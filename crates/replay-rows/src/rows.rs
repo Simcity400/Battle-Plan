@@ -1,426 +1,14 @@
 use crate::codec::{Decoder, invalid_static as invalid, put_bytes, put_varint};
-use crate::display::{Rounding, Step};
-pub use crate::event_feed_rows::EventFeedHistoryRow;
-pub use crate::map_event_rows::*;
+use crate::display::Step;
 use crate::measurement::{self, Counter};
-pub use crate::nuclear_rows::*;
-pub use crate::peace_rows::*;
 use crate::value::{EncodeValue, Value};
-pub use combat_rows::*;
 use engine_allocation as allocation;
 pub use extended_rows::*;
-pub use land_rows::*;
 pub use modifier_breakdown_rows::*;
-pub use naval_mission_rows::*;
-pub use politics_rows::*;
-pub use production_modifier_rows::*;
 use std::io;
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct ClockRow {
-    pub hour: i32,
-    pub play_time: u64,
-    pub play_session_started_at: i64,
-    pub seed: i32,
-    pub speed: i32,
-    pub debug_current_ref_id: Option<u32>,
-    pub unit: Option<i32>,
-    pub order_index: Option<i32>,
-    pub front_index: Option<i32>,
-    pub theatre_index: Option<i32>,
-    pub theater_group_index: Option<i32>,
-    pub military_deployment_line_index: Option<i32>,
-    pub military_deployment_conveyor_index: Option<i32>,
-    pub equipment_variant_index: Option<i32>,
-    pub country_leader_index: Option<i32>,
-    pub navy_id: Option<i32>,
-    pub land_combat_id: Option<i32>,
-    pub multiplayer_random_count: Option<i32>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct CampaignRow {
-    pub id: Vec<u8>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct CountryRow {
-    pub id: u32,
-    pub canonical_slot: u32,
-    pub tag: Vec<u8>,
-    pub political_power_raw: Option<i64>,
-    pub command_power_raw: i64,
-    pub stability_raw: i64,
-    pub war_support_raw: i64,
-    pub convoys_raw: Option<i64>,
-    pub peace_conference_participant: u8,
-    pub manpower_residual: i32,
-    pub border_land_doctrine_level: Recorded<Option<i32>>,
-}
-
-
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
     pub static VALIDATED_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct CountryLinkRow {
-    pub id: u32,
-    pub canonical_slot: u32,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct ConstructionRise {
-    pub hour: i32,
-    pub count: u32,
-}
-crate::value::value_struct!(ConstructionRise { hour: i32, count: u32 });
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct ProvinceRow {
-    pub id: u32,
-    pub state: u32,
-    pub owner: u32,
-    pub controller: u32,
-    pub victory_points: i32,
-    pub fort_positive: u8,
-    pub move_gate: u8,
-    pub port_sea: i32,
-    pub attack: Recorded<Witnessed<ProvinceAttackInputs>>,
-    pub selected_areas: Recorded<Retired>,
-    pub fort_bunker: Recorded<Option<i64>>,
-    pub controller_area: Recorded<Option<u32>>,
-    pub owner_area: Recorded<Option<u32>>,
-    pub area_node: Recorded<Option<ControllerAreaNode>>,
-}
-
-impl ProvinceRow {
-    pub const MOVE_NULL_OWNER_AREA: u8 = 1;
-    pub const MOVE_BORDER_CONFLICT: u8 = 2;
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct StateRow {
-    pub infrastructure: Recorded<Option<StateInfrastructure>>,
-    pub id: u32,
-    pub owner: u32,
-    pub controller: u32,
-    pub movement_infrastructure: i64,
-    pub manpower_available: i32,
-    pub manpower_locked: Recorded<i32>,
-    pub custom_name: Vec<u8>,
-    pub owner_name: Vec<u8>,
-    pub continent: Recorded<Option<u32>>,
-    pub railway_infrastructure: Recorded<Option<i64>>,
-    pub population: Recorded<i32>,
-    pub best_vp_index: Recorded<Option<i32>>,
-    pub single_controller: Recorded<Option<u32>>,
-    pub category: Recorded<Option<u32>>,
-    pub marked_owners: Recorded<Option<Vec<u32>>>,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct StateInfrastructure {
-    pub building_type: u32,
-    pub level: i32,
-    pub maximum: i32,
-}
-crate::value::value_struct!(StateInfrastructure { building_type: u32, level: i32, maximum: i32 });
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct DivisionRow {
-    pub id: u64,
-    pub roster_owner: u32,
-    pub logical_owner: u32,
-    pub expeditionary_owner: u32,
-    pub province: u32,
-    pub template: u64,
-    pub hit_points: i64,
-    pub organisation: i64,
-    pub orders_group: u64,
-    pub reveal_skip: u8,
-    pub theatre: Recorded<Option<u64>>,
-}
-
-impl DivisionRow {
-    pub const HIT_POINTS_STEP: Step = Step::fixed5(10_000, Rounding::TowardZeroNonzero);
-    pub const ORGANISATION_STEP: Step = Step::fixed5(10_000, Rounding::TowardZero);
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct WarRelationRow {
-    pub first_country: u32,
-    pub second_country: u32,
-    pub start_hour: i32,
-    pub end_hour: i32,
-    pub cancel: u8,
-    pub first_casualties: i64,
-    pub second_casualties: i64,
-    pub first_unknown_casualties: i64,
-    pub second_unknown_casualties: i64,
-    pub first_was_instigator: u8,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct FactionRow {
-    pub id: u64,
-    pub name: Vec<u8>,
-    pub template_token: Option<u32>,
-    pub color_red: u32,
-    pub color_green: u32,
-    pub color_blue: u32,
-    pub color_alpha: u32,
-    pub color_overridden: u8,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct FactionMemberRow {
-    pub country: u32,
-    pub faction: u64,
-    pub ordinal: u32,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct PlayerRow {
-    pub ordinal: Recorded<u32>,
-    pub id: i32,
-    pub country: u32,
-    pub flags: u8,
-    pub user: Vec<u8>,
-    pub name: Vec<u8>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct HumanControllerRow {
-    pub country: u32,
-    pub count: i8,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct LandCombatRow {
-    pub id: u64,
-    pub province: u32,
-    pub duration: i32,
-    pub day: i32,
-    pub attackers: Vec<u64>,
-    pub defenders: Vec<u64>,
-    pub attacker_classes: Vec<u32>,
-    pub defender_classes: Vec<u32>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct FleetRow {
-    pub id: u64,
-    pub owner: u32,
-    pub home_base: u32,
-    pub name: Recorded<Option<Vec<u8>>>,
-    pub leader: Recorded<Option<u64>>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct TaskForceRow {
-    pub id: u64,
-    pub fleet: u64,
-    pub roster_owner: u32,
-    pub logical_owner: u32,
-    pub expeditionary_owner: u32,
-    pub province: u32,
-    pub mission: u32,
-    pub route_count: i32,
-    pub combat_references: i32,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct ShipRow {
-    pub name: Recorded<Option<Vec<u8>>>,
-    pub naming: Recorded<Option<ShipNamingOperands>>,
-    pub required_manpower: Recorded<Option<i32>>,
-    pub id: u64,
-    pub task_force: u64,
-    pub strength: i64,
-    pub organisation: i64,
-    pub experience: i64,
-    pub category: u32,
-    pub sunk_convoys: i32,
-    pub class_id: i32,
-    pub acquired_manpower: Recorded<Option<i32>>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct ShipNamingOperands {
-    pub kind: i32,
-    pub order: i32,
-    pub ordered: u8,
-    pub override_name: Vec<u8>,
-    pub programmatic: u8,
-    pub equipment: Option<u64>,
-}
-crate::value::value_struct!(ShipNamingOperands {
-    kind: i32, order: i32, ordered: u8, override_name: Vec<u8>,
-    programmatic: u8, equipment: Option<u64>,
-});
-
-impl ShipRow {
-    pub const EXPERIENCE_STEP: Step = Step::fixed5(1_000, Rounding::TowardZero);
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct NavalCombatRow {
-    pub id: u64,
-    pub province: u32,
-    pub attacker_positioning: i64,
-    pub defender_positioning: i64,
-    pub attacker_anti_air: i64,
-    pub defender_anti_air: i64,
-    pub registry_ordinal: u32,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct NavalCombatParticipantRow {
-    pub combat: u64,
-    pub side: u8,
-    pub battle_slot: u32,
-    pub ship: u64,
-    pub owner: u32,
-    pub state: u32,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct AirWingRow {
-    pub id: u64,
-    pub owner: u32,
-    pub air_base: u64,
-    pub base_override: u64,
-    pub country_override: i32,
-    pub planes: i32,
-    pub acquired_manpower: Recorded<Option<i32>>,
-    pub exile_country: Recorded<Option<i32>>,
-    pub mission_mask: u32,
-    pub mission_region: Option<u32>,
-    pub base_range_raw: i64,
-    pub ace: u64,
-    pub mission_active: u8,
-    pub eligibility_veto: u8,
-    pub eligibility_counter: i32,
-    pub eligibility_limit: i32,
-    pub attached_orders_group: Option<u64>,
-    pub pool_ordinal: u32,
-    pub name: Recorded<Option<Vec<u8>>>,
-    pub pool_subunit: Recorded<Option<u32>>,
-    pub raid_reference: Recorded<Option<AirWingRaidReference>>,
-    pub strategic_bombing_raw: Recorded<Option<i64>>,
-    pub replacement_setting: Recorded<Option<u8>>,
-    pub map_flags: Recorded<Option<u32>>,
-    pub fuel_base_raw: Recorded<Option<i64>>,
-    pub fuel_current_type: Recorded<Option<i32>>,
-    pub fuel_effective_aircraft: Recorded<Option<i32>>,
-    pub fuel_context_mode: Recorded<Option<u32>>,
-    pub fuel_capacity_class: Recorded<Option<i32>>,
-    pub fuel_override_resolved: Recorded<Option<u32>>,
-}
-
-impl AirWingRow {
-    pub fn fuel_inputs(&self) -> Result<AirWingFuelInputs, String> {
-        Ok(AirWingFuelInputs {
-            base_fuel: *self.fuel_base_raw.require("AirWings.fuel_base_raw")?,
-            current_type: *self
-                .fuel_current_type
-                .require("AirWings.fuel_current_type")?,
-            effective_aircraft: *self
-                .fuel_effective_aircraft
-                .require("AirWings.fuel_effective_aircraft")?,
-            context_mode: self
-                .fuel_context_mode
-                .require("AirWings.fuel_context_mode")?
-                .map(u8::try_from)
-                .transpose()
-                .map_err(|_| "Air fuel context is outside its stored byte".to_owned())?,
-            capacity_class: *self
-                .fuel_capacity_class
-                .require("AirWings.fuel_capacity_class")?,
-            override_resolved: match self
-                .fuel_override_resolved
-                .require("AirWings.fuel_override_resolved")?
-            {
-                Some(0) => Some(false),
-                Some(1) => Some(true),
-                None => None,
-                _ => {
-                    return Err(
-                        "Air fuel override liveness is outside its native boolean domain".into(),
-                    );
-                }
-            },
-        })
-    }
-    pub fn training_stop(&self) -> Option<bool> {
-        self.map_flag(0)
-    }
-    pub fn attachment_coverage(&self) -> Option<bool> {
-        self.map_flag(2)
-    }
-    pub fn assigned_to_raid(&self) -> Option<bool> {
-        self.map_flag(4)
-    }
-    fn map_flag(&self, bit: u32) -> Option<bool> {
-        match self.map_flags {
-            Recorded::Value(Some(flags)) if flags & (1 << bit) != 0 => {
-                Some(flags & (2 << bit) != 0)
-            }
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct AirWingRaidReference {
-    pub raw: u64,
-    pub resolves: bool,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct AirWingFuelInputs {
-    pub base_fuel: Option<i64>,
-    pub current_type: Option<i32>,
-    pub effective_aircraft: Option<i32>,
-    pub context_mode: Option<u8>,
-    pub capacity_class: Option<i32>,
-    pub override_resolved: Option<bool>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct ArmyOrderRow {
-    pub owner_group: u64,
-    pub instance: u32,
-    pub country: u32,
-    pub order_type: i32,
-    pub active: u8,
-    pub path: Vec<u32>,
-    pub target_states: Vec<u32>,
-    pub paradrop_target: u32,
 }
 
 pub trait RowsVisit {
@@ -442,6 +30,10 @@ pub trait RowCodec: Default + Clone + Eq {
     const KEY_BITS: u32;
     fn key(&self) -> u128;
     fn check_key_fields(&self) -> io::Result<()>;
+    fn check_selected_fields(&self, mask: u64) -> io::Result<()> {
+        let _ = mask;
+        self.check_key_fields()
+    }
     fn not_recorded_fields(&self) -> u64;
     fn differing_fields(&self, previous: &Self) -> u64 {
         let _ = previous;
@@ -1628,6 +1220,49 @@ fn column_context(error: io::Error, key: u128, column: &str) -> io::Error {
 macro_rules! typed_codec {
     ($ty:ident, $bits:literal, |$row:ident| $key:expr, |$key_name:ident| $initial:expr,
      { $($index:literal => ($($field:tt)+) : $kind:ident $(@ $step:path)?),+ $(,)? }, |$checked:ident| $check:expr) => {
+        $crate::typed_codec!(
+            $ty,
+            $bits,
+            |$row| $key,
+            |$key_name| $initial,
+            { $($index => ($($field)+): $kind $(@ $step)?),+ },
+            |$checked| $check,
+            |_withheld_field, _withheld_format| false
+        );
+    };
+    ($ty:ident, $bits:literal, |$row:ident| $key:expr, |$key_name:ident| $initial:expr,
+     { $($index:literal => ($($field:tt)+) : $kind:ident $(@ $step:path)?),+ $(,)? }, |$checked:ident| $check:expr, |$wf:ident, $wfmt:ident| $withhold:expr) => {
+        $crate::typed_codec!(
+            $ty,
+            $bits,
+            |$row| $key,
+            |$key_name| $initial,
+            { $($index => ($($field)+): $kind $(@ $step)?),+ },
+            |$checked, mask| {
+                let all = $crate::rows::full_mask(Self::SCHEMA.len());
+                if mask & all == all {
+                    $check
+                } else {
+                    Ok(())
+                }
+            },
+            |$wf, $wfmt| $withhold
+        );
+    };
+    ($ty:ident, $bits:literal, |$row:ident| $key:expr, |$key_name:ident| $initial:expr,
+     { $($index:literal => ($($field:tt)+) : $kind:ident $(@ $step:path)?),+ $(,)? }, |$checked:ident, $mask:ident| $check:expr) => {
+        $crate::typed_codec!(
+            $ty,
+            $bits,
+            |$row| $key,
+            |$key_name| $initial,
+            { $($index => ($($field)+): $kind $(@ $step)?),+ },
+            |$checked, $mask| $check,
+            |_withheld_field, _withheld_format| false
+        );
+    };
+    ($ty:ident, $bits:literal, |$row:ident| $key:expr, |$key_name:ident| $initial:expr,
+     { $($index:literal => ($($field:tt)+) : $kind:ident $(@ $step:path)?),+ $(,)? }, |$checked:ident, $mask:ident| $check:expr, |$wf:ident, $wfmt:ident| $withhold:expr) => {
         $crate::row!($ty, |$key_name| $initial, { $(($($field)+): $kind),+ });
         #[cfg(any(test, feature = "test-support"))]
         impl $crate::checkpoint::endpoint::sparse::SparseReference for $ty {
@@ -1672,7 +1307,8 @@ macro_rules! typed_codec {
             fn round_to_display(&mut self) {
                 $(round_native_field(&mut self.$($field)+, $crate::display_step!($($step)?));)+
             }
-            fn check_key_fields(&self) -> io::Result<()> { let $checked = self; $check }
+            fn check_key_fields(&self) -> io::Result<()> { self.check_selected_fields(full_mask(Self::SCHEMA.len())) }
+            fn check_selected_fields(&self, $mask: u64) -> io::Result<()> { let $checked = self; $check }
             fn visit_nested_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
                 $(NativeValue::visit_field_gaps(&self.$($field)+, visit);)+
             }
@@ -1790,7 +1426,17 @@ macro_rules! typed_codec {
             fn decode_fields(key: u128, input: &mut Decoder<'_>) -> io::Result<Self> {
                 let $key_name = key;
                 let mut row = $initial;
-                $(row.$($field)+ = read_stepped_field($index, Kind::$kind, $crate::display_step!($($step)?), input)?;)+
+                $(row.$($field)+ = if {
+                    let ($wf, $wfmt) = ($index, input.format);
+                    $withhold
+                } {
+                    if $index < input.recorded_fields {
+                        Kind::$kind.decode(input)?;
+                    }
+                    NativeValue::not_recorded()?
+                } else {
+                    read_stepped_field($index, Kind::$kind, $crate::display_step!($($step)?), input)?
+                };)+
                 Ok(row)
             }
             fn patch_from_wire<'a>(&mut self, mask: u64, wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>) -> io::Result<bool> {
@@ -1811,6 +1457,7 @@ macro_rules! typed_codec {
                 $(if mask & (1_u64 << $index) != 0 {
                     row.$($field)+ = from_wire_field(wire($index)?, $crate::display_step!($($step)?)).map_err($crate::rows::column_error(key, stringify!($($field)+)))?;
                 })+
+                row.check_selected_fields(mask)?;
                 Ok(row)
             }
             #[allow(clippy::field_reassign_with_default, reason = "a key initializer also serves rows with nested fields")]
@@ -1839,9 +1486,24 @@ macro_rules! typed_codec {
                 };
                 let mut input = Decoder::new(&delta.values);
                 input.format = delta.format;
-                $(if $index >= fields { row.$($field)+ = NativeValue::not_recorded()?; })+
+                $(if $index >= fields || {
+                    let ($wf, $wfmt) = ($index, delta.format);
+                    $withhold
+                } {
+                    row.$($field)+ = NativeValue::not_recorded()?;
+                })+
 
-                $(if delta.mask & (1_u64 << $index) != 0 { apply_stepped_value(&mut row.$($field)+, Kind::$kind, $crate::display_step!($($step)?), &mut input)?; })+
+                $(if delta.mask & (1_u64 << $index) != 0 {
+                    if {
+                        let ($wf, $wfmt) = ($index, delta.format);
+                        $withhold
+                    } {
+                        Kind::$kind.decode_change(&mut input)?;
+                        row.$($field)+ = NativeValue::not_recorded()?;
+                    } else {
+                        apply_stepped_value(&mut row.$($field)+, Kind::$kind, $crate::display_step!($($step)?), &mut input)?;
+                    }
+                })+
                 input.finish()?;
                 Ok(row)
             }
@@ -1854,88 +1516,11 @@ macro_rules! typed_codec {
 macro_rules! row_codec {
     ($ty:ident, $bits:literal, |$row:ident| $key:expr, |$key_name:ident| { $($key_field:ident : $key_value:expr),* $(,)? },
      { $($index:literal => $field:ident : $kind:ident $(@ $step:path)?),+ $(,)? }, |$checked:ident| $check:expr) => {
-        typed_codec!($ty, $bits, |$row| $key,
+        $crate::typed_codec!($ty, $bits, |$row| $key,
             |$key_name| Self { $($key_field: $key_value,)* $($field: Default::default(),)+ },
             { $($index => ($field): $kind $(@ $step)?),+ }, |$checked| $check);
     };
 }
-row_codec!(ClockRow, 0, |_row| 0, |_key| {  }, {0 => hour: I32, 1 => play_time: U64, 2 => play_session_started_at: I64, 3 => seed: I32, 4 => speed: I32, 5 => debug_current_ref_id: OptionalU32, 6 => unit: OptionalI32, 7 => order_index: OptionalI32, 8 => front_index: OptionalI32, 9 => theatre_index: OptionalI32, 10 => theater_group_index: OptionalI32, 11 => military_deployment_line_index: OptionalI32, 12 => military_deployment_conveyor_index: OptionalI32, 13 => equipment_variant_index: OptionalI32, 14 => country_leader_index: OptionalI32, 15 => navy_id: OptionalI32, 16 => land_combat_id: OptionalI32, 17 => multiplayer_random_count: OptionalI32}, |_row| Ok(()));
-row_codec!(CampaignRow, 0, |_row| 0, |_key| {  }, {0 => id: Bytes}, |_row| Ok(()));
-mod event_feed;
-row_codec!(CountryRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => canonical_slot: U32, 1 => tag: Bytes, 2 => political_power_raw: OptionalI64, 3 => command_power_raw: I64, 4 => stability_raw: I64, 5 => war_support_raw: I64, 6 => convoys_raw: OptionalI64, 7 => peace_conference_participant: U8, 8 => manpower_residual: I32, 9 => border_land_doctrine_level: OptionalI32}, |_row| Ok(()));
-row_codec!(CountryLinkRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => canonical_slot: U32}, |_row| Ok(()));
-#[cfg(any(test, feature = "test-support"))]
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct CountryExperienceUnsayableRow {
-    pub country: u32,
-    pub army_raw: Recorded<i64>,
-    pub army_daily_raw: Recorded<i64>,
-    pub army_daily_training_raw: Recorded<i64>,
-    pub navy_raw: Recorded<i64>,
-    pub navy_daily_raw: Recorded<i64>,
-    pub navy_daily_training_raw: Recorded<i64>,
-    pub air_raw: Recorded<i64>,
-    pub air_daily_raw: Recorded<i64>,
-    pub armies_for_training_raw: Recorded<i64>,
-}
-#[cfg(any(test, feature = "test-support"))]
-row_codec!(CountryExperienceUnsayableRow, 32, |row| row.country as u128, |key| { country: key as u32 }, {0 => army_raw: I64, 1 => army_daily_raw: I64, 2 => army_daily_training_raw: I64, 3 => navy_raw: I64, 4 => navy_daily_raw: I64, 5 => navy_daily_training_raw: I64, 6 => air_raw: I64, 7 => air_daily_raw: I64, 8 => armies_for_training_raw: I64}, |_row| Ok(()));
-#[cfg(any(test, feature = "test-support"))]
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct DivisionRowAt141 {
-    pub id: u64,
-    pub roster_owner: u32,
-    pub logical_owner: u32,
-    pub expeditionary_owner: u32,
-    pub province: u32,
-    pub template: u64,
-    pub hit_points: i64,
-    pub organisation: i64,
-    pub orders_group: u64,
-    pub reveal_skip: u8,
-}
-#[cfg(any(test, feature = "test-support"))]
-row_codec!(DivisionRowAt141, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => roster_owner: U32, 1 => logical_owner: U32, 2 => expeditionary_owner: U32, 3 => province: U32, 4 => template: U64, 5 => hit_points: I64 @ DivisionRow::HIT_POINTS_STEP, 6 => organisation: I64 @ DivisionRow::ORGANISATION_STEP, 7 => orders_group: U64, 8 => reveal_skip: U8}, |_row| Ok(()));
-#[cfg(any(test, feature = "test-support"))]
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct StateRowAt141 {
-    pub id: u32,
-    pub owner: u32,
-    pub controller: u32,
-    pub movement_infrastructure: i64,
-    pub custom_name: Vec<u8>,
-    pub owner_name: Vec<u8>,
-    pub manpower_available: i32,
-    pub continent: Recorded<Option<u32>>,
-    pub railway_infrastructure: Recorded<Option<i64>>,
-    pub population: Recorded<i32>,
-    pub category: Recorded<Option<u32>>,
-    pub manpower_locked: Recorded<i32>,
-    pub best_vp_index: Recorded<Option<i32>>,
-    pub single_controller: Recorded<Option<u32>>,
-    pub infrastructure: Recorded<Option<StateInfrastructure>>,
-}
-#[cfg(any(test, feature = "test-support"))]
-row_codec!(StateRowAt141, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => owner: U32, 1 => controller: U32, 2 => movement_infrastructure: I64, 3 => custom_name: Bytes, 4 => owner_name: Bytes, 5 => manpower_available: I32, 6 => continent: OptionalU32, 7 => railway_infrastructure: OptionalI64, 8 => population: I32, 9 => category: OptionalU32, 10 => manpower_locked: I32, 11 => best_vp_index: OptionalI32, 12 => single_controller: OptionalU32, 13 => infrastructure: Opaque}, |_row| Ok(()));
-row_codec!(ProvinceRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => state: U32, 1 => owner: U32, 2 => controller: U32, 3 => victory_points: I32, 4 => fort_positive: U8, 5 => move_gate: U8, 6 => port_sea: I32, 7 => attack: Opaque, 8 => selected_areas: Opaque, 9 => fort_bunker: OptionalI64, 10 => controller_area: OptionalU32, 11 => owner_area: OptionalU32, 12 => area_node: Opaque}, |_row| Ok(()));
-row_codec!(StateRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => owner: U32, 1 => controller: U32, 2 => movement_infrastructure: I64, 3 => custom_name: Bytes, 4 => owner_name: Bytes, 5 => manpower_available: I32, 6 => continent: OptionalU32, 7 => railway_infrastructure: OptionalI64, 8 => population: I32, 9 => category: OptionalU32, 10 => manpower_locked: I32, 11 => best_vp_index: OptionalI32, 12 => single_controller: OptionalU32, 13 => infrastructure: Opaque, 14 => marked_owners: Opaque}, |_row| Ok(()));
-row_codec!(DivisionRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => roster_owner: U32, 1 => logical_owner: U32, 2 => expeditionary_owner: U32, 3 => province: U32, 4 => template: U64, 5 => hit_points: I64 @ Self::HIT_POINTS_STEP, 6 => organisation: I64 @ Self::ORGANISATION_STEP, 7 => orders_group: U64, 8 => reveal_skip: U8, 9 => theatre: OptionalU64}, |_row| Ok(()));
-row_codec!(WarRelationRow, 64, |row| (row.first_country as u128) << 32 | row.second_country as u128, |key| { first_country: (key >> 32) as u32, second_country: key as u32 }, {0 => start_hour: I32, 1 => end_hour: I32, 2 => cancel: U8, 3 => first_casualties: I64, 4 => second_casualties: I64, 5 => first_unknown_casualties: I64, 6 => second_unknown_casualties: I64, 7 => first_was_instigator: U8}, |_row| Ok(()));
-row_codec!(FactionRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => name: Bytes, 1 => template_token: OptionalU32, 2 => color_red: U32, 3 => color_green: U32, 4 => color_blue: U32, 5 => color_alpha: U32, 6 => color_overridden: U8}, |_row| Ok(()));
-row_codec!(FactionMemberRow, 32, |row| row.country as u128, |key| { country: key as u32 }, {0 => faction: U64, 1 => ordinal: U32}, |_row| Ok(()));
-row_codec!(PlayerRow, 32, |row| row.id as u32 as u128, |key| { id: key as u32 as i32 }, {0 => country: U32, 1 => flags: U8, 2 => user: Bytes, 3 => name: Bytes, 4 => ordinal: U32}, |_row| Ok(()));
-row_codec!(HumanControllerRow, 32, |row| row.country as u128, |key| { country: key as u32 }, {0 => count: I8}, |_row| Ok(()));
-row_codec!(LandCombatRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => province: U32, 1 => duration: I32, 2 => day: I32, 3 => attackers: U64List, 4 => defenders: U64List, 5 => attacker_classes: U32List, 6 => defender_classes: U32List}, |_row| Ok(()));
-row_codec!(FleetRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => owner: U32, 1 => home_base: U32, 2 => name: Opaque, 3 => leader: OptionalU64}, |_row| Ok(()));
-row_codec!(TaskForceRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => fleet: U64, 1 => roster_owner: U32, 2 => logical_owner: U32, 3 => expeditionary_owner: U32, 4 => province: U32, 5 => mission: U32, 6 => route_count: I32, 7 => combat_references: I32}, |_row| Ok(()));
-row_codec!(ShipRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => task_force: U64, 1 => strength: I64, 2 => organisation: I64, 3 => experience: I64 @ Self::EXPERIENCE_STEP, 4 => category: U32, 5 => sunk_convoys: I32, 6 => class_id: I32, 7 => acquired_manpower: OptionalI32, 8 => required_manpower: OptionalI32, 9 => name: Opaque, 10 => naming: Opaque}, |_row| Ok(()));
-row_codec!(NavalCombatRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => province: U32, 1 => attacker_positioning: I64, 2 => defender_positioning: I64, 3 => attacker_anti_air: I64, 4 => defender_anti_air: I64, 5 => registry_ordinal: U32}, |_row| Ok(()));
-row_codec!(NavalCombatParticipantRow, 97, |row| (row.combat as u128) << 33 | (row.side as u128) << 32 | row.battle_slot as u128, |key| { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, battle_slot: key as u32 }, {0 => ship: U64, 1 => owner: U32, 2 => state: U32}, |row| if row.side > 1 { Err(invalid("naval combat participant side exceeds one")) } else { Ok(()) });
-row_codec!(AirWingRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => owner: U32, 1 => air_base: U64, 2 => base_override: U64, 3 => country_override: I32, 4 => planes: I32, 5 => mission_mask: U32, 6 => mission_region: OptionalU32, 7 => base_range_raw: I64, 8 => ace: U64, 9 => mission_active: U8, 10 => eligibility_veto: U8, 11 => eligibility_counter: I32, 12 => eligibility_limit: I32, 13 => attached_orders_group: OptionalU64, 14 => pool_ordinal: U32, 15 => name: Opaque, 16 => pool_subunit: OptionalU32, 17 => raid_reference: Opaque, 18 => strategic_bombing_raw: OptionalI64, 19 => acquired_manpower: OptionalI32, 20 => exile_country: OptionalI32, 21 => replacement_setting: Opaque, 22 => map_flags: OptionalU32, 23 => fuel_base_raw: OptionalI64, 24 => fuel_current_type: OptionalI32, 25 => fuel_effective_aircraft: OptionalI32, 26 => fuel_context_mode: OptionalU32, 27 => fuel_capacity_class: OptionalI32, 28 => fuel_override_resolved: OptionalU32}, |_row| Ok(()));
-row_codec!(ArmyOrderRow, 96, |row| (row.owner_group as u128) << 32 | row.instance as u128, |key| { owner_group: (key >> 32) as u64, instance: key as u32 }, {0 => country: U32, 1 => order_type: I32, 2 => active: U8, 3 => paradrop_target: U32, 4 => path: U32List, 5 => target_states: U32List}, |_row| Ok(()));
 
 #[derive(Clone, Copy, Debug)]
 pub enum Kind {
@@ -2352,50 +1937,53 @@ impl<'a> Field<'a> {
         Ok(())
     }
 }
+pub trait OpaqueValue: Value + crate::checkpoint::values::CheckpointValue {
+    const RESTORED: bool = false;
+}
+
+#[macro_export]
+#[doc(hidden)]
 macro_rules! opaque_value {
-    ($ty:ty, restored) => {
-        opaque_value!($ty, true);
-    };
     ($ty:ty) => {
-        opaque_value!($ty, false);
+        $crate::opaque_value!(@impl [] $ty, false);
     };
-    ($ty:ty, $restored:literal) => {
-        $crate::rows::checkpoint::opaque!($ty);
-        impl NativeValue for $ty {
-            const HAS_STEPS: bool = <$ty as Value>::HAS_STEPS;
+    (@impl [$($generic:tt)*] $ty:ty, $restored:expr) => {
+        $crate::rows::checkpoint::opaque!(@impl [$($generic)*] $ty);
+        impl $($generic)* $crate::rows::NativeValue for $ty {
+            const HAS_STEPS: bool = <$ty as $crate::value::Value>::HAS_STEPS;
             const RESTORED: bool = $restored;
             fn heap_bytes(&self) -> usize {
-                <$ty as Value>::heap_bytes(self)
+                <$ty as $crate::value::Value>::heap_bytes(self)
             }
             fn visit_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
-                Value::visit_field_gaps(self, visit);
+                $crate::value::Value::visit_field_gaps(self, visit);
             }
             fn round_display(&mut self) {
-                Value::round_display(self);
+                $crate::value::Value::round_display(self);
             }
             fn round_to(&mut self, step: $crate::display::Step) {
-                Value::round_to(self, step);
+                $crate::value::Value::round_to(self, step);
             }
-            fn to_units(&self, step: $crate::display::Step) -> io::Result<Self> {
-                Value::to_units(self, step)
+            fn to_units(&self, step: $crate::display::Step) -> std::io::Result<Self> {
+                $crate::value::Value::to_units(self, step)
             }
-            fn from_units(self, step: $crate::display::Step) -> io::Result<Self> {
-                Value::from_units(self, step)
+            fn from_units(self, step: $crate::display::Step) -> std::io::Result<Self> {
+                $crate::value::Value::from_units(self, step)
             }
-            fn try_clone(&self) -> io::Result<Self> {
-                Value::try_clone(self)
+            fn try_clone(&self) -> std::io::Result<Self> {
+                $crate::value::Value::try_clone(self)
             }
-            fn field(&self) -> Field<'_> {
-                Field::Opaque(Opaque::Native(self))
+            fn field(&self) -> $crate::rows::Field<'_> {
+                $crate::rows::Field::Opaque($crate::rows::Opaque::Native(self))
             }
-            fn from_field(field: Field<'_>) -> io::Result<Self> {
-                let Field::Opaque(Opaque::Encoded(bytes, format)) = field else {
-                    return Err(invalid("structured field requires encoded native bytes"));
+            fn from_field(field: $crate::rows::Field<'_>) -> std::io::Result<Self> {
+                let $crate::rows::Field::Opaque($crate::rows::Opaque::Encoded(bytes, format)) = field else {
+                    return Err($crate::codec::invalid_static("structured field requires encoded native bytes"));
                 };
-                measurement::count(Counter::NativeOpaqueBytes, bytes.len());
-                let mut input = Decoder::new(bytes);
+                $crate::measurement::count($crate::measurement::Counter::NativeOpaqueBytes, bytes.len());
+                let mut input = $crate::codec::Decoder::new(bytes);
                 input.format = format;
-                let value = <$ty as Value>::decode(&mut input)?;
+                let value = <$ty as $crate::value::Value>::decode(&mut input)?;
                 input.finish()?;
                 Ok(value)
             }
@@ -2403,13 +1991,21 @@ macro_rules! opaque_value {
     };
 }
 
-opaque_value!(crate::event_feed_rows::EventFeedCoverage);
-opaque_value!(Option<crate::event_feed_rows::EventFeedCounts>);
-opaque_value!(Option<ShipNamingOperands>);
-opaque_value!(Option<StateInfrastructure>);
-opaque_value!(Vec<ConstructionRise>);
-opaque_value!(Vec<crate::event_feed_rows::EventFeedEvent>);
-opaque_value!(Vec<crate::event_feed_rows::EventFeedScope>);
+macro_rules! opaque_wrapper {
+    ($element:ident [$($generic:tt)+] $wrapper:ty) => {
+        impl <$($generic)+> OpaqueValue for $wrapper {
+            const RESTORED: bool = $element::RESTORED;
+        }
+        opaque_value!(@impl [<$($generic)+>] $wrapper, <Self as OpaqueValue>::RESTORED);
+    };
+}
+
+opaque_wrapper!(T [T: OpaqueValue] Option<T>);
+opaque_wrapper!(T [T: OpaqueValue] Vec<T>);
+opaque_wrapper!(T [T: OpaqueValue, const N: usize] [T; N]);
+opaque_wrapper!(T [T: OpaqueValue] Witnessed<T>);
+opaque_wrapper!(T [T: OpaqueValue] std::sync::Arc<T>);
+
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum List<'a, T> {
@@ -2472,21 +2068,46 @@ pub use retired::{
     Retired, RetiredBool, RetiredI32, RetiredI64, RetiredKept, RetiredNested, RetiredOptionalI64,
     RetiredU8, RetiredU32, RetiredU32List, RetiredU64,
 };
-#[path = "combat_rows.rs"]
-mod combat_rows;
 #[path = "extended_rows.rs"]
 mod extended_rows;
-#[path = "land_rows.rs"]
-mod land_rows;
-#[path = "naval_mission_rows.rs"]
-mod naval_mission_rows;
-#[path = "politics_rows.rs"]
-mod politics_rows;
 
 #[path = "modifier_breakdown_rows.rs"]
 mod modifier_breakdown_rows;
-#[path = "production_modifier_rows.rs"]
-mod production_modifier_rows;
+
+#[path = "witnessed.rs"]
+mod witnessed;
+pub use witnessed::*;
+#[path = "equipment_destruction_cause.rs"]
+mod equipment_destruction_cause;
+pub use equipment_destruction_cause::*;
+#[path = "occupation_values.rs"]
+mod occupation_values;
+pub use occupation_values::*;
+#[path = "power_values.rs"]
+mod power_values;
+pub use power_values::*;
+#[path = "variant_values.rs"]
+mod variant_values;
+pub use variant_values::*;
+#[path = "industrial_organisations.rs"]
+mod industrial_organisations;
+#[path = "fuel_demand_values.rs"]
+mod fuel_demand_values;
+#[path = "strategic_action.rs"]
+mod strategic_action;
+pub use strategic_action::*;
+#[path = "division_panel_source.rs"]
+mod division_panel_source;
+pub use division_panel_source::*;
+#[path = "air_power_values.rs"]
+mod air_power_values;
+pub use air_power_values::*;
+#[path = "air_history_channels.rs"]
+mod air_history_channels;
+pub use air_history_channels::*;
+#[path = "shared_rows.rs"]
+mod shared_rows;
+pub use shared_rows::*;
 
 pub mod ops;
 pub use ops::{RowOps, TableRow};

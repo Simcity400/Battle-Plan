@@ -8,4 +8,4 @@ An upload key and stamp also have to identify the position of a retained window.
 
 Keep fixed-size texture pages and allocate new pages as cells fill. The page size respects the adapter limit, with a supported default before the device reports one. A cell larger than a page is refused, and no country-count limit is needed. Stable page dimensions keep normalized coordinates stable. Cells have no gutters. Whole-pixel 1:1 and minified sampling stays inside the cell, and scaled variants clamp their taps to its texel centres and average the minified footprint.
 
-[Anchored overlays](../../crates/viewer-foundation/src/map/anchored.rs) · [Atlas pages](../../crates/viewer-foundation/src/map/atlas_pages.rs)
+[Anchored overlays](../../crates/viewer-native-gui/src/anchored.rs) · [Atlas pages](../../crates/viewer-gpu/src/atlas_pages.rs)

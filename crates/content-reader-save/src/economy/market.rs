@@ -282,7 +282,7 @@ mod tests {
     use super::*;
     #[test]
     fn market_save_runtime_keeps_history_route_and_literal_random_variable_independent() {
-        let document = content_reader_core::parser::parse(br#"
+        let document = content_reader_parser::parser::parse(br#"
             days=19
             contract_meta={cic=4.00004 convoys=5.00005 efficiency_due_to_lost_convoys=0.75
                 history={factory_cic_progress=1.00001 equipment_transfer_progress=-2.00002 collected=3.00003}}
@@ -328,7 +328,7 @@ mod tests {
     }
     #[test]
     fn market_save_preserves_requested_items_independent_prices_and_subsidy_alternatives() {
-        let document=content_reader_core::parser::parse(br#"equipment_market={contracts={purchase_contract={id={id=17 type=81} contract_definition={contract_draft={seller=AA buyer=BB speed=3 equipments={allow_zero_entries=yes equipment={id={id=7 type=70} amount=-0.00001}} subsidies={subsidies={ {cic=90071992547.40993 archetype=synthetic targets={AA BB AA}} {cic=-1 archetype=synthetic trigger=""} }}} prices={allow_zero_entries=no equipment={id={id=7 type=70} amount=7.5}} price_levels={levels={ {{id=7 type=70} low} }}}}} requests={5001}}"#).unwrap();
+        let document=content_reader_parser::parser::parse(br#"equipment_market={contracts={purchase_contract={id={id=17 type=81} contract_definition={contract_draft={seller=AA buyer=BB speed=3 equipments={allow_zero_entries=yes equipment={id={id=7 type=70} amount=-0.00001}} subsidies={subsidies={ {cic=90071992547.40993 archetype=synthetic targets={AA BB AA}} {cic=-1 archetype=synthetic trigger=""} }}} prices={allow_zero_entries=no equipment={id={id=7 type=70} amount=7.5}} price_levels={levels={ {{id=7 type=70} low} }}}}} requests={5001}}"#).unwrap();
         let parsed = terms(&document.items).unwrap().unwrap();
         assert_eq!(parsed[0].equipment.equipment[0].amount.raw, -1);
         assert_eq!(parsed[0].prices.equipment[0].amount.raw, 750000);
@@ -339,11 +339,11 @@ mod tests {
     }
     #[test]
     fn market_save_keeps_pending_requests_and_empty_country_holders() {
-        let document=content_reader_core::parser::parse(br#"equipment_market={contracts={} requests={5001 {index=5000 value={ {id={id=2 type=82} contract_definition={contract_draft={seller=AA buyer=BB speed=0 equipments={allow_zero_entries=no} subsidies={}} prices={allow_zero_entries=yes} price_levels={levels={}}}} }}}}"#).unwrap();
+        let document=content_reader_parser::parser::parse(br#"equipment_market={contracts={} requests={5001 {index=5000 value={ {id={id=2 type=82} contract_definition={contract_draft={seller=AA buyer=BB speed=0 equipments={allow_zero_entries=no} subsidies={}} prices={allow_zero_entries=yes} price_levels={levels={}}}} }}}}"#).unwrap();
         let parsed = terms(&document.items).unwrap().unwrap();
         assert!(parsed[0].request);
         assert_eq!(parsed[0].id, (2_u64 << 32) | 82);
-        let document=content_reader_core::parser::parse(br#"equipment_market={market_stockpile={equipments={allow_zero_entries=no}} price_levels={levels={}} subsidies={} market_request_automation={option={auto_send_market_access=yes}}}"#).unwrap();
+        let document=content_reader_parser::parser::parse(br#"equipment_market={market_stockpile={equipments={allow_zero_entries=no}} price_levels={levels={}} subsidies={} market_request_automation={option={auto_send_market_access=yes}}}"#).unwrap();
         let parsed = country(&document.items).unwrap().unwrap();
         assert!(parsed.inventory.equipment.is_empty());
         assert!(parsed.auto_send_market_access);

@@ -8,4 +8,4 @@ The Windows CPU-set query uses a null sizing buffer followed by aligned storage 
 
 When capture holds the game thread, its priority guard skips the Windows failure sentinel and priorities already at or above the intended level. The current-thread pseudo-handle is also used when restoring this thread’s prior value. The processor group count and current processor queries need no arguments or owned handle.
 
-[Windows worker priority and CPU policy](../../crates/collector/src/runtime.rs)
+[Windows worker priority and CPU policy](../../crates/collector-runtime/src/runtime.rs)

@@ -7,7 +7,7 @@ use replay_data::rows::{
     StateMovementTerms, TableRows, tables,
 };
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::map::test_support::test_put;
+use viewer_foundation::test_support::test_put;
 
 fn fixed_modifier_names() -> executable_tables::Tables {
     static TABLES: OnceLock<executable_tables::Tables> = OnceLock::new();

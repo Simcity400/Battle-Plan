@@ -37,7 +37,7 @@ pub(super) fn run(run: Run<'_>) -> io::Result<Value> {
     if let Some(side) = &viewer.playhead_map {
         side.anchor(start, !schedule.paused, speed, false);
     }
-    let mut limited = viewer_foundation::map::frame_limit::Grid::default();
+    let mut limited = viewer_runtime::frame_limit::Grid::default();
     let mut drawn_before = None::<i32>;
     let t0 = Instant::now();
     for index in 0u64.. {
@@ -48,7 +48,7 @@ pub(super) fn run(run: Run<'_>) -> io::Result<Value> {
         let now = Instant::now();
         limited.take(now);
         let start_us = now.duration_since(t0).as_secs_f64() * 1e6;
-        let cpu_us = viewer_foundation::profiling::current_thread_cpu_time().map_or(f64::NAN, |cpu| cpu.as_secs_f64() * 1e6);
+        let cpu_us = viewer_runtime::profiling::current_thread_cpu_time().map_or(f64::NAN, |cpu| cpu.as_secs_f64() * 1e6);
         let head = match &viewer.playhead_map {
             _ if schedule.paused => f64::from(start),
             Some(side) => f64::from(side.head(now)),

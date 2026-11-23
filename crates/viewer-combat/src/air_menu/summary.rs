@@ -7,9 +7,7 @@ use std::{
     collections::BTreeMap,
     io,
 };
-use viewer_foundation::map::air_participants::{
-    CountryRelations, CountryVectors, ordered_participants,
-};
+use viewer_unit_reads::air_participants::{CountryRelations, CountryVectors, ordered_participants};
 
 struct RelationRows<'a>(&'a [AirCountryRelationRow]);
 impl CountryVectors for RelationRows<'_> {
@@ -238,7 +236,7 @@ fn anti_air(
         }
     }
     let tokens =
-        viewer_foundation::table_access::TokenNames::new(frame).map_err(|e| e.to_string())?;
+        dashboard_text::table_access::TokenNames::new(frame).map_err(|e| e.to_string())?;
     let buildings = frame
         .complete::<tables::StateBuildings>()
         .map_err(|e| e.to_string())?;
@@ -315,7 +313,7 @@ fn cipher(
             .copied()
             .ok_or_else(|| format!("cipher country {raw} is unresolved"))
     };
-    let relations = viewer_foundation::map::visibility::Relations::read(frame, &links)
+    let relations = viewer_foundation::visibility::Relations::read(frame, &links)
         .map_err(str::to_owned)?;
     let mut rows: Vec<_> = frame
         .complete::<tables::Cryptology>()

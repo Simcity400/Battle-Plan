@@ -7,25 +7,19 @@ use replay_data::{
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 use viewer_foundation::tooltip_text::tooltip_keys;
-use {
-    super::INLINE_FLAG, super::Selection, super::Values, super::Widget, super::binding::Bindings,
-    super::binding::FILL, super::binding::FLAG, super::binding::Flags, super::binding::SPRITE,
-    super::binding::TEXT, super::binding::country_flag, super::binding::fill, super::binding::hide,
-    super::binding::text, super::template_icons, super::tooltips::hover_text,
-    super::tooltips::set_hover, viewer_foundation::land_combat_math::Condition,
-    viewer_foundation::land_combat_math::combat_rows,
-    viewer_foundation::land_combat_math::conditions,
-    viewer_foundation::land_combat_math::member_values, viewer_foundation::tooltip_text::TextIcons,
-    viewer_foundation::tooltip_text::builtin, viewer_foundation::tooltip_text::displayable,
-    viewer_foundation::tooltip_text::token,
+use super::{
+    INLINE_FLAG,
+    Selection,
+    Values,
+    Widget,
+    binding::{Bindings, FILL, FLAG, Flags, SPRITE, TEXT, country_flag, fill, hide, text},
+    template_icons,
+    tooltips::{hover_text, set_hover},
 };
-use {
-    super::content::Content as StaticContent,
-    viewer_foundation::map::{
-        perspective::Vision,
-        tables::{Available, rows},
-    },
-};
+use viewer_engagements::land_combat_math::{Condition, combat_rows, conditions, member_values};
+use viewer_foundation::tooltip_text::{TextIcons, builtin, displayable, token};
+use super::content::Content as StaticContent;
+use viewer_foundation::{perspective::Vision, tables::{Available, rows}};
 
 pub(super) fn bind(
     out: &mut Bindings,
@@ -404,7 +398,7 @@ fn entry(
                 text(
                     &mut values,
                     key,
-                    content_reader_core::fixed5::fixed5_to_string(raw, 0),
+                    content_reader_parser::fixed5::fixed5_to_string(raw, 0),
                 );
             } else {
                 values.entry(key.into()).or_default().text = None;
@@ -1166,7 +1160,7 @@ fn naval(
                         text(
                             &mut out.values,
                             key,
-                            content_reader_core::fixed5::fixed5_percent(raw, 0, true),
+                            content_reader_parser::fixed5::fixed5_percent(raw, 0, true),
                         );
                     }
                 }
@@ -1179,7 +1173,7 @@ fn naval(
                 &format!("header_container/{wnd}_wnd/stat_positioning"),
                 TEXT,
                 positioning[side]
-                    .map(|raw| content_reader_core::fixed5::fixed5_percent(raw, 0, true))
+                    .map(|raw| content_reader_parser::fixed5::fixed5_percent(raw, 0, true))
                     .ok_or_else(|| {
                         format!(
                             "Naval combat {id} {label} positioning is hidden: the positioning modifier keys are refused or a required combat, ship or carrier-air operand is unavailable."
@@ -1202,7 +1196,7 @@ fn naval(
                             .map(|counter| counter.anti_air_base)
                     },
                 )
-                .map(|raw| content_reader_core::fixed5::fixed5_to_string(raw, 1))
+                .map(|raw| content_reader_parser::fixed5::fixed5_to_string(raw, 1))
                 .map_err(|reason| {
                     format!("Naval combat {id} {label} anti-air is hidden: {reason}.")
                 })

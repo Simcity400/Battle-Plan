@@ -4,7 +4,7 @@ use super::{
     Decimal, block, boolean, bytes, decimal, field, integer, invalid, object_id, required_block,
     required_bytes, scalar, typed_handle,
 };
-use content_reader_core::{parser::Item, parser::Value};
+use content_reader_parser::parser::{Item, Value};
 
 pub const STATISTIC_CHANNELS: [usize; 24] = [
     0, 1, 2, 3, 10, 17, 24, 36, 37, 38, 39, 40, 41, 42, 43, 44, 51, 58, 65, 77, 78, 79, 80, 81,
@@ -515,7 +515,7 @@ pub(super) fn parse_with_countries(
 mod tests {
     #[test]
     fn regional_ground_crews_follow_country_blocks_and_false_omission() {
-        let doc = content_reader_core::parser::parse(br#"countries={ AAA={ strategic_region_data={ strategic_region=7 more_ground_crews_enabled=yes } strategic_region_data={ strategic_region=8 } } BBB={} }"#).unwrap();
+        let doc = content_reader_parser::parser::parse(br#"countries={ AAA={ strategic_region_data={ strategic_region=7 more_ground_crews_enabled=yes } strategic_region_data={ strategic_region=8 } } BBB={} }"#).unwrap();
         let pack = super::parse(&doc.items).unwrap();
         assert_eq!(
             pack.ground_crews,
@@ -534,7 +534,7 @@ mod tests {
         );
     }
     use super::*;
-    use content_reader_core::parser;
+    use content_reader_parser::parser;
 
     #[test]
     fn state_container_fuel_preserves_order_repeats_zero_omission_and_exact_signed_words() {

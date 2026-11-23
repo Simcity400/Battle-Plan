@@ -14,6 +14,7 @@ import Table from './table/Table';
 import type { TableColumn } from './table/Table';
 import type { SortValue } from './table/logic';
 import LogList from './log/LogList';
+import { ENTRY_MS, entryTime } from './log/entryLayer.ts';
 import { VirtualList } from '../components/VirtualList';
 import { useRef } from 'react';
 import type { LogRow } from './log/logData';
@@ -191,6 +192,9 @@ const api = {
     if (still) still.textContent = `[data-widget="glide"] .moving-row:is(.is-entering, [data-reveal='in']) { animation: none; }
       [data-widget="glide"] .moving-row:is(.is-entering, [data-reveal='in'])::after { content: none; }`;
     const root = place('glide', 400, 320);
+    let time = 0;
+    const realTime = entryTime.now;
+    entryTime.now = () => time;
     root.render(<LogList rows={feedRows} label="Glide" density="comfortable" months animate playhead={clock.read()} reveal={reveal}
       columns="minmax(0, 1fr)" renderRow={row => <span>{row.item}</span>} describe={row => row.item} />);
     const host = document.querySelector<HTMLElement>('[data-widget="glide"]')!;
@@ -201,7 +205,7 @@ const api = {
       const target = event.target as Element;
       started[target.classList.contains('log-row') ? 'rows' : target.classList.contains('log-glide') ? 'glide' : 'other']++;
     });
-    for (let at = 0; at < 60; at++) await frame();
+    for (let at = 0; at < 60; at++) { time += 1000 / 60; await frame(); }
     const shown = () => host.querySelectorAll('.log-row:not([data-reveal="ahead"])').length;
     const scroller = host.querySelector<HTMLElement>('.log-scroll')!, body = host.querySelector<HTMLElement>('.log-body')!;
     let revealed = 0, before = shown();
@@ -210,19 +214,20 @@ const api = {
     listening = true;
     for (let at = 0; at < frames; at++) {
       clock.set(clock.read() + hours);
+      time += 1000 / 60;
       await frame();
       const now = shown();
-      if (now !== before) { revealed++; reveals.push({ at: performance.now(), rows: Math.abs(now - before) }); }
+      if (now !== before) { revealed++; reveals.push({ at: time, rows: Math.abs(now - before) }); }
       before = now;
     }
     listening = false;
     if (marks) performance.mark(marks.to);
-    const end = performance.now();
-    const entering = reveals.filter(reveal => end - reveal.at < 700).reduce((sum, reveal) => sum + reveal.rows, 0);
+    const entering = reveals.filter(reveal => time - reveal.at < ENTRY_MS).reduce((sum, reveal) => sum + reveal.rows, 0);
     const layer = host.querySelectorAll('canvas.log-entries:not([hidden])').length;
     const animated = host.getAnimations({ subtree: true }).filter(animation => animation.playState === 'running').length;
     const scroll = { height: scroller.scrollHeight, list: body.offsetHeight, view: scroller.clientHeight };
     root.unmount();
+    entryTime.now = realTime;
     host.remove();
     still?.remove();
     return { frames, revealed, started, scroll, entering, layer, animated };

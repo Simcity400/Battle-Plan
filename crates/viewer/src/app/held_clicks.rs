@@ -4,14 +4,12 @@ use eframe::egui;
 use replay_data::{BranchId, Hour};
 use replay_frame::frame::DecodedFrame;
 use std::sync::Arc;
-use viewer_counters::map::selection_sounds;
-use viewer_foundation::{
-    combat_selection::Selection as Window,
-    map::counter_hovers::unit_hits::{Hit, Kind},
-    unit_handle::Unit,
-};
+use viewer_counters::selection_sounds;
+use viewer_engagements::combat_selection::Selection as Window;
+use viewer_native_gui::counter_hovers::unit_hits::{Hit, Kind};
+use viewer_runtime::unit_handle::Unit;
 use viewer_raids::map::raids::offers::TooltipTarget;
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 #[derive(Clone, Debug)]
 pub(super) enum Click {
@@ -68,9 +66,9 @@ impl Viewer {
     }
 
     pub(super) fn clickable(&self, document: &Document) -> super::head_rows::Clickable {
-        use viewer_counters::map::counters::Shown;
+        use viewer_counters::counters::Shown;
         let defines = &document.content.counters.defines;
-        let on_screen = self.overlay_placed.as_ref().zip(self.overlay_view.as_ref()).map(|(camera, view)| crate::playhead_host::overlay::shown(camera, None, view, defines));
+        let on_screen = self.overlay_placed.as_ref().zip(self.overlay_view.as_ref()).map(|(camera, view)| viewer_playback::overlay::shown(camera, None, view, defines));
         let shown = [self.overlay_asked, on_screen].into_iter().flatten().fold(super::head_rows::Clickable::GROUND.shown, |held, more| Shown {
             units: held.units || more.units,
             bases: held.bases || more.bases,
@@ -136,7 +134,7 @@ impl Viewer {
         let head = super::head_rows::head(super::live_of(&self.playhead_map));
         match click {
             &Click::NavalMission { viewer, region, mission, rect, layer, order } => {
-                let Some(read) = self.head_rows.clicks(head, frame, |frame| viewer_counters::map::naval_selection::mission_members(frame, viewer, region, mission)) else {
+                let Some(read) = self.head_rows.clicks(head, frame, |frame| viewer_counters::naval_selection::mission_members(frame, viewer, region, mission)) else {
                     return Answer::Loading;
                 };
                 let Some(members) = read_click(&mut self.overlay_loading, click.name(), Some(read)) else { return Answer::Done };
@@ -163,7 +161,7 @@ impl Viewer {
                 }
             }
             &Click::AirBase { viewer, province, kind, shift } => {
-                let Some(read) = self.head_rows.clicks(head, frame, |frame| viewer_counters::map::air_selection::base_target(frame, viewer, province, kind)) else {
+                let Some(read) = self.head_rows.clicks(head, frame, |frame| viewer_counters::air_selection::base_target(frame, viewer, province, kind)) else {
                     return Answer::Loading;
                 };
                 let Some(target) = read_click(&mut self.overlay_loading, "the air base's target", Some(read)).flatten() else { return Answer::Done };
@@ -180,7 +178,7 @@ impl Viewer {
                 self.counter_view.selected = Arc::clone(self.unit_selection.units());
             }
             &Click::NavalBase { viewer, province, rect, layer } => {
-                let Some(read) = self.head_rows.clicks(head, frame, |frame| viewer_counters::map::naval_selection::base_members(frame, viewer, province)) else {
+                let Some(read) = self.head_rows.clicks(head, frame, |frame| viewer_counters::naval_selection::base_members(frame, viewer, province)) else {
                     return Answer::Loading;
                 };
                 let Some(members) = read_click(&mut self.overlay_loading, click.name(), Some(read)) else { return Answer::Done };
@@ -196,7 +194,7 @@ impl Viewer {
                 }
             }
             &Click::AirMission { viewer, region, mission, shift } => {
-                let Some(read) = self.head_rows.clicks(head, frame, |frame| viewer_counters::map::air_selection::mission_members(frame, viewer, region, mission)) else {
+                let Some(read) = self.head_rows.clicks(head, frame, |frame| viewer_counters::air_selection::mission_members(frame, viewer, region, mission)) else {
                     return Answer::Loading;
                 };
                 let Some(members) = read_click(&mut self.overlay_loading, "the air mission's members", Some(read)) else { return Answer::Done };
@@ -351,7 +349,7 @@ impl Viewer {
     }
 
     fn answer_air_order(&mut self, document: &Document, region: Option<u32>, wings: &Arc<Vec<u64>>, shift: bool, order: usize) -> Answer {
-        use viewer_counters::map::air_orders;
+        use viewer_counters::air_orders;
         let head = super::head_rows::head(super::live_of(&self.playhead_map));
         let reads = document.icons.raids.movement_reads();
         let content = &document.counter_content;
@@ -384,7 +382,7 @@ impl Viewer {
 mod tests {
     use super::super::{Config, MapHit, Options, Viewer};
     use std::sync::{Arc, Mutex};
-    use viewer_foundation::map::{counter_hovers::unit_hits, sprites::layer};
+    use viewer_native_gui::{counter_hovers::unit_hits, sprites::layer};
     use viewer_raids::map::raids::tooltips::{Hit, Key};
 
     #[test]

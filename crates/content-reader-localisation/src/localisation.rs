@@ -46,7 +46,7 @@ pub struct Localisation {
 #[derive(Clone)]
 enum Entries {
     Read(BTreeMap<String, String>),
-    Kept(content_reader_core::kept::Table),
+    Kept(content_reader_layers::kept::Table),
 }
 
 impl Default for Entries {
@@ -140,7 +140,7 @@ impl Localisation {
     }
 
     pub fn keep(&self, out: &mut Vec<u8>) {
-        use content_reader_core::kept::{Table, put_bytes, put_texts};
+        use content_reader_layers::kept::{Table, put_bytes, put_texts};
         put_bytes(out, self.language.as_bytes());
         put_texts(out, &self.logged);
         put_texts(out, &self.refused);
@@ -155,12 +155,12 @@ impl Localisation {
     }
 
     pub fn from_kept(bytes: &std::sync::Arc<Vec<u8>>, at: usize) -> io::Result<(Self, usize)> {
-        let mut input = content_reader_core::kept::Input::new(bytes, at);
+        let mut input = content_reader_layers::kept::Input::new(bytes, at);
         let language = input.text()?;
         let logged = input.texts()?;
         let refused = input.texts()?;
         let duplicates = input.texts()?;
-        let (table, end) = content_reader_core::kept::Table::read(bytes, input.at())?;
+        let (table, end) = content_reader_layers::kept::Table::read(bytes, input.at())?;
         Ok((
             Self {
                 language,
@@ -508,6 +508,26 @@ pub fn format_scripted_variable(value: i64, format: Option<&[u8]>) -> String {
         }
     }
     crate::fixed5::fixed5_to_string(value, -1)
+}
+
+pub fn format_argument(value: Argument<'_>, format: &[u8]) -> Result<String, Cause> {
+    let mut out = Output::default();
+    formatted(value, format, &mut out);
+    out.finish()
+}
+
+pub fn argument_format<'t>(template: &'t str, name: &str) -> Option<&'t str> {
+    let mut rest = template;
+    loop {
+        let open = rest.find('$')?;
+        let close = open + 1 + rest[open + 1..].find('$')?;
+        let operand = &rest[open + 1..close];
+        let (operand_name, format) = operand.split_once('|').unwrap_or((operand, ""));
+        if close > open + 1 && operand_name == name {
+            return Some(format);
+        }
+        rest = &rest[close + 1..];
+    }
 }
 
 fn argument(operand: &[u8], arguments: &[(&str, Argument<'_>)], out: &mut Output) -> bool {
@@ -1138,7 +1158,7 @@ const LANGUAGE_LIST: &str = "localisation/languages.yml";
 fn carried<'a>(layers: &'a ResolvedLayers, language: &'a str) -> &'a str {
     match layers.recorded_language() {
         Some(recorded) if recorded != language => {
-            content_reader_core::content::diagnostics::Diagnostics::note(format!(
+            content_reader_layers::content::diagnostics::Diagnostics::note(format!(
                 "Text is shown in {recorded}, the language this recording was made in: it carries no {language} text."
             ));
             recorded
@@ -1173,7 +1193,7 @@ fn read_with(
         ..Localisation::default()
     };
     let mut sources = BTreeMap::new();
-    let read = content_reader_core::parallel::map(&files, |(_, _, path)| {
+    let read = content_reader_layers::parallel::map(&files, |(_, _, path)| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let bytes = layers.read_path(&normalize_path(path)?)?;
             io::Result::Ok(parse(&bytes))
@@ -1358,6 +1378,20 @@ fn decode_memo(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn icon_names_split_at_the_first_bar() {
+        assert_eq!(
+            super::icon_lookup("flag_x|12|3"),
+            ([b"GFX_flag_x".to_vec(), b"flag_x".to_vec()], Some(0))
+        );
+        assert_eq!(super::icon_lookup("a|12").1, Some(11));
+        assert_eq!(super::icon_lookup("a|").1, Some(-1));
+        assert_eq!(super::icon_lookup("a|0").1, Some(-1));
+        assert_eq!(super::icon_lookup("a|4294967299").1, Some(2));
+        assert_eq!(super::icon_lookup("a|2147483648").1, Some(0));
+        assert_eq!(super::icon_lookup("a").1, None);
+    }
+
     #[test]
     fn the_selected_language_follows_the_mod_stacks_language_list() {
         let root = std::env::temp_dir().join(format!("language-list-{}", std::process::id()));
@@ -1682,6 +1716,22 @@ mod tests {
         assert!(deep.ends_with("31 "));
         let key = vec![b'k'; 0x2000];
         assert_eq!(loc.localise(&key).map(|text| text.len()), Ok(0x1800));
+    }
+
+    #[test]
+    fn an_argument_keeps_its_template_format_outside_the_template() {
+        let template = "10$$ off $USES$$BONUS|%0+$ for $LIST|Y$.";
+        assert_eq!(argument_format(template, "BONUS"), Some("%0+"));
+        assert_eq!(argument_format(template, "USES"), Some(""));
+        assert_eq!(argument_format(template, "MISSING"), None);
+        let loc = loc(&[("KEY", template)]);
+        assert_eq!(
+            loc.localise_with(b"KEY", &[("BONUS", Argument::Fixed5(20_000)), ("LIST", Argument::Text("Armor")), ("USES", Argument::Text(""))]).as_deref(),
+            Ok("10$ off \u{11}G20%\u{11}! for \u{11}YArmor\u{11}!.")
+        );
+        assert_eq!(format_argument(Argument::Fixed5(20_000), b"%0+").as_deref(), Ok("\u{11}G20%\u{11}!"));
+        assert_eq!(format_argument(Argument::Fixed5(-5_000), b"=%H").as_deref(), Ok("\u{11}H-5.00%\u{11}!"));
+        assert_eq!(format_argument(Argument::Fixed5(1_500_000), b"=+0").as_deref(), Ok("\u{11}G+15\u{11}!"));
     }
 
     #[test]
@@ -2470,7 +2520,7 @@ mod tests {
 
     #[test]
     fn an_archive_file_whose_name_is_not_utf8_loads() {
-        use content_reader_core::test_support::{Record, zip_records};
+        use content_reader_layers::test_support::{Record, zip_records};
         let root = std::env::temp_dir().join(format!(
             "hoi4_localisation_raw_name_{}_{:?}",
             std::process::id(),
@@ -2533,4 +2583,25 @@ mod tests {
         assert_eq!(localisation.get("REPLACED"), Some("replaced"));
         let _ = std::fs::remove_dir_all(&root);
     }
+}
+
+pub fn icon_lookup(name: &str) -> ([Vec<u8>; 2], Option<i32>) {
+    let (stem, suffix) = match name.split_once('|') {
+        Some((stem, suffix)) => (stem, Some(suffix)),
+        None => (name, None),
+    };
+    let frame = suffix.map(|suffix| {
+        let mut value: i32 = 0;
+        for byte in suffix.bytes() {
+            if !byte.is_ascii_digit() {
+                return 0;
+            }
+            value = value.wrapping_mul(10).wrapping_add(i32::from(byte - b'0'));
+        }
+        if value < 0 { 0 } else { value - 1 }
+    });
+    (
+        [format!("GFX_{stem}").into_bytes(), stem.as_bytes().to_vec()],
+        frame,
+    )
 }

@@ -1,4 +1,5 @@
-import { CLOSED, pinnedBreakdown, reduceDrill } from '../drill/drillState.ts';
+import type { GatedTime } from '../../dashboard/regionTime';
+import { CLOSED, pinnedBreakdown, reduceDrill, type PinnedSpec } from '../drill/drillState.ts';
 import type { DrillAction, DrillState } from '../drill/drillState';
 import { shownRuns } from './lines.ts';
 import type { Run, Span } from '../series';
@@ -55,12 +56,12 @@ export type PartsRaceDrillAction = DrillAction
 export type NativePartsRaceDrillAction = PartsRaceDrillAction & { selection?: CountryPartsSelection; owner?: unknown; pickOwner?: unknown };
 
 export function reducePartsRaceDrill(state: PartsRaceDrillState, action: NativePartsRaceDrillAction): PartsRaceDrillState {
-  if (action.type === 'actors') return { ...CLOSED, follow: false, hour: Math.floor(action.hour),
+  if (action.type === 'actors') return { ...CLOSED, spec: false, follow: false, hour: Math.floor(action.hour),
     choices: { key: action.key, tags: action.tags }, ...(action.owner ? { owner: action.owner } : {}),
     ...(action.pickOwner ? { pickOwner: action.pickOwner } : {}) };
   if (action.type === 'choose') {
     if (!state.choices || state.choices.key !== action.key || state.hour !== action.hour || !state.choices.tags.includes(action.tag)) return state;
-    return { ...reduceDrill(state, { type: 'open', breakdown: action.tag, hour: action.hour, playing: false, playhead: null }), choices: null,
+    return { ...reduceDrill(state, { type: 'open', breakdown: action.tag, hour: action.hour, follow: false }), choices: null,
       ...(action.selection ? { selection: action.selection } : {}), ...(action.owner ? { owner: action.owner } : {}) };
   }
   if (state.choices && (action.type === 'follow' || action.type === 'pick')) return state;
@@ -85,10 +86,6 @@ export function partsRaceDrillBands(model: PartsRaceModel, tag: string, membersh
   });
 }
 
-export function pinPartsRace(source: WidgetSpec, track: Pick<BoundTrack, 'id' | 'branch'>, tag: string,
-  hour: number, follow: boolean, label: string): WidgetSpec {
-  const pinned = pinnedBreakdown(source, { id: 'breakdown', label }, track.id);
-  const offset = Math.floor(hour) - track.branch.firstHour;
-  return { ...pinned, countries: { kind: 'tags', tags: [tag] },
-    time: follow ? { mode: 'follow' } : { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } } };
+export function pinPartsRace(source: WidgetSpec, track: Pick<BoundTrack, 'id'>, tag: string, time: GatedTime, label: string): PinnedSpec {
+  return { ...pinnedBreakdown(source, { id: 'breakdown', label }, track.id, time), countries: { kind: 'tags', tags: [tag] } };
 }

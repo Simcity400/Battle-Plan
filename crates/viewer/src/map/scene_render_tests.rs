@@ -2,14 +2,8 @@
 mod sprites;
 use super::scene_failure_tests::Fixture;
 use std::io;
-use viewer_foundation::map::{
-    camera::{Free, Lens, Pose},
-    gpu_contract::read_texture,
-};
-use viewer_world::map::{
-    scene::{Request, Scene, SceneProof, passes},
-    scene_faults::Point,
-};
+use viewer_gpu::{camera::{Free, Lens, Pose}, gpu_contract::read_texture};
+use viewer_world::{scene::{Request, Scene, SceneProof, passes}, scene_faults::Point};
 
 fn error(result: io::Result<()>) -> Result<(), (io::ErrorKind, String)> {
     result.map_err(|error| (error.kind(), error.to_string()))
@@ -98,7 +92,7 @@ fn render(
 ) {
     let batch = sprites.batch((request.animation_time * 60.).round() as usize);
     let request = Request {
-        overlay: viewer_world::map::scene::Overlay {
+        overlay: viewer_world::scene::Overlay {
             sprites: Some(&batch),
             ..request.overlay
         },
@@ -177,7 +171,7 @@ fn scene_immediate_multiframe_bytes_state_and_pixels_are_deterministic() -> io::
                 ));
             }
             for scene in &mut scenes {
-                scene.set_graphics(dashboard::protocol::MapGraphics {
+                scene.set_graphics(dashboard_core::protocol::MapGraphics {
                     samples,
                     full_resolution: frame % 8 < 4,
                     ..Default::default()
@@ -292,8 +286,8 @@ fn scene_immediate_later_fatal_refusals_and_recovery() -> io::Result<()> {
 #[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn scene_province_frame_cut_spends_once_and_restores_an_unwalked_frame() -> io::Result<()> {
     use std::collections::{BTreeMap, BTreeSet};
-    use viewer_foundation::map::province_schedule::Shared;
-    use viewer_world::map::scene::SceneInput;
+    use viewer_gpu::province_schedule::Shared;
+    use viewer_world::scene::SceneInput;
 
     let fixture = Fixture::load("scene-province-frame")?;
     let (device, queue) = (&fixture.state.device, &fixture.state.queue);

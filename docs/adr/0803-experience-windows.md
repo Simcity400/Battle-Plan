@@ -4,4 +4,4 @@
 
 Use the `CountryExperience` sample hour to publish. A changed banked cell without a read stamp does not write a daily row. The first hour and a return after an hour the writer did not run start fresh, with today's values withheld unless the hour read the table. Persist the recent banked reads and runs of equal hourly gains in the recorder blob and rebuild the index of gain rows on resume.
 
-[Writer](../../crates/recorder-derive/src/experience.rs)
+[Writer](../../crates/recorder-derive-land/src/experience.rs)

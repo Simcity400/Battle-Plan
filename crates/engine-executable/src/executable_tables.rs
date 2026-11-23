@@ -1,6 +1,7 @@
 
 pub mod auxiliary;
 pub mod commands;
+pub mod cursors;
 pub mod folding;
 pub mod keywords;
 pub mod numeric;
@@ -121,6 +122,7 @@ pub struct ExecutableTables {
     pub numeric: Verified<numeric::NumericTables>,
     pub commands: Verified<commands::CommandTables>,
     pub folding: Verified<folding::FoldingTable>,
+    pub cursors: Verified<cursors::CursorTable>,
 }
 
 impl ExecutableTables {
@@ -146,6 +148,7 @@ impl ExecutableTables {
             self.numeric.as_ref().err(),
             self.commands.as_ref().err(),
             self.folding.as_ref().err(),
+            self.cursors.as_ref().err(),
         ]
         .into_iter()
         .flatten()
@@ -156,7 +159,7 @@ impl ExecutableTables {
         )
     }
 
-    pub fn content_digests(&self) -> [(&'static str, Verified<[u8; 32]>); 7] {
+    pub fn content_digests(&self) -> [(&'static str, Verified<[u8; 32]>); 8] {
         fn digest<T>(table: &Verified<T>, of: fn(&T) -> [u8; 32]) -> Verified<[u8; 32]> {
             table.as_ref().map(of).map_err(Clone::clone)
         }
@@ -168,6 +171,7 @@ impl ExecutableTables {
             (NUMERIC, digest(&self.numeric, numeric::NumericTables::content_digest)),
             (COMMANDS, digest(&self.commands, commands::CommandTables::content_digest)),
             (FOLDING, digest(&self.folding, folding::FoldingTable::content_digest)),
+            (CURSORS, digest(&self.cursors, cursors::CursorTable::content_digest)),
         ]
     }
 
@@ -228,6 +232,7 @@ const VARIABLES: &str = "built-in variable names";
 const NUMERIC: &str = "numeric property table";
 const COMMANDS: &str = "player command table";
 const FOLDING: &str = "diacritic folding table";
+const CURSORS: &str = "map cursor registry";
 
 pub fn decode(identity: ExecutableIdentity, bytes: Vec<u8>, game_dir: &Path) -> ExecutableTables {
     let image = PeImage::parse(bytes).map_err(|error| Withheld::new("executable image", error));
@@ -243,14 +248,21 @@ pub fn decode(identity: ExecutableIdentity, bytes: Vec<u8>, game_dir: &Path) -> 
             numeric: Err(withheld.requires(NUMERIC)),
             commands: Err(withheld.requires(COMMANDS)),
             folding: Err(withheld.requires(FOLDING)),
+            cursors: Err(withheld.requires(CURSORS)),
         };
     };
+    let cursor_identity = identity.clone();
     std::thread::scope(|scope| {
         let variables =
             scope.spawn(|| table(VARIABLES, || variables::VariableTables::decode(game_dir)));
         let commands = scope.spawn(|| table(COMMANDS, || commands::CommandTables::decode(image)));
         let numeric = scope.spawn(|| table(NUMERIC, || numeric::NumericTables::decode(image)));
         let folding = scope.spawn(|| table(FOLDING, || folding::FoldingTable::decode(image)));
+        let cursors = scope.spawn(move || {
+            table(CURSORS, || {
+                cursors::CursorTable::decode(image, &cursor_identity)
+            })
+        });
         let version = build::version_banner(&image.read_only_data().collect::<Vec<_>>());
         let keywords = table(KEYWORDS, || keywords::KeywordTables::decode(image));
         let (registries, auxiliary) = match &keywords {
@@ -291,6 +303,7 @@ pub fn decode(identity: ExecutableIdentity, bytes: Vec<u8>, game_dir: &Path) -> 
             numeric: joined(NUMERIC, numeric),
             commands: joined(COMMANDS, commands),
             folding: joined(FOLDING, folding),
+            cursors: joined(CURSORS, cursors),
         }
     })
 }
@@ -342,6 +355,7 @@ fn unscoped() -> Tables {
             numeric: Err(withheld(NUMERIC)),
             commands: Err(withheld(COMMANDS)),
             folding: Err(withheld(FOLDING)),
+            cursors: Err(withheld(CURSORS)),
         }
     })
 }
@@ -437,6 +451,10 @@ pub fn commands() -> io::Result<&'static commands::CommandTables> {
 
 pub fn folding() -> io::Result<&'static folding::FoldingTable> {
     get().folding.as_ref().map_err(io::Error::from)
+}
+
+pub fn cursors() -> io::Result<&'static cursors::CursorTable> {
+    get().cursors.as_ref().map_err(io::Error::from)
 }
 
 pub fn initialize_for_tests() -> io::Result<Tables> {

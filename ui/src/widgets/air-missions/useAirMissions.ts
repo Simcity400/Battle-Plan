@@ -4,6 +4,7 @@ import type { WidgetSpec } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { tableSortChoices } from '../../charts/table/options';
 import { useSpriteArtwork } from '../../dashboard/useSpriteArtwork';
 import { choicesAt, regionLabel, validateAirMissions } from './airMissionsData';
@@ -17,7 +18,7 @@ export function useAirMissions(widget: WidgetSpec, runtime: WidgetRuntime, activ
   const options = resolveOptions(OPTIONS, widget.options);
   const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const params = track && tag ? { country: countryFromKey(tag) } : null;
-  const product = useHeadProduct<AirMissionsReply>(runtime, widget, 'air-missions', params, { active, validate: validateAirMissions, structure });
+  const product = useHeadProduct(runtime, useGate(runtime, widget), 'air-missions', params, { active, validate: validateAirMissions, structure });
   return { track, tag, options, ...product };
 }
 

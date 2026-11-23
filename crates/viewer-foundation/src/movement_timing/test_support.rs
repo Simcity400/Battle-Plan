@@ -1,3 +1,10 @@
+use super::{LandSpeedContent, MovementContent, MovementMap, RailMovementDefines};
+use content_reader_map::movement::{Neighbour, ProvinceTerrain};
+use replay_data::rows::{DivisionMovementRow, DivisionPanelStatsRow, DivisionRow, ProvinceRow};
+use replay_derive::eta_derive::Defines;
+use replay_frame::frame::Metrics;
+use std::collections::BTreeMap;
+
 use replay_data::rows::{
     CoreSupplyAccessRow, CountryCounterInputRow, CountryLinkRow, CountryMovementModifiers,
     CountryRow, DivisionMovementStats, DivisionStatusRow, DivisionTemplateIconRow, LexicalTokenRow,
@@ -6,7 +13,7 @@ use replay_data::rows::{
 };
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 
-fn put(frame: &mut DecodedFrame, rows: TableRows) {
+pub fn put(frame: &mut DecodedFrame, rows: TableRows) {
     let id = rows.table();
     *frame.tables[id.index()] = TableView::Complete(rows);
 }
@@ -149,7 +156,7 @@ pub fn neutral_world(frame: &mut DecodedFrame, country: u32) {
     put(frame, TableRows::CountryUnitSpeedEntries(vec![]));
     put(frame, TableRows::DivisionTransportSpeeds(vec![]));
     if !engine_executable::executable_tables::is_initialized() {
-        crate::map::test_support::enter_fixed_modifier_tables();
+        crate::test_support::enter_fixed_modifier_tables();
     }
     let mut keys = engine_executable::modifier_keys::all()
         .unwrap()
@@ -178,4 +185,122 @@ pub fn neutral_world(frame: &mut DecodedFrame, country: u32) {
                 .collect(),
         ),
     );
+}
+
+pub(super) const LAND: ProvinceTerrain = ProvinceTerrain { flags: 1, index: 1 };
+
+pub const SPEED: i64 = 700_000;
+
+pub const DIVISION: u64 = 7;
+
+pub fn content(map: MovementMap) -> MovementContent {
+    MovementContent {
+        map,
+        defines: Defines {
+            outer_scale: 100_000,
+            ..Default::default()
+        },
+        rail: Ok(RailMovementDefines {
+            speed: [0; 4],
+            maximum_level: 0,
+        }),
+        task_force_terrain: Err("unrelated task-force terrain is unavailable".into()),
+        land: Ok(LandSpeedContent {
+            terrain_movement: vec![0],
+            regions: BTreeMap::new(),
+            ..Default::default()
+        }),
+    }
+}
+
+pub(super) fn status_row(division: u64) -> DivisionStatusRow {
+    neutral_status(division, 1)
+}
+
+pub(super) fn world(frame: &mut DecodedFrame) {
+    neutral_world(frame, 1);
+}
+
+pub fn two_leg_map() -> MovementMap {
+    let edge = |to, distance| Neighbour {
+        to,
+        distance: Some(distance),
+        ..Default::default()
+    };
+    MovementMap::from_parts(&[
+        (1, LAND, vec![edge(2, 350_000)]),
+        (2, LAND, vec![edge(1, 350_000), edge(3, 700_000)]),
+        (3, LAND, vec![edge(2, 700_000)]),
+    ])
+}
+
+pub(super) fn frame() -> DecodedFrame {
+    DecodedFrame {
+        branch: 1,
+        hour: 60_832_632,
+        tables: std::array::from_fn(|_| TableView::Unavailable {
+            reason: "not needed for the estimate".into(),
+        })
+        .map(Into::into),
+        metrics: Metrics::default(),
+    }
+}
+
+pub(super) fn moving() -> DivisionMovementRow {
+    DivisionMovementRow {
+        division: DIVISION,
+        path: vec![2, 3],
+        path_total: 2,
+        numerator: 175_000,
+        withdrawal: Recorded::Value(Some(0)),
+        fuel: Recorded::Value(Some(0)),
+        ..Default::default()
+    }
+}
+
+pub(super) fn panel(division: u64, speed: Option<i64>) -> DivisionPanelStatsRow {
+    let mut panel = DivisionPanelStatsRow {
+        division,
+        ..Default::default()
+    };
+    panel.panel_stats[DivisionPanelStatsRow::MAXIMUM_SPEED] = speed;
+    panel.panel_stats[1] = Some(1_000_000);
+    panel
+}
+
+pub(super) fn provinces(ids: impl IntoIterator<Item = u32>) -> TableRows {
+    TableRows::Provinces(
+        ids.into_iter()
+            .map(|id| ProvinceRow {
+                id,
+                ..Default::default()
+            })
+            .collect(),
+    )
+}
+
+pub fn hour(base_speed: Option<i64>) -> DecodedFrame {
+    let mut frame = frame();
+    put(&mut frame, provinces(1..=3));
+    put(
+        &mut frame,
+        TableRows::Divisions(vec![DivisionRow {
+            id: DIVISION,
+            province: 1,
+            roster_owner: 1,
+            logical_owner: 1,
+            ..Default::default()
+        }]),
+    );
+    put(&mut frame, TableRows::DivisionMovement(vec![moving()]));
+    put(
+        &mut frame,
+        TableRows::DivisionPanelStats(vec![panel(DIVISION, base_speed)]),
+    );
+    put(
+        &mut frame,
+        TableRows::DivisionStatus(vec![status_row(DIVISION)]),
+    );
+    world(&mut frame);
+    frame
 }

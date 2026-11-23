@@ -121,7 +121,7 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see its peace conferences." />;
   if (error && !data) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading peace conferences…" />;
-  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{error && <WidgetState kind="error" failure={error} onRetry={retry} />}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{error && <WidgetState kind="error" failure={error} onRetry={retry} />}<WidgetState kind="outside" /></>;
 
   const flag = (tag: string, at: number) => {
     const label = labelAt(at)(tag);

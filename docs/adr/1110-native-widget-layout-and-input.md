@@ -14,4 +14,4 @@ Edit box measurement uses font layout up to the caret. Pointer placement chooses
 
 Text writes refresh the text box's scrollbar in call order. A long value can show the scrollbar even while the box is hidden and a shorter write can hide it within the same frame. Retaining a low-level text write without the ordering would lose that refresh, so the retained control path refuses it. Successive range updates clamp the retained value, and increasing the range after shrinking it keeps the previously clamped value. The text's existing scroll offset is separate from that clamp. Container scroll calls use the smoothed current value for arrow input and the target for a wheel update. A hidden bar can reset the scroll offset without changing the retained content extent.
 
-[Widget construction and layout](../../crates/viewer-foundation/src/map/native_gui/widgets.rs) · [GUI layout fixtures](../../crates/viewer-foundation/src/map/native_gui/tests.rs)
+[Widget construction and layout](../../crates/viewer-native-gui/src/native_gui/widgets.rs) · [GUI layout fixtures](../../crates/viewer-native-gui/src/native_gui/tests.rs)

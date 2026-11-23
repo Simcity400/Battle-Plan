@@ -7,28 +7,16 @@ pub mod answer;
 pub mod content_check;
 pub mod products;
 pub mod reply_check;
-mod reply_dto;
+pub mod panel;
 pub mod service;
 
-pub use dashboard_base::{catalogue, content, presentation, ranking, read_runs, source, span};
-pub(crate) use dashboard_core::invalid;
-pub use dashboard_core::{
-    QueryError, blocks, config, dto::*, map_display, map_settings, protocol, refusal, refused,
-    transport,
-};
-pub use dashboard_text::{
-    artwork, character_scope, cryptology, effect_description, flag_choices, identity, metadata,
-    modifier_text, naval_battle_name, scope, scripted_text, state_resources, triggers, unit_names,
-};
-
-pub use config::Config;
-pub use reply_dto::*;
 pub use service::Service;
-pub use source::{Source, SourceKey};
 
 #[cfg(any(test, feature = "export-types"))]
 pub fn typescript_contract() -> String {
-    #[cfg(any(test, feature = "export-types"))]
+    use dashboard_core::{QueryError, dto::*, map_display, map_settings, protocol, transport};
+    use dashboard_land::products::army;
+    use dashboard_politics::products::focus_dto::*;
     use ts_rs::TS;
     let mut declarations = vec![
         QueryError::decl(),
@@ -93,8 +81,8 @@ pub fn typescript_contract() -> String {
         dashboard_query::series::ranked::RankedSpan::decl(),
         dashboard_query::series::ranked::SeriesRankedLine::decl(),
         dashboard_query::series::ranked::SeriesRankedReply::decl(),
-        products::army::ArmyChartLine::decl(),
-        products::army::ArmyChartReply::decl(),
+        army::ArmyChartLine::decl(),
+        army::ArmyChartReply::decl(),
     ];
     for product in products::PRODUCTS {
         declarations.extend(product.types.expect("every exported product registers its types")());
@@ -184,6 +172,7 @@ pub fn typescript_contract() -> String {
     text.push_str(&format!(
         "/** Pages that replay recorded tables to their rows' hours: served apart, so no other request waits behind them. */\nexport const REPLAY_PRODUCTS = [{replay_products}] as const;\n"
     ));
+    text.push_str(&request_hours());
     {
         use map_display::option_defaults as defaults;
         text.push_str(&format!(
@@ -199,7 +188,158 @@ pub fn typescript_contract() -> String {
     text
 }
 
+pub fn series_walk() -> dashboard_query::fields::Walk {
+    use dashboard_query::fields::{Leaf, Walk};
+    dashboard_query::series::params_walk()
+        .join(dashboard_query::tile::params_walk())
+        .join(dashboard_land::products::army::series_params_walk())
+        .join(dashboard_players::products::player_apm::head::tile_ask_walk())
+        .join(dashboard_world::products::scalars::world_tension::step_walk())
+        .nest("family", dashboard_players::products::player_apm::head::tile_family_walk())
+        .nest("family", dashboard_land::products::army::tile_family_walk())
+        .join(Walk { heads: Some(vec!["least".to_owned()]), leaves: std::collections::BTreeMap::from([("least".to_owned(), Leaf::Text)]), ..Walk::default() })
+}
+
+pub fn request_paths() -> std::collections::BTreeMap<String, std::collections::BTreeMap<String, &'static str>> {
+    use dashboard_query::fields::{Leaf, Walk};
+    let paths = |walk: Walk, hour: bool| {
+        let mut out: std::collections::BTreeMap<String, &'static str> = walk.interiors.into_iter().filter(|path| !path.is_empty()).map(|path| (path, "node")).collect();
+        out.extend(walk.leaves.into_iter().map(|(path, leaf)| (path, if leaf == Leaf::Opaque { "any" } else { "leaf" })));
+        if hour {
+            out.entry("hour".to_owned()).or_insert("leaf");
+        }
+        out
+    };
+    let mut table = std::collections::BTreeMap::new();
+    for product in products::PRODUCTS {
+        table.insert(product.key.to_owned(), paths((product.params)(), product.read_hour));
+    }
+    let series = paths(series_walk(), false);
+    for key in answer::SERIES_PRODUCTS {
+        table.insert((*key).to_owned(), series.clone());
+    }
+    for (head, _, walk) in dashboard_players::products::player_apm::head::HEADS {
+        table.insert(format!("head:{head}"), paths(walk(), false));
+    }
+    aliased(table)
+}
+
+fn aliased<T: Clone>(mut table: std::collections::BTreeMap<String, T>) -> std::collections::BTreeMap<String, T> {
+    for (alias, product) in panel::PANEL_ALIASES {
+        if let Some(row) = table.get(*product).cloned() {
+            table.insert((*alias).to_owned(), row);
+        }
+    }
+    table
+}
+
+pub fn request_fields() -> std::collections::BTreeMap<String, Vec<(&'static str, &'static str)>> {
+    let dated = |fields: dashboard_base::products::Fields| fields.iter().filter_map(|(path, role)| role.name().map(|role| (*path, role))).collect::<Vec<_>>();
+    let mut table = std::collections::BTreeMap::new();
+    for product in products::PRODUCTS {
+        let mut fields = dated(product.fields);
+        if product.read_hour {
+            fields.push(("hour", "read"));
+        }
+        table.insert(product.key.to_owned(), fields);
+    }
+    for key in answer::SERIES_PRODUCTS {
+        table.insert((*key).to_owned(), dated(dashboard_query::series::FIELDS));
+    }
+    for (head, fields, _) in dashboard_players::products::player_apm::head::HEADS {
+        table.insert(format!("head:{head}"), dated(fields));
+    }
+    aliased(table)
+}
+
+#[derive(Default)]
+struct ParamNode {
+    hour: Option<bool>,
+    fields: std::collections::BTreeMap<String, ParamNode>,
+    items: Option<Box<ParamNode>>,
+}
+
+impl ParamNode {
+    fn insert(&mut self, path: &str, exact: bool) {
+        let (segment, rest) = path.split_once('.').map_or((path, None), |(head, rest)| (head, Some(rest)));
+        let (name, many) = segment.strip_suffix("[]").map_or((segment, false), |name| (name, true));
+        let mut node = self.fields.entry(name.to_owned()).or_default();
+        if many {
+            node = node.items.get_or_insert_with(Box::default).as_mut();
+        }
+        match rest {
+            Some(rest) => node.insert(rest, exact),
+            None => node.hour = Some(node.hour.unwrap_or(false) || exact),
+        }
+    }
+
+    fn render(&self) -> String {
+        let mut alternatives = Vec::new();
+        if let Some(exact) = self.hour {
+            alternatives.push(if exact { "E".to_owned() } else { "B".to_owned() });
+        }
+        if !self.fields.is_empty() {
+            alternatives.push(self.object());
+        }
+        if let Some(items) = &self.items {
+            alternatives.push(format!("readonly ({})[]", items.render()));
+        }
+        alternatives.join(" | ")
+    }
+
+    fn object(&self) -> String {
+        let fields = self.fields.iter().map(|(name, node)| format!("readonly {name:?}?: {} | null", node.render())).collect::<Vec<_>>();
+        let positional = self.fields.keys().all(|name| name.bytes().all(|byte| byte.is_ascii_digit()));
+        match (fields.is_empty(), positional) {
+            (true, _) => "{}".to_owned(),
+            (false, true) => format!("{{ {} }}", fields.join("; ")),
+            (false, false) => format!("{{ readonly [key: string]: unknown; {} }}", fields.join("; ")),
+        }
+    }
+}
+
+fn request_hours() -> String {
+    let table = request_fields();
+    let exact = |role: &str| role == "read" || role == "bucket";
+    let mut every: std::collections::BTreeMap<String, Option<bool>> = std::collections::BTreeMap::new();
+    let mut rows = Vec::with_capacity(table.len());
+    let mut params = Vec::with_capacity(table.len());
+    for (key, fields) in &table {
+        let roles = fields.iter().map(|(path, role)| format!("{path:?}: {role:?}")).collect::<Vec<_>>();
+        rows.push(if roles.is_empty() { format!("  {key:?}: {{}},") } else { format!("  {key:?}: {{ {} }},", roles.join(", ")) });
+        let mut node = ParamNode::default();
+        for (path, role) in fields {
+            node.insert(path, exact(role));
+        }
+        for (name, field) in &node.fields {
+            let now = field.hour.filter(|_| field.fields.is_empty() && field.items.is_none());
+            let held = every.entry(name.clone()).or_insert(now);
+            *held = held.zip(now).map(|(was, now)| was || now);
+        }
+        params.push(format!("  {key:?}: {};", node.object()));
+    }
+    let every = ParamNode {
+        fields: every.into_iter().filter_map(|(name, hour)| Some((name, ParamNode { hour: Some(hour?), ..ParamNode::default() }))).collect(),
+        ..ParamNode::default()
+    };
+    let names = request_paths()
+        .iter()
+        .map(|(key, paths)| format!("  {key:?}: {{ {} }},", paths.iter().map(|(path, kind)| format!("{path:?}: {kind:?}")).collect::<Vec<_>>().join(", ")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (rows, params, every) = (rows.join("\n"), params.join("\n"), every.object());
+    [
+        "export type HourRole = \"read\" | \"start\" | \"end\" | \"bucket\";".to_owned(),
+        format!("export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, HourRole>>>> = {{\n{rows}\n}};"),
+        "/** Every field each product's request type names: a node holds named fields, a leaf a value, and any a value the contract does not spell out. */".to_owned(),
+        format!("export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, \"node\" | \"leaf\" | \"any\">>>> = {{\n{names}\n}};"),
+        "/** Each product's dated request fields, with E an exact read's hour and B a range bound's. */".to_owned(),
+        format!("export type RequestParams<E, B> = {{\n{params}\n}};"),
+        "/** The top-level fields every product that names them dates as a plain hour, for a request whose product is not known where it is built. */".to_owned(),
+        format!("export type AnyRequestParams<E, B> = {every};\n"),
+    ]
+    .join("\n")
+}
+
 #[cfg(test)]
 mod contract_tests;
-#[cfg(test)]
-pub(crate) use dashboard_base::test_fixtures;

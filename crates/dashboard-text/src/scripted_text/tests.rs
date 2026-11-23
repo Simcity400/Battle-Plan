@@ -1,4 +1,5 @@
 use super::*;
+pub(super) use super::complete_test_frame as complete_frame;
 use crate::scope::tests::positive_frame as frame;
 use replay_data::{
     rows::FactionMemberRow, rows::PoliticalPartyRow, rows::TableId, rows::TableRows,
@@ -120,7 +121,7 @@ const SCRIPTED: &str = "defined_text = { name = GetModText text = { localization
 fn scripted_map_state_hovers_use_controller_continent_occupied_country_and_cached_vp() {
     engine_executable::executable_tables::initialize_for_tests().unwrap();
     use replay_data::rows::{LexicalTokenRow, ProvinceRow, StateResistanceRow, StateRow};
-    let (cat, _folder) = catalogue_with(
+    let (_, folder) = catalogue_with(
         "",
         concat!(
             " mod_continent:0 \"Generic continent\"\n",
@@ -147,6 +148,17 @@ fn scripted_map_state_hovers_use_controller_continent_occupied_country_and_cache
             ),
         ],
     );
+    let mut bmp = vec![0_u8; 58];
+    bmp[..2].copy_from_slice(b"BM");
+    for (at, value) in [(2, 58_u32), (10, 54), (14, 40), (18, 1), (22, 1)] {
+        bmp[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bmp[26..28].copy_from_slice(&1_u16.to_le_bytes());
+    bmp[28..30].copy_from_slice(&24_u16.to_le_bytes());
+    bmp[54..57].copy_from_slice(&[0, 0, 1]);
+    std::fs::write(folder.0.join("map/provinces.bmp"), bmp).unwrap();
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+    let cat = crate::catalogue::tests::layers_catalogue(layers);
     let content = cat.scripted_content().unwrap();
     let mut f = complete_frame();
     *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![StateRow {
@@ -217,16 +229,6 @@ fn scripted_map_state_hovers_use_controller_continent_occupied_country_and_cache
             .unwrap_err()
             .contains("not read this hour, so the values carried from an earlier hour cannot answer this exactly")
     );
-}
-
-pub(super) fn complete_frame() -> DecodedFrame {
-    let mut frame = frame();
-    for id in TableId::ALL {
-        if matches!(&*frame.tables[id.index()], TableView::Unavailable { .. }) {
-            *frame.tables[id.index()] = TableView::Complete(TableRows::empty(id));
-        }
-    }
-    frame
 }
 
 fn with_party(mut frame: DecodedFrame) -> DecodedFrame {
@@ -1088,9 +1090,9 @@ fn predicate_world_keeps_country_facts_when_map_content_or_provinces_are_missing
     let text = ScriptedText::new(&frame, &cat.localisation, content, 1);
     assert!(text.world().is_err());
     let world = text.trigger_world().unwrap();
-    let parsed = content_reader_core::triggers::read(
+    let parsed = content_reader_script::triggers::read(
         b"has_government=mod_group has_country_flag=occupation_flag has_completed_focus=occupation_focus has_country_leader_ideology=FIRST_SUBTYPE",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     );
     assert_eq!(
         world.evaluate(

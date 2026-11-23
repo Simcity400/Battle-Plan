@@ -77,6 +77,9 @@ pub struct Snapshot {
     pub capture_mode: Option<&'static str>,
     pub build_warning: Option<String>,
     pub behind: Option<u64>,
+    pub session_key: Option<u64>,
+    pub prompt: Option<crate::panel::Prompt>,
+    pub revision: u64,
 }
 
 #[derive(Debug, Default, PartialEq)]

@@ -33,6 +33,8 @@ pub enum NativeCommand {
         playback: Option<MapPlayback>,
     },
     MapViews {
+        #[serde(default)]
+        clock_id: Option<String>,
         views: Vec<DashboardMapView>,
     },
     Gamepad {
@@ -88,10 +90,6 @@ pub enum NativeEvent {
         #[serde(rename = "viewId")]
         view_id: String,
         toggle: MapToggle,
-    },
-    Export {
-        request: u64,
-        answer: Result<String, String>,
     },
     ObserveCountry {
         #[serde(rename = "viewId")]
@@ -154,12 +152,6 @@ pub enum MapAction {
     },
     Configure {
         options: MapOptions,
-    },
-    Export {
-        path: String,
-        #[serde(rename = "viewId")]
-        view_id: Option<String>,
-        request: u64,
     },
     Inspect,
     Folders {
@@ -342,15 +334,6 @@ impl MapAction {
                 }
                 options.validate_modes()?;
             }
-            Self::Export { path, view_id, .. } => {
-                validate_local_path(path)?;
-                if view_id
-                    .as_ref()
-                    .is_some_and(|id| id.is_empty() || id.len() > 128 || id.contains('\0'))
-                {
-                    return Err("Invalid map widget id");
-                }
-            }
             Self::Folders { game, user } => {
                 validate_local_path(game)?;
                 validate_local_path(user)?;
@@ -383,6 +366,14 @@ impl MapAction {
         }
         Ok(())
     }
+}
+
+pub fn validate_export(path: &str, view_id: Option<&str>) -> Result<(), &'static str> {
+    validate_local_path(path)?;
+    if view_id.is_some_and(|id| id.is_empty() || id.len() > 128 || id.contains('\0')) {
+        return Err("Invalid map widget id");
+    }
+    Ok(())
 }
 
 fn validate_local_path(path: &str) -> Result<(), &'static str> {
@@ -487,7 +478,7 @@ pub struct MapDetails {
 
 pub const MAX_EXACT_JS_INTEGER: u64 = 9_007_199_254_740_991;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MapPlayback {
     pub playing: bool,
@@ -495,16 +486,25 @@ pub struct MapPlayback {
     pub fraction: f64,
     pub hours_per_second: f64,
     pub composed_at: f64,
+    pub clock_id: String,
+}
+
+pub fn validate_clock_id(clock_id: &str) -> Result<(), &'static str> {
+    if clock_id.is_empty() || clock_id.len() > 128 || clock_id.contains('\0') {
+        return Err("Map clock identity is missing or exceeds its control budget");
+    }
+    Ok(())
 }
 
 impl MapPlayback {
-    pub fn validate(self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), &'static str> {
         if !self.fraction.is_finite() || !(0.0..1.0).contains(&self.fraction) {
             return Err("Map hour fraction must be finite and in [0, 1)");
         }
         if !self.composed_at.is_finite() || self.composed_at < 0.0 {
             return Err("Map anchor compose time must be finite and not negative");
         }
+        validate_clock_id(&self.clock_id)?;
         if !self.hours_per_second.is_finite() || self.hours_per_second <= 0.0 {
             return Err("Map playback speed must be finite and positive");
         }
@@ -534,6 +534,7 @@ pub struct DashboardMapView {
     #[serde(default)]
     pub seek_sequence: Option<u64>,
     pub composed_at: f64,
+    pub clock_id: String,
     pub bounds: ViewBounds,
     pub clip: ViewBounds,
     pub visible: bool,
@@ -550,6 +551,7 @@ impl DashboardMapView {
                 return Err("Map identity is missing or exceeds its control budget");
             }
         }
+        validate_clock_id(&self.clock_id)?;
         if self.path.is_empty() || self.path.len() > 32_000 || self.path.contains('\0') {
             return Err("Map recording path is invalid");
         }
@@ -597,13 +599,17 @@ impl DashboardMapView {
     }
 }
 
-pub fn validate_map_views(views: &[DashboardMapView]) -> Result<(), &'static str> {
+pub fn validate_map_views(clock_id: &str, views: &[DashboardMapView]) -> Result<(), &'static str> {
+    validate_clock_id(clock_id)?;
     if views.len() > 128 {
         return Err("Too many native map views");
     }
     let mut ids = std::collections::BTreeSet::new();
     for view in views {
         view.validate()?;
+        if view.clock_id != clock_id {
+            return Err("Map view clock identity does not match snapshot clock identity");
+        }
         if !ids.insert(&view.id) {
             return Err("Native map view ids must be unique");
         }
@@ -615,6 +621,8 @@ pub fn validate_map_views(views: &[DashboardMapView]) -> Result<(), &'static str
 #[serde(rename_all = "camelCase")]
 pub struct DashboardMapState {
     pub id: String,
+    #[serde(default)]
+    pub clock_id: String,
     pub source_id: Option<String>,
     pub revision: Option<String>,
     pub branch_id: Option<String>,
@@ -714,26 +722,34 @@ mod tests {
             fraction: 0.375,
             hours_per_second: 1440.25,
             composed_at: 12_345.5,
+            clock_id: "page-origin-1".into(),
         };
-        let json = serde_json::to_value(clock).unwrap();
+        let json = serde_json::to_value(&clock).unwrap();
         assert_eq!(
             json,
             serde_json::json!({
                 "playing": true, "seekSequence": 7, "fraction": 0.375, "hoursPerSecond": 1440.25,
-                "composedAt": 12_345.5,
+                "composedAt": 12_345.5, "clockId": "page-origin-1",
             })
         );
         let decoded: super::MapPlayback = serde_json::from_value(json).unwrap();
         assert_eq!(clock, decoded);
         assert!(decoded.validate().is_ok());
         for fraction in [-0.1, 1.0, f64::NAN, f64::INFINITY] {
-            assert!(super::MapPlayback { fraction, ..clock }.validate().is_err());
+            assert!(
+                super::MapPlayback {
+                    fraction,
+                    ..clock.clone()
+                }
+                .validate()
+                .is_err()
+            );
         }
         for hours_per_second in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert!(
                 super::MapPlayback {
                     hours_per_second,
-                    ..clock
+                    ..clock.clone()
                 }
                 .validate()
                 .is_err()
@@ -742,7 +758,7 @@ mod tests {
         assert!(
             super::MapPlayback {
                 seek_sequence: super::MAX_EXACT_JS_INTEGER + 1,
-                ..clock
+                ..clock.clone()
             }
             .validate()
             .is_err()
@@ -751,7 +767,17 @@ mod tests {
             assert!(
                 super::MapPlayback {
                     composed_at,
-                    ..clock
+                    ..clock.clone()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        for clock_id in [String::new(), "bad\0id".into(), "x".repeat(129)] {
+            assert!(
+                super::MapPlayback {
+                    clock_id,
+                    ..clock.clone()
                 }
                 .validate()
                 .is_err()
@@ -774,17 +800,28 @@ mod tests {
             "id": "map", "sourceId": "source", "path": "replay.battleplan",
             "revision": "1", "branchId": "1", "playing": true, "hoursPerSecond": 0.25,
             "hour": 20, "fraction": 0.0, "sequence": 8, "seekSequence": 2, "composedAt": 9.5,
+            "clockId": "page-origin-1",
             "bounds": { "x": 0, "y": 0, "width": 640, "height": 360 },
             "clip": { "x": 0, "y": 0, "width": 640, "height": 360 },
             "visible": true
         });
         let view: super::DashboardMapView = serde_json::from_value(input.clone()).unwrap();
         view.validate().unwrap();
+        super::validate_map_views("page-origin-1", &[view.clone()]).unwrap();
+        super::validate_map_views("page-origin-1", &[]).unwrap();
+        assert!(super::validate_map_views("", &[]).is_err());
+        assert!(super::validate_map_views("page-origin-2", &[view.clone()]).is_err());
         assert_eq!(view.seek_sequence, Some(2));
         assert_eq!(view.hours_per_second, 0.25);
+        assert_eq!(view.clock_id, "page-origin-1");
         for speed in [0.0, -1.0, f64::INFINITY, f64::NAN] {
             let mut invalid = view.clone();
             invalid.hours_per_second = speed;
+            assert!(invalid.validate().is_err());
+        }
+        for clock_id in [String::new(), "bad\0id".into(), "x".repeat(129)] {
+            let mut invalid = view.clone();
+            invalid.clock_id = clock_id;
             assert!(invalid.validate().is_err());
         }
         let mut pinned = input;
@@ -896,12 +933,14 @@ b"
     fn a_map_state_names_the_mode_and_time_of_the_frame_drawn() {
         let state = super::DashboardMapState {
             id: "m".into(),
+            clock_id: "page-origin-1".into(),
             hour: Some(7),
             map_mode: Some("terrain".into()),
             drawn_at: Some(1.5),
             ..Default::default()
         };
         let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["clockId"], "page-origin-1");
         assert_eq!(json["mapMode"], "terrain");
         assert_eq!(json["drawnAt"], 1.5);
     }
@@ -944,31 +983,15 @@ b"
 
     #[test]
     fn widget_exports_keep_their_target_and_reject_invalid_ids() {
-        for view_id in [None, Some("campaign-map".into())] {
-            assert!(
-                MapAction::Export {
-                    path: "C:/map.png".into(),
-                    view_id,
-                    request: 1,
-                }
-                .validate()
-                .is_ok()
-            );
+        for view_id in [None, Some("campaign-map")] {
+            assert!(super::validate_export("C:/map.png", view_id).is_ok());
         }
-        assert!(
-            MapAction::Export {
-                path: "C:/map.png".into(),
-                view_id: Some(String::new()),
-                request: 1,
-            }
-            .validate()
-            .is_err()
-        );
+        assert!(super::validate_export("C:/map.png", Some("")).is_err());
     }
 
     #[test]
     fn visual_mod_selections_refuse_only_empty_and_repeated_ids() {
-        let choice = |id: &str| content_reader_core::content::visual::Choice {
+        let choice = |id: &str| content_reader_layers::content::visual::Choice {
             id: id.into(),
             name: "Art".into(),
         };

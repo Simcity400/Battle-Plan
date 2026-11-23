@@ -6,11 +6,13 @@ pub mod slots;
 #[cfg(test)]
 mod tests;
 
-use super::{Country, CountryParams, LoadContext, Product, artwork};
-use crate::{Artwork, Source, metadata::check_cancel};
+use dashboard_base::products::{Country, CountryParams, LoadContext, Product, artwork};
+use dashboard_core::dto::Artwork;
+use dashboard_base::Source;
+use dashboard_text::metadata::check_cancel;
 use dashboard_base::{ResearchFolder, ResearchTechnologyFolder};
 use dashboard_query::{Query, cost, identity::Holder};
-use replay::lanes::{self, Cell, History, Keys, Step};
+use replay_lanes::lanes::{self, Cell, History, Keys, Step};
 use replay_data::rows::{ResearchAppliedBonusRow, ResearchAssignmentRow, ResearchCoverageRow, ResearchInputRow, TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -112,6 +114,8 @@ pub struct ResearchSlotState {
     pub first_hour: i32,
     pub last_hour: i32,
     pub token: Option<String>,
+    #[doc = " The technology's template occurrence as read; none while idle."]
+    pub database_index: Option<i32>,
     pub entry_first_observed_hour: Option<i32>,
     #[doc = " Native fixed5 operands as decimal text."]
     pub speed_multiplier_raw: String,
@@ -127,6 +131,8 @@ pub struct ResearchSlotState {
 pub struct ResearchDetails {
     #[doc = " The game's days-left estimate at the read; none where its rate is not known."]
     pub remaining_days: Option<u32>,
+    #[doc = " The same estimate before the game rounds it up to whole days, as fixed5 days."]
+    pub estimate_raw: Option<String>,
     #[doc = " None where the bonuses were not read with the slot or do not attribute."]
     pub bonuses: Option<Vec<ResearchBonus>>,
     pub modifiers: Option<ResearchModifiers>,
@@ -364,14 +370,14 @@ pub(crate) fn entries(history: &History, last_read: Option<i32>, ends: Option<i3
 }
 
 fn last_read(source: &Source, query: &Query<'_>, span: &Span) -> io::Result<Option<i32>> {
-    let links = crate::answer::links(source, span.run)?;
+    let links = dashboard_base::queries::links(source, span.run)?;
     let mut keys: Vec<u128> = links.slots.keys().filter(|&&raw| links.slot_at(raw, span.last) == Some(span.slot)).map(|&raw| slice_key(INPUTS, raw)).collect();
     if keys.is_empty() {
         return Ok(None);
     }
     keys.sort_unstable();
-    let reads = [replay::at::Read { table: TableId::SliceReads, columns: None, keys: replay::at::Keys::These(&keys) }];
-    let frame = cost::storage(|| replay::at::frame(query.replay.recording(), span.run, span.last, &reads))?;
+    let reads = [replay_lanes::at::Read { table: TableId::SliceReads, columns: None, keys: replay_lanes::at::Keys::These(&keys) }];
+    let frame = cost::storage(|| replay_lanes::at::frame(query.replay.recording(), span.run, span.last, &reads))?;
     Ok(frame.complete::<tables::SliceReads>().ok().and_then(|rows| rows.iter().map(|row| row.sample_hour).filter(|&read| read <= span.last).max()))
 }
 
@@ -440,6 +446,7 @@ impl Product for Research {
     const KEY: &'static str = "research";
     const CONTENT_DEPENDENT: bool = true;
     type Params = CountryParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = ResearchReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -463,7 +470,7 @@ impl Product for Research {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let query = crate::answer::query(source, params.branch())?;
+        let query = dashboard_base::queries::query(source, params.branch())?;
         let (history, warnings) = history(source, &query, &params.country, cancelled)?;
         present(source, context, history, warnings, cancelled)
     }
@@ -510,12 +517,12 @@ pub(crate) fn base_cost(row: &ResearchInputRow) -> Option<i128> {
     (cost > 0 && cost <= i128::from(i64::MAX)).then_some(cost)
 }
 
-pub(crate) fn remaining(row: &ResearchInputRow, rate: i128) -> Option<u32> {
+pub(crate) fn remaining(row: &ResearchInputRow, rate: i128) -> Option<(u32, i128)> {
     if rate <= 0 || row.progress_raw < 0 {
         return None;
     }
     let left = (base_cost(row)? - i128::from(row.progress_raw)).max(0);
-    u32::try_from((left + rate - 1) / rate).ok()
+    Some((u32::try_from((left + rate - 1) / rate).ok()?, (left.checked_mul(100_000)? + rate - 1) / rate))
 }
 
 pub(crate) fn valid_inputs(inputs: &[&ResearchInputRow]) -> bool {
@@ -574,12 +581,13 @@ pub(crate) fn slot_read(
     let present = input.technology_present != 0;
     let mut bonuses = bonuses.and_then(|rows| attributed_bonuses(input, rows));
     let mut modifiers = modifier_rows.and_then(|rows| modifiers::breakdown(input, Some(rows)));
-    let remaining_days = present
+    let estimate = present
         .then(|| {
             let fresh = joined.is_some_and(|joined| joined.fresh).then_some(i128::from(input.research_speed_raw));
             modifiers.as_ref().and_then(|modifiers| modifiers::rate(modifiers, input.ahead_reduction_raw, read)).or(daily).or(fresh).and_then(|rate| remaining(input, rate))
         })
         .flatten();
+    let (remaining_days, estimate_raw) = (estimate.map(|(days, _)| days), estimate.map(|(_, raw)| raw.to_string()));
     for bonus in bonuses.iter_mut().flatten() {
         bonus.name = bonus.token.as_deref().and_then(localise);
     }
@@ -599,12 +607,16 @@ pub(crate) fn slot_read(
             first_hour: read,
             last_hour: through,
             token,
+            database_index: match input.database_index {
+                replay_data::rows::Recorded::Value(index) if present => Some(index),
+                _ => None,
+            },
             entry_first_observed_hour: joined.filter(|_| present).map(|joined| joined.first_observed),
             speed_multiplier_raw: input.research_speed_raw.to_string(),
             banked_days_raw: input.banked_days_raw.to_string(),
             applied_days_raw: input.applied_days_raw.to_string(),
             ahead_reduction_years_raw: present.then(|| input.ahead_reduction_raw.to_string()),
-            details: Some(ResearchDetails { remaining_days, bonuses, modifiers }),
+            details: Some(ResearchDetails { remaining_days, estimate_raw, bonuses, modifiers }),
         },
     }
 }
@@ -627,6 +639,7 @@ pub(crate) fn continues(last: &ResearchSlotState, next: &ResearchSlotState) -> b
         && details
         && countdown
         && last.token == next.token
+        && last.database_index == next.database_index
         && last.entry_first_observed_hour == next.entry_first_observed_hour
         && last.speed_multiplier_raw == next.speed_multiplier_raw
         && last.banked_days_raw == next.banked_days_raw

@@ -1,8 +1,8 @@
 
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::combat_selection::Selection;
-use viewer_foundation::map::tables::Limitations;
+use viewer_engagements::combat_selection::Selection;
+use viewer_foundation::tables::Limitations;
 
 pub fn combat_limitations(frame: &DecodedFrame, selection: Selection) -> Limitations {
     let mut out = Limitations::default();

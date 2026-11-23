@@ -2,7 +2,7 @@ use crate::triggers::Failure;
 
 use std::collections::BTreeSet;
 
-use content_reader_core::{parser::Item, parser::Operator};
+use content_reader_parser::parser::{Item, Operator};
 use replay_data::rows::{TableSchema, tables};
 use replay_frame::frame::Leader;
 
@@ -440,7 +440,7 @@ impl Evaluator<'_, '_> {
                 .value
                 .scalar()
                 .ok_or("has_dynamic_modifier name is not a scalar")?;
-            return Ok((content_reader_core::parser::c_string(name), None));
+            return Ok((content_reader_parser::parser::c_string(name), None));
         };
         let mut name = b"".as_slice();
         for field in block {
@@ -516,7 +516,7 @@ impl Evaluator<'_, '_> {
                         (Some("activated"), Some("yes")) => activated = Some(true),
                         (Some("activated"), Some("no")) => activated = Some(false),
                         (Some("preparation"), Some(value)) => {
-                            let threshold = content_reader_core::fixed5::script_fixed5(value.as_bytes())
+                            let threshold = content_reader_parser::fixed5::script_fixed5(value.as_bytes())
                                 .ok_or_else(|| -> Failure {
                                     format!("{name} preparation {value} is not a number").into()
                                 })?;
@@ -873,7 +873,7 @@ impl Evaluator<'_, '_> {
         result
     }
 
-    pub(crate) fn leader_visible<'r>(&self, row: impl Into<Leader<'r>>) -> Eval {
+    pub fn leader_visible<'r>(&self, row: impl Into<Leader<'r>>) -> Eval {
         let row = row.into();
         self.decide_leader_visibility(row, self.world().leader_visibility(row), false)
     }
@@ -938,7 +938,7 @@ impl Evaluator<'_, '_> {
                     ruling_only = entry
                         .value
                         .scalar()
-                        .and_then(content_reader_core::parser::read_bool)
+                        .and_then(content_reader_parser::parser::read_bool)
                         .unwrap_or(ruling_only);
                 }
                 _ => {

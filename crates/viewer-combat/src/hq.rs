@@ -2,7 +2,7 @@
 use replay_data::{rows::LandCombatSideDetails, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{fmt, io};
-use viewer_foundation::table_access::{Available, rows};
+use dashboard_text::table_access::{Available, rows};
 
 const FORMATIONS_FEATURE: u32 = 1 << 17;
 

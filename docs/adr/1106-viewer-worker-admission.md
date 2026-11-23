@@ -6,4 +6,4 @@ An admission failure returns the original job and distinguishes capacity from di
 
 Workers release receiver and listener locks before calling subscribers or executing jobs. Dequeue skips the generation update, registry lock and allocation with no listeners. A callback panic re-arms that listener and leaves the accepted job available to run. A job panic leaves the worker available for other jobs. Queue and wake tests synchronize through explicit events, including a competing producer.
 
-[Builder queue](../../crates/viewer-foundation/src/builder_pool.rs) · [Capacity listeners](../../crates/viewer-foundation/src/builder_pool/capacity.rs) · [Scheduling tests](../../crates/viewer-foundation/src/builder_pool/tests.rs)
+[Builder queue](../../crates/viewer-runtime/src/builder_pool.rs) · [Capacity listeners](../../crates/viewer-runtime/src/builder_pool/capacity.rs) · [Scheduling tests](../../crates/viewer-runtime/src/builder_pool/tests.rs)

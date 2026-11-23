@@ -88,7 +88,7 @@ pub fn read_batch(
     let mut block_ptrs = [0_usize; BATCH];
     let mut block_slots = [0_usize; BATCH];
     let mut block_count = 0_usize;
-    for (i, &country) in batch.iter().enumerate() {
+    for (i, &_country) in batch.iter().enumerate() {
         let status = if i < ptrs_copied {
             let p = usize::try_from(u64::from_le_bytes(
                 ptr_bytes[i * 8..(i + 1) * 8].try_into().unwrap(),

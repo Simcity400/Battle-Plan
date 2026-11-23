@@ -37,6 +37,7 @@ export function resolveChoice(histories: readonly CountryIdentityHistory[], comp
   branchFirst: number, branchLast: number, hour: number)
   : { country: ReachedCountry; holders: CountryHolder[] | null; rebind: DatedCountrySelection | null } {
   const waiting = { country: { chosen: selection.tag, tag: null, absent: false, reason: null }, holders: null, rebind: null };
+  if (hour < branchFirst || hour > branchLast) return { ...waiting, country: outsideCountry(selection.tag) };
   const settled = settleChoice(histories, selection, branchFirst);
   if (settled.kind === 'held') return { ...waiting, country: reachedCountryAt(histories, selection, branchFirst, branchLast, hour) };
   if (!complete) return waiting;
@@ -46,6 +47,8 @@ export function resolveChoice(histories: readonly CountryIdentityHistory[], comp
 }
 
 export interface ReachedCountry { chosen: string | null; tag: string | null; absent: boolean; reason: string | null }
+
+export const outsideCountry = (chosen: string): ReachedCountry => ({ chosen, tag: null, absent: false, reason: 'This time is outside the recording.' });
 
 export function reachedCountryAt(histories: readonly CountryIdentityHistory[], selection: DatedCountrySelection,
   branchFirst: number, branchLast: number, hour: number): ReachedCountry {

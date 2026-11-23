@@ -61,7 +61,7 @@ pub(super) fn geography_catalogue() -> (crate::catalogue::Catalogue, crate::cata
     ] {
         std::fs::write(folder.0.join("map/logs").join(name), bytes).unwrap();
     }
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&folder.0, &[])]).unwrap();
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&folder.0, &[])]).unwrap();
     let _reads = layers.report_uncovered_reads();
     (crate::catalogue::tests::layers_catalogue(layers), folder)
 }
@@ -145,7 +145,7 @@ fn reached_scripted_geography_preserves_values_diagnostics_and_cache_reuse() {
     let content = cat.scripted_content().unwrap();
     let frame = geography_frame();
     let text = ScriptedText::new(&frame, &cat.localisation, content, 1);
-    let ((warnings, cached), _) = content_reader_core::content::diagnostics::capture(|| {
+    let ((warnings, cached), _) = content_reader_layers::content::diagnostics::capture(|| {
         assert_eq!(
             text.expand("[ROOT.64.Neighbors]").as_deref(),
             Ok("Localized neighbors")
@@ -201,7 +201,7 @@ fn reached_scripted_geography_preserves_values_diagnostics_and_cache_reuse() {
     for name in ["provinces.bmp", "terrain.bmp", "rivers.bmp"] {
         std::fs::remove_file(folder.0.join("map/logs").join(name)).unwrap();
     }
-    let (reused, _) = content_reader_core::content::diagnostics::capture(|| {
+    let (reused, _) = content_reader_layers::content::diagnostics::capture(|| {
         let next = ScriptedText::new(&frame, &cat.localisation, content, 1);
         assert_eq!(
             next.expand("[ROOT.64.Neighbors]").as_deref(),
@@ -272,8 +272,6 @@ fn reached_geography_caches_missing_and_malformed_map_refusals_without_refusing_
 
 #[test]
 fn description_append_preserves_active_cursor_graph_and_guard_state() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut graph = EventScopes::new(vec![
         EventScope {
             root: Link::Scope(1),
@@ -298,7 +296,7 @@ fn description_append_preserves_active_cursor_graph_and_guard_state() {
         variables: graph.variables,
     });
     {
-        let appended = expanded.append_description(&graph);
+        let appended = expanded.append_description(&graph).unwrap();
         assert_eq!(appended.offset, 3);
         let active = expanded.active.borrow();
         assert_eq!(active.len(), 1);
@@ -322,9 +320,39 @@ fn description_append_preserves_active_cursor_graph_and_guard_state() {
     );
     assert_eq!(expanded.variables.get(), graph.variables);
     assert_eq!(expanded.active.borrow()[0].at, 0);
+    let mut child = graph.clone();
+    child.scopes[0].prev = Link::Scope(usize::MAX);
+    assert_eq!(
+        expanded.append_description(&child).err(),
+        Some(format!(
+            "scripted text event scope link {} overflows when rebased",
+            usize::MAX
+        ))
+    );
+    child.scopes[0].prev = graph.scopes[0].prev;
+    let target = vec![(b"child".to_vec(), EventObject::State(12))];
+    let first_missing_scope = child.scopes.len();
+    child.tooltip_targets.insert(first_missing_scope, target.clone());
+    assert_eq!(
+        expanded.append_description(&child).err(),
+        Some(format!(
+            "scripted text tooltip target event scope {first_missing_scope} is not given"
+        ))
+    );
+    child.tooltip_targets.remove(&first_missing_scope);
+    child.saved_targets.insert(usize::MAX, target);
+    assert_eq!(
+        expanded.append_description(&child).err(),
+        Some(format!(
+            "scripted text saved target event scope {} is not given",
+            usize::MAX
+        ))
+    );
+    assert_eq!(*expanded.scopes.borrow(), graph.scopes);
+    assert_eq!(*expanded.targets.borrow(), graph);
     graph.scopes[0].prev = Link::Scope(99);
     {
-        let _appended = expanded.append_description(&graph);
+        let _appended = expanded.append_description(&graph).unwrap();
         assert!(!expanded.valid_links.get());
     }
     assert!(expanded.valid_links.get());
@@ -338,22 +366,22 @@ fn scripted_text_cached_state_diagnostics_are_filtered_and_reported_once() {
     let (cat, _folder) = crate::scripted_text::tests::catalogue("", "");
     let warnings = vec![
         Diagnostic {
-            kind: content_reader_core::DiagnosticKind::Warning,
+            kind: content_reader_parser::DiagnosticKind::Warning,
             message: "native template skip".into(),
             cause: None,
         },
         Diagnostic {
-            kind: content_reader_core::DiagnosticKind::Misread,
+            kind: content_reader_parser::DiagnosticKind::Misread,
             message: "proven state recovery".into(),
             cause: Some(MisreadCause::InvalidImpassable),
         },
         Diagnostic {
-            kind: content_reader_core::DiagnosticKind::Misread,
+            kind: content_reader_parser::DiagnosticKind::Misread,
             message: "unproven state recovery".into(),
             cause: None,
         },
         Diagnostic {
-            kind: content_reader_core::DiagnosticKind::Unsupported,
+            kind: content_reader_parser::DiagnosticKind::Unsupported,
             message: "unsupported state content".into(),
             cause: None,
         },
@@ -361,7 +389,7 @@ fn scripted_text_cached_state_diagnostics_are_filtered_and_reported_once() {
     assert!(
         cat.state_content
             .set(Ok(StateContent {
-                defines: content_reader_core::defines::read(&cat.content.layers).unwrap(),
+                defines: content_reader_defines::defines::read(&cat.content.layers).unwrap(),
                 states: Default::default(),
                 names: StateNames::new(),
                 warnings: warnings.clone(),
@@ -430,4 +458,46 @@ fn scripted_text_state_display_shares_precedence_language_and_cached_failures() 
             .unwrap_err()
             .contains("other-language")
     );
+}
+
+#[test]
+fn state_templates_accept_synthesized_unclaimed_bmp_provinces() {
+    content_reader_script::test_game::enter();
+    let stack = content_reader_layers::test_support::Stack::new("state_templates_unclaimed_bmp");
+    let base = stack.base();
+    stack.write(
+        &base,
+        "common/defines/fixture.lua",
+        "NDefines = { NBuildings = { MAX_BUILDING_LEVELS = 15 } }",
+    );
+    stack.write(
+        &base,
+        "map/default.map",
+        "definitions = definition.csv provinces = provinces.bmp terrain = terrain.bmp rivers = rivers.bmp heightmap = heightmap.bmp tree_definition = trees.bmp",
+    );
+    stack.write(
+        &base,
+        "map/definition.csv",
+        "0;0;0;0;land;false;unknown;0\n1;1;0;0;land;false;unknown;1\n",
+    );
+    stack.write(
+        &base,
+        "history/states/unclaimed.txt",
+        "state = { id = 77 name = SYNTH_STATE provinces = { 1 2 } }",
+    );
+    let mut bmp = vec![0_u8; 62];
+    bmp[..2].copy_from_slice(b"BM");
+    for (at, value) in [(2, 62_u32), (10, 54), (14, 40), (18, 2), (22, 1)] {
+        bmp[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bmp[26..28].copy_from_slice(&1_u16.to_le_bytes());
+    bmp[28..30].copy_from_slice(&24_u16.to_le_bytes());
+    bmp[54..60].copy_from_slice(&[0, 0, 1, 7, 8, 9]);
+    std::fs::write(base.join("map/provinces.bmp"), bmp).unwrap();
+
+    let layers = stack.layers(&[]);
+    let defines = content_reader_defines::defines::read(&layers).unwrap();
+    let (states, names, _) = read_state_templates(&layers, &defines).unwrap();
+    assert_eq!(states.definitions()[&77].provinces, [1, 2]);
+    assert_eq!(names[&77], Ok("SYNTH_STATE".into()));
 }

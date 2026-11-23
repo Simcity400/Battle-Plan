@@ -242,7 +242,7 @@ fn conditional_name(
     saved: Option<&[u8]>,
 ) -> io::Result<()> {
     let actual = actual.ok_or_else(|| invalid("fuel demand stored-name capture failed"))?;
-    let prefix = content_reader_core::parser::c_string(actual);
+    let prefix = content_reader_parser::parser::c_string(actual);
     if prefix.len() < actual.len() {
         report.limitation(
             "native text serialization ends at the first NUL; captured trailing name bytes are not save-comparable",

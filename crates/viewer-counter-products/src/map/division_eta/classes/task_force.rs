@@ -5,7 +5,7 @@ use content_reader_unit_path::unit_path::Fact;
 use replay_data::{
     rows::FreshTaskForceCounterEta, rows::TaskForceMapMotionRow, rows::TaskForceRow,
 };
-use viewer_foundation::table_access::TokenError;
+use dashboard_text::table_access::TokenError;
 
 const P: i64 = 100_000;
 
@@ -168,16 +168,13 @@ fn remaining(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::{
-        movement::MovementDefines, movement::MovementMap, movement::Neighbour,
-        movement::ProvinceTerrain,
-    };
+    use content_reader_map::movement::{MovementDefines, MovementMap, Neighbour, ProvinceTerrain};
     use replay_data::{
         rows::LexicalTokenRow, rows::Recorded, rows::ShipRow, rows::TableId, rows::TableRows,
         rows::tables,
     };
     use replay_frame::{frame::DecodedFrame, frame::TableView};
-    use viewer_foundation::map::test_support::movement_timing::terrain;
+    use viewer_foundation::test_support::movement_timing::terrain;
     use viewer_foundation::movement_timing::MovementContent;
 
     fn frame() -> DecodedFrame {

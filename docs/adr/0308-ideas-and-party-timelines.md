@@ -6,4 +6,4 @@ The recorded advisor seat takes precedence over the content's role or group. The
 
 The ruling-party history follows recorded holders over consecutive observed hours. It connects ideology tokens to recorded party indices for popularity tiles and uses authored colors or the palette when content is unavailable. A change of holder or a recording gap ends the evidence for a change of government. An election already recorded on the first observation supplies no new event. A new last-election value on a later read for the same holder dates the observation, including after a gap. The party view only renders names that can resolve without unavailable runtime scope. Histories without explicit sample-hour metadata use the table's available hours to carry its last read.
 
-[Ideas](../../crates/dashboard/src/products/ideas.rs) · [Party history](../../crates/dashboard/src/products/party_history.rs)
+[Ideas](../../crates/dashboard-politics/src/products/ideas.rs) · [Party history](../../crates/dashboard-politics/src/products/party_history.rs)

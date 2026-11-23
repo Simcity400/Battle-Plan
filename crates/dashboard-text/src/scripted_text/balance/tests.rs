@@ -1,6 +1,7 @@
 use super::*;
 use replay_data::rows::*;
 
+#[cfg(test)]
 #[test]
 fn balance_property_methods_select_the_registered_handler() {
     assert!(matches_numeric_handler("GetPowerBalanceName", 46));
@@ -13,7 +14,7 @@ fn balance_property_methods_select_the_registered_handler() {
     assert!(!matches_numeric_handler("GetPowerBalanceName", 45));
 }
 
-fn fixture(
+pub fn fixture(
     bop: Option<&str>,
 ) -> (
     crate::catalogue::Catalogue,
@@ -117,166 +118,7 @@ fn fixture(
     (catalogue, folder, frame)
 }
 
-#[test]
-fn nested_balance_effects_keep_the_viewer_nato_preference() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (catalogue, _folder, frame) = fixture(Some(
-        "balance={range={id=active on_activate={add_unit_bonus={syn_unit={}}}}}",
-    ));
-    let content = catalogue.scripted_content().unwrap();
-    let effects = content.effects().unwrap();
-    let items = content_reader_core::parser::parse(b"custom_effect_tooltip=ENTRY_TOOLTIP")
-        .unwrap()
-        .items;
-    for nato in [false, true] {
-        let text =
-            ScriptedText::new(&frame, &catalogue.localisation, content, 1).with_nato_counters(nato);
-        let context = crate::effect_description::Context::new(
-            &text,
-            &catalogue.localisation,
-            0,
-            "synthetic border event",
-            effects.view(None),
-        );
-        let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
-        let out = crate::effect_description::describe(&items, &context, &mut scopes);
-        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-        let frame = if nato { 2 } else { 1 };
-        assert_eq!(
-            out.text,
-            format!("Activate:\n\u{13}GFX_syn_unit_icon_small|{frame} Unit\n")
-        );
-    }
-}
-
-#[test]
-fn balance_effect_sessions_keep_nesting_active_history_and_large_stack() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (catalogue, _folder, frame) = fixture(Some(
-        "balance={range={id=active on_activate={custom_effect_tooltip=LOOP}}}",
-    ));
-    let content = catalogue.scripted_content().unwrap();
-    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 1);
-    let graph = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
-    let mut scopes = ExpansionScopes::new(&graph);
-    scopes.on_large_stack = true;
-    scopes.fresh_depth.set(MAX_SCRIPTED_NESTING);
-    let effects = content_reader_core::parser::parse(b"custom_effect_tooltip=ACTIVATION")
-        .unwrap()
-        .items;
-    let why = text
-        .active_range_effects(&effects, &mut Vec::new(), 1, "guard", &scopes)
-        .unwrap_err();
-    assert!(why.contains("native stack exhaustion"), "{why}");
-    scopes.fresh_depth.set(MAX_SCRIPTED_NESTING - 1);
-    {
-        let appended = scopes.append_description(&graph);
-        assert_eq!(appended.offset, 1);
-        assert_eq!(scopes.scope(0), graph.scopes[0]);
-        assert_eq!(scopes.scope(1), graph.scopes[0]);
-        assert_eq!(scopes.fresh_depth.get(), MAX_SCRIPTED_NESTING - 1);
-        assert!(scopes.on_large_stack);
-    }
-    assert_eq!(scopes.scopes.borrow().len(), 1);
-    let effects = content_reader_core::parser::parse(b"custom_effect_tooltip=LOOP")
-        .unwrap()
-        .items;
-    let mut refused = Vec::new();
-    assert_eq!(
-        text.active_range_effects(&effects, &mut refused, 1, "guard", &scopes)
-            .unwrap(),
-        ""
-    );
-    assert_eq!(refused.len(), 1);
-    assert!(
-        refused[0].contains("native stack exhaustion"),
-        "{:?}",
-        refused
-    );
-    assert_eq!(scopes.fresh_depth.get(), MAX_SCRIPTED_NESTING - 1);
-
-    let (catalogue, _folder, frame) = fixture(Some(
-        "balance={range={id=active on_activate={custom_effect_tooltip=ENTRY_TOOLTIP}}}",
-    ));
-    let text = ScriptedText::new(
-        &frame,
-        &catalogue.localisation,
-        catalogue.scripted_content().unwrap(),
-        1,
-    );
-    let why = text.expand("[BalanceEntry]").unwrap_err();
-    assert!(why.contains("cyclic entry invocation"), "{why}");
-}
-
-#[test]
-fn custom_only_balance_effects_do_not_require_world_or_environment() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (catalogue, _folder, mut frame) = fixture(None);
-    *frame.tables[TableId::Provinces.index()] = TableView::Unavailable {
-        reason: "synthetic province gap".into(),
-    };
-    let content = catalogue.scripted_content().unwrap();
-    assert!(
-        content
-            .environment()
-            .unwrap()
-            .inputs
-            .set(Err("synthetic unavailable environment".into()))
-            .is_ok()
-    );
-    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 1);
-    assert_eq!(
-        text.expand("[ROOT.GetActiveRangeActivationEffect]"),
-        Ok("Activate:\nGER activated\nNext effect\n".into())
-    );
-    assert_eq!(
-        text.expand("[ROOT.GetActiveRangeDeactivationEffect]"),
-        Ok("Deactivate:\nGER deactivated\n".into())
-    );
-    assert!(text.world.get().is_none());
-}
-
-#[test]
-fn balance_context_headers_use_the_viewing_country() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (catalogue, _folder, mut frame) = fixture(Some(
-        "balance={range={id=active on_activate={SOV={custom_effect_tooltip=NEXT}}}}",
-    ));
-    let content = catalogue.scripted_content().unwrap();
-    content.set_synthetic_environment(Default::default());
-    *frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(vec![]));
-    if let TableView::Complete(TableRows::Politics(rows)) =
-        &mut *frame.tables[TableId::Politics.index()]
-    {
-        rows.push(PoliticsRow {
-            country: 200,
-            ..Default::default()
-        });
-    }
-    *frame.tables[TableId::Autonomy.index()] = TableView::Complete(TableRows::Autonomy(vec![]));
-    if let TableView::Complete(TableRows::PowerBalanceMembers(members)) =
-        &mut *frame.tables[TableId::PowerBalanceMembers.index()]
-    {
-        members[0].country = 200;
-    }
-    for (perspective, expected) in [
-        (1, "Activate:\n\u{12}SOVOther Next effect\n"),
-        (2, "Activate:\nNext effect\n"),
-    ] {
-        let text = ScriptedText::new(&frame, &catalogue.localisation, content, perspective);
-        let graph = EventScopes::new(vec![EventScope::of(EventObject::Country(2))]);
-        assert_eq!(
-            text.expand_in("[ROOT.GetActiveRangeActivationEffect]", &graph),
-            Ok(expected.into())
-        );
-    }
-}
-
-fn description(
+pub fn description(
     catalogue: &crate::catalogue::Catalogue,
     frame: &DecodedFrame,
     property: &str,
@@ -295,25 +137,7 @@ fn description(
     )
 }
 
-#[test]
-fn activation_uses_the_shared_numeric_and_conditional_descriptions() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (catalogue, _folder, frame) = fixture(Some(
-        "balance={range={id=active on_activate={add_political_power=2 if={limit={always=no} army_experience=9} else={army_experience=3}}}}",
-    ));
-    catalogue
-        .scripted_content()
-        .unwrap()
-        .set_synthetic_environment(Default::default());
-    let mut frame = frame;
-    *frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(vec![]));
-    assert_eq!(
-        description(&catalogue, &frame, "GetActiveRangeActivationEffect").unwrap(),
-        "Activate:\nPP2\nXP3\n"
-    );
-}
-
+#[cfg(test)]
 #[test]
 fn active_range_mod_description() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -325,6 +149,7 @@ fn active_range_mod_description() {
     );
 }
 
+#[cfg(test)]
 #[test]
 fn active_range_modifier_feature_gate() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -361,6 +186,7 @@ fn active_range_modifier_feature_gate() {
     }
 }
 
+#[cfg(test)]
 #[test]
 fn active_range_rule_description() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -372,65 +198,48 @@ fn active_range_rule_description() {
     );
 }
 
-#[test]
-fn active_range_effect_refusals_are_named_and_counted() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (catalogue, _folder, frame) = fixture(Some(
-        r#"balance={range={id=active
-            on_activate={unported=1 hidden_effect={other=2}
-                custom_effect_tooltip="fmt|value" custom_effect_tooltip={localization_key=KEY}}
-        }}"#,
-    ));
-    let error = description(&catalogue, &frame, "GetActiveRangeActivationEffect").unwrap_err();
-    for name in [
-        "3 unsupported effect descriptions",
-        "unported",
-        "other",
-        "formatter fmt requires core registry callback",
-        "bound localisation",
-    ] {
-        assert!(error.contains(name), "{error}");
-    }
-    assert_eq!(
-        description(&catalogue, &frame, "GetActiveRangeDeactivationEffect").unwrap(),
-        ""
-    );
-    let (catalogue, _folder, frame) = fixture(Some(
-        "balance={range={id=active on_activate={custom_effect_tooltip={localization_key=KEY}}}}",
-    ));
-    assert_eq!(
-        description(&catalogue, &frame, "GetActiveRangeActivationEffect").unwrap(),
-        "Activate:\nKEY\n"
-    );
-}
 
-#[test]
-fn active_range_missing_feature_mask_and_null_balance() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (catalogue, _folder, mut frame) = fixture(None);
-    if let TableView::Complete(TableRows::ModifierDefinitions(rows)) =
-        &mut *frame.tables[TableId::ModifierDefinitions.index()]
-    {
-        for row in &mut rows[..2] {
-            row.feature_selector = 1;
-            row.eligibility = 1;
-        }
+pub const MAX_SCRIPTED_NESTING: usize = super::super::MAX_SCRIPTED_NESTING;
+
+pub struct BalanceEffectScopes<'a>(ExpansionScopes<'a, 'a>);
+
+impl<'a> BalanceEffectScopes<'a> {
+    pub fn new(graph: &EventScopes, depth: usize) -> Self {
+        let mut scopes = ExpansionScopes::new(graph);
+        scopes.on_large_stack = true;
+        scopes.fresh_depth.set(depth);
+        Self(scopes)
     }
-    let error = description(&catalogue, &frame, "GetActiveRangeModDesc").unwrap_err();
-    assert!(
-        error.contains("2 feature-gated modifiers (first, second)")
-            && error.contains("dlc mask of simulation features")
-    );
-    *frame.tables[TableId::PowerBalanceMembers.index()] =
-        TableView::Complete(TableRows::PowerBalanceMembers(Vec::new()));
-    for property in [
-        "GetActiveRangeModDesc",
-        "GetActiveRangeRuleDesc",
-        "GetActiveRangeActivationEffect",
-        "GetActiveRangeDeactivationEffect",
-    ] {
-        assert_eq!(description(&catalogue, &frame, property).unwrap(), "");
+
+    pub fn set_depth(&self, depth: usize) {
+        self.0.fresh_depth.set(depth);
+    }
+
+    pub fn depth(&self) -> usize {
+        self.0.fresh_depth.get()
+    }
+
+    pub fn check_appended(&self, graph: &EventScopes, depth: usize) {
+        let scopes = &self.0;
+        {
+            let appended = scopes.append_description(graph).unwrap();
+            assert_eq!(appended.offset, 1);
+            assert_eq!(scopes.scope(0), graph.scopes[0]);
+            assert_eq!(scopes.scope(1), graph.scopes[0]);
+            assert_eq!(scopes.fresh_depth.get(), depth);
+            assert!(scopes.on_large_stack);
+        }
+        assert_eq!(scopes.scopes.borrow().len(), 1);
+    }
+
+    pub fn describe(
+        &self,
+        text: &ScriptedText<'a>,
+        effects: &[content_reader_parser::parser::Item],
+        refused: &mut Vec<String>,
+        slot: u32,
+        name: &str,
+    ) -> Result<String, String> {
+        text.active_range_effects(effects, refused, slot, name, &self.0)
     }
 }

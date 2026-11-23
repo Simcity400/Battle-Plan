@@ -82,7 +82,7 @@ impl ActiveEntry {
 }
 
 pub struct StateContent {
-    pub defines: content_reader_core::defines::Defines,
+    pub defines: content_reader_defines::defines::Defines,
     pub states: content_reader_states::states::States,
     pub names: StateNames,
     pub warnings: Vec<content_reader_states::states::Diagnostic>,
@@ -93,7 +93,7 @@ pub fn live_state_warnings(
 ) -> impl Iterator<Item = &str> {
     use content_reader_states::states::MisreadCause;
     notes.iter().filter_map(|note| {
-        let exact = note.kind == content_reader_core::DiagnosticKind::Misread
+        let exact = note.kind == content_reader_parser::DiagnosticKind::Misread
             && matches!(
                 note.cause,
                 Some(
@@ -104,15 +104,15 @@ pub fn live_state_warnings(
                         | MisreadCause::NonBlockBuildings
                 )
             );
-        (note.kind != content_reader_core::DiagnosticKind::Warning && !exact)
+        (note.kind != content_reader_parser::DiagnosticKind::Warning && !exact)
             .then_some(note.message.as_str())
     })
 }
 
 pub fn read_state_content(
-    layers: &content_reader_core::ResolvedLayers,
+    layers: &content_reader_layers::ResolvedLayers,
 ) -> std::io::Result<StateContent> {
-    let defines = content_reader_core::defines::read(layers)?;
+    let defines = content_reader_defines::defines::read(layers)?;
     let (states, names, warnings) = read_state_templates(layers, &defines)?;
     Ok(StateContent {
         defines,
@@ -123,16 +123,14 @@ pub fn read_state_content(
 }
 
 fn read_state_templates(
-    layers: &content_reader_core::ResolvedLayers,
-    defines: &content_reader_core::defines::Defines,
+    layers: &content_reader_layers::ResolvedLayers,
+    defines: &content_reader_defines::defines::Defines,
 ) -> std::io::Result<(
     content_reader_states::states::States,
     StateNames,
     Vec<content_reader_states::states::Diagnostic>,
 )> {
-    let map = content_reader_core::terrain::read_default_map(layers)?;
-    let provinces =
-        content_reader_core::map::parse_definitions(&layers.read(&map.file("definitions")?)?)?;
+    let provinces = content_reader_map::map::load_definitions(layers)?;
     let (states, warnings) =
         content_reader_states::states::read_with_diagnostics(layers, defines, &provinces)?;
     let names = states
@@ -143,23 +141,23 @@ fn read_state_templates(
     Ok((states, names, warnings))
 }
 
-type Database<T> = content_reader_core::content::diagnostics::Once<(Result<T, String>, Vec<String>)>;
+type Database<T> = content_reader_layers::content::diagnostics::Once<(Result<T, String>, Vec<String>)>;
 
 pub struct Environment {
     prepared: prepared::PreparedInputs,
-    defines: content_reader_core::defines::Defines,
-    layers: content_reader_core::ResolvedLayers,
-    ideologies: Database<content_reader_core::ideologies::Ideologies>,
-    terrain_definitions: Database<content_reader_core::terrain::TerrainDefinitions>,
-    leader_traits: Database<content_reader_core::leader_traits::LeaderTraits>,
-    ideas: Database<content_reader_core::ideas::IdeaContent>,
+    defines: content_reader_defines::defines::Defines,
+    layers: content_reader_layers::ResolvedLayers,
+    ideologies: Database<content_reader_key_names::ideologies::Ideologies>,
+    terrain_definitions: Database<content_reader_key_names::terrain::TerrainDefinitions>,
+    leader_traits: Database<content_reader_military::leader_traits::LeaderTraits>,
+    ideas: Database<content_reader_politics::ideas::IdeaContent>,
     #[cfg(any(test, feature = "test-support"))]
     pub(super) inputs: std::sync::OnceLock<Result<EnvironmentInputs, String>>,
 }
 
 impl Environment {
-    pub(super) fn read(layers: &content_reader_core::ResolvedLayers) -> std::io::Result<Self> {
-        let defines = content_reader_core::defines::read(layers)?;
+    pub(super) fn read(layers: &content_reader_layers::ResolvedLayers) -> std::io::Result<Self> {
+        let defines = content_reader_defines::defines::read(layers)?;
         Ok(Self {
             prepared: Default::default(),
             defines,
@@ -173,7 +171,7 @@ impl Environment {
         })
     }
 
-    pub(crate) fn catalogue_notes(&self) -> Vec<String> {
+    pub fn catalogue_notes(&self) -> Vec<String> {
         [
             self.ideologies.get().map(|db| &db.1),
             self.terrain_definitions.get().map(|db| &db.1),
@@ -186,14 +184,14 @@ impl Environment {
         .collect()
     }
 
-    fn ideas(&self) -> Result<&content_reader_core::ideas::IdeaContent, &str> {
+    fn ideas(&self) -> Result<&content_reader_politics::ideas::IdeaContent, &str> {
         self.ideas
             .get_or_init(|| {
                 let loaded = (|| {
                     let officers = self
                         .defines
                         .strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
-                    content_reader_core::ideas::read(&self.layers, &officers)
+                    content_reader_politics::ideas::read(&self.layers, &officers)
                 })();
                 match loaded {
                     Ok((ideas, _, notes)) => {
@@ -207,39 +205,39 @@ impl Environment {
             .map_err(String::as_str)
     }
 
-    pub(crate) fn defines(&self) -> &content_reader_core::defines::Defines {
+    pub fn defines(&self) -> &content_reader_defines::defines::Defines {
         &self.defines
     }
 
-    pub(crate) fn ideologies(&self) -> Result<&content_reader_core::ideologies::Ideologies, String> {
+    pub fn ideologies(&self) -> Result<&content_reader_key_names::ideologies::Ideologies, String> {
         self.ideologies_result().as_ref().map_err(Clone::clone)
     }
 
-    pub(crate) fn terrain(&self) -> Result<&content_reader_core::terrain::TerrainDefinitions, String> {
+    pub fn terrain(&self) -> Result<&content_reader_key_names::terrain::TerrainDefinitions, String> {
         self.terrain_result().as_ref().map_err(Clone::clone)
     }
 
-    pub(crate) fn leader_traits(
+    pub fn leader_traits(
         &self,
-    ) -> Result<&content_reader_core::leader_traits::LeaderTraits, String> {
+    ) -> Result<&content_reader_military::leader_traits::LeaderTraits, String> {
         self.leader_traits_result().as_ref().map_err(Clone::clone)
     }
 
-    fn ideologies_result(&self) -> &Result<content_reader_core::ideologies::Ideologies, String> {
+    fn ideologies_result(&self) -> &Result<content_reader_key_names::ideologies::Ideologies, String> {
         &self
             .ideologies
-            .get_or_init(|| match content_reader_core::ideologies::read(&self.layers) {
+            .get_or_init(|| match content_reader_key_names::ideologies::read(&self.layers) {
                 Ok((db, notes)) => (Ok(db), notes.into_iter().map(|(_, why)| why).collect()),
                 Err(why) => (Err(why.to_string()), Vec::new()),
             })
             .0
     }
 
-    fn terrain_result(&self) -> &Result<content_reader_core::terrain::TerrainDefinitions, String> {
+    fn terrain_result(&self) -> &Result<content_reader_key_names::terrain::TerrainDefinitions, String> {
         &self
             .terrain_definitions
             .get_or_init(
-                || match content_reader_core::terrain::read_definitions(&self.layers) {
+                || match content_reader_key_names::terrain::read_definitions(&self.layers) {
                     Ok(db) => {
                         let notes = db.skipped.clone();
                         (Ok(db), notes)
@@ -250,10 +248,10 @@ impl Environment {
             .0
     }
 
-    fn leader_traits_result(&self) -> &Result<content_reader_core::leader_traits::LeaderTraits, String> {
+    fn leader_traits_result(&self) -> &Result<content_reader_military::leader_traits::LeaderTraits, String> {
         &self
             .leader_traits
-            .get_or_init(|| match content_reader_core::leader_traits::read(&self.layers) {
+            .get_or_init(|| match content_reader_military::leader_traits::read(&self.layers) {
                 Ok((db, notes)) => (Ok(db), notes.into_iter().map(|(_, why)| why).collect()),
                 Err(why) => (Err(why.to_string()), Vec::new()),
             })
@@ -277,19 +275,19 @@ pub(super) struct EnvironmentInputs {
     state_error: Option<String>,
     continents: Result<Vec<String>, String>,
     impassable: BTreeSet<u32>,
-    neighbors: content_reader_core::content::diagnostics::Once<Result<BTreeMap<u32, Vec<u32>>, String>>,
+    neighbors: content_reader_layers::content::diagnostics::Once<Result<BTreeMap<u32, Vec<u32>>, String>>,
     terrain:
-        content_reader_core::content::diagnostics::Once<Option<content_reader_core::movement::MovementMap>>,
+        content_reader_layers::content::diagnostics::Once<Option<content_reader_map::movement::MovementMap>>,
     terrain_names: Result<Vec<Vec<u8>>, String>,
     dlcs: BTreeSet<String>,
-    triggers: Result<content_reader_core::trigger_keys::TriggerNames, String>,
-    aliases: std::sync::Arc<content_reader_core::tag_aliases::TagAliases>,
-    buildings: Result<content_reader_core::buildings::Buildings, String>,
+    triggers: Result<content_reader_script::trigger_keys::TriggerNames, String>,
+    aliases: std::sync::Arc<content_reader_key_names::tag_aliases::TagAliases>,
+    buildings: Result<content_reader_key_names::buildings::Buildings, String>,
     bonuses: Result<[i64; 2], String>,
     roles: Result<LeaderRoles, String>,
     invasion_days: Result<i32, String>,
-    constants: Result<content_reader_core::script_constants::Constants, String>,
-    traits: Result<content_reader_core::unit_leader::Traits, String>,
+    constants: Result<content_reader_politics::script_constants::Constants, String>,
+    traits: Result<content_reader_key_names::unit_leader::Traits, String>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -354,6 +352,7 @@ impl EnvironmentInputs {
     ) -> World<'a> {
         World::read_in(frame, self.facts(environment))
             .with_geography(self.geography(content, environment))
+            .with_prepared_special_projects(content)
             .with_template_names(
                 &content.template_names,
                 &content.layers.layers,
@@ -371,7 +370,7 @@ impl ScriptedContent {
             .get_or_init(|| self.layers.layers.dlc_names().map_err(|e| e.to_string()))
             .as_ref()
             .map_err(Clone::clone)?;
-        static TRIGGERS: std::sync::OnceLock<content_reader_core::trigger_keys::TriggerNames> =
+        static TRIGGERS: std::sync::OnceLock<content_reader_script::trigger_keys::TriggerNames> =
             std::sync::OnceLock::new();
         Ok(World::unrecorded(
             dlcs,
@@ -455,14 +454,14 @@ impl<'a> ScriptedText<'a> {
         self.world
             .get_or_init(|| {
                 crate::triggers::inputs::unrecorded(|| {
-                    self.content.lazy_world(self.frame)
+                    self.content.lazy_world(self.frame).map(|world| world.with_accepted_projects(self.accepted_projects.clone()))
                 })
             })
             .as_ref()
             .map_err(Clone::clone)
     }
 
-    pub(crate) fn world(&self) -> Result<&World<'a>, String> {
+    pub fn world(&self) -> Result<&World<'a>, String> {
         let world = self.trigger_world()?;
         match world.core_gap() {
             Some(gap) => Err(gap.to_string()),
@@ -578,7 +577,7 @@ impl<'a> ScriptedText<'a> {
         Ok(String::new())
     }
 
-    pub(crate) fn state_name(&self, id: u32) -> Result<String, String> {
+    pub fn state_name(&self, id: u32) -> Result<String, String> {
         self.state_name_for(id, false)
     }
 
@@ -681,7 +680,7 @@ impl<'a> ScriptedText<'a> {
         })
     }
 
-    pub(crate) fn province_display_name(&self, id: u32) -> Result<String, String> {
+    pub fn province_display_name(&self, id: u32) -> Result<String, String> {
         crate::triggers::inputs::query(
             || crate::triggers::inputs::Key::Text(TextQuery::ProvinceDisplayName(id)),
             || self.province_display_name_unrecorded(id),
@@ -728,7 +727,7 @@ impl<'a> ScriptedText<'a> {
         }
     }
 
-    pub(crate) fn province_victory_point_name(&self, id: u32) -> Result<String, String> {
+    pub fn province_victory_point_name(&self, id: u32) -> Result<String, String> {
         crate::triggers::inputs::query(
             || crate::triggers::inputs::Key::Text(TextQuery::ProvinceVictoryPointName(id)),
             || self.province_victory_point_name_unrecorded(id),
@@ -766,13 +765,13 @@ impl<'a> ScriptedText<'a> {
         victory_point_name(self.localisation, id, &tag)
     }
 
-    pub(crate) fn province_terrain(&self, id: u32) -> Result<i32, String> {
+    pub fn province_terrain(&self, id: u32) -> Result<i32, String> {
         crate::triggers::PreparedContent::geography(self.content).terrain().and_then(|map| map.terrain(id))
             .map(|terrain| terrain.index)
             .ok_or_else(|| format!("Terrain of province {id}: the recorded-content province template is unavailable"))
     }
 
-    pub(crate) fn terrain_id_name(&self, ordinal: i32) -> Result<String, String> {
+    pub fn terrain_id_name(&self, ordinal: i32) -> Result<String, String> {
         if ordinal == 0 {
             return Ok(String::new());
         }
@@ -978,8 +977,8 @@ impl EnvironmentInputs {
             state_error: None,
             continents: Err("no synthetic continent content is supplied".into()),
             impassable: BTreeSet::new(),
-            neighbors: content_reader_core::content::diagnostics::Once::from(Ok(BTreeMap::new())),
-            terrain: content_reader_core::content::diagnostics::Once::from(None),
+            neighbors: content_reader_layers::content::diagnostics::Once::from(Ok(BTreeMap::new())),
+            terrain: content_reader_layers::content::diagnostics::Once::from(None),
             terrain_names: Ok(Vec::new()),
             dlcs: BTreeSet::new(),
             triggers: Ok(Default::default()),
@@ -993,10 +992,17 @@ impl EnvironmentInputs {
         }
     }
 
+    pub(super) fn with_constants(
+        self,
+        constants: Result<content_reader_politics::script_constants::Constants, String>,
+    ) -> Self {
+        Self { constants, ..self }
+    }
+
     #[cfg(test)]
     pub(super) fn with_aliases(
         self,
-        aliases: std::sync::Arc<content_reader_core::tag_aliases::TagAliases>,
+        aliases: std::sync::Arc<content_reader_key_names::tag_aliases::TagAliases>,
     ) -> Self {
         Self { aliases, ..self }
     }
@@ -1004,7 +1010,7 @@ impl EnvironmentInputs {
     #[cfg(test)]
     pub(super) fn with_triggers(
         self,
-        triggers: content_reader_core::trigger_keys::TriggerNames,
+        triggers: content_reader_script::trigger_keys::TriggerNames,
     ) -> Self {
         Self {
             triggers: Ok(triggers),

@@ -108,6 +108,10 @@ impl LiveRows {
         (Answer::Body, read)
     }
 
+    pub(crate) fn whole(&self) -> u32 {
+        self.rows.as_ref().map_or(0, |rows| rows.encoded_len() as u32)
+    }
+
     pub(crate) fn bytes(&self) -> usize {
         self.rows.as_ref().map_or(0, Table::bytes) + self.changed.capacity() + (self.list.capacity() + self.touched.capacity()) * 4 + self.cells.capacity() * 16
     }

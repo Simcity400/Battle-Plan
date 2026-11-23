@@ -4,7 +4,7 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, fmt, io};
-use viewer_foundation::table_access::{Available, rows};
+use dashboard_text::table_access::{Available, rows};
 
 const EXILE_ORIGIN: i32 = 2;
 

@@ -9,6 +9,8 @@ import type { Alignment, BoundTrack, CountrySelection, DashboardTemplate, TrackS
 import type { PlaybackController } from './playback';
 import type { OptionField, OptionValue } from './options';
 import type { Failure } from './queryError';
+import type { PinnedSpec } from './regionTime';
+import type { DeclaredProduct } from './request';
 
 export interface WidgetRuntime {
   campaignTracks: TrackSpec[];
@@ -24,7 +26,7 @@ export interface WidgetRuntime {
   recordings: ReplayFile[];
   assignCampaign: (widgetId: string, chosen: string | null) => Promise<void>;
   requestSeek: (trackId: string, rawHour: number) => boolean;
-  addWidgetBelow: (sourceId: string, widget: WidgetSpec) => void;
+  addWidgetBelow: (sourceId: string, widget: PinnedSpec) => void;
 }
 
 export interface WidgetProps {
@@ -73,7 +75,7 @@ export interface WidgetMeta {
   defaultCountries?: CountrySelection;
   options?: readonly OptionField[];
   captureModes?: readonly CaptureMode[];
-  availability?: { product: string; params: Readonly<Record<string, unknown>> };
+  availability?: { product: DeclaredProduct; params: Readonly<Record<string, unknown>> };
   migrate?: (from: number, widget: WidgetSpec) => WidgetSpec | null;
   variants?: readonly WidgetPreset[];
 }

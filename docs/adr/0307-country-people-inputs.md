@@ -6,4 +6,4 @@ Election month arithmetic preserves the offset within the month, so an interval 
 
 A positive recorded host identifies an exile. A nonpositive host means it is not an exile and a missing host remains unknown. Count missing hosts separately from missing legitimacy, manpower, cap and leader resources. Exile air crews come from the recorder's sums of wings flying on behalf of the exile. The product reads the whole small identity tables first, then the relevant countries' rows by raw references and slot, and finally the states and modifier definitions their recorded operands name.
 
-[Country people product](../../crates/dashboard/src/products/country_people.rs) · [Country people tests](../../crates/dashboard/src/products/country_people/tests.rs)
+[Country people product](../../crates/dashboard-politics/src/products/country_people.rs) · [Country people tests](../../crates/dashboard-politics/src/products/country_people/tests.rs)

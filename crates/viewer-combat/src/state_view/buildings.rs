@@ -4,11 +4,13 @@ use crate::content::Content;
 use crate::tooltips::{hover_text, refuse_hovers, set_hover};
 use content_reader_localisation::localisation::Argument;
 use dashboard_text::table_access::TokenNames;
-use content_reader_core::{buildings::BuildingType, gui::native, parser::Item};
+use content_reader_key_names::buildings::BuildingType;
+use content_reader_gui::gui::native;
+use content_reader_parser::parser::Item;
 use replay_data::rows::{BuildingRow, ProvinceRow, Recorded, StateBuildingInputRow, StateRow, tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
-use viewer_foundation::map::{building_facts, perspective::Vision};
+use viewer_foundation::{building_facts, perspective::Vision};
 
 const RAILWAY: &str = "rail_way";
 const GUN_EMPLACEMENT_FEATURE: u32 = 1 << 13;
@@ -161,7 +163,7 @@ pub(super) fn shared_slots(inputs: &StateBuildingInputRow, owner: u32, maximum: 
     Ok(((base / 100_000) as i32).wrapping_add(inputs.extra_shared_slots).max(0).min(maximum))
 }
 
-pub(super) fn energy_usage(inputs: &StateBuildingInputRow, controller: u32, infrastructure: i64, buildings: &[(i16, content_reader_core::buildings::FactoryFlags)]) -> Result<i64, String> {
+pub(super) fn energy_usage(inputs: &StateBuildingInputRow, controller: u32, infrastructure: i64, buildings: &[(i16, content_reader_key_names::buildings::FactoryFlags)]) -> Result<i64, String> {
     if inputs.controller != controller {
         return Err("its building inputs were read for another controller".into());
     }
@@ -243,7 +245,7 @@ fn has_state_modifier(building: &BuildingType) -> Result<bool, String> {
         let value = item
             .value
             .scalar()
-            .and_then(content_reader_core::fixed5::script_fixed5)
+            .and_then(content_reader_parser::fixed5::script_fixed5)
             .ok_or_else(|| format!("building type {}'s state modifier {} is not a number", building.name, String::from_utf8_lossy(item.key.as_deref().unwrap_or_default())))?;
         any |= value != 0;
     }
@@ -725,7 +727,7 @@ fn modifiers_shown(
     state_rows: &[BuildingRow],
     province_rows: &[BuildingRow],
     facts: &Facts<'_>,
-    buildings: &content_reader_core::buildings::Buildings,
+    buildings: &content_reader_key_names::buildings::Buildings,
 ) -> Result<bool, String> {
     let provinces: std::collections::BTreeSet<u32> = frame
         .complete::<tables::Provinces>()
@@ -830,7 +832,7 @@ fn scaled_state_modifiers(
     if healthy <= 0 {
         return Ok(None);
     }
-    let authored = content_reader_core::modifiers::values(&building.state_modifiers);
+    let authored = content_reader_script::modifiers::values(&building.state_modifiers);
     let (mut block, _) = crate::modifier_text::Block::build(definitions, &authored).map_err(|e| e.to_string())?;
     let scale = i64::from(healthy).wrapping_mul(crate::fixed::ONE);
     for value in block.values.values_mut() {
@@ -853,7 +855,7 @@ mod tests {
     fn state_modifiers_scale_by_healthy_levels_and_a_building_without_any_leaves_the_hover() {
         let rows = [replay_data::rows::ModifierDefinitionRow { index: 0, token: 1, name_key: b"A".to_vec(), category_mask: 1, ..Default::default() }];
         let definitions = crate::modifier_text::Definitions::from_parts(&rows, &[(b"a", 0)], Some(0));
-        let building = BuildingType { name: "b".into(), state_modifiers: content_reader_core::parser::parse(b"a = 0.1 undeclared = 1").unwrap().items, ..Default::default() };
+        let building = BuildingType { name: "b".into(), state_modifiers: content_reader_parser::parser::parse(b"a = 0.1 undeclared = 1").unwrap().items, ..Default::default() };
         assert!(scaled_state_modifiers(&definitions, &building, 0).unwrap().is_none());
         let block = scaled_state_modifiers(&definitions, &building, 3).unwrap().unwrap();
         assert_eq!(block.values, BTreeMap::from([(0, 30_000)]));
@@ -949,7 +951,7 @@ mod tests {
 
     #[test]
     fn energy_usage_sums_each_active_buildings_groups() {
-        use content_reader_core::buildings::FactoryFlags;
+        use content_reader_key_names::buildings::FactoryFlags;
         let inputs = StateBuildingInputRow {
             controller: 5,
             local_factories: Some(0),
@@ -991,7 +993,7 @@ mod tests {
         assert_eq!(dlc_hidden(&gun, GUN_EMPLACEMENT_FEATURE, |_| unreachable!()), Ok(false));
         let headquarter = BuildingType { naval_headquarter: true, ..Default::default() };
         assert_eq!(dlc_hidden(&headquarter, GUN_EMPLACEMENT_FEATURE, |_| unreachable!()), Ok(true));
-        let gated = BuildingType { dlc_allowed: content_reader_core::parser::parse(b"always = no").unwrap().items, ..Default::default() };
+        let gated = BuildingType { dlc_allowed: content_reader_parser::parser::parse(b"always = no").unwrap().items, ..Default::default() };
         assert_eq!(dlc_hidden(&gated, 0, |_| Ok(false)), Ok(true));
         assert_eq!(dlc_hidden(&gated, 0, |_| Ok(true)), Ok(false));
         assert!(dlc_hidden(&gated, 0, |_| Err("undecided".into())).is_err());
@@ -999,7 +1001,7 @@ mod tests {
 
     #[test]
     fn only_a_non_zero_state_modifier_counts() {
-        let with = |text: &[u8]| BuildingType { state_modifiers: content_reader_core::parser::parse(text).unwrap().items, ..Default::default() };
+        let with = |text: &[u8]| BuildingType { state_modifiers: content_reader_parser::parser::parse(text).unwrap().items, ..Default::default() };
         assert_eq!(has_state_modifier(&with(b"")), Ok(false));
         assert_eq!(has_state_modifier(&with(b"stability_factor = 0")), Ok(false));
         assert_eq!(has_state_modifier(&with(b"stability_factor = 0 local_supplies = 0.5")), Ok(true));

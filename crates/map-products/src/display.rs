@@ -6,7 +6,7 @@ use std::{
     io,
     sync::{Arc, Mutex},
 };
-use viewer_foundation::map::tables::Limitations;
+use viewer_foundation::tables::Limitations;
 
 fn weather_kind(row: &replay_data::rows::WeatherRegionRow) -> Option<usize> {
     [
@@ -22,7 +22,7 @@ fn weather_kind(row: &replay_data::rows::WeatherRegionRow) -> Option<usize> {
 
 pub fn weather_field(frame: &DecodedFrame) -> io::Result<data::WeatherField> {
     let mut kinds = data::copy_index::CopyIndex::default();
-    for row in viewer_foundation::table_access::rows::<tables::WeatherRegions>(frame)?.rows() {
+    for row in dashboard_text::table_access::rows::<tables::WeatherRegions>(frame)?.rows() {
         if let Some(kind) = weather_kind(row) {
             kinds = kinds.inserted(row.id, kind)?;
         }
@@ -133,7 +133,7 @@ impl FogProduct {
             limitations: Limitations::from_lines(fog.limitations),
             header: Arc::new(fog.header),
             map_text: Arc::new(
-                viewer_world::map::animated_map_text::events::Prepared::from_display(fog.map_text)?,
+                viewer_map_text::animated_map_text::events::Prepared::from_display(fog.map_text)?,
             ),
             music: fog.music.map(Arc::new),
             battles: fog.battles.map(Arc::new),
@@ -144,16 +144,16 @@ impl FogProduct {
 
 #[derive(Default)]
 pub struct SnowMemo {
-    values: Mutex<Vec<std::sync::Weak<map_snow::SnowMud>>>,
+    values: Mutex<Vec<std::sync::Weak<map_display_data::SnowMud>>>,
 }
 impl SnowMemo {
     pub fn new() -> Self {
         Self::default()
     }
-    fn intern(&self, snow: map_snow::SnowMud) -> Arc<map_snow::SnowMud> {
+    fn intern(&self, snow: map_display_data::SnowMud) -> Arc<map_display_data::SnowMud> {
         self.intern_shared(Arc::new(snow))
     }
-    fn intern_shared(&self, snow: Arc<map_snow::SnowMud>) -> Arc<map_snow::SnowMud> {
+    fn intern_shared(&self, snow: Arc<map_display_data::SnowMud>) -> Arc<map_display_data::SnowMud> {
         let mut values = self
             .values
             .lock()
@@ -179,11 +179,11 @@ impl ProductHour<'_> {
         std::collections::BTreeMap<u32, u32>,
         std::collections::BTreeMap<u32, String>,
     )> {
-        let links = viewer_foundation::map::tables::core::<tables::CountryLinks>(self.frame)?
+        let links = viewer_foundation::tables::core::<tables::CountryLinks>(self.frame)?
             .iter()
             .map(|r| (r.id, r.canonical_slot))
             .collect();
-        let tags = viewer_foundation::map::tables::core::<tables::Countries>(self.frame)?
+        let tags = viewer_foundation::tables::core::<tables::Countries>(self.frame)?
             .iter()
             .map(|r| {
                 (
@@ -197,12 +197,12 @@ impl ProductHour<'_> {
 
     pub fn seed_country(
         &self,
-        choice: &viewer_foundation::map::perspective::Choice,
+        choice: &viewer_foundation::perspective::Choice,
         id: u32,
         slot: u32,
     ) -> io::Result<()> {
         let (links, tags) = self.country_maps()?;
-        if !viewer_foundation::map::tables::core::<tables::Countries>(self.frame)?
+        if !viewer_foundation::tables::core::<tables::Countries>(self.frame)?
             .iter()
             .any(|row| row.id == id && row.canonical_slot == slot)
         {
@@ -211,26 +211,26 @@ impl ProductHour<'_> {
                 "country instance is not present this hour",
             ));
         }
-        let projected = viewer_foundation::map::memo::project(
+        let projected = viewer_runtime::memo::project(
             self.frame,
-            viewer_foundation::map::perspective::VISION_TABLES,
+            viewer_foundation::perspective::VISION_TABLES,
         );
-        let vision = viewer_foundation::map::perspective::Vision::read_resolved(
+        let vision = viewer_foundation::perspective::Vision::read_resolved(
             &projected,
             &links,
             &tags,
             choice.fog,
             (
                 slot,
-                viewer_foundation::map::perspective::Resolution::Requested,
+                viewer_foundation::perspective::Resolution::Requested,
             ),
-            viewer_foundation::map::visibility::FogContent::loaded(&self.content.fog),
+            viewer_foundation::visibility::FogContent::loaded(&self.content.fog),
         )?;
         self.seed_vision(choice, Arc::new(vision));
         Ok(())
     }
 
-    pub fn snow_grid(&self, cells: &map_snow::SnowCells) -> io::Result<map_snow::SnowMud> {
+    pub fn snow_grid(&self, cells: &map_snow::SnowCells) -> io::Result<map_display_data::SnowMud> {
         map_snow::grid_from_cells(cells, self.frame)
     }
 
@@ -239,7 +239,7 @@ impl ProductHour<'_> {
         cells: &map_snow::SnowCells,
         winter: &impl map_snow::winter::Factors,
         memo: &SnowMemo,
-    ) -> io::Result<Arc<map_snow::SnowMud>> {
+    ) -> io::Result<Arc<map_display_data::SnowMud>> {
         let built = map_snow::build(cells, self.frame, winter)?;
         Ok(memo.intern(built))
     }
@@ -287,7 +287,7 @@ impl SnowContent {
         &self,
         frame: &DecodedFrame,
         memo: &SnowMemo,
-    ) -> io::Result<Arc<map_snow::SnowMud>> {
+    ) -> io::Result<Arc<map_display_data::SnowMud>> {
         let projected = self
             .fold
             .lock()
@@ -296,7 +296,7 @@ impl SnowContent {
         Ok(memo.intern_shared(projected))
     }
     pub fn new(
-        map: &content_reader_core::map::MapData,
+        map: &content_reader_map::map::MapData,
         permanent: &[bool],
         winter: map_snow::winter::Winter,
     ) -> io::Result<Self> {
@@ -380,9 +380,9 @@ impl crate::ProductContent {
             .map_err(|(kind, reason)| io::Error::new(*kind, reason.clone()))
     }
 }
-fn read_snow(loader: &crate::loader::Loader, map: &content_reader_core::map::MapData) -> io::Result<SnowContent> {
+fn read_snow(loader: &crate::loader::Loader, map: &content_reader_map::map::MapData) -> io::Result<SnowContent> {
     loader.reads.load_retryable(|layers| {
-        let (definitions, defaults) = content_reader_core::terrain::read(layers)?;
+        let (definitions, defaults) = content_reader_key_names::terrain::read(layers)?;
         let terrain = content_reader_image::bmp::decode_indexed(
             &layers.read(&format!("map/{}", defaults.terrain))?,
         )?;
@@ -394,7 +394,7 @@ fn read_snow(loader: &crate::loader::Loader, map: &content_reader_core::map::Map
         }
         let cells =
             map_snow::SnowCells::new(map, &map_snow::permanent_mask(&definitions, &terrain))?;
-        let defines = content_reader_core::defines::read(layers)?;
+        let defines = content_reader_defines::defines::read(layers)?;
         let regions = content_reader_regions::regions::read(layers)?.regions;
         let winter = map_snow::winter::Winter::load(layers, &defines, map, &regions)?;
         Ok(SnowContent {

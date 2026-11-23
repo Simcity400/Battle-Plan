@@ -2,7 +2,7 @@ use super::*;
 use engine_native::{
     ccountry, cname_group_member, cprovince, ctask_force, cunit, memory::SliceMemory, msvc_string,
 };
-use replay::spool::Record;
+use replay_capture_spool::spool::Record;
 use replay_data::{identity::Roster, rows::ShipRow};
 use replay_frame::frame::TableUpdate;
 use std::cell::RefCell;
@@ -313,6 +313,7 @@ fn recording(rows: Vec<ShipRow>, fresh: bool) -> Replay {
         }
     }
     Replay::from_records(
+        recorder_derive::writers(),
         crate::test_support::ALLOCATION_CAMPAIGN.to_vec(),
         &[records],
     )
@@ -627,6 +628,7 @@ fn ship_name_witness_refuses_unavailable_replay_census_and_unverified_content() 
             }
         }
         let replay = Replay::from_records(
+            recorder_derive::writers(),
             crate::test_support::ALLOCATION_CAMPAIGN.to_vec(),
             &[records],
         )

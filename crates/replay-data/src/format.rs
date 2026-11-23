@@ -251,7 +251,7 @@ mod tests {
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
         assert_eq!(
             FORMAT_VERSION,
-            crate::rows::compatibility::CAPTURE_ADDITIONS_FORMAT
+            crate::rows::compatibility::ENGAGED_REFRESH_WITNESS_FORMAT
         );
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
@@ -260,6 +260,20 @@ mod tests {
             }
             let format = FormatVersion::read(version).unwrap();
             let mut expected = crate::rows::compatibility::RETIRED_TABLES.to_vec();
+            if version < crate::rows::compatibility::ENGAGED_REFRESH_WITNESS_FORMAT {
+                expected.push(TableId::CombatEngagementRefreshes);
+            }
+            if version < crate::rows::compatibility::VARIANT_STAT_WITNESS_FORMAT {
+                expected.extend([
+                    TableId::VariantStats,
+                    TableId::VariantChanges,
+                    TableId::RaidSpeedInputs,
+                    TableId::RocketProductionOutput,
+                ]);
+            }
+            if version < crate::rows::compatibility::POWER_LEDGER_DAY_LOG_FORMAT {
+                expected.push(TableId::PowerSpendDays);
+            }
             if version < crate::rows::compatibility::CAPTURE_ADDITIONS_FORMAT {
                 expected.push(TableId::StrategicRegionWeights);
             }

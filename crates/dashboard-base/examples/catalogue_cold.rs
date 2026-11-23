@@ -32,7 +32,7 @@ fn main() -> io::Result<()> {
     let missing = || io::Error::other(USAGE);
     let recording = recording.ok_or_else(missing)?;
     let options = ContentOptions {
-        options: content_reader_core::ResolveOptions {
+        options: content_reader_layers::ResolveOptions {
             game_dir: game.ok_or_else(missing)?,
             user_dir: user.ok_or_else(missing)?,
             cache_dir: cache.ok_or_else(missing)?,
@@ -42,18 +42,27 @@ fn main() -> io::Result<()> {
     };
     std::fs::create_dir_all(&options.options.cache_dir)?;
     let kept_folder = options.options.cache_dir.join("catalogue");
-    let kept_files = || -> Vec<PathBuf> {
-        std::fs::read_dir(&kept_folder)
-            .map(|entries| {
-                entries
-                    .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-                    .filter(|path| path.extension().is_some_and(|extension| extension == "bin"))
-                    .collect()
-            })
-            .unwrap_or_default()
+    let kept_files = || -> io::Result<Vec<PathBuf>> {
+        let entries = match std::fs::read_dir(&kept_folder) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        let mut files = Vec::new();
+        for entry in entries {
+            let path = entry?.path();
+            if path.extension().is_some_and(|extension| extension == "bin") {
+                files.push(path);
+            }
+        }
+        Ok(files)
     };
     let cancelled = AtomicBool::new(false);
-    let open = || {
+    let open = || -> io::Result<(Source, replay_tools::cold_cache::Probe)> {
+        let probe = replay_tools::cold_cache::probe_file(
+            &recording,
+            replay_tools::cold_cache::ResetScope::FreshSourcePerSample,
+        )?;
         let source = Source::open(
             SourceKey {
                 source_id: "catalogue-cold".into(),
@@ -62,17 +71,23 @@ fn main() -> io::Result<()> {
             recording.clone(),
             &cancelled,
         )?;
-        purge(&recording);
-        Ok::<_, io::Error>(source)
+        Ok((source, probe))
     };
 
-    let before = kept_files().len();
-    let source = open()?;
+    let before = kept_files()?.len();
+    let (source, cache) = open()?;
+    println!("cache state: {} ({})", cache.label, cache.reason);
+    if purge_kept {
+        println!(
+            "kept catalogue files (--purge-kept): {} (system file cache eviction is not performed or verified)",
+            cache.label
+        );
+    }
     let started = Instant::now();
     source.in_scope(|| catalogue::catalogue(&source, &options))?;
     let first = ms(started);
     drop(source);
-    let after = kept_files();
+    let after = kept_files()?;
     println!(
         "first catalogue (kept files {} before, {} after): {first:.1} ms",
         before,
@@ -82,14 +97,14 @@ fn main() -> io::Result<()> {
         println!(
             "kept file {}: {} bytes",
             file.display(),
-            std::fs::metadata(file).map_or(0, |metadata| metadata.len())
+            std::fs::metadata(file)?.len()
         );
     }
 
     println!("sample\tcontent\tbuilt\tbuilt whole\tcontent\tlocalisation\tcatalogue\tloaded whole");
     let (mut built_whole, mut loaded_whole) = (Vec::new(), Vec::new());
     for sample in 0..samples {
-        let source = open()?;
+        let (source, _) = open()?;
         let (content, built) = source.in_scope(|| {
             let started = Instant::now();
             source.content(&options.options)?;
@@ -99,9 +114,14 @@ fn main() -> io::Result<()> {
             Ok::<_, io::Error>((content, ms(started)))
         })?;
         drop(source);
-        let source = open()?;
+        let (source, _) = open()?;
         if purge_kept {
-            kept_files().iter().for_each(|file| purge(file));
+            for file in kept_files()? {
+                replay_tools::cold_cache::probe_file(
+                    &file,
+                    replay_tools::cold_cache::ResetScope::FreshSourcePerSample,
+                )?;
+            }
         }
         let (mount, localisation, loaded) = source.in_scope(|| {
             let started = Instant::now();
@@ -127,7 +147,8 @@ fn main() -> io::Result<()> {
         wholes.sort_by(f64::total_cmp);
         if let (Some(least), Some(most)) = (wholes.first(), wholes.last()) {
             println!(
-                "{name}: p50 {:.1} ms, least {least:.1}, most {most:.1}",
+                "{name} ({}): p50 {:.1} ms, least {least:.1}, most {most:.1}",
+                cache.label,
                 wholes[wholes.len() / 2]
             );
         }
@@ -137,13 +158,4 @@ fn main() -> io::Result<()> {
 
 fn ms(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1e3
-}
-
-fn purge(path: &std::path::Path) {
-    use std::os::windows::fs::OpenOptionsExt;
-    const FILE_FLAG_NO_BUFFERING: u32 = 0x2000_0000;
-    let _ = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_NO_BUFFERING)
-        .open(path);
 }

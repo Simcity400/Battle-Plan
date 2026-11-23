@@ -70,28 +70,43 @@ pub fn mark_stranded() {
 pub fn capacity() -> usize {
     LEDGER.demand()
 }
-pub fn presize(events: usize) {
+/// # Safety
+/// Run only while air-loss observer storage remains live for the active session (or an isolated
+/// test owning air-loss observation) and teardown is excluded; `EventLedger::prepare` synchronizes
+/// spare and retired buffers across concurrent growth callers.
+pub unsafe fn presize(events: usize) {
     #[cfg(test)]
     if !tests::owns_observation() {
         return;
     }
     LEDGER.prepare(events);
 }
-pub fn lost_drain() {
+/// # Safety
+/// Caller must own the active session's recovery or publication failure path (or an isolated test
+/// owning air-loss observation) when invalidating air-loss drains.
+pub unsafe fn lost_drain() {
     #[cfg(test)]
     if !tests::owns_observation() {
         return;
     }
-    LEDGER.lost_drain();
+    // SAFETY: Caller owns the air-loss recovery or publication failure path.
+    unsafe { LEDGER.lost_drain() };
 }
-pub fn lost_output(events: usize) {
+/// # Safety
+/// Caller must own the active session's projection or publication failure path (or an isolated
+/// test owning air-loss observation) when recording lost air-loss output.
+pub unsafe fn lost_output(events: usize) {
     #[cfg(test)]
     if !tests::owns_observation() {
         return;
     }
-    LEDGER.lost_output(events);
+    // SAFETY: Caller owns the air-loss projection or publication failure path.
+    unsafe { LEDGER.lost_output(events) };
 }
-pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass against the authenticated
+/// session image, while air-loss observer storage remains live and teardown is excluded.
+pub unsafe fn prepare(memory: &impl Memory, base: usize, countries: usize) {
     #[cfg(test)]
     if !tests::owns_observation() {
         return;
@@ -122,16 +137,24 @@ pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
     WINGS.store(wings, Ordering::Release);
     LEDGER.prepare(population);
 }
-pub fn boundary(clock: Option<Clock>) {
+/// # Safety
+/// Caller must run on the admitted hourly capture boundary as the sole consumer advancing air-loss
+/// observation (or an isolated test owning air-loss observation).
+pub unsafe fn boundary(clock: Option<Clock>) {
     #[cfg(test)]
     if !tests::owns_observation() {
         return;
     }
-    LEDGER.boundary(clock);
+    // SAFETY: Caller runs on the admitted hourly capture boundary for air-loss observation.
+    unsafe { LEDGER.boundary(clock) };
 }
-pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
+/// # Safety
+/// Caller must be the admitted hourly capture consumer draining air-loss events while observer
+/// storage stays live and teardown is excluded.
+pub unsafe fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
     drain_admitted()?;
-    LEDGER.drain(output)
+    // SAFETY: Caller holds hourly capture admission as the sole air-loss consumer.
+    unsafe { LEDGER.drain(output) }
 }
 fn drain_admitted() -> Result<(), &'static str> {
     #[cfg(test)]

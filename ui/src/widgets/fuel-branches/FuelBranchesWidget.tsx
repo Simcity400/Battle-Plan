@@ -1,10 +1,11 @@
+import { SPEC } from '../../dashboard/regionTime';
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { keyNameAt, useSlotTags } from '../../dashboard/countrySlots.ts';
-import { useCallback, useId, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useId, useMemo,  useRef, useState } from 'react';
 import { setStyle, setText } from '../../charts/domText';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { useContextMenu } from '../../components/ContextMenu';
 import { dayLabel, drawEndLabels } from '../../charts/draw';
 import { drawLineSummary, summaryExtent } from '../../charts/chartSummary';
@@ -29,15 +30,19 @@ import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { keyId } from '../../dashboard/keyedSeriesData';
 import { useKeyedSeries, useSeriesParts } from '../../dashboard/keyedSeries';
-import { useFallbackHour } from '../../dashboard/follow/useFollow';
+import { usePlaybackHour } from '../../dashboard/follow/useFollow';
 import { CONSUMPTION, OPTIONS } from './definition';
 import { FUEL_BRANCHES, FUEL_CONSUMERS, barWidths, branchName, branchesAt, fuelAmount, fuelDecimals, fuelStructure, percentText, ratioAxis,
   validateFuelBranches } from './fuelBranchesData';
 import type { BranchAt } from './fuelBranchesData';
 import './fuelBranches.css';
 import type { FuelBranchesReply } from '../../generated/dashboard';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
+import { UNRECORDED_MESSAGE } from '../../dashboard/regionTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 const UNNAMED = 'Country name unavailable';
@@ -85,7 +90,7 @@ function FuelBranchBars({ widget, runtime, active, onDiagnostics, within, tag }:
       setStyle(held.short, 'width', width.unmet);
     }
   }, [digits]);
-  const head = useHeadProduct<FuelBranchesReply>(runtime, widget, FUEL_BRANCHES, { country: countryFromKey(tag) }, { active, validate: validateFuelBranches, structure: fuelStructure, paint });
+  const head = useHeadProduct(runtime, useGate(runtime, widget), FUEL_BRANCHES, { country: countryFromKey(tag) }, { active, validate: validateFuelBranches, structure: fuelStructure, paint });
   const data = head.data;
   useDiagnostics(onDiagnostics, data?.warnings ?? NO_WARNINGS);
   const rows = useMemo(() => data ? branchesAt(data) : [], [data]);
@@ -103,10 +108,15 @@ function FuelBranchBars({ widget, runtime, active, onDiagnostics, within, tag }:
     return { title: row.name, rows: lines };
   }, [digits, data?.readHour]);
   const anchor = useRef<HTMLDivElement>(null);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
+  const drillRegion = drillControl.region;
+  const drillAt = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null);
   const open = () => {
-    const at = head.at ?? Math.floor(runtime.clock.getHour());
-    dispatch({ type: 'open', breakdown: CONSUMPTION.id, hour: at, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? at : null });
+    const at = head.at ?? head.hour;
+    if (at === null) return;
+    dispatch({ type: 'open', breakdown: CONSUMPTION.id, hour: at, follow: drillControl.followsAt(at) });
   };
   const rowTips = useRowTooltips<number>({ owner, active, revision: `${data?.readHour}:${digits}:${fuelStructure(data ?? EMPTY)}`,
     content: index => { const row = rows.find(item => item.index === index); return row ? fitTooltip([tooltip(row)], viewport) : null; },
@@ -114,7 +124,7 @@ function FuelBranchBars({ widget, runtime, active, onDiagnostics, within, tag }:
 
   let body;
   if (head.error) body = <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
-  else if (head.read === 'off' && !data) body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  else if (head.read === 'off' && !data) body = <WidgetState kind="outside" />;
   else if (!data) body = <WidgetState kind="loading" label="Loading fuel by branch…" />;
   else if (!isMember(within, hour)) body = <WidgetState kind="unavailable" message="This country is not in the group at this date." />;
   else if (data.missing) body = <WidgetState kind="unavailable" message={data.missing} />;
@@ -152,11 +162,10 @@ function FuelBranchBars({ widget, runtime, active, onDiagnostics, within, tag }:
     </ol>
     {menu.menu}
   </div>;
-  const at = drillHour(drill, head.at) ?? head.at;
+  const at = drillAt;
   return <div ref={anchor} className="fuel-branches-host">
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null} anchor={anchor} title={CONSUMPTION.label}
-      day={at === null ? '' : dayLabel(at)} following={drill.follow} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })}
-      onFollow={() => dispatch({ type: 'follow' })} main={<div ref={head.root} className="fuel-branches-host">{body}</div>}>
+    <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor} title={CONSUMPTION.label}
+      day={at === null ? '' : dayLabel(at)} canFollow onClose={() => dispatch({ type: 'close' })} main={<div ref={head.root} className="fuel-branches-host">{body}</div>}>
       <FuelConsumptionDrill />
     </DrillHost>
   </div>;
@@ -179,22 +188,25 @@ function FuelBranchesOverTime({ widget, runtime, active, onDiagnostics, within, 
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const playbackHour = useFallbackHour(runtime.clock, active && following);
+  const playbackHour = usePlaybackHour(runtime.clock, active && following);
   const window = resolveWindow(widget, track, runtime.tracks, playbackHour);
   const playhead = window && (following || widget.time.mode === 'pin') ? window.lastHour : null;
   const extent: [number, number] = widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour];
   const axisOffset = track.axisOffset ?? 0;
   const liveHead = useMemo(() => following ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [following, runtime.clock, axisOffset]);
-  const parts = useSeriesParts(runtime.client, track.source, track.branch.id, SHARE, tag, { firstHour: extent[0], lastHour: extent[1] }, active);
-  const names = useProduct<FuelBranchesReply>(runtime.client, { sourceId: track.source.id, revision: track.source.revision, product: FUEL_BRANCHES,
-    params: { branchId: track.branch.id, country: countryFromKey(tag), hour: extent[1] } }, active, validateFuelBranches, track.source);
+  const gate = useGate(runtime, widget, SPEC, active);
+  const span = gate.span(extent[0], extent[1]);
+  const parts = useSeriesParts(runtime.client, gate, track.source, track.branch.id, SHARE, useMemo(() => ({ key: tag, spans: within ?? null }), [tag, within]), span, active);
+  const namesAt = gate.recorded(extent[1]);
+  const names = useProduct<FuelBranchesReply>(runtime.client, namesAt === null ? null : productRequest({ sourceId: track.source.id, revision: track.source.revision, product: FUEL_BRANCHES,
+    params: { branchId: track.branch.id, country: countryFromKey(tag), hour: namesAt } }), active, validateFuelBranches, track.source);
   const consumerNames = names.data?.consumerNames ?? [];
   const keys = useMemo(() => (parts.data?.parts ?? []).map(part => ({ tag, part: part.part })).sort((a, b) => Number(a.part) - Number(b.part)), [parts.data, tag]);
   const membership = useMemo(() => within ? new Map(keys.map(key => [keyId(key), within])) : undefined, [keys, within]);
-  const series = useKeyedSeries(runtime.client, runtime.clock, keys.length ? { source: track.source, branchId: track.branch.id, family: SHARE, keys,
-    partBits: parts.data?.partBits ?? 32, within: membership, lastHour: track.branch.lastHour, axisOffset: track.axisOffset } : null,
-  following ? null : playhead ?? extent[1], hoverHour, following, active, root);
+  const series = useKeyedSeries(runtime.client, runtime.clock, gate, keys.length ? { source: track.source, branch: track.branch, family: SHARE, keys,
+    partBits: parts.data?.partBits ?? 32, within: membership, lastHour: track.branch.lastHour } : null,
+  following ? null : gate.hour, gate.recorded(hoverHour, within), following, active, root);
   useDiagnostics(onDiagnostics, names.data?.warnings ?? NO_WARNINGS);
   const lines = useMemo(() => keys.map((key, index) => ({ key, color: tokens.categories[index % tokens.categories.length],
     name: branchName(consumerNames, Number(key.part)) })), [keys, tokens.categories, consumerNames]);
@@ -238,7 +250,7 @@ function FuelBranchesOverTime({ widget, runtime, active, onDiagnostics, within, 
       const run = runAt(reached?.runs ?? [], at);
       const missing = reached?.missing.get(at);
       return { label: line.name, strong: true, swatch: line.color,
-        value: run ? percentText(Number(run.valueRaw) / 10 ** SHARE_PLACES) : missing ? 'No share' : 'Loading…',
+        value: run ? percentText(Number(run.valueRaw) / 10 ** SHARE_PLACES) : missing ? 'No share' : gate.recorded(at, within) === null ? UNRECORDED_MESSAGE : 'Loading…',
         detail: run ? undefined : missing, tone: run ? undefined : 'muted' as const };
     }) }], viewport);
   };

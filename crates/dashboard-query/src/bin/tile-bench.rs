@@ -218,15 +218,6 @@ fn line_scale(line: &Line<'_, '_>) -> f64 {
     10_f64.powi(i32::from(line.decimals()))
 }
 
-fn purge(path: &Path) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        const FILE_FLAG_NO_BUFFERING: u32 = 0x2000_0000;
-        let _ = std::fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_NO_BUFFERING).open(path);
-    }
-}
-
 fn asks(tags: &[String]) -> Vec<Ask> {
     tags.iter().map(|tag| Ask::whole(tag)).collect()
 }
@@ -532,6 +523,10 @@ fn time(path: &Path, group: usize, threads: Option<usize>) -> Result<Value> {
     };
     let threads = threads.unwrap_or_else(|| (std::thread::available_parallelism().map_or(1, std::num::NonZero::get) / 2).max(2));
     let sets: Vec<(String, Vec<String>)> = [8, 100, all.len()].into_iter().map(|n| (format!("{n}"), all.iter().take(n).cloned().collect())).collect();
+    let mut cache = replay_tools::cold_cache::probe_file(
+        path,
+        replay_tools::cold_cache::ResetScope::FreshRecordingAndIndexPerBatch,
+    )?;
     let mut rows = Vec::new();
     let mut opens = Vec::new();
     for (name, held) in &sets {
@@ -545,12 +540,15 @@ fn time(path: &Path, group: usize, threads: Option<usize>) -> Result<Value> {
             while index <= last_index {
                 let indices: Vec<i64> = (index..=(index + 2).min(last_index)).collect();
                 index += 3;
+                cache = replay_tools::cold_cache::probe_file(
+                    path,
+                    replay_tools::cold_cache::ResetScope::FreshRecordingAndIndexPerBatch,
+                )?;
                 let opened = Instant::now();
                 let replay = open(path)?;
                 let index_state = Index::default();
                 let query = query(&replay, &index_state)?;
                 opens.push(opened.elapsed().as_secs_f64() * 1e3);
-                purge(path);
                 let jobs: Vec<(i64, &[String])> = indices.iter().flat_map(|&index| groups.iter().map(move |&tags| (index, tags))).collect();
                 let next = std::sync::atomic::AtomicUsize::new(0);
                 let started = Instant::now();
@@ -597,5 +595,5 @@ fn time(path: &Path, group: usize, threads: Option<usize>) -> Result<Value> {
             "views": views_all.len(), "viewP50": percentile(&views_all, 0.5), "viewP99": percentile(&views_all, 0.99), "viewMax": views_all.last() }));
     }
     opens.sort_by(f64::total_cmp);
-    Ok(json!({ "recording": path, "timeline": [timeline.0, timeline.1], "tags": all.len(), "group": group, "threads": threads, "openP50": percentile(&opens, 0.5), "rows": rows }))
+    Ok(json!({ "recording": path, "timeline": [timeline.0, timeline.1], "tags": all.len(), "group": group, "threads": threads, "cache": cache, "openP50": percentile(&opens, 0.5), "rows": rows }))
 }

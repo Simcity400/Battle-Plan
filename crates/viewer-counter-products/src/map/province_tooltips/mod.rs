@@ -1,5 +1,6 @@
+use dashboard_effects::ScriptedEffects;
 use super::counter_content;
-use viewer_foundation::map::native_text::FLAG;
+use viewer_native_gui::native_text::FLAG;
 use viewer_foundation::tooltip_text::state_name as tooltip_text_state_name;
 pub mod air_region;
 mod border;
@@ -32,15 +33,13 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
-use viewer_foundation::map::ribbon_content::TradeRouteLine;
-use viewer_foundation::table_access::TokenNames;
-use {
-    viewer_foundation::map::perspective::Vision, viewer_foundation::tooltip_text::Tooltip,
-    viewer_foundation::unit_handle::Unit,
-};
+use viewer_gpu::ribbon_content::TradeRouteLine;
+use dashboard_text::table_access::TokenNames;
+use viewer_foundation::{perspective::Vision, tooltip_text::Tooltip};
+use viewer_runtime::unit_handle::Unit;
 
 pub struct Content {
-    labels: Arc<viewer_foundation::recorded_labels::RecordedLabels>,
+    labels: Arc<viewer_runtime::recorded_labels::RecordedLabels>,
     members: BTreeMap<u32, Vec<u32>>,
     impassable: BTreeSet<u32>,
     neighbors: Result<BTreeMap<u32, Vec<u32>>, String>,
@@ -50,13 +49,13 @@ pub struct Content {
     pub(super) units: Result<units::Content, String>,
     border: Result<border::Defines, String>,
     air_log_timeout: Result<i32, String>,
-    air_detection: Result<viewer_foundation::map::air_detection::Defines, String>,
-    air_range: Result<viewer_foundation::map::air_range::Defines, String>,
+    air_detection: Result<viewer_unit_reads::air_detection::Defines, String>,
+    air_range: Result<viewer_unit_reads::air_range::Defines, String>,
     pub(super) air_fuel: Result<super::counter_tooltips::air_fuel::Defines, String>,
     navy: strategic_navy::Defines,
     occupation: Result<mode_lines::OccupationDefines, String>,
     network_base_target: Result<i64, String>,
-    resources: Result<viewer_foundation::resource_origins::Content, String>,
+    resources: Result<viewer_runtime::resource_origins::Content, String>,
 }
 
 impl Content {
@@ -64,7 +63,7 @@ impl Content {
         self.impassable.contains(&state)
     }
 
-    pub fn resources(&self) -> Result<&viewer_foundation::resource_origins::Content, &str> {
+    pub fn resources(&self) -> Result<&viewer_runtime::resource_origins::Content, &str> {
         self.resources.as_ref().map_err(String::as_str)
     }
 }
@@ -74,18 +73,18 @@ impl Content {
         &self.members
     }
     pub fn load(
-        layers: &content_reader_core::ResolvedLayers,
-        defines: &content_reader_core::defines::Defines,
+        layers: &content_reader_layers::ResolvedLayers,
+        defines: &content_reader_defines::defines::Defines,
         states: &BTreeMap<u32, StateDefinition>,
         temperature: &Result<content_reader_weather::weather::TemperatureRanges, String>,
-        subunits: Result<&content_reader_core::unit_leader::SubUnits, &str>,
-        labels: Arc<viewer_foundation::recorded_labels::RecordedLabels>,
+        subunits: Result<&content_reader_script::sub_units::SubUnits, &str>,
+        labels: Arc<viewer_runtime::recorded_labels::RecordedLabels>,
     ) -> Self {
         let members = states
             .iter()
             .map(|(&id, state)| (id, state.provinces.clone()))
             .collect();
-        let graph = content_reader_core::province_graph::ProvinceGraph::read(layers);
+        let graph = content_reader_map::province_graph::ProvinceGraph::read(layers);
         Self {
             labels,
             impassable: states
@@ -111,10 +110,10 @@ impl Content {
             air_log_timeout: defines
                 .int32("NGame", "AIR_LOG_TIMEOUT_HOURS")
                 .map_err(|e| e.to_string()),
-            air_detection: viewer_foundation::map::air_detection::Defines::load(defines)
+            air_detection: viewer_unit_reads::air_detection::Defines::load(defines)
                 .map_err(|e| e.to_string()),
             air_range: (|| -> std::io::Result<_> {
-                Ok(viewer_foundation::map::air_range::Defines {
+                Ok(viewer_unit_reads::air_range::Defines {
                     map_scale: defines.fixed5("NGame", "MAP_SCALE_PIXEL_TO_KM")?,
                     ace_wing_size: defines.fixed5("NAir", "ACE_WING_SIZE")?,
                     ace_wing_size_max_bonus: defines.fixed5("NAir", "ACE_WING_SIZE_MAX_BONUS")?,
@@ -131,7 +130,7 @@ impl Content {
                     "INTEL_NETWORK_BASE_STRENGTH_TARGET_COUNTERINTELLIGENCE_OFFSET",
                 )
                 .map_err(|e| e.to_string()),
-            resources: viewer_foundation::resource_origins::Content::load(layers, defines)
+            resources: viewer_runtime::resource_origins::Content::load(layers, defines)
                 .map_err(|e| e.to_string()),
         }
     }
@@ -181,7 +180,7 @@ impl Content {
         rows: &[replay_data::rows::WeatherProvinceRow],
         province: u32,
     ) -> Result<i64, String> {
-        let _weather_span = viewer_foundation::profiling::span("pt_weather_states");
+        let _weather_span = viewer_runtime::profiling::span("pt_weather_states");
         self.derived.at(
             frame,
             rows,
@@ -196,10 +195,10 @@ pub enum ModeHover {
     Location { category: bool },
     StrategicAir(Arc<Vec<u64>>),
     StrategicNavy(
-        Arc<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap>,
+        Arc<viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap>,
     ),
     SeaRegion(
-        Arc<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap>,
+        Arc<viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap>,
     ),
     Region,
     Terrain { region: bool },
@@ -257,7 +256,7 @@ impl Cache {
     pub fn request(
         &mut self,
         content: &Arc<counter_content::Content>,
-        reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
+        reads: viewer_unit_reads::movement_reads::ReadOperands<'_>,
         frame: &Arc<DecodedFrame>,
         province: u32,
         vision: &Arc<Vision>,
@@ -412,7 +411,7 @@ fn line(out: &mut Tooltip, name: &str, indent: usize, value: Result<String, Stri
 #[allow(clippy::too_many_arguments)]
 fn build(
     content: &counter_content::Content,
-    reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
+    reads: viewer_unit_reads::movement_reads::ReadOperands<'_>,
     frame: &DecodedFrame,
     id: u32,
     vision: &Vision,
@@ -421,7 +420,7 @@ fn build(
     rosters: &dyn air_region::Rosters,
     mode: &ModeHover,
 ) -> Tooltip {
-    let sources_span = viewer_foundation::profiling::span("pt_sources");
+    let sources_span = viewer_runtime::profiling::span("pt_sources");
     let mut out = Tooltip::default();
     let provinces = match frame.complete::<tables::Provinces>() {
         Ok(rows) => rows,
@@ -465,7 +464,7 @@ fn build(
     if province.state != 0 {
         context.location(&mut out, *category);
     }
-    let units_span = viewer_foundation::profiling::span("pt_units");
+    let units_span = viewer_runtime::profiling::span("pt_units");
     let composition = content
         .province_hover
         .units
@@ -502,10 +501,10 @@ fn build(
         }
     }
     {
-        let _rosters_span = viewer_foundation::profiling::span("pt_rosters");
+        let _rosters_span = viewer_runtime::profiling::span("pt_rosters");
         air_region::append(&context, &mut out);
     }
-    let _selection_span = viewer_foundation::profiling::span("pt_selection");
+    let _selection_span = viewer_runtime::profiling::span("pt_selection");
     let selected = selection::build(&context, selected, nato);
     selection::append(&mut out, selected, &content.localisation);
     click_footer(&content.localisation, content.kinds.get(&id).copied(), &mut out);
@@ -572,9 +571,9 @@ fn state_name_of(content: &counter_content::Content, frame: &DecodedFrame, id: u
     })
 }
 
-fn click_footer(loc: &Localisation, kind: Option<content_reader_core::map::ProvinceKind>, out: &mut Tooltip) {
+fn click_footer(loc: &Localisation, kind: Option<content_reader_map::map::ProvinceKind>, out: &mut Tooltip) {
     match kind {
-        Some(content_reader_core::map::ProvinceKind::Land) => match localise(loc, "PROVINCE_CLICK_VIEW", &[]) {
+        Some(content_reader_map::map::ProvinceKind::Land) => match localise(loc, "PROVINCE_CLICK_VIEW", &[]) {
             Ok(text) => {
                 viewer_foundation::tooltip_text::ensure_newlines(&mut out.body, 1);
                 out.body.push_str(&text);
@@ -587,7 +586,7 @@ fn click_footer(loc: &Localisation, kind: Option<content_reader_core::map::Provi
 }
 
 struct Context<'a> {
-    reads: viewer_foundation::map::movement_reads::ReadOperands<'a>,
+    reads: viewer_unit_reads::movement_reads::ReadOperands<'a>,
     content: &'a counter_content::Content,
     frame: &'a DecodedFrame,
     vision: &'a Vision,
@@ -638,14 +637,14 @@ impl Context<'_> {
         )
         .viewing(self.vision.ours());
         let effects = scripted.effects()?;
-        let context = dashboard_text::effect_description::Context::new(
+        let context = dashboard_effects::effect_description::Context::new(
             &text,
             &self.content.localisation,
             self.vision.ours(),
             "common/modifiers",
             effects.view(None),
         );
-        dashboard_text::effect_description::scaled_static_modifiers(&context, token, "  ", scale)
+        dashboard_effects::effect_description::scaled_static_modifiers(&context, token, "  ", scale)
     }
     fn state_name(&self) -> Result<String, String> {
         self.state_name_of(self.province.state)

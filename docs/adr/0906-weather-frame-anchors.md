@@ -10,4 +10,4 @@ From format 102, province temperature rows hold their anchor's committed tempera
 
 Keep day/night derivation separate from the held values. When the manager is not suspended, the hourly pass updates slots above zero using the hour and content, so format 102 records an update marker and zero clock words. Slot zero never updates, and its clocks, suspended rows and rows whose gates could not be read retain the authenticated clock values. The native fresh clock begins with local hour zero and a night factor of one. Format 101's observed clocks decode as held. Older formats have no clock. Seasonal forecast direction follows the same distinction between an updated derivation, a held value and an independently refused read.
 
-[Weather row codecs](../../crates/replay-rows/src/extended_rows/naval_weather.rs) · [Temperature pass](../../crates/replay-rows/src/temperature.rs)
+[Weather row codecs](../../crates/replay-rows-weather/src/naval_weather.rs) · [Temperature pass](../../crates/replay-rows-weather/src/temperature.rs)

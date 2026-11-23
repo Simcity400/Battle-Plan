@@ -6,4 +6,4 @@ Read the country's pools and the definitions and token spellings. Deals carry im
 
 The request-versus-panel fixture compares the same structural result and its live cells at each hour. Market purchase progress, resource values and fuel branch amounts can change while the structural panel reply stays the same.
 
-[Resource balance](../../crates/dashboard/src/products/economy/resources.rs) · [Economy request and panel tests](../../crates/dashboard/src/products/economy/tests.rs)
+[Resource balance](../../crates/dashboard-economy/src/products/economy/resources.rs) · [Economy request and panel tests](../../crates/dashboard-economy/src/products/economy/tests.rs)

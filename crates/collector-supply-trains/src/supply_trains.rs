@@ -174,6 +174,35 @@ impl WalkObservations {
 
 static NULL_PROVINCES: WalkObservations = WalkObservations::new();
 static PROVINCE_REFUSALS: WalkObservations = WalkObservations::new();
+static TRUCK_DEMAND_WITHHELD_ROWS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static LAST_TRUCK_DEMAND_WITHHELD: std::sync::Mutex<Option<(i32, &'static str)>> =
+    std::sync::Mutex::new(None);
+
+fn observe_truck_demand_witness(hour: i32, withheld_rows: u32, reason: Option<&'static str>) {
+    if withheld_rows > 0 {
+        TRUCK_DEMAND_WITHHELD_ROWS.fetch_add(
+            u64::from(withheld_rows),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+    if let Some(reason) = reason {
+        *LAST_TRUCK_DEMAND_WITHHELD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((hour, reason));
+    }
+}
+
+pub fn truck_demand_witness_status() -> impl serde::Serialize {
+    let last = *LAST_TRUCK_DEMAND_WITHHELD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    crate::status::status!({
+        "withheld_rows": TRUCK_DEMAND_WITHHELD_ROWS.load(std::sync::atomic::Ordering::Relaxed),
+        "last_hour": last.map(|(hour, _)| hour),
+        "last_reason": last.map(|(_, reason)| reason),
+    })
+}
 
 fn observe_walk(hour: i32, report: &supply_node::Report) {
     if let Some(observed) = report.last_null_province {
@@ -323,6 +352,7 @@ pub struct Trains {
     access: Arena<u8>,
     access_runs: Arena<[u32; 2]>,
     vehicle_failures: [u32; 3],
+    required_trucks_withheld: Option<&'static str>,
 }
 impl Trains {
     fn new(c: &Capacities) -> Self {
@@ -332,6 +362,7 @@ impl Trains {
             access: Arena::new(c.access),
             access_runs: Arena::new(c.access_runs),
             vehicle_failures: [0; 3],
+            required_trucks_withheld: None,
         }
     }
     pub fn vacant() -> Self {
@@ -341,6 +372,7 @@ impl Trains {
             access: Arena::new(0),
             access_runs: Arena::new(0),
             vehicle_failures: [0; 3],
+            required_trucks_withheld: None,
         }
     }
     fn reset(&mut self) {
@@ -349,6 +381,7 @@ impl Trains {
         self.access.reset();
         self.access_runs.reset();
         self.vehicle_failures = [0; 3];
+        self.required_trucks_withheld = None;
     }
     pub fn allocated_bytes(&self) -> usize {
         self.countries.allocated_bytes()
@@ -389,6 +422,12 @@ impl Trains {
         self.access_runs.len = trains.runs;
         self.access_runs.required = trains.required_runs;
         self.vehicle_failures = trains.vehicle_failures;
+        self.required_trucks_withheld = trains.required_trucks_withheld;
+        observe_truck_demand_witness(
+            context.hour,
+            trains.vehicle_failures[1],
+            trains.required_trucks_withheld,
+        );
         qpc().saturating_sub(begin).max(0) as u64
     }
 }
@@ -1224,5 +1263,38 @@ mod tests {
             (11, 2, 9, true, 200)
         );
         assert_eq!(observations.total(), 3);
+    }
+
+    #[test]
+    fn train_inventory_withholds_unverified_required_trucks_while_preserving_other_fields() {
+        let mut capture = read_fixture();
+        capture.trains.countries.rows[0].required_trucks_raw = None;
+        capture.trains.required_trucks_withheld = Some("supply required trucks witness mismatch");
+        let [_, trains] = capture.table_inputs();
+        let TableInput::Sampled(TableView::Complete(replay_data::rows::TableRows::TrainInventory(
+            rows,
+        ))) = trains
+        else {
+            panic!("train inventory stays complete when only required_trucks_raw is withheld");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].required_trucks_raw, Recorded::Value(None));
+        assert_eq!(rows[0].allocated_trucks, Recorded::Value(Some(i32::MIN)));
+        assert_eq!(rows[0].required_trains, Recorded::Value(Some(i32::MAX)));
+        assert_eq!(rows[0].node_count, u32::MAX);
+        assert_eq!(rows[0].allocations.len(), 3);
+        assert_eq!(rows[0].controller_access.len, 3);
+        observe_truck_demand_witness(
+            42,
+            1,
+            Some("supply required trucks witness mismatch"),
+        );
+        let status = serde_json::to_value(truck_demand_witness_status()).unwrap();
+        assert!(status["withheld_rows"].as_u64().unwrap() >= 1);
+        assert_eq!(status["last_hour"], 42);
+        assert_eq!(
+            status["last_reason"],
+            "supply required trucks witness mismatch"
+        );
     }
 }

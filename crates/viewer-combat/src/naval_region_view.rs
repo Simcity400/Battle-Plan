@@ -1,10 +1,11 @@
 use super::{binding::Bindings, content::Content, state_view};
-use content_reader_core::gui::native::Element;
+use content_reader_gui::gui::native::Element;
 use replay_data::rows::{AirCountryRelationRow, tables};
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
-use viewer_foundation::engagement_history::CombatFlags;
-use viewer_foundation::{combat_selection::Selection, map::perspective::Vision};
+use viewer_engagements::engagement_history::CombatFlags;
+use viewer_engagements::combat_selection::Selection;
+use viewer_foundation::perspective::Vision;
 
 mod convoys;
 mod counts;
@@ -19,7 +20,7 @@ const MINES: [&str; 4] = ["mine_text", "enemy_mine_text", "mine_icon", "enemy_mi
 const ACCESS_RULES: [&str; 3] = ["naval_access_rule_allowed", "naval_access_rule_avoid", "naval_access_rule_blocked"];
 
 fn percent(share: i64) -> String {
-    content_reader_core::fixed5::fixed5_percent(share, 0, true)
+    content_reader_parser::fixed5::fixed5_percent(share, 0, true)
 }
 
 fn mine_share(amount: i64, maximum: i64) -> i64 {
@@ -55,7 +56,7 @@ fn text(out: &mut Bindings, root: &Element, name: &str, value: Result<String, St
 }
 
 fn mines(content: &Content, frame: &DecodedFrame, vision: &Vision, root: &Element, out: &mut Bindings, region: u32) {
-    match viewer_foundation::map::naval_mine_levels::enabled(frame) {
+    match viewer_foundation::naval_mine_feature::enabled(frame) {
         Ok(false) => {
             for name in MINES {
                 for path in state_view::paths_named(root, name) {
@@ -72,7 +73,7 @@ fn mines(content: &Content, frame: &DecodedFrame, vision: &Vision, root: &Elemen
     }
     let own = (|| -> Result<String, String> {
         let links = links(frame)?;
-        let levels = viewer_foundation::map::naval_mine_levels::Levels::read(frame, &links)?;
+        let levels = replay_derive::naval_mine_levels::Levels::read(frame, &links)?;
         let maximum = content.assets.air_mine_maximum.clone()?;
         Ok(percent(mine_share(levels.amount(own_raw(frame, vision)?, region)?, maximum)))
     })();
@@ -133,7 +134,7 @@ pub(super) fn bind(
     region: u32,
     engaged: &CombatFlags,
     paused: bool,
-    sources: &viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap,
+    sources: &viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap,
 ) -> io::Result<Bindings> {
     let mut out = Bindings::default();
     let Some(root) = content.assets.native_windows.gui_type(WINDOW) else {

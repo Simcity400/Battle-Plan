@@ -122,7 +122,7 @@ pub fn token_with(
     displayable(icons, text).map_err(|reason| {
         format!(
             "localisation {} holds {reason}",
-            String::from_utf8_lossy(content_reader_core::parser::c_string(token))
+            String::from_utf8_lossy(content_reader_parser::parser::c_string(token))
         )
     })
 }
@@ -186,7 +186,7 @@ pub fn country_localised(
 
 pub fn viewing_tag<'a>(
     countries: &'a [CountryRow],
-    vision: &crate::map::perspective::Vision,
+    vision: &crate::perspective::Vision,
 ) -> Result<&'a str, &'static str> {
     countries
         .iter()
@@ -266,94 +266,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod validation_tests {
-    use super::*;
-    struct Icons;
-    impl TextIcons for Icons {
-        fn icon(&self, name: &str) -> Option<(u32, i64)> {
-            name.starts_with("strip").then(|| {
-                (
-                    3,
-                    i64::from(crate::map::native_text::icon_lookup(name).1.unwrap_or(0)),
-                )
-            })
-        }
-    }
-
-    #[test]
-    fn carrier_flags_facade_preserves_other_text_validation() {
-        let flag = "\u{12}SYN\u{11}HCountry\u{11}!:\n".to_owned();
-        assert!(
-            displayable(&Icons, flag.clone())
-                .unwrap_err()
-                .contains("inline flag")
-        );
-        assert_eq!(displayable_flags(&Icons, flag.clone()), Ok(flag));
-        for text in ["\u{13}strip|4 ", "\u{14}", "\u{1a}x"] {
-            assert_eq!(
-                displayable_flags(&Icons, text.into()),
-                displayable(&Icons, text.into()),
-            );
-            assert!(displayable_flags(&Icons, text.into()).is_err());
-        }
-        assert_eq!(
-            displayable_flags(&Icons, "\u{13}missing ".into()),
-            Ok("\u{13}missing ".into())
-        );
-    }
-
-    #[test]
-    fn localised_text_is_native_and_refused_by_name() {
-        let localisation: Localisation = [
-            ("BATTLE_ATTACK", "§YAngriff§! $NESTED$"),
-            ("NESTED", "[x] 100§§"),
-            ("SKILL", "$SKILL|Y$"),
-            ("FLAG", "@GER"),
-            ("ICON", "£strip|3 £strip|4 £missing"),
-            ("SPACE", "a¤b"),
-        ]
-        .into_iter()
-        .map(|(key, value)| (key.to_owned(), value.to_owned()))
-        .collect();
-        assert_eq!(
-            builtin(&Icons, &localisation, "BATTLE_ATTACK", &[]).as_deref(),
-            Ok("\u{11}YAngriff\u{11}! [x] 100§")
-        );
-        assert_eq!(
-            builtin(
-                &Icons,
-                &localisation,
-                "SKILL",
-                &[("SKILL", Argument::Int32(4))]
-            )
-            .as_deref(),
-            Ok("\u{11}Y4\u{11}!")
-        );
-        assert_eq!(
-            builtin(&Icons, &localisation, "BUTTON_DISMISS", &[]).as_deref(),
-            Ok("BUTTON_DISMISS")
-        );
-        assert_eq!(
-            token(&Icons, &localisation, b"BUTTON_DISMISS\0x").as_deref(),
-            Ok("BUTTON_DISMISS")
-        );
-        assert_eq!(token(&Icons, &localisation, b"").as_deref(), Ok(""));
-        assert_eq!(
-            token(&Icons, &localisation, b"FLAG"),
-            Err("localisation FLAG holds the inline flag 0x12 \"GER\" (an authored `@`), which the viewer does not draw".into())
-        );
-        assert_eq!(
-            token(&Icons, &localisation, b"ICON"),
-            Err("localisation ICON holds the icon 0x13 \"strip|4\" (an authored `£`), which selects frame index 3 of a 3-frame sprite, outside it".into())
-        );
-        assert!(
-            token(&Icons, &localisation, b"SPACE")
-                .unwrap_err()
-                .contains("0x14")
-        );
-    }
-}
 
 pub fn wing_short_name(loc: &Localisation, tag: &str, key: &str) -> Result<String, String> {
     let short = format!("{key}_short");

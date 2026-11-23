@@ -12,6 +12,7 @@ import { counterCountries, currentCampaignSettings, saveCampaignSettings, setCou
 import './mapControls.css';
 import type { CampaignMapSettings, DashboardClient, DashboardSource, MapGraphics, MapSettingsReply } from '../dashboard/client';
 import type { CounterFilter, MapAudio } from '../generated/dashboard';
+import { writeSlot } from '../shell/pendingWrites';
 
 const ANTI_ALIASING = 'Anti-aliasing';
 const TEXTURE_QUALITY = 'Texture quality';
@@ -142,7 +143,7 @@ export default function MapAppearance({ source, client, global = false, viewId, 
   const [clearing, setClearing] = useState(false);
   const clearTrigger = useRef<HTMLButtonElement>(null);
   const modTools = useRef<HTMLDivElement>(null);
-  const writes = useRef<{ next: CampaignMapSettings | null; running: boolean; live: boolean }>({ next: null, running: false, live: true });
+  const writes = useRef({ next: null as CampaignMapSettings | null, running: false, live: true, slot: writeSlot() });
   useEffect(() => {
     const controller = new AbortController();
     setError(null); setReply(null); setDraft(null);
@@ -153,7 +154,7 @@ export default function MapAppearance({ source, client, global = false, viewId, 
     }).catch(cause => { if (!controller.signal.aborted) setError({ text: 'Couldn’t read map settings.', detail: errorMessage(cause), retry: () => setRetry(value => value + 1) }); });
     return () => controller.abort();
   }, [client, source?.id, source?.revision, global, viewId, retry]);
-  useEffect(() => { const queue = writes.current; queue.live = true; return () => { queue.live = false; }; }, []);
+  useEffect(() => { const queue = writes.current; queue.live = true; return () => { queue.live = false; if (!queue.running) queue.slot.discard(); }; }, []);
   const mapDirty = !!reply && !!draft && JSON.stringify(reply.settings) !== JSON.stringify(draft);
   const graphicsCustom = !!draft && !!reply && overridden(draft);
   const videoCustom = global && video.canReset && !video.atGame;
@@ -175,24 +176,30 @@ export default function MapAppearance({ source, client, global = false, viewId, 
     const queue = writes.current;
     if (queue.running || !client.mapSettings) return;
     queue.running = true;
+    queue.slot.enter();
     setSaving(true);
+    let failed: CampaignMapSettings | null = null;
     while (queue.next) {
       const settings = queue.next; queue.next = null;
       try {
         const value = await client.mapSettings(source?.id ?? '', source?.revision ?? '', settings, new AbortController().signal, target);
+        failed = null;
         if (queue.live) { setReply(value); setError(null); if (!queue.next) setDraft(value.settings); }
       } catch (cause) {
+        failed = settings;
         if (queue.live) setError({ text: 'Couldn’t save that change.', detail: errorMessage(cause), write: true, retry: () => { queue.next ??= settings; void write(); } });
       }
     }
     queue.running = false;
+    const again = failed;
+    if (!again) queue.slot.saved(); else if (queue.live) queue.slot.failed(() => { queue.next ??= again; void write(); }); else queue.slot.discard();
     if (queue.live) setSaving(false);
   };
   const change = (next: CampaignMapSettings) => {
     const sections = new Set(unsavedSettings(draft ?? next, next).map(key => PLACES.get(key)?.section));
     setLastSection(sections.size === 1 ? [...sections][0] : undefined);
     setDraft(next);
-    writes.current.next = next; void write();
+    writes.current.slot.enter(); writes.current.next = next; void write();
   };
   const setGraphics = (key: keyof MapGraphics, value: unknown) => { if (draft) change({ ...draft, graphics: { ...draft.graphics, [key]: value } }); };
   const setAudio = (key: keyof MapAudio, value: number | null) => { if (draft) change({ ...draft, audio: { ...draft.audio, [key]: value } }); };
@@ -356,9 +363,11 @@ export default function MapAppearance({ source, client, global = false, viewId, 
               <Icon name="refresh" />Revert to game settings</button>
               : draft && <span className="settings-value">Following the game</span>}
           </div>}
-          {(available && !reply && !error) || reply?.gameSettingsError || video.gameError || failure ? <div className="settings-group-body map-settings-notes">
+          {(available && !reply && !error) || reply?.gameSettingsError || reply?.saveWarning || video.warning || video.gameError || failure ? <div className="settings-group-body map-settings-notes">
             {available && !reply && !error && <p className="settings-help" role="status">Reading map settings…</p>}
             {reply?.gameSettingsError && <div className="notice warning" role="status" data-detail={reply.gameSettingsError}><Icon name="alert" /><span>Couldn’t read your game’s graphics settings.</span></div>}
+            {video.warning && <div className="notice warning" role="status" data-detail={video.warning}><Icon name="alert" /><span>Saved, but Windows didn’t confirm the display change reached the disk.</span></div>}
+            {reply?.saveWarning && <div className="notice warning" role="status" data-detail={reply.saveWarning}><Icon name="alert" /><span>Saved, but Windows didn’t confirm the change reached the disk.</span></div>}
             {video.gameError && <div className="notice warning" role="status" data-detail={video.gameError}><Icon name="alert" /><span>Couldn’t read your game’s display settings.</span></div>}
             {failure}
           </div> : null}
@@ -394,6 +403,7 @@ export default function MapAppearance({ source, client, global = false, viewId, 
     <div className="map-appearance-heading"><strong>{scopeLabel}</strong><span className="folder-info" tabIndex={0} role="img" aria-label="About graphics settings" data-tooltip={viewId ? 'Changes apply only to this widget for this campaign. Settings you leave follow the campaign.' : 'Changes apply to this campaign and widgets that follow it. Settings you leave follow the global defaults.'}><Icon name="info" /></span></div>
     {!available && <p className="map-menu-note" role="status">Load a campaign to configure its map graphics and visual mods.</p>}
     {draft && <small className="pill graphics-inheritance">{graphicsCustom ? 'Some settings changed here' : `Using ${parentLabel}`}</small>}
+    {reply?.saveWarning && <div className="notice warning" role="status" data-detail={reply.saveWarning}><Icon name="alert" /><span>Saved, but Windows didn’t confirm the change reached the disk.</span></div>}
     <div className="map-graphics-options">
       <div className="map-graphics-fields">{display}</div>
       {failureIn('display')}

@@ -3,6 +3,7 @@ import type { HourWindow } from './model';
 import { OUTSIDE, perfLog } from '../shell/perf.ts';
 import { engine } from '../engine/frame.ts';
 import type { EngineTask, FrameEngine } from '../engine/frame.ts';
+import { PAGE_CLOCK_ID } from './mapPlayback.ts';
 
 export const MIN_PLAYBACK_SPEED = 0.25;
 export const MAX_PLAYBACK_SPEED = 1440;
@@ -35,15 +36,18 @@ export class PlaybackController {
   private snapshot: PlaybackSnapshot = { position: 0, hour: 0, fraction: 0, playing: false, hoursPerSecond: 1, sequence: 0, seekSequence: 0, bounds: null };
   private listeners = new Set<() => void>();
   private anchorListeners = new Set<(previous: PlaybackSnapshot, next: PlaybackSnapshot) => void>();
+  private publishListeners = new Set<(previous: PlaybackSnapshot, next: PlaybackSnapshot) => void>();
+  private firstListeners = new Set<(previous: PlaybackSnapshot, next: PlaybackSnapshot) => void>();
   private discards = new Set<() => void>();
   private frameListeners = new Set<() => void>();
   private lastTime = 0;
   private framing = OUTSIDE;
   private readonly engine: FrameEngine;
+  readonly clockId: string;
   private stepTask: EngineTask | null = null;
   private paintTask: EngineTask | null = null;
 
-  constructor(frames: FrameEngine = engine) { this.engine = frames; }
+  constructor(frames: FrameEngine = engine, clockId: string = PAGE_CLOCK_ID) { this.engine = frames; this.clockId = clockId; }
 
   get frameAt(): number { return this.framing; }
 
@@ -59,6 +63,10 @@ export class PlaybackController {
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   onAnchor = (listener: (previous: PlaybackSnapshot, next: PlaybackSnapshot) => void) => {
     this.anchorListeners.add(listener); return () => { this.anchorListeners.delete(listener); };
+  };
+  onPublish = (listener: (previous: PlaybackSnapshot, next: PlaybackSnapshot) => void, first = false) => {
+    const into = first ? this.firstListeners : this.publishListeners;
+    into.add(listener); return () => { into.delete(listener); };
   };
   onDiscard = (listener: () => void) => { this.discards.add(listener); return () => { this.discards.delete(listener); }; };
   subscribeFrame = (listener: () => void) => { this.frameListeners.add(listener); return () => { this.frameListeners.delete(listener); }; };
@@ -142,6 +150,8 @@ export class PlaybackController {
       sequence: this.snapshot.sequence + (hourChanged || discontinuity ? 1 : 0),
       seekSequence: this.snapshot.seekSequence + (discontinuity ? 1 : 0) };
     perfLog?.clock(this.snapshot.position, this.snapshot.playing, this.snapshot.hoursPerSecond, this.snapshot.sequence, this.snapshot.seekSequence, this.snapshot.composedAt);
+    for (const listener of this.firstListeners) listener(previous, this.snapshot);
+    for (const listener of this.publishListeners) listener(previous, this.snapshot);
     if (anchor) for (const listener of this.anchorListeners) listener(previous, this.snapshot);
     if (!forward || !this.paintTask || !next.playing) this.tellFrame();
     else this.paintTask.wake();

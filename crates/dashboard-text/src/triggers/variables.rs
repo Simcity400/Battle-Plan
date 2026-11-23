@@ -17,11 +17,8 @@ fn localisation_status(
     }
 }
 
-use content_reader_core::{
-    parser::Item, parser::Operator, scope::Keyword as ScopeKeyword, scope::Names, scoped_variable,
-    scoped_variable::Constant, scoped_variable::Link, scoped_variable::ScopedVariable,
-    variable_builtins,
-};
+use content_reader_parser::parser::{Item, Operator};
+use content_reader_script::{scope::{Keyword as ScopeKeyword, Names}, scoped_variable::{self, Constant, Link, ScopedVariable}, variable_builtins};
 
 use super::{
     Scope, Scopes,
@@ -152,10 +149,10 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             .map_err(within)
     }
 
-    pub(crate) const NULL_IDEOLOGY: &'static str =
+    pub const NULL_IDEOLOGY: &'static str =
         "ideology database null-object identity is unrecorded";
 
-    pub(crate) fn ideology_specifier(
+    pub fn ideology_specifier(
         &self,
         operand: Option<&[u8]>,
         scopes: Scopes,
@@ -187,7 +184,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             }
             return Ok((id, token));
         }
-        let constant = content_reader_core::fixed5::fixed5_to_string(value, 5);
+        let constant = content_reader_parser::fixed5::fixed5_to_string(value, 5);
         let Some(country) = self.scoped_country(constant.as_bytes(), scopes)? else {
             return Err(Self::NULL_IDEOLOGY.into());
         };

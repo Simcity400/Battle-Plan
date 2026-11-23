@@ -11,12 +11,13 @@ import type { BoundTrack } from '../../dashboard/model';
 import { useProduct } from '../../dashboard/products';
 import { chosenMembers, manpowerLine } from './manpowerLine';
 import type { FactionManpowerReply } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 export default function ManpowerHistory({ runtime, track, faction, tag, picked, name, colour, following, active }: {
   runtime: WidgetRuntime; track: BoundTrack; faction: string; tag: string; picked: number; name: string; colour: string; following: boolean; active: boolean;
 }) {
-  const reply = useProduct<FactionManpowerReply>(runtime.client, { sourceId: track.source.id, revision: track.source.revision, product: 'faction-state',
-    params: { view: 'manpower', branchId: track.branch.id, faction } }, active, undefined, track.source);
+  const reply = useProduct<FactionManpowerReply>(runtime.client, productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'faction-state',
+    params: { view: 'manpower', branchId: track.branch.id, faction } }), active, undefined, track.source);
   const occurrences = useMemo(() => reply.data ? chosenMembers(reply.data.members, tag, picked) : [], [reply.data, tag, picked]);
   const lines = useMemo(() => occurrences.map(member => manpowerLine(member.runs)), [occurrences]);
   const axisOffset = track.axisOffset ?? 0;

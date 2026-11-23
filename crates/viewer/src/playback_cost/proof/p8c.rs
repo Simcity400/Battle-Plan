@@ -1,10 +1,11 @@
 
 use super::{Compared, Document, Layer, Mirrors};
-use crate::layers::{aircraft::Aircraft, rebuilt::Built, ships::Ships};
+use viewer_layers_forces::{aircraft::Aircraft, ships::Ships};
+use viewer_layer_core::rebuilt::Built;
 use serde_json::{Value, json};
 use std::{io, sync::Arc, time::Duration};
-use viewer_foundation::map::perspective::Choice;
-use viewer_world::map::unit_models::naval_differ;
+use viewer_foundation::perspective::Choice;
+use viewer_unit_models::unit_models::naval_differ;
 
 const WAIT: Duration = Duration::from_secs(30);
 
@@ -21,11 +22,11 @@ fn aircraft(layer: &dyn Layer) -> &Aircraft {
 }
 
 pub(super) fn ships_make(document: &Document) -> Box<dyn Layer> {
-    Box::new(Ships::new(Arc::clone(&document.content) as Arc<dyn crate::layers::ships::Naval>).expect("the ships layer's worker starts"))
+    Box::new(Ships::new(Arc::clone(&document.content) as Arc<dyn viewer_layers_forces::ships::Naval>).expect("the ships layer's worker starts"))
 }
 
 pub(super) fn aircraft_make(document: &Document) -> Box<dyn Layer> {
-    Box::new(crate::layers::aircraft::new(Arc::clone(&document.content), true).expect("the aircraft layer's worker starts"))
+    Box::new(viewer_layers_forces::aircraft::new(Arc::clone(&document.content) as Arc<dyn viewer_layers_forces::aircraft::Source>, true).expect("the aircraft layer's worker starts"))
 }
 
 pub(super) fn give(layer: &dyn Layer, side: &crate::playhead_host::MapSide, document: &Document, choice: &Choice) -> io::Result<()> {
@@ -43,7 +44,7 @@ pub(super) fn give(layer: &dyn Layer, side: &crate::playhead_host::MapSide, docu
     Ok(())
 }
 
-fn worker<P: Send + Sync + 'static>(rebuilt: &crate::layers::rebuilt::Rebuilt<P>, built: &Built<P>) -> Value {
+fn worker<P: Send + Sync + 'static>(rebuilt: &viewer_layer_core::rebuilt::Rebuilt<P>, built: &Built<P>) -> Value {
     let builds = rebuilt.builds();
     json!({
         "builds": builds.count, "build_ms_mean": builds.total_ns as f64 / 1e6 / builds.count.max(1) as f64, "build_ms_most": builds.most_ns as f64 / 1e6,
@@ -58,8 +59,8 @@ fn note(compared: &mut Compared, what: String) {
 }
 
 pub(super) fn ships_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
-    use viewer_world::map::unit_history::NavalSources;
-    use viewer_foundation::unit_class::CounterClass;
+    use viewer_unit_history::unit_history::NavalSources;
+    use viewer_runtime::unit_class::CounterClass;
     let layer = ships(layer);
     let mut compared = Compared::default();
     if !layer.drawn() {
@@ -169,7 +170,7 @@ pub(super) fn aircraft_today(layer: &dyn Layer, document: &Document) -> io::Resu
     Ok(compared)
 }
 
-pub(super) fn ships_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+pub(super) fn ships_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = ships(layer);
     if !layer.drawn() {
         return Ok(Compared { entries: 1, notes: json!({"drawn": false}), ..Compared::default() });
@@ -180,7 +181,7 @@ pub(super) fn ships_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crat
     Ok(Compared { entries: layer.counts()[1] as u64 + 1, differing, first, notes: Value::Null })
 }
 
-pub(super) fn aircraft_fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+pub(super) fn aircraft_fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = aircraft(layer);
     if !layer.drawn() {
         return Ok(Compared { entries: 1, notes: json!({"drawn": false}), ..Compared::default() });

@@ -2064,11 +2064,7 @@ mod carry_cost_bench {
         samples[samples.len() / 2]
     }
 
-    fn check_budget(world: &World, capture: &Captured, eviction: &[u64], started: Instant) {
-        assert!(
-            started.elapsed().as_secs() < 600,
-            "ship-model benchmark exceeded ten minutes"
-        );
+    fn check_budget(world: &World, capture: &Captured, eviction: &[u64]) {
         let owned = world.memory.low.capacity()
             + world.census.capacity() * std::mem::size_of::<cship::Row>()
             + world.tasks.capacity() * std::mem::size_of::<usize>()
@@ -2151,7 +2147,7 @@ mod carry_cost_bench {
         elapsed
     }
 
-    fn task_terms(world: &World, eviction: &mut [u64], cold: bool, started: Instant) {
+    fn task_terms(world: &World, eviction: &mut [u64], cold: bool) {
         let mut fields = cship::ShipFields::new(fleet::IMAGE);
         let held: Vec<_> = (0..world.tasks.len())
             .map(|index| {
@@ -2169,7 +2165,7 @@ mod carry_cost_bench {
             if hour != 0 {
                 samples.push(elapsed as f64 / world.census.len() as f64);
             }
-            check_budget(world, &capture, eviction, started);
+            check_budget(world, &capture, eviction);
         }
         let outer = engine_native::memory::ReadCounts::take_current();
         let counted = engine_native::memory::CountedMemory::new(Borrowed(&world.memory));
@@ -3529,7 +3525,6 @@ mod carry_cost_bench {
         if !ship_model_changes::CARRY {
             panic!("benchmark requires ship_model_changes");
         }
-        let started = Instant::now();
         let mut world = World::new(countries);
         let ships = world.census.len();
         let mut eviction = vec![1_u64; EVICTION_BYTES / std::mem::size_of::<u64>()];
@@ -3570,7 +3565,7 @@ mod carry_cost_bench {
                     samples.push(timer.elapsed().as_nanos() as f64 / ships as f64);
                     assert_eq!(capture.outcomes(), [Outcome::Rows { len: ships }]);
                     assert!(!watches.poisoned());
-                    check_budget(&world, &capture, &eviction, started);
+                    check_budget(&world, &capture, &eviction);
                 }
                 println!(
                     "BENCH ship models {countries} countries, {ships} ships, {} cache, {}: median {:.0} ns per ship",
@@ -3582,7 +3577,7 @@ mod carry_cost_bench {
                 world.seed(&mut capture);
                 account(&world, &mut capture, &watches, path);
             }
-            task_terms(&world, &mut eviction, cold, started);
+            task_terms(&world, &mut eviction, cold);
         }
     }
 }

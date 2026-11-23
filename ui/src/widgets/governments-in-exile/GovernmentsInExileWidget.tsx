@@ -18,6 +18,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt } from '../../dashboard/groups';
 import { useChoiceHour } from '../../dashboard/atHead';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -59,7 +60,7 @@ export default function GovernmentsInExileWidget({ widget, runtime, active, head
   const options = resolveOptions(OPTIONS, widget.options);
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const head = useHeadProduct(runtime, widget, 'politics-state', track ? PARAMS : null, { active, validate: validateExiles, structure: exileStructure });
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'politics-state', track ? PARAMS : null, { active, validate: validateExiles, structure: exileStructure });
   const data = useMemo(() => head.data && head.at !== null ? { ...head.data, hour: head.at } : undefined, [head.data, head.at]);
   const live = head.live;
   const shown = useShownHour();
@@ -97,7 +98,7 @@ export default function GovernmentsInExileWidget({ widget, runtime, active, head
 
   let body;
   if (!track) body = <WidgetState kind="empty" icon="flag" message="Load a campaign to see governments in exile." />;
-  else if (head.read === 'off') body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  else if (head.read === 'off') body = <WidgetState kind="outside" />;
   else if (head.error && !data) body = <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   else if (needsGroups && groups.error && !groups.data) body = <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   else if (match.reason) body = <WidgetState kind="unavailable" message={match.reason} />;

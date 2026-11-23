@@ -5,7 +5,7 @@ fn whole(tags: &[&str]) -> Vec<Ask> {
     tags.iter().map(|tag| Ask::whole(*tag)).collect()
 }
 
-fn line<'q>(query: &'q Query<'static>) -> Line<'q, 'static> {
+fn line<'q, 'r>(query: &'q Query<'r>) -> Line<'q, 'r> {
     let series = dashboard_declare::series("country-measure").unwrap();
     Line::new(query, series, series.measure("politicalPower").unwrap()).unwrap()
 }
@@ -29,14 +29,22 @@ fn joined(spans: impl IntoIterator<Item = MissingSpan>) -> Vec<MissingSpan> {
     out
 }
 
+const LONG_SECOND: i32 = FIRST + 17 * UNIT_HOURS + GAP;
+const LONG_LAST: i32 = LONG_SECOND + 2 * UNIT_HOURS - 1;
+
+fn long_campaign() -> Fixture {
+    Fixture::with_gap(Data::Power, FIRST..=LONG_LAST, LONG_SECOND - GAP..=LONG_SECOND - 1)
+}
+
 #[test]
 fn a_tile_holds_the_bins_a_view_of_its_hours_reads_at_every_level() {
-    let query = query();
+    let fixture = long_campaign();
+    let query = fixture.query();
     let line = line(&query);
     let mut compared = 0;
     for bin_hours in [3, 6, 18, 96, 288, 1_536, 73_728] {
         let span = BINS as i64 * bin_hours;
-        let (first_tile, last_tile) = (i64::from(FIRST).div_euclid(span), i64::from(LAST).div_euclid(span));
+        let (first_tile, last_tile) = (i64::from(FIRST).div_euclid(span), i64::from(LONG_LAST).div_euclid(span));
         let (first, last) = (first_tile * span, (last_tile + 1) * span - 1);
         let from = first - bin_hours;
         let width = ((last - from + 1) / bin_hours) as u32;
@@ -67,12 +75,13 @@ fn a_tile_holds_the_bins_a_view_of_its_hours_reads_at_every_level() {
 
 #[test]
 fn a_tile_across_a_gap_marks_its_bins_not_recorded() {
-    let query = query();
+    let gap = (FIRST + FIRST_HOURS, SECOND - 1);
+    let fixture = Fixture::with_gap(Data::Power, gap.0 - 24..=gap.1 + 24, gap.0..=gap.1);
+    let query = fixture.query();
     let line = line(&query);
     let bin_hours = 6;
     let index = i64::from(FIRST + FIRST_HOURS).div_euclid(BINS as i64 * bin_hours);
     let (reply, tiles) = wire(&line, bin_hours, index);
-    let gap = (FIRST + FIRST_HOURS, SECOND - 1);
     for (at, tag) in TAGS.iter().enumerate() {
         let mut inside = 0;
         for (bin, bucket) in tiles[at].iter().enumerate() {
@@ -94,16 +103,20 @@ fn a_tile_across_a_gap_marks_its_bins_not_recorded() {
 
 #[test]
 fn the_last_tile_says_how_far_it_is_filled_and_is_not_immutable() {
-    let query = query();
-    let line = line(&query);
     let bin_hours = 18;
-    let last = i64::from(LAST).div_euclid(BINS as i64 * bin_hours);
+    let span = BINS as i64 * bin_hours;
+    let seam = ((i64::from(ITA_FROM).div_euclid(span) + 1) * span) as i32;
+    let last_hour = seam + 16;
+    let fixture = Fixture::new(Data::Power, seam - 16..=last_hour);
+    let query = fixture.query();
+    let line = line(&query);
+    let last = i64::from(last_hour).div_euclid(span);
     let (reply, _) = wire(&line, bin_hours, last);
     assert!(!reply.immutable);
-    assert_eq!(reply.filled, Some(LAST));
+    assert_eq!(reply.filled, Some(last_hour));
     let (before, _) = wire(&line, bin_hours, last - 1);
     assert!(before.immutable);
-    assert_eq!(before.filled, Some(before.first_hour + (BINS as i64 * bin_hours) as i32 - 1));
+    assert_eq!(before.filled, Some(before.first_hour + span as i32 - 1));
     let (after, tiles) = wire(&line, bin_hours, last + 1);
     assert!(!after.immutable);
     assert_eq!(after.filled, None);
@@ -112,7 +125,9 @@ fn the_last_tile_says_how_far_it_is_filled_and_is_not_immutable() {
 
 #[test]
 fn a_tile_of_a_tag_the_recording_lacks_is_refused_by_name() {
-    let query = query();
+    let hour = 10 * BINS as i32 * 6;
+    let fixture = Fixture::new(Data::Power, hour..=hour);
+    let query = fixture.query();
     let line = line(&query);
     let error = tile(&line, "1", &whole(&["GER", "XYZ"]), None, 6, 10, false).unwrap_err();
     assert!(error.to_string().contains("XYZ"), "{error}");
@@ -172,14 +187,15 @@ fn bins_of_no_view_are_refused() {
     for bin_hours in [0, -6, 100, 6 * 16 * 15 + 6] {
         assert!(level_of(bin_hours).is_err(), "{bin_hours}");
     }
-    assert_eq!(level_of(5).unwrap(), replay::lanes::WALKED);
+    assert_eq!(level_of(5).unwrap(), replay_lanes::lanes::WALKED);
     assert_eq!(level_of(90).unwrap(), 0);
     assert_eq!(level_of(96 * 15).unwrap(), 1);
 }
 
 #[test]
 fn a_tile_carries_its_drops_per_bin_and_the_drops_before_it() {
-    let query = query();
+    let fixture = Fixture::campaign(Data::Power);
+    let query = fixture.query();
     let line = line(&query);
     let mut compared = 0;
     for bin_hours in [1, 3, 6, 18, 96, 288] {
@@ -214,7 +230,8 @@ fn a_tile_carries_its_drops_per_bin_and_the_drops_before_it() {
 
 #[test]
 fn an_hourly_tile_holds_the_runs_a_view_of_its_hours_reads() {
-    let query = query();
+    let fixture = Fixture::campaign(Data::Power);
+    let query = fixture.query();
     let line = line(&query);
     let tags: Vec<String> = TAGS.map(str::to_owned).to_vec();
     let seam = (FIRST / 256 + 20) * 256;
@@ -278,23 +295,24 @@ fn an_hourly_tile_holds_the_runs_a_view_of_its_hours_reads() {
 
 #[test]
 fn a_view_assembled_from_tiles_holds_the_chart_of_its_whole_bins() {
-    let query = query();
+    let fixture = long_campaign();
+    let query = fixture.query();
     let line = line(&query);
     let held = |tag: &str, hour: i32| query.holders.at(tag, hour).is_some() && query.timeline.at(hour).is_some();
     let seam = (FIRST / 256 + 20) * 256;
     let views = [
-        (FIRST + 7, LAST - 11, 64),
-        (FIRST + 5, LAST, 600),
+        (FIRST + 7, LONG_LAST - 11, 64),
+        (FIRST + 5, LONG_LAST, 600),
         (FIRST + 101, FIRST + 1_900, 600),
-        (SECOND - 2_000, SECOND + 700, 333),
+        (LONG_SECOND - 2_000, LONG_SECOND + 700, 333),
         (ITA_FROM - 500, ITA_FROM + 2_500, 100),
-        (FIRST, LAST, 3),
-        (LAST - 700, LAST, 128),
+        (FIRST, LONG_LAST, 3),
+        (LONG_LAST - 700, LONG_LAST, 128),
         (FIRST, FIRST + 100, 64),
         (seam - 30, seam + 90, 64),
-        (SECOND - 40, SECOND + 20, 64),
+        (LONG_SECOND - 40, LONG_SECOND + 20, 64),
         (ITA_FROM - 20, ITA_FROM + 30, 64),
-        (LAST - 50, LAST, 64),
+        (LONG_LAST - 50, LONG_LAST, 64),
     ];
     let (mut bins_compared, mut runs_compared, mut marks_compared) = (0, 0, 0);
     let mut levels = std::collections::BTreeSet::new();
@@ -372,7 +390,7 @@ fn a_view_assembled_from_tiles_holds_the_chart_of_its_whole_bins() {
     assert!(bins_compared > 5_000 && runs_compared > 20 && marks_compared > 100, "{bins_compared} bins, {runs_compared} runs, {marks_compared} marks");
 }
 
-fn together(query: &Query<'static>, tags: &[&str], bin_hours: i64, index: i64) -> Vec<Vec<Option<ChartBucket>>> {
+fn together(query: &Query<'_>, tags: &[&str], bin_hours: i64, index: i64) -> Vec<Vec<Option<ChartBucket>>> {
     let line = line(query);
     let reply = tile(&line, "1", &whole(tags), None, bin_hours, index, false).unwrap();
     let buckets = decode(&unbase64(&reply.bins), tags.len(), reply.first_hour, bin_hours, line.scale(), reply.raw_values, reply.hour_bytes).unwrap();
@@ -381,22 +399,24 @@ fn together(query: &Query<'static>, tags: &[&str], bin_hours: i64, index: i64) -
 
 #[test]
 fn a_line_has_the_same_bins_asked_alone_or_beside_tags_held_over_other_hours() {
-    let mut renamed = query();
+    let first = ITA_FROM - 2 * UNIT_HOURS;
+    let fixture = Fixture::with_gap(Data::Power, first..=LAST, FIRST + FIRST_HOURS..=SECOND - 1);
+    let mut renamed = fixture.query();
     let change = ITA_FROM + 7;
     let run = |first: i32, last: i32| HolderRun { first, last, holder: Holder::Found { slot: 7, id: 9001 }, starts_segment: true };
     let mut holders = (*renamed.holders).clone();
-    holders.tags.insert("GER".to_owned(), vec![run(FIRST, change - 1)]);
+    holders.tags.insert("GER".to_owned(), vec![run(first, change - 1)]);
     holders.tags.insert("PRU".to_owned(), vec![HolderRun { starts_segment: false, ..run(change, FIRST + FIRST_HOURS - 1) }, run(SECOND, LAST)]);
     renamed.holders = std::sync::Arc::new(holders);
     let mut compared = 0;
-    for (query, tags) in [(query(), vec!["GER", "ITA"]), (renamed, vec!["GER", "PRU", "ITA"])] {
+    for (query, tags) in [(fixture.query(), vec!["GER", "ITA"]), (renamed, vec!["GER", "PRU", "ITA"])] {
         for bin_hours in [3, 6, 18, 96] {
             let index = i64::from(ITA_FROM).div_euclid(BINS as i64 * bin_hours);
             let both = together(&query, &tags, bin_hours, index);
             for (at, tag) in tags.iter().enumerate() {
                 let alone = together(&query, &[tag], bin_hours, index).remove(0);
                 assert_eq!(both[at], alone, "{tag} beside {tags:?}, bins of {bin_hours} hours");
-                if level_of(bin_hours).unwrap() != replay::lanes::WALKED && bucket_hours(level_of(bin_hours).unwrap()) == bin_hours {
+                if level_of(bin_hours).unwrap() != replay_lanes::lanes::WALKED && bucket_hours(level_of(bin_hours).unwrap()) == bin_hours {
                     for bucket in alone.iter().flatten() {
                         assert_eq!((bucket.min_hour, bucket.max_hour), (bucket.first_hour, bucket.first_hour), "{tag}'s extremes in a bin of {bin_hours} hours");
                     }

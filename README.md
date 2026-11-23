@@ -18,12 +18,22 @@ BattlePlan records your Hearts of Iron IV campaign while you play, then replays 
 
 ## What you get
 
-- **The whole war, hour by hour.** Rewind, pause or fast-forward through every recorded hour.
+- **Your whole campaign, hour by hour.** Rewind, pause or fast-forward through every recorded hour.
 - **The game's map, redrawn.** Units, fronts, battles, weather, day and night, and over a dozen map modes, from any country's point of view and with its fog of war.
 - **A dashboard you build.** Charts, races, tables, timelines and breakdowns for armies, economies, research, diplomacy and more. Tooltips and drill-downs show the detail behind each value.
-- **Mods first.** A recording remembers the exact DLC and mod list it was made with, and playback uses it.
+- **Mod Compatibility.** I can't guarantee that all mods will work but I'm trying hard to make sure they do.
 - **Read-only.** The recorder only reads the game. It never pauses, saves or controls it.
-- **Open.** MIT licensed.
+- **Open.** Completely free and Open Source. Always 
+
+## Important to Know
+- **You Must Own the Game** You must have an official copy of Hearts of Iron IV otherwise this app will not work. BattlePlan contains no game assets and you must use your owned version of the game. It will check for the assets on your computer and that you have a supported HOI4 EXE.
+- **Performance** When the recorder is running, your game will be slowed down by around 20% when on 5 speed - almost none at all when playing on lower speeds. Weaker PC may not be able to handle this.
+- **Storage Space** Typical 1936 - 1948 campaigns are around 1.2GB.
+- **Your Content** The replayer relies on content being on your computer. That includes mods, if the content changes ie an update to the game or a mod, you may not be able to playback your recording. Downgrade to a previous version to fix this.
+- **This is an Alpha** I am solo developing this so be nice and expect lots of bugs. Please also note that **I cannot guarentee your old replay files will always be playable in the future**. At least until I get things into a more stable state.
+- **Multiplayer Compatibility** The recorder does work in multiplayer games. Please note that it cannot be played back while recording.
+- **Windows Only**  
+
 
 ## Install
 
@@ -31,11 +41,6 @@ BattlePlan records your Hearts of Iron IV campaign while you play, then replays 
 
 - **BattlePlan**: the replay app, with the campaign map and the dashboard.
 - **BattlePlan Recorder**: a small tray app that records while you play.
-
-You need:
-
-- Windows, with Microsoft Edge WebView2.
-- Hearts of Iron IV. An unrecognised game version shows a warning, and any part that can't verify itself on that version is left out by name.
 
 Updates arrive in the app. Choose the **stable** or **nightly** channel in **Settings**, and a badge shows when a new version is ready to download.
 

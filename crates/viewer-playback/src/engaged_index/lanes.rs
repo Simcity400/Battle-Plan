@@ -1,6 +1,6 @@
 
 use super::Pass;
-use crate::lane_rows::{Kept, Table};
+use viewer_layer_core::lane_rows::{Kept, Table};
 use playhead::{Piece, Timeline, pages::Pages};
 use replay_columnar::manifest::Status;
 use replay_data::{
@@ -14,7 +14,8 @@ use std::{
     sync::{Arc, atomic::Ordering},
     time::Instant,
 };
-use viewer_foundation::{engagement_history::History, map::perspective::Country};
+use viewer_engagements::engagement_history::History;
+use viewer_foundation::perspective::Country;
 
 const READ: &[(TableId, Option<&[&str]>)] = &[
     (TableId::Campaign, None),
@@ -33,9 +34,23 @@ const READ: &[(TableId, Option<&[&str]>)] = &[
     (TableId::NavalCombatParticipants, Some(&["ship"])),
     (TableId::NavalCombatShips, Some(&["ship", "member_source", "group_index", "live_ship", "live_convoy", "formation_flags"])),
     (TableId::TaskForces, Some(&["roster_owner", "logical_owner"])),
+    (TableId::CountryCounterInputs, Some(&["forward_visibility", "zero_war", "zero_subject"])),
+    (TableId::ReservedCountryNaming, Some(&["faction", "reverse_visibility"])),
+    (TableId::CombatEngagementRefreshes, None),
 ];
 
-const VIEWER: [TableId; 8] = [TableId::CountryLinks, TableId::Countries, TableId::LocalPlayer, TableId::Players, TableId::HumanControllers, TableId::FactionMembers, TableId::WarRelations, TableId::Subjects];
+const VIEWER: [TableId; 10] = [
+    TableId::CountryLinks,
+    TableId::Countries,
+    TableId::LocalPlayer,
+    TableId::Players,
+    TableId::HumanControllers,
+    TableId::FactionMembers,
+    TableId::WarRelations,
+    TableId::Subjects,
+    TableId::CountryCounterInputs,
+    TableId::ReservedCountryNaming,
+];
 
 fn invalid(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -57,10 +72,58 @@ macro_rules! open {
     };
 }
 
+fn open_optional<T: TableSchema + 'static>(
+    pages: &Arc<dyn Pages>,
+    run: usize,
+    held: &mut [Option<Box<dyn Kept>>],
+) -> io::Result<()>
+where
+    T::Row: Send + Default,
+{
+    let Some(kinds) = pages.kinds(T::ID.index()) else {
+        return Ok(());
+    };
+    let requested = READ
+        .iter()
+        .find(|(id, _)| *id == T::ID)
+        .and_then(|(_, fields)| *fields);
+    match requested {
+        None => {
+            held[T::ID.index()] = Some(Box::new(Table::<T>::open(
+                pages,
+                run,
+                None,
+                "The engaged index",
+            )?));
+        }
+        Some(fields) => {
+            let present: Vec<&str> = fields
+                .iter()
+                .copied()
+                .filter(|&name| {
+                    (0..kinds.len()).any(|column| T::ID.field_name(column) == Some(name))
+                })
+                .collect();
+            if !present.is_empty() {
+                held[T::ID.index()] = Some(Box::new(Table::<T>::open(
+                    pages,
+                    run,
+                    Some(&present),
+                    "The engaged index",
+                )?));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Store {
     fn open(pages: &Arc<dyn Pages>, run: usize, branch: BranchId) -> io::Result<Self> {
         let mut held: Vec<Option<Box<dyn Kept>>> = (0..TableId::ALL.len()).map(|_| None).collect();
         open!(pages, run, held, Campaign, CountryLinks, Countries, LocalPlayer, Players, HumanControllers, FactionMembers, WarRelations, Subjects, LandCombats, LandCombatSides, NavalCombats, NavalCombatDetails, NavalCombatParticipants, NavalCombatShips, TaskForces);
+        open_optional::<tables::CountryCounterInputs>(pages, run, &mut held)?;
+        open_optional::<tables::ReservedCountryNaming>(pages, run, &mut held)?;
+        open_optional::<tables::CombatEngagementRefreshes>(pages, run, &mut held)?;
         Ok(Self { tables: held, branch, hour: 0, metrics: Metrics::default() })
     }
 
@@ -138,7 +201,7 @@ type FoldKey = (String, Vec<Piece>, BranchId, Country);
 
 static FOLDS: std::sync::Mutex<Vec<(FoldKey, std::sync::Weak<History>)>> = std::sync::Mutex::new(Vec::new());
 
-pub fn shared(replay: &replay::campaign::Replay, units: &crate::playhead_host::units::Units, branch: BranchId, country: &Country) -> io::Result<Arc<History>> {
+pub fn shared(replay: &replay::campaign::Replay, units: &viewer_layer_core::playhead_host::units::Units, branch: BranchId, country: &Country) -> io::Result<Arc<History>> {
     let key: FoldKey = (units.name.clone(), units.timeline.pieces().to_vec(), branch, country.clone());
     let mut folds = FOLDS.lock().unwrap_or_else(|p| p.into_inner());
     folds.retain(|(_, history)| history.strong_count() > 0);
@@ -149,7 +212,7 @@ pub fn shared(replay: &replay::campaign::Replay, units: &crate::playhead_host::u
     let history = Arc::new(History::default());
     let (held, folded, campaign, pages, timeline) = (Arc::clone(&history), country.clone(), replay.campaign_id.clone(), Arc::clone(&units.pages), units.timeline.clone());
     std::thread::Builder::new().name("engaged lanes".into()).spawn(move || {
-        viewer_foundation::worker_priority::lowest_priority();
+        viewer_runtime::worker_priority::lowest_priority();
         if let Err(error) = fold(&pages, &timeline, &|at: usize| starts[at], Some(&campaign), folded, held, None, |_, _, _| {}) {
             eprintln!("The engaged index's lanes stopped: {error}");
         }
@@ -229,8 +292,9 @@ pub fn fold(
             let readable = campaign.is_none_or(|id| store.table::<tables::Campaign>().is_some_and(|rows| rows.len() == 1 && rows[0].id == id));
             let load = (start.load && hour == piece.first).then_some(hour);
             let restart = start.restart && hour == piece.first;
-            let kept = hour > first && !VIEWER.iter().any(|table| store.tables[table.index()].as_ref().is_some_and(|held| held.touched()));
-            pass.fold_source(start.branch, hour, readable.then_some(&store), load, restart, kept);
+            let inputs_kept = hour > first && !VIEWER.iter().any(|table| store.tables[table.index()].as_ref().is_some_and(|held| held.touched()));
+            let witness_kept = hour > first && !store.tables[TableId::CombatEngagementRefreshes.index()].as_ref().is_some_and(|held| held.touched());
+            pass.fold_source(start.branch, hour, readable.then_some(&store), load, restart, inputs_kept, witness_kept);
             spent.fold_ns += began.elapsed().as_nanos() as u64;
             spent.hours += 1;
             each(hour, &store, &spent);

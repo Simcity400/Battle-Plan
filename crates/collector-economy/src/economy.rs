@@ -54,7 +54,10 @@ collector_primitives::capacity_max!(Capacities {
 const FUEL_CONSUMERS: usize = ccountry_fuel_status::MAX_CONSUMERS as usize;
 
 impl Capacities {
-    pub fn presize(
+    /// # Safety
+    /// Run only during attach or the active session's serial sizing pass against the authenticated
+    /// session image, while market observer storage remains live and teardown is excluded.
+    pub unsafe fn presize(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -105,12 +108,15 @@ impl Capacities {
         ] {
             crate::table_capture::grow_capacity(&mut self.rows[index], rows(outcome)?);
         }
-        collector_observers::market_changes::presize(
-            market_demand
-                .checked_add(countries)
-                .ok_or("market storage demand overflow")?,
-            countries.max(self.rows[9]),
-        );
+        // SAFETY: Caller guarantees attach or serial sizing pass with live market observer storage.
+        unsafe {
+            collector_observers::market_changes::presize(
+                market_demand
+                    .checked_add(countries)
+                    .ok_or("market storage demand overflow")?,
+                countries.max(self.rows[9]),
+            );
+        }
         Ok(())
     }
 

@@ -47,13 +47,13 @@ pub(crate) fn localisation_in(
     source: &Source,
     content: &ContentOptions,
     key: LocalisationKey,
-    resolved: impl FnOnce() -> io::Result<Arc<content_reader_core::content::ResolvedContent>>,
+    resolved: impl FnOnce() -> io::Result<Arc<content_reader_layers::content::ResolvedContent>>,
     keeping: Keeping,
 ) -> io::Result<Arc<Localisation>> {
     type Cached = Option<(
         LocalisationKey,
         Arc<Localisation>,
-        content_reader_core::content::diagnostics::Diagnostics,
+        content_reader_layers::content::diagnostics::Diagnostics,
     )>;
     let state = source.state::<Cached>();
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
@@ -67,7 +67,7 @@ pub(crate) fn localisation_in(
     let mut warnings = Vec::new();
     check_replay(&source.replay(), content.allow_unverified, &mut warnings)?;
     let build = || {
-        content_reader_core::content::diagnostics::capture(|| {
+        content_reader_layers::content::diagnostics::capture(|| {
             let layers = resolved()?;
             let language = recorded_language(source.replay_ref());
             content_reader_localisation::localisation::read_cached(
@@ -93,11 +93,20 @@ pub(crate) fn localisation_in(
 }
 
 pub fn warm(source: &Source, content: &ContentOptions) {
-    let _warm = content_reader_core::content::Generation::inherit();
+    let _warm = content_reader_layers::content::Generation::inherit();
     let resolved = source.content(&content.options).ok();
     let _generation = resolved.as_ref().map(|content| content.layers.enter_generation());
     let _ = localisation(source, content);
     let _ = crate::catalogue::catalogue(source, content);
+}
+
+pub fn warm_checked(source: &Source, content: &ContentOptions) -> io::Result<()> {
+    let _warm = content_reader_layers::content::Generation::inherit();
+    let resolved = source.content(&content.options)?;
+    let _generation = resolved.layers.enter_generation();
+    localisation(source, content)?;
+    crate::catalogue::catalogue(source, content)?;
+    Ok(())
 }
 
 pub fn name_localisation(
@@ -137,7 +146,7 @@ pub fn check_verification(
 }
 
 pub fn strategic_regions(
-    layers: &content_reader_core::ResolvedLayers,
+    layers: &content_reader_layers::ResolvedLayers,
 ) -> io::Result<Arc<content_reader_regions::regions::StrategicRegions>> {
     layers
         .derived::<crate::catalogue::CachedResult<content_reader_regions::regions::StrategicRegions>>()
@@ -177,5 +186,23 @@ mod tests {
         let first = super::strategic_regions(layers).unwrap();
         let again = super::strategic_regions(layers).unwrap();
         assert!(Arc::ptr_eq(&first, &again));
+    }
+
+    #[test]
+    fn warm_checked_surfaces_content_load_failures() {
+        let root = std::env::temp_dir().join(format!("warm-checked-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (source, context) = crate::test_fixtures::source_with_content(
+            vec![crate::test_fixtures::source(1, 0, Some(1))],
+            &root,
+        );
+        let mut bad = context.content.unwrap();
+        bad.allow_unverified = false;
+        let err = source
+            .in_scope(|| super::warm_checked(&source, &bad))
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("unverified content"), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

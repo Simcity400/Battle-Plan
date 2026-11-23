@@ -10,4 +10,4 @@ When capture runs alongside the game it starts below game priority and avoids th
 
 The foreign-unwind oracle exercises the production Tap from an authored native test frame under a separate parent process. The observer has a system-unwind callback signature. Its synthetic patched span has no interior entry or stack dependence. The stack oracle includes the DTO, flags, saved nonvolatiles and call return slot. It witnesses the native stack pointer at entry and uses an observable Rust write to keep a Rust frame during the check. A registered native frame or escaping production flight remains owned until native unwind has finished. Rust cleanup alone does not witness that point.
 
-[Capture admission](../../crates/collector/src/capture_point.rs) · [Command-batch observation](../../crates/collector/src/command_batch.rs) · [Foreign-unwind test](../../crates/collector/examples/tap_foreign_unwind.rs)
+[Capture admission](../../crates/collector-capture/src/capture_point.rs) · [Command-batch observation](../../crates/collector-capture/src/command_batch.rs) · [Foreign-unwind test](../../crates/collector-hooks/examples/tap_foreign_unwind.rs)

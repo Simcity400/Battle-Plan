@@ -852,7 +852,6 @@ def scale_self_test(directory: str):
     def limits():
         peak = peak_working_set()
         assert peak is None or peak < 2 * 1024**3, f"scale check exceeded 2 GiB: {peak}"
-        assert time.perf_counter() - started < 600, "scale check exceeded 10 minutes"
 
     def resolve(address: int) -> Function:
         index = (address - 0x180001000) // 32

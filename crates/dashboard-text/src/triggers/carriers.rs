@@ -11,7 +11,14 @@ const PROJECT: u64 = mask::<ProjectRow>(&["definition_id"]);
 const ORGANISATION: u64 = mask::<IndustrialOrganisationRow>(&["country", "ordinal", "token"]);
 
 impl<'a> World<'a> {
-    pub(crate) fn project(&self, owner: u32, id: u32) -> Result<Cow<'a, ProjectRow>, Failure> {
+    pub fn project(&self, owner: u32, id: u32) -> Result<Cow<'a, ProjectRow>, Failure> {
+        if let Some(accepted) = self.accepted_projects() {
+            return match accepted.rows.get(&(owner, id)) {
+                Some(row) => Ok(Cow::Owned(row.clone())),
+                None if accepted.owners.contains(&owner) => Err(super::refusal::missing_reference(replay_data::rows::TableId::Projects, None)),
+                None => Err(super::refusal::refused("the project's owner has no Projects read supplying this hour".to_owned())),
+            };
+        }
         table::<tables::Projects>(self.tables(), tables::Projects::ID.full_mask())?
             .get((u128::from(owner) << 32) | u128::from(id))
             .map_err(|why| super::refusal::input_error(tables::Projects::ID, why))?
@@ -20,7 +27,7 @@ impl<'a> World<'a> {
             })
     }
 
-    pub(crate) fn raid(&self, reference: u64) -> Result<Cow<'a, RaidRow>, Failure> {
+    pub fn raid(&self, reference: u64) -> Result<Cow<'a, RaidRow>, Failure> {
         table::<tables::Raids>(self.tables(), tables::Raids::ID.full_mask())?
             .get(u128::from(reference))
             .map_err(|why| super::refusal::input_error(tables::Raids::ID, why))?
@@ -29,7 +36,7 @@ impl<'a> World<'a> {
             })
     }
 
-    pub(crate) fn unit(&self, reference: u64) -> Result<replay_frame::frame::Division, Failure> {
+    pub fn unit(&self, reference: u64) -> Result<replay_frame::frame::Division, Failure> {
         const DIVISION: u64 = mask::<replay_data::rows::DivisionRow>(&[
             "roster_owner",
             "logical_owner",

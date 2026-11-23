@@ -1,5 +1,5 @@
-use content_reader_core::map::ProvinceKind;
-use viewer_world::map::map_mode::{MapMode, Stock};
+use content_reader_map::map::ProvinceKind;
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Ground {
@@ -114,7 +114,7 @@ impl super::Viewer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use viewer_world::map::map_mode::MapMode;
+    use viewer_map_modes::map_mode::MapMode;
 
     fn picked(kind: Option<ProvinceKind>, state: bool, naval: Result<bool, String>) -> Picked {
         Picked { province: 7, kind, state, region: Some(40), naval }

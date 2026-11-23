@@ -5,18 +5,14 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
-use viewer_foundation::map::gradient_math::hsv_to_rgb;
+use viewer_gpu::gradient_math::hsv_to_rgb;
 use viewer_foundation::tooltip_text::country_localised;
 use viewer_foundation::tooltip_text::displayable;
 use viewer_foundation::tooltip_text::tooltip_keys;
 use viewer_foundation::tooltip_text::wing_short_name;
-use {
-    super::content::Content as StaticContent,
-    viewer_foundation::{
-        map::perspective::Vision,
-        table_access::{Available, TokenNames, country_slot, rows},
-    },
-};
+use super::content::Content as StaticContent;
+use viewer_foundation::perspective::Vision;
+use dashboard_text::table_access::{Available, TokenNames, country_slot, rows};
 use {
     super::{
         Values, Widget,
@@ -603,7 +599,7 @@ fn ship_sprite(
         .ok_or_else(|| format!("stacked content lacks retained ship sprite {name}"))
 }
 
-pub(super) fn pride_color(defines: &content_reader_core::defines::Defines) -> Result<[f32; 4], String> {
+pub(super) fn pride_color(defines: &content_reader_defines::defines::Defines) -> Result<[f32; 4], String> {
     let values = defines
         .numbers("NGraphics", "PRIDE_OF_THE_FLEET_MODULATE")
         .map_err(|error| error.to_string())?;

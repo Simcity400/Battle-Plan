@@ -325,6 +325,23 @@ const fn field(source_offset: usize, destination_offset: usize, len: usize) -> R
     }
 }
 
+fn read_region_serial(memory: &impl Memory, pointer: usize, out: &mut [u8; 28]) -> bool {
+    let (vtable, rest) = out.split_at_mut(8);
+    let (provinces, rest) = rest.split_at_mut(4);
+    let (identity, phase) = rest.split_at_mut(12);
+    let (Some(p_provinces), Some(p_identity), Some(p_phase)) = (
+        pointer.checked_add(cstrategic_region::PROVINCES_COUNT),
+        pointer.checked_add(cstrategic_region::ID),
+        pointer.checked_add(cstrategic_region::AIR_PHASE),
+    ) else {
+        return false;
+    };
+    memory.copy_scattered(
+        [pointer, p_provinces, p_identity, p_phase],
+        &mut [vtable, provinces, identity, phase],
+    ) == 4
+}
+
 fn read_regions(
     memory: &impl Memory,
     base: usize,
@@ -362,13 +379,28 @@ fn read_regions(
             slots[live] = slot;
             live += 1;
         }
-        let copied = memory.copy_records(
-            RecordSources::Pointers(&pointers[..live]),
-            &REGION_LAYOUT,
-            &mut bytes[..live * 28],
-        );
-        if copied != live * REGION_FIELDS.len() {
-            return Err("raid air region unreadable");
+        let copied = if live == 0 {
+            0
+        } else {
+            memory.copy_records(
+                RecordSources::Pointers(&pointers[..live]),
+                &REGION_LAYOUT,
+                &mut bytes[..live * 28],
+            )
+        };
+        let done = (copied / REGION_FIELDS.len()).min(live);
+        for index in done..live {
+            let pointer = pointers[index];
+            let offset = index * 28;
+            if let Some(previous) = pointers[..index].iter().position(|&seen| seen == pointer) {
+                let src = previous * 28;
+                bytes.copy_within(src..src + 28, offset);
+            } else {
+                let record: &mut [u8; 28] = (&mut bytes[offset..offset + 28]).try_into().unwrap();
+                if !read_region_serial(memory, pointer, record) {
+                    return Err("raid air region unreadable");
+                }
+            }
         }
         for (record, &slot) in bytes[..live * 28].chunks_exact(28).zip(&slots[..live]) {
             let word = |at: usize| u32::from_le_bytes(record[at..at + 4].try_into().unwrap());
@@ -1279,6 +1311,153 @@ mod tests {
             Some(3)
         );
         assert_eq!(memory.attempts.get(), 2);
+    }
+
+    #[test]
+    fn region_and_score_pair_faults_retry_once_without_rereading_completed_rows() {
+        struct CountedFault<'a> {
+            memory: SliceMemory<'a>,
+            fault: usize,
+            once: bool,
+            spent: std::cell::Cell<bool>,
+            reads: std::cell::RefCell<std::collections::HashMap<usize, usize>>,
+        }
+        impl<'a> CountedFault<'a> {
+            fn new(bytes: &'a [u8], fault: usize, once: bool) -> Self {
+                Self {
+                    memory: SliceMemory {
+                        base: MEMORY,
+                        bytes,
+                    },
+                    fault,
+                    once,
+                    spent: std::cell::Cell::new(false),
+                    reads: std::cell::RefCell::new(std::collections::HashMap::new()),
+                }
+            }
+            fn reads_at(&self, address: usize) -> usize {
+                self.reads.borrow().get(&address).copied().unwrap_or(0)
+            }
+        }
+        impl Memory for CountedFault<'_> {
+            fn copy(&self, at: usize, to: &mut [u8]) -> bool {
+                {
+                    let mut reads = self.reads.borrow_mut();
+                    for offset in 0..to.len() {
+                        *reads.entry(at + offset).or_insert(0) += 1;
+                    }
+                }
+                if at <= self.fault
+                    && self.fault < at.saturating_add(to.len())
+                    && (!self.once || !self.spent.get())
+                {
+                    if self.once {
+                        self.spent.set(true);
+                    }
+                    to.fill(0xff);
+                    return false;
+                }
+                self.memory.copy(at, to)
+            }
+        }
+
+        let mut world = World::new(1, 20);
+        world.pair(1, 3, 5, 1);
+        world.pair(1, 5, 9, 2);
+        world.pair(1, 11, 7, 3);
+
+        let region_kept = MEMORY + world.region(1) + cstrategic_region::AIR_PHASE;
+        let region_fault = MEMORY + world.region(3) + cstrategic_region::AIR_PHASE;
+        for once in [true, false] {
+            let memory = CountedFault::new(&world.bytes, region_fault, once);
+            let mut held = held(20, 1, 20);
+            held.certify(Some(1));
+            let mut output = vec![Row::default(); 20];
+            let walked = walk(&memory, BASE, GAME, HOUR, &mut held, &mut output);
+            if once {
+                assert!(matches!(walked.outcome, Outcome::Rows { .. }));
+                assert!(pairs(&walked, &output).contains(&(1, 1_003, 5, 1)));
+            } else {
+                assert_eq!(
+                    walked.outcome,
+                    Outcome::Unavailable {
+                        reason: "raid air region unreadable"
+                    }
+                );
+            }
+            assert_eq!(memory.reads_at(region_kept), 1);
+            assert_eq!(memory.reads_at(region_fault), 2);
+        }
+
+        let bad_vtable = world.region(1);
+        world.bytes[bad_vtable] ^= 1;
+        let memory = CountedFault::new(&world.bytes, region_fault, false);
+        let mut state = held(20, 1, 20);
+        state.certify(Some(1));
+        let mut output = vec![Row::default(); 20];
+        let walked = walk(&memory, BASE, GAME, HOUR, &mut state, &mut output);
+        assert_eq!(
+            walked.outcome,
+            Outcome::Unavailable {
+                reason: "raid air region unreadable"
+            }
+        );
+        assert_eq!(memory.reads_at(MEMORY + bad_vtable), 1);
+        assert_eq!(memory.reads_at(region_fault), 2);
+        world.bytes[bad_vtable] ^= 1;
+
+        let pair_kept = MEMORY + world.entry(1, 3);
+        let pair_fault = MEMORY + world.entry(1, 5);
+        for once in [true, false] {
+            let memory = CountedFault::new(&world.bytes, pair_fault, once);
+            let mut held = held(20, 1, 20);
+            held.certify(Some(1));
+            let mut output = vec![Row::default(); 20];
+            let walked = walk(&memory, BASE, GAME, HOUR, &mut held, &mut output);
+            if once {
+                assert!(walked.full);
+                assert!(matches!(walked.outcome, Outcome::Rows { .. }));
+                assert!(pairs(&walked, &output).contains(&(1, 1_005, 9, 2)));
+            } else {
+                assert_eq!(
+                    walked.outcome,
+                    Outcome::Unavailable {
+                        reason: "raid air score pair unreadable"
+                    }
+                );
+            }
+            assert_eq!(memory.reads_at(pair_kept), 1);
+            assert_eq!(memory.reads_at(pair_fault), 2);
+        }
+
+        let carry_kept = MEMORY + world.entry(1, 3);
+        let carry_fault = MEMORY + world.entry(1, 11);
+        for once in [true, false] {
+            let mut held = held(20, 1, 20);
+            held.certify(Some(1));
+            let mut output = vec![Row::default(); 20];
+            assert!(world.walk(HOUR - 1, &mut held, &mut output).full);
+            world.pair(1, 3, 15, 4);
+            world.pair(1, 11, 17, 6);
+            let memory = CountedFault::new(&world.bytes, carry_fault, once);
+            let walked = walk(&memory, BASE, GAME, HOUR, &mut held, &mut output);
+            if once {
+                assert!(!walked.full);
+                assert!(matches!(walked.outcome, Outcome::Rows { .. }));
+                let got = pairs(&walked, &output);
+                assert!(got.contains(&(1, 1_003, 15, 4)));
+                assert!(got.contains(&(1, 1_011, 17, 6)));
+            } else {
+                assert_eq!(
+                    walked.outcome,
+                    Outcome::Unavailable {
+                        reason: "raid air score pair unreadable"
+                    }
+                );
+            }
+            assert_eq!(memory.reads_at(carry_kept), 1);
+            assert_eq!(memory.reads_at(carry_fault), 2);
+        }
     }
 
     #[test]

@@ -16,4 +16,4 @@ A merely slow spool retains queued frames and reports their time and bytes. A st
 
 Sizing tests pin an active throttle instead of relying on when Poll runs. A throttled observation supplies neither a zero nor another failure. A country header above the valid slot range is refused as torn, and a later valid hint may still grow the buffers. A failed or unreadable hint leaves earlier readable capacities intact. Raid sizing consults memo headers even when buckets are unreadable, and a rehash can increase memo storage without new tokens or reservations. A returned frame still receives hints that were published while it was held, including a dropped frame that returns straight to the free queue.
 
-[Sizing demand](../../crates/collector/src/runtime.rs)
+[Sizing demand](../../crates/collector-runtime/src/runtime.rs)

@@ -5,7 +5,7 @@ use crate::{
 };
 use replay_data::{BranchId, Hour, rows::TableId};
 use replay_frame::frame::DecodedFrame;
-use viewer_counters::map::counters::Shown;
+use viewer_counters::counters::Shown;
 
 
 #[cfg(test)]
@@ -73,17 +73,17 @@ pub(crate) fn click_tables(clickable: Clickable, learned: &[TableId]) -> Vec<Tab
 }
 
 pub(crate) fn hidden_families(shown: Shown) -> Vec<TableId> {
-    use crate::playhead_host::overlay::{overlay_tables, tables_shown};
+    use viewer_playback::overlay::{overlay_tables, tables_shown};
     let drawn = tables_shown(shown);
     overlay_tables().into_iter().filter(|table| !drawn.contains(table)).collect()
 }
 
-pub(crate) fn head(side: Option<&crate::playhead_host::side::SideThread>) -> Head<'_> {
-    side.map(crate::playhead_host::side::SideThread::views)
+pub(crate) fn head(side: Option<&viewer_playback::side::SideThread>) -> Head<'_> {
+    side.map(viewer_playback::side::SideThread::views)
 }
 
-pub(crate) fn branch(side: Option<&crate::playhead_host::side::SideThread>, document: &Document) -> replay_data::BranchId {
-    side.and_then(crate::playhead_host::side::SideThread::branch).unwrap_or_else(|| document.playback.branch())
+pub(crate) fn branch(side: Option<&viewer_playback::side::SideThread>, document: &Document) -> replay_data::BranchId {
+    side.and_then(viewer_playback::side::SideThread::branch).unwrap_or_else(|| document.playback.branch())
 }
 
 #[derive(Debug)]

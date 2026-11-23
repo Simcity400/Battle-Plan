@@ -10,4 +10,4 @@ Scripts can read tables outside the declared trigger core. Undeclared reads accu
 
 Timing reports accumulate histogram buckets and event counts so diagnostics do not retain a sample for every hour played.
 
-[Scripted layer](../../crates/viewer-playback/src/layers/scripts.rs) · [Proof](../../crates/viewer-playback/src/layers/scripts/proof.rs) · [Tests](../../crates/viewer-playback/src/layers/scripts/tests.rs)
+[Scripted layer](../../crates/viewer-layers-political/src/scripts.rs) · [Proof](../../crates/viewer-playback/src/proofs/scripts.rs) · [Tests](../../crates/viewer-layers-political/src/scripts/tests.rs)

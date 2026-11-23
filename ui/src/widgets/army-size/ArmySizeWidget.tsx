@@ -1,8 +1,9 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { asFailure } from '../../dashboard/queryError.ts';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo,  useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import DrillHost from '../../charts/drill/DrillHost';
-import { drillHour } from '../../charts/drill/drillState';
 import { CLOSED_PARTS_RACE, partsRaceDrillActors, reducePartsRaceDrill } from '../../charts/race/partsRaceDrill';
 import CountryPicker from '../../components/CountryPicker';
 import { armyDrillActors, armyDrillNumbers, pinArmyDrill } from './armyDrill';
@@ -29,7 +30,7 @@ import { isMember, rankedCandidates, resolveCountries } from '../../dashboard/gr
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { CELL, cellState, rowName } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer, FollowedRows as FollowedRowsAnswer } from '../../dashboard/follow/message';
 import { shownThrough } from '../../dashboard/follow/store.ts';
@@ -38,7 +39,7 @@ import { stickyLimit, stickyMembers } from '../../dashboard/follow/stickyMembers
 import type { StickyMembers } from '../../dashboard/follow/stickyMembers';
 import type { FollowEntry } from '../../dashboard/follow/store';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
-import { followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { NumericReply } from '../../dashboard/numericReply';
 import { useProduct } from '../../dashboard/products';
 import { useFrameWindows } from './frameWindows.ts';
@@ -57,6 +58,10 @@ import { useHeadHour } from './headHour.ts';
 import { followedArmy, liveArmy, replyEntries } from './liveArmy.ts';
 import type { LiveArmy } from './liveArmy';
 import { useChangedState } from '../../dashboard/changedState.ts';
+import { useDrill } from '../../charts/drill/useDrill';
+import type { PartsRaceDrillAction, PartsRaceDrillState } from '../../charts/race/partsRaceDrill';
+import { useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const sameWarnings = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((warning, at) => warning === b[at]);
 
@@ -85,11 +90,15 @@ class FollowedRows {
   tags(): readonly string[] { return this.held?.reset === this.scope ? this.held.tags : []; }
 }
 
+const HOLDERS = { holders: true };
+
 export default function ArmySizeWidget({ widget, runtime, active, countrySlot = null, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, normaliseArmyOptions(widget.options));
   const view = (options.view === 'breakdown' ? 'mix' : options.view) as RaceView;
   const pinned = options.view === 'breakdown';
-  const [drill, dispatchDrill] = useReducer(reducePartsRaceDrill, CLOSED_PARTS_RACE);
+  const drillControl = useDrill<PartsRaceDrillState, PartsRaceDrillAction>(runtime, useRegion(widget), null, reducePartsRaceDrill, CLOSED_PARTS_RACE, HOLDERS);
+  const gate = useGate(runtime, widget, SPEC, active);
+  const drill = drillControl.state, dispatchDrill = drillControl.dispatch;
   const drillFollowing = drill.breakdown !== null && drill.follow;
   const liveRef = useRef<LiveArmy | null>(null);
   const mixKey = useRef<(hour: number) => string>(() => '');
@@ -145,16 +154,17 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   useLayoutEffect(() => { if (drillAnchor.current !== rootElement) setRoot(drillAnchor.current); });
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const followQuery = useMemo(() => liveRaceView && track && !byType && (resolved.top != null || resolved.tags.length)
-    ? { product: 'army-size', params: armySizeRequest(track.branch.id, resolved, measure, countFor, false) } : null,
-  [liveRaceView, track?.branch.id, byType, resolved, measure, countFor]);
+    ? gate.follow({ product: 'army-size', params: armySizeRequest(track.branch.id, resolved, measure, countFor, false) }) : null,
+  [liveRaceView, track?.branch.id, byType, resolved, measure, countFor, gate.follow]);
   const followed = useFollow(store, followQuery, root, useCallback((entry: FollowEntry) => {
     liveRef.current?.wake();
     for (const wake of [...woken]) wake();
     reportShown(shownThrough(entry));
   }, [woken, reportShown]));
   const followedHead = followsHead(followed) && followed.entry !== null;
+  const refused = followRefusal(followed);
   followedEntry.current = followedHead && liveRaceView ? followed.entry : null;
   followedRows.scope = followQuery ? canonical(followQuery) : '';
   followedRows.limit = stickyLimit(Math.max(1, resolved.top ?? resolved.tags.length));
@@ -171,7 +181,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     viewport.current = { key: viewportKey, range: { firstHour: Math.floor(x[0]), lastHour: Math.ceil(x[1]) } };
     windowsCheck.current();
   }, [viewportKey]);
-  const prepared = usePreparedArmy(runtime.client, track, track && metadata.data ? armySizeRequest(track.branch.id, resolved, measure, countFor, false) : null,
+  const prepared = usePreparedArmy(runtime.client, gate, track, track && metadata.data ? armySizeRequest(track.branch.id, resolved, measure, countFor, false) : null,
     metadata.data, active && view === 'lines', widget.time.mode === 'follow');
   const [reachedHour, setReachedHour] = useState<number | null>(null);
   const dense = view === 'lines' && prepared.dense;
@@ -200,10 +210,10 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     const stops = [runtime.clock.subscribeFrame(changed), runtime.clock.subscribe(changed)];
     return () => { for (const stop of stops) stop(); };
   }, [runtime.clock]);
-  const history = useFrameWindows<ArmySizeReply>(runtime.client, identity, window => ({
+  const history = useFrameWindows<ArmySizeReply>(runtime.client, identity, window => (productRequest({
     sourceId: track!.source.id, revision: track!.source.revision, product: 'army-size',
     params: armySizeRequest(track!.branch.id, resolved, measure, countFor, byType, window),
-  }), () => windowsAt(runtime.clock.getHour()).wanted, subscribeClock, active && offersMeasure(metadata.data, measure),
+  })), () => windowsAt(runtime.clock.getHour()).wanted, subscribeClock, active && offersMeasure(metadata.data, measure),
   value => validateArmyWindow(value, metadata.data!), track?.source);
   windowsCheck.current = history.check;
   missingKey.current = hour => windowsAt(hour).required.filter(window => !history.holds(window)).join(',');
@@ -262,12 +272,13 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   useEffect(() => { dispatchDrill({ type: 'close' }); setDrillOrigin(null); }, [resetKey]);
   const drillTag = drill.breakdown;
   const clockHour = track ? Math.floor(playbackHour) + track.axisOffset : null;
-  const drillAt = Math.floor((drill.breakdown === null && choices === null ? moment : drillHour(drill, clockHour)) ?? moment);
-  const drillPlayhead = drill.breakdown !== null && drill.follow ? clockHour : playhead;
+  const drillHour = choices !== null ? drill.hour : drillControl.following ? clockHour : drillControl.hour;
+  const drillAt = Math.floor((drillControl.open ? drillHour : moment) ?? moment);
+  const drillPlayhead = drillControl.following ? clockHour : playhead;
   const originHour = drillOrigin?.tag === drillTag ? drillOrigin.hour : drillAt;
   const pinSlots = useSlotTags(runtime.client, track, active && !!drillTag && isSlotKey(drillTag));
   const pinTag = drillTag && isSlotKey(drillTag) ? countryTagAt(pinSlots, countryFromKey(drillTag), originHour) : drillTag;
-  const follow = () => { if (active && track) dispatchDrill({ type: 'follow' }); };
+  const follow = () => { if (active && track) drillControl.follow(); };
   useEffect(() => {
     if (!pinned || invalidSavedSelection || !window || drill.breakdown !== null || drill.choices !== null || !model) return;
     const fixed = savedSelection?.tag;
@@ -276,8 +287,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
         : rankedCandidates(resolved, moment, model.tags), moment, resolved.top ?? undefined);
     if (actors.length === 1) {
       setDrillOrigin({ tag: actors[0], hour: savedSelection?.hour ?? moment });
-      dispatchDrill({ type: 'open', breakdown: actors[0], hour: moment, playing: false,
-        playhead: widget.time.mode === 'follow' ? playhead : null });
+      drillControl.show(actors[0], moment);
     } else if (actors.length > 1) dispatchDrill({ type: 'actors', key: resetKey, tags: actors, hour: moment });
   }, [pinned, invalidSavedSelection, !!window, drill, model, resolved, moment, playhead, savedSelection?.tag, savedSelection?.hour, widget.countries, widget.time.mode, resetKey]);
   const drillOpen = choices !== null || drill.breakdown !== null;
@@ -288,8 +298,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     if (actors.length > 1) dispatchDrill({ type: 'actors', key: resetKey, tags: actors, hour });
     else if (actors.length) {
       setDrillOrigin({ tag: actors[0], hour: Math.floor(hour) });
-      dispatchDrill({ type: 'open', breakdown: actors[0], hour, playing: runtime.clock.getSnapshot().playing,
-        playhead: widget.time.mode === 'follow' ? playhead : null });
+      drillControl.show(actors[0], hour);
     }
     else if (candidates !== undefined) dispatchDrill({ type: 'close' });
   };
@@ -356,6 +365,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
 
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its army sizes." />;
+    if (refused) return <WidgetState kind="unavailable" message={refused} />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (invalidSavedSelection) return <WidgetState kind="unavailable" message="Saved country unavailable." />;
     if (metadata.error) return <WidgetState kind="error" failure={asFailure(metadata.error)} onRetry={metadata.retry} />;
@@ -382,7 +392,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     ? createPortal(unchosen ? <ChooseCountryChip /> : <DatedCountryChip label={null} hour={window ? drillAt : null}
       reason={!savedSelection ? 'Saved country unavailable.'
         : 'Country unavailable at this time.'} />, countrySlot) : null;
-  const breakdown = <ArmyBreakdown runtime={runtime} track={track} active={active} options={options} extent={extent}
+  const breakdown = <ArmyBreakdown runtime={runtime} gate={pinned ? gate : drillControl.gate} track={track} active={active} options={options} extent={extent}
     countrySlot={pinned && state === undefined && choices === null && !unchosen ? countrySlot : null}
     headerSelection={hasOrigin || drillTag === null ? savedSelection : { tag: drillTag, hour: originHour }}
     playhead={drillPlayhead} tag={drillTag} hour={drillAt} measure={measure} countFor={countFor} manifest={metadata.data}
@@ -436,12 +446,15 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
           swatch: country(tag), short: true, countryFlag: label };
       }) : [{ label: 'Not recorded', tone: 'muted' as const }],
     }]} />;
+  const pinTimed = drillControl.gate.checkTime();
+  const pinTime = pinTimed.time;
+  const pinHeld = drillControl.gate.checkHold(pinTag ? { tag: pinTag, origin: originHour } : null);
+  const pinCountry = pinHeld.held;
   return <div className="army-size-drill parts-race" ref={drillAnchor}>{groupNotice}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={drillAnchor}
-      title="Army breakdown" day={drillFollowing && track ? <LiveText live={dayLive} at="day" /> : dayLabel(drillAt)} following={drill.follow} canFollow={choices === null && track !== undefined}
-      returnFocus=".race-chart canvas, .time-chart canvas" onClose={() => dispatchDrill({ type: 'close' })} onFollow={follow}
-      onPin={track && pinTag ? () => runtime.addWidgetBelow(widget.id, pinArmyDrill(
-        widget, track, pinTag, drillFollowing ? Math.floor(runtime.clock.getHour()) + track.axisOffset : drillAt, originHour, measure, drill.follow)) : undefined}
+    <DrillHost drill={{ ...drillControl, open: drillOpen, follow }} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={drillAnchor}
+      title="Army breakdown" day={drillFollowing && track ? <LiveText live={dayLive} at="day" /> : dayLabel(drillAt)} canFollow={choices === null && track !== undefined}
+      returnFocus=".race-chart canvas, .time-chart canvas"
+      pinRefused={pinTimed.refused ?? pinHeld.refused ?? null} onPin={track && pinCountry && pinTime ? () => runtime.addWidgetBelow(widget.id, pinArmyDrill(widget, track, pinCountry, pinTime, measure)) : undefined}
       main={main}>
       {choice}
     </DrillHost>

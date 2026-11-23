@@ -113,7 +113,7 @@ pub(super) fn matches_numeric_handler(name: &str, ordinal: u32) -> bool {
 impl<'a> ScriptedText<'a> {
     fn active_range_effects(
         &self,
-        effects: &[content_reader_core::parser::Item],
+        effects: &[content_reader_parser::parser::Item],
         refused: &mut Vec<String>,
         slot: u32,
         name: &str,
@@ -133,28 +133,11 @@ impl<'a> ScriptedText<'a> {
         }
         scopes.fresh_depth.set(depth + 1);
         let result = (|| {
-            let content = self.content.effects()?;
-            let mut context = crate::effect_description::Context::new(
-                self,
-                self.localisation,
-                self.root,
-                name,
-                content.view(None),
-            )
-            .with_expansion_scopes(scopes);
-            let session = scopes.session.borrow().clone();
-            if let Some(session) = &session {
-                context = context.with_variable_session(session);
-            }
+            let describer = self.content.effect_describer.as_deref().ok_or_else(|| {
+                format!("{name}: power balance effect describer is unavailable")
+            })?;
             let mut graph = EventScopes::new(vec![EventScope::of(EventObject::Country(slot))]);
-            let description = crate::effect_description::describe(effects, &context, &mut graph);
-            if session.is_some() {
-                scopes.session.replace(context.variable_session());
-            }
-            for (reason, count) in description.refusals {
-                refused.extend(std::iter::repeat_n(reason, count));
-            }
-            Ok(description.text)
+            describer.describe(self, name, effects, scopes, &mut graph, refused)
         })();
         scopes.fresh_depth.set(depth);
         result
@@ -192,7 +175,7 @@ impl<'a> ScriptedText<'a> {
                 })?;
             registry.insert(literal.to_ascii_lowercase(), definition);
         }
-        let database = content_reader_core::power_balance::read(&self.content.layers.layers, &|key| {
+        let database = content_reader_politics::power_balance::read(&self.content.layers.layers, &|key| {
             Some(registry.contains_key(&key.to_ascii_lowercase()))
         })
         .map_err(|e| format!("{name}: {e}"))?;
@@ -297,7 +280,7 @@ impl<'a> ScriptedText<'a> {
             for (&value, &(_, key, default, fulfilled)) in range
                 .rules
                 .iter()
-                .zip(content_reader_core::power_balance::rules())
+                .zip(content_reader_politics::power_balance::rules())
             {
                 if value == default {
                     continue;
@@ -359,15 +342,14 @@ impl<'a> ScriptedText<'a> {
         sources: &[Vec<u8>],
     ) -> Result<[Vec<replay_data::rows::ModifierBreakdownNode>; 2], String> {
         let registry = replay_derive::modifier_registry::Registry::from_tables(&self.frame, 0)?;
-        let effects = self.content.effects()?;
-        let statics = effects
-            .view(None)
-            .static_modifiers
-            .ok_or("static modifiers are unavailable")?;
+        if let Some(describer) = &self.content.effect_describer {
+            describer.prepare_static_modifiers(self.content)?;
+        }
+        let statics = self.content.static_modifiers();
         let mut blocks = Vec::with_capacity(sources.len());
         for source in sources {
             let key =
-                std::str::from_utf8(content_reader_core::parser::c_string(source)).map_err(|_| {
+                std::str::from_utf8(content_reader_parser::parser::c_string(source)).map_err(|_| {
                     format!(
                         "static modifier {} is not UTF-8",
                         String::from_utf8_lossy(source)
@@ -607,5 +589,5 @@ impl<'a> ScriptedText<'a> {
     }
 }
 
-#[cfg(test)]
-mod tests;
+#[cfg(any(test, feature = "test-support"))]
+pub mod tests;

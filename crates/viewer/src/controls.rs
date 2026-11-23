@@ -3,7 +3,7 @@ pub mod flight;
 pub mod orbit;
 pub mod walker;
 
-use dashboard::protocol::{GamepadButton, GamepadMessage, GamepadOwner, GamepadState};
+use dashboard_core::protocol::{GamepadButton, GamepadMessage, GamepadOwner, GamepadState};
 use eframe::egui;
 use std::collections::BTreeSet;
 use std::time::Instant;

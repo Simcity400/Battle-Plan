@@ -7,7 +7,7 @@ use super::{
     picker::{Control as PickerControl, Placed},
 };
 use std::{collections::BTreeMap, io, sync::Arc};
-use viewer_foundation::map::native_gui::{self, Resources, lifecycle, pointer::Input};
+use viewer_native_gui::native_gui::{self, Resources, lifecycle, pointer::Input};
 
 
 pub const WINDOW: &str = "mini_map_interface";
@@ -20,7 +20,7 @@ const WORLD_SPRITE: &[u8] = b"GFX_minimap_world";
 pub const PINGS_REFUSED: &str = "the recording holds no pings, so the pinged handle and the ping      circle never show";
 
 pub const TOOLTIP_ANCHOR: super::TooltipAnchor =
-    super::TooltipAnchor::Authored(content_reader_core::gui::native::TooltipAnchor {
+    super::TooltipAnchor::Authored(content_reader_gui::gui::native::TooltipAnchor {
         set: true,
         x: 0,
         y: -90,
@@ -64,7 +64,7 @@ pub struct Defines {
 }
 
 impl Defines {
-    pub fn load(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &content_reader_defines::defines::Defines) -> io::Result<Self> {
         let duration = defines.number("NInterface", "MINIMAP_TOGGLE_DURATION")? as f32;
         let shift = defines.number("NInterface", "MINIMAP_TOGGLE_SHIFT")?;
         if !(duration.is_finite() && duration > 0.0) {
@@ -277,7 +277,7 @@ pub struct MinimapDrawn {
 pub struct Minimap {
     built: Option<(
         [i32; 2],
-        viewer_foundation::map::native_windows::NativeWindows,
+        viewer_native_gui::native_windows::NativeWindows,
     )>,
     window: Option<Retained>,
     generation: u64,
@@ -396,7 +396,7 @@ impl Minimap {
                         .instance
                         .set_size(root, border, [image[2], image[3]], &resources)
             {
-                viewer_foundation::map::gui_resources::count_refused(
+                viewer_native_gui::gui_resources::count_refused(
                     refused,
                     BORDER,
                     &why,

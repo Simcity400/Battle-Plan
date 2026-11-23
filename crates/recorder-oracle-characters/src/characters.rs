@@ -1,6 +1,7 @@
 
 use super::{Report, TokenNames, complete, invalid, required_country_tag};
-use content_reader_core::{leader_traits::LeaderTraits, parser::c_string};
+use content_reader_military::leader_traits::LeaderTraits;
+use content_reader_parser::parser::c_string;
 use content_reader_save::characters as saved;
 use replay_data::{rows::CountryRow, rows::tables};
 use replay_frame::frame::DecodedFrame;

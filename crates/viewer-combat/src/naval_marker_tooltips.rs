@@ -7,16 +7,13 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, BTreeSet};
-use viewer_foundation::engaged::Engaged;
-use viewer_foundation::engagement_history::{self, History};
-use viewer_foundation::map::tables::core;
+use viewer_engagements::engaged::Engaged;
+use viewer_engagements::engagement_history::{self, History};
+use viewer_foundation::tables::core;
 use viewer_foundation::tooltip_text::ensure_newlines;
 use viewer_foundation::tooltip_text::tooltip_keys;
-use viewer_foundation::{
-    map::visibility::Relations,
-    table_access::{Available, rows},
-    tooltip_text::Tooltip,
-};
+use viewer_foundation::{visibility::Relations, tooltip_text::Tooltip};
+use dashboard_text::table_access::{Available, rows};
 use {
     super::land_marker_tooltips,
     viewer_foundation::tooltip_text::{TextIcons, builtin},

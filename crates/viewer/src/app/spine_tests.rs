@@ -1,8 +1,6 @@
 use super::{Config, Options, Playhead, Viewer};
-use crate::{
-    layers::{Carried, Settling, Inputs, Layer, Published, View, recorded::record},
-    playhead_host::{MapSide, mirror::Mirrors, open, views::tests::hourly_steps},
-};
+use viewer_layer_core::{layers::{Carried, Settling, Inputs, Layer, Published, View}, test_support::recorded::record};
+use crate::playhead_host::{MapSide, mirror::Mirrors, open, views::tests::hourly_steps};
 use playhead::Step;
 use replay_columnar::manifest::Status;
 use replay_data::{BranchId, Hour, rows::TableId};
@@ -15,11 +13,9 @@ use std::{
     },
     time::Instant,
 };
-use viewer_foundation::map::{
-    frame::DayNight,
-    presentation::{Continuity, UnitRestart},
-};
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_gpu::frame::DayNight;
+use viewer_runtime::presentation::{Continuity, UnitRestart};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 const BRANCH: BranchId = 1;
 const LAST: Hour = 11;
@@ -80,31 +76,23 @@ fn side(name: &str) -> (MapSide, Arc<AtomicBool>) {
     let entry = open(units, hourly_steps()).unwrap();
     let gate = Arc::new(AtomicBool::new(true));
     let layer = Gated { open: Arc::clone(&gate), next: None, published: None, viewed: false };
-    let mut side = MapSide::new(entry, vec![Box::new(layer)], View::default()).unwrap();
+    let mut side = MapSide::with_products(entry, vec![Box::new(layer)], View::default()).unwrap();
     side.set_branch(BRANCH);
     (side, gate)
 }
 
-fn map(viewer: &mut Viewer) -> &mut crate::playhead_host::side::SideThread {
+fn map(viewer: &mut Viewer) -> &mut viewer_playback::side::SideThread {
     viewer.playhead_map.as_mut().expect("the window's reader")
 }
 
-fn frames_at(side: &mut crate::playhead_host::side::SideThread, hour: Hour, mut done: impl FnMut(&MapSide) -> bool) {
+fn frames_at(side: &mut viewer_playback::side::SideThread, hour: Hour, mut done: impl FnMut(&MapSide) -> bool) {
     side.with_side_mut(|side| {
-        loop {
-            let frame = side.frame(hour).unwrap();
-            if done(side) {
-                return;
-            }
-            if frame.steps == 0 && frame.swapped.is_none() {
-                std::thread::yield_now();
-            }
-        }
+        viewer_layer_core::test_support::recorded::frames_at(side, hour, &format!("hour {hour}"), |side, _| done(side));
     });
     side.driven(|_| ());
 }
 
-fn shown(side: &mut crate::playhead_host::side::SideThread, hour: Hour) {
+fn shown(side: &mut viewer_playback::side::SideThread, hour: Hour) {
     frames_at(side, hour, |side| !side.composing() && side.last_frame().drawn == Some(hour));
 }
 
@@ -113,7 +101,7 @@ fn viewer(side: MapSide, hour: Hour) -> Viewer {
     viewer.playhead = Some(at(hour));
     viewer.rendered_sequence = 1;
     viewer.playhead_opened = true;
-    let mut side = crate::playhead_host::side::SideThread::new(side).unwrap();
+    let mut side = viewer_playback::side::SideThread::new(side).unwrap();
     side.driven(|_| ());
     viewer.playhead_map = Some(side);
     viewer
@@ -131,9 +119,9 @@ fn drawn(viewer: &mut Viewer) {
     viewer.rendered = viewer.layers_on_screen().map(|(branch, hour)| Playhead { branch, hour, fraction: 0.0 });
 }
 
-fn target(hour: Hour, playing: bool) -> dashboard::protocol::DashboardMapView {
-    let bounds = dashboard::protocol::ViewBounds { x: 0, y: 0, width: 256, height: 144 };
-    dashboard::protocol::DashboardMapView {
+fn target(hour: Hour, playing: bool) -> dashboard_core::protocol::DashboardMapView {
+    let bounds = dashboard_core::protocol::ViewBounds { x: 0, y: 0, width: 256, height: 144 };
+    dashboard_core::protocol::DashboardMapView {
         options: Default::default(),
         id: "spine".into(),
         source_id: "spine".into(),
@@ -147,6 +135,7 @@ fn target(hour: Hour, playing: bool) -> dashboard::protocol::DashboardMapView {
         sequence: 1,
         seek_sequence: Some(1),
         composed_at: 0.0,
+        clock_id: "page-1".into(),
         bounds,
         clip: bounds,
         visible: true,
@@ -330,4 +319,77 @@ fn the_mode_on_screen_stays_the_previous_one_until_the_picture_for_the_new_one_i
     gate.store(true, Ordering::Release);
     frames_at(map(&mut viewer), 2, |side| side.mode_on_screen() == Some(&diplomacy));
     assert_eq!(*viewer.shown_mode(), diplomacy);
+}
+
+#[test]
+fn overlay_continuity_matches_destination_across_lagging_layers_and_rejects_stale_overlays() {
+    let gaps = [Gap { branch: BRANCH, first_hour: 5, last_hour: 6, reason: "recorder paused".into() }];
+    assert!(
+        !super::overlay_matches_continuity((0, BRANCH, 8, 7), (BRANCH, 4, Some("7")), Some(0), &gaps),
+        "destination overlay arriving while layers lag before the gap stays stale on Frame 1"
+    );
+    assert!(
+        super::overlay_matches_continuity((0, BRANCH, 8, 7), (BRANCH, 8, Some("7")), Some(0), &gaps),
+        "destination overlay matches once layers catch up across the gap on Frame 2"
+    );
+    assert!(
+        !super::overlay_matches_continuity((0, BRANCH, 4, 7), (BRANCH, 8, Some("7")), Some(0), &gaps),
+        "retained pre-gap overlay is not promoted across the gap"
+    );
+    assert!(
+        !super::overlay_matches_continuity((0, BRANCH, 8, 7), (BRANCH, 8, Some("7")), Some(1), &gaps),
+        "retained pre-seek overlay is rejected once overlay generation advances"
+    );
+    assert!(
+        super::overlay_matches_continuity((1, BRANCH, 8, 7), (BRANCH, 8, Some("7")), Some(1), &gaps),
+        "destination overlay from the current generation matches after seek"
+    );
+    assert!(
+        !super::overlay_matches_continuity((0, BRANCH, 8, 7), (BRANCH, 8, Some("9")), Some(1), &gaps),
+        "retained overlay from another viewing country is rejected"
+    );
+    assert!(
+        !super::overlay_matches_continuity((0, BRANCH, 8, 7), (BRANCH + 1, 8, Some("7")), Some(0), &gaps),
+        "retained overlay from another branch is rejected"
+    );
+}
+
+#[test]
+fn a_new_playing_origin_seeks_the_attached_map_side_to_the_new_hour() {
+    let (side, _) = side("spine origin switch");
+    let mut viewer = viewer(side, 2);
+    let now = viewer.last_step;
+    let sample = |origin, composed_at| {
+        Some(crate::page_clock::ClockSample {
+            origin,
+            composed_at,
+        })
+    };
+    viewer.anchor_playback(
+        at(2),
+        true,
+        1_440.0,
+        true,
+        sample("page-A", 10_000.0),
+        now,
+        LAST,
+    );
+    shown(map(&mut viewer), 2);
+    let before_epoch = map(&mut viewer).entry().playhead().epoch();
+    viewer.anchor_playback(
+        at(9),
+        true,
+        1_440.0,
+        false,
+        sample("page-B", 9_500.0),
+        now + std::time::Duration::from_millis(500),
+        LAST,
+    );
+    assert_eq!(viewer.playhead, Some(at(9)));
+    assert!(
+        map(&mut viewer).entry().playhead().epoch() > before_epoch,
+        "a new playing page origin must issue a seek to the attached map side"
+    );
+    shown(map(&mut viewer), 9);
+    assert_eq!(map(&mut viewer).applied(), Some(9));
 }

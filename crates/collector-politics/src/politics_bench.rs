@@ -261,6 +261,7 @@ fn measure(values: &mut [std::time::Duration]) -> (u128, u128) {
 #[test]
 #[ignore = "release production daily tap observer profile; no game"]
 fn politics_daily_tap_profile() {
+    let _guard = hooks::staging_test();
     for countries in [1500, 5000] {
         let mut world = World::new(countries);
         let define = engine_events::politics_sites::BLOCKADE_COST_DEFINE_RVA.0;
@@ -277,7 +278,8 @@ fn politics_daily_tap_profile() {
         let mut bytes = vec![0u8; countries * 3];
         let mut times = Vec::new();
         for iteration in 0..110 {
-            hooks::bench_begin(world.base, countries * 3, 1);
+            // SAFETY: Benchmark holds `hooks::staging_test()` across setup and drain.
+            unsafe { hooks::bench_begin(world.base, countries * 3, 1) };
             let start = Instant::now();
             for receivers in world.receivers.chunks_exact(8) {
                 hooks::bench_daily_taps(receivers[0] - 0x200, modifier_frame, rate_frame);
@@ -285,7 +287,8 @@ fn politics_daily_tap_profile() {
             if iteration >= 10 {
                 times.push(start.elapsed());
             }
-            let drain = hooks::bench_drain(&mut output, &mut bytes);
+            // SAFETY: Benchmark holds `hooks::staging_test()` as the sole consumer.
+            let drain = unsafe { hooks::bench_drain(&mut output, &mut bytes) };
             assert_eq!(drain.copied, countries * 3);
             for rows in output.chunks_exact(3) {
                 assert_eq!(
@@ -308,6 +311,7 @@ fn politics_daily_tap_profile() {
 #[test]
 #[ignore = "release offline politics detour/staging and worker benchmark"]
 fn politics_daily_scale() {
+    let _guard = hooks::staging_test();
     for countries in [1500, 5000] {
         let world = World::new(countries);
         let events = world.events();
@@ -332,7 +336,8 @@ fn politics_daily_scale() {
             entries: events.len(),
             bytes: events.len() * 32,
         });
-        hooks::bench_begin(world.base, events.len(), 32);
+        // SAFETY: Benchmark holds `hooks::staging_test()` across setup, capture, and assembly.
+        unsafe { hooks::bench_begin(world.base, events.len(), 32) };
         let mut observation = Vec::new();
         let mut handoff = Vec::new();
         let mut worker = Vec::new();
@@ -342,9 +347,10 @@ fn politics_daily_scale() {
             let mut tables: Vec<_> = (0..replay_data::rows::TABLE_COUNT)
                 .map(|_| TableInput::Sampled(unavailable("fixture")))
                 .collect();
-            capture.capture();
-            ledger
-                .assemble_owned(
+            // SAFETY: benchmark holds the politics lock as the sole capture and spool caller.
+            unsafe {
+                capture.capture();
+                ledger.assemble_owned(
                     1,
                     -1,
                     &capture,
@@ -352,7 +358,8 @@ fn politics_daily_scale() {
                     Outcome::Rows { len: countries },
                     &mut tables,
                 )
-                .unwrap();
+            }
+            .unwrap();
             let all = Instant::now();
             let start = Instant::now();
             for (owner, receivers) in world.receivers.chunks_exact(8).enumerate() {
@@ -360,11 +367,13 @@ fn politics_daily_scale() {
             }
             let observed = start.elapsed();
             let start = Instant::now();
-            black_box(capture.capture());
+            // SAFETY: benchmark holds the politics lock as the sole capture caller.
+            black_box(unsafe { capture.capture() });
             let handed = start.elapsed();
             let start = Instant::now();
-            ledger
-                .assemble_owned(
+            // SAFETY: benchmark holds the politics lock as the sole spool consumer.
+            unsafe {
+                ledger.assemble_owned(
                     1,
                     0,
                     &capture,
@@ -372,7 +381,8 @@ fn politics_daily_scale() {
                     Outcome::Rows { len: countries },
                     &mut tables,
                 )
-                .unwrap();
+            }
+            .unwrap();
 
             let Some(TableRows::CountryPowerChanges(changes)) =
                 rows(&tables[TableId::CountryPowerChanges.index()])
@@ -425,9 +435,11 @@ fn politics_daily_scale() {
 #[test]
 #[ignore = "release staging component profile"]
 fn politics_staging_profile() {
+    let _guard = hooks::staging_test();
     for countries in [1500, 5000] {
         let world = World::new(countries);
-        hooks::bench_begin(world.base, countries * 13, 32);
+        // SAFETY: Benchmark holds `hooks::staging_test()`.
+        unsafe { hooks::bench_begin(world.base, countries * 13, 32) };
         let mut identities = Vec::new();
         for _ in 0..100 {
             let start = Instant::now();
@@ -453,7 +465,8 @@ fn politics_staging_profile() {
             "identity_part countries={countries} median_p95_ns={:?}",
             measure(&mut identities)
         );
-        hooks::bench_staging_parts(&world.events());
+        // SAFETY: Benchmark holds `hooks::staging_test()`.
+        unsafe { hooks::bench_staging_parts(&world.events()) };
         hooks::bench_end();
     }
 }
@@ -461,10 +474,14 @@ fn politics_staging_profile() {
 #[test]
 #[ignore = "release populated per-event midnight profile"]
 fn politics_midnight_profile() {
+    let _guard = hooks::staging_test();
     for countries in [1500, 5000] {
         let world = World::new(countries);
-        hooks::bench_begin(world.base, countries * 13, 32);
-        hooks::bench_midnight_parts(&world.receivers);
+        // SAFETY: Benchmark holds `hooks::staging_test()`.
+        unsafe {
+            hooks::bench_begin(world.base, countries * 13, 32);
+            hooks::bench_midnight_parts(&world.receivers);
+        }
         hooks::bench_end();
     }
 }

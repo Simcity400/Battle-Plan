@@ -1,4 +1,4 @@
-use content_reader_core::map::ProvinceKind;
+use content_reader_map::map::ProvinceKind;
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
     rows::LandCombatDetailsRow, rows::LandCombatDivisionModifierRow, rows::LandCombatDivisionRow,
@@ -10,7 +10,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
-use viewer_foundation::engagement_progress::sides as engagement_progress_sides;
+use viewer_engagements::engagement_progress::sides as engagement_progress_sides;
 use viewer_foundation::modifier_names::{
     BM_AMPH_PENALTY, BM_DUGIN_MODIFIER, BM_ENCIRCLEMENT_PENALTY, BM_MULTIPLE, BM_PARADROP,
     BM_RIVER_PENALTY, BM_SUPPLY, BM_TERRAIN, modifier_name_key,
@@ -19,28 +19,29 @@ use viewer_foundation::tooltip_text::country_localised;
 use viewer_foundation::tooltip_text::localise;
 use viewer_foundation::tooltip_text::tooltip_keys;
 use viewer_foundation::tooltip_text::viewing_tag as tooltip_text_viewing_tag;
-use {
-    super::Selection, super::Values, super::binding::Bindings, super::defines::ArmourHover,
-    super::defines::LandDefines, super::fixed::fraction, super::fixed::mul,
-    super::land_details::direction_count, super::land_details::division_width,
-    super::land_details::total_width, super::tactics::Content as Tactics,
-    super::tooltips::hover_text, super::tooltips::organisation_effects,
-    super::tooltips::refuse_hovers, super::tooltips::set_hover,
-    viewer_foundation::land_combat_math::Condition, viewer_foundation::land_combat_math::Divisions,
-    viewer_foundation::land_combat_math::combat_rows,
-    viewer_foundation::land_combat_math::member_values,
-    viewer_foundation::land_combat_math::condition_gap,
-    viewer_foundation::land_combat_math::conditions, viewer_foundation::land_combat_math::modifier,
-    viewer_foundation::tooltip_text::TextIcons, viewer_foundation::tooltip_text::builtin,
-    viewer_foundation::tooltip_text::token,
+use super::{
+    Selection,
+    Values,
+    binding::Bindings,
+    defines::{ArmourHover, LandDefines},
+    fixed::{fraction, mul},
+    land_details::{direction_count, division_width, total_width},
+    tactics::Content as Tactics,
+    tooltips::{hover_text, organisation_effects, refuse_hovers, set_hover},
 };
-use {
-    super::content::Content as StaticContent,
-    viewer_foundation::{
-        map::perspective::Vision,
-        table_access::{Available, rows},
-    },
+use viewer_engagements::land_combat_math::{
+    Condition,
+    Divisions,
+    combat_rows,
+    member_values,
+    condition_gap,
+    conditions,
+    modifier,
 };
+use viewer_foundation::tooltip_text::{TextIcons, builtin, token};
+use super::content::Content as StaticContent;
+use viewer_foundation::perspective::Vision;
+use dashboard_text::table_access::{Available, rows};
 
 mod history;
 mod panel;
@@ -56,7 +57,7 @@ fn combat_strength(strength: i64, maximum: i64, factor: i64) -> Option<i64> {
 }
 
 fn one_decimal(value: i64) -> String {
-    content_reader_core::fixed5::fixed5_to_string(value, 1)
+    content_reader_parser::fixed5::fixed5_to_string(value, 1)
 }
 
 fn tactic_effects(
@@ -179,7 +180,7 @@ fn combat_stat(
 }
 
 fn fixed_decimal(value: i64) -> String {
-    content_reader_core::fixed5::fixed5_to_string(value, -1)
+    content_reader_parser::fixed5::fixed5_to_string(value, -1)
 }
 
 fn armour_description(
@@ -343,7 +344,7 @@ fn division_summary(
 fn division_experience_tooltip(
     icons: &dyn TextIcons,
     loc: &Localisation,
-    experience: content_reader_core::unit_leader::DivisionExperienceProgress,
+    experience: content_reader_key_names::unit_leader::DivisionExperienceProgress,
 ) -> Result<String, String> {
     let level = builtin(icons, loc, &format!("UNIT_LEVEL_{}", experience.level), &[])?;
     let combat = content_reader_localisation::localisation::format_scripted_variable(

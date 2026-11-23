@@ -6,4 +6,4 @@ Use one route sample for admission, placement, and scale. Animation and selectio
 
 The counter and ship-model passes share the mission skip decision. A skipped task force never reaches representative selection, so neither its counter nor its model appears. The decision depends on the recorded skip flag, active mission, region state, absence of combat, and the mission-specific region requirements. A strike force is inactive for this rule. Invasion support needs a bombardment region, and a patrol needs the current matching patrol region. Absence of required operands leaves the result unavailable.
 
-[Task-force visual state](../../crates/viewer-foundation/src/map/task_force_visual.rs) · [Shared unit rules](../../crates/viewer-foundation/src/map/unit_rules.rs)
+[Task-force visual state](../../crates/viewer-unit-reads/src/task_force_visual.rs) · [Shared unit rules](../../crates/viewer-foundation/src/unit_rules.rs)

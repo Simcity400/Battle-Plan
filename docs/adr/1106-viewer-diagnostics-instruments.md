@@ -6,4 +6,4 @@ The optional install check compares a product’s incremental install with a who
 
 Canonical debug formatting shared by the corpus omits runtime handles and caches. Tests use the viewer’s allocator to exercise the same allocation behavior. Division-template icon preparation expands only the supported compressed base-level color formats on the CPU and names unsupported ones in refusals.
 
-[Load measurement](../../crates/viewer-foundation/src/load_record.rs) · [Install parity](../../crates/viewer-foundation/src/install_check.rs) · [Canonical formatting](../../crates/viewer-foundation/src/debug_fields.rs) · [CPU texture preparation](../../crates/viewer-foundation/src/image_rgba.rs)
+[Load measurement](../../crates/viewer-runtime/src/load_record.rs) · [Install parity](../../crates/viewer-runtime/src/install_check.rs) · [Canonical formatting](../../crates/viewer-runtime/src/debug_fields.rs) · [CPU texture preparation](../../crates/viewer-foundation/src/templates/image_rgba.rs)

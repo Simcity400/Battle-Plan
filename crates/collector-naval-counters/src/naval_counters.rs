@@ -154,7 +154,10 @@ collector_primitives::capacity_max!(Capacities {
 });
 
 impl Capacities {
-    pub fn presize(
+    /// # Safety
+    /// Run only against the authenticated session image while fleet-region watches remain live for
+    /// the active session (or an isolated test) and `WatchRegistry::release` is excluded.
+    pub unsafe fn presize(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -227,8 +230,11 @@ impl Capacities {
         })?;
         demand.task_forces = demand.task_forces.max(tasks);
         demand.fleets = demand.fleets.max(fleets);
-        collector_observers::fleet_region_changes::demand(fleets);
-        collector_observers::fleet_region_changes::presize();
+        // SAFETY: Caller guarantees live fleet-region watches with `release` excluded.
+        unsafe {
+            collector_observers::fleet_region_changes::demand(fleets);
+            collector_observers::fleet_region_changes::presize();
+        }
         demand.rosters = demand.rosters.max(tasks);
         demand.motion = demand.motion.max(tasks);
         demand.paths = demand.paths.max(paths);
@@ -404,13 +410,21 @@ impl CensusStore {
 }
 impl Captured {
     pub fn vacant() -> Self {
-        Self::with_capacities(&Capacities::default())
+        // SAFETY: Zero fleet capacity neither updates fleet demand nor offers watch storage.
+        unsafe { Self::with_capacities(&Capacities::default()) }
     }
 
-    pub fn with_capacities(capacity: &Capacities) -> Self {
+    /// # Safety
+    /// Allocate only while fleet-region watches remain live for the active session (or an isolated
+    /// test) and `WatchRegistry::release` is excluded; `WatchRegistry::offer` atomically swaps
+    /// offered tables if frame construction overlaps with sizing.
+    pub unsafe fn with_capacities(capacity: &Capacities) -> Self {
         if capacity.fleets != 0 {
-            collector_observers::fleet_region_changes::demand(capacity.fleets);
-            collector_observers::fleet_region_changes::presize();
+            // SAFETY: Caller guarantees live fleet-region watches with `release` excluded.
+            unsafe {
+                collector_observers::fleet_region_changes::demand(capacity.fleets);
+                collector_observers::fleet_region_changes::presize();
+            }
         }
         Self {
             owned_pending: false,
@@ -522,8 +536,11 @@ impl Captured {
         self.port_bytes.grow(&mut capacity.port_bytes);
         self.port_answers.grow(&mut capacity.port_answers);
     }
+    /// # Safety
+    /// Run only during admitted naval capture (or an isolated fixture) while fleet-region watches
+    /// remain live and teardown is excluded.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
+    pub unsafe fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         self.capture_at(
             memory,
             base,
@@ -534,7 +551,7 @@ impl Captured {
     }
 
     #[cfg(test)]
-    pub fn capture_with_hour(
+    pub(crate) fn capture_with_hour(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -545,7 +562,10 @@ impl Captured {
         self.capture_at(memory, base, state, Some(hour), modifier_guard)
     }
 
-    pub fn acquire_with_hour(
+    /// # Safety
+    /// Run only during admitted naval capture (or an isolated fixture) while fleet-region watches
+    /// remain live and teardown is excluded.
+    pub unsafe fn acquire_with_hour(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -748,7 +768,8 @@ impl Captured {
         self.regions.required = registered.required_regions;
         self.task_forces.outcome = captured.task_forces;
         self.fleets.outcome = captured.fleets;
-        collector_observers::fleet_region_changes::demand(self.fleets.outcome.len());
+        // SAFETY: Admitted naval capture records measured fleet demand for the live session.
+        unsafe { collector_observers::fleet_region_changes::demand(self.fleets.outcome.len()) };
         self.rosters.len = captured.roster_len;
         self.rosters.required = captured.roster_required;
         self.motion.outcome = walked.outcome;
@@ -1370,7 +1391,8 @@ mod tests {
             };
             rows[0].regions.to_vec()
         };
-        let mut captured = Captured::with_capacities(&Capacities::default());
+        // SAFETY: synthetic unit test with no live naval observer hooks.
+        let mut captured = unsafe { Captured::with_capacities(&Capacities::default()) };
         let capture = |captured: &mut Captured, bytes: &[u8], world: Option<u64>| {
             let slice = SliceMemory { base: 0, bytes };
             let memory = Singles {
@@ -1413,7 +1435,8 @@ mod tests {
             calls: Default::default(),
         };
         let mut capacity = Capacities::default();
-        let mut captured = Captured::with_capacities(&capacity);
+        // SAFETY: synthetic unit test with no live naval observer hooks.
+        let mut captured = unsafe { Captured::with_capacities(&capacity) };
         assert_eq!(captured.allocated_bytes(), 0);
         captured.capture_with_hour(&memory, 0, STATE, 123, Err("fixture modifier refusal"));
         assert_eq!(captured.outcomes(), [Outcome::Rows { len: 1 }; N]);
@@ -1431,7 +1454,8 @@ mod tests {
         let calls = |gather: bool| {
             TASK_GATHER_OFF.set(!gather);
             memory.calls.set(0);
-            let mut captured = Captured::with_capacities(&Capacities::default());
+            // SAFETY: synthetic unit test with no live naval observer hooks.
+            let mut captured = unsafe { Captured::with_capacities(&Capacities::default()) };
             captured.capture_with_hour(&memory, 0, STATE, 123, Err("fixture modifier refusal"));
             TASK_GATHER_OFF.set(false);
             memory.calls.get()
@@ -1470,7 +1494,8 @@ mod tests {
                 .iter()
                 .all(|table| matches!(table, TableView::Complete(_)))
         );
-        capacity.presize(&memory, 0, STATE).unwrap();
+        // SAFETY: synthetic unit test with no live naval observer hooks.
+        unsafe { capacity.presize(&memory, 0, STATE) }.unwrap();
         assert_eq!(
             (
                 capacity.task_forces,
@@ -1507,22 +1532,26 @@ mod tests {
             base: 0,
             bytes: &[],
         };
-        let mut capture = Captured::with_capacities(&Capacities {
-            task_forces: 1,
-            fleets: 1,
-            rosters: 2,
-            motion: 1,
-            paths: 1,
-            missions: 1,
-            regions: 1,
-            names: 0,
-            supply_origins: 0,
-            port_searchers: 0,
-            port_avoided: 0,
-            port_bytes: 0,
-            port_answers: 0,
-        });
-        capture.capture(&memory, 0, 0);
+        // SAFETY: synthetic unit test with no live naval observer hooks.
+        let mut capture = unsafe {
+            Captured::with_capacities(&Capacities {
+                task_forces: 1,
+                fleets: 1,
+                rosters: 2,
+                motion: 1,
+                paths: 1,
+                missions: 1,
+                regions: 1,
+                names: 0,
+                supply_origins: 0,
+                port_searchers: 0,
+                port_avoided: 0,
+                port_bytes: 0,
+                port_answers: 0,
+            })
+        };
+        // SAFETY: synthetic unit test with no live naval observer hooks.
+        unsafe { capture.capture(&memory, 0, 0) };
         assert!(
             capture
                 .tables()
@@ -1563,7 +1592,8 @@ mod tests {
             names: 7,
             ..Default::default()
         };
-        let mut capture = Captured::with_capacities(&capacity);
+        // SAFETY: synthetic unit test with no live naval observer hooks.
+        let mut capture = unsafe { Captured::with_capacities(&capacity) };
         capture.task_forces.rows[0] = ctask_force::CounterRow {
             id: 51,
             received_supply_ratio: 35_000,
@@ -1636,7 +1666,8 @@ mod tests {
             port_bytes: 0,
             port_answers: 0,
         };
-        let mut capture = Captured::with_capacities(&capacity);
+        // SAFETY: synthetic unit test with no live naval observer hooks.
+        let mut capture = unsafe { Captured::with_capacities(&capacity) };
         capture.motion.rows[0] = ctask_force::MapMotionRow {
             id: (5 << 32) | 61,
             target: 9,
@@ -1697,7 +1728,8 @@ mod tests {
             motion: 2,
             ..Capacities::default()
         };
-        let mut capture = Captured::with_capacities(&capacity);
+        // SAFETY: synthetic unit test with no live naval observer hooks.
+        let mut capture = unsafe { Captured::with_capacities(&capacity) };
         let owner = engine_native::ccountry::Country {
             pointer: 0x1234,
             id: 19,
@@ -1784,7 +1816,8 @@ mod tests {
             port_bytes: 0,
             port_answers: 0,
         };
-        let mut capture = Captured::with_capacities(&capacity);
+        // SAFETY: synthetic unit test with no live naval observer hooks.
+        let mut capture = unsafe { Captured::with_capacities(&capacity) };
         capture.missions.rows[0] = ctask_force::MissionRow {
             id: (5 << 32) | 61,
             owner: 42,
@@ -1834,7 +1867,8 @@ mod tests {
             port_answers: 0,
             ..Default::default()
         };
-        let mut capture = Captured::with_capacities(&capacity);
+        // SAFETY: synthetic unit test with no live naval observer hooks.
+        let mut capture = unsafe { Captured::with_capacities(&capacity) };
         capture.names.first[..4].copy_from_slice(b"Navy");
         capture.names.len = 4;
         capture.supply_origins.first[..2].copy_from_slice(&[
@@ -1946,10 +1980,13 @@ mod tests {
     #[test]
     fn invalid_supply_origin_span_withholds_only_nodes_and_name_fault_keeps_supply() {
         use engine_native::cunit_supply_inputs::Inputs;
-        let mut capture = Captured::with_capacities(&Capacities {
-            task_forces: 1,
-            ..Default::default()
-        });
+        // SAFETY: synthetic unit test with no live naval observer hooks.
+        let mut capture = unsafe {
+            Captured::with_capacities(&Capacities {
+                task_forces: 1,
+                ..Default::default()
+            })
+        };
         capture.task_forces.rows[0] = ctask_force::CounterRow {
             id: (29 << 32) | 61,
             running_away: 0xff,
@@ -1982,14 +2019,17 @@ mod tests {
     #[test]
     fn port_projection_owns_ordered_fault_slots_and_exact_bytes_without_hiding_old_fields() {
         use ctask_force::port_mission::{EngagementTarget, Inputs, Searcher};
-        let mut capture = Captured::with_capacities(&Capacities {
-            task_forces: 1,
-            names: 4,
-            port_searchers: 3,
-            port_avoided: 3,
-            port_bytes: 3,
-            ..Default::default()
-        });
+        // SAFETY: synthetic unit test with no live naval observer hooks.
+        let mut capture = unsafe {
+            Captured::with_capacities(&Capacities {
+                task_forces: 1,
+                names: 4,
+                port_searchers: 3,
+                port_avoided: 3,
+                port_bytes: 3,
+                ..Default::default()
+            })
+        };
         capture.task_forces.rows[0] = ctask_force::CounterRow {
             id: (29 << 32) | 61,
             received_supply_ratio: 12_345,
@@ -2085,9 +2125,11 @@ mod tests {
             names: 4,
             ..Default::default()
         };
-        let mut capture = Captured::with_capacities(&capacity);
+        // SAFETY: synthetic unit test with no live naval observer hooks.
+        let mut capture = unsafe { Captured::with_capacities(&capacity) };
         let mut old_capacity = capacity;
-        let mut old = Captured::with_capacities(&old_capacity);
+        // SAFETY: synthetic unit test with no live naval observer hooks.
+        let mut old = unsafe { Captured::with_capacities(&old_capacity) };
         old.names.first[..4].copy_from_slice(b"Navy");
         old.names.len = 4;
         capture.names.first[..4].copy_from_slice(b"Navy");

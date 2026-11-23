@@ -8,4 +8,4 @@ Position, size, margin and bounds have separate accepted keys and recovery rules
 
 Tooltip hashes use case-sensitive authored first-NUL text, including the delayed and disabled variants. The text bytes remain available to localisation. A tooltip anchor runs its own key loop with integer coordinates and boolean relative/below settings. Map icon objects have no pointer hit list. Bound localisation uses a pre-order node list, preserving duplicate arguments in input order. A scalar builds one node. An empty root key empties the tree. Recognize the native token and formatter forms before the plain key fallback. Context-aware text uses the view's scoped localizer only during the corresponding shown refresh, and before or outside that refresh the static text applies.
 
-[Shared GUI value reader](../../crates/content-reader-core/src/gui/native/reader.rs) · [Element readers](../../crates/content-reader-core/src/gui/native/elements.rs)
+[Shared GUI value reader](../../crates/content-reader-gui/src/gui/native/reader.rs) · [Element readers](../../crates/content-reader-gui/src/gui/native/elements.rs)

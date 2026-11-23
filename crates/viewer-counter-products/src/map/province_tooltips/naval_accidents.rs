@@ -2,10 +2,8 @@ use super::{Arg, Tooltip, counter_content};
 use replay_data::{rows::AirCountryRelationRow, rows::NavalAccidentReportRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
-use viewer_foundation::{
-    map::{naval_region_control::raw_roster, perspective::Vision},
-    tooltip_text::ensure_newlines,
-};
+use replay_derive::naval_region_control::raw_roster;
+use viewer_foundation::{perspective::Vision, tooltip_text::ensure_newlines};
 
 #[derive(Default, Debug, PartialEq, Eq)]
 struct Aggregate {

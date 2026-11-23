@@ -10,4 +10,4 @@ Map and division visitation seed the later typed work. ArmyIcons uses installed 
 
 Supply work loans node-census parts while part zero owns train data, selection and the store. The character roster and other split families similarly collect each part's timing and treat accepted interruption as terminal for the family. Ship models first walk a census. Only a completed census lends detail parts, sized from actual ship count without allocations. Join part zero first and restore detail outcomes in census order. A completed ship-model failure remains authoritative until reset or a new first census starts an epoch. Its scrubbed seeds cannot be read again. FinalInputs borrows the last sources after their owners join and leaves variants independent. ScriptVariables is held separately until the last Intel borrower returns. A failed worker refuses its table by name and forgets its store.
 
-[Pack scheduling](../../crates/collector/src/extended/packs.rs) · [Capture dispatch](../../crates/collector/src/extended/mod.rs)
+[Pack scheduling](../../crates/collector-capture/src/extended/packs.rs) · [Capture dispatch](../../crates/collector-capture/src/extended/mod.rs)

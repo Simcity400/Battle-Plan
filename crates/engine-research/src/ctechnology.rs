@@ -130,6 +130,18 @@ pub(crate) fn copy_identities(
     )
 }
 
+pub(crate) fn copy_identity_one(
+    memory: &impl crate::Memory,
+    pointer: usize,
+    out: &mut [u8; IDENTITY_BYTES],
+) -> usize {
+    memory.copy_records(
+        crate::memory::RecordSources::Pointers(&[pointer]),
+        &IDENTITY_LAYOUT,
+        out,
+    )
+}
+
 pub fn decode_batch(
     base: usize,
     status: usize,

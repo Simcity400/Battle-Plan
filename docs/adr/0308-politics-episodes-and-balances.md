@@ -6,4 +6,4 @@ Civil war episodes connect listings through a shared holder while their interval
 
 Balance positions identify records only within a recorded hour. The game's chosen balance is the first record listing the holder and requires resolved membership. The history reads relevant records per stretch. The state and history products resolve names, ranges and sides through the recording's content. A known numeric value stays visible if content withholds a name or range. Moving quantities use live cells. Drift sources are named in recorded static-modifier order, separately from members' contributions. The breakdown requires a name for every source.
 
-[Civil wars](../../crates/dashboard/src/products/politics/civil_wars.rs) · [Political history](../../crates/dashboard/src/products/politics/history.rs) · [Political state](../../crates/dashboard/src/products/politics/state.rs)
+[Civil wars](../../crates/dashboard-politics/src/products/politics/civil_wars.rs) · [Political history](../../crates/dashboard-politics/src/products/politics/history.rs) · [Political state](../../crates/dashboard-politics/src/products/politics/state.rs)

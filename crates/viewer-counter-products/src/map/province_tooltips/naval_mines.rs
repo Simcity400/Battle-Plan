@@ -1,11 +1,14 @@
+use dashboard_effects::ScriptedEffects;
 use super::inputs::Names;
 use super::{Arg, Tooltip, counter_content};
 use replay_data::{rows::AirCountryRelationRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, BTreeSet};
-use viewer_foundation::map::{
-    allegiance::NativeRelations, directed_wars::Owner, naval_mine_levels::{self, Levels},
-    naval_region_control::raw_roster, perspective::Vision,
+use viewer_foundation::{allegiance::NativeRelations, perspective::Vision};
+use replay_derive::{
+    directed_wars::Owner,
+    naval_mine_levels::Levels,
+    naval_region_control::raw_roster,
 };
 
 type Fact<T> = Result<T, String>;
@@ -143,7 +146,7 @@ impl Inputs<'_> {
         if !self.positive_states(raw)? {
             return Ok((String::new(), None));
         }
-        if !naval_mine_levels::enabled(self.frame)? {
+        if !viewer_foundation::naval_mine_feature::enabled(self.frame)? {
             return Ok((String::new(), None));
         }
         let levels = Levels::read(self.frame, &self.links)?;
@@ -266,7 +269,7 @@ impl Inputs<'_> {
             let name = self.countries.name_with(slot, "_DEF")?;
             let name = format!(
                 "{}{} {}",
-                viewer_foundation::map::native_text::FLAG,
+                viewer_native_gui::native_text::FLAG,
                 tag,
                 content_reader_localisation::localisation::crt_case_text(&name, true, true)
             );
@@ -434,14 +437,14 @@ impl Inputs<'_> {
         )
         .viewing(self.vision.ours());
         let effects = scripted.effects()?;
-        let context = dashboard_text::effect_description::Context::new(
+        let context = dashboard_effects::effect_description::Context::new(
             &text,
             &self.content.localisation,
             self.vision.ours(),
             "common/modifiers",
             effects.view(None),
         );
-        dashboard_text::effect_description::scaled_static_modifiers(
+        dashboard_effects::effect_description::scaled_static_modifiers(
             &context,
             "naval_mines_effect",
             "  ",

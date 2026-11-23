@@ -1,4 +1,6 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
+use content_reader_script::native::{self, Shape};
 use crate::{
     ResolvedLayers,
     fields::invalid,
@@ -6,11 +8,10 @@ use crate::{
     modifiers,
     parser::{
         c_string,
-        native::{self, Shape},
     },
     script_files,
 };
-use content_reader_core::ideologies::ColorReads;
+use content_reader_script::color_reads::ColorReads;
 use std::io;
 
 #[derive(Default)]
@@ -191,7 +192,7 @@ mod tests {
 
     #[test]
     fn state_category_names_and_consumption() {
-        content_reader_core::test_game::with(|game| {
+        content_reader_script::test_game::with(|game| {
             game.modifiers(["local_building_slots", "local_supplies"])
         });
         for (input, expected) in [
@@ -208,7 +209,7 @@ mod tests {
 
     #[test]
     fn state_category_colours_replay_on_the_object() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let database = parse(
             b"state_categories={Syn={color={1 2 3}} plain={} SYN={color={0.5 0.25 0.125 0.75}} late={color={255 0 0}} LATE={color={0 0}}}",
             &KeyNames::default(),
@@ -231,23 +232,41 @@ mod tests {
             Some([2.0 / 255.0, 4.0 / 255.0, 6.0 / 255.0, 1.0])
         );
         let packed = parse(
-            b"state_categories={isle={color=16711680 color={0 1 0}} part={color=16711680 color={0 1 x}} late={color=16711680} LATE={color={0 0 1 0.5}}}",
+            b"state_categories={isle={color=16711680 color={0 1 0}} part={color=16711680 color={0 1 x}} late={color=16711680} LATE={color={0 0 1 0.5}} argb={color=0x80102030} bad={color={10 20 30} color=0xg} zero={color={10 20 30} color=0x}}",
             &KeyNames::default(),
         )
         .unwrap();
         assert_eq!(packed.color(b"isle").unwrap(), Some([0.0, 1.0, 0.0, 1.0]));
-        assert!(
-            packed
-                .color(b"part")
-                .unwrap_err()
-                .contains("the packed colour 16711680")
+        assert_eq!(
+            packed.color(b"part").unwrap(),
+            Some([0.0, 1.0, 128.0 / 255.0, 1.0])
         );
         assert_eq!(packed.color(b"late").unwrap(), Some([0.0, 0.0, 1.0, 0.5]));
+        assert_eq!(
+            packed.color(b"argb").unwrap(),
+            Some([16.0 / 255.0, 32.0 / 255.0, 48.0 / 255.0, 128.0 / 255.0])
+        );
+        assert_eq!(
+            packed.color(b"bad").unwrap(),
+            Some([10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0, 1.0])
+        );
+        assert_eq!(packed.color(b"zero").unwrap(), Some([0.0; 4]));
+        assert_eq!(
+            packed.notes.iter().filter(|note| note.contains("0xg")).count(),
+            1,
+            "{:?}",
+            packed.notes
+        );
+        assert!(
+            packed.notes.iter().all(|note| !note.contains("`0x`")),
+            "{:?}",
+            packed.notes
+        );
     }
 
     #[test]
     fn state_category_stack_order_and_replacement() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = std::env::temp_dir().join(format!("state-category-{}", std::process::id()));
         let _folder = Folder(root.clone());
         let base = root.join("base");
@@ -291,7 +310,7 @@ mod tests {
 
     #[test]
     fn uncertain_state_category_modifier_names_are_named() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut names = KeyNames::default();
         names.effects.modifiers_gap = Some("synthetic missing registry".into());
         let error = parse(b"state_categories={syn={unresolved_modifier={}}}", &names)

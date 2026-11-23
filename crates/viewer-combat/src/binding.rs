@@ -3,15 +3,16 @@ use content_reader_localisation::localisation::Argument;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
-use viewer_foundation::engagement_history::CombatFlags;
-use viewer_foundation::engagement_progress::FIXED;
-use viewer_foundation::engagement_progress::Progresses;
-use viewer_foundation::engagement_progress::sides as engagement_progress_sides;
-use viewer_foundation::map::native_text::icon_lookup;
-use viewer_foundation::map::perspective::Vision;
-use viewer_foundation::map::templates::custom_icon_index;
+use viewer_engagements::engagement_history::CombatFlags;
+use viewer_engagements::engagement_progress::FIXED;
+use viewer_engagements::engagement_progress::Progresses;
+use viewer_engagements::engagement_progress::sides as engagement_progress_sides;
+use content_reader_localisation::localisation::icon_lookup;
+use viewer_foundation::perspective::Vision;
+use viewer_foundation::templates::custom_icon_index;
 use viewer_foundation::tooltip_text::{TextIcons, builtin, token};
-use {super::content::Content as StaticContent, viewer_foundation::map::tables::rows};
+use super::content::Content as StaticContent;
+use viewer_foundation::tables::rows;
 
 pub(super) type NavalPenalty = (i64, i32, i32);
 
@@ -167,7 +168,7 @@ impl Bindings {
         engaged: &CombatFlags,
         paused: bool,
         nato: bool,
-        navy_sources: &viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap,
+        navy_sources: &viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap,
         rule_relations: Option<&super::RuleRelations>,
     ) -> io::Result<Self> {
         let mut out = Self::default();
@@ -554,12 +555,12 @@ impl Bindings {
             text(
                 &mut self.values,
                 &format!("{prefix}/{wnd}_wnd/stat_positioning"),
-                content_reader_core::fixed5::fixed5_percent(positioning, 0, true),
+                content_reader_parser::fixed5::fixed5_percent(positioning, 0, true),
             );
             text(
                 &mut self.values,
                 &format!("{prefix}/{wnd}_wnd/stat_anti_air"),
-                content_reader_core::fixed5::fixed5_to_string(anti_air, 1),
+                content_reader_parser::fixed5::fixed5_to_string(anti_air, 1),
             );
             for member in members {
                 let ship = ships.get(&member.ship).copied();

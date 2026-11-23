@@ -1,13 +1,13 @@
 import '../styles.css';
 
 const asked: { view: string | null; menuOpen: boolean }[] = [];
-let answer: { error?: string } = {};
+let answer: { error?: string; warning?: string } = {};
 Object.assign(globalThis, { isTauri: true });
 Object.assign(window, { __TAURI_INTERNALS__: { invoke: async (command: string, args: { viewId?: string | null }) => {
   if (command !== 'export_map') throw new Error(`unexpected command ${command}`);
   asked.push({ view: args.viewId ?? null, menuOpen: panel()?.matches(':popover-open') ?? false });
   if (answer.error) throw answer.error;
-  return 'Saved map.png: branch 1, hour 12';
+  return { message: 'Saved map.png: branch 1, hour 12', warning: answer.warning ?? null };
 } } });
 
 const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
@@ -23,8 +23,8 @@ createRoot(document.body.appendChild(document.createElement('div'))).render(crea
 
 export const fixture = {
   async ready() { await settle(); return !!document.querySelector('.map-controls-trigger'); },
-  async exportWith(error: string | null) {
-    answer = error ? { error } : {};
+  async exportWith(error: string | null, warning?: string) {
+    answer = error ? { error } : { warning };
     document.querySelector<HTMLButtonElement>('.map-controls-trigger')!.click();
     await settle();
     const opened = panel()!.matches(':popover-open');
@@ -33,9 +33,10 @@ export const fixture = {
     const shown = panel()!.matches(':popover-open');
     const said = panel()!.querySelector('.map-menu-error > span')?.textContent ?? null;
     const retry = panel()!.querySelector('.map-menu-error button')?.textContent ?? null;
+    const note = panel()!.querySelector('.map-menu-note[role="status"]')?.textContent ?? null;
     if (shown) panel()!.hidePopover();
     await settle();
-    return { opened, asked: asked.splice(0), shown, said, retry };
+    return { opened, asked: asked.splice(0), shown, said, retry, note };
   },
 };
 Object.assign(window, { mapControls: fixture });

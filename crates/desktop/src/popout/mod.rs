@@ -2,7 +2,7 @@ mod lifecycle;
 mod shell;
 
 use crate::native::{HostStatus, NativeHost};
-use dashboard::protocol::{MapAction, MapPlayback, ViewBounds};
+use dashboard_core::protocol::{MapAction, MapPlayback, ViewBounds};
 use lifecycle::{Effect, Input, Lifecycle};
 use serde::Serialize;
 use std::sync::{
@@ -114,7 +114,6 @@ fn mirrored(action: &MapAction) -> Option<Mirror> {
         MapAction::RefreshVisualMods => Some(Mirror::RefreshVisualMods),
         MapAction::Unload { .. }
         | MapAction::Configure { .. }
-        | MapAction::Export { .. }
         | MapAction::Inspect
         | MapAction::Folders { .. }
         | MapAction::CameraMode { .. }
@@ -182,7 +181,7 @@ impl PopOuts {
         }
     }
 
-    pub fn set_folders(&self, config: &dashboard::Config) {
+    pub fn set_folders(&self, config: &dashboard_core::config::Config) {
         if let Some(host) = self.host() {
             host.set_folders(config);
         }
@@ -432,7 +431,9 @@ impl Owner {
                 }
             }
             Effect::Raise => {
-                self.shared.with(|_, popout| popout.shell.raise());
+                if let Some(hwnd) = self.shared.with(|_, popout| popout.shell.hwnd()) {
+                    shell::raise(hwnd);
+                }
             }
             Effect::Release(generation) => {
                 let current = {
@@ -672,7 +673,7 @@ pub fn popout_seek(
 pub fn popout_configure(
     popouts: State<'_, PopOuts>,
     generation: u64,
-    options: dashboard::protocol::MapOptions,
+    options: dashboard_core::protocol::MapOptions,
 ) -> Result<(), String> {
     running(&popouts, Some(generation))?.map_action(MapAction::Configure { options })
 }
@@ -681,7 +682,7 @@ pub fn popout_configure(
 pub fn popout_camera_mode(
     popouts: State<'_, PopOuts>,
     generation: u64,
-    mode: dashboard::protocol::CameraMode,
+    mode: dashboard_core::protocol::CameraMode,
     overlays: bool,
 ) -> Result<(), String> {
     running(&popouts, Some(generation))?.map_action(MapAction::CameraMode { mode, overlays })
@@ -696,7 +697,7 @@ pub fn popout_fly_aircraft(
     running(&popouts, Some(generation))?.map_action(MapAction::FlyAircraft { aircraft })
 }
 
-pub fn export(popouts: &PopOuts, generation: Option<u64>, path: String) -> Result<tokio::sync::oneshot::Receiver<Result<String, String>>, String> {
+pub fn export(popouts: &PopOuts, generation: Option<u64>, path: String) -> Result<tokio::sync::oneshot::Receiver<viewer::host::Answer>, String> {
     let generation = generation.ok_or("The map isn’t popped out")?;
     running(popouts, Some(generation))?.export(path, None)
 }
@@ -740,18 +741,13 @@ mod tests {
             MapAction::Configure {
                 options: Default::default(),
             },
-            MapAction::Export {
-                path: "a.png".into(),
-                view_id: None,
-                request: 1,
-            },
             MapAction::Inspect,
             MapAction::Folders {
                 game: "g".into(),
                 user: "u".into(),
             },
             MapAction::CameraMode {
-                mode: dashboard::protocol::CameraMode::Fly,
+                mode: dashboard_core::protocol::CameraMode::Fly,
                 overlays: true,
             },
             MapAction::FlyAircraft {

@@ -10,4 +10,4 @@ Decode prepares the current worker's logical capacities before comparing. The si
 
 The worker's staging refusal can send a frame through the already-admitted typed fallback. A failure after owned staging is accepted publishes a named refusal and does not reread live memory. Tests compare the typed and owned results at exact fit, short capacity, repeated identities and shared or private faults. The dense-plan differential fixture deliberately breaks the writer premise and confirms that a whole scan finds an unlisted slot which the plan is allowed to omit only under that premise.
 
-[Raw AirBases acquisition and memo](../../crates/collector/src/extended/air/bases.rs) · [AirBases parity tests](../../crates/collector/src/extended/air/tests.rs) · [Recorded span lookup](../../crates/collector-raw/src/raw/recorded.rs)
+[Raw AirBases acquisition and memo](../../crates/collector-air/src/extended/air/bases.rs) · [AirBases parity tests](../../crates/collector-air/src/extended/air/tests.rs) · [Recorded span lookup](../../crates/collector-raw/src/raw/recorded.rs)

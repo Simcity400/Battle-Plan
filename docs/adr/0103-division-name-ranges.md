@@ -6,4 +6,4 @@ The language-neutral operands and cached display text can share a native member 
 
 The held store is read-only for these ranges. Register fresh member reads with their writer watches. A held span and cached name can be reused only for a member registered under the take's epoch that no member or country-wide writer touched. The template group and heap override still need their own reads when reconstructing operands from a held span. If the touched list cannot be retained, reread every member. Used staging is at most one receipt per admitted division. An optional copy of the held ordinals lets the ranges stage attack reads under the same admitted maxima. Losing that copy leaves attack reads to the ordered pass.
 
-[Name acquisition and stitching](../../crates/collector/src/extended/division_presentation/naming.rs)
+[Name acquisition and stitching](../../crates/collector-divisions/src/extended/division_presentation/naming.rs)

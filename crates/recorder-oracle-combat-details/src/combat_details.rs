@@ -247,7 +247,7 @@ fn equal<T: PartialEq + std::fmt::Debug>(
 }
 
 fn text_projection<'a>(r: &mut Report, label: &str, value: &'a [u8]) -> &'a [u8] {
-    let prefix = content_reader_core::parser::c_string(value);
+    let prefix = content_reader_parser::parser::c_string(value);
     if prefix.len() < value.len() {
         r.limitation(
             "text serialization stops at the first NUL; captured suffix bytes are not comparable",
@@ -960,7 +960,14 @@ fn member_group<'t>(
             return None;
         }
         MemberTemplate::NotInRecording => {
-            return rebound_group(r, label, recorded, rebound, templates);
+            return rebound_group(
+                r,
+                label,
+                recorded,
+                rebound,
+                unit.alternate_template.is_none(),
+                templates,
+            );
         }
     };
     if reference == 0 {
@@ -1005,6 +1012,7 @@ fn rebound_group<'t>(
     label: &str,
     recorded: &[u8],
     rebound: Option<u64>,
+    from_deployment: bool,
     templates: &NameTemplates<'t>,
 ) -> Option<Option<&'t [u8]>> {
     let Some(template) = rebound else {
@@ -1019,7 +1027,7 @@ fn rebound_group<'t>(
         return None;
     };
     let group = saved.names_group.as_deref();
-    if group.unwrap_or_default() == recorded {
+    if !from_deployment || group.unwrap_or_default() == recorded {
         return Some(group);
     }
     let held = if recorded.is_empty() {

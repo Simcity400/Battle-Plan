@@ -1,18 +1,18 @@
 
 #[cfg(test)]
-use viewer_foundation::map::camera::MapDefines;
+use viewer_gpu::camera::MapDefines;
 #[cfg(test)]
-use viewer_foundation::map::camera::MapSize;
-use viewer_foundation::map::native_resources::Context;
+use viewer_gpu::camera::MapSize;
+use viewer_native_gui::native_resources::Context;
 #[cfg(test)]
-use viewer_foundation::map::test_support::gui;
+use viewer_native_gui::test_support::gui;
 
 use super::*;
-use viewer_foundation::map::free_icons::{IconAnchor, IconFamily};
-use viewer_foundation::map::gui_resources::count_refused;
-use viewer_foundation::map::gui_resources::hit_rectangle;
-use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
-use viewer_foundation::map::icon_windows::PoolView;
+use viewer_gpu::icon_tracks::{IconAnchor, IconFamily};
+use viewer_native_gui::gui_resources::count_refused;
+use viewer_native_gui::gui_resources::hit_rectangle;
+use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
+use viewer_native_gui::icon_windows::PoolView;
 
 const BUTTON_CONTAINER: &str = "raid_map_icon_button_container";
 const FRAME: &str = "raid_map_icon_frame";
@@ -188,7 +188,7 @@ impl PreparedRaids {
         details: Option<&(u32, std::sync::Arc<tooltips::Details>)>,
         hovered: Option<u32>,
     ) -> usize {
-        use viewer_foundation::map::icon_windows::{Owner, Plan};
+        use viewer_native_gui::icon_windows::{Owner, Plan};
         hits.clear();
         let owners: Vec<_> = self
             .placed
@@ -295,8 +295,8 @@ impl PreparedRaids {
             {
                 let layer = sprites::layer(priority, ordinal as u32, 1);
                 batch.at_layer(layer);
-                if let Some((panel, buttons)) = super::details::draw(context, shown, drawn.origin, batch, &mut report.reasons) {
-                    if let Some(rect) = panel {
+                if let Some((panels, buttons)) = super::details::draw(context, shown, drawn.origin, batch, &mut report.reasons) {
+                    for rect in panels {
                         hits.push(tooltips::Hit {
                             origin: [rect[0], rect[1]],
                             size: [rect[2], rect[3]],
@@ -356,11 +356,11 @@ mod tests {
         family: IconFamily::Raids,
         moves: None,
     };
-    use viewer_foundation::map::native_gui::lifecycle::Instance;
+    use viewer_native_gui::native_gui::lifecycle::Instance;
 
     #[test]
     fn native_raid_draw_and_hover_follow_the_map_anchor() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = draw_resources();
         let windows = gui::windows(DRAW_GUI);
         let context = Context {
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn raid_tooltip_regression_overlap_tracks_paint_order_after_camera_move() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = draw_resources();
         let windows = gui::windows(DRAW_GUI);
         let context = Context {
@@ -429,7 +429,7 @@ mod tests {
             height: 300.,
             map: MapSize::TEST,
             defines: MapDefines::test(),
-            pose: viewer_foundation::map::camera::Pose::Map,
+            pose: viewer_gpu::camera::Pose::Map,
         };
         let key = |id| tooltips::Key::Raid {
             id,
@@ -506,7 +506,7 @@ mod tests {
 
     #[test]
     fn raid_tooltip_regression_overlapping_buildings_keep_the_hovered_targets_native_state() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         use super::super::test_support::{frame, put, registered_command_power};
         use content_reader_localisation::localisation::Localisation;
         use replay_data::rows::Recorded;
@@ -534,7 +534,7 @@ mod tests {
             .need_detection = false;
         assets.trigger_content.buildings.types.insert(
             "facility".into(),
-            content_reader_core::buildings::BuildingType {
+            content_reader_key_names::buildings::BuildingType {
                 name: "facility".into(),
                 ..Default::default()
             },
@@ -701,7 +701,7 @@ mod tests {
 
     #[test]
     fn missing_native_raid_controls_are_named_and_counted_for_each_owner() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = draw_resources();
         let windows = gui::windows(
             br#"guiTypes = { containerWindowType = {
@@ -757,7 +757,7 @@ mod tests {
 
     #[test]
     fn groups_standing_at_one_province_keep_their_own_windows() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = draw_resources();
         let windows = gui::windows(DRAW_GUI);
         let context = Context {
@@ -802,7 +802,7 @@ mod tests {
 
     #[test]
     fn a_reused_raid_window_keeps_an_undeclared_glyph_and_withholds_an_undecided_one() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = draw_resources();
         let windows = gui::windows(DRAW_GUI);
         let context = Context {
@@ -865,7 +865,7 @@ mod tests {
 
     #[test]
     fn native_raid_bindings_find_nested_inherited_controls() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = draw_resources();
         let windows = gui::windows(br#"guiTypes = { containerWindowType = {
           name = raid_map_icon size = { width = 100 height = 80 }

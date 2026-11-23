@@ -6,6 +6,12 @@ import type { BoundTrack } from '../../dashboard/model';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { Artwork, FocusArtworkParams } from '../../generated/dashboard';
 import type { NameAt } from '../../dashboard/countryFacts';
+import { regionHour, SPEC, type AxisHour, type Region } from '../../dashboard/regionTime.ts';
+
+Object.assign(globalThis, {
+  __focusGate: (runtime: WidgetProps['runtime'], widget: WidgetProps['widget']) => ({ open: true, region: { widget, action: SPEC }, hour: runtime.clock.getHour(), stage: { stage: 'open' } }),
+  __focusHourAt: (runtime: WidgetProps['runtime'], region: Region, axis: AxisHour) => regionHour(region, runtime.tracks[0], runtime.tracks, axis),
+});
 
 type Effect = { deps: readonly unknown[]; run: () => void | (() => void); cleanup?: () => void };
 const settle = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -78,7 +84,7 @@ test.skip('focus titles and icons exclude descriptions, while opened details ret
     let client = makeClient(), track = { source: { id: 'source', revision: 'revision' }, branch: { id: 'branch' } } as BoundTrack;
     const wanted = ['literal', 'empty', 'equal'].map(tag => ({ tag, hour: 10 }));
     let detailsWanted: readonly NameAt[] = [];
-    const params = (call: typeof calls[number]) => call.input.params as FocusArtworkParams;
+    const params = (call: typeof calls[number]) => call.input.params as unknown as FocusArtworkParams;
     const answer = (call: typeof calls[number], details = false) => call.answer({
       branchId: params(call).branchId, hour: params(call).hour, tag: String(params(call).country), database: params(call).database,
       items: params(call).tokens.map(token => ({ artwork: { token,
@@ -207,7 +213,7 @@ test.skip('known static focus titles omit dated title work, retaining empty and 
     const { nameKey } = await vite.ssrLoadModule('/ui/src/dashboard/countryFacts.ts') as typeof import('../../dashboard/countryFacts');
     const calls: { params: FocusArtworkParams; answer: (name: string | null, description?: string) => void }[] = [];
     const client = { product: (input: ProductRequest) => new Promise<ProductReply<unknown>>(resolve => {
-      const params = input.params as FocusArtworkParams;
+      const params = input.params as unknown as FocusArtworkParams;
       calls.push({ params, answer: (name, description) => resolve({ ...input, data: {
         branchId: params.branchId, hour: params.hour, tag: String(params.country), database: params.database, warnings: [],
         items: params.tokens.map(token => ({ artwork: { token, name, description: description ?? null,
@@ -285,7 +291,7 @@ test.skip('a continuous focus is read from its own database, never from a nation
     const { nameKey } = await vite.ssrLoadModule('/ui/src/dashboard/countryFacts.ts') as typeof import('../../dashboard/countryFacts');
     const calls: { params: FocusArtworkParams; answer: () => void }[] = [];
     const client = { product: (input: ProductRequest) => new Promise<ProductReply<unknown>>(resolve => {
-      const params = input.params as FocusArtworkParams;
+      const params = input.params as unknown as FocusArtworkParams;
       const name = params.database === 'national' ? 'National title' : 'Continuous title';
       calls.push({ params, answer: () => resolve({ ...input, data: {
         branchId: params.branchId, hour: params.hour, tag: String(params.country), database: params.database, warnings: [],
@@ -362,7 +368,9 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/national-focus/NationalFocusWidget.tsx')) return source.replace(
-          /import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__focusDetails.hooks;');
+          /import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__focusDetails.hooks;')
+          .replace('useGate(runtime, widget, SPEC, active)', 'globalThis.__focusGate(runtime, widget)')
+          .replace('useRegionHourAt(runtime, gate.region)', '(axis => globalThis.__focusHourAt(runtime, gate.region, axis))');
         return Object.entries(replacements).find(([suffix]) => path.endsWith(suffix))?.[1];
       },
     }] });
@@ -461,7 +469,9 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/national-focus/NationalFocusWidget.tsx')) return source.replace(
-          /import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__focusShown.hooks;');
+          /import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__focusShown.hooks;')
+          .replace('useGate(runtime, widget, SPEC, active)', 'globalThis.__focusGate(runtime, widget)')
+          .replace('useRegionHourAt(runtime, gate.region)', '(axis => globalThis.__focusHourAt(runtime, gate.region, axis))');
         return Object.entries(replacements).find(([suffix]) => path.endsWith(suffix))?.[1];
       },
     }] });
@@ -541,7 +551,9 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/national-focus/NationalFocusWidget.tsx')) return source.replace(
-          /import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__focusRepeated.hooks;');
+          /import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__focusRepeated.hooks;')
+          .replace('useGate(runtime, widget, SPEC, active)', 'globalThis.__focusGate(runtime, widget)')
+          .replace('useRegionHourAt(runtime, gate.region)', '(axis => globalThis.__focusHourAt(runtime, gate.region, axis))');
         return Object.entries(replacements).find(([suffix]) => path.endsWith(suffix))?.[1];
       },
     }] });

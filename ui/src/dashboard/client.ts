@@ -12,13 +12,8 @@ export interface DashboardSource {
   metadata: ReplayMetadata;
 }
 
-export interface ProductRequest<P = unknown> {
-  sourceId: string;
-  revision: string;
-  product: string;
-  params: P;
-  asksFrom?: number;
-}
+export type { ProductRequest } from './request.ts';
+import type { ProductRequest } from './request.ts';
 
 export interface ProductReply<T> {
   sourceId: string;
@@ -37,7 +32,7 @@ export function validateProductReply<T>(reply: ProductReply<T>, request: Product
 export type RecorderSettings = Omit<PanelRecorderSettings, 'effectiveSaveFolder'>;
 
 export interface ReplayFile { path: string; name: string; folder: string; partial?: import('../generated/dashboard').PartialRecording | null }
-export interface ReplayLibrary { folder: string | null; files: ReplayFile[] }
+export interface ReplayLibrary { folder: string | null; files: ReplayFile[]; warning?: string | null }
 
 export interface DashboardMapView {
   options?: MapOptions;
@@ -53,6 +48,7 @@ export interface DashboardMapView {
   sequence: number;
   seekSequence?: number;
   composedAt: number;
+  clockId: string;
   bounds: MapBounds;
   clip: MapBounds;
   visible: boolean;
@@ -60,6 +56,7 @@ export interface DashboardMapView {
 
 export interface DashboardMapState {
   id: string;
+  clockId: string;
   sourceId: string | null;
   revision: string | null;
   branchId: string | null;
@@ -101,17 +98,17 @@ export interface DashboardClient {
   setReplayFolder?(folder: string): Promise<ReplayLibrary>;
   chooseReplayFolder?(initial?: string): Promise<string | null>;
   chooseRecording?(): Promise<string | null>;
-  renameRecording?(path: string, name: string): Promise<string>;
+  renameRecording?(path: string, name: string): Promise<{ path: string; warning: string | null }>;
   locateRecordings?(recordings: { path: string; campaignKey: string }[]): Promise<(string | null)[]>;
   recorderSettings?(): Promise<RecorderSettings>;
   setRecordingCompression?(compression: Compression): Promise<RecorderSettings>;
   setAutoCompress?(enabled: boolean): Promise<RecorderSettings>;
-  setMapViews(views: DashboardMapView[]): Promise<void>;
+  setMapViews(clockId: string, views: DashboardMapView[]): Promise<void>;
   onMapStates(callback: (states: DashboardMapState[]) => void): Promise<() => void>;
   onMapOptions?(callback: (event: MapOptionsEvent) => void): Promise<() => void>;
   onMapToggle?(callback: (event: MapToggleEvent) => void): Promise<() => void>;
   onMapObserve?(callback: (event: MapObserveEvent) => void): Promise<() => void>;
-  openFollow?(ports: readonly MessagePort[]): Promise<void>;
+  openFollow?(ports: readonly MessagePort[]): Promise<string | void>;
 }
 
 export interface MapOptionsEvent { viewId: string; options: MapOptions }

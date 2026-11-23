@@ -9,10 +9,8 @@ use viewer_combat::{
     minimap::{self, Armed, Control, Slide},
     picker::{Control as PickerControl, PickerDrawn, Placed},
 };
-use viewer_foundation::map::{
-    camera::{Camera, motion::Floor},
-    native_gui::pointer::Input,
-};
+use viewer_gpu::camera::{Camera, motion::Floor};
+use viewer_native_gui::native_gui::pointer::Input;
 use viewer_playback::cursors::MapCursor;
 
 const PING_DLC: u32 = 0x8;
@@ -212,15 +210,15 @@ impl Viewer {
         let free = |at: [f32; 2]| {
             !picker_rects
                 .iter()
-                .any(|&rect| viewer_foundation::map::gui_resources::contains(rect, at))
+                .any(|&rect| viewer_runtime::geometry::contains(rect, at))
         };
         let input = input.map(|input| input.filter(free));
         let footprint = self.camera.map(|placement| {
             let camera = placement.on(
-                viewer_foundation::map::camera::MapSize::of(&document.map),
+                viewer_gpu::camera::MapSize::of(&document.map),
                 document.map_defines,
             );
-            viewer_foundation::map::province_admission::water_footprint(
+            viewer_gpu::province_admission::water_footprint(
                 camera,
                 extent.map(|value| value.max(1.0) as u32),
             )

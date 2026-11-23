@@ -1,4 +1,4 @@
-use replay::publication::ReplaceError;
+use replay_settings::publication::ReplaceError;
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -38,7 +38,7 @@ fn read_shared(path: &Path) -> io::Result<String> {
 }
 
 fn publish(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    publish_with(path, bytes, replay::publication::replace_file).map_err(io::Error::from)
+    publish_with(path, bytes, replay_settings::publication::replace_file).map_err(io::Error::from)
 }
 
 fn publish_with(
@@ -69,7 +69,7 @@ pub(super) struct HistoryRequest {
 
 impl HistoryRequest {
     pub(super) fn publish(session: &Path, action: &str, subject: &str) -> Result<Self, String> {
-        Self::publish_using(session, action, subject, replay::publication::replace_file)
+        Self::publish_using(session, action, subject, replay_settings::publication::replace_file)
     }
 
     fn publish_using(
@@ -530,7 +530,7 @@ mod tests {
         let stopped = AtomicBool::new(true);
         assert!(
             HistoryRequest::publish_using(&root, "release", "campaign", |from, to| {
-                replay::publication::replace_file(from, to)?;
+                replay_settings::publication::replace_file(from, to)?;
                 Err(ReplaceError::Unflushed(io::Error::other("flush failed")))
             })
             .is_err()

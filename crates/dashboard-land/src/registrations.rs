@@ -1,0 +1,41 @@
+dashboard_base::register_products! {
+    DOCTRINES_DOCTRINES => crate::products::doctrines::Doctrines,
+    ARMY_ARMYSIZE => crate::products::army::ArmySize,
+    FORCES_AIRFORCESIZE => crate::products::forces::AirForceSize,
+    FORCES_NAVYSIZE => crate::products::forces::NavySize,
+    LEADERS_LEADERPORTRAITS => crate::products::leaders::LeaderPortraits,
+    LEADERS_CAREER_LEADERCAREER => crate::products::leaders::career::LeaderCareer,
+    LEADERS_CAREER_LEADERCHOICES => crate::products::leaders::career::LeaderChoices,
+    DIVISION_LOG_DIVISIONLOG => crate::products::division_log::DivisionLog,
+    DIVISION_LOG_DIVISIONLOGMANIFEST => crate::products::division_log::DivisionLogManifest,
+    LAND_BATTLES_LANDBATTLESMANIFEST => crate::products::land_battles::LandBattlesManifest,
+    LAND_BATTLES_LANDBATTLES => crate::products::land_battles::LandBattles,
+    LAND_BATTLES_LANDBATTLESRANKING => crate::products::land_battles::LandBattlesRanking,
+    LAND_BATTLES_LANDBATTLECOURSES => crate::products::land_battles::LandBattleCourses,
+    LAND_TERRAIN_LANDBATTLETERRAINS => crate::products::land_terrain::LandBattleTerrains,
+    COMBAT_LOG_COMBATLOG => crate::products::combat_log::CombatLog,
+}
+
+dashboard_base::register_hourly_products! {
+    ARMY_TEMPLATEROSTER => crate::products::army::TemplateRoster,
+    EXPERIENCE_COUNTRYEXPERIENCE => crate::products::experience::CountryExperience,
+    TRAINING_QUEUE_TRAININGQUEUE => crate::products::training_queue::TrainingQueue,
+    DOCTRINE_MASTERY_DOCTRINEMASTERY => crate::products::doctrine_mastery::DoctrineMastery,
+    DOCTRINE_MASTERY_REWARDS_DOCTRINEREWARDS => crate::products::doctrine_mastery::rewards::DoctrineRewards,
+    LEADERS_UNITLEADERS => crate::products::leaders::UnitLeaders,
+    LEADERS_CAREER_LEADERHOUR => crate::products::leaders::career::LeaderHour,
+    DIVISIONS_TEMPLATES_DIVISIONTEMPLATES => crate::products::divisions::templates::DivisionTemplates,
+    DIVISIONS_CAREERS_DIVISIONCAREERS => crate::products::divisions::careers::DivisionCareers,
+    DIVISIONS_CAREERS_DIVISIONRECORD => crate::products::divisions::careers::DivisionRecord,
+    DIVISIONS_EQUIPMENT_DIVISIONEQUIPMENT => crate::products::divisions::equipment::DivisionEquipment,
+    ARMY_LOSSES_ARMYLOSSES => crate::products::army_losses::ArmyLosses,
+}
+
+use dashboard_base::{Source, products::at_hour::exact_panel};
+use dashboard_core::config::LoadContext;
+use dashboard_follow::panel::Panel;
+use serde_json::Value;
+
+type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, String>;
+
+pub const EXACT_DOCTRINEMASTERY: ExactPanel = exact_panel::<crate::products::doctrine_mastery::DoctrineMastery>;

@@ -14,7 +14,7 @@ use dashboard_query::{
 };
 use replay_data::rows::TableId;
 use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -92,6 +92,7 @@ pub trait AtHour: 'static {
     const TITLE: &'static str;
     const CONTENT_DEPENDENT: bool;
     const INTERACTIVE: bool = true;
+    const FIELDS: super::Fields;
     type Params: DeserializeOwned + Send + 'static;
     type Reply: Serialize + ReplyWarnings + PartialEq + Send + 'static;
     type Context: Send + 'static;
@@ -143,6 +144,8 @@ pub trait AtHour: 'static {
 
     const CLOCK_DEPENDENT: bool = true;
 
+    const REPLY_NAMES_NO_HOUR: bool = false;
+
     fn clock_dependent(_plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> bool { Self::CLOCK_DEPENDENT }
 
     fn advance(_frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, _edits: &Edits, _live: &Live, _data: &mut Held<'_>) -> io::Result<bool> {
@@ -171,18 +174,18 @@ fn empty(branch: u64, hour: i32) -> DecodedFrame {
     DecodedFrame { branch, hour, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() }
 }
 
-fn converted<'a>(reads: &'a [Read], fields: &'a [Option<Vec<usize>>]) -> Vec<replay::at::Read<'a>> {
+fn converted<'a>(reads: &'a [Read], fields: &'a [Option<Vec<usize>>]) -> Vec<replay_lanes::at::Read<'a>> {
     reads
         .iter()
         .zip(fields)
-        .map(|(read, fields)| replay::at::Read {
+        .map(|(read, fields)| replay_lanes::at::Read {
             table: read.table,
             columns: fields.as_deref(),
             keys: match &read.keys {
-                Keys::All => replay::at::Keys::All,
-                Keys::These(keys) => replay::at::Keys::These(keys),
-                Keys::Range(lo, hi) => replay::at::Keys::Range(*lo, *hi),
-                Keys::Ranges(ranges) => replay::at::Keys::Ranges(ranges),
+                Keys::All => replay_lanes::at::Keys::All,
+                Keys::These(keys) => replay_lanes::at::Keys::These(keys),
+                Keys::Range(lo, hi) => replay_lanes::at::Keys::Range(*lo, *hi),
+                Keys::Ranges(ranges) => replay_lanes::at::Keys::Ranges(ranges),
             },
         })
         .collect()
@@ -210,17 +213,17 @@ fn count_frame(frame: &DecodedFrame, reads: &[Read]) {
 
 fn frame_at(query: &Query<'_>, run: u32, hour: i32, reads: &[Read], columns: fn(TableId) -> Option<Vec<usize>>) -> io::Result<DecodedFrame> {
     let fields: Vec<Option<Vec<usize>>> = reads.iter().map(|read| columns(read.table)).collect();
-    replay::at::frame(query.replay.recording(), run, hour, &converted(reads, &fields)).inspect(|frame| count_frame(frame, reads))
+    replay_lanes::at::frame(query.replay.recording(), run, hour, &converted(reads, &fields)).inspect(|frame| count_frame(frame, reads))
 }
 
 pub struct Frames<'q> {
     query: &'q Query<'q>,
-    seeker: replay::at::Seeker<'q>,
+    seeker: replay_lanes::at::Seeker<'q>,
 }
 
 impl<'q> Frames<'q> {
     pub fn new(query: &'q Query<'q>) -> io::Result<Self> {
-        Ok(Self { query, seeker: replay::at::Seeker::new(query.replay.recording())? })
+        Ok(Self { query, seeker: replay_lanes::at::Seeker::new(query.replay.recording())? })
     }
 
     pub fn frame(&mut self, hour: i32, reads: &[Read], title: &str) -> io::Result<DecodedFrame> {
@@ -356,7 +359,7 @@ fn request_hour(request: &mut Value) -> Option<i32> {
 
 fn load<P: AtHour>(source: &Source, lease_id: &str, mut request: Value, load: &LoadContext, cancelled: &AtomicBool) -> Result<String, dashboard_core::QueryError> {
     let hour = request_hour(&mut request).ok_or_else(|| format!("Invalid {} request: it names no hour", P::KEY))?;
-    let params = P::Params::deserialize(&request).map_err(|error| format!("Invalid {} request: {error}", P::KEY))?;
+    let params = dashboard_query::named::named::<P::Params>(&request).map_err(|error| format!("Invalid {} request: {error}", P::KEY))?;
     P::validate(&params).map_err(str::to_owned)?;
     super::reply_json(source, lease_id, P::KEY, P::CONTENT_DEPENDENT, load, cancelled, || {
         let query = crate::queries::query(source, dashboard_query::branch(&request)?)?;
@@ -371,7 +374,7 @@ where P::Params: Sync, P::Context: Sync {
     let query = crate::queries::query(source, branch).map_err(|e| e.to_string())?;
     let mut request = asked.clone();
     if let Some(fields) = request.as_object_mut() { fields.remove("panel"); }
-    let params = P::Params::deserialize(request).map_err(|e| format!("Invalid {} panel: {e}", P::KEY))?;
+    let params = dashboard_query::named::named::<P::Params>(&request).map_err(|e| format!("Invalid {} panel: {e}", P::KEY))?;
     P::validate(&params)?;
     let context = Arc::new(P::context_for(source, load, &params).map_err(|e| e.to_string())?);
     let params = Arc::new(params);
@@ -419,6 +422,7 @@ struct Followed<P: AtHour> {
     context: P::Context,
     content_warnings: Vec<String>,
     live: Option<Live>,
+    answered: Option<(Option<Owner>, Vec<replay_frame::frame::SharedView>)>,
     executable: Option<engine_executable::executable_tables::Tables>,
     product: PhantomData<fn() -> P>,
 }
@@ -428,7 +432,17 @@ impl<P: AtHour> Panel for Followed<P> {
         &self.tables
     }
 
+    fn unchanged(&mut self, frame: &DecodedFrame) -> bool {
+        let Some((owner, views)) = &self.answered else { return false };
+        P::REPLY_NAMES_NO_HOUR
+            && !P::CLOCK_DEPENDENT
+            && holder::<P>(&self.holders, &self.params, frame.hour).ok().is_some_and(|held| held == *owner)
+            && self.tables.iter().zip(views).all(|(table, view)| replay_frame::frame::SharedView::ptr_eq(&frame.tables[table.index()], view))
+    }
+
     fn data(&mut self, frame: &DecodedFrame) -> PanelData {
+        self.answered = None;
+        let held = holder::<P>(&self.holders, &self.params, frame.hour).ok();
         let cancelled = AtomicBool::new(false);
         let mut own = OwnRefusals::default();
         let cells = Cells::default();
@@ -442,7 +456,11 @@ impl<P: AtHour> Panel for Followed<P> {
         let mut reply = made.map_err(|error| error.to_string())?;
         finish(reply.warnings_mut(), &own, &self.content_warnings);
         self.live = Some(cells.finish()).filter(|live| !live.is_empty());
-        serde_json::to_value(&reply).map_err(|error| error.to_string())
+        let data = serde_json::to_value(&reply).map_err(|error| error.to_string())?;
+        if P::REPLY_NAMES_NO_HOUR && !P::CLOCK_DEPENDENT && let Some(owner) = held {
+            self.answered = Some((owner, self.tables.iter().map(|table| frame.tables[table.index()].clone()).collect()));
+        }
+        Ok(data)
     }
 
     fn live(&self) -> Option<&Live> {
@@ -455,12 +473,12 @@ fn panel<P: AtHour>(source: &Source, load: &LoadContext, asked: &Value) -> Resul
     if let Some(fields) = asked.as_object_mut() {
         fields.remove("panel");
     }
-    let params = P::Params::deserialize(&asked).map_err(|error| format!("Invalid {} panel: {error}", P::KEY))?;
+    let params = dashboard_query::named::named::<P::Params>(&asked).map_err(|error| format!("Invalid {} panel: {error}", P::KEY))?;
     P::validate(&params).map_err(str::to_owned)?;
     let branch = dashboard_query::branch(&asked).map_err(|error| error.to_string())?;
     let holders = Arc::clone(&crate::queries::query(source, branch).map_err(|error| error.to_string())?.holders);
     let context = P::context_for(source, load, &params).map_err(|error| error.to_string())?;
-    Ok(Box::new(Followed::<P> { tables: P::tables(&params), params, holders, context, content_warnings: content_warnings::<P>(source, load), live: None, executable: source.tables(), product: PhantomData }))
+    Ok(Box::new(Followed::<P> { tables: P::tables(&params), params, holders, context, content_warnings: content_warnings::<P>(source, load), live: None, answered: None, executable: source.tables(), product: PhantomData }))
 }
 
 #[cfg(any(test, feature = "export-types"))]
@@ -488,8 +506,12 @@ pub const fn entry<P: AtHour>() -> Entry {
             interactive: P::INTERACTIVE,
             replays: false,
             load: load::<P>,
+            fields: P::FIELDS,
+            read_hour: true,
             #[cfg(any(test, feature = "export-types"))]
             types: None,
+            #[cfg(any(test, feature = "export-types"))]
+            params: dashboard_query::fields::walk::<P::Params>,
         },
         panel: panel::<P>,
     }

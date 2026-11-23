@@ -1,4 +1,3 @@
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static SLOTS_HINT: AtomicUsize = AtomicUsize::new(0);
@@ -67,3 +66,5 @@ mod tests {
         assert!(!reserve_rows(&mut census, rows(10, 1)));
     }
 }
+
+pub const MIN_COUNTRY_CELLS: usize = 8192;

@@ -1,6 +1,6 @@
 
 use viewer_combat::picker::Control;
-use viewer_foundation::unit_handle::Unit;
+use viewer_runtime::unit_handle::Unit;
 
 pub(crate) fn describe(control: Option<&Control>, unit: Option<Unit>) -> Option<String> {
     if let Some(control) = control {

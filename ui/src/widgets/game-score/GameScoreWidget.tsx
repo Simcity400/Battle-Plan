@@ -16,6 +16,7 @@ import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { isMember } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { usePushedLooksHour } from '../../dashboard/pushedLooks.ts';
 import { resolveOptions } from '../../dashboard/options';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -62,7 +63,7 @@ function ScoreTable({ widget, runtime, active, onDiagnostics, setOption }: Widge
   const groups = useCountryGroups(runtime, track, active && needsGroups);
   const resolved = useMemo(() => scoreCountries(widget.countries, [...selectedCountryKeys(widget.countries, track)], groups.data, lastHour),
     [widget.countries, track, groups.data, lastHour]);
-  const head = useHeadProduct<GameScoreReply>(runtime, widget, 'game-score', track ? PARAMS : null, { active, validate: validateGameScore, structure: scoreStructure });
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'game-score', track ? PARAMS : null, { active, validate: validateGameScore, structure: scoreStructure });
   const reply = head.data;
   const live = head.live;
   const shown = useShownHour();
@@ -115,7 +116,7 @@ function ScoreTable({ widget, runtime, active, onDiagnostics, setOption }: Widge
     if (!track) return <WidgetState kind="empty" icon="grid" message="Load a campaign to see its game scores." />;
     if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
     if (needsGroups && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
-    if (head.read === 'off') return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    if (head.read === 'off') return <WidgetState kind="outside" />;
     if (!reply || (needsGroups && !groups.data) || (bySlot && !slots)) return <WidgetState kind="loading" label="Loading game scores…" />;
     if (reply.missing) return <WidgetState kind="unavailable" message={reply.missing} />;
     if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;

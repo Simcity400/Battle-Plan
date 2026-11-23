@@ -2,7 +2,8 @@
 #[path = "native-bench/widgets.rs"]
 mod widgets;
 
-use dashboard::{Source, SourceKey, answer, config::{ContentOptions, LoadContext}, products::at_hour};
+use dashboard_base::{Source, SourceKey, products::at_hour};
+use dashboard_core::config::{ContentOptions, LoadContext};
 use dashboard_follow::{Identity, lead, panel::dated};
 use playhead::{Piece, Playhead, Settings, Timeline, pages::{Span, WorldPages}};
 use replay_data::rows::{TableId, tables};
@@ -100,6 +101,7 @@ fn standing_cost() {
     use std::{collections::BTreeSet, hint::black_box};
 
     let push = Push::default();
+    let (session, mut released) = (push.session(), 0u64);
     let mut samples = Vec::new();
     const STEPS: i32 = 100_000;
     for round in 0..9 {
@@ -110,7 +112,10 @@ fn standing_cost() {
             for hour in 0..STEPS {
                 assert!(take_due(black_box(&mut due), hour).is_none());
                 push.offer_kind(PANEL, dated::ProductBatch::new((0, 1, 0)).finish(Some(hour)));
-                black_box(push.take_kind());
+                if let Some((_, bytes, ..)) = black_box(push.take_kind()) {
+                    released += dashboard_follow::charge(&bytes) as u64;
+                    push.credit(session, released);
+                }
             }
             samples.push(json!({"subscriptions": subscriptions, "round": round,
                 "nsPerStep": start.elapsed().as_nanos() as f64 / f64::from(STEPS)}));
@@ -133,15 +138,15 @@ fn main() -> io::Result<()> {
     let hourly = flags == ["--hourly-check"];
     if !flags.is_empty() && !hourly && !audit && !capacity { return Err(io::Error::other("unknown option")); }
     let path = PathBuf::from(recording);
-    let source = Source::open(SourceKey { source_id: "native-bench".into(), revision: dashboard::protocol::replay_revision(&path)? }, path.clone(), &false.into())?;
+    let source = Source::open(SourceKey { source_id: "native-bench".into(), revision: dashboard_core::protocol::replay_revision(&path)? }, path.clone(), &false.into())?;
     engine_executable::executable_tables::enter(source.tables());
     let load = LoadContext { content: Some(ContentOptions {
-        options: content_reader_core::ResolveOptions { game_dir: game.into(), user_dir: user.into(), cache_dir: cache.into() },
+        options: content_reader_layers::ResolveOptions { game_dir: game.into(), user_dir: user.into(), cache_dir: cache.into() },
         allow_unverified: false, presentation: Default::default(),
     }) };
     let metadata = source.metadata().map_err(io::Error::other)?;
     let branch = metadata.branches.iter().find(|b| b.main).ok_or_else(|| io::Error::other("no main branch"))?;
-    let q = answer::query(&source, branch.id.parse().map_err(io::Error::other)?)?;
+    let q = dashboard_base::queries::query(&source, branch.id.parse().map_err(io::Error::other)?)?;
     let opened = q.timeline.stretches.iter().map(|s| s.first).min().ok_or_else(|| io::Error::other("the branch holds no recording"))?;
     let closed = q.timeline.stretches.iter().map(|s| s.last).max().unwrap_or(opened);
     let start = opened + (closed - opened) * 3 / 10;

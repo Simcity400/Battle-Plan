@@ -1,8 +1,8 @@
 
 use crate::{
-    Memory, cadvisor, ccharacter, ccountry, ccountry_characters, ccountry_leader,
-    cdiplomacy_status, cdynamic_modifier, cdynamic_modifier_container, cidea, cideology_group,
-    cmodifier,
+    Memory, cadvisor, cattache_relation, ccharacter, ccountry, ccountry_characters,
+    ccountry_leader, cdiplomacy_status, cdynamic_modifier, cdynamic_modifier_container, cidea,
+    cideology_group, cmodifier,
     cpdx_array::Array,
     cpolitical_party, cpolitical_status, crelation, cstatic_modifier, cwar_relation, cworld_threat,
     dynamic_modifier_entry, localization_root_layout,
@@ -59,6 +59,7 @@ pub const DYNAMIC_VALUE_ROW_STRIDE: usize = 0xd8;
 pub const STATIC_DATABASE_RVA: Rva = Rva(0x033d_e590);
 pub const STATIC_NAME: usize = 0x1a8;
 pub const DIPLOMACY_HOSTING: usize = 0x1f0;
+pub const PRIDE_OF_THE_FLEET_SUNK_ACTIVE: usize = 0x270;
 
 const RING: usize = 0x10;
 const RING_DATA: usize = 0x08;
@@ -82,67 +83,63 @@ pub const DEFINE_RVAS: [Rva; DEFINES] = [
 ];
 pub const DEFINES: usize = 12;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StaticWitness {
+    AttacheSent,
+    AtPeace,
+    AtWar,
+    PrideSunk,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct StaticWitnesses {
+    attache_sent: Option<bool>,
+    at_war_mode0: Option<bool>,
+    pride_sunk: Option<bool>,
+}
+
+impl StaticWitnesses {
+    fn active(self, witness: StaticWitness) -> bool {
+        match witness {
+            StaticWitness::AttacheSent => self.attache_sent == Some(true),
+            StaticWitness::AtPeace => self.at_war_mode0 == Some(false),
+            StaticWitness::AtWar => self.at_war_mode0 == Some(true),
+            StaticWitness::PrideSunk => self.pride_sunk == Some(true),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct StaticSlot {
     offset: usize,
     scaled: bool,
     phase: u8,
+    witness: StaticWitness,
 }
-const STATIC_SLOTS: [StaticSlot; 11] = [
+const STATIC_SLOTS: [StaticSlot; 4] = [
     StaticSlot {
         offset: 0x90,
         scaled: false,
         phase: 1,
-    },
-    StaticSlot {
-        offset: 0x60,
-        scaled: false,
-        phase: 1,
-    },
-    StaticSlot {
-        offset: 0xb8,
-        scaled: false,
-        phase: 2,
+        witness: StaticWitness::AttacheSent,
     },
     StaticSlot {
         offset: 0x390,
         scaled: false,
         phase: 2,
+        witness: StaticWitness::AtPeace,
     },
     StaticSlot {
         offset: 0x398,
         scaled: false,
         phase: 2,
+        witness: StaticWitness::AtWar,
     },
     StaticSlot {
         offset: 0xc0,
         scaled: false,
         phase: 2,
-    },
-    StaticSlot {
-        offset: 0x78,
-        scaled: true,
-        phase: 3,
-    },
-    StaticSlot {
-        offset: 0x80,
-        scaled: true,
-        phase: 3,
-    },
-    StaticSlot {
-        offset: 0x88,
-        scaled: true,
-        phase: 3,
-    },
-    StaticSlot {
-        offset: 0x68,
-        scaled: true,
-        phase: 3,
-    },
-    StaticSlot {
-        offset: 0x70,
-        scaled: true,
-        phase: 3,
+        witness: StaticWitness::PrideSunk,
     },
 ];
 
@@ -618,7 +615,8 @@ fn walk_country_buffers<M: Memory>(
     if let Some(timing) = timing.as_deref_mut() {
         timing.boundary(0);
     }
-    *input = acquired_input?;
+    let (acquired, witnesses) = acquired_input?;
+    *input = acquired;
     let mut observations = std::mem::take(&mut scratch.observations);
     let memory = Observed::new(memory, &mut observations, memo);
     let result = (|| {
@@ -634,7 +632,7 @@ fn walk_country_buffers<M: Memory>(
             timing.boundary(1);
         }
         let children = children?;
-        let candidates = candidates(&memory, base, country, context, scratch);
+        let candidates = candidates(&memory, base, country, context, witnesses, scratch);
         if let Some(timing) = timing.as_deref_mut() {
             timing.boundary(2);
         }
@@ -721,7 +719,7 @@ fn inputs<M: Memory>(
     countries: &ccountry::Reader<'_, M>,
     country: ccountry::Country,
     context: &Context,
-) -> Result<InputRow, &'static str> {
+) -> Result<(InputRow, StaticWitnesses), &'static str> {
     phase!(Fields);
     let c = country.pointer;
     let mut bases = [0_u8; 16];
@@ -740,9 +738,12 @@ fn inputs<M: Memory>(
     {
         return Err("country stability fields unreadable");
     }
+    let pride_sunk = at(c, PRIDE_OF_THE_FLEET_SUNK_ACTIVE)
+        .ok()
+        .and_then(|address| read::<u8>(memory, address))
+        .map(|flag| flag != 0);
     let children = Array::from_header(children, 8).ok_or("country modifier children invalid")?;
-    let (at_war, offensive_war, defensive_war, diplomacy) =
-        war_flags(memory, base, countries, country)?;
+    let wars = war_flags(memory, base, countries, country)?;
     phase!(Totals);
     let mut totals = [None; TOTALS];
     let (sorted, len) = context.keys.sorted_totals();
@@ -767,29 +768,36 @@ fn inputs<M: Memory>(
             });
         }
     }
-    Ok(InputRow {
-        country: country.id,
-        manpower: if context.manpower_enabled {
-            crate::ccountry_manpower::read_authenticated(memory, c, diplomacy)
-        } else {
-            Default::default()
+    Ok((
+        InputRow {
+            country: country.id,
+            manpower: if context.manpower_enabled {
+                crate::ccountry_manpower::read_authenticated(memory, c, wars.diplomacy)
+            } else {
+                Default::default()
+            },
+            stability_raw: i64_at(&bases, 0),
+            war_support_raw: i64_at(&bases, 8),
+            at_war: wars.at_war,
+            offensive_war: wars.offensive_war,
+            defensive_war: wars.defensive_war,
+            ruling_party_popularity_raw: popularity(memory, base, c)?,
+            propaganda_stability_q15: i64_at(&penalties, 0),
+            bombing_q15: i64_at(&penalties, 8),
+            heroes_q15: i64_at(&penalties, 16),
+            convoys_q15: i64_at(&penalties, 24),
+            propaganda_war_support_q15: i64_at(&penalties, 32),
+            coastal_protection_stability_raw: i64_at(&coastal, 0),
+            interception_sum_raw: interception(memory, c)?,
+            totals,
+            children: children.count,
         },
-        stability_raw: i64_at(&bases, 0),
-        war_support_raw: i64_at(&bases, 8),
-        at_war,
-        offensive_war,
-        defensive_war,
-        ruling_party_popularity_raw: popularity(memory, base, c)?,
-        propaganda_stability_q15: i64_at(&penalties, 0),
-        bombing_q15: i64_at(&penalties, 8),
-        heroes_q15: i64_at(&penalties, 16),
-        convoys_q15: i64_at(&penalties, 24),
-        propaganda_war_support_q15: i64_at(&penalties, 32),
-        coastal_protection_stability_raw: i64_at(&coastal, 0),
-        interception_sum_raw: interception(memory, c)?,
-        totals,
-        children: children.count,
-    })
+        StaticWitnesses {
+            attache_sent: wars.attache_sent,
+            at_war_mode0: wars.at_war_mode0,
+            pride_sunk,
+        },
+    ))
 }
 
 fn popularity(memory: &impl Memory, base: usize, country: usize) -> Result<i64, &'static str> {
@@ -807,12 +815,21 @@ fn popularity(memory: &impl Memory, base: usize, country: usize) -> Result<i64, 
         .ok_or("ruling party popularity unreadable")
 }
 
+struct WarFlags {
+    at_war: bool,
+    offensive_war: bool,
+    defensive_war: bool,
+    at_war_mode0: Option<bool>,
+    attache_sent: Option<bool>,
+    diplomacy: usize,
+}
+
 fn war_flags<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
     country: ccountry::Country,
-) -> Result<(bool, bool, bool, usize), &'static str> {
+) -> Result<WarFlags, &'static str> {
     phase!(Wars);
     let diplomacy = pointer(memory, at(country.pointer, ccountry::DIPLOMACY_STATUS)?)?;
     let mut head = [0_u8; 8];
@@ -837,6 +854,9 @@ fn war_flags<M: Memory>(
     }
     let owned = Array::from_header(owned, 8).ok_or("owned relation array invalid")?;
     let war_vtable = site(base, cwar_relation::VTABLE_RVA)? as u64;
+    let attache_vtable = engine_sites::resolve(base, cattache_relation::VTABLE_RVA)
+        .ok()
+        .map(|address| address as u64);
     let same = |raw: u32| -> Result<bool, &'static str> {
         Ok(raw == country.id
             || (raw != 0
@@ -844,21 +864,46 @@ fn war_flags<M: Memory>(
                 && countries.link(raw)? == countries.link(country.id)?))
     };
     let (mut at_war, mut offensive, mut defensive) = (false, false, false);
+    let mut has_war_relation = false;
+    let mut attache_verified = false;
+    let mut attache_unknown = attache_vtable.is_none();
     pointer_pages(memory, owned, |relation| {
-        let header = read::<[u8; 0x18]>(memory, relation).ok_or("relation unreadable")?;
-        if u32::from_le_bytes(
-            header[crelation::TYPE_ID..crelation::TYPE_ID + 4]
+        let prefix = read::<[u8; 0x0c]>(memory, relation).ok_or("relation unreadable")?;
+        let type_id = u32::from_le_bytes(
+            prefix[crelation::TYPE_ID..crelation::TYPE_ID + 4]
                 .try_into()
                 .unwrap(),
-        ) != cwar_relation::TYPE
-        {
+        );
+        if type_id == cattache_relation::TYPE {
+            if let Some(expected_vtable) = attache_vtable {
+                if u64::from_le_bytes(prefix[..8].try_into().unwrap()) != expected_vtable {
+                    attache_unknown = true;
+                } else if let Some(first) = at(relation, crelation::FIRST_COUNTRY)
+                    .ok()
+                    .and_then(|address| read::<u32>(memory, address))
+                {
+                    match same(first) {
+                        Ok(true) => attache_verified = true,
+                        Ok(false) => {}
+                        Err(_) => attache_unknown = true,
+                    }
+                } else {
+                    attache_unknown = true;
+                }
+            }
             return Ok(());
         }
-        if u64::from_le_bytes(header[..8].try_into().unwrap()) != war_vtable {
+        if type_id != cwar_relation::TYPE {
+            return Ok(());
+        }
+        if u64::from_le_bytes(prefix[..8].try_into().unwrap()) != war_vtable {
             return Err("war relation vtable mismatch");
         }
-        let first = u32::from_le_bytes(header[0x10..0x14].try_into().unwrap());
-        let second = u32::from_le_bytes(header[0x14..0x18].try_into().unwrap());
+        has_war_relation = true;
+        let endpoints = read::<[u8; 8]>(memory, at(relation, crelation::FIRST_COUNTRY)?)
+            .ok_or("war relation endpoints unreadable")?;
+        let first = u32::from_le_bytes(endpoints[0..4].try_into().unwrap());
+        let second = u32::from_le_bytes(endpoints[4..8].try_into().unwrap());
         let instigator = read::<u8>(memory, at(relation, cwar_relation::FIRST_WAS_INSTIGATOR)?)
             .ok_or("war relation instigator unreadable")?;
         let (attacker, defender) = if instigator != 0 {
@@ -877,7 +922,29 @@ fn war_flags<M: Memory>(
         }
         Ok(())
     })?;
-    Ok((at_war, offensive, defensive, diplomacy))
+    let attache_sent = if attache_verified {
+        Some(true)
+    } else if attache_unknown {
+        None
+    } else {
+        Some(false)
+    };
+    let at_war_mode0 = if has_war_relation {
+        Some(true)
+    } else {
+        at(diplomacy, cdiplomacy_status::ENEMY_COUNTRY_COUNT)
+            .ok()
+            .and_then(|address| read::<i32>(memory, address))
+            .map(|count| count != 0)
+    };
+    Ok(WarFlags {
+        at_war,
+        offensive_war: offensive,
+        defensive_war: defensive,
+        at_war_mode0,
+        attache_sent,
+        diplomacy,
+    })
 }
 
 fn interception(memory: &impl Memory, country: usize) -> Result<i64, &'static str> {
@@ -1149,6 +1216,7 @@ fn candidates(
     base: usize,
     country: ccountry::Country,
     context: &Context,
+    witnesses: StaticWitnesses,
     scratch: &mut Scratch,
 ) -> Result<usize, &'static str> {
     let mut list = Builder {
@@ -1363,7 +1431,7 @@ fn candidates(
         })?;
     }
     for phase in [1, 2] {
-        list.statics(memory, context, phase)?;
+        list.statics(memory, context, witnesses, phase)?;
     }
     phase!(Dynamic);
     let container = at(c, ccountry::DYNAMIC_MODIFIERS)?;
@@ -1444,7 +1512,6 @@ fn candidates(
                 .identity(id, scope.0, scope.1);
         }
     }
-    list.statics(memory, context, 3)?;
     Ok(list.len)
 }
 
@@ -1516,12 +1583,13 @@ impl Builder<'_> {
         &mut self,
         memory: &Observed<'_, impl Memory>,
         context: &Context,
+        witnesses: StaticWitnesses,
         phase: u8,
     ) -> Result<(), &'static str> {
         let mut modifiers = [0; STATIC_SLOTS.len()];
         let mut len = 0;
         for (slot, address) in STATIC_SLOTS.iter().zip(context.statics) {
-            if slot.phase == phase && address != 0 {
+            if slot.phase == phase && address != 0 && witnesses.active(slot.witness) {
                 modifiers[len] = address;
                 len += 1;
             }
@@ -1538,7 +1606,7 @@ impl Builder<'_> {
             } else {
                 phase!(Statics);
             }
-            if slot.phase != phase || address == 0 {
+            if slot.phase != phase || address == 0 || !witnesses.active(slot.witness) {
                 continue;
             }
             let kind = if slot.scaled {

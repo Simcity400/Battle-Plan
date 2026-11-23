@@ -123,6 +123,19 @@ export class CountryIdentityIndex {
     return keys;
   }
 
+  changeHoursOf(chosen: readonly string[]): number[] {
+    const hours = new Set<number>();
+    const add = (run: Span) => { hours.add(run.firstHour); hours.add(run.lastHour + 1); };
+    for (const tag of chosen) for (const run of this.byTag.get(tag) ?? []) add(run);
+    for (const key of this.selected(chosen)) for (const runs of this.byKey.get(key)?.values() ?? []) for (const run of runs) add(run);
+    return [...hours].sort((a, b) => a - b);
+  }
+
+  identityOf(key: string): { slot: number; countryId: number } {
+    const [slot, countryId] = JSON.parse(key) as [number, number];
+    return { slot, countryId };
+  }
+
   keysDuring(memberships: readonly MembershipRun[]): ReadonlySet<string> {
     const keys = new Set<string>();
     for (const member of memberships) for (const run of this.runsDuring(member)) keys.add(run.key);

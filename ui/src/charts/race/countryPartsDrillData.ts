@@ -1,3 +1,6 @@
+import type { GatedTime } from '../../dashboard/regionTime';
+import type { HeldCountry } from '../../dashboard/regionGate';
+import type { PinnedSpec } from '../drill/drillState';
 import type { CountryRacePart } from './countryRace';
 import type { Run, Span } from '../series';
 import type { TooltipContent } from '../tooltip';
@@ -48,12 +51,10 @@ export function savedCountryPartsSelection(widget: WidgetSpec, track: BoundTrack
   } catch { return null; }
 }
 
-export function pinNativeCountryParts(source: WidgetSpec, track: BoundTrack, selection: CountryPartsSelection,
-  hour: number, follow: boolean, label: string): WidgetSpec {
-  const pinned = pinCountryParts(source, track, selection.tag, hour, selection.hour, follow, label);
-  const [slot, countryId] = JSON.parse(selection.key) as [number, number];
+export function pinNativeCountryParts(source: WidgetSpec, track: BoundTrack, held: HeldCountry, time: GatedTime, label: string): PinnedSpec {
+  const pinned = pinCountryParts(source, track, held, time, label);
   return { ...pinned, options: { ...pinned.options,
-    holder: JSON.stringify([track.source.metadata.campaignKey, track.branch.id, selection.tag, slot, countryId]) } };
+    holder: JSON.stringify([track.source.metadata.campaignKey, track.branch.id, held.tag, held.slot, held.countryId]) } };
 }
 
 export function bindCountryParts(model: CountryPartsData, tag: string, originHour: number, holder?: string | null) {
@@ -103,10 +104,9 @@ export function exactPartShare(value: bigint | null, total: number | null): stri
   return `${negative && tenths !== 0n ? '-' : ''}${tenths / 10n}${tenths % 10n ? `.${tenths % 10n}` : ''}%`;
 }
 
-export function pinCountryParts(source: WidgetSpec, track: Pick<BoundTrack, 'id' | 'branch'>, tag: string, hour: number,
-  originHour: number, follow: boolean, label: string): WidgetSpec {
-  const pinned = pinPartsRace(source, track, tag, hour, follow, label);
-  return { ...pinned, options: { ...pinned.options, drillOriginHour: originHour } };
+export function pinCountryParts(source: WidgetSpec, track: Pick<BoundTrack, 'id' | 'branch'>, held: HeldCountry, time: GatedTime, label: string): PinnedSpec {
+  const pinned = pinPartsRace(source, track, held.tag, time, label);
+  return { ...pinned, options: { ...pinned.options, drillOriginHour: held.origin } };
 }
 
 export function countryPartsRemainder(at: CountryPartsAt | null): bigint | null {

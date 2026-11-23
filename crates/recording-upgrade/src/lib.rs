@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use content_reader_core::content::{ResolveOptions, facts, proof};
+use content_reader_layers::content::{ResolveOptions, facts, proof};
 use replay::campaign::{Replay, writer};
 
 const SHARING_VIOLATION: i32 = 32;
@@ -45,7 +45,7 @@ pub fn upgrade(path: &Path, folders: &Folders) -> io::Result<Outcome> {
     drop(opened);
     let folder = std::fs::canonicalize(path)?;
     let folder = folder.parent().unwrap_or_else(|| Path::new("."));
-    let _names = replay::recording_files::NamesLock::wait(folder)?;
+    let _names = replay_files::recording_files::NamesLock::wait(folder)?;
     let mut steps = Vec::new();
     for step in STEPS {
         let replay = Replay::open_newest(path)?;
@@ -68,7 +68,7 @@ fn uncontinued(path: &Path, replay: &Replay) -> io::Result<()> {
     let path = std::fs::canonicalize(path)?;
     let folder = path.parent().unwrap_or_else(|| Path::new("."));
     let deferred = |why: &str| Err(io::Error::new(io::ErrorKind::WouldBlock, why));
-    if folder.file_name() == replay::publication::unsaved_folder(Path::new("")).file_name() {
+    if folder.file_name() == replay_settings::publication::unsaved_folder(Path::new("")).file_name() {
         return deferred("unsaved hours are upgraded once they are saved");
     }
     if replay.unsaved() {
@@ -109,8 +109,8 @@ fn add_facts(replay: &Replay, path: &Path, folders: &Folders) -> io::Result<Stri
         layers: &layers,
         withheld,
     };
-    let (pack, stats) = facts::write(&source, identity, tables, &folders.cache, &|| false)?;
-    let level = replay::recorder_settings::RecorderSettings::load()
+    let (pack, stats) = facts::write(&source, identity, tables, &folders.cache, &|| false, content_reader_key_names::equipment_facts::gather)?;
+    let level = replay_settings::recorder_settings::RecorderSettings::load()
         .map(|settings| settings.compression)
         .unwrap_or_default()
         .level();
@@ -149,8 +149,8 @@ fn add_facts(replay: &Replay, path: &Path, folders: &Folders) -> io::Result<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::{GatherOptions, gather};
-    use replay::spool::Record;
+    use content_reader_layers::{GatherOptions, gather};
+    use replay_capture_spool::spool::Record;
     use replay_data::{identity::CaptureMode, identity::SampleBoundary, identity::SessionStart, rows::CampaignRow, rows::TableId, rows::TableRows};
     use replay_frame::{branches::BranchReason, branches::BranchStart, branches::Parentage, frame::Frame, frame::Metrics, frame::TableUpdate};
     use std::{collections::BTreeMap, fs, sync::Arc};
@@ -158,7 +158,7 @@ mod tests {
     const CAMPAIGN: &[u8] = b"upgrade-test";
 
     fn unequipped(pack: &[u8]) -> Vec<u8> {
-        let why = facts::Pack::open(Arc::new(pack.to_vec()), 0, pack.len() as u64).unwrap().sub_unit_needs().unwrap_err();
+        let why = content_reader_key_names::equipment_facts::sub_unit_needs(&facts::Pack::open(Arc::new(pack.to_vec()), 0, pack.len() as u64).unwrap()).unwrap_err();
         let compressed = u32::from_le_bytes(pack[6..10].try_into().unwrap()) as usize;
         let raw = u32::from_le_bytes(pack[10..14].try_into().unwrap()) as usize;
         let mut manifest = zstd::bulk::decompress(&pack[14..14 + compressed], raw).unwrap();
@@ -193,7 +193,7 @@ mod tests {
         let content = gather(&GatherOptions { game_dir: root.join("game"), user_dir: root.join("user"), cache_dir: folders.cache.clone(), dlc_order: None }).unwrap();
         let identity = content.identity("build".into(), [1; 32], 20, "test".into(), [2; 32]).unwrap();
         let source = facts::Source { layers: &content.layers, withheld: BTreeMap::new() };
-        let (pack, _) = facts::write(&source, &identity, Err("no tables".to_owned()), &folders.cache, &|| false).unwrap();
+        let (pack, _) = facts::write(&source, &identity, Err("no tables".to_owned()), &folders.cache, &|| false, content_reader_key_names::equipment_facts::gather).unwrap();
         let older = unequipped(&pack);
         let session = SessionStart {
             id: 1,
@@ -213,10 +213,10 @@ mod tests {
         ];
         let path = root.join("recordings/synthetic.battleplan");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        Replay::from_records(CAMPAIGN.into(), &[records]).unwrap().write_atomic(&path).unwrap();
+        Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records]).unwrap().write_atomic(&path).unwrap();
         let recorded = Replay::open_newest(&path).unwrap();
         let addition = writer::Addition { facts: Some(&older), ..writer::Addition::default() };
-        let level = replay::compression::Compression::default().level();
+        let level = replay_settings::compression::Compression::default().level();
         writer::revise(&path, recorded.recording(), &addition, true, level).unwrap();
         drop(recorded);
         write("user/changed/common/ideas/mod.txt", "ideas = { second = {} }");

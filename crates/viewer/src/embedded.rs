@@ -1,9 +1,6 @@
 
 use job_priority::SpawnCarried as _;
-use dashboard::protocol::{
-    CameraMode, DashboardMapState, DashboardMapView, GamepadMessage, NativeCommand, NativeEvent,
-    ViewBounds, ViewerState, validate_map_views,
-};
+use dashboard_core::protocol::{CameraMode, DashboardMapState, DashboardMapView, GamepadMessage, NativeCommand, NativeEvent, ViewBounds, ViewerState, validate_map_views};
 use eframe::egui;
 use std::{
     cell::{Cell, RefCell},
@@ -33,7 +30,7 @@ pub struct Seek {
     pub revision: String,
     pub branch: replay_data::BranchId,
     pub hour: i32,
-    pub playback: Option<dashboard::protocol::MapPlayback>,
+    pub playback: Option<dashboard_core::protocol::MapPlayback>,
 }
 
 impl Seek {
@@ -67,22 +64,32 @@ fn validate_snapshot(path: &str, revision: Option<&str>) -> Result<(), String> {
 
 #[derive(Default)]
 pub struct Pending {
-    pub actions: VecDeque<dashboard::protocol::MapAction>,
+    pub actions: VecDeque<dashboard_core::protocol::MapAction>,
+    pub exports: Vec<crate::host::ExportJob>,
     pub campaign_map: bool,
     pub open: Option<OpenRequest>,
     pub seek: Option<Seek>,
     pub close: bool,
     pub error: Option<String>,
-    pub map_views: Option<Vec<DashboardMapView>>,
+    pub map_views: Option<(Option<String>, Vec<DashboardMapView>)>,
     pub gamepad: Option<GamepadMessage>,
     bounds: Option<ViewBounds>,
     visibility: Option<bool>,
+    clock_origins: crate::page_clock::OriginGate,
 }
 
 impl Pending {
+    fn take(&mut self) -> Self {
+        let origins = std::mem::take(&mut self.clock_origins);
+        let taken = std::mem::take(self);
+        self.clock_origins = origins;
+        taken
+    }
+
     fn is_empty(&self) -> bool {
         self.open.is_none()
             && self.actions.is_empty()
+            && self.exports.is_empty()
             && !self.campaign_map
             && self.map_views.is_none()
             && self.seek.is_none()
@@ -93,14 +100,21 @@ impl Pending {
             && self.error.is_none()
     }
 
-    fn push(&mut self, command: NativeCommand) -> Result<(), String> {
+    fn push(&mut self, command: impl Into<crate::host::Command>) -> Result<(), String> {
         if self.close {
             return Ok(());
         }
+        let command = match command.into() {
+            crate::host::Command::Native(command) => command,
+            crate::host::Command::Export(job) => {
+                self.exports.push(job);
+                return Ok(());
+            }
+        };
         match command {
             NativeCommand::MapAction { action } => {
                 action.validate().map_err(str::to_owned)?;
-                if let dashboard::protocol::MapAction::Unload { path } = &action {
+                if let dashboard_core::protocol::MapAction::Unload { path } = &action {
                     let path = Path::new(path);
                     if self
                         .open
@@ -123,9 +137,28 @@ impl Pending {
                 self.campaign_map = true;
                 self.map_views = None;
             }
-            NativeCommand::MapViews { views } => {
-                validate_map_views(&views)?;
-                self.map_views = Some(views);
+            NativeCommand::MapViews { clock_id, views } => {
+                match clock_id.as_deref() {
+                    Some(clock_id) => {
+                        validate_map_views(clock_id, &views)?;
+                        if self.clock_origins.admit(clock_id)
+                            == crate::page_clock::OriginStatus::Retired
+                        {
+                            return Ok(());
+                        }
+                    }
+                    None if !views.is_empty() => {
+                        return Err(
+                            "Map clock identity is missing or exceeds its control budget".into(),
+                        );
+                    }
+                    None => {
+                        if self.clock_origins.active().is_some() {
+                            return Ok(());
+                        }
+                    }
+                }
+                self.map_views = Some((clock_id, views));
                 self.campaign_map = false;
                 self.open = None;
                 self.seek = None;
@@ -164,19 +197,26 @@ impl Pending {
                 hour,
                 playback,
             } => {
-                if let Some(playback) = playback {
+                if let Some(playback) = &playback {
                     playback.validate()?;
                 }
                 validate_snapshot(&path, Some(&revision))?;
                 if branch.is_empty() || !branch.bytes().all(|byte| byte.is_ascii_digit()) {
                     return Err("A branch must be an unsigned decimal string".into());
                 }
+                let branch = branch
+                    .parse()
+                    .map_err(|_| "Branch exceeds the replay's u64 id")?;
+                if playback.as_ref().is_some_and(|clock| {
+                    self.clock_origins.admit(&clock.clock_id)
+                        == crate::page_clock::OriginStatus::Retired
+                }) {
+                    return Ok(());
+                }
                 self.seek = Some(Seek {
                     path: PathBuf::from(path),
                     revision,
-                    branch: branch
-                        .parse()
-                        .map_err(|_| "Branch exceeds the replay's u64 id")?,
+                    branch,
                     hour,
                     playback,
                 });
@@ -217,7 +257,7 @@ impl ReportedState {
 
 #[derive(Default)]
 struct Outgoing {
-    details: Option<dashboard::protocol::MapDetails>,
+    details: Option<dashboard_core::protocol::MapDetails>,
     ready: Option<(String, Option<Vec<u32>>)>,
     state: Option<ReportedState>,
     error: Option<String>,
@@ -225,11 +265,11 @@ struct Outgoing {
     map_order: VecDeque<String>,
     toggle_diagnostics: bool,
     camera_mode: Option<(CameraMode, bool)>,
-    fly_aircraft: Option<dashboard::protocol::FlyAircraftStatus>,
-    view_options: BTreeMap<String, dashboard::protocol::MapOptions>,
-    view_toggles: VecDeque<(String, dashboard::protocol::MapToggle)>,
-    view_modes: BTreeMap<String, Vec<dashboard::protocol::MapModeChoice>>,
-    view_observes: BTreeMap<String, dashboard::protocol::ObservedCountry>,
+    fly_aircraft: Option<dashboard_core::protocol::FlyAircraftStatus>,
+    view_options: BTreeMap<String, dashboard_core::protocol::MapOptions>,
+    view_toggles: VecDeque<(String, dashboard_core::protocol::MapToggle)>,
+    view_modes: BTreeMap<String, Vec<dashboard_core::protocol::MapModeChoice>>,
+    view_observes: BTreeMap<String, dashboard_core::protocol::ObservedCountry>,
 }
 
 impl Outgoing {
@@ -286,7 +326,7 @@ struct Shared {
 }
 
 impl Shared {
-    fn input(&self, command: NativeCommand) {
+    fn input(&self, command: crate::host::Command) {
         let mut pending = self
             .pending
             .lock()
@@ -313,7 +353,7 @@ impl Shared {
         self.output_ready.notify_one();
     }
 
-    fn details(&self, details: dashboard::protocol::MapDetails) {
+    fn details(&self, details: dashboard_core::protocol::MapDetails) {
         self.outgoing
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -384,12 +424,12 @@ fn clock_only(old: &DashboardMapState, new: &DashboardMapState) -> bool {
     clockless(old) == clockless(new)
 }
 
-pub fn install_follow(send: impl Fn(u8, Vec<u8>) + Send + 'static) -> io::Result<bool> {
+pub fn install_follow(send: impl Fn(u8, Vec<u8>, u64) + Send + 'static) -> io::Result<bool> {
     let push = Arc::new(dashboard_follow::push::Push::default());
     let drained = Arc::clone(&push);
     thread::Builder::new().name("follow push".into()).spawn(move || {
-        while let Some((kind, bytes, _, _)) = drained.take_kind() {
-            send(kind, bytes);
+        while let Some((kind, bytes, session)) = drained.take_sent() {
+            send(kind, bytes, session);
         }
     })?;
     Ok(dashboard_follow::registry::install(Arc::new(FollowPlayheads { push, hosts: Mutex::default(), building: Mutex::default() })))
@@ -425,12 +465,20 @@ impl FollowPlayheads {
 }
 
 impl dashboard_follow::registry::Playheads for FollowPlayheads {
+    fn credit(&self, session: u64, released: u64) {
+        self.push.credit(session, released);
+    }
+
+    fn restart(&self) -> u64 {
+        self.push.restart()
+    }
+
     fn open(&self, path: &Path, branch: u64, clock: i32) -> Result<Arc<dyn dashboard_follow::registry::Hosted>, String> {
         let push = &self.push;
         if let Some(failed) = push.failed() {
             return Err(failed);
         }
-        let recording = replay::columnar_frames::Recording::open_path_as(path, replay::columnar_frames::Open::Saved).map_err(|error| error.to_string())?;
+        let recording = replay_recording::columnar_frames::Recording::open_path_as(path, replay_recording::columnar_frames::Open::Saved).map_err(|error| error.to_string())?;
         let capture = replay_data::scope::CaptureMode::from_byte(recording.root().identity.capture_mode).map_err(|error| error.to_string())?;
         let key = (crate::playhead_host::units::name(&recording), branch, clock);
         if let Some(host) = self.hosted(&key) {
@@ -446,8 +494,8 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
         entry.set_capture(capture);
         let follow = dashboard_follow::Follow::new(clock);
         let out = Arc::clone(push);
-        let hook = follow.hook(Box::new(move |_, message| {
-            if let Some(message) = message { out.offer(message.bytes); }
+        let hook = follow.hook(Box::new(move |stats, message| {
+            if let Some(message) = message { out.offer_from(stats.session, dashboard_follow::push::FOLLOW, message.bytes); }
         }));
         let held = dashboard_follow::host::held_tables(&**entry.pages(), entry.kinds().len());
         let host = dashboard_follow::host::PlayheadHost::new(Arc::clone(&entry), crate::playhead_host::Entry::playhead, crate::playhead_host::Entry::follow_anchor, follow, held).map_err(|error| error.to_string())?;
@@ -516,7 +564,7 @@ impl dashboard_follow::panel::PanelReader for FollowRowReader {
 
 pub struct Parent {
     window: crate::host::Window,
-    commands: mpsc::Receiver<NativeCommand>,
+    commands: mpsc::Receiver<crate::host::Command>,
     events: crate::host::Events,
     service: Arc<dashboard::Service>,
 }
@@ -524,7 +572,7 @@ pub struct Parent {
 impl Parent {
     pub fn new(
         window: crate::host::Window,
-        commands: mpsc::Receiver<NativeCommand>,
+        commands: mpsc::Receiver<crate::host::Command>,
         events: crate::host::Events,
         service: Arc<dashboard::Service>,
     ) -> Self {
@@ -553,7 +601,6 @@ impl Parent {
             output_done,
             service,
             sent_maps: Sent::default(),
-            events: Arc::clone(&events),
         };
         let input = Arc::clone(&shared);
         thread::Builder::new()
@@ -561,13 +608,13 @@ impl Parent {
             .spawn_carried(move || {
                 while !input.stopped.load(Ordering::Acquire) {
                     let Ok(command) = commands.recv() else { break };
-                    let close = matches!(command, NativeCommand::Close);
+                    let close = matches!(command, crate::host::Command::Native(NativeCommand::Close));
                     input.input(command);
                     if close {
                         return;
                     }
                 }
-                input.input(NativeCommand::Close);
+                input.input(NativeCommand::Close.into());
             })?;
         let output = Arc::clone(&shared);
         let output_events = Arc::clone(&events);
@@ -665,7 +712,7 @@ impl Parent {
             .unwrap_or_else(|error| error.into_inner())
             .ready = Some((
             controller.window.window.hwnd().to_string(),
-            dashboard::map_settings::sample_counts(),
+            dashboard_core::map_settings::sample_counts(),
         ));
         shared.output_ready.notify_one();
         ctx.request_repaint();
@@ -682,7 +729,6 @@ pub struct Controller {
     output_done: mpsc::Receiver<()>,
     service: Arc<dashboard::Service>,
     sent_maps: Sent,
-    events: crate::host::Events,
 }
 
 impl Controller {
@@ -691,13 +737,12 @@ impl Controller {
     }
 
     pub fn poll(&mut self, ctx: &egui::Context) -> Pending {
-        let mut pending = std::mem::take(
-            &mut *self
-                .shared
-                .pending
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()),
-        );
+        let mut pending = self
+            .shared
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
         pending.close |= self.closing;
         if !pending.close {
             let applied = (|| {
@@ -710,7 +755,7 @@ impl Controller {
                 if let Some(visible) = pending.visibility {
                     self.window.visibility(visible);
                 }
-                if let Some(views) = &pending.map_views {
+                if let Some((_, views)) = &pending.map_views {
                     self.window.map_views(views)?;
                 }
                 Ok::<_, io::Error>(())
@@ -736,7 +781,7 @@ impl Controller {
         self.window.placement.get().bounds.map(|bounds| [bounds.width, bounds.height])
     }
 
-    pub fn report_details(&self, details: dashboard::protocol::MapDetails) {
+    pub fn report_details(&self, details: dashboard_core::protocol::MapDetails) {
         if let Some(path) = std::env::var_os("BATTLEPLAN_MAP_DETAILS_FILE").or_else(|| std::env::var_os("HOI4_MAP_DETAILS_FILE"))
             && let Ok(bytes) = serde_json::to_vec(&serde_json::json!({
                 "at": crate::perf_log::epoch_ms(), "details": &details,
@@ -747,7 +792,7 @@ impl Controller {
         self.shared.details(details);
     }
 
-    pub fn report_fly_aircraft(&self, status: dashboard::protocol::FlyAircraftStatus) {
+    pub fn report_fly_aircraft(&self, status: dashboard_core::protocol::FlyAircraftStatus) {
         self.shared
             .outgoing
             .lock()
@@ -767,10 +812,6 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    pub fn report_export(&self, request: u64, answer: Result<String, String>) {
-        (self.events)(NativeEvent::Export { request, answer });
-    }
-
     pub fn report_camera_mode(&self, mode: CameraMode, overlays: bool) {
         let mut outgoing = self
             .shared
@@ -782,7 +823,7 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    pub fn report_view_options(&self, view_id: &str, options: dashboard::protocol::MapOptions) {
+    pub fn report_view_options(&self, view_id: &str, options: dashboard_core::protocol::MapOptions) {
         let mut outgoing = self
             .shared
             .outgoing
@@ -793,7 +834,7 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    pub fn report_view_observe(&self, view_id: &str, country: dashboard::protocol::ObservedCountry) {
+    pub fn report_view_observe(&self, view_id: &str, country: dashboard_core::protocol::ObservedCountry) {
         let mut outgoing = self
             .shared
             .outgoing
@@ -804,7 +845,7 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    pub fn report_view_modes(&self, view_id: &str, modes: Vec<dashboard::protocol::MapModeChoice>) {
+    pub fn report_view_modes(&self, view_id: &str, modes: Vec<dashboard_core::protocol::MapModeChoice>) {
         let mut outgoing = self
             .shared
             .outgoing
@@ -815,7 +856,7 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    pub fn report_view_toggle(&self, view_id: &str, toggle: dashboard::protocol::MapToggle) {
+    pub fn report_view_toggle(&self, view_id: &str, toggle: dashboard_core::protocol::MapToggle) {
         let mut outgoing = self
             .shared
             .outgoing
@@ -1066,7 +1107,7 @@ mod tests {
         messages.push("Capture 1.250 ms".into());
         assert!(serde_json::to_vec(&messages).unwrap().len() > 16_000);
         let shared = shared();
-        shared.details(dashboard::protocol::MapDetails {
+        shared.details(dashboard_core::protocol::MapDetails {
             messages: messages.clone(),
             ..Default::default()
         });
@@ -1103,7 +1144,7 @@ mod tests {
 
     #[test]
     fn twenty_map_actions_queued_before_a_frame_are_all_taken_in_order() {
-        use dashboard::protocol::MapAction;
+        use dashboard_core::protocol::MapAction;
         let names: Vec<String> = (0..20).map(|n| format!("plane {n}")).collect();
         let mut pending = Pending::default();
         for name in &names {
@@ -1200,7 +1241,7 @@ mod tests {
     #[test]
     fn a_views_latest_mode_list_replaces_an_unsent_one_and_leaves_on_the_event_queue() {
         let mut outgoing = Outgoing::default();
-        let choice = |token: &str| dashboard::protocol::MapModeChoice {
+        let choice = |token: &str| dashboard_core::protocol::MapModeChoice {
             token: token.into(),
             label: token.into(),
             unavailable: None,
@@ -1254,9 +1295,7 @@ mod tests {
 
     #[test]
     fn controller_messages_wait_merged_and_camera_modes_reach_the_map() {
-        use dashboard::protocol::{
-            CameraMode, GamepadButton, GamepadOwner, GamepadState, MapAction,
-        };
+        use dashboard_core::protocol::{CameraMode, GamepadButton, GamepadOwner, GamepadState, MapAction};
         let owner = GamepadOwner {
             viewer: 1,
             handoff: 4,
@@ -1374,13 +1413,13 @@ mod tests {
         pending.push(open.clone()).unwrap();
         pending
             .push(NativeCommand::MapAction {
-                action: dashboard::protocol::MapAction::Unload { path: "B".into() },
+                action: dashboard_core::protocol::MapAction::Unload { path: "B".into() },
             })
             .unwrap();
         assert!(pending.open.is_some());
         pending
             .push(NativeCommand::MapAction {
-                action: dashboard::protocol::MapAction::Unload { path: "A".into() },
+                action: dashboard_core::protocol::MapAction::Unload { path: "A".into() },
             })
             .unwrap();
         assert!(pending.open.is_none());
@@ -1398,12 +1437,13 @@ mod tests {
                     revision: "100:10:0".into(),
                     branch: u64::MAX.to_string(),
                     hour,
-                    playback: Some(dashboard::protocol::MapPlayback {
+                    playback: Some(dashboard_core::protocol::MapPlayback {
                         playing: true,
                         seek_sequence: (hour / 100) as u64,
                         fraction: 0.375,
                         hours_per_second: 1440.0,
                         composed_at: 0.0,
+                        clock_id: "page-1".into(),
                     }),
                 })
                 .unwrap();
@@ -1415,12 +1455,13 @@ mod tests {
                 revision: "100:10:0".into(),
                 branch: u64::MAX,
                 hour: 9999,
-                playback: Some(dashboard::protocol::MapPlayback {
+                playback: Some(dashboard_core::protocol::MapPlayback {
                     playing: true,
                     seek_sequence: 99,
                     fraction: 0.375,
                     hours_per_second: 1440.0,
                     composed_at: 0.0,
+                    clock_id: "page-1".into(),
                 }),
             })
         );
@@ -1653,5 +1694,156 @@ mod tests {
         drop(panel);
         assert!(following.upgrade().is_none(), "the last panel reader's close stops the store");
         assert!(entry.playhead().declarations() > declarations, "the store's playhead reader is retired");
+    }
+
+    #[test]
+    fn coalescing_rejects_seeks_from_retired_clock_origins_before_drain() {
+        let mut pending = Pending::default();
+        let seek = |path: &str, hour: i32, clock_id: &str| NativeCommand::Seek {
+            path: path.into(),
+            revision: "rev-1".into(),
+            branch: "1".into(),
+            hour,
+            playback: Some(dashboard_core::protocol::MapPlayback {
+                playing: true,
+                seek_sequence: 1,
+                fraction: 0.0,
+                hours_per_second: 1440.0,
+                composed_at: 10.0,
+                clock_id: clock_id.into(),
+            }),
+        };
+        pending.push(seek("old.battleplan", 100, "page-A")).unwrap();
+        pending.push(seek("new.battleplan", 200, "page-B")).unwrap();
+        pending.push(seek("old.battleplan", 300, "page-A")).unwrap();
+        let drained = pending.take();
+        let kept = drained.seek.expect("page-B seek survives");
+        assert_eq!(kept.path, PathBuf::from("new.battleplan"));
+        assert_eq!(kept.hour, 200);
+        assert_eq!(
+            kept.playback.as_ref().map(|clock| clock.clock_id.as_str()),
+            Some("page-B")
+        );
+        pending.push(seek("old.battleplan", 400, "page-A")).unwrap();
+        assert!(pending.take().seek.is_none(), "origin retirement persists across drains");
+    }
+
+    #[test]
+    fn map_views_envelope_gates_empty_clears_and_state_dedup_distinguishes_clock_origin() {
+        let bounds = ViewBounds {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        };
+        let make = |clock_id: &str, sequence: u64, hour: i32| DashboardMapView {
+            options: Default::default(),
+            id: "map-1".into(),
+            source_id: "source".into(),
+            path: "campaign.battleplan".into(),
+            revision: "rev-1".into(),
+            branch_id: "1".into(),
+            playing: false,
+            hours_per_second: 24.0,
+            hour,
+            fraction: 0.0,
+            sequence,
+            seek_sequence: Some(sequence),
+            composed_at: 1000.0,
+            clock_id: clock_id.into(),
+            bounds,
+            clip: bounds,
+            visible: true,
+        };
+
+        let mut pending = Pending::default();
+        pending
+            .push(NativeCommand::MapViews {
+                clock_id: Some("page-A".into()),
+                views: vec![make("page-A", 80, 100)],
+            })
+            .unwrap();
+        pending
+            .push(NativeCommand::MapViews {
+                clock_id: Some("page-B".into()),
+                views: vec![make("page-B", 0, 260)],
+            })
+            .unwrap();
+        pending
+            .push(NativeCommand::MapViews {
+                clock_id: Some("page-A".into()),
+                views: Vec::new(),
+            })
+            .unwrap();
+        let (clock_id, views) = pending.take().map_views.expect("B's widgets survive late A clear");
+        assert_eq!(clock_id.as_deref(), Some("page-B"));
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].hour, 260);
+
+        pending
+            .push(NativeCommand::MapViews {
+                clock_id: Some("page-B".into()),
+                views: Vec::new(),
+            })
+            .unwrap();
+        pending
+            .push(NativeCommand::MapViews {
+                clock_id: Some("page-A".into()),
+                views: vec![make("page-A", 81, 101)],
+            })
+            .unwrap();
+        let (clock_id, views) = pending
+            .take()
+            .map_views
+            .expect("B's legitimate empty clear survives late A snapshot");
+        assert_eq!(clock_id.as_deref(), Some("page-B"));
+        assert!(views.is_empty());
+
+        let state_a = DashboardMapState {
+            id: "map-1".into(),
+            clock_id: "page-A".into(),
+            source_id: Some("source".into()),
+            revision: Some("rev-1".into()),
+            hour: Some(260),
+            sequence: 0,
+            requested_sequence: 0,
+            ..Default::default()
+        };
+        let state_b = DashboardMapState {
+            clock_id: "page-B".into(),
+            ..state_a.clone()
+        };
+        assert!(!same_ack(&state_a, &state_b));
+        assert!(!clock_only(&state_a, &state_b));
+
+        let mut after_seek = Pending::default();
+        after_seek
+            .push(NativeCommand::Seek {
+                path: "campaign.battleplan".into(),
+                revision: "rev-1".into(),
+                branch: "1".into(),
+                hour: 100,
+                playback: Some(dashboard_core::protocol::MapPlayback {
+                    playing: false,
+                    seek_sequence: 1,
+                    fraction: 0.0,
+                    hours_per_second: 24.0,
+                    composed_at: 100.0,
+                    clock_id: "page-A".into(),
+                }),
+            })
+            .unwrap();
+        let _ = after_seek.take();
+        after_seek
+            .push(NativeCommand::MapViews {
+                clock_id: Some("page-A".into()),
+                views: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(
+            after_seek.take().map_views,
+            Some((Some("page-A".into()), Vec::new())),
+            "a stamped empty clear for the active origin is admitted to hide the campaign map"
+        );
     }
 }

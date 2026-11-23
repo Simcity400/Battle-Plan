@@ -279,6 +279,12 @@ impl Tap {
     pub fn publication_hook(&mut self) -> &mut Hook {
         &mut self.hook
     }
+    pub fn is_enabled(&self) -> bool {
+        self.hook.is_enabled()
+    }
+    pub fn is_published(&self) -> bool {
+        self.hook.is_published()
+    }
     pub fn executable_ranges(&self) -> Vec<Range<usize>> {
         self.hook
             .executable_ranges()

@@ -1,6 +1,7 @@
+use dashboard_effects::ScriptedEffects;
 use super::counter_content;
 use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, Link, ScriptedText};
-use content_reader_core::{occupation_modifiers::Definition, occupation_modifiers::Kind};
+use content_reader_politics::occupation_modifiers::{Definition, Kind};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use viewer_foundation::tooltip_text::{self, Tooltip};
@@ -23,7 +24,7 @@ pub fn build(
         let scripted = content.scripted.as_ref().as_ref().map_err(Clone::clone)?;
         let text = ScriptedText::new(frame, &content.localisation, scripted, perspective).viewing(viewer);
         let effects = scripted.effects()?;
-        let context = dashboard_text::effect_description::Context::new(
+        let context = dashboard_effects::effect_description::Context::new(
             &text,
             &content.localisation,
             perspective,
@@ -31,7 +32,7 @@ pub fn build(
             effects.view(None),
         );
         Ok::<_, String>(
-            dashboard_text::effect_description::occupation_modifier_description(
+            dashboard_effects::effect_description::occupation_modifier_description(
                 definition,
                 &context,
                 &mut scopes,
@@ -84,10 +85,10 @@ fn recorded_scopes(frame: &DecodedFrame, state: u32, kind: Kind) -> Result<Event
     } else {
         resistance.country
     };
-    let links = viewer_foundation::table_access::rows::<tables::CountryLinks>(frame)
+    let links = dashboard_text::table_access::rows::<tables::CountryLinks>(frame)
         .map_err(|why| why.to_string())?;
     let slot = |raw| {
-        viewer_foundation::table_access::country_slot(&links, raw).map(|slot| slot.unwrap_or(0))
+        dashboard_text::table_access::country_slot(&links, raw).map(|slot| slot.unwrap_or(0))
     };
     Ok(scopes(
         slot(state_row.controller)?,

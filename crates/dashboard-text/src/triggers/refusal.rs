@@ -256,7 +256,7 @@ impl PartialEq<String> for Failure {
     }
 }
 
-pub(crate) fn capture<T>(run: impl FnOnce() -> T) -> (T, BTreeSet<Failure>) {
+pub fn capture<T>(run: impl FnOnce() -> T) -> (T, BTreeSet<Failure>) {
     CAPTURES.with(|captures| captures.borrow_mut().push(BTreeSet::new()));
     struct Pop;
     impl Drop for Pop {
@@ -428,15 +428,15 @@ mod tests {
     #[test]
     fn runtime_dispatch_preserves_its_source_error_without_a_string_round_trip() {
         let (_, failures) = capture(|| {
-            let dispatched = content_reader_core::trigger_keys::dispatch_with_error::<(), (), Failure>(
-                content_reader_core::trigger_keys::Key {
+            let dispatched = content_reader_script::trigger_keys::dispatch_with_error::<(), (), Failure>(
+                content_reader_script::trigger_keys::Key {
                     keyword: None,
                     text: b"synthetic",
                     quoted: false,
                     opens: true,
                 },
                 |_, _| {
-                    content_reader_core::trigger_keys::ScopeStep::Unknown(Failure::input(
+                    content_reader_script::trigger_keys::ScopeStep::Unknown(Failure::input(
                         TableId::Countries,
                         "",
                         None,
@@ -463,15 +463,15 @@ mod tests {
             );
         });
         assert_eq!(failures.len(), 1);
-        let _: content_reader_core::trigger_keys::Dispatched<(), ()> =
-            content_reader_core::trigger_keys::dispatch(
-                content_reader_core::trigger_keys::Key {
+        let _: content_reader_script::trigger_keys::Dispatched<(), ()> =
+            content_reader_script::trigger_keys::dispatch(
+                content_reader_script::trigger_keys::Key {
                     keyword: None,
                     text: b"synthetic",
                     quoted: false,
                     opens: true,
                 },
-                |_, _| content_reader_core::trigger_keys::ScopeStep::NotScope,
+                |_, _| content_reader_script::trigger_keys::ScopeStep::NotScope,
                 |_| Ok(None),
                 |_| None,
             )

@@ -12,13 +12,15 @@ use replay_data::{
     rows::NuclearStrikeRefusal, rows::NuclearStrikeRow, rows::NuclearUnitDamage,
     rows::NuclearWarSupport, rows::NuclearWingLoss, rows::TableId, rows::TableRows,
 };
-use replay_frame::frame::TableView;
+use replay_frame::frame::{TableInput, TableView};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::NuclearStrikes];
 pub type Capacities = usize;
 pub struct Captured {
     rows: CaptureRows<Entry>,
+    loss_recorded: AtomicBool,
 }
 impl Captured {
     pub fn vacant() -> Self {
@@ -27,10 +29,12 @@ impl Captured {
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(*c),
+            loss_recorded: AtomicBool::new(false),
         }
     }
     pub fn reset(&mut self) {
         self.rows.reset();
+        self.loss_recorded.store(false, Ordering::Relaxed);
     }
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
@@ -41,8 +45,12 @@ impl Captured {
     }
     pub fn fail(&mut self, reason: &'static str) {
         self.rows.fail(Outcome::Unavailable { reason });
+        self.loss_recorded.store(false, Ordering::Relaxed);
     }
-    pub fn capture(
+    /// # Safety
+    /// Caller must hold hourly capture admission as the sole consumer of nuclear-strike events
+    /// while observer storage stays live and teardown is excluded.
+    pub unsafe fn capture(
         &mut self,
         _memory: &impl Memory,
         _base: usize,
@@ -50,7 +58,8 @@ impl Captured {
     ) -> [u64; N] {
         self.reset();
         let started = qpc();
-        self.rows.outcome = match producer::drain(&mut self.rows.rows) {
+        // SAFETY: Caller holds hourly capture admission as the sole nuclear-strikes consumer.
+        self.rows.outcome = match unsafe { producer::drain(&mut self.rows.rows) } {
             Ok(len) => Outcome::Rows { len },
             Err(reason) => Outcome::Unavailable { reason },
         };
@@ -59,7 +68,7 @@ impl Captured {
     pub fn outcomes(&self) -> [Outcome; N] {
         [self.rows.outcome]
     }
-    pub fn tables(&self) -> [TableView; N] {
+    fn project_tables(&self, record_loss: bool) -> [TableView; N] {
         let Outcome::Rows { len } = self.rows.outcome else {
             return [unavailable(match self.rows.outcome {
                 Outcome::Unavailable { reason } => reason,
@@ -69,10 +78,22 @@ impl Captured {
         match project(&self.rows.rows[..len]) {
             Ok(rows) => [TableView::Complete(TableRows::NuclearStrikes(rows))],
             Err(reason) => {
-                producer::lost_output(len);
+                if record_loss && !self.loss_recorded.swap(true, Ordering::AcqRel) {
+                    // SAFETY: Caller is the owning publication path recording loss once.
+                    unsafe { producer::lost_output(len) };
+                }
                 [unavailable(reason)]
             }
         }
+    }
+    pub fn tables(&self) -> [TableView; N] {
+        self.project_tables(false)
+    }
+    /// # Safety
+    /// Caller must be the owning spool publication path converting this frame while observer
+    /// storage stays live; conversion failure records `lost_output` at most once per frame.
+    pub unsafe fn table_inputs(&self) -> [TableInput; N] {
+        self.project_tables(true).map(TableInput::Sampled)
     }
 }
 

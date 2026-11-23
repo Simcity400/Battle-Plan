@@ -36,7 +36,7 @@ pub const TABLES: [TableId; N] = [
     TableId::CombatLogBattleCountries,
 ];
 
-pub fn release_retained_history() {
+pub(crate) fn release_retained_history() {
     with_store(|store| store.retained = crate::history_capture::State::new());
     crate::history_capture::release_conversion();
 }
@@ -145,12 +145,16 @@ pub fn forget_reads() {
     FORGET.with(|forget| forget.store(true, Ordering::Release));
 }
 
-fn drain_prune_log(signal: i64, output: &mut Vec<native::Row>) -> bool {
+/// # Safety
+/// Caller holds hourly capture admission (or test lock) as the sole prune-log consumer while prune
+/// storage stays live.
+unsafe fn drain_prune_log(signal: i64, output: &mut Vec<native::Row>) -> bool {
     #[cfg(any(test, feature = "test-support"))]
     if !DRAINS.get() {
         return false;
     }
-    crate::combat_log_prune::drain(signal, output).is_ok()
+    // SAFETY: Caller holds hourly capture admission as the sole prune-log consumer.
+    unsafe { crate::combat_log_prune::drain(signal, output) }.is_ok()
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -172,7 +176,10 @@ pub struct Capacities {
 
 collector_primitives::capacity_max!(Capacities { rows, lend_lease });
 impl Capacities {
-    pub fn presize(
+    /// # Safety
+    /// Run only during attach or the active session's serial sizing pass against the authenticated
+    /// session image, while combat-log observer storage remains live and teardown is excluded.
+    pub unsafe fn presize(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -280,7 +287,10 @@ impl Captured {
         self.signal = signal;
     }
 
-    pub fn capture(
+    /// # Safety
+    /// Caller holds hourly capture admission for the active session (or exclusive fixture control)
+    /// while the history-events lane stays live and teardown is excluded.
+    pub unsafe fn capture(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -295,7 +305,8 @@ impl Captured {
                 let _reads = crate::read_accounting::table(TABLES[1]);
                 let started = qpc();
                 self.viewing = native::viewing_country(memory, game_state).ok_or(VIEWING_UNREAD);
-                self.prune_observed = self.begin(store, hour, force_full);
+                // SAFETY: Caller holds hourly capture admission as the sole combat-log consumer.
+                self.prune_observed = unsafe { self.begin(store, hour, force_full) };
                 qpc().saturating_sub(started).max(0) as u64
             };
             let log_cost = {
@@ -326,7 +337,10 @@ impl Captured {
         costs
     }
 
-    fn begin(&mut self, store: &mut Store, hour: i32, force_full: bool) -> bool {
+    /// # Safety
+    /// Caller holds hourly capture admission as the sole combat-log consumer while prune storage
+    /// stays live.
+    unsafe fn begin(&mut self, store: &mut Store, hour: i32, force_full: bool) -> bool {
         let new_session =
             store.signal != Some(self.signal) || store.hour.is_some_and(|last| hour < last);
         if new_session {
@@ -355,7 +369,8 @@ impl Captured {
             })
         });
         self.drained.clear();
-        let observed = drain_prune_log(self.signal, &mut self.drained);
+        // SAFETY: Caller holds hourly capture admission as the sole prune-log consumer.
+        let observed = unsafe { drain_prune_log(self.signal, &mut self.drained) };
         if allocation::reserve(&mut store.finals, self.drained.len()).is_err() {
             return false;
         }
@@ -578,7 +593,8 @@ mod tests {
         };
         let mut captured = Captured::with_capacities(&Capacities::default());
         for hour in 0..24 {
-            captured.capture(&memory, 0, 0x1000, hour, false);
+            // SAFETY: Test holds `TEST_LOCK` as the sole combat-log capture caller.
+            unsafe { captured.capture(&memory, 0, 0x1000, hour, false) };
             let [log, state, lend_lease, ..] = captured.outcomes();
             assert_eq!(state, Outcome::Rows { len: 1 }, "{hour}");
             let skipped = lend_lease
@@ -620,7 +636,8 @@ mod tests {
             bytes: &bytes,
         };
         let mut captured = Captured::with_capacities(&Capacities::default());
-        captured.capture(&memory, 0, 0x1000, 5, false);
+        // SAFETY: Test holds `TEST_LOCK` as the sole combat-log capture caller.
+        unsafe { captured.capture(&memory, 0, 0x1000, 5, false) };
         let [
             _,
             TableView::Complete(TableRows::CombatLogState(rows)),
@@ -641,7 +658,8 @@ mod tests {
             base: 0x10_0000,
             bytes: &bytes,
         };
-        captured.capture(&memory, 0, 0x1000, 5, false);
+        // SAFETY: Test holds `TEST_LOCK` as the sole combat-log capture caller.
+        unsafe { captured.capture(&memory, 0, 0x1000, 5, false) };
         assert!(matches!(
             captured.tables()[1],
             TableView::Unavailable { .. }
@@ -702,7 +720,8 @@ mod tests {
         let mut memo = native::VariantMemo::default();
         for (hour, force_full) in [(5, false), (6, false), (7, true), (8, false)] {
             captured.set_signal(SIGNAL);
-            captured.capture(&memory, 0, 0x1000, hour, force_full);
+            // SAFETY: Test holds `TEST_LOCK` as the sole combat-log capture caller.
+            unsafe { captured.capture(&memory, 0, 0x1000, hour, force_full) };
             original_visited.clear();
             let outcome = native::walk(
                 &memory,
@@ -744,7 +763,8 @@ mod tests {
             bytes,
         };
         captured.set_signal(signal);
-        captured.capture(&memory, 0, 0x1000, hour, force_full);
+        // SAFETY: Test holds `TEST_LOCK` as the sole combat-log capture caller.
+        unsafe { captured.capture(&memory, 0, 0x1000, hour, force_full) };
         let Outcome::Rows { len } = captured.rows.outcome else {
             panic!("complete read at {hour}: {:?}", captured.rows.outcome);
         };

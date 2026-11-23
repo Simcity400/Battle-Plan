@@ -2,8 +2,8 @@ use super::*;
 use fixed::SCALE;
 use std::cell::Cell;
 use std::cell::RefCell;
-use viewer_foundation::map::test_support::localisation::loaded;
-use viewer_foundation::map::text::GlyphBox;
+use viewer_foundation::test_support::localisation::loaded;
+use viewer_native_gui::text::GlyphBox;
 
 struct Fixed;
 
@@ -434,4 +434,44 @@ fn a_missing_label_key_and_a_missing_token_are_copied() {
         composer.drawn(Variant::Short).as_deref(),
         Ok("MAP_ARROWS_LOCALIZATION_EMPTY_SHORT")
     );
+}
+
+#[test]
+fn order_label_color_runs_preserve_colors_and_break_kerning() {
+    struct Colored;
+    impl GlyphMetrics for Colored {
+        fn advance(&self, ch: char) -> Option<f32> {
+            Fixed.advance(ch)
+        }
+        fn line_height(&self) -> f32 {
+            Fixed.line_height()
+        }
+        fn base(&self) -> f32 {
+            Fixed.base()
+        }
+        fn glyph(&self, ch: char) -> Option<GlyphBox> {
+            Fixed.glyph(ch)
+        }
+        fn kerning(&self, a: char, b: char) -> f32 {
+            if (a, b) == ('A', 'V') { -4.0 } else { 0.0 }
+        }
+        fn text_color(&self, code: char) -> Option<[f32; 4]> {
+            (code == 'G').then_some([0.2, 0.8, 0.3, 1.0])
+        }
+    }
+    impl LabelFont for Colored {
+        fn page(&self, _: char) -> Option<usize> {
+            Some(0)
+        }
+    }
+    let run = centred_run(&Colored, "A\u{11}GV\u{11}!A", 1.0);
+    assert_eq!(run.len(), 3);
+    assert_eq!(run[0].color, None);
+    assert_eq!(
+        run[1].color,
+        Some(viewer_native_gui::native_text::packed([0.2, 0.8, 0.3, 1.0]))
+    );
+    assert_eq!(run[2].color, None);
+    let pair = centred_run(&Colored, "A\u{11}GV\u{11}!", 1.0);
+    assert_eq!(pair.iter().map(|g| g.left).collect::<Vec<_>>(), [-0.5, 0.0]);
 }

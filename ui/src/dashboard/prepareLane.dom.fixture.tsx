@@ -1,3 +1,5 @@
+import { gatedHour } from '../test-support/gated.ts';
+import { followQuery } from '../test-support/gated.ts';
 import { Profiler, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
@@ -12,7 +14,9 @@ import { preparingClient, prepareGate } from './prepare.ts';
 import { loadProduct, useFollowedProduct, useProduct, useProducts } from './products.ts';
 import { forgetProducts } from './products.ts';
 import { useFollow } from './follow/useFollow.ts';
-import type { FollowStore } from './follow/store.ts';
+import { followStore } from './follow/store.ts';
+import { PlaybackController as PageClock } from './playback.ts';
+import type { DashboardSource } from './client';
 import { PreparingPage } from './preparing.ts';
 
 const START = 30_000;
@@ -54,7 +58,7 @@ const client = {
   },
 } as unknown as DashboardClient;
 
-const ask = (product: string, hour: number): ProductRequest => ({ sourceId: 'fixture', revision: '1', product, params: { hour } });
+const ask = (product: string, hour: number) => ({ sourceId: 'fixture', revision: '1', product, params: { hour: gatedHour(hour) } }) as ProductRequest;
 
 function ShownPage() {
   const blockOf = () => Math.floor(clock.getHour() / 2880) * 2880;
@@ -109,23 +113,18 @@ const fixture = {
     clock.playing = true; clock.anchor();
     await frame(); await frame();
     const before = { requests: requests.length, commits: visibleCommits, prepared: preparedRenders };
-    const intervals: number[] = [];
-    let last = await frame();
+    await frame();
     for (let at = 0; at < frames; at++) {
       clock.step(hours);
-      const now = await frame();
-      intervals.push(now - last);
-      last = now;
+      await frame();
     }
     clock.playing = false; clock.anchor();
-    intervals.sort((a, b) => a - b);
     const asked = requests.slice(before.requests);
     return {
       commits: visibleCommits - before.commits,
       preparedRenders: preparedRenders - before.prepared,
       asked: asked.map(item => item.product),
       hostWhilePlaying: false,
-      p50: intervals[Math.floor(intervals.length * 0.5)], p95: intervals[Math.floor(intervals.length * 0.95)],
     };
   },
   hostShown: () => !!document.querySelector('[data-prepare]'),
@@ -187,15 +186,17 @@ const fixture = {
   async followed() {
     root?.unmount(); host?.remove();
     const acquired: string[] = [];
-    const store = {
-      acquire(query: Record<string, unknown>) { acquired.push(String(query.copy)); return { entry: { id: acquired.length, status: 'pending' }, release() {} }; },
-      painter: () => ({ dispose() {}, repaint() {} }),
-      watch: () => () => {},
-    } as unknown as FollowStore;
+    const following = { available: true, openFollow: async () => {}, product: async (request: ProductRequest) => {
+      if (request.product === 'follow') acquired.push(String(((request.params as { query?: { copy?: unknown } }).query)?.copy));
+      return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: { available: false, reason: 'nothing is pushed here' } };
+    } } as unknown as DashboardClient;
+    const clock = new PageClock();
+    clock.setBounds({ firstHour: 0, lastHour: START * 2 });
+    const store = followStore(following, { source: { id: 'followed', revision: '1', path: 'followed', metadata: {} } as unknown as DashboardSource, axisOffset: 0 }, clock);
     const seen: Record<string, { status: string; hidden: boolean }> = {};
     function Widget({ copy }: { copy: string }) {
       const target = useRef<HTMLDivElement>(null);
-      const followed = useFollow(store, { copy }, target, () => {}, undefined, (_element, changed) => { changed(copy !== 'off screen'); return () => {}; });
+      const followed = useFollow(store, followQuery({ copy, branchId: '1' }), target, () => {}, undefined, (_element, changed) => { changed(copy !== 'off screen'); return () => {}; });
       seen[copy] = { status: followed.status, hidden: followed.hidden };
       return <div ref={target} />;
     }
@@ -203,6 +204,7 @@ const fixture = {
     document.body.append(host);
     root = createRoot(host);
     root.render(<><Widget copy="shown" /><Widget copy="off screen" /><PreparingPage.Provider value={true}><Widget copy="prepared" /></PreparingPage.Provider></>);
+    for (let at = 0; at < 60 && !acquired.length; at++) await frame();
     await frame(); await frame();
     return { acquired, seen };
   },

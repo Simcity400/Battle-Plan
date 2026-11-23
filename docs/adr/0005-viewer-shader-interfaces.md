@@ -8,4 +8,4 @@ The hatch uniform packs the camera direction and depth bias into `look`, map-pix
 
 Screen comparison records the size and bounds of pixel changes and the tiles that contain a change of at least two steps in 8-bit color. This distinguishes one-step flicker and scene-wide effects from localized movement. The tile counts follow the eleven aggregate values in the storage buffer, which the Rust readback decodes in the same order.
 
-[Texture unpack](../../crates/viewer-foundation/src/map/texture_unpack.wgsl) · [Political fill](../../crates/viewer-world/src/map/political_fill.wgsl) · [Weather hatch](../../crates/viewer-world/src/map/weather/unknown_hatch.wgsl) · [Screen comparison](../../crates/viewer/src/screen_count.wgsl)
+[Texture unpack](../../crates/viewer-gpu/src/texture_unpack.wgsl) · [Political fill](../../crates/viewer-map-modes/src/political_fill.wgsl) · [Weather hatch](../../crates/viewer-terrain/src/weather/unknown_hatch.wgsl) · [Screen comparison](../../crates/viewer/src/screen_count.wgsl)

@@ -1,4 +1,4 @@
-use content_reader_core::defines::Defines;
+use content_reader_defines::defines::Defines;
 use std::io;
 
 fn invalid(message: String) -> io::Error {
@@ -27,7 +27,7 @@ pub(crate) struct Reinforce {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct LandDefines {
     pub(crate) combat_speed: i64,
-    pub(crate) experience: Option<content_reader_core::unit_leader::DivisionExperience>,
+    pub(crate) experience: Option<content_reader_key_names::unit_leader::DivisionExperience>,
     pub(crate) experience_refusal: Option<String>,
     pub(crate) armour_icons: [f32; 4],
     pub(crate) piercing_thresholds: Vec<i64>,
@@ -68,7 +68,7 @@ impl LandDefines {
                     .into(),
             ));
         }
-        let experience = content_reader_core::unit_leader::DivisionExperience::read(defines);
+        let experience = content_reader_key_names::unit_leader::DivisionExperience::read(defines);
         let experience_refusal = experience.as_ref().err().map(ToString::to_string);
         Ok(Self {
             combat_speed: military("COMBAT_MOVEMENT_SPEED")?.max(0),

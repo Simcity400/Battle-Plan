@@ -6,4 +6,4 @@ Each visibility source places terms on the provinces it reaches, ordered as the 
 
 Consumers that copy sight take the entire snapshot on a change to shared inputs and otherwise get changed unit levels and province bytes. The fold maintains reverse dependencies from province bytes to readers. Its output can update province arrays by sharing the previous pages and copying the changed bytes. A perspective change restarts the fold on the applied hour and distinguishes held earlier output until that fold answers. Fog can withhold a frame's display independently of the province bytes computed for a comparison.
 
-[Vision layer](../../crates/viewer-playback/src/layers/vision.rs) · [Ordered fold](../../crates/viewer-playback/src/layers/vision/fold.rs) · [Global inputs](../../crates/viewer-playback/src/layers/vision/global.rs)
+[Vision layer](../../crates/viewer-layer-core/src/vision.rs) · [Ordered fold](../../crates/viewer-layer-core/src/vision/fold.rs) · [Global inputs](../../crates/viewer-layer-core/src/vision/global.rs)

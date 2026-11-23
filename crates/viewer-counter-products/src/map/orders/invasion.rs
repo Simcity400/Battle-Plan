@@ -2,11 +2,8 @@
 use replay_data::{rows::ArmyOrderPlanRow, rows::ArmyOrderRow, rows::OrdersGroupRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, sync::OnceLock};
-use {
-    dashboard_text::triggers::World, viewer_foundation::map::movement_reads::Cells,
-    viewer_foundation::map::movement_reads::Moves,
-    viewer_foundation::map::movement_reads::ReadOperands,
-};
+use dashboard_text::triggers::World;
+use viewer_unit_reads::movement_reads::{Cells, Moves, ReadOperands};
 
 pub struct Routes<'a> {
     frame: &'a DecodedFrame,

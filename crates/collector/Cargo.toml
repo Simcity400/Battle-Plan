@@ -8,236 +8,83 @@ license.workspace = true
 
 [lib]
 crate-type = ["cdylib"]
+test = false
 
 [features]
-order_membership_changes = ["collector-observers/order_membership_changes"]
-order_membership_oracle = ["acquisition_profile", "engine-native/order_membership_oracle", "collector-observers/order_membership_oracle"]
-acquisition_profile = ["engine-native/acquisition_profile", "collector-memory/acquisition_profile"]
+order_membership_changes = ["collector-runtime/order_membership_changes"]
+order_membership_oracle = ["collector-runtime/order_membership_oracle"]
+acquisition_profile = ["collector-runtime/acquisition_profile"]
 default = ["executor_join_help", "order_membership_changes", "politics_capture", "portrait_changes", "advisor_changes", "relation_changes", "opinion_changes", "history_changes", "character_changes", "flag_changes", "building_changes", "advisor_pool_changes", "party_leader_changes", "variable_changes", "party_changes", "wing_changes", "roster_changes", "political_status_changes", "mission_changes", "rail_changes", "territory_changes", "navy_ledger_changes", "air_base_changes", "army_stat_changes", "country_input_changes", "raid_changes", "appointment_changes", "naval_tree_changes", "area_changes", "air_record_changes", "world_input_changes", "retreat_ban_changes", "local_subunit_changes", "template_changes", "faction_changes", "ship_model_changes", "technology_changes", "focus_changes", "projects_changes", "character_record_changes", "appearance_changes", "counter_changes", "war_changes", "province_unit_changes", "province_combat_changes", "air_base_carry_changes", "unit_leader_changes", "census_changes", "unit_leader_trait_changes", "province_changes", "weather_changes", "visibility_changes", "raid_intel_changes"]
-politics_capture = ["collector-politics/politics_capture"]
-advisor_changes = []
-advisor_profile = ["advisor_changes"]
-callback_profile = ["collector-fuel-awards/callback_profile"]
-phase_cpu = []
-worker_sampler = []
-columnar-fault-injection = []
-executor_join_help = []
-breakdown_witness = ["collector-governance/breakdown_witness"]
-conversion_check = ["collector-intel/conversion_check"]
-alloc-fault-injection = ["engine-air-history/alloc-fault-injection", "engine-allocation/alloc-fault-injection", "engine-characters/alloc-fault-injection", "engine-decisions/alloc-fault-injection", "engine-deployment/alloc-fault-injection", "engine-dlc/alloc-fault-injection", "engine-events/alloc-fault-injection", "engine-fixed-layout/alloc-fault-injection", "engine-fuel/alloc-fault-injection", "engine-intelligence/alloc-fault-injection", "engine-land-inputs/alloc-fault-injection", "engine-map-air/alloc-fault-injection", "engine-mutations/alloc-fault-injection", "engine-native/alloc-fault-injection", "engine-naval-history/alloc-fault-injection", "engine-occupation/alloc-fault-injection", "engine-peace/alloc-fault-injection", "engine-production/alloc-fault-injection", "engine-raid-inputs/alloc-fault-injection", "engine-railways/alloc-fault-injection", "engine-research/alloc-fault-injection", "engine-resources/alloc-fault-injection", "engine-scripts/alloc-fault-injection", "engine-stability/alloc-fault-injection", "engine-visibility/alloc-fault-injection", "collector-memory/alloc-fault-injection"]
-tap-foreign-probe = ["collector-observers/tap-foreign-probe"]
-portrait_changes = []
-relation_changes = ["collector-air-relations/relation_changes"]
-history_changes = ["collector-air-histories/history_changes"]
-opinion_changes = ["collector-observers/opinion_changes"]
-character_changes = ["advisor_changes", "collector-observers/character_changes"]
-flag_changes = ["collector-intel/flag_changes"]
-building_changes = ["collector-construction/building_changes"]
-advisor_pool_changes = ["character_changes", "collector-observers/advisor_pool_changes"]
-appointment_changes = ["advisor_pool_changes", "roster_changes", "collector-advisors/appointment_changes"]
-character_record_changes = ["advisor_pool_changes", "roster_changes", "collector-advisors/character_record_changes"]
-party_leader_changes = ["character_changes", "collector-governance/party_leader_changes"]
-variable_changes = ["collector-intel/variable_changes"]
-party_changes = ["collector-governance/party_changes"]
-wing_changes = ["collector-observers/wing_changes"]
-roster_changes = ["collector-observers/roster_changes"]
-political_status_changes = ["collector-observers/political_status_changes"]
-mission_changes = []
-rail_changes = ["collector-observers/rail_changes"]
-territory_changes = ["collector-observers/territory_changes"]
-navy_ledger_changes = []
-air_base_changes = []
-air_base_carry_changes = ["raid_changes", "ship_model_changes", "building_changes", "collector-observers/air_base_carry_changes"]
-army_stat_changes = ["collector-division-parts/army_stat_changes"]
-ship_model_changes = ["collector-ship-models/ship_model_changes"]
-country_input_changes = ["collector-observers/country_input_changes"]
-air_record_changes = ["collector-air-records/air_record_changes"]
-technology_changes = ["country_input_changes", "collector-observers/technology_changes"]
-focus_changes = ["country_input_changes", "collector-observers/focus_changes"]
-projects_changes = ["country_input_changes", "collector-observers/projects_changes"]
-weather_changes = ["country_input_changes", "collector-observers/weather_changes"]
-appearance_changes = ["country_input_changes", "collector-observers/appearance_changes"]
-counter_changes = ["country_input_changes", "collector-observers/counter_changes"]
-visibility_changes = ["country_input_changes", "collector-observers/visibility_changes", "collector-visibility/visibility_changes"]
-attack_witness = ["collector-division-parts/attack_witness"]
-raid_changes = ["collector-observers/raid_changes"]
-naval_tree_changes = ["collector-observers/naval_tree_changes"]
-naval_tree_oracle = ["collector-observers/naval_tree_oracle"]
-raid_intel_changes = ["naval_tree_changes", "collector-projects/raid_intel_changes"]
-world_input_changes = ["collector-observers/world_input_changes"]
-province_unit_changes = []
-retreat_ban_changes = ["naval_tree_changes", "collector-observers/retreat_ban_changes"]
-area_changes = ["collector-observers/area_changes"]
-province_changes = ["collector-observers/province_changes"]
-province_combat_changes = ["collector-observers/province_combat_changes"]
-local_subunit_changes = ["collector-model-inputs/local_subunit_changes"]
-template_changes = []
-faction_changes = []
-war_changes = ["collector-observers/war_changes"]
-unit_leader_changes = ["roster_changes", "naval_tree_changes", "collector-observers/unit_leader_changes"]
-census_changes = ["advisor_changes", "roster_changes", "collector-observers/census_changes"]
-unit_leader_trait_changes = ["naval_tree_changes", "collector-observers/unit_leader_trait_changes"]
+politics_capture = ["collector-runtime/politics_capture"]
+advisor_changes = ["collector-runtime/advisor_changes"]
+advisor_profile = ["collector-runtime/advisor_profile"]
+callback_profile = ["collector-runtime/callback_profile"]
+phase_cpu = ["collector-runtime/phase_cpu"]
+worker_sampler = ["collector-runtime/worker_sampler"]
+columnar-fault-injection = ["collector-runtime/columnar-fault-injection"]
+executor_join_help = ["collector-runtime/executor_join_help"]
+breakdown_witness = ["collector-runtime/breakdown_witness"]
+conversion_check = ["collector-runtime/conversion_check"]
+alloc-fault-injection = ["collector-runtime/alloc-fault-injection"]
+tap-foreign-probe = ["collector-runtime/tap-foreign-probe"]
+portrait_changes = ["collector-runtime/portrait_changes"]
+relation_changes = ["collector-runtime/relation_changes"]
+history_changes = ["collector-runtime/history_changes"]
+opinion_changes = ["collector-runtime/opinion_changes"]
+character_changes = ["collector-runtime/character_changes"]
+flag_changes = ["collector-runtime/flag_changes"]
+building_changes = ["collector-runtime/building_changes"]
+advisor_pool_changes = ["collector-runtime/advisor_pool_changes"]
+appointment_changes = ["collector-runtime/appointment_changes"]
+character_record_changes = ["collector-runtime/character_record_changes"]
+party_leader_changes = ["collector-runtime/party_leader_changes"]
+variable_changes = ["collector-runtime/variable_changes"]
+party_changes = ["collector-runtime/party_changes"]
+wing_changes = ["collector-runtime/wing_changes"]
+roster_changes = ["collector-runtime/roster_changes"]
+political_status_changes = ["collector-runtime/political_status_changes"]
+mission_changes = ["collector-runtime/mission_changes"]
+rail_changes = ["collector-runtime/rail_changes"]
+territory_changes = ["collector-runtime/territory_changes"]
+navy_ledger_changes = ["collector-runtime/navy_ledger_changes"]
+air_base_changes = ["collector-runtime/air_base_changes"]
+air_base_carry_changes = ["collector-runtime/air_base_carry_changes"]
+army_stat_changes = ["collector-runtime/army_stat_changes"]
+ship_model_changes = ["collector-runtime/ship_model_changes"]
+country_input_changes = ["collector-runtime/country_input_changes"]
+air_record_changes = ["collector-runtime/air_record_changes"]
+technology_changes = ["collector-runtime/technology_changes"]
+focus_changes = ["collector-runtime/focus_changes"]
+projects_changes = ["collector-runtime/projects_changes"]
+weather_changes = ["collector-runtime/weather_changes"]
+appearance_changes = ["collector-runtime/appearance_changes"]
+counter_changes = ["collector-runtime/counter_changes"]
+visibility_changes = ["collector-runtime/visibility_changes"]
+attack_witness = ["collector-runtime/attack_witness"]
+raid_changes = ["collector-runtime/raid_changes"]
+naval_tree_changes = ["collector-runtime/naval_tree_changes"]
+naval_tree_oracle = ["collector-runtime/naval_tree_oracle"]
+raid_intel_changes = ["collector-runtime/raid_intel_changes"]
+world_input_changes = ["collector-runtime/world_input_changes"]
+province_unit_changes = ["collector-runtime/province_unit_changes"]
+retreat_ban_changes = ["collector-runtime/retreat_ban_changes"]
+area_changes = ["collector-runtime/area_changes"]
+province_changes = ["collector-runtime/province_changes"]
+province_combat_changes = ["collector-runtime/province_combat_changes"]
+local_subunit_changes = ["collector-runtime/local_subunit_changes"]
+template_changes = ["collector-runtime/template_changes"]
+faction_changes = ["collector-runtime/faction_changes"]
+war_changes = ["collector-runtime/war_changes"]
+unit_leader_changes = ["collector-runtime/unit_leader_changes"]
+census_changes = ["collector-runtime/census_changes"]
+unit_leader_trait_changes = ["collector-runtime/unit_leader_trait_changes"]
 
 [dependencies]
-game-model.workspace = true
-engine-sites.workspace = true
-collector-naval-management.workspace = true
-replay = { workspace = true, features = ["journal"] }
-engine-air-history.workspace = true
-engine-allocation.workspace = true
-engine-characters.workspace = true
-engine-decisions.workspace = true
-engine-deployment.workspace = true
-engine-dlc.workspace = true
-engine-events.workspace = true
-engine-executable.workspace = true
-engine-fixed-layout.workspace = true
-engine-fuel.workspace = true
-engine-intelligence.workspace = true
-engine-land-inputs.workspace = true
-engine-map-air.workspace = true
-engine-mutations.workspace = true
-engine-native.workspace = true
-engine-naval-history.workspace = true
-engine-occupation.workspace = true
-engine-peace.workspace = true
-engine-production.workspace = true
-engine-raid-inputs.workspace = true
-engine-railways.workspace = true
-engine-research.workspace = true
-engine-resources.workspace = true
-engine-scripts.workspace = true
-engine-stability.workspace = true
-engine-visibility.workspace = true
-replay-columnar.workspace = true
-replay-data.workspace = true
-replay-derive.workspace = true
-replay-frame = { workspace = true, features = ["capture"] }
-collector-politics.workspace = true
-collector-construction.workspace = true
-collector-railway-guns.workspace = true
-collector-country-counters.workspace = true
-collector-naval-details.workspace = true
-collector-air-histories.workspace = true
-collector-air-relations.workspace = true
-collector-air-records.workspace = true
-collector-air-sorties.workspace = true
-collector-output.workspace = true
-collector-new-divisions.workspace = true
-collector-naval-counters.workspace = true
-collector-division-parts.workspace = true
-collector-naval-movement.workspace = true
-collector-army-icons.workspace = true
-collector-war-overview.workspace = true
-collector-map-tables.workspace = true
-collector-slow-tables.workspace = true
-collector-ledger-tables.workspace = true
-collector-map-events.workspace = true
-collector-fuel-awards.workspace = true
-collector-peace.workspace = true
-collector-experience-gains.workspace = true
-collector-leaders.workspace = true
-collector-production-daily.workspace = true
-collector-visibility.workspace = true
-collector-session.workspace = true
-collector-raids.workspace = true
-collector-combat-log.workspace = true
-collector-supply-trains.workspace = true
-collector-projects.workspace = true
-collector-stability.workspace = true
-collector-model-inputs.workspace = true
-collector-ship-models.workspace = true
-collector-advisors.workspace = true
-collector-lexical.workspace = true
-collector-weather.workspace = true
-collector-governance.workspace = true
-collector-intel.workspace = true
 collector-observers.workspace = true
-collector-extended-support.workspace = true
-collector-production.workspace = true
-collector-economy.workspace = true
-collector-combat.workspace = true
-collector-projection.workspace = true
-collector-raw.workspace = true
-collector-memory.workspace = true
-collector-logistics.workspace = true
-collector-lifetime.workspace = true
-collector-metadata.workspace = true
-collector-snapshots.workspace = true
-collector-certificates.workspace = true
-collector-timing.workspace = true
-collector-hooks.workspace = true
-collector-primitives.workspace = true
-collector-status.workspace = true
-retour = "0.3"
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Kernel", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Performance", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_System_SystemServices"] }
-
-[[example]]
-name = "tap_foreign_unwind"
-required-features = ["tap-foreign-probe"]
-
-[dev-dependencies]
-synthetic-game.workspace = true
-engine-equipment.workspace = true
-collector-naval-management = { workspace = true, features = ["test-support"] }
-recorder-replay.workspace = true
-syn = { version = "2.0.119", features = ["full", "visit"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
-collector-politics = { workspace = true, features = ["test-support"] }
-collector-construction = { workspace = true, features = ["test-support"] }
-collector-railway-guns = { workspace = true, features = ["test-support"] }
-collector-country-counters = { workspace = true, features = ["test-support"] }
-collector-naval-details = { workspace = true, features = ["test-support"] }
-collector-air-histories = { workspace = true, features = ["test-support"] }
-collector-air-relations = { workspace = true, features = ["test-support"] }
-collector-air-records = { workspace = true, features = ["test-support"] }
-collector-air-sorties = { workspace = true, features = ["test-support"] }
-collector-output = { workspace = true, features = ["test-support"] }
-collector-new-divisions = { workspace = true, features = ["test-support"] }
-collector-naval-counters = { workspace = true, features = ["test-support"] }
-collector-division-parts = { workspace = true, features = ["test-support"] }
-collector-naval-movement = { workspace = true, features = ["test-support"] }
-collector-army-icons = { workspace = true, features = ["test-support"] }
-collector-war-overview = { workspace = true, features = ["test-support"] }
-collector-map-tables = { workspace = true, features = ["test-support"] }
-collector-slow-tables = { workspace = true, features = ["test-support"] }
-collector-ledger-tables = { workspace = true, features = ["test-support"] }
-collector-map-events = { workspace = true, features = ["test-support"] }
-collector-fuel-awards = { workspace = true, features = ["test-support"] }
-collector-peace = { workspace = true, features = ["test-support"] }
-collector-experience-gains = { workspace = true, features = ["test-support"] }
-collector-leaders = { workspace = true, features = ["test-support"] }
-collector-production-daily = { workspace = true, features = ["test-support"] }
-collector-visibility = { workspace = true, features = ["test-support"] }
-collector-session = { workspace = true, features = ["test-support"] }
-collector-raids = { workspace = true, features = ["test-support"] }
-collector-combat-log = { workspace = true, features = ["test-support"] }
-collector-supply-trains = { workspace = true, features = ["test-support"] }
-collector-projects = { workspace = true, features = ["test-support"] }
-collector-stability = { workspace = true, features = ["test-support"] }
-collector-model-inputs = { workspace = true, features = ["test-support"] }
-collector-ship-models = { workspace = true, features = ["test-support"] }
-collector-advisors = { workspace = true, features = ["test-support"] }
-collector-lexical = { workspace = true, features = ["test-support"] }
-collector-weather = { workspace = true, features = ["test-support"] }
-collector-governance = { workspace = true, features = ["test-support"] }
-collector-intel = { workspace = true, features = ["test-support"] }
-collector-observers = { workspace = true, features = ["test-support"] }
-collector-extended-support = { workspace = true, features = ["test-support"] }
-collector-production = { workspace = true, features = ["test-support"] }
-collector-economy = { workspace = true, features = ["test-support"] }
-collector-combat = { workspace = true, features = ["test-support"] }
-collector-raw = { workspace = true, features = ["test-support"] }
-collector-memory = { workspace = true, features = ["test-support"] }
-collector-lifetime = { workspace = true, features = ["test-support"] }
-collector-metadata = { workspace = true, features = ["test-support"] }
-collector-certificates = { workspace = true, features = ["test-support"] }
-collector-timing = { workspace = true, features = ["test-support"] }
-collector-hooks = { workspace = true, features = ["test-support"] }
-collector-primitives = { workspace = true, features = ["test-support"] }
-collector-test-support.workspace = true
+collector-operation-outcomes.workspace = true
+collector-runtime.workspace = true
+collector-workers.workspace = true
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [lints]
 workspace = true
@@ -247,33 +94,50 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 collector-advisors = { workspace = true, features = ["advisor_changes", "advisor_pool_changes", "appointment_changes", "character_changes", "character_record_changes", "default", "roster_changes", "test-support"] }
+collector-air = { workspace = true, features = ["air_base_changes", "default", "test-support", "wing_changes"] }
 collector-air-histories = { workspace = true, features = ["default", "history_changes", "test-support"] }
 collector-air-records = { workspace = true, features = ["air_record_changes", "default", "test-support"] }
 collector-air-relations = { workspace = true, features = ["default", "relation_changes", "test-support"] }
+collector-air-sorties = { workspace = true, features = ["test-support"] }
+collector-capture = { workspace = true, features = ["advisor_changes", "advisor_pool_changes", "air_base_carry_changes", "air_base_changes", "air_record_changes", "appearance_changes", "appointment_changes", "area_changes", "army_stat_changes", "building_changes", "census_changes", "character_changes", "character_record_changes", "counter_changes", "country_input_changes", "default", "executor_join_help", "faction_changes", "flag_changes", "focus_changes", "history_changes", "local_subunit_changes", "mission_changes", "naval_tree_changes", "navy_ledger_changes", "opinion_changes", "order_membership_changes", "party_changes", "party_leader_changes", "political_status_changes", "politics_capture", "portrait_changes", "projects_changes", "province_changes", "province_combat_changes", "province_unit_changes", "raid_changes", "raid_intel_changes", "rail_changes", "relation_changes", "retreat_ban_changes", "roster_changes", "ship_model_changes", "technology_changes", "template_changes", "territory_changes", "test-support", "unit_leader_changes", "unit_leader_trait_changes", "variable_changes", "visibility_changes", "war_changes", "weather_changes", "wing_changes", "world_input_changes"] }
+collector-characters = { workspace = true, features = ["advisor_changes", "character_changes", "default", "portrait_changes", "roster_changes", "test-support"] }
 collector-construction = { workspace = true, features = ["building_changes", "default", "test-support"] }
 collector-division-parts = { workspace = true, features = ["army_stat_changes", "default", "test-support"] }
+collector-division-templates = { workspace = true, features = ["default", "template_changes", "test-support"] }
+collector-divisions = { workspace = true, features = ["default", "province_unit_changes", "test-support"] }
+collector-equipment-destruction = { workspace = true, features = ["default", "test-support"] }
+collector-factions = { workspace = true, features = ["default", "faction_changes", "test-support"] }
 collector-governance = { workspace = true, features = ["advisor_changes", "character_changes", "default", "party_changes", "party_leader_changes", "test-support"] }
+collector-hook-failures = { workspace = true, features = ["default", "test-support"] }
 collector-intel = { workspace = true, features = ["default", "flag_changes", "opinion_changes", "test-support", "variable_changes"] }
+collector-land-events = { workspace = true, features = ["default", "test-support"] }
+collector-map-capture = { workspace = true, features = ["advisor_pool_changes", "air_base_carry_changes", "air_base_changes", "appearance_changes", "area_changes", "census_changes", "character_changes", "counter_changes", "country_input_changes", "default", "executor_join_help", "focus_changes", "naval_tree_changes", "opinion_changes", "order_membership_changes", "political_status_changes", "projects_changes", "province_changes", "province_combat_changes", "province_unit_changes", "raid_changes", "rail_changes", "retreat_ban_changes", "roster_changes", "ship_model_changes", "technology_changes", "territory_changes", "test-support", "unit_leader_changes", "unit_leader_trait_changes", "visibility_changes", "war_changes", "weather_changes", "wing_changes", "world_input_changes"] }
+collector-missions = { workspace = true, features = ["default", "mission_changes", "navy_ledger_changes", "test-support"] }
 collector-model-inputs = { workspace = true, features = ["default", "local_subunit_changes", "test-support"] }
+collector-naval-history = { workspace = true, features = ["default", "test-support"] }
+collector-naval-missions = { workspace = true, features = ["default", "test-support"] }
+collector-naval-results = { workspace = true, features = ["default", "test-support"] }
 collector-observers = { workspace = true, features = ["advisor_changes", "advisor_pool_changes", "air_base_carry_changes", "appearance_changes", "area_changes", "census_changes", "character_changes", "counter_changes", "country_input_changes", "default", "focus_changes", "naval_tree_changes", "opinion_changes", "order_membership_changes", "political_status_changes", "projects_changes", "province_changes", "province_combat_changes", "raid_changes", "rail_changes", "retreat_ban_changes", "roster_changes", "ship_model_changes", "technology_changes", "territory_changes", "test-support", "unit_leader_changes", "unit_leader_trait_changes", "visibility_changes", "war_changes", "weather_changes", "wing_changes", "world_input_changes"] }
+collector-operation-outcomes = { workspace = true, features = ["default", "test-support"] }
+collector-plans = { workspace = true, features = ["default", "test-support"] }
+collector-player-commands = { workspace = true, features = ["default", "test-support"] }
 collector-politics = { workspace = true, features = ["default", "politics_capture", "test-support"] }
 collector-projects = { workspace = true, features = ["default", "naval_tree_changes", "raid_intel_changes", "test-support"] }
+collector-runtime = { workspace = true, features = ["advisor_changes", "advisor_pool_changes", "air_base_carry_changes", "air_base_changes", "air_record_changes", "appearance_changes", "appointment_changes", "area_changes", "army_stat_changes", "building_changes", "census_changes", "character_changes", "character_record_changes", "counter_changes", "country_input_changes", "default", "executor_join_help", "faction_changes", "flag_changes", "focus_changes", "history_changes", "local_subunit_changes", "mission_changes", "naval_tree_changes", "navy_ledger_changes", "opinion_changes", "order_membership_changes", "party_changes", "party_leader_changes", "political_status_changes", "politics_capture", "portrait_changes", "projects_changes", "province_changes", "province_combat_changes", "province_unit_changes", "raid_changes", "raid_intel_changes", "rail_changes", "relation_changes", "retreat_ban_changes", "roster_changes", "ship_model_changes", "technology_changes", "template_changes", "territory_changes", "unit_leader_changes", "unit_leader_trait_changes", "variable_changes", "visibility_changes", "war_changes", "weather_changes", "wing_changes", "world_input_changes"] }
 collector-ship-models = { workspace = true, features = ["default", "ship_model_changes", "test-support"] }
+collector-spool = { workspace = true, features = ["advisor_changes", "advisor_pool_changes", "air_base_carry_changes", "air_base_changes", "air_record_changes", "appearance_changes", "appointment_changes", "area_changes", "army_stat_changes", "building_changes", "census_changes", "character_changes", "character_record_changes", "counter_changes", "country_input_changes", "default", "executor_join_help", "faction_changes", "flag_changes", "focus_changes", "history_changes", "local_subunit_changes", "mission_changes", "naval_tree_changes", "navy_ledger_changes", "opinion_changes", "order_membership_changes", "party_changes", "party_leader_changes", "political_status_changes", "politics_capture", "portrait_changes", "projects_changes", "province_changes", "province_combat_changes", "province_unit_changes", "raid_changes", "raid_intel_changes", "rail_changes", "relation_changes", "retreat_ban_changes", "roster_changes", "ship_model_changes", "technology_changes", "template_changes", "territory_changes", "test-support", "unit_leader_changes", "unit_leader_trait_changes", "variable_changes", "visibility_changes", "war_changes", "weather_changes", "wing_changes", "world_input_changes"] }
+collector-states = { workspace = true, features = ["default", "test-support"] }
 collector-visibility = { workspace = true, features = ["country_input_changes", "default", "test-support", "visibility_changes"] }
-content-reader-country-names = { workspace = true, features = ["test-support"] }
-content-reader-localisation = { workspace = true, features = ["test-support"] }
+collector-workers = { workspace = true, features = ["default", "executor_join_help", "test-support"] }
+content-reader-key-names = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
-recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+engine-executable = { workspace = true, features = ["test-support"] }
+recorder-derive-framework = { workspace = true, features = ["test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-bitflags-2 = { workspace = true }
-unify-bytemuck = { workspace = true }
-unify-either = { workspace = true }
-unify-num-traits = { workspace = true }
-unify-proc-macro2 = { workspace = true }
 unify-smallvec = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }

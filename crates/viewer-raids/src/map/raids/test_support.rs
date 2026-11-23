@@ -5,9 +5,9 @@ use replay_data::{
     rows::TableSchema,
 };
 use replay_frame::frame::TableView;
-use viewer_foundation::map::test_support::gui;
-pub fn parse(source: &str) -> Vec<content_reader_core::parser::Item> {
-    content_reader_core::parser::parse(source.as_bytes())
+use viewer_native_gui::test_support::gui;
+pub fn parse(source: &str) -> Vec<content_reader_parser::parser::Item> {
+    content_reader_parser::parser::parse(source.as_bytes())
         .unwrap()
         .items
 }
@@ -16,7 +16,7 @@ pub fn set_counts(assets: &mut RaidAssets) {
     let facts = &mut assets.trigger_content;
     let ideologies = facts.ideologies.get_or_insert_with(Default::default);
     let mut names = (*facts.triggers).clone();
-    names.counts = Some(content_reader_core::trigger_keys::CountTriggerNames::new(
+    names.counts = Some(content_reader_key_names::key_name_products::count_trigger_names(
         &facts.buildings,
         ideologies,
         &Default::default(),
@@ -35,7 +35,7 @@ pub fn kind(name: &str, target: TargetType) -> Kind {
 }
 
 pub fn assets() -> RaidAssets {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let mut assets = unnamed_assets();
     set_counts(&mut assets);
     assets
@@ -245,7 +245,7 @@ pub fn target(id: u32, province: u32, detected: u8) -> RaidTargetRow {
 }
 
 pub fn path_assets() -> RaidAssets {
-    let mut graph = content_reader_core::province_graph::ProvinceGraph::default();
+    let mut graph = content_reader_map::province_graph::ProvinceGraph::default();
     for id in 1..=4_u32 {
         let next: Vec<_> = [id.wrapping_sub(1), id + 1]
             .into_iter()

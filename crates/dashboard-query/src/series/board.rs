@@ -4,7 +4,7 @@ use crate::{
     identity::{Country, Holder},
     read,
 };
-use replay::lanes::Keys;
+use replay_lanes::lanes::Keys;
 use replay_columnar::manifest::Status;
 use std::{collections::HashMap, io};
 
@@ -105,7 +105,7 @@ fn values(lines: &[&Line<'_, '_>], countries: &[Country], hour: i32, run: u32) -
         wanted.dedup();
         let snapshot = match wanted.is_empty() {
             true => None,
-            false => Some(crate::cost::storage(|| replay::lanes::at_keys(recording, run, table, hour, Some(&asked), Keys::These(&wanted)))?),
+            false => Some(crate::cost::storage(|| replay_lanes::lanes::at_keys(recording, run, table, hour, Some(&asked), Keys::These(&wanted)))?),
         };
         let complete = snapshot.as_ref().is_some_and(|snapshot| matches!(snapshot.status, Status::Complete));
         let view = snapshot.as_ref().map(|snapshot| snapshot.view());
@@ -140,12 +140,12 @@ mod tests {
     use super::*;
     use crate::fixture::*;
 
-    fn line<'q>(query: &'q crate::Query<'static>, measure: &str) -> Line<'q, 'static> {
+    fn line<'q, 'r>(query: &'q crate::Query<'r>, measure: &str) -> Line<'q, 'r> {
         let series = dashboard_declare::series("country-measure").unwrap();
         Line::new(query, series, series.measure(measure).unwrap()).unwrap()
     }
 
-    fn power_column<'q>(query: &'q crate::Query<'static>) -> Column<'q, 'static> {
+    fn power_column<'q, 'r>(query: &'q crate::Query<'r>) -> Column<'q, 'r> {
         Column { line: line(query, "politicalPower"), partial: None }
     }
 
@@ -155,15 +155,19 @@ mod tests {
 
     #[test]
     fn a_top_is_the_countries_greatest_at_the_hour_and_every_column_is_read_for_them() {
-        let query = query();
-        let hour = both_recorded();
+        let hour = ITA_FROM;
+        let fixture = Fixture::new(Data::Power, hour - 1..=hour + 1);
+        let query = fixture.query();
         let columns = [power_column(&query), Column { line: line(&query, "commandPower"), partial: Some(line(&query, "politicalPower")) }];
+        assert_eq!(columns[0].line.rank_at_by(query.timeline.first, 2, false).unwrap(), ["GER"]);
         let board = at(&columns, Rows::Top { by: 0, n: 2, least: false }, hour).unwrap();
         let mut wanted: Vec<(i64, u32)> = [9001, 9002].into_iter().map(|id| (power(id, hour).unwrap(), id)).collect();
         wanted.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         let tags: Vec<&str> = board.rows.iter().map(|row| row.tag.as_str()).collect();
         assert_eq!(tags, wanted.iter().map(|(_, id)| tag_of(*id)).collect::<Vec<_>>());
-        for (row, (value, _)) in board.rows.iter().zip(&wanted) {
+        for (row, (value, id)) in board.rows.iter().zip(&wanted) {
+            assert_ne!(power(*id, hour - 1), Some(*value));
+            assert_ne!(power(*id, hour + 1), Some(*value));
             assert_eq!(row.cells[0], Cell { value_raw: Some(value.to_string()), missing: None, partial: false });
             assert_eq!(row.cells[1], Cell { value_raw: Some("0".into()), missing: None, partial: *value != 0 });
         }
@@ -175,13 +179,14 @@ mod tests {
 
     #[test]
     fn countries_of_equal_value_rank_by_tag_as_the_followed_top_and_the_ui_do() {
-        let mut query = query();
+        let hour = both_recorded();
+        let fixture = Fixture::new(Data::Power, hour..=hour);
+        let mut query = fixture.query();
         let held = std::sync::Arc::make_mut(&mut query.holders);
         let ger = held.tags.remove("GER").unwrap();
         let ita = held.tags.remove("ITA").unwrap();
         held.tags.insert("ZZZ".into(), ger);
         held.tags.insert("AAA".into(), ita);
-        let hour = both_recorded();
         let columns = [Column { line: line(&query, "commandPower"), partial: None }];
         let board = at(&columns, Rows::Top { by: 0, n: 2, least: false }, hour).unwrap();
         assert_eq!(board.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), ["AAA", "ZZZ"]);
@@ -190,16 +195,17 @@ mod tests {
 
     #[test]
     fn chosen_tags_keep_their_order_leave_out_a_country_not_held_and_never_rank_an_unknown_value() {
-        let query = query();
+        let unrecorded = (FIRST..ITA_FROM).rev().find(|&hour| power(9001, hour).is_none()).unwrap();
+        let hour = both_recorded();
+        let fixture = Fixture::new(Data::Power, unrecorded..=hour);
+        let query = fixture.query();
         let columns = [power_column(&query)];
         let tags = [Country::from("ITA"), Country::from("GER")];
-        let unrecorded = (FIRST..ITA_FROM).find(|&hour| power(9001, hour).is_none()).unwrap();
         let board = at(&columns, Rows::Countries(&tags), unrecorded).unwrap();
         assert_eq!(board.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), ["GER"], "ITA does not exist yet");
         assert_eq!(board.rows[0].cells[0].value_raw, None);
         assert!(board.rows[0].cells[0].missing.is_some());
         assert!(at(&columns, Rows::Top { by: 0, n: 2, least: false }, unrecorded).unwrap().rows.is_empty());
-        let hour = both_recorded();
         let board = at(&columns, Rows::Countries(&tags), hour).unwrap();
         assert_eq!(board.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), ["ITA", "GER"]);
     }
@@ -207,14 +213,15 @@ mod tests {
     #[test]
     fn a_holder_with_no_row_ranks_at_zero_where_its_series_holds_none_there() {
         use crate::identity::{Holder, HolderRun};
-        let mut query = query();
+        let hour = both_recorded();
+        let fixture = Fixture::new(Data::Power, hour..=hour);
+        let mut query = fixture.query();
         let held = std::sync::Arc::make_mut(&mut query.holders);
-        held.tags.insert("POL".into(), vec![HolderRun { first: FIRST, last: LAST, holder: Holder::Found { slot: 9, id: 9003 }, starts_segment: true }]);
+        held.tags.insert("POL".into(), vec![HolderRun { first: hour, last: hour, holder: Holder::Found { slot: 9, id: 9003 }, starts_segment: true }]);
         let base = dashboard_declare::series("country-measure").unwrap();
         let series: &'static dashboard_declare::Series = Box::leak(Box::new(dashboard_declare::Series {
             kind: base.kind, table: base.table, key: base.key, parts: base.parts, measures: base.measures, drops: base.drops, absent_none: true,
         }));
-        let hour = both_recorded();
         let columns = [Column { line: Line::new(&query, series, series.measure("politicalPower").unwrap()).unwrap(), partial: None }];
         let mut wanted: Vec<(i64, &str)> = vec![(power(9001, hour).unwrap(), "GER"), (power(9002, hour).unwrap(), "ITA"), (0, "POL")];
         wanted.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
@@ -230,7 +237,9 @@ mod tests {
 
     #[test]
     fn an_hour_the_timeline_does_not_hold_has_no_rows_and_says_why() {
-        let query = query();
+        let end = FIRST + FIRST_HOURS - 1;
+        let fixture = Fixture::with_gap(Data::Power, end..=SECOND, end + 1..=SECOND - 1);
+        let query = fixture.query();
         let columns = [power_column(&query)];
         let board = at(&columns, Rows::Top { by: 0, n: 2, least: false }, FIRST + FIRST_HOURS + 1).unwrap();
         assert!(board.rows.is_empty());

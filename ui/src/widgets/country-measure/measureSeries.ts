@@ -15,12 +15,19 @@ import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useViewRead } from '../../dashboard/viewRead';
 import { useTiles } from '../../dashboard/tiles/useTiles';
+import type { CoveredBranch, GatedHour } from '../../dashboard/regionTime';
+import type { SeriesGate } from '../../dashboard/keyedSeries';
+import { forwardRequest, type DeclaredProduct } from '../../dashboard/request.ts';
+import type { ParamsFor } from '../../dashboard/regionTime';
+import { withinParams } from '../../dashboard/keyedSeriesData.ts';
 
 export type MeasureFamily = string;
 
-export function useMeasureSeries(client: DashboardClient, source: DashboardSource | undefined, branchId: string | undefined,
-  family: MeasureFamily, measure: string, tags: readonly string[], headHour: number | null, hoverHour: number | null, active: boolean,
-  withMarks: boolean, within: ReadonlyMap<string, readonly HourSpan[]> | undefined, lastHour: number, live: boolean) {
+export function useMeasureSeries(client: DashboardClient, gate: SeriesGate, source: DashboardSource | undefined, branch: (CoveredBranch & { id: string }) | undefined,
+  family: MeasureFamily, measure: string, tags: readonly string[], headHour: GatedHour | null, hoverHour: GatedHour | null, active: boolean,
+  withMarks: boolean, within: ReadonlyMap<string, readonly HourSpan[]> | undefined, lastHour: number, live: boolean,
+  readable: (tag: string, hour: number) => boolean = () => true) {
+  const branchId = branch?.id;
   const enabled = !!source && !!branchId && tags.length > 0;
   const ownerKey = JSON.stringify([source?.id, source?.revision, branchId, family, measure, tags, within && [...within]]);
   const owner = useMemo(() => ({ client, key: ownerKey }), [client, ownerKey]);
@@ -28,14 +35,14 @@ export function useMeasureSeries(client: DashboardClient, source: DashboardSourc
   const [failure, setFailure] = useState<{ owner: typeof owner; error: Failure }>();
   const [keyboard, setKeyboard] = useState<{ owner: typeof owner; hour: number | null; revision: number }>();
   const navigation = useRef<AbortController | null>(null);
-  const tiles = useTiles(client, enabled ? { source: source!, branchId: branchId!, family: { kind: family, measure }, tags, within, lastHour, marks: withMarks } : null, active, live);
+  const tiles = useTiles(client, enabled ? { source: source!, branchId: branchId!, family: { kind: family, measure }, tags, within, span: gate.span, lastHour, marks: withMarks } : null, active, live);
   const tileView = tiles.onView;
   const onSummaryView = useCallback<NonNullable<TimeChartProps['onSummaryView']>>(view => {
     if (view.to < view.from) return;
     tileView(view);
   }, [tileView]);
-  const request = (product: string, params: Record<string, unknown>) => ({ sourceId: source!.id, revision: source!.revision, product,
-    params: { branchId, family: { kind: family, measure }, ...params } });
+  const request = <K extends DeclaredProduct>(product: K, params: ParamsFor<K>) => forwardRequest(source!, product,
+    { branchId, family: { kind: family, measure }, ...params } as unknown as ParamsFor<K>);
   const content = useContentRevision(client);
   const readLines = tiles.read;
   const lineOf = useCallback((tag: string): ChartSummary | undefined => readLines()?.get(tag)?.summary, [readLines]);
@@ -46,8 +53,9 @@ export function useMeasureSeries(client: DashboardClient, source: DashboardSourc
     return marked.current.marks.get(tag) ?? null;
   }, [readLines]);
   const tileDecimals = tiles.lines?.values().next().value?.decimals;
-  const reads = tags.flatMap(tag => [...new Set([...(headHour === null ? [] : [Math.floor(headHour)]), ...(hoverHour === null ? [] : [Math.floor(hoverHour)])])]
-    .map(hour => ({ tag, hour })));
+  const hours = [...new Set([headHour, hoverHour].filter(hour => hour !== null))];
+  const member = (tag: string, hour: number) => (!within || (within.get(tag) ?? []).some(span => span.firstHour <= hour && hour <= span.lastHour)) && readable(tag, hour);
+  const reads = tags.flatMap(tag => hours.filter(hour => member(tag, hour)).map(hour => ({ country: countryFromKey(tag), hour })));
   const stateRead = useViewRead<typeof reads, MeasureStates>(enabled && reads.length ? JSON.stringify([ownerKey, content]) : null,
     reads, JSON.stringify(reads), active, (at, signal, publish, restart) => loadProduct(client, request('series-state', { reads: at }),
       signal, validateMeasureStates, source, restart, publish), client);
@@ -56,13 +64,15 @@ export function useMeasureSeries(client: DashboardClient, source: DashboardSourc
     if (!enabled || !active) return;
     navigation.current?.abort();
     const controller = new AbortController(); navigation.current = controller;
-    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', { countries: tags.map(countryFromKey), key, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) }),
+    const range = gate.span(x[0], Math.min(x[1], until ?? x[1]));
+    if (!range) return;
+    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', { countries: tags.map(countryFromKey), ...withinParams(tags, within, gate.span), key, from: gate.within(from), ...range }),
       controller.signal).then(reply => {
       if (controller.signal.aborted || alive.current !== owner) return;
       if (reply.hour !== null && (typeof reply.hour !== 'number' || !Number.isFinite(reply.hour))) throw new Error('The keyboard reply is malformed.');
       setKeyboard(previous => ({ owner, hour: reply.hour as number | null, revision: (previous?.revision ?? 0) + 1 }));
     }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setFailure({ owner, error: asFailure(error) }); });
-  }, [owner, active, enabled]);
+  }, [owner, active, enabled, gate.span, gate.within]);
   const lines = useMemo(() => reachedLines(tags, stateRead.data), [owner, stateRead.data]);
   const retry = () => { setFailure(undefined); tiles.retry(); stateRead.retry(); };
   const stateError = stateRead.errorKey === JSON.stringify(reads) ? stateRead.error : undefined;

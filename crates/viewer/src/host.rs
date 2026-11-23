@@ -3,7 +3,7 @@ pub(crate) mod driver;
 mod window;
 
 use crate::{Options, app, embedded};
-use dashboard::protocol::{NativeCommand, NativeEvent};
+use dashboard_core::protocol::{NativeCommand, NativeEvent};
 use eframe::wgpu;
 use job_priority::SpawnCarried as _;
 use std::{
@@ -16,7 +16,7 @@ use std::{
 };
 
 pub use embedded::install_follow;
-pub use window::{Inputs, Window};
+pub use window::{Inputs, WM_TAKE_FOCUS, Window};
 
 pub fn log_map_frames(prefix: &std::path::Path) {
     crate::perf_log::log_to(prefix);
@@ -173,8 +173,70 @@ pub struct Launch {
     pub service: Arc<dashboard::Service>,
 }
 
+pub const STOPPED: &str = "The map stopped before the export finished";
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Saved {
+    pub message: String,
+    pub warning: Option<String>,
+}
+
+pub type Answer = Result<Saved, String>;
+
+pub struct Reply(Option<Box<dyn FnOnce(Answer) + Send>>);
+
+impl Reply {
+    pub fn new(answer: impl FnOnce(Answer) + Send + 'static) -> Self {
+        Self(Some(Box::new(answer)))
+    }
+
+    fn send(mut self, answer: Answer) {
+        if let Some(reply) = self.0.take() {
+            reply(answer);
+        }
+    }
+}
+
+impl Drop for Reply {
+    fn drop(&mut self) {
+        if let Some(reply) = self.0.take() {
+            reply(Err(STOPPED.to_owned()));
+        }
+    }
+}
+
+pub struct ExportJob {
+    reply: Reply,
+    pub path: String,
+    pub view_id: Option<String>,
+    pub receipt: replay_settings::exit::Receipt<'static>,
+}
+
+impl ExportJob {
+    pub fn new(path: String, view_id: Option<String>, receipt: replay_settings::exit::Receipt<'static>, reply: Reply) -> Self {
+        Self { reply, path, view_id, receipt }
+    }
+
+    pub fn answer(self, answer: Answer) {
+        let Self { reply, receipt, .. } = self;
+        reply.send(answer);
+        drop(receipt);
+    }
+}
+
+pub enum Command {
+    Native(NativeCommand),
+    Export(ExportJob),
+}
+
+impl From<NativeCommand> for Command {
+    fn from(native: NativeCommand) -> Self {
+        Self::Native(native)
+    }
+}
+
 pub struct Map {
-    commands: mpsc::Sender<NativeCommand>,
+    commands: mpsc::Sender<Command>,
 }
 
 impl Map {
@@ -189,8 +251,15 @@ impl Map {
         Ok(Self { commands })
     }
 
-    pub fn send(&self, command: NativeCommand) -> bool {
-        self.commands.send(command).is_ok()
+    pub fn send(&self, command: impl Into<Command>) -> bool {
+        self.commands.send(command.into()).is_ok()
+    }
+
+    pub fn send_export(&self, job: ExportJob) -> Result<(), ExportJob> {
+        self.commands.send(Command::Export(job)).map_err(|refused| match refused.0 {
+            Command::Export(job) => job,
+            Command::Native(_) => unreachable!("an export was sent"),
+        })
     }
 }
 
@@ -199,9 +268,9 @@ pub fn window_dump(args: impl Iterator<Item = OsString>) -> io::Result<()> {
     if !options.window_dump || options.out.is_none() || options.replay.is_none() {
         return Err(io::Error::other("--window-dump needs a recording and --out"));
     }
-    let (mut config, config_error) = match dashboard::Config::load() {
+    let (mut config, config_error) = match dashboard_core::config::Config::load() {
         Ok(config) => (config, None),
-        Err(error) => (dashboard::Config::default(), Some(error.to_string())),
+        Err(error) => (dashboard_core::config::Config::default(), Some(error.to_string())),
     };
     if let Some(path) = &options.game_dir {
         config.game_dir = path.clone();
@@ -213,7 +282,7 @@ pub fn window_dump(args: impl Iterator<Item = OsString>) -> io::Result<()> {
 }
 
 pub(crate) fn dump_window(
-    config: dashboard::Config,
+    config: dashboard_core::config::Config,
     options: Options,
     config_error: Option<String>,
 ) -> io::Result<()> {
@@ -227,11 +296,11 @@ pub(crate) fn dump_window(
     spawn(
         "map (window dump)",
         move |lost| {
-            viewer_foundation::worker_priority::frame_priority();
+            viewer_runtime::worker_priority::frame_priority();
             let failure: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
             let reported = Arc::clone(&failure);
             driver::run(&drawn, inputs, lost, move |ctx, state| {
-                let _generation = content_reader_core::content::Generation::enter();
+                let _generation = content_reader_layers::content::Generation::enter();
                 Ok(app::Viewer::new(ctx, Some(state), config, options, config_error, reported, None))
             })?;
             match failure.lock().unwrap_or_else(|error| error.into_inner()).take() {
@@ -262,7 +331,7 @@ pub(crate) fn paced_window(
     spawn(
         "map (harness)",
         move |_lost| {
-            viewer_foundation::worker_priority::frame_priority();
+            viewer_runtime::worker_priority::frame_priority();
             job(&drawn, inputs).map_err(|error| error.to_string())
         },
         move |result| {
@@ -279,7 +348,7 @@ pub(crate) fn paced_window(
 
 fn embedded_map(
     launch: Launch,
-    commands: mpsc::Receiver<NativeCommand>,
+    commands: mpsc::Receiver<Command>,
     lost: &Lost,
 ) -> Result<(), String> {
     let Launch { args, window, inputs, events, role, service } = launch;
@@ -291,8 +360,8 @@ fn embedded_map(
         );
     }
     crate::perf_log::enter(role.name());
-    viewer_foundation::worker_priority::frame_priority();
-    let mut config = dashboard::Config::default();
+    viewer_runtime::worker_priority::frame_priority();
+    let mut config = dashboard_core::config::Config::default();
     if let Some(path) = &options.game_dir {
         config.game_dir = path.clone();
     }
@@ -301,7 +370,7 @@ fn embedded_map(
     }
     let parent = embedded::Parent::new(window.clone(), commands, events, service);
     driver::run(&window, inputs, lost, move |ctx, state| {
-        let _generation = content_reader_core::content::Generation::enter();
+        let _generation = content_reader_layers::content::Generation::enter();
         let embedding = parent.attach(ctx).map_err(|error| format!("Couldn’t show the map in its window: {error}"))?;
         let failure = Arc::new(Mutex::new(None));
         Ok(app::Viewer::new(ctx, Some(state), config, options, None, failure, Some(embedding)))
@@ -309,8 +378,48 @@ fn embedded_map(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    pub(crate) type Answers = Arc<Mutex<Vec<Answer>>>;
+
+    pub(crate) fn job_under(exit: &'static replay_settings::exit::Exit, path: &str) -> (ExportJob, Answers) {
+        let answers = Answers::default();
+        let heard = Arc::clone(&answers);
+        let receipt = exit.admit(replay_settings::exit::What::Export).unwrap();
+        (ExportJob::new(path.into(), None, receipt, Reply::new(move |answer| heard.lock().unwrap().push(answer))), answers)
+    }
+
+    pub(crate) fn job(path: &str) -> (ExportJob, Answers) {
+        job_under(Box::leak(Box::new(replay_settings::exit::Exit::new())), path)
+    }
+
+    pub(crate) fn taken(answers: &Answers) -> Vec<Result<String, String>> {
+        taken_saved(answers).into_iter().map(|answer| answer.map(|saved| saved.message)).collect()
+    }
+
+    pub(crate) fn taken_saved(answers: &Answers) -> Vec<Answer> {
+        std::mem::take(&mut *answers.lock().unwrap())
+    }
+
+    #[test]
+    fn an_export_job_answers_once_and_settles_its_reply_before_it_lets_its_receipt_go() {
+        let exit: &'static replay_settings::exit::Exit = Box::leak(Box::new(replay_settings::exit::Exit::new()));
+        let answers = Answers::default();
+        let heard = Arc::clone(&answers);
+        let job = ExportJob::new("map.png".into(), None, exit.admit(replay_settings::exit::What::Export).unwrap(), Reply::new(move |answer| {
+            assert_eq!(exit.count(replay_settings::exit::What::Export), 1, "the reply is settled while the receipt still holds the exit");
+            heard.lock().unwrap().push(answer);
+        }));
+        job.answer(Ok(Saved { message: "Saved map.png".into(), warning: None }));
+        assert_eq!(taken(&answers), [Ok("Saved map.png".to_owned())]);
+        assert_eq!(exit.count(replay_settings::exit::What::Export), 0);
+        let (dropped, answers) = job_under(exit, "lost.png");
+        drop(dropped);
+        assert_eq!(taken(&answers), [Err(STOPPED.to_owned())], "a job the map drops unanswered still answers, by name");
+        assert_eq!(exit.count(replay_settings::exit::What::Export), 0);
+    }
+
 
     #[test]
     fn a_panic_in_the_map_ends_it_by_name_and_where_and_the_next_map_starts() {
@@ -345,19 +454,21 @@ mod tests {
         assert_eq!(contain(&lost, || Err::<(), _>("closed".to_owned())), expected);
     }
 
-    // quarantine: #1453 needs a GPU adapter
     #[test]
-    #[ignore = "needs a GPU adapter"]
     fn a_map_started_after_another_ended_builds_on_a_device_of_its_own() {
-        let _gpu = viewer_foundation::map::test_support::serial();
-        let (first, _) = driver::map_device(None).unwrap();
+        let _gpu = viewer_gpu::test_support::serial();
+        let (first, _) = driver::map_device(None).unwrap_or_else(|reason| {
+            panic!(
+                "a_map_started_after_another_ended_builds_on_a_device_of_its_own requires a usable GPU or WARP adapter: {reason}"
+            )
+        });
         let kept = first.device.clone();
-        let made = viewer_foundation::map::device_shared::shared(&first.device, "restart probe", || 1_u32);
+        let made = viewer_runtime::device_shared::shared(&first.device, "restart probe", || 1_u32);
         drop(first);
         let (second, _) = driver::map_device(None).unwrap();
         assert!(kept != second.device, "the second map's device compares equal to the first's");
         let mut built = false;
-        let again = viewer_foundation::map::device_shared::shared(&second.device, "restart probe", || {
+        let again = viewer_runtime::device_shared::shared(&second.device, "restart probe", || {
             built = true;
             2_u32
         });
@@ -365,13 +476,31 @@ mod tests {
         drop(made);
     }
 
-    // quarantine: #1453 needs a GPU adapter
     #[test]
-    #[ignore = "needs a GPU adapter"]
     fn a_destroyed_device_is_seen_as_lost_and_its_later_errors_do_not_panic() {
-        let _gpu = viewer_foundation::map::test_support::serial();
+        let _gpu = viewer_gpu::test_support::serial();
         let instance = shader_pipeline::gpu::instance();
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
+        let adapter = pollster::block_on(async {
+            match instance
+                .request_adapter(&wgpu::RequestAdapterOptions::default())
+                .await
+            {
+                Ok(adapter) => Ok(adapter),
+                Err(_) => {
+                    instance
+                        .request_adapter(&wgpu::RequestAdapterOptions {
+                            force_fallback_adapter: true,
+                            ..Default::default()
+                        })
+                        .await
+                }
+            }
+        })
+        .unwrap_or_else(|error| {
+            panic!(
+                "a_destroyed_device_is_seen_as_lost_and_its_later_errors_do_not_panic requires a GPU or WARP adapter: {error}"
+            )
+        });
         let (device, _queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
         let lost = Lost::default();
         let (woke, woken) = mpsc::channel();

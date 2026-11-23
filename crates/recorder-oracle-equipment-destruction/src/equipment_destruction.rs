@@ -27,6 +27,22 @@ pub fn compare(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
     let mut causes = BTreeMap::new();
     let mut amount_rows = 0;
     let mut signed_net = 0_i128;
+    if rows
+        .iter()
+        .any(|row| row.coverage == Recorded::Value(EquipmentDestructionCoverage::PartialInterval))
+    {
+        if rows.len() != 1 {
+            return Err(invalid(
+                "EquipmentDestruction partial interval marker cannot appear with other rows",
+            ));
+        }
+        rows[0].check_key_fields()?;
+        let reason = rows[0]
+            .unavailable_reason
+            .require("EquipmentDestruction.unavailable_reason")
+            .map_err(invalid)?;
+        return Err(invalid(format!("EquipmentDestruction is unavailable: {reason}")));
+    }
     for row in rows {
         row.check_key_fields()?;
         if row.coverage == Recorded::Value(EquipmentDestructionCoverage::SupplementalUnavailable) {

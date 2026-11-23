@@ -8,4 +8,4 @@ Hover handlers see the actual drawn control, counter member order and presented 
 
 Use authored fallback text only when the drawn object's callback declines or is absent. Probe occupied bound text before ordinary hashes. Resolve each disabled hash independently. A missing ordinary lookup leaves its handler field alone and a present one supplies raw stored text. Use the formatter for bound text, appending the title in the unscoped case.
 
-[Land actions](../../crates/viewer-foundation/src/map/counter_action.rs) · [Hover inputs and hit resolution](../../crates/viewer-foundation/src/map/counter_hovers)
+[Land actions](../../crates/viewer-unit-reads/src/counter_action.rs) · [Hover inputs and hit resolution](../../crates/viewer-native-gui/src/counter_hovers)

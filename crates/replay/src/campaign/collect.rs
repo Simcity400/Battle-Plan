@@ -1,11 +1,9 @@
-use super::{Replay, records::Records, records::RecoveryNote};
-use crate::{
-    BranchId,
-    branches::BranchStart,
-    codec::invalid_static as invalid,
-    identity::{Identity, SessionStart},
-    spool::{ControlRecord, RecordRef, Recovery, SegmentState, SpoolRecord},
-};
+use super::Replay;
+use replay_recording::records::{Records, RecoveryNote};
+use replay_data::{BranchId, codec::invalid_static as invalid, identity::{Identity, SessionStart}};
+use replay_frame::branches::BranchStart;
+use replay_recording::control::ControlRecord;
+use replay_capture_spool::spool::{RecordRef, Recovery, SegmentState, SpoolRecord};
 use std::{collections::BTreeMap, io};
 
 pub fn records_of<R: SpoolRecord>(

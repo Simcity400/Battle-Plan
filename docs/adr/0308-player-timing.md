@@ -4,4 +4,4 @@ Effective APM and elapsed time use the command index's count and unpaused-tick p
 
 The request, head and chart paths share the index. A follow lays out the player versions and their spans once, then queries differences at the playhead. A tile's 256 level bins calculate a separate rate over each bin's period. They read the prefix edges for their intersecting series parts and check the covered span once for coverage. The campaign clock uses the same recorded, playing and paused time evidence from the branch start.
 
-[Player activity](../../crates/dashboard/src/products/player_apm.rs) · [Head and chart activity](../../crates/dashboard/src/products/player_apm_head.rs)
+[Player activity](../../crates/dashboard-players/src/products/player_apm.rs) · [Head and chart activity](../../crates/dashboard-players/src/products/player_apm_head.rs)

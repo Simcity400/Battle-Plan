@@ -209,13 +209,13 @@ impl Memory for Native {
     }
 }
 fn boundary(hour: i32) {
-    producer::boundary(
+    unsafe { producer::boundary(
         Some(cgame_state::Clock {
             hour,
             ..Default::default()
         }),
         false,
-    );
+    ) };
 }
 fn record(
     memory: &impl Memory,
@@ -224,7 +224,7 @@ fn record(
     decoder: &mut FrameDecoder,
 ) -> DecodedFrame {
     let mut pack = Captured::vacant();
-    pack.capture(memory, 0, GAME, hour, false);
+    unsafe { pack.capture(memory, 0, GAME, hour, false) };
     assert!(
         pack.outcomes()[..3]
             .iter()
@@ -264,7 +264,7 @@ fn encode_capture(
     }
     let wire = encoder.encode_bytes(frame, false).unwrap();
     let frame = wire.decode().unwrap();
-    replay::spool::encode_record(&replay::spool::Record::Frame(frame.clone())).unwrap();
+    replay_capture_spool::spool::encode_record(&replay_capture_spool::spool::Record::Frame(frame.clone())).unwrap();
     let decoded = decoder.apply(&frame).unwrap();
     decoded.clone()
 }
@@ -277,7 +277,7 @@ impl Memory for NoReads {
 
 #[test]
 fn populated_native_startup_and_zero_country_replacement_survive_production_spool() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -333,7 +333,7 @@ fn populated_native_startup_and_zero_country_replacement_survive_production_spoo
 
 #[test]
 fn active_removal_precedes_retired_cleanup_variable_marks_and_new_contract_admission() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -427,7 +427,7 @@ fn active_removal_precedes_retired_cleanup_variable_marks_and_new_contract_admis
 #[test]
 fn unobserved_birth_and_unreadable_selected_variable_holder_still_refuse() {
     for missing_birth in [true, false] {
-        let _session = producer::test_support::Session::default();
+        let _session = unsafe { producer::test_support::Session::new() };
         let mut memory = Native::new();
         let mut encoder = FrameEncoder::new();
         let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -455,7 +455,7 @@ fn unobserved_birth_and_unreadable_selected_variable_holder_still_refuse() {
             }
         }
         let mut pack = Captured::vacant();
-        pack.capture(&Failure(&memory), 0, GAME, 101, false);
+        unsafe { pack.capture(&Failure(&memory), 0, GAME, 101, false) };
         let expected = if missing_birth {
             "market new contract has no observed birth"
         } else {
@@ -472,7 +472,7 @@ fn unobserved_birth_and_unreadable_selected_variable_holder_still_refuse() {
 
 #[test]
 fn daily_discovery_then_observed_birth_and_removal_needs_no_surviving_definition() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -501,7 +501,7 @@ fn daily_discovery_then_observed_birth_and_removal_needs_no_surviving_definition
 
 #[test]
 fn an_unobserved_variable_change_rereads_every_contract_and_keeps_its_terms() {
-    let _session = producer::test_support::Session::default();
+    let _session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -530,7 +530,7 @@ fn an_unobserved_variable_change_rereads_every_contract_and_keeps_its_terms() {
 
 #[test]
 fn surrender_target_changes_do_not_change_inventory_or_marked_country_identity() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -565,7 +565,7 @@ fn surrender_target_changes_do_not_change_inventory_or_marked_country_identity()
 
 #[test]
 fn authenticated_census_replacement_rebinds_holdings_without_a_reset_occurrence() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -622,7 +622,7 @@ impl Memory for Missing<'_> {
 #[test]
 fn each_country_read_refusal_recovers_first_exact_hour_and_keeps_contract_totals() {
     for domain in 0..4 {
-        let session = producer::test_support::Session::default();
+        let session = unsafe { producer::test_support::Session::new() };
         let mut memory = Native::new();
         let mut encoder = FrameEncoder::new();
         let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -654,9 +654,9 @@ fn each_country_read_refusal_recovers_first_exact_hour_and_keeps_contract_totals
                 range: 0x3000..0x3008,
             };
             if hour < 103 {
-                pack.capture(&fault, 0, GAME, hour, false);
+                unsafe { pack.capture(&fault, 0, GAME, hour, false) };
             } else {
-                pack.capture(&memory, 0, GAME, hour, false);
+                unsafe { pack.capture(&memory, 0, GAME, hour, false) };
             }
             assert_eq!(
                 matches!(pack.outcomes()[0], Outcome::Unavailable { .. }),
@@ -692,7 +692,7 @@ fn each_country_read_refusal_recovers_first_exact_hour_and_keeps_contract_totals
 
 #[test]
 fn unreadable_reset_holder_is_retained_for_first_exact_rebind() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -705,7 +705,7 @@ fn unreadable_reset_holder_is_retained_for_first_exact_rebind() {
     session.reset_country(&memory, 5000);
     boundary(101);
     let mut pack = Captured::vacant();
-    pack.capture(
+    unsafe { pack.capture(
         &Missing {
             native: &memory,
             range: 0x4800..0x4808,
@@ -714,7 +714,7 @@ fn unreadable_reset_holder_is_retained_for_first_exact_rebind() {
         GAME,
         101,
         false,
-    );
+    ) };
     assert!(matches!(pack.outcomes()[0], Outcome::Unavailable { .. }));
     encode_capture(pack, 101, &mut encoder, &mut decoder);
     memory.clock(102);
@@ -741,7 +741,7 @@ fn country_identity_validation_stays_strict_and_recovers_after_each_bad_holder()
         0x4800 + market::COUNTRY_BACKLINK,
         0x4800 + engine_production::cequipment_market_status::MANAGER,
     ] {
-        let session = producer::test_support::Session::default();
+        let session = unsafe { producer::test_support::Session::new() };
         let mut memory = Native::new();
         let mut encoder = FrameEncoder::new();
         let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -755,7 +755,7 @@ fn country_identity_validation_stays_strict_and_recovers_after_each_bad_holder()
         session.inventory(&memory, 5000);
         boundary(101);
         let mut pack = Captured::vacant();
-        pack.capture(&memory, 0, GAME, 101, false);
+        unsafe { pack.capture(&memory, 0, GAME, 101, false) };
         assert!(matches!(pack.outcomes()[0], Outcome::Unavailable { .. }));
         encode_capture(pack, 101, &mut encoder, &mut decoder);
         memory.bytes[field..field + 8].copy_from_slice(&previous);
@@ -769,7 +769,7 @@ fn country_identity_validation_stays_strict_and_recovers_after_each_bad_holder()
 
 #[test]
 fn country_recovery_rebinds_a_fresh_market_manager_from_the_existing_census() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -789,7 +789,7 @@ fn country_recovery_rebinds_a_fresh_market_manager_from_the_existing_census() {
     session.automation(5000);
     boundary(101);
     let mut pack = Captured::vacant();
-    pack.capture(&memory, 0, GAME, 101, false);
+    unsafe { pack.capture(&memory, 0, GAME, 101, false) };
     assert!(matches!(pack.outcomes()[0], Outcome::Unavailable { .. }));
     encode_capture(pack, 101, &mut encoder, &mut decoder);
     for hour in 102..=104 {
@@ -799,7 +799,7 @@ fn country_recovery_rebinds_a_fresh_market_manager_from_the_existing_census() {
         memory.start();
         let mut pack = Captured::vacant();
         if hour < 104 {
-            pack.capture(
+            unsafe { pack.capture(
                 &Missing {
                     native: &memory,
                     range: 0x4900 + market::STOCKPILE_EQUIPMENT
@@ -809,9 +809,9 @@ fn country_recovery_rebinds_a_fresh_market_manager_from_the_existing_census() {
                 GAME,
                 hour,
                 false,
-            );
+            ) };
         } else {
-            pack.capture(&memory, 0, GAME, hour, false);
+            unsafe { pack.capture(&memory, 0, GAME, hour, false) };
         }
         assert_eq!(
             matches!(pack.outcomes()[0], Outcome::Unavailable { .. }),
@@ -848,8 +848,9 @@ fn country_recovery_rebinds_a_fresh_market_manager_from_the_existing_census() {
 
 #[test]
 fn country_market_writer_rebinding_has_no_country_count_or_id_cap() {
-    let session = producer::test_support::Session::default();
-    producer::presize(1500, 1500);
+    let session = unsafe { producer::test_support::Session::new() };
+    // SAFETY: `session` serializes market-change globals with no live hooks.
+    unsafe { producer::presize(1500, 1500) };
     let mut memory = Native::new();
     memory.bytes.resize(0x20000 + 1498 * COUNTRY_STRIDE, 0);
     let holders: Vec<_> = (0..1498)
@@ -890,7 +891,7 @@ fn country_market_writer_rebinding_has_no_country_count_or_id_cap() {
 
 #[test]
 fn failed_initial_country_seed_recovers_without_publishing_a_default_row() {
-    let _session = producer::test_support::Session::default();
+    let _session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -916,7 +917,7 @@ fn failed_initial_country_seed_recovers_without_publishing_a_default_row() {
     held::finish_seed(true);
     held::recover_contracts(&memory, 0, GAME);
     let mut pack = Captured::vacant();
-    pack.capture(&fault, 0, GAME, 100, false);
+    unsafe { pack.capture(&fault, 0, GAME, 100, false) };
     assert!(matches!(pack.outcomes()[0], Outcome::Unavailable { .. }));
     encode_capture(pack, 100, &mut encoder, &mut decoder);
     memory.clock(101);
@@ -935,8 +936,9 @@ fn failed_initial_country_seed_recovers_without_publishing_a_default_row() {
 #[test]
 fn persistent_country_failure_retries_only_its_holder_and_preserves_healthy_writer_marks_at_scale()
 {
-    let session = producer::test_support::Session::default();
-    producer::presize(1500, 1500);
+    let session = unsafe { producer::test_support::Session::new() };
+    // SAFETY: `session` serializes market-change globals with no live hooks.
+    unsafe { producer::presize(1500, 1500) };
     let mut memory = Native::new();
     memory.bytes.resize(0x20000 + 1498 * COUNTRY_STRIDE, 0);
     let holders: Vec<_> = (0..1498)
@@ -1019,7 +1021,7 @@ fn persistent_country_failure_retries_only_its_holder_and_preserves_healthy_writ
         held::finish_seed(true);
         let mut pack = Captured::vacant();
         if hour < 105 {
-            pack.capture(
+            unsafe { pack.capture(
                 &Missing {
                     native: &memory,
                     range: 0x2900 + market::STOCKPILE_EQUIPMENT
@@ -1029,9 +1031,9 @@ fn persistent_country_failure_retries_only_its_holder_and_preserves_healthy_writ
                 GAME,
                 hour,
                 false,
-            );
+            ) };
         } else {
-            pack.capture(&memory, 0, GAME, hour, false);
+            unsafe { pack.capture(&memory, 0, GAME, hour, false) };
         }
         assert_eq!(
             matches!(pack.outcomes()[0], Outcome::Unavailable { .. }),
@@ -1136,7 +1138,7 @@ fn persistent_country_failure_retries_only_its_holder_and_preserves_healthy_writ
 
 #[test]
 fn country_witness_recovery_recertifies_once_and_keeps_recovered_holders() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -1163,7 +1165,7 @@ fn country_witness_recovery_recertifies_once_and_keeps_recovered_holders() {
         memory.reads.borrow_mut().clear();
         let mut pack = Captured::vacant();
         if hour < 104 {
-            pack.capture(
+            unsafe { pack.capture(
                 &Missing {
                     native: &memory,
                     range: 0x2900 + market::STOCKPILE_EQUIPMENT
@@ -1173,9 +1175,9 @@ fn country_witness_recovery_recertifies_once_and_keeps_recovered_holders() {
                 GAME,
                 hour,
                 false,
-            );
+            ) };
         } else {
-            pack.capture(&memory, 0, GAME, hour, false);
+            unsafe { pack.capture(&memory, 0, GAME, hour, false) };
         }
         drop(running);
         assert_eq!(
@@ -1208,7 +1210,7 @@ fn country_witness_recovery_recertifies_once_and_keeps_recovered_holders() {
 
 #[test]
 fn refused_country_registration_renews_only_once_without_reacquiring_recovered_holders() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -1231,7 +1233,7 @@ fn refused_country_registration_renews_only_once_without_reacquiring_recovered_h
         held::finish_seed(true);
         let mut pack = Captured::vacant();
         if hour < 104 {
-            pack.capture(
+            unsafe { pack.capture(
                 &Missing {
                     native: &memory,
                     range: 0x2900 + market::STOCKPILE_EQUIPMENT
@@ -1241,9 +1243,9 @@ fn refused_country_registration_renews_only_once_without_reacquiring_recovered_h
                 GAME,
                 hour,
                 false,
-            );
+            ) };
         } else {
-            pack.capture(&memory, 0, GAME, hour, false);
+            unsafe { pack.capture(&memory, 0, GAME, hour, false) };
         }
         assert_eq!(
             matches!(pack.outcomes()[0], Outcome::Unavailable { .. }),
@@ -1278,7 +1280,7 @@ fn refused_country_registration_renews_only_once_without_reacquiring_recovered_h
 
 #[test]
 fn exhausted_country_registration_retries_a_deferred_renewal_at_the_first_quiet_hour() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -1313,7 +1315,7 @@ fn exhausted_country_registration_retries_a_deferred_renewal_at_the_first_quiet_
         held::discover_country(&memory, 0, GAME, country, 0);
         held::finish_seed(true);
         let mut pack = Captured::vacant();
-        pack.capture(&memory, 0, GAME, hour, false);
+        unsafe { pack.capture(&memory, 0, GAME, hour, false) };
         assert_eq!(
             matches!(pack.outcomes()[0], Outcome::Unavailable { .. }),
             hour < 103,
@@ -1361,21 +1363,22 @@ fn exhausted_country_registration_retries_a_deferred_renewal_at_the_first_quiet_
 #[test]
 fn offered_country_growth_survives_a_draining_predecessor_and_recovers_after_collection() {
     for offer_hour in [101, 103] {
-        let session = producer::test_support::Session::default();
+        let session = unsafe { producer::test_support::Session::new() };
         let mut memory = Native::new();
         let mut encoder = FrameEncoder::new();
         let mut decoder = FrameDecoder::for_tables(&TABLES);
         boundary(99);
         let slots = session.country_domain_capacity(producer::PRICES);
-        producer::presize(16, slots / 2);
+        // SAFETY: `session` serializes market-change globals with no live hooks.
+        unsafe { producer::presize(16, slots / 2) };
         memory.clock(100);
-        producer::boundary(
+        unsafe { producer::boundary(
             Some(cgame_state::Clock {
                 hour: 100,
                 ..Default::default()
             }),
             true,
-        );
+        ) };
         session.defer_country_domain_retirement(producer::PRICES);
         memory.start();
         record(&memory, 100, &mut encoder, &mut decoder);
@@ -1436,7 +1439,7 @@ fn offered_country_growth_survives_a_draining_predecessor_and_recovers_after_col
             }
             held::finish_seed(true);
             let mut pack = Captured::vacant();
-            pack.capture(&memory, 0, GAME, hour, false);
+            unsafe { pack.capture(&memory, 0, GAME, hour, false) };
             assert_eq!(
                 matches!(pack.outcomes()[0], Outcome::Unavailable { .. }),
                 hour < recovered_hour,

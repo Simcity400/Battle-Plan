@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -19,14 +21,14 @@ import { motionOf } from '../../charts/easing.ts';
 import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { contentTitleHint } from '../../dashboard/contentTitles';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { worldFilter } from '../../dashboard/groups';
+import { worldFilterQuery } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
-import { followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { followAtHead } from '../../dashboard/tiles/head.ts';
 import { useHeadHour } from '../army-size/headHour';
 import { useIdentityKey } from '../../dashboard/atHead';
@@ -43,6 +45,7 @@ import type { AutonomyLane } from './autonomyData';
 import { OPTIONS } from './definition';
 import './autonomy.css';
 import type { HourSpan, SubjectReply } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_SPANS: HourSpan[] = [];
@@ -106,38 +109,51 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const head = Math.floor(playhead ?? last);
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
   const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'subjects', params: { branchId: track.branch.id } } : null;
+  const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'subjects', params: { branchId: track.branch.id } }) : null;
   const product = useProduct<SubjectReply>(runtime.client, request, active, validateSubjectReply, track?.source);
   const data = product.data;
-  const filter = useMemo(() => worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, head, lastHour),
-    [widget.countries, fallback, groups.data, head, lastHour]);
+  const selection = useMemo(() => worldFilterQuery(widget.countries, fallback ? [fallback] : [], groups.data, lastHour), [widget.countries, fallback, groups.data, lastHour]);
+  const filter = useMemo(() => selection.at(head), [selection, head]);
   const lanesData = useMemo(() => data ? autonomyLanes(data, filter.tags, bySubject) : [], [data, filter.tags, bySubject]);
   const tags = useMemo(() => lanesData.map(lane => lane.tag), [lanesData]);
   const within = useMemo(() => new Map(lanesData.map(lane => [lane.tag, lane.within])), [lanesData]);
-  const series = useMeasureSeries(runtime.client, track?.source, track?.branch.id, 'autonomy', 'progress', tags,
-    following && !followsClock ? head : null, hoverHour, active, false, within, lastHour, followsClock);
+  const gate = useGate(runtime, widget, SPEC, active);
+  const lanesByTag = useMemo(() => new Map(lanesData.map(lane => [lane.tag, lane])), [lanesData]);
+  const selectedAt = useCallback((tag: string, hour: number) => {
+    const at = selection.at(hour);
+    if (at.reason !== null) return false;
+    if (at.tags === null) return true;
+    if (bySubject) return at.tags.has(tag);
+    const lane = lanesByTag.get(tag);
+    const run = lane ? runAt(lane, hour) : null;
+    return !!run && at.tags.has(run.overlord);
+  }, [selection, bySubject, lanesByTag]);
+  const series = useMeasureSeries(runtime.client, gate, track?.source, track?.branch, 'autonomy', 'progress', tags,
+    following && !followsClock ? gate.recorded(head) : null, gate.recorded(hoverHour), active, false, within, lastHour, followsClock, selectedAt);
   const axisOffset = track?.axisOffset ?? 0;
   const tilesLanded = series.subscribe;
   const liveHead = useMemo(() => followsClock && track ? { read: () => clock.getSnapshot().position + axisOffset, subscribe: (changed: () => void) => {
     const stops = [clock.subscribeFrame(changed), tilesLanded(changed)];
     return () => { for (const stop of stops) stop(); };
   } } : undefined, [followsClock, track, clock, axisOffset, tilesLanded]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, clock, track.axisOffset) : null, [runtime.client, clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, clock) : null, [runtime.client, clock, track?.source, track?.axisOffset]);
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const headQuery = useMemo(() => followsClock && active && track && tags.length ? { product: 'series-state', params: { branchId: track.branch.id,
-    family: { kind: 'autonomy', measure: 'progress' }, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null, [followsClock, active, track?.branch.id, tags]);
+  const headQuery = useMemo(() => followsClock && active && track && tags.length ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id,
+    family: { kind: 'autonomy', measure: 'progress' }, reads: tags.map(tag => ({ country: countryFromKey(tag) })) } }) : null, [followsClock, active, track?.branch.id, tags, gate.follow]);
   const followed = useFollow(store, headQuery, root, NO_PAINT);
   const entry = followsHead(followed) ? followed.entry : null;
+  const refused = followRefusal(followed);
   const places = series.decimals;
   useEffect(() => {
     const stops = entry && places !== null ? tags.map((tag, row) => followAtHead(series.head(tag), () => rowAmount(entry.answer, row, places))) : [];
     return () => stops.forEach(stop => stop());
   }, [entry, places, tags, series.head]);
   useShownEachFrame(clock, () => data ? liveHead ? Math.min(liveHead.read(), lastHour) : head : null);
-  const hovered = hoverHour === null ? null : Math.floor(hoverHour);
-  const scoreRequest = (measure: string) => track && hovered !== null && tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
-    params: { branchId: track.branch.id, family: { kind: 'autonomy', measure }, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: hovered })) } } : null;
+  const hovered = gate.recorded(hoverHour);
+  const hoverTags = hovered === null ? [] : tags.filter(tag => selectedAt(tag, hovered) && within.get(tag)?.some(span => span.firstHour <= hovered && hovered <= span.lastHour));
+  const scoreRequest = (measure: string) => track && hovered !== null && hoverTags.length ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
+    params: { branchId: track.branch.id, family: { kind: 'autonomy', measure }, reads: hoverTags.map(tag => ({ country: countryFromKey(tag), hour: hovered })) } }) : null;
   const scores = useProduct<MeasureStates>(runtime.client, scoreRequest('score'), active, validateMeasureStates, track?.source);
   const lowers = useProduct<MeasureStates>(runtime.client, scoreRequest('lower'), active, validateMeasureStates, track?.source);
   const uppers = useProduct<MeasureStates>(runtime.client, scoreRequest('upper'), active, validateMeasureStates, track?.source);
@@ -194,8 +210,9 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const groupFailure = groups.error && widget.countries.kind === 'group' ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   const content = (() => {
     if (!track) return <WidgetState kind="empty" icon="link" message="Load a campaign to see its subjects’ autonomy." />;
+    if (refused) return <WidgetState kind="unavailable" message={refused} />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-    if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="outside" />;
     if (groupFailure && !groups.data) return groupFailure;
     if (widget.countries.kind === 'group' && !groups.data) return <WidgetState kind="loading" label="Loading country membership…" />;
     if (filter.reason) return <WidgetState kind="empty" message={filter.reason} />;

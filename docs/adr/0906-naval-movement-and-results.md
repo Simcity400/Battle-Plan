@@ -12,4 +12,4 @@ Keep the province combat vector's identity and order so naval icons visit its na
 
 Within a complete region access table, retain only the stored nonzero modes for each country's strategic navy. Missing entries certify allowed. Mode one is avoid, mode two is block and raid routes opt into avoiding restricted regions. The gate applies when entering a different strategic region by sea. Raid ownership uses a positive expeditionary owner if present, then the roster owner. The command path for players and daily AI writes and the navy reset at country reuse are known writers. Initial allocation, resizing and save load rebuild the state. The audit of navy pointers held by other objects remains incomplete.
 
-[Naval movement and result rows](../../crates/replay-rows/src/extended_rows/naval_weather.rs) · [Unit combat references](../../crates/replay-rows/src/extended_rows/unit_combat_references.rs)
+[Naval movement and result rows](../../crates/replay-rows-weather/src/naval_weather.rs) · [Unit combat references](../../crates/replay-rows-world/src/unit_combat_references.rs)

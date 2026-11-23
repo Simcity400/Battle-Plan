@@ -9,7 +9,7 @@ use replay_data::{
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
-use viewer_foundation::map::movement_reads::Moves;
+use viewer_unit_reads::movement_reads::Moves;
 use viewer_foundation::movement_timing::{HourTerms, operands};
 
 pub(super) struct Inputs<'a> {
@@ -147,7 +147,7 @@ impl<'a> Inputs<'a> {
     }
 }
 
-impl viewer_foundation::map::movement_reads::CounterFacts for Inputs<'_> {
+impl viewer_unit_reads::movement_reads::CounterFacts for Inputs<'_> {
     fn rail_connected(&self, from: u32, to: u32) -> Fact<bool> {
         for province in [from, to] {
             if self
@@ -274,10 +274,7 @@ impl<'a> Inputs<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::{
-        movement::MovementMap, movement::Neighbour, movement::ProvinceTerrain,
-        movement::RailMovementDefines,
-    };
+    use content_reader_map::movement::{MovementMap, Neighbour, ProvinceTerrain, RailMovementDefines};
     use replay_data::{
         rows::CountryLinkRow, rows::CountryRow, rows::RailEdgeRow, rows::RailwayBuildingHealth,
         rows::RailwayBuildingState, rows::Recorded, rows::TableId, rows::TableRows,
@@ -337,11 +334,11 @@ mod tests {
 
     #[test]
     fn idle_explicit_target_times_the_searched_route_at_the_edge_speed() {
-        use content_reader_core::province_graph::ProvinceGraph;
+        use content_reader_map::province_graph::ProvinceGraph;
         use content_reader_unit_path::unit_path::MoveGraph;
         use dashboard_text::triggers::World;
         use replay_data::rows::DivisionTemplateIconRow;
-        use viewer_foundation::map::movement_reads::{
+        use viewer_unit_reads::movement_reads::{
             Cells,
             test_support::{positive_frame, unnamed_assets},
         };
@@ -489,11 +486,11 @@ mod tests {
             );
             let inputs = Inputs::new(&frame, &content);
             assert_eq!(
-                viewer_foundation::map::movement_reads::CounterFacts::rail_connected(&inputs, 1, 2),
+                viewer_unit_reads::movement_reads::CounterFacts::rail_connected(&inputs, 1, 2),
                 Ok(expected)
             );
             assert_eq!(
-                viewer_foundation::map::movement_reads::CounterFacts::rail_connected(&inputs, 2, 1),
+                viewer_unit_reads::movement_reads::CounterFacts::rail_connected(&inputs, 2, 1),
                 Ok(false)
             );
         }
@@ -504,7 +501,7 @@ mod tests {
         let mut frame = frame();
         let sea = content(0);
         assert_eq!(
-            viewer_foundation::map::movement_reads::CounterFacts::rail_connected(
+            viewer_unit_reads::movement_reads::CounterFacts::rail_connected(
                 &Inputs::new(&frame, &sea),
                 1,
                 2
@@ -524,7 +521,7 @@ mod tests {
         );
         let land = content(1);
         assert_eq!(
-            viewer_foundation::map::movement_reads::CounterFacts::rail_connected(
+            viewer_unit_reads::movement_reads::CounterFacts::rail_connected(
                 &Inputs::new(&frame, &land),
                 1,
                 2
@@ -535,7 +532,7 @@ mod tests {
 
     #[test]
     fn task_force_admission_facts_refuse_by_name() {
-        use viewer_foundation::map::movement_reads::CounterFacts;
+        use viewer_unit_reads::movement_reads::CounterFacts;
         let frame = frame();
         let content = content(0);
         let inputs = Inputs::new(&frame, &content);

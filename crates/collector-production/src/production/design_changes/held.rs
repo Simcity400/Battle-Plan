@@ -505,6 +505,7 @@ mod census_tests {
                 .is_ok()
         );
         ENABLED.store(true, Ordering::Release);
+        collector_observers::world_input_changes::set_design_watch_enabled_for_test(true);
         SAVED_BASELINE.store(true, Ordering::Release);
         SOURCE_BASELINE.store(true, Ordering::Release);
         LIVENESS_BASELINE.store(true, Ordering::Release);

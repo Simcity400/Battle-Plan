@@ -17,6 +17,7 @@ import { useHeadHour } from '../army-size/headHour';
 import { OPTIONS } from './definition';
 import { LEVELS, footnote, formatSpent, hasConstruction, presentKey, scaleDigits, spendingItems, validateSpendingReply } from './spendingData';
 import type { SpendingWindow } from './spendingData';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 const ROOT = { id: 'all', label: 'All construction' };
@@ -26,8 +27,8 @@ export default function ConstructionSpendingWidget({ widget, runtime, active, on
   const settings = sunburstSettings(options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'construction-spending',
-    params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null;
+  const request = track && tag ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'construction-spending',
+    params: { branchId: track.branch.id, country: countryFromKey(tag) } }) : null;
   const { data, error, retry } = useProduct(runtime.client, request, active, validateSpendingReply, track?.source);
   const following = active && widget.time.mode === 'follow' && !!track && !!data;
   const range = widget.time.mode === 'range';
@@ -74,7 +75,7 @@ export default function ConstructionSpendingWidget({ widget, runtime, active, on
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading construction spending…" />;
   if (!data.recorded) return <WidgetState kind="unavailable" message="Construction was not recorded." />;
-  if (!shownWindow || !inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (!shownWindow || !inBranch) return <WidgetState kind="outside" />;
   const note = footnote(data, items, shownWindow);
   if (!hasConstruction(items)) return <WidgetState kind="empty" icon="sunburst" message="No construction recorded" detail={note} />;
   return <div style={{ height: '100%' }}><Sunburst label="Construction spending" items={items} root={ROOT} levels={levels} text={text} settings={settings}

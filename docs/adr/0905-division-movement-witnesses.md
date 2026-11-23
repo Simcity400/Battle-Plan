@@ -12,4 +12,4 @@ Apply the ordinary or separate HQ commander's modifiers using the same selection
 
 Land combat progress is derived from ordered same-hour rosters and organization; direction follows the first attacker with a map entity. Exact loss counters are separately dated and a changed manpower count need not re-encode equipment pools. Tactic unlock vectors retain native order and source definition identities, resolving trigger tokens from content. Railway cooldown rows retain the selected source building for the reached domain. The acquisition hour is outside the selection vectors so a new read of equal vectors does not change their payload; a carried selection cannot witness the current gate. A proved unbound railway building shows the native damaged state.
 
-[Movement and census rows](../../crates/replay-rows/src/extended_rows/movement.rs) · [Route inputs](0905-fresh-route-operands.md) · [Attack inputs](0905-attack-operands.md)
+[Movement and census rows](../../crates/replay-rows-land/src/movement.rs) · [Route inputs](0905-fresh-route-operands.md) · [Attack inputs](0905-attack-operands.md)

@@ -618,7 +618,7 @@ fn reserve_sources_join_the_recorded_country_and_commander_trees() {
         rows::DivisionRow, rows::ModifierBreakdownNode, rows::ModifierDefinitionRow,
         rows::ReserveModifierTreeRow, rows::TableId, rows::TableRows,
     };
-    use viewer_foundation::map::test_support::{test_frame, test_put};
+    use viewer_foundation::test_support::{test_frame, test_put};
     let mut loc = Localisation::default();
     loc.language = "english".into();
     let leaf = |value: i64, name: &[u8]| {
@@ -764,7 +764,7 @@ fn division_experience_hover_uses_localized_levels_and_exact_progress() {
     let text = division_experience_tooltip(
         &NoIcons,
         &loc,
-        content_reader_core::unit_leader::DivisionExperienceProgress {
+        content_reader_key_names::unit_leader::DivisionExperienceProgress {
             level: 7,
             next_level_fraction: 25_000,
             combat_bonus: -12_500,

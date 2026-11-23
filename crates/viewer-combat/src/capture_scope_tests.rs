@@ -1,12 +1,20 @@
 
 use super::*;
-use content_reader_core::{ResolvedLayers, flags::FlagSet, map::MapData};
+use content_reader_layers::ResolvedLayers;
+use content_reader_gui::flags::FlagSet;
+use content_reader_map::map::MapData;
 use replay_data::rows::TableRows;
 use replay_data::rows::{TableId, tables};
-use viewer_foundation::map::test_support::{
-    assert_reads_recorded, complete_frame, map_scoped, put_sample_campaign, test_put,
+use viewer_foundation::test_support::{
+    assert_reads_recorded,
+    complete_frame,
+    map_scoped,
+    put_sample_campaign,
+    test_put,
 };
-use viewer_foundation::map::{lazy_icons::flag_set, memo::Keyed, perspective::Vision};
+use viewer_native_gui::lazy_icons::flag_set;
+use viewer_runtime::memo::Keyed;
+use viewer_foundation::perspective::Vision;
 
 const PRESENTED_ABSENT: [TableId; 4] = [
     TableId::DivisionStatus,
@@ -44,26 +52,26 @@ fn map_battle_windows_read_only_recorded_tables() {
         province_geometry: Default::default(),
         region_of: Default::default(),
         terrain: Default::default(),
-        scores: viewer_foundation::land_combat_math::ScoreDefines {
+        scores: viewer_engagements::land_combat_math::ScoreDefines {
             avoid_with_defence: 90_000,
             avoid_without_defence: 60_000,
             organisation_die: 2,
         },
         fog: Arc::new(Err("synthetic content has no fog layer".into())),
         vision_memo: Arc::new(Keyed::new(
-            viewer_foundation::map::perspective::VISION_TABLES,
+            viewer_foundation::perspective::VISION_TABLES,
         )),
         eta_cache: Default::default(),
         modifier_names: Arc::new(modifier_text::name_index_cache()),
         movement: None,
-        window_cache: Arc::new(viewer_foundation::map::native_windows::WindowCache::new(
+        window_cache: Arc::new(viewer_native_gui::native_windows::WindowCache::new(
             Arc::clone(&layers),
         )),
         small_flags: Arc::clone(&flags),
         large_flags: flags,
         lazy,
         trigger_content: Arc::new(
-            viewer_foundation::map::movement_reads::test_support::unnamed_assets().trigger_content,
+            viewer_unit_reads::movement_reads::test_support::unnamed_assets().trigger_content,
         ),
         occupation: Arc::new(Err("not loaded".into())),
     };

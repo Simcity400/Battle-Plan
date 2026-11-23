@@ -10,4 +10,4 @@ An absent declaration can resolve to the registry's fallback sprite. A missing l
 
 The renderer loads the standard text, linked shield and default sprite effects alongside what templates request. A plain sprite with an empty effect uses the default effect, and a loaded mask selects the masking variant. Deferred plain textures retain eager declaration metadata. The eager animation path uses plain and tile variants only when the selected program declares the needed technique and slots. Frame-animated sprites and masked shields retain their separate paths. Resource metadata preserves the main and secondary textures, mask and animation records each native draw expects.
 
-[Resource registry](../../crates/viewer-foundation/src/map/native_resources.rs) · [Native windows](../../crates/viewer-foundation/src/map/native_windows.rs)
+[Resource registry](../../crates/viewer-native-gui/src/native_resources.rs) · [Native windows](../../crates/viewer-native-gui/src/native_windows.rs)

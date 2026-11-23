@@ -8,11 +8,12 @@ import { useAtHead } from './atHead.ts';
 import { useProduct } from './products.ts';
 import { validateIdeaHistoryReply } from './ideaHistoryReply.ts';
 import type { IdeaHistoryReply } from '../generated/dashboard';
+import { productRequest } from './request.ts';
 
 export function useIdeaHistory(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'idea-history', params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null;
+  const request = track && tag ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'idea-history', params: { branchId: track.branch.id, country: countryFromKey(tag) } }) : null;
   const { data, error, retry } = useProduct<IdeaHistoryReply>(runtime.client, request, active, validateIdeaHistoryReply);
   return { track, tag, data, error, retry };
 }

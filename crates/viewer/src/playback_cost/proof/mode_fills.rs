@@ -1,9 +1,9 @@
 
 use super::{Compared, Document, Layer, Mirrors};
-use crate::layers::mode_fills::{Fill, ModeFills, Paint};
+use viewer_layers_political::mode_fills::{Fill, ModeFills, Paint};
 use serde_json::{Value, json};
 use std::{io, sync::Arc, time::Duration};
-use viewer_foundation::map::perspective::Choice;
+use viewer_foundation::perspective::Choice;
 
 const WAIT: Duration = Duration::from_secs(30);
 
@@ -12,7 +12,7 @@ fn fills(layer: &dyn Layer) -> &ModeFills {
 }
 
 pub(super) fn make(document: &Document) -> Box<dyn Layer> {
-    Box::new(crate::layers::mode_fills::new(Arc::clone(&document.content) as Arc<dyn Paint>, true).expect("the mode fills layer's worker starts"))
+    Box::new(viewer_layers_political::mode_fills::new(Arc::clone(&document.content) as Arc<dyn Paint>, true).expect("the mode fills layer's worker starts"))
 }
 
 pub(super) fn give(layer: &dyn Layer, side: &crate::playhead_host::MapSide, document: &Document, choice: &Choice) -> io::Result<()> {
@@ -98,7 +98,7 @@ pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compar
     Ok(compared)
 }
 
-pub(super) fn fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+pub(super) fn fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = fills(layer);
     let mut compared = Compared { entries: 1, ..Compared::default() };
     if !layer.drawn() {

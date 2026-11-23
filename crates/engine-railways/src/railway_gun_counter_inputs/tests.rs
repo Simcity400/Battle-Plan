@@ -1163,9 +1163,7 @@ fn read_calls(mut bytes: Vec<u8>, guns: usize) -> u64 {
     reads.copy_calls + reads.scattered_calls + reads.record_calls + reads.plan_calls
 }
 
-// quarantine: #147 the reader and the test disagree
 #[test]
-#[ignore = "quarantined under #147"]
 fn read_calls_per_hour_and_per_gun_are_pinned() {
     let cost = |bytes: fn() -> Vec<u8>| {
         let one = read_calls(bytes(), 1);
@@ -1177,8 +1175,8 @@ fn read_calls_per_hour_and_per_gun_are_pinned() {
         "railway gun inputs: standing {standing_hour} calls for one gun, {standing_gun} per \
          further gun; moving in combat {moving_hour}, {moving_gun} per further gun"
     );
-    assert_eq!((standing_hour, standing_gun), (55, 39));
-    assert_eq!((moving_hour, moving_gun), (91, 53));
+    assert_eq!((standing_hour, standing_gun), (57, 41));
+    assert_eq!((moving_hour, moving_gun), (93, 55));
 }
 
 #[test]

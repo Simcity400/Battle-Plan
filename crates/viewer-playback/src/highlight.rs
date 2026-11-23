@@ -1,8 +1,8 @@
 
-use crate::layers::political::Political;
+use viewer_layers_political::political::Political;
 use map_display_data::{landscape::Regions, province_field, value_index::ValueIndex};
 use std::{collections::BTreeSet, sync::Arc};
-use viewer_world::map::demilitarized::Zone;
+use viewer_borders::demilitarized::Zone;
 
 #[derive(Clone)]
 pub enum Over<P> {
@@ -35,7 +35,7 @@ impl Picture {
         }
     }
 
-    pub fn regions_and_zone(&self, map: &content_reader_core::map::MapData) -> (Regions, Zone) {
+    pub fn regions_and_zone(&self, map: &content_reader_map::map::MapData) -> (Regions, Zone) {
         let field = |values: &Arc<Vec<u32>>| province_field::ProvinceField(Arc::new(province_field::Storage::Dense(Arc::clone(values))));
         let regions = Regions {
             country_of: field(&self.country_of),

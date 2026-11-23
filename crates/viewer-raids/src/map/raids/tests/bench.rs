@@ -120,7 +120,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
         height: (COLUMN * 4) as i32,
         ..Default::default()
     };
-    let mut graph = content_reader_core::province_graph::ProvinceGraph::default();
+    let mut graph = content_reader_map::province_graph::ProvinceGraph::default();
     for country in 0..countries {
         for row in 0..COLUMN {
             let id = province(country, row);
@@ -165,7 +165,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
         types: kinds(),
         ..Default::default()
     };
-    assets.trigger_content.buildings = content_reader_core::buildings::Buildings {
+    assets.trigger_content.buildings = content_reader_key_names::buildings::Buildings {
         types: ["naval_base", "air_base"]
             .map(|name| {
                 (
@@ -181,7 +181,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
         ..Default::default()
     };
     super::set_counts(&mut assets);
-    assets.equipment = content_reader_core::equipment::fixture::load(&[(
+    assets.equipment = content_reader_key_names::equipment::fixture::load(&[(
         "common/units/equipment/a.txt",
         "equipments = { large_plane_airframe = { is_archetype = yes type = strategic_bomber } transport_plane = { is_archetype = yes type = air_transport } }",
     )])
@@ -523,7 +523,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
             .flat_map(|slot| {
                 (0..4).map(move |index| VariantStatsRow {
                     variant: variant(slot, index),
-                    values: [1500 * 100_000; 10],
+                    values: [Some(1500 * 100_000); 10],
                     ..Default::default()
                 })
             })

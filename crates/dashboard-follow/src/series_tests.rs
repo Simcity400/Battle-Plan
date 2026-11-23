@@ -11,7 +11,8 @@ use playhead::{
     lane::Lane,
     pages::{Pages, Span, WorldPages},
 };
-use replay::{campaign::Replay, spool::Record};
+use replay::campaign::Replay;
+use replay_capture_spool::spool::Record;
 use replay_columnar::{envelope::UNIT_ORDINALS, summary::Cells};
 use replay_data::{
     identity::{CaptureMode, Identity as Recorded, Roster, SampleBoundary, SessionStart, Verification},
@@ -104,7 +105,7 @@ fn replay() -> &'static Replay {
             input.scope_to(CaptureMode::Full);
             records.push(Record::Frame(encoder.encode_input(input, false).unwrap()));
         }
-        Replay::from_records(b"follow".to_vec(), &[records]).unwrap()
+        Replay::from_records(recorder_derive::writers(), b"follow".to_vec(), &[records]).unwrap()
     })
 }
 
@@ -186,7 +187,7 @@ fn a_followed_computed_column_equals_series_state_at_every_step() {
     let identity = Identity { holders: Arc::clone(&state.holders), timeline: Arc::clone(&state.timeline) };
     let followed = Query::Series { series: &NEGATED, measure: &NEGATED.measures[0], countries: vec!["GER".into(), "ITA".into()], top: None, least: false, parts: false, identity };
     let line = Line::new(&state, &NEGATED, &NEGATED.measures[0]).unwrap();
-    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay::columnar_frames::Recording::open(replay().bytes().to_vec()).unwrap(), Span::Whole).unwrap());
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay().bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let edge = FIRST + UNIT_ORDINALS as i32;
     let (mut valued, mut unrecorded) = (0, 0);
     for (from, to) in [(ITA_FROM - 30, ITA_FROM + 60), (edge - 40, edge + 40)] {
@@ -231,7 +232,7 @@ fn a_followed_owners_parts_equal_series_state_of_every_part_at_every_step() {
     let parts = series.parts.unwrap();
     let identity = Identity { holders: Arc::clone(&state.holders), timeline: Arc::clone(&state.timeline) };
     let line = Line::new(&state, series, measure).unwrap();
-    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay::columnar_frames::Recording::open(replay().bytes().to_vec()).unwrap(), Span::Whole).unwrap());
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay().bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let columns = dashboard_query::read::columns_of(&dashboard_declare::source(series.table, measure).unwrap());
     let mut compared = 0;
     for top in [None, Some(2)] {
@@ -259,4 +260,242 @@ fn a_followed_owners_parts_equal_series_state_of_every_part_at_every_step() {
         }
     }
     assert!(compared > 300, "{compared} rows compared");
+}
+
+#[test]
+fn a_followed_supply_health_withholds_v1_and_admits_v2_across_step_and_backward_seek() {
+    use crate::{Follow, Message, Sink, StepStats, decode};
+    use playhead::{Playhead, Settings as PlaySettings, Timeline as PlayTimeline};
+    use recorder_derive_framework::framework::{
+        Definitions,
+        definitions::{Define, Form},
+    };
+    use replay_recording::{records::Records, columnar_frames::Recording, schema::schema};
+    use replay_journal::{columnar_file::{FileWriter, HourWriter, Resumed}, synthetic::{Input, Sample, Synthetic}};
+    use replay_settings::compression::Settings;
+    use replay_columnar::{
+        container::{self, SectionKey, Tags},
+        envelope::{self, Kind},
+    };
+    use replay_data::{
+        format::FormatVersion,
+        identity::IdentityCodec,
+        rows::{ClockRow, DivisionLandInputsRow, DivisionRow, DivisionStatusRow, Recorded as RecCell, TABLE_COUNT},
+    };
+    use std::{io::Cursor, sync::mpsc};
+
+    let session = SessionStart {
+        id: 1,
+        process_id: 1,
+        process_start_time: 1,
+        qpc_frequency: 10_000_000,
+        sample_boundary: SampleBoundary::EndOfHour,
+        capture_mode: CaptureMode::Full,
+        identity: Recorded {
+            game_version: "synthetic".into(),
+            exe_hash: [1; 32],
+            exe_size: 1,
+            vanilla_hash: [2; 32],
+            dlc: vec![],
+            mods: vec![],
+            coverage_policy: 1,
+            language: "l_english".into(),
+            recorder_version: "test".into(),
+            collector_hash: [3; 32],
+            verification: Verification::Verified { launcher: Roster::default(), memory: Roster::default() },
+        },
+    };
+    let (first_v1, last_v1, first_v2, last_v2) = (100, 111, 112, 123);
+    let branch = BranchStart {
+        id: 1,
+        session: 1,
+        loaded_hour: None,
+        first_hour: first_v1,
+        parent: Parentage::Unknown,
+        reason: BranchReason::SessionStart,
+    };
+    let records = Records { sessions: vec![session.clone()], branches: vec![branch], ..Records::default() };
+    let kinds = schema().unwrap();
+    let mut content = Vec::new();
+    session.identity.encode(&mut content).unwrap();
+    let identity_env = envelope::Identity {
+        schema: envelope::schema_digest(&kinds),
+        campaign: b"follow-mixed".to_vec(),
+        content,
+        capture_mode: CaptureMode::Full.byte(),
+    };
+    let definitions = || {
+        Definitions::read_none()
+            .with_define(Define { section: "NMilitary", name: "SUPPLY_GRACE", form: Form::Int32 }, Ok(72))
+            .with_define(Define { section: "NMilitary", name: "LOW_SUPPLY", form: Form::Fixed5 }, Ok(50_000))
+            .with_define(Define { section: "NGraphics", name: "SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD", form: Form::Fixed5 }, Ok(15_500))
+            .with_define(Define { section: "NGraphics", name: "SUPPLY_UNIT_COUNTER_LOW_THRESHOLD", form: Form::Fixed5 }, Ok(35_000))
+    };
+    let campaign = [CampaignRow { id: b"follow-mixed".to_vec() }];
+    let countries = [CountryRow { id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), ..Default::default() }];
+    let links = [CountryLinkRow { id: 9001, canonical_slot: 7 }];
+    let divisions = [DivisionRow { id: 1, roster_owner: 9001, logical_owner: 9001, province: 1, ..Default::default() }];
+    let land = [DivisionLandInputsRow { division: 1, naval_transfer: false, ..Default::default() }];
+    let statuses = [DivisionStatusRow {
+        division: 1,
+        supply_ratio: None,
+        supply_grace_maximum: RecCell::Value(7_200_000),
+        supply_grace_remaining: RecCell::Value(0),
+        supply_ratio_exact: RecCell::Value(Some(15_000)),
+        supply_grace_exact: RecCell::Value(Some(0)),
+        ..Default::default()
+    }];
+    let write_hours = |writer: &mut HourWriter<Cursor<Vec<u8>>>, start: i32, end: i32| {
+        writer.start_run(1, envelope::epoch::START, start).unwrap();
+        let mut synthetic = Synthetic::new(1, start).unwrap();
+        for hour in start..=end {
+            synthetic.table(TableId::Clock, Input::Snapshot { rows: &[ClockRow { hour, ..Default::default() }], partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+            synthetic.table(TableId::Campaign, Input::Snapshot { rows: &campaign, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+            synthetic.table(TableId::Countries, Input::Snapshot { rows: &countries, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+            synthetic.table(TableId::CountryLinks, Input::Snapshot { rows: &links, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+            synthetic.table(TableId::Divisions, Input::Snapshot { rows: &divisions, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+            synthetic.table(TableId::DivisionLandInputs, Input::Snapshot { rows: &land, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+            synthetic.table(TableId::DivisionStatus, Input::Snapshot { rows: &statuses, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+            synthetic.end_encoded(|manifest, sections| writer.hour(manifest, sections)).unwrap().unwrap();
+        }
+    };
+
+    let key = SectionKey::derived(TableId::SupplyHealth.index() as u32);
+
+    let file = FileWriter::create(Cursor::new(Vec::new()), identity_env.clone(), TABLE_COUNT, Settings { level: 1 }, None).unwrap();
+    let mut writer = HourWriter::new(file, 1, recorder_derive::writers()).unwrap();
+    writer.define(definitions());
+    write_hours(&mut writer, first_v1, last_v1);
+    let mut file = writer.finish().unwrap();
+    let encoded = records.encode(FormatVersion::CURRENT).unwrap();
+    let extent = file.container().put_zstd(Kind::Controls, Tags::default(), &encoded, 1).unwrap();
+    file.container().append(SectionKey::RECORDS, extent).unwrap();
+    let v1_marked = file.finish_runs(&[], true, |_| Ok(())).unwrap().0.into_inner();
+    let (extent, length) = container::locate(v1_marked.as_slice(), container::Open::Newest).unwrap().unwrap();
+    let mut root = container::read_root(v1_marked.as_slice(), &extent).unwrap();
+    root.sections.retain(|section| section.key != key);
+    let at = container::Revision { number: root.revision, length, root: extent.digest };
+    let mut stripped = container::ContainerWriter::resume(Cursor::new(v1_marked), root, at, 1, None).unwrap();
+    stripped.commit(None, true, |_| Ok(())).unwrap();
+    let v1_bytes = stripped.into_inner().into_inner();
+    let (extent, length) = container::locate(v1_bytes.as_slice(), container::Open::Newest).unwrap().unwrap();
+    let root = container::read_root(v1_bytes.as_slice(), &extent).unwrap();
+    let at = container::Revision { number: root.revision, length, root: extent.digest };
+    let file = FileWriter::resume(Cursor::new(v1_bytes), Resumed { root, at, last: Some((1, last_v1)), open: None }, TABLE_COUNT, Settings { level: 1 }, None).unwrap();
+    let mut writer = HourWriter::new(file, 1, recorder_derive::writers()).unwrap();
+    writer.define(definitions());
+    write_hours(&mut writer, first_v2, last_v2);
+    let two_run_bytes = writer.finish().unwrap().finish_runs(&[], true, |_| Ok(())).unwrap().0.into_inner();
+
+    let v1_run_pages = WorldPages::over(Recording::open(two_run_bytes.clone()).unwrap(), Span::Run(0)).unwrap();
+    let held_v1_run = crate::host::held_tables(&v1_run_pages, TABLE_COUNT);
+    assert!(!held_v1_run[TableId::SupplyHealth.index()], "pure v1 run of mixed recording must not be held by dashboard-follow");
+
+    let file = FileWriter::create(Cursor::new(Vec::new()), identity_env, TABLE_COUNT, Settings { level: 1 }, None).unwrap();
+    let mut writer = HourWriter::new(file, 1, recorder_derive::writers()).unwrap();
+    writer.define(definitions());
+    write_hours(&mut writer, first_v1, last_v2);
+    let mut file = writer.finish().unwrap();
+    let extent = file.container().put_zstd(Kind::Controls, Tags::default(), &encoded, 1).unwrap();
+    file.container().append(SectionKey::RECORDS, extent).unwrap();
+    let single = file.finish_runs(&[], true, |_| Ok(())).unwrap().0.into_inner();
+    let (extent, length) = container::locate(single.as_slice(), container::Open::Newest).unwrap().unwrap();
+    let mut root = container::read_root(single.as_slice(), &extent).unwrap();
+    root.sections.retain(|section| section.key != key);
+    let at = container::Revision { number: root.revision, length, root: extent.digest };
+    let mut rewritten = container::ContainerWriter::resume(Cursor::new(single), root, at, 1, None).unwrap();
+    rewritten.section(key, 2).unwrap();
+    let mut payload = replay_columnar::leaf::Writer::new();
+    payload.varint(0).unwrap();
+    payload.varint(12).unwrap();
+    let payload = payload.into_bytes();
+    let extent = rewritten.put(Kind::Stored, Tags::default(), payload.len() as u64, &payload).unwrap();
+    rewritten.append(key, extent).unwrap();
+    rewritten.commit(None, true, |_| Ok(())).unwrap();
+    let mid_run_bytes = rewritten.into_inner().into_inner();
+
+    let series = dashboard_declare::series("supply-health").unwrap();
+    let measure = series.measure("noSupply").unwrap();
+    let run_follow = |bytes: Vec<u8>, stretches: Vec<Stretch>| {
+        let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(Recording::open(bytes).unwrap(), Span::Whole).unwrap());
+        let timeline = Arc::new(Timeline { id: 1, first: first_v1, last: last_v2, stretches, unheld: Vec::new() });
+        let holders = Arc::new(Holders::new(
+            [(
+                "GER".to_owned(),
+                vec![HolderRun { first: first_v1, last: last_v2, holder: Holder::Found { slot: 7, id: 9001 }, starts_segment: true }],
+            )]
+            .into(),
+            Vec::new(),
+        ));
+        let identity = Identity { holders, timeline };
+        let query = Query::Series { series, measure, countries: vec!["GER".into()], top: None, least: false, parts: false, identity };
+
+        let follow = Follow::new(0);
+        let (send, recv) = mpsc::channel();
+        let sink: Sink = Box::new(move |stats: &StepStats, message: Option<Message>| {
+            let _ = send.send((*stats, message));
+        });
+        let hook = follow.hook(sink);
+        let settings = PlaySettings { step_threads: 1, fetch_threads: 1, ahead: 32, ring: 8, speed: 1.0, rate: 1.0, ..PlaySettings::default() };
+        let playhead = Arc::new(Playhead::new(Arc::clone(&pages), PlayTimeline::whole(&*pages).unwrap(), settings, Some(hook)).unwrap());
+        let reader = playhead.declare(Vec::new(), None).unwrap();
+        let mut consumer = playhead.consumer(reader);
+        let weak = Arc::downgrade(&playhead);
+        follow.bind(move |tables, _| weak.upgrade().map_or(Ok(()), |playhead| playhead.redeclare(reader, tables)), playhead.log_reads()).unwrap();
+        follow.follow(1, query).unwrap();
+
+        let drive_to = |target: i32, seek: bool, consumer: &mut playhead::Consumer| -> Answer {
+            if seek {
+                playhead.seek(target);
+            } else {
+                playhead.play(1.0);
+            }
+            let mut last_answer: Option<Answer> = None;
+            let mut steps = Vec::new();
+            loop {
+                consumer.advance(target);
+                consumer.take(target, &mut steps);
+                let (stats, message) = recv.recv().unwrap();
+                if let Some(message) = message {
+                    let decoded = decode(&message.bytes).unwrap();
+                    for &(id, _, body) in &decoded.answers {
+                        if id == 1 {
+                            last_answer = Some(Answer::parse(body).unwrap());
+                        }
+                    }
+                }
+                if stats.last == target {
+                    return last_answer.unwrap_or_else(|| panic!("no answer emitted when reaching target hour {target} (seek={seek})"));
+                }
+            }
+        };
+
+        let at_v1 = drive_to(last_v1, true, &mut consumer);
+        assert!(
+            at_v1.not_recorded.as_deref().is_some_and(|why| why.contains("SupplyHealth")),
+            "dashboard-follow must withhold last v1 hour {last_v1}: {at_v1:?}"
+        );
+
+        let at_v2 = drive_to(first_v2, false, &mut consumer);
+        assert_eq!(at_v2.not_recorded, None, "dashboard-follow must admit first v2 hour {first_v2}: {at_v2:?}");
+        assert_eq!(rows(&at_v2), vec![(7, Some(1), "GER".to_owned())]);
+
+        let back_v1 = drive_to(last_v1, true, &mut consumer);
+        assert!(
+            back_v1.not_recorded.as_deref().is_some_and(|why| why.contains("SupplyHealth")),
+            "dashboard-follow backward seek must withhold v1 hour {last_v1}: {back_v1:?}"
+        );
+    };
+
+    run_follow(
+        mid_run_bytes,
+        vec![Stretch { run: 0, first: first_v1, last: last_v2, join: Join::Start }],
+    );
+    run_follow(
+        two_run_bytes,
+        vec![
+            Stretch { run: 0, first: first_v1, last: last_v1, join: Join::Start },
+            Stretch { run: 1, first: first_v2, last: last_v2, join: Join::Break },
+        ],
+    );
 }

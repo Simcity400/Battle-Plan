@@ -1,13 +1,11 @@
 
-use crate::{
-    document::Document,
-    playback_cost::distribution,
-    playhead_host::{self, Entry, Head, MapSide, Opening, side::SideThread},
-};
+use crate::{document::Document, playback_cost::distribution, playhead_host::{Entry, Head, MapSide, Opening}};
+use viewer_layer_core::playhead_host;
+use viewer_playback::side::SideThread;
 use replay_data::Hour;
 use serde_json::{Value, json};
 use std::{io, sync::Arc, time::Instant};
-use viewer_foundation::profiling::current_thread_cpu_time;
+use viewer_runtime::profiling::current_thread_cpu_time;
 
 fn number(name: &str) -> io::Result<Option<u64>> {
     match std::env::var(name) {
@@ -100,7 +98,7 @@ impl Extras {
             let first = units.timeline.first();
             let entry = playhead_host::open(units, playhead_host::settings())?;
             entry.set_capture(document.capture_mode());
-            let side = SideThread::new(MapSide::new(Arc::clone(&entry), Self::layers(document), main.map(|side| side.view().clone()).unwrap_or_default())?)?;
+            let side = SideThread::new(MapSide::with_products(Arc::clone(&entry), Self::layers(document), main.map(|side| side.view().clone()).unwrap_or_default())?)?;
             entry.anchor(first, true, speed, true);
             extras.other = Some(side);
         }
@@ -111,19 +109,19 @@ impl Extras {
         self.wanted > 0 || self.other.is_some() || self.hide.is_some()
     }
 
-    fn layers(document: &Document) -> Vec<Box<dyn crate::layers::Layer>> {
-        let content = Arc::new(crate::layers::political::Content::new(Arc::clone(&document.content.map), Arc::clone(&document.border_meshes)));
+    fn layers(document: &Document) -> Vec<Box<dyn viewer_layer_core::layers::Layer>> {
+        let content = Arc::new(viewer_layers_political::political::Content::new(Arc::clone(&document.content.map), Arc::clone(&document.border_meshes)));
         let place_in = Arc::clone(&document.content);
         vec![
-            Box::new(crate::layers::political::Political::new(content)),
-            Box::new(crate::layers::sounds::SoundsFed::new(crate::layers::sounds::Sounds::new(document.content.audio.as_ref().map(|source| Arc::clone(&source.content))))),
-            Box::new(crate::layers::strikes::Strikes::new(Arc::new(move |province| place_in.products.impact_place(province)))),
+            Box::new(viewer_layers_political::political::Political::new(content)),
+            Box::new(viewer_layers_infrastructure::sounds::SoundsFed::new(viewer_layers_infrastructure::sounds::Sounds::new(document.content.audio.as_ref().map(|source| Arc::clone(&source.content))))),
+            Box::new(viewer_layers_infrastructure::strikes::Strikes::new(Arc::new(move |province| place_in.products.impact_place(province)))),
         ]
     }
 
     fn start(&mut self, document: &Document, index: u64, shown: bool) {
         while self.sides.len() + self.pending.len() < self.wanted {
-            match Opening::start(document, None) {
+            match crate::playhead_host::open_document(document, None) {
                 Ok(opening) => self.pending.push(Pending { opening, started: index, shown }),
                 Err(error) => {
                     eprintln!("An extra map's playhead is refused: {error}");
@@ -341,7 +339,7 @@ impl Extras {
     }
 }
 
-fn window_for(side: &mut SideThread, head: Head) -> Option<crate::playhead_host::side::Window<'_>> {
+fn window_for(side: &mut SideThread, head: Head) -> Option<viewer_playback::side::Window<'_>> {
     match head {
         Head::Stepped(hour) => side.stepped_window(hour),
         _ => side.window(),

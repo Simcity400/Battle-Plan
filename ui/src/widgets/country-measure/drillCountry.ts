@@ -4,6 +4,7 @@ import { countryDrillSpans, historyAt } from '../../dashboard/countryIdentity.ts
 import type { BoundTrack, CountrySelection } from '../../dashboard/model';
 import { object, opaqueTag, signed32 } from '../../dashboard/validation.ts';
 import type { CountryIdentityHistory } from '../../generated/dashboard';
+import type { HeldCountry } from '../../dashboard/regionGate';
 
 export interface DrillCountry {
   campaign: string; branch: string; tag: string; originOffset: number; slot: number; countryId: number;
@@ -17,6 +18,9 @@ export function chooseDrillCountry(histories: readonly CountryIdentityHistory[],
     ? { campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag: history.tag,
       originOffset: origin - track.branch.firstHour, slot: identity.slot, countryId: identity.countryId } : null;
 }
+
+export const heldDrillCountry = (held: HeldCountry, track: BoundTrack): DrillCountry => ({ campaign: track.source.metadata.campaignKey, branch: track.branch.id,
+  tag: held.tag, originOffset: held.origin - track.branch.firstHour, slot: held.slot, countryId: held.countryId });
 
 export function readDrillCountry(value: unknown, track: BoundTrack | undefined, countries: CountrySelection): DrillCountry | null {
   if (typeof value !== 'string' || !track) return null;

@@ -1,10 +1,10 @@
 
-use content_reader_core::terrain::TerrainCategory;
+use content_reader_key_names::terrain::TerrainCategory;
 use content_reader_localisation::localisation::Localisation;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use viewer_foundation::{
-    map::perspective::Vision,
+    perspective::Vision,
     tooltip_text::{TextIcons, Tooltip, token, viewing_tag},
 };
 

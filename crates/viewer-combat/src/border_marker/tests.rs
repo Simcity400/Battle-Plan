@@ -102,11 +102,11 @@ fn border_marker_membership_and_event_scopes_use_native_alias_and_copy_links() {
 
 #[test]
 fn border_marker_multi_option_enemy_event_appears_only_under_win() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let events = content_reader_events::events::parse(
         b"add_namespace=s country_event={id=s.5 title=VICTORY option={name=A} option={name=B}} country_event={id=s.6 title=DEFEAT option={name=A} option={name=B}}",
         "events/synthetic.txt",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     );
     let border = LandBorderWarInputs {
         sides: [
@@ -267,9 +267,9 @@ fn with_effects(loc: &Localisation, run: impl FnOnce(&EffectContext<'_, '_>)) {
         "0;0;0;0;land;false;unknown;0\n1;1;1;1;land;false;synthetic;1\n",
     )
     .unwrap();
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
-    let content = dashboard_text::scripted_text::ScriptedContent::read(
-        Arc::new(content_reader_core::content::ResolvedContent {
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let content = dashboard_base::catalogue::read_scripted_content(
+        Arc::new(content_reader_layers::content::ResolvedContent {
             layers,
             stats: Default::default(),
             changed: Vec::new(),
@@ -319,8 +319,8 @@ fn with_effects(loc: &Localisation, run: impl FnOnce(&EffectContext<'_, '_>)) {
 
 #[test]
 fn border_marker_event_native_effects_or_title_follow_option_count() {
-    content_reader_core::test_game::enter();
-    let events = content_reader_events::events::parse(b"add_namespace=s country_event={id=s.1 title={text=IGNORED text=TITLE trigger={always=no}} immediate={custom_effect_tooltip=FIRST hidden_effect={custom_effect_tooltip=HIDDEN} add_political_power=2} option={name=A effect_tooltip={custom_effect_tooltip=SECOND}}}", "events/synthetic.txt", &content_reader_core::key_names::KeyNames::default());
+    content_reader_script::test_game::enter();
+    let events = content_reader_events::events::parse(b"add_namespace=s country_event={id=s.1 title={text=IGNORED text=TITLE trigger={always=no}} immediate={custom_effect_tooltip=FIRST hidden_effect={custom_effect_tooltip=HIDDEN} add_political_power=2} option={name=A effect_tooltip={custom_effect_tooltip=SECOND}}}", "events/synthetic.txt", &content_reader_script::key_names::KeyNames::default());
     let mut event = events.get(b"S.01").unwrap().clone();
     let base = localisation();
     let loc = base
@@ -398,7 +398,7 @@ fn border_marker_event_native_effects_or_title_follow_option_count() {
         );
         assert_eq!(text.body, "Event Text TITLE");
         assert!(text.refused.is_empty());
-        event.titles[1].value = content_reader_core::parser::Value::Scalar(b"OTHER_TITLE".to_vec());
+        event.titles[1].value = content_reader_parser::parser::Value::Scalar(b"OTHER_TITLE".to_vec());
         let text = event_description(
             &event, false, &describe, &mut graph, &render, &NoIcons, &loc,
         );
@@ -449,7 +449,7 @@ fn border_marker_empty_enemy_description_has_no_enemy_heading_and_counts_failure
 
 #[test]
 fn covered_events_keep_supported_operative_text_and_refuse_missing_scoped_readers() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let root = std::env::temp_dir().join(format!(
         "hoi4-covered-border-events-{}-{:?}",
         std::process::id(),
@@ -462,7 +462,7 @@ fn covered_events_keep_supported_operative_text_and_refuse_missing_scoped_reader
         b"add_namespace=s country_event={id=s.1 immediate={custom_effect_tooltip=TEXT}} operative_leader_event={id=s.2 immediate={custom_effect_tooltip=TEXT}} operative_leader_event={id=s.3 title=TITLE option={name=A hidden_effect={remove_unit_leader_role={character=fixture}}}}",
     )
     .unwrap();
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
     let events = content_reader_events::events::LazyEvents::new(Arc::new(layers));
     let render = |key: &[u8], _: &EventScopes| Ok(String::from_utf8_lossy(key).into_owned());
     let loc = localisation();

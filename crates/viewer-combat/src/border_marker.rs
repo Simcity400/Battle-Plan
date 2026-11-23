@@ -1,8 +1,6 @@
-use dashboard_text::{
-    effect_description::{self, Context as EffectContext},
-    scripted_text::{EventObject, EventScope, EventScopes, Link, ScriptedText},
-};
-use content_reader_core::parser::Item;
+use dashboard_effects::{ScriptedEffects, effect_description::{self, Context as EffectContext}};
+use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, Link, ScriptedText};
+use content_reader_parser::parser::Item;
 use content_reader_events::events::Event;
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{rows::LandBorderWarInputs, rows::tables};
@@ -14,10 +12,9 @@ use {
     super::INLINE_FLAG,
     viewer_foundation::tooltip_text::{TextIcons, builtin, token},
 };
-use {
-    super::content::Content as StaticContent,
-    viewer_foundation::{table_access::rows, tooltip_text::Tooltip},
-};
+use super::content::Content as StaticContent;
+use dashboard_text::table_access::rows;
+use viewer_foundation::tooltip_text::Tooltip;
 
 tooltip_keys! {
     BORDER_CONFLICT_IF_YOU_WIN = "BORDER_CONFLICT_IF_YOU_WIN",

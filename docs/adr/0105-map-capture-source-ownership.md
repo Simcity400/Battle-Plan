@@ -12,4 +12,4 @@ One worker acquires the two raw players sources and a FIFO decode worker runs th
 
 The wing gather also owns the attachment pointers. Its only mapping to a recorded group handle is a unique identity from the same-pass group census. Null is detached. A partial census can prove a match, but it cannot prove an unmatched pointer absent. Combat participant keys reserve one bit for the authenticated side-vector selection.
 
-[Map capture](../../crates/collector/src/map_capture.rs) · [Combat capture](../../crates/collector/src/map_capture/combat.rs) · [Map spool conversion](../../crates/collector/src/map_spool.rs)
+[Map capture](../../crates/collector-map-capture/src/map_capture.rs) · [Combat capture](../../crates/collector-map-capture/src/map_capture/combat.rs) · [Map spool conversion](../../crates/collector-spool/src/map_spool.rs)

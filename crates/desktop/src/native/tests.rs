@@ -1,5 +1,5 @@
 use super::pending::MAX_QUEUED_ACTIONS;
-use dashboard::protocol::NativeCommand;
+use dashboard_core::protocol::NativeCommand;
 use super::*;
 
 #[test]
@@ -48,12 +48,13 @@ fn restart_restores_unacknowledged_open_and_seek() {
         revision: "new-version".into(),
         branch: "9".into(),
         hour: 456,
-        playback: Some(dashboard::protocol::MapPlayback {
+        playback: Some(dashboard_core::protocol::MapPlayback {
             playing: true,
             seek_sequence: 7,
             fraction: 0.375,
             hours_per_second: 1440.0,
             composed_at: 0.0,
+            clock_id: "page-1".into(),
         }),
     };
     let mut inner = Inner {
@@ -146,7 +147,7 @@ fn hidden_map_defers_document_work_without_spinning() {
     ));
 }
 
-use dashboard::transport::{MAP_CONTROLS_BUSY, transient_error};
+use dashboard_core::transport::{MAP_CONTROLS_BUSY, transient_error};
 
 #[test]
 fn busy_map_controls_refuse_with_a_retryable_error() {
@@ -154,12 +155,12 @@ fn busy_map_controls_refuse_with_a_retryable_error() {
     for _ in 0..MAX_QUEUED_ACTIONS - 1 {
         pending
             .actions
-            .push_back(dashboard::protocol::MapAction::Inspect);
+            .push_back(dashboard_core::protocol::MapAction::Inspect);
     }
     assert!(pending.action_room().is_ok());
     pending
         .actions
-        .push_back(dashboard::protocol::MapAction::Inspect);
+        .push_back(dashboard_core::protocol::MapAction::Inspect);
     let refusal = pending.action_room().unwrap_err();
     assert!(refusal.starts_with(MAP_CONTROLS_BUSY));
     assert!(transient_error(&refusal));
@@ -168,7 +169,7 @@ fn busy_map_controls_refuse_with_a_retryable_error() {
 #[test]
 fn folders_applied_before_a_viewer_starts_are_kept_for_its_launch() {
     let host = NativeHost::default();
-    let config = dashboard::Config {
+    let config = dashboard_core::config::Config {
         game_dir: r"C:\Game".into(),
         user_dir: r"C:\User".into(),
         older_game_dirs: Vec::new(),
@@ -181,7 +182,7 @@ fn folders_applied_before_a_viewer_starts_are_kept_for_its_launch() {
 
 #[test]
 fn display_choices_sent_while_no_viewer_runs_are_kept_for_one_starting() {
-    use dashboard::protocol::MapAction;
+    use dashboard_core::protocol::MapAction;
     let host = NativeHost::popout(1, Arc::new(|| ()));
     host.set_display(MapAction::Vsync { enabled: true });
     host.set_display(MapAction::Vsync { enabled: false });
@@ -237,7 +238,7 @@ fn moving_the_view_never_starts_a_viewer() {
 
 #[test]
 fn only_a_display_choice_sent_while_a_viewer_starts_replaces_its_launch_read() {
-    use dashboard::protocol::MapAction;
+    use dashboard_core::protocol::MapAction;
     let host = NativeHost::default();
     let debug = |actions: &[MapAction]| format!("{actions:?}");
     let read = vec![
@@ -287,7 +288,7 @@ fn a_host_names_the_recording_it_shows_requests_and_seeks() {
 
 #[test]
 fn a_waiting_controller_message_is_sent_even_while_hidden() {
-    use dashboard::protocol::GamepadMessage;
+    use dashboard_core::protocol::GamepadMessage;
     let mut pending = Pending::default();
     assert!(!pending.can_send(true));
     pending.gamepad = Some(GamepadMessage::Release);
@@ -304,7 +305,7 @@ fn a_waiting_controller_message_is_sent_even_while_hidden() {
 
 #[test]
 fn only_the_latest_camera_mode_waits_for_the_viewer() {
-    use dashboard::protocol::{CameraMode, MapAction};
+    use dashboard_core::protocol::{CameraMode, MapAction};
     let host = NativeHost::default();
     host.shared.lock().unwrap().status.ready = true;
     for (mode, overlays) in [
@@ -334,7 +335,7 @@ fn only_the_latest_camera_mode_waits_for_the_viewer() {
 #[test]
 fn the_status_carries_the_camera_mode_for_the_interface() {
     let status = HostStatus {
-        camera_mode: dashboard::protocol::CameraMode::Walk,
+        camera_mode: dashboard_core::protocol::CameraMode::Walk,
         camera_overlays: true,
         ..Default::default()
     };
@@ -350,7 +351,7 @@ fn the_status_carries_the_camera_mode_for_the_interface() {
 
 #[test]
 fn only_the_latest_aircraft_choice_waits_for_the_viewer() {
-    use dashboard::protocol::{CameraMode, MapAction};
+    use dashboard_core::protocol::{CameraMode, MapAction};
     let host = NativeHost::default();
     host.shared.lock().unwrap().status.ready = true;
     host.map_action(MapAction::CameraMode {
@@ -378,4 +379,229 @@ fn only_the_latest_aircraft_choice_waits_for_the_viewer() {
             MapAction::FlyAircraft { aircraft: None }
         ]
     ));
+}
+
+#[test]
+fn retired_clock_origin_seeks_cannot_overwrite_pending_seek_or_reopen_previous_recording() {
+    let playback = |clock_id: &str, seek_sequence: u64| {
+        Some(dashboard_core::protocol::MapPlayback {
+            playing: true,
+            seek_sequence,
+            fraction: 0.0,
+            hours_per_second: 1440.0,
+            composed_at: 100.0,
+            clock_id: clock_id.into(),
+        })
+    };
+    let host = NativeHost::default();
+    host.seek(
+        "old.battleplan".into(),
+        "rev-old".into(),
+        "1".into(),
+        100,
+        playback("page-A", 1),
+    )
+    .unwrap();
+    host.seek(
+        "new.battleplan".into(),
+        "rev-new".into(),
+        "2".into(),
+        200,
+        playback("page-B", 1),
+    )
+    .unwrap();
+    host.seek(
+        "old.battleplan".into(),
+        "rev-old".into(),
+        "1".into(),
+        105,
+        playback("page-A", 2),
+    )
+    .unwrap();
+    host.seek(
+        "new.battleplan".into(),
+        "rev-new".into(),
+        "2".into(),
+        999,
+        playback("page-A", 3),
+    )
+    .unwrap();
+    let inner = host.shared.lock().unwrap();
+    assert_eq!(inner.requested_path.as_deref(), Some("new.battleplan"));
+    assert_eq!(inner.requested_revision.as_deref(), Some("rev-new"));
+    assert_eq!(
+        inner.pending.open,
+        Some(("new.battleplan".into(), Some("rev-new".into())))
+    );
+    let pending_seek = inner.pending.seek.as_ref().expect("B seek stays queued");
+    assert_eq!(pending_seek.path, "new.battleplan");
+    assert_eq!(pending_seek.hour, 200);
+    assert_eq!(
+        pending_seek.playback.as_ref().map(|clock| clock.clock_id.as_str()),
+        Some("page-B")
+    );
+    let requested_seek = inner.requested_seek.as_ref().expect("B seek stays requested");
+    assert_eq!(requested_seek.path, "new.battleplan");
+    assert_eq!(requested_seek.hour, 200);
+    drop(inner);
+
+    let popout = NativeHost::popout(0, Arc::new(|| {}));
+    popout
+        .seek(
+            "popout.battleplan".into(),
+            "rev-pop".into(),
+            "1".into(),
+            50,
+            playback("page-A", 1),
+        )
+        .unwrap();
+    let popout_inner = popout.shared.lock().unwrap();
+    assert_eq!(
+        popout_inner.pending.seek.as_ref().map(|seek| seek.hour),
+        Some(50),
+        "origin retirement is scoped per NativeHost"
+    );
+}
+
+#[test]
+fn dashboard_snapshot_envelope_gates_empty_clears_and_filters_state_replies_by_origin_before_sequence() {
+    use dashboard_core::protocol::{DashboardMapState, DashboardMapView, ViewBounds};
+
+    let bounds = ViewBounds {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+    };
+    let make_view = |id: &str, clock_id: &str, sequence: u64, hour: i32, playing: bool| {
+        DashboardMapView {
+            options: Default::default(),
+            id: id.into(),
+            source_id: "source".into(),
+            path: "campaign.battleplan".into(),
+            revision: "rev-1".into(),
+            branch_id: "1".into(),
+            playing,
+            hours_per_second: 24.0,
+            hour,
+            fraction: 0.0,
+            sequence,
+            seek_sequence: Some(sequence),
+            composed_at: 1000.0,
+            clock_id: clock_id.into(),
+            bounds,
+            clip: bounds,
+            visible: true,
+        }
+    };
+    let make_state = |id: &str, clock_id: &str, sequence: u64, hour: i32| DashboardMapState {
+        id: id.into(),
+        clock_id: clock_id.into(),
+        source_id: Some("source".into()),
+        revision: Some("rev-1".into()),
+        branch_id: Some("1".into()),
+        hour: Some(hour),
+        fraction: Some(0.0),
+        sequence,
+        requested_sequence: sequence,
+        loading: false,
+        ..Default::default()
+    };
+
+    let mut inner = Inner {
+        active_dashboard: true,
+        ..Default::default()
+    };
+    let view_a = make_view("map-1", "page-A", 80, 100, true);
+    let view_b = make_view("map-1", "page-B", 0, 260, false);
+
+    assert!(inner.apply_dashboard_views("page-A", &[view_a.clone()]).unwrap());
+    assert!(inner.apply_dashboard_views("page-B", &[view_b.clone()]).unwrap());
+    assert!(!inner.apply_dashboard_views("page-A", &[]).unwrap());
+    assert!(inner.status.visible, "late empty clear from A must not hide B's widgets");
+    let kept = inner.dashboard_views.as_ref().expect("B's snapshot survives");
+    assert_eq!(kept.clock_id.as_deref(), Some("page-B"));
+    assert_eq!(kept.views.len(), 1);
+    assert_eq!(kept.views[0].hour, 260);
+    assert_eq!(
+        inner.pending.maps.as_ref().map(|snap| (snap.clock_id.as_deref(), snap.views.len())),
+        Some((Some("page-B"), 1))
+    );
+
+    let reply_a = make_state("map-1", "page-A", 80, 100);
+    let reply_b = make_state("map-1", "page-B", 0, 260);
+    assert!(
+        inner.filter_map_states(vec![reply_a.clone()]).is_empty(),
+        "A/80 arriving before B/0 must be filtered out before sequence comparison"
+    );
+    let kept_b = inner.filter_map_states(vec![reply_b.clone()]);
+    assert_eq!(kept_b.len(), 1);
+    assert_eq!(kept_b[0].clock_id, "page-B");
+    assert_eq!(kept_b[0].hour, Some(260));
+    assert!(!kept_b[0].loading);
+    assert!(
+        inner.filter_map_states(vec![reply_a]).is_empty(),
+        "A/80 arriving after B/0 must be filtered out before sequence comparison"
+    );
+
+    assert!(inner.apply_dashboard_views("page-B", &[]).unwrap());
+    assert!(!inner.status.visible);
+    assert_eq!(
+        inner.dashboard_views.as_ref().map(|snap| (snap.clock_id.as_deref(), snap.views.len())),
+        Some((Some("page-B"), 0))
+    );
+    assert!(!inner.apply_dashboard_views("page-A", &[view_a]).unwrap());
+    assert_eq!(
+        inner.dashboard_views.as_ref().map(|snap| (snap.clock_id.as_deref(), snap.views.len())),
+        Some((Some("page-B"), 0)),
+        "late populated snapshot from A after B's legitimate empty clear must be ignored"
+    );
+    assert_eq!(
+        inner.pending.maps.as_ref().map(|snap| (snap.clock_id.as_deref(), snap.views.len())),
+        Some((Some("page-B"), 0))
+    );
+}
+
+#[test]
+fn select_view_and_restore_after_stamped_campaign_seek_stamp_empty_clear_with_active_origin() {
+    let host = NativeHost::default();
+    host.seek(
+        "campaign.battleplan".into(),
+        "rev-1".into(),
+        "1".into(),
+        100,
+        Some(dashboard_core::protocol::MapPlayback {
+            playing: false,
+            seek_sequence: 1,
+            fraction: 0.0,
+            hours_per_second: 24.0,
+            composed_at: 100.0,
+            clock_id: "page-A".into(),
+        }),
+    )
+    .unwrap();
+    assert!(host.shared.lock().unwrap().dashboard_views.is_none());
+
+    host.select_view(true).unwrap();
+    let commands = host.shared.lock().unwrap().pending.take_commands(true);
+    assert_eq!(
+        commands,
+        vec![NativeCommand::MapViews {
+            clock_id: Some("page-A".into()),
+            views: Vec::new(),
+        }],
+        "switching from the campaign map to Settings with no cached dashboard views must stamp the empty clear with the active origin"
+    );
+
+    let mut inner = host.shared.lock().unwrap();
+    inner.restore_commands();
+    let restored = inner.pending.take_commands(true);
+    assert_eq!(
+        restored,
+        vec![NativeCommand::MapViews {
+            clock_id: Some("page-A".into()),
+            views: Vec::new(),
+        }],
+        "restoring an empty active dashboard must also stamp the active origin"
+    );
 }

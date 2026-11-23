@@ -17,7 +17,7 @@ pub const END_PRESENT: usize = 0x1b0;
 pub const ARMY_REFERENCE: usize = craid_instance::UNIT;
 pub const WING_REFERENCE: usize = craid_instance::UNIT + 8;
 pub const AIR_TRANSPORT: u64 = 0x10_0000;
-pub const TRANSPORT_SPEED_STAT: usize = cequipment_variant::MAXIMUM_SPEED_CACHE_CANDIDATE;
+pub const TRANSPORT_SPEED_STAT: usize = cequipment_variant::MAXIMUM_SPEED_STAT;
 pub const ACE_TYPE_ACCUMULATOR: usize = 0x38 + 0x10;
 pub const WING_POOL_OWNER: usize = 0x40;
 pub const POOL_OWNER_COUNTRY: usize = 0x90;
@@ -91,10 +91,12 @@ fn effective(
 
 fn transports(
     memory: &impl Memory,
+    base: usize,
     pool: usize,
     arena: &mut crate::walk::Buffer<'_, i64>,
     len: &mut usize,
     required: &mut usize,
+    witness: &impl cequipment_variant::StatWitness,
 ) -> Result<usize, &'static str> {
     let items = pool
         .checked_add(cequipment_variant_pool::ITEMS)
@@ -116,13 +118,19 @@ fn transports(
         if flags & AIR_TRANSPORT == 0 {
             continue;
         }
-        let speed: i64 = field(memory, variant, TRANSPORT_SPEED_STAT)?;
+        let stat = cequipment_variant::verified_cached_stat(memory, base, variant, 4, witness)?;
+        if stat.classifier_flags & AIR_TRANSPORT == 0 {
+            return Err("raid transport classifier changed during read");
+        }
+        if stat.value < 0 {
+            return Err("raid transport speed stat negative");
+        }
         *required = required
             .checked_add(1)
             .ok_or("raid transport count overflow")?;
         arena.ensure(*required)?;
         if let Some(slot) = arena.get_mut(*len) {
-            *slot = speed;
+            *slot = stat.value;
             *len += 1;
         }
         found += 1;
@@ -153,6 +161,7 @@ fn read_row(
     memo: &DefinitionMemo,
     arena: &mut crate::walk::Buffer<'_, i64>,
     walk: &mut Walk,
+    witness: &impl cequipment_variant::StatWitness,
 ) -> Result<Row, &'static str> {
     let (reference_type, id, phase, outcome, end_hour) = identity;
     let mut row = Row {
@@ -179,10 +188,12 @@ fn read_row(
         .ok_or("raid pool address overflow")?;
     let mut found = transports(
         memory,
+        base,
         pool,
         arena,
         &mut walk.transport_len,
         &mut walk.required_transport,
+        witness,
     )?;
     if found == 0 {
         let owner: u64 = field(memory, raid, craid_instance::OWNER_OBJECT)?;
@@ -194,10 +205,12 @@ fn read_row(
                 .ok_or("stockpile address overflow")?;
             found = transports(
                 memory,
+                base,
                 stockpile,
                 arena,
                 &mut walk.transport_len,
                 &mut walk.required_transport,
+                witness,
             )?;
             row.transport_from_country = 1;
         }
@@ -334,6 +347,10 @@ pub fn each_raid(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Raid speed walk passes memory, base, game state, modifier memo, output buffers and stat timing witness explicitly."
+)]
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -341,6 +358,7 @@ pub fn walk(
     memo: &DefinitionMemo,
     rows: &mut Vec<Row>,
     arena: &mut Vec<i64>,
+    witness: &impl cequipment_variant::StatWitness,
 ) -> Walk {
     walk_buffer(
         memory,
@@ -349,9 +367,14 @@ pub fn walk(
         memo,
         crate::walk::Buffer::Growing(rows),
         crate::walk::Buffer::Growing(arena),
+        witness,
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Raid speed walk passes memory, base, game state, modifier memo, output buffers and stat timing witness explicitly."
+)]
 pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
@@ -359,6 +382,7 @@ pub fn walk_buffer(
     memo: &DefinitionMemo,
     mut rows: crate::walk::Buffer<'_, Row>,
     mut arena: crate::walk::Buffer<'_, i64>,
+    witness: &impl cequipment_variant::StatWitness,
 ) -> Walk {
     let mut walk = Walk {
         outcome: Outcome::Rows { len: 0 },
@@ -389,6 +413,7 @@ pub fn walk_buffer(
                 memo,
                 &mut arena,
                 &mut walk,
+                witness,
             )?;
             let fitted = walk.required_transport - before.1 == walk.transport_len - before.0;
             rows.ensure(len.checked_add(1).ok_or("raid speed row count overflow")?)?;
@@ -506,6 +531,7 @@ mod tests {
     const ACE: usize = 0x4_0000;
     const ACE_TYPE: usize = 0x4_8000;
     const TRANSPORT: usize = 0x5_0000;
+    const TRANSPORT_DEF: usize = 0x5_4000;
     const RIFLE: usize = 0x5_8000;
     const DEFINITIONS: usize = 0x10_0000;
     const ARMY_HANDLE: u64 = (1 << 32) | 4713;
@@ -536,6 +562,21 @@ mod tests {
         m.u64(0x6108, 5);
         m.u64(0x6110, RIFLE as u64);
         m.u64(0x6118, 7);
+        m.put(TRANSPORT, &[0; 0x500]);
+        m.put(TRANSPORT_DEF, &[0; 0x500]);
+        m.u64(TRANSPORT, cequipment_variant::VTABLE_RVA.0 as u64);
+        m.u64(
+            TRANSPORT + cequipment_variant::TYPE,
+            (41_u64 << 32) | u64::from(cequipment_variant::REFERENCE_TYPE),
+        );
+        m.u32(TRANSPORT + cequipment_variant::EQUIPMENT_TOKEN, 41);
+        m.u64(TRANSPORT + cequipment_variant::DEFINITION, TRANSPORT_DEF as u64);
+        m.u64(TRANSPORT_DEF, crate::cequipment_type::VTABLE_RVA.0 as u64);
+        m.u32(TRANSPORT_DEF + crate::cequipment_type::TOKEN, 41);
+        m.u64(
+            TRANSPORT_DEF + crate::cequipment_type::STATS_BASE + 62 * 8,
+            300_000,
+        );
         m.u64(
             TRANSPORT + cequipment_variant::CLASSIFIER_FLAGS,
             AIR_TRANSPORT | 1,
@@ -580,6 +621,13 @@ mod tests {
         m
     }
 
+    struct QuietTestWitness;
+    impl cequipment_variant::StatWitness for QuietTestWitness {
+        fn quiet(&self) -> Result<cequipment_variant::QuietToken, &'static str> {
+            Ok(cequipment_variant::QuietToken::new(1, 7))
+        }
+    }
+
     fn run(memory: &Image) -> (Walk, Vec<Row>, Vec<i64>) {
         let mut rows = vec![Row::default(); 2];
         let mut arena = vec![0; 4];
@@ -590,6 +638,7 @@ mod tests {
             &DefinitionMemo::default(),
             &mut rows,
             &mut arena,
+            &QuietTestWitness,
         );
         (walk, rows, arena)
     }
@@ -636,6 +685,73 @@ mod tests {
             run(&memory).0.outcome,
             Outcome::Unavailable { .. }
         ));
+    }
+
+    #[test]
+    fn raid_transport_refuses_unverified_cached_speed_stat() {
+        let mut memory = fixture();
+        let mut rows = vec![Row::default(); 2];
+        let mut arena = vec![0; 4];
+        let disabled = walk(
+            &memory,
+            0,
+            GS,
+            &DefinitionMemo::default(),
+            &mut rows,
+            &mut arena,
+            &(),
+        );
+        assert!(matches!(disabled.outcome, Outcome::Unavailable { .. }));
+        memory.u64(TRANSPORT + TRANSPORT_SPEED_STAT, 999_999);
+        assert!(matches!(
+            run(&memory).0.outcome,
+            Outcome::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn raid_transport_refuses_variant_replaced_with_non_transport_before_stat_verification() {
+        use std::cell::Cell;
+
+        struct MutatingClassifier {
+            image: Image,
+            classifier_reads: Cell<usize>,
+        }
+
+        impl Memory for MutatingClassifier {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                if !self.image.copy(address, destination) {
+                    return false;
+                }
+                if address == TRANSPORT + cequipment_variant::CLASSIFIER_FLAGS
+                    && destination.len() == 8
+                {
+                    let reads = self.classifier_reads.get();
+                    self.classifier_reads.set(reads + 1);
+                    if reads >= 1 {
+                        destination.copy_from_slice(&0x20_u64.to_le_bytes());
+                    }
+                }
+                true
+            }
+        }
+
+        let memory = MutatingClassifier {
+            image: fixture(),
+            classifier_reads: Cell::new(0),
+        };
+        let mut rows = vec![Row::default(); 2];
+        let mut arena = vec![0; 4];
+        let result = walk(
+            &memory,
+            0,
+            GS,
+            &DefinitionMemo::default(),
+            &mut rows,
+            &mut arena,
+            &QuietTestWitness,
+        );
+        assert!(matches!(result.outcome, Outcome::Unavailable { .. }));
     }
 
     #[test]

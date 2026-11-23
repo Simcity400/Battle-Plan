@@ -1,6 +1,6 @@
 use super::*;
 use crate::{Emitter, Group, Listener};
-use content_reader_core::test_support::Stack;
+use content_reader_layers::test_support::Stack;
 
 const ASSETS: &str = r#"
     sound = { name = tone file = "tone.wav" }
@@ -51,8 +51,6 @@ fn frame(effect: &str, key: u64) -> Frame {
     }
 }
 
-const HANG_GUARD: Duration = Duration::from_secs(120);
-
 fn hold(control: &mut Control) {
     let unplayed = control.unplayed;
     control.step_at(unplayed);
@@ -72,7 +70,7 @@ fn receive_load(control: &mut Control, relay: &Relay) {
     hold(control);
     let loaded = relay
         .loader
-        .recv_timeout(HANG_GUARD)
+        .recv()
         .expect("the loader answered the request");
     relay.step.send(loaded).unwrap();
     hold(control);
@@ -218,8 +216,9 @@ fn another_content_stack_drops_the_old_ones_notes() {
     let mut control = Control::new(Arc::clone(&status), None, true);
     let relay = relay(&mut control);
     let publish = |control: &mut Control| {
-        control.last_evict = Instant::now() - Duration::from_secs(6);
-        control.step();
+        let now = control.last_evict + Duration::from_secs(6);
+        control.unplayed = now;
+        control.step_at(now);
     };
     control.apply(Command::Claim(1));
     control.apply(Command::Frame(1, Arc::clone(&old), frame("absent", 1)));
@@ -341,10 +340,11 @@ fn stream_errors_that_leave_the_stream_playing_are_not_failures() {
 fn a_lost_device_is_reported_and_dropped() {
     let status = Arc::new(Mutex::new(Status::default()));
     let mut control = Control::new(Arc::clone(&status), None, false);
+    let now = control.unplayed;
     let ring = Ring::new(8, 2);
     ring.push_frame(&[0.5, 0.5]);
-    control.output = Some(fake_output(ring, Instant::now() - STALLED * 2));
-    control.step();
+    control.output = Some(fake_output(ring, now - STALLED * 2));
+    control.step_at(now);
     assert!(control.output.is_none());
     assert_eq!(
         status.lock().unwrap().device,
@@ -352,11 +352,11 @@ fn a_lost_device_is_reported_and_dropped() {
             "The audio output was lost (it stopped taking samples)".into()
         ))
     );
-    assert!(control.next_open > Instant::now(), "the reopen waits");
-    let (output, converter) = fake_output(Ring::new(8, 2), Instant::now());
+    assert_eq!(control.next_open, now + REOPEN, "the reopen waits");
+    let (output, converter) = fake_output(Ring::new(8, 2), now);
     record_failure(&output.failure, cpal::ErrorKind::DeviceNotAvailable);
     control.output = Some((output, converter));
-    control.step();
+    control.step_at(now);
     assert!(control.output.is_none());
     assert_eq!(
         status.lock().unwrap().device,
@@ -365,7 +365,7 @@ fn a_lost_device_is_reported_and_dropped() {
             cpal::ErrorKind::DeviceNotAvailable
         )))
     );
-    control.output = Some(fake_output(Ring::new(8, 2), Instant::now() - STALLED * 2));
-    control.step();
+    control.output = Some(fake_output(Ring::new(8, 2), now - STALLED * 2));
+    control.step_at(now);
     assert!(control.output.is_some());
 }

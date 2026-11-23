@@ -1,10 +1,10 @@
 use super::scene_failure_tests::Fixture;
 use crate::controls::flight::{Airframe, EXPLODE, Flight};
 use std::io;
-use viewer_foundation::errors::invalid;
-use viewer_foundation::map::camera::Pose;
-use viewer_foundation::map::province_map::HeightField;
-use viewer_world::map::scene::{PlayerModel, Request};
+use viewer_runtime::errors::invalid;
+use viewer_gpu::camera::Pose;
+use viewer_gpu::province_map::HeightField;
+use viewer_world::scene::{PlayerModel, Request};
 
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
@@ -21,7 +21,7 @@ fn the_flying_aircraft_draws_whatever_the_map_cutoffs_and_layer_switches() -> io
         .keys()
         .find_map(|name| document.aircraft.player(name).ok())
         .ok_or_else(|| invalid("the content registers no entity that can be flown"))?;
-    scene.set_graphics(dashboard::protocol::MapGraphics {
+    scene.set_graphics(dashboard_core::protocol::MapGraphics {
         samples: 1,
         units: false,
         ..Default::default()
@@ -55,14 +55,14 @@ fn the_flying_aircraft_draws_whatever_the_map_cutoffs_and_layer_switches() -> io
     );
     let sight = flight.sight(base, &floor, &airframe);
     let instance = sight.aircraft.expect("the chase view draws the aircraft");
-    assert!(!viewer_world::map::aircraft::draws(&sight.camera));
+    assert!(!viewer_aircraft::aircraft::draws(&sight.camera));
     let request = Request {
         camera: sight.camera,
         animation_time: 1.0,
         postfx: false,
         ..fixture.request([320, 180])
     };
-    let frame = |scene: &mut viewer_world::map::scene::Scene, player: bool| {
+    let frame = |scene: &mut viewer_world::scene::Scene, player: bool| {
         let library = document.aircraft.library();
         scene.set_player(
             device,

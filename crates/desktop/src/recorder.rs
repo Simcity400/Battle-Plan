@@ -1,7 +1,5 @@
-use replay::{
-    recorder_settings::RecorderSettings,
-    recording_files::{self, NamesLock},
-};
+use replay_settings::recorder_settings::RecorderSettings;
+use replay_files::recording_files::{self, NamesLock};
 use replay_data::identity::is_campaign_uuid;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -33,13 +31,13 @@ pub fn start_recorder() {
         return;
     }
     let mut command = Command::new(&executable);
-    command.arg(replay::recorder_settings::STARTED_WITH_REPLAY);
+    command.arg(replay_settings::recorder_settings::STARTED_WITH_REPLAY);
     if let Err(refusal) = launch_independently(&mut command) {
         eprintln!("{refusal}");
         std::thread::spawn(move || {
             rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Warning)
-                .set_title("BattlePlan Recorder")
+                .set_title(app_update::recorder_name())
                 .set_description(refusal)
                 .set_buttons(rfd::MessageButtons::Ok)
                 .show()
@@ -53,7 +51,7 @@ fn recorder_running() -> bool {
         Foundation::CloseHandle,
         System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE},
     };
-    let name: Vec<u16> = std::ffi::OsStr::new(replay::recorder_settings::RECORDER_INSTANCE).encode_wide().chain([0]).collect();
+    let name: Vec<u16> = std::ffi::OsStr::new(replay_settings::recorder_settings::RECORDER_INSTANCE).encode_wide().chain([0]).collect();
     let held = unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, 0, name.as_ptr()) };
     if held.is_null() {
         return false;
@@ -142,23 +140,40 @@ pub async fn recorder_settings() -> Result<RecorderSettings, String> {
         .map_err(|e| e.to_string())
 }
 
+#[derive(Serialize)]
+pub struct Warned<T> {
+    #[serde(flatten)]
+    value: T,
+    warning: Option<String>,
+}
+
+impl<T> Warned<T> {
+    pub fn new(value: T, warning: Option<String>) -> Self {
+        Self { value, warning }
+    }
+}
+
+fn saved(applied: replay_settings::exit::Applied<RecorderSettings>) -> Warned<RecorderSettings> {
+    Warned::new(applied.value, applied.warning)
+}
+
 #[tauri::command]
 pub async fn set_recording_compression(
-    compression: replay::compression::Compression,
-) -> Result<RecorderSettings, String> {
+    compression: replay_settings::compression::Compression,
+) -> Result<Warned<RecorderSettings>, String> {
     blocking(move || {
         RecorderSettings::update(|settings| settings.choose_compression(compression))
-            .map(|(settings, ())| settings)
+            .map(saved)
             .map_err(|error| error.to_string())
     })
     .await
 }
 
 #[tauri::command]
-pub async fn set_auto_compress(enabled: bool) -> Result<RecorderSettings, String> {
+pub async fn set_auto_compress(enabled: bool) -> Result<Warned<RecorderSettings>, String> {
     blocking(move || {
         RecorderSettings::update(|settings| settings.auto_compress = enabled)
-            .map(|(settings, ())| settings)
+            .map(saved)
             .map_err(|error| error.to_string())
     })
     .await
@@ -174,16 +189,23 @@ pub async fn recording_preferences() -> Result<RecordingPreferences, String> {
     .await
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Renamed {
+    path: String,
+    warning: Option<String>,
+}
+
 #[tauri::command]
-pub async fn rename_recording(path: String, name: String) -> Result<String, String> {
+pub async fn rename_recording(path: String, name: String) -> Result<Renamed, String> {
     blocking(move || {
         rename(Path::new(&path), &name, &RecorderSettings::path())
-            .map(|renamed| renamed.display().to_string())
+            .map(|(renamed, warning)| Renamed { path: renamed.display().to_string(), warning })
     })
     .await
 }
 
-fn rename(path: &Path, name: &str, settings: &Path) -> Result<PathBuf, String> {
+fn rename(path: &Path, name: &str, settings: &Path) -> Result<(PathBuf, Option<String>), String> {
     let failed = |error: std::io::Error| format!("The recording couldn’t be renamed: {error}");
     let stem = recording_files::file_stem(name)
         .ok_or("Choose a name with a letter or number Windows allows in file names.")?;
@@ -198,24 +220,28 @@ fn rename(path: &Path, name: &str, settings: &Path) -> Result<PathBuf, String> {
     let campaign = recording_files::campaign_of(path)
         .map_err(failed)?
         .and_then(|id| String::from_utf8(id).ok());
-    let added = match &campaign {
-        Some(campaign) => {
-            RecorderSettings::update_at(settings, |settings| {
-                let before = settings.name_chosen(&folder, campaign.as_bytes());
-                settings.choose_name(&folder, campaign, true);
-                !before
-            })
-            .map_err(failed)?
-            .1
+    let (renamed, warning) = RecorderSettings::hold_at(settings, |held| {
+        let mut added = false;
+        let mut warning = None;
+        if let Some(campaign) = &campaign {
+            warning = held
+                .update(|settings| {
+                    added = !settings.name_chosen(&folder, campaign.as_bytes());
+                    settings.choose_name(&folder, campaign, true);
+                })?
+                .warning;
         }
-        None => false,
-    };
-    recording_files::rename(path, &stem).map_err(|error| {
-        if let (true, Some(campaign)) = (added, &campaign) {
-            let _ = RecorderSettings::update_at(settings, |settings| {
-                settings.choose_name(&folder, campaign, false)
-            });
+        let renamed = recording_files::rename(path, &stem);
+        if renamed.is_err()
+            && let (true, Some(campaign)) = (added, &campaign)
+        {
+            warning = held.update(|settings| settings.choose_name(&folder, campaign, false))?.warning.or(warning);
         }
+        Ok((renamed, warning))
+    })
+    .map_err(failed)?;
+    let warning = warning.map(|warning| format!("The recording was renamed, but BattlePlan Recorder may not keep the name: {warning}"));
+    renamed.map(|renamed| (renamed, warning)).map_err(|error| {
         if error.raw_os_error() == Some(32) {
             "BattlePlan Recorder is recording into this file. Rename it once the session is saved."
                 .to_owned()
@@ -284,7 +310,7 @@ pub async fn locate_recordings(recordings: Vec<Shown>) -> Result<Vec<Option<Stri
 }
 
 #[tauri::command]
-pub async fn set_campaign_flag(campaign_key: String, tag: Option<String>) -> Result<(), String> {
+pub async fn set_campaign_flag(campaign_key: String, tag: Option<String>) -> Result<Option<String>, String> {
     let id = campaign_id(&campaign_key).ok_or("Unknown campaign")?;
     if tag
         .as_deref()
@@ -294,7 +320,7 @@ pub async fn set_campaign_flag(campaign_key: String, tag: Option<String>) -> Res
     }
     blocking(move || {
         RecorderSettings::update(|settings| settings.campaigns.entry(id).or_default().flag = tag)
-            .map(|_| ())
+            .map(|applied| applied.warning)
             .map_err(|error| format!("The campaign flag couldn’t be saved: {error}"))
     })
     .await
@@ -343,8 +369,9 @@ mod tests {
             },
         };
         let bytes = replay::campaign::fixtures::encode_records(
+            recorder_derive::writers(),
             CAMPAIGN.as_bytes().to_vec(),
-            &[vec![replay::spool::Record::SessionStart(session)]],
+            &[vec![replay_capture_spool::spool::Record::SessionStart(session)]],
         )
         .unwrap();
         std::fs::write(path, bytes).unwrap();
@@ -371,7 +398,8 @@ mod tests {
         let path = folder.join("Germany 1936–1941.battleplan");
         recording(&path);
         std::fs::write(folder.join("Barbarossa.battleplan"), b"another").unwrap();
-        let renamed = rename(&path, " Barbarossa? ", &settings).unwrap();
+        let (renamed, warning) = rename(&path, " Barbarossa? ", &settings).unwrap();
+        assert_eq!(warning, None);
         assert_eq!(renamed, folder.join("Barbarossa (2).battleplan"));
         assert!(!path.exists());
         assert_eq!(

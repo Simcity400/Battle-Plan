@@ -4,4 +4,4 @@ The writer framework reads numeric facts and content definitions from the record
 
 The pack can be passed in memory when available or read in bounded ranges from the recording. No installed game folders are selected for those reads. Stream the province raster to count area. Use the pack's small sub-unit requirements fact rather than reading the equipment database. Read named defines in their declared form, with integer values as recorded and fixed5 values as raw integers. Resolve a province's strategic region only when exactly one distinct region claims it. A repeated claim by that same region does not introduce ambiguity.
 
-[Definitions and readers](../../crates/recorder-derive/src/framework/definitions.rs) · [Writer admission](../../crates/recorder-derive/src/framework.rs)
+[Definitions and readers](../../crates/recorder-derive-framework/src/framework/definitions.rs) · [Writer admission](../../crates/recorder-derive-framework/src/framework.rs)

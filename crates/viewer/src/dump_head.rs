@@ -2,14 +2,10 @@
 #[cfg(test)]
 mod tests;
 
-use crate::{
-    document::Document,
-    layers::{Layer, View, political::Political, strikes::Strikes},
-    playhead_host::{
-        self, Entry, MapSide,
-        views::{Need, Pace, Reader as ViewReader},
-    },
-};
+use crate::{document::Document, playhead_host::{Entry, MapSide, views::{Need, Pace, Reader as ViewReader}}};
+use viewer_layer_core::{layers::{Layer, View}, playhead_host};
+use viewer_layers_political::political::Political;
+use viewer_layers_infrastructure::strikes::Strikes;
 use map_display_data::{
     landscape::Regions,
     province_field::{ProvinceField, Storage},
@@ -18,8 +14,9 @@ use map_display_data::{
 use replay_data::{Hour, rows::TableId};
 use replay_frame::frame::DecodedFrame;
 use std::{io, sync::Arc, time::Duration};
-use viewer_foundation::map::perspective;
-use viewer_world::map::{map_mode::MapMode, political::PoliticalLayers, strike_effects::Impacts};
+use viewer_foundation::perspective;
+use viewer_map_modes::{map_mode::MapMode, political::PoliticalLayers};
+use viewer_models::strike_effects::Impacts;
 
 const LIMIT: Duration = Duration::from_secs(600);
 
@@ -63,7 +60,7 @@ pub(crate) fn open(document: &Document) -> io::Result<DumpHead> {
     let entry = playhead_host::open(units, playhead_host::settings())?;
     entry.set_capture(document.capture_mode());
     document.playback.read_rosters_of(&entry);
-    let content = Arc::new(crate::layers::political::Content::new(Arc::clone(&document.content.map), Arc::clone(&document.border_meshes)));
+    let content = Arc::new(viewer_layers_political::political::Content::new(Arc::clone(&document.content.map), Arc::clone(&document.border_meshes)));
     let place_in = Arc::clone(&document.content);
     let layers: Vec<Box<dyn Layer>> = vec![Box::new(Political::new(content)), Box::new(Strikes::new(Arc::new(move |province| place_in.products.impact_place(province))))];
     at(entry, layers, document.playback.hour(), document.playback.branch(), dashboard_base::map_tables::selected_tables(), name)
@@ -74,7 +71,7 @@ pub(crate) fn at(entry: Arc<Entry>, layers: Vec<Box<dyn Layer>>, hour: Hour, bra
     if !(timeline.first()..=timeline.last()).contains(&hour) {
         return Err(io::Error::other(format!("hour {hour} is outside the playhead's units ({} to {})", timeline.first(), timeline.last())));
     }
-    let mut side = MapSide::new(Arc::clone(&entry), layers, View::default())?;
+    let mut side = MapSide::with_products(Arc::clone(&entry), layers, View::default())?;
     side.set_branch(branch);
     let reader = side.views().handle().reader_at("dump", &tables.iter().copied().map(Need::every).collect::<Vec<Need>>(), Pace::Step);
     if let Some((name, why)) = side.refusals().next() {

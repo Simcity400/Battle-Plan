@@ -12,4 +12,4 @@ The selected transport preview was retired. Keep exact early naval-base and cont
 
 The selected order cursor cannot read a theatre's controller-area membership or a directed truce end from the recording. The reached branches name those missing facts. Future truce evidence needs the end at the frame's date, and theatre evidence needs an owner and labelled area on that frame.
 
-[Movement reads](../../crates/viewer-foundation/src/map/movement_reads.rs) · [Selected movement](../../crates/viewer-foundation/src/map/movement_reads/selected_common.rs) · [Order cursor](../../crates/viewer-foundation/src/map/movement_reads/order_cursor.rs)
+[Movement reads](../../crates/viewer-unit-reads/src/movement_reads.rs) · [Selected movement](../../crates/viewer-unit-reads/src/movement_reads/selected_common.rs) · [Order cursor](../../crates/viewer-unit-reads/src/movement_reads/order_cursor.rs)

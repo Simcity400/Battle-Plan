@@ -1,7 +1,7 @@
 
-use viewer_foundation::map::province_geometry::{Centers, province_at};
+use viewer_gpu::province_geometry::{Centers, province_at};
 
-use content_reader_core::map::MapData;
+use content_reader_map::map::MapData;
 
 use super::fixed::{self, Point, SCALE};
 
@@ -108,7 +108,7 @@ fn append_control(controls: &mut Vec<Point>, point: Point) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use viewer_foundation::map::test_support::province_geometry::*;
+    use viewer_gpu::test_support::province_geometry::*;
 
     #[test]
     fn predecessor_scan_stops_at_the_last_different_id_even_when_invalid() {

@@ -8,4 +8,4 @@ Fixed-point multiplication truncates at every product. The nominal amount uses t
 
 A template listing, positive pool, building grant, cost, or additive gate can admit an icon. The admitted icon is withheld by name when the controller's origin is missing. Its rows show positive nominal amounts in database order. An icon uses a single window flag when all displayed rows assign rights to the same other country. Otherwise each row can carry its holder's flag. Below nominal or below zero is red, above nominal is green, and equal is neutral.
 
-[Resource origins](../../crates/viewer-foundation/src/resource_origins.rs) · [Resource fixtures](../../crates/viewer-foundation/src/resource_origins/tests.rs)
+[Resource origins](../../crates/viewer-runtime/src/resource_origins.rs) · [Resource fixtures](../../crates/viewer-runtime/src/resource_origins/tests.rs)

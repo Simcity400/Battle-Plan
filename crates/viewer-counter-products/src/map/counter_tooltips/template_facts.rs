@@ -9,7 +9,7 @@ use replay_frame::frame::DecodedFrame;
 #[cfg(test)]
 pub(super) fn fixture() -> DecodedFrame {
     use replay_data::rows::*;
-    use viewer_foundation::map::test_support::{test_frame, test_put as put};
+    use viewer_foundation::test_support::{test_frame, test_put as put};
     let mut frame = test_frame(77);
     put(
         &mut frame,
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn missing_layout_keeps_settings_and_refuses_only_layout() {
         use replay_data::rows::*;
-        use viewer_foundation::map::test_support::test_put as put;
+        use viewer_foundation::test_support::test_put as put;
         for layout in [Recorded::Value(None), Recorded::NotRecorded] {
             let mut frame = fixture();
             let mut rows = frame
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn missing_settings_keeps_layout_and_model_facts() {
         use replay_data::rows::*;
-        use viewer_foundation::map::test_support::test_put as put;
+        use viewer_foundation::test_support::test_put as put;
         for settings in [Recorded::NotRecorded, Recorded::Value(None)] {
             let mut frame = fixture();
             let mut rows = frame
@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn country_fields_refuse_independently_and_keep_staff_configuration() {
         use replay_data::rows::*;
-        use viewer_foundation::map::test_support::test_put as put;
+        use viewer_foundation::test_support::test_put as put;
         for garrisons in [Recorded::Value(None), Recorded::NotRecorded] {
             let mut frame = fixture();
             let mut rows = frame
@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn missing_role_or_restriction_spelling_keeps_known_siblings() {
         use replay_data::rows::*;
-        use viewer_foundation::map::test_support::test_put as put;
+        use viewer_foundation::test_support::test_put as put;
         let mut frame = fixture();
         let mut rows = frame
             .complete::<tables::DivisionTemplateIcons>()
@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn missing_nearest_front_keeps_hq_context_and_pools() {
         use replay_data::rows::*;
-        use viewer_foundation::map::test_support::test_put as put;
+        use viewer_foundation::test_support::test_put as put;
         for front in [Recorded::NotRecorded, Recorded::Value(None)] {
             let mut frame = fixture();
             let mut rows = frame
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn model_read_failure_refuses_choice_and_exclusions_without_hiding_other_inputs() {
         use replay_data::rows::*;
-        use viewer_foundation::map::test_support::test_put as put;
+        use viewer_foundation::test_support::test_put as put;
         let mut frame = fixture();
         let mut rows = frame
             .complete::<tables::DivisionTemplateIcons>()
@@ -414,7 +414,7 @@ mod tests {
     #[test]
     fn text_validation_refuses_individual_names_definitions_and_choices() {
         use replay_data::rows::*;
-        use viewer_foundation::map::test_support::test_put as put;
+        use viewer_foundation::test_support::test_put as put;
         use viewer_foundation::tooltip_text::{NoIcons, validate};
         let mut frame = fixture();
         let mut rows = frame

@@ -4,11 +4,8 @@ use super::{
     library::Selection,
     vertices::{Declaration, Vertices},
 };
-use content_reader_core::content::diagnostics::{self, Diagnostics};
-use content_reader_core::pdxshader::{
-    Address, DepthStencilState, RasterizerState,
-    program::{Filter, Sampler, Stage},
-};
+use content_reader_layers::content::diagnostics::{self, Diagnostics};
+use content_reader_gui::pdxshader::{Address, DepthStencilState, RasterizerState, program::{Filter, Sampler, Stage}};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -1433,13 +1430,14 @@ mod tests {
             })],
             instanced: 0,
             stream: None,
+            vertex_color_tint: None,
         }
     }
 
     #[test]
     fn resolved_pass_key_covers_pipeline_inputs_but_not_draw_resources() {
         crate::tests::initialize_runtime_tables();
-        let source = content_reader_core::pdxshader::program::read_with(b"key.shader", &|path| {
+        let source = content_reader_gui::pdxshader::program::read_with(b"key.shader", &|path| {
             Some(if path == b"key.shader" {
                 b"Effect Draw { }".to_vec()
             } else {
@@ -1653,7 +1651,7 @@ mod tests {
     #[test]
     fn independent_handles_survive_program_misses_and_scoped_passes() {
         crate::tests::initialize_runtime_tables();
-        let program = content_reader_core::pdxshader::program::read_with(b"states.shader", &|path| {
+        let program = content_reader_gui::pdxshader::program::read_with(b"states.shader", &|path| {
             Some(if path == b"states.shader" {
                 b"Effect Draw { }".to_vec()
             } else {
@@ -1740,7 +1738,7 @@ mod tests {
     #[test]
     fn packed_world_text_retains_raster_and_distinct_stage_allocations() {
         crate::tests::initialize_runtime_tables();
-        let source = content_reader_core::pdxshader::program::read_with(b"text.shader", &|path| {
+        let source = content_reader_gui::pdxshader::program::read_with(b"text.shader", &|path| {
             Some(if path == b"text.shader" {
                 b"Effect Text3D { }".to_vec()
             } else {
@@ -1836,7 +1834,7 @@ mod tests {
         use std::sync::Mutex;
         crate::tests::initialize_runtime_tables();
         let mut replacement =
-            content_reader_core::pdxshader::program::read_with(b"mod.shader", &|path| {
+            content_reader_gui::pdxshader::program::read_with(b"mod.shader", &|path| {
                 Some(match path {
                 b"mod.shader" => {
                     b"VertexShader = { MainCode V [[ float4 main() : SV_POSITION { return 1; } ]] }
@@ -1929,7 +1927,7 @@ Effect Up { VertexShader = V PixelShader = P }
     ) {
         use super::super::library::{Effect, Recorded};
         use crate::{Compiled, ScalarKind, Shader, VertexInput};
-        use content_reader_core::pdxshader::program::{Program, Technique};
+        use content_reader_gui::pdxshader::program::{Program, Technique};
         struct Layouts([u8; 32]);
         impl crate::cache::Compile for Layouts {
             fn compile(

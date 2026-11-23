@@ -8,7 +8,7 @@ use std::{
 use engine_dlc::cdlc_manager;
 use engine_executable::build::hash_executable;
 use engine_native::{Memory, capture_text::Owned, cfleet, cgame_state, cship, read, walk::Outcome};
-use content_reader_core::content::{GatherOptions, gather};
+use content_reader_layers::content::{GatherOptions, gather};
 use recorder_platform::games::{Discovery, choose_game};
 use replay::campaign::{Replay, SeekResult};
 use replay_data::{
@@ -386,7 +386,7 @@ fn capture(options: Options) -> Result<(), String> {
             .ok_or("game executable has no folder")?
             .to_owned(),
         user_dir: user,
-        cache_dir: replay::recorder_settings::directory(),
+        cache_dir: replay_settings::recorder_settings::directory(),
         dlc_order: None,
     })
     .map_err(|e| e.to_string())?;

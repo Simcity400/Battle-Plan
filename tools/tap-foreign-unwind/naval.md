@@ -32,7 +32,7 @@ use owned synthetic game operands and confirm an actual emitted new/merge row
 before retaining the next unpublished row. No fresh native result is invented.
 
 The existing `native_foreign_unwind_probe` and its independently authored
-`crates/collector/tests/naval_unwind_probe.cpp` remain unchanged. That narrower
+`crates/collector-runtime/tests/naval_unwind_probe.cpp` remain unchanged. That narrower
 C++ proof covers the constructor's unknown-caller path and both result CALLs.
 Keep both checks: the shared proof adds SEH and complete continuation witnesses;
 it does not replace those assertions.
@@ -53,7 +53,7 @@ $proofOutput = Join-Path $env:TEMP 'battleplan-naval-foreign-proof'
 New-Item -ItemType Directory -Force -Path $proofOutput | Out-Null
 cl.exe /nologo /LD /O2 /EHa /W4 /WX tools/tap-foreign-unwind/probe.cpp "/Fo:$proofOutput/probe.obj" "/Fe:$proofOutput/tap_foreign_probe.dll" /link "/IMPLIB:$proofOutput/tap_foreign_probe.lib"
 if ($LASTEXITCODE -ne 0) { throw 'Shared native probe build failed' }
-cl.exe /nologo /LD /O2 /EHa /W4 /WX crates/collector/tests/naval_unwind_probe.cpp "/Fo:$proofOutput/naval.obj" "/Fe:$proofOutput/naval_unwind_probe.dll" /link "/IMPLIB:$proofOutput/naval_unwind_probe.lib"
+cl.exe /nologo /LD /O2 /EHa /W4 /WX crates/collector-runtime/tests/naval_unwind_probe.cpp "/Fo:$proofOutput/naval.obj" "/Fe:$proofOutput/naval_unwind_probe.dll" /link "/IMPLIB:$proofOutput/naval_unwind_probe.lib"
 if ($LASTEXITCODE -ne 0) { throw 'Existing Naval C++ probe build failed' }
 $env:BATTLEPLAN_TAP_UNWIND_PROBE = "$proofOutput/tap_foreign_probe.dll"
 $env:BATTLEPLAN_NAVAL_UNWIND_PROBE = "$proofOutput/naval_unwind_probe.dll"
@@ -62,7 +62,7 @@ $navalProofFilters = @(
     'naval_result_sources::tests::foreign_unwind::naval_original_cpp_seh_preserves_cleanup_storage_and_restores_hooks'
 )
 foreach ($proofFilter in $navalProofFilters) {
-    cargo test -p collector --features tap-foreign-probe $proofFilter -- --exact --ignored --nocapture --test-threads=1
+    cargo test -p collector-naval-results --features tap-foreign-probe $proofFilter -- --exact --ignored --nocapture --test-threads=1
     if ($LASTEXITCODE -ne 0) { throw "Naval foreign proof failed: $proofFilter" }
 }
 ```

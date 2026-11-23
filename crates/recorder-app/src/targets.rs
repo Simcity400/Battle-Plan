@@ -1,7 +1,6 @@
-use replay::{
-    campaign::Replay, recorder_settings::NextLoad, recorder_settings::RecorderSettings,
-    recording_files,
-};
+use replay::campaign::Replay;
+use replay_settings::recorder_settings::{NextLoad, RecorderSettings};
+use replay_files::recording_files;
 use replay_data::scope::CaptureMode;
 use std::{
     path::{Component, Path, PathBuf},
@@ -58,7 +57,7 @@ fn waiting_sessions(root: &Path, folder: &Path, campaign: &str) -> Vec<PathBuf> 
 fn holds_recording(root: &Path, folder: &Path, campaign: &str) -> bool {
     recording_files::recordings_of(folder, campaign.as_bytes())
         .map_or(true, |found| !found.is_empty())
-        || replay::publication::unsaved_path(folder, campaign).exists()
+        || replay_settings::publication::unsaved_path(folder, campaign).exists()
         || !waiting_sessions(root, folder, campaign).is_empty()
 }
 
@@ -86,7 +85,7 @@ fn new_folder_name(root: &Path, campaign: &str) -> String {
 fn other_mode(folder: &Path, campaign: &str, mode: CaptureMode) -> bool {
     let other =
         |path: &Path| Replay::read_capture_mode(path).is_ok_and(|recorded| recorded != mode);
-    let unsaved = replay::publication::unsaved_path(folder, campaign);
+    let unsaved = replay_settings::publication::unsaved_path(folder, campaign);
     let continued = if unsaved.exists() {
         other(&unsaved)
     } else {
@@ -127,7 +126,7 @@ pub fn session_target_at(
         choice.folder = Some(name);
         (folder, new_file)
     })
-    .map(|(_, target)| target)
+    .map(|applied| applied.logged("The recording’s folder choice").result)
     .map_err(|error| format!("Recorder settings couldn’t be saved: {error}"))
 }
 
@@ -148,8 +147,9 @@ pub(crate) mod tests {
 
     pub(crate) fn recording_file(path: &Path, campaign: &str) {
         let replay = replay::campaign::Replay::from_records(
+            recorder_derive::writers(),
             campaign.as_bytes().to_vec(),
-            &[vec![replay::spool::Record::SessionStart(
+            &[vec![replay_capture_spool::spool::Record::SessionStart(
                 replay_data::identity::SessionStart {
                     id: 1,
                     process_id: 1,
@@ -191,7 +191,7 @@ pub(crate) mod tests {
     }
 
     fn recorded_in(folder: &Path, mode: CaptureMode) {
-        use replay::spool::Record;
+        use replay_capture_spool::spool::Record;
         use replay_data::identity::{SampleBoundary, SessionStart};
         let session = SessionStart {
             id: 1,
@@ -203,7 +203,7 @@ pub(crate) mod tests {
             identity: replay_identity::test_fixtures::identity(),
         };
         let replay =
-            Replay::from_records(CAMPAIGN.into(), &[vec![Record::SessionStart(session)]]).unwrap();
+            Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[vec![Record::SessionStart(session)]]).unwrap();
         fs::create_dir_all(folder).unwrap();
         fs::write(folder.join("Recording.battleplan"), replay.bytes()).unwrap();
     }
@@ -213,11 +213,11 @@ pub(crate) mod tests {
         let scratch = scratch();
         let settings = scratch.join("settings.json");
         let root = scratch.join("recordings");
-        let unsaved = replay::publication::unsaved_folder(&root);
+        let unsaved = replay_settings::publication::unsaved_folder(&root);
         recorded_in(&unsaved, CaptureMode::Full);
         fs::rename(
             unsaved.join("Recording.battleplan"),
-            replay::publication::unsaved_path(&root, CAMPAIGN),
+            replay_settings::publication::unsaved_path(&root, CAMPAIGN),
         )
         .unwrap();
         assert_eq!(
@@ -278,7 +278,7 @@ pub(crate) mod tests {
             session_target_at(&settings, &root, CAMPAIGN, false, CaptureMode::Full).unwrap(),
             (root.clone(), false)
         );
-        RecorderSettings::update_at(&settings, |settings| {
+        let _ = RecorderSettings::update_at(&settings, |settings| {
             settings.campaigns.entry(CAMPAIGN.into()).or_default().next = NextLoad::NewFile;
         })
         .unwrap();
@@ -295,7 +295,7 @@ pub(crate) mod tests {
         recording_file(&earlier, CAMPAIGN);
         let contents = fs::read(&earlier).unwrap();
         assert_eq!(recording(&root, CAMPAIGN), Some(earlier.clone()));
-        RecorderSettings::update_at(&settings, |settings| {
+        let _ = RecorderSettings::update_at(&settings, |settings| {
             settings.campaigns.entry(CAMPAIGN.into()).or_default().next = NextLoad::NewFile;
         })
         .unwrap();
@@ -319,7 +319,7 @@ pub(crate) mod tests {
         fs::create_dir_all(&second).unwrap();
         recording_file(&second.join("Germany 1941.battleplan"), CAMPAIGN);
         fs::create_dir_all(root.join(format!("{CAMPAIGN} (3)"))).unwrap();
-        RecorderSettings::update_at(&settings, |settings| {
+        let _ = RecorderSettings::update_at(&settings, |settings| {
             settings.campaigns.get_mut(CAMPAIGN).unwrap().next = NextLoad::NewFile;
         })
         .unwrap();
@@ -336,7 +336,7 @@ pub(crate) mod tests {
         let settings = scratch.join("settings.json");
         let root = scratch.join("recordings");
         fs::create_dir_all(&root).unwrap();
-        RecorderSettings::update_at(&settings, |settings| {
+        let _ = RecorderSettings::update_at(&settings, |settings| {
             settings.campaigns.entry(CAMPAIGN.into()).or_default().next = NextLoad::NewFile;
         })
         .unwrap();

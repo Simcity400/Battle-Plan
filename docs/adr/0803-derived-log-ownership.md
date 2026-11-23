@@ -6,4 +6,4 @@ A writer stages appends and forgets for the hour and lands them through the log 
 
 Run-keyed logs retain keys in ranges and persist them across block resumes. Hour-keyed logs carry the write hour in their key, verify it on append, and retain keys only for that hour. This avoids growing a historical key set for a product whose key space already separates hours. The tests replay appends and forgets across blocks, then compare seeks and resumed output with the uninterrupted recording for both key lifetimes.
 
-[Log contracts and implementation](../../crates/recorder-derive/src/framework.rs) · [Log parity and failure fixtures](../../crates/recorder-derive/src/framework/tests.rs)
+[Log contracts and implementation](../../crates/recorder-derive-framework/src/framework.rs) · [Log parity and failure fixtures](../../crates/recorder-derive-framework/src/framework/tests.rs)

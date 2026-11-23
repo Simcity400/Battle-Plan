@@ -18,8 +18,9 @@ pub fn frame(rows: impl IntoIterator<Item = TableRows>) -> DecodedFrame {
 
 pub const ALLOCATION_CAMPAIGN: &[u8; 36] = b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6";
 
-pub fn allocation_records() -> Vec<replay::spool::Record> {
-    use replay::{spool::ControlRecord, spool::Record};
+pub fn allocation_records() -> Vec<replay_capture_spool::spool::Record> {
+    use replay_recording::control::ControlRecord;
+    use replay_capture_spool::spool::Record;
     use replay_data::{
         identity::CaptureMode, identity::Identity, identity::SampleBoundary,
         identity::SessionStart, identity::Verification,
@@ -203,8 +204,9 @@ pub fn named_session_records(
     session: u64,
     branch: u64,
     hours: &[(i32, &str, usize)],
-) -> Vec<replay::spool::Record> {
-    use replay::{spool::ControlRecord, spool::Record};
+) -> Vec<replay_capture_spool::spool::Record> {
+    use replay_recording::control::ControlRecord;
+    use replay_capture_spool::spool::Record;
     let mut records = allocation_records();
     records.truncate(2);
     if let Record::SessionStart(start) = &mut records[0] {
@@ -233,12 +235,13 @@ pub fn named_session_records(
 }
 
 fn push_load(
-    records: &mut Vec<replay::spool::Record>,
+    records: &mut Vec<replay_capture_spool::spool::Record>,
     branch: u64,
     hours: std::ops::RangeInclusive<i32>,
     load_signal: i64,
 ) {
-    use replay::{spool::ControlRecord, spool::Record};
+    use replay_recording::control::ControlRecord;
+    use replay_capture_spool::spool::Record;
     use replay_frame::{branches::BranchReason, branches::BranchStart, branches::Parentage};
     records.pop();
     let last_hour = *hours.end();
@@ -265,13 +268,13 @@ fn push_load(
     }));
 }
 
-pub fn two_load_records() -> Vec<replay::spool::Record> {
+pub fn two_load_records() -> Vec<replay_capture_spool::spool::Record> {
     let mut records = allocation_records();
     push_load(&mut records, 10, 3..=4, RELOAD);
     records
 }
 
-pub fn three_load_records() -> Vec<replay::spool::Record> {
+pub fn three_load_records() -> Vec<replay_capture_spool::spool::Record> {
     let mut records = two_load_records();
     push_load(&mut records, 11, 5..=6, THIRD_LOAD);
     records
@@ -279,7 +282,7 @@ pub fn three_load_records() -> Vec<replay::spool::Record> {
 
 pub fn write_campaign_journal(
     session: &std::path::Path,
-    records: &[replay::spool::Record],
+    records: &[replay_capture_spool::spool::Record],
 ) -> std::path::PathBuf {
     let campaign = session.join(std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap());
     write_capture(&campaign, 0, records, true);
@@ -289,7 +292,7 @@ pub fn write_campaign_journal(
 pub fn write_capture(
     campaign: &std::path::Path,
     number: u32,
-    records: &[replay::spool::Record],
+    records: &[replay_capture_spool::spool::Record],
     finish: bool,
 ) {
     let id = campaign.file_name().and_then(|name| name.to_str()).unwrap();
@@ -301,8 +304,9 @@ pub fn load_segment_records(
     branch: u64,
     hours: std::ops::RangeInclusive<i32>,
     load: i64,
-) -> Vec<replay::spool::Record> {
-    use replay::{spool::ControlRecord, spool::Record};
+) -> Vec<replay_capture_spool::spool::Record> {
+    use replay_recording::control::ControlRecord;
+    use replay_capture_spool::spool::Record;
     use replay_frame::{branches::BranchReason, branches::BranchStart, branches::Parentage};
     let mut records = vec![allocation_records().remove(0)];
     records.push(Record::BranchStart(BranchStart {
@@ -387,9 +391,9 @@ pub fn allocation_test_directory(name: &str) -> std::path::PathBuf {
     path
 }
 
-pub fn replay(records: Vec<replay::spool::Record>) -> replay::campaign::Replay {
+pub fn replay(records: Vec<replay_capture_spool::spool::Record>) -> replay::campaign::Replay {
     let encoded =
-        replay::campaign::Replay::from_records(ALLOCATION_CAMPAIGN.to_vec(), &[records]).unwrap();
+        replay::campaign::Replay::from_records(recorder_derive::writers(), ALLOCATION_CAMPAIGN.to_vec(), &[records]).unwrap();
     replay::campaign::Replay::open(encoded.bytes().to_vec()).unwrap()
 }
 
@@ -417,7 +421,7 @@ mod tests {
             }
         }
         for record in allocation_records() {
-            replay::spool::encode_record(&record).unwrap();
+            replay_capture_spool::spool::encode_record(&record).unwrap();
         }
         let recording = replay(allocation_records());
         let hours: Vec<i32> = recording

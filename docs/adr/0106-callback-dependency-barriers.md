@@ -14,4 +14,4 @@ The wing join releases AirMissions and patrol combat work, and the air pack carr
 
 Join World and Economy after the early roster work, retaining their verdicts for the final borrowers. Production modifier ranges split from the last scheduled balance and join in slot order. The longest independent daily production walk launches first, while daily production joins as late as its cost assembly permits. Research starts before its family and returns into it. The Variants observer drain precedes its own worker roster decision. Ordinary parts join together after the map sample so typed air fallback cannot read their score pack prematurely. Seal event feed on a worker after Governance’s census markers return and before table assembly reads the feed. A refused seal leaves a named failure for that hour. ScriptVariables joins when Intel comes back from its final borrowers. UnitIntel, Projects and AirBases can join with their first reader after raw verdicts are established. Return every seed loan before decode retires the census.
 
-[Hourly scheduler](../../crates/collector/src/sampling.rs)
+[Hourly scheduler](../../crates/collector-capture/src/sampling.rs)

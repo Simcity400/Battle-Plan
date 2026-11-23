@@ -1,3 +1,5 @@
+import { gatedTime } from '../../test-support/gated.ts';
+import { persistedSpec } from '../../dashboard/regionTime.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { runAt } from '../../charts/series.ts';
@@ -45,14 +47,14 @@ test('pair Pin retains directed identities, branch-relative day and explicit Fol
   const track = { id: 'main', axisOffset: 30, source: { metadata: { campaignKey: 'synthetic campaign' } },
     branch: { id: '1', firstHour: 100, lastHour: 500 } } as BoundTrack;
   const ids = casualtyPairIds([reply(0, '1:10|2:20', 100, 110, '-12')]);
-  const held = pinPairs(source, track, ids, 127.9, false);
+  const held = persistedSpec(pinPairs(source, track, ids, gatedTime({ mode: 'pin', windows: { main: { firstOffset: 27, lastOffset: 27 } } })));
   assert.deepEqual(held.time, { mode: 'pin', windows: { main: { firstOffset: 27, lastOffset: 27 } } });
   assert.equal(resolveWindow(held, track, [track], 400)?.lastHour, 127);
   assert.equal(held.options?.show, 'pairs');
   assert.deepEqual(readPairSelection(held.options?.pairSelection, track), ids);
   assert.equal(readPairSelection(held.options?.pairSelection, { ...track, branch: { ...track.branch, id: 'other' } }), null);
   assert.equal(readPairSelection(held.options?.pairSelection, { ...track, source: { ...track.source, metadata: { ...track.source.metadata, campaignKey: 'other' } } }), null);
-  const live = pinPairs(source, track, ids, 127, true);
+  const live = persistedSpec(pinPairs(source, track, ids, gatedTime({ mode: 'follow' })));
   assert.deepEqual(live.time, { mode: 'follow' });
   assert.equal(resolveWindow(live, track, [track], 170)?.lastHour, 200);
 });

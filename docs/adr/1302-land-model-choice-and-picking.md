@@ -10,4 +10,4 @@ Cache only successful static facts attached to immutable authored content. Clone
 
 Pick collision triangles in the actor's own space. Other shapes use the world bounds of posed root joints or the drawable submeshes. Preserve separate rules for the two-sided triangle intersection and forward world-box intersection. The frame's land identity controls an index of conservative cell candidates, including horizontal wrapping. A figure without a finite bound or a query crossing more than the index threshold falls back to direct testing. Both paths retain figure order and therefore the same hit preference.
 
-[Pair selection](../../crates/viewer-world/src/map/model_selection.rs) · [Queue fallback](../../crates/viewer-world/src/map/model_multi_fallback.rs) · [Option labels](../../crates/viewer-world/src/map/model_labels.rs) · [Picking](../../crates/viewer-world/src/map/model_pick.rs)
+[Pair selection](../../crates/viewer-unit-models/src/model_selection.rs) · [Queue fallback](../../crates/viewer-unit-models/src/model_multi_fallback.rs) · [Option labels](../../crates/viewer-unit-models/src/model_labels.rs) · [Picking](../../crates/viewer-unit-models/src/model_pick.rs)

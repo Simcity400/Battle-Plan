@@ -24,8 +24,12 @@ pub fn past_slots(table: impl std::fmt::Display) -> io::Error {
     invalid(format!("{table}: more than 4,294,967,295 rows, the format's slot width"))
 }
 
+const fn valid_slot(slot: u32) -> bool {
+    slot < SLOTS
+}
+
 fn slot_at(word: usize, bit: u32) -> Option<u32> {
-    word.checked_mul(64).and_then(|first| first.checked_add(bit as usize)).and_then(|slot| u32::try_from(slot).ok()).filter(|&slot| slot < SLOTS)
+    word.checked_mul(64).and_then(|first| first.checked_add(bit as usize)).and_then(|slot| u32::try_from(slot).ok()).filter(|&slot| valid_slot(slot))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1090,26 +1094,39 @@ impl StoreBytes {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 struct KeyIndex {
     buckets: Vec<u32>,
     held: usize,
     lookups: u64,
+    hasher: foldhash::fast::RandomState,
 }
 
-#[inline]
-fn bucket_of(key: u128, mask: usize) -> usize {
-    let mixed = (key as u64 ^ (key >> 64) as u64 ^ (key >> 64) as u64 >> 29).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    (mixed >> 32) as usize & mask
+impl PartialEq for KeyIndex {
+    fn eq(&self, other: &Self) -> bool {
+        self.held == other.held && self.lookups == other.lookups
+    }
 }
+
+impl Eq for KeyIndex {}
 
 impl KeyIndex {
+    fn with_capacity(count: usize) -> Self {
+        let size = if count == 0 { 0 } else { (count * 4 / 3 + 1).next_power_of_two().max(16) };
+        Self { buckets: vec![0; size], held: 0, lookups: 0, hasher: foldhash::fast::RandomState::default() }
+    }
+
+    #[inline]
+    fn bucket(&self, key: u128, mask: usize) -> usize {
+        std::hash::BuildHasher::hash_one(&self.hasher, key) as usize & mask
+    }
+
     fn find(&self, key: u128, keys: &Keys) -> Option<u32> {
         if self.buckets.is_empty() {
             return None;
         }
         let mask = self.buckets.len() - 1;
-        let mut at = bucket_of(key, mask);
+        let mut at = self.bucket(key, mask);
         loop {
             match self.buckets[at] {
                 0 => return None,
@@ -1119,22 +1136,56 @@ impl KeyIndex {
         }
     }
 
-    fn insert(&mut self, key: u128, slot: u32, keys: &Keys) {
-        if (self.held + 1) * 4 > self.buckets.len() * 3 {
-            let _label = label("store: index grown");
-            let size = ((self.held + 1) * 4 / 3 + 1).next_power_of_two().max(16);
-            let old = std::mem::replace(&mut self.buckets, vec![0; size]);
-            self.held = 0;
-            for held in old.into_iter().filter(|&held| held != 0) {
-                self.place(keys.get(held - 1), held);
+    #[inline]
+    fn reserve(&mut self, additional: usize, keys: &Keys) {
+        let needed = self.held.saturating_add(additional);
+        if needed == 0 || needed * 4 <= self.buckets.len() * 3 {
+            return;
+        }
+        self.grow(needed, keys);
+    }
+
+    #[cold]
+    fn grow(&mut self, needed: usize, keys: &Keys) {
+        let _label = label("store: index grown");
+        let size = (needed * 4 / 3 + 1).next_power_of_two().max(16);
+        let old = std::mem::replace(&mut self.buckets, vec![0; size]);
+        self.held = 0;
+        for held in old.into_iter().filter(|&held| held != 0) {
+            self.place(keys.get(held - 1), held);
+        }
+    }
+
+    fn prepare_insert_unique(&mut self, key: u128, slot: u32, keys: &Keys) -> io::Result<usize> {
+        self.reserve(1, keys);
+        let mask = self.buckets.len() - 1;
+        let mut at = self.bucket(key, mask);
+        loop {
+            match self.buckets[at] {
+                0 => return Ok(at),
+                held if keys.get(held - 1) == key => {
+                    return Err(invalid(format!("Row key {key:#x} at slot {slot} is already held at slot {}", held - 1)));
+                }
+                _ => at = (at + 1) & mask,
             }
         }
+    }
+
+    fn insert_unique(&mut self, key: u128, slot: u32, keys: &Keys) -> io::Result<()> {
+        let at = self.prepare_insert_unique(key, slot, keys)?;
+        self.buckets[at] = slot + 1;
+        self.held += 1;
+        Ok(())
+    }
+
+    fn insert(&mut self, key: u128, slot: u32, keys: &Keys) {
+        self.reserve(1, keys);
         self.place(key, slot + 1);
     }
 
     fn place(&mut self, key: u128, held: u32) {
         let mask = self.buckets.len() - 1;
-        let mut at = bucket_of(key, mask);
+        let mut at = self.bucket(key, mask);
         while self.buckets[at] != 0 {
             at = (at + 1) & mask;
         }
@@ -1147,7 +1198,7 @@ impl KeyIndex {
             return;
         }
         let mask = self.buckets.len() - 1;
-        let mut at = bucket_of(key, mask);
+        let mut at = self.bucket(key, mask);
         loop {
             match self.buckets[at] {
                 0 => return,
@@ -1160,7 +1211,7 @@ impl KeyIndex {
         let mut next = (at + 1) & mask;
         while self.buckets[next] != 0 {
             let held = self.buckets[next];
-            let home = bucket_of(keys.get(held - 1), mask);
+            let home = self.bucket(keys.get(held - 1), mask);
             let between = if at <= next { home <= at || home > next } else { home <= at && home > next };
             if between {
                 self.buckets[at] = held;
@@ -1320,13 +1371,17 @@ impl TableState {
         self.last.as_ref()
     }
 
+    fn build_index(&self) -> io::Result<KeyIndex> {
+        let mut index = KeyIndex::with_capacity(self.live.count());
+        for slot in self.live.ones() {
+            index.insert_unique(self.keys.get(slot), slot, &self.keys)?;
+        }
+        Ok(index)
+    }
+
     pub fn slot(&mut self, key: u128) -> Option<u32> {
-        if self.index.is_none() {
-            let mut index = KeyIndex::default();
-            for slot in self.live.ones() {
-                index.insert(self.keys.get(slot), slot, &self.keys);
-            }
-            self.index = Some(index);
+        if self.index.is_none() && self.try_index_keys().is_err() {
+            return self.live.ones().find(|&slot| self.keys.get(slot) == key);
         }
         let index = self.index.as_mut().expect("built");
         index.lookups += 1;
@@ -1367,6 +1422,28 @@ impl TableState {
         }
     }
 
+    pub fn try_index_keys(&mut self) -> io::Result<()> {
+        if self.index.is_none() {
+            self.index = Some(self.build_index()?);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_unique_keys(&self) -> io::Result<()> {
+        let _ = self.build_index()?;
+        Ok(())
+    }
+
+    pub(crate) fn enable_index(&mut self) {
+        if self.index.is_none() {
+            self.index = Some(KeyIndex::default());
+        }
+    }
+
+    pub(crate) fn clear_index(&mut self) {
+        self.index = None;
+    }
+
     fn lowest_free(&mut self) -> Option<u32> {
         let mut word = self.free_from as usize / 64;
         while self.live.0.get(word) == Some(&u64::MAX) {
@@ -1379,12 +1456,16 @@ impl TableState {
     }
 
     fn insert_at(&mut self, slot: u32, key: u128) -> io::Result<()> {
-        if slot >= SLOTS {
+        if !valid_slot(slot) {
             return Err(past_slots("A table"));
         }
         if self.live.get(slot) {
             return Err(invalid(format!("Insert names slot {slot}, which holds a row")));
         }
+        let bucket = match &mut self.index {
+            Some(index) => Some(index.prepare_insert_unique(key, slot, &self.keys)?),
+            None => None,
+        };
         if slot >= self.slots {
             self.slots = slot + 1;
         }
@@ -1394,11 +1475,9 @@ impl TableState {
         if slot == self.free_from {
             self.free_from += 1;
         }
-        if let Some(index) = &mut self.index {
-            if index.find(key, &self.keys).is_some_and(|held| held != slot) {
-                return Err(invalid(format!("Row key {key:#x} at slot {slot} is already held")));
-            }
-            index.insert(key, slot, &self.keys);
+        if let (Some(index), Some(at)) = (&mut self.index, bucket) {
+            index.buckets[at] = slot + 1;
+            index.held += 1;
         }
         for column in &mut self.columns {
             column.grow(slots);
@@ -1490,6 +1569,9 @@ impl TableState {
         if count != keys.len() {
             return Err(invalid("A restore's rows hold another count of keys than live slots"));
         }
+        if let Some(index) = &mut self.index {
+            index.reserve(keys.len(), &self.keys);
+        }
         let mut keys = keys.iter();
         let (high, low) = (self.keys.high.width(), self.keys.low.width());
         for (index, &byte) in bits.iter().enumerate() {
@@ -1507,7 +1589,13 @@ impl TableState {
                 if low > 0 {
                     self.keys.low.store(slot, key as u64);
                 }
+                if let Some(index) = &mut self.index {
+                    index.insert_unique(key, slot, &self.keys)?;
+                }
             }
+        }
+        if self.index.is_none() {
+            self.check_unique_keys()?;
         }
         self.free_from = 0;
         Ok(())
@@ -1743,8 +1831,8 @@ pub trait StringSource {
 
 #[derive(Default)]
 pub struct Strings {
-    held: HashMap<u32, Box<[u8]>, foldhash::fast::FixedState>,
-    pinned: HashMap<u32, Box<[u8]>, foldhash::fast::FixedState>,
+    held: HashMap<u32, Box<[u8]>, foldhash::fast::RandomState>,
+    pinned: HashMap<u32, Box<[u8]>, foldhash::fast::RandomState>,
     next: u32,
     pinned_from: Option<u32>,
     bytes: usize,
@@ -1753,13 +1841,22 @@ pub struct Strings {
 
 #[derive(Default)]
 struct TextIndex {
-    first: HashMap<u64, u32, foldhash::fast::FixedState>,
-    more: HashMap<u64, Vec<u32>, foldhash::fast::FixedState>,
+    hasher: foldhash::fast::RandomState,
+    first: HashMap<u64, u32, foldhash::fast::RandomState>,
+    more: HashMap<u64, Vec<u32>, foldhash::fast::RandomState>,
 }
 
 impl TextIndex {
+    fn digest(&self, text: &[u8]) -> u64 {
+        #[cfg(test)]
+        if COLLIDING.get() {
+            return 0;
+        }
+        std::hash::BuildHasher::hash_one(&self.hasher, text)
+    }
+
     fn add(&mut self, text: &[u8], id: u32) {
-        let digest = text_digest(text);
+        let digest = self.digest(text);
         match self.first.entry(digest) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(id);
@@ -1768,8 +1865,8 @@ impl TextIndex {
         }
     }
 
-    fn find(&self, text: &[u8], held: &HashMap<u32, Box<[u8]>, foldhash::fast::FixedState>) -> Option<u32> {
-        let digest = text_digest(text);
+    fn find(&self, text: &[u8], held: &HashMap<u32, Box<[u8]>, foldhash::fast::RandomState>) -> Option<u32> {
+        let digest = self.digest(text);
         let first = *self.first.get(&digest)?;
         std::iter::once(first)
             .chain(self.more.get(&digest).into_iter().flatten().copied())
@@ -1787,14 +1884,6 @@ impl TextIndex {
 #[cfg(test)]
 thread_local! {
     static COLLIDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-fn text_digest(text: &[u8]) -> u64 {
-    #[cfg(test)]
-    if COLLIDING.get() {
-        return 0;
-    }
-    std::hash::BuildHasher::hash_one(&foldhash::fast::FixedState::default(), text)
 }
 
 impl Strings {
@@ -2722,7 +2811,7 @@ impl TableChanges<'_> {
         let rows = appended[table].as_mut().expect("a log's hour rows");
         let at = rows.slots;
         let result: io::Result<()> = (|| {
-            if at >= SLOTS {
+            if !valid_slot(at) {
                 return Err(past_slots(format_args!("Log table {table}'s hour")));
             }
             rows.insert_at(at, key)?;
@@ -2874,7 +2963,7 @@ impl TableChanges<'_> {
 
     fn inserting(&mut self, slot: u32, key: u128, given: bool) -> io::Result<()> {
         self.holds_state("inserted")?;
-        if slot >= SLOTS {
+        if !valid_slot(slot) {
             return Err(past_slots(format_args!("Table {}", self.table)));
         }
         self.state().insert_at(slot, key)?;

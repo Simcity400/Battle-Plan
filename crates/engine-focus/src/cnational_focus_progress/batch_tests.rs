@@ -159,3 +159,46 @@ fn governance_batch_focus_truncation_keeps_serial_arenas_and_demand() {
         }
     }
 }
+
+#[test]
+fn focus_root_completed_count_double_fault_refuses_both_summary_and_completed_without_third_read() {
+    use std::cell::Cell;
+
+    struct TwoShotFault<'a> {
+        world: &'a World,
+        fault: usize,
+        attempts: Cell<usize>,
+    }
+
+    impl Memory for TwoShotFault<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            if address <= self.fault && self.fault < address.saturating_add(destination.len()) {
+                let attempt = self.attempts.get() + 1;
+                self.attempts.set(attempt);
+                if attempt <= 2 {
+                    destination.fill(0xff);
+                    return false;
+                }
+            }
+            self.world.copy(address, destination)
+        }
+    }
+
+    let world = World::new(1);
+    let country = World::country(1);
+    let memory = TwoShotFault {
+        world: &world,
+        fault: country + engine_governance_tests::FOCUS + COMPLETED_COUNT,
+        attempts: Cell::new(0),
+    };
+    let mut rows = vec![Row::default()];
+    let mut completed = vec![CompletedRow::default(); 3];
+    let mut tokens = vec![0; 256];
+    let result = walk(&memory, 0, country, 1, &mut rows, &mut completed, &mut tokens);
+    assert!(matches!(result.outcome, Outcome::Unavailable { .. }));
+    assert!(matches!(
+        result.completed_outcome,
+        Outcome::Unavailable { .. }
+    ));
+    assert_eq!(memory.attempts.get(), 2);
+}

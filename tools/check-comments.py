@@ -53,7 +53,7 @@ SHELLS = {b"bash": "bash", b"sh": "bash", b"pwsh": "powershell", b"powershell": 
 def language_of(name):
     if name.startswith(("vendor/", "LICENSES/")) or name in GENERATED:
         return None
-    if name == "crates/collector/src/hook_constructor_routes.txt":
+    if name == "crates/collector-runtime/src/hook_constructor_routes.txt":
         return "hash"
     path = Path(name)
     return LANGUAGES.get(path.suffix.lower() or path.name)

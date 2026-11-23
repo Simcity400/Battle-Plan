@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useSlotTags } from '../../dashboard/countrySlots.ts';
 import { useMemo } from 'react';
@@ -9,15 +11,16 @@ import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { resolveCountries } from '../../dashboard/groups';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useProduct, useFollowedProduct } from '../../dashboard/products';
-import { useFallbackHour } from '../../dashboard/follow/useFollow.ts';
-import type { ApmParams, ApmReply } from '../../generated/dashboard';
+import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
+import type { ApmReply } from '../../generated/dashboard';
 import { GRAPH_OPTIONS, TABLE_APM_OPTIONS } from './definition';
 import { playerNames, validateApm } from './apmData';
+import { productRequest } from '../../dashboard/request.ts';
 
 export function useApmRegistry(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(track => track.id === widget.trackIds[0]);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'player-apm',
-    params: { branchId: track.branch.id, group: 'player', registry: true, firstHour: null, lastHour: null, tags: null, membership: null, players: [], buckets: 1 } } : null;
+  const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'player-apm',
+    params: { branchId: track.branch.id, group: 'player', registry: true, firstHour: null, lastHour: null, tags: null, membership: null, players: [], buckets: 1 } }) : null;
   return useProduct<ApmReply>(runtime.client, request, active, validateApm, track?.source);
 }
 
@@ -32,8 +35,9 @@ export function useApmChoices(widget: WidgetSpec, runtime: WidgetRuntime): Optio
 
 export function useApm({ widget, runtime, active }: WidgetProps, graph: boolean, view?: { identity: string; from: number; to: number; width: number } | null,
   followed = false) {
-  const playbackHour = useFallbackHour(runtime.clock, active && widget.time.mode === 'follow' && !followed);
+  const playbackHour = usePlaybackHour(runtime.clock, false);
   const track = runtime.tracks.find(track => track.id === widget.trackIds[0]);
+  const gate = useGate(runtime, widget, SPEC, active);
   const identity = JSON.stringify([track?.source.id, track?.branch.id, widget.time]);
   const options = resolveOptions(graph ? GRAPH_OPTIONS : TABLE_APM_OPTIONS, widget.options);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
@@ -60,22 +64,27 @@ export function useApm({ widget, runtime, active }: WidgetProps, graph: boolean,
   const known = firstHour !== null && lastHour !== null && (asked?.known(firstHour, lastHour) ?? true);
   const membershipGap = resolved?.unobserved.some(span => firstHour !== null && lastHour !== null && span.firstHour <= lastHour && firstHour <= span.lastHour);
   const reason = resolved?.reason ?? (membershipGap ? 'Country group membership was not recorded throughout this period.' : null);
-  const params: ApmParams | null = !followed && track && firstHour !== null && lastHour !== null && firstHour <= lastHour && known && !reason ? {
-    branchId: track.branch.id, group: options.group === 'player' ? 'player' : 'country', registry: false, firstHour, lastHour,
+  const span = firstHour !== null && lastHour !== null ? gate.span(firstHour, lastHour) : null;
+  const membership = useMemo(() => asked?.membership ? [...asked.membership.values()].flat().flatMap(run => {
+    const held = gate.span(run.firstHour, run.lastHour);
+    return held ? [{ tag: run.tag, ...held }] : [];
+  }) : null, [asked, gate.span]);
+  const params = !followed && track && span && known && !reason ? {
+    branchId: track.branch.id, group: options.group === 'player' ? 'player' as const : 'country' as const, registry: false, ...span,
     tags: asked?.tags ?? null, players: contentSet(options.players).map(contentKey),
-    membership: asked?.membership ? [...asked.membership.values()].flat() : null,
+    membership,
     buckets: graph ? Math.max(1, Math.min(4096, Math.ceil(view?.width ?? 1024))) : 1,
   } : null;
-  const product = useFollowedProduct<ApmReply>(runtime.client, track && params ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'player-apm', params } : null, ['firstHour', 'lastHour', 'buckets'], active, validateApm, track?.source);
+  const product = useFollowedProduct<ApmReply>(runtime.client, track && params ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'player-apm', params }) : null, ['firstHour', 'lastHour', 'buckets'], active, validateApm, track?.source);
   const answered = useMemo(() => {
     if (!product.moment) return null;
     const [firstHour, lastHour] = JSON.parse(product.moment) as [number, number, number];
     return { firstHour, lastHour };
   }, [product.moment]);
-  const head = track && (!resolved || (!resolved.reason && !resolved.unobserved.length)) ? {
+  const head = track && (!resolved || (!resolved.reason && !membershipGap)) ? {
     branchId: track.branch.id, group: options.group === 'player' ? 'player' as const : 'country' as const, tags: asked?.tags ?? null,
-    membership: asked?.membership ? [...asked.membership.values()].flat() : null, players: contentSet(options.players).map(contentKey),
+    membership, players: contentSet(options.players).map(contentKey),
   } : null;
   return { track, identity, options, window, first, last, playbackHour, known, reason, groups, answered, head, ...product };
 }

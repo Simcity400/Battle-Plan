@@ -6,4 +6,4 @@ Railway-gun counters share the hour and layer computation for their logical memb
 
 The initial flag pass warms the same atlas stores used by ordinary hour preparation and draws. It discovers recorded candidates without acquiring unrelated cells and retains the original core validation order. A missing advisory input leaves the ordinary worker warm and draw-time cold loading in place, including their own refusal. Optional lookup errors stay local to the affected flag.
 
-[Land observers](../../crates/viewer-counters/src/map/counters/hovers.rs) · [Gun hour members](../../crates/viewer-counters/src/map/counters/gun_members.rs) · [Initial flags](../../crates/viewer-counters/src/map/counters/initial_flags.rs)
+[Land observers](../../crates/viewer-counters-land/src/hovers.rs) · [Gun hour members](../../crates/viewer-counters-land/src/gun_members.rs) · [Initial flags](../../crates/viewer-counters/src/counters/initial_flags.rs)

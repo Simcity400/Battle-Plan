@@ -33,18 +33,25 @@ export function blockedReason(state: UpdateState | null): string | null {
 
 const percent = (state: UpdateState) => typeof state.downloadPercent === 'number' ? ` (${Math.floor(state.downloadPercent)}%)` : '';
 
+const offer = (state: UpdateState) => state.downgrade ? 'version' : 'update';
+const Offer = (state: UpdateState) => state.downgrade ? 'Version' : 'Update';
+
+export function restartLabel(state: UpdateState | null): string {
+  return state?.downgrade ? 'Restart to switch' : 'Restart to update';
+}
+
 export function updateTooltip(state: UpdateState | null): string {
   if (!state) return 'Checking for updates…';
   if (!state.enabled) return state.message ? plainFailure(state.message).text : 'Updates are off in this build.';
   if (state.status === 'checking') return 'Checking for updates…';
-  if (state.status === 'downloading') return `Downloading update ${state.availableVersion ?? ''}${percent(state)}`.replace('  ', ' ');
+  if (state.status === 'downloading') return `Downloading ${offer(state)} ${state.availableVersion ?? ''}${percent(state)}`.replace('  ', ' ');
   const failure = updateFailure(state);
   if (failure) return `${failure.text.replace(/\.$/, '')} · Try again`;
   if (state.downloadedVersion) {
-    if (state.installBlocked) return `Update ${state.downloadedVersion} downloaded. ${blockedReason(state)}`;
-    return `Update ${state.downloadedVersion} downloaded · Restart to update`;
+    if (state.installBlocked) return `${Offer(state)} ${state.downloadedVersion} downloaded. ${blockedReason(state)}`;
+    return `${Offer(state)} ${state.downloadedVersion} downloaded · ${restartLabel(state)}`;
   }
-  if (state.availableVersion) return `Update ${state.availableVersion} ready to download`;
+  if (state.availableVersion) return `${Offer(state)} ${state.availableVersion} ready to download`;
   if (state.status === 'up-to-date') return `Up to date · ${state.currentVersion}`;
   return 'Check for updates';
 }
@@ -58,7 +65,7 @@ export function updateButtonLabel(state: UpdateState | null): string {
   if (state?.status === 'checking') return 'Checking…';
   if (state?.status === 'downloading') return `Downloading…${state.downloadPercent == null ? '' : ` ${Math.floor(state.downloadPercent)}%`}`;
   const action = updateAction(state);
-  if (action === 'install') return 'Restart to update';
+  if (action === 'install') return restartLabel(state);
   if (action === 'download') return 'Download';
   return state?.status === 'up-to-date' ? 'Check again' : 'Check for updates';
 }
@@ -66,9 +73,11 @@ export function updateButtonLabel(state: UpdateState | null): string {
 export function updateDescription(state: UpdateState | null): string {
   if (!state) return 'Reading the update state…';
   if (!state.enabled) return state.message ? plainFailure(state.message).text : 'Updates are off in this build.';
-  if (state.installBlocked && state.downloadedVersion) return `Update ${state.downloadedVersion} is downloaded. ${blockedReason(state)}`;
-  if (state.downloadedVersion) return `Update ${state.downloadedVersion} is downloaded. Restart to install it in both apps.`;
-  if (state.availableVersion) return `Update ${state.availableVersion} is available.`;
+  if (state.installBlocked && state.downloadedVersion) return `${Offer(state)} ${state.downloadedVersion} is downloaded. ${blockedReason(state)}`;
+  if (state.downloadedVersion) return state.downgrade ? `Version ${state.downloadedVersion} is downloaded. Restart to switch both apps to it.`
+    : `Update ${state.downloadedVersion} is downloaded. Restart to install it in both apps.`;
+  if (state.availableVersion) return state.downgrade ? `Version ${state.availableVersion} is available on this channel. It’s older than ${state.currentVersion}.`
+    : `Update ${state.availableVersion} is available.`;
   if (state.status === 'up-to-date') return `Up to date${state.checkedAt ? ` (checked ${new Date(state.checkedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })})` : ''}.`;
   return 'BattlePlan and BattlePlan Recorder update together.';
 }
@@ -81,20 +90,21 @@ export const CHANNEL_LABELS: Record<UpdateChannel, string> = { stable: 'Stable',
 
 export function channelDescription(state: UpdateState | null): string {
   if (!state) return '';
+  if (state.channelWarning) return `Changed to ${CHANNEL_LABELS[state.channel]}, but Windows didn’t confirm the choice reached the disk.`;
   if (!state.enabled) return 'This build doesn’t update, so its channel has no effect.';
-  if (state.channel === 'stable' && state.build === 'nightly')
-    return `This nightly build stays until a stable release newer than ${state.currentVersion} comes out.`;
   return state.channel === 'nightly'
     ? 'Nightly: a build of each day’s changes for BattlePlan and the recorder.'
     : 'Stable: tested releases for BattlePlan and the recorder.';
 }
 
-export function restartQuestion(version: string): string {
-  return `Restart to update to ${version}?`;
+export function restartQuestion(version: string, downgrade: boolean): string {
+  return downgrade ? `Restart to switch to ${version}?` : `Restart to update to ${version}?`;
 }
 
-export function confirmInstall(version: string): string {
-  return `BattlePlan and BattlePlan Recorder close, update to ${version} and reopen.`;
+export function confirmInstall(version: string, downgrade: boolean): string {
+  return downgrade
+    ? `BattlePlan and BattlePlan Recorder close, switch to ${version}, an older version, and reopen. Recordings made with this build may not open in it.`
+    : `BattlePlan and BattlePlan Recorder close, update to ${version} and reopen.`;
 }
 
 export function shownNotes(notes: readonly string[], shown = 6): { items: string[]; more: number } {

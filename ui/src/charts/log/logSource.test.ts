@@ -1,7 +1,9 @@
+import { gatedHour } from '../../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { aheadThrough, askedPages, binPages, countsAhead, cumulativeCounts, drawnAhead, failedPage, heldPage, logPageRequest, missingNote, missingThrough, noPages, pageFirstHour, pageInSpan, pagesOf, rowsAhead, shownPages, shownThrough, validateLogCounts, validateLogPage } from './logSource.ts';
 import type { LogRow } from './logData';
+import { gatedWindow } from '../../test-support/gated.ts';
 
 const hours = [100, 101, 104, 106, 106, 110, 111, 112, 115, 117];
 const counts = validateLogCounts({ branchId: '1', log: 'test', firstHour: 100, binHours: 6, missing: [], warnings: [],
@@ -92,14 +94,14 @@ test('the page after the head is asked only while it holds rows: past the span t
 });
 
 test('a family\'s own page is asked without the log it fixes, as its strict params require; log-page is asked with it', () => {
-  const span = { branchId: '1', log: 'market-events', facets: [{ name: 'kind', values: [20], countries: [] }], firstHour: 100, lastHour: 117 };
+  const span = { branchId: '1', log: 'market-events', facets: [{ name: 'kind', values: [20], countries: [] }], firstHour: gatedHour(100), lastHour: gatedHour(117) };
   const ledger = logPageRequest({ ...span, product: 'market-ledger' }, 24, 500);
   assert.equal(ledger.product, 'market-ledger');
   assert.deepEqual(ledger.params, { branchId: '1', facets: span.facets, from: 100, to: 117, cursor: '24', pageSize: 500 });
   const generic = logPageRequest(span, 24, 500);
   assert.equal(generic.product, 'log-page');
   assert.equal(generic.params.log, 'market-events');
-  const scope = [{ tag: 'GER', firstHour: 100, lastHour: 110 }];
+  const scope = [{ tag: 'GER', ...gatedWindow(100, 110) }];
   assert.deepEqual(logPageRequest({ ...span, product: 'event-feed', scope }, 0, 500).params.scope, scope, 'a country scope is asked with the page');
   assert.equal('scope' in generic.params, false, 'no scope asks every row');
 });

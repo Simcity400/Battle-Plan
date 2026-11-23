@@ -3,7 +3,7 @@ use crate::{
     catalogue::tests::folder_catalogue,
     triggers::{Combat, ContentFacts, Eval, World},
 };
-use content_reader_core::trigger_keys::TriggerNames;
+use content_reader_script::trigger_keys::TriggerNames;
 use replay_data::{rows::TableId, rows::TableRows};
 use replay_frame::frame::TableView;
 use std::{
@@ -94,13 +94,13 @@ fn run_at(source: &str, scripted: &str, entries: &str, extra: &str, at: Option<(
         }
     }
     let names = TriggerNames {
-        scripted: content_reader_core::scripted_triggers::read(&content.layers.layers).unwrap(),
+        scripted: content_reader_key_names::scripted_triggers::read(&content.layers.layers).unwrap(),
         counts: Some(Default::default()),
     };
     let dlcs = BTreeSet::new();
     let aliases = Arc::default();
     let roles = crate::triggers::LeaderRoles::new(
-        content_reader_core::characters::leader_templates(&content.layers.layers).unwrap(),
+        content_reader_key_names::characters::leader_templates(&content.layers.layers).unwrap(),
     );
     let mut facts = ContentFacts::content_only(&dlcs, &names, &aliases);
     facts.leader_roles = Ok(&roles);
@@ -108,7 +108,7 @@ fn run_at(source: &str, scripted: &str, entries: &str, extra: &str, at: Option<(
     let side = Side::default();
     let evaluator = Evaluator::new(&world, Some(&side));
     let text = ScriptedText::new(&frame, &catalogue.localisation, content, 0);
-    let items = content_reader_core::parser::parse(source.as_bytes())
+    let items = content_reader_parser::parser::parse(source.as_bytes())
         .unwrap()
         .items;
     let mut refusals = BTreeMap::new();
@@ -286,4 +286,233 @@ fn new_assignment_trigger_descriptions_use_native_arguments_and_inversion() {
         assert!(why.contains(source.split('=').next().unwrap()), "{why}");
         assert!(why.contains("not reproduced"), "{why}");
     }
+}
+
+#[test]
+fn hidden_trigger_writes_temps_and_malformed_or_unknown_logic_preserves_siblings() {
+    content_reader_script::test_game::with(|game| {
+        use content_reader_script::trigger_keys::Reader;
+        game.trigger("synthetic_unported_trigger", 0, Reader::Assign, 0)
+            .trigger("set_temp_variable", 0, Reader::Body, 0)
+            .trigger("add_to_temp_variable", 0, Reader::Body, 0)
+            .trigger("check_variable", 0, Reader::Body, 0)
+    });
+    struct Folder(std::path::PathBuf);
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_trigger_description_test_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let _folder = Folder(root.clone());
+    let defines = root.join("common/defines/test.lua");
+    std::fs::create_dir_all(defines.parent().unwrap()).unwrap();
+    std::fs::write(&defines, "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}").unwrap();
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let resolved = content_reader_layers::content::ResolvedContent {
+        layers,
+        stats: Default::default(),
+        changed: Vec::new(),
+        notes: Vec::new(),
+    };
+    let content = crate::scripted_text::ScriptedContent::read(Arc::new(resolved), String::new())
+        .unwrap();
+    content.set_synthetic_environment(Default::default());
+    let mut frame = crate::scope::tests::frame();
+    for id in TableId::ALL {
+        if matches!(&*frame.tables[id.index()], TableView::Unavailable { .. }) {
+            *frame.tables[id.index()] = TableView::Complete(TableRows::empty(id));
+        }
+    }
+    *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(
+        vec![replay_data::rows::LexicalTokenRow {
+            token: 1,
+            literal: b"missing_flag".to_vec(),
+        }],
+    ));
+    *frame.tables[TableId::ScriptFlags.index()] = TableView::Unavailable {
+        reason: "flag read refused".into(),
+    };
+    let names = TriggerNames {
+        scripted: Default::default(),
+        counts: Some(Default::default()),
+    };
+    let dlcs = BTreeSet::new();
+    let aliases = Arc::default();
+    let roles = crate::triggers::LeaderRoles::new(Default::default());
+    let mut facts = ContentFacts::content_only(&dlcs, &names, &aliases);
+    facts.leader_roles = Ok(&roles);
+    let world = World::read(&frame, facts);
+    let localisation: Localisation = [
+        ("TRIGGER_FULLFILLED_PREFIX", "[yes]"),
+        ("TRIGGER_UNFULLFILLED_PREFIX", "[no]"),
+        ("TRIGGER_AND_STARTS", "All"),
+        ("TRIGGER_OR_STARTS", "Any"),
+        ("TRIGGER_ALWAYS_TRUE", "Always"),
+        ("TRIGGER_ALWAYS_FALSE", "Never"),
+        ("custom", "Custom"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.into(), v.into()))
+    .collect();
+    let side = Side::default();
+    let text = ScriptedText::new(&frame, &localisation, &content, 0);
+    let run_synthetic = |source: &str| {
+        let evaluator = Evaluator::new(&world, Some(&side));
+        let items = content_reader_parser::parser::parse(source.as_bytes())
+            .unwrap()
+            .items;
+        let mut refusals = BTreeMap::new();
+        let tactic = |name: &[u8]| -> Result<Vec<u8>, String> { Ok(name.to_vec()) };
+        let result = describe(
+            &items,
+            &evaluator,
+            &text,
+            &localisation,
+            Scopes::combat(),
+            &[],
+            &tactic,
+            &mut refusals,
+        );
+        assert_eq!(evaluator.description_depth.get(), 0);
+        match result {
+            Ok(out) if !refusals.is_empty() => Err(format!("{out} {refusals:?}")),
+            other => other,
+        }
+    };
+    assert_eq!(
+        run_synthetic(
+            "hidden_trigger={set_temp_variable={x=7}} if={limit={check_variable={temp_var:x=7}} always=no}"
+        )
+        .unwrap(),
+        "[no]Never\n"
+    );
+    assert_eq!(
+        run_synthetic(
+            "hidden_trigger={set_temp_variable={x=7}} if={limit={check_variable={temp_var:x=8}} always=no}"
+        )
+        .unwrap(),
+        ""
+    );
+    assert_eq!(
+        run_synthetic(
+            "ROOT={hidden_trigger={add_to_temp_variable={x=1}}} if={limit={check_variable={temp_var:x=1}} always=no}"
+        )
+        .unwrap(),
+        "[no]Never\n"
+    );
+    assert_eq!(
+        run_synthetic(
+            "OR={always=yes hidden_trigger={add_to_temp_variable={x=1}}} if={limit={check_variable={temp_var:x=0}} always=no}"
+        )
+        .unwrap(),
+        "[yes]Any:\n   Always\n[no]Never\n"
+    );
+    assert_eq!(
+        run_synthetic(
+            "OR={ROOT={always=no hidden_trigger={add_to_temp_variable={x=1}}} always=yes} if={limit={check_variable={temp_var:x=0}} always=no}"
+        )
+        .unwrap(),
+        "[yes]Any:\n   :\n      Never\n   Always\n[no]Never\n"
+    );
+    assert_eq!(
+        run_synthetic(
+            "NOT={always=yes hidden_trigger={add_to_temp_variable={x=1}}} if={limit={check_variable={temp_var:x=0}} always=no}"
+        )
+        .unwrap(),
+        "[no]Never\n[no]Never\n"
+    );
+    for source in [
+        "OR={check_variable={temp_var:x=0} hidden_trigger={add_to_temp_variable={x=1}}} if={limit={check_variable={temp_var:x=0}} always=no}",
+        "OR={ROOT={check_variable={temp_var:x=1} hidden_trigger={add_to_temp_variable={x=1}}} always=yes} if={limit={check_variable={temp_var:x=0}} always=no}",
+        "OR={check_variable={temp_var:x=1} hidden_trigger={add_to_temp_variable={x=1}}} if={limit={check_variable={temp_var:x=1}} always=no}",
+    ] {
+        let display_refused = run_synthetic(source).unwrap_err();
+        assert!(
+            display_refused.contains("check_variable"),
+            "{source}: {display_refused}"
+        );
+        assert!(
+            display_refused.contains("[no]Never\n"),
+            "{source}: {display_refused}"
+        );
+        assert!(
+            !display_refused.contains("session is uncertain"),
+            "{source}: {display_refused}"
+        );
+    }
+    for source in [
+        "hidden_trigger={set_temp_variable={x=7}} OR={has_global_flag=missing_flag always=yes} if={limit={check_variable={temp_var:x=7}} always=no}",
+        "hidden_trigger={set_temp_variable={x=7}} OR={if={limit={has_global_flag=missing_flag} always=no} always=yes} if={limit={check_variable={temp_var:x=7}} always=no}",
+    ] {
+        let kept = run_synthetic(source).unwrap_err();
+        assert!(kept.contains("[no]Never\n"), "{source}: {kept}");
+        assert!(!kept.contains("session is uncertain"), "{source}: {kept}");
+    }
+    assert_eq!(
+        run_synthetic(
+            "hidden_trigger={set_temp_variable={x=7}} OR={hidden_trigger={has_global_flag=missing_flag} always=yes} if={limit={check_variable={temp_var:x=7}} always=no}"
+        )
+        .unwrap(),
+        "[yes]Any:\n   Always\n[no]Never\n"
+    );
+    assert_eq!(
+        run_synthetic(
+            "hidden_trigger={set_temp_variable={x=7}} OR={custom_trigger_tooltip={tooltip=custom has_global_flag=missing_flag} always=yes} if={limit={check_variable={temp_var:x=7}} always=no}"
+        )
+        .unwrap(),
+        "[yes]Any:\n   Custom\n   Always\n[no]Never\n"
+    );
+    let dependent = run_synthetic(
+        "hidden_trigger={set_temp_variable={x=7}} OR={has_global_flag=missing_flag hidden_trigger={set_temp_variable={x=8}} always=yes} if={limit={check_variable={temp_var:x=7}} always=no}",
+    )
+    .unwrap_err();
+    assert!(!dependent.contains("[no]Never\n"), "{dependent}");
+    assert!(
+        dependent.contains("depends on an unknown earlier condition"),
+        "{dependent}"
+    );
+    let undecided_write = run_synthetic(
+        "hidden_trigger={set_temp_variable={x=7}} if={limit={has_global_flag=missing_flag} set_temp_variable={x=8}} if={limit={check_variable={temp_var:x=7}} always=no}",
+    )
+    .unwrap_err();
+    assert!(!undecided_write.contains("[no]Never\n"), "{undecided_write}");
+    assert!(
+        undecided_write.contains("session is uncertain"),
+        "{undecided_write}"
+    );
+    let definite_after_if = run_synthetic(
+        "if={limit={has_global_flag=missing_flag} always=yes} hidden_trigger={set_temp_variable={x=7}} if={limit={check_variable={temp_var:x=7}} always=no}",
+    )
+    .unwrap_err();
+    assert!(
+        definite_after_if.contains("[no]Never\n"),
+        "{definite_after_if}"
+    );
+    assert!(
+        definite_after_if.contains("ScriptFlags is unavailable"),
+        "{definite_after_if}"
+    );
+    let retainted = run_synthetic(
+        "OR={has_global_flag=missing_flag hidden_trigger={set_temp_variable={y=1}}} hidden_trigger={set_temp_variable={x=7}} if={limit={has_global_flag=missing_flag} set_temp_variable={x=8}} if={limit={check_variable={temp_var:x=7}} always=no} always=no",
+    )
+    .unwrap_err();
+    assert_eq!(retainted.matches("[no]Never\n").count(), 1, "{retainted}");
+    let or_refused = run_synthetic("OR={always=no synthetic_unported_trigger=yes}").unwrap_err();
+    assert!(or_refused.contains("   Never\n"), "{or_refused}");
+    assert!(
+        or_refused.contains("synthetic_unported_trigger"),
+        "{or_refused}"
+    );
+    let malformed = run_synthetic("always=no NOT=yes").unwrap_err();
+    assert!(malformed.contains("[no]Never\n"), "{malformed}");
+    assert!(
+        malformed.contains("logical trigger requires block"),
+        "{malformed}"
+    );
 }

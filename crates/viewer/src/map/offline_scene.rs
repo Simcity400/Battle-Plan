@@ -1,16 +1,14 @@
 use viewer_playback::map_icons::MapIcons;
 use eframe::wgpu;
-use content_reader_core::ResolvedLayers;
+use content_reader_layers::ResolvedLayers;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::{fs, io, path::PathBuf};
-use viewer_foundation::map::gpu_contract::map_device_descriptor;
-use viewer_foundation::map::gpu_contract::select_adapter;
-use {
-    viewer_foundation::map::camera, viewer_foundation::map::frame,
-    viewer_foundation::map::province_map::HeightField, viewer_world::map::mapframe,
-    viewer_world::map::rivers, viewer_world::map::scene, viewer_world::map::trees,
-};
+use viewer_gpu::gpu_contract::map_device_descriptor;
+use viewer_gpu::gpu_contract::select_adapter;
+use viewer_gpu::{camera, frame, province_map::HeightField};
+use viewer_world::{mapframe, scene};
+use viewer_terrain::{rivers, trees};
 
 #[derive(Deserialize)]
 struct Layer {
@@ -54,7 +52,7 @@ enum SyntheticEffect {
     CriticalBombardment,
 }
 
-impl From<SyntheticEffect> for viewer_world::map::strike_effects::Effect {
+impl From<SyntheticEffect> for viewer_models::strike_effects::Effect {
     fn from(effect: SyntheticEffect) -> Self {
         match effect {
             SyntheticEffect::Nuclear => Self::Nuclear,
@@ -71,7 +69,7 @@ fn default_steps() -> u32 {
 #[test]
 #[ignore = "offline content-reader integration; requires BATTLEPLAN_CONTENT_SCENE_INPUT JSON"]
 fn content_stack_scene() -> io::Result<()> {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let path = std::env::var_os("BATTLEPLAN_CONTENT_SCENE_INPUT").or_else(|| std::env::var_os("HOI4_CONTENT_SCENE_INPUT"))
         .ok_or_else(|| io::Error::other("BATTLEPLAN_CONTENT_SCENE_INPUT is required"))?;
     let input: Input = serde_json::from_slice(&fs::read(path)?).map_err(io::Error::other)?;
@@ -109,19 +107,19 @@ fn content_stack_scene() -> io::Result<()> {
 
 fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) -> io::Result<()> {
     eprintln!("Content scene: static map assets");
-    let definitions = content_reader_core::terrain::read_definitions(layers)?;
-    let default_map = content_reader_core::terrain::read_default_map(layers)?;
+    let definitions = content_reader_key_names::terrain::read_definitions(layers)?;
+    let default_map = content_reader_key_names::terrain::read_default_map(layers)?;
     let province_image =
         content_reader_image::bmp::decode_rgb(&layers.read(&format!("map/{}", default_map.provinces))?)?;
     let map = camera::MapSize {
         width: province_image.width,
         height: province_image.height,
     };
-    let defines = content_reader_core::defines::read(layers)?;
+    let defines = content_reader_defines::defines::read(layers)?;
     let decode = content_reader_image::native::Decode {
         force_pow2_textures: input.force_pow2_textures,
     };
-    let assets = crate::map_assets::load_with_products(
+    let assets = viewer_world::map_assets::load_with_products(
         None,
         layers,
         &defines,
@@ -134,7 +132,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         decode,
     )?;
     eprintln!("Content scene: interface assets");
-    let map_data = content_reader_core::map::load(layers)?;
+    let map_data = content_reader_map::map::load(layers)?;
     let regions = content_reader_regions::regions::read(layers)?.regions;
     let viewer_playback::map_icons::LoadedIcons {
         combat,
@@ -198,20 +196,30 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         warnings,
     )?;
     let river_assets = rivers::RiverAssets::load(layers, [map.width, map.height], 0, decode)?;
-    let (river_mesh, _) = rivers::build(
-        &rivers::RiverImage {
-            width: map.width,
-            height: map.height,
-            indices: &assets.rivers.indices,
-        },
-        &heights,
-    )?;
+    let river_mesh = match rivers::RiverDefines::load(&defines) {
+        Ok(river_defines) => {
+            rivers::build(
+                &rivers::RiverImage {
+                    width: map.width,
+                    height: map.height,
+                    indices: &assets.rivers.indices,
+                },
+                &heights,
+                river_defines,
+            )?
+            .0
+        }
+        Err(error) => {
+            warnings.push(format!("Rivers are withheld and draw nothing: {error}"));
+            rivers::RiverMesh::default()
+        }
+    };
     eprintln!("Content scene: particle assets");
-    let weather = viewer_world::map::weather_effects::Assets::load(
+    let weather = viewer_weather_effects::weather_effects::Assets::load(
         layers,
         &defines,
         [map.width, map.height],
-        viewer_world::map::weather_effects::RegionProvinces::new(&regions, |province| {
+        viewer_weather_effects::weather_effects::RegionProvinces::new(&regions, |province| {
             map_data.definitions.contains_key(&province)
         }),
         decode,
@@ -257,7 +265,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         for (index, &[x, z, height]) in input.cameras.iter().enumerate() {
             scene.set_nuclear_impacts(
                 [&impacts],
-                viewer_foundation::map::presentation::Continuity::Reset,
+                viewer_runtime::presentation::Continuity::Reset,
             );
             eprintln!("Content scene: view {index}");
             let request = scene::Request {
@@ -265,7 +273,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
                 camera: camera::Placement {
                     center: [x, z],
                     height,
-                    pose: viewer_foundation::map::camera::Pose::Map,
+                    pose: viewer_gpu::camera::Pose::Map,
                 }
                 .on(map, camera_defines),
                 day_night: frame::DayNight::at_hour(input.hour),
@@ -318,23 +326,23 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
 fn synthetic_impacts(
     layers: &ResolvedLayers,
     impacts: &[SyntheticImpact],
-) -> io::Result<viewer_world::map::strike_effects::Impacts> {
-    let stacks = content_reader_core::positions::read_unit_stacks(layers)?;
-    let map = content_reader_core::map::load(layers)?;
-    let boxes = viewer_foundation::map::province_admission::province_boxes(
-        &viewer_foundation::map::province_map::ProvinceMap {
+) -> io::Result<viewer_models::strike_effects::Impacts> {
+    let stacks = content_reader_map::positions::read_unit_stacks(layers)?;
+    let map = content_reader_map::map::load(layers)?;
+    let boxes = viewer_gpu::province_admission::province_boxes(
+        &viewer_gpu::province_map::ProvinceMap {
             width: map.width,
             height: map.height,
             ids: &map.province_ids,
         },
     );
-    let mut out = viewer_world::map::strike_effects::Impacts::default();
+    let mut out = viewer_models::strike_effects::Impacts::default();
     for (id, impact) in impacts.iter().enumerate() {
         let stack = stacks
             .iter()
             .find(|stack| {
                 stack.province == impact.province
-                    && stack.kind == viewer_foundation::map::unit_rules::STANDSTILL
+                    && stack.kind == viewer_foundation::unit_rules::STANDSTILL
             })
             .ok_or_else(|| {
                 io::Error::other(format!(
@@ -345,7 +353,7 @@ fn synthetic_impacts(
         let bounds = *boxes.get(&impact.province).ok_or_else(|| {
             io::Error::other(format!("province {} is not painted", impact.province))
         })?;
-        out.impacts.push(viewer_world::map::strike_effects::Impact {
+        out.impacts.push(viewer_models::strike_effects::Impact {
             id: id as u64,
             province: impact.province,
             effect: impact.effect.into(),

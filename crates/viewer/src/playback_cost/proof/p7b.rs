@@ -1,16 +1,11 @@
 
 use super::Compared;
-use crate::{
-    document::Document,
-    layers::{
-        Layer,
-        buildings::{Buildings, BuildingsFed, Catalogue, Inspected},
-    },
-    playhead_host::mirror::Mirrors,
-};
+use crate::{document::Document, playhead_host::mirror::Mirrors};
+use viewer_layer_core::layers::Layer;
+use viewer_layers_infrastructure::buildings::{Buildings, BuildingsFed, Catalogue, Inspected};
 use serde_json::{Value, json};
 use std::{io, sync::Arc};
-use viewer_foundation::map::perspective::Choice;
+use viewer_foundation::perspective::Choice;
 
 fn note(compared: &mut Compared, what: String) {
     compared.differing += 1;
@@ -100,7 +95,7 @@ pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compar
     Ok(compared)
 }
 
-pub(super) fn fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+pub(super) fn fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let mut fresh = of(layer).fresh();
     fresh.compose(mirrors)?;
     let layer = inspected(of(layer))?;

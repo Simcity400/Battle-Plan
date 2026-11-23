@@ -2,7 +2,7 @@ use super::super::{Capture, Playhead, Viewer};
 use super::{drain, frame_ui, memory, render_state, wait_until};
 use crate::Options;
 use eframe::egui;
-use content_reader_core::content::visual::Choice;
+use content_reader_layers::content::visual::Choice;
 use serde_json::{Value, json};
 use std::{
     io,
@@ -49,7 +49,7 @@ fn ids(set: &[Choice]) -> std::collections::BTreeSet<&str> {
 }
 
 pub(super) fn viewer(
-    config: &dashboard::Config,
+    config: &dashboard_core::config::Config,
     options: &Options,
     state: &eframe::egui_wgpu::RenderState,
     service: &Arc<dashboard::Service>,
@@ -78,20 +78,21 @@ pub(super) fn viewer(
         frames: 1,
         index: 0,
         paced: true,
-        request: None,
+        export: None,
     });
     Ok(viewer)
 }
 
 fn save(key: &str, set: &[Choice]) -> io::Result<()> {
-    let mut store = dashboard::map_settings::Store::open();
+    let mut store = dashboard_core::map_settings::Store::open();
     store.save(
         key.to_owned(),
-        dashboard::protocol::CampaignMapSettings {
+        dashboard_core::protocol::CampaignMapSettings {
             visual_mods: Some(set.to_vec()),
             ..Default::default()
         },
     )
+    .map(drop)
 }
 
 pub(super) fn frame(
@@ -195,7 +196,7 @@ fn until_correct(
     let mut work_after_ready = Vec::new();
     let mut layers_first = Value::Null;
     for index in 0u64.. {
-        let due = requested + Duration::from_secs_f64(index as f64 / run.refresh_hz);
+        let due = crate::playback_cost::frame_due(requested, index as f64 / run.refresh_hz)?;
         wait_until(due);
         let started = Instant::now();
         let at_ms = started.duration_since(requested).as_secs_f64() * 1e3;
@@ -257,7 +258,7 @@ fn until_correct(
             &output.join(format!("{name}-settled.png")),
         )?;
     }
-    let (stages, counts) = viewer_foundation::load_record::take();
+    let (stages, counts) = viewer_runtime::load_record::take();
     let after = Totals::now();
     let gpu: serde_json::Map<String, Value> = shader_pipeline::gpu::stats::NAMES
         .iter()
@@ -298,7 +299,7 @@ fn until_correct(
 
 #[expect(clippy::too_many_arguments, reason = "one open's whole input")]
 fn open(
-    config: &dashboard::Config,
+    config: &dashboard_core::config::Config,
     options: &Options,
     state: &eframe::egui_wgpu::RenderState,
     run: &Toggle,
@@ -309,18 +310,18 @@ fn open(
 ) -> io::Result<(Value, Viewer, Arc<dashboard::Service>, egui::Context, String)> {
     let service = dashboard::Service::new(Arc::new(|_| true))?;
     service.configure_content(config, options.allow_unverified)?;
-    let revision = dashboard::protocol::replay_revision(path)?;
+    let revision = dashboard_core::protocol::replay_revision(path)?;
     let source = service
         .open_map(path, Some(&revision))
         .map_err(io::Error::other)?;
-    let key = dashboard::map_settings::campaign_key(&source.replay());
+    let key = dashboard_core::map_settings::campaign_key(&source.replay());
     save(&key, set)?;
     service.reload_map_settings();
     let mut viewer = viewer(config, options, state, &service)?;
     let ctx = egui::Context::default();
     ctx.set_theme(egui::Theme::Dark);
     let requested = Instant::now();
-    viewer_foundation::load_record::begin(requested);
+    viewer_runtime::load_record::begin(requested);
     shader_pipeline::gpu::stats::take();
     let before = Totals::now();
     viewer.open(path.to_path_buf(), &ctx, Some(source.key().revision.clone()));
@@ -329,13 +330,13 @@ fn open(
 }
 
 pub(crate) fn measure(
-    config: dashboard::Config,
+    config: dashboard_core::config::Config,
     mut options: Options,
     path: PathBuf,
     run: Toggle,
     output: &Path,
 ) -> io::Result<Value> {
-    viewer_foundation::worker_priority::frame_priority();
+    viewer_runtime::worker_priority::frame_priority();
     shader_pipeline::gpu::stats::mark_window_thread();
     let state = render_state()?;
     let info = state.adapter.get_info();
@@ -354,7 +355,7 @@ pub(crate) fn measure(
         let name = format!("toggle-{toggle}-{}", label(set));
         save(&key, target)?;
         let requested = Instant::now();
-        viewer_foundation::load_record::begin(requested);
+        viewer_runtime::load_record::begin(requested);
         shader_pipeline::gpu::stats::take();
         let before = Totals::now();
         viewer.check_visual_mods(true, &ctx);

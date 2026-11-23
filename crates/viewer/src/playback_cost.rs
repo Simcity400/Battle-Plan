@@ -55,6 +55,26 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
 }
 
+pub(crate) fn refresh_rate(hz: f64) -> io::Result<f64> {
+    let range = dashboard_core::protocol::MAP_FRAME_LIMIT_RANGE;
+    if range.contains(&hz) {
+        Ok(hz)
+    } else {
+        Err(invalid(format!(
+            "--refresh-hz needs a rate of {} to {} frames a second",
+            range.start(),
+            range.end()
+        )))
+    }
+}
+
+pub(crate) fn frame_due(start: Instant, seconds: f64) -> io::Result<Instant> {
+    std::time::Duration::try_from_secs_f64(seconds)
+        .ok()
+        .and_then(|after| start.checked_add(after))
+        .ok_or_else(|| invalid(format!("A frame {seconds} s after the start is past the clock's range")))
+}
+
 pub(crate) fn dispatch(args: &[OsString]) -> Option<io::Result<()>> {
     let given = |flag: &str| args.iter().any(|arg| arg == flag);
     if !["--playhead-proof", "--visual-toggle", "--viewpoint-switch", "--playback-cost"].iter().any(|job| given(job)) {
@@ -412,24 +432,24 @@ fn parse(args: &[OsString], var: impl Fn(&str) -> Option<OsString>) -> io::Resul
             Some("--complete-models") => schedule.complete_models = true,
             Some("--gpu-pass-times") => gpu_pass_times = true,
             Some("--refresh-hz") => {
-                schedule.refresh_hz = args
-                    .next()
-                    .and_then(|v| v.to_str())
-                    .and_then(|v| v.parse::<f64>().ok())
-                    .filter(|v| v.is_finite() && *v > 0.0)
-                    .ok_or_else(|| invalid("--refresh-hz needs a positive rate"))?;
+                schedule.refresh_hz = refresh_rate(
+                    args.next()
+                        .and_then(|v| v.to_str())
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .ok_or_else(|| invalid("--refresh-hz needs a number"))?,
+                )?;
             }
             Some("--frame-limit") => {
                 frame_limit = Some(
                     args.next()
                         .and_then(|v| v.to_str())
                         .and_then(|v| v.parse::<f64>().ok())
-                        .filter(|v| dashboard::protocol::MAP_FRAME_LIMIT_RANGE.contains(v))
+                        .filter(|v| dashboard_core::protocol::MAP_FRAME_LIMIT_RANGE.contains(v))
                         .ok_or_else(|| {
                             invalid(format!(
                                 "--frame-limit needs a rate of {} to {} frames a second",
-                                dashboard::protocol::MAP_FRAME_LIMIT_RANGE.start(),
-                                dashboard::protocol::MAP_FRAME_LIMIT_RANGE.end()
+                                dashboard_core::protocol::MAP_FRAME_LIMIT_RANGE.start(),
+                                dashboard_core::protocol::MAP_FRAME_LIMIT_RANGE.end()
                             ))
                         })?,
                 );
@@ -595,15 +615,15 @@ fn run(request: Request, window: Window) -> io::Result<()> {
     let Request { mut schedule, options, hours, frame_limit, gpu_pass_times, recording } = request;
     let output = options.out.as_ref().expect("an admitted run has --out");
     if gpu_pass_times {
-        viewer_foundation::map::gpu_passes::record();
+        viewer_gpu::gpu_passes::record();
     }
-    viewer_foundation::map::frame_limit::limit_to(frame_limit);
-    viewer_foundation::map::display_refresh::pace_at(schedule.refresh_hz);
-    schedule.refresh_hz = viewer_foundation::map::display_refresh::rate();
+    viewer_runtime::frame_limit::limit_to(frame_limit);
+    viewer_runtime::display_refresh::pace_at(schedule.refresh_hz);
+    schedule.refresh_hz = viewer_runtime::display_refresh::rate();
     fs::create_dir(output)?;
     let output = fs::canonicalize(output)?;
     let _locks = lock(&output)?;
-    let mut config = dashboard::Config::load()?;
+    let mut config = dashboard_core::config::Config::load()?;
     if let Some(path) = &options.game_dir {
         config.game_dir = path.clone();
     }
@@ -880,12 +900,27 @@ mod lean_tests {
     }
 
     #[test]
+    fn every_run_refuses_a_refresh_rate_outside_the_frame_limit_range() {
+        let none = |_: &str| None;
+        assert_eq!(refusal(&["--refresh-hz", "1"], none), None);
+        let named = |refused: Option<String>| refused.is_some_and(|why| why.contains("--refresh-hz"));
+        for rate in ["1e-300", "0.5", "1001"] {
+            assert!(named(refusal(&["--refresh-hz", rate], none)), "{rate}");
+            let toggle: Vec<OsString> = ["--refresh-hz", rate].iter().map(OsString::from).collect();
+            assert!(named(toggle::run(&toggle).err().map(|error| error.to_string())), "{rate}");
+            let viewpoint: Vec<OsString> =
+                ["--countries", "GER,ENG", "--refresh-hz", rate].iter().map(OsString::from).collect();
+            assert!(named(viewpoint::run(&viewpoint).err().map(|error| error.to_string())), "{rate}");
+        }
+    }
+
+    #[test]
     fn a_refused_lean_run_opens_nothing_and_sets_nothing() {
         let refused = dispatch(&args(&["--frame-limit", "60", "--gpu-pass-times"]))
             .expect("a playback-cost job")
             .expect_err("a refused lean run");
         assert!(refused.to_string().contains("--gpu-pass-times"), "{refused}");
-        assert_eq!(viewer_foundation::map::frame_limit::limit(), None);
+        assert_eq!(viewer_runtime::frame_limit::limit(), None);
         let sizeless: Vec<_> = args(&[])
             .into_iter()
             .filter(|arg| !["--width", "--height", "8"].iter().any(|dropped| arg == dropped))

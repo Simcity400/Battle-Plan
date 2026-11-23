@@ -8,6 +8,7 @@ import { chosenConference, conferenceChoiceId, conferenceToken, countryBalances,
 import { definition, OPTIONS } from './definition.ts';
 import { deal, holder, olderBridge, reply } from './transfers.fixture.ts';
 import type { Move } from './transfers.fixture.ts';
+import { assertLinearWork, measureWork } from '../../test-support/work.ts';
 
 const loser = (hour: number) => holder(1, 'LOS', hour);
 const winner = (hour: number) => holder(2, 'WIN', hour);
@@ -157,12 +158,13 @@ test('conference choices bind campaign and branch and name an unrecorded war pla
 });
 
 test('balances scale linearly to 5,000 countries without a chosen cap', () => {
-  const moves: Move[] = [];
-  for (let id = 0; id < 5000; id++) moves.push(move(id, holder(id, `T${id}`, 100), holder((id + 1) % 5000, `T${(id + 1) % 5000}`, 101), 101));
-  const data = decodeTransfers(reply([deal('world', moves)]));
-  const started = performance.now();
-  const rows = countryBalances(data.all);
-  assert.equal(rows.length, 5000);
-  assert.ok(rows.every(row => row.gained === 1 && row.lost === 1 && netVictoryPoints(row) === 0n));
-  assert.ok(performance.now() - started < 1000);
+  assertLinearWork(count => {
+    const moves: Move[] = [];
+    for (let id = 0; id < count; id++) moves.push(move(id, holder(id, `T${id}`, 100), holder((id + 1) % count, `T${(id + 1) % count}`, 101), 101));
+    let rows: ReturnType<typeof countryBalances> = [];
+    const work = measureWork(decodeTransfers(reply([deal('world', moves)])).all, transfers => { rows = countryBalances(transfers); });
+    assert.equal(rows.length, count);
+    assert.ok(rows.every(row => row.gained === 1 && row.lost === 1 && netVictoryPoints(row) === 0n));
+    return work;
+  }, 'balancing transfers among countries');
 });

@@ -11,7 +11,7 @@ publish = false
 license = "MIT"
 
 [workspace.lints.clippy]
-correctness = { level = "warn", priority = -1 }
+correctness = { level = "deny", priority = -1 }
 suspicious = { level = "warn", priority = -1 }
 style = { level = "allow", priority = -1 }
 complexity = { level = "allow", priority = -1 }
@@ -24,27 +24,15 @@ unimplemented = "warn"
 [workspace.dependencies]
 # Begin generated declarations (tools/check-feature-unification.py --fix; do not edit).
 test-unify = { path = "crates/test-unify" }
-unify-adler2 = { package = "adler2", version = "2.0.1", default-features = false, features = [] }
-unify-bitflags-1 = { package = "bitflags", version = "1.3.2", default-features = false, features = ["default"] }
-unify-bitflags-2 = { package = "bitflags", version = "2.13.1", default-features = false, features = ["serde", "serde_core"] }
-unify-bytemuck = { package = "bytemuck", version = "1.25.2", default-features = false, features = ["bytemuck_derive", "derive", "extern_crate_alloc", "min_const_generics"] }
-unify-crossbeam-utils = { package = "crossbeam-utils", version = "0.8.23", default-features = false, features = ["default", "std"] }
+unify-bitflags = { package = "bitflags", version = "1.3.2", default-features = false, features = ["default"] }
 unify-dpi = { package = "dpi", version = "0.1.2", default-features = false, features = ["default", "serde", "std"] }
-unify-either = { package = "either", version = "1.18.0", default-features = false, features = ["default", "std", "use_std"] }
-unify-fdeflate = { package = "fdeflate", version = "0.3.7", default-features = false, features = [] }
-unify-flate2 = { package = "flate2", version = "1.1.10", default-features = false, features = ["any_impl", "default", "miniz_oxide", "runtime_detection", "rust_backend"] }
 unify-hashbrown = { package = "hashbrown", version = "0.17.1", default-features = false, features = ["default-hasher", "inline-more"] }
 unify-indexmap = { package = "indexmap", version = "2.14.2", default-features = false, features = ["default", "std"] }
 unify-lock_api = { package = "lock_api", version = "0.4.14", default-features = false, features = ["arc_lock", "atomic_usize", "default"] }
 unify-log = { package = "log", version = "0.4.34", default-features = false, features = ["alloc", "std"] }
-unify-miniz_oxide-0-8 = { package = "miniz_oxide", version = "0.8.9", default-features = false, features = ["default", "simd", "simd-adler32", "with-alloc"] }
-unify-miniz_oxide-0-9 = { package = "miniz_oxide", version = "0.9.1", default-features = false, features = ["default", "simd", "simd-adler32", "with-alloc"] }
-unify-num-traits = { package = "num-traits", version = "0.2.19", default-features = false, features = ["default", "i128", "libm", "std"] }
 unify-once_cell = { package = "once_cell", version = "1.21.4", default-features = false, features = ["alloc", "default", "race", "std"] }
 unify-parking_lot = { package = "parking_lot", version = "0.12.5", default-features = false, features = ["arc_lock", "default"] }
-unify-proc-macro2 = { package = "proc-macro2", version = "1.0.107", default-features = false, features = ["default", "proc-macro"] }
 unify-rustc-hash = { package = "rustc-hash", version = "2.1.3", default-features = false, features = ["default", "std"] }
-unify-simd-adler32 = { package = "simd-adler32", version = "0.3.10", default-features = false, features = ["const-generics", "default", "std"] }
 unify-smallvec = { package = "smallvec", version = "1.16.0", default-features = false, features = ["const_generics", "const_new", "union"] }
 unify-tauri = { package = "tauri", version = "2.11.5", default-features = false, features = ["common-controls-v6", "compression", "dbus", "default", "dynamic-acl", "tauri-runtime-wry", "tray-icon", "webkit2gtk", "webview2-com", "wry", "x11"] }
 unify-thiserror = { package = "thiserror", version = "2.0.20", default-features = false, features = ["default", "std"] }
@@ -64,9 +52,39 @@ product-codec = { path = "crates/product-codec" }
 content-witness = { path = "crates/content-witness" }
 map-products = { path = "crates/map-products" }
 map-content = { path = "crates/map-content" }
+viewer-counter-kit = { path = "crates/viewer-counter-kit" }
+viewer-counters-naval = { path = "crates/viewer-counters-naval" }
+viewer-counters-land = { path = "crates/viewer-counters-land" }
+viewer-counters = { path = "crates/viewer-counters" }
 viewer-playback = { path = "crates/viewer-playback" }
+viewer-layer-core = { path = "crates/viewer-layer-core" }
+viewer-layers-counters = { path = "crates/viewer-layers-counters" }
+viewer-layers-forces = { path = "crates/viewer-layers-forces" }
+viewer-layers-political = { path = "crates/viewer-layers-political" }
+viewer-layers-infrastructure = { path = "crates/viewer-layers-infrastructure" }
 map-display-data = { path = "crates/map-display-data" }
 map-snow = { path = "crates/map-snow" }
+shader-pipeline = { path = "crates/shader-pipeline" }
+viewer-aircraft = { path = "crates/viewer-aircraft" }
+viewer-borders = { path = "crates/viewer-borders" }
+viewer-buildings = { path = "crates/viewer-buildings" }
+viewer-foundation = { path = "crates/viewer-foundation" }
+viewer-engagements = { path = "crates/viewer-engagements" }
+viewer-gpu = { path = "crates/viewer-gpu" }
+viewer-native-gui = { path = "crates/viewer-native-gui" }
+viewer-runtime = { path = "crates/viewer-runtime" }
+viewer-unit-reads = { path = "crates/viewer-unit-reads" }
+viewer-map-icons = { path = "crates/viewer-map-icons" }
+viewer-map-modes = { path = "crates/viewer-map-modes" }
+viewer-map-text = { path = "crates/viewer-map-text" }
+viewer-models = { path = "crates/viewer-models" }
+viewer-rail = { path = "crates/viewer-rail" }
+viewer-scene-base = { path = "crates/viewer-scene-base" }
+viewer-terrain = { path = "crates/viewer-terrain" }
+viewer-unit-history = { path = "crates/viewer-unit-history" }
+viewer-unit-models = { path = "crates/viewer-unit-models" }
+viewer-weather-effects = { path = "crates/viewer-weather-effects" }
+viewer-world = { path = "crates/viewer-world" }
 collector-naval-management = { path = "crates/collector-naval-management" }
 replay-columnar = { path = "crates/replay-columnar" }
 replay-frame = { path = "crates/replay-frame" }
@@ -188,14 +206,45 @@ collector-hooks = { path = "crates/collector-hooks" }
 collector-primitives = { path = "crates/collector-primitives" }
 collector-status = { path = "crates/collector-status" }
 collector-test-support = { path = "crates/collector-test-support" }
+collector-air = { path = "crates/collector-air", default-features = false }
+collector-characters = { path = "crates/collector-characters", default-features = false }
+collector-division-templates = { path = "crates/collector-division-templates", default-features = false }
+collector-divisions = { path = "crates/collector-divisions", default-features = false }
+collector-equipment-destruction = { path = "crates/collector-equipment-destruction", default-features = false }
+collector-factions = { path = "crates/collector-factions", default-features = false }
+collector-hook-failures = { path = "crates/collector-hook-failures", default-features = false }
+collector-land-events = { path = "crates/collector-land-events", default-features = false }
+collector-missions = { path = "crates/collector-missions", default-features = false }
+collector-naval-history = { path = "crates/collector-naval-history", default-features = false }
+collector-naval-missions = { path = "crates/collector-naval-missions", default-features = false }
+collector-naval-results = { path = "crates/collector-naval-results", default-features = false }
+collector-operation-outcomes = { path = "crates/collector-operation-outcomes", default-features = false }
+collector-plans = { path = "crates/collector-plans", default-features = false }
+collector-states = { path = "crates/collector-states", default-features = false }
+collector-capture = { path = "crates/collector-capture", default-features = false }
+collector-map-capture = { path = "crates/collector-map-capture", default-features = false }
+collector-player-commands = { path = "crates/collector-player-commands", default-features = false }
+collector-spool = { path = "crates/collector-spool", default-features = false }
+collector-runtime = { path = "crates/collector-runtime", default-features = false }
+collector-workers = { path = "crates/collector-workers", default-features = false }
 blake3 = "1"
 bytemuck = "1"
 dashboard = { path = "crates/dashboard" }
+dashboard-world = { path = "crates/dashboard-world" }
+dashboard-wars = { path = "crates/dashboard-wars" }
+dashboard-production = { path = "crates/dashboard-production" }
+dashboard-politics = { path = "crates/dashboard-politics" }
+dashboard-players = { path = "crates/dashboard-players" }
+dashboard-naval = { path = "crates/dashboard-naval" }
+dashboard-land = { path = "crates/dashboard-land" }
+dashboard-economy = { path = "crates/dashboard-economy" }
+dashboard-air = { path = "crates/dashboard-air" }
 dashboard-research = { path = "crates/dashboard-research" }
 dashboard-intelligence = { path = "crates/dashboard-intelligence" }
 dashboard-core = { path = "crates/dashboard-core" }
 dashboard-declare = { path = "crates/dashboard-declare" }
 dashboard-query = { path = "crates/dashboard-query" }
+dashboard-effects = { path = "crates/dashboard-effects" }
 dashboard-text = { path = "crates/dashboard-text" }
 engine = { path = "crates/engine" }
 engine-mutations = { path = "crates/engine-mutations" }
@@ -255,30 +304,66 @@ content-reader-focus = { path = "crates/content-reader-focus" }
 content-reader-events = { path = "crates/content-reader-events" }
 content-reader-division-names = { path = "crates/content-reader-division-names" }
 content-reader-abilities = { path = "crates/content-reader-abilities" }
-content-reader-core = { path = "crates/content-reader-core" }
+content-reader-parser = { path = "crates/content-reader-parser" }
+content-reader-layers = { path = "crates/content-reader-layers" }
+content-reader-defines = { path = "crates/content-reader-defines" }
+content-reader-script = { path = "crates/content-reader-script" }
+content-reader-key-names = { path = "crates/content-reader-key-names" }
+content-reader-gui = { path = "crates/content-reader-gui" }
+content-reader-mesh = { path = "crates/content-reader-mesh" }
+content-reader-map = { path = "crates/content-reader-map" }
+content-reader-military = { path = "crates/content-reader-military" }
+content-reader-politics = { path = "crates/content-reader-politics" }
 content-reader-image = { path = "crates/content-reader-image" }
 content-reader-save = { path = "crates/content-reader-save" }
 libmimalloc-sys = { version = "0.1.49", default-features = false }
 png = "0.18"
-pollster = "0.4"
+pollster = "1"
 job-priority = { path = "crates/job-priority" }
 replay = { path = "crates/replay", default-features = false }
+replay-settings = { path = "crates/replay-settings" }
+replay-recording = { path = "crates/replay-recording" }
+replay-journal = { path = "crates/replay-journal" }
+replay-capture-spool = { path = "crates/replay-capture-spool" }
+replay-lanes = { path = "crates/replay-lanes" }
+replay-files = { path = "crates/replay-files" }
+replay-tools = { path = "crates/replay-tools", default-features = false }
 replay-looks = { path = "crates/replay-looks" }
 recorder-derive = { path = "crates/recorder-derive" }
+recorder-derive-air = { path = "crates/recorder-derive-air" }
+recorder-derive-economy = { path = "crates/recorder-derive-economy" }
+recorder-derive-equipment = { path = "crates/recorder-derive-equipment" }
+recorder-derive-framework = { path = "crates/recorder-derive-framework" }
+recorder-derive-land = { path = "crates/recorder-derive-land" }
+recorder-derive-naval = { path = "crates/recorder-derive-naval" }
+recorder-derive-politics = { path = "crates/recorder-derive-politics" }
+recorder-derive-world = { path = "crates/recorder-derive-world" }
 app-update = { path = "crates/app-update" }
 replay-data = { path = "crates/replay-data" }
 replay-rows = { path = "crates/replay-rows" }
+replay-rows-world = { path = "crates/replay-rows-world" }
+replay-rows-events = { path = "crates/replay-rows-events" }
+replay-rows-air = { path = "crates/replay-rows-air" }
+replay-rows-naval = { path = "crates/replay-rows-naval" }
+replay-rows-weather = { path = "crates/replay-rows-weather" }
+replay-rows-land = { path = "crates/replay-rows-land" }
+replay-rows-presentation = { path = "crates/replay-rows-presentation" }
+replay-rows-wars = { path = "crates/replay-rows-wars" }
 replay-rows-economy = { path = "crates/replay-rows-economy" }
 replay-tables-economy = { path = "crates/replay-tables-economy" }
+replay-tables-world = { path = "crates/replay-tables-world" }
+replay-tables-events = { path = "crates/replay-tables-events" }
+replay-tables-air = { path = "crates/replay-tables-air" }
+replay-tables-naval = { path = "crates/replay-tables-naval" }
+replay-tables-weather = { path = "crates/replay-tables-weather" }
+replay-tables-land = { path = "crates/replay-tables-land" }
+replay-tables-presentation = { path = "crates/replay-tables-presentation" }
+replay-tables-wars = { path = "crates/replay-tables-wars" }
+replay-tables-derived = { path = "crates/replay-tables-derived" }
 replay-rows-projects = { path = "crates/replay-rows-projects" }
 replay-rows-intelligence = { path = "crates/replay-rows-intelligence" }
 replay-rows-politics = { path = "crates/replay-rows-politics" }
 replay-rows-derived = { path = "crates/replay-rows-derived" }
-replay-tables-a = { path = "crates/replay-tables-a" }
-replay-tables-b = { path = "crates/replay-tables-b" }
-replay-tables-c = { path = "crates/replay-tables-c" }
-replay-tables-d = { path = "crates/replay-tables-d" }
-replay-tables-e = { path = "crates/replay-tables-e" }
 core-events = { path = "crates/core-events" }
 core-shared-owners = { path = "crates/core-shared-owners" }
 replay-identity = { path = "crates/replay-identity" }
@@ -330,12 +415,13 @@ opt-level = 3
 
 [profile.ci]
 inherits = "dev"
+opt-level = 0
 
 [profile.ci.package."*"]
 opt-level = 1
 
-[profile.ci.package.collector]
-opt-level = 0
+[profile.ci.package.dashboard-query]
+opt-level = 1
 
 [profile.release-lto]
 inherits = "release"
@@ -343,6 +429,69 @@ lto = "fat"
 codegen-units = 1
 
 [profile.release-lto.package.collector]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-air]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-characters]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-division-templates]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-divisions]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-equipment-destruction]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-factions]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-hook-failures]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-land-events]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-missions]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-naval-history]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-naval-missions]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-naval-results]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-operation-outcomes]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-plans]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-states]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-capture]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-map-capture]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-player-commands]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-spool]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-runtime]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-workers]
 debug = "line-tables-only"
 
 [patch.crates-io]

@@ -9,47 +9,63 @@ import type { DashboardClient, DashboardSource, ProductRequest } from './client'
 import { validateProductReply } from './client.ts';
 import { useContentRevision } from './contentRevision.ts';
 import { useHeldFailure } from './heldFailures.ts';
-import { loadProduct, loadTransientProduct, useProduct } from './products.ts';
+import { loadProduct, loadTransientProduct, useProducts } from './products.ts';
 import { type Failure, asFailure } from './queryError.ts';
 import { useViewRead } from './viewRead.ts';
-import { followStore } from './follow/connection.ts';
+import type { BoundWindow, CoveredBranch, GatedHour } from './regionTime.ts';
+import type { Gate } from './regionGate';
+
+export type SeriesGate = Pick<Gate, 'follow' | 'span' | 'within' | 'track'>;
+
+export interface SeriesOwner { readonly key: string; readonly spans: readonly HourSpan[] | null }
+
+export const seriesOwner = (country: { readonly history: { key: string; spans: readonly HourSpan[] } | null } | null | undefined, tag: string | null): SeriesOwner | null =>
+  country?.history ?? (tag === null ? null : { key: tag, spans: null });
+
+export function ownerKeys(owner: SeriesOwner | null, parts: readonly string[]): { keys: SeriesKey[]; within: ReadonlyMap<string, readonly HourSpan[]> | undefined } {
+  const keys = owner ? parts.map(part => ({ tag: owner.key, part })) : [];
+  return { keys, within: owner?.spans ? new Map(keys.map(key => [keyId(key), owner.spans!])) : undefined };
+}
+import { followStore } from './follow/store.ts';
 import { rowAmount } from './follow/painters.ts';
-import { followsHead, useFollow } from './follow/useFollow.ts';
+import { followRefusal, followsHead, useFollow } from './follow/useFollow.ts';
 import type { FollowEntry, FollowStore } from './follow/store';
 import type { PlaybackController } from './playback';
 import { followAtHead, tileHead } from './tiles/head.ts';
 import type { TileReply } from './tiles/tile';
 import { TileView, tileCache, unrecordedReason } from './tiles/view.ts';
 import type { TiledLine, TileViewport } from './tiles/view';
-import { followedRow, keyId, keyedTileParams, keyedTileReply, reachedKeyLines, validateKeyedStates, validateSeriesParts } from './keyedSeriesData.ts';
-import type { KeyedStates, SeriesKey, SeriesParts } from './keyedSeriesData';
+import { followedRow, heldParts, keyId, keyedTileParams, keyedTileReply, reachedKeyLines, validateKeyedStates, validateSeriesParts } from './keyedSeriesData.ts';
+import type { HeldParts, KeyedStates, SeriesKey, SeriesParts } from './keyedSeriesData';
+import { productRequest } from './request.ts';
+import { forwardRequest, type DeclaredProduct } from './request.ts';
+import type { ParamsFor } from './regionTime';
 
 export interface KeyedSeriesSpec {
   source: DashboardSource;
-  branchId: string;
+  branch: CoveredBranch & { id: string };
   family: Readonly<Record<string, unknown>>;
   keys: readonly SeriesKey[];
   partBits: number;
   within?: ReadonlyMap<string, readonly HourSpan[]>;
   lastHour: number;
   marks?: boolean;
-  axisOffset?: number;
 }
 
 const NO_PAINT = () => {};
 
-const keyedLane = (spec: KeyedSeriesSpec) => `${spec.source.id}|${spec.source.revision}|${spec.branchId}|${JSON.stringify(spec.family)}|keyed`;
+const keyedLane = (spec: KeyedSeriesSpec) => `${spec.source.id}|${spec.source.revision}|${spec.branch.id}|${JSON.stringify(spec.family)}|keyed`;
 
-export function useKeyedSeries(client: DashboardClient, clock: PlaybackController, spec: KeyedSeriesSpec | null, headHour: number | null,
-  hoverHour: number | null, following: boolean, active: boolean, root: { readonly current: Element | null }) {
+export function useKeyedSeries(client: DashboardClient, clock: PlaybackController, gate: SeriesGate, spec: KeyedSeriesSpec | null, headHour: GatedHour | null,
+  hoverHour: GatedHour | null, following: boolean, active: boolean, root: { readonly current: Element | null }) {
   const enabled = !!spec && spec.keys.length > 0;
   const ids = useMemo(() => spec?.keys.map(keyId) ?? [], [spec?.keys]);
-  const ownerKey = spec ? JSON.stringify([spec.source.id, spec.source.revision, spec.branchId, spec.family, ids, spec.within && [...spec.within]]) : null;
+  const ownerKey = spec ? JSON.stringify([spec.source.id, spec.source.revision, spec.branch.id, spec.family, ids, spec.within && [...spec.within]]) : null;
   const owner = useMemo(() => ({ client, key: ownerKey }), [client, ownerKey]);
   const alive = useRef(owner); alive.current = owner;
   const latest = useRef(spec); latest.current = spec;
-  const request = (product: string, params: Record<string, unknown>): ProductRequest => ({ sourceId: spec!.source.id, revision: spec!.source.revision,
-    product, params: { branchId: spec!.branchId, family: spec!.family, ...params } });
+  const request = <K extends DeclaredProduct>(product: K, params: ParamsFor<K>): ProductRequest => forwardRequest(spec!.source, product,
+    { branchId: spec!.branch.id, family: spec!.family, ...params } as unknown as ParamsFor<K>);
 
   const tileKey = spec ? JSON.stringify([ownerKey, spec.lastHour, spec.marks === true]) : null;
   const [tiles, setTiles] = useState<{ key: string; lines: ReadonlyMap<string, TiledLine> | null; error: unknown }>();
@@ -64,7 +80,7 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
     const byId = new Map(lane.keys.map(key => [keyId(key), key]));
     const ask = async (binHours: number, index: number, asked: readonly string[], within: Record<string, HourSpan[]> | undefined) => {
       const keys = asked.map(id => byId.get(id)!);
-      const tileRequest = request('series-tiles', { binHours, index, ...keyedTileParams(keys, within), ...(lane.marks ? { withMarks: true } : {}) });
+      const tileRequest = request('series-tiles', { binHours, index, ...keyedTileParams(keys, within, gate.span), ...(lane.marks ? { withMarks: true } : {}) });
       const reply = validateProductReply(await client.product<TileReply>(tileRequest, new AbortController().signal), tileRequest).data;
       return keyedTileReply(reply as Parameters<typeof keyedTileReply>[0], keys);
     };
@@ -96,16 +112,19 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
     return out;
   }, [lines]);
 
-  const store: FollowStore | null = useMemo(() => spec ? followStore(client, spec.source, clock, spec.axisOffset) : null, [client, clock, spec?.source, spec?.axisOffset]);
-  const headQuery = useMemo(() => following && active && enabled ? { product: 'series-state', params: { branchId: spec!.branchId, family: spec!.family,
-    reads: [...new Set(spec!.keys.map(({ tag }) => tag))].map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null,
-  [following, active, enabled, ownerKey]);
+  const track = gate.track;
+  const store: FollowStore | null = useMemo(() => spec && track ? followStore(client, track, clock) : null, [client, clock, !!spec, track]);
+  const headQuery = useMemo(() => following && active && enabled ? gate.follow({ product: 'series-state', params: { branchId: spec!.branch.id, family: spec!.family,
+    reads: [...new Set(spec!.keys.map(({ tag }) => tag))].map(tag => ({ country: countryFromKey(tag) })) } }) : null,
+  [following, active, enabled, ownerKey, gate.follow]);
   const followed = useFollow(store, headQuery, root, NO_PAINT);
   const headFollowed = following && followsHead(followed);
   const content = useContentRevision(client);
   const reads = (spec?.keys ?? []).flatMap(key => {
-    const hours = new Set([...(headFollowed || headHour === null ? [] : [Math.floor(headHour)]), ...(hoverHour === null ? [] : [Math.floor(hoverHour)])]);
-    return [...hours].map(hour => ({ country: countryFromKey(key.tag), part: key.part, hour }));
+    const hours = new Set([headFollowed ? null : headHour, hoverHour].filter(hour => hour !== null));
+    const spans = spec?.within?.get(keyId(key));
+    return [...hours].filter(hour => !spans || spans.some(span => span.firstHour <= hour && hour <= span.lastHour))
+      .map(hour => ({ country: countryFromKey(key.tag), part: key.part, hour }));
   });
   const stateRead = useViewRead<typeof reads, KeyedStates>(enabled && reads.length ? JSON.stringify([ownerKey, content]) : null,
     reads, JSON.stringify(reads), active, (at, signal, publish, restart) => loadProduct(client, request('series-state', { reads: at }),
@@ -132,13 +151,15 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
     if (!held || !held.keys.length || !active) return;
     navigation.current?.abort();
     const controller = new AbortController(); navigation.current = controller;
-    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', { lines: held.keys.map(({ tag, part }) => ({ country: countryFromKey(tag), part })),
-      key, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) }), controller.signal).then(reply => {
+    const range = gate.span(x[0], Math.min(x[1], until ?? x[1]));
+    if (!range) return;
+    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', { ...keyedTileParams(held.keys, held.within && Object.fromEntries(held.within), gate.span),
+      key, from: gate.within(from), ...range }), controller.signal).then(reply => {
       if (controller.signal.aborted || alive.current !== owner) return;
       if (reply.hour !== null && !Number.isSafeInteger(reply.hour)) throw new Error('The keyboard reply is malformed.');
       setKeyboard(previous => ({ owner, hour: reply.hour as number | null, revision: (previous?.revision ?? 0) + 1 }));
     }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setFailure({ owner, error: asFailure(error) }); });
-  }, [owner, active]);
+  }, [owner, active, gate.span, gate.within]);
 
   const unrecorded = useMemo(() => unrecordedReason(tiles?.key === tileKey ? tiles.lines : null), [tiles, tileKey]);
   const reached = useMemo(() => reachedKeyLines(spec?.keys ?? [], stateRead.data), [owner, stateRead.data]);
@@ -150,14 +171,28 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
   return { enabled, owner, decimals, lines: reached, states: stateRead.data, summaryByKey, summaryOf, revision: readLines, subscribe, onSummaryView, onNavigateHour,
     keyboardHour: keyboard?.owner === owner ? keyboard.hour : undefined, keyboardRevision: keyboard?.owner === owner ? keyboard.revision : undefined,
     followed: followedEntry && store ? { store, entry: followedEntry, row: (key: SeriesKey) => followedRow(followedEntry.answer, key, partBits) } : null,
-    reason: following && followed.status === 'unavailable' ? followed.reason : undefined,
+    reason: following ? followRefusal(followed) ?? undefined : undefined,
     unrecorded, error, retry };
 }
 
-export function useSeriesParts(client: DashboardClient, source: DashboardSource | undefined, branchId: string | undefined,
-  family: Readonly<Record<string, unknown>> | null, tag: string | null, span: HourSpan | null, active: boolean) {
-  const request = source && branchId && family && tag && span ? { sourceId: source.id, revision: source.revision, product: 'series-parts',
-    params: { branchId, family, countries: [countryFromKey(tag)], from: span.firstHour, to: span.lastHour } } : null;
-  const validate = useCallback((value: unknown) => validateSeriesParts(value, tag ?? ''), [tag]);
-  return useProduct<SeriesParts>(client, request, active, validate, source);
+export function useSeriesParts(client: DashboardClient, gate: Pick<Gate, 'span'>, source: DashboardSource | undefined, branchId: string | undefined,
+  family: Readonly<Record<string, unknown>> | null, owner: SeriesOwner | null, span: BoundWindow | null, active: boolean) {
+  const key = owner?.key ?? null;
+  const windows = useMemo(() => !owner || !span ? [] : owner.spans === null ? [span]
+    : owner.spans.flatMap(held => gate.span(Math.max(held.firstHour, span.firstHour), Math.min(held.lastHour, span.lastHour)) ?? []),
+  [owner, span?.firstHour, span?.lastHour, gate.span]);
+  const requests = useMemo(() => source && branchId && family && key ? windows.map(window => productRequest({ sourceId: source.id, revision: source.revision,
+    product: 'series-parts', params: { branchId, family, countries: [countryFromKey(key)], from: window.firstHour, to: window.lastHour } })) : [],
+  [source, branchId, family, key, windows]);
+  const validate = useCallback((value: unknown) => validateSeriesParts(value, key ?? ''), [key]);
+  const read = useProducts<SeriesParts>(client, requests, active && requests.length > 0, validate, source);
+  const data = useMemo<HeldParts | undefined>(() => key === null || !owner || !span ? undefined : !requests.length ? { tag: key, parts: [], missing: [], partBits: 1 }
+    : read.data && { tag: key, partBits: read.data[0]?.partBits ?? 1,
+      parts: heldParts(read.data.flatMap((reply, at) => reply.parts.flatMap(part => {
+        const first = Math.max(part.firstHour, windows[at].firstHour), last = Math.min(part.lastHour, windows[at].lastHour);
+        return first <= last ? [{ ...part, firstHour: first, lastHour: last }] : [];
+      }))),
+      missing: read.data.flatMap(reply => reply.missing) },
+  [key, owner, span, requests.length, read.data, windows]);
+  return { ...read, data };
 }

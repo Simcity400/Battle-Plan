@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, unlink } from 'node:fs/promises';
+import { mkdir, readFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { crc32, inflateSync } from 'node:zlib';
+import { PNG } from 'pngjs';
 import { log, sleep } from './cdp.mjs';
 import { Session } from './session.mjs';
 
@@ -55,20 +57,23 @@ async function mapArea(s, dpr) {
 const stateAfter = (view, after, test) => `__e2e.mapState(${JSON.stringify(view)}, ${after}, ${test})`;
 
 async function drawnState(s, view, after, test, timeout) {
-  for (const end = Date.now() + timeout; Date.now() < end; await sleep(16)) {
+  const end = Date.now() + timeout;
+  while (true) {
     const state = await s.app.evaluate(stateAfter(view, after, test));
     if (state) return state;
+    if (Date.now() >= end) return null;
+    await sleep(16);
   }
-  return null;
 }
 
 export async function mapModes(s, dpr) {
   const { view } = await mapArea(s, dpr);
   const modes = await s.app.evaluate(`__e2e.mapModes[${JSON.stringify(view)}] ?? null`);
   if (!modes?.length) throw new Error('the viewer reported no modes for the map');
-  const views = s.app.lastSent('set_dashboard_maps')?.args.views ?? null;
-  if (!views?.some(entry => entry.id === view)) throw new Error('the app has sent no layout with the map in it');
-  const send = list => s.app.evaluate(`window.__TAURI_INTERNALS__.invoke('set_dashboard_maps', { views: ${JSON.stringify(list)} }).then(() => true)`);
+  const last = s.app.lastSent('set_dashboard_maps')?.args ?? null;
+  const views = last?.views ?? null;
+  if (!last?.clockId || !views?.some(entry => entry.id === view)) throw new Error('the app has sent no layout with the map in it');
+  const send = list => s.app.evaluate(`window.__TAURI_INTERNALS__.invoke('set_dashboard_maps', ${JSON.stringify({ ...last, views: list })}).then(() => true)`);
   const active = await s.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(view)} && x.mapMode).at(-1)?.mapMode ?? null`);
   const ordered = [...modes.filter(mode => mode.token !== active), ...modes.filter(mode => mode.token === active)];
   for (const mode of ordered) {
@@ -210,36 +215,246 @@ export async function hover(s, input, dpr) {
   await s.record({ area: 'map', item: 'interaction: hover', label: 'paused', pass: true, reasons: [], from, to: Date.now(), screenshot: false });
 }
 
-export async function mapPictures(s, input, visual, dpr, work, seeks) {
+export const CLOSE_CAMERA_ZOOM_SHARE = 0.06;
+export const CLOSE_CAMERA_MIN_HEIGHT = 120;
+export const CLOSE_CAMERA_TOLERANCE = 0.5;
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PNG_SAMPLES = new Map([[0, 1], [2, 3], [3, 1], [4, 2], [6, 4]]);
+const ADAM7_PASSES = [[0, 0, 8, 8], [4, 0, 8, 8], [0, 4, 4, 8], [2, 0, 4, 4], [0, 2, 2, 4], [1, 0, 2, 2], [0, 1, 1, 2]];
+
+function expectedPngScanlineBytes(width, height, bitDepth, colorType, interlace) {
+  const samples = PNG_SAMPLES.get(colorType);
+  if (!samples || bitDepth <= 0) throw new Error(`unsupported PNG format (colorType=${colorType}, bitDepth=${bitDepth})`);
+  const rowBytes = cols => 1 + Math.ceil((cols * samples * bitDepth) / 8);
+  if (interlace === 0) return height * rowBytes(width);
+  if (interlace !== 1) throw new Error(`unsupported PNG interlace method (${interlace})`);
+  let total = 0;
+  for (const [x0, y0, dx, dy] of ADAM7_PASSES) {
+    const pw = Math.ceil((width - x0) / dx);
+    const ph = Math.ceil((height - y0) / dy);
+    if (pw > 0 && ph > 0) total += ph * rowBytes(pw);
+  }
+  return total;
+}
+
+export async function assertValidPng(filePath) {
+  const bytes = await readFile(filePath);
+  if (bytes.length < PNG_SIGNATURE.length + 12 || !bytes.subarray(0, 8).equals(PNG_SIGNATURE)) {
+    throw new Error('file does not start with a valid PNG signature');
+  }
+  let offset = 8;
+  let ihdr = null;
+  let seenIend = false;
+  const idatParts = [];
+  while (offset < bytes.length) {
+    if (offset + 12 > bytes.length) throw new Error('PNG chunk header is truncated');
+    const length = bytes.readUInt32BE(offset);
+    const type = bytes.toString('ascii', offset + 4, offset + 8);
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
+    if (dataEnd + 4 > bytes.length) throw new Error(`PNG chunk ${type} is truncated`);
+    const expectedCrc = crc32(bytes.subarray(offset + 4, dataEnd)) >>> 0;
+    if (expectedCrc !== bytes.readUInt32BE(dataEnd)) throw new Error(`PNG chunk ${type} failed CRC verification`);
+    if (!ihdr) {
+      if (type !== 'IHDR' || length !== 13) throw new Error('PNG does not begin with a valid IHDR chunk');
+      ihdr = {
+        width: bytes.readUInt32BE(dataStart),
+        height: bytes.readUInt32BE(dataStart + 4),
+        bitDepth: bytes[dataStart + 8],
+        colorType: bytes[dataStart + 9],
+        interlace: bytes[dataStart + 12],
+      };
+      if (ihdr.width === 0 || ihdr.height === 0) throw new Error('PNG IHDR has zero dimensions');
+    } else if (type === 'IDAT') {
+      idatParts.push(bytes.subarray(dataStart, dataEnd));
+    } else if (type === 'IEND') {
+      if (length !== 0) throw new Error('PNG IEND chunk is non-empty');
+      seenIend = true;
+      offset = dataEnd + 4;
+      break;
+    }
+    offset = dataEnd + 4;
+  }
+  if (!ihdr || !seenIend || offset !== bytes.length) {
+    throw new Error('PNG is incomplete or missing a terminal IEND chunk');
+  }
+  if (!idatParts.length) throw new Error('PNG contains no IDAT image data');
+  const inflated = inflateSync(Buffer.concat(idatParts));
+  const needed = expectedPngScanlineBytes(ihdr.width, ihdr.height, ihdr.bitDepth, ihdr.colorType, ihdr.interlace);
+  if (inflated.length !== needed) {
+    throw new Error(`PNG scanline payload length ${inflated.length} does not match expected ${needed} bytes`);
+  }
+  const decoded = PNG.sync.read(bytes);
+  if (decoded.width !== ihdr.width || decoded.height !== ihdr.height || decoded.data.length !== ihdr.width * ihdr.height * 4) {
+    throw new Error('PNG decode mismatch');
+  }
+  return { width: decoded.width, height: decoded.height };
+}
+
+export function deriveCloseCameraPose(state) {
+  if (!Array.isArray(state?.center) || state.center.length !== 2 || !state.center.every(Number.isFinite)
+    || !Number.isFinite(state?.zoom) || state.zoom <= 0) {
+    throw new Error('the map reported no default camera center and zoom to derive a close camera pose from');
+  }
+  const height = Math.round(Math.min(state.zoom * 0.5, Math.max(CLOSE_CAMERA_MIN_HEIGHT, state.zoom * CLOSE_CAMERA_ZOOM_SHARE)) * 100) / 100;
+  const center = [Math.round(state.center[0] * 100) / 100, Math.round(state.center[1] * 100) / 100];
+  return { center, height };
+}
+
+function resolveCameraReply(reply, fallback = null) {
+  if (Array.isArray(reply?.center) && reply.center.length === 2 && reply.center.every(Number.isFinite)
+    && Number.isFinite(reply?.height) && reply.height > 0) {
+    return { center: [reply.center[0], reply.center[1]], height: reply.height };
+  }
+  if (fallback) return fallback;
+  throw new Error('the camera command returned no resolved center and height');
+}
+
+export function cameraPoseMatches(state, pose, hour = null, tolerance = 0.5) {
+  if (!state || state.loading || state.error) return false;
+  if (hour !== null && state.hour !== hour) return false;
+  if (!Array.isArray(state.center) || state.center.length !== 2 || !Number.isFinite(state.zoom)) return false;
+  return Math.abs(state.zoom - pose.height) <= tolerance
+    && Math.abs(state.center[0] - pose.center[0]) <= tolerance
+    && Math.abs(state.center[1] - pose.center[1]) <= tolerance;
+}
+
+const poseCheck = (pose, hour, tolerance = CLOSE_CAMERA_TOLERANCE) =>
+  `x => (${cameraPoseMatches.toString()})(x, ${JSON.stringify(pose)}, ${JSON.stringify(hour)}, ${tolerance})`;
+
+async function seekMapFrame(s, view, fraction, timeoutMs, { requireCamera = false } = {}) {
+  const line = await s.timeline();
+  if (!line) return { hour: null, state: null };
+  const expectedHour = Math.round(line.min + fraction * (line.max - line.min));
+  const before = Date.now();
+  const prevSent = s.app.lastSent?.('set_dashboard_maps') ?? null;
+  await s.app.click(Session.timelineX(line, fraction), line.y);
+  const deadline = Date.now() + timeoutMs;
+  let soughtHour = (await s.timeline()).value;
+  while (expectedHour !== line.value && soughtHour === line.value && Date.now() < deadline) {
+    await sleep(16);
+    soughtHour = (await s.timeline()).value;
+  }
+  if (expectedHour !== line.value && soughtHour === line.value) {
+    return { hour: expectedHour, state: null };
+  }
+  const latestSent = s.app.lastSent?.('set_dashboard_maps') ?? null;
+  const sentEntry = latestSent && latestSent !== prevSent
+    ? latestSent.args?.views?.find(entry => entry.id === view && entry.hour === soughtHour) ?? null
+    : null;
+  const minSequence = Number.isFinite(sentEntry?.sequence) ? sentEntry.sequence : null;
+  const cameraPredicate = requireCamera ? ' && Array.isArray(x.center) && x.center.length === 2 && Number.isFinite(x.zoom)' : '';
+  const seqPredicate = minSequence !== null ? ` && (x.sequence ?? 0) >= ${minSequence}` : '';
+  const predicate = `x => !x.loading && !x.error && x.hour === ${soughtHour}${seqPredicate}${cameraPredicate}`;
+  const remaining = Math.max(0, deadline - Date.now());
+  let drawn = await drawnState(s, view, before, predicate, remaining);
+  if (!drawn && soughtHour === line.value) {
+    const last = await s.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(view)}).at(-1) ?? null`);
+    const cameraOk = !requireCamera || (Array.isArray(last?.center) && last.center.length === 2 && Number.isFinite(last?.zoom));
+    if (last && !last.loading && !last.error && last.hour === soughtHour && cameraOk) drawn = last;
+  }
+  return { hour: soughtHour, state: drawn };
+}
+
+export async function mapPictures(s, input, visual, dpr, work, seeks, { timeoutMs = 15_000, stepDelayMs = 150 } = {}) {
   const area = await mapArea(s, dpr);
-  const exportAs = caseId => exportPicture(s, input, visual, work, caseId);
+  const exportAs = caseId => exportPicture(s, input, visual, work, caseId, { timeoutMs, stepDelayMs });
+  const results = [];
   for (const [label, fraction] of seeks) {
-    const line = await s.timeline();
-    const before = Date.now();
-    await s.app.click(Session.timelineX(line, fraction), line.y);
-    const drawn = await drawnState(s, area.view, before, 'x => !x.loading && x.hour != null', 15_000);
-    if (!drawn) { visual.fail(`map/default camera/${label}`, 'map', 'the map never drew the sought hour'); continue; }
+    const { hour, state: drawn } = await seekMapFrame(s, area.view, fraction, timeoutMs, { requireCamera: true });
+    results.push({ label, fraction, hour, state: drawn });
+    if (!drawn) {
+      visual.fail(`map/default camera/${label}`, 'map', `the map never drew the sought hour ${hour ?? label}`);
+      continue;
+    }
     await exportAs(`map/default camera/${label}`);
   }
   log('map pictures', visual.items.filter(item => item.kind === 'map').length);
+  return results;
 }
 
-export function zoomedMapPicture(visual, [label]) {
-  visual.fail(`map/zoomed camera/${label}`, 'map', "no repeatable close camera: wheel zoom moves by frame time, as the game's does, and no command sets the camera");
+export async function zoomedMapPicture(s, input, visual, dpr, work, [label, fraction], defaultState = null, { timeoutMs = 15_000, stepDelayMs = 150 } = {}) {
+  const caseId = `map/zoomed camera/${label}`;
+  const area = await mapArea(s, dpr);
+  const currentLine = await s.timeline();
+  let base = defaultState;
+  const baseMatchesCurrent = base && !base.loading && !base.error && base.hour != null
+    && Array.isArray(base.center) && base.center.length === 2 && Number.isFinite(base.zoom)
+    && (!currentLine || base.hour === currentLine.value);
+  if (!baseMatchesCurrent) {
+    const { hour, state } = await seekMapFrame(s, area.view, fraction, timeoutMs, { requireCamera: true });
+    base = state;
+    if (!base) {
+      visual.fail(caseId, 'map', `the map never drew the sought hour ${hour ?? label} with a default camera before the close-camera capture`);
+      return;
+    }
+  }
+  let requested;
+  try { requested = deriveCloseCameraPose(base); } catch (error) {
+    visual.fail(caseId, 'map', error.message);
+    return;
+  }
+  let dispatched = false;
+  try {
+    const before = Date.now();
+    dispatched = true;
+    const reply = await input.ask({ op: 'camera', view: area.view, center: requested.center, height: requested.height });
+    const pose = resolveCameraReply(reply);
+    if (!(pose.height < base.zoom - CLOSE_CAMERA_TOLERANCE)) {
+      visual.fail(caseId, 'map', `the resolved close camera height (${pose.height}) is not closer than the default zoom (${base.zoom})`);
+      return;
+    }
+    const reached = await drawnState(s, area.view, before, poseCheck(pose, base.hour), timeoutMs);
+    if (!reached) {
+      const last = await s.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(area.view)}).at(-1) ?? null`);
+      const shown = last ? `center=${JSON.stringify(last.center ?? null)}, zoom=${last.zoom ?? null}, hour=${last.hour ?? null}, loading=${last.loading}` : 'no state';
+      visual.fail(caseId, 'map', `the map never drew the requested close camera pose (${pose.center.join(', ')} at height ${pose.height}, hour ${base.hour}; last ${shown})`);
+      return;
+    }
+    await exportPicture(s, input, visual, work, caseId, { timeoutMs, stepDelayMs });
+  } catch (error) {
+    visual.fail(caseId, 'map', `close camera capture failed: ${error.message}`);
+  } finally {
+    if (dispatched) {
+      try {
+        const resetBefore = Date.now();
+        const resetReply = await input.ask({ op: 'camera', view: area.view, reset: true });
+        const resetPose = resolveCameraReply(resetReply, { center: base.center, height: base.zoom });
+        const restored = await drawnState(s, area.view, resetBefore, poseCheck(resetPose, base.hour), timeoutMs);
+        if (!restored) {
+          const last = await s.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(area.view)}).at(-1) ?? null`);
+          const shown = last ? `center=${JSON.stringify(last.center ?? null)}, zoom=${last.zoom ?? null}, hour=${last.hour ?? null}, loading=${last.loading}` : 'no state';
+          visual.fail(`${caseId}/reset`, 'map', `the map never redrew its default camera after reset (${resetPose.center.join(', ')} at height ${resetPose.height}, hour ${base.hour}; last ${shown})`);
+        }
+      } catch (error) {
+        visual.fail(`${caseId}/reset`, 'map', `close camera reset failed: ${error.message}`);
+      }
+    }
+  }
 }
 
-async function exportPicture(s, input, visual, work, caseId) {
+async function exportPicture(s, input, visual, work, caseId, { timeoutMs = 20_000, stepDelayMs = 150 } = {}) {
   const folder = path.join(work, 'map-exports');
   await mkdir(folder, { recursive: true });
   const file = path.join(folder, `${caseId.replace(/[^\w.-]+/g, '_')}.png`);
   if (existsSync(file)) await unlink(file);
   await s.click('article.dash-widget.kind-map button[aria-label="Map settings"]');
-  await sleep(150);
+  if (s.until) await s.until(`document.querySelector('.map-controls-menu:popover-open')`, 3000);
+  else if (stepDelayMs > 0) await sleep(stepDelayMs);
+  const exportSince = Date.now();
   await s.click('.map-controls-menu:popover-open .map-menu-action', { text: 'Export map', partial: true });
   await input.ask({ op: 'save_dialog', path: file, seconds: 20 });
-  for (const end = Date.now() + 20_000; !existsSync(file) && Date.now() < end;) await sleep(100);
-  await sleep(300);
-  if (!existsSync(file)) { visual.fail(caseId, 'map', 'the export wrote no image within 20 s'); return; }
+  const done = await s.app.waitForIpc('export_map', exportSince, Math.max(timeoutMs, 20_000));
+  if (!done) { visual.fail(caseId, 'map', 'export_map did not finish within 20 s'); await s.escape(); return; }
+  if (!done.ok) { visual.fail(caseId, 'map', `export_map failed: ${done.error ?? `status ${done.status}`}`); await s.escape(); return; }
+  if (done.result === null) { visual.fail(caseId, 'map', 'export_map was cancelled before writing an image'); await s.escape(); return; }
+  try {
+    await assertValidPng(file);
+  } catch (error) {
+    visual.fail(caseId, 'map', `exported PNG is invalid: ${error.message}`);
+    await s.escape();
+    return;
+  }
   await visual.addFile(caseId, 'map', file);
   await s.escape();
 }

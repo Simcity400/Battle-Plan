@@ -1,6 +1,6 @@
 use super::{Arg, Context, Tooltip};
 use replay_data::{rows::NavalSupremacyRow, rows::tables};
-use viewer_foundation::map::naval_region_control::Snapshot;
+use replay_derive::naval_region_control::Snapshot;
 use viewer_foundation::tooltip_text::ensure_newlines;
 
 #[derive(Clone)]
@@ -38,7 +38,7 @@ impl Default for Defines {
     }
 }
 impl Defines {
-    pub(super) fn load(d: &content_reader_core::defines::Defines) -> Self {
+    pub(super) fn load(d: &content_reader_defines::defines::Defines) -> Self {
         let fixed = |section, key| d.fixed5(section, key).map_err(|e| e.to_string());
         Self {
             sources: replay_derive::naval_dominance_derive::Defines::read(|section, key| {
@@ -67,7 +67,7 @@ impl Defines {
 
 pub(super) fn append(
     context: &Context<'_>,
-    sources: &viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap,
+    sources: &viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap,
     out: &mut Tooltip,
 ) {
     let Some(&region) = context.content.region_of.get(&context.province.id) else {
@@ -90,7 +90,7 @@ pub(super) fn append(
         }
     };
     if !region_content.provinces.iter().any(|province| {
-        context.content.kinds.get(province) == Some(&content_reader_core::map::ProvinceKind::Sea)
+        context.content.kinds.get(province) == Some(&content_reader_map::map::ProvinceKind::Sea)
     }) {
         return;
     }
@@ -229,7 +229,7 @@ pub(super) fn append(
 fn terrain_category<'c>(
     content: &'c super::counter_content::Content,
     region: &content_reader_regions::regions::StrategicRegion,
-) -> Result<&'c content_reader_core::terrain::TerrainCategory, String> {
+) -> Result<&'c content_reader_key_names::terrain::TerrainCategory, String> {
     let terrain = content.movement_terrain.as_ref().map_err(Clone::clone)?;
     let index = region
         .naval_terrain
@@ -287,7 +287,7 @@ pub fn dominance_hover(
     viewer: u32,
     region: u32,
     links: &std::collections::BTreeMap<u32, u32>,
-    sources: &viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap,
+    sources: &viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap,
     marked: impl Fn(u32, u32) -> Result<String, String>,
 ) -> Result<String, String> {
     let (mut text, ratios) = dominance_parts(content, frame, viewer, region, links, sources, marked)?;
@@ -302,7 +302,7 @@ pub fn dominance_parts(
     viewer: u32,
     region: u32,
     links: &std::collections::BTreeMap<u32, u32>,
-    sources: &viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap,
+    sources: &viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap,
     marked: impl Fn(u32, u32) -> Result<String, String>,
 ) -> Result<(String, String), String> {
     let (snapshot, _, minimum) = region_dominance(content, frame, viewer, region, links)?;
@@ -320,7 +320,7 @@ pub fn dominance_parts(
 
 pub(super) fn default_region(
     context: &Context<'_>,
-    sources: &viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap,
+    sources: &viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap,
     out: &mut Tooltip,
 ) {
     let Some(&region) = context.content.region_of.get(&context.province.id) else {
@@ -331,7 +331,7 @@ pub(super) fn default_region(
         let name = context.countries.name_with(slot, "_DEF")?;
         Ok(format!(
             "{}{tag} {}",
-            viewer_foundation::map::native_text::FLAG,
+            viewer_native_gui::native_text::FLAG,
             content_reader_localisation::localisation::crt_case_text(&name, true, true)
         ))
     };
@@ -352,7 +352,7 @@ fn own_row(
 ) -> Result<NavalSupremacyRow, String> {
     let mut own = None;
     for row in rows {
-        if viewer_foundation::map::naval_region_control::canonical(links, row.country)? == viewer {
+        if replay_derive::naval_region_control::canonical(links, row.country)? == viewer {
             own = Some(*row);
         }
     }
@@ -380,7 +380,7 @@ fn ratios(
     let mut ordered = rows.to_vec();
     ordered.sort_by_key(|row| row.region_slot);
     for row in ordered {
-        let slot = viewer_foundation::map::naval_region_control::canonical(links, row.country)?;
+        let slot = replay_derive::naval_region_control::canonical(links, row.country)?;
         let name = marked(row.country, slot)?;
         text.push_str(&loc(
             "NAVAL_DOMINANCE_RATIO",
@@ -426,7 +426,7 @@ fn building_counts(
             states.insert(row.state);
         }
     }
-    let tokens = viewer_foundation::table_access::TokenNames::new(context.frame)
+    let tokens = dashboard_text::table_access::TokenNames::new(context.frame)
         .map_err(|e| e.to_string())?;
     let facts = &context.content.building_facts;
     let buildings = context
@@ -461,7 +461,7 @@ fn count_levels(
         let end = first + buildings[first..].partition_point(|row| row.location == state);
         for building in &buildings[first..end] {
             if !building.active
-                || viewer_foundation::map::naval_region_control::canonical(links, building.country)? != viewer
+                || replay_derive::naval_region_control::canonical(links, building.country)? != viewer
             {
                 continue;
             }
@@ -545,9 +545,9 @@ fn building_text(
 fn source_text(
     context: &Region<'_>,
     region: u32,
-    sources: &viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap,
+    sources: &viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap,
 ) -> Result<String, String> {
-    let source = viewer_foundation::map::naval_dominance_sources::region(sources, region)?;
+    let source = viewer_unit_reads::naval_dominance_sources::region(sources, region)?;
     let mut text = String::new();
     if source.strike_multiplier > 100_000 && source.patrol > 0 {
         let percent = source.strike_multiplier.wrapping_sub(100_000);
@@ -602,7 +602,7 @@ fn access(context: &Context<'_>, region: u32) -> Result<String, String> {
 }
 
 fn minimum_text(minimum: i64, ratio: i64) -> i64 {
-    let value = viewer_foundation::naval_math::dominance_value(minimum, ratio);
+    let value = replay_derive::naval_math::dominance_value(minimum, ratio);
     i64::from(
         value
             .wrapping_add(if value < 0 { -50_000 } else { 50_000 })
@@ -640,7 +640,7 @@ fn current_text(
         let days = if divisor == 0 {
             0xffff_ffff
         } else {
-            viewer_foundation::map::naval_region_control::quotient(difference, divisor)?
+            replay_derive::naval_region_control::quotient(difference, divisor)?
         };
         if days > 0 {
             text.push_str(&loc(

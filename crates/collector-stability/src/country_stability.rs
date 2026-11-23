@@ -42,6 +42,16 @@ collector_primitives::capacity_max!(Capacities {
     demand { inputs, lines, bytes, children, candidates, values },
 });
 impl Capacities {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test(inputs: usize, lines: usize, bytes: usize) -> Self {
+        Self {
+            inputs,
+            lines,
+            bytes,
+            demand: native::Demand::default(),
+        }
+    }
+
     pub fn raise_for_countries(&mut self, slots: usize) {
         let inputs = crate::country_scale::rows(slots, 1);
         self.inputs = self.inputs.max(inputs);
@@ -152,6 +162,11 @@ impl Captured {
     pub fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         self.selection.reset(hour, force_full);
         self.phase_ticks = [0; 4];
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_keys(&mut self, keys: native::Keys) {
+        self.keys = Some(keys);
     }
 
     pub fn capture(
@@ -624,6 +639,184 @@ mod tests {
         );
         assert_eq!(captured.scratch.batch_fallbacks(), 0);
         assert_eq!(count(), before + 1);
+    }
+
+    #[test]
+    fn failed_static_witness_read_keeps_both_stability_tables_available() {
+        use engine_native::{
+            cdiplomacy_status, cgame_state, cidea, cideology_group, cpdx_array::Array,
+            cpolitical_party, cpolitical_status, cstatic_modifier, modifier_definition,
+            msvc_string,
+        };
+        use engine_stability::{cmodifier, cworld_threat};
+        use std::{cell::Cell, collections::BTreeMap};
+
+        struct World {
+            bytes: BTreeMap<usize, u8>,
+            fault: Cell<Option<usize>>,
+        }
+        impl World {
+            fn put(&mut self, at: usize, bytes: &[u8]) {
+                self.bytes
+                    .extend(bytes.iter().enumerate().map(|(i, &b)| (at + i, b)));
+            }
+            fn word(&mut self, at: usize, value: u64) {
+                self.put(at, &value.to_le_bytes());
+            }
+            fn u32(&mut self, at: usize, value: u32) {
+                self.put(at, &value.to_le_bytes());
+            }
+            fn array(&mut self, at: usize, data: usize, count: u32) {
+                self.word(at, data as u64);
+                self.word(at + 8, u64::from(count) | (u64::from(count) << 32));
+            }
+            fn string(&mut self, at: usize, text: &[u8]) {
+                let mut storage = [0_u8; 16];
+                storage[..text.len()].copy_from_slice(text);
+                self.put(at, &storage);
+                self.word(at + msvc_string::LENGTH, text.len() as u64);
+                self.word(at + msvc_string::CAPACITY, 15);
+            }
+        }
+        impl Memory for World {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                if self
+                    .fault
+                    .get()
+                    .is_some_and(|fault| at <= fault && fault - at < out.len())
+                {
+                    return false;
+                }
+                for (i, byte) in out.iter_mut().enumerate() {
+                    *byte = self.bytes.get(&(at + i)).copied().unwrap_or(0);
+                }
+                true
+            }
+        }
+        const BASE: usize = 0x1_4000_0000;
+        const STATE: usize = 0x1000;
+        const COUNTRY: usize = 0x10000;
+        const STATUS: usize = 0x20000;
+        const PARTY: usize = 0x21000;
+        const IDEA: usize = 0x22000;
+        const GROUP: usize = 0x23000;
+        const DIPLOMACY: usize = 0x24000;
+        const STATS: usize = 0x25000;
+        const RING: usize = 0x26000;
+        const WORLD: usize = 0x27000;
+        const DATABASE: usize = 0x28000;
+        const SUNK: usize = 0x29000;
+        const SUNK_ENTRIES: usize = 0x29400;
+        const CHILD: usize = 0x2a000;
+        const CHILDREN: usize = 0x2a400;
+        const CHILD_ENTRIES: usize = 0x2a800;
+        const TABLE: usize = 0x2b000;
+        const STABILITY_KEY: u32 = 5;
+
+        let mut memory = World {
+            bytes: BTreeMap::new(),
+            fault: Cell::new(None),
+        };
+        memory.array(STATE + cgame_state::COUNTRIES, 0x3000, 2);
+        memory.array(STATE + cgame_state::COUNTRY_LINKS, 0x4000, 2);
+        memory.word(0x3008, COUNTRY as u64);
+        memory.u32(0x4004, 1);
+        memory.word(COUNTRY, (BASE + ccountry::VTABLE_RVA.0) as u64);
+        memory.u32(COUNTRY + ccountry::ID, 1);
+        memory.word(COUNTRY + ccountry::STABILITY, 50_000);
+        memory.put(COUNTRY + native::PRIDE_OF_THE_FLEET_SUNK_ACTIVE, &[1]);
+        memory.word(COUNTRY + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64);
+        memory.word(DIPLOMACY, (BASE + cdiplomacy_status::VTABLE_RVA.0) as u64);
+        memory.word(DIPLOMACY + cdiplomacy_status::COUNTRY, COUNTRY as u64);
+        memory.word(COUNTRY + ccountry::POLITICAL_STATUS, STATUS as u64);
+        memory.word(STATUS, (BASE + cpolitical_status::VTABLE_RVA.0) as u64);
+        memory.word(STATUS + cpolitical_status::RULING_PARTY, PARTY as u64);
+        memory.word(PARTY, (BASE + cpolitical_party::VTABLE_RVA.0) as u64);
+        memory.word(PARTY + cpolitical_party::IDEOLOGY_GROUP, GROUP as u64);
+        memory.word(GROUP, (BASE + cideology_group::VTABLE_RVA.0) as u64);
+        memory.string(
+            GROUP + native::IDEOLOGY_GROUP_MODIFIER + cmodifier::DISPLAY_NAME,
+            b"",
+        );
+        memory.array(STATUS + cpolitical_status::IDEAS, 0x5000, 1);
+        memory.word(0x5000, IDEA as u64);
+        memory.word(IDEA, (BASE + cidea::VTABLE_RVA.0) as u64);
+        memory.word(COUNTRY + native::AIR_STATISTICS, STATS as u64);
+        memory.word(STATS + 0x10, RING as u64);
+        memory.word(STATE + cgame_state::WORLD_THREAT, WORLD as u64);
+        memory.word(WORLD, (BASE + cworld_threat::VTABLE_RVA.0) as u64);
+        memory.array(BASE + modifier_definition::TABLE_RVA.0, TABLE, 8);
+        memory.u32(
+            TABLE + STABILITY_KEY as usize * modifier_definition::STRIDE + modifier_definition::FLAGS,
+            3,
+        );
+        memory.word(BASE + native::STATIC_DATABASE_RVA.0, DATABASE as u64);
+        memory.word(DATABASE + 0xc0, SUNK as u64);
+        memory.word(SUNK, (BASE + cstatic_modifier::VTABLE_RVA.0) as u64);
+        memory.u32(SUNK_ENTRIES, STABILITY_KEY);
+        memory.word(SUNK_ENTRIES + 8, (-3_000_i64) as u64);
+        memory.array(SUNK + cmodifier::ACCUMULATOR, SUNK_ENTRIES, 1);
+        memory.string(SUNK + cmodifier::DISPLAY_NAME, b"Pride sunk");
+        memory.string(SUNK + native::STATIC_NAME, b"pride_sunk");
+        memory.array(COUNTRY + native::MODIFIER_CHILDREN, CHILDREN, 1);
+        memory.word(CHILDREN, CHILD as u64);
+        memory.word(CHILD, (BASE + cmodifier::VTABLE_RVA.0) as u64);
+        memory.u32(CHILD_ENTRIES, STABILITY_KEY);
+        memory.word(CHILD_ENTRIES + 8, (-3_000_i64) as u64);
+        memory.array(CHILD + cmodifier::ACCUMULATOR, CHILD_ENTRIES, 1);
+        memory.string(CHILD + cmodifier::DISPLAY_NAME, b"Pride sunk");
+
+        let mut keys = [None; native::TRACKED];
+        keys[0] = Some(STABILITY_KEY);
+        let mut captured = Captured::with_capacities(&Capacities {
+            inputs: 2,
+            lines: 4,
+            bytes: 64,
+            ..Default::default()
+        });
+        captured.keys = Some(native::Keys {
+            keys,
+            table: Array {
+                data: TABLE,
+                count: 8,
+            },
+        });
+
+        memory
+            .fault
+            .set(Some(COUNTRY + native::PRIDE_OF_THE_FLEET_SUNK_ACTIVE));
+        captured.capture(&memory, BASE, STATE, 0, true, None);
+        assert_eq!(
+            captured.outcomes(),
+            [Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 }]
+        );
+        let [inputs_view, lines_view] = captured.tables();
+        assert!(matches!(inputs_view, TableView::Complete(_)));
+        let TableView::Complete(TableRows::CountryStabilityLines(rows)) = lines_view else {
+            panic!("expected complete stability lines");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, CountryStabilityLineRow::UNPAIRED);
+        assert_eq!(rows[0].text, b"Pride sunk");
+        assert_eq!(rows[0].value, -3_000);
+
+        memory
+            .fault
+            .set(Some(DIPLOMACY + cdiplomacy_status::ENEMY_COUNTRY_COUNT));
+        captured.capture(&memory, BASE, STATE, 1, true, None);
+        assert_eq!(
+            captured.outcomes(),
+            [Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 }]
+        );
+        let [inputs_view, lines_view] = captured.tables();
+        assert!(matches!(inputs_view, TableView::Complete(_)));
+        let TableView::Complete(TableRows::CountryStabilityLines(rows)) = lines_view else {
+            panic!("expected complete stability lines");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, CountryStabilityLineRow::STATIC);
+        assert_eq!(rows[0].identity, b"pride_sunk");
+        assert_eq!(rows[0].value, -3_000);
     }
 
     #[test]

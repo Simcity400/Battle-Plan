@@ -8,4 +8,4 @@ Grid items retain the offsets of construction against the GUI viewport when they
 
 The pointer walk keeps position and hit geometry apart from cropped or stretched draws. Regions include text boxes with no drawn glyphs. The walk resolves hits using the frames already drawn, then draws again with the resulting button states. The last admitted hit is the topmost control. All hovered check boxes qualify for their unchecked Over state even when another control wins dispatch. A held button keeps the pointer until release. The view passes logical construction dimensions, and supplies physical dimensions separately when pointer inversion needs them.
 
-[Layout walk and part composition](../../crates/viewer-foundation/src/map/native_gui.rs) · [Retained pointer](../../crates/viewer-foundation/src/map/native_gui/pointer.rs)
+[Layout walk and part composition](../../crates/viewer-native-gui/src/native_gui.rs) · [Retained pointer](../../crates/viewer-native-gui/src/native_gui/pointer.rs)

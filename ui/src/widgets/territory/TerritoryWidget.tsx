@@ -9,6 +9,7 @@ import { useChartTokens } from '../../charts/useChartTokens';
 import { useCountryLooks } from '../../dashboard/countryLooks';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { resolveOptions } from '../../dashboard/options';
 import type { OptionValue } from '../../dashboard/options';
 import { AREA_UNIT, formatTerritory, MEASURES, measureOf, ruleOf, territoryMeasureLabel, territoryNote, territorySeriesMeasure } from '../../dashboard/territoryMeasure.ts';
@@ -19,7 +20,6 @@ import { mapLive } from '../../charts/live.ts';
 import { useShownHour } from '../../dashboard/widgetPerf';
 import { OPTIONS } from './definition';
 import '../../charts/race/countryRace.css';
-import type { TerritoryShareReply } from '../../generated/dashboard';
 
 const NO_WARNINGS: string[] = [];
 const SHARE_SETTINGS = { growth: 'share', labels: true, legend: true, breadcrumb: false, dimming: true } as const;
@@ -55,7 +55,7 @@ function TerritoryShareView({ widget, runtime, active, onDiagnostics, measure, r
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const name = territorySeriesMeasure(measure, rule);
   const count = widget.countries.kind === 'group' && widget.countries.group.type === 'top' ? widget.countries.group.count : 10;
-  const share = useHeadProduct<TerritoryShareReply>(runtime, widget, 'territory-share', track ? { measure: name } : null,
+  const share = useHeadProduct(runtime, useGate(runtime, widget), 'territory-share', track ? { measure: name } : null,
     { active, validate: validateShareReply, structure: reply => shareStructure(reply, count) });
   const hour = share.at ?? (track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : 0);
   const shownTags = useMemo(() => share.data?.entries.slice(0, count).map(entry => entry.tag) ?? [], [share.data, count]);

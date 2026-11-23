@@ -1,5 +1,5 @@
 
-use replay::spool::Record;
+use replay_capture_spool::spool::Record;
 use replay_data::{
     identity::CaptureMode, identity::Identity, identity::Roster, identity::SampleBoundary,
     identity::SessionStart, identity::Verification, rows::CampaignRow, rows::CountryLinkRow,
@@ -506,10 +506,10 @@ pub fn named_frame(hour: i32, name: Option<&[u8]>) -> DecodedFrame {
 }
 
 pub fn replay(frames: Vec<DecodedFrame>) -> replay::campaign::Replay {
-    replay::campaign::Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap()
+    replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap()
 }
 
-pub fn equipment_types(texts: &[&[u8]]) -> std::io::Result<content_reader_core::equipment::Database> {
+pub fn equipment_types(texts: &[&[u8]]) -> std::io::Result<content_reader_key_names::equipment::Database> {
     let texts: Vec<String> = texts
         .iter()
         .map(|text| String::from_utf8(text.to_vec()).unwrap())
@@ -522,7 +522,7 @@ pub fn equipment_types(texts: &[&[u8]]) -> std::io::Result<content_reader_core::
         .zip(&texts)
         .map(|(path, text)| (path.as_str(), text.as_str()))
         .collect();
-    let (database, _) = content_reader_core::equipment::fixture::load(&files);
+    let (database, _) = content_reader_key_names::equipment::fixture::load(&files);
     match &database.lost {
         Some(reason) => Err(std::io::Error::other(reason.clone())),
         None => Ok(database),
@@ -550,7 +550,7 @@ pub fn production_frame(
     use replay_data::{
         rows::CountryAppearanceRow, rows::IndustrialOrganisationRow, rows::LexicalTokenRow,
         rows::OutputPurpose, rows::ProductionLineOutputRow, rows::ProductionLineRow,
-        rows::Recorded, rows::VariantDefinitionRow,
+        rows::Recorded, rows::ReservedCountryNamingRow, rows::VariantDefinitionRow,
     };
     let mut frame = source(1, hour, Some(1));
     let country = |id, canonical_slot, tag: &[u8]| CountryRow {
@@ -573,8 +573,16 @@ pub fn production_frame(
     *frame.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
             country: 11,
+            original_tag_reference: Recorded::Value(Some(0)),
             ..Default::default()
         }]));
+    *frame.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow {
+                dynamic_tag_boundary: Recorded::Value(Some(50)),
+                ..Default::default()
+            },
+        ]));
     *frame.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(vec![
             LexicalTokenRow {

@@ -1,15 +1,15 @@
 use super::{Config, MAP_LINES_LOADING, Options, Viewer};
-use crate::{
-    layers::{View, recorded::record, strikes::Strikes},
-    playhead_host::{MapSide, limitations, open, views::tests::hourly_steps},
-};
+use viewer_layer_core::{layers::View, test_support::recorded::record};
+use viewer_layers_infrastructure::strikes::Strikes;
+use crate::playhead_host::{MapSide, open, views::tests::hourly_steps};
+use viewer_playback::limitations;
 use replay_columnar::manifest::Status;
 use replay_data::rows::TableId;
 use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use viewer_world::map::strike_effects;
+use viewer_models::strike_effects;
 
 #[test]
 fn before_the_head_reaches_an_hour_the_lines_are_the_maps_whole_list() {
@@ -17,9 +17,9 @@ fn before_the_head_reaches_an_hour_the_lines_are_the_maps_whole_list() {
         let status = if at >= 2 { Status::Truncated { missing: 3 } } else { Status::Complete };
         store.status(TableId::NuclearStrikes.index(), status, true, Some(at as i32), true).unwrap();
     });
-    let side = MapSide::new(open(units, hourly_steps()).unwrap(), vec![Box::new(Strikes::new(Arc::new(|_| None)))], View::default()).unwrap();
+    let side = MapSide::with_products(open(units, hourly_steps()).unwrap(), vec![Box::new(Strikes::new(Arc::new(|_| None)))], View::default()).unwrap();
     let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::new(Mutex::new(None)), None, None);
-    let mut side = crate::playhead_host::side::SideThread::new(side).unwrap();
+    let mut side = viewer_playback::side::SideThread::new(side).unwrap();
     side.driven(|_| ());
     viewer.playhead_map = Some(side);
     let [lines, _] = viewer.hour_lines().expect("the open map's lines, though it shows no hour");
@@ -45,13 +45,13 @@ fn before_the_head_reaches_an_hour_the_lines_are_the_maps_whole_list() {
 
 #[test]
 fn a_refused_vision_is_named_on_the_map_without_diagnostics() {
-    use crate::layers::vision::{Content, Vision};
+    use viewer_layer_core::vision::{Content, Vision};
     let units = record("refused vision", 4, |_, _| {});
     let vision = Vision::new(Arc::new(Content::new(Err("no fog content".into()))));
-    let side = MapSide::new(open(units, hourly_steps()).unwrap(), vec![Box::new(vision)], View::default()).unwrap();
+    let side = MapSide::with_products(open(units, hourly_steps()).unwrap(), vec![Box::new(vision)], View::default()).unwrap();
     let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::new(Mutex::new(None)), None, None);
     assert!(!viewer.diagnostics, "the diagnostics are off");
-    let mut side = crate::playhead_host::side::SideThread::new(side).unwrap();
+    let mut side = viewer_playback::side::SideThread::new(side).unwrap();
     side.anchor(2, false, 0.0, true);
     let deadline = Instant::now() + Duration::from_secs(120);
     while side.products().vision_refused.is_none() || side.on_screen().is_none() {

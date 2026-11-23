@@ -6,4 +6,4 @@ The steady pool size is a retention target. Backlogged frame slots add capacity 
 
 The sizing thread presizes idle payloads for map dimension and registry changes. New dimensions must reach idle jobs before the first hourly copy on the new branch. The game thread can still fall back to a vacant job if sizing holds the pool. New modifier hints also update jobs prepared before the campaign loaded. For `keep()`, the loader publishes `SHARED` before it starts the decode worker and clears it after joining that worker. This makes the lookup valid for the worker's lifetime.
 
-[Decode pools](../../crates/collector/src/decode/pools.rs) · [Capture frame pool](../../crates/collector/src/frame_pool.rs)
+[Decode pools](../../crates/collector-capture/src/decode/pools.rs) · [Capture frame pool](../../crates/collector-capture/src/frame_pool.rs)

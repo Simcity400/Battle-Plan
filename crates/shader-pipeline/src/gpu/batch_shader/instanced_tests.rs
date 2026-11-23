@@ -71,6 +71,7 @@ fn pass(stream: Option<usize>) -> super::super::Pass {
         targets: Vec::new(),
         instanced: 0,
         stream,
+        vertex_color_tint: None,
     }
 }
 

@@ -1,7 +1,7 @@
 use super::{Arg, Context, Tooltip, line};
-use content_reader_core::fixed5::fixed5_to_string;
+use content_reader_parser::fixed5::fixed5_to_string;
 use replay_data::{rows::IntelNetworkRow, rows::tables};
-use viewer_foundation::map::native_text::{COLOR, FLAG};
+use viewer_native_gui::native_text::{COLOR, FLAG};
 
 const ONE: i64 = 100_000;
 const FULL_STRENGTH: i64 = 100 * ONE;

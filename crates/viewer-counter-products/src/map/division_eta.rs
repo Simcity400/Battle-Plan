@@ -1,8 +1,8 @@
 
 use super::counter_content::Content;
-use viewer_foundation::map::movement_reads::ReadOperands;
+use viewer_unit_reads::movement_reads::ReadOperands;
 use viewer_foundation::movement_timing::{Etas, MovementContent, arrival};
-use viewer_foundation::unit_handle::Unit;
+use viewer_runtime::unit_handle::Unit;
 mod fresh_search;
 #[path = "division_eta/classes/naval.rs"]
 mod naval;
@@ -54,8 +54,8 @@ pub(crate) struct CounterQueries<'a> {
     world: OnceCell<dashboard_text::triggers::World<'a>>,
     inputs: OnceCell<fresh_search::Inputs<'a>>,
     etas: OnceCell<Result<Arc<Etas>, String>>,
-    cells: viewer_foundation::map::movement_reads::Cells,
-    common: viewer_foundation::map::movement_reads::CommonCells<'a>,
+    cells: viewer_unit_reads::movement_reads::Cells,
+    common: viewer_unit_reads::movement_reads::CommonCells<'a>,
 }
 
 impl<'a> CounterQueries<'a> {
@@ -72,7 +72,7 @@ impl<'a> CounterQueries<'a> {
             inputs: OnceCell::new(),
             etas: OnceCell::new(),
             cells: Default::default(),
-            common: viewer_foundation::map::movement_reads::CommonCells::new(frame),
+            common: viewer_unit_reads::movement_reads::CommonCells::new(frame),
         }
     }
 
@@ -84,7 +84,7 @@ impl<'a> CounterQueries<'a> {
         let world = self.world.get_or_init(|| {
             dashboard_text::triggers::World::read(self.frame, self.reads.trigger_content.facts())
         });
-        let moves = viewer_foundation::map::movement_reads::Moves::for_common(
+        let moves = viewer_unit_reads::movement_reads::Moves::for_common(
             world,
             self.reads,
             &self.cells,
@@ -102,13 +102,13 @@ impl<'a> CounterQueries<'a> {
         let world = self.world.get_or_init(|| {
             dashboard_text::triggers::World::read(self.frame, self.reads.trigger_content.facts())
         });
-        let moves = viewer_foundation::map::movement_reads::Moves::for_common(
+        let moves = viewer_unit_reads::movement_reads::Moves::for_common(
             world,
             self.reads,
             &self.cells,
             &self.common,
         )?;
-        let content = viewer_foundation::map::movement_reads::CommonText {
+        let content = viewer_unit_reads::movement_reads::CommonText {
             frame: self.frame,
             loc: &self.content.localisation,
             recorded_language: &self.content.recorded_language,
@@ -133,13 +133,13 @@ impl<'a> CounterQueries<'a> {
         let world = self.world.get_or_init(|| {
             dashboard_text::triggers::World::read(self.frame, self.reads.trigger_content.facts())
         });
-        let moves = viewer_foundation::map::movement_reads::Moves::for_common(
+        let moves = viewer_unit_reads::movement_reads::Moves::for_common(
             world,
             self.reads,
             &self.cells,
             &self.common,
         )?;
-        let content = viewer_foundation::map::movement_reads::CommonText {
+        let content = viewer_unit_reads::movement_reads::CommonText {
             frame: self.frame,
             loc: &self.content.localisation,
             recorded_language: &self.content.recorded_language,
@@ -189,7 +189,7 @@ impl<'a> CounterQueries<'a> {
         &self,
         derive: impl FnOnce(
             &fresh_search::Inputs<'a>,
-            &viewer_foundation::map::movement_reads::Moves<'_, 'a>,
+            &viewer_unit_reads::movement_reads::Moves<'_, 'a>,
         ) -> Result<T, String>,
     ) -> Result<T, String> {
         let content = self
@@ -203,7 +203,7 @@ impl<'a> CounterQueries<'a> {
         let world = self.world.get_or_init(|| {
             dashboard_text::triggers::World::read(self.frame, self.reads.trigger_content.facts())
         });
-        let moves = viewer_foundation::map::movement_reads::Moves::for_counter(
+        let moves = viewer_unit_reads::movement_reads::Moves::for_counter(
             world,
             self.reads,
             &self.cells,

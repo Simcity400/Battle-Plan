@@ -112,3 +112,83 @@ pub fn phase_enter(phase: u8) {
         REACHED.store(true, Ordering::Relaxed);
     }
 }
+
+pub const TEST_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(120);
+
+pub fn watched(state: impl Fn() -> String, scenario: impl FnOnce(&Steps) + Send + 'static) {
+    use std::sync::mpsc::RecvTimeoutError;
+    let (steps, seen) = std::sync::mpsc::channel();
+    let scenario = std::thread::spawn(move || scenario(&Steps(steps)));
+    let mut last = String::from("starting");
+    loop {
+        match seen.recv_timeout(TEST_HANG_GUARD) {
+            Ok(step) => last = step,
+            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {
+                panic!("blocked for {TEST_HANG_GUARD:?} at: {last}; {}", state())
+            }
+        }
+    }
+    if let Err(panic) = scenario.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+pub struct Ending<T> {
+    pub thread: std::thread::JoinHandle<()>,
+    pub done: std::sync::mpsc::Receiver<T>,
+}
+
+pub fn spawn_ending<T: Send + 'static>(run: impl FnOnce() -> T + Send + 'static) -> Ending<T> {
+    let (send, done) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let _ = send.send(run());
+    });
+    Ending { thread, done }
+}
+
+impl<T> Ending<T> {
+    pub fn thread(&self) -> &std::thread::Thread {
+        self.thread.thread()
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.thread.is_finished()
+    }
+
+    pub fn end(self, what: impl FnOnce() -> String) -> T {
+        use std::sync::mpsc::RecvTimeoutError;
+        match self.done.recv_timeout(TEST_HANG_GUARD) {
+            Ok(result) => {
+                let _ = self.thread.join();
+                result
+            }
+            Err(RecvTimeoutError::Disconnected) => match self.thread.join() {
+                Err(panic) => std::panic::resume_unwind(panic),
+                Ok(()) => unreachable!("a thread that returned sent its result"),
+            },
+            Err(RecvTimeoutError::Timeout) => {
+                panic!("{} did not end within {TEST_HANG_GUARD:?}", what())
+            }
+        }
+    }
+}
+
+pub struct Steps(std::sync::mpsc::Sender<String>);
+
+impl Steps {
+    pub fn at(&self, step: impl std::fmt::Display) {
+        let _ = self.0.send(step.to_string());
+    }
+}
+
+#[cfg(windows)]
+pub fn qpc_frequency() -> u64 {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
+    }
+    let mut frequency = 0;
+    unsafe { QueryPerformanceFrequency(&mut frequency) };
+    frequency.max(1) as u64
+}

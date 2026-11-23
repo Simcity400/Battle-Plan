@@ -4,9 +4,9 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 #[cfg(test)]
-use viewer_foundation::map::test_support::test_frame;
+use viewer_foundation::test_support::test_frame;
 #[cfg(test)]
-use viewer_foundation::map::test_support::test_put;
+use viewer_foundation::test_support::test_put;
 use viewer_foundation::movement_timing::MovementContent;
 
 use replay_data::{rows::Recorded, rows::TableSchema, rows::tables};
@@ -14,14 +14,12 @@ use replay_derive::{eta_derive, eta_derive::ProvinceOperands};
 use replay_frame::frame::DecodedFrame;
 
 use crate::map::counter_content::Content;
-use viewer_foundation::map::movement_routes::Route;
+use viewer_unit_reads::movement_routes::Route;
 
-use {
-    viewer_foundation::map::counter_move, viewer_foundation::map::counter_move::RouteWorld,
-    viewer_foundation::map::directed_wars::Owner,
-    viewer_foundation::map::province_map::HeightField, viewer_foundation::unit_class::CounterClass,
-    viewer_foundation::unit_handle::Unit,
-};
+use viewer_unit_reads::counter_move::{self, RouteWorld};
+use replay_derive::directed_wars::Owner;
+use viewer_gpu::province_map::HeightField;
+use viewer_runtime::{unit_class::CounterClass, unit_handle::Unit};
 
 pub fn selected_provinces(frame: &DecodedFrame, selected: &BTreeSet<Unit>) -> BTreeSet<u32> {
     selected
@@ -258,7 +256,7 @@ impl<'a> Context<'a> {
         let anchor = |province| {
             let land = input.style.class == CounterClass::TaskForce
                 && movement.map.terrain(province)?.flags & 1 != 0;
-            viewer_foundation::map::counter_anchors::stack_anchor(
+            viewer_unit_reads::counter_anchors::stack_anchor(
                 &self.content.anchors,
                 &self.content.default_anchors,
                 province,

@@ -8,4 +8,4 @@ Text layout wraps inside its borders, then applies orientation, format and verti
 
 Glyph vertices flush in native-sized batches. Inline icons and flags submit immediately with the inherited text projection and modulation. An inline quad covers earlier submitted glyphs and lies under glyphs still buffered. Text color travels in the glyphs, while window opacity reaches modulation. An instant text box clips to its own inner box. Its named scrollbar draws afterward without inheriting the text's window opacity. Every text write refreshes the fixed-point overflow range, visibility flag and slider immediately. Changed limits clamp the value without notifying the text object, so the previous text offset persists until a notification.
 
-[GUI text and asset collection](../../crates/viewer-foundation/src/map/native_gui.rs) · [Ordered text writes](../../crates/viewer-foundation/src/map/native_gui/lifecycle.rs)
+[GUI text and asset collection](../../crates/viewer-native-gui/src/native_gui.rs) · [Ordered text writes](../../crates/viewer-native-gui/src/native_gui/lifecycle.rs)

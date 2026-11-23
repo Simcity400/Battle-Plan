@@ -2,22 +2,22 @@ use eframe::wgpu;
 use std::io;
 use std::sync::MutexGuard;
 use std::{fs, path::PathBuf, sync::Arc};
-use viewer_foundation::errors::invalid;
-use viewer_foundation::map::camera::MapSize;
-use viewer_foundation::map::camera::Placement;
-use viewer_foundation::map::frame::DayNight;
-use viewer_foundation::map::gpu_contract::OUTPUT_FORMAT;
-use viewer_foundation::map::gpu_contract::map_device_descriptor;
-use viewer_foundation::map::gpu_contract::select_adapter;
-use viewer_foundation::map::name_draw::Placements;
-use viewer_foundation::map::perspective::Choice;
-use viewer_foundation::map::presentation::Continuity;
+use viewer_runtime::errors::invalid;
+use viewer_gpu::camera::MapSize;
+use viewer_gpu::camera::Placement;
+use viewer_gpu::frame::DayNight;
+use viewer_gpu::gpu_contract::OUTPUT_FORMAT;
+use viewer_gpu::gpu_contract::map_device_descriptor;
+use viewer_gpu::gpu_contract::select_adapter;
+use viewer_runtime::name_draw::Placements;
+use viewer_foundation::perspective::Choice;
+use viewer_runtime::presentation::Continuity;
 #[cfg(test)]
-use viewer_foundation::map::test_support::serial as test_support_serial;
-use viewer_world::map::models::ModelPass;
-use viewer_world::map::scene::passes;
-use viewer_world::map::scene::*;
-use viewer_world::map::scene_faults::{Point, Probe};
+use viewer_gpu::test_support::serial as test_support_serial;
+use viewer_models::ModelPass;
+use viewer_world::scene::passes;
+use viewer_world::scene::*;
+use viewer_world::scene_faults::{Point, Probe};
 
 #[derive(serde::Deserialize)]
 pub(crate) struct Input {
@@ -74,7 +74,7 @@ impl Fixture {
         })?;
         let document = crate::document::Document::load(
             &input.replay,
-            &content_reader_core::ResolveOptions {
+            &content_reader_layers::ResolveOptions {
                 game_dir: input.game.clone(),
                 user_dir: input.user.clone(),
                 cache_dir: input.cache.clone(),
@@ -108,7 +108,7 @@ impl Fixture {
             camera: Placement {
                 center: [x, z],
                 height,
-                pose: viewer_foundation::map::camera::Pose::Map,
+                pose: viewer_gpu::camera::Pose::Map,
             }
             .on(MapSize::of(&self.document.map), self.document.map_defines),
             day_night: DayNight::at_hour(self.input.hour),
@@ -137,7 +137,7 @@ impl Fixture {
             device,
             queue,
             d,
-            dashboard::protocol::MapGraphics {
+            dashboard_core::protocol::MapGraphics {
                 samples,
                 ..Default::default()
             },
@@ -145,7 +145,7 @@ impl Fixture {
         )?;
         scene.build_names_in_upload(true);
         let perspective = Choice::default();
-        let political = viewer_world::map::political::build(&d.map, d.frame()?)?;
+        let political = viewer_map_modes::political::build(&d.map, d.frame()?)?;
         scene.set_political(device, queue, &political.regions)?;
         scene.set_classes(
             device,
@@ -235,7 +235,7 @@ fn a_window_scene_admits_unit_models_by_the_content_cutoffs() -> io::Result<()> 
         &fixture.state.device,
         &fixture.state.queue,
         &fixture.document,
-        dashboard::protocol::MapGraphics {
+        dashboard_core::protocol::MapGraphics {
             samples: 1,
             ..Default::default()
         },
@@ -351,7 +351,7 @@ fn production_scene_targets_and_post_recover() -> io::Result<()> {
         control.targets = None;
         control.post.invalidate();
         for current in [&mut scene, &mut control] {
-            current.set_graphics(dashboard::protocol::MapGraphics {
+            current.set_graphics(dashboard_core::protocol::MapGraphics {
                 samples: 1,
                 full_resolution: full,
                 ..Default::default()
@@ -401,7 +401,7 @@ fn production_scene_targets_and_post_recover() -> io::Result<()> {
         );
         assert_eq!(
             scene.shadow_screen(),
-            Some(viewer_world::map::shadow::Screen::Half),
+            Some(viewer_scene_base::shadow::Screen::Half),
             "the shipped shadow readers sample the half-size screen buffer"
         );
         assert_eq!(
@@ -530,7 +530,7 @@ fn production_scene_fatal_encoder_is_not_submitted() -> io::Result<()> {
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn near_names_fade_in_as_the_country_names_fade_out() -> io::Result<()> {
-    use viewer_foundation::map::name_draw::next_generation;
+    use viewer_runtime::name_draw::next_generation;
     let fixture = Fixture::load("near-names")?;
     let mut scene = fixture.scene()?;
     let names = Placements {
@@ -561,7 +561,7 @@ fn near_names_fade_in_as_the_country_names_fade_out() -> io::Result<()> {
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn installed_names_handed_nothing_for_frames_are_drawn_when_handed_again() -> io::Result<()> {
-    use viewer_foundation::map::name_draw::next_generation;
+    use viewer_runtime::name_draw::next_generation;
     let fixture = Fixture::load("names-handed-nothing")?;
     let mut scene = fixture.scene()?;
     scene.build_names_in_upload(false);

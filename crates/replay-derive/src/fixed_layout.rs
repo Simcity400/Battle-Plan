@@ -65,28 +65,6 @@ pub const TASK_FORCE_COUNTER_ETA: Family = Family {
     tables: &[],
 };
 
-pub const TRANSPORT_RISK: Family = Family {
-    name: "selected transport risk",
-    keys: &[
-        keys::NAVAL_COORDINATION,
-        keys::NAVAL_SPEED_FACTOR,
-        keys::NAVAL_DETECTION,
-        keys::SPOTTING_CHANCE,
-        keys::NIGHT_SPOTTING_CHANCE,
-        keys::NAVY_VISIBILITY,
-        keys::SPOTTING_CHANCE_AGAINST,
-    ],
-    tokens: &[],
-    tables: &[],
-};
-
-pub const TRANSPORT_AIR: Family = Family {
-    name: "selected transport air normalization",
-    keys: &engine_executable::modifier_keys::TRANSPORT_AIR_NORMALIZATION,
-    tokens: &[],
-    tables: &[],
-};
-
 pub const AIR_MAP: Family = Family {
     name: "Air map detection and base modifiers",
     keys: &[
@@ -332,6 +310,13 @@ pub const COUNTRY_RECRUITMENT: Family = Family {
     tables: &[TableId::CountryCounterInputs],
 };
 
+pub const COUNTRY_AIR_COMBAT: Family = Family {
+    name: "country air combat modifiers",
+    keys: &engine_native::ccountry::AIR_COMBAT_MODIFIER_KEYS,
+    tokens: &[],
+    tables: &[TableId::CountryCounterInputs],
+};
+
 pub const STATE_RECRUITMENT: Family = Family {
     name: "state recruitment",
     keys: &[
@@ -397,9 +382,20 @@ pub const PARADROP_TRANSPORT: Family = Family {
     tables: &[],
 };
 
+const NAVAL_MISSION_KEYS: [u32; engine_native::naval_mission_inputs::COUNTRY_KEYS.len() + 1] = {
+    let mut out = [0; engine_native::naval_mission_inputs::COUNTRY_KEYS.len() + 1];
+    let mut index = 0;
+    while index < engine_native::naval_mission_inputs::COUNTRY_KEYS.len() {
+        out[index] = engine_native::naval_mission_inputs::COUNTRY_KEYS[index];
+        index += 1;
+    }
+    out[index] = keys::SPOTTING_CHANCE_AGAINST;
+    out
+};
+
 pub const NAVAL_MISSIONS: Family = Family {
     name: "naval mission active counts and efficiencies",
-    keys: &engine_native::naval_mission_inputs::COUNTRY_KEYS,
+    keys: &NAVAL_MISSION_KEYS,
     tokens: &[],
     tables: &[
         TableId::NavalMissionTaskForces,
@@ -497,8 +493,6 @@ pub const FAMILIES: &[Family] = &[
     STRATEGIC_ACTION,
     NAVAL_TRANSFER,
     TASK_FORCE_COUNTER_ETA,
-    TRANSPORT_RISK,
-    TRANSPORT_AIR,
     AIR_MAP,
     RAILWAY_SPEED,
     LAND_COMBAT_DIVISIONS,
@@ -522,6 +516,7 @@ pub const FAMILIES: &[Family] = &[
     POWER_BALANCE,
     STATE_RESOURCES,
     COUNTRY_RECRUITMENT,
+    COUNTRY_AIR_COMBAT,
     STATE_RECRUITMENT,
     RAID_LAUNCH,
     COMMAND_POWER,
@@ -842,5 +837,58 @@ mod tests {
                 .unwrap_err()
                 .contains("gap (0x29a) is registered")
         );
+    }
+
+    #[test]
+    fn retired_transport_families_are_absent_while_shared_keys_stay_validated() {
+        for retired in [
+            "selected transport risk",
+            "selected transport air normalization",
+        ] {
+            assert!(
+                FAMILIES.iter().all(|family| family.name != retired),
+                "retired family still active: {retired}"
+            );
+        }
+
+        let mut spotting_mismatch = fixture();
+        let TableView::Complete(TableRows::LexicalTokens(tokens)) =
+            &mut *spotting_mismatch.tables[TableId::LexicalTokens.index()]
+        else {
+            panic!()
+        };
+        tokens
+            .iter_mut()
+            .find(|token| token.token == keys::SPOTTING_CHANCE_AGAINST + 1)
+            .unwrap()
+            .literal = b"renumbered_by_patch".to_vec();
+        let refusal = validate_recording(&spotting_mismatch, NAVAL_MISSIONS).unwrap_err();
+        assert!(refusal.contains(NAVAL_MISSIONS.name));
+        assert!(refusal.contains(keys::fixed_name(keys::SPOTTING_CHANCE_AGAINST).unwrap()));
+
+        for &key in &engine_native::ccountry::AIR_COMBAT_MODIFIER_KEYS {
+            let mut air_mismatch = fixture();
+            let TableView::Complete(TableRows::LexicalTokens(tokens)) =
+                &mut *air_mismatch.tables[TableId::LexicalTokens.index()]
+            else {
+                panic!()
+            };
+            tokens
+                .iter_mut()
+                .find(|token| token.token == key + 1)
+                .unwrap()
+                .literal = b"renumbered_by_patch".to_vec();
+            let owner = FAMILIES
+                .iter()
+                .copied()
+                .find(|family| {
+                    family.tables.contains(&TableId::CountryCounterInputs)
+                        && family.keys.contains(&key)
+                })
+                .expect("air combat modifier key must belong to an active CountryCounterInputs family");
+            let refusal = validate_recording(&air_mismatch, owner).unwrap_err();
+            assert!(refusal.contains(owner.name));
+            assert!(refusal.contains(keys::fixed_name(key).unwrap()));
+        }
     }
 }

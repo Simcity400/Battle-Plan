@@ -1,70 +1,44 @@
+use recorder_derive_air::{air_force, air_ledger_totals, air_missions, air_owner_days, air_region_activity, air_region_days, air_region_wings, air_theatre_regions, nuke_totals, raid_ends};
+use recorder_derive_economy::{aid, construction_projects, construction_spend, fuel_days, fuel_demand, produced_values, production, supply_health, trade_flows};
+use recorder_derive_equipment::{division_equipment, equipment_losses, stock};
+use recorder_derive_land::{army, casualties, deployed, division_events, experience, garrison_strength, land_battles, leader_battles, leader_commands, leader_traits};
+use recorder_derive_naval::{dockyard_repairs, naval_battles, naval_control, naval_losses, navy};
+use recorder_derive_politics::{faction_accounts, faction_totals, game_score, peace, power_ledger, research, stability, stability_parts, threat_totals, threats};
+use recorder_derive_world::{drops, feed, groups, identity, looks, occupation, territory, territory_regions};
+use recorder_derive_framework::framework::{Columns, Writer, Writers};
 
-pub mod aid;
-pub mod air_force;
-pub mod air_ledger_totals;
-pub mod air_missions;
-pub mod air_owner_days;
-pub mod air_region_activity;
-pub mod air_region_days;
-pub mod air_region_wings;
-pub mod air_theatre_regions;
-pub mod army;
-pub mod casualties;
-pub mod construction_projects;
-pub mod construction_spend;
-pub mod deployed;
-pub mod division_equipment;
-pub mod dockyard_repairs;
-pub mod division_events;
-pub mod drops;
-pub mod equipment_losses;
-pub mod experience;
-pub mod faction_accounts;
-pub mod faction_totals;
-pub mod feed;
-mod forces;
-pub mod framework;
-pub mod fuel_days;
-pub mod fuel_demand;
-pub mod game_score;
-pub mod garrison_strength;
-pub mod groups;
-mod holders;
-pub mod identity;
-pub mod land_battles;
-pub mod leader_battles;
-pub mod leader_commands;
-pub mod leader_traits;
-pub mod looks;
-pub mod naval_battles;
-pub mod naval_control;
-pub mod naval_losses;
-pub mod navy;
-pub mod nuke_totals;
-pub mod peace;
-pub mod occupation;
-mod producers;
-pub mod raid_ends;
-pub mod production;
-pub mod produced_values;
-pub mod power_ledger;
-pub mod research;
-pub mod stability;
-pub mod stability_parts;
-pub mod supply_health;
-pub mod stock;
-pub mod threat_totals;
-pub mod territory;
-pub mod territory_regions;
-#[cfg(any(test, feature = "test-support"))]
-pub mod testing;
-pub mod threats;
-pub mod trade_flows;
-
-pub use framework::{Definitions, Facts, Writers};
+#[cfg(test)]
+mod tests;
 
 pub fn writers() -> Writers {
-    Writers::new(vec![
+    Writers::new(writer_list())
+}
+
+pub fn writers_within(columns: &[usize], current: &[usize]) -> Writers {
+    Writers::new(
+        writer_list()
+            .into_iter()
+            .filter(|writer| {
+                writer.tables().iter().all(|output| {
+                    let index = output.table().index();
+                    columns.get(index).is_some_and(|&held| held == current[index])
+                }) && writer.reads().iter().all(|read| {
+                    let index = read.table.index();
+                    let Some(&held) = columns.get(index) else {
+                        return false;
+                    };
+                    match read.columns {
+                        Columns::Every => true,
+                        Columns::These(needed) => needed.iter().all(|&col| col < held),
+                    }
+                })
+            })
+            .collect(),
+    )
+}
+
+fn writer_list() -> Vec<Box<dyn Writer>> {
+    vec![
         Box::new(identity::TagHolders::default()),
         Box::new(army::Army::default()),
         Box::new(air_force::AirForce::default()),
@@ -122,5 +96,5 @@ pub fn writers() -> Writers {
         Box::new(air_ledger_totals::BombingTotals::default()),
         Box::new(power_ledger::PowerLedger::default()),
         Box::new(feed::Feed::default()),
-    ])
+    ]
 }

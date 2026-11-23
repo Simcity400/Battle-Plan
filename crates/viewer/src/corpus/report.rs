@@ -25,25 +25,25 @@ pub enum Kind {
     Offline,
 }
 
-impl From<content_reader_core::DiagnosticKind> for Kind {
-    fn from(kind: content_reader_core::DiagnosticKind) -> Self {
+impl From<content_reader_parser::DiagnosticKind> for Kind {
+    fn from(kind: content_reader_parser::DiagnosticKind) -> Self {
         match kind {
-            content_reader_core::DiagnosticKind::ParseFailure => Self::ParseFailure,
-            content_reader_core::DiagnosticKind::Misread => Self::Misread,
-            content_reader_core::DiagnosticKind::Unsettled => Self::Unsettled,
-            content_reader_core::DiagnosticKind::Unsupported => Self::Unsupported,
-            content_reader_core::DiagnosticKind::Refused => Self::Refused,
-            content_reader_core::DiagnosticKind::Ambiguous => Self::Ambiguous,
-            content_reader_core::DiagnosticKind::Fallback => Self::Fallback,
-            content_reader_core::DiagnosticKind::Logged => Self::Logged,
-            content_reader_core::DiagnosticKind::Warning => Self::Warning,
+            content_reader_parser::DiagnosticKind::ParseFailure => Self::ParseFailure,
+            content_reader_parser::DiagnosticKind::Misread => Self::Misread,
+            content_reader_parser::DiagnosticKind::Unsettled => Self::Unsettled,
+            content_reader_parser::DiagnosticKind::Unsupported => Self::Unsupported,
+            content_reader_parser::DiagnosticKind::Refused => Self::Refused,
+            content_reader_parser::DiagnosticKind::Ambiguous => Self::Ambiguous,
+            content_reader_parser::DiagnosticKind::Fallback => Self::Fallback,
+            content_reader_parser::DiagnosticKind::Logged => Self::Logged,
+            content_reader_parser::DiagnosticKind::Warning => Self::Warning,
         }
     }
 }
 
-impl From<dashboard::content_check::Kind> for Kind {
-    fn from(kind: dashboard::content_check::Kind) -> Self {
-        use dashboard::content_check::Kind as ProductKind;
+impl From<dashboard_core::findings::Kind> for Kind {
+    fn from(kind: dashboard_core::findings::Kind) -> Self {
+        use dashboard_core::findings::Kind as ProductKind;
         match kind {
             ProductKind::ParseFailure => Self::ParseFailure,
             ProductKind::Misread => Self::Misread,
@@ -1217,7 +1217,9 @@ mod tests {
 
     #[test]
     fn summary_lists_stack_descriptors_dependencies_and_every_product() {
-        use dashboard::products::{Product, doctrines::Doctrines, national_focus::NationalFocus};
+        use dashboard_base::products::Product;
+        use dashboard_land::products::doctrines::Doctrines;
+        use dashboard_politics::products::national_focus::NationalFocus;
         let reader = format!("dashboard.{}", NationalFocus::KEY);
         let mut report = StackReport {
             stack: "local-fixture".into(),

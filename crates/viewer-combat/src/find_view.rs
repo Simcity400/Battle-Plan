@@ -12,14 +12,14 @@ use index::{Entry, Target};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
-use viewer_foundation::map::native_gui::{self, lifecycle, pointer::Input};
+use viewer_native_gui::native_gui::{self, lifecycle, pointer::Input};
 
 pub const WINDOW: &str = "find_view";
 pub const ITEM: &str = "find_view_item";
 pub const TEMPLATES: &[&[u8]] = &[b"find_view", b"find_view_item"];
 
 pub fn victory_point_icon(frame: u32) -> String {
-    format!("{}onmap_victorypoints_strip|{frame}", viewer_foundation::map::native_text::ICON)
+    format!("{}onmap_victorypoints_strip|{frame}", viewer_native_gui::native_text::ICON)
 }
 
 const FIELD: &str = "to_find_text";
@@ -201,7 +201,7 @@ pub fn dragged(at: [i32; 2], size: [i32; 2], moved: [i32; 2], parent: [i32; 2]) 
 pub struct FindView {
     built: Option<(
         [i32; 2],
-        viewer_foundation::map::native_windows::NativeWindows,
+        viewer_native_gui::native_windows::NativeWindows,
     )>,
     window: Option<Retained>,
     generation: u64,
@@ -235,7 +235,7 @@ impl FindView {
     ) -> io::Result<()> {
         if !self
             .results
-            .is_some_and(|rect| viewer_foundation::map::gui_resources::contains(rect, point))
+            .is_some_and(|rect| viewer_runtime::geometry::contains(rect, point))
         {
             return Ok(());
         }
@@ -449,7 +449,7 @@ impl FindView {
                             &resources,
                         )
                     {
-                        viewer_foundation::map::gui_resources::count_refused(
+                        viewer_native_gui::gui_resources::count_refused(
                             refused, RESULTS, &why,
                         );
                     }
@@ -468,7 +468,7 @@ impl FindView {
             if button.down {
                 self.slider = button.place.and_then(|place| {
                     let (_, slide) = sliders.iter().rev().find(|(rect, _)| {
-                        viewer_foundation::map::gui_resources::contains(*rect, place.at)
+                        viewer_runtime::geometry::contains(*rect, place.at)
                     })?;
                     Some((axis(*slide, pixel(place.at)), *slide))
                 });
@@ -489,7 +489,7 @@ impl FindView {
                 &resources,
             )
         {
-            viewer_foundation::map::gui_resources::count_refused(refused, RESULTS, &why);
+            viewer_native_gui::gui_resources::count_refused(refused, RESULTS, &why);
         }
         if !gui::draw_prepared(
             &prepared.layout,
@@ -517,7 +517,7 @@ impl FindView {
             .find(|region| results_element.is_some_and(|results| results.path == region.path))
             .and_then(|region| gui::region_rect(region, origin));
         if let Some(field) = root.path_named(FIELD)
-            && let content_reader_core::gui::native::Fields::EditBox(edit) = &field.fields
+            && let content_reader_gui::gui::native::Fields::EditBox(edit) = &field.fields
         {
             let [x, y] = edit.position();
             let [w, h] = edit.size();
@@ -535,7 +535,7 @@ impl FindView {
                 .rev()
                 .find_map(|button| {
                     let place = button.place.filter(|_| button.down)?;
-                    viewer_foundation::map::gui_resources::contains(rect, place.at)
+                    viewer_runtime::geometry::contains(rect, place.at)
                         .then(|| pixel(place.at))
                 });
             if let Some(point) = press {
@@ -548,7 +548,7 @@ impl FindView {
                     point,
                 ) {
                     Ok(caret) => out.caret = Some(caret),
-                    Err(why) => viewer_foundation::map::gui_resources::count_refused(
+                    Err(why) => viewer_native_gui::gui_resources::count_refused(
                         refused,
                         FIELD,
                         &[why],
@@ -587,7 +587,7 @@ impl FindView {
 }
 
 fn button_texts(
-    root: &content_reader_core::gui::native::Element,
+    root: &content_reader_gui::gui::native::Element,
     localisation: &content_reader_localisation::localisation::Localisation,
     refused: &mut BTreeMap<String, usize>,
 ) -> Values {
@@ -746,8 +746,8 @@ mod tests {
 
     #[test]
     fn the_buttons_show_their_authored_text_localised() {
-        content_reader_core::test_game::enter();
-        let windows = viewer_foundation::map::native_windows::NativeWindows::read(
+        content_reader_script::test_game::enter();
+        let windows = viewer_native_gui::native_windows::NativeWindows::read(
             b"guiTypes = { containerWindowType = { name = unit_counter_navy }               containerWindowType = { name = naval_combat_mapicon }               containerWindowType = { name = find_view                 buttonType = { name = find_button buttonText = \"FIND\" buttonFont = \"hoi_16mbs\" }                 buttonType = { name = goto_home_button buttonText = \"GOTO_CAPITAL\" buttonFont = \"hoi_16mbs\" }                 buttonType = { name = back_button buttonFont = \"hoi_16mbs\" } } }",
             [1280, 720],
         )

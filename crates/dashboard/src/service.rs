@@ -1,11 +1,8 @@
 
 use job_priority::SpawnCarried as _;
-use crate::{
-    Config, Source, map_settings,
-    products::{self, ContentOptions},
-    protocol::ResolvedMapSettings,
-    transport::{DataCommand, DataEvent, MAX_REPLY_BYTES, MapSettingsTarget},
-};
+use dashboard_core::{config::Config, map_settings, protocol::ResolvedMapSettings, transport::{DataCommand, DataEvent, MAX_REPLY_BYTES, MapSettingsTarget}};
+use dashboard_base::{Source, products::ContentOptions};
+use crate::products;
 use std::{
     io,
     path::{Path, PathBuf},
@@ -27,7 +24,7 @@ use admission::{Lease, Pending, Request};
 use jobs::{LoadJob, MapSettingsJob, OpenJob, Sources};
 use pump::{Signal, run_pump};
 
-const MAX_PENDING: usize = crate::transport::MAX_PENDING_REQUESTS;
+const MAX_PENDING: usize = dashboard_core::transport::MAX_PENDING_REQUESTS;
 
 const MAX_SERIALIZED_BYTES: usize = MAX_REPLY_BYTES * 2;
 const MAX_CANCELLED: usize = MAX_PENDING * 2;
@@ -91,7 +88,7 @@ impl Lanes {
 type VisualCatalogue = (
     PathBuf,
     PathBuf,
-    Vec<content_reader_core::content::visual::InstalledMod>,
+    Vec<content_reader_layers::content::visual::InstalledMod>,
 );
 
 #[cfg(test)]
@@ -100,7 +97,7 @@ type RefreshHook = Box<dyn FnOnce(&Inner) + Send>;
 struct Inner {
     lease_namespace: uuid::Uuid,
     map_settings: Mutex<map_settings::Store>,
-    content: crate::presentation::Config<Option<ContentOptions>>,
+    content: dashboard_base::presentation::Config<Option<ContentOptions>>,
     visual_catalogue: Mutex<Option<VisualCatalogue>>,
     presentation_generation: std::sync::atomic::AtomicU64,
     sources: Mutex<Sources>,
@@ -137,7 +134,7 @@ impl Service {
         let inner = Arc::new(Inner {
             lease_namespace: uuid::Uuid::new_v4(),
             map_settings: Mutex::new(map_settings::Store::open()),
-            content: crate::presentation::Config::new(None),
+            content: dashboard_base::presentation::Config::new(None),
             visual_catalogue: Mutex::new(None),
             presentation_generation: std::sync::atomic::AtomicU64::new(0),
             sources: Mutex::new(Sources::default()),
@@ -192,7 +189,7 @@ impl Service {
         let options = match config.resolve_options() {
             Ok(options) => options,
             Err(_) => match Config::content_cache_dir() {
-                Ok(cache_dir) => content_reader_core::ResolveOptions {
+                Ok(cache_dir) => content_reader_layers::ResolveOptions {
                     game_dir: cache_dir.join("no game folder chosen"),
                     user_dir: cache_dir.join("no user folder chosen"),
                     cache_dir,
@@ -228,7 +225,7 @@ impl Service {
         let key = |value: Option<&ContentOptions>| {
             value.map(|value| {
                 (
-                    crate::content::content_key(Some(value)),
+                    dashboard_base::content::content_key(Some(value)),
                     value.options.cache_dir.clone(),
                 )
             })
@@ -326,7 +323,7 @@ impl Service {
         if content.is_none() {
             self.inner.error(
                 Arc::clone(request),
-                crate::QueryError::Refused {
+                dashboard_core::QueryError::Refused {
                     text: "Choose the game and user folders in Settings first".into(),
                 },
             );

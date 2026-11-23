@@ -1,5 +1,5 @@
 use super::Inner;
-use dashboard::protocol::{DashboardMapView, NativeCommand, ViewBounds, ViewerState};
+use dashboard_core::protocol::{DashboardMapView, NativeCommand, ViewBounds, ViewerState};
 use std::collections::VecDeque;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -8,7 +8,7 @@ pub(super) struct SeekTarget {
     pub(super) revision: String,
     pub(super) branch: String,
     pub(super) hour: i32,
-    pub(super) playback: Option<dashboard::protocol::MapPlayback>,
+    pub(super) playback: Option<dashboard_core::protocol::MapPlayback>,
 }
 
 impl SeekTarget {
@@ -30,16 +30,22 @@ impl SeekTarget {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct DashboardSnapshot {
+    pub(super) clock_id: Option<String>,
+    pub(super) views: Vec<DashboardMapView>,
+}
+
 #[derive(Default)]
 pub(super) struct Pending {
-    pub(super) actions: VecDeque<dashboard::protocol::MapAction>,
+    pub(super) actions: VecDeque<dashboard_core::protocol::MapAction>,
     pub(super) campaign_map: bool,
     pub(super) bounds: Option<ViewBounds>,
     pub(super) visibility: Option<bool>,
     pub(super) open: Option<(String, Option<String>)>,
     pub(super) seek: Option<SeekTarget>,
-    pub(super) maps: Option<Vec<DashboardMapView>>,
-    pub(super) gamepad: Option<dashboard::protocol::GamepadMessage>,
+    pub(super) maps: Option<DashboardSnapshot>,
+    pub(super) gamepad: Option<dashboard_core::protocol::GamepadMessage>,
     pub(super) close: bool,
 }
 
@@ -50,7 +56,7 @@ impl Pending {
         if self.actions.len() >= MAX_QUEUED_ACTIONS {
             return Err(format!(
                 "{}; try again",
-                dashboard::transport::MAP_CONTROLS_BUSY
+                dashboard_core::transport::MAP_CONTROLS_BUSY
             ));
         }
         Ok(())
@@ -93,8 +99,11 @@ impl Pending {
         if let Some(visible) = self.visibility.take() {
             commands.push(NativeCommand::Visibility { visible });
         }
-        if let Some(views) = self.maps.take() {
-            commands.push(NativeCommand::MapViews { views });
+        if let Some(snapshot) = self.maps.take() {
+            commands.push(NativeCommand::MapViews {
+                clock_id: snapshot.clock_id,
+                views: snapshot.views,
+            });
         }
         if let Some(message) = self.gamepad.take() {
             commands.push(NativeCommand::Gamepad { message });
@@ -139,8 +148,7 @@ impl Inner {
 
     pub(super) fn restore_commands(&mut self) {
         if self.active_dashboard {
-            let views = self.dashboard_views.clone().unwrap_or_default();
-            self.pending.maps = Some(views);
+            self.pending.maps = Some(self.dashboard_snapshot());
             return;
         }
         let target = self

@@ -1,9 +1,9 @@
-use content_reader_core::{
-    ResolvedLayers, defines::Defines, terrain::TerrainAdjuster, terrain::TerrainDefinitions,
-};
+use content_reader_layers::ResolvedLayers;
+use content_reader_defines::defines::Defines;
+use content_reader_key_names::terrain::{TerrainAdjuster, TerrainDefinitions};
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use std::{io, sync::Arc};
-use viewer_foundation::naval_math::dominance_value;
+use replay_derive::naval_math::dominance_value;
 use viewer_foundation::tooltip_text::country_localised;
 use viewer_foundation::tooltip_text::displayable;
 use viewer_foundation::tooltip_text::tooltip_keys;
@@ -87,7 +87,7 @@ impl Content {
         defines: &Defines,
         terrain: Arc<TerrainDefinitions>,
     ) -> io::Result<Self> {
-        let sub_units = content_reader_core::unit_leader::sub_units(layers)?;
+        let sub_units = content_reader_key_names::unit_leader::sub_units(layers)?;
         let mut ship_classes = Vec::new();
         for index in 1.. {
             let Some(name) = sub_units.name(index) else {
@@ -108,7 +108,7 @@ impl Content {
     pub(super) fn test_empty(name: &[u8]) -> Self {
         Self {
             terrain: Arc::new(TerrainDefinitions {
-                categories: vec![content_reader_core::terrain::TerrainCategory {
+                categories: vec![content_reader_key_names::terrain::TerrainCategory {
                     name: name.to_vec(),
                     movement_cost: 0,
                     combat_width: 0,

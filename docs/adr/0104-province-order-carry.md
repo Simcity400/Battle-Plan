@@ -8,4 +8,4 @@ A listed walk's first native refusal remains the reported result. It cannot prom
 
 The live-memory parity benchmark holds the synthetic heap throughout every walk and writes none of its bytes while a walk is active.
 
-[Province unit order](../../crates/collector/src/extended/province_unit_order.rs)
+[Province unit order](../../crates/collector-divisions/src/extended/province_unit_order.rs)

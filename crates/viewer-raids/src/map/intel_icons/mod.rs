@@ -5,11 +5,12 @@ use std::{
     sync::Arc,
 };
 
-use content_reader_core::ResolvedLayers;
+use content_reader_layers::ResolvedLayers;
 use content_reader_localisation::localisation::Localisation;
 use replay_data::{rows::OperationRow, rows::OperativeMissionRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::{map::native_gui, tooltip_text::Tooltip};
+use viewer_native_gui::native_gui;
+use viewer_foundation::tooltip_text::Tooltip;
 
 use super::raids::{RaidAssets, script::World};
 
@@ -21,7 +22,7 @@ pub mod windows;
 
 pub use windows::{IntelHit, IntelInputs, IntelView, PreparedIntel, hit_at, hit_seen, prepare};
 
-use viewer_foundation::map::native_windows;
+use viewer_native_gui::native_windows;
 
 pub const CONTAINER_WINDOW: &str = native_windows::INTEL_CONTAINER_WINDOW;
 pub const ENTRIES_LIST: &str = "entries";
@@ -75,7 +76,7 @@ pub struct IntelDefines {
 }
 
 impl IntelDefines {
-    pub fn read(d: &content_reader_core::defines::Defines) -> io::Result<Self> {
+    pub fn read(d: &content_reader_defines::defines::Defines) -> io::Result<Self> {
         let named =
             |group: &str, name: &str, error: io::Error| format!("NDefines.{group}.{name}: {error}");
         let fixed = |group: &'static str, name: &'static str| {
@@ -164,15 +165,15 @@ impl IntelDefines {
     }
 
     pub fn cutoff(&self) -> f32 {
-        viewer_foundation::map::camera::fixed5_camera_distance(self.cutoff)
+        viewer_gpu::camera::fixed5_camera_distance(self.cutoff)
     }
 }
 
 pub struct IntelAssets {
     pub defines: Result<IntelDefines, String>,
     pub scripted: Option<Arc<Result<dashboard_text::scripted_text::ScriptedContent, String>>>,
-    operations: Result<content_reader_core::intelligence::Intelligence, String>,
-    phases: Result<content_reader_core::intelligence::OperationPhases, String>,
+    operations: Result<content_reader_military::intelligence::Intelligence, String>,
+    phases: Result<content_reader_military::intelligence::OperationPhases, String>,
     nationality: Result<i64, String>,
     pub warnings: Vec<String>,
 }
@@ -188,7 +189,7 @@ impl std::fmt::Debug for IntelAssets {
 }
 
 impl IntelAssets {
-    pub fn load(layers: &ResolvedLayers, defines: &content_reader_core::defines::Defines) -> Self {
+    pub fn load(layers: &ResolvedLayers, defines: &content_reader_defines::defines::Defines) -> Self {
         let mut warnings = Vec::new();
         let defines = IntelDefines::read(defines).map_err(|error| error.to_string());
         if let Err(why) = &defines {
@@ -197,7 +198,7 @@ impl IntelAssets {
             ));
         }
         let operations =
-            content_reader_core::intelligence::read(layers).map_err(|error| error.to_string());
+            content_reader_military::intelligence::read(layers).map_err(|error| error.to_string());
         match &operations {
             Ok(read) => warnings.extend(
                 read.warnings
@@ -208,7 +209,7 @@ impl IntelAssets {
                 "Operatives map icons: the operation definitions cannot be read ({why}); operation icons are hidden."
             )),
         }
-        let phases = content_reader_core::intelligence::read_operation_phases(layers)
+        let phases = content_reader_military::intelligence::read_operation_phases(layers)
             .map_err(|error| error.to_string());
         match &phases {
             Ok(read) => warnings.extend(
@@ -220,9 +221,9 @@ impl IntelAssets {
                 "Operatives map icons: the operation phase definitions cannot be read ({why}); phase icons are hidden."
             )),
         }
-        let nationality = content_reader_core::static_modifiers::read(
+        let nationality = content_reader_politics::static_modifiers::read(
             layers,
-            &[content_reader_core::static_modifiers::Request {
+            &[content_reader_politics::static_modifiers::Request {
                 modifier: NATIONALITY_MODIFIER,
                 key: NATIONALITY_KEY,
             }],
@@ -259,21 +260,21 @@ impl IntelAssets {
     #[cfg(any(test, feature = "test-support"))]
     pub fn test(
         defines: IntelDefines,
-        operations: Vec<content_reader_core::intelligence::Operation>,
-        phases: Vec<content_reader_core::intelligence::OperationPhase>,
+        operations: Vec<content_reader_military::intelligence::Operation>,
+        phases: Vec<content_reader_military::intelligence::OperationPhase>,
         nationality: i64,
     ) -> Self {
         Self {
             defines: Ok(defines),
             scripted: None,
-            operations: Ok(content_reader_core::intelligence::Intelligence {
+            operations: Ok(content_reader_military::intelligence::Intelligence {
                 operations: operations
                     .into_iter()
                     .map(|operation| (operation.token.to_ascii_lowercase(), operation))
                     .collect(),
                 ..Default::default()
             }),
-            phases: Ok(content_reader_core::intelligence::OperationPhases {
+            phases: Ok(content_reader_military::intelligence::OperationPhases {
                 definitions: phases
                     .into_iter()
                     .map(|phase| (phase.token.to_ascii_lowercase(), phase))
@@ -287,7 +288,7 @@ impl IntelAssets {
 
     pub fn gui_assets(
         &self,
-        registry: &content_reader_core::gui::native::resources::Registry,
+        registry: &content_reader_gui::gui::native::resources::Registry,
     ) -> native_gui::Assets {
         let mut assets = native_gui::Assets::default();
         let declared = |name: &str| registry.sprite(name.as_bytes()).is_some();
@@ -306,7 +307,7 @@ impl IntelAssets {
                 phases
                     .definitions
                     .values()
-                    .map(content_reader_core::intelligence::OperationPhase::map_sprite)
+                    .map(content_reader_military::intelligence::OperationPhase::map_sprite)
                     .filter(|name| declared(name))
                     .map(|name| name.as_bytes().to_vec()),
             );
@@ -322,7 +323,7 @@ impl IntelAssets {
     fn operation(
         &self,
         token: &str,
-    ) -> Result<Option<&content_reader_core::intelligence::Operation>, String> {
+    ) -> Result<Option<&content_reader_military::intelligence::Operation>, String> {
         self.operations
             .as_ref()
             .map_err(Clone::clone)?
@@ -332,7 +333,7 @@ impl IntelAssets {
     fn phase(
         &self,
         token: &str,
-    ) -> Result<Option<&content_reader_core::intelligence::OperationPhase>, String> {
+    ) -> Result<Option<&content_reader_military::intelligence::OperationPhase>, String> {
         self.phases.as_ref().map_err(Clone::clone)?.phase(token)
     }
 }

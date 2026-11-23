@@ -8,4 +8,4 @@ When a slot is freed and reused in the same hour, deletion takes effect before i
 
 The recorder and dashboard share their summary declarations. They are deliberately outside the schema digest because readers get each piece's shape from the block index. Synthetic journals rank a recorded column for tests, since derivations own writing their own rows.
 
-[Point readers](../../crates/replay/src/points.rs) · [Summary registry](../../crates/replay/src/summaries.rs)
+[Point readers](../../crates/replay-lanes/src/points.rs) · [Summary registry](../../crates/replay-recording/src/summaries.rs)

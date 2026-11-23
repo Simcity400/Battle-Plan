@@ -1,6 +1,7 @@
 import type { WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
-import { resolveWindow } from './model.ts';
+import { useGate } from './regionGate.ts';
+import { SPEC, UNRECORDED_MESSAGE } from './regionTime.ts';
 import { useProduct } from './products.ts';
 import { contentTitle } from './contentTitles.ts';
 import { drawableIcon } from './artwork.ts';
@@ -8,6 +9,8 @@ import { compareTags } from './tagOrder.ts';
 import { isOrderedSpans, runAt } from '../charts/series.ts';
 import type { Span } from '../charts/series';
 import type { RaidEpisode, RaidLogReply, RaidPhaseRun, RaidPreparationRun, RaidTypeInfo } from '../generated/dashboard';
+import { productRequest } from './request.ts';
+import { gatedRead, readData } from './gatedRead.ts';
 
 export const RAIDS_AVAILABILITY = { product: 'raid-log', params: { catalogue: true } } as const;
 
@@ -41,10 +44,14 @@ export function validateRaidLog(value: unknown): RaidLogReply {
 
 export function useRaidLog(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, catalogue = false) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const range = track && !catalogue && widget.time.mode === 'range' ? resolveWindow(widget, track, runtime.tracks, 0) : null;
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'raid-log',
-    params: { branchId: track.branch.id, ...(catalogue ? { catalogue: true } : {}), ...(range ? { from: range.firstHour, to: range.lastHour } : {}) } } : null;
-  return { track, ...useProduct<RaidLogReply>(runtime.client, request, active, validateRaidLog, track?.source) };
+  const gate = useGate(runtime, widget, SPEC, active);
+  const ranged = !catalogue && widget.time.mode === 'range';
+  const range = ranged ? gate.window : null;
+  const request = track && (!ranged || range) ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'raid-log',
+    params: { branchId: track.branch.id, ...(catalogue ? { catalogue: true } : {}), ...(range ? { from: range.firstHour, to: range.lastHour } : {}) } }) : null;
+  const product = useProduct<RaidLogReply>(runtime.client, request, active, validateRaidLog, track?.source);
+  const read = catalogue ? null : gatedRead(gate, range ? { ...product, kind: 'dated', hour: range.lastHour } : { ...product, kind: 'branch' }, ranged && gate.open && !range ? UNRECORDED_MESSAGE : null);
+  return { track, read, ...product, data: read ? readData(read) : product.data };
 }
 
 export function startedBy(episodes: readonly RaidEpisode[], hour: number | null): number {

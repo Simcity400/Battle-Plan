@@ -1,6 +1,6 @@
 use super::{Eval, Evaluator, Scope, Scopes, Store};
 use crate::triggers::Failure;
-use content_reader_core::parser::Item;
+use content_reader_parser::parser::Item;
 use replay_data::rows::{TableSchema, mask, tables};
 use replay_frame::frame::HourFrame;
 use std::{borrow::Cow, collections::BTreeSet};
@@ -9,7 +9,7 @@ impl Evaluator<'_, '_> {
     pub(super) fn map_builtin_value(
         &self,
         store: Store,
-        operand: &content_reader_core::scoped_variable::ScopedVariable,
+        operand: &content_reader_script::scoped_variable::ScopedVariable,
         scopes: Scopes,
     ) -> Result<Option<i64>, Failure> {
         if let (Store::Country(slot), b"modifier") = (store, operand.name.as_slice()) {
@@ -422,7 +422,7 @@ impl Evaluator<'_, '_> {
             }
         }
         let mut length = operand.clone();
-        length.index = Some(Box::new(content_reader_core::scoped_variable::ScopedVariable {
+        length.index = Some(Box::new(content_reader_script::scoped_variable::ScopedVariable {
             parsed: true,
             num: true,
             ..Default::default()

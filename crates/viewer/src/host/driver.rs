@@ -50,7 +50,7 @@ pub(crate) fn map_device(window: Option<&Window>) -> Result<(egui_wgpu::RenderSt
         let target_format = match &surface {
             Some(surface) => egui_wgpu::preferred_framebuffer_format(&surface.get_capabilities(&adapter).formats)
                 .map_err(|error| format!("Couldn’t draw in the map’s window: {error}"))?,
-            None => viewer_foundation::map::gpu_contract::OUTPUT_FORMAT,
+            None => viewer_gpu::gpu_contract::OUTPUT_FORMAT,
         };
         let renderer = egui_wgpu::Renderer::new(&device, target_format, Default::default());
         Ok((
@@ -97,7 +97,7 @@ pub(crate) fn run(
     lost: &Lost,
     make: impl FnOnce(&egui::Context, &egui_wgpu::RenderState) -> Result<app::Viewer, String>,
 ) -> Result<(), String> {
-    let _followed = viewer_foundation::map::display_refresh::follow_window(window.hwnd());
+    let _followed = viewer_runtime::display_refresh::follow_window(window.hwnd());
     let (state, surface) = map_device(Some(window))?;
     let state = Released(Some(state));
     let mut surface = Released(Some(renderer_host::WindowSurface::new(surface.ok_or("The map’s window gave no surface")?)));
@@ -112,7 +112,7 @@ pub(crate) fn run(
     frame.wgpu_render_state = Some(state.clone());
     let started = Instant::now();
     let mut due = Some(Instant::now());
-    let mut limited = viewer_foundation::map::frame_limit::Grid::default();
+    let mut limited = viewer_runtime::frame_limit::Grid::default();
     let mut focused = false;
     let mut events = Vec::new();
     let max_texture_side = state.device.limits().max_texture_dimension_2d as usize;

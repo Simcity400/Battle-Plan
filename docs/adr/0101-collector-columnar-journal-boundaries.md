@@ -10,4 +10,4 @@ Journal failure stops the current capture and returns the unwritten hours and co
 
 Columnar conversion helpers run between game ticks. The spool thread remains able to finish the current hour during a tick. Sync statistics use bounded buckets, with the exceptional top bucket reporting its measured maximum as the quantile's upper bound.
 
-[Columnar capture](../../crates/collector/src/columnar.rs) · [Journal thread](../../crates/collector/src/columnar/journal_thread.rs) · [Journal recovery tests](../../crates/collector/src/columnar/tests.rs)
+[Columnar capture](../../crates/collector-spool/src/columnar.rs) · [Journal thread](../../crates/collector-spool/src/columnar/journal_thread.rs) · [Journal recovery tests](../../crates/collector-spool/src/columnar/tests.rs)

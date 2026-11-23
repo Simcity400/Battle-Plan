@@ -1807,6 +1807,7 @@ impl RestAux {
                 &self.speed_memo,
                 &mut self.raid_speeds.rows,
                 &mut self.raid_transports.first,
+                &collector_observers::variant_stat_witness::ObserverStatWitness,
             );
             self.raid_transports.len = walk.transport_len;
             self.raid_transports.required = walk.required_transport;

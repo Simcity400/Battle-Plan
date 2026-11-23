@@ -16,4 +16,4 @@ Keep the carry confined to the spool so encodings stay byte-identical. Native co
 
 A state row gets both display names from the captured frame arena, with a table refusal when a name span lies outside the copied bytes. Equal IDs from separate native unit namespaces stay separate rows. The recorder-panel flag keeps the previous allocation when committed operands are equal, and its original tag can be unknown. Production and construction output exclude increments from before branch observation.
 
-[Spool conversion and admission](../../crates/collector/src/spooling.rs) · [Conversion equivalence tests](../../crates/collector/src/spooling/conversion_helper_tests.rs) · [Provenance equivalence tests](../../crates/collector/src/spooling/slice_reads_tests.rs)
+[Spool conversion and admission](../../crates/collector-spool/src/spooling.rs) · [Conversion equivalence tests](../../crates/collector-spool/src/spooling/conversion_helper_tests.rs) · [Provenance equivalence tests](../../crates/collector-spool/src/spooling/slice_reads_tests.rs)

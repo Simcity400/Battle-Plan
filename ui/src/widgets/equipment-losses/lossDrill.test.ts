@@ -1,3 +1,4 @@
+import { gatedTime, heldCountry } from '../../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { drawBands } from '../../charts/draw.ts';
@@ -14,7 +15,7 @@ import { lossHistory, lossNumbers, lossParts, lossRows, lossSegments, pinLosses,
 
 function reply(count = 1): LossesReply {
   return { branchId: 'b', tag: 'opaque tag', ships: [], from: 100, to: 110, width: 64, exactHours: [], restarts: [], amountScale: 100000, retainedMonths: 6, warnings: [],
-    landSource: 'combatLog', landLowerBound: null, destructionCountedFrom: 100,
+    landSource: 'combatLog', landLowerBound: null, destructionRuns: [{ firstHour: 100, lastHour: 110, countedFrom: 100, withheldFrom: null }],
     coverage: [{ firstHour: 100, lastHour: 110, coverage: 'logged' }],
     destructionCoverage: [{ firstHour: 100, lastHour: 110, reason: null }],
     designs: Array.from({ length: count }, (_, index) => ({ variant: index + 1, equipment: 'mod/item', archetype: 'mod/type', archetypeName: 'Mod type',
@@ -22,7 +23,7 @@ function reply(count = 1): LossesReply {
     causes: [{ source: { kind: 'combatLog', reason: 0 }, domain: 'land', name: { key: 'mod/cause', template: 'Mod cause', text: 'Mod cause' },
       loss: true, unknown: null, unknownSpans: [], group: null,
       leaves: Array.from({ length: count }, (_, design) => ({ design, key: String(design), lowerBoundFrom: null,
-        points: [{ hour: 100, totalRaw: '100000' }, { hour: 104, totalRaw: '150000' }, { hour: 108, totalRaw: '50000' }] })) }] };
+        points: [{ hour: 100, totalRaw: '100000' }, { hour: 104, totalRaw: '150000' }, { hour: 108, totalRaw: '50000' }], exact: [] })) }] };
 }
 const window = { first: 100, hour: 110, end: 110, campaign: true, from: null };
 const edgeAt = (history: ReturnType<typeof lossHistory>, hour: number) => history.model.edges[history.model.hours.indexOf(hour)];
@@ -90,7 +91,7 @@ test('event history breaks unread and destruction intervals and resumes measured
 
 test('an absent opening destruction drain leaves unknown edges and boolean gap markers until a supplying read', () => {
   const data = reply();
-  data.landSource = 'destruction'; data.destructionCountedFrom = 104;
+  data.landSource = 'destruction'; data.destructionRuns = [{ firstHour: 100, lastHour: 110, countedFrom: 104, withheldFrom: null }];
   data.causes[0].source = { kind: 'destruction', reason: 'unknown' };
   data.causes[0].leaves[0].points = [{ hour: 104, totalRaw: '150000' }];
   data.destructionCoverage = [{ firstHour: 104, lastHour: 110, reason: null }];
@@ -101,6 +102,140 @@ test('an absent opening destruction drain leaves unknown edges and boolean gap m
   assert.equal(history.model.breakBefore[history.model.hours.indexOf(104)], true);
   assert.deepEqual(lossRows(data, { ...window, hour: 103 }), []);
   assert.deepEqual(lossRows(data, { ...window, hour: 104 }).map(row => [row.exact, row.readHour]), [[150000n, 104]]);
+
+  data.from = 100; data.to = 210;
+  data.destructionRuns = [
+    { firstHour: 100, lastHour: 199, countedFrom: 104, withheldFrom: null },
+    { firstHour: 200, lastHour: 210, countedFrom: 201, withheldFrom: null },
+  ];
+  data.destructionCoverage = [
+    { firstHour: 104, lastHour: 199, reason: null },
+    { firstHour: 201, lastHour: 210, reason: null },
+  ];
+  data.causes[0].leaves[0].points = [{ hour: 104, totalRaw: '500000' }, { hour: 201, totalRaw: '200000' }];
+  assert.deepEqual(lossRows(data, { first: 100, hour: 200, end: 210, campaign: false, from: null }), []);
+  assert.deepEqual(lossRows(data, { first: 100, hour: 201, end: 210, campaign: false, from: null }).map(row => [row.exact, row.readHour]), [[200000n, 201]]);
+});
+
+test('destruction history resets running totals and range baselines across recorded run boundaries', () => {
+  const data = reply(2);
+  data.from = 100;
+  data.to = 250;
+  data.landSource = 'destruction';
+  data.destructionRuns = [
+    { firstHour: 100, lastHour: 199, countedFrom: 101, withheldFrom: null },
+    { firstHour: 200, lastHour: 250, countedFrom: 201, withheldFrom: null },
+  ];
+  data.destructionCoverage = [
+    { firstHour: 101, lastHour: 199, reason: null },
+    { firstHour: 201, lastHour: 250, reason: null },
+  ];
+  data.causes[0].source = { kind: 'destruction', reason: 'land_combat' };
+  data.causes[0].leaves[0].points = [{ hour: 101, totalRaw: '500000' }, { hour: 201, totalRaw: '200000' }];
+  data.causes[0].leaves[1].points = [{ hour: 101, totalRaw: '900000' }];
+
+  const full = lossHistory(data, 100, 250);
+  assert.deepEqual(edgeAt(full, 101), [{ low: 0, high: 14 }]);
+  assert.equal(edgeAt(full, 200), null);
+  assert.deepEqual(edgeAt(full, 201), [{ low: 0, high: 2 }]);
+  assert.equal(full.model.breakBefore[full.model.hours.indexOf(201)], true);
+  assert.equal(lossesTotal(lossItems(data, { first: 100, hour: 201, end: 250, campaign: false, from: null })).exact, 200000n);
+
+  const ranged = lossHistory(data, 150, 250, 150);
+  assert.deepEqual(edgeAt(ranged, 150), [{ low: 0, high: 0 }]);
+  assert.equal(edgeAt(ranged, 200), null);
+  assert.deepEqual(edgeAt(ranged, 201), [{ low: 0, high: 2 }]);
+
+  data.destructionRuns = [
+    { firstHour: 100, lastHour: 149, countedFrom: 100, withheldFrom: null },
+    { firstHour: 150, lastHour: 199, countedFrom: 150, withheldFrom: null },
+  ];
+  data.destructionCoverage = [{ firstHour: 100, lastHour: 199, reason: null }];
+  data.causes[0].leaves[0].points = [{ hour: 100, totalRaw: '500000' }, { hour: 150, totalRaw: '200000' }];
+  data.causes[0].leaves[1].points = [{ hour: 100, totalRaw: '900000' }];
+  const contiguous = lossHistory(data, 100, 199);
+  assert.deepEqual(edgeAt(contiguous, 100), [{ low: 0, high: 14 }]);
+  assert.deepEqual(edgeAt(contiguous, 150), [{ low: 0, high: 2 }]);
+  assert.equal(contiguous.model.breakBefore[contiguous.model.hours.indexOf(150)], true);
+});
+
+test('exact read absence inside a multi-hour bin hides future loss at the read hour while keeping the bin loss on the chart', () => {
+  const make = (exactHour: number) => {
+    const data = reply(1);
+    data.from = 120;
+    data.to = 130;
+    data.width = 1;
+    data.exactHours = [exactHour];
+    data.landSource = 'destruction';
+    data.destructionRuns = [{ firstHour: 120, lastHour: 130, countedFrom: 121, withheldFrom: null }];
+    data.destructionCoverage = [
+      { firstHour: 121, lastHour: 123, reason: 'supplemental hooks unavailable' },
+      { firstHour: 124, lastHour: 130, reason: null },
+    ];
+    data.causes[0].source = { kind: 'destruction', reason: 'land_combat' };
+    data.causes[0].unknownSpans = [{ firstHour: 121, lastHour: 130, reason: 'destructionWithheld', detail: 'supplemental hooks unavailable' }];
+    data.causes[0].leaves[0].points = [{ hour: 121, totalRaw: '100000' }];
+    data.causes[0].leaves[0].exact = [{ hour: exactHour, totalRaw: null }];
+    return data;
+  };
+
+  const at124 = make(124);
+  assert.equal(lossRows(at124, { first: 120, hour: 124, end: 130, campaign: false, from: null }).every(row => row.exact === null), true);
+  assert.equal(edgeAt(lossHistory(at124, 124, 124), 124), null);
+  const chart124 = lossHistory(at124, 120, 130);
+  assert.equal(edgeAt(chart124, 124), null);
+  assert.deepEqual(edgeAt(chart124, 125), [{ low: 0, high: 1 }]);
+  assert.equal(chart124.model.breakBefore[chart124.model.hours.indexOf(125)], true);
+
+  const zero124 = make(124);
+  zero124.causes[0].leaves[0].exact = [{ hour: 124, totalRaw: '0' }];
+  assert.deepEqual(edgeAt(lossHistory(zero124, 124, 124), 124), [{ low: 0, high: 0 }]);
+
+  const at121 = make(121);
+  assert.equal(lossRows(at121, { first: 120, hour: 121, end: 130, campaign: false, from: null }).every(row => row.exact === null), true);
+  const chart121 = lossHistory(at121, 120, 130);
+  assert.equal(edgeAt(chart121, 121), null);
+  assert.deepEqual(edgeAt(chart121, 124), [{ low: 0, high: 1 }]);
+  assert.deepEqual(edgeAt(lossHistory(at121, 125, 125), 125), [{ low: 0, high: 1 }]);
+  assert.deepEqual(edgeAt(lossHistory(at121, 130, 130), 130), [{ low: 0, high: 1 }]);
+});
+
+test('exact hover inside a rising multi-hour bin keeps the newer total without dropping back to the bin start', () => {
+  const data = reply(1);
+  data.from = 120;
+  data.to = 125;
+  data.width = 1;
+  data.exactHours = [122];
+  data.landSource = 'destruction';
+  data.destructionRuns = [{ firstHour: 120, lastHour: 125, countedFrom: 120, withheldFrom: null }];
+  data.destructionCoverage = [{ firstHour: 120, lastHour: 125, reason: null }];
+  data.causes[0].source = { kind: 'destruction', reason: 'land_combat' };
+  data.causes[0].leaves[0].points = [{ hour: 120, totalRaw: '100000' }, { hour: 125, totalRaw: '500000' }];
+  data.causes[0].leaves[0].exact = [{ hour: 122, totalRaw: '500000' }];
+
+  const chart = lossHistory(data, 120, 125);
+  assert.deepEqual(edgeAt(chart, 120), [{ low: 0, high: 1 }]);
+  assert.deepEqual(edgeAt(chart, 122), [{ low: 0, high: 5 }]);
+  assert.equal(chart.model.hours.includes(123), false);
+  assert.deepEqual(edgeAt(lossHistory(data, 123, 123), 123), [{ low: 0, high: 5 }]);
+  assert.deepEqual(edgeAt(lossHistory(data, 125, 125), 125), [{ low: 0, high: 5 }]);
+
+  const coarse = reply(1);
+  coarse.from = 120;
+  coarse.to = 130;
+  coarse.width = 1;
+  coarse.exactHours = [124];
+  coarse.landSource = 'destruction';
+  coarse.destructionRuns = [{ firstHour: 120, lastHour: 130, countedFrom: 121, withheldFrom: null }];
+  coarse.destructionCoverage = [{ firstHour: 121, lastHour: 130, reason: null }];
+  coarse.causes[0].source = { kind: 'destruction', reason: 'land_combat' };
+  coarse.causes[0].leaves[0].points = [{ hour: 121, totalRaw: '100000' }, { hour: 125, totalRaw: '100000' }];
+  coarse.causes[0].leaves[0].exact = [{ hour: 124, totalRaw: '0' }];
+  const coarseChart = lossHistory(coarse, 120, 130);
+  assert.deepEqual(edgeAt(coarseChart, 124), [{ low: 0, high: 0 }]);
+  assert.deepEqual(edgeAt(coarseChart, 125), [{ low: 0, high: 1 }]);
+  assert.deepEqual(edgeAt(lossHistory(coarse, 126, 126), 126), [{ low: 0, high: 1 }]);
+  assert.deepEqual(lossRows(coarse, { first: 120, hour: 126, end: 130, campaign: false, from: null }).map(row => row.exact), [100000n]);
 });
 
 test('missing rows invent no amount or date, and exchange uncertainty belongs to its affected design', () => {
@@ -137,20 +272,21 @@ test('historical pins retain the country, native cohort and branch-relative hour
     countries: { kind: 'selected' }, time: { mode: 'campaign' }, options: { landSource: 'combatLog', lossSelection: 'old' } };
   const keys = [lossKey(reply().causes[0], reply().designs[0])];
   const country = { campaign: 'campaign', branch: 'b', tag: 'opaque tag', originOffset: 2, slot: 17, countryId: 21 };
-  const pinned = pinLosses(widget, track, 'opaque tag', 205.8, false, null, keys, country);
+  const held = heldCountry({ tag: 'opaque tag', origin: 102, slot: 17, countryId: 21 });
+  const pinned = pinLosses(widget, track, held, gatedTime({ mode: 'pin', windows: { t: { firstOffset: 105, lastOffset: 105 } } }), keys);
   assert.deepEqual(readDrillCountry(pinned.options?.lossCountry, track, pinned.countries), country);
   assert.deepEqual(readDrillCountry(JSON.parse(JSON.stringify(pinned)).options.lossCountry, track, pinned.countries), country);
   assert.deepEqual(pinned.countries, { kind: 'tags', tags: ['opaque tag'] });
-  assert.deepEqual(pinned.time, { mode: 'pin', windows: { t: { firstOffset: 105, lastOffset: 105 } } });
+  assert.deepEqual(pinned.time.value, { mode: 'pin', windows: { t: { firstOffset: 105, lastOffset: 105 } } });
   assert.equal(pinned.options?.show, 'loss-details');
   assert.deepEqual(readLossSelection(pinned.options?.lossSelection, 'campaign', 'b', 'opaque tag')?.keys, keys);
   for (const scope of [['another', 'b', 'opaque tag'], ['campaign', 'another', 'opaque tag'], ['campaign', 'b', 'another']])
     assert.equal(readLossSelection(pinned.options?.lossSelection, scope[0], scope[1], scope[2]), undefined);
   assert.equal(readLossSelection('malformed', 'campaign', 'b', 'opaque tag'), undefined);
-  assert.deepEqual(pinLosses(widget, track, 'opaque tag', 205.8, false, 150, keys).time,
+  assert.deepEqual(pinLosses(widget, track, held, gatedTime({ mode: 'range', firstOffset: 50, lastOffset: 105 }), keys).time.value,
     { mode: 'range', firstOffset: 50, lastOffset: 105 });
-  assert.deepEqual(pinLosses(widget, track, 'opaque tag', 205, true, null, null, country).time, { mode: 'follow' });
-  const followed = pinLosses(widget, track, 'opaque tag', 205, true, null, null, country);
+  assert.deepEqual(pinLosses(widget, track, held, gatedTime({ mode: 'follow' }), null).time.value, { mode: 'follow' });
+  const followed = pinLosses(widget, track, held, gatedTime({ mode: 'follow' }), null);
   assert.equal(followed.options?.lossSelection, undefined);
   assert.deepEqual(readDrillCountry(followed.options?.lossCountry, track, followed.countries), country);
 });

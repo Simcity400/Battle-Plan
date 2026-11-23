@@ -23,7 +23,7 @@ impl<'a> Names<'a> {
 
     fn with<T>(&self, slot: u32, read: impl FnOnce(&CountryNames<'_>) -> T) -> T {
         let names = {
-            let _span = viewer_foundation::profiling::span("pt_country_names");
+            let _span = viewer_runtime::profiling::span("pt_country_names");
             CountryNames::read_selected(self.frame, self.localisation, [slot])
         };
         read(&names)

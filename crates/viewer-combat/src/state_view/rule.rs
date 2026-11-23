@@ -1,14 +1,15 @@
+use content_reader_politics::faction_templates::FactionTemplateProducts as _;
 use super::{loc, paths_named};
 use crate::binding::Bindings;
 use crate::content::Content;
 use crate::tooltips::{hover_text, set_hover};
-use content_reader_core::adjacency_rules::{AdjacencyRule, Verdict};
+use content_reader_map::adjacency_rules::{AdjacencyRule, Verdict};
 use content_reader_country_names::country_names::CountryNames;
 use content_reader_localisation::localisation::Argument;
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::map::movement_reads::RuleReason;
+use viewer_unit_reads::movement_reads::RuleReason;
 
 type Loc<'a> = dyn Fn(&str, &[(&str, Argument<'_>)]) -> Result<String, String> + 'a;
 

@@ -6,4 +6,4 @@ A command span starts when an orders group or fleet first names the leader. It r
 
 Trait history compares a leader's complete old and new trait lists using retained cells from deleted or changed rows. A change in list position is not a gain. Distinguish baseline traits, traits absent in the immediately preceding complete read, and traits first observed after a gap or when a leader appears. A repeated first observation of a trait does not replace a known gain. `LeaderTraitDates` preserves the first observation and last gain, even when the leader loses the trait, until the leader is removed. The gain rows keep the recorded spelling and are published for the read hour.
 
-[Leader battles](../../crates/recorder-derive/src/leader_battles.rs) · [Command spans](../../crates/recorder-derive/src/leader_commands.rs) · [Trait gains and dates](../../crates/recorder-derive/src/leader_traits.rs)
+[Leader battles](../../crates/recorder-derive-land/src/leader_battles.rs) · [Command spans](../../crates/recorder-derive-land/src/leader_commands.rs) · [Trait gains and dates](../../crates/recorder-derive-land/src/leader_traits.rs)

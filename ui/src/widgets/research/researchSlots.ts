@@ -1,10 +1,12 @@
 import { researchNumber } from './researchBreakdown.ts';
 import { researchDate } from './researchLayout.ts';
+import { isUnjoinedResearch } from './researchData.ts';
 import type { ResearchSlotNow } from '../../generated/dashboard';
 import type { ResearchSlotsReply } from '../../generated/dashboard';
 
 export function slotsStructure(reply: ResearchSlotsReply): string {
-  return JSON.stringify([reply.missing, reply.slots.map(slot => [slot.index, slot.state.token, slot.state.entryFirstObservedHour,
+  return JSON.stringify([reply.missing, reply.slots.map(slot => [slot.index, slot.state.token, slot.state.databaseIndex, slot.state.entryFirstObservedHour,
+    isUnjoinedResearch(slot.state) ? slot.state.firstHour : null,
     readFraction(slot) !== null, slot.state.details?.remainingDays != null, BigInt(slot.state.bankedDaysRaw) > 0n])]);
 }
 
@@ -40,6 +42,36 @@ export function slotValues(reply: ResearchSlotsReply, hour: number, progress?: (
     const numbers = slotNumbers(read, hour, progress?.(read.index));
     for (const field of ['percent', 'days', 'saved'] as const) values.set(read.index + ':' + field, numbers[field]);
     values.set(read.index + ':bar', numbers.fraction === null ? '' : String(numbers.fraction));
+    values.set(read.index + ':left', numbers.left === null ? '' : String(numbers.left));
+    values.set(read.index + ':estimate', numbers.left === null ? '' : String(effectiveHour(read, hour)));
   }
   return values;
+}
+
+const effectiveHour = (read: ResearchSlotNow, hour: number) =>
+  hour < read.state.firstHour ? hour : read.state.firstHour + Math.floor((hour - read.state.firstHour) / 24) * 24;
+
+export function estimateHour(shown: { texts: ReadonlyMap<string, string>; hour: number; data: ResearchSlotsReply | undefined } | undefined, asked: ResearchSlotsReply & { hour: number },
+  slot: number, token: string): number {
+  if (shown) {
+    const painted = shown.texts.get(slot + ':estimate');
+    return shown.data?.slots.find(held => held.index === slot)?.state.token === token && painted ? Number(painted) : shown.hour;
+  }
+  const read = asked.slots.find(held => held.index === slot);
+  return !read || read.state.token !== token || read.state.details?.remainingDays == null ? asked.hour : effectiveHour(read, asked.hour);
+}
+
+export interface SlotInspection { fraction: number | null; left: number | null; hour: number; token?: string | null }
+
+export function inspectedSlot(shown: { texts: ReadonlyMap<string, string>; hour: number; data: { slots: readonly { index: number; state: { token: string | null } }[] } | undefined } | undefined,
+  slot: number): SlotInspection | undefined {
+  if (!shown) return undefined;
+  const values = slotInspection(shown.texts, slot, shown.hour) ?? { fraction: null, left: null, hour: shown.hour };
+  return { ...values, token: shown.data?.slots.find(read => read.index === slot)?.state.token };
+}
+
+export function slotInspection(texts: ReadonlyMap<string, string> | undefined, slot: number, hour: number | null): SlotInspection | undefined {
+  const bar = texts?.get(slot + ':bar'), left = texts?.get(slot + ':left');
+  if (bar === undefined || left === undefined || hour === null) return undefined;
+  return { fraction: bar === '' ? null : Number(bar), left: left === '' ? null : Number(left), hour };
 }

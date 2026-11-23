@@ -5,7 +5,7 @@ use super::{
     Decimal, GameDate, block, boolean, bytes, decimal, field, integer, invalid, required_block,
     required_bytes, scalar,
 };
-use content_reader_core::parser::{Item, Value};
+use content_reader_parser::parser::{Item, Value};
 #[path = "intel_network_auxiliary.rs"]
 pub mod network_auxiliary;
 #[path = "intel_sources.rs"]
@@ -179,7 +179,7 @@ pub enum OperationResource {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OperationSlot {
     pub operative: Option<u64>,
-    pub mission_present: bool,
+    pub mission: Option<Vec<Item>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -382,7 +382,7 @@ fn parse_agency_upgrades(value: &Value) -> io::Result<Vec<AgencyUpgradeLevel>> {
                 String::from_utf8_lossy(token)
             ))
         };
-        if entry.operator != content_reader_core::parser::Operator::Equals {
+        if entry.operator != content_reader_parser::parser::Operator::Equals {
             return Err(refuse());
         }
         let level = integer(scalar(&entry.value).map_err(|_| refuse())?).map_err(|_| refuse())?;
@@ -1025,14 +1025,10 @@ fn parse_operation_slots(value: &Value) -> io::Result<Vec<OperationSlot>> {
         let operative = field(fields, b"operative")?
             .map(super::typed_handle)
             .transpose()?;
-        let mission_present = field(fields, b"mission")?
-            .map(|value| block(value).map(|_| ()))
-            .transpose()?
-            .is_some();
-        slots.push(OperationSlot {
-            operative,
-            mission_present,
-        });
+        let mission = field(fields, b"mission")?
+            .map(|value| block(value).map(<[Item]>::to_vec))
+            .transpose()?;
+        slots.push(OperationSlot { operative, mission });
     }
     if slots.is_empty() {
         return Err(invalid(
@@ -1413,7 +1409,7 @@ mod tests {
             ("281474976710655.99996", i64::MAX),
         ] {
             let text = format!("effort={{stability={literal} war_support={literal}}}");
-            let tree = content_reader_core::parser::parse(text.as_bytes()).unwrap();
+            let tree = content_reader_parser::parser::parse(text.as_bytes()).unwrap();
             assert_eq!(
                 parse_propaganda_effort(&tree.items[0].value).unwrap(),
                 PropagandaEffort {
@@ -1447,7 +1443,7 @@ mod tests {
                     "stability"
                 };
                 let text = format!("effort={{{channel}={literal} {other}=0}}");
-                let tree = content_reader_core::parser::parse(text.as_bytes()).unwrap();
+                let tree = content_reader_parser::parser::parse(text.as_bytes()).unwrap();
                 assert!(
                     parse_propaganda_effort(&tree.items[0].value).is_err(),
                     "{channel}={literal}"
@@ -1458,7 +1454,7 @@ mod tests {
             b"effort={stability=0}".as_slice(),
             b"effort={war_support=0}",
         ] {
-            let tree = content_reader_core::parser::parse(text).unwrap();
+            let tree = content_reader_parser::parser::parse(text).unwrap();
             assert!(parse_propaganda_effort(&tree.items[0].value).is_err());
         }
     }
@@ -1497,7 +1493,7 @@ mod tests {
     use super::*;
 
     fn parsed(input: &[u8]) -> io::Result<Pack> {
-        parse(&content_reader_core::parser::parse(input)?.items)
+        parse(&content_reader_parser::parser::parse(input)?.items)
     }
 
     #[test]
@@ -2012,7 +2008,7 @@ mod tests {
         let slots = running[0].operative_slots.as_ref().unwrap();
         assert_eq!(slots.len(), 1);
         assert_eq!(slots[0].operative, Some((9831 << 32) | 4713));
-        assert!(slots[0].mission_present);
+        assert_eq!(slots[0].mission.as_ref().map(Vec::len), Some(3));
         assert!(pack.countries[b"SOV".as_slice()].operations.is_none());
     }
 
@@ -2076,9 +2072,74 @@ mod tests {
             .unwrap();
         assert_eq!(slots.len(), 2);
         assert_eq!(slots[0].operative, None);
-        assert!(slots[0].mission_present);
+        assert_eq!(slots[0].mission.as_ref().map(Vec::len), Some(1));
         assert_eq!(slots[1].operative, None);
-        assert!(!slots[1].mission_present);
+        assert_eq!(slots[1].mission, None);
+    }
+
+    #[test]
+    fn operation_slot_missions_distinguish_different_valid_blocks_empty_and_absent() {
+        let pack = parsed(
+            br#"countries={GER={operations={
+                running={ operation_x={
+                    id={ id=1 type=4713 } target="FRA"
+                    operative_slots={
+                        { mission={ mission=build_intel_network target_country="SOV" target_state=219 } }
+                        { mission={ mission=boost_ideology target_country="FRA" } }
+                        { mission={} }
+                        { }
+                    }
+                } }
+            }}}"#,
+        )
+        .unwrap();
+        let slots = pack.countries[b"GER".as_slice()]
+            .operations
+            .as_ref()
+            .unwrap()
+            .running
+            .as_ref()
+            .unwrap()[0]
+            .operative_slots
+            .as_ref()
+            .unwrap();
+        assert_eq!(slots.len(), 4);
+        assert_ne!(slots[0], slots[1]);
+        assert_ne!(slots[0], slots[2]);
+        assert_ne!(slots[1], slots[2]);
+        assert_ne!(slots[2], slots[3]);
+        let first = slots[0].mission.as_deref().unwrap();
+        assert_eq!(first.len(), 3);
+        assert_eq!(
+            bytes(first, b"mission").unwrap().as_deref(),
+            Some(b"build_intel_network".as_slice())
+        );
+        assert_eq!(
+            bytes(first, b"target_country").unwrap().as_deref(),
+            Some(b"SOV".as_slice())
+        );
+        assert_eq!(
+            bytes(first, b"target_state").unwrap().as_deref(),
+            Some(b"219".as_slice())
+        );
+        let second = slots[1].mission.as_deref().unwrap();
+        assert_eq!(second.len(), 2);
+        assert_eq!(
+            bytes(second, b"mission").unwrap().as_deref(),
+            Some(b"boost_ideology".as_slice())
+        );
+        assert_eq!(
+            bytes(second, b"target_country").unwrap().as_deref(),
+            Some(b"FRA".as_slice())
+        );
+        assert_eq!(slots[2].mission, Some(Vec::new()));
+        assert_eq!(slots[3].mission, None);
+        assert!(
+            parsed(
+                br#"countries={GER={operations={running={operation_x={id={id=1 type=4713} target="FRA" operative_slots={{mission=not_a_block}}}}}}}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -2397,7 +2458,7 @@ mod tests {
     }
     #[test]
     fn operative_inherited_cooldown_fields_keep_reason_and_both_dates() {
-        let items = content_reader_core::parser::parse(
+        let items = content_reader_parser::parser::parse(
             br#"id={ id=27 type=4713 } state=on_cooldown
             cooldown_reason=forced_into_hiding leader_cooldown_start_date=1938.4.3.7
             leader_modifier_enable_date=1938.4.8.19"#,

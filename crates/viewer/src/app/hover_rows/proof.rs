@@ -1,6 +1,6 @@
 
 use super::{Caches, Family, HoverRows, Inputs, Job, Key, Posted, Retry, What, id, make};
-use crate::lane_rows::rosters::Lanes;
+use viewer_layer_core::lane_rows::rosters::Lanes;
 use viewer_counter_products::map::province_tooltips::air_region::{RosterHistory, SampleSource, Sampler, Span};
 use crate::{
     app::picker,
@@ -25,17 +25,14 @@ use std::{
     time::{Duration, Instant},
 };
 use viewer_counter_products::map::{counter_tooltips::Style, province_tooltips::ModeHover};
-use viewer_foundation::{
-    map::{
-        camera::{Camera, MapSize, Placement},
-        counter_hovers::{land::CounterHover, task_force, task_force_port},
-        layers::Omissions,
-        perspective::{self, Vision},
-        province_geometry::ProvinceGeometry,
-    },
-    tooltip_text::Tooltip,
+use viewer_gpu::{
+    camera::{Camera, MapSize, Placement},
+    layers::Omissions,
+    province_geometry::ProvinceGeometry,
 };
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_native_gui::counter_hovers::{land::CounterHover, task_force, task_force_port};
+use viewer_foundation::{perspective::{self, Vision}, tooltip_text::Tooltip};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 const LIMIT: Duration = Duration::from_secs(120);
 const VIEWPORT: [u32; 2] = [2048, 1152];
@@ -250,7 +247,7 @@ impl Line {
             busiest.sort_by_key(|&(province, count)| (std::cmp::Reverse(count), province));
             cameras.extend(busiest.iter().filter_map(|&(province, _)| self.geometry.centroid(province)).take(CAMERAS).map(|center| Placement::map(center, NEAR).on(map, document.map_defines)));
         }
-        let settings = viewer_counters::map::counters::CounterSettings { color_mode: viewer_counters::map::counters::CounterColorMode::of(document.game_options.country_counter_colours), nato: document.game_options.nato_counters };
+        let settings = viewer_counter_kit::CounterSettings { color_mode: viewer_counter_kit::CounterColorMode::of(document.game_options.country_counter_colours), nato: document.game_options.nato_counters };
         let choice = perspective::Choice::default();
         let mut targets = Targets::default();
         let mut navy_sources = None;
@@ -266,7 +263,7 @@ impl Line {
                 targets.air_bases.extend(report.air_base_hits.values().copied());
                 targets.naval_bases.extend(report.naval_base_hits.values().copied());
                 for hover in &report.naval_region_hovers {
-                    use viewer_counters::map::counters::NavalRegionalControl;
+                    use viewer_counter_kit::NavalRegionalControl;
                     match hover.control {
                         NavalRegionalControl::Mines => targets.naval.insert((hover.region, true)),
                         NavalRegionalControl::Accidents => targets.naval.insert((hover.region, false)),
@@ -274,7 +271,7 @@ impl Line {
                     };
                 }
                 for hit in &overlay.hits.occupation {
-                    if let viewer_world::map::occupation_icons::Hover::Modifier { state, token } = &hit.hover {
+                    if let viewer_map_icons::occupation_icons::Hover::Modifier { state, token } = &hit.hover {
                         targets.occupation.insert((*state, token.clone()));
                     }
                 }
@@ -473,7 +470,7 @@ type MakeJob = Box<dyn Fn(&Caches) -> Job>;
 fn all(family: Family, document: &Document, targets: &Targets, inputs: &Inputs) -> Vec<(String, Key, MakeJob)> {
     let mut out: Vec<(String, Key, MakeJob)> = Vec::new();
     let replay = document.playback.roster_sampler();
-    let selected: Arc<Vec<viewer_foundation::unit_handle::Unit>> = Arc::default();
+    let selected: Arc<Vec<viewer_runtime::unit_handle::Unit>> = Arc::default();
     match family {
         Family::Counters => {
             for hover in &targets.land {

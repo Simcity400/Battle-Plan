@@ -1,26 +1,32 @@
 
 use crate::{
     Query,
-    identity::{Holder, HolderRun, Holders},
+    identity::{self, Holders},
     timeline::{Join, Stretch, Timeline, Unheld},
 };
-use replay::{campaign::Replay, spool::Record};
-use replay_columnar::envelope::UNIT_ORDINALS;
+use replay::campaign::Replay;
+use replay_journal::synthetic::{Input, Sample, Synthetic};
+use replay_capture_spool::spool::Record;
+use replay_columnar::envelope::{SPAN_BLOCKS, UNIT_ORDINALS};
 use replay_data::{
     identity::{CaptureMode, Identity, Roster, SampleBoundary, SessionStart, Verification},
-    rows::{CampaignRow, CountryLinkRow, CountryResourceRow, CountryRow, FactionMemberRow, FactionRow, MarketEventRow, StateRow, TableId, TableRows, WorldTensionRow},
+    rows::{
+        CampaignRow, ClockRow, CountryLinkRow, CountryResourceRow, CountryRow, FactionMemberRow, FactionRow, MarketEventRow,
+        ProvinceRow, RowCodec, StateRow, TableId, TableRows, WorldTensionRow,
+    },
 };
 use replay_frame::{
     branches::{BranchReason, BranchStart, Parentage},
     frame::{DecodedFrame, FrameEncoder, FrameInput, Metrics, TableView},
 };
-use std::sync::{Arc, OnceLock};
+use std::{io, ops::RangeInclusive, sync::Arc};
 
 pub const FIRST: i32 = 10_003;
-pub const FIRST_HOURS: i32 = 17 * UNIT_ORDINALS as i32;
+pub const UNIT_HOURS: i32 = UNIT_ORDINALS as i32;
+pub const FIRST_HOURS: i32 = 9 * UNIT_HOURS;
 pub const GAP: i32 = 400;
 pub const SECOND: i32 = FIRST + FIRST_HOURS + GAP;
-pub const SECOND_HOURS: i32 = 2 * UNIT_ORDINALS as i32;
+pub const SECOND_HOURS: i32 = UNIT_HOURS;
 pub const LAST: i32 = SECOND + SECOND_HOURS - 1;
 pub const ITA_FROM: i32 = FIRST + 5_000;
 pub const GAP_REASON: &str = "The game was not recorded here";
@@ -114,26 +120,51 @@ pub fn receiver(country: u32, kind: u8, hour: i32) -> u32 {
     }
 }
 
-fn frame(branch: u64, hour: i32) -> DecodedFrame {
-    let mut tables = std::array::from_fn(|_| TableView::Unavailable { reason: "outside the fixture".into() });
-    tables[TableId::Campaign.index()] = TableView::Complete(TableRows::Campaign(vec![CampaignRow { id: b"tiles".to_vec() }]));
-    let mut countries = vec![CountryRow { id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), political_power_raw: power(9001, hour), ..CountryRow::default() }];
-    let mut links = vec![CountryLinkRow { id: 9001, canonical_slot: 7 }];
-    if exists(9002, hour) {
-        countries.push(CountryRow { id: 9002, canonical_slot: 8, tag: b"ITA".to_vec(), political_power_raw: power(9002, hour), ..CountryRow::default() });
-        links.push(CountryLinkRow { id: 9002, canonical_slot: 8 });
-    }
-    let rows = [9001, 9002].into_iter().flat_map(|id| resources(id, hour).into_iter().map(move |held| resource(id, held, hour))).collect();
-    let events = market(hour)
+pub enum Data {
+    Power,
+    Resources,
+    Market,
+    Tension,
+    Faction,
+}
+
+fn sample<R: RowCodec>(frame: &mut Synthetic, table: TableId, rows: &[R]) -> io::Result<()> {
+    frame.table(table, Input::Snapshot { rows, partial: None, read: true, sample: Sample::FromReadBit })
+}
+
+fn country_rows(frame: &mut Synthetic, hour: i32, with_power: bool) -> io::Result<()> {
+    let countries: Vec<_> = [(9001, 7), (9002, 8)]
+        .into_iter()
+        .filter(|&(id, _)| exists(id, hour))
+        .map(|(id, canonical_slot)| CountryRow {
+            id,
+            canonical_slot,
+            tag: tag_of(id).as_bytes().to_vec(),
+            political_power_raw: if with_power { power(id, hour) } else { None },
+            ..CountryRow::default()
+        })
+        .collect();
+    let links: Vec<_> = countries.iter().map(|row| CountryLinkRow { id: row.id, canonical_slot: row.canonical_slot }).collect();
+    sample(frame, TableId::Countries, &countries)?;
+    sample(frame, TableId::CountryLinks, &links)
+}
+
+fn resource_rows(frame: &mut Synthetic, hour: i32) -> io::Result<()> {
+    let rows: Vec<_> = [9001, 9002].into_iter().flat_map(|id| resources(id, hour).into_iter().map(move |held| resource(id, held, hour))).collect();
+    sample(frame, TableId::CountryResources, &rows)
+}
+
+fn market_rows(frame: &mut Synthetic, hour: i32) -> io::Result<()> {
+    let events: Vec<_> = market(hour)
         .into_iter()
         .map(|(id, kind, country)| MarketEventRow { id, occurrence: id, hour, country, receiver: receiver(country, kind, hour), kind, amount_raw: i64::from(hour), ..MarketEventRow::default() })
         .collect();
-    tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(countries));
-    tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(links));
-    tables[TableId::CountryResources.index()] = TableView::Complete(TableRows::CountryResources(rows));
-    tables[TableId::MarketEvents.index()] = TableView::Complete(TableRows::MarketEvents(events));
+    sample(frame, TableId::MarketEvents, &events)
+}
+
+fn faction_rows(frame: &mut Synthetic, hour: i32) -> io::Result<()> {
     let (ger, ita) = (states(9001, hour), states(9002, hour));
-    let held = (1..=STATES)
+    let held: Vec<_> = (1..=STATES)
         .map(|id| {
             let country = match id {
                 _ if id <= ger => 9001,
@@ -144,23 +175,15 @@ fn frame(branch: u64, hour: i32) -> DecodedFrame {
             StateRow { id, owner: country, controller: country, ..StateRow::default() }
         })
         .collect();
-    let members = [9001, 9002].into_iter().filter(|&id| exists(id, hour)).zip(0..).map(|(country, ordinal)| FactionMemberRow { country, faction: FACTION, ordinal }).collect();
-    tables[TableId::States.index()] = TableView::Complete(TableRows::States(held));
-    tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(Vec::new()));
-    tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(vec![FactionRow { id: FACTION, ..FactionRow::default() }]));
-    tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(members));
-    tables[TableId::WorldTension.index()] = TableView::Complete(TableRows::WorldTension(vec![WorldTensionRow { total_raw: tension(hour), ..WorldTensionRow::default() }]));
-    let mut metrics = Metrics::default();
-    for (index, view) in tables.iter().enumerate() {
-        if matches!(view, TableView::Complete(_)) {
-            metrics.table_ns[index] = 1;
-        }
-    }
-    DecodedFrame { branch, hour, tables: tables.map(Into::into), metrics }
+    let members: Vec<_> = [9001, 9002].into_iter().filter(|&id| exists(id, hour)).zip(0..).map(|(country, ordinal)| FactionMemberRow { country, faction: FACTION, ordinal }).collect();
+    sample(frame, TableId::States, &held)?;
+    sample::<ProvinceRow>(frame, TableId::Provinces, &[])?;
+    sample(frame, TableId::Factions, &[FactionRow { id: FACTION, ..FactionRow::default() }])?;
+    sample(frame, TableId::FactionMembers, &members)
 }
 
-pub(crate) fn segment(branch: u64, first: i32, hours: i32) -> Vec<Record> {
-    let session = SessionStart {
+fn session(branch: u64) -> SessionStart {
+    SessionStart {
         id: branch,
         process_id: 1,
         process_start_time: 1,
@@ -180,48 +203,88 @@ pub(crate) fn segment(branch: u64, first: i32, hours: i32) -> Vec<Record> {
             collector_hash: [3; 32],
             verification: Verification::Verified { launcher: Roster::default(), memory: Roster::default() },
         },
-    };
-    let mut out = vec![
-        Record::SessionStart(session),
-        Record::BranchStart(BranchStart { id: branch, session: branch, loaded_hour: None, first_hour: first, parent: Parentage::Unknown, reason: BranchReason::SessionStart }),
-    ];
+    }
+}
+
+fn branch_start(branch: u64, first: i32) -> BranchStart {
+    BranchStart { id: branch, session: branch, loaded_hour: None, first_hour: first, parent: Parentage::Unknown, reason: BranchReason::SessionStart }
+}
+
+pub(crate) fn segment(branch: u64, first: i32, hours: i32) -> Vec<Record> {
+    let mut out = vec![Record::SessionStart(session(branch)), Record::BranchStart(branch_start(branch, first))];
     let mut encoder = FrameEncoder::new();
     for hour in first..first + hours {
-        let mut input = FrameInput::from(frame(branch, hour));
+        let mut tables = std::array::from_fn(|_| TableView::Unavailable { reason: "outside the fixture".into() });
+        tables[TableId::Campaign.index()] = TableView::Complete(TableRows::Campaign(vec![CampaignRow { id: b"tiles".to_vec() }]));
+        let mut metrics = Metrics::default();
+        metrics.table_ns[TableId::Campaign.index()] = 1;
+        let mut input = FrameInput::from(DecodedFrame { branch, hour, tables: tables.map(Into::into), metrics });
         input.scope_to(CaptureMode::Full);
         out.push(Record::Frame(encoder.encode_input(input, false).unwrap()));
     }
     out
 }
 
-pub fn replay() -> &'static Replay {
-    static HELD: OnceLock<Replay> = OnceLock::new();
-    HELD.get_or_init(|| Replay::from_records(b"tiles".to_vec(), &[segment(1, FIRST, LAST - FIRST + 1)]).unwrap())
+pub struct Fixture {
+    replay: Replay,
+    timeline: Arc<Timeline>,
+    holders: Arc<Holders>,
 }
 
-pub fn query() -> Query<'static> {
-    let replay = replay();
-    assert_eq!(replay.recording().run_count(), 1);
-    let timeline = Timeline {
-        id: 1,
-        first: FIRST,
-        last: LAST,
-        stretches: vec![
-            Stretch { run: 0, first: FIRST, last: FIRST + FIRST_HOURS - 1, join: Join::Start },
-            Stretch { run: 0, first: SECOND, last: LAST, join: Join::Break },
-        ],
-        unheld: vec![Unheld { first: FIRST + FIRST_HOURS, last: SECOND - 1, reason: GAP_REASON.into() }],
-    };
-    let run = |first: i32, last: i32, slot: u32, id: u32| HolderRun { first, last, holder: Holder::Found { slot, id }, starts_segment: true };
-    let holders = Holders::new(
-        [
-            ("GER".to_owned(), vec![run(FIRST, FIRST + FIRST_HOURS - 1, 7, 9001), run(SECOND, LAST, 7, 9001)]),
-            ("ITA".to_owned(), vec![run(ITA_FROM, FIRST + FIRST_HOURS - 1, 8, 9002), run(SECOND, LAST, 8, 9002)]),
-        ]
-        .into(),
-        Vec::new(),
-    );
-    Query { replay, timeline: Arc::new(timeline), holders: Arc::new(holders) }
+impl Fixture {
+    pub fn new(data: Data, hours: RangeInclusive<i32>) -> Self {
+        Self::record(data, hours, None)
+    }
+
+    pub fn with_gap(data: Data, hours: RangeInclusive<i32>, gap: RangeInclusive<i32>) -> Self {
+        Self::record(data, hours, Some(gap))
+    }
+
+    pub fn campaign(data: Data) -> Self {
+        Self::with_gap(data, FIRST..=LAST, FIRST + FIRST_HOURS..=SECOND - 1)
+    }
+
+    pub fn campaign_with_sealed_span(data: Data) -> Self {
+        let gap = FIRST + (SPAN_BLOCKS as i32 + 1) * UNIT_HOURS;
+        let second = gap + GAP;
+        let fixture = Self::with_gap(data, FIRST..=second + 240, gap..=second - 1);
+        assert_eq!(fixture.replay.recording().run(0).unwrap().directory().spans.len(), 1);
+        fixture
+    }
+
+    fn record(data: Data, hours: RangeInclusive<i32>, gap: Option<RangeInclusive<i32>>) -> Self {
+        let (first, last) = hours.into_inner();
+        let campaign = CampaignRow { id: b"tiles".to_vec() };
+        let replay = Replay::from_synthetic(recorder_derive::writers(), campaign.id.clone(), session(1), branch_start(1, first), last, |frame, hour| {
+            sample(frame, TableId::Clock, &[ClockRow { hour, ..ClockRow::default() }])?;
+            sample(frame, TableId::Campaign, std::slice::from_ref(&campaign))?;
+            country_rows(frame, hour, matches!(data, Data::Power))?;
+            match data {
+                Data::Power => Ok(()),
+                Data::Resources => resource_rows(frame, hour),
+                Data::Market => market_rows(frame, hour),
+                Data::Tension => sample(frame, TableId::WorldTension, &[WorldTensionRow { total_raw: tension(hour), ..WorldTensionRow::default() }]),
+                Data::Faction => faction_rows(frame, hour),
+            }
+        }).unwrap();
+        assert_eq!(replay.recording().run_count(), 1);
+        let mut stretches = vec![Stretch { run: 0, first, last, join: Join::Start }];
+        let mut unheld = Vec::new();
+        if let Some(gap) = gap {
+            let (gap_first, gap_last) = gap.into_inner();
+            assert!(first < gap_first && gap_first <= gap_last && gap_last < last);
+            stretches[0].last = gap_first - 1;
+            stretches.push(Stretch { run: 0, first: gap_last + 1, last, join: Join::Break });
+            unheld.push(Unheld { first: gap_first, last: gap_last, reason: GAP_REASON.into() });
+        }
+        let timeline = Arc::new(Timeline { id: 1, first, last, stretches, unheld });
+        let holders = Arc::new(identity::holders(replay.recording(), &timeline).unwrap());
+        Self { replay, timeline, holders }
+    }
+
+    pub fn query(&self) -> Query<'_> {
+        Query { replay: &self.replay, timeline: Arc::clone(&self.timeline), holders: Arc::clone(&self.holders) }
+    }
 }
 
 pub fn tag_of(id: u32) -> &'static str {

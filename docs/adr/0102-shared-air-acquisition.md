@@ -12,4 +12,4 @@ Attach and cadence presizing supplies only advisory floors. Growth and replay oc
 
 The scale fixture arranges mission vector order, census order and handle order to differ. It places wing objects outside the readable fixture ranges because the joins consume owned identities by mission address. It varies registered, training and idle wings, repeated pools, transfer overrides, unresolvable references, indexed state locations and hosted carriers. This verifies that sorting or deduplication affects lookup work only and that a failed base witness does not rewrite the registration result.
 
-[Air pack and mission joins](../../crates/collector/src/extended/air.rs) Â· [Scale regressions](../../crates/collector/src/extended/air_mission_scale_tests.rs) Â· [Wing acquisition](../../crates/collector/src/extended/air/wing.rs)
+[Air pack and mission joins](../../crates/collector-air/src/extended/air.rs) Â· [Scale regressions](../../crates/collector-air/src/extended/air_mission_scale_tests.rs) Â· [Wing acquisition](../../crates/collector-air/src/extended/air/wing.rs)

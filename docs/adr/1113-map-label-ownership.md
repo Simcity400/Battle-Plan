@@ -6,4 +6,4 @@ Keep reverse indexes of raw country links, canonical country data, stars by stat
 
 Attach the branch, viewing country and settled hour range before publishing the layout product. A refused or unfinished calculation cannot claim even an empty label product for an authoritative hour. Tests keep the previous allocation alive when checking publication identity so allocator address reuse cannot stand in for the wrong product.
 
-[Labels](../../crates/viewer-playback/src/layers/labels.rs) · [Label tests](../../crates/viewer-playback/src/layers/labels/tests.rs)
+[Labels](../../crates/viewer-layers-political/src/labels.rs) · [Label tests](../../crates/viewer-layers-political/src/labels/tests.rs)

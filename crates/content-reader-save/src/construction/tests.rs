@@ -97,7 +97,7 @@ fn occupation_resistance_targets_keep_order_country_omissions_and_emitted_empty_
 }
 
 fn railway_fields(extra: &str) -> Vec<Item> {
-    content_reader_core::parser::parse(
+    content_reader_parser::parser::parse(
         format!(
             "id={{id=4294967295 type=4713}} cost=-90071992547.40993 priority=-9 amount=-2147483648 created_date=1936.1.1.12 base=-3 target=7 current_province=-1 remaining_hours=0.00001 {extra}"
         )
@@ -108,7 +108,7 @@ fn railway_fields(extra: &str) -> Vec<Item> {
 }
 
 fn pack(input: &str) -> io::Result<Pack> {
-    parse(&content_reader_core::parser::parse(input.as_bytes())?.items)
+    parse(&content_reader_parser::parser::parse(input.as_bytes())?.items)
 }
 
 #[test]
@@ -304,6 +304,7 @@ fn construction_and_buildings_keep_shared_queue_order_and_signed_levels() {
         countries={GER={production={general_lines={
             building={id={id=4 type=59} cost=1 priority=-8 amount=1 created_date=1936.1.1.12 building={template=factory location=3}}
             railway_gun={id={id=1 type=76} priority=1 amount=0 cost=0 created_date="1944.8.26.17" railway_gun={id=1 type=74}}
+            railway_gun={id={id=2 type=76} priority=2 amount=0 cost=0 created_date="1944.8.27.1" railway_gun={id=0 type=0}}
             rail_way={id={id=4 type=4713} cost=2 priority=-9 amount=1 created_date=1936.1.1.12 base=-1 target=3 current_province=-1 remaining_hours=-0.00001 rail_way={8 3 8}}
         }} buildings={factory={level=3 healthy_levels=2 partial_health=50}}} ITA={}}
         states={3={buildings={factory={level=-32768 healthy_levels=-2 partial_health=-90071992547.40993} port={level=1 healthy_levels=1 partial_health=0}} resistance={}}}
@@ -321,7 +322,24 @@ fn construction_and_buildings_keep_shared_queue_order_and_signed_levels() {
             .unwrap()
             .production
             .queue_ordinal,
-        2
+        3
+    );
+    assert_eq!(
+        saved.railway_gun_repairs,
+        vec![
+            RailwayGunRepair {
+                id: Some((1_u64 << 32) | 76),
+                country: b"GER".to_vec(),
+                queue_ordinal: 1,
+                railway_gun: Some((1_u64 << 32) | 74),
+            },
+            RailwayGunRepair {
+                id: Some((2_u64 << 32) | 76),
+                country: b"GER".to_vec(),
+                queue_ordinal: 2,
+                railway_gun: Some(0),
+            },
+        ]
     );
     let state = &saved.state_buildings[&(3, b"factory".to_vec())];
     assert_eq!(state.level, i16::MIN);
@@ -397,7 +415,7 @@ fn malformed_or_duplicate_serialized_scope_is_never_silently_overwritten() {
 #[test]
 fn shared_manpower_reader_keeps_nonfaction_wrappers_unique() {
     let doc =
-        content_reader_core::parser::parse(b"manpower_pool={} manpower_pool={value={tag=MOD value=4}}")
+        content_reader_parser::parser::parse(b"manpower_pool={} manpower_pool={value={tag=MOD value=4}}")
             .unwrap();
     assert_eq!(
         manpower(&doc.items, b"manpower_pool")

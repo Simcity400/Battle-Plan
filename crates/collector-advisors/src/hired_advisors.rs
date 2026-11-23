@@ -176,8 +176,10 @@ impl Captured {
         self.available.grow(&mut capacity.available);
         self.available_bytes.grow(&mut capacity.available_bytes);
     }
+    /// # Safety
+    /// Caller holds hourly capture admission for the active session (or isolated fixture control).
     #[cfg(any(test, feature = "test-support"))]
-    pub fn capture(
+    pub unsafe fn capture(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -185,11 +187,15 @@ impl Captured {
         hour: i32,
         force_full: bool,
     ) -> [u64; N] {
-        self.capture_carried(memory, base, game_state, hour, force_full, None, None)
+        // SAFETY: Caller upholds the hourly capture admission contract.
+        unsafe { self.capture_carried(memory, base, game_state, hour, force_full, None, None) }
     }
 
+    /// # Safety
+    /// Caller holds hourly capture admission for the active session (or isolated fixture control)
+    /// so global `advisor_pool_changes` demand updates belong to this capture pass.
     #[allow(clippy::too_many_arguments)]
-    pub fn capture_carried(
+    pub unsafe fn capture_carried(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -597,7 +603,8 @@ mod tests {
         };
         let mut captured = Captured::with_capacities(&Capacities::default());
         for hour in 0..24 {
-            captured.capture(&memory, 0, 0x1000, hour, false);
+            // SAFETY: Unit test runs against an isolated in-memory fixture.
+            unsafe { captured.capture(&memory, 0, 0x1000, hour, false) };
             for index in [0, 4] {
                 assert!(
                     matches!(
@@ -690,7 +697,8 @@ mod tests {
             ..Default::default()
         });
         for hour in 0..24 {
-            captured.capture(&memory, 0, 0x1000, hour, false);
+            // SAFETY: Unit test runs against an isolated in-memory fixture.
+            unsafe { captured.capture(&memory, 0, 0x1000, hour, false) };
             for index in [1, 3] {
                 assert!(matches!(
                     captured.outcomes()[index],

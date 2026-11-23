@@ -4,9 +4,11 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: "0 14 * * *"
 
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'schedule' && 'nightly' || github.run_attempt == 1 && 'main' || format('main-retry-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -20,12 +22,16 @@ env:
 jobs:
   changes:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       any: ${{ steps.plan.outputs.any }}
       base: ${{ steps.plan.outputs.base }}
       tier: ${{ steps.tier.outputs.tier }}
       exact: ${{ steps.tier.outputs.exact }}
+      everything: ${{ steps.tier.outputs.everything }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -39,29 +45,44 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
-          BEFORE: ${{ github.event.before }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ "$EVENT" = pull_request ]; then
-            { echo "tier=check"; echo "base=$PR_BASE"; echo "exact="; } >> "$GITHUB_OUTPUT"
-          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
-            git cat-file -e "$BEFORE^{commit}" 2>/dev/null || git fetch --no-tags origin "$BEFORE"
-            { echo "tier=main"; echo "base=$BEFORE"; echo "exact=--exact-base"; } >> "$GITHUB_OUTPUT"
-          else
-            { echo "tier=main"; echo "base=$(git hash-object -t tree /dev/null)"; echo "exact=--exact-base"; } >> "$GITHUB_OUTPUT"
+            { echo "tier=check"; echo "base=$PR_BASE"; echo "exact="; echo "everything="; } >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          green=
+          head=$(git rev-parse HEAD)
+          any=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=100" \
+            --jq "[.workflow_runs[] | select((.event == \"push\" or .event == \"schedule\") and .head_sha != \"$head\")] | length") \
+            || { echo "::error::Main's CI runs could not be listed, so its last green commit is unknown"; exit 1; }
+          [ "$any" -gt 0 ] || echo "main has no green run yet"
+          for sha in $([ "$any" -gt 0 ] && git rev-list --first-parent HEAD^ 2>/dev/null); do
+            found=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$sha&status=success&per_page=100" \
+              --jq '[.workflow_runs[] | select(.head_branch == "main" and (.event == "push" or .event == "schedule"))] | length') \
+              || { echo "::error::Main's CI runs could not be listed, so its last green commit is unknown"; exit 1; }
+            if [ "$found" -gt 0 ]; then green=$sha; break; fi
+          done
+          everything=
+          if [ "$EVENT" = schedule ] || [ -z "$green" ]; then everything=--everything; fi
+          echo "last green main commit: ${green:-none}"
+          { echo "tier=main"; echo "base=${green:-$(git hash-object -t tree /dev/null)}"; echo "exact=--exact-base"; echo "everything=$everything"; } >> "$GITHUB_OUTPUT"
       - id: plan
         shell: bash
         env:
           TIER: ${{ steps.tier.outputs.tier }}
           BASE: ${{ steps.tier.outputs.base }}
           EXACT: ${{ steps.tier.outputs.exact }}
-        run: python tools/ci.py changes --tier "$TIER" --base "$BASE" $EXACT --github-output "$GITHUB_OUTPUT"
+          EVERYTHING: ${{ steps.tier.outputs.everything }}
+        run: python tools/ci.py changes --tier "$TIER" --base "$BASE" $EXACT $EVERYTHING --github-output "$GITHUB_OUTPUT"
 
   run:
     needs: changes
     if: needs.changes.outputs.any == 'true'
     name: ${{ matrix.name }}
-    runs-on: ${{ fromJSON('{"repo":"ubuntu-24.04","ui":"ubuntu-24.04","tools":"windows-latest","browser":"windows-latest","rust":"windows-latest"}')[matrix.group] }}
+    runs-on: ${{ fromJSON('{"linux":"ubuntu-24.04","windows":"windows-latest","rust":"windows-latest"}')[matrix.group] }}
+    timeout-minutes: ${{ fromJSON('{"linux":30,"windows":60,"rust":90}')[matrix.group] }}
     strategy:
       fail-fast: false
       matrix:
@@ -70,6 +91,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          filter: ${{ matrix.needs_rust && 'blob:none' || '' }}
           persist-credentials: false
       - if: needs.changes.outputs.exact != ''
         shell: bash
@@ -113,10 +135,12 @@ jobs:
           TIER: ${{ needs.changes.outputs.tier }}
           BASE: ${{ needs.changes.outputs.base }}
           EXACT: ${{ needs.changes.outputs.exact }}
+          EVERYTHING: ${{ needs.changes.outputs.everything }}
           GROUP: ${{ matrix.group }}
           JOBS: ${{ matrix.jobs }}
           SHARD: ${{ matrix.shard }}
-        run: python tools/ci.py job --tier "$TIER" --group "$GROUP" --jobs "$JOBS" --base "$BASE" $EXACT ${SHARD:+--shard "$SHARD"}
+          RUST_MIN_STACK: '33554432'
+        run: python tools/ci.py job --tier "$TIER" --group "$GROUP" --jobs "$JOBS" --base "$BASE" $EXACT $EVERYTHING ${SHARD:+--shard "$SHARD"}
       - if: failure() && matrix.needs_rust
         uses: actions/upload-artifact@v7
         with:

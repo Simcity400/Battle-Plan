@@ -1,3 +1,4 @@
+use dashboard_effects::ScriptedEffects;
 use job_priority::SpawnCarried as _;
 use super::{ContentOptions, politics_content};
 use crate::{
@@ -60,7 +61,7 @@ fn read(source: &Weak<Source>, mut options: ContentOptions) {
 
 pub(crate) fn warm_guis(catalogue: &Catalogue) {
     if catalogue.content.layers.presentation().shows_visual_mods() {
-        content_reader_core::content::strict(|| drop(catalogue.guis()));
+        content_reader_layers::content::strict(|| drop(catalogue.guis()));
     } else {
         drop(catalogue.guis());
     }

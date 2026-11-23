@@ -1,5 +1,5 @@
 use crate::peace_settlements::{Capacities, Storage};
-#[path = "../../engine/tests/support/peace_world.rs"]
+#[path = "../../engine/tests/native/support/peace_world.rs"]
 pub mod fixture;
 use fixture::Fixture;
 

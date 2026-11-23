@@ -1,4 +1,5 @@
-use content_reader_core::{gui::native, gui::native::Element, unit_leader::Skills};
+use content_reader_gui::gui::native::{self, Element};
+use content_reader_key_names::unit_leader::Skills;
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
     rows::LandCombatDetailsRow, rows::LandCombatSideDetails, rows::LandCombatSideInputs,
@@ -6,28 +7,26 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
-use viewer_foundation::land_combat_math::side_scores;
-use viewer_foundation::table_access::TokenNames;
-use viewer_foundation::table_access::country_slot;
+use viewer_engagements::land_combat_math::side_scores;
+use dashboard_text::table_access::TokenNames;
+use dashboard_text::table_access::country_slot;
 use viewer_foundation::tooltip_text::displayable;
 use viewer_foundation::tooltip_text::tooltip_keys;
 use viewer_foundation::tooltip_text::viewing_tag as tooltip_text_viewing_tag;
-use {
-    super::HoverText, super::Selection, super::Values, super::binding::Bindings,
-    super::land_details::division_width, super::modifier_text::Block,
-    super::modifier_text::Definitions, super::modifier_text::Refusal,
-    viewer_foundation::land_combat_math::Conditions,
-    viewer_foundation::land_combat_math::condition_gap,
-    viewer_foundation::land_combat_math::conditions, viewer_foundation::tooltip_text::TextIcons,
-    viewer_foundation::tooltip_text::builtin, viewer_foundation::tooltip_text::token,
+use super::{
+    HoverText,
+    Selection,
+    Values,
+    binding::Bindings,
+    land_details::division_width,
+    modifier_text::{Block, Definitions, Refusal},
 };
-use {
-    super::content::Content as StaticContent,
-    viewer_foundation::{
-        map::{native_windows::NativeWindows, perspective::Vision},
-        table_access::rows,
-    },
-};
+use viewer_engagements::land_combat_math::{Conditions, condition_gap, conditions};
+use viewer_foundation::tooltip_text::{TextIcons, builtin, token};
+use super::content::Content as StaticContent;
+use viewer_native_gui::native_windows::NativeWindows;
+use viewer_foundation::perspective::Vision;
+use dashboard_text::table_access::rows;
 
 use super::tactics::{Content as Tactics, Effects};
 
@@ -180,7 +179,7 @@ fn authored_key<'a>(
     if hash == 0 {
         return Ok(None);
     }
-    std::str::from_utf8(content_reader_core::parser::c_string(key))
+    std::str::from_utf8(content_reader_parser::parser::c_string(key))
         .map(Some)
         .map_err(|_| {
             format!("authored_tooltip_undecodable_key: {path}'s {field} key {key:?} is not UTF-8")
@@ -712,8 +711,8 @@ pub(super) fn bind(
     set_hover(&mut out.values, "combat_width", width, None);
     let links = rows::<tables::CountryLinks>(frame)?;
     let division_rows = rows::<tables::LandCombatDivisions>(frame)?;
-    let combat_members = viewer_foundation::land_combat_math::combat_rows(division_rows.rows(), id);
-    let member_values = viewer_foundation::land_combat_math::member_values(frame, combat_members)?;
+    let combat_members = viewer_engagements::land_combat_math::combat_rows(division_rows.rows(), id);
+    let member_values = viewer_engagements::land_combat_math::member_values(frame, combat_members)?;
     let divisions: BTreeMap<_, _> = combat_members
         .iter()
         .map(|row| (row.division, row))

@@ -76,6 +76,7 @@ pub struct Hook {
     enabled: bool,
     needs_flush: bool,
     diagnostic_failure: bool,
+    verification_failed: bool,
     page_protection: u32,
     tap: Option<TapSafety>,
     name: &'static str,
@@ -182,6 +183,7 @@ impl Hook {
                     enabled: false,
                     needs_flush: false,
                     diagnostic_failure: false,
+                    verification_failed: false,
                     page_protection: region.Protect,
                     tap: None,
                     name: "native hook",
@@ -287,6 +289,10 @@ impl Hook {
 
     pub fn is_enabled(&self) -> bool {
         self.enabled || self.needs_flush
+    }
+
+    pub fn is_published(&self) -> bool {
+        self.enabled && !self.needs_flush && !self.verification_failed
     }
 
     pub fn guard(&mut self, function: Option<Range<usize>>) {
@@ -483,6 +489,7 @@ impl Hook {
             }
             if !hook.bytes_match(hook.enabled) {
                 hook.diagnostic_failure = true;
+                hook.verification_failed = true;
                 *snapshot_refusal = unowned;
                 return Err(0);
             }
@@ -743,8 +750,9 @@ impl Hook {
                             .filter(|hook| hook.needs_flush)
                             .all(|hook| hook.bytes_match(hook.enabled))
                     {
-                        for hook in hooks.iter_mut() {
+                        for hook in hooks.iter_mut().filter(|hook| hook.needs_flush) {
                             hook.needs_flush = false;
+                            hook.verification_failed = false;
                         }
                     }
                     return Err(code);
@@ -752,11 +760,13 @@ impl Hook {
                 for (index, hook) in hooks.iter_mut().enumerate() {
                     if selected(index) && !hook.bytes_match(enabled) {
                         hook.diagnostic_failure = true;
+                        hook.verification_failed = true;
                         return Err(0);
                     }
                 }
                 for hook in hooks.iter_mut() {
                     hook.needs_flush = false;
+                    hook.verification_failed = false;
                 }
                 Ok(true)
             })()

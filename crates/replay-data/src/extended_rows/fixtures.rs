@@ -1052,7 +1052,7 @@ impl Sample for VariantDesignState {
         }
     }
 }
-fixture!(VariantStatsRow, |key| {variant: key as u64}, {values: [i64;10], organisation: u64, organisation_trait_count: i32, organisation_bonuses: Vec<IndustrialOrganisationBonus>});
+fixture!(VariantStatsRow, |key| {variant: key as u64}, {values: [Option<i64>;10], organisation: u64, organisation_trait_count: i32, organisation_bonuses: Vec<IndustrialOrganisationBonus>});
 fixture!(VariantUpgradeRow, |key| {variant: (key >> 32) as u64, source_ordinal: key as u32}, {definition_token: i32, level: u8});
 fixture!(ArmyUpgradeGroupRow, |key| {army: key as u64}, {country: u32, priority: u32});
 fixture!(ArmyUpgradeRequestRow, |key| {army: (key >> 32) as u64, ordinal: key as u32}, {country: u32, equipment: u64, request_raw: i64, total_raw: i64});
@@ -2425,6 +2425,38 @@ impl Fixture for LandCombatDivisionModifierRow {
         };
         RowCodec::round_to_display(&mut row);
         row
+    }
+}
+impl Fixture for CombatEngagementRefreshRow {
+    fn smallest_key() -> u128 {
+        1_u128 << 33
+    }
+    fn largest_key() -> u128 {
+        (u128::from(Self::LOCAL_ALL_SIDES) << 97) | (u128::from(i32::MAX as u64) << 33)
+    }
+    fn fixture(key: u128, tick: usize) -> Self {
+        let kind = ((key >> 97) & 3) as u8;
+        let target = (key >> 33) as u64;
+        let side = ((key >> 32) & 1) as u8;
+        let viewer = key as u32;
+        let triggers = if kind == Self::LOCAL_ALL_SIDES {
+            if tick.is_multiple_of(2) {
+                Self::TRIGGER_RECORDED
+            } else {
+                Self::TRIGGER_RECORDED | Self::TRIGGER_CACHE_WRITE
+            }
+        } else if kind == Self::CONTROLLER_TARGET {
+            Self::TRIGGER_RECORDED
+        } else {
+            ((tick % 3) + 1) as u8
+        };
+        Self {
+            kind,
+            target,
+            side,
+            viewer,
+            triggers,
+        }
     }
 }
 impl Fixture for LandCombatSideRow {
@@ -4290,6 +4322,9 @@ pub fn sample_extended_table(table: TableId, tick: usize) -> Option<TableRows> {
             TableRows::LandCombatProgress(rows::<LandCombatProgressRow>(tick))
         }
         TableId::LandCombatSides => TableRows::LandCombatSides(rows::<LandCombatSideRow>(tick)),
+        TableId::CombatEngagementRefreshes => {
+            TableRows::CombatEngagementRefreshes(rows::<CombatEngagementRefreshRow>(tick))
+        }
         TableId::ThreatSources => TableRows::ThreatSources(rows::<ThreatSourceRow>(tick)),
         TableId::ThreatCountryAggregates => {
             TableRows::ThreatCountryAggregates(rows::<ThreatCountryAggregateRow>(tick))
@@ -5747,7 +5782,7 @@ fn wide_masks_change_one_native_channel_at_a_time() {
     let previous = VariantStatsRow::default();
     for index in 0..10 {
         let mut next = previous.clone();
-        next.values[index] = i64::MAX;
+        next.values[index] = Some(i64::MAX);
         let delta = next.delta(Some(&previous)).unwrap().unwrap();
         assert_eq!(delta.mask, 1_u64 << index);
         assert_eq!(delta.apply(Some(previous.clone())).unwrap(), next);
@@ -6503,6 +6538,7 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<DivisionEtaInputsRow>(TableId::DivisionEtaInputs);
     check_table::<LandCombatProgressRow>(TableId::LandCombatProgress);
     check_table::<LandCombatSideRow>(TableId::LandCombatSides);
+    check_table::<CombatEngagementRefreshRow>(TableId::CombatEngagementRefreshes);
     check_table::<ThreatSourceRow>(TableId::ThreatSources);
     check_table::<ThreatCountryAggregateRow>(TableId::ThreatCountryAggregates);
     check_table::<RelationOpinionRow>(TableId::RelationOpinions);
@@ -7367,7 +7403,9 @@ impl Fixture for VariantChangeRow {
             removed: tick % 2 == 1,
             snapshot: Some(VariantSnapshot {
                 definition: VariantDefinitionRow::fixture(key, tick).into(),
-                stats: vec![tick as i64; 10],
+                stats: (0..10)
+                    .map(|index| ((tick + index) % 3 != 0).then_some(tick as i64))
+                    .collect(),
                 ..Default::default()
             }),
             failure: Vec::new(),

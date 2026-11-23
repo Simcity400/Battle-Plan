@@ -8,4 +8,4 @@ Per-hour model selection can retain a result while its recorded census and addre
 
 Sample scenario tracks from locators and the source-order pose. An animation joint name does not rebind a skeleton. A slot with no corresponding locator rides the entity root with its authored scale. Only an unbound rocket needs the separate rocket speed. Only rigs with a nonlanding actor require near-ground defines. The default outcome reads the selected entity's default state when no explicit default exists, and named outcome states keep their own selection. Authored flight and effect graphics can override the recorded layer's defines, while simulation-based sorties read the recorded operands.
 
-[Aircraft assets and placement reuse](../../crates/viewer-world/src/map/aircraft.rs) · [Model memoization](../../crates/viewer-world/src/map/aircraft/model_inputs.rs)
+[Aircraft assets and placement reuse](../../crates/viewer-aircraft/src/aircraft.rs) · [Model memoization](../../crates/viewer-aircraft/src/aircraft/model_inputs.rs)

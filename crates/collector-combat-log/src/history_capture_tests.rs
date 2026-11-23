@@ -408,7 +408,8 @@ fn an_empty_attach_seed_cannot_limit_three_noncombat_writes_at_the_third_hour() 
     let mut c = Conversion::new();
     f.noncombat_sources(1, 11_133);
     let mut capacities = crate::combat_log::Capacities::default();
-    capacities.presize(&f, 0, GAME_STATE).unwrap();
+    // SAFETY: test runs in an isolated process with no concurrent combat-log sizing.
+    unsafe { capacities.presize(&f, 0, GAME_STATE) }.unwrap();
     assert!(producer.capacity() >= 11_136);
     for _hour in 60_759_371..60_759_374 {
         let batch = capture_public(&mut state, &f);
@@ -468,12 +469,14 @@ fn pending_occurrences_survive_growth_deferred_until_public_begin_drains_them() 
     f.managers(&[(7, vec![g])]);
     let mut capacities = crate::combat_log::Capacities::default();
     producer.write(SIGNAL, |emit| {
-        capacities.presize(&f, 0, GAME_STATE).unwrap();
+        // SAFETY: test runs in an isolated process and verifies active-writer exclusion.
+        unsafe { capacities.presize(&f, 0, GAME_STATE) }.unwrap();
         assert_eq!(producer.capacity(), 1, "an active writer excludes growth");
         event::seed_group(&f, 0, g, 7, 0, &f.blocks[&g], emit).unwrap();
     });
     assert!(producer.required() >= 11_137);
-    history_events::prepare(0);
+    // SAFETY: test runs in an isolated process as the sole history-events sizer.
+    unsafe { history_events::prepare(0) };
     assert_eq!(producer.capacity(), 1, "pending occurrences exclude growth");
     let batch = capture_public(&mut state, &NoFullWalk(&f));
     assert!(!batch.full);
@@ -500,11 +503,13 @@ fn growth_and_both_drain_arenas_retry_with_production_terminal_hooks_installed()
     assert_eq!(producer.capacity(), 0);
     assert_eq!(producer.losses(), 1);
     hooks.assert_live();
-    history_events::prepare(0);
+    // SAFETY: test runs in an isolated process as the sole history-events sizer.
+    unsafe { history_events::prepare(0) };
     assert_eq!(producer.capacity(), 1);
     {
         let _denied = collector_test_support::NullGuard::new(2);
-        history_events::prepare(8);
+        // SAFETY: test runs in an isolated process as the sole history-events sizer.
+        unsafe { history_events::prepare(8) };
     }
     assert_eq!(
         producer.capacity(),
@@ -513,7 +518,8 @@ fn growth_and_both_drain_arenas_retry_with_production_terminal_hooks_installed()
     );
     assert_eq!(producer.losses(), 2);
     hooks.assert_live();
-    history_events::prepare(0);
+    // SAFETY: test runs in an isolated process as the sole history-events sizer.
+    unsafe { history_events::prepare(0) };
     assert!(producer.capacity() >= 8);
     let mut f = Fixture::new();
     let mut state = State::new();
@@ -672,7 +678,8 @@ fn overflow_stays_incremental_and_a_refused_spill_recovers_by_the_first_readable
         let status = serde_json::to_value(crate::history_events::refusals()).unwrap();
         assert_eq!(status["first_loss"], "combat log event allocation failed");
         assert_eq!(status["lost"], producer.losses());
-        history_events::prepare(0);
+        // SAFETY: test runs in an isolated process as the sole history-events sizer.
+        unsafe { history_events::prepare(0) };
         assert_eq!(
             producer.capacity(),
             1,
@@ -1159,9 +1166,8 @@ fn noncombat_sizing_counts_all_fifteen_hundred_countries_without_combat_or_histo
         event::noncombat_writer_demand(&f, 0, GAME_STATE),
         Ok(15_000)
     );
-    crate::combat_log::Capacities::default()
-        .presize(&f, 0, GAME_STATE)
-        .unwrap();
+    // SAFETY: test runs in an isolated process with no concurrent combat-log sizing.
+    unsafe { crate::combat_log::Capacities::default().presize(&f, 0, GAME_STATE) }.unwrap();
     assert!(producer.capacity() >= 15_000);
     let mut state = State::new();
     let batch = capture_public(&mut state, &f);

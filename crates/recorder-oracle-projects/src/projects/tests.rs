@@ -9,7 +9,7 @@ use replay_frame::frame::TableView;
 
 fn scientist_pack() -> characters_saved::Pack {
     characters_saved::parse(
-        &content_reader_core::parser::parse(
+        &content_reader_parser::parser::parse(
             br#"character_manager={ historical={
                 character={ id={ id=265 type=73 } token="a" country="GER"
                     scientist={ traits={ "t1" "t2" }
@@ -374,7 +374,7 @@ fn raid_fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
     };
     let source = br"countries={GER={nukes={{amount=90071992547.40993 nukes_ready=-1}{amount=0 nukes_ready=0}} program_status={project_pool={project={}} breakthrough={}}}}
         raids={targets={target={valid=yes target={state=291} detected={ 1 0 }}} countries={{tag=GER priority=-1 raid_instance={{id={id=4294967295 type=84} phase=PREPARED prep_time=-2 distance=22.1 target={state=291}}} target_cooldowns={{target={state=291} type=oilfield_raid cooldown=3}}}}} peace_conference={}";
-    let pack = saved::parse(&content_reader_core::parser::parse(source).unwrap().items).unwrap();
+    let pack = saved::parse(&content_reader_parser::parser::parse(source).unwrap().items).unwrap();
     *frame.tables[TableId::Nukes.index()] = TableView::Complete(TableRows::Nukes(vec![
         NukeRow {
             country: 102,
@@ -1030,7 +1030,22 @@ fn raid_equipment_totals_match_the_saved_sums_by_archetype() {
     let (frame, pack) = totals_fixture(&[(RIFLE, "5"), (TRUCK, "2")], true);
     let report = run_totals(&frame, &pack, &items, &[(0x3309, 700_000), (0x330a, 0)]);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    assert_eq!(report.compared_tables["RaidEquipment.archetype_amounts"], 1);
+    assert!(
+        !report
+            .compared_tables
+            .contains_key("RaidEquipment.archetype_amounts"),
+        "{:?}",
+        report.compared_tables
+    );
+    assert!(
+        report
+            .limitations
+            .values()
+            .flatten()
+            .any(|subject| subject.contains("1 totals consistent with saved variant sums")),
+        "{:?}",
+        report.limitations
+    );
     let (mut frame, pack) = totals_fixture(&[(RIFLE, "5"), (TRUCK, "2")], false);
     let report = run_totals(&frame, &pack, &items, &[(0x3309, 1)]);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
@@ -1058,22 +1073,35 @@ fn raid_equipment_totals_that_disagree_away_from_the_bound_are_differences() {
     let items = [(RIFLE, 500_000), (TRUCK, 200_000)];
     let (frame, pack) = totals_fixture(&[(RIFLE, "5"), (TRUCK, "2")], true);
     let differences = |totals: &[(u32, i64)]| run_totals(&frame, &pack, &items, totals).differences;
-    let wrong = differences(&[(0x3309, 700_001)]);
-    assert!(
-        wrong.len() == 1 && wrong[0].contains("archetype[13065]"),
-        "{wrong:?}"
-    );
-    assert!(differences(&[(0x3309, 700_000), (0x330a, 1)])[0].contains("no saved variant"));
     assert!(differences(&[])[0].contains("absent"));
     assert!(differences(&[(0x3309, 700_000), (0x3309, 700_000)])[0].contains("repeated"));
-    let (frame, pack) = totals_fixture(&[(TRUCK, "691752901.5")], true);
-    let unwound = run_totals(
-        &frame,
-        &pack,
-        &[(RIFLE, 0), (TRUCK, BOUND / 4 * 3)],
-        &[(0x3309, BOUND / 4)],
+    assert!(differences(&[(0x3309, BOUND + 1)])[0].contains("archetype[13065]"));
+    let off_by_one = run_totals(&frame, &pack, &items, &[(0x3309, 700_001)]);
+    assert!(
+        off_by_one.differences.is_empty(),
+        "{:?}",
+        off_by_one.differences
     );
-    assert_eq!(unwound.differences.len(), 1, "{:?}", unwound.differences);
+    assert!(
+        off_by_one
+            .limitations
+            .values()
+            .flatten()
+            .any(|subject| subject.contains("archetype[13065]")),
+        "{:?}",
+        off_by_one.limitations
+    );
+    let extra = run_totals(&frame, &pack, &items, &[(0x3309, 700_000), (0x330a, 1)]);
+    assert!(extra.differences.is_empty(), "{:?}", extra.differences);
+    assert!(
+        extra
+            .limitations
+            .values()
+            .flatten()
+            .any(|subject| subject.contains("no saved variant")),
+        "{:?}",
+        extra.limitations
+    );
 }
 
 #[test]
@@ -1129,6 +1157,188 @@ fn raid_equipment_totals_at_the_clamp_bound_are_a_limitation() {
         &[(RIFLE, 60_000_000_000_000), (TRUCK, 60_000_000_000_000)],
         &[(0x3309, 1)],
     ));
+}
+
+#[test]
+fn unwound_raid_pool_saturation_is_reported_as_a_limitation_not_a_difference() {
+    let clamp = |value: i128| value.clamp(-i128::from(BOUND), i128::from(BOUND)) as i64;
+    let apply = |entries: &mut BTreeMap<u64, i64>, total: &mut i64, variant: u64, delta: i64| {
+        let entry = entries.entry(variant).or_default();
+        *entry = clamp(i128::from(*entry) + i128::from(delta));
+        *total = clamp(i128::from(*total) + i128::from(delta));
+    };
+
+    let three_quarters = BOUND / 4 * 3;
+    let mut entries = BTreeMap::new();
+    let mut total = 0;
+    apply(&mut entries, &mut total, RIFLE, three_quarters);
+    apply(&mut entries, &mut total, TRUCK, three_quarters);
+    assert_eq!(total, BOUND);
+    apply(&mut entries, &mut total, RIFLE, -three_quarters);
+    assert_eq!(entries[&RIFLE], 0);
+    assert_eq!(entries[&TRUCK], three_quarters);
+    assert_eq!(total, BOUND / 4);
+
+    let (frame, pack) = totals_fixture(&[(TRUCK, "691752901.5")], true);
+    let report = run_totals(
+        &frame,
+        &pack,
+        &[(RIFLE, entries[&RIFLE]), (TRUCK, entries[&TRUCK])],
+        &[(0x3309, total)],
+    );
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        !report
+            .compared_tables
+            .contains_key("RaidEquipment.archetype_amounts"),
+        "{:?}",
+        report.compared_tables
+    );
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("unwound saturation")),
+        "{:?}",
+        report.limitations
+    );
+
+    let false_match = run_totals(
+        &frame,
+        &pack,
+        &[(RIFLE, entries[&RIFLE]), (TRUCK, entries[&TRUCK])],
+        &[(0x3309, three_quarters)],
+    );
+    assert!(
+        false_match.differences.is_empty(),
+        "{:?}",
+        false_match.differences
+    );
+    assert!(
+        !false_match
+            .compared_tables
+            .contains_key("RaidEquipment.archetype_amounts"),
+        "{:?}",
+        false_match.compared_tables
+    );
+
+    apply(&mut entries, &mut total, TRUCK, -three_quarters);
+    assert_eq!(entries[&TRUCK], 0);
+    assert_eq!(total, -(BOUND / 2));
+    let (frame, pack) = totals_fixture(&[], true);
+    let report = run_totals(
+        &frame,
+        &pack,
+        &[(RIFLE, 0), (TRUCK, 0)],
+        &[(0x3309, total)],
+    );
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("unwound saturation")),
+        "{:?}",
+        report.limitations
+    );
+
+    let (frame, pack) = totals_fixture(&[(RIFLE, "5"), (TRUCK, "2")], true);
+    let items = [(RIFLE, 500_000), (TRUCK, 200_000)];
+    for impossible in [BOUND + 1, -BOUND - 1] {
+        let report = run_totals(&frame, &pack, &items, &[(0x3309, impossible)]);
+        assert_eq!(report.differences.len(), 1, "{impossible}: {:?}", report.differences);
+    }
+}
+
+#[test]
+fn raid_equipment_structural_checks_run_even_when_variant_definitions_are_missing() {
+    use replay_data::rows::VariantDefinitionRow;
+    let items = [(RIFLE, 500_000), (TRUCK, 200_000)];
+    let (mut frame, pack) = totals_fixture(&[(RIFLE, "5"), (TRUCK, "2")], false);
+    *frame.tables[TableId::VariantDefinitions.index()] = TableView::Unavailable {
+        reason: "fixture".into(),
+    };
+    for pair in [
+        [(0x3309, BOUND + 1), (0x3309, 100)],
+        [(0x3309, 100), (0x3309, BOUND + 1)],
+    ] {
+        let unavailable = run_totals(&frame, &pack, &items, &pair);
+        assert_eq!(
+            unavailable.differences.len(),
+            2,
+            "{pair:?}: {:?}",
+            unavailable.differences
+        );
+        assert!(
+            unavailable
+                .differences
+                .iter()
+                .any(|d| d.contains("within clamp bound")),
+            "{pair:?}: {:?}",
+            unavailable.differences
+        );
+        assert!(
+            unavailable
+                .differences
+                .iter()
+                .any(|d| d.contains("repeated")),
+            "{pair:?}: {:?}",
+            unavailable.differences
+        );
+        assert!(
+            unavailable
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("VariantDefinitions is not complete")),
+            "{pair:?}: {:?}",
+            unavailable.limitations
+        );
+    }
+
+    *frame.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+            id: RIFLE,
+            archetype_token: 0x3309,
+            ..Default::default()
+        }]));
+    let partial = run_totals(
+        &frame,
+        &pack,
+        &items,
+        &[(0x330a, 100), (0x330a, BOUND + 1)],
+    );
+    assert_eq!(partial.differences.len(), 3, "{:?}", partial.differences);
+    assert!(
+        partial
+            .differences
+            .iter()
+            .any(|d| d.contains("within clamp bound")),
+        "{:?}",
+        partial.differences
+    );
+    assert!(
+        partial.differences.iter().any(|d| d.contains("repeated")),
+        "{:?}",
+        partial.differences
+    );
+    assert!(
+        partial.differences.iter().any(|d| {
+            d.contains("archetype[13065]")
+                && d.contains("absent")
+                && d.contains("present")
+                && !d.contains("500000")
+        }),
+        "{:?}",
+        partial.differences
+    );
+    assert!(
+        partial
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("no VariantDefinitions row")),
+        "{:?}",
+        partial.limitations
+    );
 }
 
 #[test]
@@ -1204,11 +1414,11 @@ fn raid_path_verdict_uses_only_its_dispatchers_search() {
 #[test]
 fn raid_memo_oracle_checks_each_dispatcher_instead_of_either_path() {
     use replay_data::rows::{RaidPathDispatcher, RaidPathDistanceRow};
-    let graph = content_reader_core::province_graph::ProvinceGraph {
+    let graph = content_reader_map::province_graph::ProvinceGraph {
         edges: BTreeMap::from([(1, vec![(2, Some(50_000))]), (2, vec![(3, Some(50_000))])]),
         ..Default::default()
     };
-    let mut geometry = content_reader_core::province_geometry::ProvinceGeometry::default();
+    let mut geometry = content_reader_map::province_geometry::ProvinceGeometry::default();
     geometry.width = 10;
     geometry.height = 1;
     geometry.centroids = BTreeMap::from([(1, [0, 0]), (2, [1, 0]), (3, [2, 0])]);
@@ -1497,7 +1707,7 @@ fn populated_dictionary_checks_project_names_and_breakthrough_points() {
         }}}
         breakthrough={specialization=-2147483648}
     }}}";
-    let mut parsed = saved::parse(&content_reader_core::parser::parse(source).unwrap().items).unwrap();
+    let mut parsed = saved::parse(&content_reader_parser::parser::parse(source).unwrap().items).unwrap();
     pack.countries.get_mut(b"GER".as_slice()).unwrap().status =
         parsed.countries.remove(b"GER".as_slice()).unwrap().status;
     let definition = 0x1234;
@@ -1688,7 +1898,7 @@ fn hourly_facilities_compare_order_duplicates_and_unresolved_project_tokens() {
             building=building unread_prototype_rewards=0 project=definition}
         project_pool={project={}} breakthrough={}
     }}}";
-    let mut parsed = saved::parse(&content_reader_core::parser::parse(source).unwrap().items).unwrap();
+    let mut parsed = saved::parse(&content_reader_parser::parser::parse(source).unwrap().items).unwrap();
     pack.countries.get_mut(b"GER".as_slice()).unwrap().status =
         parsed.countries.remove(b"GER".as_slice()).unwrap().status;
     let original: Vec<_> = (0..2)

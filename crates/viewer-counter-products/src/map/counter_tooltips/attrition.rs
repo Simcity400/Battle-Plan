@@ -2,13 +2,13 @@
 use super::*;
 use replay_derive::modifier_registry::Registry;
 use std::collections::BTreeMap;
-use viewer_foundation::map::counter_attrition::{Content, Terrain};
+use viewer_unit_reads::counter_attrition::{Content, Terrain};
 use viewer_foundation::movement_timing::HourTerms;
 use viewer_foundation::tooltip_text::ensure_newlines;
 
-use viewer_foundation::map::counter_inputs::SCALE as ONE;
+use viewer_unit_reads::counter_inputs::SCALE as ONE;
 
-use viewer_foundation::map::division_panel as panel;
+use viewer_foundation::division_panel as panel;
 
 struct Lookups<'b> {
     content: &'b Content,
@@ -74,7 +74,7 @@ fn coloured_percent(value: i64, precision: i32) -> String {
         _ => 'Y',
     };
     let sign = if scaled >= 0 { "+" } else { "" };
-    let number = content_reader_core::fixed5::fixed5_to_string(scaled, precision);
+    let number = content_reader_parser::fixed5::fixed5_to_string(scaled, precision);
     format!("\u{11}{colour}{sign}{number}%\u{11}!")
 }
 

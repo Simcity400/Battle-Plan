@@ -416,6 +416,8 @@ fn division_country_ordinal_compares_the_full_saved_roster() {
             pending_template: replay_data::rows::Recorded::NotRecorded,
             country_ordinal: replay_data::rows::Recorded::Value(Some(1)),
             supply: replay_data::rows::Recorded::NotRecorded,
+            supply_ratio_exact: replay_data::rows::Recorded::Value(Some(0)),
+            supply_grace_exact: replay_data::rows::Recorded::Value(Some(0)),
             ..Default::default()
         },
         replay_data::rows::DivisionStatusRow {
@@ -427,6 +429,8 @@ fn division_country_ordinal_compares_the_full_saved_roster() {
             pending_template: replay_data::rows::Recorded::NotRecorded,
             country_ordinal: replay_data::rows::Recorded::Value(Some(0)),
             supply: replay_data::rows::Recorded::NotRecorded,
+            supply_ratio_exact: replay_data::rows::Recorded::Value(Some(0)),
+            supply_grace_exact: replay_data::rows::Recorded::Value(Some(0)),
             ..Default::default()
         },
     ];
@@ -642,6 +646,8 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
                 pending_template: Recorded::NotRecorded,
                 supply_grace_remaining: Recorded::Value(0),
                 supply: supply.clone(),
+                supply_ratio_exact: Recorded::Value(Some(0)),
+                supply_grace_exact: Recorded::Value(Some(0)),
                 ..Default::default()
             }]),
         );
@@ -696,6 +702,8 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
             experience: Recorded::NotRecorded,
             pending_template: Recorded::NotRecorded,
             supply: Recorded::Value(None),
+            supply_ratio_exact: Recorded::Value(Some(0)),
+            supply_grace_exact: Recorded::Value(Some(0)),
             ..Default::default()
         }]),
     );
@@ -973,7 +981,7 @@ fn land_combat_classes_follow_the_saved_roster_of_each_participant() {
 
 #[test]
 fn divisions_compare_locations_strength_and_missing_rows_despite_membership_exclusions() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let membership = membership();
     let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
     let owner = saved.countries.keys().next().unwrap().clone();
@@ -2270,4 +2278,125 @@ fn acclimatization_categories_compare_their_exact_bytes() {
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     compare_acclimatization("division", &row, Some(&saved(0x81)), &tokens, &mut report);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+}
+
+#[test]
+fn division_status_accepts_always_exact_supply_at_zero_days_and_historical_absence() {
+    use content_reader_save::Decimal;
+    use replay_data::rows::{DivisionStatusRow, Recorded, TableId, TableRows};
+    let (frame, mut saved, _, _) = super::super::fixtures::fixture();
+    let id = (7_u64 << 32) | 51;
+    saved.divisions.insert(
+        id,
+        content_reader_save::Division {
+            id,
+            roster_owner: b"GER".to_vec(),
+            logical_owner: b"GER".to_vec(),
+            expeditionary_owner: None,
+            province: None,
+            template: None,
+            alternate_template: None,
+            separate_counter: false,
+            hit_points: zero(),
+            organisation: zero(),
+            country_intel: Vec::new(),
+            presentation: content_reader_save::DivisionPresentation {
+                max_supply: Some(Decimal::parse(b"72").unwrap()),
+                army_current_supply_ratio: Some(Decimal::parse(b"36.35999").unwrap()),
+                ..Default::default()
+            },
+        },
+    );
+    let base = DivisionStatusRow {
+        division: id,
+        officer_experience: Some(0).into(),
+        career_counter: Some(0).into(),
+        experience: Recorded::NotRecorded,
+        pending_template: Recorded::NotRecorded,
+        out_of_supply_days: Recorded::Value(Some(0)),
+        supply: Recorded::NotRecorded,
+        supply_grace_maximum: Recorded::Value(7_200_000),
+        supply_grace_remaining: Recorded::Value(3_600_000),
+        supply_ratio: None,
+        supply_ratio_exact: Recorded::Value(Some(35_499)),
+        supply_grace_exact: Recorded::Value(Some(3_635_999)),
+        ..Default::default()
+    };
+    let run = |row: DivisionStatusRow| {
+        let mut frame = frame.clone();
+        set(&mut frame, TableId::DivisionStatus, TableRows::DivisionStatus(vec![row]));
+        let mut report = Report::default();
+        compare_division_status(&frame, &saved, &BTreeMap::new(), &Ok(50_000), &Ok(72), &mut report)
+            .unwrap();
+        report
+    };
+    let report = run(base.clone());
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    let wrong_grace = run(DivisionStatusRow {
+        supply_grace_exact: Recorded::Value(Some(3_636_000)),
+        ..base.clone()
+    });
+    assert_eq!(wrong_grace.differences.len(), 1, "{:?}", wrong_grace.differences);
+    assert!(wrong_grace.differences[0].contains("supply_exact.grace_remaining"));
+    let duplicated = run(DivisionStatusRow {
+        supply_ratio: Some(35_000),
+        ..base.clone()
+    });
+    assert_eq!(duplicated.differences.len(), 1, "{:?}", duplicated.differences);
+    assert!(duplicated.differences[0].contains("supply_exact shown"));
+    let historical = run(DivisionStatusRow {
+        supply_ratio: Some(35_000),
+        supply_ratio_exact: Recorded::Value(None),
+        supply_grace_exact: Recorded::Value(None),
+        ..base.clone()
+    });
+    assert!(historical.differences.is_empty(), "{:?}", historical.differences);
+    let partial = run(DivisionStatusRow {
+        supply_grace_exact: Recorded::Value(None),
+        ..base.clone()
+    });
+    assert_eq!(partial.differences.len(), 1, "{:?}", partial.differences);
+    assert!(partial.differences[0].contains("supply_exact"));
+    let missing_all = run(DivisionStatusRow {
+        supply_ratio: None,
+        supply_ratio_exact: Recorded::Value(None),
+        supply_grace_exact: Recorded::Value(None),
+        ..base.clone()
+    });
+    assert_eq!(missing_all.differences.len(), 1, "{:?}", missing_all.differences);
+    assert!(missing_all.differences[0].contains("supply_exact"));
+    let half_recorded = run(DivisionStatusRow {
+        supply_ratio_exact: Recorded::NotRecorded,
+        ..base.clone()
+    });
+    assert_eq!(half_recorded.differences.len(), 1, "{:?}", half_recorded.differences);
+    assert!(half_recorded.differences[0].contains("supply_exact"));
+    let pre_format = run(DivisionStatusRow {
+        supply_ratio: Some(35_000),
+        supply_ratio_exact: Recorded::NotRecorded,
+        supply_grace_exact: Recorded::NotRecorded,
+        ..base.clone()
+    });
+    assert!(pre_format.differences.is_empty(), "{:?}", pre_format.differences);
+    assert!(
+        pre_format
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("DivisionStatus.supply_ratio_exact")),
+        "{:?}",
+        pre_format.limitations
+    );
+    let pre_format_missing_legacy = run(DivisionStatusRow {
+        supply_ratio: None,
+        supply_ratio_exact: Recorded::NotRecorded,
+        supply_grace_exact: Recorded::NotRecorded,
+        ..base
+    });
+    assert_eq!(
+        pre_format_missing_legacy.differences.len(),
+        1,
+        "{:?}",
+        pre_format_missing_legacy.differences
+    );
+    assert!(pre_format_missing_legacy.differences[0].contains("supply_ratio"));
 }

@@ -7,7 +7,7 @@ import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { SeriesRankedLine, SeriesState, SeriesStateReply } from '../../generated/dashboard';
 
-export interface RankedMeasure { kind: string; measure: string }
+export type RankedMeasure = { kind: string; measure: string };
 export type RankedLine = Decoded<SeriesRankedLine>;
 
 
@@ -66,6 +66,13 @@ export function followedEntries(answer: FollowedAnswer | undefined, asked: reado
   return rows.slice(0, Math.max(0, slots)).map(({ tag, raw }) => ({ tag, value: rawNumber(raw, decimals), label: format(String(raw), decimals), stretch: null, hour }));
 }
 
+export function followedRace(entry: { answer: FollowedAnswer | undefined; through: number }, asked: readonly string[] | null,
+  member: ((tag: string, hour: number) => boolean) | null, hour: number, slots: number, decimals: number, format: (raw: string, decimals: number) => string) {
+  const shown = Math.min(hour, entry.through);
+  if (entry.answer?.kind === 'notRecorded') return { entries: [] as CountryRaceEntry[], reason: entry.answer.reason, shown };
+  return { entries: followedEntries(entry.answer, asked, member, shown, slots, decimals, format), shown };
+}
+
 export function followedRowTags(answer: FollowedAnswer | undefined, asked: readonly string[] | null): string[] {
   if (!answer || answer.kind === 'notRecorded') return [];
   const out: string[] = [];
@@ -79,19 +86,22 @@ export function raceLookTags(race: boolean, followed: readonly string[] | null, 
 
 export const rowsOf = (entries: readonly CountryRaceEntry[]) => entries.map(entry => entry.tag).sort().join(',');
 
+const sameEntry = (a: CountryRaceEntry, b: CountryRaceEntry) => a.tag === b.tag && a.label === b.label && a.value === b.value && a.hatched === b.hatched
+  && (a.parts?.length ?? 0) === (b.parts?.length ?? 0) && (a.parts ?? []).every((part, at) => part.id === b.parts![at]!.id && part.value === b.parts![at]!.value && part.hatched === b.parts![at]!.hatched);
+
 export function liveRace(clock: { getSnapshot(): { position: number } }, axisOffset: number, read: (hour: number) => readonly CountryRaceEntry[],
-  version: () => number, byHour: boolean): LiveRaceEntries & { wake(): void } {
+  version: () => number, byHour: boolean, dated: (hour: number) => number = hour => hour): LiveRaceEntries & { wake(): void } {
   const wakes = new Set<() => void>();
   let made: { hour: number; version: number; entries: readonly CountryRaceEntry[] } | null = null;
   const hour = () => Math.floor(clock.getSnapshot().position) + axisOffset;
   return {
-    hour,
+    hour: () => dated(hour()),
     entries: () => {
       const at = hour(), now = version();
       if (!made || (byHour && made.hour !== at) || made.version !== now) {
         const next = read(at);
         const same = made !== null && made.entries.length === next.length
-          && next.every((entry, index) => made!.entries[index].tag === entry.tag && made!.entries[index].label === entry.label);
+          && next.every((entry, index) => sameEntry(made!.entries[index]!, entry));
         made = { hour: at, version: now, entries: same ? made!.entries : next };
       }
       return made.entries;

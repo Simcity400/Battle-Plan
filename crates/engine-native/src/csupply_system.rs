@@ -10,6 +10,9 @@ pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x029f_02e0);
 pub const SECONDARY_BASE: usize = 0x08;
 pub const PROVINCE_DATA: usize = 0x10;
 pub const PROVINCE_COUNT: usize = 0x1c;
+pub const FOREIGN_SOURCE_DATA: usize = 0x40;
+pub const FOREIGN_SOURCE_STRIDE: usize = 0x78;
+pub const FOREIGN_SOURCE_RELATED_COUNTRIES: usize = 0x58;
 pub const COUNTRY_SYSTEM_DATA: usize = 0x108;
 pub const COUNTRY_COMPANION_DATA: usize = 0x120;
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00f3_ce90);
@@ -91,8 +94,29 @@ impl<'a, M: Memory> Reader<'a, M> {
         self.systems.count
     }
 
+    pub(crate) fn root(&self) -> usize {
+        self.root
+    }
+
     pub(crate) fn resolve_country(&self, raw: u32) -> Result<ccountry::Country, &'static str> {
         self.countries.resolve(raw)
+    }
+
+    pub(crate) fn canonical_slot(&self, raw: u32) -> Result<Option<u32>, &'static str> {
+        if raw == 0 {
+            return Ok(Some(0));
+        }
+        self.countries.link(raw)
+    }
+
+    pub(crate) fn same_country(&self, left: u32, right: u32) -> Result<bool, &'static str> {
+        if left == right {
+            return Ok(true);
+        }
+        if left == 0 || right == 0 {
+            return Ok(false);
+        }
+        Ok(self.canonical_slot(left)? == self.canonical_slot(right)?)
     }
 
     pub(crate) fn country(&self, slot: u32) -> Result<Option<ccountry::Country>, &'static str> {

@@ -3,7 +3,8 @@ use crate::binding::Bindings;
 use replay_data::rows::{ConvoyClientRow, ResourceOriginRow, TradeRouteRow, tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, HashMap};
-use viewer_foundation::map::{count_math, perspective::Vision};
+use viewer_runtime::count_math;
+use viewer_foundation::perspective::Vision;
 
 const CONVOY_SALT: u32 = 0xab5;
 const SUPPLY_TRANSFER: u8 = 1;

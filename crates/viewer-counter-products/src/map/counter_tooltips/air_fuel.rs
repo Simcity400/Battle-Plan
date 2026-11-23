@@ -1,10 +1,11 @@
+use content_reader_key_names::unit_leader::AirWings as _;
 use super::{Context, carrier_summary};
 use replay_data::{
     rows::AirBaseRegistrationRow, rows::AirBaseRow, rows::AirWingRow, rows::CarrierAirPool,
     rows::tables,
 };
 use std::{cell::OnceCell, collections::BTreeMap, io};
-use viewer_foundation::map::{air_detection, air_range};
+use viewer_unit_reads::{air_detection, air_range};
 
 const ONE: i64 = 100_000;
 const SENTINEL: i64 = u32::MAX as i64;
@@ -21,7 +22,7 @@ pub(crate) struct Defines {
 }
 
 impl Defines {
-    pub fn load(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &content_reader_defines::defines::Defines) -> io::Result<Self> {
         Ok(Self {
             costs: defines
                 .fixed5_array("NAir", "MISSION_FUEL_COSTS")

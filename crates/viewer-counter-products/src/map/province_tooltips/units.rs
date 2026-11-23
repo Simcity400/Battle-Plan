@@ -1,19 +1,21 @@
 
 use std::{cmp::Reverse, collections::BTreeMap, io};
-use viewer_foundation::map::count_math::{count_range_seeded, ratio};
+use viewer_runtime::count_math::{count_range_seeded, ratio};
 
-use content_reader_core::{defines::Defines, unit_leader::SubUnit, unit_leader::SubUnits};
+use content_reader_defines::defines::Defines;
+use content_reader_script::sub_units::{SubUnit, SubUnits};
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{rows::DivisionTemplateIconRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
-use viewer_foundation::{map::perspective::Vision, table_access::TokenNames};
+use viewer_foundation::perspective::Vision;
+use dashboard_text::table_access::TokenNames;
 
 #[derive(Clone, Debug)]
 pub struct Content {
     subunits: SubUnits,
     defines: CountDefines,
-    template_reveal: Result<viewer_foundation::map::visibility::template_reveal::Defines, String>,
+    template_reveal: Result<viewer_foundation::visibility::template_reveal::Defines, String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -27,7 +29,7 @@ struct CountDefines {
 impl Content {
     pub(crate) fn template_reveal_defines(
         &self,
-    ) -> Result<&viewer_foundation::map::visibility::template_reveal::Defines, String> {
+    ) -> Result<&viewer_foundation::visibility::template_reveal::Defines, String> {
         self.template_reveal.as_ref().map_err(Clone::clone)
     }
     pub fn load(defines: &Defines, subunits: Result<&SubUnits, &str>) -> Result<Self, String> {
@@ -44,7 +46,7 @@ impl Content {
             ));
         }
         Ok(Self {
-            template_reveal: viewer_foundation::map::visibility::template_reveal::Defines::load(
+            template_reveal: viewer_foundation::visibility::template_reveal::Defines::load(
                 defines,
             )
             .map_err(|error| error.to_string()),

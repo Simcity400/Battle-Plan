@@ -12,4 +12,4 @@ Detach drains decode first in FIFO hour order. Decoded frames go to the spool’
 
 The restoration test treats a cache flush still pending as incomplete and verifies that later independent cases are still visited. The attachment publication guard test uses capacity overflow to exercise refusal classification without modifying allocator hooks or attempting an enormous allocation. Its stage tests use an absent temporary directory so an unavailable progress file does not create capture files in the checkout.
 
-[Restoration and drain](../../crates/collector/src/runtime.rs)
+[Restoration and drain](../../crates/collector-runtime/src/runtime.rs)

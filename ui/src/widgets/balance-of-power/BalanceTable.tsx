@@ -4,6 +4,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
+import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
 import { usNumber } from '../../charts/numberFormat';
 import Table, { CountryCell } from '../../charts/table/Table';
@@ -22,6 +23,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt } from '../../dashboard/groups';
 import { useChoiceHour } from '../../dashboard/atHead';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { POLITICS_HISTORY, tagAt, unknownHours, valueAt } from '../../dashboard/politicsHistory';
@@ -40,6 +42,8 @@ import type { LiveValues } from '../../charts/live';
 import type { BalanceRow } from './balanceOfPowerData';
 import { DEFAULT_SORT, OPTIONS } from './definition';
 import type { PoliticsHistoryReply } from '../../generated/dashboard';
+import { useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_ROWS: readonly BalanceRow[] = [];
 const PARAMS = { view: 'balances' } as const;
@@ -76,11 +80,13 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   const viewport = useViewportHeight();
   const anchor = useRef<HTMLDivElement>(null);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const head = useHeadProduct(runtime, widget, 'politics-state', track ? PARAMS : null, { active, validate: validateBalanceList, structure: balanceStructure });
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'politics-state', track ? PARAMS : null, { active, validate: validateBalanceList, structure: balanceStructure });
   const headRoot = head.root;
   const rootRef = useCallback((element: HTMLDivElement | null) => { anchor.current = element; headRoot(element); }, [headRoot]);
   const data = useMemo(() => head.data && head.at !== null ? { ...head.data, hour: head.at } : undefined, [head.data, head.at]);
   const hour = data?.hour ?? track?.branch.lastHour ?? 0;
+  const mainRegion = useRegion(widget);
+  const itemDrill = useDrill(runtime, mainRegion);
   const live = head.live;
   const shown = useShownHour();
   const shownAt = useRef(head.shownAt);
@@ -117,12 +123,13 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   const openRow = useCallback((row: BalanceRow) => {
     const member = rowHolder(row, choiceAt, match.matches);
     setOpened({ owner, tag: member.tag, token: row.token });
+    itemDrill.attach(row.token);
   }, [owner, choiceAt, match]);
-  const request = track && open ? { sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
-    params: { branchId: track.branch.id, mode: 'country', country: countryFromKey(open.tag) } } : null;
+  const request = track && open ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
+    params: { branchId: track.branch.id, mode: 'country', country: countryFromKey(open.tag) } }) : null;
   const history = useProduct<PoliticsHistoryReply>(runtime.client, request, active, validateCountryBalances, track?.source);
-  const membershipRequest = track ? { sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
-    params: { branchId: track.branch.id, mode: 'memberships' } } : null;
+  const membershipRequest = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
+    params: { branchId: track.branch.id, mode: 'memberships' } }) : null;
   const memberships = useProduct<PoliticsHistoryReply>(runtime.client, membershipRequest, active, validateMemberships, track?.source);
   const openHolder = useMemo(() => open && history.data ? countryHolder(history.data, open.tag, hour) : null, [open, history.data, hour]);
   const openTag = openHolder ? tagAt(openHolder.tags, hour) ?? open!.tag : null;
@@ -174,7 +181,7 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
 
   let body;
   if (!track) body = <WidgetState kind="empty" icon="sliders" message="Load a campaign to see the balance of power." />;
-  else if (head.read === 'off') body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  else if (head.read === 'off') body = <WidgetState kind="outside" />;
   else if (head.error && !data) body = <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   else if (needsGroups && groups.error && !groups.data) body = <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   else if (match.reason) body = <WidgetState kind="unavailable" message={match.reason} />;
@@ -193,8 +200,8 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   return <div className="balance-of-power" ref={rootRef}>
     {headerSlot && view && createPortal(<span className="pill balance-count">{usNumber.format(rows.length)} active</span>, headerSlot)}
     {needsGroups && groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
-    <DrillHost mode="inline" open={!!choice?.balance} anchor={anchor} title={`${countryName}: ${openName}`} day={dayLabel(hour)} following={false} canFollow={false}
-      onClose={() => setOpened(null)} onFollow={() => {}} main={body}>
+    <DrillHost drill={itemDrill} runtime={runtime} subject={!!choice?.balance} mode="inline" anchor={anchor} title={`${countryName}: ${openName}`} day={data ? dayLabel(data.hour) : ''} canFollow={false}
+      onClose={() => setOpened(null)} main={body}>
       {track && history.data && openHolder && choice?.balance && <BalanceCountryView runtime={runtime} track={track} active={active} subject={openHolder} names={history.data.names}
         balance={choice.balance} liveHead={liveHead} limitAt={limitAt} gameShown={hour <= limit ? valueAt(openHolder.shown, hour) : null} countryName={countryName} at={hour} limit={limit}
         extent={extent} playhead={playhead} playback={{ mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }}

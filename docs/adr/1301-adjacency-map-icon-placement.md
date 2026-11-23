@@ -4,4 +4,4 @@ An adjacency rule that names an icon province supplies the icon for that provinc
 
 The icons obey the active mode's adjacency admission and its content-defined priority. The stock camera measures the cutoff from its height. A free camera measures distance to each icon. The comparison is strict, the draw walks farthest first, and an unreadable cutoff withholds the icons with its reason. The rule's current trade or passage status does not affect admission.
 
-[Adjacency icon preparation and tests](../../crates/viewer-world/src/map/adjacency_icons.rs)
+[Adjacency icon preparation and tests](../../crates/viewer-map-icons/src/adjacency_icons.rs)

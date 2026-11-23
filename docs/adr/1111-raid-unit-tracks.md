@@ -4,4 +4,4 @@ Raid motion uses stored control points and recorded progress. Build straight con
 
 Derive phase-4 elapsed and remaining hours with native integer rounding and preserve its invalid or unbounded distance handling. Interpolate current and next-hour progress by the fractional tick, then map it onto the arrow interval beginning at the authored start offset. The tick pose samples the stored polyline and its tangent, adds the entity offset, wraps the position, and faces back along the tangent. Keep animation history by raid ID so the next hour continues the entity. Only stages present on the resolved entity can be selected. If no reached stage exists, its current state persists.
 
-[Unit placement and pose tests](../../crates/viewer-foundation/src/map/unit_pose.rs)
+[Unit placement and pose tests](../../crates/viewer-gpu/src/unit_pose.rs)

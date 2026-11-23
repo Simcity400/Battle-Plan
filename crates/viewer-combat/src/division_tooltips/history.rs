@@ -107,10 +107,8 @@ fn medal_effects(
     scale: i64,
 ) -> Result<(String, Vec<String>), String> {
     use super::super::modifier_text::{Block, Definitions};
-    use dashboard_text::{
-        effect_description,
-        scripted_text::{EventObject, EventScope, EventScopes, ScriptedText},
-    };
+    use dashboard_effects::{ScriptedEffects, effect_description};
+    use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, ScriptedText};
     let scripted = content.scripted.as_ref().as_ref().map_err(Clone::clone)?;
     let definitions = Definitions::read(frame, &content.modifier_names)
         .map_err(|why| why.to_string())?
@@ -118,7 +116,7 @@ fn medal_effects(
     let medals = content
         .medals
         .get_or_init(|| {
-            content_reader_core::unit_medals::Medals::load(&scripted.layers.layers, &|name| {
+            content_reader_military::unit_medals::Medals::load(&scripted.layers.layers, &|name| {
                 std::str::from_utf8(name)
                     .ok()
                     .and_then(|name| definitions.index(name).ok().map(|index| index.is_some()))

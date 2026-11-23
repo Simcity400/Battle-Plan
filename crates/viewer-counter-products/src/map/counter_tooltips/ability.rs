@@ -1,4 +1,5 @@
 
+use dashboard_effects::ScriptedEffects;
 use super::*;
 use replay_data::{rows::ActiveAbilityRow, rows::UnitLeaderRow};
 use std::collections::BTreeSet;
@@ -123,7 +124,7 @@ fn scoped_description(
     reference: u64,
     leader: &UnitLeaderRow,
     definition: &content_reader_abilities::abilities::Definition,
-) -> Result<dashboard_text::effect_description::Description, String> {
+) -> Result<dashboard_effects::effect_description::Description, String> {
     use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, ScriptedText};
 
     let owner = context.slot(leader.owner)?;
@@ -133,7 +134,7 @@ fn scoped_description(
         .viewing(context.vision.ours())
         .with_nato_counters(context.nato);
     let effects = scripted.effects()?;
-    let effect_context = dashboard_text::effect_description::Context::new(
+    let effect_context = dashboard_effects::effect_description::Context::new(
         &text,
         context.loc,
         context.vision.ours(),
@@ -144,7 +145,7 @@ fn scoped_description(
         country: owner,
         leader: reference,
     })]);
-    Ok(dashboard_text::effect_description::ability_description(
+    Ok(dashboard_effects::effect_description::ability_description(
         definition,
         &effect_context,
         &mut scopes,

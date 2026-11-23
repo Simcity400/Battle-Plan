@@ -2,7 +2,7 @@ use crate::{
     Memory, carmy, carmy_manpower_values,
     cpdx_array::Array,
     manpower_value_entry,
-    walk::{Buffer, Outcome},
+    walk::{Outcome, grow},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -40,27 +40,6 @@ pub fn capture(
     contributors: &mut Vec<Contributor>,
     scratch: Scratch<'_>,
 ) -> Walk {
-    capture_buffer(
-        memory,
-        base,
-        sources,
-        source,
-        Buffer::Growing(rows),
-        Buffer::Growing(contributors),
-        scratch,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn capture_buffer(
-    memory: &impl Memory,
-    base: usize,
-    sources: &[carmy::DivisionSeed],
-    source: Outcome,
-    mut rows: Buffer<'_, Row>,
-    mut contributors: Buffer<'_, Contributor>,
-    scratch: Scratch<'_>,
-) -> Walk {
     let mut result = Walk {
         outcome: source,
         contributors: 0,
@@ -69,15 +48,13 @@ fn capture_buffer(
     if matches!(source, Outcome::Unavailable { .. }) {
         return result;
     }
-    let mut run = || -> Result<(usize, usize, usize), &'static str> {
+    let mut run = || -> Result<(usize, usize), &'static str> {
         if !matches!(source, Outcome::Rows { .. }) || source.len() > sources.len() {
             return Err("division land census incomplete");
         }
-        rows.ensure(source.len())?;
+        grow(rows, source.len())?;
         let mut len = 0_usize;
         let mut used = 0_usize;
-        let mut required = 0usize;
-        let mut stopped = false;
         use crate::memory::{RecordLayout, RecordSources, packed_fields};
         const ENTRY: usize = manpower_value_entry::STRIDE;
         const PAIR: usize = 2 * ENTRY;
@@ -85,11 +62,7 @@ fn capture_buffer(
         const TWO: [crate::memory::RecordField; 1] = packed_fields([(0, PAIR)]);
         const ONE_LAYOUT: RecordLayout<'static> = RecordLayout::new(&ONE, PAIR).unwrap();
         const TWO_LAYOUT: RecordLayout<'static> = RecordLayout::new(&TWO, PAIR).unwrap();
-        let scratch_rows = if rows.is_growing() {
-            source.len()
-        } else {
-            rows.len()
-        };
+        let scratch_rows = source.len();
         if scratch.pointers.len() < scratch_rows
             || scratch.ordinals.len() < scratch_rows
             || scratch.first.len() < scratch_rows
@@ -126,24 +99,17 @@ fn capture_buffer(
                 manpower_value_entry::STRIDE,
             )
             .ok_or("division manpower array invalid")?;
-            required = required
+            let next = used
                 .checked_add(array.count as usize)
                 .ok_or("division manpower demand overflow")?;
-            contributors.ensure(
-                used.checked_add(array.count as usize)
-                    .ok_or("division manpower demand overflow")?,
-            )?;
-            if stopped || len == rows.len() || array.count as usize > contributors.len() - used {
-                stopped = true;
-                continue;
-            }
+            grow(contributors, next)?;
             rows[len] = Row {
                 division: seed.division,
                 start: used,
                 len: array.count as usize,
                 naval_transfer: seed.naval_transfer_membership.unwrap() != 0,
             };
-            used += array.count as usize;
+            used = next;
             len += 1;
         }
         for (count, layout) in [(2, &TWO_LAYOUT), (1, &ONE_LAYOUT)] {
@@ -212,20 +178,13 @@ fn capture_buffer(
                 }
             }
         }
-        Ok((len, used, required))
+        Ok((len, used))
     };
     match run() {
-        Ok((len, used, required)) => {
+        Ok((len, used)) => {
             result.contributors = used;
-            result.required_contributors = required;
-            result.outcome = if len < source.len() {
-                Outcome::Truncated {
-                    len,
-                    unread_rows: u32::try_from(source.len() - len).expect("native census fits u32"),
-                }
-            } else {
-                Outcome::Rows { len }
-            };
+            result.required_contributors = used;
+            result.outcome = Outcome::Rows { len };
         }
         Err(reason) => result.outcome = Outcome::Unavailable { reason },
     }

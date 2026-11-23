@@ -2,7 +2,7 @@
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 
 use super::fixed::{self, Point};
-use viewer_foundation::map::text::{self, Font, GlyphMetrics};
+use viewer_native_gui::text::{self, Font, GlyphMetrics};
 
 const FONT_PIXEL: f32 = 0.05;
 const BOUND: f32 = 9999.0;
@@ -207,43 +207,52 @@ struct RunGlyph {
     top: f32,
     uv: [f32; 4],
     page: usize,
+    color: Option<[f32; 4]>,
 }
 
 fn centred_run(font: &dyn LabelFont, text: &str, size: f32) -> Vec<RunGlyph> {
-    let chars: Vec<char> = text::strip_color_codes(text).chars().collect();
+    let chars = text::color_runs(text, |code| font.text_color(code));
     let mut width = 0.0f32;
     let mut previous = None;
-    for &ch in &chars {
-        let Some(glyph) = font.glyph(ch) else {
+    for item in &chars {
+        if item.reset_kerning {
+            previous = None;
+        }
+        let Some(glyph) = font.glyph(item.ch) else {
             previous = None;
             continue;
         };
         if let Some(p) = previous {
-            width += font.kerning(p, ch);
+            width += font.kerning(p, item.ch);
         }
         width += glyph.xadvance;
-        previous = Some(ch);
+        previous = Some(item.ch);
     }
     let scale = FONT_PIXEL * size;
     let line = font.line_height();
     let mut pen = -((width as i32) / 2) as f32;
     let mut previous = None;
     let mut out = Vec::with_capacity(chars.len());
-    for &ch in &chars {
-        let Some(glyph) = font.glyph(ch) else {
+    for item in &chars {
+        if item.reset_kerning {
+            previous = None;
+        }
+        let Some(glyph) = font.glyph(item.ch) else {
             previous = None;
             continue;
         };
         if let Some(p) = previous {
-            pen += font.kerning(p, ch);
+            pen += font.kerning(p, item.ch);
         }
-        previous = Some(ch);
+        previous = Some(item.ch);
         let left = pen + glyph.xoffset;
         pen += glyph.xadvance;
         if glyph.height <= 0.0 {
             continue;
         }
-        let Some(page) = font.page(ch) else { continue };
+        let Some(page) = font.page(item.ch) else {
+            continue;
+        };
         out.push(RunGlyph {
             left: left * scale,
             right: (left + glyph.width) * scale,
@@ -251,6 +260,7 @@ fn centred_run(font: &dyn LabelFont, text: &str, size: f32) -> Vec<RunGlyph> {
             top: (line - glyph.yoffset) * scale,
             uv: glyph.uv,
             page,
+            color: item.color,
         });
     }
     out
@@ -364,6 +374,7 @@ pub struct LabelGlyph {
     pub corners: [[f32; 3]; 4],
     pub uv: [f32; 4],
     pub page: usize,
+    pub color: Option<[f32; 4]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -454,6 +465,7 @@ fn fit(
             ],
             uv: glyph.uv,
             page: glyph.page,
+            color: glyph.color,
         });
     }
     Fit::Placed(out)

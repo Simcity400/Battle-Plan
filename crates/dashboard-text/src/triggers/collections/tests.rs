@@ -2,11 +2,11 @@ use super::*;
 use crate::scripted_text::{EventObject, EventScope, EventScopes, Link};
 use std::{cell::RefCell, rc::Rc};
 
-fn collection(text: &str) -> content_reader_core::collections::Collection {
-    let input = content_reader_core::parser::parse(format!("input={{{text}}}").as_bytes())
+fn collection(text: &str) -> content_reader_politics::collections::Collection {
+    let input = content_reader_parser::parser::parse(format!("input={{{text}}}").as_bytes())
         .unwrap()
         .items;
-    content_reader_core::collections::compile(&input[0], None).unwrap()
+    content_reader_politics::collections::compile(&input[0], None).unwrap()
 }
 
 #[test]
@@ -244,7 +244,7 @@ fn collection_constant_arrays_keep_content_order_and_default_seeds() {
             ..Default::default()
         },
     ]));
-    let constants = content_reader_core::script_constants::parse(&[("synthetic.txt", b"states={schema={any_key=yes array=state} group={8 7} invalid={0}} tags={schema={any_key=yes array=country} group={GER AAA}}")]);
+    let constants = content_reader_politics::script_constants::parse(&[("synthetic.txt", b"states={schema={any_key=yes array=state} group={8 7} invalid={0}} tags={schema={any_key=yes array=country} group={GER AAA}}")]);
     let none = BTreeSet::new();
     let names = TriggerNames::default();
     let aliases = Arc::default();

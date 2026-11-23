@@ -633,8 +633,8 @@ pub struct Cursor {
     timed: bool,
     lap: Option<std::time::Instant>,
     passing: Vec<bool>,
-    open: HashMap<u32, usize, foldhash::fast::FixedState>,
-    skipped: HashMap<u32, u128, foldhash::fast::FixedState>,
+    open: HashMap<u32, usize, foldhash::fast::RandomState>,
+    skipped: HashMap<u32, u128, foldhash::fast::RandomState>,
     targets: Vec<u32>,
 }
 
@@ -974,7 +974,7 @@ fn lap(last: &mut Option<std::time::Instant>) -> std::time::Duration {
     now - held
 }
 
-fn passing(raw: &[u8], life: Life, to: u16, passing: &mut Vec<bool>, open: &mut HashMap<u32, usize, foldhash::fast::FixedState>, slots: &mut Vec<u32>) -> io::Result<()> {
+fn passing(raw: &[u8], life: Life, to: u16, passing: &mut Vec<bool>, open: &mut HashMap<u32, usize, foldhash::fast::RandomState>, slots: &mut Vec<u32>) -> io::Result<()> {
     passing.clear();
     open.clear();
     let (mut at, mut hour) = (life.at, u32::from(life.hour));
@@ -1453,6 +1453,14 @@ fn chunk_and_prefix(source: &dyn Extents, chunk: &super::restore::Chunk, reading
 }
 
 pub fn restore(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds: &[Kind], columns: &[usize]) -> io::Result<(TableState, super::restore::Meta)> {
+    restore_into(source, entry, kinds, columns, false)
+}
+
+pub fn restore_keyed(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds: &[Kind], columns: &[usize]) -> io::Result<(TableState, super::restore::Meta)> {
+    restore_into(source, entry, kinds, columns, true)
+}
+
+fn restore_into(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds: &[Kind], columns: &[usize], keyed: bool) -> io::Result<(TableState, super::restore::Meta)> {
     use super::restore::{self as held, META, ROWS, ROWS_CHUNK};
     if entry.log {
         return logs::log_restore(source, entry, kinds);
@@ -1478,6 +1486,9 @@ pub fn restore(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds
             (from, to.min(meta.slots.max(from)))
         };
         let rows = stream(ROWS);
+        if !rows.is_empty() || keyed {
+            table.enable_index();
+        }
         let mut keys = Vec::new();
         for index in 0..rows.len() {
             let against = chunk_and_prefix(source, &rows[index], reading, &mut raw, &mut prefix)?;
@@ -1490,6 +1501,9 @@ pub fn restore(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds
             } else {
                 bulk::rows(bytes, from, to, &mut table, &mut keys)?;
             }
+        }
+        if !keyed {
+            table.clear_index();
         }
         let (mut values, mut cells) = (Vec::new(), Vec::new());
         for &column in columns {

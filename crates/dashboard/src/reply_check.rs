@@ -69,11 +69,20 @@ fn label(product: &str, params: &Value) -> String {
     }
 }
 
+pub fn warm_catalogue(
+    source: &dashboard_base::Source,
+    content: &dashboard_core::config::ContentOptions,
+) -> io::Result<f64> {
+    let started = Instant::now();
+    source.in_scope(|| dashboard_base::content::warm_checked(source, content))?;
+    Ok(started.elapsed().as_secs_f64() * 1e3)
+}
+
 pub fn check(
     transcript: &mut dyn BufRead,
     asked: &dyn Fn(&str, &Value) -> bool,
     serve: &mut dyn FnMut(&str, &Value) -> Reply,
-    reset: &mut dyn FnMut(&Value) -> f64,
+    reset: &mut dyn FnMut(&Value) -> io::Result<f64>,
     ignored: &[Vec<String>],
     mut kept: Option<&mut dyn io::Write>,
 ) -> io::Result<Report> {
@@ -92,7 +101,7 @@ pub fn check(
             report.skipped += 1;
             continue;
         }
-        let built = reset(&exchange.params);
+        let built = reset(&exchange.params)?;
         let served = match exchange.product.as_str() {
             "series-summary" => chart(serve, &exchange.params),
             product => timed(serve, product, &exchange.params),
@@ -223,6 +232,8 @@ pub struct Report {
     pub differing: usize,
     pub skipped: usize,
     pub ignored: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache: Option<replay_tools::cold_cache::Probe>,
     #[serde(skip)]
     patterns: Vec<Vec<String>>,
     pub products: BTreeMap<String, Tally>,
@@ -594,5 +605,47 @@ fn same_number(a: &Number, b: &Number) -> bool {
             .is_some_and(|(a, b)| a.to_bits() == b.to_bits()),
         (Some(integer), None) => b.as_f64().is_some_and(|float| whole(integer, float)),
         (None, Some(integer)) => a.as_f64().is_some_and(|float| whole(integer, float)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_surfaces_reset_open_failures() {
+        let exchange = json!({
+            "product": "clock",
+            "params": {},
+            "reply": { "answered": { "data": 1 } }
+        });
+        let body = format!("{exchange}\n");
+        let mut cursor = io::Cursor::new(body.as_bytes());
+        let err = check(
+            &mut cursor,
+            &|_, _| true,
+            &mut |_, _| Reply::Answered(json!({ "data": 1 })),
+            &mut |_| Err(io::Error::new(io::ErrorKind::NotFound, "recording vanished")),
+            &[],
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn warm_catalogue_surfaces_content_load_failure_instead_of_timing() {
+        let root = std::env::temp_dir().join(format!("reply-check-warm-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (source, context) = dashboard_base::test_fixtures::source_with_content(
+            vec![dashboard_base::test_fixtures::source(1, 0, Some(1))],
+            &root,
+        );
+        let mut bad = context.content.unwrap();
+        bad.allow_unverified = false;
+        let err = warm_catalogue(&source, &bad).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("unverified content"), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

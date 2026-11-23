@@ -171,6 +171,7 @@ impl Admission {
 pub struct WatchRegistry {
     table: AtomicPtr<Table>,
     offered: AtomicPtr<Table>,
+    offer_lock: std::sync::Mutex<()>,
     draining: AtomicPtr<Table>,
     retired: AtomicPtr<Table>,
     capacity: AtomicUsize,
@@ -246,6 +247,7 @@ impl WatchRegistry {
         Self {
             table: AtomicPtr::new(ptr::null_mut()),
             offered: AtomicPtr::new(ptr::null_mut()),
+            offer_lock: std::sync::Mutex::new(()),
             draining: AtomicPtr::new(ptr::null_mut()),
             retired: AtomicPtr::new(ptr::null_mut()),
             capacity: AtomicUsize::new(0),
@@ -992,6 +994,10 @@ impl WatchRegistry {
     }
 
     fn offer_slots(&self, len: usize) -> bool {
+        self.offer_slots_with(len, || {})
+    }
+
+    fn offer_slots_with(&self, len: usize, before_publish: impl FnOnce()) -> bool {
         if len <= self.requested.load(SeqCst) {
             return false;
         }
@@ -999,8 +1005,18 @@ impl WatchRegistry {
             self.failed_offers.fetch_add(1, Relaxed);
             return false;
         };
-        self.requested.store(len, SeqCst);
-        let previous = self.offered.swap(Box::into_raw(table), SeqCst);
+        before_publish();
+        let previous = {
+            let _guard = self
+                .offer_lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if len <= self.requested.load(SeqCst) {
+                return false;
+            }
+            self.requested.store(len, SeqCst);
+            self.offered.swap(Box::into_raw(table), SeqCst)
+        };
         // SAFETY: an offered table was never installed; the swap owns it.
         unsafe { free(previous) };
         true
@@ -2154,5 +2170,20 @@ mod tests {
         assert!(small.sequence(40).is_some());
         small.collect();
         unsafe { small.release() };
+    }
+
+    #[test]
+    fn concurrent_smaller_offer_does_not_replace_larger_pending_offer() {
+        let registry = WatchRegistry::enabled(64);
+        registry.offer_slots_with(128, || {
+            registry.offer_slots(512);
+        });
+        assert_eq!(registry.requested.load(SeqCst), 512);
+        assert!(registry.boundary(true).installed());
+        assert_eq!(registry.capacity(), 512);
+        registry.collect();
+        unsafe {
+            registry.release();
+        }
     }
 }

@@ -1,5 +1,5 @@
 
-use crate::Source;
+use dashboard_base::Source;
 use dashboard_base::{
     catalogue::{self, Catalogue, View},
     products::{
@@ -9,7 +9,8 @@ use dashboard_base::{
 };
 use dashboard_core::config::LoadContext;
 use engine_native::{cdate::HOUR_EPOCH, cgame_date::NULL_RAW_HOUR};
-use content_reader_core::{intelligence::Intelligence, unit_leader::{Leaders, Skills}};
+use content_reader_military::intelligence::Intelligence;
+use content_reader_key_names::unit_leader::{Leaders, Skills};
 use content_reader_localisation::localisation::{Argument, Localisation};
 use replay_data::rows::{CharacterPortraitRow, OperativeMembershipRow, PORTRAIT_LARGE, Recorded};
 use std::{
@@ -90,8 +91,8 @@ impl OperativeContent {
         let catalogue = Arc::clone(&politics.catalogue);
         let layers = &catalogue.content.layers;
         let leaders = Leaders::<String>::load(layers, &|_| None)?;
-        let operations = content_reader_core::intelligence::read(layers)?;
-        let capture_days = content_reader_core::defines::read(layers)
+        let operations = content_reader_military::intelligence::read(layers)?;
+        let capture_days = content_reader_defines::defines::read(layers)
             .and_then(|defines| defines.int32("NOperatives", "OPERATIVE_CAPTURE_DURATION_IN_DAYS"))
             .map_err(|error| format!("NDefines.NOperatives.OPERATIVE_CAPTURE_DURATION_IN_DAYS is unavailable: {error}"));
         let mut warnings = politics.warnings.clone();

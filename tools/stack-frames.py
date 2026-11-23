@@ -9,12 +9,12 @@ pushed registers and allocation recorded in its x64 unwind information (.pdata),
 including chained fragments. A function is attributed by its own start address,
 never by the nearest preceding symbol. Names come from the PDB's procedure records
 when it has debug information, otherwise from its publics; functions with neither
-show as `<0xADDRESS>`. A `--release` build names the roots; for every name, build
-the same code with `--config profile.release.package.collector.debug=2`. A
-`--profile release-lto` build keeps the collector's line tables, which name its functions.
+show as `<0xADDRESS>`. A `--profile release-lto` build keeps line tables for the
+collector crates, which name their functions. With `--release`, use
+`--config profile.release.package.collector-capture.debug=2` to name the hourly root.
 
---check follows direct calls and tail jumps from each root (GAME_THREAD_ROOTS: the
-hourly hook, which runs acquisition on the game's main thread). It fails when a
+--check follows direct calls and tail jumps from `collector_capture::sampling::tick`,
+the hourly hook that runs acquisition on the game's main thread. It fails when a
 reachable function's frame exceeds MAX_FRAME or the deepest acyclic chain from a
 root exceeds MAX_DEPTH, and prints the offending call chains. Indirect calls, such
 as job runners and panic hooks, are not followed. A failure means a large value
@@ -33,7 +33,7 @@ import sys
 
 MAX_FRAME = 64 * 1024
 MAX_DEPTH = 384 * 1024
-GAME_THREAD_ROOTS = ("collector::sampling::tick",)
+GAME_THREAD_ROOTS = ("collector_capture::sampling::tick",)
 
 LLVM_DIRS = (r"C:\Program Files\LLVM\bin",)
 

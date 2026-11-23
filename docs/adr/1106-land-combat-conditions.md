@@ -6,4 +6,4 @@ The early estimate evaluates firing committed divisions and verified game define
 
 The estimates and progress use wrapping 64-bit sums and products followed by signed division with a positive denominator. Extreme reserved values produce the game’s positive sentinel. Nonpositive late loss averages take the native minimum denominator. When the modifier table is available, missing entries and feature-ineligible entries contribute zero. Contextual and country lookups both honor the metadata’s unit-interval clamp.
 
-[Condition and survival inputs](../../crates/viewer-foundation/src/land_combat_math.rs) · [Operand and overflow cases](../../crates/viewer-foundation/src/land_combat_math/tests.rs)
+[Condition and survival inputs](../../crates/viewer-engagements/src/land_combat_math.rs) · [Operand and overflow cases](../../crates/viewer-engagements/src/land_combat_math/tests.rs)

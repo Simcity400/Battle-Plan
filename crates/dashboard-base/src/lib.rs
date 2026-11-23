@@ -23,7 +23,7 @@ pub use dashboard_core::invalid;
 pub use dashboard_core::{blocks, config, dto::*, findings, map_settings, protocol, transport};
 pub use dashboard_text::{air_wing_names, faction_names, idea_names, party_names, variant_names};
 pub use dashboard_text::{
-    character_scope, cryptology, effect_description, flag_choices, identity, metadata,
+    character_scope, cryptology, flag_choices, identity, metadata,
     modifier_text, naval_battle_name, scope, scripted_text, state_resources, triggers, unit_names,
 };
 

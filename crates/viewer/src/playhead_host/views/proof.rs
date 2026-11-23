@@ -6,7 +6,7 @@ use replay_data::rows::{Field, List, Opaque, RowRef, TableId, TableRows};
 use replay_frame::frame::{DecodedFrame, TableView, discovering, undeclared_reads, view_reads};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, io, io::Write, sync::Arc, time::Duration};
-use viewer_foundation::map::perspective;
+use viewer_foundation::perspective;
 
 const LIMIT: Duration = Duration::from_secs(120);
 
@@ -47,7 +47,7 @@ pub(crate) struct Line {
 }
 
 impl Line {
-    pub(crate) fn open(views: Views, branch: replay_data::BranchId, names: &str, timing: bool, path: &std::path::Path, content: &content_reader_core::ResolveOptions) -> io::Result<Self> {
+    pub(crate) fn open(views: Views, branch: replay_data::BranchId, names: &str, timing: bool, path: &std::path::Path, content: &content_reader_layers::ResolveOptions) -> io::Result<Self> {
         let mut readers = Vec::new();
         let mut roster = None;
         let mut window = None;
@@ -252,7 +252,7 @@ pub(crate) struct Compared {
 
 fn evaluate(document: &Document, frame: &DecodedFrame, ours: u32, countries: &[u32]) -> (Vec<String>, Vec<String>) {
     let products = &document.content.products;
-    let world = dashboard::triggers::World::read(frame, products.triggers.facts());
+    let world = dashboard_text::triggers::World::read(frame, products.triggers.facts());
     let music = match &products.audio {
         Some(audio) => countries.iter().map(|&country| format!("{country}: {:?}", map_products::music_inputs::Memo::new().chances(frame, audio, country, &world))).collect(),
         None => Vec::new(),

@@ -1,16 +1,11 @@
 
 use super::{Content, Country, IDENTITY, Tags, branch, missing};
-use crate::{
-    Source,
-    products::{
-        LoadContext,
-        at_hour::{At, AtHour},
-    },
-};
+use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour}}};
 use dashboard_follow::live::Source as Cell;
 use dashboard_query::{Index, Query, timeline::Join};
 use dashboard_text::cryptology;
-use replay::{campaign::Replay, lanes, points::Cell as Read};
+use replay::campaign::Replay;
+use replay_lanes::{lanes, points::Cell as Read};
 use replay_data::rows::{CryptologyRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -182,6 +177,7 @@ impl AtHour for Decryption {
     const TITLE: &'static str = "Decryption";
     const CONTENT_DEPENDENT: bool = true;
     type Params = DecryptionParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = DecryptionReply;
     type Context = DecryptionContext;
 
@@ -476,7 +472,7 @@ pub struct Ciphers {
 
 impl Ciphers {
     pub fn of(source: &Source) -> Self {
-        Self { replay: source.replay(), index: crate::answer::index(source), held: source.state::<Held>() }
+        Self { replay: source.replay(), index: dashboard_base::queries::index(source), held: source.state::<Held>() }
     }
 
     fn history(&self, branch: u64) -> io::Result<Arc<CipherHistory>> {

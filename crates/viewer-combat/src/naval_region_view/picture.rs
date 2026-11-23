@@ -5,7 +5,7 @@ use crate::state_view::{paths_named, withhold_named};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::io;
-use viewer_foundation::engagement_history::CombatFlags;
+use viewer_engagements::engagement_history::CombatFlags;
 
 const NIGHT: i64 = 50_000;
 

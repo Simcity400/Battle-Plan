@@ -19,6 +19,7 @@ import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, toggleContentSet } from '../../dashboard/options';
 import { loadTransientProduct, useProduct } from '../../dashboard/products';
@@ -38,6 +39,7 @@ import { completionRow, endedRows, endedThrough, filteredPages, jumpHours, opera
 import type { OperationDetail, OperationFilter, OperationItem } from './espionageData';
 import { useEspionageTypes, useEspionageTypeTokens } from './useEspionageTypes';
 import './espionageLog.css';
+import { productRequest } from '../../dashboard/request.ts';
 
 function SectionNote({ text, detail, failure, retry, loading }: { text?: string; detail?: string | null; failure?: Failure; retry?: () => void; loading?: boolean }) {
   if (failure) return <span className="espionage-note is-error" data-tooltip={failure.message}>{failureText(failure, text ?? 'Couldn’t load operations.')}
@@ -84,7 +86,8 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const paint = useCallback((reply: EspionageOperationsReply) => { latest.current = reply; paintOperations(root.current, reply); }, []);
   const structure = useCallback((reply: EspionageOperationsReply) => underWayStructure(reply, order), [order]);
   const params = useMemo(() => track ? {} : null, [track]);
-  const head = useHeadProduct<EspionageOperationsReply>(runtime, widget, 'espionage-operations', params, { active, validate: validateOperations, structure, paint });
+  const gate = useGate(runtime, widget);
+  const head = useHeadProduct(runtime, gate, 'espionage-operations', params, { active, validate: validateOperations, structure, paint });
   if (head.data && head.read !== 'followed') latest.current = head.data;
   useShownEachFrame(runtime.clock, () => head.shownAt(), head.live);
   const hour = head.at ?? head.hour ?? pinned ?? lastHour;
@@ -97,17 +100,20 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const serverRole = tagged && role !== 'either' ? role : null;
   const facets = useMemo<FacetFilter[]>(() => [...(tokens ? [{ name: 'operation', values: tokens, countries: [] }] : []),
     ...(serverRole ? [{ name: serverRole, values: [], countries: fallback.map(countryFromKey) }] : [])], [tokens, serverRole, fallback]);
-  const spec = useMemo<LogSpec | null>(() => track && tokens !== undefined && !(tokens && tokens.length === 0) ? { source: track.source, branchId: track.branch.id, log: 'operation-completions',
-    product: 'espionage-log', ...(facets.length ? { facets } : {}), firstHour: from ?? track.branch.firstHour, lastHour: track.branch.lastHour } : null,
-  [track, tokens, facets, from]);
+  const logSpan = track ? gate.span(from ?? track.branch.firstHour, track.branch.lastHour) : null;
+  const spec = useMemo<LogSpec | null>(() => track && logSpan && tokens !== undefined && !(tokens && tokens.length === 0) ? { source: track.source, branchId: track.branch.id, log: 'operation-completions',
+    product: 'espionage-log', ...(facets.length ? { facets } : {}), ...logSpan } : null,
+  [track, tokens, facets, logSpan?.firstHour, logSpan?.lastHour]);
   const cut: LogCut = live ? { follow: true, offset: track?.axisOffset ?? 0 } : { follow: false, hour: widget.time.mode === 'campaign' ? null : pinned };
   const log = useLogPages<OperationItem>(runtime.client, runtime.clock, spec, cut, active, completionRow);
   const pageFilter = useMemo(() => needsGroups && !serverRole ? { ...filter, types: null, from: null } : null, [needsGroups, serverRole, filter]);
   const pages = useMemo(() => filteredPages(log.pages, pageFilter), [log.pages, pageFilter]);
 
   const endedTo = live || widget.time.mode === 'campaign' ? lastHour : pinned ?? lastHour;
-  const ended = useProduct<EspionageEndedReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'espionage-ended',
-    params: { branchId: track.branch.id, from, to: endedTo } } : null, active, validateEnded, track?.source);
+  const endedAt = gate.within(endedTo);
+  const endedFrom = from === null ? null : gate.within(from);
+  const ended = useProduct<EspionageEndedReply>(runtime.client, track && endedAt !== null && (from === null || endedFrom !== null) ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'espionage-ended',
+    params: { branchId: track.branch.id, from: endedFrom, to: endedAt } }) : null, active, validateEnded, track?.source);
   const offset = track?.axisOffset ?? 0;
   const endedHours = useMemo(() => ended.data ? ended.data.operations.map(operation => operation.byHour).reverse() : [], [ended.data]);
   const endedEnd = useCallback((clockHour: number) => {
@@ -133,14 +139,14 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
 
   const [tipRow, setTipRow] = useState<LogRow<OperationItem> | null>(null);
   const [detail, setDetail] = useState<{ key: string; value: OperationDetail } | null>(null);
-  const detailHour = tipRow ? tipRow.item.kind === 'ended' ? tipRow.item.lastSeen : tipRow.item.kind === 'completed' ? tipRow.hour : hour : null;
+  const detailHour = gate.recorded(tipRow ? tipRow.item.kind === 'ended' ? tipRow.item.lastSeen : tipRow.item.kind === 'completed' ? tipRow.hour : hour : null);
   const detailKey = tipRow?.item.id && detailHour !== null ? JSON.stringify([tipRow.item.id, detailHour]) : null;
   useEffect(() => {
     if (!active || !track || !tipRow?.item.id || detailHour === null || !detailKey) return;
     const controller = new AbortController();
     const id = tipRow.item.id;
-    loadTransientProduct<unknown>(runtime.client, { sourceId: track.source.id, revision: track.source.revision, product: 'espionage-operation',
-      params: { branchId: track.branch.id, id, hour: detailHour } }, controller.signal)
+    loadTransientProduct<unknown>(runtime.client, productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'espionage-operation',
+      params: { branchId: track.branch.id, id, hour: detailHour } }), controller.signal)
       .then(value => { if (!controller.signal.aborted) setDetail({ key: detailKey, value: { reply: validateOperation(value, id) } }); })
       .catch(error => { if (!controller.signal.aborted) setDetail({ key: detailKey, value: { failure: failureText(asFailure(error), 'Couldn’t load the operation.') } }); });
     return () => controller.abort();
@@ -210,9 +216,9 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
     : tokens === undefined ? { key: 'completed', label: 'Completed', rows: NO_ROWS, note: <SectionNote text="Loading completed operations…" loading /> }
     : !spec ? { key: 'completed', label: 'Completed', rows: NO_ROWS, note: <SectionNote text="No operation of the chosen types was recorded." /> }
     : { key: 'completed', label: 'Completed', pages, note: <SectionNote text="No espionage operations match these countries and settings by this moment." /> };
-  const endedSection: LogListSection<OperationItem> = ended.error ? { key: 'ended', label: 'Ended without completing', rows: NO_ROWS, note: <SectionNote failure={ended.error} retry={ended.retry} /> }
-    : !ended.data ? { key: 'ended', label: 'Ended without completing', rows: NO_ROWS, note: <SectionNote text="Loading ended operations…" loading /> }
-    : { key: 'ended', label: 'Ended without completing', rows: endedList, note: <SectionNote text="No operation ended without completing by this moment." /> };
+  const endedSection: LogListSection<OperationItem> = ended.error ? { key: 'ended', label: 'Ended operations', rows: NO_ROWS, note: <SectionNote failure={ended.error} retry={ended.retry} /> }
+    : !ended.data ? { key: 'ended', label: 'Ended operations', rows: NO_ROWS, note: <SectionNote text="Loading ended operations…" loading /> }
+    : { key: 'ended', label: 'Ended operations', rows: endedList, note: <SectionNote text="No other endings recorded." /> };
   const sections = [underWaySection, completedSection, endedSection];
 
   return <div ref={element => { root.current = element; head.root(element); }} className="espionage-log">

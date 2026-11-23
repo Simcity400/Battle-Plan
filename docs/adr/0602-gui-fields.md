@@ -20,4 +20,4 @@ Grid fields include the first background and preserve the odd consequences of an
 
 For the point components whose native storage continues into the next field, keep the modeled words in element order. Edit-box position, size and border components can reach the later words used for cursor and flags. Browser and curve-graph components can reach size and then the sprite string. Scrollbar components can reach its bounds, step, start value, priority and the field list examined during inheritance. Some writes touch unused padding. Refuse a later consumer that would depend on an unavailable object reference or field instead of manufacturing a value for it. The unset minimum, field-list count and distinct child registry matter even for scrollbars without a parent.
 
-[Typed GUI elements](../../crates/content-reader-core/src/gui/native.rs) · [Element readers](../../crates/content-reader-core/src/gui/native/elements.rs)
+[Typed GUI elements](../../crates/content-reader-gui/src/gui/native.rs) · [Element readers](../../crates/content-reader-gui/src/gui/native/elements.rs)

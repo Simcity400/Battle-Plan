@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_core::parser::c_string;
+use content_reader_parser::parser::c_string;
 use replay_data::rows::Recorded;
 
 mod directed_wars;
@@ -370,7 +370,7 @@ fn task_force_port(
                 let field = format!("{label}.avoided_ship_types[{at}]");
                 match kind {
                     Some(kind) => {
-                        let comparable = content_reader_core::parser::c_string(kind);
+                        let comparable = content_reader_parser::parser::c_string(kind);
                         if comparable.len() < kind.len() {
                             r.limitation("native text serialization ends at the first NUL; captured trailing ship-type bytes are not save-comparable", &field);
                         }

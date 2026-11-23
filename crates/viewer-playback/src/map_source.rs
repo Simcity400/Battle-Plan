@@ -1,9 +1,5 @@
-use crate::playback::Current;
-use replay::{
-    campaign::{Parallel, Replay},
-    columnar_frames::Pool,
-    columnar_natives::{Cursor, Natives},
-};
+use replay::campaign::Replay;
+use replay_recording::{columnar_frames::Pool, columnar_natives::{Cursor, Natives}};
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
 use replay_frame::frame::{DecodedFrame, TableView};
 use std::{
@@ -18,9 +14,9 @@ fn background() -> io::Result<Arc<Pool>> {
         return Ok(Arc::clone(pool));
     }
     let pool = Arc::new(Pool::new(
-        viewer_foundation::retirement::builder_count(),
+        viewer_runtime::retirement::builder_count(),
         "map background",
-        viewer_foundation::worker_priority::background_priority,
+        viewer_runtime::worker_priority::background_priority,
     )?);
     Ok(Arc::clone(BACKGROUND.get_or_init(|| pool)))
 }
@@ -34,26 +30,19 @@ impl Columnar {
         Self { natives }
     }
 
-    pub fn open(&self, replay: Arc<Replay>, workers: usize) -> io::Result<MapSource> {
+    pub fn open(&self, replay: Arc<Replay>) -> io::Result<MapSource> {
         let cursor = Cursor::new(
             Arc::clone(&self.natives),
             dashboard_base::map_tables::selected_tables(),
-            replay.format,
-            replay.capture_mode,
         )?
         .with_change_facts();
-        Ok(MapSource {
-            cursor,
-            replay,
-            workers: workers.max(1),
-        })
+        Ok(MapSource { cursor, replay })
     }
 }
 
 pub struct MapSource {
     cursor: Cursor,
     replay: Arc<Replay>,
-    workers: usize,
 }
 
 impl MapSource {
@@ -68,14 +57,9 @@ impl MapSource {
         materialize: bool,
         cancelled: &dyn Fn() -> bool,
     ) -> io::Result<Current> {
-        let priority = viewer_foundation::worker_priority::current_priority();
+        let priority = viewer_runtime::worker_priority::current_priority();
         let behind = priority.is_some_and(|priority| priority < 0);
         self.cursor.set_pool(if behind { Some(background()?) } else { None });
-        let on_worker = || {};
-        let parallel = Parallel {
-            workers: self.workers,
-            on_worker: &on_worker,
-        };
         let gap = |reason: String| Current::Gap {
             branch,
             hour,
@@ -86,13 +70,11 @@ impl MapSource {
             .segment_at(branch, hour)
             .filter(|segment| self.cursor.natives().find(*segment, hour).is_some())
         else {
-            return Ok(gap(crate::playback::gap_reason(&self.replay, branch, hour)));
+            return Ok(gap(gap_reason(&self.replay, branch, hour)));
         };
         let read = (|| -> io::Result<Option<DecodedFrame>> {
             self.cursor.move_to(segment, branch, hour, cancelled)?;
-            materialize
-                .then(|| self.cursor.build(Some(&parallel)))
-                .transpose()
+            materialize.then(|| self.cursor.build()).transpose()
         })();
         let refused = |reason: String| Current::Refused {
             branch,
@@ -122,5 +104,35 @@ fn campaign_holds(frame: &DecodedFrame, campaign: &[u8]) -> bool {
             .rows::<tables::Campaign>()
             .is_some_and(|rows| rows.len() == 1 && rows[0].id == campaign),
         _ => true,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Current {
+    Frame(Arc<DecodedFrame>),
+    Gap {
+        branch: BranchId,
+        hour: Hour,
+        reason: String,
+    },
+    Refused {
+        branch: BranchId,
+        hour: Hour,
+        reason: String,
+    },
+}
+
+pub fn gap_reason(replay: &Replay, branch: BranchId, hour: Hour) -> String {
+    let reason = replay
+        .gaps
+        .iter()
+        .filter(|gap| gap.branch == branch && gap.first_hour <= hour && hour <= gap.last_hour)
+        .map(|gap| gap.reason.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    if reason.is_empty() {
+        "hour was not recorded".into()
+    } else {
+        reason
     }
 }

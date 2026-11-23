@@ -70,6 +70,9 @@ impl Reasons {
     }
 
     pub(crate) fn unrecorded(&self, lane: &Lane) -> Option<String> {
+        if let Some(reason) = lane.withheld() {
+            return Some(reason.to_owned());
+        }
         let status = lane.status().0;
         let text = match status {
             Status::Unavailable { reason } => self.0.get(&(lane.run(), reason)).map(|text| &**text),

@@ -1,13 +1,10 @@
 use super::{Evaluator, Scope, Scopes};
 use crate::triggers::Failure;
-use content_reader_core::{
-    collections::{Collection, Input, Operator},
-    script_constants::CollectionConstant,
-};
+use content_reader_politics::{collections::{Collection, Input, Operator}, script_constants::CollectionConstant};
 use replay_data::rows::{TableSchema, tables};
 
 impl Evaluator<'_, '_> {
-    pub(crate) fn collection_representative(
+    pub fn collection_representative(
         &self,
         collection: &Collection,
         caller: Scopes,
@@ -52,7 +49,7 @@ impl Evaluator<'_, '_> {
                 {
                     world.table_status(replay_data::rows::TableId::Countries)?;
                     let country = |tag: &[u8]| {
-                        std::str::from_utf8(content_reader_core::parser::c_string(tag))
+                        std::str::from_utf8(content_reader_parser::parser::c_string(tag))
                             .ok()
                             .and_then(|tag| world.recorded().country(tag))
                             .unwrap_or(0)

@@ -14,10 +14,8 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_foundation::{
-    engagement_history::{Covered, History},
-    map::perspective::Country,
-};
+use viewer_engagements::engagement_history::{Covered, History};
+use viewer_foundation::perspective::Country;
 
 fn differ(a: &History, b: &History) -> (BTreeMap<&'static str, u64>, Option<String>, u64) {
     let (a, b) = (a.branches.lock().unwrap_or_else(|p| p.into_inner()), b.branches.lock().unwrap_or_else(|p| p.into_inner()));

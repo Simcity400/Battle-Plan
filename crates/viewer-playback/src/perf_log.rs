@@ -56,7 +56,7 @@ pub fn first_complete() {
     }
 }
 
-pub fn source_admission_probe(source: &dashboard_base::Source, options: &content_reader_core::ResolveOptions) {
+pub fn source_admission_probe(source: &dashboard_base::Source, options: &content_reader_layers::ResolveOptions) {
     let Some(path) = std::env::var_os("BATTLEPLAN_SOURCE_ADMISSION_FILE").or_else(|| std::env::var_os("HOI4_SOURCE_ADMISSION_FILE")) else { return; };
     let measure = || -> std::io::Result<serde_json::Value> {
         let content = source.content(options)?;
@@ -106,7 +106,7 @@ pub fn source_admission_probe(source: &dashboard_base::Source, options: &content
 pub struct StartupSpan {
     name: &'static str,
     started: Option<(Instant, Option<u64>)>,
-    loaders: Option<content_reader_core::parallel::cpu::Measurement>,
+    loaders: Option<content_reader_layers::parallel::cpu::Measurement>,
     source: Option<String>,
     peak_before: Option<u64>,
 }
@@ -141,7 +141,7 @@ impl StartupSpan {
 
     pub fn with_loaders(mut self, path: &std::path::Path) -> Self {
         if self.started.is_some() {
-            self.loaders = Some(content_reader_core::parallel::cpu::Measurement::start());
+            self.loaders = Some(content_reader_layers::parallel::cpu::Measurement::start());
             self.source = Some(path.display().to_string());
             self.peak_before = startup_memory().map(|memory| memory.0);
         }
@@ -252,7 +252,7 @@ static PREFIX: OnceLock<std::ffi::OsString> = OnceLock::new();
 
 pub fn log_to(prefix: &std::path::Path) {
     let _ = PREFIX.set(prefix.as_os_str().to_owned());
-    viewer_foundation::map::gpu_frame_time::request();
+    viewer_gpu::gpu_frame_time::request();
     account();
 }
 

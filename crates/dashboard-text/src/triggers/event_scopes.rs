@@ -2,7 +2,7 @@ use crate::triggers::Failure;
 
 use std::{cell::RefCell, rc::Rc};
 
-use content_reader_core::{scope::Keyword, scope::Scope as Parsed};
+use content_reader_script::scope::{Keyword, Scope as Parsed};
 
 use super::{Evaluator, Scope, Scopes, UnknownLinks, saved_event_targets::Reader};
 use crate::scripted_text::{EventObject, EventScope, EventScopes, Link};
@@ -54,6 +54,73 @@ pub(super) fn linked(graph: &EventScopes, at: usize, link: Link) -> Result<usize
     }
 }
 
+pub fn step_event_scope(
+    graph: &mut EventScopes,
+    caller: usize,
+    parsed: &Parsed,
+    this: Scope,
+) -> Result<usize, String> {
+    if caller >= graph.scopes.len() {
+        return Err("scope graph cursor is outside the caller graph".into());
+    }
+    if let Parsed::Chain { head, then } = parsed {
+        let mid = match head {
+            Keyword::This => Some(Ok(caller)),
+            Keyword::Root => Some(linked(graph, caller, graph.scopes[caller].root)),
+            Keyword::From => Some(linked(graph, caller, graph.scopes[caller].from)),
+            Keyword::Prev => Some(linked(graph, caller, graph.scopes[caller].prev)),
+            _ => None,
+        };
+        if let Some(Ok(mid)) = mid {
+            let first = step_event_scope(
+                graph,
+                caller,
+                &Parsed::Keyword(*head),
+                object(graph.scopes[mid].this),
+            )?;
+            let index = step_event_scope(graph, first, then, this)?;
+            graph.scopes[index].prev = Link::Scope(caller);
+            return Ok(index);
+        }
+    }
+    let source = match parsed {
+        Parsed::Keyword(Keyword::This) => caller,
+        Parsed::Keyword(Keyword::Root) => {
+            linked(graph, caller, graph.scopes[caller].root).map_err(|why| why.to_string())?
+        }
+        Parsed::Keyword(Keyword::From) => {
+            linked(graph, caller, graph.scopes[caller].from).map_err(|why| why.to_string())?
+        }
+        Parsed::Keyword(Keyword::Prev) => {
+            linked(graph, caller, graph.scopes[caller].prev).map_err(|why| why.to_string())?
+        }
+        _ => caller,
+    };
+    let mut copied = graph.scopes[source];
+    copied.from = match copied.from {
+        Link::Itself => Link::Scope(source),
+        other => other,
+    };
+    copied.root = match graph.scopes[caller].root {
+        Link::Itself => Link::Scope(caller),
+        root => root,
+    };
+    copied.prev = Link::Scope(caller);
+    copied.this = event_object(this).map_err(|why| why.to_string())?;
+    if matches!(parsed, Parsed::Keyword(Keyword::Root | Keyword::Prev)) {
+        copied.from = match linked(graph, caller, graph.scopes[caller].root) {
+            Ok(root) => match graph.scopes[root].from {
+                Link::Itself => Link::Scope(root),
+                from => from,
+            },
+            Err(_) => Link::Unknown,
+        };
+    }
+    let index = graph.scopes.len();
+    graph.scopes.push(copied);
+    Ok(index)
+}
+
 fn terminal(graph: &EventScopes, mut at: usize, root: bool) -> Result<usize, Failure> {
     for _ in 0..101 {
         let current = graph.scopes.get(at).ok_or("event scope is not given")?;
@@ -72,7 +139,7 @@ fn lookup(rows: &[(Vec<u8>, EventObject)], name: &[u8]) -> Option<EventObject> {
         .map(|(_, value)| *value)
 }
 
-pub(crate) fn project(graph: &EventScopes, at: usize) -> Result<Scopes, Failure> {
+pub fn project(graph: &EventScopes, at: usize) -> Result<Scopes, Failure> {
     let scope = graph.scopes.get(at).ok_or("event scope is not given")?;
     let selected = |link| {
         linked(graph, at, link)
@@ -105,7 +172,7 @@ pub(crate) fn project(graph: &EventScopes, at: usize) -> Result<Scopes, Failure>
     })
 }
 
-pub(crate) fn cleanup_description(graph: &mut EventScopes, at: usize) -> Result<(), Failure> {
+pub fn cleanup_description(graph: &mut EventScopes, at: usize) -> Result<(), Failure> {
     if !graph.tooltip_targets.is_empty() {
         let owner = terminal(graph, at, false)?;
         graph.tooltip_targets.remove(&owner);
@@ -242,7 +309,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         self.description_depth.set(self.description_depth.get() + 1);
     }
 
-    pub(crate) fn begin_description_in(&self, scopes: Scopes) {
+    pub fn begin_description_in(&self, scopes: Scopes) {
         let outer = self.description_depth.get() == 0 && self.checking.get() == 0;
         self.begin_description();
         if outer {
@@ -302,7 +369,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(())
     }
 
-    pub(crate) fn save_global_tooltip_target(
+    pub fn save_global_tooltip_target(
         &self,
         name: &[u8],
         scopes: Scopes,
@@ -542,7 +609,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(index)
     }
 
-    pub(crate) fn fresh_country_scope(
+    pub fn fresh_country_scope(
         &self,
         country: Option<u32>,
         from: Option<Scopes>,
@@ -599,7 +666,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         self.event_scopes(index)
     }
 
-    pub(crate) fn repoint_this(&self, scopes: Scopes, this: Scope) -> Result<Scopes, Failure> {
+    pub fn repoint_this(&self, scopes: Scopes, this: Scope) -> Result<Scopes, Failure> {
         let Some(at) = scopes.cursor else {
             return Ok(scopes.with_this(this));
         };

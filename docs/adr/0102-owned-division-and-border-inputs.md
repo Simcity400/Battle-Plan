@@ -8,4 +8,4 @@ The design observer owns the variant writer set and forwards changes to division
 
 Border conflicts can use the controller doctrine of an active province with no divisions. The collector takes the relevant controllers from all active states so the recording serves every hover perspective. The land-membership inputs and controller-doctrine inputs are independent joins, allowing one result to stay available when the other is withheld.
 
-[Division detail packets](../../crates/collector/src/division_detail.rs) · [Variant forwarding](../../crates/collector/src/division_panel_forwarder.rs) · [Border inputs](../../crates/collector/src/extended/border_inputs.rs)
+[Division detail packets](../../crates/collector-capture/src/division_detail.rs) · [Variant forwarding](../../crates/collector-runtime/src/division_panel_forwarder.rs) · [Border inputs](../../crates/collector-capture/src/extended/border_inputs.rs)

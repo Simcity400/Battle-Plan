@@ -1,29 +1,25 @@
 use super::{Assets, modifier_text::NameIndexCache};
-use content_reader_core::map::MapData;
+use content_reader_map::map::MapData;
 use content_reader_localisation::localisation::Localisation;
 use content_reader_regions::regions::StrategicRegion;
 use std::{collections::BTreeMap, sync::Arc};
+use viewer_engagements::land_combat_math::ScoreDefines;
+use viewer_native_gui::{lazy_icons::{LazyFlags, LazyTextures}, native_windows::WindowCache};
+use viewer_runtime::memo::Keyed;
 use viewer_foundation::{
-    land_combat_math::ScoreDefines,
-    map::{
-        lazy_icons::{LazyFlags, LazyTextures},
-        memo::Keyed,
-        native_windows::WindowCache,
-        perspective::{Vision, VisionKey},
-        province_geometry::ProvinceGeometry,
-        terrain_content::TerrainContent,
-        visibility::FogContent,
-    },
+    perspective::{Vision, VisionKey},
+    visibility::FogContent,
     movement_timing::{EtaCache, MovementContent},
     trigger_content::TriggerContent,
 };
+use viewer_gpu::{province_geometry::ProvinceGeometry, terrain_content::TerrainContent};
 
 pub struct Content {
     pub air_context: Option<Arc<viewer_counter_products::map::counter_content::Content>>,
     pub attrition: std::sync::OnceLock<
-        Result<viewer_foundation::map::counter_attrition::PanelContent, String>,
+        Result<viewer_unit_reads::counter_attrition::PanelContent, String>,
     >,
-    pub medals: std::sync::OnceLock<Result<content_reader_core::unit_medals::Medals, String>>,
+    pub medals: std::sync::OnceLock<Result<content_reader_military::unit_medals::Medals, String>>,
     pub assets: Arc<Assets>,
     pub localisation: Arc<Localisation>,
     pub recorded_language: String,
@@ -51,15 +47,15 @@ pub struct Content {
 }
 
 pub struct Occupation {
-    pub laws: content_reader_core::occupation_laws::Laws,
-    pub modifiers: content_reader_core::occupation_modifiers::Definitions,
+    pub laws: content_reader_politics::occupation_laws::Laws,
+    pub modifiers: content_reader_politics::occupation_modifiers::Definitions,
 }
 
 impl Occupation {
-    pub fn load(layers: &content_reader_core::ResolvedLayers) -> Result<Self, String> {
+    pub fn load(layers: &content_reader_layers::ResolvedLayers) -> Result<Self, String> {
         Ok(Self {
-            laws: content_reader_core::occupation_laws::read(layers).map_err(|why| why.to_string())?,
-            modifiers: content_reader_core::occupation_modifiers::read(layers).map_err(|why| why.to_string())?,
+            laws: content_reader_politics::occupation_laws::read(layers).map_err(|why| why.to_string())?,
+            modifiers: content_reader_politics::occupation_modifiers::read(layers).map_err(|why| why.to_string())?,
         })
     }
 }

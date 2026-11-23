@@ -78,6 +78,7 @@ fn initial_catalogue_has_no_countries_or_player_when_its_block_is_unreadable() {
             },
         ]));
     let healthy = Replay::from_records(
+        recorder_derive::writers(),
         CAMPAIGN.into(),
         &[records(1, vec![first, scale_frame(1, 101, 5000)])],
     )
@@ -105,6 +106,7 @@ fn catalogue_campaign_failure_becomes_a_gap_and_tries_the_next_block() {
     let next_hour = 200;
     let recording = |first| {
         Replay::from_records(
+            recorder_derive::writers(),
             CAMPAIGN.into(),
             &[records(1, vec![first, source(1, next_hour, Some(2))])],
         )
@@ -172,7 +174,7 @@ fn catalogue_checked_allocation_failures_propagate_instead_of_becoming_success()
     }
     let mut segment = records(1, vec![source(1, 100, Some(1))]);
     for record in &mut segment {
-        if let replay::spool::Record::SessionStart(session) = record {
+        if let replay_capture_spool::spool::Record::SessionStart(session) = record {
             session.identity.verification = replay_data::identity::Verification::Unverified {
                 reason: "synthetic launcher roster".into(),
                 launcher: Default::default(),
@@ -180,7 +182,7 @@ fn catalogue_checked_allocation_failures_propagate_instead_of_becoming_success()
             };
         }
     }
-    let replay = Arc::new(Replay::from_records(CAMPAIGN.into(), &[segment]).unwrap());
+    let replay = Arc::new(Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[segment]).unwrap());
     let read = || {
         super::read_resident(
             &replay,
@@ -446,7 +448,9 @@ fn link_tags_contradictory_raw_links_and_conflicting_slots_never_reach_a_scan() 
 
 #[test]
 fn metadata_partial_marker_keeps_the_failure_separate_from_known_and_unknown_hour_gaps() {
-    use replay::{campaign::SeekResult, spool::ControlRecord, spool::Record};
+    use replay::campaign::SeekResult;
+    use replay_recording::control::ControlRecord;
+    use replay_capture_spool::spool::Record;
     use replay_frame::branches::Gap;
     for failed_hour in [Some(1017), None] {
         let mut records = records(1, vec![source(1, 1000, Some(1))]);
@@ -467,7 +471,7 @@ fn metadata_partial_marker_keeps_the_failure_separate_from_known_and_unknown_hou
             session: 1,
             last_hour: Some(1000),
         }));
-        let replay = Arc::new(Replay::from_records(CAMPAIGN.into(), &[records]).unwrap());
+        let replay = Arc::new(Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records]).unwrap());
         let metadata = crate::metadata::read(
             &replay,
             Path::new("partial.battleplan"),
@@ -505,6 +509,7 @@ fn metadata_partial_marker_keeps_the_failure_separate_from_known_and_unknown_hou
     }
     let replay = Arc::new(
         Replay::from_records(
+            recorder_derive::writers(),
             CAMPAIGN.into(),
             &[records(1, vec![source(1, 1000, Some(1))])],
         )
@@ -527,6 +532,7 @@ fn metadata_skips_an_unavailable_first_census_warns_on_bad_links_and_stops_when_
     };
     let replay = Arc::new(
         Replay::from_records(
+            recorder_derive::writers(),
             CAMPAIGN.into(),
             &[records(1, vec![first, source(1, 101, Some(1))])],
         )
@@ -552,7 +558,7 @@ fn metadata_skips_an_unavailable_first_census_warns_on_bad_links_and_stops_when_
     {
         links[1].canonical_slot = 8;
     }
-    let replay = Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, vec![bad])]).unwrap());
+    let replay = Arc::new(Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![bad])]).unwrap());
     let metadata = crate::metadata::read(&replay, path, &AtomicBool::new(false)).unwrap();
     assert!(metadata.countries.is_empty());
     assert!(
@@ -572,13 +578,13 @@ fn a_branch_without_a_complete_census_is_catalogued_from_a_later_block() {
     let path = Path::new("memory.battleplan");
     let flag = AtomicBool::new(false);
     let early =
-        Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first])]).unwrap());
+        Arc::new(Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![first])]).unwrap());
     let previous = crate::metadata::read_resident(&early, path, &flag).unwrap();
     assert!(previous.countries.is_empty());
     assert_eq!(previous.branches[0].catalogue_hour, None);
     let later = Arc::new(
         early
-            .append(&[crate::test_fixtures::continuation_records(
+            .append(recorder_derive::writers(), &[crate::test_fixtures::continuation_records(
                 &early,
                 1,
                 vec![source(1, 101, Some(1))],
@@ -607,7 +613,7 @@ fn metadata_catalogue_lists_every_country_once_across_branches_within_the_reply_
     let branches: Vec<_> = (1..=3)
         .map(|branch| records(branch, vec![scale_frame(branch, 100, COUNTRIES)]))
         .collect();
-    let replay = Arc::new(Replay::from_records(CAMPAIGN.into(), &branches).unwrap());
+    let replay = Arc::new(Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &branches).unwrap());
     let metadata = crate::metadata::read(
         &replay,
         Path::new("scale.battleplan"),
@@ -1008,7 +1014,8 @@ fn a_table_is_read_by_its_slot_or_timing_and_a_deferred_intel_walk_proves_nothin
 
 #[test]
 fn recorded_gap_and_partial_reasons_and_campaign_identity_stay_exact() {
-    use replay::{spool::ControlRecord, spool::Record};
+    use replay_recording::control::ControlRecord;
+    use replay_capture_spool::spool::Record;
     use replay_frame::branches::Gap;
     let campaign = vec![0xa5; 1024 * 1024];
     let reason = "synthetic gap".to_owned() + &"\u{e9}".repeat(1024 * 1024);
@@ -1025,7 +1032,7 @@ fn recorded_gap_and_partial_reasons_and_campaign_identity_stay_exact() {
         reason: reason.clone(),
         failed_hour: None,
     }));
-    let replay = Arc::new(Replay::from_records(campaign.clone(), &[input]).unwrap());
+    let replay = Arc::new(Replay::from_records(recorder_derive::writers(), campaign.clone(), &[input]).unwrap());
     let metadata = super::read(
         &replay,
         Path::new("memory.battleplan"),
@@ -1056,6 +1063,7 @@ fn recorded_gap_and_partial_reasons_and_campaign_identity_stay_exact() {
 #[test]
 fn damage_after_the_initial_catalogue_reports_a_gap_and_preserves_good_data() {
     let recording = Replay::from_records(
+        recorder_derive::writers(),
         CAMPAIGN.into(),
         &[
             records(1, vec![source(1, 100, Some(1))]),
@@ -1100,13 +1108,13 @@ fn malformed_table_after_the_catalogue_is_found_by_playback_not_by_opening() {
         1,
         vec![source(1, 100, Some(1)), source(1, 101, Some(1))],
     );
-    let recording = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&input)).unwrap();
+    let recording = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), std::slice::from_ref(&input)).unwrap();
     let mut malformed = input;
-    let replay::spool::Record::Frame(frame) = &mut malformed[3] else {
+    let replay_capture_spool::spool::Record::Frame(frame) = &mut malformed[3] else {
         unreachable!();
     };
     frame.tables[TableId::Countries.index()] = TableUpdate::Unchanged { baseline: 99 };
-    let replay = Arc::new(Replay::from_records(CAMPAIGN.into(), &[malformed]).unwrap());
+    let replay = Arc::new(Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[malformed]).unwrap());
     let metadata = super::read(
         &replay,
         Path::new("table.battleplan"),
@@ -1421,6 +1429,7 @@ fn country_key_changes_use_field_masks_and_snapshots_keep_full_comparison() {
 fn every_wire_vector_string_and_summary_copy_fails_by_name_under_real_denied_growth() {
     let replay = Arc::new(
         Replay::from_records(
+            recorder_derive::writers(),
             CAMPAIGN.into(),
             &[records(1, vec![source(1, 100, Some(1))])],
         )
@@ -1504,6 +1513,7 @@ fn every_wire_vector_string_and_summary_copy_fails_by_name_under_real_denied_gro
 fn a_restored_wire_vector_without_a_spare_slot_returns_a_named_failure_without_allocating() {
     let replay = Arc::new(
         Replay::from_records(
+            recorder_derive::writers(),
             CAMPAIGN.into(),
             &[records(1, vec![source(1, 100, Some(1))])],
         )

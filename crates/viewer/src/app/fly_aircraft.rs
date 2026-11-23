@@ -1,8 +1,8 @@
 
 use job_priority::SpawnCarried as _;
-use dashboard::protocol::{FlyAircraftState, FlyAircraftStatus};
+use dashboard_core::protocol::{FlyAircraftState, FlyAircraftStatus};
 use std::sync::{Arc, mpsc};
-use viewer_world::map::aircraft::{AircraftAssets, PlayerAircraft};
+use viewer_aircraft::aircraft::{AircraftAssets, PlayerAircraft};
 
 #[derive(Default)]
 pub struct FlyAircraft {
@@ -126,7 +126,7 @@ fn start(
     let spawned = std::thread::Builder::new()
         .name("fly aircraft".into())
         .spawn_carried(move || {
-            viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Normal);
+            viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Normal);
             let _ = send.send(assets.player(&name));
             repaint();
         });

@@ -27,6 +27,9 @@ import { OPTIONS } from './definition';
 import { eventHours, eventsThrough, memberNameHour, selectionName, upgradeLanes } from './upgradesData';
 import type { LaneInfo } from './upgradesData';
 import type { FactionRulesReply } from '../../generated/dashboard';
+import { SPEC, axisAt } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_EVENTS: number[] = [];
@@ -38,14 +41,15 @@ export default function FactionUpgradesWidget({ widget, runtime, active, headerS
   const { groups, pick, tag: viewpointTag, hour: chosenAt } = useChosenFaction(widget, runtime, track, active);
   const displayNames = useFactionDisplayNames(track?.source);
   const faction = pick?.faction ?? null;
-  const reply = useProduct<FactionRulesReply>(runtime.client, track && faction ? { sourceId: track.source.id, revision: track.source.revision, product: 'faction-state',
-    params: { view: 'rules', branchId: track.branch.id, faction: faction.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } } : null, active, undefined, track?.source);
+  const reply = useProduct<FactionRulesReply>(runtime.client, track && faction ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'faction-state',
+    params: { view: 'rules', branchId: track.branch.id, faction: faction.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } }) : null, active, undefined, track?.source);
   const data = reply.data;
   const following = widget.time.mode === 'follow';
-  const { hourAt } = headRead(widget, track, runtime.tracks, null);
+  const { hourAt } = headRead({ widget, action: SPEC }, track, runtime.tracks);
   const events = useMemo(() => data ? eventHours(data) : NO_EVENTS, [data]);
-  const clockHour = useHeadHour(runtime.clock, active && following && !!data, hour => { const at = hourAt(hour); return at === null ? 'outside' : String(eventsThrough(events, at)); });
-  const at = hourAt(following ? clockHour : runtime.clock.getHour()) ?? chosenAt ?? track?.branch.lastHour ?? 0;
+  const clockHour = useHeadHour(runtime.clock, active && following && !!data, hour => { const at = hourAt(axisAt(hour)); return at === null ? 'outside' : String(eventsThrough(events, at)); });
+  const at = hourAt(axisAt(following ? clockHour : runtime.clock.getHour())) ?? chosenAt;
+  const coverage = useRegionCoverage(runtime, useRegion(widget));
   const shown = useShownHour();
   const axisOffset = track?.axisOffset ?? 0;
   const liveHead = useMemo(() => following && active ? { read: () => { const head = runtime.clock.getSnapshot().position + axisOffset; shown(Math.floor(head)); return head; },
@@ -53,7 +57,7 @@ export default function FactionUpgradesWidget({ widget, runtime, active, headerS
   const names = useCountryNamesAt(runtime.client, track, useMemo(() => (data?.members ?? []).flatMap(member => {
     const hour = memberNameHour(member); return hour === null || member.tag === null ? [] : [{ hour, tag: member.tag }]; }), [data]), active);
   const groupNames = useMemo(() => new Map(data?.groups.map(group => [group.group, group.name]) ?? []), [data]);
-  const { lanes, info } = useMemo(() => data ? upgradeLanes(data, at, following, {
+  const { lanes, info } = useMemo(() => data && at !== null ? upgradeLanes(data, at, following, {
     endedProgrammes: options.endedProgrammes !== 'hidden', groupName: group => groupNames.get(group) ?? 'Upgrade group name unavailable',
     country: (tag, hour) => tag === null ? { name: 'Country unavailable' } : nameReadMetadata(names.get(nameKey(hour, tag))) }) : { lanes: [], info: new Map<string, LaneInfo>() },
   [data, at, following, options.endedProgrammes, groupNames, names]);
@@ -78,8 +82,9 @@ export default function FactionUpgradesWidget({ widget, runtime, active, headerS
       ...(run.reason ? [{ label: 'Name', value: 'Unavailable', tone: 'muted' as const }] : []),
     ] };
   }, [info, track]);
-  const header = headerSlot && faction && createPortal(<span className="pill">{factionNameAt(faction, at, displayNames[faction.id])}</span>, headerSlot);
+  const header = headerSlot && faction && at !== null && createPortal(<span className="pill">{factionNameAt(faction, at, displayNames[faction.id])}</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see faction rules." />;
+  if (coverage.outside || at === null) return <WidgetState kind="outside" read={coverage} />;
   const groupFailure = groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (!groups.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading faction rules…" /></>;

@@ -1,19 +1,19 @@
 use super::*;
 use crate::map::scene_failure_tests::Fixture;
-use viewer_foundation::map::camera::Placement;
-use viewer_foundation::map::test_support::TEST_HANG_GUARD;
-use viewer_world::map::map_mode::MapMode;
+use viewer_gpu::camera::Placement;
+use viewer_runtime::test_support::TEST_HANG_GUARD;
+use viewer_map_modes::map_mode::MapMode;
 
 const MAP: [f32; 2] = [640., 480.];
 
-fn target(fixture: &Fixture, id: &str, x: i32) -> dashboard::protocol::DashboardMapView {
-    let bounds = dashboard::protocol::ViewBounds {
+fn target(fixture: &Fixture, id: &str, x: i32) -> dashboard_core::protocol::DashboardMapView {
+    let bounds = dashboard_core::protocol::ViewBounds {
         x,
         y: 0,
         width: MAP[0] as u32,
         height: MAP[1] as u32,
     };
-    dashboard::protocol::DashboardMapView {
+    dashboard_core::protocol::DashboardMapView {
         options: Default::default(),
         id: id.into(),
         source_id: "verified-fixture".into(),
@@ -27,6 +27,7 @@ fn target(fixture: &Fixture, id: &str, x: i32) -> dashboard::protocol::Dashboard
         sequence: 1,
         seek_sequence: Some(1),
         composed_at: 0.0,
+        clock_id: "page-1".into(),
         bounds,
         clip: bounds,
         visible: true,
@@ -39,7 +40,7 @@ fn left(index: usize) -> f32 {
 
 fn pass(
     viewers: &mut [Viewer; 2],
-    targets: &[dashboard::protocol::DashboardMapView; 2],
+    targets: &[dashboard_core::protocol::DashboardMapView; 2],
     ctx: &egui::Context,
     frame: &eframe::Frame,
     events: Vec<egui::Event>,
@@ -286,10 +287,10 @@ fn the_picker_keys_and_toggles_reach_one_map() -> std::io::Result<()> {
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn the_air_and_navy_modes_write_strategic_region_names() -> std::io::Result<()> {
-    use viewer_world::map::map_mode::Stock;
+    use viewer_map_modes::map_mode::Stock;
     let fixture = Fixture::load("viewer-region-names")?;
     let hour = fixture.document.hour()?;
-    let none = viewer_world::map::name_pass::NameAreas::default();
+    let none = viewer_map_text::name_pass::NameAreas::default();
     assert_ne!(hour.name_areas(&MapMode::default())?, none);
     for stock in [Stock::StrategicAir, Stock::StrategicNavy] {
         let areas = hour.name_areas(&MapMode::Stock(stock))?;
@@ -312,7 +313,7 @@ fn the_states_mode_names_its_live_category_or_refuses_the_line() -> std::io::Res
     use viewer_counter_products::map::province_tooltips::{Cache, ModeHover};
     let fixture = Fixture::load("viewer-state-category")?;
     let document = &fixture.document;
-    let crate::playback::Current::Frame(frame) = document.playback.current() else {
+    let viewer_playback::map_source::Current::Frame(frame) = document.playback.current() else {
         panic!("the fixture hour is a gap");
     };
     let province = frame
@@ -357,11 +358,11 @@ fn the_states_mode_names_its_live_category_or_refuses_the_line() -> std::io::Res
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn a_scripted_modes_hover_reads_the_viewer_and_the_hovered_state() -> std::io::Result<()> {
-    use dashboard::scripted_text::{EventObject, EventScope, EventScopes, ScriptedText};
+    use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, ScriptedText};
     use viewer_counter_products::map::province_tooltips::{Cache, ModeHover};
     let fixture = Fixture::load("viewer-scripted-hover")?;
     let document = &fixture.document;
-    let crate::playback::Current::Frame(frame) = document.playback.current() else {
+    let viewer_playback::map_source::Current::Frame(frame) = document.playback.current() else {
         panic!("the fixture hour is a gap");
     };
     let province = frame
@@ -437,7 +438,7 @@ fn the_resistance_hover_shows_the_recorded_strengths() -> std::io::Result<()> {
     use viewer_counter_products::map::province_tooltips::{Cache, ModeHover};
     let fixture = Fixture::load("viewer-resistance-hover")?;
     let document = &fixture.document;
-    let crate::playback::Current::Frame(frame) = document.playback.current() else {
+    let viewer_playback::map_source::Current::Frame(frame) = document.playback.current() else {
         panic!("the fixture hour is a gap");
     };
     let resistance = frame

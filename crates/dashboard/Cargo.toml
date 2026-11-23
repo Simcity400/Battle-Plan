@@ -10,69 +10,54 @@ license.workspace = true
 doctest = false
 
 [features]
-export-types = ["dashboard-base/export-types", "dashboard-intelligence/export-types", "dashboard-research/export-types"]
+export-types = ["dashboard-base/export-types", "dashboard-air/export-types", "dashboard-economy/export-types", "dashboard-intelligence/export-types", "dashboard-land/export-types", "dashboard-naval/export-types", "dashboard-players/export-types", "dashboard-politics/export-types", "dashboard-production/export-types", "dashboard-research/export-types", "dashboard-wars/export-types", "dashboard-world/export-types"]
 
 [dependencies]
-game-model.workspace = true
-dashboard-research.workspace = true
-dashboard-intelligence.workspace = true
-dashboard-base.workspace = true
-dashboard-declare.workspace = true
-dashboard-follow = { path = "../dashboard-follow" }
-playhead = { path = "../playhead" }
-dashboard-query.workspace = true
-replay-columnar.workspace = true
-job-priority.workspace = true
-map-snow.workspace = true
-content-reader-wargoals.workspace = true
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-military.workspace = true
+content-reader-parser.workspace = true
+content-reader-politics.workspace = true
+replay-tools.workspace = true
 replay.workspace = true
-engine-air-history.workspace = true
-engine-fuel.workspace = true
-engine-allocation.workspace = true
-engine-executable.workspace = true
-engine-land-inputs.workspace = true
-engine-intelligence.workspace = true
-engine-native.workspace = true
-engine-resources.workspace = true
-engine-stability.workspace = true
-engine-projects.workspace = true
-content-reader-core.workspace = true
-recording-upgrade.workspace = true
-replay-spool.workspace = true
-shader-pipeline = { path = "../shader-pipeline" }
-content-reader-country-names.workspace = true
-content-reader-division-names.workspace = true
-content-reader-equipment-graphics.workspace = true
-content-reader-events.workspace = true
-content-reader-gfx.workspace = true
-content-reader-image.workspace = true
-content-reader-localisation.workspace = true
-content-reader-province-area.workspace = true
-content-reader-raids.workspace = true
-content-reader-regions.workspace = true
-content-reader-settings.workspace = true
-content-reader-weather.workspace = true
-replay-data.workspace = true
-replay-frame.workspace = true
-replay-looks.workspace = true
-replay-derive.workspace = true
-engine-power-balance.workspace = true
-rayon.workspace = true
-blake3.workspace = true
-dashboard-core.workspace = true
-dashboard-text.workspace = true
-recorder-platform.workspace = true
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
-serde = { workspace = true, features = ["derive", "rc"] }
-serde_json.workspace = true
-rmp-serde.workspace = true
-ts-rs = "11.1"
 base64 = "0.22.1"
-png.workspace = true
+blake3 = { workspace = true }
+content-reader-country-names = { workspace = true }
+content-reader-equipment-graphics = { workspace = true }
+content-reader-wargoals = { workspace = true }
+dashboard-air = { workspace = true }
+dashboard-base = { workspace = true }
+dashboard-core = { workspace = true }
+dashboard-declare = { workspace = true }
+dashboard-economy = { workspace = true }
+dashboard-follow = { path = "../dashboard-follow" }
+dashboard-intelligence = { workspace = true }
+dashboard-land = { workspace = true }
+dashboard-naval = { workspace = true }
+dashboard-players = { workspace = true }
+dashboard-politics = { workspace = true }
+dashboard-production = { workspace = true }
+dashboard-query = { workspace = true }
+dashboard-research = { workspace = true }
+dashboard-effects.workspace = true
+dashboard-text = { workspace = true }
+dashboard-wars = { workspace = true }
+dashboard-world = { workspace = true }
+engine-allocation = { workspace = true }
+engine-executable = { workspace = true }
+engine-heap = { workspace = true }
+job-priority = { workspace = true }
+playhead = { path = "../playhead" }
+recording-upgrade = { workspace = true }
+replay-data = { workspace = true }
+replay-frame = { workspace = true }
+rfd = { workspace = true }
+rmp-serde = { workspace = true }
+serde = { workspace = true, features = ["derive", "rc"] }
+serde_json = { workspace = true }
+ts-rs = "11.1"
 uuid = { workspace = true, features = ["v4"] }
-rfd.workspace = true
-sha2.workspace = true
-engine-heap.workspace = true
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
 zstd = "0.13"
 
 [[bin]]
@@ -86,46 +71,47 @@ name = "dashboard-bridge"
 path = "src/bin/dashboard-bridge.rs"
 
 [dev-dependencies]
-dashboard = { workspace = true, features = ["export-types"] }
-dashboard-base = { workspace = true, features = ["test-support"] }
-engine-research.workspace = true
+content-reader-layers = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["test-support"] }
-content-reader-core = { workspace = true, features = ["test-support"] }
 content-reader-country-names = { workspace = true, features = ["test-support"] }
-content-reader-division-names = { workspace = true, features = ["test-support"] }
 content-reader-equipment-graphics = { workspace = true, features = ["test-support"] }
-content-reader-events = { workspace = true, features = ["test-support"] }
-content-reader-focus = { workspace = true, features = ["test-support"] }
-content-reader-gfx = { workspace = true, features = ["test-support"] }
-content-reader-image = { workspace = true, features = ["test-support"] }
-content-reader-localisation = { workspace = true, features = ["test-support"] }
-content-reader-province-area = { workspace = true, features = ["test-support"] }
-content-reader-regions = { workspace = true, features = ["test-support"] }
-content-reader-settings = { workspace = true, features = ["test-support"] }
-content-reader-states = { workspace = true, features = ["test-support"] }
+content-reader-wargoals = { workspace = true, features = ["test-support"] }
+dashboard = { workspace = true, features = ["export-types"] }
+dashboard-air = { workspace = true, features = ["test-support"] }
+dashboard-base = { workspace = true, features = ["test-support"] }
+dashboard-core = { workspace = true, features = ["test-support"] }
+dashboard-land = { workspace = true, features = ["test-support"] }
+dashboard-politics = { workspace = true, features = ["test-support"] }
+dashboard-text = { workspace = true, features = ["test-support"] }
+dashboard-wars = { workspace = true, features = ["test-support"] }
+engine-heap = { workspace = true }
+playhead = { path = "../playhead", features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }
-recorder-derive = { workspace = true, features = ["test-support"] }
-dashboard-core = { workspace = true, features = ["test-support"] }
-dashboard-text = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true
 
 # Generated by tools/check-feature-unification.py --fix (do not edit): the features
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
+content-reader-politics = { workspace = true, features = ["test-support"] }
 content-reader-weather = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
-playhead = { path = "../playhead", features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+engine-native = { workspace = true, features = ["batch-fallback-test-counts", "layout-fixtures", "test-support"] }
+recorder-derive = { workspace = true, features = ["test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
-shader-pipeline = { path = "../shader-pipeline", features = ["test-support"] }
+replay-tools = { workspace = true, features = ["default", "journal"] }
+shader-pipeline = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-bitflags-2 = { workspace = true }
-unify-either = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-log = { workspace = true }
-unify-num-traits = { workspace = true }
 unify-once_cell = { workspace = true }
 unify-smallvec = { workspace = true }
 unify-wgpu = { workspace = true }
@@ -133,6 +119,3 @@ unify-winapi-util = { workspace = true }
 unify-windows = { workspace = true }
 unify-windows-core = { workspace = true }
 uuid = { version = "1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }
-
-[lints]
-workspace = true

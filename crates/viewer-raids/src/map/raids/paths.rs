@@ -5,15 +5,12 @@ use std::{
     fmt,
     sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak},
 };
-use viewer_foundation::debug_fields;
+use viewer_runtime::debug_fields;
 
 pub(crate) const NAVAL_BASE: u8 = engine_native::craid_source::KIND_NAVAL_BASE as u8;
 pub(crate) const BUILDING: u8 = engine_native::craid_source::KIND_BUILDING as u8;
 
-use content_reader_core::{
-    province_geometry::ProvinceGeometry, province_graph::ProvinceGraph, province_graph::RaidPath,
-    province_graph::raid_distance,
-};
+use content_reader_map::{province_geometry::ProvinceGeometry, province_graph::{ProvinceGraph, RaidPath, raid_distance}};
 use replay_data::{
     rows::RaidPathDispatcher, rows::RaidPathDistanceRow, rows::RaidScope, rows::tables,
 };
@@ -385,7 +382,7 @@ impl<'a> Distances<'a> {
 pub struct HourPaths<'a> {
     assets: &'a RaidAssets,
     distances: Distances<'a>,
-    reach: viewer_foundation::map::movement_reads::Cells,
+    reach: viewer_unit_reads::movement_reads::Cells,
 }
 
 impl<'a> HourPaths<'a> {
@@ -393,7 +390,7 @@ impl<'a> HourPaths<'a> {
         Self {
             assets,
             distances: Distances::new(assets, frame),
-            reach: viewer_foundation::map::movement_reads::Cells::default(),
+            reach: viewer_unit_reads::movement_reads::Cells::default(),
         }
     }
 }
@@ -426,7 +423,7 @@ impl super::launch::RaidPaths for HourPaths<'_> {
     }
 
     fn army_reaches(&self, world: &World<'_>, division: u64, source_province: u32) -> Eval {
-        viewer_foundation::map::movement_reads::Moves::new(
+        viewer_unit_reads::movement_reads::Moves::new(
             world,
             self.assets.movement_reads(),
             &self.reach,
@@ -451,8 +448,8 @@ impl HourPaths<'_> {
     pub fn moves<'s, 'w>(
         &'s self,
         world: &'s World<'w>,
-    ) -> viewer_foundation::map::movement_reads::Moves<'s, 'w> {
-        viewer_foundation::map::movement_reads::Moves::new(
+    ) -> viewer_unit_reads::movement_reads::Moves<'s, 'w> {
+        viewer_unit_reads::movement_reads::Moves::new(
             world,
             self.assets.movement_reads(),
             &self.reach,
@@ -521,7 +518,7 @@ impl super::launch::RaidPaths for PartPaths<'_, '_> {
     }
 
     fn army_reaches(&self, world: &World<'_>, division: u64, source_province: u32) -> Eval {
-        viewer_foundation::map::movement_reads::Moves::new(
+        viewer_unit_reads::movement_reads::Moves::new(
             world,
             self.hour.assets.movement_reads(),
             &self.hour.reach,

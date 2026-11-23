@@ -10,7 +10,7 @@ mod rule;
 mod stakeholders;
 pub(crate) use owner::OWNER_INFO_MODIFIERS;
 
-pub(crate) fn icon_modifier_names(windows: &viewer_foundation::map::native_windows::NativeWindows) -> Vec<String> {
+pub(crate) fn icon_modifier_names(windows: &viewer_native_gui::native_windows::NativeWindows) -> Vec<String> {
     windows.gui_type(WINDOW).map(province::icon_modifier_names).unwrap_or_default()
 }
 
@@ -22,14 +22,13 @@ pub(super) fn hour_temperature(content: &Content, frame: &DecodedFrame, rows: &[
         .province_hover
         .temperature_at(frame, rows, province)
 }
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{Recorded, tables};
 use replay_frame::frame::DecodedFrame;
 use std::io;
-use viewer_foundation::{
-    combat_selection::Selection, map::perspective::Vision, tooltip_text::displayable,
-};
+use viewer_engagements::combat_selection::Selection;
+use viewer_foundation::{perspective::Vision, tooltip_text::displayable};
 
 pub(super) const WINDOW: &[u8] = b"countrystateview";
 
@@ -289,7 +288,7 @@ mod tests {
 
     #[test]
     fn withheld_controls_hide_wherever_a_mod_nests_them_and_count_once() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let gui = native::read(
             b"guiTypes={containerWindowType={name=countrystateview containerWindowType={name=moved gridBoxType={name=state_shared_slot_building_entries}} instantTextboxType={name=state_name} containerWindowType={name=province_info_window iconType={name=province_building_entries} iconType={name=province_custom_icon_building_entries}}}}",
         );

@@ -264,8 +264,8 @@ fn composition(frame: &mut DecodedFrame, unreadable: u8) {
 }
 
 fn rendered_with_sub_units(frame: &DecodedFrame) -> Tooltip {
-    let mut units = content_reader_core::unit_leader::SubUnits::default();
-    engine_executable::executable_tables::scope(Some(content_reader_core::test_game::tables()), || {
+    let mut units = content_reader_script::sub_units::SubUnits::default();
+    engine_executable::executable_tables::scope(Some(content_reader_script::test_game::tables()), || {
         units.read(
             b"sub_units={ marine={special_forces=yes type=infantry} infantry={type=infantry} }",
             "common/units/test.txt",
@@ -573,4 +573,48 @@ fn shared_membership_and_country_roots_replace_blanket_counter_refusals() {
     ] {
         assert!(!refused(&out, line), "{line}: {:?}", out.refused);
     }
+}
+
+#[test]
+fn zero_supply_days_attrition_uses_exact_operands_and_proves_historical_threshold() {
+    let mut frame = frame(5, 0, vec![]);
+    put(
+        &mut frame,
+        TableRows::SimulationFeatures(vec![SimulationFeatureRow {
+            movement_defines: Recorded::Value(MovementDefines {
+                supply_days: Some(0),
+                supply_grace: Some(72),
+                out_of_supply_speed: Some(-80_000),
+                out_of_supply_attrition: Some(20_000),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]),
+    );
+    status(&mut frame).out_of_supply_days = Recorded::Value(Some(0));
+    status(&mut frame).supply_ratio = None;
+    status(&mut frame).supply_ratio_exact = Recorded::Value(Some(10_500));
+    status(&mut frame).supply_grace_exact = Recorded::Value(Some(0));
+    let exact = rendered(&frame);
+    assert!(!refused(&exact, "attrition supply"), "{:?}", exact.refused);
+    assert!(exact.title.contains("supply "), "{}", exact.title);
+    status(&mut frame).supply_ratio = Some(35_000);
+    status(&mut frame).supply_ratio_exact = Recorded::Value(None);
+    status(&mut frame).supply_grace_exact = Recorded::Value(None);
+    let historical_proven = rendered(&frame);
+    assert!(
+        !refused(&historical_proven, "attrition supply"),
+        "{:?}",
+        historical_proven.refused
+    );
+    assert!(!historical_proven.title.contains("supply "), "{}", historical_proven.title);
+    status(&mut frame).supply_ratio = Some(34_000);
+    let historical_refused = rendered(&frame);
+    assert!(
+        historical_refused.refused.keys().any(|key| key.contains(
+            replay_derive::eta_derive::frame_terms::SUPPLY_DAYS_ZERO
+        )),
+        "{:?}",
+        historical_refused.refused
+    );
 }

@@ -31,6 +31,7 @@ type Declare = Box<dyn Fn(Vec<Declared>, bool) -> io::Result<()> + Send + Sync>;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StepStats {
     pub epoch: u64,
+    pub session: u64,
     pub first: Hour,
     pub last: Hour,
     pub reset: bool,
@@ -89,6 +90,7 @@ struct Control {
     declare: Option<Declare>,
     logs: Option<LogReads>,
     classes: BTreeMap<usize, bool>,
+    session: u64,
 }
 
 type ProductHook = Arc<dyn Fn(&Step, &Lanes<'_>) + Send + Sync>;
@@ -123,7 +125,7 @@ impl Follow {
                 products: Mutex::default(),
                 page_seek: Mutex::default(),
                 route: next_route(),
-                control: Mutex::new(Control { products: BTreeMap::new(), ops: Vec::new(), followed: BTreeMap::new(), declare: None, logs: None, classes: BTreeMap::new() }),
+                control: Mutex::new(Control { products: BTreeMap::new(), ops: Vec::new(), followed: BTreeMap::new(), declare: None, logs: None, classes: BTreeMap::new(), session: 0 }),
                 report: Mutex::default(),
             }),
         }
@@ -179,6 +181,10 @@ impl Follow {
         control.followed.insert(id, Reads { table: query.table(), columns: query.declared(), appended: query.appended(), listed: query.listed() });
         control.ops.push(Op::Follow(id, Box::new(query)));
         redeclare(&mut control, true)
+    }
+
+    pub fn serve(&self, session: u64) {
+        lock(&self.shared.control).session = session;
     }
 
     pub fn unfollow(&self, id: u32) -> io::Result<()> {
@@ -263,6 +269,7 @@ struct Followed {
     pending: Vec<u8>,
     has_pending: bool,
     pending_hour: Hour,
+    pending_held: u32,
     queued: bool,
     live: LiveRows,
     ranking: evaluate::Ranking,
@@ -313,6 +320,7 @@ struct Index {
     ordered: Option<Vec<(u128, u32)>>,
     until: Hour,
     status: Option<Status>,
+    withheld: bool,
 }
 
 impl Index {
@@ -501,6 +509,7 @@ fn queue_body(followed: &mut Followed, query: usize, body: &mut Vec<u8>, hour: H
     mem::swap(&mut followed.pending, body);
     followed.has_pending = true;
     followed.pending_hour = hour;
+    followed.pending_held = 0;
     if !followed.queued {
         followed.queued = true;
         queue.push(query);
@@ -544,7 +553,8 @@ impl Engine {
     fn step(&mut self, step: &Step, lanes: &Lanes<'_>) {
         let start = Instant::now();
         let mut stats = StepStats { epoch: step.epoch(), first: step.first(), last: step.last(), reset: step.reset(), gap: step.gap(), ..StepStats::default() };
-        let changed = self.apply_ops();
+        let (changed, session) = self.apply_ops();
+        stats.session = session;
         if step.reset() {
             self.resend(step.last());
         }
@@ -554,6 +564,7 @@ impl Engine {
             for changes in step.tables() {
                 self.touch(changes, lanes, step.reset());
             }
+            self.check_withheld(lanes);
             lanes.iter().for_each(|lane| self.reasons.learn(lane));
             self.follow_holders(lanes);
             self.activate(lanes, &mut stats);
@@ -584,8 +595,11 @@ impl Engine {
         (self.sink)(&stats, message);
     }
 
-    fn apply_ops(&mut self) -> bool {
-        let ops = mem::take(&mut lock(&self.shared.control).ops);
+    fn apply_ops(&mut self) -> (bool, u64) {
+        let (ops, session) = {
+            let mut control = lock(&self.shared.control);
+            (mem::take(&mut control.ops), control.session)
+        };
         let changed = !ops.is_empty();
         for op in ops {
             match op {
@@ -596,7 +610,7 @@ impl Engine {
                 Op::Unfollow(id) => self.remove(id),
             }
         }
-        changed
+        (changed, session)
     }
 
     fn resend(&mut self, hour: Hour) {
@@ -633,6 +647,7 @@ impl Engine {
             pending: Vec::new(),
             has_pending: false,
             pending_hour: 0,
+            pending_held: 0,
             queued: false,
             live: LiveRows::default(),
             ranking: evaluate::Ranking::default(),
@@ -712,7 +727,7 @@ impl Engine {
             }
             followed.phase = Phase::Active;
             let head = evaluate::head(lane);
-            let index = self.tables.entry(followed.table).or_insert_with(|| Index { until: Hour::MAX, status: Some(lane.status().0), ..Index::default() });
+            let index = self.tables.entry(followed.table).or_insert_with(|| Index { until: Hour::MAX, status: Some(lane.status().0), withheld: lane.withheld().is_some(), ..Index::default() });
             index.queries.push(query);
             let keyed = match &followed.query {
                 Query::Cells { rows: Rows::Keys(keys) | Rows::Live(keys), .. } => {
@@ -771,6 +786,7 @@ impl Engine {
         let (slab, marked) = (&mut self.slab, &mut self.marked);
         if changes.reset() {
             index.status = Some(lane.status().0);
+            index.withheld = lane.withheld().is_some();
             index.forget_slots();
             for &query in &index.standing {
                 relist(&self.shared, slab[query].as_mut().expect("a followed list"), lane);
@@ -929,6 +945,18 @@ impl Engine {
         }
     }
 
+    fn check_withheld(&mut self, lanes: &Lanes<'_>) {
+        let (slab, marked) = (&mut self.slab, &mut self.marked);
+        for (&table, index) in &mut self.tables {
+            let Some(lane) = lanes.get(table) else { continue };
+            let withheld = lane.withheld().is_some();
+            if index.withheld != withheld {
+                index.withheld = withheld;
+                index.queries.iter().for_each(|&query| mark_all(slab, marked, query));
+            }
+        }
+    }
+
     fn fill(&mut self) {
         for index in self.tables.values() {
             for &query in &index.standing {
@@ -1030,7 +1058,9 @@ impl Engine {
                     live_rows::Answer::Same => followed.has_pending = false,
                     live_rows::Answer::Body => {
                         stats.changed += 1;
+                        let changed = self.body.first() == Some(&answer::CHANGED);
                         queue_body(followed, query, &mut self.body, evaluate::head(lane), &mut self.queue);
+                        if changed { followed.pending_held = followed.live.whole(); }
                     }
                 }
                 continue;
@@ -1109,7 +1139,7 @@ impl Engine {
                 }
                 &followed.pending
             };
-            answer::push(&mut self.message, followed.id, followed.pending_hour, body);
+            answer::push_held(&mut self.message, followed.id, followed.pending_hour, body, if followed.query.appended() { 0 } else { followed.pending_held });
             stats.sent += 1;
             followed.queued = false;
             if followed.query.appended() && followed.phase != Phase::Refused {

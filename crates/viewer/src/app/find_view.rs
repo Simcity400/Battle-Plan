@@ -6,14 +6,14 @@ use engine_executable::executable_tables::folding::FoldingTable;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use map_display_data::landscape::{LabelName, Labels};
-use viewer_playback::layers::labels::Stamped;
+use viewer_layers_political::labels::Stamped;
 use std::{collections::BTreeMap, sync::Arc};
 use viewer_combat::find_view::{
     Control, EditKey, Field, FindView,
     index::{Entry, Fold, Index, Target, UNFOLDED_NAMES},
 };
-use viewer_foundation::map::camera::Camera;
-use viewer_foundation::map::camera::motion::Floor;
+use viewer_gpu::camera::Camera;
+use viewer_gpu::camera::motion::Floor;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Key {
@@ -176,7 +176,7 @@ fn drawn_labels(drawn: Option<&Stamped>, ours: u32, branch: replay_data::BranchI
 
 fn victory_point_entries(
     labels: &Labels,
-    defines: &viewer_world::map::labels::LabelDefines,
+    defines: &viewer_map_icons::labels::LabelDefines,
     refused: &mut BTreeMap<String, usize>,
 ) -> Vec<Entry> {
     labels
@@ -197,9 +197,9 @@ fn victory_point_entries(
             let side = candidate
                 .controller
                 .and_then(|slot| labels.allegiances.get(&slot).copied())
-                .unwrap_or(viewer_foundation::map::allegiance::Allegiance::Other.index());
+                .unwrap_or(viewer_foundation::allegiance::Allegiance::Other.index());
             let shape =
-                viewer_world::map::labels::shape_group(false, candidate.victory_points, defines);
+                viewer_map_icons::labels::shape_group(false, candidate.victory_points, defines);
             let frame_number = shape * 5 + side + 1;
             Some(Entry {
                 display: format!("{} {name}", viewer_combat::find_view::victory_point_icon(frame_number)),
@@ -279,7 +279,7 @@ pub(crate) fn dump(
     let state = viewer_combat::find_view::State { text: query, query, caret: None, results: &results, fingerprint: results.len() as u64 };
     let mut drawn = viewer_combat::Drawn::default();
     let mut window_refused = BTreeMap::new();
-    let extent = viewer_foundation::map::ui_scale::extent(options.size, options.ui_scale.unwrap_or(1.0));
+    let extent = viewer_gpu::ui_scale::extent(options.size, options.ui_scale.unwrap_or(1.0));
     FindView::default()
         .draw(&document.combat, &state, extent, false, options.presentation_time, true, None, &mut drawn, &mut window_refused)
         .map_err(|e| e.to_string())?;
@@ -409,10 +409,10 @@ mod tests {
     fn the_index_key_and_its_labels_are_the_frame_it_is_built_over() {
         let labels = Arc::new(Labels::default());
         let drawn = Stamped { labels: Arc::clone(&labels), ours: 3, branch: 1, hours: 40..=44 };
-        let (key, taken) = key_of(&viewer_foundation::map::test_support::test_frame(44), 3, Some(&drawn));
+        let (key, taken) = key_of(&viewer_foundation::test_support::test_frame(44), 3, Some(&drawn));
         assert_eq!((key.branch, key.hour, key.ours, key.labels), (1, 44, 3, Ok(Arc::as_ptr(&labels) as usize)));
         assert!(taken.is_ok_and(|taken| Arc::ptr_eq(&taken, &labels)));
-        let (key, taken) = key_of(&viewer_foundation::map::test_support::test_frame(45), 3, Some(&drawn));
+        let (key, taken) = key_of(&viewer_foundation::test_support::test_frame(45), 3, Some(&drawn));
         assert_eq!((key.hour, key.labels), (45, Err(LABELS_LOADING)), "a frame published after the labels: the rename is not in them");
         assert_eq!(taken.err(), Some(LABELS_LOADING));
     }
@@ -488,8 +488,8 @@ mod tests {
             ]),
             allegiances: BTreeMap::from([(1, 2)]),
         };
-        use viewer_foundation::map::mode_visibility::{PriorityIcon, Priorities};
-        let defines = viewer_world::map::labels::LabelDefines {
+        use viewer_foundation::mode_visibility::{PriorityIcon, Priorities};
+        let defines = viewer_map_icons::labels::LabelDefines {
             after: vec![0.0, 9.0, 20.0],
             dot_cutoff: [0.0; 2],
             text_cutoff: [0.0; 2],
@@ -505,7 +505,7 @@ mod tests {
             entries[0].display,
             format!(
                 "{}onmap_victorypoints_strip|8 Roma",
-                viewer_foundation::map::native_text::ICON
+                viewer_native_gui::native_text::ICON
             )
         );
         entries.insert(

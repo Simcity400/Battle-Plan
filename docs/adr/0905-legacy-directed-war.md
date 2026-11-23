@@ -4,4 +4,4 @@ Recordings through format 101 can store exact directed-war cells in `CountryCoun
 
 The native test uses the resolved slot, including zero. A null slot-zero war pointer or a retired relation is false. A complete writer-witnessed active domain allows a false cell to be omitted. A partial read without a cell leaves the answer unknown. Receiver zero can reuse the recorded reverse-visibility war value. Bounds checks and binary searches suffice after admission, including for repeated queries.
 
-[Historical directed-war packet](../../crates/replay-rows/src/extended_rows/directed_war.rs)
+[Historical directed-war packet](../../crates/replay-rows-presentation/src/directed_war.rs)

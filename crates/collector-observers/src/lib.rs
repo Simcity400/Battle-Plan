@@ -18,6 +18,7 @@ pub mod area_changes;
 pub mod building_bombing;
 pub mod census_changes;
 pub mod character_changes;
+pub mod combat_engagement_refreshes;
 pub mod country_input_changes;
 pub mod doctrine_changes;
 pub mod crew_changes;
@@ -68,6 +69,7 @@ static TEST_THREAD_STACK: unsafe extern "C" fn() = collector_test_support::reser
 
 pub mod wargoal_changes;
 pub mod division_panel_changes;
+pub mod variant_stat_witness;
 
 fn verified(base: usize, key: engine_sites::Rva) -> Result<(), &'static str> {
     engine_sites::hook(base, key)?.sentinel::<16>().map(drop)

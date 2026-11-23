@@ -10,4 +10,4 @@ A halted native capture makes later hours gaps naming that reason, with no repea
 
 The collector leases the history file while recording. For a checkpoint it lets the recorder append the closed journal segments, then retakes the file. A session close must refer to the load the collector is on, and a segment becomes settled only when no writer can append to it. Wait for work already queued to reach the journals before exposing their contents to a reader. History requests carry a correlation token and return a token-matched acknowledgment or a named refusal. A context that failed to close is returned to the capture side once.
 
-[Spool processing and history handoff](../../crates/collector/src/spooling.rs) · [Write-behind recovery tests](../../crates/collector/src/spooling/write_behind_tests.rs)
+[Spool processing and history handoff](../../crates/collector-spool/src/spooling.rs) · [Write-behind recovery tests](../../crates/collector-spool/src/spooling/write_behind_tests.rs)

@@ -6,4 +6,4 @@ The history worker handles request I/O. It hands close and release commands to t
 
 The recorder supplies scripted map demand before attachment. The collector keeps the demand fixed for the session. If a table encounters a withheld game site, subsequent frames report the withheld site by name instead of carrying rows taken without it.
 
-[History mailbox](../../crates/collector/src/runtime/history_requests.rs) · [Scripted map demand](../../crates/collector/src/scripted_maps.rs) · [Table withholding](../../crates/collector/src/site_withholding.rs)
+[History mailbox](../../crates/collector-runtime/src/runtime/history_requests.rs) · [Scripted map demand](../../crates/collector-states/src/scripted_maps.rs) · [Table withholding](../../crates/collector-spool/src/site_withholding.rs)

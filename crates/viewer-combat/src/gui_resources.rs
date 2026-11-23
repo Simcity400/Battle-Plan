@@ -1,11 +1,11 @@
 use super::{Assets, Values, binding::Bindings, gui::CombatResources};
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use content_reader_localisation::localisation::Localisation;
 use std::collections::{BTreeMap, BTreeSet};
-use viewer_foundation::map::native_flags::resolved_flag_cell;
-use viewer_foundation::map::native_flags::resolved_text_flag as native_flags_resolved_text_flag;
-use viewer_foundation::map::native_windows::NativeWindows;
-use viewer_foundation::map::{
+use viewer_native_gui::native_flags::resolved_flag_cell;
+use viewer_native_gui::native_flags::resolved_text_flag as native_flags_resolved_text_flag;
+use viewer_native_gui::native_windows::NativeWindows;
+use viewer_native_gui::{
     lazy_icons::LazyFlags,
     native_effects::Effect,
     native_gui::{self, Resources, Sheets, SpriteInfo, Texture},
@@ -121,7 +121,7 @@ impl CombatResources for GuiResources<'_> {
     fn line_chart(
         &self,
         sprite: &[u8],
-    ) -> Result<(viewer_foundation::map::native_shader::draw::Effect, f32), String> {
+    ) -> Result<(viewer_native_gui::native_shader::draw::Effect, f32), String> {
         let facts = self
             .assets
             .gui
@@ -137,7 +137,7 @@ impl CombatResources for GuiResources<'_> {
             .ok_or("line chart sprite was not loaded")?;
         let effect = info.effect.as_ref().map_err(Clone::clone)?;
         Ok((
-            viewer_foundation::map::native_shader::draw::Effect {
+            viewer_native_gui::native_shader::draw::Effect {
                 asset: effect
                     .compiled
                     .clone()

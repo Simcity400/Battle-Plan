@@ -18,8 +18,10 @@ pub const CELLS: u32 = 1 << 31;
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
-pub fn cells_id() -> u32 {
-    CELLS | (NEXT.fetch_add(1, Ordering::Relaxed) & !CELLS)
+pub fn cells_id(lane: u32, lanes: u32) -> u32 {
+    let lanes = lanes.max(1);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed) % (!CELLS / lanes);
+    CELLS | (n * lanes + lane % lanes)
 }
 
 pub const NO_ROW: &str = "No live row has this key";
@@ -118,12 +120,34 @@ impl Live {
                         CellValue::Number(number) => json!(number),
                         CellValue::Missing(reason) => json!(reason),
                     }).collect::<Value>();
+                let raw_values_json = |values: &[CellValue]| {
+                    values
+                        .iter()
+                        .any(|value| matches!(value, CellValue::Number(number) if number.unsigned_abs() >= 1 << 53))
+                        .then(|| {
+                            values
+                                .iter()
+                                .map(|value| match value {
+                                    CellValue::Number(number) if number.unsigned_abs() >= 1 << 53 => json!(number.to_string()),
+                                    _ => Value::Null,
+                                })
+                                .collect::<Value>()
+                        })
+                };
                 let (name, value) = match state {
-                    GroupState::Values(values) => ("values", values_json(values)),
+                    GroupState::Values(values) => {
+                        if let Some(raw) = raw_values_json(values) {
+                            out["rawValues"] = raw;
+                        }
+                        ("values", values_json(values))
+                    }
                     GroupState::Follow(id) => ("follow", json!(id)),
                     GroupState::Seeded { follow, hour, values } => {
                         out["seedHour"] = json!(hour);
                         out["values"] = values_json(values);
+                        if let Some(raw) = raw_values_json(values) {
+                            out["rawValues"] = raw;
+                        }
                         ("follow", json!(follow))
                     }
                     GroupState::Unavailable(reason) => ("unavailable", json!(reason)),
@@ -294,5 +318,37 @@ impl Cells {
             }
         }
         Live { groups, rows, kinds, cells: flat }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_values_carry_exact_raw_strings_only_for_unsafe_64_bit_integers() {
+        let cells = Cells::default();
+        cells.value("a", "total", Source { table: TableId::EquipmentLossTotals, column: 0, key: 1 }, 1.0);
+        cells.value("b", "total", Source { table: TableId::EquipmentLossTotals, column: 0, key: 2 }, 1.0);
+        cells.value("c", "total", Source { table: TableId::EquipmentLossTotals, column: 0, key: 3 }, 1.0);
+        let live = cells.finish();
+
+        let safe = live.json(&[GroupState::Values(vec![
+            CellValue::Number((1_i64 << 53) - 1),
+            CellValue::Number(-((1_i64 << 53) - 1)),
+            CellValue::Missing(NO_ROW.to_owned()),
+        ])]);
+        assert!(safe["groups"][0].get("rawValues").is_none(), "safe integers omit rawValues: {safe}");
+
+        let unsafe_json = live.json(&[GroupState::Values(vec![
+            CellValue::Number(9_007_199_254_740_993),
+            CellValue::Number(42),
+            CellValue::Missing(NO_ROW.to_owned()),
+        ])]);
+        assert_eq!(
+            unsafe_json["groups"][0]["rawValues"],
+            json!(["9007199254740993", null, null]),
+            "unsafe 64-bit integers must include exact rawValues strings"
+        );
     }
 }

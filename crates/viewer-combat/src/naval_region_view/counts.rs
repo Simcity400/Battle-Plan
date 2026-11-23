@@ -3,7 +3,8 @@ use crate::binding::Bindings;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, HashMap};
-use viewer_foundation::map::{count_math, perspective::Vision};
+use viewer_runtime::count_math;
+use viewer_foundation::perspective::Vision;
 
 const SHIP_SALT: u32 = 0x8b;
 

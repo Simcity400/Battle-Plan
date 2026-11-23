@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartData, ChartLayer } from '../../charts/TimeChart';
@@ -22,12 +24,12 @@ import { useHolderLooks } from '../../dashboard/holderLooks';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { FollowedText } from '../../dashboard/follow/FollowedText.tsx';
 import { liveFollowed } from '../../dashboard/follow/liveFollowed.ts';
 import { shownThrough } from '../../dashboard/follow/store.ts';
 import type { FollowEntry } from '../../dashboard/follow/store';
-import { followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { useProduct } from '../../dashboard/products';
 import { useTiles } from '../../dashboard/tiles/useTiles';
 import { useHeadHour } from '../army-size/headHour.ts';
@@ -39,6 +41,7 @@ import { apmFromSort, apmHeadQuery, apmHeadRows, apmHeadStructure, apmHolders, a
 import { DEFAULT_SORT } from './definition';
 import { useApm, useApmRegistry } from './useApm';
 import { useChangedState } from '../../dashboard/changedState.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_ROWS: readonly ApmSeries[] = [];
 const NO_TAGS: readonly string[] = [];
@@ -55,8 +58,7 @@ function tiledBin(summary: ChartSummary | undefined, hour: number): ChartBucket 
 export function ApmWidget(props: WidgetProps & { graph: boolean }) {
   const { graph, runtime, active, widget, setOption, onDiagnostics } = props;
   const [view, setView] = useChangedState<{ identity: string; from: number; to: number; width: number } | null>(null);
-  const [headFollowed, setHeadFollowed] = useState(false);
-  const query = useApm(props, graph, view, headFollowed);
+  const query = useApm(props, graph, view, widget.time.mode === 'follow' && active);
   const { data, track, options, first, last } = query;
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
@@ -64,13 +66,14 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
   const paused = options.showPausedActions === true;
   const players = options.group === 'player';
   const following = widget.time.mode === 'follow';
+  const gate = useGate(runtime, widget, SPEC, active);
 
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const headKey = query.head ? JSON.stringify(query.head) : null;
-  const headQuery = useMemo(() => following && active && track && query.head ? apmHeadQuery(query.head, track.branch, TRAILING_HOURS) : null,
-    [following, active, track?.branch.id, track?.branch.firstHour, track?.branch.lastHour, headKey]);
+  const headQuery = useMemo(() => following && active && track && query.head ? gate.follow(apmHeadQuery(query.head, track.branch, TRAILING_HOURS)) : null,
+    [following, active, track?.branch.id, track?.branch.firstHour, track?.branch.lastHour, headKey, gate.follow]);
   const woken = useMemo(() => new Set<() => void>(), []);
   const shown = useShownHour();
   const followed = useFollow(store, headQuery, root, useCallback((entry: FollowEntry) => {
@@ -78,20 +81,21 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
     shown(shownThrough(entry));
   }, [woken, shown]));
   const headEntry = followsHead(followed) ? followed.entry : null;
-  useLayoutEffect(() => setHeadFollowed(headEntry !== null), [headEntry]);
+  const refused = followRefusal(followed);
   const entryRef = useRef(headEntry); entryRef.current = headEntry;
   useHeadHour(runtime.clock, headEntry !== null && !graph, () => apmHeadStructure(entryRef.current?.answer), woken);
   const headStructure = headEntry && !graph ? apmHeadStructure(headEntry.answer) : null;
   const headRows = useMemo(() => headEntry ? apmHeadRows(headEntry.answer) : null, [headEntry, headStructure]);
   const headRefused = headEntry?.answer?.kind === 'notRecorded' ? headEntry.answer.reason : null;
-  const live = useMemo(() => store && headEntry ? liveFollowed(store, headEntry, entry => apmLiveValues(entry.answer)) : undefined, [store, headEntry]);
+  const live = useMemo(() => store && headEntry ? liveFollowed(headEntry, entry => apmLiveValues(entry.answer)) : undefined, [store, headEntry]);
   const current = (row: ApmSeries): ApmValue => (entryRef.current ? apmHeadRows(entryRef.current.answer).find(held => held.id === row.id)?.summary : undefined) ?? row.summary;
 
   const tiled = graph && headEntry !== null;
-  const branchSeries = useProduct<ApmReply>(runtime.client, tiled && track && query.head ? { sourceId: track.source.id, revision: track.source.revision, product: 'player-apm',
-    params: { ...query.head, registry: false, firstHour: track.branch.firstHour, lastHour: track.branch.lastHour, buckets: 1 } } : null, active, validateApm, track?.source);
+  const branchSpan = track ? gate.span(track.branch.firstHour, track.branch.lastHour) : null;
+  const branchSeries = useProduct<ApmReply>(runtime.client, tiled && track && query.head && branchSpan ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'player-apm',
+    params: { ...query.head, registry: false, ...branchSpan, buckets: 1 } }) : null, active, validateApm, track?.source);
   const ids = useMemo(() => branchSeries.data?.series.map(series => series.id) ?? [], [branchSeries.data]);
-  const tileSeries = (value: string) => tiled && track && query.head && ids.length ? { source: track.source, branchId: track.branch.id, lastHour: track.branch.lastHour, tags: ids,
+  const tileSeries = (value: string) => tiled && track && query.head && ids.length ? { source: track.source, span: gate.span, branchId: track.branch.id, lastHour: track.branch.lastHour, tags: ids,
     family: { kind: 'player-apm', group: query.head.group, tags: query.head.tags, membership: query.head.membership, players: query.head.players, value } } : null;
   const rates = useTiles(runtime.client, tileSeries('apm'), active, true);
   const pausedRates = useTiles(runtime.client, paused ? tileSeries('pausedOrders') : null, active, true);
@@ -192,7 +196,8 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
 
   const body = (() => {
     if (!track) return <WidgetState kind="empty" icon="chart-bars" message="Load a campaign to see eAPM." />;
-    if (!query.window || first == null || last == null || first > last) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    if (refused) return <WidgetState kind="unavailable" message={refused} />;
+    if (!query.window || first == null || last == null || first > last) return <WidgetState kind="outside" />;
     if (query.groups.error && widget.countries.kind === 'group') return <WidgetState kind="error" failure={query.groups.error} onRetry={query.groups.retry} />;
     if (query.reason && !headEntry) return <WidgetState kind="unavailable" message={query.reason} />;
     if (players && registry.error) return <WidgetState kind="error" failure={registry.error} onRetry={registry.retry} />;
@@ -246,7 +251,7 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
         }} />
     </div><Legend label="eAPM" always items={lines.map(line => ({ id: line.row.id, label: label(line.row), color: line.color,
       value: headEntry && store
-        ? <FollowedText store={store} entry={headEntry} write={(entry, cell) => {
+        ? <FollowedText entry={headEntry} write={(entry, cell) => {
           const value = apmHeadRows(entry.answer).find(held => held.id === line.row.id)?.summary;
           cell.put(value ? `${apmValueText(value)} eAPM` : '—', value ? valueNote(value) : entry.answer?.kind === 'notRecorded' ? entry.answer.reason : 'Not played in the week to the head');
         }} />

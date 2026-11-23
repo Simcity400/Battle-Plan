@@ -1,5 +1,6 @@
 use super::{Inner, MAX_CANCELLED, MAX_PENDING};
-use crate::{QueryError, Source, transport::bounded_text};
+use dashboard_core::{QueryError, transport::bounded_text};
+use dashboard_base::Source;
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
@@ -14,7 +15,7 @@ pub(super) struct Request {
     pub(super) timing: Option<super::perf::RequestTiming>,
 }
 
-impl crate::presentation::Cancel for Request {
+impl dashboard_base::presentation::Cancel for Request {
     fn flag(&self) -> &AtomicBool {
         &self.cancelled
     }
@@ -69,7 +70,7 @@ impl Pending {
             .insert(request.id.clone(), Arc::clone(&request));
         if at_capacity {
             self.errors
-                .push_back((request, crate::transport::CAPACITY_REACHED.into()));
+                .push_back((request, dashboard_core::transport::CAPACITY_REACHED.into()));
             None
         } else {
             Some(request)

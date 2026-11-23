@@ -1,19 +1,13 @@
 
 use dashboard_base::products::{Country, validate_country};
 use super::{
-    BONUSES, INPUTS, Joined, MODIFIERS, ResearchProgress, ResearchSlotState, assignment_keys, coverage_keys,
+    BONUSES, INPUTS, Joined, MODIFIERS, ResearchDefinitionText, ResearchProgress, ResearchSlotState, assignment_keys, coverage_keys,
     grants::{self, GrantInventory},
     slice_key, slot_read, valid_inputs,
 };
 #[cfg(any(test, feature = "export-types"))]
 use super::grants::{GrantRestriction, ResearchGrant};
-use crate::{
-    Source,
-    products::{
-        LoadContext, artwork,
-        at_hour::{At, AtHour, Keys, Owner, Read},
-    },
-};
+use dashboard_base::{Source, products::{LoadContext, artwork, at_hour::{At, AtHour, Keys, Owner, Read}}};
 use dashboard_follow::live::{Cells, Source as Cell};
 use replay_data::rows::{ResearchAssignmentRow, ResearchCoverageRow, ResearchInputRow, ResearchModifierRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
@@ -52,6 +46,8 @@ pub struct ResearchSlotNow {
     pub state: ResearchSlotState,
     #[doc = " The joined assignment's progress at the read; none while idle."]
     pub progress: Option<ResearchProgress>,
+    #[doc = " The text of the definition an unjoined read names, looked up by its template; none when idle or joined."]
+    pub definition: Option<ResearchDefinitionText>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -90,6 +86,7 @@ impl AtHour for ResearchSlots {
     const TITLE: &'static str = "Research";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ResearchSlotsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = ResearchSlotsReply;
     type Context = Content;
 
@@ -176,7 +173,9 @@ impl AtHour for ResearchSlots {
             let joined = assignments.iter().find(|a| a.index == index && a.lane == 0 && a.outcome == ResearchAssignmentRow::ACTIVE && r.technology_present != 0 && r.database_index == replay_data::rows::Recorded::Value(a.database_index) && r.token == a.token);
             let rate = mods.filter(|_| sample(samples, TableId::ResearchModifiers, r.country) == Some(read)).and_then(|m| super::modifiers::breakdown(r, Some(m))).and_then(|m| super::modifiers::rate(&m, r.ahead_reduction_raw, read))
                 .or_else(|| joined.filter(|a| a.started_after_hour.is_some() && read - a.first_observed_hour < 24).map(|_| i128::from(r.research_speed_raw)));
-            slot["state"]["details"]["remainingDays"] = if r.technology_present != 0 { rate.and_then(|v| super::remaining(r, v)) } else { None }.into();
+            let estimate = if r.technology_present != 0 { rate.and_then(|v| super::remaining(r, v)) } else { None };
+            slot["state"]["details"]["remainingDays"] = estimate.map(|(days, _)| days).into();
+            slot["state"]["details"]["estimateRaw"] = estimate.map(|(_, raw)| raw.to_string()).into();
             slot["state"]["bankedDaysRaw"] = r.banked_days_raw.to_string().into();
             slot["state"]["appliedDaysRaw"] = r.applied_days_raw.to_string().into();
             if !slot["progress"].is_null() { slot["progress"]["progressRaw"] = r.progress_raw.to_string().into(); }
@@ -230,7 +229,8 @@ impl AtHour for ResearchSlots {
             reply.warnings.push(format!("Research names are unavailable: {error}"));
         }
         match slots(frame, owner, at.hour, &localise, at.live) {
-            Ok((read, slots, inventory)) => {
+            Ok((read, mut slots, inventory)) => {
+                defined(&mut slots, &|token, index| at.context.as_ref().map_or((None, None), |art| art.definition_text(token, index)));
                 reply.read_hour = Some(read);
                 reply.slots = slots;
                 reply.grants = inventory;
@@ -238,6 +238,19 @@ impl AtHour for ResearchSlots {
             Err(missing) => reply.missing = Some(missing),
         }
         Ok(reply)
+    }
+}
+
+pub(crate) fn defined(slots: &mut [ResearchSlotNow], text: &dyn Fn(&str, u32) -> (Option<String>, Option<String>)) {
+    for slot in slots {
+        let state = &slot.state;
+        slot.definition = match (&state.token, state.database_index, state.entry_first_observed_hour) {
+            (Some(token), Some(index), None) => u32::try_from(index).ok().map(|index| {
+                let (name, description) = text(token, index);
+                ResearchDefinitionText { token: token.clone(), database_index: index, name, description }
+            }),
+            _ => None,
+        };
     }
 }
 
@@ -297,7 +310,7 @@ pub(crate) fn slots(frame: &DecodedFrame, owner: Owner, hour: i32, localise: &dy
         if slot.progress.as_ref().is_some_and(|progress| progress.base_days_raw.is_some()) {
             progress_cell(input, live);
         }
-        out.push(ResearchSlotNow { index: input.index, state: slot.state, progress: slot.progress });
+        out.push(ResearchSlotNow { index: input.index, state: slot.state, progress: slot.progress, definition: None });
     }
     let inventory = match modifiers {
         None => GrantInventory::unavailable("Research grants are not recorded at this hour"),

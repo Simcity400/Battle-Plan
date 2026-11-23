@@ -6,4 +6,4 @@ The game records the battle list by ordinal. The battle object identifies the sa
 
 The window hands its applied steps and changed declarations to a worker that maintains its own table copies and folds queued work in order. Ordinary playback takes available products without a wait and publishes the hour of the mix it actually holds. Compose and whole settle wait for the product of the applied hour. A reset discards results from an older epoch; a panic stops the battle layer. The tests compare the resulting mix against the direct fold throughout membership changes, ordinal shifts, and a recording gap.
 
-[Battle ambience](../../crates/viewer-playback/src/layers/sounds.rs) · [Worker](../../crates/viewer-playback/src/layers/sounds/fed.rs) · [Tests](../../crates/viewer-playback/src/layers/sounds/tests.rs)
+[Battle ambience](../../crates/viewer-layers-infrastructure/src/sounds.rs) · [Worker](../../crates/viewer-layers-infrastructure/src/sounds/fed.rs) · [Tests](../../crates/viewer-layers-infrastructure/src/sounds/tests.rs)

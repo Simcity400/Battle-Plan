@@ -66,7 +66,7 @@ pub(super) fn compare_variants(
 
 pub fn compare_variant_archetypes(
     frame: &DecodedFrame,
-    equipment: &content_reader_core::equipment::Database,
+    equipment: &content_reader_key_names::equipment::Database,
     tokens: &TokenNames<'_>,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -399,8 +399,18 @@ fn compare_variant_stats(
         .variants
         .as_ref()
         .ok_or_else(|| invalid("save lacks the equipment variant registry"))?;
+    let definitions: BTreeMap<u64, u64> = frame
+        .complete::<tables::VariantDefinitions>()
+        .map(|rows| {
+            rows.iter()
+                .map(|row| (row.id, row.classifier_flags))
+                .collect()
+        })
+        .unwrap_or_default();
     let mut stats = BTreeSet::new();
     let mut census_matches = true;
+    let mut published = [0_usize; replay_data::rows::VariantStatsRow::LANE_NAMES.len()];
+    let mut withheld = [0_usize; replay_data::rows::VariantStatsRow::LANE_NAMES.len()];
     for row in complete::<tables::VariantStats>(frame)? {
         if row.variant == 0 || !stats.insert(row.variant) {
             return Err(invalid("null or duplicate variant stats parent"));
@@ -413,6 +423,50 @@ fn compare_variant_stats(
                 "absent variant",
             );
         }
+        let is_plane = definitions
+            .get(&row.variant)
+            .is_some_and(|flags| flags & engine_native::cequipment_type::PLANE_MASK != 0);
+        for (index, value) in row.values.into_iter().enumerate() {
+            let lane = replay_data::rows::VariantStatsRow::LANE_NAMES[index];
+            match value {
+                Some(raw) => {
+                    published[index] += 1;
+                    if is_plane
+                        && matches!(
+                            index,
+                            replay_data::rows::VariantStatsRow::AIR_DEFENCE
+                                | replay_data::rows::VariantStatsRow::AIR_AGILITY
+                        )
+                    {
+                        equal(
+                            report,
+                            format!("variant {}.stats.{lane} plane minimum", row.variant),
+                            raw >= 100_000,
+                            true,
+                        );
+                    }
+                    if matches!(
+                        index,
+                        replay_data::rows::VariantStatsRow::MAXIMUM_SPEED
+                            | replay_data::rows::VariantStatsRow::RELIABILITY
+                    ) {
+                        equal(
+                            report,
+                            format!("variant {}.stats.{lane} non-negative", row.variant),
+                            raw >= 0,
+                            true,
+                        );
+                    }
+                }
+                None => {
+                    withheld[index] += 1;
+                    report.limitation(
+                        &format!("VariantStats.{lane} native witness withheld"),
+                        format!("variant {}", row.variant),
+                    );
+                }
+            }
+        }
     }
     for id in saved_variants.keys() {
         if !stats.contains(id) {
@@ -420,8 +474,18 @@ fn compare_variant_stats(
             report.difference(format!("variant {id}.stats"), "absent", "present variant");
         }
     }
+    let total_published: usize = published.iter().sum();
+    let total_withheld: usize = withheld.iter().sum();
     report.compared("VariantStats", 0);
-    report.limitation("the variant writer does not serialize the native stat sheet or mission-specific caches; the save comparison does not substitute recomputed values for native runtime results", format!("VariantStats: {} decoded rows, zero save comparisons", stats.len()));
+    report.limitation(
+        "the variant writer does not serialize the native stat sheet or mission-specific caches; capture verifies live stat lanes with native value and timing witnesses and withholds unverified lanes by name",
+        format!(
+            "VariantStats: {} decoded rows, {} published lanes, {} withheld lanes, zero save comparisons",
+            stats.len(),
+            total_published,
+            total_withheld,
+        ),
+    );
     if census_matches {
         Ok(())
     } else {

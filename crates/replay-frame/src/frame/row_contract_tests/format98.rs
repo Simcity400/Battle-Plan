@@ -872,3 +872,78 @@ fn state_continent_append_preserves_format98_prefix_and_distinct_failures() {
         input.finish().unwrap();
     }
 }
+
+#[test]
+fn format_143_train_inventory_withholds_required_trucks_raw_and_skips_legacy_variant_stats() {
+    let format = replay_data::rows::compatibility::VARIANT_STAT_WITNESS_FORMAT - 1;
+    let train = TrainInventoryRow {
+        country: 5000,
+        node_count: 4,
+        allocated_trucks: Recorded::Value(Some(12)),
+        required_trucks_raw: Recorded::Value(Some(0)),
+        required_trains: Recorded::Value(Some(3)),
+        ..Default::default()
+    };
+    let mut train_bytes = Vec::new();
+    train.encode_fields(&mut train_bytes).unwrap();
+    let mut input = Decoder::new(&train_bytes);
+    input.format = format;
+    input.recorded_fields = TrainInventoryRow::SCHEMA.len();
+    let decoded = TrainInventoryRow::decode_fields(train.key(), &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!(decoded.allocated_trucks, Recorded::Value(Some(12)));
+    assert_eq!(decoded.required_trains, Recorded::Value(Some(3)));
+    assert_eq!(decoded.required_trucks_raw, Recorded::NotRecorded);
+
+    let mut delta = train.delta(None).unwrap().unwrap();
+    delta.format = format;
+    let applied = delta.apply::<TrainInventoryRow>(None).unwrap();
+    assert_eq!(applied.allocated_trucks, Recorded::Value(Some(12)));
+    assert_eq!(applied.required_trains, Recorded::Value(Some(3)));
+    assert_eq!(applied.required_trucks_raw, Recorded::NotRecorded);
+
+    let next_train = TrainInventoryRow {
+        allocated_trucks: Recorded::Value(Some(18)),
+        required_trucks_raw: Recorded::Value(Some(100_000)),
+        ..train.clone()
+    };
+    let mut second_delta = next_train.delta(Some(&train)).unwrap().unwrap();
+    second_delta.format = format;
+    let updated = second_delta.apply(Some(decoded)).unwrap();
+    assert_eq!(updated.allocated_trucks, Recorded::Value(Some(18)));
+    assert_eq!(updated.required_trains, Recorded::Value(Some(3)));
+    assert_eq!(updated.required_trucks_raw, Recorded::NotRecorded);
+
+    let mut legacy_snapshot = Vec::new();
+    legacy_snapshot.extend_from_slice(&1_u32.to_le_bytes());
+    TableId::VariantStats
+        .encode_key((1_u128 << 32) | 70, 0, &mut legacy_snapshot)
+        .unwrap();
+    for lane in 0..10_i64 {
+        legacy_snapshot.extend_from_slice(&(lane * 100_000).to_le_bytes());
+    }
+    legacy_snapshot.extend_from_slice(&0_u64.to_le_bytes());
+    legacy_snapshot.extend_from_slice(&0_i32.to_le_bytes());
+    legacy_snapshot.extend_from_slice(&0_u32.to_le_bytes());
+    let mut skip_in = Decoder::new(&legacy_snapshot);
+    skip_in.format = format;
+    TableId::VariantStats
+        .skip_snapshot(13, &mut skip_in)
+        .unwrap();
+    skip_in.finish().unwrap();
+
+    let mut legacy_delta = Vec::new();
+    legacy_delta.extend_from_slice(&1_u32.to_le_bytes());
+    TableId::VariantStats
+        .encode_key((1_u128 << 32) | 70, 0, &mut legacy_delta)
+        .unwrap();
+    legacy_delta.extend_from_slice(&1_u16.to_le_bytes());
+    replay_data::codec::put_varint(&mut legacy_delta, 1_000_000);
+    legacy_delta.extend_from_slice(&0_u32.to_le_bytes());
+    let mut skip_delta_in = Decoder::new(&legacy_delta);
+    skip_delta_in.format = format;
+    TableId::VariantStats
+        .skip_delta(13, &mut skip_delta_in)
+        .unwrap();
+    skip_delta_in.finish().unwrap();
+}

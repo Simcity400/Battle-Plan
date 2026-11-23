@@ -14,4 +14,4 @@ Plain hook families publish under a shared suspension. Taps with unwind retentio
 
 Lifecycle events can be signalled, reset, or waited on from any thread. Their owner closes the handle only on drop. Production refusals and regression cases share the same detach refusal boundary.
 
-[Attachment and admission](../../crates/collector/src/runtime.rs)
+[Attachment and admission](../../crates/collector-runtime/src/runtime.rs)

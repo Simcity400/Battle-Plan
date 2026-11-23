@@ -4,4 +4,4 @@ Native capture and typed row projection finish before spool conversion. The spoo
 
 The safety of `HelperView`'s `Send` and `Sync` implementations relies on the scoped `Helpers::join_some` call. Its mutex orders each helper's accesses with spool ownership. Ordinary shared packs and the air pack read by appearance are reached through `sync_pack`, whose bound proves `Sync`. The hour's queue lends each cached or exclusive pack to exactly one thread. The spool skips those packs while the queue runs, and no other pack reads them. Division presentation's exclusive observers finish before the join starts, and outcomes, slice selection, merging and reuse wait for it to end. This gives a queued non-`Sync` pack the exclusive access of a mutable borrow. Its lent caches return after the join, and no other pack is reachable through the view.
 
-[Spool conversion macros and helper view](../../crates/collector/src/extended/mod.rs)
+[Spool conversion macros and helper view](../../crates/collector-capture/src/extended/mod.rs)

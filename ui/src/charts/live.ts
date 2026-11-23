@@ -1,7 +1,7 @@
 
 export interface Live<T> { read(): T; subscribe(changed: () => void): () => void }
 
-export interface LiveValues<V> { get(key: string): V | undefined; missing(key: string): string }
+export interface LiveValues<V> { get(key: string): V | undefined; missing(key: string): string; raw?(key: string): bigint | undefined }
 
 export const liveKey = (...parts: readonly string[]) => parts.join('\u0000');
 

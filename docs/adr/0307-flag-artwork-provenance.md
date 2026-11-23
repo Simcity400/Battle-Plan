@@ -8,4 +8,4 @@ A shield comes from the content declaration of the top bar's flag button. Its de
 
 Bind caches to one presentation and catalogue, including shield refusals. Resolve the cancellable mount and do decoding and rendering outside the state lock so concurrent calls can use held contexts. Read each file once per combination of effective layer stack, atlas set, path and decode cell. Draw a batch when possible and try its flags individually if the renderer refuses the batch, so one failure does not suppress other artwork. Keep the single flag's refusal, and report an empty batch's refusal unchanged. Image cache identities include the asset name and decoded pixel digest so different visual modifications to the same asset stay distinct.
 
-[Flag products and fixtures](../../crates/dashboard/src/products/country_flags.rs)
+[Flag products and fixtures](../../crates/dashboard-world/src/products/country_flags.rs)

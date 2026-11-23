@@ -1,5 +1,5 @@
 use crate::{Decimal, block, field, integer, invalid, required_bytes, scalar};
-use content_reader_core::parser::{Item, Value};
+use content_reader_parser::parser::{Item, Value};
 use std::{collections::BTreeMap, io};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Account {
@@ -119,7 +119,7 @@ mod tests {
     use super::*;
     #[test]
     fn sparse_accounts_keep_retained_occurrences_sizes_negative_values_and_dynamic_indices() {
-        let doc=content_reader_core::parser::parse(br#"faction_system={countries={5000 {index=4999 data={influence_status={6 {index=5 data=-2.5}} initiative=3 contribution_gain={1 -2} war_score_breakdown=7 member_upgrades={mod_b mod_a} completed_faction_goals={mod_a mod_a}}}}}"#).unwrap();
+        let doc=content_reader_parser::parser::parse(br#"faction_system={countries={5000 {index=4999 data={influence_status={6 {index=5 data=-2.5}} initiative=3 contribution_gain={1 -2} war_score_breakdown=7 member_upgrades={mod_b mod_a} completed_faction_goals={mod_a mod_a}}}}}"#).unwrap();
         let result = parse(&doc.items).unwrap().unwrap();
         assert_eq!(result.count, 5000);
         let row = &result.entries[&4999];
@@ -128,7 +128,7 @@ mod tests {
         assert_eq!(row.gain[1].raw, -200000);
         assert_eq!(row.completed, [b"mod_a".to_vec(), b"mod_a".to_vec()]);
         let invalid =
-            content_reader_core::parser::parse(b"faction_system={countries={1 {index=1 data={}}}}")
+            content_reader_parser::parser::parse(b"faction_system={countries={1 {index=1 data={}}}}")
                 .unwrap();
         assert!(parse(&invalid.items).is_err());
     }

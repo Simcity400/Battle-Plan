@@ -81,9 +81,13 @@ pub fn located() -> Option<&'static Located> {
 #[inline]
 pub fn resolve(base: usize, key: Rva) -> Verified<usize> {
     match MODE.load(Ordering::Acquire) {
-        SYNTHETIC => base
-            .checked_add(key.0)
-            .ok_or_else(|| Withheld::new(name(key), "synthetic address overflows")),
+        SYNTHETIC => {
+            if SYNTHETIC_WITHHELD.try_with(Cell::get).ok().flatten() == Some(key) {
+                return Err(Withheld::new(name(key), "withheld in synthetic test"));
+            }
+            base.checked_add(key.0)
+                .ok_or_else(|| Withheld::new(name(key), "synthetic address overflows"))
+        }
         INSTALLED => located()
             .ok_or_else(|| Withheld::new(name(key), "no located image"))?
             .resolve(base, key),
@@ -211,6 +215,19 @@ pub fn name(key: Rva) -> std::borrow::Cow<'static, str> {
 
 thread_local! {
     static TAINT: Cell<Option<Rva>> = const { Cell::new(None) };
+    static SYNTHETIC_WITHHELD: Cell<Option<Rva>> = const { Cell::new(None) };
+}
+
+pub fn with_synthetic_withheld<R>(key: Rva, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<Rva>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = SYNTHETIC_WITHHELD.try_with(|cell| cell.set(self.0));
+        }
+    }
+    let previous = SYNTHETIC_WITHHELD.with(|cell| cell.replace(Some(key)));
+    let _restore = Restore(previous);
+    f()
 }
 
 fn taint(key: Rva) {

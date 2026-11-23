@@ -6,4 +6,4 @@ A base selects queued ships in queue order using the replay repair rule and stop
 
 The writer indexes bases, queues and their ships and forces so an hour revisits only the selections its changes reach. Relation changes trigger selection when they affect ports and access. War casualties need no new selection, while a war starting or ending can change access. A fresh hour or resume rebuilds the indexes and outputs from the held tables, without a writer blob.
 
-[Writer](../../crates/recorder-derive/src/dockyard_repairs.rs) · [Input decoding](../../crates/recorder-derive/src/dockyard_repairs/inputs.rs) · [Tests](../../crates/recorder-derive/src/dockyard_repairs/tests.rs)
+[Writer](../../crates/recorder-derive-naval/src/dockyard_repairs.rs) · [Input decoding](../../crates/recorder-derive-naval/src/dockyard_repairs/inputs.rs) · [Tests](../../crates/recorder-derive-naval/src/dockyard_repairs/tests.rs)

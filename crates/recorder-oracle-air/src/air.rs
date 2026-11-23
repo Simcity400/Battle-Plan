@@ -382,7 +382,7 @@ fn ace_names_use_first_nul_and_callsign_stored_length() {
         (b"".as_slice(), "callsign=\"\"", 1),
         (b"C\0tail".as_slice(), "callsign=D", 1),
     ] {
-        let doc = content_reader_core::parser::parse(format!("countries={{AAA={{ace={{id={{id=1 type=4}} name=N surname=S portrait=0 {callsign}}}}}}}").as_bytes()).unwrap();
+        let doc = content_reader_parser::parser::parse(format!("countries={{AAA={{ace={{id={{id=1 type=4}} name=N surname=S portrait=0 {callsign}}}}}}}").as_bytes()).unwrap();
         let saved = air::parse(&doc.items).unwrap();
         *frame.tables[replay_data::rows::TableId::AirAces.index()] =
             replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::AirAces(vec![
@@ -636,7 +636,7 @@ fn compare_statistics(
 mod tests {
     use super::*;
     use crate::test_support::frame;
-    use content_reader_core::parser;
+    use content_reader_parser::parser;
     use replay_data::{
         rows::AirStatisticsRow, rows::TableId, rows::TableRows, rows::WingCumulativeRow,
         rows::WingEquipmentRow,

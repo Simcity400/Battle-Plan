@@ -1,130 +1,25 @@
 pub use crate::checkpoint::endpoint::EndpointRows;
+pub use replay_rows::rows::ops;
 pub use replay_rows::rows::*;
+pub use replay_rows_world::*;
+pub use replay_rows_events::*;
+pub use replay_rows_air::*;
+pub use replay_rows_naval::*;
+pub use replay_rows_weather::*;
+pub use replay_rows_land::*;
+pub use replay_rows_presentation::*;
+pub use replay_rows_wars::*;
 pub use replay_rows_economy::*;
-pub use replay_rows_projects::{
-    AceRangeInputRow,
-    NukeRow,
-    ProjectBreakthroughRow,
-    ProjectHistoryRow,
-    ProjectProgramRow,
-    ProjectRow,
-    RaidAirScoreRow,
-    RaidAirSiteRow,
-    RaidCooldownRow,
-    RaidCountryInputRow,
-    RaidCountryRow,
-    RaidEquipmentRow,
-    RaidFacilityRow,
-    RaidIntelInputRow,
-    RaidPathDistanceRow,
-    RaidPlayerAllowedTypeRow,
-    RaidRow,
-    RaidSpeedInputRow,
-    RaidTargetRow,
-    RaidTargetStatusRow,
-    RaidTooltipOperandRow,
-};
-pub use replay_rows_intelligence::{
-    ActiveAbilityRow,
-    AdvisorRoleRow,
-    AdvisorTokenRow,
-    AgencyOperationBuffersRow,
-    AgencyUpgradeLevelRow,
-    AvailableAdvisorRow,
-    CapturedOperativeReferenceRow,
-    CharacterOperativeRow,
-    CharacterRoleTraitRow,
-    CharacterRow,
-    CountryCharacterRow,
-    CountryIntelRow,
-    CountryLeaderRoleRow,
-    CryptologyRow,
-    FactionAdvisorRow,
-    HiredAdvisorRow,
-    IntelContributionRow,
-    IntelNetworkAuxiliaryRow,
-    IntelNetworkRow,
-    IntelNetworkSummaryRow,
-    IntelSourceRow,
-    IntelligenceAgencyRow,
-    OperationAssignmentRow,
-    OperationCompletionRow,
-    OperationRow,
-    OperationTokensRow,
-    OperativeMembershipRow,
-    OperativeMissionRow,
-    PropagandaEffortRow,
-    ScientistDailyRow,
-    ScientistRow,
-    ScientistSkillRow,
-    StrategicOperativeRow,
-    UnitIntelRow,
-    UnitLeaderRow,
-    UnitLeaderTraitExperienceRow,
-    UnitLeaderTraitRow,
-};
-pub use replay_rows_politics::{
-    ActiveIdeaRow,
-    AutonomyRow,
-    BorderConflictRow,
-    CapitulationRow,
-    CompletedFocusRow,
-    CountryCivilWarRow,
-    CountryCollaborationRow,
-    CountryCommandPowerRow,
-    CountryExperienceGainRow,
-    CountryExperienceRow,
-    CountryOccupationReserveManpowerRow,
-    CountryStabilityInputRow,
-    CountryStabilityLineRow,
-    CountryWarRow,
-    DecisionCountsRow,
-    DecisionRandomItemRow,
-    DecisionRow,
-    DynamicModifierRow,
-    FocusRow,
-    GlobalSavedEventTargetRow,
-    IncomingDiplomaticActionRow,
-    LexicalTokenRow,
-    ModifierDefinitionRow,
-    OccupationSettingsRow,
-    OwnedWargoalRow,
-    PartyLeaderRow,
-    PeaceConferenceRow,
-    PoliticalPartyRow,
-    PoliticsRow,
-    PowerBalanceMemberRow,
-    PowerBalanceOverrideRow,
-    PowerBalanceRangeRow,
-    PowerBalanceRow,
-    RelationLinkRow,
-    RelationOpinionRow,
-    RelationTupleRow,
-    ResearchAppliedBonusRow,
-    ResearchInputRow,
-    ResearchModifierRow,
-    ResearchSlotRow,
-    ResearchTechnologyRow,
-    ScriptFlagRow,
-    ScriptVariablesRow,
-    SliceReadRow,
-    StateAssignedManpowerRow,
-    StateCoreRow,
-    StateDynamicModifierRow,
-    StateFlagRow,
-    StateGarrisonRow,
-    StateOccupationLawRow,
-    StateResistanceRow,
-    SubjectRow,
-    TechSharingGroupRow,
-    TechSharingMemberRow,
-    TechnologyDefinitionRow,
-    ThreatCountryAggregateRow,
-    ThreatSourceRow,
-    TimedIdeaRow,
-    WorldTensionRow,
-};
+pub use replay_rows_projects::*;
+pub use replay_rows_intelligence::*;
+pub use replay_rows_politics::*;
 pub use replay_rows_derived::*;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod test_rows {
+    pub use replay_rows::rows::test_rows::*;
+    pub use replay_rows_land::test_rows::*;
+}
 use crate::codec::{Decoder, invalid_static as invalid, put_varint};
 use crate::display::Step;
 use engine_allocation as allocation;
@@ -140,7 +35,7 @@ use crate::{
 };
 
 
-pub const LOGS: [TableId; 15] = [
+pub const LOGS: [TableId; 16] = [
     TableId::CombatLogBattleModifiers,
     TableId::OperationCompletions,
     TableId::PeaceSettlements,
@@ -156,6 +51,7 @@ pub const LOGS: [TableId; 15] = [
     TableId::LeaderBattles,
     TableId::LeaderTraitGains,
     TableId::LeaderCommands,
+    TableId::PowerSpendDays,
 ];
 
 pub fn logs() -> [bool; TABLE_COUNT] {
@@ -188,21 +84,22 @@ impl<T> fmt::Debug for Shown<'_, T> {
 }
 
 macro_rules! define_tables {
-    (
-        recorded { $($recorded:ident = $recorded_id:literal => $recorded_variant:ident($recorded_row:ident)),+ $(,)? }
-        derived { $($derived:ident = $derived_id:literal => $derived_variant:ident($derived_row:ident)),+ $(,)? }
-        $(recorded { $($later:ident = $later_id:literal => $later_variant:ident($later_row:ident)),+ $(,)? })?
-    ) => {
-        define_tables! {
-            $($recorded = $recorded_id => $recorded_variant($recorded_row)),+,
-            $($derived = $derived_id => $derived_variant($derived_row)),+
-            $($(, $later = $later_id => $later_variant($later_row))+)?
-        }
+    (@acc [$($all:tt)*] [$($derived:ident)*]) => {
+        define_tables! { $($all)* }
         impl TableId {
             pub const fn is_derived(self) -> bool {
-                matches!(self, $(Self::$derived)|+)
+                matches!(self, $(Self::$derived)|*)
             }
         }
+    };
+    (@acc [$($all:tt)*] [$($derived:ident)*] recorded { $($t:ident = $id:literal => $v:ident($r:ident)),+ $(,)? } $($rest:tt)*) => {
+        define_tables! { @acc [$($all)* $($t = $id => $v($r),)+] [$($derived)*] $($rest)* }
+    };
+    (@acc [$($all:tt)*] [$($derived:ident)*] derived { $($t:ident = $id:literal => $v:ident($r:ident)),+ $(,)? } $($rest:tt)*) => {
+        define_tables! { @acc [$($all)* $($t = $id => $v($r),)+] [$($derived)* $($t)+] $($rest)* }
+    };
+    (recorded { $($first:tt)* } $($rest:tt)*) => {
+        define_tables! { @acc [] [] recorded { $($first)* } $($rest)* }
     };
     ($($table:ident = $id:literal => $variant:ident($row:ident)),+ $(,)?) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1090,10 +987,48 @@ LandUnitOrder = 515 => LandUnitOrder(LandUnitOrderRow),
 StrategicRegionWeights = 516 => StrategicRegionWeight(StrategicRegionWeightRow),
 StateBuildingInputs = 517 => StateBuildingInput(StateBuildingInputRow),
 }
+derived {
+PowerSpendDays = 518 => PowerSpendDay(PowerSpendDayRow),
 }
+recorded {
+CombatEngagementRefreshes = 519 => CombatEngagementRefresh(CombatEngagementRefreshRow),
+}
+}
+const VARIANT_STATS_PRE_WITNESS_SCHEMA: [Kind; 13] = [
+    Kind::I64,
+    Kind::I64,
+    Kind::I64,
+    Kind::I64,
+    Kind::I64,
+    Kind::I64,
+    Kind::I64,
+    Kind::I64,
+    Kind::I64,
+    Kind::I64,
+    Kind::U64,
+    Kind::I32,
+    Kind::Opaque,
+];
+
 impl TableId {
+    pub fn schema_at(&self, format: u16) -> &'static [Kind] {
+        if *self == Self::VariantStats
+            && format < compatibility::VARIANT_STAT_WITNESS_FORMAT
+        {
+            &VARIANT_STATS_PRE_WITNESS_SCHEMA
+        } else {
+            self.schema()
+        }
+    }
+
+    pub const fn column_withheld_at(self, column: usize, format: u16) -> bool {
+        matches!(self, Self::TrainInventory)
+            && column == 4
+            && format < compatibility::VARIANT_STAT_WITNESS_FORMAT
+    }
+
     pub fn skip_snapshot(&self, fields: usize, input: &mut Decoder<'_>) -> io::Result<()> {
-        let schema = &self.schema()[..fields];
+        let schema = &self.schema_at(input.format)[..fields];
         let minimum = 1 + schema
             .iter()
             .map(|kind| kind.minimum_row_bytes())
@@ -1117,7 +1052,7 @@ impl TableId {
     }
 
     pub fn skip_delta(&self, fields: usize, input: &mut Decoder<'_>) -> io::Result<()> {
-        let schema = &self.schema()[..fields];
+        let schema = &self.schema_at(input.format)[..fields];
         let width = fields.div_ceil(8);
         let count = input.count(1 + width)?;
         let mut previous = 0;
@@ -1160,13 +1095,13 @@ impl TableId {
 
     pub fn field_span<'a>(self, field: usize, input: &mut Decoder<'a>) -> io::Result<&'a [u8]> {
         let before = input.rest();
-        self.schema()[field].decode(input)?;
+        self.schema_at(input.format)[field].decode(input)?;
         Ok(&before[..before.len() - input.remaining()])
     }
 
     pub fn change_span<'a>(self, field: usize, input: &mut Decoder<'a>) -> io::Result<&'a [u8]> {
         let before = input.rest();
-        self.schema()[field].decode_change(input)?;
+        self.schema_at(input.format)[field].decode_change(input)?;
         Ok(&before[..before.len() - input.remaining()])
     }
 

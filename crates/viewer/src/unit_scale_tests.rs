@@ -8,15 +8,12 @@ use std::{
     sync::Arc,
     time::Instant,
 };
-use viewer_foundation::engagement_history::LAND;
-use viewer_foundation::engagement_history::combats;
-use {
-    crate::document::Document, crate::document::Hour, crate::document::InitialHour,
-    crate::engaged_index::EngagedIndex, viewer_foundation::map::camera::MapSize,
-    viewer_foundation::map::camera::Placement, viewer_foundation::map::perspective,
-    viewer_foundation::map::tables::core, viewer_foundation::map::visibility::Relations,
-    viewer_world::map::political,
-};
+use viewer_engagements::engagement_history::LAND;
+use viewer_engagements::engagement_history::combats;
+use crate::{document::{Document, Hour, InitialHour}, engaged_index::EngagedIndex};
+use viewer_gpu::camera::{MapSize, Placement};
+use viewer_foundation::{perspective, tables::core, visibility::Relations};
+use viewer_map_modes::political;
 
 fn lap<T>(name: &str, camera: &str, hour: i32, work: impl FnOnce() -> io::Result<T>) {
     let start = Instant::now();
@@ -39,7 +36,7 @@ fn unit_scale_replay_layers() {
     let path = |name| PathBuf::from(std::env::var_os(name).expect(name));
     let document = Document::load(
         &path("BATTLEPLAN_UNIT_REPLAY"),
-        &content_reader_core::ResolveOptions {
+        &content_reader_layers::ResolveOptions {
             game_dir: path("BATTLEPLAN_UNIT_GAME"),
             user_dir: path("BATTLEPLAN_UNIT_USER"),
             cache_dir: path("BATTLEPLAN_UNIT_CACHE"),
@@ -79,7 +76,7 @@ fn unit_scale_replay_layers() {
         let camera = Placement {
             center: [3009.9868, 1537.9652],
             height,
-            pose: viewer_foundation::map::camera::Pose::Map,
+            pose: viewer_gpu::camera::Pose::Map,
         }
         .on(MapSize::of(&document.map), document.map_defines);
         for offset in 0..9 {

@@ -322,8 +322,8 @@ pub(super) fn bind(
 }
 
 pub(crate) fn draw(
-    root: &content_reader_core::gui::native::Element,
-    layout: &viewer_foundation::map::native_gui::Layout,
+    root: &content_reader_gui::gui::native::Element,
+    layout: &viewer_native_gui::native_gui::Layout,
     origin: [i32; 2],
     resources: &impl crate::gui::CombatResources,
     chart: &Chart,
@@ -357,7 +357,7 @@ pub(crate) fn draw(
         let (effect, half_width) = resources.line_chart(&icon.sprite)?;
         for points in &chart.graphs {
             let first = drawn.batch.quads.len();
-            viewer_foundation::map::native_shader::draw::line_chart(
+            viewer_native_gui::native_shader::draw::line_chart(
                 effect.clone(),
                 rect,
                 half_width,

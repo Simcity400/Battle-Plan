@@ -6,4 +6,4 @@ The native process clock and random stream are absent from the recording. Begin 
 
 Reset one content-defined creation allowance each frame. Visit provinces in ascending order, with their buildings and hulls charging the allowance inline. Land creations queue against what remains. Their final creation has no separate budget guard and can exceed the allowance. Zero or negative content allowance creates nothing live. A steady offline capture settles every admitted model, and a judge running alongside the frame spends a copy of the allowance. The viewer's own frame cut occurs between provinces, tracks what it holds back and raises later floors to bound delay. Keep that accounting separate from the authored allowance, which does not carry refusals forward.
 
-[Ambient frame](../../crates/viewer-world/src/map/mapframe.rs) · [Creation allowance](../../crates/viewer-world/src/map/mesh_budget.rs)
+[Ambient frame](../../crates/viewer-world/src/mapframe.rs) · [Creation allowance](../../crates/viewer-scene-base/src/mesh_budget.rs)

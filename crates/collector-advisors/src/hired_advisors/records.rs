@@ -64,7 +64,8 @@ pub fn capture(
         held.published = Some(held.generation);
         counts.reused = 1;
         counts.reused_rows = rows(held.active.len(), held.retired.len());
-        crate::advisor_pool_changes::record(Table::CharacterRecords, &counts, None);
+        // SAFETY: Called from admitted character-records capture with no pool-demand override.
+        unsafe { crate::advisor_pool_changes::record(Table::CharacterRecords, &counts, None) };
         return [&held.active, &held.retired].map(|held| Outcome::Rows { len: held.len() });
     }
     let outcomes = native::walk_records(memory, base, game_state, active, retired);
@@ -85,7 +86,8 @@ pub fn capture(
         }
         _ => held.forget(),
     }
-    crate::advisor_pool_changes::record(Table::CharacterRecords, &counts, None);
+    // SAFETY: Called from admitted character-records capture with no pool-demand override.
+    unsafe { crate::advisor_pool_changes::record(Table::CharacterRecords, &counts, None) };
     outcomes
 }
 

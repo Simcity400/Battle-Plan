@@ -8,4 +8,4 @@ An invalid required-archetype definition withholds a figure. A failed definition
 
 Each hour owns its pool-limit memo. Evaluation starts with fresh temporary state even for an empty scope. Reused plans re-decide the previously consulted pools and check the results instead of recording everything evaluation read. This preserves per-hour answers and avoids evaluating the same pool for every figure. Scope-masked predicates refuse before accessing their operands.
 
-[Pool memo](../../crates/viewer-world/src/map/equipment_graphics.rs) · [Census bridge](../../crates/viewer-world/src/map/equipment_graphics/bridge.rs) · [Independent reference](../../crates/viewer-world/src/map/equipment_graphics/bridge_reference.rs) · [Conventional selection](../../crates/viewer-world/src/map/equipment_graphics/legacy.rs)
+[Pool memo](../../crates/viewer-unit-models/src/equipment_graphics.rs) · [Census bridge](../../crates/viewer-unit-models/src/equipment_graphics/bridge.rs) · [Independent reference](../../crates/viewer-unit-models/src/equipment_graphics/bridge_reference.rs) · [Conventional selection](../../crates/viewer-unit-models/src/equipment_graphics/legacy.rs)

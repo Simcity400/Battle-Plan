@@ -8,4 +8,4 @@ Compose attachments in the root's object space. Keep their palette and actor rec
 
 The palette stores three aligned rows per joint and transposes the imported column form once. Compose attachment transforms into root-space bind mappings. Use the placed corners of rotated static boxes and posed vertices for skinned cull extents, which can differ from the bind box. Enclose every drawable LOD. A creation-time convoy collision sphere is a separate native construction from per-bone transformed boxes, with restrictions on LOD and skin support. Map instances retain authored basis, scale and pose fields where supplied. An entity locator's world transform excludes the mesh import scale already baked into geometry.
 
-[Library and model bounds](../../crates/viewer-world/src/map/models.rs) · [Asset identities](../../crates/viewer-world/src/map/models/identity.rs) · [Mesh pose and locators](../../crates/viewer-world/src/map/mesh_pose.rs)
+[Library and model bounds](../../crates/viewer-models/src/lib.rs) · [Asset identities](../../crates/viewer-models/src/identity.rs) · [Mesh pose and locators](../../crates/viewer-models/src/mesh_pose.rs)

@@ -1,9 +1,11 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
 import { Segmented } from '../../components/Segmented';
 import DrillHost from '../../charts/drill/DrillHost';
+import { useDrill } from '../../charts/drill/useDrill';
 import Table, { CellBar } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf } from '../../charts/table/options';
@@ -14,18 +16,19 @@ import { jumpItem } from '../../charts/jump';
 import { formatDateTime } from '../../dashboard/calendar';
 import { contentTitleHint } from '../../dashboard/contentTitles';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { useCountryNameAt, useReachedCountry } from '../../dashboard/reachedProduct';
+import { useCountryNameAt } from '../../dashboard/reachedProduct';
+import GateState from '../../dashboard/GateState';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
-import { useIdentityHour } from '../../dashboard/atHead';
-import ReachedCountryChoice from '../../dashboard/ReachedCountryChoice';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { OPTIONS, VIEWS } from './definition';
 import { counted, divisionName, equipmentStructure, fill, items, percent, share, templateName, templateTooltip, typeFill, typeKey, typeName, typeTooltip, validateDivisionEquipment } from './divisionEquipmentData';
 import './divisionEquipment.css';
 import type { DivisionPoolType, EquipmentDivision, EquipmentTemplate, EquipmentType } from '../../generated/dashboard';
+import { SPEC } from '../../dashboard/regionTime';
+import { useRegion } from '../../dashboard/widgetTime';
 
 type Drill = { kind: 'type'; key: string } | { kind: 'template'; template: string } | { kind: 'division'; division: string; template: string | null };
 const templateKey = (row: EquipmentTemplate) => row.template;
@@ -47,13 +50,12 @@ export function missingCell(raw: string | null) {
 export default function DivisionEquipmentWidget({ widget, runtime, active, setOption, onDiagnostics, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const [storedDrill, setStoredDrill] = useState<{ owner: object; drill: Drill } | null>(null);
-  const chosen = typeof widget.options?.country === 'string' ? [widget.options.country] : [];
-  const identityHour = useIdentityHour(runtime.client, track, chosen, runtime.clock, active && widget.time.mode === 'follow',
-    clockHour => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null);
-  const window = track && resolveWindow(widget, track, runtime.tracks, identityHour ?? runtime.clock.getHour());
-  const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
-  const country = useReachedCountry(widget, runtime, hour, active, widget.options?.country, setOption);
-  const tag = country.tag;
+  const mainRegion = useRegion(widget);
+  const itemDrill = useDrill(runtime, mainRegion);
+  const gate = useGate(runtime, widget, SPEC, active, { country: { stored: widget.options?.country, setOption } });
+  const country = gate.country!;
+  const hour = gate.hour;
+  const tag = gate.open ? country.tag : null;
   const countryLabel = useCountryNameAt(runtime.client, track, tag ?? country.chosen, hour, active);
   const countryName = countryLabel.name;
   const nameDetail = countryLabel.nameFailure ? <span data-detail={countryLabel.nameFailure.message}>{countryName}</span> : undefined;
@@ -62,15 +64,15 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   const countFor = options.countFor === 'host' ? 'host' : 'owner';
   const bars = options.cellBars === true;
   const subject = JSON.stringify([track?.branch.id, country.chosen, countFor]);
-  const asked = track && window && tag ? { tag, countFor } : null;
-  const state = useHeadProduct(runtime, widget, 'division-equipment', asked, { active, validate: validateDivisionEquipment, structure: equipmentStructure });
+  const asked = tag ? { country: countryFromKey(tag), countFor } : null;
+  const state = useHeadProduct(runtime, gate, 'division-equipment', asked, { active, validate: validateDivisionEquipment, structure: equipmentStructure });
   useShownEachFrame(runtime.clock, state.shownAt, state.live);
   const data = state.data;
   const drillOwner = useMemo(() => ({}), [runtime.client, track?.source.id, track?.source.revision, subject, view]);
   const drill = storedDrill?.owner === drillOwner ? storedDrill.drill : null;
-  const setDrill = (next: Drill | null) => setStoredDrill(next && { owner: drillOwner, drill: next });
+  const setDrill = (next: Drill | null) => { setStoredDrill(next && { owner: drillOwner, drill: next }); if (next) itemDrill.attach(JSON.stringify(next)); else itemDrill.close(); };
   const drillParams = drill?.kind === 'template' ? { template: drill.template } : drill?.kind === 'division' ? { division: drill.division } : null;
-  const detail = useHeadProduct(runtime, widget, 'division-equipment', asked && drillParams && { ...asked, ...drillParams },
+  const detail = useHeadProduct(runtime, gate, 'division-equipment', asked && drillParams && { ...asked, ...drillParams },
     { active: active && drillParams !== null, validate: validateDivisionEquipment, structure: equipmentStructure });
   const viewportHeight = useViewportHeight();
   const anchor = useRef<HTMLDivElement>(null);
@@ -134,13 +136,8 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   </>;
   let main;
   if (!track) main = <WidgetState kind="empty" message="Load a campaign to see division equipment." />;
-  else if (!window) main = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  else if (!country.chosen) main = <WidgetState kind="empty" message="Choose a country to see its division equipment." />;
-  else if (country.error && !country.historyHeld) main = <WidgetState kind="error" failure={country.error} onRetry={country.retry} />;
-  else if (country.holders) main = <ReachedCountryChoice tag={country.chosen} holders={country.holders} onPick={country.pick} />;
-  else if (country.reason) main = <WidgetState kind="unavailable" message={country.reason} />;
-  else if (country.absent) main = <WidgetState kind="unavailable" message={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
-  else if (!tag) main = <WidgetState kind="loading" label="Loading division equipment…" />;
+  else if (!gate.open) main = <GateState gate={gate} loading="Loading division equipment…" choose="Choose a country to see its division equipment."
+    absent={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
   else if (state.error) main = <WidgetState kind="error" failure={state.error} onRetry={state.retry} />;
   else if (!data) main = <WidgetState kind="loading" label="Loading division equipment…" />;
   else if (data.missing !== null) main = <WidgetState kind="unavailable" message="Division equipment wasn’t recorded at this time." detail={data.missing} />;
@@ -156,9 +153,12 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   const type = drill?.kind === 'type' ? data?.types.find(row => typeKey(row) === drill.key) : undefined;
   const drillData = detail.data;
   const drillMenu = () => drillData?.poolHour == null || !track ? [] : [jumpItem(runtime, track.id, drillData.poolHour)];
-  const drillHour = drill && drill.kind !== 'type' ? detail.hour : state.hour;
+  const drillHour = (drill && drill.kind !== 'type' ? detail.at ?? detail.hour : state.at ?? state.hour) ?? hour;
   let body = null;
-  if (drill?.kind === 'type') body = type ? <div className="division-equipment-drill">
+  if (drill && (drill.kind === 'type' ? state.outside : detail.outside)) body = <WidgetState kind="outside" read={drill.kind === 'type' ? state : detail} />;
+  else if (drill?.kind === 'type' && state.error) body = <WidgetState kind="error" failure={state.error} onRetry={state.retry} />;
+  else if (drill?.kind === 'type' && !data) body = <WidgetState kind="loading" label="Loading…" read={state} />;
+  else if (drill?.kind === 'type') body = type ? <div className="division-equipment-drill">
     <Table rowRevision={row => [row]} label={`${typeName(type)} models`} rows={type.variants} columns={[
       { key: 'model', header: 'Model', label: 'Model', width: 'minmax(var(--table-name-min), 2fr)', value: row => row.name ?? 'Design name unavailable',
         render: row => <span data-tooltip={row.variant}>{row.name ?? 'Design name unavailable'}</span> },
@@ -167,7 +167,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
     ]} rowKey={row => row.variant} sort={{ column: 'held', direction: 'descending' }} cellBars={bars} narrow={narrowTableOf(options)} menu={menu} /></div>
     : <WidgetState kind="unavailable" message="This equipment type is not held at this date." />;
   else if (drill && detail.error) body = <WidgetState kind="error" failure={detail.error} onRetry={detail.retry} />;
-  else if (drill && !drillData) body = <WidgetState kind="loading" label="Loading…" />;
+  else if (drill && !drillData) body = <WidgetState kind="loading" label="Loading…" read={detail} />;
   else if (drill?.kind === 'template' && drillData) body = <div className="division-equipment-drill">
     <Table rowRevision={row => [row, divisionColumns]} label="Divisions of this template" rows={drillData.divisionRows ?? []} columns={divisionColumns} rowKey={divisionKey} sort={FILL_SORT}
       cellBars={bars} narrow={narrowTableOf(options)} onRowClick={row => setDrill({ kind: 'division', division: row.division, template: drill.template })}
@@ -189,9 +189,9 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   return <div ref={root} className="division-equipment" data-detail={countryLabel.nameFailure?.message}>{header}
     { }
     {country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" failure={country.error} onRetry={country.retry} /> : null}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill !== null}
+    <DrillHost drill={itemDrill} runtime={runtime} subject={drill !== null} mode={options.drill === 'popout' ? 'popout' : 'inline'}
       title={drill?.kind === 'type' ? type ? typeName(type) : 'Equipment' : drill?.kind === 'template'
         ? templateName(drillData?.templates.find(row => row.template === drill.template) ?? data?.templates.find(row => row.template === drill.template) ?? { name: null }) : 'Division'}
-      day={formatDateTime(drillHour ?? Math.floor(runtime.clock.getHour()))} following={widget.time.mode === 'follow'} canFollow={false} anchor={anchor}
-      onClose={() => setDrill(back)} onFollow={() => {}} main={main}>{body}</DrillHost></div>;
+      day={drillHour === null ? '' : formatDateTime(drillHour)} canFollow={false} anchor={anchor}
+      onClose={() => setDrill(back)} main={main}>{body}</DrillHost></div>;
 }

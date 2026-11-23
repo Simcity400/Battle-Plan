@@ -60,7 +60,7 @@ pub(crate) fn present(
     {
         return Err(invalid("scene presentation exceeds device texture extent"));
     }
-    let mut pixels = viewer_foundation::map::gpu_contract::scoped(
+    let mut pixels = viewer_gpu::gpu_contract::scoped(
         &state.device,
         || "The graphics device could not read this map back".to_owned(),
         || draw_and_read(state, ctx, texture, size, pixels_per_point),
@@ -136,7 +136,7 @@ fn draw_and_read(
         .queue
         .submit(commands.into_iter().chain([encoder.finish()]));
     drop(renderer);
-    viewer_foundation::map::gpu_contract::read_texture(&state.device, &state.queue, &target, 4)
+    viewer_gpu::gpu_contract::read_texture(&state.device, &state.queue, &target, 4)
 }
 
 fn swap_bgra(pixels: &mut [u8]) {

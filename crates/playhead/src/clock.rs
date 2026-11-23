@@ -2,6 +2,12 @@
 use replay_data::Hour;
 use std::time::{Duration, Instant};
 
+pub const FRAME_RATES: std::ops::RangeInclusive<f64> = 1.0..=1000.0;
+
+pub fn frame_period(rate: f64) -> Option<Duration> {
+    FRAME_RATES.contains(&rate).then_some(rate).and_then(|rate| Duration::try_from_secs_f64(1.0 / rate).ok())
+}
+
 #[derive(Default)]
 pub struct PageTime {
     quickest: Option<(f64, Instant)>,
@@ -127,8 +133,17 @@ impl Clock {
 
 #[cfg(test)]
 mod tests {
-    use super::{Clock, PageTime};
+    use super::{Clock, FRAME_RATES, PageTime, frame_period};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_frame_period_is_refused_outside_the_frame_rates() {
+        assert_eq!(frame_period(*FRAME_RATES.start()), Some(Duration::from_secs(1)));
+        assert_eq!(frame_period(*FRAME_RATES.end()), Some(Duration::from_millis(1)));
+        for rate in [1e-300, 0.5, 1_001.0, 0.0, -60.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(frame_period(rate), None, "{rate}");
+        }
+    }
 
     #[test]
     fn the_page_clock_counts_elapsed_ui_work_and_delivery_delay() {

@@ -1,8 +1,8 @@
 use super::*;
 use crate::controls::Pad;
 use eframe::egui;
-use viewer_foundation::map::camera::{MapDefines, MapSize};
-use viewer_foundation::map::province_map::HeightField;
+use viewer_gpu::camera::{MapDefines, MapSize};
+use viewer_gpu::province_map::HeightField;
 
 const FIGURE: f32 = 2.0;
 const STEP: f32 = 1.0 / 60.0;

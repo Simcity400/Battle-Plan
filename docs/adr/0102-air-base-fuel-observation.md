@@ -6,4 +6,4 @@ The worker gathers demand first and allocation second for every container. When 
 
 Metadata projections interpret subfields of owned spans separately from the typed replay's exact-key cursor. A covering observation wins even when it failed, and the worker may fetch additional subtype or owner fields only during fresh membership projection. The reusable index holds geometry and ordinals alone; each value and failure comes from the current owned log. Equal start addresses keep their input order, including later failed observations, during the stable address sort. A partially built index is discarded on error before another hour can use it.
 
-[State-base fuel projection and gather](../../crates/collector/src/extended/air/state_fuel_inputs.rs)
+[State-base fuel projection and gather](../../crates/collector-air/src/extended/air/state_fuel_inputs.rs)

@@ -192,9 +192,63 @@ impl Deref for Taken {
     }
 }
 
+fn advance(playhead: &Playhead, head: i32) {
+    while !playhead.shared.ask(None, head) {
+        std::thread::yield_now();
+    }
+}
+
+fn consumer_advance(consumer: &Consumer, head: i32) {
+    let clamped = consumer.shared.timeline.clamp(head);
+    loop {
+        consumer.advance(head);
+        let recorded = super::lock(&consumer.shared.control).asks.get(&Some(consumer.id)) == Some(&clamped);
+        if recorded && consumer.asked.load(Ordering::Relaxed) {
+            return;
+        }
+        std::thread::yield_now();
+    }
+}
+
+fn reaches(consumer: &Consumer, head: i32) -> bool {
+    loop {
+        if let Some(hit) = consumer.reaches(head) {
+            return hit;
+        }
+        std::thread::yield_now();
+    }
+}
+
+fn ahead_nonempty(consumer: &Consumer, out: &mut Vec<Arc<Step>>) {
+    let before = out.len();
+    loop {
+        consumer.ahead(out);
+        if out.len() > before {
+            return;
+        }
+        std::thread::yield_now();
+    }
+}
+
+fn take_steps(consumer: &mut Consumer, head: i32, out: &mut Vec<Arc<Step>>) -> usize {
+    let before = out.len();
+    loop {
+        consumer.take(head, out);
+        if consumer.reaches(head) == Some(false) {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    let taken = out.len() - before;
+    if taken > 0 {
+        consumer.shared.nudge(|_| {});
+    }
+    taken
+}
+
 fn take(consumer: &mut Consumer, head: i32, out: &mut Vec<Taken>) {
     let mut steps = Vec::new();
-    consumer.take(head, &mut steps);
+    take_steps(consumer, head, &mut steps);
     for step in steps {
         let states = step.tables().iter().filter(|changes| changes.reset()).filter_map(|changes| consumer.state(&step, changes.table()).map(|state| (changes.table(), *state.downcast::<Kept>().expect("a kept state")))).collect();
         out.push(Taken { step, states });
@@ -212,7 +266,7 @@ fn start(pages: &Arc<Runs>, settings: Settings, tables: &[usize], log: &Log) -> 
 fn play(playhead: &Playhead, consumer: &mut Consumer, from: i32, to: i32, every: i32, taken: &mut Vec<Taken>) {
     let mut head = from;
     loop {
-        playhead.advance(head);
+        advance(playhead, head);
         playhead.wait_until(|| {
             let built = playhead.newest().is_some_and(|newest| newest >= head);
             take(consumer, head, taken);
@@ -224,7 +278,14 @@ fn play(playhead: &Playhead, consumer: &mut Consumer, from: i32, to: i32, every:
         head = (head + every).min(to);
     }
     playhead.wait_until(|| {
-        take(consumer, if taken.last().is_some_and(|step| step.last() >= to) { to } else { i32::MAX }, taken);
+        if taken.last().is_some_and(|step| step.last() >= to) {
+            return true;
+        }
+        let mut ahead = Vec::new();
+        super::lock(&consumer.shared.ring).ahead(consumer.id, &mut ahead);
+        if let Some(through) = ahead.iter().map(|step| step.last()).find(|&last| last >= to) {
+            take(consumer, through, taken);
+        }
         taken.last().is_some_and(|step| step.last() >= to)
     });
 }
@@ -293,7 +354,7 @@ fn a_seek_abandons_the_ring() {
     let mut taken = Vec::new();
     play(&playhead, &mut consumer, 0, 96, 24, &mut taken);
     let old = taken.last().unwrap().epoch();
-    playhead.advance(400);
+    advance(&playhead, 400);
     playhead.wait_until(|| playhead.kept() == 3);
     playhead.seek(1000);
     taken.clear();
@@ -399,7 +460,7 @@ fn a_failed_join_of_a_table_no_reader_declares_any_more_does_not_stop_the_playhe
     let b = playhead.declare(every(&[1]), Some(kept(1, &log))).unwrap();
     pages.extents[0].wait_blocked();
     hold.arm();
-    playhead.advance(124);
+    advance(&playhead, 124);
     take(&mut first.consumer, 124, &mut first.taken);
     hold.wait_held();
     playhead.redeclare(b, Vec::new()).unwrap();
@@ -429,7 +490,7 @@ fn a_seek_runs_each_readers_rebuild_once_for_each_table_it_declared() {
         playhead.seek(hour);
         let mut steps = Vec::new();
         playhead.wait_until(|| {
-            first.take(hour, &mut steps);
+            take_steps(&mut first, hour, &mut steps);
             !steps.is_empty()
         });
         let reset = &steps[0];
@@ -448,7 +509,7 @@ fn a_seek_runs_each_readers_rebuild_once_for_each_table_it_declared() {
         assert_eq!(state.columns, vec![0, 2]);
         assert!(state.holds(&states[0][1][hour as usize]));
         let mut rest = Vec::new();
-        second.take(hour, &mut rest);
+        take_steps(&mut second, hour, &mut rest);
         drop((steps, rest));
     }
 }
@@ -587,7 +648,7 @@ fn a_seek_across_a_boundary_resets_whole_and_the_hours_after_it_cross_again() {
     for sought in [1000, 1024, 300] {
         taken.clear();
         playhead.seek(sought);
-        playhead.advance(sought);
+        advance(&playhead, sought);
         playhead.wait_until(|| {
             take(&mut consumer, sought, &mut taken);
             taken.iter().any(|step| step.reset() && step.last() == sought)
@@ -640,7 +701,7 @@ fn a_rebuilt_state_is_taken_once_by_its_reader_and_one_never_taken_is_dropped_on
     playhead.seek(0);
     let mut steps = Vec::new();
     playhead.wait_until(|| {
-        first.take(0, &mut steps);
+        take_steps(&mut first, 0, &mut steps);
         !steps.is_empty()
     });
     assert!(first.state(&steps[0], 0).unwrap().downcast::<Kept>().is_ok());
@@ -673,12 +734,12 @@ fn the_clock_holds_at_a_seek_until_its_reset_is_taken_and_a_newer_seek_replaces_
     playhead.seek(900);
     let later = Instant::now() + Duration::from_secs(3600);
     assert_eq!(playhead.head(later), 900, "held at the newer hour");
-    playhead.advance(900);
+    advance(&playhead, 900);
     playhead.wait_until(|| playhead.ring_len() >= 1);
     assert_eq!(playhead.head(later), 900, "held while its reset waits to be taken");
     let mut steps = Vec::new();
     let before = Instant::now();
-    consumer.take(900, &mut steps);
+    take_steps(&mut consumer, 900, &mut steps);
     let after = Instant::now();
     assert!(steps[0].reset() && steps[0].last() == 900, "the first reset taken is the newer seek's");
     assert_eq!(playhead.holding(), None);
@@ -699,10 +760,10 @@ fn a_publication_is_prepared_for_the_hour_the_head_will_reach_and_for_nothing_pa
     playhead.play(1440.0);
     playhead.seek(300);
     assert_eq!(playhead.head_from(300, making), None, "held at a seek, the hour sought is the hour prepared");
-    playhead.advance(300);
+    advance(&playhead, 300);
     playhead.wait_until(|| playhead.ring_len() >= 1);
     let mut steps = Vec::new();
-    consumer.take(300, &mut steps);
+    take_steps(&mut consumer, 300, &mut steps);
     assert!(steps[0].reset());
     assert_eq!(playhead.head_from(300, making), Some(314), "at 1,440 hours a second ten milliseconds is fourteen hours");
     assert_eq!(playhead.head_from(300, Duration::ZERO), Some(300), "a publication that reaches the screen at once looks nowhere ahead");
@@ -725,12 +786,12 @@ fn the_clock_runs_from_the_frame_that_shows_the_reset() {
     let mut consumer = playhead.consumer(reader);
     playhead.play(24.0);
     playhead.seek(900);
-    playhead.advance(900);
+    advance(&playhead, 900);
     playhead.wait_until(|| playhead.ring_len() >= 1);
     let frame = Instant::now();
     let head = playhead.head(frame);
     let mut steps = Vec::new();
-    consumer.take(head, &mut steps);
+    take_steps(&mut consumer, head, &mut steps);
     assert!(steps[0].reset() && head == 900);
     assert_eq!(playhead.head(frame + Duration::from_secs(1)), 924, "a step a second after the frame that showed the reset");
     assert_eq!(playhead.head(frame + Duration::from_secs(10)), 1140);
@@ -744,9 +805,9 @@ fn a_head_run_ahead_of_every_reader_builds_no_more_than_the_ring_past_what_was_t
     let mut taken = Vec::new();
     play(&playhead, &mut consumer, 0, 0, 24, &mut taken);
     playhead.wait_until(|| playhead.newest() == Some(3 * 24));
-    playhead.advance(600);
+    advance(&playhead, 600);
     let mut first = Vec::new();
-    consumer.take(24, &mut first);
+    take_steps(&mut consumer, 24, &mut first);
     assert_eq!(first.len(), 1, "the step to hour 24");
     playhead.wait_until(|| playhead.newest().is_some_and(|newest| newest >= 600));
     assert_eq!(playhead.newest(), Some(600), "one step to the head once one was taken, none past it while nobody took them");
@@ -768,9 +829,9 @@ fn the_ring_holds_its_size_and_recycles_its_steps() {
     let mut head = 0;
     while head + 4 * 24 < BLOCK as i32 {
         head += 24;
-        playhead.advance(head);
+        advance(&playhead, head);
         let mut now = Vec::new();
-        consumer.take(head, &mut now);
+        take_steps(&mut consumer, head, &mut now);
         assert!(now.last().is_some_and(|step| step.last() == head), "the step to hour {head} is there to take");
         steps += now.len();
         made.extend(now.iter().map(|step| Arc::as_ptr(step) as usize));
@@ -790,21 +851,21 @@ fn a_second_consumer_sees_every_step_once() {
     let (mut seen, mut late) = (Vec::new(), Vec::new());
     let mut head = 0;
     while head < 719 {
-        playhead.advance(head);
+        advance(&playhead, head);
         playhead.wait_until(|| {
-            first.take(head, &mut seen);
-            second.take(head - 24, &mut late);
+            take_steps(&mut first, head, &mut seen);
+            take_steps(&mut second, head - 24, &mut late);
             playhead.newest().is_some_and(|newest| newest >= head)
         });
         head = (head + 24).min(719);
     }
-    playhead.advance(719);
+    advance(&playhead, 719);
     playhead.wait_until(|| {
-        second.take(719, &mut late);
-        first.take(719, &mut seen);
+        take_steps(&mut second, 719, &mut late);
+        take_steps(&mut first, 719, &mut seen);
         seen.last().is_some_and(|step| step.last() == 719 && step.tables().iter().all(|table| table.short() == 0))
     });
-    second.take(719, &mut late);
+    take_steps(&mut second, 719, &mut late);
     let spans = |steps: &[Arc<Step>]| steps.iter().map(|step| (step.seq(), step.first(), step.last(), step.tables().iter().map(Changes::short).max())).collect::<Vec<_>>();
     assert_eq!(spans(&seen), spans(&late), "the first consumer's steps against the second's (seq, first, last, most short)");
     for (a, b) in seen.iter().zip(&late) {
@@ -822,7 +883,7 @@ fn the_head_past_the_end_stops_at_the_last_hour() {
     assert_eq!(last, BLOCK as i32 + 99);
     let mut taken = Vec::new();
     play(&playhead, &mut consumer, 0, 600, 24, &mut taken);
-    playhead.advance(i32::MAX);
+    advance(&playhead, i32::MAX);
     playhead.wait_until(|| {
         take(&mut consumer, i32::MAX, &mut taken);
         taken.last().is_some_and(|step| step.last() == last)
@@ -847,9 +908,9 @@ fn the_hook_sees_every_step_with_the_lanes_at_its_end() {
     let mut consumer = playhead.consumer(reader);
     playhead.seek(0);
     let mut taken = Vec::new();
-    playhead.advance(300);
+    advance(&playhead, 300);
     playhead.wait_until(|| {
-        consumer.take(i32::MAX, &mut taken);
+        take_steps(&mut consumer, i32::MAX, &mut taken);
         taken.last().is_some_and(|step| step.last() >= 300)
     });
     let seen = seen.lock().unwrap();
@@ -872,9 +933,9 @@ fn log_declared(passing: bool) -> Vec<Declared> {
 fn play_steps(playhead: &Playhead, consumer: &mut Consumer, from: i32, to: i32, every: i32, taken: &mut Vec<Arc<Step>>) {
     let mut head = from;
     loop {
-        playhead.advance(head);
+        advance(playhead, head);
         playhead.wait_until(|| {
-            consumer.take(head, taken);
+            take_steps(consumer, head, taken);
             playhead.newest().is_some_and(|newest| newest >= head)
         });
         if head >= to {
@@ -883,7 +944,7 @@ fn play_steps(playhead: &Playhead, consumer: &mut Consumer, from: i32, to: i32, 
         head = (head + every).min(to);
     }
     playhead.wait_until(|| {
-        consumer.take(i32::MAX, taken);
+        take_steps(consumer, i32::MAX, taken);
         taken.last().is_some_and(|step| step.last() >= to && step.tables().iter().all(|table| table.short() == 0))
     });
 }
@@ -901,14 +962,14 @@ fn a_seek_abandons_a_log_lanes_ring() {
     let mut taken = Vec::new();
     play_steps(&playhead, &mut consumer, 0, 96, 24, &mut taken);
     let old = taken.last().unwrap().epoch();
-    playhead.advance(400);
+    advance(&playhead, 400);
     playhead.wait_until(|| playhead.kept() == 3);
     playhead.seek(1000);
     taken.clear();
-    consumer.take(i32::MAX, &mut taken);
+    take_steps(&mut consumer, i32::MAX, &mut taken);
     assert!(taken.iter().all(|step| step.epoch() != old), "nothing of the old epoch after the seek");
     playhead.wait_until(|| {
-        consumer.take(1000, &mut taken);
+        take_steps(&mut consumer, 1000, &mut taken);
         !taken.is_empty()
     });
     let reset = Arc::clone(&taken[0]);
@@ -1009,7 +1070,7 @@ fn whole_ahead() -> Settings {
 fn frames(playhead: &Playhead, sides: &mut [&mut Side], from: i32, to: i32) {
     let mut head = from;
     loop {
-        playhead.advance(head);
+        advance(playhead, head);
         playhead.wait_until(|| {
             let built = playhead.newest().is_some_and(|newest| newest >= head);
             for side in sides.iter_mut() {
@@ -1025,7 +1086,7 @@ fn frames(playhead: &Playhead, sides: &mut [&mut Side], from: i32, to: i32) {
 }
 
 fn arrive(playhead: &Playhead, side: &mut Side, head: i32, tables: &[usize]) {
-    playhead.advance(head);
+    advance(playhead, head);
     playhead.wait_until(|| {
         take(&mut side.consumer, head, &mut side.taken);
         tables.iter().all(|&table| side.joined(table).is_some())
@@ -1109,12 +1170,12 @@ fn a_consumer_looks_ahead_without_taking_and_a_join_at_the_head_lands_past_steps
     playhead.wait_until(|| playhead.ring_len() == 3);
     let shown = first.taken.last().unwrap().last();
     let mut lent = Vec::new();
-    first.consumer.ahead(&mut lent);
+    ahead_nonempty(&first.consumer, &mut lent);
     assert_eq!(lent.len(), 3, "every step built and not taken is lent");
     assert!(lent.iter().all(|step| step.first() > shown), "only steps past the last taken");
     assert!(lent.windows(2).all(|pair| pair[1].first() == pair[0].last() + 1), "in order, hour after hour");
     let mut again = Vec::new();
-    first.consumer.ahead(&mut again);
+    ahead_nonempty(&first.consumer, &mut again);
     assert!(lent.iter().zip(&again).all(|(a, b)| Arc::ptr_eq(a, b)) && again.len() == lent.len(), "looking twice lends the same steps: looking takes none");
     let spans: Vec<(i32, i32)> = lent.iter().filter(|step| step.first() <= step.last()).map(|step| (step.first(), step.last())).collect();
     let b = playhead.declare(every(&[1]), Some(kept(1, &log))).unwrap();
@@ -1298,14 +1359,14 @@ fn a_consumer_late_to_take_holds_neither_the_stepper_nor_another_consumer_and_co
         !reset.is_empty()
     });
     assert!(reset[0].reset() && reset[0].states.contains_key(&0), "the late one takes the seek's reset, then nothing");
-    late.advance(0);
+    consumer_advance(&late, 0);
     let mut seen: Vec<Arc<Step>> = Vec::new();
     let mut frame = |head: i32, seen: &mut Vec<Arc<Step>>| {
-        early.advance(head);
+        consumer_advance(&early, head);
         playhead.wait_until(|| {
             let built = playhead.newest().is_some_and(|newest| newest >= head);
-            early.take(head, seen);
-            built && early.reaches(head) == Some(false)
+            take_steps(&mut early, head, seen);
+            built && !reaches(&early, head)
         });
     };
     let joins = playhead.held().2.joins;
@@ -1360,18 +1421,18 @@ fn a_log_reader_far_behind_is_caught_up_from_the_file_with_every_row_it_skipped(
     playhead.seek(0);
     let mut taken: Vec<Arc<Step>> = Vec::new();
     playhead.wait_until(|| {
-        late.take(0, &mut taken);
+        take_steps(&mut late, 0, &mut taken);
         !taken.is_empty()
     });
     assert!(taken.len() == 1 && taken[0].reset(), "the late one takes the seek's reset, then nothing");
-    late.advance(0);
+    consumer_advance(&late, 0);
     let mut seen: Vec<Arc<Step>> = Vec::new();
     let mut frame = |head: i32, seen: &mut Vec<Arc<Step>>| {
-        early.advance(head);
+        consumer_advance(&early, head);
         playhead.wait_until(|| {
             let built = playhead.newest().is_some_and(|newest| newest >= head);
-            early.take(head, seen);
-            built && early.reaches(head) == Some(false)
+            take_steps(&mut early, head, seen);
+            built && !reaches(&early, head)
         });
     };
     let mut head = 0;
@@ -1390,10 +1451,10 @@ fn a_log_reader_far_behind_is_caught_up_from_the_file_with_every_row_it_skipped(
     while head < through {
         head = (head + 24).min(last);
         frame(head, &mut seen);
-        late.take(head, &mut taken);
+        take_steps(&mut late, head, &mut taken);
     }
     playhead.wait_until(|| {
-        late.take(head, &mut taken);
+        take_steps(&mut late, head, &mut taken);
         taken.last().and_then(|step| step.table(0)).and_then(Changes::head).is_some_and(|reached| reached >= head)
     });
     let mut reached = 0;
@@ -1431,18 +1492,18 @@ fn caught_up_where_its_lane_stood_short(built_past: bool) {
     playhead.seek(0);
     let mut taken: Vec<Arc<Step>> = Vec::new();
     playhead.wait_until(|| {
-        late.take(0, &mut taken);
+        take_steps(&mut late, 0, &mut taken);
         !taken.is_empty()
     });
-    late.advance(0);
+    consumer_advance(&late, 0);
     pages.extents[0].close(0, u64::MAX);
     let mut seen: Vec<Arc<Step>> = Vec::new();
     let frame = |early: &mut Consumer, head: i32, seen: &mut Vec<Arc<Step>>| {
-        early.advance(head);
+        consumer_advance(early, head);
         playhead.wait_until(|| {
             let built = playhead.newest().is_some_and(|newest| newest >= head);
-            early.take(head, seen);
-            built && early.reaches(head) == Some(false)
+            take_steps(early, head, seen);
+            built && !reaches(early, head)
         });
     };
     let stand = 144;
@@ -1451,7 +1512,7 @@ fn caught_up_where_its_lane_stood_short(built_past: bool) {
     }
     assert!(seen.last().and_then(|step| step.table(0)).and_then(Changes::head).is_some_and(|head| head < stand), "the log's lane stands short at {stand}");
     if built_past {
-        early.advance(stand + 96);
+        consumer_advance(&early, stand + 96);
         playhead.wait_until(|| playhead.newest().is_some_and(|newest| newest >= stand + 96));
     }
     playhead.wait_until(|| playhead.held().2.landed_behind >= 1);
@@ -1462,10 +1523,10 @@ fn caught_up_where_its_lane_stood_short(built_past: bool) {
     while head < stand + 240 {
         head += 24;
         frame(&mut early, head, &mut seen);
-        late.take(head, &mut taken);
+        take_steps(&mut late, head, &mut taken);
     }
     playhead.wait_until(|| {
-        late.take(head, &mut taken);
+        take_steps(&mut late, head, &mut taken);
         taken.last().and_then(|step| step.table(0)).and_then(Changes::head).is_some_and(|reached| reached >= head)
     });
     let mut reached = 0;
@@ -1507,7 +1568,7 @@ fn a_seek_prepares_its_tables_on_threads_lent_to_it() {
     gated.open();
     playhead.wait_until(|| playhead.ring_len() >= 1);
     let mut steps = Vec::new();
-    consumer.take(100, &mut steps);
+    take_steps(&mut consumer, 100, &mut steps);
     let sought = steps[0].built().sought.expect("the reset of a seek");
     assert!(steps[0].reset() && sought.tables as usize == tables);
     assert!(sought.threads as usize >= expected, "{} threads prepared the seek's tables", sought.threads);
@@ -1520,12 +1581,12 @@ fn a_head_held_past_the_newest_step_is_reached_by_the_next_step() {
     let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 100, ring: 1, speed: 1.0, rate: 1.0, ..Settings::default() };
     let (playhead, mut consumer) = start(&pages, settings, &[0], &log);
     let mut taken = Vec::new();
-    playhead.advance(0);
+    advance(&playhead, 0);
     playhead.wait_until(|| {
         take(&mut consumer, 0, &mut taken);
         !taken.is_empty() && playhead.ring_len() == 1
     });
-    playhead.advance(5);
+    advance(&playhead, 5);
     playhead.wait_until(|| {
         take(&mut consumer, 5, &mut taken);
         taken.last().is_some_and(|step| step.last() == 5) || playhead.ring_len() == 1 && taken.last().is_some_and(|step| step.last() < 5) && playhead.newest().is_some_and(|newest| newest > 5)
@@ -1546,13 +1607,13 @@ fn a_table_declared_while_the_clock_is_held_joins_where_the_frames_are_not_where
     let (mut ahead, mut behind) = (Side::new(&playhead, a), Side::new(&playhead, a));
     playhead.seek(0);
     frames(&playhead, &mut [&mut ahead, &mut behind], 0, 96);
-    playhead.advance(120);
+    advance(&playhead, 120);
     playhead.wait_until(|| {
         take(&mut ahead.consumer, 120, &mut ahead.taken);
         ahead.taken.last().is_some_and(|step| step.last() == 120)
     });
     assert_eq!(playhead.head(Instant::now()), 0, "the clock is held where it was sought");
-    assert!(behind.consumer.reaches(120) == Some(true) && ahead.consumer.reaches(120) == Some(false), "the side behind has a step to take at the head, the one ahead none");
+    assert!(reaches(&behind.consumer, 120) && !reaches(&ahead.consumer, 120), "the side behind has a step to take at the head, the one ahead none");
     let b = playhead.declare(every(&[1]), Some(kept(1, &log))).unwrap();
     let mut late = Side::new(&playhead, b);
     let until = Instant::now() + Duration::from_secs(5);
@@ -1769,7 +1830,7 @@ fn a_reader_declared_after_a_seek_with_the_head_standing_there_has_its_tables_at
     let mut late_side = Side::new(&playhead, late);
     let deadline = Instant::now() + Duration::from_secs(50);
     playhead.wait_until(|| {
-        playhead.advance(0);
+        advance(&playhead, 0);
         std::thread::yield_now();
         take(&mut map_side.consumer, 0, &mut map_side.taken);
         take(&mut late_side.consumer, 0, &mut late_side.taken);
@@ -1861,7 +1922,7 @@ fn a_table_declared_again_while_the_head_stands_then_moves_takes_the_landing_fro
     let declared = playhead.newest().unwrap();
     let deadline = Instant::now() + Duration::from_secs(50);
     playhead.wait_until(|| {
-        playhead.advance(168);
+        advance(&playhead, 168);
         std::thread::yield_now();
         take(&mut kept_side.consumer, 168, &mut kept_side.taken);
         take(&mut side.consumer, 168, &mut side.taken);
@@ -1913,14 +1974,14 @@ fn a_reader_standing_beside_one_stepping_on_gets_a_table_it_declares_at_its_own_
     let before = slow.taken.len();
     let mut head = 96;
     let stand = |slow: &mut Side| {
-        slow.consumer.advance(96);
+        consumer_advance(&slow.consumer, 96);
         playhead.stand();
         take(&mut slow.consumer, 96, &mut slow.taken);
         slow.taken[before..].iter().any(|step| step.states.contains_key(&1))
     };
     while head < 96 + 240 {
         head += 24;
-        fast.consumer.advance(head);
+        consumer_advance(&fast.consumer, head);
         playhead.wait_until(|| {
             take(&mut fast.consumer, head, &mut fast.taken);
             fast.taken.last().is_some_and(|step| step.last() >= head)
@@ -1929,7 +1990,7 @@ fn a_reader_standing_beside_one_stepping_on_gets_a_table_it_declares_at_its_own_
     }
     let deadline = Instant::now() + Duration::from_secs(50);
     playhead.wait_until(|| {
-        fast.consumer.advance(head);
+        consumer_advance(&fast.consumer, head);
         take(&mut fast.consumer, head, &mut fast.taken);
         assert!(Instant::now() < deadline, "the reader standing at 96 did not get table 1 within 50 s, the other standing at {head}: {:?}", playhead.held().2);
         stand(&mut slow)
@@ -1942,7 +2003,7 @@ fn a_reader_standing_beside_one_stepping_on_gets_a_table_it_declares_at_its_own_
     let mut at_hour = 96;
     while at_hour < head {
         at_hour = (at_hour + 24).min(head);
-        slow.consumer.advance(at_hour);
+        consumer_advance(&slow.consumer, at_hour);
         playhead.wait_until(|| {
             take(&mut slow.consumer, at_hour, &mut slow.taken);
             slow.taken.last().is_some_and(|step| step.last() >= at_hour)
@@ -2011,7 +2072,7 @@ fn a_table_dropped_and_declared_again_before_the_stepper_applies_arrives_as_a_re
     let landed = |side: &mut Side, before: usize, head: i32, what: &str| -> usize {
         let deadline = Instant::now() + Duration::from_secs(50);
         playhead.wait_until(|| {
-            playhead.advance(head);
+            advance(&playhead, head);
             std::thread::yield_now();
             take(&mut side.consumer, head, &mut side.taken);
             if side.taken[before..].iter().any(|step| step.states.contains_key(&1)) {
@@ -2124,15 +2185,15 @@ fn a_consumer_far_behind_lands_at_the_head_from_memory_without_a_read() {
     playhead.seek(0);
     let mut seen: Vec<Arc<Step>> = Vec::new();
     let mut frame = |head: i32, seen: &mut Vec<Arc<Step>>| {
-        playhead.advance(head);
+        advance(&playhead, head);
         playhead.wait_until(|| {
-            map.take(head, seen);
+            take_steps(&mut map, head, seen);
             seen.last().is_some_and(|step| step.last() >= head)
         });
     };
     frame(0, &mut seen);
     let mut reset = Vec::new();
-    late.take(0, &mut reset);
+    take_steps(&mut late, 0, &mut reset);
     assert!(reset.len() == 1 && reset[0].reset(), "the late one takes the seek's reset alone");
     for head in (24..=96).step_by(24) {
         frame(head, &mut seen);
@@ -2149,7 +2210,7 @@ fn a_consumer_far_behind_lands_at_the_head_from_memory_without_a_read() {
         assert!(head < 1200, "the late one did not land by hour {head} (newest {:?})", playhead.newest());
         head += 24;
         frame(head, &mut seen);
-        late.take(head, &mut landed);
+        take_steps(&mut late, head, &mut landed);
     }
     let landing = Arc::clone(&landed[0]);
     let hour = landing.last();
@@ -2170,7 +2231,7 @@ fn a_consumer_far_behind_lands_at_the_head_from_memory_without_a_read() {
     for _ in 0..5 {
         head += 24;
         frame(head, &mut seen);
-        late.take(head, &mut landed);
+        take_steps(&mut late, head, &mut landed);
     }
     assert!(landed.len() > 5, "the steps after the landing");
     for step in &landed[1..] {
@@ -2237,7 +2298,7 @@ fn fast() -> Settings {
 fn hour_by_hour(playhead: &Playhead, sides: &mut [&mut Side], from: i32, to: i32) {
     for head in from..=to {
         playhead.wait_until(|| playhead.newest().is_some_and(|newest| newest >= head));
-        playhead.advance(head);
+        advance(playhead, head);
         for side in sides.iter_mut() {
             take(&mut side.consumer, head, &mut side.taken);
         }
@@ -2297,7 +2358,7 @@ fn a_slower_pace_builds_the_steps_past_the_frames_again_at_its_size_and_each_con
     playhead.seek(0);
     frames(&playhead, &mut [&mut far, &mut near], 0, 240);
     playhead.wait_until(|| playhead.ring_len() == fast().ring);
-    playhead.advance(288);
+    advance(&playhead, 288);
     playhead.wait_until(|| {
         take(&mut far.consumer, 288, &mut far.taken);
         far.taken.last().is_some_and(|step| step.last() == 288)
@@ -2341,7 +2402,7 @@ fn paused_a_new_pace_builds_the_steps_ahead_again_and_each_hour_shows_that_hour(
     playhead.wait_until(|| playhead.held().2.resteps == 1);
     for hour in 241..=260 {
         let from = side.taken.len();
-        playhead.advance(hour);
+        advance(&playhead, hour);
         playhead.wait_until(|| {
             take(&mut side.consumer, hour, &mut side.taken);
             side.taken.last().is_some_and(|step| step.last() == hour)
@@ -2391,7 +2452,7 @@ fn a_table_read_hourly_carries_its_hours_and_a_reset_or_a_crossing_carries_none(
     play(&playhead, &mut consumer, 0, 400, 24, &mut taken);
     play(&playhead, &mut consumer, 900, 1000 + BLOCK as i32 + 49, 24, &mut taken);
     playhead.seek(300);
-    playhead.advance(300);
+    advance(&playhead, 300);
     playhead.wait_until(|| {
         take(&mut consumer, 300, &mut taken);
         taken.iter().any(|step| step.reset() && step.last() == 300)
@@ -2506,7 +2567,7 @@ fn a_lead_builds_its_seconds_of_steps_past_the_head_sized_by_the_pace_and_stops_
     let mut taken = Vec::new();
     let from_the_start = |consumer: &mut Consumer, taken: &mut Vec<Taken>| {
         playhead.seek(0);
-        playhead.advance(0);
+        advance(&playhead, 0);
         taken.clear();
         playhead.wait_until(|| {
             take(consumer, 0, taken);
@@ -2532,4 +2593,397 @@ fn a_lead_builds_its_seconds_of_steps_past_the_head_sized_by_the_pace_and_stops_
     playhead.wait_until(|| playhead.lead_held().capped);
     let capped = playhead.lead_held();
     assert!(capped.past < 30 && capped.bytes >= whole.bytes / 3, "stopped at its bytes, short of its steps: {capped:?}");
+}
+
+#[test]
+fn a_contended_ring_refuses_frame_reads_without_consuming_pending_steps() {
+    let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, BLOCK)]);
+    let log = Log::default();
+    let (playhead, mut consumer) = start(&pages, whole_ahead(), &[0], &log);
+    let mut taken = Vec::new();
+    playhead.wait_until(|| {
+        take(&mut consumer, 0, &mut taken);
+        taken.iter().any(|step| step.reset() && step.last() == 0)
+    });
+    playhead.wait_until(|| playhead.ring_len() == whole_ahead().ring);
+    let mut expected = Vec::new();
+    ahead_nonempty(&consumer, &mut expected);
+    assert_eq!((expected[0].first(), expected[0].last()), (1, 24));
+    assert!(!consumer.asked.load(Ordering::Relaxed));
+
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let shared = Arc::clone(&playhead.shared);
+    let holder = std::thread::spawn(move || {
+        let _ring = super::lock(&shared.ring);
+        locked_tx.send(()).unwrap();
+        let _ = release_rx.recv();
+    });
+    locked_rx.recv().unwrap();
+
+    assert_eq!(consumer.reaches(24), None);
+    let mut preview = Vec::new();
+    consumer.ahead(&mut preview);
+    assert!(preview.is_empty());
+    let mut blocked = Vec::new();
+    assert_eq!(consumer.take(24, &mut blocked), 0);
+    assert!(blocked.is_empty());
+    while super::lock(&playhead.shared.control).head != 24 {
+        consumer.advance(24);
+        std::thread::yield_now();
+    }
+    assert!(!consumer.asked.load(Ordering::Relaxed));
+
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+
+    assert!(!super::lock(&playhead.shared.ring).asked(consumer.id));
+    assert!(reaches(&consumer, 24));
+    let mut still_ahead = Vec::new();
+    ahead_nonempty(&consumer, &mut still_ahead);
+    assert!(Arc::ptr_eq(&still_ahead[0], &expected[0]));
+    let mut after = Vec::new();
+    assert_eq!(take_steps(&mut consumer, 24, &mut after), 1);
+    assert_eq!(after.len(), 1);
+    assert!(Arc::ptr_eq(&after[0], &expected[0]));
+    assert_eq!((after[0].first(), after[0].last()), (1, 24));
+    let mut held = taken[0].states[&0].clone();
+    held.apply(after[0].table(0).unwrap());
+    assert!(held.holds(&states[0][0][24]));
+    while !consumer.asked.load(Ordering::Relaxed) {
+        consumer.advance(24);
+        std::thread::yield_now();
+    }
+    assert!(consumer.asked.load(Ordering::Relaxed));
+    assert!(super::lock(&playhead.shared.ring).asked(consumer.id));
+}
+
+#[test]
+fn a_contended_control_refuses_frame_advances_without_blocking_or_dropping_takes() {
+    let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, BLOCK)]);
+    let log = Log::default();
+    let (playhead, mut consumer) = start(&pages, whole_ahead(), &[0], &log);
+    let mut taken = Vec::new();
+    playhead.wait_until(|| {
+        take(&mut consumer, 0, &mut taken);
+        taken.iter().any(|step| step.reset() && step.last() == 0)
+    });
+    playhead.wait_until(|| playhead.ring_len() == whole_ahead().ring);
+    assert_eq!(super::lock(&playhead.shared.control).head, 0);
+    assert!(!consumer.asked.load(Ordering::Relaxed));
+
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let shared = Arc::clone(&playhead.shared);
+    let holder = std::thread::spawn(move || {
+        let _control = super::lock(&shared.control);
+        locked_tx.send(()).unwrap();
+        let _ = release_rx.recv();
+    });
+    locked_rx.recv().unwrap();
+
+    playhead.advance(96);
+    consumer.advance(72);
+    assert!(!consumer.asked.load(Ordering::Relaxed));
+    let mut during = Vec::new();
+    while during.is_empty() {
+        consumer.take(24, &mut during);
+        if during.is_empty() {
+            std::thread::yield_now();
+        }
+    }
+    assert_eq!(during.len(), 1);
+    assert_eq!((during[0].first(), during[0].last()), (1, 24));
+
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+
+    assert_eq!(super::lock(&playhead.shared.control).head, 0);
+    assert!(!consumer.asked.load(Ordering::Relaxed));
+    assert!(!super::lock(&playhead.shared.ring).asked(consumer.id));
+
+    while !consumer.asked.load(Ordering::Relaxed) || super::lock(&playhead.shared.control).head != 72 {
+        consumer.advance(72);
+        std::thread::yield_now();
+    }
+    assert!(consumer.asked.load(Ordering::Relaxed));
+    assert!(super::lock(&playhead.shared.ring).asked(consumer.id));
+    assert_eq!(super::lock(&playhead.shared.control).head, 72);
+    let mut rest = Vec::new();
+    playhead.wait_until(|| {
+        take_steps(&mut consumer, 72, &mut rest);
+        rest.last().is_some_and(|step| step.last() >= 72)
+    });
+    let mut held = taken[0].states[&0].clone();
+    for step in during.iter().chain(rest.iter()) {
+        held.apply(step.table(0).unwrap());
+    }
+    assert_eq!(held.head, Some(72));
+    assert!(held.holds(&states[0][0][72]));
+}
+
+#[test]
+fn drive_until_wakes_and_errors_when_a_hook_panics_after_an_empty_poll() {
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, BLOCK)]);
+    let (step_tx, step_rx) = std::sync::mpsc::channel::<i32>();
+    let (polled_tx, polled_rx) = std::sync::mpsc::channel::<()>();
+    let hook: super::Hook = Box::new(move |step, _| {
+        let _keep = &step_tx;
+        let _ = polled_rx.recv();
+        panic!("hook panicked at hour {}", step.last());
+    });
+    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), whole_ahead(), Some(hook)).unwrap();
+    let reader = playhead.declare(every(&[0]), None).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    playhead.seek(0);
+    let mut signaled = false;
+    let error = playhead
+        .drive_until(&mut consumer, 0, || match step_rx.try_recv() {
+            Ok(_) => std::ops::ControlFlow::Break(Ok(())),
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                if !signaled {
+                    signaled = true;
+                    polled_tx.send(()).unwrap();
+                }
+                std::ops::ControlFlow::Continue(())
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                std::ops::ControlFlow::Break(Err("step hook channel disconnected".into()))
+            }
+        })
+        .expect_err("drive_until must wake and fail when the hook panics");
+    assert!(error.contains("panicked") || error.contains("disconnected"), "unexpected error: {error}");
+    let newest_error = playhead.wait_newest(0).expect_err("wait_newest must wake on stepper panic");
+    assert!(newest_error.contains("panicked"), "unexpected wait_newest error: {newest_error}");
+}
+
+#[test]
+fn wait_step_after_observes_same_hour_join_delivery_and_queued_ring_steps() {
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 40)]);
+    let log = Log::default();
+    let playhead = Playhead::new(
+        Arc::clone(&pages) as Arc<dyn Pages>,
+        Timeline::whole(&*pages).unwrap(),
+        Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 4, speed: 4.0, rate: 1.0, ..Settings::default() },
+        None,
+    )
+    .unwrap();
+    let reader = playhead.declare(every(&[0]), Some(kept(0, &log))).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    playhead.seek(0);
+    let last = playhead.timeline().last();
+    let mut steps = Vec::new();
+    let mid = 8;
+    loop {
+        let before = playhead.step_state();
+        let head = before.0.unwrap_or(0).min(mid);
+        consumer_advance(&consumer, head);
+        take_steps(&mut consumer, head, &mut steps);
+        if steps.last().is_some_and(|step| step.last() >= mid) {
+            break;
+        }
+        assert!(consumer.wait_step_after(before, mid).unwrap(), "playhead stopped before step {mid}");
+    }
+    playhead.wait_until(|| playhead.ring_len() == 4);
+    let published = super::lock(&playhead.shared.ring).next_seq();
+    playhead.wait_until(|| playhead.step_state().1 >= published);
+    assert!(playhead.newest().is_some_and(|newest| newest > mid));
+    let paused_dropped = playhead.consumer(reader);
+    let paused_id = paused_dropped.id;
+    drop(paused_dropped);
+    playhead.shared.nudge(|control| {
+        control.lands.push(paused_id);
+        control.caught_up_at = None;
+    });
+    assert!(
+        !consumer.wait_step_after(playhead.step_state(), mid).unwrap(),
+        "a paused dropped consumer's discarded landing restores caught_up_at instead of blocking wait_step_after",
+    );
+    loop {
+        let before = playhead.step_state();
+        let head = before.0.unwrap_or(0);
+        consumer_advance(&consumer, head);
+        take_steps(&mut consumer, head, &mut steps);
+        if steps.last().is_some_and(|step| step.last() >= last) {
+            break;
+        }
+        assert!(consumer.wait_step_after(before, last).unwrap(), "playhead reached end before step {last}");
+    }
+    let at_end = playhead.step_state();
+    assert!(!consumer.wait_step_after(at_end, last).unwrap(), "at end with all tables caught up and ring drained, wait_step_after reports exhausted");
+    let dropped = playhead.consumer(reader);
+    let dropped_id = dropped.id;
+    drop(dropped);
+    playhead.shared.nudge(|control| {
+        control.lands.push(dropped_id);
+        control.caught_up_at = None;
+    });
+    assert!(
+        !consumer.wait_step_after(playhead.step_state(), last).unwrap(),
+        "a dropped consumer's discarded landing restores caught_up_at instead of blocking wait_step_after",
+    );
+    let before_redeclare = playhead.step_state();
+    playhead.redeclare(reader, every(&[0, 1])).unwrap();
+    assert!(
+        consumer.wait_step_after(before_redeclare, last).unwrap(),
+        "redeclaring table 1 at the last hour delivers a same-hour join step instead of reporting exhausted",
+    );
+    playhead.wait_until(|| {
+        playhead.step_state().1 > before_redeclare.1
+            && playhead.held().2.joins_open == 0
+            && playhead.held().2.declarations_applied == playhead.declarations()
+    });
+    let queued = playhead.step_state();
+    assert!(
+        consumer.wait_step_after(queued, last).unwrap(),
+        "a join step already queued in the ring is observed even when published_steps has not moved since",
+    );
+    let before_take = steps.len();
+    take_steps(&mut consumer, last, &mut steps);
+    assert!(steps[before_take..].iter().any(|step| step.table(1).is_some()), "the same-hour join step carries table 1");
+    let drained = playhead.step_state();
+    assert!(!consumer.wait_step_after(drained, last).unwrap(), "once the join step is drained at end, wait_step_after reports exhausted again");
+}
+
+#[test]
+fn a_completing_join_does_not_clobber_a_concurrent_redeclares_caught_up_state() {
+    #[derive(Default)]
+    struct HookGate {
+        state: std::sync::Mutex<(Option<usize>, bool, [bool; 3], bool)>,
+        changed: std::sync::Condvar,
+    }
+    struct OpenGate(Arc<HookGate>);
+    impl Drop for OpenGate {
+        fn drop(&mut self) {
+            let mut state = self.0.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.1 = true;
+            state.3 = true;
+            self.0.changed.notify_all();
+        }
+    }
+    let gate = Arc::new(HookGate::default());
+    let hook_gate = Arc::clone(&gate);
+    let hook: super::Hook = Box::new(move |step, _| {
+        for table in [1usize, 2] {
+            if step.table(table).is_some() {
+                let mut state = hook_gate.state.lock().unwrap();
+                if state.2[table] || state.3 {
+                    continue;
+                }
+                state.2[table] = true;
+                state.0 = Some(table);
+                state.1 = false;
+                hook_gate.changed.notify_all();
+                while !state.1 && !state.3 {
+                    state = hook_gate.changed.wait(state).unwrap();
+                }
+            }
+        }
+    });
+    let wait_hook = |target: usize| {
+        let mut state = gate.state.lock().unwrap();
+        while state.0 != Some(target) {
+            state = gate.changed.wait(state).unwrap();
+        }
+    };
+    let release_hook = || {
+        let mut state = gate.state.lock().unwrap();
+        state.1 = true;
+        gate.changed.notify_all();
+    };
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 3, &[(0, 40)]);
+    let log = Log::default();
+    let playhead = Playhead::new(
+        Arc::clone(&pages) as Arc<dyn Pages>,
+        Timeline::whole(&*pages).unwrap(),
+        Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 4, speed: 4.0, rate: 1.0, ..Settings::default() },
+        Some(hook),
+    )
+    .unwrap();
+    let _open = OpenGate(Arc::clone(&gate));
+    let reader = playhead.declare(every(&[0]), Some(kept(0, &log))).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    playhead.seek(0);
+    let last = playhead.timeline().last();
+    let mut steps = Vec::new();
+    loop {
+        let before = playhead.step_state();
+        let head = before.0.unwrap_or(0);
+        consumer_advance(&consumer, head);
+        take_steps(&mut consumer, head, &mut steps);
+        if steps.last().is_some_and(|step| step.last() >= last) {
+            break;
+        }
+        assert!(consumer.wait_step_after(before, last).unwrap(), "playhead reached end before step {last}");
+    }
+    playhead.redeclare(reader, every(&[0, 1])).unwrap();
+    wait_hook(1);
+    let before_t1_land = playhead.step_state();
+    playhead.redeclare(reader, every(&[0, 1, 2])).unwrap();
+    {
+        let mut control = super::lock(&playhead.shared.control);
+        release_hook();
+        while control.published_steps == before_t1_land.1 {
+            assert!(control.error.is_none(), "playhead errored while landing table 1: {:?}", control.error);
+            assert!(!control.stop, "playhead stopped while landing table 1");
+            control = playhead.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        assert_eq!(control.caught_up_at, None, "table 1's completion nudge did not clobber table 2's pending declaration");
+    }
+    wait_hook(2);
+    let before_take = steps.len();
+    take_steps(&mut consumer, last, &mut steps);
+    assert!(steps[before_take..].iter().any(|step| step.table(1).is_some()), "table 1 landed while table 2 is still joining");
+    assert!(steps[before_take..].iter().all(|step| step.table(2).is_none()), "table 2 has not landed yet");
+    let after_t1 = playhead.step_state();
+    let opener = {
+        let gate = Arc::clone(&gate);
+        std::thread::spawn(move || {
+            let mut state = gate.state.lock().unwrap();
+            state.1 = true;
+            gate.changed.notify_all();
+        })
+    };
+    assert!(consumer.wait_step_after(after_t1, last).unwrap(), "wait_step_after waits for table 2 instead of reporting exhausted");
+    opener.join().unwrap();
+    playhead.wait_until(|| {
+        playhead.step_state().1 > after_t1.1
+            && playhead.held().2.joins_open == 0
+            && playhead.held().2.declarations_applied == playhead.declarations()
+    });
+    let before_t2 = steps.len();
+    take_steps(&mut consumer, last, &mut steps);
+    assert!(steps[before_t2..].iter().any(|step| step.table(2).is_some()), "table 2 landed after release");
+    let drained = playhead.step_state();
+    assert!(!consumer.wait_step_after(drained, last).unwrap(), "after both joins drain at end, wait_step_after reports exhausted");
+
+    let mut stepper = super::Stepper::new(Arc::clone(&playhead.shared), None, Vec::new());
+    stepper.epoch = playhead.epoch();
+    stepper.selection_seen = playhead.declarations();
+    let mut control = super::lock(&playhead.shared.control);
+    let original_selection = control.selection;
+    control.caught_up_at = None;
+    control.selection = stepper.selection_seen + 1;
+    stepper.publish_caught_up(&mut control, Some(last));
+    assert_eq!(control.caught_up_at, None, "newer selection blocks setting caught_up_at");
+    control.selection = original_selection;
+    control.seek = Some((0, stepper.epoch + 1));
+    stepper.publish_caught_up(&mut control, Some(last));
+    assert_eq!(control.caught_up_at, None, "pending seek blocks setting caught_up_at");
+    control.seek = None;
+    control.lands.push(0);
+    stepper.publish_caught_up(&mut control, Some(last));
+    assert_eq!(control.caught_up_at, None, "pending land blocks setting caught_up_at");
+    control.lands.clear();
+    stepper.epoch = playhead.epoch().wrapping_add(1);
+    stepper.publish_caught_up(&mut control, Some(last));
+    assert_eq!(control.caught_up_at, None, "mismatched epoch blocks setting caught_up_at");
+    control.newest = None;
+    stepper.publish_newest(&mut control, last);
+    assert_eq!(control.newest, None, "a step of an abandoned epoch leaves the newest hour a seek cleared");
+    stepper.epoch = playhead.epoch();
+    stepper.publish_caught_up(&mut control, Some(last));
+    assert_eq!(control.caught_up_at, Some(last), "current control state accepts caught_up_at");
+    stepper.publish_newest(&mut control, last);
+    assert_eq!(control.newest, Some(last), "a step of the current epoch is the newest hour");
 }

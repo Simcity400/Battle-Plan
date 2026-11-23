@@ -15,6 +15,7 @@ import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, noMembersAt, resolveCountries } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
@@ -28,6 +29,7 @@ import { capturedText, departureText, labelHour, operativeMoments, operativeName
 import type { OperativeRow, Painted, PaintedField } from './rosterData';
 import './operativesRoster.css';
 import { useChangedState } from '../../dashboard/changedState';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_ROWS: OperativeRow[] = [];
 const NO_WARNINGS: string[] = [];
@@ -59,17 +61,19 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
     painted.current = paintedRows(reply);
     paintRoster(root.current, painted.current);
   }, []);
-  const head = useHeadProduct<OperativesRosterReply>(runtime, widget, 'operatives-roster', params, { active, validate: validateRoster, structure: rosterStructure, paint });
+  const gate = useGate(runtime, widget);
+  const head = useHeadProduct(runtime, gate, 'operatives-roster', params, { active, validate: validateRoster, structure: rosterStructure, paint });
   if (head.data && head.read !== 'followed') painted.current = paintedRows(head.data);
   useShownEachFrame(runtime.clock, () => head.shownAt(), head.live);
   const hour = head.at ?? head.hour ?? lastHour;
   const unheldSlots = useSlotTags(runtime.client, track, active && !!head.data?.unheld.some(isSlotKey));
-  const departedAt = widget.time.mode === 'campaign' && options.departed === true && head.read === 'asked' ? head.hour : null;
-  const departed = useProduct<OperativesDepartedReply>(runtime.client, track && params && departedAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'operatives-departed', params: { branchId: track.branch.id, countries: params.countries, hour: departedAt } } : null, active, validateDeparted, track?.source);
+  const departedAt = widget.time.mode === 'campaign' && options.departed === true && head.read === 'asked' ? gate.recorded(head.hour) : null;
+  const departed = useProduct<OperativesDepartedReply>(runtime.client, track && params && departedAt !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'operatives-departed', params: { branchId: track.branch.id, countries: params.countries, hour: departedAt } }) : null, active, validateDeparted, track?.source);
   const tenureHour = useRef<number | null>(null);
-  const tenuresAsked = useProduct<OperativeTenuresReply>(runtime.client, track && params && tenureHour.current !== null ? { sourceId: track.source.id,
-    revision: track.source.revision, product: 'operative-tenures', params: { branchId: track.branch.id, countries: params.countries, hour: tenureHour.current } } : null,
+  const tenureAt = gate.recorded(tenureHour.current);
+  const tenuresAsked = useProduct<OperativeTenuresReply>(runtime.client, track && params && tenureAt !== null ? productRequest({ sourceId: track.source.id,
+    revision: track.source.revision, product: 'operative-tenures', params: { branchId: track.branch.id, countries: params.countries, hour: tenureAt } }) : null,
     active, validateTenures, track?.source);
   const tenures = tenuresAsked.data;
   if (head.data && (tenureHour.current === null || (tenures && (hour < tenures.firstHour || hour > tenures.lastHour)))) tenureHour.current = hour;
@@ -149,7 +153,7 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
   const data = head.data;
   let body;
   if (!track) body = <WidgetState kind="empty" icon="shield" message="Load a campaign and choose a country to see its operatives." />;
-  else if (head.read === 'off') body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  else if (head.outside) body = <WidgetState kind="outside" read={head} />;
   else if (head.error) body = <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   else if (groups.error && !groups.data) body = <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   else if (!groups.data) body = <WidgetState kind="loading" label="Loading operatives…" />;

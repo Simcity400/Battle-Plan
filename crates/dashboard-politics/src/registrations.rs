@@ -1,0 +1,29 @@
+dashboard_base::register_products! {
+    NATIONAL_FOCUS_NATIONALFOCUS => crate::products::national_focus::NationalFocus,
+    FOCUS_ARTWORK_FOCUSARTWORK => crate::products::focus_artwork::FocusArtwork,
+    TECHNOLOGY_ARTWORK_TECHNOLOGYARTWORK => crate::products::technology_artwork::TechnologyArtwork,
+    LOGS_LOGPAGE => crate::products::logs::LogPage,
+    LOGS_LOGCOUNTS => crate::products::logs::LogCounts,
+    POLITICS_HISTORY_POLITICSSTATEHISTORY => crate::products::politics::history::PoliticsStateHistory,
+    POLITICS_CIVIL_WARS_CIVILWARS => crate::products::politics::civil_wars::CivilWars,
+    FOCUS_FOCUSHOURPRODUCT => crate::products::focus::FocusHourProduct,
+    FOCUS_FOCUSORDERPAGEPRODUCT => crate::products::focus::FocusOrderPageProduct,
+    FOCUS_FOCUSCOMPLETIONSPRODUCT => crate::products::focus::FocusCompletionsProduct,
+    IDEAS_IDEAHISTORY => crate::products::ideas::IdeaHistory,
+    PARTY_HISTORY_PARTYHISTORY => crate::products::party_history::PartyHistory,
+    FEED_EVENTFEED => crate::products::feed::EventFeed,
+    FEED_EVENTCHOICES => crate::products::feed::EventChoices,
+    FEED_DECISIONS => crate::products::feed::Decisions,
+    FEED_EVENTFEEDSPAN => crate::products::feed::EventFeedSpan,
+    POWER_LEDGER_POWERSPENDING => crate::products::power_ledger::PowerSpending,
+    STABILITY_READS_STABILITYREADS => crate::products::stability::reads::StabilityReads,
+}
+
+dashboard_base::register_hourly_products! {
+    POLITICS_STATE_POLITICSSTATE => crate::products::politics::state::PoliticsState,
+    COUNTRY_PEOPLE_COUNTRYPEOPLE => crate::products::country_people::CountryPeople,
+    FOCUS_FOCUSUNAVAILABLEAT => crate::products::focus::FocusUnavailableAt,
+    STABILITY_COUNTRYSTABILITYBREAKDOWN => crate::products::stability::CountryStabilityBreakdown,
+    STABILITY_STABILITYPARTNAMES => crate::products::stability::StabilityPartNames,
+    POWER_LEDGER_DAY_POWERDAY => crate::products::power_ledger::day::PowerDay,
+}

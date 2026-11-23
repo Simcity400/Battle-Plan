@@ -11,6 +11,7 @@ import { fixedNumber, formatAmount } from '../../charts/valueAxis';
 import { modifierTooltip } from './productionData.ts';
 import type { ProductionLineBreakdownReply } from '../../generated/dashboard';
 
+
 export default function ProductionDrill({ data, selected, onFactor, hour, active, hoursPerSecond, onPick }: {
   data: ProductionLineBreakdownReply; selected: string; onFactor: (factor: string) => void; hour: number | null;
   active: boolean; hoursPerSecond: number | undefined; onPick: (hour: number) => void;

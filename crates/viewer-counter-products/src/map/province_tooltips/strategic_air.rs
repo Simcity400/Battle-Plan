@@ -3,9 +3,8 @@ pub use selection::assignment_checks;
 use super::{Arg, Context, Tooltip, line};
 use replay_data::rows::tables;
 use std::{cell::OnceCell, collections::BTreeMap};
-use viewer_foundation::map::{
-    air_detection as detection, air_range::FrameSources, visibility::Relations,
-};
+use viewer_unit_reads::{air_detection as detection, air_range::FrameSources};
+use viewer_foundation::visibility::Relations;
 
 const UNRESOLVED_BASE_REGION: u32 = 0xaa;
 
@@ -18,7 +17,7 @@ fn keyed<T, K: Ord>(rows: &[T], key: K, field: impl FnMut(&T) -> K) -> Option<&T
 fn fraction(value: i64, count: usize, empty: i64) -> i64 {
     if count == 0 {
         empty
-    } else if !viewer_foundation::map::air_range::finite(value) {
+    } else if !viewer_unit_reads::air_range::finite(value) {
         0xffff_ffff
     } else {
         value
@@ -67,7 +66,7 @@ pub(super) fn append(context: &Context<'_>, selected: &[u64], out: &mut Tooltip)
 pub(crate) fn pool_region(
     content: &super::counter_content::Content,
     frame: &replay_frame::frame::DecodedFrame,
-    registry: &viewer_foundation::map::air_registry_sources::AirRegistrySources,
+    registry: &viewer_unit_reads::air_registry_sources::AirRegistrySources,
     base: u64,
 ) -> Result<(u32, bool), String> {
     let provinces = frame.complete::<tables::Provinces>().map_err(|e| e.to_string())?;
@@ -132,7 +131,7 @@ pub struct RegionalDetection<'a> {
     updated: &'a dyn Fn(u32) -> Result<replay_data::day_night::Clock, String>,
     countries: OnceCell<Result<detection::Countries<'a>, String>>,
     registry:
-        OnceCell<Result<viewer_foundation::map::air_registry_sources::AirRegistrySources, String>>,
+        OnceCell<Result<viewer_unit_reads::air_registry_sources::AirRegistrySources, String>>,
     sources: FrameSources<'a>,
     registered:
         OnceCell<Result<BTreeMap<u32, Vec<(u32, &'a replay_data::rows::AirWingRow)>>, String>>,
@@ -225,7 +224,7 @@ fn calculate(reads: &RegionalDetection<'_>, ours: u32) -> Result<(i64, String), 
             &tables.air_detection_override_prefix
         })
         .map_err(|withheld| withheld.to_string())?;
-        let amount = content_reader_core::fixed5::fixed5_to_string(raw.wrapping_mul(100), 0);
+        let amount = content_reader_parser::fixed5::fixed5_to_string(raw.wrapping_mul(100), 0);
         return Ok((raw, format!("{prefix}{amount}%\n")));
     }
     replay_derive::fixed_layout::validate_recording(
@@ -363,7 +362,7 @@ fn calculate(reads: &RegionalDetection<'_>, ours: u32) -> Result<(i64, String), 
         }
         let registry = registry
             .get_or_init(|| {
-                viewer_foundation::map::air_registry_sources::AirRegistrySources::read(
+                viewer_unit_reads::air_registry_sources::AirRegistrySources::read(
                     context.frame,
                 )
                 .map_err(|e| e.to_string())?

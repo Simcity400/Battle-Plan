@@ -3,25 +3,22 @@ use std::{
     io,
     sync::{Arc, Mutex},
 };
-use viewer_foundation::map::{
-    perspective::{self, Choice, Vision},
-    visibility::FogContent,
-};
+use viewer_foundation::{perspective::{self, Choice, Vision}, visibility::FogContent};
 
 #[derive(Default)]
 pub struct Visions {
-    fold: Mutex<Option<viewer_foundation::map::perspective::incremental::Fold>>,
+    fold: Mutex<Option<viewer_foundation::perspective::incremental::Fold>>,
 }
 impl Visions {
     #[cfg(test)]
-    pub fn stats(&self) -> Option<viewer_foundation::map::perspective::incremental::WorkStats> {
+    pub fn stats(&self) -> Option<viewer_foundation::perspective::incremental::WorkStats> {
         self.fold.lock().unwrap().as_ref().map(|fold| fold.last)
     }
     pub fn get(&self, hour: &ProductHour<'_>, choice: &Choice) -> io::Result<Arc<Vision>> {
         for table in perspective::VISION_TABLES {
             let _ = &*hour.frame.tables[table.index()];
         }
-        viewer_foundation::map::perspective::incremental::Fold::advance(
+        viewer_foundation::perspective::incremental::Fold::advance(
             &mut self
                 .fold
                 .lock()

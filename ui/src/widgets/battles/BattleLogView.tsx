@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { ComponentType } from 'react';
@@ -40,6 +42,7 @@ import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
 import { useDistinctState } from '../../dashboard/useDistinctState';
 import { useWhyCommit } from '../../dashboard/widgetPerf';
+import { productRequest } from '../../dashboard/request.ts';
 
 interface ViewRow extends BattleRow { provinceId: number; windowIndex: number }
 interface ManifestReply { windows: BattleWindow[]; available: boolean; unavailable: string | null; contentWarnings: string[] }
@@ -58,7 +61,7 @@ export interface BattleViewContext {
 }
 export interface BattleDetailAsk { id: string; hour: number }
 export interface BattleDetails<Row, Window> {
-  product: string;
+  product: 'naval-battle-details';
   validate: (data: unknown) => { rows: readonly BattleDetailAsk[]; warnings: string[] };
   ask: (row: Row, following: boolean) => BattleDetailAsk;
   held: (windows: ReadonlyMap<number, Window>) => BattleDetailAsk[];
@@ -67,7 +70,7 @@ export interface BattleDetails<Row, Window> {
 }
 export interface BattleViewAdapter<Row extends ViewRow, Window extends WindowReply, Ranking extends RankingReply> {
   definition: WidgetMeta;
-  product: string;
+  product: 'land-battles' | 'naval-battles';
   landPlaceNames?: boolean;
   validateManifest: (data: unknown) => ManifestReply;
   validateWindow: (data: unknown) => Window;
@@ -110,6 +113,7 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
   const live = widget.time.mode === 'follow';
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const gate = useGate(runtime, widget, SPEC, active);
 useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
   const options = resolveOptions(adapter.definition.options ?? [], widget.options);
   const view = options.view === 'biggest' ? 'biggest' : 'log';
@@ -127,8 +131,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const fallback = useMemo<string[]>(() => JSON.parse(fallbackKey), [fallbackKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
-  const manifestRequest = track ? { sourceId: track.source.id, revision: track.source.revision,
-    product: `${adapter.product}-manifest`, params: { branchId: track.branch.id } } : null;
+  const manifestRequest = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: `${adapter.product}-manifest`, params: { branchId: track.branch.id } }) : null;
   const manifest = useProduct<ManifestReply>(runtime.client, manifestRequest, active, adapter.validateManifest);
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : null;
   const windows = manifest.data?.windows;
@@ -154,8 +158,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const inBranch = !!track && playheadWindow >= 0;
   const wantedWindows = inBranch && view === 'log' ? battleWindows(manifest.data, windows?.[playheadWindow]?.firstHour ?? first, live,
     [...visibleIndices, ...(browsing ? [browseIndex] : [])], first) : [];
-  const history = useProductWindows<Window>(runtime.client, identity, index => ({ sourceId: track!.source.id,
-    revision: track!.source.revision, product: adapter.product, params: { branchId: track!.branch.id, window: index }, asksFrom: windows?.[index]?.firstHour }),
+  const history = useProductWindows<Window>(runtime.client, identity, index => (productRequest({ sourceId: track!.source.id,
+    revision: track!.source.revision, product: adapter.product, params: { branchId: track!.branch.id, window: index }, asksFrom: windows?.[index]?.firstHour })),
   wantedWindows, active && inBranch && manifest.data?.available === true, adapter.validateWindow, track?.source, true);
   const all = widget.countries.kind === 'all';
   const from = widget.time.mode === 'range' ? first : null;
@@ -177,9 +181,12 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     : following ? structureHour : hourAt(runtime.clock.getHour());
   const countries = useMemo(() => countryMatchFilter(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
-  const rankingRequest = track && hour !== null && inBranch ? { sourceId: track.source.id, revision: track.source.revision,
-    product: `${adapter.product}-ranking`, params: { branchId: track.branch.id, firstHour: Math.min(first, hour), lastHour: hour, topN, measure,
-      countries: { countries: countries.tags?.map(countryFromKey) ?? null, membership: countries.membership, unobserved: countries.unobserved } } } : null;
+  const rankingSpan = hour !== null ? gate.span(Math.min(first, hour), hour) : null;
+  const rankingRequest = track && rankingSpan && inBranch ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: `${adapter.product}-ranking`, params: { branchId: track.branch.id, ...rankingSpan, topN, measure,
+      countries: { countries: countries.tags?.map(countryFromKey) ?? null,
+        membership: countries.membership?.flatMap(run => { const held = gate.span(run.firstHour, run.lastHour); return held ? [{ ...run, ...held }] : []; }) ?? null,
+        unobserved: countries.unobserved.flatMap(span => gate.span(span.firstHour, span.lastHour) ?? []) } } }) : null;
   const ranking = useProduct<Ranking>(runtime.client, rankingRequest,
     active && inBranch && view === 'biggest' && match.ready && !match.reason && manifest.data?.available === true, adapter.validateRanking);
   const shown = useMemo(() => !inBranch || hour === null || !match.ready ? NO_ROWS : view === 'biggest' ? adapter.rankedRows(ranking.data, hour)
@@ -216,11 +223,13 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const windowPlaces = useMemo(() => ahead && adapter.windowPlaces ? placesLeadingWith(leading, adapter.windowPlaces(history.data)) : null,
     [ahead, adapter, history.data, leading]);
   const drawnPlaces = useMemo(() => ahead ? NO_PLACES : battlePlaceRequests(drawn), [ahead, drawn]);
-  const readPlaces = useCallback((places: readonly PlaceAt[], signal: AbortSignal) => loadProduct<PlaceNamesReply>(runtime.client, { sourceId: track!.source.id,
-    revision: track!.source.revision, product: 'place-names', params: { branchId: track!.branch.id, places, states: [], land: adapter.landPlaceNames === true } },
+  const recordedPlaces = useMemo(() => (windowPlaces ?? drawnPlaces).filter(place => gate.recorded(place.hour) !== null), [windowPlaces, drawnPlaces, gate.recorded]);
+  const readPlaces = useCallback((places: readonly PlaceAt[], signal: AbortSignal) => loadProduct<PlaceNamesReply>(runtime.client, productRequest({ sourceId: track!.source.id,
+    revision: track!.source.revision, product: 'place-names', params: { branchId: track!.branch.id,
+      places: places.flatMap(place => { const hour = gate.recorded(place.hour); return hour === null ? [] : [{ ...place, hour }]; }), states: [], land: adapter.landPlaceNames === true } }),
   signal, validatePlaceNamesReply, track?.source).then(reply => ({ values: reply.places.map(place => [placeKey(place.provinceId, place.hour), place] as const), warnings: reply.warnings })),
-  [runtime.client, track, adapter.landPlaceNames]);
-  const placeReads = useKeyedReads<PlaceAt, PlaceName>(track ? namesOwner : null, windowPlaces ?? drawnPlaces, active, placeAtKey, readPlaces);
+  [runtime.client, track, adapter.landPlaceNames, gate.recorded]);
+  const placeReads = useKeyedReads<PlaceAt, PlaceName>(track ? namesOwner : null, recordedPlaces, active, placeAtKey, readPlaces);
   const knownNames = placeReads.reads.values;
   const placeNamesHeld = useMemo(() => ({ places: [...knownNames.values()], states: [], warnings: [] }), [knownNames, placeReads.version]);
   const named = useMemo(() => namedBattles(shown, placeNamesHeld), [shown, placeNamesHeld]);
@@ -231,11 +240,12 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const placePending = useCallback((row: BattleRow & { provinceId: number }) => placeReads.reads.pending({ provinceId: row.provinceId, hour: row.place.namedAt ?? row.place.hour }),
   [placeReads.reads, placeReads.version]);
   const details = adapter.details;
-  const detailWanted = useMemo(() => !details ? NO_ASKS : ahead ? [...leading.map(row => details.ask(row, true)), ...details.held(history.data)]
-    : drawn.map(row => details.ask(row, false)), [details, ahead, history.data, drawn, leading]);
-  const readDetails = useCallback((battles: readonly BattleDetailAsk[], signal: AbortSignal) => loadProduct(runtime.client, { sourceId: track!.source.id,
-    revision: track!.source.revision, product: details!.product, params: { branchId: track!.branch.id, battles } }, signal, details!.validate, track?.source)
-    .then(reply => ({ values: reply.rows.map(row => [detailKey(row), row] as const), warnings: reply.warnings })), [runtime.client, track, details]);
+  const detailWanted = useMemo(() => (!details ? NO_ASKS : ahead ? [...leading.map(row => details.ask(row, true)), ...details.held(history.data)]
+    : drawn.map(row => details.ask(row, false))).filter(ask => gate.recorded(ask.hour) !== null), [details, ahead, history.data, drawn, leading, gate.recorded]);
+  const readDetails = useCallback((battles: readonly BattleDetailAsk[], signal: AbortSignal) => loadProduct(runtime.client, productRequest({ sourceId: track!.source.id,
+    revision: track!.source.revision, product: details!.product, params: { branchId: track!.branch.id,
+      battles: battles.flatMap(battle => { const hour = gate.recorded(battle.hour); return hour === null ? [] : [{ ...battle, hour }]; }) } }), signal, details!.validate, track?.source)
+    .then(reply => ({ values: reply.rows.map(row => [detailKey(row), row] as const), warnings: reply.warnings })), [runtime.client, track, details, gate.recorded]);
   const detailReads = useKeyedReads<BattleDetailAsk, BattleDetailAsk>(details && track && identity !== null ? JSON.stringify([identity, content, details.product]) : null,
     detailWanted, active, detailKey, readDetails);
   const described = useMemo(() => {
@@ -279,7 +289,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
 
   if (!track) return <WidgetState kind="empty" icon={adapter.definition.icon} message={`Load a campaign to see its ${adapter.definition.title.toLowerCase()}.`} />;
   if (manifest.error) return <WidgetState kind="error" failure={manifest.error} onRetry={manifest.retry} />;
-  if (manifest.data && !inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (manifest.data && !inBranch) return <WidgetState kind="outside" />;
   const groupFailure = widget.countries.kind !== 'all' && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;

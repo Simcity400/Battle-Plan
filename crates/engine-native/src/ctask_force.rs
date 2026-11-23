@@ -19,7 +19,7 @@ pub mod port_mission;
 pub const VTABLE_RVA: Rva = Rva(0x029d_f900);
 pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x029d_fae0);
 pub const SECONDARY_BASE: usize = 0x10;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "layout-fixtures"))]
 pub const DEFAULT_HANDLE_TYPE: u32 = 61;
 pub const FLEET: usize = 0x340;
 pub const SHIPS: usize = 0x348;

@@ -8,7 +8,7 @@ import type { DashboardMapState } from '../../dashboard/client';
 
 test('map load errors hide diagnostics and retain Retry; an hour not available yet says so; the displayed map keeps its mode and date; a hidden map is not loading; a frame of another hour stays labelled, never covered by a loading placeholder', async () => {
   const host = globalThis as typeof globalThis & { __mapReview?: DashboardMapState; __mapsHidden?: boolean };
-  host.__mapReview = { id: 'map', sourceId: 's', revision: 'r', branchId: 'b', hour: 105, fraction: 0,
+  host.__mapReview = { id: 'map', clockId: 'page-1', sourceId: 's', revision: 'r', branchId: 'b', hour: 105, fraction: 0,
     sequence: 0, requestedSequence: 0, loading: false, error: 'Synthetic native failure' };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'map-state', enforce: 'pre',

@@ -1,5 +1,3 @@
-import { drillHour } from '../../charts/drill/drillState.ts';
-import type { DrillAction, DrillState } from '../../charts/drill/drillState';
 import { contentKey, setToken } from '../../dashboard/options.ts';
 import { object } from '../../dashboard/validation.ts';
 import type { Span } from '../../charts/series';
@@ -53,12 +51,6 @@ export function readFuelExtent(token: unknown, campaign: string, branch: string)
       && int(value[2]) && int(value[3]) && value[2] <= value[3] ? [value[2], value[3]] : null;
   } catch { return null; }
 }
-
-export function fuelOpen(breakdown: string, hour: number, playing: boolean, follows: boolean, playhead: number | null): DrillAction {
-  return { type: 'open', breakdown, hour, playing, playhead: follows ? playhead : null };
-}
-export const fuelMoment = (drill: DrillState, saved: boolean, shownHour: number, clockHour: number | null) =>
-  saved && drill.breakdown === null ? Math.floor(shownHour) : drillHour(drill, clockHour);
 
 export function detailWindows(extent: readonly [number, number], visible: readonly [number, number], hour: number | null, detailHours: number): number[] {
   const from = Math.max(extent[0], visible[0]), to = Math.min(extent[1], visible[1]);

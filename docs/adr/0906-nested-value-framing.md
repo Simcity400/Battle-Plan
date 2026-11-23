@@ -10,4 +10,4 @@ The writer emits changed rows paired with their old indices and deleted keys in 
 
 Legacy fixture types intentionally describe historical side encodings. The pre-`LAND_MODIFIER_ROWS_FORMAT` fixture preserves the nested land combat division list as its writers emitted it. The format-101 side fixture retains the hover-only and oracle-only fields that were later retired. These live alongside registry tests because the private row codecs expand here.
 
-[Nested values](../../crates/replay-rows/src/value.rs) · [Range replacement](../../crates/replay-rows/src/sliced/ranges.rs) · [Legacy fixtures](../../crates/replay-rows/src/test_support.rs) · [Registry fixtures](../../crates/replay-rows/src/rows/test_rows.rs)
+[Nested values](../../crates/replay-rows/src/value.rs) · [Range replacement](../../crates/replay-rows/src/sliced/ranges.rs) · [Legacy fixtures](../../crates/replay-rows-land/src/test_support.rs) · [Registry fixtures](../../crates/replay-rows/src/rows/test_rows.rs)

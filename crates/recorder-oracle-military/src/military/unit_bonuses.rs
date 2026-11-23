@@ -178,7 +178,7 @@ fn compare_entry(
 }
 
 fn named_stats(stats: &[UnitBonusStat], label: &str, report: &mut Report) -> Vec<(Vec<u8>, i64)> {
-    let metadata = content_reader_core::equipment::stat_metadata();
+    let metadata = content_reader_script::equipment_stats::stat_metadata();
     stats
         .iter()
         .filter(|stat| stat.value_raw != 0)

@@ -1,7 +1,7 @@
 use crate::triggers::Failure;
 
 use super::*;
-use content_reader_core::parser::Value as ParsedValue;
+use content_reader_parser::parser::Value as ParsedValue;
 
 enum Right<'v> {
     Scalar(Box<ScopedVariable>),
@@ -302,7 +302,7 @@ impl Evaluator<'_, '_> {
             .and_then(|v| self.raw(v.unwrap_or(Value::Raw(default))))
     }
 
-    pub(crate) fn description_variable(
+    pub fn description_variable(
         &self,
         name: &str,
         item: &Item,
@@ -331,7 +331,7 @@ impl Evaluator<'_, '_> {
         Ok(Some((left, right)))
     }
 
-    pub(crate) fn description_temp_destination_fields(
+    pub fn description_temp_destination_fields(
         &self,
         fields: &[Item],
         name: &str,
@@ -349,22 +349,22 @@ impl Evaluator<'_, '_> {
         self.mutable_temp(&operand, scopes, index)
     }
 
-    pub(crate) fn store_description_temp(&self, key: Vec<u8>, value: i64) {
+    pub fn store_description_temp(&self, key: Vec<u8>, value: i64) {
         self.note_variable_effect();
         self.local_temps
             .borrow_mut()
             .insert(key, Ok(Value::Raw(value)));
     }
 
-    pub(crate) fn encode_description_scope(&self, scope: Scope) -> Result<i64, Failure> {
+    pub fn encode_description_scope(&self, scope: Scope) -> Result<i64, Failure> {
         self.encode(scope)
     }
 
-    pub(crate) fn refuse_description_writer(&self, reason: String) {
+    pub fn refuse_description_writer(&self, reason: String) {
         self.taint_temps(reason.into());
     }
 
-    pub(crate) fn description_random_temp(
+    pub fn description_random_temp(
         &self,
         item: &Item,
         scopes: Scopes,
@@ -394,7 +394,7 @@ impl Evaluator<'_, '_> {
         }
         let destination = self.mutable_temp(&var, scopes, None)?;
         let random = self.next_variable_random(scopes)?;
-        let integer = content_reader_core::parser::read_bool_field(
+        let integer = content_reader_parser::parser::read_bool_field(
             item.value.items().unwrap_or_default(),
             "integer",
             false,
@@ -414,7 +414,7 @@ impl Evaluator<'_, '_> {
         Ok(())
     }
 
-    pub(crate) fn description_supply_temp(
+    pub fn description_supply_temp(
         &self,
         item: &Item,
         scopes: Scopes,
@@ -431,7 +431,7 @@ impl Evaluator<'_, '_> {
         }
         let destination = self.mutable_temp(&var, scopes, None)?;
         self.store_description_temp(destination.clone(), 0);
-        let need = content_reader_core::parser::read_bool_field(
+        let need = content_reader_parser::parser::read_bool_field(
             item.value.items().unwrap_or_default(),
             "need",
             false,

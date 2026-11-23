@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime.ts';
 import { useEffect, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import BombingBreakdown from './BombingBreakdown';
@@ -27,6 +29,7 @@ export default function BombingDamageBreakdownWidget({ widget, runtime, active, 
   const hour = window?.lastHour ?? 0;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? hour : data?.countedFrom ?? data?.observed[0]?.firstHour ?? track?.branch.firstHour ?? hour;
   const end = widget.time.mode === 'range' ? hour : track?.branch.lastHour ?? hour;
+  const namedAt = useGate(runtime, widget, SPEC, active).recorded(end);
   const identity = track && tag ? ledgerPinnedIdentity(widget.options?.holder, track.source.metadata.campaignKey, track.branch.id, tag) : undefined;
   const headAt = useMemo(() => following && track ? (position: number) => {
     const at = resolveWindow(widget, track, runtime.tracks, position)?.lastHour;
@@ -45,11 +48,11 @@ export default function BombingDamageBreakdownWidget({ widget, runtime, active, 
   }, [data, onDiagnostics]);
   if (!track || !tag) return <WidgetState kind="empty" message="Load a campaign and choose a country to see its bombing damage." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="outside" />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data || !index || pending) return <WidgetState kind="loading" label="Loading bombing damage…" />;
   if (!data.available) return <WidgetState kind="unavailable" message="Bombing damage was not recorded." />;
-  return <BombingBreakdown data={data} index={index} runtime={runtime} track={track} tag={tag} identity={identity} countrySlot={countrySlot}
+  return <BombingBreakdown data={data} index={index} runtime={runtime} namedAt={namedAt} track={track} tag={tag} identity={identity} countrySlot={countrySlot}
     headerSelection={widget.countries.kind === 'tags' && widget.countries.tags.length === 1 && identity ? { tag, identity } : null}
     from={from} hour={hour} end={end} dealt={options.direction === 'dealt'} options={options} active={active} headAt={headAt} />;
 }

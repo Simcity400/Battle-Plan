@@ -2,11 +2,11 @@ use super::{loc, paths_named, province::Facts};
 use crate::binding::Bindings;
 use crate::modifier_text::{Block, Definitions};
 use crate::tooltips::{hover_text, refuse_hovers, set_hover};
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{Recorded, tables};
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::map::perspective::{SharingUnknown, Vision};
+use viewer_foundation::perspective::{SharingUnknown, Vision};
 
 const POPULATION: &str = "state view population hover: its manpower breakdown lists the sources of the state's recruitable population and growth modifiers for its owner, which are not recorded";
 
@@ -200,7 +200,7 @@ fn region_weather(content: &super::Content, frame: &DecodedFrame, province: u32)
     let definitions = crate::modifier_text::Definitions::read(frame, &content.modifier_names)
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
-    let block = |modifiers: &content_reader_core::modifiers::Modifiers| {
+    let block = |modifiers: &content_reader_script::modifiers::Modifiers| {
         crate::modifier_text::Block::build(&definitions, modifiers).map(|(block, _)| block).map_err(|e| e.to_string())
     };
     let mut sum = crate::modifier_text::Block::default();
@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn withheld_dynamic_hovers_keep_no_authored_seed_and_count_once_per_control() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let gui = native::read(
             b"guiTypes={containerWindowType={name=countrystateview containerWindowType={name=moved iconType={name=shared_slot_count pdx_tooltip=AUTHORED}} instantTextboxType={name=manpower} instantTextboxType={name=state_name}}}",
         );

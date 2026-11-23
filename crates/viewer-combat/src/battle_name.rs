@@ -5,10 +5,8 @@ use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 use viewer_foundation::tooltip_text::state_name;
 use viewer_foundation::tooltip_text::{TextIcons, builtin, token};
-use {
-    super::content::Content as StaticContent,
-    viewer_foundation::table_access::{Available, rows},
-};
+use super::content::Content as StaticContent;
+use dashboard_text::table_access::{Available, rows};
 
 struct Province<'a> {
     id: u32,

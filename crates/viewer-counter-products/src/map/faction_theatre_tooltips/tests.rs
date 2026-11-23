@@ -1,6 +1,6 @@
 use super::*;
 use replay_data::rows::{CountryLinkRow, TableRows, UnitLeaderRow};
-use viewer_foundation::map::test_support::{test_frame, test_put as put};
+use viewer_foundation::test_support::{test_frame, test_put as put};
 
 fn entries() -> Vec<(&'static str, &'static str)> {
     vec![

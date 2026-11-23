@@ -2,7 +2,7 @@ use super::*;
 use replay_data::{rows::DivisionRow, rows::TableRows};
 use replay_derive::{attack_derive::NIGHT, attack_derive::TERRAIN};
 use std::cell::RefCell;
-use viewer_foundation::map::test_support::{test_frame, test_put as put};
+use viewer_foundation::test_support::{test_frame, test_put as put};
 
 #[test]
 fn known_different_sources_skip_even_with_another_missing_location() {

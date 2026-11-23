@@ -1,8 +1,8 @@
 
 #[cfg(test)]
-use viewer_foundation::diagnostics_panel::test_support::assert_diagnostics;
+use viewer_runtime::diagnostics_panel::test_support::assert_diagnostics;
 #[cfg(test)]
-use viewer_foundation::map::counter_hovers::gui_authored;
+use viewer_native_gui::counter_hovers::gui_authored;
 #[cfg(test)]
 use viewer_foundation::tooltip_text::NoIcons;
 use viewer_foundation::tooltip_text::country_localised;
@@ -23,7 +23,7 @@ mod task_force_summary;
 mod template_facts;
 
 use std::{collections::BTreeMap, sync::Arc};
-use viewer_foundation::map::counter_hovers::{land::Timing, refuse};
+use viewer_native_gui::counter_hovers::{land::Timing, refuse};
 
 use content_reader_country_names::country_names::CountryNames;
 use content_reader_localisation::{localisation::Argument as Arg, localisation::Localisation};
@@ -37,12 +37,10 @@ use {
     super::counter_content,
     viewer_foundation::tooltip_text::{TextIcons, displayable, localise},
 };
-use {
-    super::counter_eta, super::province_tooltips::units,
-    viewer_foundation::map::counter_hovers::land::CounterHover,
-    viewer_foundation::map::counter_inputs, viewer_foundation::map::counter_status,
-    viewer_foundation::map::perspective::Vision, viewer_foundation::tooltip_text::Tooltip,
-};
+use super::{counter_eta, province_tooltips::units};
+use viewer_native_gui::counter_hovers::land::CounterHover;
+use viewer_unit_reads::{counter_inputs, counter_status};
+use viewer_foundation::{perspective::Vision, tooltip_text::Tooltip};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Style {
@@ -54,12 +52,12 @@ pub struct Style {
 pub struct Cache {
     held: Option<(CounterHover, Style, Arc<Tooltip>)>,
     naval: Option<(
-        viewer_foundation::map::counter_hovers::task_force::Hover,
+        viewer_native_gui::counter_hovers::task_force::Hover,
         Style,
         Arc<Tooltip>,
     )>,
     port: Option<(
-        viewer_foundation::map::counter_hovers::task_force_port::Hover,
+        viewer_native_gui::counter_hovers::task_force_port::Hover,
         Style,
         Arc<Tooltip>,
     )>,
@@ -74,7 +72,7 @@ impl Cache {
     pub fn request(
         &mut self,
         content: &Arc<counter_content::Content>,
-        reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
+        reads: viewer_unit_reads::movement_reads::ReadOperands<'_>,
         frame: &Arc<DecodedFrame>,
         hover: &CounterHover,
         vision: &Arc<Vision>,
@@ -109,9 +107,9 @@ impl Cache {
     pub fn request_task_force(
         &mut self,
         content: &Arc<counter_content::Content>,
-        reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
+        reads: viewer_unit_reads::movement_reads::ReadOperands<'_>,
         frame: &Arc<DecodedFrame>,
-        hover: &viewer_foundation::map::counter_hovers::task_force::Hover,
+        hover: &viewer_native_gui::counter_hovers::task_force::Hover,
         vision: &Arc<Vision>,
         style: Style,
     ) -> Arc<Tooltip> {
@@ -142,9 +140,9 @@ impl Cache {
     pub fn request_task_force_port(
         &mut self,
         content: &Arc<counter_content::Content>,
-        reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
+        reads: viewer_unit_reads::movement_reads::ReadOperands<'_>,
         frame: &Arc<DecodedFrame>,
-        hover: &viewer_foundation::map::counter_hovers::task_force_port::Hover,
+        hover: &viewer_native_gui::counter_hovers::task_force_port::Hover,
         vision: &Arc<Vision>,
         style: Style,
     ) -> Arc<Tooltip> {
@@ -220,7 +218,7 @@ struct Context<'a> {
     nato: bool,
     diagnostics: bool,
     content: Option<&'a counter_content::Content>,
-    reads: Option<viewer_foundation::map::movement_reads::ReadOperands<'a>>,
+    reads: Option<viewer_unit_reads::movement_reads::ReadOperands<'a>>,
     dig_in_factor: Result<i64, String>,
     loc: &'a Localisation,
     recorded_language: &'a str,
@@ -297,7 +295,7 @@ impl<'a> Context<'a> {
                 }
             } else if countries.insert(owner) {
                 let ledger = (|| {
-                    use viewer_foundation::map::visibility::template_reveal;
+                    use viewer_foundation::visibility::template_reveal;
                     let defines = self
                         .units
                         .as_ref()
@@ -780,7 +778,11 @@ fn next_hours(members: &[(u64, u32, u32, &Timing)]) -> Result<Option<i32>, Strin
     Ok(minimum.filter(|&hours| hours > 0))
 }
 
-fn next_location(loc: &Localisation, hours: Option<i32>) -> Result<String, String> {
+fn next_location(
+    loc: &Localisation,
+    hours: Option<i32>,
+    estimated: bool,
+) -> Result<String, String> {
     let Some(hours) = hours else {
         return Ok(String::new());
     };
@@ -800,6 +802,9 @@ fn next_location(loc: &Localisation, hours: Option<i32>) -> Result<String, Strin
             ],
         )?
     };
+    if estimated && !text.is_empty() {
+        return Ok(format!("{text}{}\n\n", counter_eta::ESTIMATED_SUFFIX));
+    }
     Ok(format!("{text}\n\n"))
 }
 
@@ -847,7 +852,7 @@ fn supply(
 
 pub fn build(
     content: &counter_content::Content,
-    reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
+    reads: viewer_unit_reads::movement_reads::ReadOperands<'_>,
     frame: &DecodedFrame,
     input: &CounterHover,
     vision: &Vision,
@@ -864,7 +869,7 @@ pub struct Batch<'a> {
 impl<'a> Batch<'a> {
     pub fn new(
         content: &'a counter_content::Content,
-        reads: viewer_foundation::map::movement_reads::ReadOperands<'a>,
+        reads: viewer_unit_reads::movement_reads::ReadOperands<'a>,
         frame: &'a DecodedFrame,
         vision: &'a Vision,
         style: Style,
@@ -955,7 +960,7 @@ impl<'a> Batch<'a> {
 
     pub fn build_task_force(
         &self,
-        input: &viewer_foundation::map::counter_hovers::task_force::Hover,
+        input: &viewer_native_gui::counter_hovers::task_force::Hover,
     ) -> Tooltip {
         task_force::build(&self.context, input, |movement, ours| {
             self.arrival.task_force_remaining(movement, ours)
@@ -964,7 +969,7 @@ impl<'a> Batch<'a> {
 
     pub fn build_task_force_port(
         &self,
-        input: &viewer_foundation::map::counter_hovers::task_force_port::Hover,
+        input: &viewer_native_gui::counter_hovers::task_force_port::Hover,
     ) -> Tooltip {
         task_force_port::build(&self.context, input)
     }
@@ -983,7 +988,7 @@ fn build_context(
 ) -> Tooltip {
     if matches!(
         input.control,
-        viewer_foundation::map::counter_hovers::land::CounterControl::Ability { .. }
+        viewer_native_gui::counter_hovers::land::CounterControl::Ability { .. }
     ) && let Some(out) = children::specific(context, input)
     {
         return out;
@@ -1120,7 +1125,7 @@ fn build_divisions(
                         context,
                         true,
                         "arrival",
-                        counter_eta::sentence(context.loc, &arrival, input.ours)
+                        counter_eta::estimated_sentence(context.loc, &arrival, input.ours)
                             .map(|text| format!("{text}\n")),
                     );
                 }
@@ -1145,7 +1150,7 @@ fn build_divisions(
                         Ok((id, division.province, movement.path_total, timing))
                     })
                     .collect::<Result<Vec<_>, String>>()?;
-                next_location(context.loc, next_hours(&members)?)
+                next_location(context.loc, next_hours(&members)?, true)
             })();
             append(&mut out, context, true, "next location", next);
         }
@@ -1313,13 +1318,13 @@ mod tests {
         LexicalTokenRow, NameOperands, PacketHour, PoliticsRow, ProvinceRow, Recorded, TableRows,
         TemplateDisplayName, TemplateLayout, TemplateNameValue, TemplateSettings, TemplateSubunit,
     };
-    use viewer_foundation::map::test_support::{test_frame, test_put as put};
+    use viewer_foundation::test_support::{test_frame, test_put as put};
 
     fn template_hover(context: &Context<'_>) -> Tooltip {
         fixture_context(
             context,
             &CounterHover {
-                control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
                 authored: None,
                 rect: [0.0; 4],
                 members: vec![1].into(),
@@ -1665,11 +1670,11 @@ mod tests {
                 ..Default::default()
             }]),
         );
-        let defines = content_reader_core::defines::Defines::new().unwrap();
+        let defines = content_reader_defines::defines::Defines::new().unwrap();
         defines.load("synthetic.lua", b"NDefines={NIntel={COUNTRY_LEVEL_INTEL_MAXIMUMS={1,1,1,1},ARMY_MIN_INTEL_TO_SHOW_BASIC_TEMPLATE_INFO=0.3,ARMY_MIN_INTEL_RATIO_NEEDED_FOR_DISPLAYING_FAKE_ENEMY_INTEL_IN_LEDGER=0.7,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MIN=0.4,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX=0.8,ARMY_TEMPLATE_UNIT_COUNT_INTEL_RANGE_AT_LOWEST_INTEL=0.5}} ").unwrap();
         let units = units::Content::load(
             &defines,
-            Ok(&content_reader_core::unit_leader::SubUnits::default()),
+            Ok(&content_reader_script::sub_units::SubUnits::default()),
         );
         let loc = loc();
         let names = content_reader_division_names::division_names::Database::default();
@@ -1968,11 +1973,11 @@ mod tests {
         vision: &Vision,
     ) -> Tooltip {
         let loc = loc();
-        let defines = content_reader_core::defines::Defines::new().unwrap();
+        let defines = content_reader_defines::defines::Defines::new().unwrap();
         defines
             .load("synthetic.lua", b"NDefines={NIntel={COUNTRY_LEVEL_INTEL_MAXIMUMS={1,1,1,1},ARMY_TEMPLATE_UNIT_COUNT_INTEL_MIN=0.25,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX=0.75,ARMY_TEMPLATE_UNIT_COUNT_INTEL_RANGE_AT_LOWEST_INTEL=1.5}}")
             .unwrap();
-        let mut subunits = content_reader_core::unit_leader::SubUnits::default();
+        let mut subunits = content_reader_script::sub_units::SubUnits::default();
         subunits.read(b"sub_units={Foot={type=infantry}}", "synthetic.txt");
         let units = units::Content::load(&defines, Ok(&subunits));
         let names = content_reader_division_names::division_names::Database::default();
@@ -1987,7 +1992,7 @@ mod tests {
         fixture_context(
             &context,
             &CounterHover {
-                control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
                 authored: None,
                 rect: [0.0; 4],
                 members: members.to_vec().into(),
@@ -2004,7 +2009,7 @@ mod tests {
 
     #[test]
     fn status_cached_name_is_authoritative_even_when_combat_has_a_name() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = frame(true);
         put(
             &mut frame,
@@ -2092,7 +2097,7 @@ mod tests {
             fixture_context(
                 &context,
                 &CounterHover {
-                    control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                    control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
                     authored: None,
                     rect: [0.0; 4],
                     members: vec![1].into(),
@@ -2132,7 +2137,7 @@ mod tests {
 
     #[test]
     fn supply_line_uses_grace_and_known_stack_average_and_refuses_historical_gaps() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let vision = Vision::sharing(1, []);
         let mut frame = frame(true);
         let mut status = frame.complete::<tables::DivisionStatus>().unwrap().to_vec();
@@ -2178,15 +2183,27 @@ mod tests {
         assert!(!historical.body.contains("supply "));
         assert_eq!(historical.refused[reason], 1);
         status[0].supply_grace_maximum = Recorded::Value(0);
-        put(&mut frame, TableRows::DivisionStatus(status));
+        put(&mut frame, TableRows::DivisionStatus(status.clone()));
         let no_grace = tooltip(&frame, &[1], false, false, &vision);
         assert!(no_grace.body.contains("supply 0%\n"));
         assert!(!no_grace.refused.contains_key(reason));
+        status[0].supply_grace_maximum = Recorded::Value(400_000);
+        status[0].supply_grace_remaining = Recorded::Value(0);
+        status[0].supply_ratio = None;
+        status[0].supply_ratio_exact = Recorded::Value(Some(35_499));
+        status[0].supply_grace_exact = Recorded::Value(Some(0));
+        put(&mut frame, TableRows::DivisionStatus(status));
+        let exact_rounded = tooltip(&frame, &[1], false, false, &vision);
+        assert!(
+            exact_rounded.body.contains("supply 35%\n"),
+            "{}",
+            exact_rounded.body
+        );
     }
 
     #[test]
     fn single_tooltip_orders_native_lines_without_a_date_or_unrecorded_name() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let vision = Vision::sharing(1, []);
         let named = tooltip(&frame(true), &[1], false, false, &vision);
         assert_eq!(
@@ -2194,7 +2211,7 @@ mod tests {
             "unit \u{11}HGuard\u{11}! (\u{11}YAlpha\u{11}!)"
         );
         assert!(named.body.starts_with(
-            "arrival 1d 5h\nnext 2h\n\norg 10/20\nstr 50%\n2\u{13}unit_Foot_icon_small|1 "
+            "arrival 1d 5h (estimated)\nnext 2h (estimated)\n\norg 10/20\nstr 50%\n2\u{13}unit_Foot_icon_small|1 "
         ));
         assert_eq!(named.refused.len(), 1);
         assert_eq!(named.refused.values().copied().sum::<usize>(), 1);
@@ -2220,7 +2237,7 @@ mod tests {
         let reason = "counter division name: naming of division status not recorded";
         assert_diagnostics(
             || {
-                viewer_foundation::diagnostics_panel::tooltip_warning_lines(&unnamed.refused)
+                viewer_runtime::diagnostics_panel::tooltip_warning_lines(&unnamed.refused)
                     .filter(|line| line.contains("counter division name:"))
                     .collect()
             },
@@ -2232,13 +2249,13 @@ mod tests {
 
     #[test]
     fn full_two_template_stack_sorts_headers_and_coarse_counter_bypasses_detail() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let frame = frame(false);
         let vision = Vision::sharing(1, []);
         let detailed = tooltip(&frame, &[1, 2], false, false, &vision);
         assert_eq!(detailed.title, "1 Second Alpha\n1 First Alpha");
         assert!(detailed.body.starts_with(
-            "arrival 1d 5h\nnext 2h\n\navg org 50%\nstr 50%\n4\u{13}unit_Foot_icon_small|1 "
+            "arrival 1d 5h (estimated)\nnext 2h (estimated)\n\navg org 50%\nstr 50%\n4\u{13}unit_Foot_icon_small|1 "
         ));
         assert!(
             !detailed
@@ -2251,11 +2268,11 @@ mod tests {
         assert_eq!(coarse.body, "");
         assert!(coarse.refused.is_empty());
         let loc = loc();
-        let defines = content_reader_core::defines::Defines::new().unwrap();
+        let defines = content_reader_defines::defines::Defines::new().unwrap();
         defines
             .load("synthetic.lua", b"NDefines={NIntel={COUNTRY_LEVEL_INTEL_MAXIMUMS={1,1,1,1},ARMY_TEMPLATE_UNIT_COUNT_INTEL_MIN=0.25,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX=0.75,ARMY_TEMPLATE_UNIT_COUNT_INTEL_RANGE_AT_LOWEST_INTEL=1.5}}")
             .unwrap();
-        let mut subunits = content_reader_core::unit_leader::SubUnits::default();
+        let mut subunits = content_reader_script::sub_units::SubUnits::default();
         subunits.read(b"sub_units={Foot={type=infantry}}", "synthetic.txt");
         let units = units::Content::load(&defines, Ok(&subunits));
         let names = content_reader_division_names::division_names::Database::default();
@@ -2268,7 +2285,7 @@ mod tests {
 
     #[test]
     fn invalid_orders_child_does_not_change_normal_or_coarse_hovers() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = frame(true);
         let vision = Vision::sharing(1, []);
         let expected = [
@@ -2296,7 +2313,7 @@ mod tests {
         };
         for coarse in [false, true] {
             let hover = CounterHover {
-                control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
                 authored: None,
                 rect: [0.0; 4],
                 members: vec![1].into(),
@@ -2335,7 +2352,7 @@ mod tests {
         fixture_context(
             &context,
             &CounterHover {
-                control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
                 authored: None,
                 rect: [0.0; 4],
                 members: members.to_vec().into(),
@@ -2655,12 +2672,15 @@ mod tests {
 
     #[test]
     fn missing_unit_intel_preserves_movement_with_one_eligibility_gap() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let frame = frame(true);
         let vision = Vision::sharing(2, []).with_truncated_unit_intel([]);
         let detailed = tooltip(&frame, &[1], false, false, &vision);
         assert_eq!(detailed.title, "");
-        assert_eq!(detailed.body, "other arrival 1d 5h\nnext 2h\n\n");
+        assert_eq!(
+            detailed.body,
+            "other arrival 1d 5h (estimated)\nnext 2h (estimated)\n\n"
+        );
         assert_eq!(
             detailed
                 .refused
@@ -2729,7 +2749,7 @@ mod tests {
 
     #[test]
     fn only_hidden_foreign_stacks_suppress_the_arrival_line() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let frame = frame(true);
         for ours in [1, 2] {
             let vision = Vision::sharing(ours, [1]);
@@ -2745,10 +2765,10 @@ mod tests {
             if ours == 1 {
                 assert_eq!(hidden.body, visible.body);
             } else {
-                assert!(visible.body.starts_with("other arrival 1d 5h\n"));
+                assert!(visible.body.starts_with("other arrival 1d 5h (estimated)\n"));
                 assert!(
                     hidden.body.starts_with(
-                        "next 2h\n\norg 10/20\nstr 50%\n2\u{13}unit_Foot_icon_small|1 "
+                        "next 2h (estimated)\n\norg 10/20\nstr 50%\n2\u{13}unit_Foot_icon_small|1 "
                     )
                 );
                 assert!(
@@ -2794,7 +2814,7 @@ mod tests {
             };
             let context = context(&frame, &loc, &vision, &names, &units);
             let hover = CounterHover {
-                control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
                 authored: None,
                 rect: [0.0; 4],
                 members: vec![1].into(),
@@ -2816,13 +2836,13 @@ mod tests {
                     .any(|key| key.starts_with("counter destination ETA:"))
             );
             assert_eq!(
-                out.body.starts_with("arrival 1d 5h\n"),
+                out.body.starts_with("arrival 1d 5h (estimated)\n"),
                 remaining == Some(2_900_000) && moving && replacement.is_none()
             );
             if moving && replacement.is_none() {
                 match remaining {
-                    Some(0) => assert!(out.body.starts_with("arrival 0h\n")),
-                    Some(-2_900_000) => assert!(out.body.starts_with("arrival -29h\n")),
+                    Some(0) => assert!(out.body.starts_with("arrival 0h (estimated)\n")),
+                    Some(-2_900_000) => assert!(out.body.starts_with("arrival -29h (estimated)\n")),
                     _ => (),
                 }
             }
@@ -2844,7 +2864,7 @@ mod tests {
 
     #[test]
     fn arrival_query_runs_once_only_for_eligible_detail() {
-        use viewer_foundation::map::counter_hovers::land::CounterControl as Control;
+        use viewer_native_gui::counter_hovers::land::CounterControl as Control;
 
         let loc = loc();
         let vision = Vision::sharing(1, []);
@@ -2965,9 +2985,9 @@ mod tests {
             assert_eq!(calls, expected_calls, "{case}");
             assert_eq!(
                 out.body.starts_with(if ours {
-                    "arrival 1d 5h\n"
+                    "arrival 1d 5h (estimated)\n"
                 } else {
-                    "other arrival 1d 5h\n"
+                    "other arrival 1d 5h (estimated)\n"
                 }),
                 expected_calls == 1,
                 "{case}"
@@ -2986,9 +3006,7 @@ mod tests {
     #[test]
     fn division_arrival_words_the_estimate_of_the_stored_route() {
         use crate::map::division_eta::test_support::neutral_land_movement;
-        use content_reader_core::{
-            movement::MovementMap, movement::Neighbour, movement::ProvinceTerrain,
-        };
+        use content_reader_map::movement::{MovementMap, Neighbour, ProvinceTerrain};
         use viewer_foundation::movement_timing::{
             Etas, LandSpeedContent, MovementContent, arrival as movement_timing_arrival,
             test_support::neutral_status,
@@ -3059,14 +3077,26 @@ mod tests {
             TableRows::DivisionTemplateIcons(neutral_templates),
         );
         for (base_speed, ours, expected) in [
-            (Recorded::Value(Some(100_000)), true, Ok("arrival 1d 1h\n")),
+            (
+                Recorded::Value(Some(100_000)),
+                true,
+                Ok("arrival 1d 1h (estimated)\n"),
+            ),
             (
                 Recorded::Value(Some(100_000)),
                 false,
-                Ok("other arrival 1d 1h\n"),
+                Ok("other arrival 1d 1h (estimated)\n"),
             ),
-            (Recorded::Value(Some(40_000)), true, Ok("arrival 1d 1h\n")),
-            (Recorded::Value(Some(200_000)), true, Ok("arrival 13h\n")),
+            (
+                Recorded::Value(Some(40_000)),
+                true,
+                Ok("arrival 1d 1h (estimated)\n"),
+            ),
+            (
+                Recorded::Value(Some(200_000)),
+                true,
+                Ok("arrival 13h (estimated)\n"),
+            ),
             (
                 Recorded::NotRecorded,
                 true,
@@ -3099,7 +3129,7 @@ mod tests {
             let etas = Etas::read(&frame, Some(&content)).unwrap();
             let context = context(&frame, &loc, &vision, &names, &units);
             let hover = CounterHover {
-                control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
                 authored: None,
                 rect: [0.0; 4],
                 members: vec![1].into(),
@@ -3177,7 +3207,7 @@ mod tests {
                      timing: &[Timing]| {
             let context = context(frame, &loc, vision, &names, &units);
             let input = CounterHover {
-                control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
                 authored: None,
                 rect: [0.0; 4],
                 members: members.to_vec().into(),
@@ -3222,7 +3252,12 @@ mod tests {
                 );
                 assert_eq!(skipped, baseline, "class13={railway_gun} coarse={coarse}");
                 if !coarse {
-                    assert!(skipped.body.contains("next 2h\n\n"), "{}", skipped.body);
+                    let expected = if railway_gun {
+                        "next 2h\n\n"
+                    } else {
+                        "next 2h (estimated)\n\n"
+                    };
+                    assert!(skipped.body.contains(expected), "{}", skipped.body);
                 }
             }
             let repeated = build(&frame, &known, railway_gun, true, &[1, dangling, 2, 2], &[]);
@@ -3283,12 +3318,12 @@ mod tests {
 
     #[test]
     fn ordinary_authored_fallback_follows_the_class_zero_and_thirteen_handler_result() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         use replay_data::{rows::ArmyIconInputRow, rows::RailwayGunCounterInputRow};
         use std::cell::Cell;
-        use viewer_foundation::map::counter_hovers::land::CounterControl as Control;
+        use viewer_native_gui::counter_hovers::land::CounterControl as Control;
 
-        let parsed = content_reader_core::gui::native::read(
+        let parsed = content_reader_gui::gui::native::read(
             br#"guiTypes = {
             iconType = { name = child pdx_tooltip = RAW_TITLE pdx_tooltip_delayed = RAW_BODY }
         }"#,
@@ -3580,9 +3615,13 @@ mod tests {
                     remaining.clone()
                 });
                 assert_eq!(calls.get(), expected_calls, "{case} class13={railway_gun}");
-                if let Some(expected) = match case {
-                    "visible foreign zero ETA" => Some("other arrival 0h\n"),
-                    "visible foreign negative ETA" => Some("other arrival -1h\n"),
+                if let Some(expected) = match (case, railway_gun) {
+                    ("visible foreign zero ETA", true) => Some("other arrival 0h\n"),
+                    ("visible foreign zero ETA", false) => Some("other arrival 0h (estimated)\n"),
+                    ("visible foreign negative ETA", true) => Some("other arrival -1h\n"),
+                    ("visible foreign negative ETA", false) => {
+                        Some("other arrival -1h (estimated)\n")
+                    }
                     _ => None,
                 } {
                     assert!(
@@ -3700,5 +3739,130 @@ mod tests {
             next_hours(&[(1, 3, first, &a), (2, 4, first, &b)]).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn division_arrival_is_labeled_estimated_while_railway_gun_and_task_force_keep_native_wording() {
+        let mut frame = frame(true);
+        put(
+            &mut frame,
+            TableRows::DivisionMovement(vec![DivisionMovementRow {
+                division: 1,
+                path_total: 1,
+                path: vec![4],
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::RailwayGunCounterInputs(vec![
+                replay_data::rows::RailwayGunCounterInputRow {
+                    gun: 1,
+                    roster_owner: 11,
+                    province: 3,
+                    ordinary_path: vec![4],
+                    current_strength: 10,
+                    maximum_strength: 10,
+                    name: Recorded::Value(Some(b"Gun".to_vec())),
+                    ..Default::default()
+                },
+            ]),
+        );
+        put(
+            &mut frame,
+            TableRows::TaskForces(vec![replay_data::rows::TaskForceRow {
+                id: 7,
+                route_count: 1,
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::TaskForceMapMotion(vec![replay_data::rows::TaskForceMapMotionRow {
+                task_force: 7,
+                path: vec![4],
+                ..Default::default()
+            }]),
+        );
+        let mut loc_map: Localisation = loc()
+            .iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .chain([(
+                "UNIT_MOVING_HOURS_NONPLAYER".to_owned(),
+                "other arrival $HOURS$h".to_owned(),
+            )])
+            .collect();
+        loc_map.language = "english".into();
+        let names = content_reader_division_names::division_names::Database::default();
+        let units = Err("unused".into());
+        for (ours, remaining, native, estimated) in [
+            (true, 2_900_000, "arrival 1d 5h\n", "arrival 1d 5h (estimated)\n"),
+            (false, 2_900_000, "other arrival 1d 5h\n", "other arrival 1d 5h (estimated)\n"),
+            (true, 200_000, "arrival 2h\n", "arrival 2h (estimated)\n"),
+            (false, 200_000, "other arrival 2h\n", "other arrival 2h (estimated)\n"),
+        ] {
+            let vision = Vision::sharing(if ours { 1 } else { 2 }, [1]);
+            let ctx = context(&frame, &loc_map, &vision, &names, &units);
+            let div_hover = CounterHover {
+                control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
+                authored: None,
+                rect: [0.0; 4],
+                members: vec![1].into(),
+                timing: vec![Timing { next: Some(100_001), kind: Some(2) }].into(),
+                coarse: false,
+                hidden: false,
+                railway_gun: false,
+                remaining: None,
+                ours,
+            };
+            let div_out = build_context(&ctx, &div_hover, false, |_, _| Ok(remaining));
+            let expected_div = format!("{estimated}next 2h (estimated)\n\n");
+            assert!(
+                div_out.body.starts_with(&expected_div),
+                "ours={ours} remaining={remaining}: {:?}",
+                div_out.body
+            );
+            if !ours {
+                let hidden_div = CounterHover {
+                    hidden: true,
+                    ..div_hover.clone()
+                };
+                let hidden_out = build_context(&ctx, &hidden_div, false, |_, _| Ok(remaining));
+                assert!(
+                    hidden_out.body.starts_with("next 2h (estimated)\n\n"),
+                    "hidden foreign division remaining={remaining}: {:?}",
+                    hidden_out.body
+                );
+            }
+            let gun_hover = CounterHover {
+                railway_gun: true,
+                ..div_hover
+            };
+            let gun_out = build_context(&ctx, &gun_hover, false, |_, _| Ok(remaining));
+            let expected_gun = format!("{native}next 2h\n\n");
+            assert!(
+                gun_out.body.starts_with(&expected_gun),
+                "gun ours={ours} remaining={remaining}: {:?}",
+                gun_out.body
+            );
+            let tf_hover = viewer_native_gui::counter_hovers::task_force::Hover {
+                control: viewer_native_gui::counter_hovers::task_force::Control::Normal,
+                unit_hit: 0,
+                rect: [0.0; 4],
+                hit: None,
+                authored: None,
+                supported: true,
+                ours,
+                coarse: false,
+                hidden: false,
+                members: vec![7].into(),
+            };
+            let tf_out = task_force::build(&ctx, &tf_hover, |_, _| Ok(remaining));
+            assert!(
+                tf_out.body.starts_with(native),
+                "tf ours={ours} remaining={remaining}: {:?}",
+                tf_out.body
+            );
+        }
     }
 }

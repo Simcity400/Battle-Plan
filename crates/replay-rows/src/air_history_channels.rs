@@ -1,0 +1,6 @@
+
+pub const AIR_MENU_CHANNELS: usize = 89;
+pub const AIR_MENU_EXTRA_CHANNELS: usize = AIR_MENU_CHANNELS - AIR_HISTORY_SCENARIO_CHANNELS.len();
+pub const AIR_HISTORY_SCENARIO_CHANNELS: [usize; 9] = [43, 3, 10, 17, 51, 58, 44, 24, 65];
+
+opaque_value!(Option<[i64; AIR_MENU_EXTRA_CHANNELS]>);

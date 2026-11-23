@@ -3,14 +3,14 @@ import type { CaptureMode } from '../generated/dashboard';
 import type { ProductRequest } from './client';
 import type { WidgetMeta } from './definitions';
 import type { BoundTrack } from './model';
+import { forwardRequest, type DeclaredProduct } from './request.ts';
+import type { ParamsFor } from './regionTime';
 
 export interface WidgetAvailability { available: boolean | null; unavailable: string | null }
 
 export function availabilityRequest(definition: Pick<WidgetMeta, 'availability'>, track: BoundTrack | undefined): ProductRequest | null {
-  return definition.availability && track ? {
-    sourceId: track.source.id, revision: track.source.revision, product: definition.availability.product,
-    params: { ...definition.availability.params, branchId: track.branch.id },
-  } : null;
+  return definition.availability && track
+    ? forwardRequest(track.source, definition.availability.product, { ...definition.availability.params, branchId: track.branch.id } as ParamsFor<DeclaredProduct>) : null;
 }
 
 export function validateWidgetAvailability(value: unknown): WidgetAvailability {

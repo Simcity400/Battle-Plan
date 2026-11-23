@@ -1,13 +1,12 @@
 
 use super::Compared;
-use crate::{
-    document::Document,
-    layers::{Layer, naval::Naval},
-    playhead_host::mirror::Mirrors,
-};
+use crate::{document::Document, playhead_host::mirror::Mirrors};
+use viewer_layer_core::layers::Layer;
+use viewer_layers_political::naval::Naval;
 use serde_json::json;
 use std::{collections::BTreeMap, io, sync::Arc};
-use viewer_world::map::{gradient::Attributes, map_mode::MapMode};
+use map_display_data::landscape::Attributes;
+use viewer_map_modes::map_mode::MapMode;
 
 const WARNING: &str = "Naval dominance FX withheld";
 
@@ -82,7 +81,7 @@ pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compar
     Ok(compared)
 }
 
-pub(super) fn fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+pub(super) fn fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = naval(layer);
     let fresh = layer.composed(mirrors);
     let mut compared = Compared::default();

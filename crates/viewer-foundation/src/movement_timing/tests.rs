@@ -1,5 +1,6 @@
+use super::test_support::{DIVISION, LAND, SPEED, content, frame, hour, moving, panel, provinces, put, status_row, two_leg_map, world};
 use super::*;
-use content_reader_core::{movement::Neighbour, movement::ProvinceTerrain};
+use content_reader_map::movement::{Neighbour, ProvinceTerrain};
 use replay_data::{
     rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryMovementModifiers,
     rows::DivisionMovementRow, rows::DivisionMovementStats, rows::DivisionPanelStatsRow,
@@ -9,33 +10,10 @@ use replay_data::{
     rows::WarRelationRow,
 };
 use replay_derive::eta_derive::SpeedTerms;
-use replay_frame::{frame::Metrics, frame::TableView};
+use replay_frame::frame::TableView;
 use std::cell::Cell;
 
-const DIVISION: u64 = 7;
-const SPEED: i64 = 700_000;
-const LAND: ProvinceTerrain = ProvinceTerrain { flags: 1, index: 1 };
 const UNRECORDED: &str = "the division's base speed is not recorded";
-
-fn content(map: MovementMap) -> MovementContent {
-    MovementContent {
-        map,
-        defines: Defines {
-            outer_scale: 100_000,
-            ..Default::default()
-        },
-        rail: Ok(RailMovementDefines {
-            speed: [0; 4],
-            maximum_level: 0,
-        }),
-        task_force_terrain: Err("unrelated task-force terrain is unavailable".into()),
-        land: Ok(LandSpeedContent {
-            terrain_movement: vec![0],
-            regions: BTreeMap::new(),
-            ..Default::default()
-        }),
-    }
-}
 
 fn plain_speed(base: i64, organisation: Option<i64>, defines: &Defines) -> i64 {
     let edge = |_: u32, _: u32| Ok(eta_derive::EdgeTerm::Normal(Default::default()));
@@ -53,103 +31,6 @@ fn plain_speed(base: i64, organisation: Option<i64>, defines: &Defines) -> i64 {
         defines,
     )
     .unwrap()
-}
-
-fn status_row(division: u64) -> DivisionStatusRow {
-    test_support::neutral_status(division, 1)
-}
-
-fn world(frame: &mut DecodedFrame) {
-    test_support::neutral_world(frame, 1);
-}
-
-fn two_leg_map() -> MovementMap {
-    let edge = |to, distance| Neighbour {
-        to,
-        distance: Some(distance),
-        ..Default::default()
-    };
-    MovementMap::from_parts(&[
-        (1, LAND, vec![edge(2, 350_000)]),
-        (2, LAND, vec![edge(1, 350_000), edge(3, 700_000)]),
-        (3, LAND, vec![edge(2, 700_000)]),
-    ])
-}
-
-fn frame() -> DecodedFrame {
-    DecodedFrame {
-        branch: 1,
-        hour: 60_832_632,
-        tables: std::array::from_fn(|_| TableView::Unavailable {
-            reason: "not needed for the estimate".into(),
-        })
-        .map(Into::into),
-        metrics: Metrics::default(),
-    }
-}
-
-fn put(frame: &mut DecodedFrame, rows: TableRows) {
-    let id = rows.table();
-    *frame.tables[id.index()] = TableView::Complete(rows);
-}
-
-fn moving() -> DivisionMovementRow {
-    DivisionMovementRow {
-        division: DIVISION,
-        path: vec![2, 3],
-        path_total: 2,
-        numerator: 175_000,
-        withdrawal: Recorded::Value(Some(0)),
-        fuel: Recorded::Value(Some(0)),
-        ..Default::default()
-    }
-}
-
-fn panel(division: u64, speed: Option<i64>) -> DivisionPanelStatsRow {
-    let mut panel = DivisionPanelStatsRow {
-        division,
-        ..Default::default()
-    };
-    panel.panel_stats[DivisionPanelStatsRow::MAXIMUM_SPEED] = speed;
-    panel.panel_stats[1] = Some(1_000_000);
-    panel
-}
-
-fn provinces(ids: impl IntoIterator<Item = u32>) -> TableRows {
-    TableRows::Provinces(
-        ids.into_iter()
-            .map(|id| ProvinceRow {
-                id,
-                ..Default::default()
-            })
-            .collect(),
-    )
-}
-
-fn hour(base_speed: Option<i64>) -> DecodedFrame {
-    let mut frame = frame();
-    put(&mut frame, provinces(1..=3));
-    put(
-        &mut frame,
-        TableRows::Divisions(vec![DivisionRow {
-            id: DIVISION,
-            province: 1,
-            roster_owner: 1,
-            logical_owner: 1,
-            ..Default::default()
-        }]),
-    );
-    put(&mut frame, TableRows::DivisionMovement(vec![moving()]));
-    put(
-        &mut frame,
-        TableRows::DivisionPanelStats(vec![panel(DIVISION, base_speed)]),
-    );
-    put(
-        &mut frame,
-        TableRows::DivisionStatus(vec![status_row(DIVISION)]),
-    );
-    world(&mut frame);
-    frame
 }
 
 fn busy_hour(count: u32, divisions: u64, legs: usize) -> (DecodedFrame, MovementMap) {
@@ -338,36 +219,6 @@ fn the_cache_holds_the_hours_in_flight_and_the_latest() {
     assert_eq!(built.get(), 4);
     fill(1);
     assert_eq!(built.get(), 5, "hour 1 should have gone");
-}
-
-#[test]
-fn a_division_s_route_made_alone_equals_the_whole_hour_s() {
-    use crate::map::counter_move::{DivisionRoutes, RouteMemo};
-    let map = content(two_leg_map());
-    let anchor = |province: u32| Some([province as f32 * 10.0, 0.0, 1.0]);
-    let (whole_memo, alone_memo) = (RouteMemo::default(), RouteMemo::default());
-    let standing = DivisionMovementRow { division: DIVISION + 1, ..Default::default() };
-    for (at, speed) in [Some(SPEED), Some(SPEED), None].into_iter().enumerate() {
-        let mut frame = hour(speed);
-        frame.hour += at as i32;
-        let mut census = rows::<tables::Divisions>(&frame).unwrap().rows().to_vec();
-        census.push(DivisionRow { id: DIVISION + 1, province: 2, ..Default::default() });
-        put(&mut frame, TableRows::Divisions(census));
-        let mut movement = rows::<tables::DivisionMovement>(&frame).unwrap().rows().to_vec();
-        movement.push(standing.clone());
-        put(&mut frame, TableRows::DivisionMovement(movement));
-        let etas = Etas::read(&frame, Some(&map)).unwrap();
-        let whole = DivisionRoutes::read_kept(&frame, &etas, Some(&map.map), &anchor, &whole_memo).unwrap();
-        let terms = HourTerms::new(&frame);
-        let census = rows::<tables::Divisions>(&frame).unwrap().rows();
-        for row in rows::<tables::DivisionMovement>(&frame).unwrap().rows() {
-            let division = census.iter().find(|division| division.id == row.division);
-            let eta = estimate_one(row, division, &terms, Some(&map));
-            assert_eq!(eta, etas.get(row.division), "hour {at}, division {}", row.division);
-            let alone = DivisionRoutes::route_of(row, division.map_or(0, |division| division.province), eta, Some(&map.map), &anchor, &alone_memo);
-            assert_eq!(Some(&alone), whole.by_division.get(&row.division), "hour {at}, division {}", row.division);
-        }
-    }
 }
 
 #[test]
@@ -1175,9 +1026,9 @@ fn restricted_estimate(frame: &DecodedFrame, map: &MovementContent) -> Result<(i
         .map_err(str::to_owned)
 }
 
-fn sub_unit_database() -> std::sync::Arc<content_reader_core::unit_leader::SubUnits> {
-    crate::map::test_support::enter_fixed_modifier_tables();
-    let mut units = content_reader_core::unit_leader::SubUnits::default();
+fn sub_unit_database() -> std::sync::Arc<content_reader_script::sub_units::SubUnits> {
+    crate::test_support::enter_fixed_modifier_tables();
+    let mut units = content_reader_script::sub_units::SubUnits::default();
     units.read(
         b"sub_units={ light_armor={type=armor} marine={special_forces=yes type=infantry} infantry={type=infantry} }",
         "common/units/test.txt",
@@ -2196,4 +2047,73 @@ fn worker_ticket_etas_match_direct_derivation_across_hours_branches_and_refusals
             }
         }
     }
+}
+
+#[test]
+fn zero_supply_days_uses_exact_operands_at_zero_days_and_proves_historical_full_supply() {
+    let map = content(two_leg_map());
+    let mut base = hour(Some(SPEED));
+    put(
+        &mut base,
+        TableRows::SimulationFeatures(vec![SimulationFeatureRow {
+            movement_defines: Recorded::Value(RecordedDefines {
+                out_of_supply_speed: Some(-80_000),
+                retreat_speed: Some(25_000),
+                withdrawal_speed: Some(-50_000),
+                out_of_fuel_speed: Some(40_000),
+                fuel_capacity_scale: Some(9_600_000),
+                supply_days: Some(0),
+                supply_grace: Some(72),
+                air_speed: Some(-50_000),
+                air_defense_denominator: Some(1_000_000),
+                air_defense_reduction: Some(100_000),
+                out_of_supply_attrition: Some(20_000),
+            }),
+            ..Default::default()
+        }]),
+    );
+    let run = |row: DivisionStatusRow| {
+        let mut frame = base.clone();
+        put(&mut frame, TableRows::DivisionStatus(vec![row]));
+        Etas::read(&frame, Some(&map))
+            .unwrap()
+            .estimate(DIVISION)
+            .map_err(str::to_owned)
+    };
+    let exact = run(DivisionStatusRow {
+        supply_ratio: None,
+        out_of_supply_days: Recorded::Value(Some(0)),
+        supply_ratio_exact: Recorded::Value(Some(35_500)),
+        supply_grace_exact: Recorded::Value(Some(0)),
+        ..status_row(DIVISION)
+    });
+    assert!(exact.is_ok(), "{exact:?}");
+    let historical_ambiguous = run(DivisionStatusRow {
+        supply_ratio: Some(35_000),
+        out_of_supply_days: Recorded::Value(Some(0)),
+        supply_ratio_exact: Recorded::Value(None),
+        supply_grace_exact: Recorded::Value(None),
+        ..status_row(DIVISION)
+    });
+    assert_eq!(
+        historical_ambiguous.as_ref().map_err(String::as_str),
+        Err(replay_derive::eta_derive::frame_terms::SUPPLY_DAYS_ZERO)
+    );
+    let historical_full = run(DivisionStatusRow {
+        supply_ratio: Some(100_000),
+        out_of_supply_days: Recorded::Value(Some(0)),
+        supply_ratio_exact: Recorded::Value(None),
+        supply_grace_exact: Recorded::Value(None),
+        ..status_row(DIVISION)
+    });
+    assert!(historical_full.is_ok(), "{historical_full:?}");
+    let historical_no_grace_max = run(DivisionStatusRow {
+        supply_ratio: Some(35_000),
+        supply_grace_maximum: Recorded::Value(0),
+        out_of_supply_days: Recorded::Value(Some(0)),
+        supply_ratio_exact: Recorded::Value(None),
+        supply_grace_exact: Recorded::Value(None),
+        ..status_row(DIVISION)
+    });
+    assert!(historical_no_grace_max.is_ok(), "{historical_no_grace_max:?}");
 }

@@ -1,0 +1,337 @@
+use super::views;
+use crate::layers::Settling;
+use replay_data::{BranchId, Hour, rows::TableId};
+use replay_frame::frame::DecodedFrame;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
+use viewer_runtime::reads::Reads;
+use viewer_engagements::engagement_history::History;
+
+const WHOLE: Duration = Duration::from_secs(120);
+
+const LOOK: Duration = Duration::from_millis(2);
+
+pub trait Asking: Clone + Send + 'static {
+    type Key: Clone + PartialEq + std::fmt::Debug + Send + 'static;
+    type Made: Send + 'static;
+    fn key(&self) -> Self::Key;
+    fn read(&self, branch: BranchId, hour: Hour, seek: u64, rows: Arc<DecodedFrame>, engaged: Option<Arc<History>>) -> Self::Made;
+}
+
+#[derive(Clone)]
+pub enum NoCombat {}
+
+impl Asking for NoCombat {
+    type Key = std::convert::Infallible;
+    type Made = std::convert::Infallible;
+
+    fn key(&self) -> Self::Key {
+        match *self {}
+    }
+
+    fn read(&self, _: BranchId, _: Hour, _: u64, _: Arc<DecodedFrame>, _: Option<Arc<History>>) -> Self::Made {
+        match *self {}
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Joined {
+    pub answered: bool,
+    pub made: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Key<K> {
+    generation: u64,
+    branch: BranchId,
+    hour: Hour,
+    covered: bool,
+    read: K,
+}
+
+struct Maker<A: Asking> {
+    reads: Reads<Key<A::Key>, Result<A::Made, String>>,
+    rows: Arc<views::Reader>,
+    declared: Vec<TableId>,
+    last: Option<Key<A::Key>>,
+    newest: Arc<AtomicU64>,
+    took: Arc<AtomicU64>,
+}
+
+pub struct Combat<A: Asking> {
+    asking: Option<A>,
+    maker: Option<Maker<A>>,
+    learned: Vec<TableId>,
+    generation: u64,
+    asked: Option<Key<A::Key>>,
+    handed: Option<Key<A::Key>>,
+    made: Option<A::Made>,
+    loading: Vec<String>,
+}
+
+impl<A: Asking> Default for Combat<A> {
+    fn default() -> Self {
+        Self { asking: None, maker: None, learned: Vec::new(), generation: 0, asked: None, handed: None, made: None, loading: Vec::new() }
+    }
+}
+
+impl<A: Asking> Combat<A> {
+    pub fn ask(&mut self, asking: Option<A>) {
+        if asking.is_none() {
+            (self.maker, self.asked, self.handed, self.made) = (None, None, None, None);
+            self.loading.clear();
+        }
+        self.asking = asking;
+    }
+
+    pub fn reset(&mut self) {
+        self.generation += 1;
+        (self.asked, self.handed, self.made) = (None, None, None);
+    }
+
+    pub fn ask_step(&mut self, store: &views::Store, applied: Option<Hour>, branch: Option<BranchId>, epoch: u64, engaged: Option<Arc<History>>) -> bool {
+        self.asked = None;
+        let (Some(asking), Some(hour), Some(branch)) = (self.asking.clone(), applied, branch) else { return false };
+        let covered = engaged.as_deref().is_some_and(|index| index.covers(branch, hour));
+        let key = Key { generation: self.generation, branch, hour, covered, read: asking.key() };
+        if self.handed.as_ref() == Some(&key) {
+            return false;
+        }
+        self.loading.clear();
+        let learned = &self.learned;
+        let maker = self.maker.get_or_insert_with(|| Maker::open(store, learned));
+        if maker.last.as_ref() != Some(&key) {
+            maker.last = Some(key.clone());
+            maker.newest.fetch_add(1, Ordering::AcqRel);
+        }
+        let (rows, newest, took) = (Arc::clone(&maker.rows), Arc::clone(&maker.newest), Arc::clone(&maker.took));
+        let stamp = newest.load(Ordering::Acquire);
+        maker.reads.ask(
+            key.clone(),
+            move || {
+                let started = Instant::now();
+                let made = rows_at(&rows, hour, epoch, &newest, stamp).map(|frame| asking.read(branch, hour, epoch, frame, engaged));
+                took.store(started.elapsed().as_nanos() as u64, Ordering::Release);
+                made
+            },
+            || {},
+        );
+        self.asked = Some(key);
+        true
+    }
+
+    pub fn join(&mut self, settling: Settling, interval: Duration) -> Joined {
+        let (Some(key), Some(maker)) = (self.asked.take(), self.maker.as_mut()) else { return Joined { answered: true, made: false } };
+        let limit = if settling.waits() {
+            WHOLE
+        } else if Duration::from_nanos(maker.took.load(Ordering::Acquire)) <= interval {
+            interval
+        } else {
+            Duration::ZERO
+        };
+        maker.reads.wait(|done| *done == key, limit);
+        let missed = maker.reads.take_missed();
+        let answered = missed.is_empty();
+        if !answered {
+            self.loading.push(format!("{missed:?}"));
+            self.learned.extend(missed);
+            self.learned.sort_unstable_by_key(|table| table.index());
+            self.learned.dedup();
+            maker.declare(&self.learned);
+        }
+        let mut made = false;
+        match maker.reads.take(|done| *done == key) {
+            Some((_, Ok(read))) => {
+                (self.made, self.handed) = (Some(read), Some(key));
+                made = true;
+            }
+            Some((_, Err(why))) => self.loading.push(why),
+            None if answered => self.loading.push(format!("its read of hour {}", key.hour)),
+            None => {}
+        }
+        Joined { answered, made }
+    }
+
+    pub fn take(&mut self) -> Option<A::Made> {
+        self.made.take()
+    }
+
+    pub fn loading(&self) -> &[String] {
+        &self.loading
+    }
+
+    pub fn open(&self) -> bool {
+        self.asking.is_some()
+    }
+
+    pub fn learned(&self) -> usize {
+        self.learned.len()
+    }
+}
+
+impl<A: Asking> Maker<A> {
+    fn open(store: &views::Store, learned: &[TableId]) -> Self {
+        let declared = Self::tables(learned);
+        let rows = Arc::new(store.reader("combat window", &declared.iter().copied().map(views::Need::every).collect::<Vec<_>>()));
+        Self { reads: Reads::new("combat window reads"), rows, declared, last: None, newest: Arc::default(), took: Arc::default() }
+    }
+
+    fn tables(learned: &[TableId]) -> Vec<TableId> {
+        let mut tables: Vec<TableId> = viewer_foundation::perspective::VISION_TABLES.iter().chain(learned).copied().collect();
+        tables.sort_unstable_by_key(|table| table.index());
+        tables.dedup();
+        tables
+    }
+
+    fn declare(&mut self, learned: &[TableId]) {
+        let tables = Self::tables(learned);
+        if tables != self.declared {
+            self.rows.declare_only(&tables);
+            self.declared = tables;
+        }
+    }
+}
+
+impl<A: Asking> Drop for Maker<A> {
+    fn drop(&mut self) {
+        self.newest.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+fn rows_at(rows: &views::Reader, hour: Hour, epoch: u64, newest: &AtomicU64, stamp: u64) -> Result<Arc<DecodedFrame>, String> {
+    let until = Instant::now() + WHOLE;
+    loop {
+        let seen = rows.published();
+        if let Some((frame, _, seek)) = rows.newest_seek()
+            && seek == epoch
+        {
+            if frame.hour == hour {
+                return Ok(frame);
+            }
+            if frame.hour > hour {
+                return Err(format!("its rows of hour {hour}, which the side's steps have passed"));
+            }
+        }
+        if newest.load(Ordering::Acquire) != stamp {
+            return Err(format!("its rows of hour {hour}, passed over for a newer hour"));
+        }
+        if Instant::now() >= until {
+            return Err(format!("its rows of hour {hour}, which did not come (waiting for {:?})", rows.arriving()));
+        }
+        rows.wait_newer(seen, LOOK);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::playhead_host::{
+        open,
+        views::{
+            apart::Apart,
+            tests::{RECORDING, hourly_steps, record},
+        },
+    };
+    use replay_data::scope::CaptureMode;
+    use std::sync::{Mutex, mpsc};
+
+    #[derive(Clone)]
+    struct Held {
+        started: Arc<Mutex<mpsc::Sender<Hour>>>,
+        finish: Arc<Mutex<mpsc::Receiver<()>>>,
+    }
+
+    impl Asking for Held {
+        type Key = ();
+        type Made = Hour;
+
+        fn key(&self) {}
+
+        fn read(&self, _: BranchId, hour: Hour, _: u64, rows: Arc<DecodedFrame>, _: Option<Arc<History>>) -> Hour {
+            assert_eq!(rows.hour, hour, "read over the rows of its own hour");
+            let _ = self.started.lock().unwrap().send(hour);
+            self.finish.lock().unwrap().recv_timeout(WHOLE).expect("the test lets the read finish");
+            rows.hour
+        }
+    }
+
+    #[test]
+    fn the_read_handed_with_a_publication_is_of_its_hour_and_a_late_one_never_is() {
+        let entry = open(record("combat window publication", 8), hourly_steps()).unwrap();
+        entry.set_capture(CaptureMode::Full);
+        entry.playhead().seek(1);
+        let mut fed = Apart::new(&entry, RECORDING.branch).unwrap();
+        let (started, reads) = mpsc::channel();
+        let (finish, finishing) = mpsc::channel();
+        let mut combat: Combat<Held> = Combat::default();
+        combat.ask(Some(Held { started: Arc::new(Mutex::new(started)), finish: Arc::new(Mutex::new(finishing)) }));
+        let branch = Some(RECORDING.branch);
+        let epoch = entry.playhead().epoch();
+        let read = || reads.recv_timeout(WHOLE).expect("a read starts");
+        let interval = Duration::from_millis(1);
+
+        assert!(combat.ask_step(fed.store(), Some(1), branch, epoch, None));
+        assert!(fed.drive(1));
+        assert_eq!(read(), 1);
+        finish.send(()).unwrap();
+        assert!(combat.join(Settling::still(), interval).answered);
+        assert_eq!(combat.take(), Some(1), "the head standing still waits for its hour's read");
+        assert!(!combat.ask_step(fed.store(), Some(1), branch, epoch, None), "the frame holds hour 1's read: nothing is read again");
+
+        assert!(combat.ask_step(fed.store(), Some(2), branch, epoch, None));
+        assert!(fed.drive(2));
+        assert_eq!(read(), 2);
+        assert!(combat.join(Settling::step(), interval).answered);
+        assert_eq!(combat.take(), None, "playing, the step does not wait for a read past its interval");
+        assert_eq!(combat.loading(), ["its read of hour 2"], "and says what the window waits for");
+
+        assert!(combat.ask_step(fed.store(), Some(3), branch, epoch, None));
+        assert!(fed.drive(3));
+        finish.send(()).unwrap();
+        assert_eq!(read(), 3, "hour 3's read follows hour 2's");
+        finish.send(()).unwrap();
+        assert!(combat.join(Settling::still(), interval).answered);
+        assert_eq!(combat.take(), Some(3), "hour 3's publication hands hour 3's read, never hour 2's");
+    }
+
+    #[test]
+    fn a_join_reports_only_the_read_it_took() {
+        let entry = open(record("combat window join", 8), hourly_steps()).unwrap();
+        entry.set_capture(CaptureMode::Full);
+        entry.playhead().seek(1);
+        let mut fed = Apart::new(&entry, RECORDING.branch).unwrap();
+        let (started, reads) = mpsc::channel();
+        let (finish, finishing) = mpsc::channel();
+        let mut combat: Combat<Held> = Combat::default();
+        combat.ask(Some(Held { started: Arc::new(Mutex::new(started)), finish: Arc::new(Mutex::new(finishing)) }));
+        let (branch, epoch) = (Some(RECORDING.branch), entry.playhead().epoch());
+        assert!(combat.ask_step(fed.store(), Some(1), branch, epoch, None));
+        assert!(fed.drive(1));
+        assert_eq!(reads.recv_timeout(WHOLE), Ok(1));
+        finish.send(()).unwrap();
+        assert_eq!(combat.join(Settling::still(), Duration::ZERO), Joined { answered: true, made: true });
+        assert!(combat.ask_step(fed.store(), Some(0), branch, epoch, None), "hour 1's read is not taken yet: hour 0 is asked");
+        assert_eq!(combat.join(Settling::still(), Duration::ZERO), Joined { answered: true, made: false }, "hour 0's rows are passed: this join took nothing");
+        assert_eq!(combat.take(), Some(1), "hour 1's read is still the frame's to take");
+    }
+
+    #[test]
+    fn rows_of_the_seek_before_never_answer_a_read_of_the_same_hour() {
+        let entry = open(record("combat window seek", 8), hourly_steps()).unwrap();
+        entry.set_capture(CaptureMode::Full);
+        entry.playhead().seek(1);
+        let mut fed = Apart::new(&entry, RECORDING.branch).unwrap();
+        let maker = Maker::<Held>::open(fed.store(), &[]);
+        let rows = Arc::clone(&maker.rows);
+        assert!(fed.drive(1));
+        let before = entry.playhead().epoch();
+        let (asked, newer) = (AtomicU64::new(0), AtomicU64::new(1));
+        assert_eq!(rows_at(&rows, 1, before, &asked, 0).map(|frame| frame.hour), Ok(1), "the rows of hour 1 at the seek they were posted at");
+        assert!(rows_at(&rows, 1, before + 1, &newer, 0).is_err(), "a read asked after the seek waits for its own rows, never taking these");
+    }
+}

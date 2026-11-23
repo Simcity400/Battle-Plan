@@ -4,15 +4,15 @@ use std::{
     io,
 };
 
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
+use content_reader_script::native::{self, Shape};
+
 use crate::{
     ResolvedLayers,
     fields::invalid,
     fixed5::decimal_i32,
     key_names::KeyNames,
-    parser::{
-        self, Item,
-        native::{self, Shape},
-    },
+    parser::{self, Item},
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

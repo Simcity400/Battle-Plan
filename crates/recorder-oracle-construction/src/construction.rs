@@ -122,7 +122,7 @@ pub fn naval_bases(
                         raw_tags
                             .get(raw)
                             .copied()
-                            .map(content_reader_core::parser::c_string)
+                            .map(content_reader_parser::parser::c_string)
                     })
                     .collect::<Option<Vec<_>>>(),
                 _ => None,
@@ -458,7 +458,34 @@ pub fn building_construction(
     );
     report.compared("BuildingConstruction", matched);
     report.limitation("construction target comparison uses the serializer's CBuildingReference projection; discarded status flag bits and unused location/country operands are not individually serialized", "BuildingConstruction");
+    report_railway_gun_repairs(saved, report);
     Ok(())
+}
+
+const RAILWAY_GUN_REPAIR_LIMITATION: &str =
+    "railway_gun repair queue rows are not recorded; they are omitted from comparison while preserving subsequent construction queue ordinals";
+
+fn report_railway_gun_repairs(saved: &saved::Pack, report: &mut Report) {
+    for entry in &saved.railway_gun_repairs {
+        let mut subject = format!(
+            "{}.general_lines[{}].railway_gun",
+            String::from_utf8_lossy(&entry.country),
+            entry.queue_ordinal
+        );
+        if let Some(id) = entry.id {
+            subject.push_str(&format!(" id={id}"));
+        }
+        if let Some(gun) = entry.railway_gun {
+            subject.push_str(&format!(" target={gun}"));
+        }
+        let already_reported = report
+            .limitations
+            .get(RAILWAY_GUN_REPAIR_LIMITATION)
+            .is_some_and(|subjects| subjects.contains(&subject));
+        if !already_reported {
+            report.limitation(RAILWAY_GUN_REPAIR_LIMITATION, subject);
+        }
+    }
 }
 
 pub fn railway_construction(
@@ -530,6 +557,7 @@ pub fn railway_construction(
         saved.railway_construction.keys().copied(),
     );
     report.compared("RailwayConstruction", matched);
+    report_railway_gun_repairs(saved, report);
     Ok(())
 }
 

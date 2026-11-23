@@ -1,5 +1,5 @@
 
-use viewer_foundation::map::lazy_icons::LazyFlags;
+use viewer_native_gui::lazy_icons::LazyFlags;
 mod chance;
 pub mod content;
 pub(crate) mod intel;

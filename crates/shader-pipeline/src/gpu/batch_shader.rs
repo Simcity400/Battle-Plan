@@ -148,6 +148,7 @@ fn attribute(binding: Option<&Binding>) -> Result<String, String> {
         Binding::BuiltIn(builtin) => {
             let name = match builtin {
                 BuiltIn::Position { .. } => "position",
+                BuiltIn::VertexIndex => "vertex_index",
                 BuiltIn::InstanceIndex => "instance_index",
                 BuiltIn::FrontFacing => "front_facing",
                 BuiltIn::SampleIndex => "sample_index",
@@ -616,6 +617,210 @@ fn stage(
         format!("diagnostic(off, derivative_uniformity);\n{source}\n{declarations}\n{wrapper}");
     validate(&module(&source)?)?;
     Ok((source, buffers))
+}
+
+fn strip_entry_stage(
+    shader: &Shader,
+    native_name: &str,
+) -> Result<(String, Module, Vec<Option<Binding>>, Option<Binding>), String> {
+    let mut parsed = module(&shader.wgsl)?;
+    if parsed.entry_points.len() != 1 {
+        return Err("tint needs one stage entry".into());
+    }
+    let mut entry = parsed.entry_points.remove(0);
+    let argument_bindings: Vec<_> = entry
+        .function
+        .arguments
+        .iter()
+        .map(|argument| argument.binding.clone())
+        .collect();
+    for argument in &mut entry.function.arguments {
+        argument.binding = None;
+    }
+    let result = entry
+        .function
+        .result
+        .as_mut()
+        .ok_or("tint stage has no result")?;
+    let result_binding = result.binding.clone();
+    result.binding = None;
+    entry.function.name = Some(native_name.into());
+    parsed
+        .functions
+        .append(entry.function, naga::Span::UNDEFINED);
+    let info = validate(&parsed)?;
+    let source = naga::back::wgsl::write_string(
+        &parsed,
+        &info,
+        naga::back::wgsl::WriterFlags::EXPLICIT_TYPES,
+    )
+    .map_err(|error| error.to_string())?;
+    let written = module(&source)?;
+    Ok((source, written, argument_bindings, result_binding))
+}
+
+pub(super) fn vertex_color_tint(compiled: &mut Compiled, color_location: u32) -> Result<(), String> {
+    if compiled.vertex.wgsl.contains("replay_tint_") || compiled.pixel.wgsl.contains("replay_tint_")
+    {
+        return Err("reserved tint identifier is already used".into());
+    }
+    let vertex_parsed = module(&compiled.vertex.wgsl)?;
+    let pixel_parsed = module(&compiled.pixel.wgsl)?;
+    let vertex_entry = vertex_parsed
+        .entry_points
+        .first()
+        .ok_or("tint vertex entry missing")?;
+    let pixel_entry = pixel_parsed
+        .entry_points
+        .first()
+        .ok_or("tint pixel entry missing")?;
+    let mut varying = vertex_entry.function.result.as_ref().map_or(0, |result| {
+        locations(&vertex_parsed, result.ty, result.binding.as_ref())
+    });
+    for argument in &pixel_entry.function.arguments {
+        varying = varying.max(locations(
+            &pixel_parsed,
+            argument.ty,
+            argument.binding.as_ref(),
+        ));
+    }
+
+    let (v_source, v_written, v_arg_bindings, v_result_binding) =
+        strip_entry_stage(&compiled.vertex, "replay_tint_native")?;
+    let v_native = &v_written
+        .functions
+        .iter()
+        .last()
+        .ok_or("generated tint vertex function missing")?
+        .1;
+    let v_native_name = v_native
+        .name
+        .as_deref()
+        .ok_or("generated tint vertex name missing")?;
+    let mut v_inputs = Vec::new();
+    let mut v_calls = Vec::new();
+    for (index, (argument, binding)) in v_native
+        .arguments
+        .iter()
+        .zip(&v_arg_bindings)
+        .enumerate()
+    {
+        let name = format!("replay_tint_arg{index}");
+        v_inputs.push(format!(
+            "{}{name}: {}",
+            attribute(binding.as_ref())?,
+            ty(&v_written, argument.ty)?
+        ));
+        v_calls.push(name);
+    }
+    v_inputs.push(format!(
+        "@location({color_location}) replay_tint_color: vec4<f32>"
+    ));
+    let v_result = v_native
+        .result
+        .as_ref()
+        .ok_or("generated tint vertex result missing")?;
+    let v_result_type = ty(&v_written, v_result.ty)?;
+    let v_result_attr = attribute(v_result_binding.as_ref())?;
+    let mut fields = Vec::new();
+    let mut copies = Vec::new();
+    match &v_written.types[v_result.ty].inner {
+        TypeInner::Struct { members, .. } => {
+            for (index, member) in members.iter().enumerate() {
+                let field = format!("value{index}");
+                fields.push(format!(
+                    "{}{field}: {},",
+                    attribute(member.binding.as_ref())?,
+                    ty(&v_written, member.ty)?
+                ));
+                copies.push(format!(
+                    "out.{field} = value.{};",
+                    member.name.as_deref().ok_or("unnamed interface member")?
+                ));
+            }
+        }
+        _ => {
+            fields.push(format!("{v_result_attr}value: {v_result_type},"));
+            copies.push("out.value = value;".into());
+        }
+    }
+    fields.push(format!("@location({varying}) replay_tint_color: vec4<f32>,"));
+    let vertex_out = format!(
+        "diagnostic(off, derivative_uniformity);\n{v_source}\nstruct ReplayTintOutput {{ {} }}\n\
+         @vertex fn main({}) -> ReplayTintOutput {{ let value = {v_native_name}({}); var out: ReplayTintOutput; {} out.replay_tint_color = replay_tint_color; return out; }}\n",
+        fields.join("\n"),
+        v_inputs.join(", "),
+        v_calls.join(", "),
+        copies.join("\n"),
+    );
+    validate(&module(&vertex_out)?)?;
+
+    let (p_source, p_written, p_arg_bindings, p_result_binding) =
+        strip_entry_stage(&compiled.pixel, "replay_tint_native")?;
+    let p_native = &p_written
+        .functions
+        .iter()
+        .last()
+        .ok_or("generated tint pixel function missing")?
+        .1;
+    let p_native_name = p_native
+        .name
+        .as_deref()
+        .ok_or("generated tint pixel name missing")?;
+    let mut p_inputs = Vec::new();
+    let mut p_calls = Vec::new();
+    for (index, (argument, binding)) in p_native
+        .arguments
+        .iter()
+        .zip(&p_arg_bindings)
+        .enumerate()
+    {
+        let name = format!("replay_tint_arg{index}");
+        p_inputs.push(format!(
+            "{}{name}: {}",
+            attribute(binding.as_ref())?,
+            ty(&p_written, argument.ty)?
+        ));
+        p_calls.push(name);
+    }
+    p_inputs.push(format!(
+        "@location({varying}) replay_tint_color: vec4<f32>"
+    ));
+    let p_result = p_native
+        .result
+        .as_ref()
+        .ok_or("generated tint pixel result missing")?;
+    let p_result_type = ty(&p_written, p_result.ty)?;
+    let p_result_attr = attribute(p_result_binding.as_ref())?;
+    let pixel_wrapper = match &p_written.types[p_result.ty].inner {
+        TypeInner::Struct { members, .. } => {
+            let color_member = members
+                .iter()
+                .find(|member| {
+                    matches!(member.binding, Some(Binding::Location { location: 0, .. }))
+                })
+                .and_then(|member| member.name.as_deref())
+                .ok_or("tint pixel output struct lacks location 0")?;
+            format!(
+                "@fragment fn main({}) -> {p_result_attr}{p_result_type} {{ var value = {p_native_name}({}); value.{color_member} = value.{color_member} * replay_tint_color; return value; }}\n",
+                p_inputs.join(", "),
+                p_calls.join(", "),
+            )
+        }
+        _ => format!(
+            "@fragment fn main({}) -> {p_result_attr}{p_result_type} {{ return {p_native_name}({}) * replay_tint_color; }}\n",
+            p_inputs.join(", "),
+            p_calls.join(", "),
+        ),
+    };
+    let pixel_out = format!(
+        "diagnostic(off, derivative_uniformity);\n{p_source}\n{pixel_wrapper}"
+    );
+    validate(&module(&pixel_out)?)?;
+
+    compiled.vertex.wgsl = vertex_out;
+    compiled.pixel.wgsl = pixel_out;
+    Ok(())
 }
 
 impl Program {

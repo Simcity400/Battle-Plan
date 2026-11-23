@@ -205,7 +205,7 @@ pub(super) fn build(
                     ))
                 })
                 .collect();
-            next_location(context.loc, next_hours(&timed)?)
+            next_location(context.loc, next_hours(&timed)?, false)
         })();
         append(&mut out, context, true, "railway gun next location", next);
     }
@@ -241,7 +241,7 @@ pub(super) fn build(
             header(context, members[0], count),
         );
         let strength = counter_inputs::member_mean(known.iter().map(|gun| {
-            viewer_foundation::map::railway_gun_counter::strength_ratio(
+            viewer_unit_reads::railway_gun_counter::strength_ratio(
                 gun.current_strength,
                 gun.maximum_strength,
             )
@@ -267,10 +267,8 @@ mod tests {
     use super::*;
     use replay_data::{rows::CountryLinkRow, rows::ProvinceRow, rows::Recorded, rows::TableRows};
     use std::cell::Cell;
-    use {
-        viewer_foundation::map::counter_hovers::land::CounterControl,
-        viewer_foundation::map::test_support::{test_frame, test_put as put},
-    };
+    use viewer_native_gui::counter_hovers::land::CounterControl;
+    use viewer_foundation::test_support::{test_frame, test_put as put};
 
     fn hover() -> CounterHover {
         CounterHover {

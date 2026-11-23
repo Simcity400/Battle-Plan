@@ -1,6 +1,6 @@
 use crate::controls::{flight, orbit};
 use std::io;
-use viewer_foundation::map::camera::{Free, Lens, Placement, Pose};
+use viewer_gpu::camera::{Free, Lens, Placement, Pose};
 
 pub(crate) const LEGS: [(&str, f32); 5] = [
     ("tilted", 4.0),

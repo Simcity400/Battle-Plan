@@ -8,16 +8,17 @@ use std::sync::{Arc, atomic::AtomicBool};
 #[cfg(windows)]
 fn cached_content_replies_do_not_sweep_a_clean_generation() {
     let replay = Arc::new(Replay::from_records(
+        recorder_derive::writers(),
         CAMPAIGN.into(), &[records(1, vec![source(1, 100, Some(1))])],
     ).unwrap());
     let source = crate::Source::from_replay(
         crate::SourceKey { source_id: "freshness".into(), revision: "1".into() },
         "memory.battleplan".into(), replay, &AtomicBool::new(false),
     ).unwrap();
-    let options = content_reader_core::ResolveOptions {
+    let options = content_reader_layers::ResolveOptions {
         game_dir: "synthetic-game".into(), user_dir: "synthetic-user".into(), cache_dir: "synthetic-cache".into(),
     };
-    let content = Arc::new(content_reader_core::content::ResolvedContent {
+    let content = Arc::new(content_reader_layers::content::ResolvedContent {
         layers: Default::default(), stats: Default::default(), changed: Vec::new(), notes: Vec::new(),
     });
     source.set_test_content(options.clone(), Arc::clone(&content));
@@ -31,6 +32,7 @@ fn cached_content_replies_do_not_sweep_a_clean_generation() {
 fn air_superiority_inherited_state_is_independent_between_revisions() {
     let replay = Arc::new(
         Replay::from_records(
+            recorder_derive::writers(),
             CAMPAIGN.into(),
             &[records(1, vec![source(1, 100, Some(1))])],
         )
@@ -87,24 +89,24 @@ fn a_reply_reports_its_own_folders_read_set_whatever_is_bound_meanwhile() {
     };
     let held_old = source.content(&old.options).unwrap();
     let held_new = source.content(&new.options).unwrap();
-    let (_, mut own) = content_reader_core::content::diagnostics::capture(|| {
+    let (_, mut own) = content_reader_layers::content::diagnostics::capture(|| {
         let _ = held_new.layers.read_uncovered_path(b"gfx/custom/icon.dds");
     });
     let mut old_lines = Vec::new();
-    content_reader_core::content::diagnostics::current().append_to(&mut old_lines);
+    content_reader_layers::content::diagnostics::current().append_to(&mut old_lines);
     source.append_changed_warnings(&mut old_lines, Some(&old));
     assert!(!uncovered(&old_lines));
-    assert!(!content_reader_core::content::diagnostics::current().has_uncovered());
+    assert!(!content_reader_layers::content::diagnostics::current().has_uncovered());
     assert!(Arc::ptr_eq(&source.bound_content(&new.options).unwrap(), &held_new));
     assert!(Arc::ptr_eq(&source.content(&old.options).unwrap(), &held_old));
     assert!(Arc::ptr_eq(&source.content(&new.options).unwrap(), &held_new));
     source.content(&old.options).unwrap();
-    content_reader_core::content::diagnostics::scope(&mut own, false, || {
+    content_reader_layers::content::diagnostics::scope(&mut own, false, || {
         let mut new_lines = Vec::new();
-        content_reader_core::content::diagnostics::current().append_to(&mut new_lines);
+        content_reader_layers::content::diagnostics::current().append_to(&mut new_lines);
         source.append_changed_warnings(&mut new_lines, Some(&new));
     assert!(uncovered(&new_lines));
-    assert!(content_reader_core::content::diagnostics::current().has_uncovered());
+    assert!(content_reader_layers::content::diagnostics::current().has_uncovered());
     });
     drop((held_old, held_new));
     let _ = std::fs::remove_dir_all(&root);
@@ -147,7 +149,7 @@ fn the_catalogue_names_countries_when_content_is_known_and_shows_tags_otherwise(
             ..Default::default()
         }]));
     let replay =
-        Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap());
+        Arc::new(Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap());
     let source = crate::Source::from_replay(
         crate::SourceKey {
             source_id: "source-1".into(),
@@ -191,7 +193,7 @@ fn warning_allocation_exhaustion_never_skips_localisation_or_saved_names() {
             ..Default::default()
         }]));
     let replay =
-        Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap());
+        Arc::new(Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap());
     let mut source = crate::Source::from_replay(
         crate::SourceKey {
             source_id: "naming-exhaustion".into(),
@@ -242,6 +244,7 @@ fn warning_allocation_exhaustion_never_skips_localisation_or_saved_names() {
 fn failed_diagnostic_initialization_never_caches_an_incomplete_naming_result() {
     let replay = Arc::new(
         Replay::from_records(
+            recorder_derive::writers(),
             CAMPAIGN.into(),
             &[records(1, vec![source(1, 100, Some(1))])],
         )

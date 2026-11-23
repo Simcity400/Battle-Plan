@@ -1,8 +1,10 @@
 
-use crate::{catalogue::Catalogue, products};
-pub use dashboard_core::findings::{Finding, Kind};
-use content_reader_core::content::ResolvedContent;
-use content_reader_core::content::diagnostics::Once as OnceLock;
+use dashboard_effects::ScriptedEffects;
+use dashboard_base::catalogue::Catalogue;
+use crate::products;
+use dashboard_core::findings::{Finding, Kind};
+use content_reader_layers::content::ResolvedContent;
+use content_reader_layers::content::diagnostics::Once as OnceLock;
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -23,11 +25,11 @@ struct Content {
     catalogue: OnceLock<Result<Arc<Catalogue>, String>>,
     tags: OnceLock<
         Result<
-            std::collections::BTreeMap<String, content_reader_core::country_tags::CountryTag>,
+            std::collections::BTreeMap<String, content_reader_key_names::country_tags::CountryTag>,
             String,
         >,
     >,
-    ideologies: OnceLock<Result<content_reader_core::ideologies::Ideologies, String>>,
+    ideologies: OnceLock<Result<content_reader_key_names::ideologies::Ideologies, String>>,
 }
 
 impl Content {
@@ -42,21 +44,21 @@ impl Content {
     }
     fn tags(
         &self,
-    ) -> Result<&std::collections::BTreeMap<String, content_reader_core::country_tags::CountryTag>, String>
+    ) -> Result<&std::collections::BTreeMap<String, content_reader_key_names::country_tags::CountryTag>, String>
     {
         self.tags
             .get_or_init(|| {
-                content_reader_core::country_tags::read_definitions(&self.resolved.layers)
+                content_reader_key_names::country_tags::read_definitions(&self.resolved.layers)
                     .map_err(|error| error.to_string())
             })
             .as_ref()
             .map_err(Clone::clone)
     }
 
-    fn ideologies(&self) -> Result<&content_reader_core::ideologies::Ideologies, String> {
+    fn ideologies(&self) -> Result<&content_reader_key_names::ideologies::Ideologies, String> {
         self.ideologies
             .get_or_init(|| {
-                content_reader_core::ideologies::read(&self.resolved.layers)
+                content_reader_key_names::ideologies::read(&self.resolved.layers)
                     .map(|(ideologies, _)| ideologies)
                     .map_err(|error| error.to_string())
             })
@@ -67,7 +69,11 @@ impl Content {
     fn catalogue(&self) -> Result<&Arc<Catalogue>, String> {
         self.catalogue
             .get_or_init(|| {
-                Catalogue::of_layers_for_check(self.resolved.layers.clone(), &self.language)
+                Catalogue::of_layers_for_check(
+                    self.resolved.layers.clone(),
+                    &self.language,
+                    dashboard_effects::effect_describer,
+                )
                     .map(Arc::new)
                     .map_err(|error| error.to_string())
             })
@@ -141,7 +147,18 @@ fn aggregate(findings: &mut Vec<Finding>) {
 }
 
 fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<String, String> {
-    use products::{at_hour::AtHour, *};
+    use dashboard_base::products::{Product, artwork, at_hour::{self, AtHour}};
+    use dashboard_world::products::{country_flags, identities, subjects};
+    use dashboard_land::products::{army, army_losses, divisions, doctrine_mastery, doctrines, experience, forces, leaders, training_queue};
+    use dashboard_naval::products::naval;
+    use dashboard_wars::products::{casualties, diplomacy, faction_state, occupation, peace, scoreboard, volunteers, wargoals, wars};
+    use dashboard_politics::products::{feed, focus_artwork, national_focus, stability, technology_artwork};
+    use dashboard_economy::products::{convoys, economy, trade_flows};
+    use dashboard_production::products::{construction, equipment_losses, equipment_produced, production, production_spending};
+    use dashboard_air::products::aircraft_catalogue;
+    use dashboard_players::products::{campaign_clock, player_apm};
+    use dashboard_research::products::research;
+    use dashboard_intelligence::products::intelligence;
     match key {
         campaign_clock::CampaignClock::KEY => Ok("Campaign clock totals require recorded real-time intervals, pause-state coverage and each session's clock frequency; no authored content is read. Recording-dependent values are unavailable offline.".into()),
         player_apm::PlayerApm::KEY => Ok("eAPM requires recorded accepted-command kinds, player lifetimes, provenance and unpaused timing coverage; no authored content is read. Recording-dependent values are unavailable offline.".into()),
@@ -149,12 +166,12 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         | focus_artwork::FocusArtwork::KEY => {
             let national = artwork_check(
                 content,
-                artwork::Kind::Focus(crate::FocusDatabase::National),
+                artwork::Kind::Focus(dashboard_core::dto::FocusDatabase::National),
                 findings,
             )?;
             let continuous = artwork_check(
                 content,
-                artwork::Kind::Focus(crate::FocusDatabase::Continuous),
+                artwork::Kind::Focus(dashboard_core::dto::FocusDatabase::Continuous),
                 findings,
             )?;
             Ok(format!("{national} {continuous}"))
@@ -167,13 +184,13 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             Ok(format!("{names} Slots, assignments, progress, modifiers and grants require the recorded research tables."))
         }
         doctrines::Doctrines::KEY | <doctrine_mastery::DoctrineMastery as AtHour>::KEY | <doctrine_mastery::rewards::DoctrineRewards as AtHour>::KEY => {
-            let database = content_reader_core::doctrines::read(&content.resolved.layers).map_err(|error| error.to_string())?;
+            let database = content_reader_military::doctrines::read(&content.resolved.layers).map_err(|error| error.to_string())?;
             let catalogue = content.catalogue()?;
             for folder in database.entries.values() {
-                if let Err(why) = crate::catalogue::localised_bytes(&catalogue.localisation, &folder.name, crate::catalogue::View::Plain) { findings.push(Finding::new(Kind::Refused, "doctrine folder name", why)); }
+                if let Err(why) = dashboard_base::catalogue::localised_bytes(&catalogue.localisation, &folder.name, dashboard_base::catalogue::View::Plain) { findings.push(Finding::new(Kind::Refused, "doctrine folder name", why)); }
             }
             for name in database.grand.values().chain(database.sub.values()).chain(database.tracks.values()) {
-                if let Err(why) = crate::catalogue::localised_bytes(&catalogue.localisation, &name.value, crate::catalogue::View::Plain) { findings.push(Finding::new(Kind::Refused, "doctrine name", why)); }
+                if let Err(why) = dashboard_base::catalogue::localised_bytes(&catalogue.localisation, &name.value, dashboard_base::catalogue::View::Plain) { findings.push(Finding::new(Kind::Refused, "doctrine name", why)); }
             }
             findings.extend(database.notes.into_iter().map(|note| Finding::new(Kind::Refused, "doctrine content", note)));
             findings.extend(catalogue.take_findings());
@@ -224,7 +241,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             Ok(format!("Air parts group recorded variants under their equipment's archetype through the equipment database ({} types); totals and parts require the recorded air force tables.", units.equipment.len()))
         }
         forces::NavySize::KEY => {
-            content_reader_core::unit_leader::sub_units(&content.catalogue()?.content.layers).map_err(|why| why.to_string())?;
+            content_reader_key_names::unit_leader::sub_units(&content.catalogue()?.content.layers).map_err(|why| why.to_string())?;
             Ok("Ship classes and roles resolve recorded class tokens through the sub-unit database; totals and classes require the recorded navy tables.".into())
         }
         volunteers::VolunteersExpeditionaries::KEY => Ok("No content dependency: links are the recorded military aid table and the identity table.".into()),
@@ -251,7 +268,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         }
         subjects::Subjects::KEY => {
             let catalogue = content.catalogue()?;
-            let (states, _) = content_reader_core::autonomy::read(&content.resolved.layers).map_err(|error| error.to_string())?;
+            let (states, _) = content_reader_politics::autonomy::read(&content.resolved.layers).map_err(|error| error.to_string())?;
             let named = states.states.iter().map(|state| state.id.as_str()).collect();
             subjects::levels(&named, Some(&states), Some(catalogue));
             take(catalogue, "subject level names", findings);
@@ -304,8 +321,8 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             || key == <faction_state::rewards::FactionGoalRewards as at_hour::AtHour>::KEY =>
         {
             let layers = &content.resolved.layers;
-            let goals = content_reader_core::faction_goals::cached(layers)?;
-            let upgrades = content_reader_core::faction_upgrades::cached(layers)?;
+            let goals = content_reader_politics::faction_goals::cached(layers)?;
+            let upgrades = content_reader_politics::faction_upgrades::cached(layers)?;
             for warning in goals.warnings.iter().chain(&upgrades.warnings) {
                 findings.push(Finding::new(Kind::Warning, key, warning));
             }
@@ -359,7 +376,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         }
         <leaders::UnitLeaders as at_hour::AtHour>::KEY | <leaders::career::LeaderHour as at_hour::AtHour>::KEY | leaders::career::LeaderCareer::KEY | leaders::career::LeaderChoices::KEY => {
             let catalogue = content.catalogue()?;
-            let read = content_reader_core::unit_leader::Leaders::<String>::load(&catalogue.content.layers, &|_| None).map_err(|why| why.to_string())?;
+            let read = content_reader_key_names::unit_leader::Leaders::<String>::load(&catalogue.content.layers, &|_| None).map_err(|why| why.to_string())?;
             findings.extend(read.misreads.iter().map(|message| Finding::new(Kind::Misread, "unit leaders", message)));
             findings.extend(read.skills.warnings().iter().map(|message| Finding::new(Kind::Refused, "leader skill definitions", message)));
             findings.extend(read.skills.conditions().iter().map(|condition| Finding::new(Kind::Offline, "leader skill definitions", format!("Maximum skill needs recorded modifier definitions: {condition}"))));
@@ -376,7 +393,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         casualties::CasualtyPairs::KEY | casualties::CasualtyBreakdown::KEY => Ok("No content dependency: pairs and losses are the recorded casualty lifetimes and totals, named by the identity table.".into()),
         casualties::CasualtyLabels::KEY => {
             let catalogue = content.catalogue()?;
-            if catalogue.localised("CASUALTIES_UNKNOWN", crate::catalogue::View::Plain).is_none() {
+            if catalogue.localised("CASUALTIES_UNKNOWN", dashboard_base::catalogue::View::Plain).is_none() {
                 findings.push(Finding::new(Kind::Fallback, "casualty labels", "localisation CASUALTIES_UNKNOWN is missing; \"Unknown attacker\" is shown"));
             }
             take(catalogue, "casualty labels", findings);
@@ -384,7 +401,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         }
         peace::PeaceDeals::KEY => {
             let catalogue = content.catalogue()?;
-            if catalogue.localised("PEACE_TAKE_STATES_DEMAND", crate::catalogue::View::Scripted).is_none() {
+            if catalogue.localised("PEACE_TAKE_STATES_DEMAND", dashboard_base::catalogue::View::Scripted).is_none() {
                 findings.push(Finding::new(Kind::Refused, "peace action names", "localisation PEACE_TAKE_STATES_DEMAND is missing; state transfers are unnamed"));
             }
             take(catalogue, "peace action names", findings);
@@ -416,7 +433,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         naval::losses::NavalLosses::KEY => Ok("No content dependency: counts are the recorded naval loss totals.".into()),
         naval::sunk::ShipsSunk::KEY | naval::sunk::ShipsSunkManifest::KEY | naval::battles::NavalBattleDetails::KEY => {
             let catalogue = content.catalogue()?;
-            content_reader_core::unit_leader::sub_units(&catalogue.content.layers).map_err(|why| why.to_string())?;
+            content_reader_key_names::unit_leader::sub_units(&catalogue.content.layers).map_err(|why| why.to_string())?;
             dashboard_base::content::strategic_regions(&catalogue.content.layers).map_err(|why| why.to_string())?;
             Ok("Ship classes resolve recorded class tokens through the sub-unit database, sea zones through the strategic regions; ship, cause and fleet names are the text the game stored, shown in its recorded language.".into())
         }
@@ -433,10 +450,10 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             Ok("Authored occupation-law names and icons checked; occupied state names, garrisons and law assignments require recorded state identities.".into())
         }
         <occupation::detail::OccupationDetail as at_hour::AtHour>::KEY => Ok("No content dependency: occupier totals and collaboration are recorded tables.".into()),
-        key if key == products::stockpile::EquipmentStockpileCatalogue::KEY
-            || key == products::stockpile::EquipmentStockpileChart::KEY
-            || key == <products::stockpile::EquipmentStockpileAt as products::at_hour::AtHour>::KEY
-            || key == <products::stockpile::StockpileArtwork as products::at_hour::AtHour>::KEY =>
+        key if key == dashboard_production::products::stockpile::EquipmentStockpileCatalogue::KEY
+            || key == dashboard_production::products::stockpile::EquipmentStockpileChart::KEY
+            || key == <dashboard_production::products::stockpile::EquipmentStockpileAt as dashboard_base::products::at_hour::AtHour>::KEY
+            || key == <dashboard_production::products::stockpile::StockpileArtwork as dashboard_base::products::at_hour::AtHour>::KEY =>
         {
             Ok("Design names, equipment types and pictures need the recorded design, country and best-design candidate operands; unavailable offline.".into())
         }
@@ -456,7 +473,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         scoreboard::ScoreboardColumns::KEY => {
             let catalogue = content.catalogue()?;
             for key in scoreboard::localised_keys() {
-                if catalogue.localised(key, crate::catalogue::View::Plain).is_none() {
+                if catalogue.localised(key, dashboard_base::catalogue::View::Plain).is_none() {
                     findings.push(Finding::new(Kind::Fallback, "scoreboard headings", format!("localisation {key} is missing; the plain heading is shown")));
                 }
             }
@@ -492,7 +509,7 @@ fn wargoals_check(content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
     );
     let mut seen = std::collections::BTreeSet::new();
     for name in &definitions.names {
-        if !seen.insert(content_reader_core::tokens::Token::c_str(name)) {
+        if !seen.insert(content_reader_parser::tokens::Token::c_str(name)) {
             continue;
         }
         let key = String::from_utf8_lossy(name);
@@ -518,7 +535,7 @@ fn wargoals_check(content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             .localisation
             .requires_arguments(name, &["ACTOR", "TARGET"])
         {
-            catalogue.localised(&key, crate::catalogue::View::Plain);
+            catalogue.localised(&key, dashboard_base::catalogue::View::Plain);
             take(catalogue, &subject, findings);
         }
     }
@@ -528,11 +545,11 @@ fn wargoals_check(content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
 
 fn artwork_check(
     content: &Content,
-    kind: products::artwork::Kind,
+    kind: dashboard_base::products::artwork::Kind,
     findings: &mut Vec<Finding>,
 ) -> Result<String, String> {
     let catalogue = content.catalogue()?;
-    let context = products::artwork::Context::load(Arc::clone(catalogue), kind)
+    let context = dashboard_base::products::artwork::Context::load(Arc::clone(catalogue), kind)
         .map_err(|error| error.to_string())?;
     let (tokens, _) = context.tokens();
     let total = tokens.len();
@@ -541,11 +558,11 @@ fn artwork_check(
         let subject = format!(
             "{} {token}",
             match kind {
-                products::artwork::Kind::Focus(crate::FocusDatabase::National) => "focus",
-                products::artwork::Kind::Focus(crate::FocusDatabase::Continuous) => {
+                dashboard_base::products::artwork::Kind::Focus(dashboard_core::dto::FocusDatabase::National) => "focus",
+                dashboard_base::products::artwork::Kind::Focus(dashboard_core::dto::FocusDatabase::Continuous) => {
                     "continuous focus"
                 }
-                products::artwork::Kind::Technology => "technology",
+                dashboard_base::products::artwork::Kind::Technology => "technology",
             }
         );
         let (_, problems) = context.prepare(token);
@@ -557,23 +574,21 @@ fn artwork_check(
         take(catalogue, &subject, findings);
     }
     Ok(match kind {
-        products::artwork::Kind::Focus(database) => format!(
+        dashboard_base::products::artwork::Kind::Focus(database) => format!(
             "{total} declared {} checked; {without_description} missing description localisation keys (descriptions are unavailable).",
             match database {
-                crate::FocusDatabase::National => "national focuses",
-                crate::FocusDatabase::Continuous => "continuous focuses",
+                dashboard_core::dto::FocusDatabase::National => "national focuses",
+                dashboard_core::dto::FocusDatabase::Continuous => "continuous focuses",
             }
         ),
-        products::artwork::Kind::Technology => {
+        dashboard_base::products::artwork::Kind::Technology => {
             format!("{total} declared technologies checked (text and icons).")
         }
     })
 }
 
 fn flags_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), String> {
-    use products::country_flags::{
-        CountryFlagSize, FlagCache, FlagSearch, ShieldStyle, find_flag, flag_cells,
-    };
+    use dashboard_world::products::country_flags::{CountryFlagSize, FlagCache, FlagSearch, ShieldStyle, find_flag, flag_cells};
     match content
         .catalogue()
         .and_then(|catalogue| ShieldStyle::load(catalogue).map_err(|error| error.to_string()))

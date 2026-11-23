@@ -1,20 +1,12 @@
-use content_reader_core::ResolvedLayers;
+use content_reader_layers::ResolvedLayers;
 use content_reader_gfx::gfx;
 use content_reader_image::{dds, native::Decode};
 use std::{collections::BTreeMap, io, sync::Arc};
 use viewer_combat as combat;
-use viewer_foundation::map::native_windows::NativeWindows;
-use {
-    viewer_counters::map::counters::CounterAssets,
-    viewer_foundation::{
-        errors::invalid,
-        map::{
-            lazy_icons::{DYNAMIC_BASE, LazyTextures},
-            sprites::Interface,
-            text,
-        },
-    },
-};
+use viewer_native_gui::native_windows::NativeWindows;
+use viewer_counters::counters::CounterAssets;
+use viewer_runtime::errors::invalid;
+use viewer_native_gui::{lazy_icons::{DYNAMIC_BASE, LazyTextures}, sprites::Interface, text};
 
 pub struct MapIcons {
     pub combat: Arc<combat::Assets>,
@@ -23,8 +15,8 @@ pub struct MapIcons {
     pub counters: Arc<CounterAssets>,
     pub raids: Arc<viewer_raids::map::raids::RaidAssets>,
     pub intel: Arc<viewer_raids::map::intel_icons::IntelAssets>,
-    pub occupation: Result<viewer_world::map::occupation_icons::Content, String>,
-    pub animated_text: Arc<viewer_world::map::animated_map_text::Assets>,
+    pub occupation: Result<viewer_map_icons::occupation_icons::Content, String>,
+    pub animated_text: Arc<viewer_map_text::animated_map_text::Assets>,
     pub lazy: Arc<LazyTextures>,
 }
 
@@ -34,7 +26,7 @@ pub struct LoadedIcons {
     pub images: Vec<dds::Texture>,
     pub fonts: text::Fonts,
     pub counters: CounterAssets,
-    pub animated_text: viewer_world::map::animated_map_text::Assets,
+    pub animated_text: viewer_map_text::animated_map_text::Assets,
     pub lazy: Arc<LazyTextures>,
 }
 
@@ -44,10 +36,10 @@ impl MapIcons {
         products: Option<&map_content::loader::Loader>,
         layers: &ResolvedLayers,
         (defines, graphics): (
-            &content_reader_core::defines::Defines,
-            &content_reader_core::defines::Defines,
+            &content_reader_defines::defines::Defines,
+            &content_reader_defines::defines::Defines,
         ),
-        map: &content_reader_core::map::MapData,
+        map: &content_reader_map::map::MapData,
         regions: &BTreeMap<u32, content_reader_regions::regions::StrategicRegion>,
         language: &str,
         map_size: [u32; 2],
@@ -55,17 +47,17 @@ impl MapIcons {
         decode: Decode,
     ) -> io::Result<LoadedIcons> {
         std::thread::scope(|scope| {
-            let strict = content_reader_core::content::is_strict();
-            let raids = content_reader_core::parallel::spawn(scope, move || {
+            let strict = content_reader_layers::content::is_strict();
+            let raids = content_reader_layers::parallel::spawn(scope, move || {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    content_reader_core::content::observe_overlay_refusals_isolated(|| {
+                    content_reader_layers::content::observe_overlay_refusals_isolated(|| {
                         let load = || {
                             viewer_raids::map::raids::RaidAssets::load_content_with_products(
                                 products, layers, graphics, map,
                             )
                         };
                         if strict {
-                            content_reader_core::content::strict(load)
+                            content_reader_layers::content::strict(load)
                         } else {
                             load()
                         }
@@ -74,11 +66,11 @@ impl MapIcons {
             });
             let mut images = Vec::new();
             let windows = NativeWindows::load_at(layers, gui_viewport)?;
-            let layouts = viewer_counters::map::counters::Layouts::read(&windows);
+            let layouts = viewer_counter_kit::Layouts::read(&windows);
             let mut font_warnings = Vec::new();
-            let arrow_font = viewer_foundation::map::ribbon_content::arrow_text_font(layers)?;
-            let registry = content_reader_core::gui::native::resources::Registry::from_files(
-                content_reader_core::gui::native::sprites::read_object_layers(layers)?,
+            let arrow_font = viewer_gpu::ribbon_content::arrow_text_font(layers)?;
+            let registry = content_reader_gui::gui::native::resources::Registry::from_files(
+                content_reader_gui::gui::native::sprites::read_object_layers(layers)?,
             );
             let interface = Interface {
                 sprites: gfx::SpriteSet::new(&registry.files),
@@ -145,9 +137,9 @@ impl MapIcons {
                 &mut images,
                 &lazy,
             )?;
-            let (raids, refusals) = content_reader_core::parallel::join(raids)
+            let (raids, refusals) = content_reader_layers::parallel::join(raids)
                 .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-            content_reader_core::content::credit_overlay_refusals(&refusals);
+            content_reader_layers::content::credit_overlay_refusals(&refusals);
             let mut raids = raids?;
             raids.retain_glyphs(&interface.registry);
             raids.trigger_content.triggers = Arc::new(combat.tactics.trigger_names());
@@ -156,7 +148,7 @@ impl MapIcons {
             counters
                 .gui
                 .load(layers, &raids.gui_assets(), &mut images)?;
-            let animated_text = viewer_world::map::animated_map_text::Assets::load(
+            let animated_text = viewer_map_text::animated_map_text::Assets::load(
                 layers,
                 (defines, graphics),
                 map_size,
@@ -168,7 +160,7 @@ impl MapIcons {
                 .load(layers, &animated_text.gui_assets(), &mut images)?;
             counters.gui.load(
                 layers,
-                &viewer_world::map::resource_icons::gui_assets(),
+                &viewer_map_icons::resource_icons::gui_assets(),
                 &mut images,
             )?;
             if images.len() >= DYNAMIC_BASE {

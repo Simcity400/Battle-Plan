@@ -22,7 +22,7 @@ fn draw(seed: u32) -> i32 {
     scoped_draw(scope_seed(seed), scope_counter(seed))
 }
 
-pub(crate) fn scoped_draw(seed: u32, counter: u32) -> i32 {
+pub fn scoped_draw(seed: u32, counter: u32) -> i32 {
     (scoped_word(seed, counter) & 0x7fff_ffff) as i32
 }
 

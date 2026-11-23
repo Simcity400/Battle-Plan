@@ -1,4 +1,5 @@
-use replay::{commands, spool::ControlRecord};
+use replay_capture_spool::commands;
+use replay_recording::control::ControlRecord;
 use serde_json::json;
 use std::{ffi::OsString, path::Path};
 
@@ -27,7 +28,7 @@ pub(crate) fn command(args: Vec<OsString>) -> Result<(), String> {
         }
     }
     let replay =
-        commands::Recording::open_path(Path::new(path)).map_err(|error| error.to_string())?;
+        replay::campaign::commands::open_path(Path::new(path)).map_err(|error| error.to_string())?;
     let branches: Vec<_> = replay
         .branches
         .iter()

@@ -1,11 +1,8 @@
 use super::tables;
 use super::*;
 use content_witness::{Entry, Outcome};
-use content_reader_core::{
-    content::ResolvedLayers,
-    map::{ProvinceDefinition, ProvinceKind},
-    test_support::Stack,
-};
+use content_reader_layers::{content::ResolvedLayers, test_support::Stack};
+use content_reader_map::map::{ProvinceDefinition, ProvinceKind};
 use replay_data::rows::*;
 use replay_frame::frame::{Metrics, TableView};
 use sha2::Digest;
@@ -165,8 +162,8 @@ fn display_content_pressure_is_retryable_without_changing_source_evidence() {
 
 #[test]
 fn building_bank_survives_dependency_binding_changes_and_replacement() {
-    use viewer_world::map::map_buildings::{CityTerrain, MapBuildingAssets};
-    content_reader_core::test_game::enter();
+    use viewer_buildings::map_buildings::{CityTerrain, MapBuildingAssets};
+    content_reader_script::test_game::enter();
     let stack = fixture("building_bank_immutable_binding");
     stack.write(
         &stack.base(),
@@ -187,7 +184,7 @@ fn building_bank_survives_dependency_binding_changes_and_replacement() {
     );
     let content = content(&stack);
     let layers = stack.layers(&[]);
-    let defines = content_reader_core::defines::read(&layers).unwrap();
+    let defines = content_reader_defines::defines::read(&layers).unwrap();
     let load_bank = || {
         MapBuildingAssets::load(
             &layers,
@@ -232,7 +229,7 @@ fn building_bank_survives_dependency_binding_changes_and_replacement() {
             &assets,
             &choice(),
             &city,
-            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            &mut viewer_runtime::profiling::BuilderSpans::new(false),
         )
         .unwrap()
         .0;
@@ -246,7 +243,7 @@ fn building_bank_survives_dependency_binding_changes_and_replacement() {
             &assets,
             &choice(),
             &city,
-            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            &mut viewer_runtime::profiling::BuilderSpans::new(false),
         )
         .unwrap()
         .0;
@@ -259,7 +256,7 @@ fn building_bank_survives_dependency_binding_changes_and_replacement() {
             &replacement,
             &choice(),
             &city,
-            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            &mut viewer_runtime::profiling::BuilderSpans::new(false),
         )
         .unwrap()
         .0;
@@ -340,7 +337,7 @@ fn witness_is_a_canonical_set_including_misses_errors_and_retained_reads() {
         })
         .unwrap();
     assert_eq!(before, other.witness().unwrap());
-    let result: io::Result<content_reader_core::content::Bytes> = reads.load(|layers| layers.read("map/missing.txt"));
+    let result: io::Result<content_reader_layers::content::Bytes> = reads.load(|layers| layers.read("map/missing.txt"));
     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
     retained.read("map/later.txt").unwrap();
     assert_ne!(before, reads.witness().unwrap());
@@ -481,9 +478,7 @@ fn retained_readers_keep_canonical_layer_indices_across_recorded_subsets() {
         Entry::Read { layer: Some(layer), .. } if layer.index == 1 && layer.id == "test1")));
 }
 
-// quarantine: #144 content verification refuses files the test never changed
 #[test]
-#[ignore = "quarantined under #144"]
 fn witness_hashes_bytes_not_sizes_or_timestamps_and_logs_verification_errors() {
     use std::{
         fs::{File, FileTimes},
@@ -550,7 +545,7 @@ fn witness_changes_on_mod_order_replace_paths_and_a_new_higher_layer_file() {
         let mut layers = ResolvedLayers::from_folders(folders).unwrap();
         for layer in &mut layers.layers {
             layer.id = match &layer.source {
-                content_reader_core::content::LayerSource::Folder(root) => {
+                content_reader_layers::content::LayerSource::Folder(root) => {
                     root.file_name().unwrap().to_string_lossy().into_owned()
                 }
                 _ => unreachable!(),
@@ -703,18 +698,18 @@ impl Original<'_> {
     fn intel_map_from_visibility(&self, fog: Option<&BTreeMap<u32, u8>>) -> io::Result<IntelMap> {
         Ok(fog_oracle::intel(&self.map, fog))
     }
-    pub fn nuclear_impacts(&self) -> io::Result<viewer_world::map::strike_effects::Impacts> {
-        viewer_world::map::strike_effects::Impacts::read(self.frame, |province| {
+    pub fn nuclear_impacts(&self) -> io::Result<viewer_models::strike_effects::Impacts> {
+        viewer_models::strike_effects::Impacts::read(self.frame, |province| {
             self.impact_place(province)
         })
     }
     fn impact_place(&self, province: u32) -> Option<([f32; 3], [f32; 4])> {
         Some((
-            viewer_foundation::map::counter_anchors::stack_anchor(
+            viewer_unit_reads::counter_anchors::stack_anchor(
                 &self.anchors,
                 &self.default_anchors,
                 province,
-                viewer_foundation::map::unit_rules::STANDSTILL,
+                viewer_foundation::unit_rules::STANDSTILL,
             )?,
             *self.bounds.get(&province)?,
         ))
@@ -722,10 +717,10 @@ impl Original<'_> {
     pub fn map_text(
         &self,
         vision: &perspective::Vision,
-    ) -> viewer_world::map::animated_map_text::events::Prepared {
-        use viewer_world::map::animated_map_text::events::{Context, Prepared};
+    ) -> viewer_map_text::animated_map_text::events::Prepared {
+        use viewer_map_text::animated_map_text::events::{Context, Prepared};
         let view = vision.ours();
-        match viewer_foundation::table_access::rows::<replay_data::rows::tables::MapEvents>(
+        match dashboard_text::table_access::rows::<replay_data::rows::tables::MapEvents>(
             self.frame,
         ) {
             Ok(intervals) => Prepared::new(
@@ -842,7 +837,7 @@ impl Original<'_> {
     }
     pub fn battle_sounds(&self) -> Option<viewer_audio::Battles> {
         use replay_data::rows::tables;
-        use viewer_foundation::table_access::{Available, rows};
+        use dashboard_text::table_access::{Available, rows};
         let audio = self.content.audio.as_ref()?;
         audio.battle.as_ref()?;
         let mut refusals = Vec::new();
@@ -1300,7 +1295,7 @@ fn original_weather_field(frame: &DecodedFrame) -> io::Result<map_display_data::
         hour: frame.hour,
         ..Default::default()
     };
-    for row in viewer_foundation::table_access::rows::<row_tables::WeatherRegions>(frame)?.rows() {
+    for row in dashboard_text::table_access::rows::<row_tables::WeatherRegions>(frame)?.rows() {
         if let Some(kind) = [
             row.light_rain,
             row.heavy_rain,
@@ -1638,8 +1633,11 @@ fn evidence_changes_without_inventing_a_value_or_a_new_country_lifetime() {
 
 #[test]
 fn weather_projection_reads_only_the_recorded_map_scope() {
-    use viewer_foundation::map::test_support::{
-        assert_reads_recorded, complete_frame, map_scoped, put_sample_campaign,
+    use viewer_foundation::test_support::{
+        assert_reads_recorded,
+        complete_frame,
+        map_scoped,
+        put_sample_campaign,
     };
     let mut frame = complete_frame(11, |table| {
         replay_data::rows::sample_extended_table(table, 0)
@@ -1656,7 +1654,7 @@ fn direct_owned_vision_keeps_the_old_keyed_source_census_and_decisions() {
     let stack = fixture("products_vision_old_census");
     let content = content(&stack);
     let frame = frame(1500);
-    let memo = viewer_foundation::map::memo::Keyed::new(perspective::VISION_TABLES);
+    let memo = viewer_runtime::memo::Keyed::new(perspective::VISION_TABLES);
     for fog in [false, true] {
         let choice = perspective::Choice {
             country: perspective::Country::Tag("Z1500".into()),
@@ -1703,7 +1701,7 @@ fn vision_core_refusals_keep_the_independent_country_maps_precedence() {
 }
 
 fn fog_content(stack: &Stack) -> ProductContent {
-    use viewer_foundation::map::visibility::{Defines, Topology};
+    use viewer_foundation::visibility::{Defines, Topology};
     let ProductContent {
         reads, mut inputs, ..
     } = content(stack);
@@ -2135,7 +2133,7 @@ fn snow_interior_matches_frozen_scalar_with_mixed_provinces_and_permanent_snow()
 
 #[test]
 fn territory_labels_and_shared_rail_graph_release_the_borrowed_host() {
-    use viewer_world::map::railways::RailNetwork;
+    use viewer_rail::railways::RailNetwork;
     let stack = fixture("landscape_closed_products");
     let content = content(&stack);
     let mut frame = frame(1501);
@@ -2398,7 +2396,7 @@ fn shared_vision_keeps_the_enforced_census_and_rejects_changed_same_hour_inputs(
     let content = fog_content(&stack);
     let mut frame = fog_frame(1500);
     let choice = perspective::Choice::default();
-    let memo = viewer_foundation::map::memo::Keyed::new(perspective::VISION_TABLES);
+    let memo = viewer_runtime::memo::Keyed::new(perspective::VISION_TABLES);
     let expected =
         perspective::cached_vision(&frame, &choice, FogContent::loaded(&content.fog), &memo)
             .unwrap();
@@ -2726,7 +2724,7 @@ fn snow_boundary_deltas_keep_refresh_only_changes_and_recover_after_refusal() {
         true,
     )
     .unwrap();
-    let mut previous: Option<Arc<map_snow::SnowMud>> = None;
+    let mut previous: Option<Arc<map_display_data::SnowMud>> = None;
     for step in 0..5 {
         if step != 0 {
             let mut next = row.clone();

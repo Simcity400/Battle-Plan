@@ -1,10 +1,7 @@
 
 use base64::Engine;
-use dashboard::{
-    Config, Service,
-    protocol::{MAX_MESSAGE_BYTES, replay_revision},
-    transport::{DataCommand, DataEvent, ReplyChunks},
-};
+use dashboard_core::{config::Config, protocol::{MAX_MESSAGE_BYTES, replay_revision}, transport::{DataCommand, DataEvent, ReplyChunks}};
+use dashboard::Service;
 use serde::Deserialize;
 use std::{
     io::{self, BufRead, Read, Write},
@@ -117,9 +114,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => return Err(format!("Unknown bridge option: {option}").into()),
         }
     }
-    if let Err(error) = dashboard::artwork::configure(
+    if let Err(error) = dashboard_text::artwork::configure(
         &artwork_url.ok_or("The bridge needs --artwork-url")?,
-        dashboard::artwork::local_folder(),
+        dashboard_text::artwork::local_folder(),
     ) {
         eprintln!("Artwork: {error}");
     }
@@ -132,7 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut command = match command {
             Command::Data(command) => command,
             Command::Local(LocalCommand::Artwork { id, name }) => {
-                let png = dashboard::artwork::bytes(&name)
+                let png = dashboard_text::artwork::bytes(&name)
                     .map(|png| base64::engine::general_purpose::STANDARD.encode(png));
                 answer(id, serde_json::to_string(&png)?)?;
                 continue;
@@ -141,7 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let partials: Vec<_> = paths
                     .iter()
                     .map(|path| {
-                        dashboard::metadata::read_partial_recording(path)
+                        dashboard_text::metadata::read_partial_recording(path)
                             .ok()
                             .flatten()
                     })
@@ -157,11 +154,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 match next
                     .save()
-                    .and_then(|()| service.configure_content(&next, false))
+                    .and_then(|applied| service.configure_content(&next, false).map(|()| applied.warning))
                 {
-                    Ok(()) => {
+                    Ok(warning) => {
                         config = next;
-                        let payload = serde_json::json!({ "game": config.game_dir, "user": config.user_dir, "contentReady": true }).to_string();
+                        let payload = serde_json::json!({ "game": config.game_dir, "user": config.user_dir, "contentReady": true, "warning": warning }).to_string();
                         answer(id, payload)?;
                     }
                     Err(error) => {

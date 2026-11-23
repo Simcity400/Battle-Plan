@@ -123,14 +123,14 @@ fn politics_tfix2_multilane_hours_encode_alias_census_and_midnight_without_loss(
     let census = Outcome::Rows {
         len: countries.len(),
     };
-    captured.handoff = Some(staging.handoff(&mut captured.cursors));
+    // SAFETY: test owns `staging` and `captured` with no concurrent producer.
+    captured.handoff = Some(unsafe { staging.handoff(&mut captured.cursors) });
     let mut tables = (0..replay_data::rows::TABLE_COUNT)
         .map(|_| TableInput::Sampled(unavailable("fixture")))
         .collect::<Vec<_>>();
     tables[TableId::OperativeMemberships.index()] = TableInput::Sampled(operative_view);
-    ledger
-        .assemble_owned(1, 22, &captured, &countries, census, &mut tables)
-        .unwrap();
+    // SAFETY: test is the sole spool consumer of `captured.handoff`.
+    unsafe { ledger.assemble_owned(1, 22, &captured, &countries, census, &mut tables) }.unwrap();
     frames.push((22, tables.clone()));
     let hour_gate = Barrier::new(17);
     let event_gate = Barrier::new(16);
@@ -162,9 +162,10 @@ fn politics_tfix2_multilane_hours_encode_alias_census_and_midnight_without_loss(
                     Some(100 - 5 * i64::from(hour - 22) + i64::from(hour >= 24) * 7);
                 country.politics_witness = Some((1, Some((hour - 21) as u32)));
             }
-            captured.handoff = Some(staging.handoff(&mut captured.cursors));
-            ledger
-                .assemble_owned(1, hour, &captured, &countries, census, &mut tables)
+            // SAFETY: producer threads are paused at `hour_gate` during this handoff.
+            captured.handoff = Some(unsafe { staging.handoff(&mut captured.cursors) });
+            // SAFETY: test is the sole spool consumer of `captured.handoff`.
+            unsafe { ledger.assemble_owned(1, hour, &captured, &countries, census, &mut tables) }
                 .unwrap();
             let scratch = ledger.scratch.as_ref().unwrap();
             let drain = scratch.drained.unwrap().unwrap();
@@ -176,8 +177,8 @@ fn politics_tfix2_multilane_hours_encode_alias_census_and_midnight_without_loss(
     assert_eq!(staging.registered_lanes(), 16);
     assert_eq!(drained_sequences, (1..=336).collect::<Vec<_>>());
     let handoff = captured.handoff.unwrap().unwrap();
-    let repeated = handoff
-        .drain(&captured.cursors, &mut [Event::default(); 336], &mut [])
+    // SAFETY: all producer threads have joined and test is the sole consumer.
+    let repeated = unsafe { handoff.drain(&captured.cursors, &mut [Event::default(); 336], &mut []) }
         .unwrap();
     assert_eq!((repeated.copied, repeated.pending), (0, 0));
     let mut encoder = FrameEncoder::new();

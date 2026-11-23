@@ -7,15 +7,15 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
 };
-use viewer_counters::map::{box_selection, selection_sounds};
-use viewer_foundation::{map::counter_hovers::unit_hits::Kind, unit_handle::Unit};
+use viewer_counters::{box_selection, selection_sounds};
+use viewer_native_gui::counter_hovers::unit_hits::Kind;
+use viewer_runtime::unit_handle::Unit;
 use super::unit_pick;
-use viewer_playback::{cursors::MapCursor, layers::units::PickDivision};
-use viewer_world::map::{
-    model_pick::{Figures, Shape},
-    models::{ModelLibrary, ModelPass},
-    unit_history::{History, LandFigure},
-};
+use viewer_playback::cursors::MapCursor;
+use viewer_layers_forces::units::PickDivision;
+use viewer_unit_models::model_pick::{Figures, Shape};
+use viewer_models::{ModelLibrary, ModelPass};
+use viewer_unit_history::unit_history::{History, LandFigure};
 
 #[derive(Debug, Default)]
 pub(crate) struct Theatres(BTreeMap<Unit, Result<u64, &'static str>>);
@@ -204,7 +204,7 @@ impl SelectionInput {
                     }
                 },
             };
-            instance.position[0] = viewer_foundation::map::unit_pose::unwrap(instance.position[0], eye[0], width);
+            instance.position[0] = viewer_gpu::unit_pose::unwrap(instance.position[0], eye[0], width);
             shape.hit(instance, &joints, eye, ray)
         };
         let hits: Vec<(u32, u32)> = figures.along(eye, ray).into_iter().filter(|figure| met(figure)).map(|figure| (figure.province, figure.order)).collect();
@@ -309,7 +309,7 @@ fn kind_of(unit: Unit) -> Kind {
 
 impl super::Viewer {
     pub(super) fn model_at(&mut self, document: &Document, point: [f32; 2], click: bool) -> Result<Option<Picked>, &'static str> {
-        use viewer_world::map::map_mode::{MapMode, Stock};
+        use viewer_map_modes::map_mode::{MapMode, Stock};
         let Some(scene) = self.scene.as_ref() else { return Ok(None) };
         let strategic = matches!(self.shown_mode(), MapMode::Stock(Stock::StrategicAir | Stock::StrategicNavy));
         let Some(view) = self.last_view.as_ref() else { return Ok(None) };
@@ -347,7 +347,7 @@ impl super::Viewer {
         ctx: &egui::Context,
         order: usize,
     ) {
-        use viewer_world::map::map_mode::{MapMode, Stock};
+        use viewer_map_modes::map_mode::{MapMode, Stock};
         let units = Arc::clone(self.unit_selection.units());
         let settled = unit_pick::click(&picked.candidates, &picked.divisions, ours, &|id| units.contains(&Unit::Division(id)), picked.unordered);
         let click = match settled {
@@ -412,7 +412,7 @@ impl super::Viewer {
         order: usize,
     ) {
         use box_selection::{Member, Mode};
-        use viewer_world::map::map_mode::{MapMode, Stock};
+        use viewer_map_modes::map_mode::{MapMode, Stock};
         let (shift, ctrl) = (modifiers.shift, modifiers.ctrl);
         let mode = match self.shown_mode() {
             MapMode::Stock(Stock::StrategicAir) => Mode::StrategicAir,
@@ -664,7 +664,7 @@ mod tests {
     #[test]
     fn theatres_come_from_the_hours_units_and_each_gap_is_named() {
         use replay_data::rows::{DivisionRow, RailwayGunCounterInputRow, TableRows};
-        use viewer_foundation::map::test_support::{test_frame, test_put};
+        use viewer_foundation::test_support::{test_frame, test_put};
         let mut frame = test_frame(0);
         test_put(
             &mut frame,
@@ -690,7 +690,7 @@ mod tests {
     #[test]
     fn the_unit_order_is_the_clients_recorded_list_and_its_absence_is_named() {
         use replay_data::rows::{CountryLinkRow, LandUnitOrderRow, LocalPlayerRow, TableRows};
-        use viewer_foundation::map::test_support::{test_frame, test_put};
+        use viewer_foundation::test_support::{test_frame, test_put};
         let mut frame = test_frame(0);
         test_put(&mut frame, TableRows::CountryLinks(vec![CountryLinkRow { id: 40, canonical_slot: 7 }]));
         test_put(&mut frame, TableRows::LocalPlayer(vec![LocalPlayerRow { country: 40, observer_country: 0 }]));

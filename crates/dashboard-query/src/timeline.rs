@@ -183,7 +183,7 @@ mod tests {
     fn a_history_of_several_segments_holds_every_segment_s_hours() {
         use crate::fixture::segment;
         let records = [segment(1, 100, 50), segment(2, 150, 50), segment(3, 250, 50)];
-        let replay = Replay::from_records(b"tiles".to_vec(), &records).unwrap().into_timelines(&Default::default()).unwrap();
+        let replay = Replay::from_records(recorder_derive::writers(), b"tiles".to_vec(), &records).unwrap().into_timelines(&Default::default()).unwrap();
         let pieces: Vec<_> = replay.timelines().unwrap().get(1).unwrap().pieces.iter().map(|piece| piece.segment).collect();
         assert_eq!(pieces, [1, 2, 3]);
         let resolved = resolve(&replay, 1).unwrap();

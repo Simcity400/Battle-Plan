@@ -4,8 +4,8 @@ use replay_data::{
     rows::CountryCounterInputRow, rows::FleetCounterInputRow, rows::TaskForceCounterInputRow,
     rows::TaskForceRow,
 };
-use viewer_foundation::map::counter_hovers::task_force::{Control, Hover};
-use viewer_foundation::map::counter_order;
+use viewer_native_gui::counter_hovers::task_force::{Control, Hover};
+use viewer_unit_reads::counter_order;
 use viewer_foundation::tooltip_text::ensure_newlines;
 
 fn force<'a>(context: &Context<'a>, id: u64) -> Result<Option<&'a TaskForceRow>, String> {
@@ -428,7 +428,7 @@ mod tests {
         rows::CountryLinkRow, rows::CountryRow, rows::Recorded, rows::ShipRow, rows::TableRows,
         rows::UnitSupplyDemand, rows::UnitSupplyInputs,
     };
-    use viewer_foundation::map::test_support::{test_frame, test_put};
+    use viewer_foundation::test_support::{test_frame, test_put};
 
     fn with_context(frame: &DecodedFrame, run: impl FnOnce(&Context<'_>)) {
         with_language(frame, None, run);

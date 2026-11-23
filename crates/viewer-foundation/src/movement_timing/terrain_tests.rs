@@ -1,4 +1,4 @@
-use crate::map::test_support::movement_timing::terrain;
+use crate::test_support::movement_timing::terrain;
 
 #[test]
 fn terrain_uses_first_registered_class_plus_common_and_native_fallback() {

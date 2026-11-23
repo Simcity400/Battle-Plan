@@ -227,7 +227,7 @@ fn validity(frame: &DecodedFrame, clock: Clock, reads: &[Dependency]) -> (i64, i
     for dependency in reads {
         match dependency.table {
             TableId::Subjects => {
-                if let Ok(rows) = viewer_foundation::map::tables::rows::<tables::Subjects>(frame) {
+                if let Ok(rows) = viewer_foundation::tables::rows::<tables::Subjects>(frame) {
                     for row in rows
                         .rows()
                         .iter()
@@ -239,7 +239,7 @@ fn validity(frame: &DecodedFrame, clock: Clock, reads: &[Dependency]) -> (i64, i
             }
             TableId::WarRelations => {
                 if let Ok(rows) =
-                    viewer_foundation::map::tables::rows::<tables::WarRelations>(frame)
+                    viewer_foundation::tables::rows::<tables::WarRelations>(frame)
                 {
                     for row in rows.rows() {
                         cut(row.start_hour);
@@ -426,7 +426,7 @@ mod tests {
             }
         };
         let build = |frame: &DecodedFrame| {
-            Ok(viewer_foundation::map::tables::core::<tables::Countries>(frame)?[0].canonical_slot)
+            Ok(viewer_foundation::tables::core::<tables::Countries>(frame)?[0].canonical_slot)
         };
         let value = cache
             .project_fields(&first, (), Clock::Stable, fields, || build(&first))

@@ -63,14 +63,14 @@ New-Item -ItemType Directory -Force -Path $proofOutput | Out-Null
 cl.exe /nologo /LD /O2 /EHa /W4 /WX tools/tap-foreign-unwind/probe.cpp "/Fo:$proofOutput/probe.obj" "/Fe:$proofOutput/tap_foreign_probe.dll" /link "/IMPLIB:$proofOutput/tap_foreign_probe.lib"
 if ($LASTEXITCODE -ne 0) { throw 'Native probe build failed' }
 $env:BATTLEPLAN_TAP_UNWIND_PROBE = "$proofOutput/tap_foreign_probe.dll"
-$landProofFilters = @(
-    'equipment_destruction::tests::foreign_unwind::production_land_detour_foreign_unwind',
-    'land_events::foreign_unwind::production_verdict_indirect_foreign_unwind',
-    'equipment_destruction::tests::foreign_unwind::production_return_call_foreign_unwind'
+$landProofs = @(
+    @{ Crate = 'collector-equipment-destruction'; Filter = 'equipment_destruction::tests::foreign_unwind::production_land_detour_foreign_unwind' },
+    @{ Crate = 'collector-land-events'; Filter = 'land_events::foreign_unwind::production_verdict_indirect_foreign_unwind' },
+    @{ Crate = 'collector-equipment-destruction'; Filter = 'equipment_destruction::tests::foreign_unwind::production_return_call_foreign_unwind' }
 )
-foreach ($proofFilter in $landProofFilters) {
-    cargo test -p collector --features tap-foreign-probe $proofFilter -- --exact --ignored --nocapture --test-threads=1
-    if ($LASTEXITCODE -ne 0) { throw "LAND foreign proof failed: $proofFilter" }
+foreach ($proof in $landProofs) {
+    cargo test -p $proof.Crate --features tap-foreign-probe $proof.Filter -- --exact --ignored --nocapture --test-threads=1
+    if ($LASTEXITCODE -ne 0) { throw "LAND foreign proof failed: $($proof.Filter)" }
 }
 ```
 

@@ -441,7 +441,7 @@ impl Lane {
             self.read = self.read.iter().filter_map(|slot| live.binary_search(slot).ok().map(|at| at as u32)).collect();
         }
         if self.keyed {
-            self.cells.index_keys();
+            self.cells.try_index_keys()?;
         }
         Ok(())
     }
@@ -461,6 +461,10 @@ impl Lane {
 
     pub fn head(&self) -> Option<Hour> {
         self.next.map(|next| self.game(next) - 1)
+    }
+
+    pub fn withheld(&self) -> Option<&str> {
+        self.pages.withheld_at(self.run, self.table, self.head()?)
     }
 
     pub fn time(&mut self, timed: bool) {
@@ -566,16 +570,17 @@ impl Lane {
         {
             self.state_reads += 1;
         }
-        let (cells, meta) = reader::restore(pages.extents(self.run), entry, &self.kinds, &self.columns)?;
+        let (cells, meta) = if self.keyed {
+            reader::restore_keyed(pages.extents(self.run), entry, &self.kinds, &self.columns)?
+        } else {
+            reader::restore(pages.extents(self.run), entry, &self.kinds, &self.columns)?
+        };
         let restore_ns = started.elapsed().as_nanos() as u64;
         if let Some(under) = self.under.take() {
             add(&mut self.spent, &under.cursor.spent);
         }
         let before = self.spent;
         self.cells = cells;
-        if self.keyed {
-            self.cells.index_keys();
-        }
         self.ahead.clear();
         self.retired.clear();
         self.texts.clear();

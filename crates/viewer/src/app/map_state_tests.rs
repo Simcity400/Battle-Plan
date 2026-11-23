@@ -1,8 +1,7 @@
 use super::{Config, Options, Playhead, Viewer};
-use crate::{
-    layers::{Carried, Settling, Inputs, Layer, Published, View, recorded::record},
-    playhead_host::{Entry, MapSide, mirror::Mirrors, open, views::tests::hourly_steps, side::SideThread},
-};
+use viewer_layer_core::{layers::{Carried, Settling, Inputs, Layer, Published, View}, test_support::recorded::record};
+use crate::playhead_host::{Entry, MapSide, mirror::Mirrors, open, views::tests::hourly_steps};
+use viewer_playback::side::SideThread;
 use playhead::Step;
 use replay_columnar::manifest::Status;
 use replay_data::{Hour, rows::TableId};
@@ -118,21 +117,11 @@ fn side(name: &str) -> (MapSide, Arc<AtomicBool>) {
 fn joins(entry: &Arc<Entry>) -> (MapSide, Arc<AtomicBool>) {
     let gate = Arc::new(AtomicBool::new(true));
     let layer = Held { open: Arc::clone(&gate), next: None, published: None };
-    (MapSide::new(Arc::clone(entry), vec![Box::new(layer)], View::default()).unwrap(), gate)
+    (MapSide::with_products(Arc::clone(entry), vec![Box::new(layer)], View::default()).unwrap(), gate)
 }
 
 fn frames_at(side: &mut MapSide, hour: Hour, what: &str, mut done: impl FnMut(&MapSide) -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(120);
-    loop {
-        let frame = side.frame(hour).unwrap();
-        if done(side) {
-            return;
-        }
-        assert!(Instant::now() < deadline, "{what} within 120 s: applied {:?}, drawn {:?}, composing {}", side.applied(), side.last_frame().drawn, side.composing());
-        if frame.steps == 0 && frame.swapped.is_none() {
-            std::thread::yield_now();
-        }
-    }
+    viewer_layer_core::test_support::recorded::frames_at(side, hour, what, |side, _| done(side));
 }
 
 fn shown_at(side: &mut MapSide, hour: Hour) {
@@ -160,9 +149,9 @@ fn viewer(hour: Hour, side: MapSide) -> Viewer {
     viewer
 }
 
-fn target(hour: Hour, playing: bool) -> dashboard::protocol::DashboardMapView {
-    let bounds = dashboard::protocol::ViewBounds { x: 0, y: 0, width: 256, height: 144 };
-    dashboard::protocol::DashboardMapView {
+fn target(hour: Hour, playing: bool) -> dashboard_core::protocol::DashboardMapView {
+    let bounds = dashboard_core::protocol::ViewBounds { x: 0, y: 0, width: 256, height: 144 };
+    dashboard_core::protocol::DashboardMapView {
         options: Default::default(),
         id: "map-state".into(),
         source_id: "map-state".into(),
@@ -176,6 +165,7 @@ fn target(hour: Hour, playing: bool) -> dashboard::protocol::DashboardMapView {
         sequence: 1,
         seek_sequence: Some(1),
         composed_at: 0.0,
+        clock_id: "page-1".into(),
         bounds,
         clip: bounds,
         visible: true,
@@ -189,6 +179,7 @@ fn after_a_seek_the_report_loads_until_every_drawn_layer_shows_the_head() {
     applied_held(&mut side, &gate, 8, true);
     let mut viewer = viewer(8, side);
     let state = viewer.map_state(&target(8, false));
+    assert_eq!(state.clock_id, "page-1");
     assert!(state.loading, "the head is hour 8, but the held layer shows hour 2: {state:?}");
     assert_eq!(state.hour, Some(2), "the hour on screen is the layer's");
     viewer.playhead_map.as_mut().unwrap().driven(|side| side.frame(8)).unwrap();
@@ -198,8 +189,13 @@ fn after_a_seek_the_report_loads_until_every_drawn_layer_shows_the_head() {
     assert!(viewer.map_state(&target(8, false)).loading, "the layers show hour 8, the overlay nothing");
     viewer.overlay_hour = Some(8);
     let state = viewer.map_state(&target(8, false));
+    assert_eq!(state.clock_id, "page-1");
     assert!(!state.loading, "the frame every part shows hour 8 stops the loading: {state:?}");
     assert_eq!(state.hour, Some(8));
+    viewer.error = Some("synthetic map error".into());
+    let failed = viewer.map_state(&target(8, false));
+    assert_eq!(failed.clock_id, "page-1");
+    assert_eq!(failed.error.as_deref(), Some("synthetic map error"));
 }
 
 #[test]
@@ -230,7 +226,7 @@ fn a_window_not_shown_lets_its_map_go_and_the_rows_answer_a_seek_meanwhile() {
     let _ = context.run_logic(&input, |context| eframe::App::logic(&mut viewer, context, &mut frame));
     entry.anchor(6, false, 0.0, true);
     assert!(apart.drive(6), "the rows answer the seek at the hour sought");
-    let rows_at = reader.wait(|frame| frame.hour == 6, Duration::from_secs(60)).expect("the rows answer the seek at the hour sought");
+    let rows_at = reader.frame().expect("the rows answer the seek at the hour sought");
     assert_eq!(rows_at.hour, 6);
 }
 
@@ -286,13 +282,13 @@ fn a_layers_install_runs_on_the_frame_that_takes_its_publication_whatever_the_fr
         store.status(TableId::Countries.index(), Status::Complete, true, Some(at as i32), true).unwrap();
     });
     let entry = open(units, hourly_steps()).unwrap();
-    let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Owing { owes: false, installs: 0 })], View::default()).unwrap();
+    let mut side = MapSide::with_products(Arc::clone(&entry), vec![Box::new(Owing { owes: false, installs: 0 })], View::default()).unwrap();
     shown_at(&mut side, 2);
-    viewer_foundation::map::display_refresh::pace_at(1e12);
+    viewer_runtime::display_refresh::pace_at(1e12);
     let mut installed = 0;
     for hour in 3..=8 {
         frames_at(&mut side, hour, &format!("hour {hour} applied"), |side| !side.composing() && side.applied() == Some(hour));
-        let _budget = viewer_foundation::map::frame_budget::begin(true);
+        let _budget = viewer_runtime::frame_budget::begin(true);
         side.upload_each(|layer| match layer.any_mut().and_then(|layer| layer.downcast_mut::<Owing>()) {
             Some(owing) => {
                 installed += 1;
@@ -305,6 +301,6 @@ fn a_layers_install_runs_on_the_frame_that_takes_its_publication_whatever_the_fr
         assert_eq!(side.last_frame().drawn, Some(hour), "the hour the picture shows is the hour the publication applied");
         assert!(!side.last_frame().layers[0].upload_carried, "nothing of the publication is left for a later frame");
     }
-    viewer_foundation::map::display_refresh::pace_at(120.0);
+    viewer_runtime::display_refresh::pace_at(120.0);
     assert_eq!(installed, 6, "every publication's install ran in the window that took it");
 }

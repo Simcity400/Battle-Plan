@@ -134,6 +134,7 @@ mod tests {
     use super::*;
     use ProcessState::*;
 
+    const INITIALIZED: u32 = 0;
     const READY: u32 = 1;
     const USER_REQUEST: u32 = 6;
 
@@ -212,16 +213,30 @@ mod tests {
             state: WAITING,
             wait_reason: SUSPENDED,
         };
+        let wr_suspended = Thread {
+            state: WAITING,
+            wait_reason: WR_SUSPENDED,
+        };
+        let initialized = Thread {
+            state: INITIALIZED,
+            wait_reason: 0,
+        };
         let ready = Thread {
             state: READY,
             wait_reason: 0,
+        };
+        let resumed = Thread {
+            state: READY,
+            wait_reason: SUSPENDED,
         };
         let blocked = Thread {
             state: WAITING,
             wait_reason: USER_REQUEST,
         };
-        assert_eq!(classify(&[suspended, suspended], false, false), Frozen);
+        assert_eq!(classify(&[suspended, wr_suspended], false, false), Frozen);
         assert_eq!(classify(&[], false, false), Frozen);
+        assert_eq!(classify(&[initialized], false, false), Running);
+        assert_eq!(classify(&[resumed], false, false), Running);
         assert_eq!(classify(&[suspended, ready], false, false), Running);
         assert_eq!(classify(&[blocked], false, false), Running);
         assert_eq!(classify(&[ready], true, false), Exiting);

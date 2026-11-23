@@ -1,7 +1,7 @@
 
 use super::super::views::{Need, Pace, Reader as ViewReader, Views};
 use dashboard_follow::panel::{Panel, PanelData, dated};
-use content_reader_core::ResolveOptions;
+use content_reader_layers::ResolveOptions;
 use replay_frame::frame::DecodedFrame;
 use serde_json::{Value, json};
 use std::{
@@ -14,8 +14,8 @@ use std::{
 pub(crate) struct RosterLine {
     tag: String,
     branch: u64,
-    source: dashboard::Source,
-    context: dashboard::config::LoadContext,
+    source: dashboard_base::Source,
+    context: dashboard_core::config::LoadContext,
     panel: Box<dyn Panel>,
     pub(super) reader: ViewReader,
     last: Option<Arc<DecodedFrame>>,
@@ -27,13 +27,13 @@ pub(crate) struct RosterLine {
 impl RosterLine {
     pub(crate) fn open(views: &Views, path: &Path, branch: u64, tag: &str, content: &ResolveOptions, pace: Pace) -> io::Result<Self> {
         let cancelled = AtomicBool::new(false);
-        let source = dashboard::Source::open(
-            dashboard::SourceKey { source_id: "roster-proof".into(), revision: dashboard::protocol::replay_revision(path)? },
+        let source = dashboard_base::Source::open(
+            dashboard_base::SourceKey { source_id: "roster-proof".into(), revision: dashboard_core::protocol::replay_revision(path)? },
             path.to_path_buf(),
             &cancelled,
         )?;
-        let context = dashboard::config::LoadContext {
-            content: Some(dashboard::config::ContentOptions { options: content.clone(), allow_unverified: false, presentation: Default::default() }),
+        let context = dashboard_core::config::LoadContext {
+            content: Some(dashboard_core::config::ContentOptions { options: content.clone(), allow_unverified: false, presentation: Default::default() }),
         };
         let panel = dashboard::answer::panel(&source, &context, &json!({ "panel": "template-roster", "branchId": branch.to_string(), "tag": tag }))
             .ok_or_else(|| io::Error::other("The service shows no template roster panel"))?

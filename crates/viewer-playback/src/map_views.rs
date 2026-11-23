@@ -1,13 +1,12 @@
 use std::sync::Mutex;
 use std::{collections::BTreeSet, sync::Arc};
-use viewer_foundation::map::counter_move::SharedMovement;
-use viewer_foundation::map::icon_windows::Pools;
-use viewer_foundation::map::province_schedule::Shared;
-use viewer_foundation::unit_handle::Unit;
-use {
-    viewer_counters::map::counters::{CounterSettings, naval_windows},
-    viewer_foundation::map::icon_windows::{PoolView, Retry},
-};
+use viewer_unit_reads::counter_move::SharedMovement;
+use viewer_native_gui::icon_windows::Pools;
+use viewer_gpu::province_schedule::Shared;
+use viewer_runtime::unit_handle::Unit;
+use viewer_counter_kit::CounterSettings;
+use viewer_counters_naval::naval_windows;
+use viewer_native_gui::icon_windows::{PoolView, Retry};
 
 fn counter_owners(
     frame: &replay_frame::frame::DecodedFrame,
@@ -96,7 +95,7 @@ const OWNER_TABLES: [replay_data::rows::TableId; 3] = [
 #[derive(Debug, Default)]
 pub struct CounterOwners {
     resolved: Option<ResolvedOwners>,
-    head: Option<crate::playhead_host::views::AtHead>,
+    head: Option<viewer_layer_core::playhead_host::views::AtHead>,
 }
 
 type ResolvedOwners = (
@@ -109,10 +108,10 @@ impl CounterOwners {
     pub fn get(
         &mut self,
         today: Option<&replay_frame::frame::DecodedFrame>,
-        head: Option<&crate::playhead_host::views::Views>,
+        head: Option<&viewer_layer_core::playhead_host::views::Views>,
         filter: &dashboard_core::protocol::CounterFilter,
     ) -> Option<Arc<BTreeSet<u32>>> {
-        use crate::playhead_host::views::{AtHead, Pace};
+        use viewer_layer_core::playhead_host::views::{AtHead, Pace};
         let Some(views) = head else {
             self.head = None;
             return today.and_then(|frame| self.read(frame, filter));
@@ -153,14 +152,14 @@ impl CounterOwners {
 #[derive(Debug, Default)]
 pub struct Views {
     pub naval: naval_windows::Windows,
-    pub labels: viewer_world::map::labels::LabelView,
+    pub labels: viewer_map_icons::labels::LabelView,
     pub pings: PoolView,
     pub raids: PoolView,
     pub intel: viewer_raids::map::intel_icons::IntelView,
-    pub bases: viewer_counters::map::counters::BaseView,
-    pub land_combats: viewer_counters::map::counters::land_windows::View,
-    pub resources: viewer_world::map::resource_icons::ResourceIconView,
-    pub occupation: viewer_world::map::occupation_icons::OccupationIconView,
+    pub bases: viewer_counters_naval::base_windows::View,
+    pub land_combats: viewer_counter_kit::land_windows::View,
+    pub resources: viewer_map_icons::resource_icons::ResourceIconView,
+    pub occupation: viewer_map_icons::occupation_icons::OccupationIconView,
     pub adjacency_rules: PoolView,
 }
 
@@ -215,7 +214,7 @@ impl Views {
             adjacency_rules: self.adjacency_rules.take_running(),
         };
         for (running, name) in running.named() {
-            viewer_foundation::map::redraws::note(name, u64::from(running));
+            viewer_runtime::redraws::note(name, u64::from(running));
         }
         running
     }
@@ -224,7 +223,7 @@ impl Views {
 #[derive(Debug, Default)]
 pub struct Presentation {
     pub windows: Mutex<Views>,
-    pub counters: Mutex<viewer_counters::map::counters::Preparation>,
+    pub counters: Mutex<viewer_counters::counters::preparation::Preparation>,
     schedule: Shared,
     movement: SharedMovement,
 }
@@ -279,7 +278,7 @@ impl Presentation {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .running();
-        viewer_foundation::map::redraws::note("running.movement", u64::from(moving));
+        viewer_runtime::redraws::note("running.movement", u64::from(moving));
         Running { any: windows.any() || moving, visible, windows }
     }
 }
@@ -302,20 +301,18 @@ pub struct CounterView {
     pub pressed: Option<Unit>,
     pub plate_hovered: Option<Unit>,
     pub operatives: bool,
-    pub occupation: Option<viewer_world::map::occupation_icons::Mode>,
+    pub occupation: Option<viewer_map_icons::occupation_icons::Mode>,
     pub presentation: Arc<Presentation>,
-    pub visibility: viewer_foundation::map::mode_visibility::Visibility,
+    pub visibility: viewer_foundation::mode_visibility::Visibility,
     pub raid_details: Option<(u32, Arc<viewer_raids::map::raids::tooltips::Details>)>,
     pub raid_hovered: Option<u32>,
 }
 
 impl CounterView {
-    pub fn set_mode(&mut self, mode: &viewer_world::map::map_mode::MapMode) {
-        use viewer_world::map::{
-            map_mode::{MapMode, Stock},
-            occupation_icons::Mode,
-        };
-        self.visibility = viewer_world::map::map_mode::visibility::of(mode);
+    pub fn set_mode(&mut self, mode: &viewer_map_modes::map_mode::MapMode) {
+        use viewer_map_modes::map_mode::{MapMode, Stock};
+        use viewer_map_icons::occupation_icons::Mode;
+        self.visibility = viewer_map_modes::map_mode::visibility::of(mode);
         self.operatives = matches!(mode, MapMode::Stock(Stock::Operatives));
         self.occupation = match mode {
             MapMode::Stock(Stock::Resistance) => Some(Mode::Resistance),
@@ -366,7 +363,9 @@ mod tests {
 
     #[test]
     fn the_memory_a_layout_was_laid_out_on_is_taken_with_it_and_the_two_alternate() {
-        use viewer_counters::map::counters::{BaseValues, Kinds, Layered};
+        use viewer_counter_kit::Kinds;
+        use viewer_counters::counters::layered::Layered;
+        use viewer_counters_naval::bases::BaseValues;
         let view = Presentation::default();
         let maker = view.sharing();
         let product = |memory: &Presentation| {
@@ -408,10 +407,8 @@ mod tests {
 
     #[test]
     fn occupation_mode_changes_invalidate_shared_visibility_and_clear_locally() {
-        use viewer_world::map::{
-            map_mode::{MapMode, Stock},
-            occupation_icons::Mode,
-        };
+        use viewer_map_modes::map_mode::{MapMode, Stock};
+        use viewer_map_icons::occupation_icons::Mode;
         let mut resistance = CounterView::default();
         resistance.set_mode(&MapMode::Stock(Stock::Resistance));
         let mut compliance = resistance.clone();

@@ -26,7 +26,7 @@ import { AXIS_HEIGHT, INDENT, ROW_HEIGHT, activateLane, barGlyphHours, barOpenEn
 import type { CachedBands, HolderState } from './layout';
 import type { TimelineLane, TimelineSpan } from './layout';
 import { coversViewport, laneWindow, sizeLaneWindow, timelineHeight, timelineViewStyle, timelineViewport, timelineY } from './viewport';
-import { labelMoment, viewForExtent } from './extent';
+import { labelMoment, liveHeaded, viewForExtent } from './extent';
 import { drawCross, drawDisclosure, acceptsLaneClick, acceptsLaneMenu } from './marks';
 import { catalogueWidth } from './labelCatalogue';
 import type { TimelineLabel } from './labelCatalogue';
@@ -42,6 +42,7 @@ export interface TimelineProps {
   extent: readonly [number, number];
   playhead: number | null;
   liveHead?: Live<number>;
+  growTo?: number;
   labelHour?: number;
   labelCatalogue?: readonly TimelineLabel[];
   preserveZoomOnExtentChange?: boolean;
@@ -92,8 +93,8 @@ const sameCatalogue = (a: readonly TimelineLabel[], b: readonly TimelineLabel[])
 function withLiveHead(props: TimelineProps): TimelineProps {
   const live = props.liveHead;
   if (!live || props.playhead == null) return props;
-  const head = Math.max(props.extent[0], Math.min(props.extent[1], live.read()));
-  return head === props.playhead ? props : { ...props, playhead: head };
+  const { extent, head } = liveHeaded(props.extent, live.read(), props.growTo);
+  return head === props.playhead && extent === props.extent ? props : { ...props, playhead: head, extent };
 }
 
 function scrollParent(element: HTMLElement): HTMLElement | null {

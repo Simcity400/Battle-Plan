@@ -3,13 +3,10 @@ use dashboard_base::products::{Country, validate_country};
 use super::{
     BONUSES, INPUTS, Joined, MODIFIERS, ResearchProgress, ResearchSlotState, all_columns, cells_at, continues, number, slice_key, slot_read,
 };
-use crate::{
-    Source,
-    metadata::check_cancel,
-    products::{LoadContext, Product},
-};
+use dashboard_base::{Source, products::{LoadContext, Product}};
+use dashboard_text::metadata::check_cancel;
 use dashboard_query::{Query, cost, identity::Holder};
-use replay::lanes::{self, Cell, History, Keys};
+use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::{
     cadence::STAGGER_PERIOD,
     rows::{Recorded, ResearchAppliedBonusRow, ResearchInputRow, ResearchModifierRow, TableId},
@@ -66,6 +63,7 @@ impl Product for ResearchBreakdown {
     const KEY: &'static str = "research-breakdown";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ResearchBreakdownParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, "parts[].firstObservedHour": Read, "parts[].lastHour": End, "parts[].slot"];
     type Reply = ResearchBreakdownReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -84,7 +82,7 @@ impl Product for ResearchBreakdown {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let query = crate::answer::query(source, params.branch_id.parse().map_err(|_| io::Error::other("Invalid branch"))?)?;
+        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| io::Error::other("Invalid branch"))?)?;
         let mut warnings = Vec::new();
         let art = super::content(source, context);
         if let Err(error) = &art {
@@ -255,7 +253,7 @@ fn reads(source: &Source, query: &Query<'_>, tag: &Country, part: &ResearchBreak
     let Holder::Found { slot, .. } = run.holder else { return Err("The country is not resolved at the assignment's first observation".into()) };
     let stretch = query.timeline.at(first).ok_or("The assignment's first observation is not recorded")?;
     let last = part.last_hour.min(stretch.last).min(run.last);
-    let links = crate::answer::links(source, stretch.run).map_err(|error| error.to_string())?;
+    let links = dashboard_base::queries::links(source, stretch.run).map_err(|error| error.to_string())?;
     let mut owners: Vec<u32> = links.slots.keys().copied().filter(|&raw| links.slot_at(raw, first) == Some(slot)).collect();
     owners.sort_unstable();
     let read = |table: TableId, keys: Keys| history(query, stretch.run, table, keys, first, last);

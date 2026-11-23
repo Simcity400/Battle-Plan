@@ -1,3 +1,4 @@
+import { gatedParams } from './gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RECORDED_KIND, RECORDED_VERSION, RecordedClient, recordedRefusal, remapMessage } from './recorded.ts';
@@ -6,6 +7,7 @@ import { datedPanel, message } from '../dashboard/follow/messages.fixture.ts';
 import { parseFollowed, parseDatedPanels } from '../dashboard/follow/message.ts';
 import { RefusedError } from '../dashboard/queryError.ts';
 import { CELLS } from '../dashboard/follow/liveCells.ts';
+import type { ProductRequest } from '../dashboard/client';
 
 const TABLES = ['0 Clock 0 hour:I32', '2 Countries 32 canonical_slot:U32,tag:Bytes', '514 GarrisonStrengths 64 value:I64'];
 const tree = (lines: string[], digest: string): RecordedFormat => ({ file: 'replies.jsonl.gz', formatFile: 'crates/replay-data/src/rows/registry.golden', digest, lines });
@@ -37,7 +39,7 @@ test('a recorded message is played under the ids this page follows the same quer
 });
 
 test('the recorded client answers a request the app made, whatever order its params were built in, and fails one it never made by name', async () => {
-  const query = (product: string, params: unknown) => ({ query: { sourceId: 's1', revision: 'r1', product, params } });
+  const query = (product: string, params: unknown) => ({ query: { sourceId: 's1', revision: 'r1', product, params: gatedParams(params) } as ProductRequest });
   const entries: RecordedEntry[] = [
     { t: 'product', at: 1, ms: 1, head: 0, args: query('series-state', { hour: 10, family: { kind: 'country', measure: 'pp' } }), ok: true,
       reply: { sourceId: 's1', revision: 'r1', product: 'series-state', data: { states: [1] } } },
@@ -55,7 +57,7 @@ test('the recorded client answers a request the app made, whatever order its par
   client.at = 6;
   client.windowEnd = 12;
   const signal = new AbortController().signal;
-  const ask = (product: string, params: unknown) => client.product<unknown>({ sourceId: 'here', revision: 'now', product, params }, signal);
+  const ask = (product: string, params: unknown) => client.product<unknown>({ sourceId: 'here', revision: 'now', product, params: gatedParams(params) } as ProductRequest, signal);
   const reply = await ask('series-state', { family: { measure: 'pp', kind: 'country' }, hour: 10 });
   assert.deepEqual(reply, { sourceId: 'here', revision: 'now', product: 'series-state', data: { states: [1] } }, 'answered under this page\'s source');
   await assert.rejects(ask('wars', { hour: 10 }), (error: unknown) => error instanceof RefusedError && /not recorded/.test(error.message), 'a recorded refusal is refused again');
@@ -68,7 +70,7 @@ test('the recorded client answers a request the app made, whatever order its par
   const { port1, port2 } = new MessageChannel();
   await client.openFollow([port1]);
   const delivered = new Promise<number[]>(resolve => {
-    port2.onmessage = ({ data: [item] }) => resolve(item.message.answers.map((answer: { id: number }) => answer.id));
+    port2.onmessage = ({ data }: MessageEvent<{ kind: string; bytes: Uint8Array }>) => resolve(parseFollowed(data.bytes).answers.map(answer => answer.id));
   });
   assert.ok(client.deliver(message(12, [{ id: 3, answer: { keys: [1n], columns: 1, values: [2n] } }])));
   try {

@@ -1,3 +1,6 @@
+import type { GatedTime } from '../../dashboard/regionTime';
+import type { HeldCountry } from '../../dashboard/regionGate';
+import type { PinnedSpec } from '../../charts/drill/drillState';
 import { pinnedBreakdown } from '../../charts/drill/drillState.ts';
 import { runAt } from '../../charts/series.ts';
 import type { Span } from '../../charts/series';
@@ -8,9 +11,9 @@ import type { DrillPart } from '../../charts/drill/parts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { entryAt } from '../../dashboard/reads.ts';
 import type { LossesReply } from '../../generated/dashboard';
-import { causeName, lossDesignName, lossItems, lossKey, pointAt, sourceKey, typeName } from './lossesData.ts';
+import { causeName, exactPointAt, lossDesignName, lossItems, lossKey, pointAt, pointIn, sourceKey, typeName } from './lossesData.ts';
 import type { LossWindow } from './lossesData';
-import type { DrillCountry } from '../country-measure/drillCountry';
+import { heldDrillCountry } from '../country-measure/drillCountry.ts';
 import { DETAIL } from './definition.ts';
 
 export function lossNumbers(reply: LossesReply): LossesReply {
@@ -43,7 +46,7 @@ export function lossRows(reply: LossesReply, window: LossWindow, selected: Reado
       const id = lossKey(cause, design);
       if (selected && !selected.has(id)) continue;
       const point = pointAt(leaf, window.hour), item = byKey.get(id);
-      if (!point) continue;
+      if (!point || !item || item.present === false) continue;
       rows.push({ id, causeKey: sourceKey(cause.source), cause: causeName(cause), type: typeName(design), design: lossDesignName(design, window.hour),
         exact: item?.exact ?? null, readHour: point.hour, incomplete: item?.incomplete === true,
         note: item?.note });
@@ -77,32 +80,95 @@ export function readLossSelection(value: unknown, campaign: string, branch: stri
   } catch { return undefined; }
 }
 
-export function pinLosses(widget: WidgetSpec, track: BoundTrack, tag: string, hour: number, following: boolean,
-  from: number | null | undefined, keys: readonly string[] | null, country?: DrillCountry | null): WidgetSpec {
-  const pinned = pinnedBreakdown(widget, DETAIL, track.id);
-  const offset = Math.floor(hour) - track.branch.firstHour;
+export function pinLosses(widget: WidgetSpec, track: BoundTrack, held: HeldCountry, time: GatedTime, keys: readonly string[] | null): PinnedSpec {
+  const country = heldDrillCountry(held, track);
+  const pinned = pinnedBreakdown(widget, DETAIL, track.id, time);
   const options = { ...pinned.options };
   delete options.lossSelection;
   delete options.lossCountry;
-  if (country) options.lossCountry = JSON.stringify(country);
-  const pinnedTag = country?.tag ?? tag;
+  options.lossCountry = JSON.stringify(country);
+  const pinnedTag = country.tag;
   if (keys) options.lossSelection = JSON.stringify({ campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag: pinnedTag, keys });
-  return { ...pinned, countries: { kind: 'tags', tags: [pinnedTag] },
-    time: from != null ? { mode: 'range', firstOffset: from - track.branch.firstHour, lastOffset: offset }
-      : following ? { mode: 'follow' } : { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } },
-    options };
+  return { ...pinned, countries: { kind: 'tags', tags: [pinnedTag] }, options };
 }
 
 export function lossSegments(model: StackModel, first: number, last: number, hoursPerPixel: number) {
   return shareSegments(model, first, last, hoursPerPixel);
 }
 
+function addLeafSegment(
+  at: (hour: number) => { deltas: Map<string, bigint>; unread: number; runBreak: boolean; measured: number; absent: number },
+  key: string,
+  leaf: LossesReply['causes'][number]['leaves'][number],
+  segFirst: number,
+  segLast: number,
+  minHour: number | null,
+  baseline: bigint,
+  resetAtEnd: boolean,
+) {
+  const hasExact = leaf.exact.some(point => point.hour >= segFirst && point.hour <= segLast);
+  let previous = 0n;
+  let wasMeasured = false;
+  let wasAbsent = false;
+  const setState = (hour: number, next: bigint, isMeasured: boolean, isAbsent: boolean) => {
+    if (next !== previous || isMeasured !== wasMeasured || isAbsent !== wasAbsent) {
+      const event = at(hour);
+      if (next !== previous) {
+        event.deltas.set(key, (event.deltas.get(key) ?? 0n) + next - previous);
+        previous = next;
+      }
+      if (isMeasured !== wasMeasured) {
+        event.measured += isMeasured ? 1 : -1;
+        wasMeasured = isMeasured;
+      }
+      if (isAbsent !== wasAbsent) {
+        event.absent += isAbsent ? 1 : -1;
+        wasAbsent = isAbsent;
+      }
+    }
+  };
+  if (!hasExact) {
+    const initial = pointIn(leaf, segFirst, minHour);
+    if (initial) setState(segFirst, BigInt(initial.totalRaw) - baseline, true, false);
+    for (const point of leaf.points) {
+      if (point.hour <= segFirst || point.hour > segLast) continue;
+      setState(point.hour, BigInt(point.totalRaw) - baseline, true, false);
+    }
+  } else {
+    const hours = new Set<number>([segFirst]);
+    for (const point of leaf.points) {
+      if (point.hour > segFirst && point.hour <= segLast) hours.add(point.hour);
+    }
+    for (const point of leaf.exact) {
+      if (point.hour < segFirst || point.hour > segLast) continue;
+      hours.add(point.hour);
+      if (point.totalRaw === null && point.hour < segLast) hours.add(point.hour + 1);
+    }
+    for (const hour of [...hours].sort((a, b) => a - b)) {
+      const exact = exactPointAt(leaf, hour);
+      if (exact && exact.totalRaw === null) {
+        setState(hour, 0n, false, true);
+      } else {
+        const point = pointIn(leaf, hour, minHour);
+        if (point) setState(hour, BigInt(point.totalRaw) - baseline, true, false);
+        else setState(hour, 0n, false, false);
+      }
+    }
+  }
+  if (resetAtEnd || wasAbsent) {
+    const endEvent = at(segLast + 1);
+    if (resetAtEnd && previous !== 0n) endEvent.deltas.set(key, (endEvent.deltas.get(key) ?? 0n) - previous);
+    if (resetAtEnd && wasMeasured) endEvent.measured -= 1;
+    if (wasAbsent) endEvent.absent -= 1;
+  }
+}
+
 export function lossHistory(reply: LossesReply, first: number, last: number, from?: number | null,
   selected: ReadonlySet<string> | null = null, countries?: readonly Span[]): { model: StackModel; keys: string[]; labels: string[] } {
-  const events = new Map<number, { deltas: Map<string, bigint>; unread: number }>();
+  const events = new Map<number, { deltas: Map<string, bigint>; unread: number; runBreak: boolean; measured: number; absent: number }>();
   const at = (hour: number) => {
     let event = events.get(hour);
-    if (!event) { event = { deltas: new Map(), unread: 0 }; events.set(hour, event); }
+    if (!event) { event = { deltas: new Map(), unread: 0, runBreak: false, measured: 0, absent: 0 }; events.set(hour, event); }
     return event;
   };
   const keys: string[] = [], labels: string[] = [];
@@ -112,24 +178,30 @@ export function lossHistory(reply: LossesReply, first: number, last: number, fro
     if (!cause.loss || cause.unknown !== null) continue;
     const key = sourceKey(cause.source);
     let included = false;
+    const isDestruction = cause.source.kind === 'destruction';
     for (const leaf of cause.leaves) {
       const design = leaf.design === null ? undefined : reply.designs[leaf.design];
       if (selected && !selected.has(lossKey(cause, design))) continue;
       included = true;
-      const baseline = from == null ? 0n : BigInt(pointAt(leaf, from - 1)?.totalRaw ?? '0');
-      let previous = BigInt(pointAt(leaf, first)?.totalRaw ?? '0') - baseline;
-      at(first).deltas.set(key, (at(first).deltas.get(key) ?? 0n) + previous);
-      for (const point of leaf.points) {
-        if (point.hour <= first || point.hour > last) continue;
-        const next = BigInt(point.totalRaw) - baseline;
-        const event = at(point.hour);
-        event.deltas.set(key, (event.deltas.get(key) ?? 0n) + next - previous);
-        previous = next;
+      if (isDestruction) {
+        for (const [index, run] of reply.destructionRuns.entries()) {
+          if (run.countedFrom === null) continue;
+          const runStart = Math.max(run.firstHour, run.countedFrom);
+          const segFirst = Math.max(first, runStart);
+          const segLast = Math.min(last, run.lastHour);
+          if (segFirst > segLast) continue;
+          if (index > 0 && segFirst === run.firstHour) at(segFirst).runBreak = true;
+          const baseline = from != null && from > runStart ? BigInt(pointIn(leaf, from - 1, runStart)?.totalRaw ?? '0') : 0n;
+          addLeafSegment(at, key, leaf, segFirst, segLast, runStart, baseline, true);
+        }
+        continue;
       }
+      const baseline = from == null ? 0n : BigInt(pointAt(leaf, from - 1)?.totalRaw ?? '0');
+      addLeafSegment(at, key, leaf, first, last, null, baseline, false);
     }
     if (!included) continue;
     keys.push(key); labels.push(causeName(cause));
-    destruction ||= cause.source.kind === 'destruction';
+    destruction ||= isDestruction;
     for (const span of cause.unknownSpans) if (span.reason === 'unread' && span.firstHour <= last && span.lastHour >= first) {
       at(Math.max(first, span.firstHour)).unread++;
       at(Math.min(last + 1, span.lastHour + 1)).unread--;
@@ -143,15 +215,17 @@ export function lossHistory(reply: LossesReply, first: number, last: number, fro
   }
   const model: StackModel = { hours: [...events.keys()].sort((a, b) => a - b), edges: [], breakBefore: [] };
   const amounts = new Map<string, bigint>();
-  let unread = 0, broken = true;
+  let unread = 0, measured = 0, absent = 0, broken = true;
   for (const hour of model.hours) {
     const event = events.get(hour)!;
     unread += event.unread;
+    measured += event.measured;
+    absent += event.absent;
     for (const [key, delta] of event.deltas) amounts.set(key, (amounts.get(key) ?? 0n) + delta);
     const drain = entryAt(reply.destructionCoverage, hour);
-    const known = hour <= last && unread === 0 && (!countries || runAt(countries, hour) !== null) && (!destruction || drain !== null && drain.lastHour >= hour && drain.reason === null);
+    const known = hour <= last && unread === 0 && !(absent > 0 && measured === 0) && (!countries || runAt(countries, hour) !== null) && (!destruction || drain !== null && drain.lastHour >= hour && drain.reason === null);
     model.edges.push(known ? stackEdges(keys.map(key => Math.max(0, Number(amounts.get(key) ?? 0n) / reply.amountScale))) : null);
-    model.breakBefore.push(known && broken); broken = !known;
+    model.breakBefore.push(known && (broken || event.runBreak)); broken = !known;
   }
   return { model, keys, labels };
 }

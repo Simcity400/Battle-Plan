@@ -1,7 +1,7 @@
 #[cfg(any(test, feature = "test-support"))]
 use crate::province_geometry::engine_map_checked;
 #[cfg(any(test, feature = "test-support"))]
-use content_reader_core::fields::invalid;
+use content_reader_parser::fields::invalid;
 use crate::{ResolvedLayers, province_geometry::land_areas::LandAreas};
 use std::{
     io,
@@ -53,7 +53,7 @@ impl ProvinceAreas {
     }
 
     fn stream_checked(
-        definitions: content_reader_core::content::Bytes,
+        definitions: content_reader_layers::content::Bytes,
         raster: impl FnOnce(&mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()>,
         check: &mut impl FnMut() -> io::Result<()>,
     ) -> io::Result<Self> {
@@ -89,7 +89,7 @@ impl ProvinceAreas {
         check: &mut impl FnMut() -> io::Result<()>,
     ) -> io::Result<Self> {
         check()?;
-        let rows = content_reader_core::map::definition_rows(definitions)?;
+        let rows = content_reader_map::map::definition_rows(definitions)?;
         for (index, row) in rows.iter().enumerate() {
             if index % 4096 == 0 {
                 check()?;
@@ -358,7 +358,7 @@ mod tests {
         let changed = ProvinceAreas::read(&layers).unwrap_err();
         assert_eq!(changed.kind(), io::ErrorKind::InvalidData);
         let changed = changed.to_string();
-        assert!(changed.contains("content generation changed"), "{changed}");
+        assert!(changed.contains("changed since verification"), "{changed}");
         assert!(changed.contains("custom-territory.bmp"), "{changed}");
         let layers = ResolvedLayers::from_folders(&[
             (&base, &[]),

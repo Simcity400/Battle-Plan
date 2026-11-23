@@ -1,7 +1,7 @@
 
 use std::collections::BTreeSet;
 
-use content_reader_core::parser::Item;
+use content_reader_parser::parser::Item;
 use replay_data::Hour;
 
 mod aliases;
@@ -11,7 +11,7 @@ mod collections;
 pub mod description;
 mod eval;
 mod flags;
-pub(crate) mod event_scopes;
+pub mod event_scopes;
 pub mod inputs;
 pub use event_scopes::EventGraphGuard;
 pub(crate) use event_scopes::event_tooltip_target;
@@ -23,6 +23,7 @@ pub use organisations::{OrganisationCondition, Undecided};
 pub mod refusal;
 pub use refusal::Failure;
 pub mod saved_event_targets;
+mod scientists;
 pub mod scripted_localisation;
 #[cfg(test)]
 mod tests;
@@ -34,7 +35,7 @@ pub use operands::{Selected, Selector, compare, scope_selector, shown, trigger_b
 pub use variables::{Store, Temps};
 pub(crate) use world::{AuthoredStates, GeographyInputs, PreparedContent};
 pub use world::{
-    ContentFacts, LeaderRoles, NULL_STATE, PartyLeader, PartyLeaders, RecordedTemplate, World,
+    AcceptedProjects, ContentFacts, LeaderRoles, NULL_STATE, PartyLeader, PartyLeaders, RecordedTemplate, World,
     required_invasion_hours,
 };
 pub use world::{LeaderVisibility, core_gap, fixed_round};
@@ -93,6 +94,8 @@ pub const RECORDED_TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::OrdersGroups,
     replay_data::rows::TableId::PartyLeaders,
     replay_data::rows::TableId::PoliticalParties,
+    replay_data::rows::TableId::ScientistSkills,
+    replay_data::rows::TableId::Scientists,
     replay_data::rows::TableId::Politics,
     replay_data::rows::TableId::Players,
     replay_data::rows::TableId::PowerBalanceMembers,
@@ -322,7 +325,7 @@ impl Scopes {
         }
     }
 
-    pub fn entered(self, target: &content_reader_core::scope::Scope, this: Scope) -> Self {
+    pub fn entered(self, target: &content_reader_script::scope::Scope, this: Scope) -> Self {
         let mut scopes = self.with_this(this);
         if relinks(target) && self.root != Scope::Combat {
             scopes.unknown.from = true;
@@ -331,14 +334,14 @@ impl Scopes {
             Carried::Kept => self.bare,
             Carried::Retained => false,
             Carried::Cleared => {
-                !matches!(target, content_reader_core::scope::Scope::Character(_)) || this != self.this
+                !matches!(target, content_reader_script::scope::Scope::Character(_)) || this != self.this
             }
         };
         scopes
     }
 
-    pub fn link(&self, keyword: content_reader_core::scope::Keyword) -> Result<Option<Scope>, Failure> {
-        use content_reader_core::scope::Keyword;
+    pub fn link(&self, keyword: content_reader_script::scope::Keyword) -> Result<Option<Scope>, Failure> {
+        use content_reader_script::scope::Keyword;
         let (scope, unknown) = match keyword {
             Keyword::Root => (Some(self.root), self.unknown.root),
             Keyword::From => (self.from, self.unknown.from),
@@ -358,8 +361,8 @@ enum Carried {
     Cleared,
 }
 
-fn carried(target: &content_reader_core::scope::Scope) -> Carried {
-    use content_reader_core::{scope::Keyword, scope::Scope as Parsed};
+fn carried(target: &content_reader_script::scope::Scope) -> Carried {
+    use content_reader_script::scope::{Keyword, Scope as Parsed};
     let keyword = |keyword: &Keyword| match keyword {
         Keyword::This => Carried::Kept,
         Keyword::Root | Keyword::From | Keyword::Prev => Carried::Retained,
@@ -379,8 +382,8 @@ fn carried(target: &content_reader_core::scope::Scope) -> Carried {
     }
 }
 
-fn relinks(target: &content_reader_core::scope::Scope) -> bool {
-    use content_reader_core::{scope::Keyword, scope::Scope as Parsed};
+fn relinks(target: &content_reader_script::scope::Scope) -> bool {
+    use content_reader_script::scope::{Keyword, Scope as Parsed};
     let link = |keyword: &Keyword| matches!(keyword, Keyword::Root | Keyword::From | Keyword::Prev);
     match target {
         Parsed::Keyword(keyword) => link(keyword),

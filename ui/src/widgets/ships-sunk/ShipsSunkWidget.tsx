@@ -28,6 +28,7 @@ import { OPTIONS } from './definition';
 import { manifestClassChoices, shipClassName, shipCountryLabels, shipDescription, shipName, shipPlace, shipTooltip } from './shipsSunkData';
 import { useShipsSunk, validateSinkingWindow } from './useShipsSunk';
 import { useDistinctState } from '../../dashboard/useDistinctState';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_ROWS: readonly LogRow<SinkingItem>[] = [];
@@ -82,8 +83,8 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
   const visibleIndices = visibleWindows.identity === identity ? visibleWindows.windows : [];
   const wantedWindows = battleWindows(manifest.data, coveredHour ?? 0, widget.time.mode === 'follow',
     [...visibleIndices, ...(browse.identity === identity && browse.hour !== null ? [browseIndex] : [])], from ?? Number.MIN_SAFE_INTEGER);
-  const history = useProductWindows<ShipsSunkWindowReply>(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision,
-    product: 'ships-sunk', params: { branchId: track!.branch.id, window: index }, asksFrom: manifest.data?.windows[index]?.firstHour }), wantedWindows,
+  const history = useProductWindows<ShipsSunkWindowReply>(runtime.client, identity, index => (productRequest({ sourceId: track!.source.id, revision: track!.source.revision,
+    product: 'ships-sunk', params: { branchId: track!.branch.id, window: index }, asksFrom: manifest.data?.windows[index]?.firstHour })), wantedWindows,
   active && data?.available === true, validateSinkingWindow, track?.source, true);
   const edges = useMemo(() => [...new Set([...(windows ?? []).map(window => window.firstHour),
     ...[...history.data.values()].flatMap(page => page.reply.rows.map(row => Math.max(row.sinkHour, row.knownAt)))])].sort((a, b) => a - b),
@@ -132,7 +133,7 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
   if (!data.available) return <>{groupFailure}<WidgetState kind="unavailable" message="Not in this recording" /></>;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour)
-    return <>{groupFailure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+    return <>{groupFailure}<WidgetState kind="outside" /></>;
 
   const pageError = history.errors.get(browseIndex);
   if (pageError) return <>{groupFailure}<WidgetState kind="error" failure={pageError} onRetry={history.retry} /></>;

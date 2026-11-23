@@ -6,4 +6,4 @@ Whole history, hourly state and order pages read the same fold. An order-page re
 
 National and continuous focus databases may name different focuses with the same token. Completed and current focuses use the national database. Continuous focuses use the continuous database, with its own missing content and cache. Static content provides authored duration and country-independent text. Visible titles that require country scope keep their dated reads and explicit refusals. The artwork reply measures escaped JSON before retaining lazy items to enforce its actual size limit.
 
-[Focus history](../../crates/dashboard/src/products/focus.rs) · [Focus presentation](../../crates/dashboard/src/products/focus_artwork.rs) · [National focus product](../../crates/dashboard/src/products/national_focus.rs)
+[Focus history](../../crates/dashboard-politics/src/products/focus.rs) · [Focus presentation](../../crates/dashboard-politics/src/products/focus_artwork.rs) · [National focus product](../../crates/dashboard-politics/src/products/national_focus.rs)

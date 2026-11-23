@@ -1,6 +1,7 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 use super::{Catalogue, tests::Folder};
 use crate::products::equipment_icon::IconContent;
-use content_reader_core::equipment::Database;
+use content_reader_key_names::equipment::Database;
 use std::sync::Arc;
 
 fn equipment_catalogue(equipment: &[(&str, &str)]) -> (Arc<Catalogue>, Folder) {
@@ -11,7 +12,7 @@ fn equipment_catalogue(equipment: &[(&str, &str)]) -> (Arc<Catalogue>, Folder) {
             "map/default.map",
             "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp continent=continent.txt",
         ),
-        ("map/definition.csv", "0;0;0;0;land;false;unknown;0\n"),
+        ("map/definition.csv", "0;0;0;0;land;false;unknown;0\n1;1;0;0;land;false;unknown;0\n"),
         ("map/continent.txt", "continents={synthetic_continent}"),
         (
             "common/defines/synthetic.lua",
@@ -19,8 +20,18 @@ fn equipment_catalogue(equipment: &[(&str, &str)]) -> (Arc<Catalogue>, Folder) {
         ),
     ];
     files.extend_from_slice(equipment);
-    let (catalogue, folder) = super::tests::folder_catalogue(&files);
-    (Arc::new(catalogue), folder)
+    let (_, folder) = super::tests::folder_catalogue(&files);
+    let mut bmp = vec![0_u8; 58];
+    bmp[..2].copy_from_slice(b"BM");
+    for (at, value) in [(2, 58_u32), (10, 54), (14, 40), (18, 1), (22, 1)] {
+        bmp[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bmp[26..28].copy_from_slice(&1_u16.to_le_bytes());
+    bmp[28..30].copy_from_slice(&24_u16.to_le_bytes());
+    bmp[54..57].copy_from_slice(&[0, 0, 1]);
+    std::fs::write(folder.0.join("map/provinces.bmp"), bmp).unwrap();
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&folder.0, &[])]).unwrap();
+    (Arc::new(super::tests::layers_catalogue(layers)), folder)
 }
 
 #[test]
@@ -40,7 +51,7 @@ fn d16_equipment_reuse_verifies_covered_reads_in_native_order() {
         for changed in [vec![0], vec![1], vec![2], vec![0, 1, 2]] {
             let (catalogue, folder) = equipment_catalogue(&files);
             let layers = &catalogue.content.layers;
-            let names = layers.key_names().unwrap();
+            let names = layers.key_name_products().unwrap();
             assert!(names.equipment_database().unwrap().lost.is_none());
             assert!(IconContent::load(Arc::clone(&catalogue)).is_ok());
             for index in changed {
@@ -68,7 +79,7 @@ fn d16_equipment_reuse_keeps_the_complete_database_refusal() {
         "equipments={synthetic_type={alias=7} later={}}",
     )]);
     let layers = &catalogue.content.layers;
-    let names = layers.key_names().unwrap();
+    let names = layers.key_name_products().unwrap();
     let lost = names.equipment_database().unwrap().lost.as_ref().unwrap();
     assert!(lost.contains("synthetic_type"), "{lost}");
     let expected = Database::load_complete(layers).err().unwrap();
@@ -105,7 +116,7 @@ fn icon_content_reads_only_files_the_store_key_stamps() {
         catalogue
             .content
             .layers
-            .with_read_trace(Arc::new(move |read: content_reader_core::content::ContentRead| {
+            .with_read_trace(Arc::new(move |read: content_reader_layers::content::ContentRead| {
                 reads.lock().unwrap().push(read.path);
             }))
     };
@@ -119,6 +130,7 @@ fn icon_content_reads_only_files_the_store_key_stamps() {
     for read in [
         "map/default.map",
         "map/definition.csv",
+        "map/provinces.bmp",
         "map/continent.txt",
         "gfx/interface/equipmentdesigner/graphic_db/a.txt",
     ] {

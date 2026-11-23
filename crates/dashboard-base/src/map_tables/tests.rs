@@ -353,7 +353,7 @@ fn production_selection_covers_map_and_shared_recorded_input_readers() {
     crates.sort();
     for directory in crates {
         let name = directory.file_name().unwrap().to_str().unwrap();
-        if !(name.starts_with("viewer") || matches!(name, "dashboard-text" | "replay-derive")) {
+        if !(name.starts_with("viewer") || matches!(name, "dashboard-effects" | "dashboard-text" | "replay-derive")) {
             continue;
         }
         let src = directory.join("src");
@@ -407,7 +407,7 @@ fn source_census_follows_aliases_macros_and_production_after_test_modules() {
             rows!(CountryGameScoreInputs);
             let _ = T::WarOwnedRelations;
             read::<WarOwnedRelations>();
-            let _: content_reader_core::intelligence::OperationTokens;
+            let _: content_reader_military::intelligence::OperationTokens;
             let _ = "tables::Decisions"; // tables::TimedIdeas
         }
     "#;

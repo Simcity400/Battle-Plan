@@ -417,7 +417,7 @@ impl Drop for Core {
 mod tests {
     use super::*;
     use crate::test_fixtures::{CAMPAIGN, records, source};
-    use replay::spool::Record;
+    use replay_capture_spool::spool::Record;
     use replay_frame::frame::FrameEncoder;
 
     #[test]
@@ -426,7 +426,7 @@ mod tests {
         use std::{sync::Arc, time::Duration};
 
         let replay =
-            Replay::from_records(CAMPAIGN.into(), &[records(1, vec![source(1, 1, None)])]).unwrap();
+            Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![source(1, 1, None)])]).unwrap();
         let background = Arc::new(AtomicBool::new(true));
         JobPriority::run(Arc::clone(&background), || {
             for expected in [true, false] {
@@ -462,12 +462,12 @@ mod tests {
     fn blocks_arrive_in_their_given_order_and_a_scan_may_stop_early() {
         let initial = records(1, vec![source(1, 1, None)]);
         let context = initial[..2].to_vec();
-        let mut replay = Replay::from_records(CAMPAIGN.into(), &[initial]).unwrap();
+        let mut replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[initial]).unwrap();
         for hour in 2..=12 {
             let mut segment = context.clone();
             let frame = FrameEncoder::new().encode(source(1, hour, None), false);
             segment.push(Record::Frame(frame.unwrap()));
-            replay = replay.append(&[segment]).unwrap();
+            replay = replay.append(recorder_derive::writers(), &[segment]).unwrap();
         }
         assert_eq!(replay.index.len(), 12);
         let blocks: Vec<_> = replay.index.iter().rev().collect();

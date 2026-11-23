@@ -28,7 +28,7 @@ const MUSIC_OPEN: Duration = Duration::from_secs(2);
 
 pub struct Source {
     pub content: Arc<Content>,
-    pub layers: content_reader_core::ResolvedLayers,
+    pub layers: content_reader_layers::ResolvedLayers,
 }
 
 enum Command {
@@ -280,7 +280,7 @@ struct Output {
 }
 
 impl Output {
-    fn lost(&mut self) -> Option<String> {
+    fn lost(&mut self, now: Instant) -> Option<String> {
         let code = self.failure.swap(0, Ordering::AcqRel);
         if code != 0 {
             let kind = STREAM_FAILURES
@@ -291,10 +291,11 @@ impl Output {
         }
         let consumed = self.ring.consumed();
         if consumed != self.progress.0 || self.ring.len() == 0 {
-            self.progress = (consumed, Instant::now());
+            self.progress = (consumed, now);
             return None;
         }
-        (self.progress.1.elapsed() > STALLED).then(|| "it stopped taking samples".into())
+        (now.saturating_duration_since(self.progress.1) > STALLED)
+            .then(|| "it stopped taking samples".into())
     }
 }
 
@@ -455,7 +456,7 @@ fn sample_path(source: &Source, load: Load) -> Result<&str, String> {
     }
 }
 
-fn read_bytes(source: &Source, load: Load) -> Result<content_reader_core::content::Bytes, String> {
+fn read_bytes(source: &Source, load: Load) -> Result<content_reader_layers::content::Bytes, String> {
     let path = sample_path(source, load)?;
     source
         .layers
@@ -659,7 +660,7 @@ impl Control {
         self.request_loads();
         self.keep_device(now);
         self.mix(now);
-        self.write_log();
+        self.write_log(now);
     }
 
     fn receive_loads(&mut self) {
@@ -723,14 +724,13 @@ impl Control {
             return;
         }
         if let Some((device, _)) = &mut self.output
-            && let Some(why) = device.lost()
+            && let Some(why) = device.lost(now)
         {
             self.output = None;
             self.status.lock().unwrap_or_else(|e| e.into_inner()).device =
                 Some(Err(format!("The audio output was lost ({why})")));
-            let lost = Instant::now();
-            self.next_open = lost + REOPEN;
-            self.unplayed = lost;
+            self.next_open = now + REOPEN;
+            self.unplayed = now;
         }
         if self.output.is_none() && self.owner != 0 && now >= self.next_open {
             self.output = open_device(&self.status);
@@ -804,7 +804,7 @@ impl Control {
         }
     }
 
-    fn write_log(&mut self) {
+    fn write_log(&mut self, now: Instant) {
         if let (Some(log), Some(file)) = (&mut self.engine.log, &mut self.log_file) {
             for started in log.drain(..) {
                 let _ = writeln!(
@@ -823,10 +823,10 @@ impl Control {
                 );
             }
         }
-        if self.last_evict.elapsed() <= Duration::from_secs(5) {
+        if now.saturating_duration_since(self.last_evict) <= Duration::from_secs(5) {
             return;
         }
-        self.last_evict = Instant::now();
+        self.last_evict = now;
         self.engine.evict(RETAIN.as_secs_f64());
         let notes = self.engine.notes.lines();
         if let Some(file) = &mut self.log_file {

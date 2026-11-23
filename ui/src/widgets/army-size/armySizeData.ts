@@ -12,6 +12,7 @@ import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { OptionValue } from '../../dashboard/options';
 import type { ArmyAttribution, ArmyMeasure, ArmySeries, ArmySizeParams, ArmySizeReply as ArmySizeAnswer } from '../../generated/dashboard';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 export type ArmySizeReply = Omit<ArmySizeAnswer, 'series'> & { series: (Omit<ArmySeries, 'country'> & { tag: string })[] };
 
@@ -188,9 +189,9 @@ export function* armyTooltips(model: CountryValuesModel, name: string, at: Count
 
 const METADATA_MEASURE: ArmyMeasure = 'divisions';
 
-export const armyMetadataRequest = (track: BoundTrack | undefined) => track ? {
+export const armyMetadataRequest = (track: BoundTrack | undefined) => track ? productRequest({
   sourceId: track.source.id, revision: track.source.revision, product: 'army-size',
   params: armySizeRequest(track.branch.id, { tags: [] }, METADATA_MEASURE, 'owner', false),
-} : null;
+}) : null;
 
 export const armyAbsent = (manifest: ArmySizeReply) => !manifest.available;

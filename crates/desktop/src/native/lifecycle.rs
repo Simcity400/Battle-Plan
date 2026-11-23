@@ -1,17 +1,17 @@
 use super::NativeHost;
-use dashboard::protocol::{DashboardMapState, NativeEvent, ViewerState};
+use dashboard_core::protocol::{DashboardMapState, NativeEvent, ViewerState};
 use std::{sync::Arc, thread};
 use tauri::{AppHandle, Emitter, WebviewWindow};
 use viewer::host::{Ending, Launch, Map, Role};
 
 fn launch_folders(
-    applied: Option<&dashboard::Config>,
-    saved: Option<&dashboard::Config>,
+    applied: Option<&dashboard_core::config::Config>,
+    saved: Option<&dashboard_core::config::Config>,
 ) -> Vec<std::ffi::OsString> {
     applied.or(saved).map(folder_arguments).unwrap_or_default()
 }
 
-fn folder_arguments(config: &dashboard::Config) -> Vec<std::ffi::OsString> {
+fn folder_arguments(config: &dashboard_core::config::Config) -> Vec<std::ffi::OsString> {
     [
         ("--game-dir", &config.game_dir),
         ("--user-dir", &config.user_dir),
@@ -25,11 +25,13 @@ fn folder_arguments(config: &dashboard::Config) -> Vec<std::ffi::OsString> {
 impl super::Inner {
     fn publish_stopped(&self, app: &AppHandle) {
         self.publish(app);
-        if let Some(views) = &self.dashboard_views {
-            let states: Vec<_> = views
+        if let Some(snapshot) = &self.dashboard_views {
+            let states: Vec<_> = snapshot
+                .views
                 .iter()
                 .map(|view| DashboardMapState {
                     id: view.id.clone(),
+                    clock_id: view.clock_id.clone(),
                     requested_sequence: view.sequence,
                     error: self.status.error.clone(),
                     ..Default::default()
@@ -39,8 +41,43 @@ impl super::Inner {
         }
     }
 
+    pub(super) fn filter_map_states(
+        &self,
+        mut states: Vec<DashboardMapState>,
+    ) -> Vec<DashboardMapState> {
+        let Some(requested) = self.dashboard_views.as_ref() else {
+            return Vec::new();
+        };
+        states.retain_mut(|state| {
+            if requested.clock_id.as_deref() != Some(state.clock_id.as_str()) {
+                return false;
+            }
+            let Some(view) = requested.views.iter().find(|view| view.id == state.id) else {
+                return false;
+            };
+            if state.clock_id != view.clock_id
+                || state
+                    .source_id
+                    .as_ref()
+                    .is_some_and(|id| *id != view.source_id)
+                || state
+                    .revision
+                    .as_ref()
+                    .is_some_and(|revision| *revision != view.revision)
+            {
+                return false;
+            }
+            if state.requested_sequence < view.sequence {
+                state.requested_sequence = view.sequence;
+                state.loading = true;
+                state.error = None;
+            }
+            true
+        });
+        states
+    }
+
     pub(super) fn map_ended(&mut self, ending: Ending) -> bool {
-        self.refuse_exports("The map stopped before the export finished");
         let was_ready = self.status.ready;
         self.map = None;
         self.generation += 1;
@@ -79,10 +116,6 @@ enum Launched {
 
 impl super::Inner {
     pub(super) fn hear(&mut self, event: NativeEvent, generation: u64) -> Option<NativeEvent> {
-        if let NativeEvent::Export { request, answer } = event {
-            self.export_ended(generation, request, answer);
-            return None;
-        }
         (self.generation == generation && !self.shutting_down && self.map.is_some()).then_some(event)
     }
 
@@ -237,8 +270,7 @@ impl NativeHost {
         inner.status.fly_aircraft = None;
         inner.last_diagnostic = None;
         if inner.active_dashboard {
-            let views = inner.dashboard_views.clone().unwrap_or_default();
-            inner.pending.maps = Some(views);
+            inner.pending.maps = Some(inner.dashboard_snapshot());
         } else {
             inner.pending.bounds = inner.bounds;
             inner.pending.visibility = Some(inner.status.visible);
@@ -248,13 +280,13 @@ impl NativeHost {
         inner
             .pending
             .actions
-            .push_back(dashboard::protocol::MapAction::Diagnostics {
+            .push_back(dashboard_core::protocol::MapAction::Diagnostics {
                 enabled: diagnostics,
             });
         inner
             .pending
             .actions
-            .push_back(dashboard::protocol::MapAction::Mute { muted });
+            .push_back(dashboard_core::protocol::MapAction::Mute { muted });
         let role = if inner.popout.is_some() { Role::PopOut } else { Role::Main };
         let receiver = self.clone();
         let app = window.app_handle().clone();
@@ -303,12 +335,12 @@ impl NativeHost {
             NativeEvent::MapDetails { details } => inner.status.map_details = Some(details),
             NativeEvent::FlyAircraft { aircraft, state } => {
                 inner.status.fly_aircraft =
-                    Some(dashboard::protocol::FlyAircraftStatus { aircraft, state });
+                    Some(dashboard_core::protocol::FlyAircraftStatus { aircraft, state });
             }
             NativeEvent::ToggleDiagnostics => {
                 drop(inner);
-                if let Err(error) = crate::video::change_map_diagnostics(app, None) {
-                    let _ = app.emit("map-diagnostics-error", error);
+                if let Err(failed) = crate::video::change_map_diagnostics(app, None) {
+                    crate::video::diagnostics_failed(app, None, &failed);
                 }
                 return;
             }
@@ -344,39 +376,17 @@ impl NativeHost {
                 );
                 return;
             }
-            NativeEvent::MapStates { mut states } => {
-                let Some(requested) = inner.dashboard_views.as_ref() else {
-                    return;
-                };
-                states.retain_mut(|state| {
-                    let Some(view) = requested.iter().find(|view| view.id == state.id) else {
-                        return false;
-                    };
-                    if state
-                        .source_id
-                        .as_ref()
-                        .is_some_and(|id| *id != view.source_id)
-                        || state
-                            .revision
-                            .as_ref()
-                            .is_some_and(|revision| *revision != view.revision)
-                    {
-                        return false;
-                    }
-                    if state.requested_sequence < view.sequence {
-                        state.requested_sequence = view.sequence;
-                        state.loading = true;
-                        state.error = None;
-                    }
-                    true
-                });
-                let _ = app.emit("dashboard-map-state", states);
+            NativeEvent::MapStates { states } => {
+                let states = inner.filter_map_states(states);
+                if !states.is_empty() {
+                    let _ = app.emit("dashboard-map-state", states);
+                }
                 return;
             }
             NativeEvent::Ready { sample_counts, .. } => {
                 inner.status.ready = true;
                 if let Some(counts) = sample_counts {
-                    dashboard::map_settings::set_sample_counts(counts);
+                    dashboard_core::map_settings::set_sample_counts(counts);
                 }
             }
             NativeEvent::CameraMode { mode, overlays } => {
@@ -416,7 +426,6 @@ impl NativeHost {
                 inner.last_diagnostic = Some(message.clone());
                 inner.status.error = Some(message);
             }
-            NativeEvent::Export { .. } => unreachable!("answered above"),
         }
         inner.publish(app);
     }
@@ -443,7 +452,7 @@ mod tests {
 
     #[test]
     fn the_viewer_receives_only_the_folders_the_host_has() {
-        let config = |game: &str, user: &str| dashboard::Config {
+        let config = |game: &str, user: &str| dashboard_core::config::Config {
             game_dir: game.into(),
             user_dir: user.into(),
             older_game_dirs: Vec::new(),
@@ -461,7 +470,7 @@ mod tests {
 
     #[test]
     fn a_new_viewer_starts_with_the_folders_apply_last_sent() {
-        let config = |game: &str| dashboard::Config {
+        let config = |game: &str| dashboard_core::config::Config {
             game_dir: game.into(),
             user_dir: r"C:\User".into(),
             older_game_dirs: Vec::new(),
@@ -481,7 +490,7 @@ mod tests {
             status: HostStatus {
                 running: true,
                 ready: true,
-                viewer: dashboard::protocol::ViewerState {
+                viewer: dashboard_core::protocol::ViewerState {
                     path: Some(path.into()),
                     revision: Some("v1".into()),
                     branch: Some("1".into()),
@@ -524,56 +533,6 @@ mod tests {
         closing.shutting_down = true;
         assert!(!closing.map_ended(Ending::Failed("late".into())));
         assert!(closing.status.error.is_none());
-    }
-
-    fn asked(inner: &mut Inner, path: &str) -> tokio::sync::oneshot::Receiver<Result<String, String>> {
-        inner.export_requests += 1;
-        let request = inner.export_requests;
-        let (answer, answered) = tokio::sync::oneshot::channel();
-        inner.exports.push(crate::native::Export { request, generation: inner.generation, answer });
-        inner.pending.actions.push_back(dashboard::protocol::MapAction::Export { path: path.into(), view_id: None, request });
-        answered
-    }
-
-    fn export(request: u64, answer: Result<&str, &str>) -> dashboard::protocol::NativeEvent {
-        dashboard::protocol::NativeEvent::Export { request, answer: answer.map(str::to_owned).map_err(str::to_owned) }
-    }
-
-    #[test]
-    fn each_export_is_answered_with_its_own_end() {
-        let mut inner = showing("A");
-        let (mut first, mut second) = (asked(&mut inner, "map.png"), asked(&mut inner, "map.png"));
-        assert!(inner.hear(export(2, Err("Capture map.png failed: its recording closed")), 3).is_none());
-        assert_eq!(second.try_recv(), Ok(Err("Capture map.png failed: its recording closed".into())));
-        assert!(first.try_recv().is_err(), "the first is still waiting");
-        assert!(inner.hear(export(1, Ok("Saved map.png: branch 1, hour 12")), 3).is_none());
-        assert_eq!(first.try_recv(), Ok(Ok("Saved map.png: branch 1, hour 12".into())));
-        assert!(inner.exports.is_empty());
-    }
-
-    #[test]
-    fn a_closing_map_answers_the_exports_it_ended_and_refuses_the_rest() {
-        let mut inner = showing("A");
-        let (mut saved, mut waiting) = (asked(&mut inner, "saved.png"), asked(&mut inner, "waiting.png"));
-        inner.shutting_down = true;
-        assert!(inner.hear(export(1, Ok("Saved saved.png: branch 1, hour 12")), 3).is_none());
-        assert_eq!(saved.try_recv(), Ok(Ok("Saved saved.png: branch 1, hour 12".into())));
-        assert!(!inner.map_ended(Ending::Closed));
-        assert_eq!(waiting.try_recv(), Ok(Err("The map stopped before the export finished".into())));
-    }
-
-    #[test]
-    fn a_replacement_map_never_runs_an_export_whose_asker_was_refused() {
-        let mut inner = showing("A");
-        let mut refused = asked(&mut inner, "map.png");
-        assert!(inner.map_ended(Ending::DeviceLost("The map lost its graphics device: Removed".into())));
-        assert_eq!(refused.try_recv(), Ok(Err("The map stopped before the export finished".into())));
-        assert!(!inner.pending.actions.iter().any(|action| matches!(action, dashboard::protocol::MapAction::Export { .. })), "{:?}", inner.pending.actions);
-        let mut next = asked(&mut inner, "map.png");
-        assert!(inner.hear(export(1, Ok("Saved map.png: branch 1, hour 12")), 3).is_none(), "the ended map's answer");
-        assert!(next.try_recv().is_err(), "is not the new map's");
-        assert!(inner.hear(export(2, Ok("Saved map.png: branch 1, hour 13")), 4).is_none());
-        assert_eq!(next.try_recv(), Ok(Ok("Saved map.png: branch 1, hour 13".into())));
     }
 
     #[test]

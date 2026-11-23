@@ -165,3 +165,66 @@ debug = 2
 
 [profile.release.package.collector-weather]
 debug = 2
+
+[profile.release.package.collector-air]
+debug = 2
+
+[profile.release.package.collector-characters]
+debug = 2
+
+[profile.release.package.collector-division-templates]
+debug = 2
+
+[profile.release.package.collector-divisions]
+debug = 2
+
+[profile.release.package.collector-equipment-destruction]
+debug = 2
+
+[profile.release.package.collector-factions]
+debug = 2
+
+[profile.release.package.collector-hook-failures]
+debug = 2
+
+[profile.release.package.collector-land-events]
+debug = 2
+
+[profile.release.package.collector-missions]
+debug = 2
+
+[profile.release.package.collector-naval-history]
+debug = 2
+
+[profile.release.package.collector-naval-missions]
+debug = 2
+
+[profile.release.package.collector-naval-results]
+debug = 2
+
+[profile.release.package.collector-operation-outcomes]
+debug = 2
+
+[profile.release.package.collector-plans]
+debug = 2
+
+[profile.release.package.collector-states]
+debug = 2
+
+[profile.release.package.collector-workers]
+debug = 2
+
+[profile.release.package.collector-capture]
+debug = 2
+
+[profile.release.package.collector-map-capture]
+debug = 2
+
+[profile.release.package.collector-player-commands]
+debug = 2
+
+[profile.release.package.collector-spool]
+debug = 2
+
+[profile.release.package.collector-runtime]
+debug = 2

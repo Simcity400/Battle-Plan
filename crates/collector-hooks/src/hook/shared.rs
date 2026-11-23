@@ -125,6 +125,10 @@ impl Drop for Round {
     }
 }
 
+pub fn attach_collecting() -> bool {
+    PREFIX.get() && MODE.get() == Some(Mode::Collect)
+}
+
 pub fn attach_reporting() -> bool {
     PREFIX.get() && MODE.get() == Some(Mode::Report)
 }
@@ -668,6 +672,7 @@ impl<'a> Group<'a> {
             }
             if !hook.bytes_match(hook.enabled) {
                 hook.diagnostic_failure = true;
+                hook.verification_failed = true;
                 self.snapshot_refusal = enabled && self.previous.iter().all(|(_, owned)| !*owned);
                 return Err(0);
             }
@@ -975,6 +980,7 @@ fn verify(group: &mut Group<'_>) {
     for (hook, &(_, owned)) in group.hooks.iter_mut().zip(&group.previous) {
         if (group.enabled || owned) && !hook.bytes_match(group.enabled) {
             hook.diagnostic_failure = true;
+            hook.verification_failed = true;
             verified = false;
             break;
         }
@@ -982,6 +988,7 @@ fn verify(group: &mut Group<'_>) {
     if verified {
         for hook in group.hooks.iter_mut() {
             hook.needs_flush = false;
+            hook.verification_failed = false;
         }
     } else {
         group.checked = Some(Err(0));
@@ -1020,8 +1027,9 @@ fn rollback(
                 .filter(|hook| hook.needs_flush)
                 .all(|hook| hook.bytes_match(hook.enabled))
             {
-                for hook in group.hooks.iter_mut() {
+                for hook in group.hooks.iter_mut().filter(|hook| hook.needs_flush) {
                     hook.needs_flush = false;
+                    hook.verification_failed = false;
                 }
             }
         }

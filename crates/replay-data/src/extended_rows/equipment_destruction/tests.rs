@@ -380,62 +380,76 @@ fn old_disposition_cause_values_are_refused_in_the_disposition_field() {
 
 #[test]
 fn unavailable_coverage_marker_roundtrips_even_with_no_losses() {
-    let marker = EquipmentDestructionRow {
-        coverage: EquipmentDestructionCoverage::SupplementalUnavailable.into(),
-        unavailable_reason: "division deletion hook sentinel differs: Δ"
-            .to_owned()
-            .into(),
-        ..Default::default()
-    };
-    assert_eq!(marker.key(), 0);
-    assert_eq!(marker.try_clone().unwrap(), marker);
-    let mut bytes = Vec::new();
-    marker.encode_fields(&mut bytes).unwrap();
-    assert_eq!(
-        EquipmentDestructionRow::decode_fields(0, &mut Decoder::new(&bytes)).unwrap(),
-        marker
-    );
-    let delta = marker.delta(None).unwrap().unwrap();
-    assert_eq!(
-        delta.apply::<EquipmentDestructionRow>(None).unwrap(),
-        marker
-    );
-    for bad in [
-        EquipmentDestructionRow {
-            country: 1,
-            ..marker.clone()
-        },
-        EquipmentDestructionRow {
-            cause: EquipmentDestructionCause::LandCombat,
-            ..marker.clone()
-        },
-        EquipmentDestructionRow {
-            variant: 1,
-            ..marker.clone()
-        },
-        EquipmentDestructionRow {
-            amount_raw: 1,
-            ..marker.clone()
-        },
-        EquipmentDestructionRow {
-            unavailable_reason: String::new().into(),
-            ..marker.clone()
-        },
-        EquipmentDestructionRow {
-            coverage: EquipmentDestructionCoverage::Complete.into(),
-            ..marker
-        },
+    for (coverage, reason) in [
+        (
+            EquipmentDestructionCoverage::SupplementalUnavailable,
+            "division deletion hook sentinel differs: Δ",
+        ),
+        (
+            EquipmentDestructionCoverage::PartialInterval,
+            "startup/branch interval partial (reworded)",
+        ),
     ] {
-        assert!(bad.delta(None).is_err());
+        let marker = EquipmentDestructionRow {
+            coverage: coverage.into(),
+            unavailable_reason: reason.to_owned().into(),
+            ..Default::default()
+        };
+        assert_eq!(marker.key(), 0);
+        assert_eq!(marker.try_clone().unwrap(), marker);
         let mut bytes = Vec::new();
-        bad.encode_fields(&mut bytes).unwrap();
-        assert!(
-            EquipmentDestructionRow::decode_fields(bad.key(), &mut Decoder::new(&bytes))
-                .and_then(|row| row.check_key_fields())
-                .is_err()
+        marker.encode_fields(&mut bytes).unwrap();
+        assert_eq!(
+            EquipmentDestructionRow::decode_fields(0, &mut Decoder::new(&bytes)).unwrap(),
+            marker
         );
+        let delta = marker.delta(None).unwrap().unwrap();
+        assert_eq!(
+            delta.apply::<EquipmentDestructionRow>(None).unwrap(),
+            marker
+        );
+        for bad in [
+            EquipmentDestructionRow {
+                country: 1,
+                ..marker.clone()
+            },
+            EquipmentDestructionRow {
+                cause: EquipmentDestructionCause::LandCombat,
+                ..marker.clone()
+            },
+            EquipmentDestructionRow {
+                variant: 1,
+                ..marker.clone()
+            },
+            EquipmentDestructionRow {
+                amount_raw: 1,
+                ..marker.clone()
+            },
+            EquipmentDestructionRow {
+                unavailable_reason: String::new().into(),
+                ..marker.clone()
+            },
+            EquipmentDestructionRow {
+                coverage: EquipmentDestructionCoverage::Complete.into(),
+                ..marker
+            },
+        ] {
+            assert!(bad.delta(None).is_err());
+            let mut bytes = Vec::new();
+            bad.encode_fields(&mut bytes).unwrap();
+            assert!(
+                EquipmentDestructionRow::decode_fields(bad.key(), &mut Decoder::new(&bytes))
+                    .and_then(|row| row.check_key_fields())
+                    .is_err()
+            );
+        }
     }
     let mut bytes = Vec::new();
+    Field::I64(0).encode(&mut bytes).unwrap();
+    Field::U8(3).encode(&mut bytes).unwrap();
+    Field::Bytes(b"reason").encode(&mut bytes).unwrap();
+    assert!(EquipmentDestructionRow::decode_fields(0, &mut Decoder::new(&bytes)).is_err());
+    bytes.clear();
     Field::I64(0).encode(&mut bytes).unwrap();
     Field::U8(255).encode(&mut bytes).unwrap();
     Field::Bytes(b"reason").encode(&mut bytes).unwrap();

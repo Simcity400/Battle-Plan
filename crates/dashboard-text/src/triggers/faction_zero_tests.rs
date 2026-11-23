@@ -70,7 +70,7 @@ fn faction_leader_raw_zero_is_empty_at_the_context_mask_in_flat_and_graph_paths(
         ])));
         let evaluator = evaluator.with_event_scopes(graph.clone());
         let caller = evaluator.event_scopes(0).unwrap();
-        let parsed = content_reader_core::scope::parse("faction_leader", false, world.recorded());
+        let parsed = content_reader_script::scope::parse("faction_leader", false, world.recorded());
         let entered = evaluator.enter_scope(&parsed, caller).unwrap().unwrap();
         assert_eq!(entered.this, Scope::State(NULL_STATE));
         assert_eq!(entered.root, Scope::Country(2));
@@ -98,7 +98,7 @@ fn only_known_clearing_carriers_use_the_reserved_faction_fallback() {
     }
     with_world(&frame, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
-        let parsed = content_reader_core::scope::parse("faction_leader", false, world.recorded());
+        let parsed = content_reader_script::scope::parse("faction_leader", false, world.recorded());
         for this in [
             Scope::State(NULL_STATE),
             Scope::State(64),
@@ -132,7 +132,7 @@ fn only_known_clearing_carriers_use_the_reserved_faction_fallback() {
         );
         let mut unknown = Scopes::of(Scope::Country(1));
         unknown.unknown.prev = true;
-        let parsed = content_reader_core::scope::parse("PREV.faction_leader", false, world.recorded());
+        let parsed = content_reader_script::scope::parse("PREV.faction_leader", false, world.recorded());
         assert!(evaluator.enter_scope(&parsed, unknown).is_err());
     });
 
@@ -141,7 +141,7 @@ fn only_known_clearing_carriers_use_the_reserved_faction_fallback() {
     };
     with_world(&frame, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
-        let parsed = content_reader_core::scope::parse("faction_leader", false, world.recorded());
+        let parsed = content_reader_script::scope::parse("faction_leader", false, world.recorded());
         assert_eq!(
             evaluator.enter(&parsed, Scopes::of(Scope::Country(1))),
             Ok(Some(Scope::Country(2)))

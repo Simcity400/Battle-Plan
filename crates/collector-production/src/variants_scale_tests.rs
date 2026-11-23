@@ -8,7 +8,7 @@ use engine_native::{
 use replay_data::rows::TableSchema;
 
 const VARIANT: usize = (cequipment_variant::DESIGN_TEAM_TRAITS + 4).next_multiple_of(16);
-const DEFINITION: usize = 0x40;
+const DEFINITION: usize = (cequipment_module::MULTIPLY_STATS + 16).next_multiple_of(16);
 const TYPE_DEFINITION: usize = cequipment_type::ARCHETYPE + 8;
 const TYPES: usize = 200;
 const MODULES: usize = 300;
@@ -269,22 +269,8 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
             variant + cequipment_variant::OBSOLETE,
             &[(seed >> 16) as u8 & 1],
         );
-        for (slot, offset) in [
-            cequipment_variant::MAP_RANGE_STAT,
-            cequipment_variant::STAT_2F,
-            cequipment_variant::AIR_ATTACK_CACHE_CANDIDATE,
-            cequipment_variant::AGILITY_CACHE_CANDIDATE,
-            cequipment_variant::MAXIMUM_SPEED_CACHE_CANDIDATE,
-            cequipment_variant::RELIABILITY_CACHE_CANDIDATE,
-            cequipment_variant::AIR_DEFENSE_CACHE_CANDIDATE,
-            cequipment_variant::THRUST_CACHE_CANDIDATE,
-            cequipment_variant::FUEL_CONSUMPTION_CACHE_CANDIDATE,
-            cequipment_variant::BUILD_COST_CACHE_CANDIDATE,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            writer.u64(variant + offset, mix(seed ^ slot as u64));
+        for (slot, lane) in cequipment_variant::STAT_LANES.into_iter().enumerate() {
+            writer.u64(variant + lane.offset, mix(seed ^ slot as u64));
         }
         let entries = writer.alloc(module_count * equipment_module_entry::STRIDE);
         writer.array(
@@ -413,7 +399,7 @@ fn digest(views: &[TableView; 4]) -> u64 {
 
 #[test]
 fn scaled_variant_rows_match_the_recorded_digests() {
-    for (countries, golden) in [(2, 0xa55e_52ae_5273_9aa1), (440, 0xea38_fc2c_9476_520c)] {
+    for (countries, golden) in [(2, 0xb6db_8a07_3fc3_fea7), (440, 0x2e8d_591a_edac_0413)] {
         let space = space(countries, 16);
         let (views, _) = capture(&space.memory(), &space, countries * 16);
         assert!(

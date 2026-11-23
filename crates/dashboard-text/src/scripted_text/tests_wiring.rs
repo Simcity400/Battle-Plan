@@ -477,7 +477,7 @@ fn scriptable_random_weights_use_the_unified_operands_and_ignore_modifier_condit
         |source: &str| content_reader_scripted_localisation::scripted_localisation::RandomMember {
             weight: 1_000_000,
             key: Vec::new(),
-            modifiers: content_reader_core::parser::parse(source.as_bytes())
+            modifiers: content_reader_parser::parser::parse(source.as_bytes())
                 .unwrap()
                 .items
                 .into_iter()
@@ -1056,116 +1056,6 @@ fn balance_names_selection_change_binding_and_icon_direction() {
         at.expand("[ROOT.GetBopTrendTextIcon]").unwrap(),
         "\u{13}BoP_right_texticon "
     );
-}
-
-#[test]
-fn balance_modifier_description_derives_from_sources_and_localised_static_keys() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (catalogue, _folder) = tests::catalogue_with(
-        "",
-        " SOURCE:0 \"Source\"\n TEST:0 \"[ROOT.GetPowerBalanceModDesc]\"\n",
-        &[(
-            "common/modifiers/00_balance.txt",
-            "SOURCE = { power_balance_daily = 0.01234 power_balance_weekly = -0.02345 }\nZERO = { power_balance_daily = 0 }\nEMPTY = { }\n",
-        )],
-    );
-    let mut f = frame();
-    set::<tables::PowerBalances>(
-        &mut f,
-        vec![PowerBalanceRow {
-            ordinal: 0,
-            ..Default::default()
-        }],
-    );
-    set::<tables::PowerBalanceMembers>(
-        &mut f,
-        vec![PowerBalanceMemberRow {
-            country: 100,
-            ..Default::default()
-        }],
-    );
-    set::<tables::ModifierDefinitions>(
-        &mut f,
-        [
-            (engine_executable::modifier_keys::POWER_BALANCE_DAILY, 7_001),
-            (
-                engine_executable::modifier_keys::POWER_BALANCE_WEEKLY,
-                7_002,
-            ),
-        ]
-        .into_iter()
-        .map(|(index, token)| ModifierDefinitionRow {
-            index,
-            token,
-            flags: 3,
-            precision: 2,
-            ..Default::default()
-        })
-        .collect(),
-    );
-    set::<tables::LexicalTokens>(
-        &mut f,
-        vec![
-            LexicalTokenRow {
-                token: 7_001,
-                literal: b"power_balance_daily".to_vec(),
-            },
-            LexicalTokenRow {
-                token: 7_002,
-                literal: b"power_balance_weekly".to_vec(),
-            },
-        ],
-    );
-    set::<tables::PowerBalanceModifierBreakdowns>(
-        &mut f,
-        vec![PowerBalanceModifierBreakdownRow {
-            record: 0,
-            sources: vec![b"SOURCE".to_vec(), b"EMPTY".to_vec(), b"ZERO".to_vec()],
-            daily: Vec::new(),
-            weekly: Vec::new(),
-        }],
-    );
-    assert_eq!(
-        rendered(&catalogue, &f, "TEST").unwrap(),
-        "Source: +1.23%\nSource: -2.34%\n"
-    );
-    let witness = vec![
-        ModifierBreakdownNode {
-            children: 1,
-            value: 0,
-            name: Vec::new(),
-        },
-        ModifierBreakdownNode {
-            children: 0,
-            value: 99_999,
-            name: b"SOURCE".to_vec(),
-        },
-    ];
-    set::<tables::PowerBalanceModifierBreakdowns>(
-        &mut f,
-        vec![PowerBalanceModifierBreakdownRow {
-            record: 0,
-            sources: vec![b"SOURCE".to_vec(), b"EMPTY".to_vec(), b"ZERO".to_vec()],
-            daily: witness.clone(),
-            weekly: witness,
-        }],
-    );
-    assert_eq!(
-        rendered(&catalogue, &f, "TEST").unwrap(),
-        "Source: +1.23%\nSource: -2.34%\n"
-    );
-    f.tables[TableId::PowerBalanceModifierBreakdowns.index()] = TableView::Unavailable {
-        reason: "missing source capture".into(),
-    }
-    .into();
-    assert!(
-        rendered(&catalogue, &f, "TEST")
-            .unwrap_err()
-            .contains("PowerBalanceModifierBreakdowns")
-    );
-    set::<tables::PowerBalanceMembers>(&mut f, Vec::new());
-    assert_eq!(rendered(&catalogue, &f, "TEST").unwrap(), "");
 }
 
 #[test]

@@ -228,7 +228,7 @@ fn characters(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<(
             projected.push(save::characters::Portrait {
                 category: role.to_vec(),
                 size: size.to_vec(),
-                identity: content_reader_core::parser::c_string(&entry.identity).to_vec(),
+                identity: content_reader_parser::parser::c_string(&entry.identity).to_vec(),
             });
         }
         eq(
@@ -304,7 +304,7 @@ fn leaders(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> 
             eq(
                 r,
                 &format!("LeaderPortraits {id} string{index}"),
-                content_reader_core::parser::c_string(actual),
+                content_reader_parser::parser::c_string(actual),
                 saved[index].as_slice(),
             );
         }
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn ordered_portraits_and_noncharacter_strings_compare_and_mismatches_fail() {
         let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
-        let doc=content_reader_core::parser::parse(br#"countries={GER={units={corps_commander={id={id=8 type=4713} portrait_path="x.dds" picture="p" gfx="GFX_z"}}}} character_manager={historical={character={id={id=7 type=73} token=x portraits={civilian={small="GFX_a"} civilian={large="GFX_b"}}}}}"#).unwrap();
+        let doc=content_reader_parser::parser::parse(br#"countries={GER={units={corps_commander={id={id=8 type=4713} portrait_path="x.dds" picture="p" gfx="GFX_z"}}}} character_manager={historical={character={id={id=7 type=73} token=x portraits={civilian={small="GFX_a"} civilian={large="GFX_b"}}}}}"#).unwrap();
         saved.characters = save::characters::parse(&doc.items).unwrap();
         set_hq_scope(&mut frame, &mut saved, (8 << 32) | 4713);
         *frame.tables[TableId::CharacterPortraits.index()] =

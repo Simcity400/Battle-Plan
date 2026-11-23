@@ -1,16 +1,13 @@
 use super::{Drawn, ScrollTarget, Selection, TooltipHit, Values, binding::Bindings};
-use content_reader_core::{crt::truncate_f32, gui::native::Element, gui::native::Kind};
+use content_reader_parser::crt::truncate_f32;
+use content_reader_gui::gui::native::{Element, Kind};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
-use viewer_foundation::map::{
+use viewer_native_gui::{
     gui_resources as gui_windows,
-    native_gui::{
-        self, Layout, Part, Pointer, Region, Resources, SpriteKind, SpriteSetter,
-        lifecycle::{Instance, Tick},
-        pointer::{self, Input, Played, PointerState, Step},
-    },
+    native_gui::{self, Layout, Part, Pointer, Region, Resources, SpriteKind, SpriteSetter, lifecycle::{Instance, Tick}, pointer::{self, Input, Played, PointerState, Step}},
     native_windows::NativeWindows,
 };
 
@@ -20,12 +17,12 @@ pub trait CombatResources: Resources + native_gui::Sheets {
     fn flag_texture(&self, key: &str, small: bool) -> Option<native_gui::Texture>;
     fn button_sounds(
         &self,
-        button: &content_reader_core::gui::native::Button,
-    ) -> content_reader_core::gui::native::ButtonSounds;
+        button: &content_reader_gui::gui::native::Button,
+    ) -> content_reader_gui::gui::native::ButtonSounds;
     fn line_chart(
         &self,
         _sprite: &[u8],
-    ) -> Result<(viewer_foundation::map::native_shader::draw::Effect, f32), String> {
+    ) -> Result<(viewer_native_gui::native_shader::draw::Effect, f32), String> {
         Err("line chart has no compiled content effect".into())
     }
 }
@@ -1024,7 +1021,7 @@ fn item_at(
         .iter()
         .rev()
         .find(|(_, rect, _, clip)| {
-            gui_windows::contains(*rect, place.at)
+            viewer_runtime::geometry::contains(*rect, place.at)
                 && clip.is_none_or(|clip| {
                     (clip[0] as f32..clip[2] as f32).contains(&place.clip[0])
                         && (clip[1] as f32..clip[3] as f32).contains(&place.clip[1])
@@ -1552,12 +1549,12 @@ impl Windows {
             self.root.as_ref().is_some_and(Retained::holding).then_some(false)
         };
         let owner = |at: [f32; 2]| {
-            if popup_rect.is_some_and(|rect| gui_windows::contains(rect, at)) {
+            if popup_rect.is_some_and(|rect| viewer_runtime::geometry::contains(rect, at)) {
                 Some(true)
             } else {
                 root_areas
                     .iter()
-                    .any(|&rect| gui_windows::contains(rect, at))
+                    .any(|&rect| viewer_runtime::geometry::contains(rect, at))
                     .then_some(false)
             }
         };
@@ -1567,7 +1564,7 @@ impl Windows {
         let window_input = input.as_ref().map(|input| {
             input
                 .shared(holder, owner, false)
-                .filter(|at| popup_rect.is_none_or(|rect| !gui_windows::contains(rect, at)))
+                .filter(|at| popup_rect.is_none_or(|rect| !viewer_runtime::geometry::contains(rect, at)))
         });
         let root = match template(windows, name) {
             Ok(root) => root,

@@ -8,4 +8,4 @@ Province fog rebuilds in simulation country order. Stamp neighbours and apply oc
 
 Base icon detail gates use the observed DLC feature and the authored values. Search detail thresholds in reverse index order, since their contents need not be numerically sorted. Shared vision contributes full intel and still goes through the threshold search. The air-base count spread uses a separate, seeded calculation and applies independently of that feature. For the army cutoff, take the value paired with the first threshold strictly above the intel fraction, or the last value. Ignore an orphaned trailing entry, as the original content loader does.
 
-[Province visibility](../../crates/viewer-foundation/src/map/visibility.rs) · [Template disclosure](../../crates/viewer-foundation/src/map/visibility/template_reveal.rs) · [Receiver-zero tests](../../crates/viewer-foundation/src/map/visibility/reverse_zero_tests.rs)
+[Province visibility](../../crates/viewer-foundation/src/visibility.rs) · [Template disclosure](../../crates/viewer-foundation/src/visibility/template_reveal.rs) · [Receiver-zero tests](../../crates/viewer-foundation/src/visibility/reverse_zero_tests.rs)

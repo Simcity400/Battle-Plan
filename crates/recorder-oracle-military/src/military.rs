@@ -673,50 +673,65 @@ pub fn compare_division_status(
                 None => report.difference(label, "unavailable", "a recorded value"),
             }
         }
-        if report
-            .recorded(
-                &row.supply_ratio_exact,
-                "DivisionStatus.supply_ratio_exact",
-                format!("division status {}.supply_ratio_exact", row.division),
-            )
-            .is_some()
-        {
-            let label = format!("division status {}", row.division);
-            let days = match &row.out_of_supply_days {
-                Recorded::Value(days) => *days,
-                Recorded::NotRecorded => None,
-            };
-            let exact = match (&row.supply_ratio_exact, &row.supply_grace_exact) {
-                (Recorded::Value(ratio), Recorded::Value(grace)) => Some((*ratio, *grace)),
-                _ => None,
-            };
-            match (exact, days) {
-                (Some((Some(ratio), Some(grace))), Some(days)) if days != 0 => {
-                    report.scalar(
-                        &label,
-                        "supply_exact.grace_remaining",
-                        Some(grace),
-                        saved.presentation.army_current_supply_ratio.as_ref(),
+        match (&row.supply_ratio_exact, &row.supply_grace_exact) {
+            (Recorded::NotRecorded, Recorded::NotRecorded) => {
+                let _ = report.recorded(
+                    &row.supply_ratio_exact,
+                    "DivisionStatus.supply_ratio_exact",
+                    format!("division status {}.supply_ratio_exact", row.division),
+                );
+                report.scalar_checks += 1;
+                if row.supply_ratio.is_none() {
+                    report.difference(
+                        format!("division status {}.supply_ratio", row.division),
+                        "None",
+                        "recorded legacy supply_ratio when exact supply columns are not recorded",
                     );
-                    let _ = ratio;
-                    report.scalar_checks += 1;
-                    if row.supply_ratio.is_some() {
-                        report.difference(
-                            format!("{label}.supply_exact shown"),
-                            format!("{:?}", row.supply_ratio),
-                            "derived from the exact ratio",
-                        );
-                    }
                 }
-                (Some((None, None)), Some(0) | None) => report.scalar_checks += 1,
-                (exact, days) => {
-                    report.scalar_checks += 1;
+            }
+            (Recorded::Value(Some(_)), Recorded::Value(Some(grace))) => {
+                let label = format!("division status {}", row.division);
+                report.scalar(
+                    &label,
+                    "supply_exact.grace_remaining",
+                    Some(*grace),
+                    saved.presentation.army_current_supply_ratio.as_ref(),
+                );
+                report.scalar_checks += 1;
+                if row.supply_ratio.is_some() {
+                    report.difference(
+                        format!("{label}.supply_exact shown"),
+                        format!("{:?}", row.supply_ratio),
+                        "derived from the exact ratio",
+                    );
+                }
+            }
+            (Recorded::Value(None), Recorded::Value(None)) => {
+                let label = format!("division status {}", row.division);
+                let days = match &row.out_of_supply_days {
+                    Recorded::Value(days) => *days,
+                    Recorded::NotRecorded => None,
+                };
+                report.scalar_checks += 1;
+                if !matches!(days, Some(0) | None) || row.supply_ratio.is_none() {
                     report.difference(
                         format!("{label}.supply_exact"),
-                        format!("{exact:?}"),
-                        format!("kept only with nonzero days out of supply ({days:?})"),
+                        format!(
+                            "exact=(None, None), supply_ratio={:?}, days={days:?}",
+                            row.supply_ratio
+                        ),
+                        "complete exact pair, or absent with recorded supply_ratio only at zero days out of supply",
                     );
                 }
+            }
+            (ratio_exact, grace_exact) => {
+                let label = format!("division status {}", row.division);
+                report.scalar_checks += 1;
+                report.difference(
+                    format!("{label}.supply_exact"),
+                    format!("({ratio_exact:?}, {grace_exact:?})"),
+                    "both exact columns recorded together or both omitted before format support",
+                );
             }
         }
         if let Some(supply) = report.recorded(
@@ -1031,7 +1046,7 @@ fn compare_template_text(
     saved: &[u8],
     saved_present: bool,
 ) {
-    let prefix = content_reader_core::parser::c_string(stored);
+    let prefix = content_reader_parser::parser::c_string(stored);
     if prefix.len() < stored.len() {
         report.limitation(
             "native text serialization ends at the first NUL; captured trailing bytes are not save-comparable",
@@ -1398,7 +1413,7 @@ pub fn compare_division_template_icons(
             let names_group = settings
                 .names_group
                 .as_deref()
-                .map(content_reader_core::parser::c_string)
+                .map(content_reader_parser::parser::c_string)
                 .filter(|key| !key.is_empty());
             setting!(
                 "division_names_group",
@@ -1703,7 +1718,7 @@ pub fn compare_naval_units(
             ),
             Recorded::Value(None) => return Err(invalid("fleet stored name capture refused")),
             Recorded::Value(Some(bytes)) => {
-                let comparable = content_reader_core::parser::c_string(bytes);
+                let comparable = content_reader_parser::parser::c_string(bytes);
                 if comparable.len() != bytes.len() {
                     report.limitation("native name serialization ends at the first NUL; trailing owned bytes need a live comparison", format!("{label}.name"));
                 }

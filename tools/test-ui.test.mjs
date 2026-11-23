@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { browserTests, checkBrowserManifest, checkNodeImports, discoverTests, repositoryRoot, runGroups, testGroups } from './test-ui.mjs';
+import { browserTests, checkBrowserManifest, checkNodeImports, discoverTests, repositoryRoot, plannedGroups, runGroups, testArguments, testGroups } from './test-ui.mjs';
 
 const driverTimeoutMs = 30_000;
 let checkedFiles;
@@ -26,10 +26,31 @@ test('test:ui runs every file once, with normal pure concurrency and serial brow
   const groups = testGroups(files);
   assert.equal(groups[0].concurrency, true, 'pure tests use ordinary Node file concurrency');
   assert.equal(groups[1].concurrency, 1, 'browser fixtures have exclusive process ownership');
+  assert.deepEqual(groups.map(group => group.deadlineMinutes), [20, undefined], 'a pure test file is stopped at a deadline; a browser fixture is never killed with Edge open');
   assert.deepEqual(groups[1].files.slice().sort(), browserTests.slice().sort());
   const scheduled = groups.flatMap(group => group.files);
   assert.equal(new Set(scheduled).size, files.length, 'no test is scheduled twice');
   assert.deepEqual(scheduled.slice().sort(), files, 'no test is omitted');
+});
+
+test('test:ui runs only the named files, in their own groups, and refuses names it cannot run', async () => {
+  const files = await checkedTestFiles();
+  const pure = 'tools/test-ui.test.mjs', browser = browserTests[0];
+  const here = { root: repositoryRoot, cwd: repositoryRoot, caseless: false };
+  const plan = (argv, location = here) => plannedGroups(files, testArguments(argv), location).map(group => group.files);
+  assert.deepEqual(plan([pure, browser.split('/').join('\\'), resolve(repositoryRoot, pure)]), [[pure], [browser]],
+    'separators and absolute paths name the same file once, in its own group');
+  assert.deepEqual(plan(['test-ui.test.mjs'], { ...here, cwd: resolve(repositoryRoot, 'tools') }), [[pure], []]);
+  assert.deepEqual(plan(['--group', 'browser', browser]), [[browser]]);
+  assert.deepEqual(plan([browser.toUpperCase()], { ...here, caseless: true }), [[], [browser]], 'a caseless file system names the discovered spelling');
+  assert.throws(() => plan([browser.toUpperCase()]), /Not a discovered UI test/);
+  assert.throws(() => plan([pure, 'ui/src/missing.test.ts']), /Not a discovered UI test: ui\/src\/missing\.test\.ts$/);
+  assert.throws(() => plan(['--group', 'browser', pure, browser]), /Not in the browser group: tools\/test-ui\.test\.mjs$/);
+  assert.throws(() => testArguments(['--tab-full', pure]), /takes no test files/);
+  assert.throws(() => testArguments(['--check-imports', pure]), /takes no test files/);
+  assert.throws(() => testArguments(['--files', pure]), /Unknown option: --files/);
+  assert.throws(() => testArguments(['--group', 'all']), /--group takes node or browser, not all/);
+  assert.equal(plan([]).flat().length, files.length, 'no names runs every test');
 });
 
 test('test:ui:tab-full selects only the native Tab fixture with serial browser ownership', async () => {
@@ -101,30 +122,51 @@ test('both groups complete sequentially and failure of either group fails test:u
   }
 });
 
-test('the production group runner reports actual Node test failures', async () => {
+test('the production group runner reports actual Node test failures, and a group stopped at its deadline names its unfinished files', async () => {
   const root = await mkdtemp(resolve(tmpdir(), 'hoi4-test-ui-results-'));
   try {
-    await writeFile(resolve(root, 'pass.test.mjs'), "import test from 'node:test'; test('synthetic pass', () => {});");
+    await writeFile(resolve(root, 'pass.test.mjs'), `import assert from 'node:assert/strict'; import test from 'node:test';
+test('synthetic pass', () => { assert.equal(process.cwd(), ${JSON.stringify(root)}, 'tests run from the root, wherever the runner was started'); });`);
     await writeFile(resolve(root, 'fail.test.mjs'), "import test from 'node:test'; test('synthetic failure', () => { throw new Error('expected synthetic failure'); });");
+    await writeFile(resolve(root, 'leak.test.mjs'), `import test from 'node:test';
+test('synthetic leak', () => {
+  const { port1 } = new MessageChannel();
+  port1.on('message', () => {});
+  process.stdin.on('end', () => port1.close()).resume();
+});`);
     const runner = pathToFileURL(resolve(repositoryRoot, 'tools/test-ui.mjs')).href;
     await writeFile(resolve(root, 'driver.mjs'), `
 import { executeGroup } from ${JSON.stringify(runner)};
 let reported = '';
 const output = { write(chunk) { reported += chunk; } };
 const passed = await executeGroup({ files: ['pass.test.mjs'], concurrency: true }, ${JSON.stringify(root)}, output);
+const caller = process.cwd();
+process.chdir(${JSON.stringify(dirname(root))});
+const relativePassed = await executeGroup({ files: ['pass.test.mjs'], concurrency: true }, ${JSON.stringify(basename(root))}, output);
+process.chdir(caller);
 const passReport = reported;
 reported = '';
 const failed = await executeGroup({ files: ['fail.test.mjs'], concurrency: 1 }, ${JSON.stringify(root)}, output);
-console.log(JSON.stringify({ passed, failed, passReport, failureReport: reported }));
+const failureReport = reported;
+reported = '';
+const controller = new AbortController();
+const stopping = { write(chunk) { reported += chunk; if (chunk.includes('synthetic leak')) controller.abort(); } };
+const stopped = await executeGroup({ name: 'Synthetic group', files: ['leak.test.mjs', 'pass.test.mjs'], concurrency: 1 }, ${JSON.stringify(root)}, stopping, controller.signal);
+console.log(JSON.stringify({ passed, failed, passReport, failureReport, stopped, stopReport: reported, cwd: process.cwd(), relativePassed }));
 `);
     const env = { ...process.env };
     delete env.NODE_TEST_CONTEXT;
-    const { stdout } = await promisify(execFile)(process.execPath, [resolve(root, 'driver.mjs')], { env, timeout: driverTimeoutMs, windowsHide: true });
+    const { stdout } = await promisify(execFile)(process.execPath, [resolve(root, 'driver.mjs')], { env, cwd: repositoryRoot, timeout: driverTimeoutMs, windowsHide: true });
     const result = JSON.parse(stdout);
-    assert.equal(result.passed, 0);
+    assert.equal(resolve(result.cwd), resolve(repositoryRoot), 'the caller gets its own directory back');
+    assert.equal(result.passed, 0, result.passReport);
+    assert.equal(result.relativePassed, 0, 'a relative root names the same folder before and after changing into it');
     assert.match(result.passReport, /synthetic pass/);
     assert.equal(result.failed, 1);
     assert.match(result.failureReport, /expected synthetic failure/);
+    assert.equal(result.stopped, 1, 'a group stopped at its deadline fails');
+    assert.match(result.stopReport, /^Synthetic group hit its deadline while these files were still running: leak\.test\.mjs$/m,
+      'the file holding its process open is named, and the queued one behind it is not');
   } finally {
     await rm(root, { recursive: true, force: true });
   }

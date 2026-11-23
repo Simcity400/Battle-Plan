@@ -6,4 +6,4 @@ The loader owns the hook for the workers' lifetime. Quiescent teardown joins the
 
 The payload retirement queue likewise lives through quiescent loader teardown. A frame that never returns its borrowed orders buffer retires it through the original job family exactly once, on either an ordinary drop or an unwind. The orders regression builds its naval job from the public default because the capture state is private.
 
-[Decode failure context](../../crates/collector/src/decode/failure.rs) · [Order loan regression](../../crates/collector/src/decode/order_group_loan_tests.rs)
+[Decode failure context](../../crates/collector-workers/src/panic_failure.rs) · [Order loan regression](../../crates/collector-capture/src/decode/order_group_loan_tests.rs)

@@ -6,4 +6,4 @@ Resistance, compliance, their rates and the moving garrison amounts use live cel
 
 A read of the holder's occupation status certifies an empty reserve as a zero. Reserve entries keep their list order and signed amounts. A holder with recorded zero owned states is excluded, consistent with the game's existence check. History splits where an entry, the admission row or coverage changes, and resolves the sources' changing tags over their dated runs.
 
-[Occupied states](../../crates/dashboard/src/products/occupation/states.rs) · [Occupation trend](../../crates/dashboard/src/products/occupation/detail.rs) · [Reserve](../../crates/dashboard/src/products/occupation_reserve.rs)
+[Occupied states](../../crates/dashboard-wars/src/products/occupation/states.rs) · [Occupation trend](../../crates/dashboard-wars/src/products/occupation/detail.rs) · [Reserve](../../crates/dashboard-wars/src/products/occupation_reserve.rs)

@@ -11,6 +11,7 @@ use playhead::{
 use replay::campaign::{Replay, SeekResult};
 use replay_data::rows::{CountryLinkRow, CountryResourceRow, CountryRow, TableRows, tables};
 use replay_frame::frame::TableView;
+use serde::Deserialize;
 use serde_json::json;
 
 struct Power;
@@ -37,7 +38,7 @@ crate::reply_warnings!(PowerReply);
 fn streamed(data: &PanelData, fresh: bool) -> PanelData {
     data.clone().map(|mut reply| {
         for group in reply["live"]["groups"].as_array_mut().into_iter().flatten() {
-            if !fresh && let Some(group) = group.as_object_mut() { group.remove("values"); }
+            if !fresh && let Some(group) = group.as_object_mut() { group.remove("values"); group.remove("rawValues"); }
         }
         reply
     })
@@ -52,6 +53,7 @@ impl AtHour for Power {
     const TITLE: &'static str = "Power";
     const CONTENT_DEPENDENT: bool = false;
     type Params = PowerParams;
+    const FIELDS: crate::products::Fields = crate::fields![branchId, country];
     type Reply = PowerReply;
     type Context = ();
 
@@ -123,8 +125,8 @@ fn frame(hour: i32) -> DecodedFrame {
 
 fn recording() -> (Source, Arc<dyn Pages>) {
     let frames = (FIRST..=LAST).map(frame).collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
-    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let source = Source::from_replay(crate::SourceKey { source_id: "at-hour".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     (source, pages)
 }
@@ -271,6 +273,7 @@ impl AtHour for Scoped {
     const TITLE: &'static str = "Scoped";
     const CONTENT_DEPENDENT: bool = false;
     type Params = ScopedParams;
+    const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = ScopedReply;
     type Context = ();
 
@@ -299,6 +302,7 @@ fn a_panel_made_on_the_panels_thread_reads_with_its_recordings_executable_tables
         context: (),
         content_warnings: Vec::new(),
         live: None,
+        answered: None,
         executable: Some(executable),
         product: PhantomData,
     };
@@ -307,12 +311,62 @@ fn a_panel_made_on_the_panels_thread_reads_with_its_recordings_executable_tables
     assert_eq!(data.unwrap()["scoped"], true, "a panel reading recorded keywords or registries would find them withheld");
 }
 
+struct Static;
+
+impl AtHour for Static {
+    const KEY: &'static str = "test-static";
+    const TITLE: &'static str = "Static";
+    const CONTENT_DEPENDENT: bool = false;
+    const CLOCK_DEPENDENT: bool = false;
+    const REPLY_NAMES_NO_HOUR: bool = true;
+    type Params = ScopedParams;
+    const FIELDS: crate::products::Fields = crate::fields![branchId];
+    type Reply = ScopedReply;
+    type Context = std::sync::atomic::AtomicUsize;
+
+    fn tables(_params: &Self::Params) -> Vec<TableId> {
+        Vec::new()
+    }
+
+    fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
+        Ok(0.into())
+    }
+
+    fn reply(_frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+        at.context.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(ScopedReply { scoped: false, warnings: Vec::new() })
+    }
+}
+
+#[test]
+fn a_followed_product_that_reads_neither_tables_nor_the_hour_answers_once_for_every_frame() {
+    let (source, _) = recording();
+    let holders = Arc::clone(&crate::queries::query(&source, 1).unwrap().holders);
+    let mut panel = Followed::<Static> {
+        params: ScopedParams { branch_id: "1".into() },
+        tables: Vec::new(),
+        holders,
+        context: 0.into(),
+        content_warnings: Vec::new(),
+        live: None,
+        answered: None,
+        executable: None,
+        product: PhantomData,
+    };
+    assert!(followed(&source, &mut panel, FIRST).is_ok());
+    for hour in FIRST + 1..=FIRST + 3 {
+        let SeekResult::Frame(frame) = source.replay_ref().seek_selected(1, hour, Some(&[][..])).unwrap() else { panic!("hour {hour} is recorded") };
+        assert!(panel.unchanged(&frame), "hour {hour}");
+    }
+    assert_eq!(panel.context.load(std::sync::atomic::Ordering::Relaxed), 1, "an unchanged input is answered once, not again at every published frame");
+}
+
 #[test]
 fn dated_read_in_a_gap_refuses_the_hour_between_two_recorded_stretches() {
     let segments = [(1, FIRST..=FIRST + 5), (2, FIRST + 10..=LAST)].map(|(branch, hours)| {
         records(branch, hours.map(|hour| DecodedFrame { branch, ..frame(hour) }).collect())
     });
-    let replay = Replay::from_records(CAMPAIGN.into(), &segments).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &segments).unwrap().into_timelines(&Default::default()).unwrap();
     let token = AtomicBool::new(false);
     let source = Source::from_replay(crate::SourceKey { source_id: "gapped".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &token).unwrap();
     let panel = exact_panel::<Power>(&source, &load(), &json!({"panel": "test-power", "branchId":"1","country":"GER"})).unwrap();
@@ -352,6 +406,7 @@ impl AtHour for Planned {
     const TITLE: &'static str = "Planned";
     const CONTENT_DEPENDENT: bool = false;
     type Params = PlannedParams;
+    const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = PlannedReply;
     type Context = ();
 
@@ -434,6 +489,7 @@ impl AtHour for Clocked {
     const TITLE: &'static str = "Clocked";
     const CONTENT_DEPENDENT: bool = false;
     type Params = PlannedParams;
+    const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = ClockedReply;
     type Context = ();
 
@@ -498,6 +554,7 @@ impl AtHour for Dropping {
     const CONTENT_DEPENDENT: bool = false;
     const CLOCK_DEPENDENT: bool = false;
     type Params = PlannedParams;
+    const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = DroppingReply;
     type Context = AtomicBool;
 
@@ -567,6 +624,7 @@ impl AtHour for Steady {
     const CONTENT_DEPENDENT: bool = false;
     const CLOCK_DEPENDENT: bool = false;
     type Params = PlannedParams;
+    const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = SteadyReply;
     type Context = ();
 
@@ -669,9 +727,20 @@ fn stepped(pages: &Arc<dyn Pages>, exact: &dashboard_follow::panel::AtHour, ever
     playhead.seek(FIRST);
     let (mut head, mut out) = (FIRST, Vec::new());
     loop {
-        playhead.advance(head);
-        let (last, read) = played.recv_timeout(std::time::Duration::from_secs(120)).unwrap_or_else(|_| panic!("no step at head {head}: {:?}", playhead.error()));
-        consumer.take(head, &mut Vec::new());
+        let mut next = None;
+        playhead
+            .drive_until(&mut consumer, head, || match played.try_recv() {
+                Ok(item) => {
+                    next = Some(item);
+                    std::ops::ControlFlow::Break(Ok(()))
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => std::ops::ControlFlow::Continue(()),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    std::ops::ControlFlow::Break(Err("step hook channel disconnected".into()))
+                }
+            })
+            .unwrap_or_else(|error| panic!("no step at head {head}: {error}"));
+        let (last, read) = next.unwrap();
         if let Some(read) = read {
             let before = declared.clone();
             for lane in &read.lanes {
@@ -749,6 +818,7 @@ impl AtHour for Partial {
     const TITLE: &'static str = "Partial";
     const CONTENT_DEPENDENT: bool = false;
     type Params = PlannedParams;
+    const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = PartialReply;
     type Context = ();
 
@@ -781,11 +851,11 @@ fn a_table_read_in_part_is_the_rows_its_hour_read_on_every_path() {
             frame
         })
         .collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
-    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let source = Source::from_replay(crate::SourceKey { source_id: "at-hour-partly".into(), revision: "1".into() }, "partly.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let recorded = |hour: i32| {
-        let frame = replay::at::frame(source.replay_ref().recording(), 0, hour, &[replay::at::Read::all(TableId::CountryResources)]).unwrap();
+        let frame = replay_lanes::at::frame(source.replay_ref().recording(), 0, hour, &[replay_lanes::at::Read::all(TableId::CountryResources)]).unwrap();
         let (keys, missing) = partly_held(frame.tables[TableId::CountryResources.index()].held());
         (json!(keys), json!(missing))
     };

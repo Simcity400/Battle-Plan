@@ -6,8 +6,8 @@ use replay_frame::frame::TableView;
 use std::collections::HashSet;
 use std::path::Path;
 use std::{path::PathBuf, sync::Arc, time::Instant};
-use viewer_foundation::map::presentation::Target;
-use viewer_foundation::map::ui_scale::Setting;
+use viewer_runtime::presentation::Target;
+use viewer_gpu::ui_scale::Setting;
 
 impl Viewer {
     pub(super) fn embedded_logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
@@ -25,7 +25,7 @@ impl Viewer {
             self.last_step = Instant::now();
             self.last_frame = Instant::now();
         }
-        if let Some(views) = pending.map_views {
+        if let Some((clock_id, views)) = pending.map_views {
             self.dashboard_active = true;
             self.playing = false;
             if self.dashboard.is_none() {
@@ -54,7 +54,7 @@ impl Viewer {
                         self.dashboard = Some(Box::new(dashboard));
                     }
                     Err(error) => {
-                        self.refuse_exports(pending.actions, &format!("The map widgets could not start: {error}"));
+                        self.refuse_exports(pending.exports, &format!("The map widgets could not start: {error}"));
                         self.error = Some(error.to_string());
                         self.report_embedded(ctx);
                         return;
@@ -63,7 +63,7 @@ impl Viewer {
             }
             if let Some(dashboard) = &mut self.dashboard {
                 dashboard.update_config(&self.config, frame, ctx);
-                dashboard.set_views(views, frame, ctx);
+                dashboard.set_views(clock_id.as_deref(), views, frame, ctx);
             }
         }
         let service = self
@@ -86,6 +86,9 @@ impl Viewer {
         let actions = pending.actions;
         for action in actions {
             self.host_map_action(action, ctx, frame);
+        }
+        for job in pending.exports {
+            self.host_export(job, ctx, frame);
         }
         {
             let _other_cost = replay_frame::cpu::scope("frame.fly-aircraft", Some("other"));
@@ -115,20 +118,26 @@ impl Viewer {
             self.embedded_seek = None;
         }
         if let Some(seek) = pending.seek {
-            let accepted = self
-                .document
+            if !seek
+                .playback
                 .as_ref()
-                .map(|document| (document.source_path.as_path(), self.revision.as_deref()));
-            let pending_load = if self.loading.is_some() || self.awaiting_folders {
-                self.options
-                    .replay
-                    .as_deref()
-                    .map(|path| (path, self.expected_revision.as_deref()))
-            } else {
-                None
-            };
-            self.embedded_open = seek_open_target(&seek, accepted, pending_load);
-            self.embedded_seek = Some(seek);
+                .is_some_and(|clock| self.page_clock.is_retired(&clock.clock_id))
+            {
+                let accepted = self
+                    .document
+                    .as_ref()
+                    .map(|document| (document.source_path.as_path(), self.revision.as_deref()));
+                let pending_load = if self.loading.is_some() || self.awaiting_folders {
+                    self.options
+                        .replay
+                        .as_deref()
+                        .map(|path| (path, self.expected_revision.as_deref()))
+                } else {
+                    None
+                };
+                self.embedded_open = seek_open_target(&seek, accepted, pending_load);
+                self.embedded_seek = Some(seek);
+            }
         }
         {
             let _other_cost = replay_frame::cpu::scope("frame.load", Some("other"));
@@ -149,61 +158,71 @@ impl Viewer {
             && !self.awaiting_folders
             && let Some(seek) = self.embedded_seek.take()
         {
-            let result = self
-                .document
+            if seek
+                .playback
                 .as_ref()
-                .filter(|document| seek.matches(&document.source_path, self.revision.as_deref()))
-                .ok_or_else(|| {
-                    self.error.clone().unwrap_or_else(|| {
-                        "The requested replay snapshot did not open; seek was not applied"
-                            .to_owned()
+                .is_some_and(|clock| self.page_clock.is_retired(&clock.clock_id))
+            {
+            } else {
+                let result = self
+                    .document
+                    .as_ref()
+                    .filter(|document| seek.matches(&document.source_path, self.revision.as_deref()))
+                    .ok_or_else(|| {
+                        self.error.clone().unwrap_or_else(|| {
+                            "The requested replay snapshot did not open; seek was not applied"
+                                .to_owned()
+                        })
                     })
-                })
-                .and_then(|document| match document.playback.range(seek.branch) {
-                    Some((first, last)) if (first..=last).contains(&seek.hour) => Ok(()),
-                    Some((first, last)) => Err(format!(
-                        "Hour {} is outside branch {} ({first}..{last})",
-                        seek.hour, seek.branch
-                    )),
-                    None => Err(format!("Unknown branch {}", seek.branch)),
-                });
-            match result {
-                Ok(()) => {
-                    self.error = None;
-                    let now = Instant::now();
-                    let last = self
-                        .document
-                        .as_ref()
-                        .expect("validated above")
-                        .playback
-                        .range(seek.branch)
-                        .expect("validated above")
-                        .1;
-                    let animation_target = Target {
-                        branch: seek.branch,
-                        hour: seek.hour,
-                        seek_sequence: seek.playback.map(|clock| clock.seek_sequence),
-                    };
-                    let sought = seek.playback.is_none()
-                        || self
-                            .map_animation_target
-                            .is_none_or(|old| animation_target.seeks_from(old));
-                    self.animation_seek |= sought;
-                    self.map_animation_target = Some(animation_target);
-                    let playing = seek.playback.is_some_and(|clock| clock.playing);
-                    let target = Playhead {
-                        branch: seek.branch,
-                        hour: seek.hour,
-                        fraction: seek.playback.map_or(0.0, |clock| clock.fraction),
-                    };
-                    let speed = seek
-                        .playback
-                        .map_or(self.speed, |clock| clock.hours_per_second);
-                    let composed_at = seek.playback.map(|clock| clock.composed_at);
-                    self.anchor_playback(target, playing, speed, sought, composed_at, now, last);
-                }
-                Err(error) => {
-                    self.error = Some(error);
+                    .and_then(|document| match document.playback.range(seek.branch) {
+                        Some((first, last)) if (first..=last).contains(&seek.hour) => Ok(()),
+                        Some((first, last)) => Err(format!(
+                            "Hour {} is outside branch {} ({first}..{last})",
+                            seek.hour, seek.branch
+                        )),
+                        None => Err(format!("Unknown branch {}", seek.branch)),
+                    });
+                match result {
+                    Ok(()) => {
+                        self.error = None;
+                        let now = Instant::now();
+                        let last = self
+                            .document
+                            .as_ref()
+                            .expect("validated above")
+                            .playback
+                            .range(seek.branch)
+                            .expect("validated above")
+                            .1;
+                        let playback = seek.playback.as_ref();
+                        let animation_target = Target {
+                            branch: seek.branch,
+                            hour: seek.hour,
+                            seek_sequence: playback.map(|clock| clock.seek_sequence),
+                        };
+                        let sought = playback.is_none()
+                            || self
+                                .map_animation_target
+                                .is_none_or(|old| animation_target.seeks_from(old));
+                        self.animation_seek |= sought;
+                        self.map_animation_target = Some(animation_target);
+                        let playing = playback.is_some_and(|clock| clock.playing);
+                        let target = Playhead {
+                            branch: seek.branch,
+                            hour: seek.hour,
+                            fraction: playback.map_or(0.0, |clock| clock.fraction),
+                        };
+                        let speed = playback
+                            .map_or(self.speed, |clock| clock.hours_per_second);
+                        let composed = playback.map(|clock| crate::page_clock::ClockSample {
+                            origin: &clock.clock_id,
+                            composed_at: clock.composed_at,
+                        });
+                        self.anchor_playback(target, playing, speed, sought, composed, now, last);
+                    }
+                    Err(error) => {
+                        self.error = Some(error);
+                    }
                 }
             }
         }
@@ -245,9 +264,9 @@ impl Viewer {
         if let Some(source) = self.source.clone() {
             let replay = source.replay();
             let preferences =
-                self.follow_map_settings(service, dashboard::map_settings::campaign_key(&replay));
+                self.follow_map_settings(service, dashboard_core::map_settings::campaign_key(&replay));
             let selection = (
-                dashboard::map_settings::campaign_key(&replay),
+                dashboard_core::map_settings::campaign_key(&replay),
                 preferences.visual_mods.clone(),
                 preferences.graphics.samples,
                 preferences.graphics.texture_quality,
@@ -332,21 +351,45 @@ impl Viewer {
         }
     }
 
-    fn refuse_exports(&mut self, actions: impl IntoIterator<Item = dashboard::protocol::MapAction>, why: &str) {
-        for action in actions {
-            if let dashboard::protocol::MapAction::Export { request, .. } = action {
-                self.export_results.push((request, Err(why.to_owned())));
-            }
+    fn refuse_exports(&mut self, jobs: Vec<crate::host::ExportJob>, why: &str) {
+        for job in jobs {
+            job.answer(Err(why.to_owned()));
         }
+    }
+
+    pub(crate) fn host_export(&mut self, job: crate::host::ExportJob, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if let Some(id) = job.view_id.clone() {
+            match self.dashboard.as_mut() {
+                Some(dashboard) => dashboard.export_view(&id, job, ctx, frame),
+                None => job.answer(Err("The requested map widget is unavailable".into())),
+            }
+            return;
+        }
+        if self.document.is_none() || self.capture.is_some() {
+            job.answer(Err("Open a map and wait for any active export to finish".into()));
+            return;
+        }
+        self.capture = Some(Capture {
+            path: PathBuf::from(&job.path),
+            remaining: 0,
+            pinned: None,
+            exit: false,
+            time: crate::suite_input::capture_clock(),
+            step: 0.0,
+            frames: 1,
+            index: 0,
+            paced: false,
+            export: Some(job),
+        });
     }
 
     pub(crate) fn host_map_action(
         &mut self,
-        action: dashboard::protocol::MapAction,
+        action: dashboard_core::protocol::MapAction,
         ctx: &egui::Context,
         frame: &mut eframe::Frame,
     ) {
-        use dashboard::protocol::MapAction;
+        use dashboard_core::protocol::MapAction;
         match action {
             MapAction::Unload { path } => {
                 if self.unload_recording(Path::new(&path)) {
@@ -364,7 +407,7 @@ impl Viewer {
                 }
             }
             MapAction::FrameLimit { hz } => {
-                viewer_foundation::map::frame_limit::limit_to(hz);
+                viewer_runtime::frame_limit::limit_to(hz);
             }
             MapAction::UiScale { scale } => {
                 self.ui_scale = Setting::from_stored(scale);
@@ -385,41 +428,6 @@ impl Viewer {
             MapAction::Configure { options } => {
                 self.host_perspective(&options);
                 self.apply_host_options(&options);
-            }
-            MapAction::Export {
-                path,
-                view_id: Some(id),
-                request,
-            } => {
-                let refused = match self.dashboard.as_mut() {
-                    Some(dashboard) => dashboard.export_view(&id, path, request, ctx, frame).err(),
-                    None => Some("The requested map widget is unavailable".into()),
-                };
-                if let Some(why) = refused {
-                    self.export_results.push((request, Err(why)));
-                }
-            }
-            MapAction::Export {
-                path,
-                view_id: None,
-                request,
-            } => {
-                if self.document.is_some() && self.capture.is_none() {
-                    self.capture = Some(Capture {
-                        path: PathBuf::from(path),
-                        remaining: 0,
-                        pinned: None,
-                        exit: false,
-                        time: crate::suite_input::capture_clock(),
-                        step: 0.0,
-                        frames: 1,
-                        index: 0,
-                        paced: false,
-                        request: Some(request),
-                    });
-                } else {
-                    self.export_results.push((request, Err("Open a map and wait for any active export to finish".into())));
-                }
             }
             MapAction::Folders { game, user } => {
                 self.config.game_dir = PathBuf::from(game);
@@ -459,7 +467,7 @@ impl Viewer {
 
     fn reload_campaign_map(
         &mut self,
-        source: std::sync::Arc<dashboard::Source>,
+        source: std::sync::Arc<dashboard_base::Source>,
         ctx: &egui::Context,
     ) {
         if let Some((branch, hour)) = self.document.as_ref().map(|document| self.hour_on_screen(document)) {
@@ -500,7 +508,7 @@ impl Viewer {
                 .identity
                 .mods
                 .iter()
-                .map(|recorded| content_reader_core::content::visual::RecordedMod {
+                .map(|recorded| content_reader_layers::content::visual::RecordedMod {
                     id: recorded.id.clone(),
                     name: recorded.display_name.clone(),
                 })
@@ -527,14 +535,14 @@ impl Viewer {
         let spawned = std::thread::Builder::new()
             .name("visual mod check".into())
             .spawn_carried(move || {
-                let _stage = viewer_foundation::load_record::stage("visual_check");
+                let _stage = viewer_runtime::load_record::stage("visual_check");
                 if reload_settings {
                     service.reload_map_settings();
                 }
                 let cancel = std::sync::atomic::AtomicBool::new(false);
                 let failures = std::cell::RefCell::new(Vec::new());
-                let changed = |selected: &[content_reader_core::content::visual::Choice],
-                               recorded: &[content_reader_core::content::visual::RecordedMod],
+                let changed = |selected: &[content_reader_layers::content::visual::Choice],
+                               recorded: &[content_reader_layers::content::visual::RecordedMod],
                                revision: &str| {
                     let Some(options) = &options else {
                         failures
@@ -542,8 +550,8 @@ impl Viewer {
                             .push("the content folders are not set".to_owned());
                         return false;
                     };
-                    let stage = viewer_foundation::load_record::stage("visual_check.revision");
-                    let now = content_reader_core::content::visual::revision(
+                    let stage = viewer_runtime::load_record::stage("visual_check.revision");
+                    let now = content_reader_layers::content::visual::revision(
                         options, selected, recorded, &cancel,
                     );
                     drop(stage);
@@ -609,13 +617,13 @@ impl Viewer {
                         .iter()
                         .flat_map(|side| side.with_side(crate::playhead_host::details::of_map)),
                 ),
-                crate::playback::Current::Gap { reason, .. } => {
+                viewer_playback::map_source::Current::Gap { reason, .. } => {
                     messages.push(format!("Gap: {reason}"))
                 }
-                crate::playback::Current::Refused { reason, .. } => {
+                viewer_playback::map_source::Current::Refused { reason, .. } => {
                     messages.push(format!("Refused: {reason}"))
                 }
-                crate::playback::Current::Frame(frame) => {
+                viewer_playback::map_source::Current::Frame(frame) => {
                     for table in TableId::ALL {
                         messages.push(match &*frame.tables[table.index()] {
                             TableView::Complete(rows) => format!("{table:?}: {} rows", rows.len()),
@@ -640,7 +648,7 @@ impl Viewer {
         messages.extend(self.visual_check_note.iter().cloned());
         let mut seen = HashSet::new();
         messages.retain(|message| seen.insert(message.clone()));
-        embedded.report_details(dashboard::protocol::MapDetails {
+        embedded.report_details(dashboard_core::protocol::MapDetails {
             content_ready: self.config.resolve_options().is_ok(),
             error: self.error.clone(),
             game: self.config.game_dir.to_string_lossy().into_owned(),
@@ -661,7 +669,7 @@ impl Viewer {
             return;
         };
         embedded.report(
-            dashboard::protocol::ViewerState {
+            dashboard_core::protocol::ViewerState {
                 path: self
                     .document
                     .as_ref()

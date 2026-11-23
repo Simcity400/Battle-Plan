@@ -5,6 +5,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { canvasPage } from '../../../tools/canvas-page.ts';
+import { withNativePage } from '../../../tools/native-page.ts';
 import type { PanelActions, PanelViewProps } from './RecorderPanel';
 import type { RecorderSettings, Snapshot } from './status';
 
@@ -12,7 +13,7 @@ const settings: RecorderSettings = { recordEveryCampaign: true, autoSave: true, 
   campaigns: {}, effectiveSaveFolder: 'C:\\Recordings' };
 const snapshot: Snapshot = { phase: 'waiting', campaign: null, recording: null, name: null, continued: false, hour: null, firstHour: null,
   savedBytes: null, spoolBytes: null, startedAt: null, stopping: false, problem: null, automatic: true, session: null, flag: null,
-  captureMode: null };
+  captureMode: null, revision: 0 };
 
 test('a panel clamped to a short screen scrolls its content and keeps its footer in reach', async () => {
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
@@ -57,3 +58,19 @@ try {
   assert.ok(at.scrolledTop >= 0 && at.scrolledBottom <= 320, `footer ${at.scrolledTop}–${at.scrolledBottom}`);
   assert.ok(at.lastBottom <= at.scrolledTop + 0.5, `last section ends ${at.lastBottom}, footer starts ${at.scrolledTop}`);
 });
+
+test('the panel reports a prompt seen only when the user acts inside it, never because it was drawn', async () => {
+  await withNativePage('recorder-prompt', '/ui/src/recorder/RecorderPanel.dom.fixture.tsx', page => page.stage('recorder prompt', async () => {
+    const act = <T,>(expression: string) => page.evaluate<T>(`window.recorderPanelFixture.${expression}`);
+    await act('render("main", 4)');
+    assert.deepEqual(await act('seen()'), [], 'a Quit drawn in the panel isn’t one the user saw');
+    await act('press(".recorder-head")');
+    assert.deepEqual(await act('seen()'), [], 'a click elsewhere in the panel isn’t an act on the Quit');
+    await act('press(".recorder-ask p")');
+    assert.deepEqual(await act('seen()'), [4]);
+    await act('render("main", 5, true)');
+    await act('key(".recorder-prompt button")');
+    assert.deepEqual(await act('seen()'), [4, 5], 'a key inside a prompt reissued for a new session reports that prompt');
+  }, 60_000));
+});
+

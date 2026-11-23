@@ -1,19 +1,15 @@
 
-use {
-    super::{MapHit, unit_family},
-    std::collections::HashMap,
-    viewer_counters::map::counters::CounterReport,
-    viewer_foundation::map::{
-        anchored::Shifts,
-        free_icons::{self, IconFamily},
-    },
-};
+use super::{MapHit, unit_family};
+use std::collections::HashMap;
+use viewer_counter_kit::CounterReport;
+use viewer_native_gui::{anchored::Shifts, free_icons};
+use viewer_gpu::icon_tracks::IconFamily;
 
 pub(crate) struct Shapes<'a> {
     pub report: &'a CounterReport,
     pub raids: &'a [viewer_raids::map::raids::tooltips::Hit],
-    pub occupation: &'a [viewer_world::map::occupation_icons::Hit],
-    pub adjacency: &'a [viewer_world::map::adjacency_icons::Hit],
+    pub occupation: &'a [viewer_map_icons::occupation_icons::Hit],
+    pub adjacency: &'a [viewer_map_icons::adjacency_icons::Hit],
     pub looks: Option<&'a free_icons::Looks>,
     pub shifts: Option<&'a Shifts>,
 }
@@ -133,7 +129,7 @@ fn on_screen(
     shown(shapes.shifts, shapes.looks, family, layer, bounds)
 }
 
-fn geometry_bounds(hit: Option<&viewer_foundation::map::native_gui::HitGeometry>, rect: [f32; 4]) -> Option<[f32; 4]> {
+fn geometry_bounds(hit: Option<&viewer_native_gui::native_gui::HitGeometry>, rect: [f32; 4]) -> Option<[f32; 4]> {
     match hit {
         None => Some(rect),
         Some(hit) => hit.bounds(),
@@ -205,7 +201,7 @@ impl Index {
             push(&mut entries, IconFamily::Combats, hit.layer, 7, hit.order, Shape::NavalMarker(index), Some(hit.rect));
         }
         for (index, hit) in report.combat_hits.iter().enumerate() {
-            let pass = if matches!(hit.selection, viewer_foundation::combat_selection::Selection::Land(_)) { 6 } else { 7 };
+            let pass = if matches!(hit.selection, viewer_engagements::combat_selection::Selection::Land(_)) { 6 } else { 7 };
             push(&mut entries, IconFamily::Combats, hit.layer, pass, hit.order, Shape::Combat(index), Some(hit.rect));
         }
         let adjacency = shapes
@@ -376,7 +372,7 @@ const NOWHERE: [f32; 4] = [f32::NAN, f32::NAN, 0.0, 0.0];
 
 impl Entry {
     fn target(&self, shapes: &Shapes<'_>, local: [f32; 2]) -> Option<MapHit> {
-        use viewer_foundation::map::counter_hovers::task_force_port::Control;
+        use viewer_native_gui::counter_hovers::task_force_port::Control;
         let report = shapes.report;
         match self.shape {
             Shape::Pin(index) => report.faction_pin_hovers.get(index)?.contains(local).then_some(MapHit::Pin(index)),
@@ -481,8 +477,8 @@ impl Resolved {
     fn note(&mut self) {
         let [asked, kept] = std::mem::take(&mut self.counted);
         if asked > 0 {
-            viewer_foundation::map::redraws::note("pointer.asked", asked);
-            viewer_foundation::map::redraws::note("pointer.resolved", asked - kept);
+            viewer_runtime::redraws::note("pointer.asked", asked);
+            viewer_runtime::redraws::note("pointer.resolved", asked - kept);
         }
     }
 
@@ -494,21 +490,16 @@ impl Resolved {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use {
-        std::sync::Arc,
-        viewer_foundation::{
-            combat_selection,
-            map::counter_hovers::{task_force, unit_hits},
-            map::sprites::layer,
-        },
-    };
+    use std::sync::Arc;
+    use viewer_engagements::combat_selection;
+    use viewer_native_gui::{counter_hovers::{task_force, unit_hits}, sprites::layer};
 
     fn shapes() -> (CounterReport, Vec<viewer_raids::map::raids::tooltips::Hit>) {
         let mut report = CounterReport::default();
         for step in 0..40u32 {
             let at = |scale: f32| [f32::from(step as u16) * scale, f32::from(step as u16) * scale * 0.5];
             let [x, y] = at(61.0);
-            report.faction_pin_hovers.push(viewer_counters::map::counters::faction_pings::PinHover {
+            report.faction_pin_hovers.push(viewer_counter_kit::PinHover {
                 rect: [x, y, 24.0, 24.0],
                 theatre: (0, 0),
                 regions: Arc::from([step]),
@@ -550,14 +541,14 @@ mod tests {
                 order: step as usize,
                 supported: true,
             });
-            report.air_mission_hits.push(viewer_counters::map::counters::AirMissionHover {
+            report.air_mission_hits.push(viewer_counter_kit::AirMissionHover {
                 region: step,
-                part: viewer_counters::map::counters::AirMissionPart::Supply,
+                part: viewer_counter_kit::AirMissionPart::Supply,
                 rect: [x, y - 30.0, 50.0, 50.0],
                 layer: layer(8, step, 0),
                 text: Arc::default(),
             });
-            report.naval_mission_hits.push(viewer_counters::map::counters::NavalMissionHit {
+            report.naval_mission_hits.push(viewer_counter_kit::NavalMissionHit {
                 region: step,
                 mission: step,
                 rect: [x + 2.0, y - 28.0, 50.0, 50.0],
@@ -598,7 +589,7 @@ mod tests {
 
     #[test]
     fn the_hit_shapes_move_with_the_windows_a_moved_camera_offset() {
-        use viewer_foundation::map::anchored::Shifts;
+        use viewer_native_gui::anchored::Shifts;
         let (report, raids) = shapes();
         let by = [40, -25];
         let families = [
@@ -644,7 +635,7 @@ mod tests {
 
     #[test]
     fn the_cell_index_answers_a_scan_for_a_free_eye_s_scaled_icons() {
-        use viewer_foundation::map::free_icons::{Looks, Present};
+        use viewer_native_gui::free_icons::{Looks, Present};
         let (report, raids) = shapes();
         let mut looks = Looks::default();
         for (rank, hit) in report.unit_hits.iter().enumerate() {
@@ -690,7 +681,7 @@ mod tests {
 
     #[test]
     fn every_consumer_of_a_hit_reads_the_point_in_the_layout_its_window_stands_in() {
-        use viewer_foundation::map::{anchored::Shifts, native_gui::HitGeometry};
+        use viewer_native_gui::{anchored::Shifts, native_gui::HitGeometry};
         use viewer_raids::map::intel_icons::{self, IntelHit};
         let (panned, tracked) = ([40, -25], [-18, 33]);
         let mut report = CounterReport::default();
@@ -705,8 +696,8 @@ mod tests {
             layer: counter,
             plate: None,
         });
-        report.land_hovers.push(viewer_foundation::map::counter_hovers::land::CounterHover {
-            control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+        report.land_hovers.push(viewer_native_gui::counter_hovers::land::CounterHover {
+            control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
             authored: None,
             rect: [600.0, 400.0, 20.0, 12.0],
             remaining: None,

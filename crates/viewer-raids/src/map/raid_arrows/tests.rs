@@ -1,6 +1,6 @@
 use super::*;
 use std::cell::Cell;
-use viewer_foundation::map::unit_pose::test_support::defines;
+use viewer_gpu::unit_pose::test_support::defines;
 
 #[test]
 fn the_colour_is_active_in_flight_preparing_before_and_undecided_when_prepared() {
@@ -505,7 +505,7 @@ fn the_pool_is_the_raids_recorded_row_or_refused_by_name() {
 
 #[test]
 fn the_unit_entity_follows_the_native_ladder() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use content_reader_raids::raids::RaidUnitModel;
     let declared = |name: &str| {
         [
@@ -521,7 +521,7 @@ fn the_unit_entity_follows_the_native_ladder() {
             entity: entity.map(str::to_owned),
             default_entity: default.map(str::to_owned),
             equipment: equipment
-                .and_then(content_reader_core::equipment::category_mask)
+                .and_then(content_reader_script::equipment_stats::category_mask)
                 .unwrap_or(0),
             ..RaidUnitModel::default()
         };
@@ -551,7 +551,7 @@ fn the_unit_entity_follows_the_native_ladder() {
         ),
         UnitEntity::Entity("fallback_entity".into())
     );
-    let category = content_reader_core::test_game::category;
+    let category = content_reader_script::test_game::category;
     let primary = [
         (10, category("capital_ship")),
         (11, category("air_transport")),
@@ -589,8 +589,8 @@ fn the_unit_entity_follows_the_native_ladder() {
 
 #[test]
 fn the_designer_model_follows_resolve_aircraft_designer_model_with_and_without_the_dlc() {
-    content_reader_core::test_game::enter();
-    let (content, _) = content_reader_core::equipment::fixture::load(&[(
+    content_reader_script::test_game::enter();
+    let (content, _) = content_reader_key_names::equipment::fixture::load(&[(
         "common/units/equipment/planes.txt",
         "equipments = {
             transport_plane_equipment = { is_archetype = yes sprite = transport_plane }

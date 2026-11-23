@@ -1,9 +1,7 @@
 use job_priority::SpawnCarried as _;
 use super::{Arg, Context, line};
-use replay::{
-    campaign::Replay,
-    columnar_natives::{Cursor, Natives},
-};
+use replay::campaign::Replay;
+use replay_recording::columnar_natives::{Cursor, Natives};
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
 use replay_derive::air_region_derive as derive;
 use replay_frame::frame::DecodedFrame;
@@ -139,8 +137,6 @@ impl SampleSource for Columnar {
                 Cursor::new(
                     Arc::clone(&self.natives),
                     &[TableId::AirDailyRoster, TableId::CountryLinks],
-                    self.replay.format,
-                    self.replay.capture_mode,
                 )
                 .map(Mutex::new)
                 .map_err(|error| error.to_string())
@@ -161,7 +157,7 @@ impl SampleSource for Columnar {
             Err(_) if superseded() => Err(SUPERSEDED.into()),
             Err(error) => only(Err(error.to_string())),
             Ok(false) => only(Err(format!("hour {hour} of branch {branch} is not recorded"))),
-            Ok(true) => only(cursor.build(None).map_err(|error| error.to_string()).and_then(|decoded| roster(&decoded))),
+            Ok(true) => only(cursor.build().map_err(|error| error.to_string()).and_then(|decoded| roster(&decoded))),
         }
     }
 }
@@ -570,7 +566,7 @@ impl PassRosters {
             .name("air roster history".into())
             .spawn_carried(move || {
                 let _exit = Exit(Arc::clone(&shared));
-                viewer_foundation::worker_priority::lowest_priority();
+                viewer_runtime::worker_priority::lowest_priority();
                 loop {
                     {
                         let (demand, signal) = &*shared.demand;
@@ -704,7 +700,7 @@ fn fixed_round(value: i64) -> i32 {
 
 fn value(context: &Context<'_>, item: derive::Item) -> Result<String, String> {
     let text = match item.cause {
-        0 | 1 | 2 | 6 | 7 => content_reader_core::fixed5::fixed5_to_string(item.amount, 2),
+        0 | 1 | 2 | 6 | 7 => content_reader_parser::fixed5::fixed5_to_string(item.amount, 2),
         3 => context.loc(
             "AIRWING_DISRUPTED_VAL",
             &[("VAL", Arg::Fixed5(item.amount))],
@@ -863,7 +859,7 @@ pub(super) mod tests {
     }
 
     pub(in super::super) fn recording(until: Hour, missing: &[Hour]) -> Arc<Replay> {
-        use replay::spool::Record;
+        use replay_capture_spool::spool::Record;
         use replay_data::{
             identity::Identity, identity::Roster as Verified, identity::SessionStart,
             identity::Verification, rows::AirDailyRosterRow, rows::CampaignRow,
@@ -937,7 +933,7 @@ pub(super) mod tests {
             };
             records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
         }
-        Arc::new(Replay::from_records(b"campaign".to_vec(), &[records]).unwrap())
+        Arc::new(Replay::from_records(recorder_derive::writers(), b"campaign".to_vec(), &[records]).unwrap())
     }
 
     fn answered(rosters: &PassRosters, hour: Hour, slot: u32) -> Answer {

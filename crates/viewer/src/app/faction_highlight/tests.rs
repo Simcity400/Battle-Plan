@@ -1,11 +1,8 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use viewer_foundation::retirement::Dropper;
-use {
-    viewer_world::map::borders::BorderClass, viewer_world::map::borders::BorderMesh,
-    viewer_world::map::borders::BorderMeshes, viewer_world::map::demilitarized::Zone,
-    viewer_world::map::political::Regions,
-};
+use viewer_runtime::retirement::Dropper;
+use viewer_borders::{borders::{BorderClass, BorderMesh, BorderMeshes}, demilitarized::Zone};
+use map_display_data::landscape::Regions;
 
 fn key() -> Key {
     Key {

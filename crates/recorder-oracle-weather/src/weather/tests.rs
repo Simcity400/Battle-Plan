@@ -4,9 +4,7 @@ use replay_data::{
 };
 use replay_frame::{frame::Metrics, frame::TableView};
 
-// quarantine: #148 the code and the test disagree on a recorded or displayed fact
 #[test]
-#[ignore = "quarantined under #148"]
 fn typed_weather_comparison_keeps_exact_words_and_refuses_unavailable_rows() {
     let mut saved = content_reader_save::parse(
         br#"HOI4txt
@@ -205,7 +203,7 @@ regions={0={region=0 temperature=-90071992547.40993
 
     for (table, name, scalar_checks) in [
         (TableId::WeatherProvinces, "WeatherProvinces", 0),
-        (TableId::WeatherRegions, "WeatherRegions", 2),
+        (TableId::WeatherRegions, "WeatherRegions", 3),
     ] {
         let original = frame.tables[table.index()].clone();
         *frame.tables[table.index()] = if table == TableId::WeatherProvinces {
@@ -238,7 +236,7 @@ regions={0={region=0 temperature=-90071992547.40993
             if table == TableId::WeatherProvinces {
                 1
             } else {
-                2
+                3
             }
         );
         assert!(!report.compared_tables.contains_key(name));
@@ -405,9 +403,7 @@ fn weather_dense_census_includes_zero_and_rejects_duplicates_or_holes() {
     assert!(dense_slot(1, 2, "weather").is_err());
 }
 
-// quarantine: #148 the code and the test disagree on a recorded or displayed fact
 #[test]
-#[ignore = "quarantined under #148"]
 fn anchored_temperatures_compare_their_derivation_and_refuse_without_one() {
     let saved = content_reader_save::parse(
         br#"HOI4txt
@@ -449,7 +445,10 @@ regions={0={region=0}}
                 ..Default::default()
             }]));
         *frame.tables[TableId::WeatherRegions.index()] =
-            TableView::Complete(TableRows::WeatherRegions(vec![WeatherRegionRow::default()]));
+            TableView::Complete(TableRows::WeatherRegions(vec![WeatherRegionRow {
+                custom_sea: Some(Vec::new()).into(),
+                ..Default::default()
+            }]));
         frame
     };
     let content = replay_data::temperature::Content {
@@ -534,11 +533,11 @@ fn static_list(
     }))
 }
 
-fn statics(values: &[(&str, i64)]) -> content_reader_core::modifiers::Modifiers {
-    let mut block = content_reader_core::modifiers::Modifiers::default();
+fn statics(values: &[(&str, i64)]) -> content_reader_script::modifiers::Modifiers {
+    let mut block = content_reader_script::modifiers::Modifiers::default();
     block.values = values
         .iter()
-        .map(|&(name, value)| content_reader_core::modifiers::Modifier {
+        .map(|&(name, value)| content_reader_script::modifiers::Modifier {
             key: name.to_owned(),
             name: name.to_ascii_lowercase(),
             text: String::new(),

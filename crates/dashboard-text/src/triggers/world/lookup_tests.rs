@@ -179,7 +179,7 @@ fn rows_out_of_country_order_are_scanned_whole() {
 fn leader_roles_find_templates_at_the_recorded_first_token_line() {
     let path = "common/characters/mod.txt";
     let roles = LeaderRoles::new(
-        content_reader_core::characters::parse_leader_templates(
+        content_reader_key_names::characters::parse_leader_templates(
             &path.into(),
             br#"characters = {
     next = {

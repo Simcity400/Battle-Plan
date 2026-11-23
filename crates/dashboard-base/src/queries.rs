@@ -24,11 +24,11 @@ pub fn spellings(source: &Source, run: u32, hour: i32, tokens: &std::collections
         tokens.iter().filter(|token| known.is_none_or(|known| !known.contains_key(token))).map(|&token| u128::from(token)).collect()
     };
     if !missing.is_empty() {
-        let read = [replay::at::Read { table: replay_data::rows::TableId::LexicalTokens, columns: None, keys: replay::lanes::Keys::These(&missing) }];
-        let frame = dashboard_query::cost::storage(|| replay::at::frame(source.replay_ref().recording(), run, hour, &read))?;
+        let read = [replay_lanes::at::Read { table: replay_data::rows::TableId::LexicalTokens, columns: None, keys: replay_lanes::lanes::Keys::These(&missing) }];
+        let frame = dashboard_query::cost::storage(|| replay_lanes::at::frame(source.replay_ref().recording(), run, hour, &read))?;
         let mut spelled: std::collections::HashMap<u32, Option<String>> = missing.iter().map(|&token| (token as u32, None)).collect();
         for row in frame.complete::<replay_data::rows::tables::LexicalTokens>().unwrap_or(&[]) {
-            if let Ok(text) = std::str::from_utf8(content_reader_core::parser::c_string(&row.literal))
+            if let Ok(text) = std::str::from_utf8(content_reader_parser::parser::c_string(&row.literal))
                 && !text.is_empty()
             {
                 spelled.insert(row.token, Some(text.to_owned()));
@@ -105,4 +105,32 @@ pub fn lifetimes(source: &Source, run: u32, table: replay_data::rows::TableId) -
 
 pub fn query(source: &Source, branch: u64) -> io::Result<dashboard_query::Query<'_>> {
     index(source).query(source.replay_ref(), branch)
+}
+
+#[cfg(feature = "test-support")]
+pub fn has_cached_spellings(source: &Source) -> bool {
+    !source.state::<Spellings>().lock().unwrap_or_else(PoisonError::into_inner).0.is_empty()
+}
+
+pub struct RunCache<K, V>(HashMap<u32, Arc<V>>, std::marker::PhantomData<fn() -> K>);
+
+impl<K, V> Default for RunCache<K, V> {
+    fn default() -> Self {
+        Self(HashMap::new(), std::marker::PhantomData)
+    }
+}
+
+impl<K: 'static, V: Send + Sync + 'static> RunCache<K, V> {
+    pub fn forget(source: &Source) {
+        *source.state::<Self>().lock().unwrap_or_else(PoisonError::into_inner) = Self::default();
+    }
+
+    pub fn held(state: &std::sync::Mutex<Self>, run: u32, read: impl FnOnce() -> io::Result<V>) -> io::Result<Arc<V>> {
+        if let Some(found) = state.lock().unwrap_or_else(PoisonError::into_inner).0.get(&run) {
+            return Ok(Arc::clone(found));
+        }
+        let made = Arc::new(read()?);
+        state.lock().unwrap_or_else(PoisonError::into_inner).0.insert(run, Arc::clone(&made));
+        Ok(made)
+    }
 }

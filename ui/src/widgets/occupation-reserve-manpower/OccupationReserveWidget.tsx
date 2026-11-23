@@ -1,10 +1,11 @@
-import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import CountryRaceView from '../../charts/race/CountryRaceView';
 import type { CountryRacePart, LiveRaceEntries } from '../../charts/race/countryRace';
 import { useCountryColours } from '../../charts/race/countryColours';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
+import {  pinnedBreakdown } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
 import { mapLive } from '../../charts/live';
 import type { LiveHead } from '../../charts/TimeChart';
@@ -16,6 +17,7 @@ import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatchFilter, noMembersAt, projectResolvedCountries, rankedCandidates, resolveCountries } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { shownHour } from '../../dashboard/IntelCountry';
 import NoMembersState from '../../dashboard/NoMembersState';
 import { contentKey, resolveOptions, setToken } from '../../dashboard/options';
@@ -27,21 +29,26 @@ import { BREAKDOWN, OPTIONS } from './definition';
 import { holderBands, holderOf, holderToken, historySources, holderTooltip, persons, raceEntries, raceHolders, reserveOf, reserveStructure, segmentAt,
   segmentParts, sourceKey, sourceTagAt, UNRESOLVED, validateOccupationReserve, validateReserveHistory } from './occupationReserveData';
 import './occupationReserve.css';
-import type { OccupationReserveReply, ReserveHistoryReply } from '../../generated/dashboard';
+import type { ReserveHistoryReply } from '../../generated/dashboard';
+import {  SPEC } from '../../dashboard/regionTime';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime';
+import { productRequest } from '../../dashboard/request.ts';
 
 const PARAMS = {} as const;
 const NO_TAGS: readonly string[] = [];
 
 export default function OccupationReserveWidget(props: WidgetProps) {
   const { widget, runtime, active, onDiagnostics } = props;
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const tokens = useChartTokens();
   const anchor = useRef<HTMLDivElement>(null);
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const pinned = options.show === 'breakdown';
   const readHour = useRef<number | null>(null);
-  const head = useHeadProduct<OccupationReserveReply>(runtime, widget, 'occupation-reserve-manpower', track && !pinned ? PARAMS : null,
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'occupation-reserve-manpower', track && !pinned ? PARAMS : null,
     { active, validate: validateOccupationReserve, structure: reserveStructure, paint: reply => { readHour.current = reply.readHour; } });
   useShownEachFrame(runtime.clock, head.shownAt, head.live);
   const data = head.data;
@@ -89,26 +96,28 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   const [chosen, setChosen] = useState<{ tag: string; id: number } | null>(null);
   const pinnedHolder = pinned && options.holder ? holderOf(contentKey(String(options.holder))) : null;
   const drilled = pinned ? pinnedHolder : drill.breakdown ? chosen : null;
-  const drillAt = pinned ? moment : drillHour(drill, moment);
+  const drillRegion = useRegion(widget, pinned ? SPEC : drillControl.region.action);
+  const regionAt = useRegionHour(runtime, drillRegion, active && (pinned || drill.breakdown !== null));
+  const drillAt = pinned || drillControl.following && widget.time.mode === 'follow' ? moment : regionAt;
   const headRoot = head.root;
   const root = useCallback((element: HTMLDivElement | null) => { anchor.current = element; headRoot(element); }, [headRoot]);
   const none = grouped ? noMembersAt(widget.countries, resolved, groups.data, moment, track?.branch.lastHour ?? 0) : null;
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...unnamed ? [`${unnamed} holders the recording names no tag for are not shown.`] : [], ...groups.data?.warnings ?? []] : null);
   if (!track) return <WidgetState kind="empty" icon="flag" message="Load a campaign to see occupation manpower." />;
-  if (pinned) return <HolderSources {...props} holder={pinnedHolder} hour={moment} extent={extent} playhead={playhead} liveHead={liveHead} />;
-  if (head.read === 'off') return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (head.error && !data) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
+  if (pinned) return head.outside ? <WidgetState kind="outside" read={head} /> : <HolderSources {...props} holder={pinnedHolder} hour={moment} extent={extent} playhead={playhead} liveHead={liveHead} />;
   const groupFailure = grouped && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
-  if (groupFailure && !groups.data) return groupFailure;
-  if (resolved.reason && !all) return <>{groupFailure}<WidgetState kind="empty" message={resolved.reason} /></>;
-  if (none) return <>{groupFailure}<NoMembersState reason={none.reason} icon="flag" /></>;
-  if (!data || grouped && !groups.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading occupation manpower…" /></>;
-  if (data.missing) return <>{groupFailure}<WidgetState kind="unavailable" message="Occupation manpower was not recorded at this time." detail={data.missing} /></>;
+  const parentState = head.read === 'off' ? <WidgetState kind="outside" />
+    : head.error && !data ? <WidgetState kind="error" failure={head.error} onRetry={head.retry} />
+      : groupFailure && !groups.data ? null
+        : resolved.reason && !all ? <WidgetState kind="empty" message={resolved.reason} />
+          : none ? <NoMembersState reason={none.reason} icon="flag" />
+            : !data || grouped && !groups.data ? <WidgetState kind="loading" label="Loading occupation manpower…" />
+              : data.missing ? <WidgetState kind="unavailable" message="Occupation manpower was not recorded at this time." detail={data.missing} /> : undefined;
   const tooltip = (tag: string, _hour: number, name: string): TooltipContent[] | null => {
     const holder = byTag.get(tag);
     return holder ? [holderTooltip(reserveOf(holder, live.read()), name, sourceName, sourceColour, readHour.current === null ? null : dayLabel(readHour.current))] : null;
   };
-  const main = <CountryRaceView runtime={runtime} track={track} active={active && !drill.breakdown} options={options} view="race" extent={extent}
+  const main = parentState !== undefined ? parentState : <CountryRaceView runtime={runtime} track={track} active={active && !drill.breakdown} options={options} view="race" extent={extent}
     playhead={playhead} moment={moment} slots={top ?? Math.max(1, holders.length)} ranked={ranked.read()} liveRanked={liveRanked} lines={[]} parts={parts}
     raceLegendParts={parts} partsLabel="Source countries" countryTags={holderTags} label="Occupation reserve manpower"
     empty="No reserve manpower is held at this date." formatValue={value => Math.round(value).toLocaleString('en-US')}
@@ -118,14 +127,15 @@ export default function OccupationReserveWidget(props: WidgetProps) {
       const holder = tag ? byTag.get(tag) : undefined;
       if (!holder) return;
       setChosen({ tag: holder.country.tag!, id: holder.country.id });
-      dispatch({ type: 'open', breakdown: BREAKDOWN.id, hour, playing: following, playhead: following ? moment : null });
+      dispatch({ type: 'open', breakdown: BREAKDOWN.id, hour, follow: drillControl.followsAt(hour) });
     }} />;
   return <div ref={root} className="parts-race occupation-reserve">{groupFailure}
-    <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drilled !== null}
-      title={drilled ? looks.name(drilled.tag, drillAt ?? moment) : BREAKDOWN.label} day={drillAt === null ? '' : dayLabel(drillAt)}
-      following={drill.follow} canFollow onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}
-      onPin={drilled ? () => {
-        const pin = pinnedBreakdown(widget, BREAKDOWN, track.id);
+    <DrillHost drill={drillControl} runtime={runtime} subject={drilled !== null} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
+      title={drilled ? looks.name(drilled.tag, drillAt ?? moment) : BREAKDOWN.label} day={drillAt === null ? '' : dayLabel(drillAt)} canFollow onClose={() => dispatch({ type: 'close' })} main={main}
+      pinRefused={drillControl.pinRefused} onPin={drilled && drillControl.time() ? () => {
+        const time = drillControl.time();
+        if (!time) return;
+        const pin = pinnedBreakdown(widget, BREAKDOWN, track.id, time);
         pin.options = { ...pin.options, holder: setToken(holderToken(drilled)) };
         runtime.addWidgetBelow(widget.id, pin);
       } : undefined}>
@@ -139,8 +149,8 @@ function HolderSources({ widget, runtime, active, holder, hour, extent, playhead
 }) {
   const tokens = useChartTokens();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const request = track && holder ? { sourceId: track.source.id, revision: track.source.revision, product: 'occupation-reserve-history',
-    params: { branchId: track.branch.id, holder: holder.id } } : null;
+  const request = track && holder ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'occupation-reserve-history',
+    params: { branchId: track.branch.id, holder: holder.id } }) : null;
   const { data, error, retry } = useProduct<ReserveHistoryReply>(runtime.client, request, active, validateReserveHistory, track?.source);
   const sources = useMemo(() => data ? historySources(data) : [], [data]);
   const bands = useMemo(() => data ? holderBands(data, sources) : [], [data, sources]);

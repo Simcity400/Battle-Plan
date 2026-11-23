@@ -1,9 +1,9 @@
 
 use std::sync::Arc;
-use viewer_foundation::map::sprites::{Batch, Quad};
+use viewer_native_gui::sprites::{Batch, Quad};
 
 pub(crate) fn clockless(batch: &Batch) -> Vec<Quad> {
-    use viewer_foundation::map::native_shader::draw::SPRITE_TIME;
+    use viewer_native_gui::native_shader::draw::SPRITE_TIME;
     let mut quads = batch.quads.clone();
     for quad in &mut quads {
         if let Some(exact) = &mut quad.exact {
@@ -43,7 +43,7 @@ pub(crate) fn first_difference(laid: &[Quad], fresh: &[Quad]) -> Option<String> 
 }
 
 pub(crate) fn layers_moved(painting: [usize; 6], fresh: [usize; 6]) -> Option<String> {
-    let moved = viewer_counters::map::counters::layers_moved(painting, fresh);
+    let moved = viewer_counters::counters::layers_moved(painting, fresh);
     (!moved.is_empty()).then(|| moved.join(", "))
 }
 
@@ -142,7 +142,7 @@ mod tests {
             rect: [0.; 4],
             uv: [0.; 4],
             color: [1.; 4],
-            rotation: 0.,
+            rotation: None,
             layer,
             shade: 0.,
             exact: None,

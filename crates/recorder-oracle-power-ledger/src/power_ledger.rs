@@ -344,4 +344,139 @@ mod tests {
         changes(&frame, &save, &links, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
     }
+
+    #[test]
+    fn shared_holder_unlinked_relink_and_late_revision_settle_once_in_derived_tables() {
+        use replay::campaign::{Replay, SeekResult};
+        use replay_capture_spool::spool::Record;
+        use replay_data::identity::{CaptureMode, Identity, Roster, SampleBoundary, SessionStart, Verification};
+        use replay_frame::{
+            branches::{BranchReason, BranchStart, Parentage},
+            frame::{FrameEncoder, Metrics, TableView},
+        };
+        const Q: i64 = 100_000;
+        let cost = |country: u32, day_hour: i32, amount: i64, sequence: u64| CountryPowerDailyCostRow {
+            country,
+            ordinal: 0,
+            epoch: 1,
+            day_hour,
+            pp_sequence: sequence,
+            component: PowerDailyCostKind::Relation,
+            cost_raw: amount,
+            cause: PowerCause::DailyGain,
+            site: PowerSite::AddPoliticalPower,
+            identity: PowerIdentity { target_country: Some(999), ..PowerIdentity::default() },
+            ..Default::default()
+        };
+        let daily = |country: u32, day_hour: i32, amount: i64, sequence: u64| CountryPowerDailyRow {
+            country,
+            epoch: 1,
+            day_hour,
+            pp_gross_gain_raw: Some(3 * Q),
+            pp_cost_raw: Some(amount),
+            pp_net_gain_raw: Some(3 * Q - amount),
+            pp_realized_delta_raw: Some(3 * Q - amount),
+            pp_sequence: Some(sequence),
+            ..Default::default()
+        };
+        let session = SessionStart {
+            id: 1,
+            process_id: 1,
+            process_start_time: 1,
+            qpc_frequency: 10_000_000,
+            sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: CaptureMode::Full,
+            identity: Identity {
+                game_version: "synthetic".into(),
+                exe_hash: [1; 32],
+                exe_size: 1,
+                vanilla_hash: [2; 32],
+                dlc: Vec::new(),
+                mods: Vec::new(),
+                coverage_policy: 1,
+                language: "l_english".into(),
+                recorder_version: "test".into(),
+                collector_hash: [3; 32],
+                verification: Verification::Verified { launcher: Roster::default(), memory: Roster::default() },
+            },
+        };
+        let mut records = vec![
+            Record::SessionStart(session),
+            Record::BranchStart(BranchStart {
+                id: 1,
+                session: 1,
+                loaded_hour: None,
+                first_hour: 0,
+                parent: Parentage::Unknown,
+                reason: BranchReason::SessionStart,
+            }),
+        ];
+        let mut encoder = FrameEncoder::new();
+        for hour in 0..=49 {
+            let mut tables: [TableView; TABLE_COUNT] = std::array::from_fn(|_| TableView::Unavailable { reason: "outside oracle fixture".into() });
+            let mut countries = vec![
+                CountryRow { id: 101, canonical_slot: 7, tag: b"GER".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..Default::default() },
+            ];
+            let mut links = vec![CountryLinkRow { id: 101, canonical_slot: 7 }, CountryLinkRow { id: 102, canonical_slot: 7 }];
+            if hour >= 25 {
+                countries.push(CountryRow { id: 103, canonical_slot: 8, tag: b"FRA".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..Default::default() });
+                links.push(CountryLinkRow { id: 103, canonical_slot: 8 });
+            }
+            tables[TableId::Campaign.index()] = TableView::Complete(TableRows::Campaign(vec![CampaignRow { id: b"campaign".to_vec() }]));
+            tables[TableId::Clock.index()] = TableView::Complete(TableRows::Clock(vec![ClockRow { hour, seed: 7, ..Default::default() }]));
+            tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(countries));
+            tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(links));
+            tables[TableId::CountryPowerChanges.index()] = TableView::Complete(TableRows::CountryPowerChanges(Vec::new()));
+            tables[TableId::CountryCommandPower.index()] = TableView::Complete(TableRows::CountryCommandPower(Vec::new()));
+            tables[TableId::PoliticsCaptureCoverage.index()] = TableView::Complete(TableRows::PoliticsCaptureCoverage(
+                [101, 102, 103]
+                    .into_iter()
+                    .map(|country| PoliticsCaptureCoverageRow { country, epoch: 1, since_hour: 0, through_hour: hour, streams: PoliticsCaptureCoverageRow::ALL_STREAMS, ..Default::default() })
+                    .collect(),
+            ));
+            let (days, costs) = match hour {
+                0..=23 => (Vec::new(), Vec::new()),
+                24..=47 => (
+                    vec![daily(101, 24, Q / 2, 50), daily(102, 24, Q / 4, 51), daily(103, 24, Q / 5, 60)],
+                    vec![cost(101, 24, Q / 2, 50), cost(102, 24, Q / 4, 51), cost(103, 24, Q / 5, 60)],
+                ),
+                _ => (
+                    vec![daily(101, 24, Q / 3, 50), daily(102, 24, Q / 4, 51), daily(103, 24, Q / 5, 60)],
+                    vec![cost(101, 24, Q / 3, 50), cost(102, 24, Q / 4, 51), cost(103, 24, Q / 5, 60)],
+                ),
+            };
+            tables[TableId::CountryPowerDaily.index()] = TableView::Complete(TableRows::CountryPowerDaily(days));
+            tables[TableId::CountryPowerDailyCosts.index()] = TableView::Complete(TableRows::CountryPowerDailyCosts(costs));
+            let frame = DecodedFrame { branch: 1, hour, metrics: Metrics::default(), tables: tables.map(Into::into) };
+            records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
+        }
+        let (replay, _) = Replay::from_records_derived(recorder_derive::writers(), b"campaign".to_vec(), &[records]).unwrap();
+        let at = |hour: i32| match replay.seek(1, hour).unwrap() {
+            SeekResult::Frame(frame) => frame,
+            other => panic!("expected frame at hour {hour}, got {other:?}"),
+        };
+        let f24 = at(24);
+        validate_costs(f24.complete::<tables::CountryPowerDaily>().unwrap(), f24.complete::<tables::CountryPowerDailyCosts>().unwrap()).unwrap();
+        let parts24 = f24.complete::<tables::PowerDayParts>().unwrap();
+        let shared = parts24.iter().find(|part| part.holder == 7 && part.ordinal == 0).expect("shared open part");
+        assert_eq!((shared.spent, shared.payments, shared.covered), (Recorded::Value(Q / 2 + Q / 4), 2, true));
+        let f25 = at(25);
+        let parts25 = f25.complete::<tables::PowerDayParts>().unwrap();
+        assert!(parts25.iter().all(|part| part.holder != TagHolderRow::NONE), "linking 103 withdraws its batch from NONE");
+        let moved = parts25.iter().find(|part| part.holder == 8 && part.ordinal == 0).expect("moved open part");
+        assert_eq!((moved.spent, moved.payments), (Recorded::Value(Q / 5), 1));
+        for hour in [48, 49] {
+            let frame = at(hour);
+            let totals = frame.complete::<tables::PowerSpendTotals>().unwrap();
+            let shared_total = totals.iter().find(|row| row.holder == 7 && row.ordinal == 0).expect("shared settled total");
+            assert_eq!(
+                (shared_total.days, shared_total.day_payments, shared_total.day_charge),
+                (Recorded::Value(1), Recorded::Value(2), Recorded::Value(Q / 2 + Q / 4)),
+                "shared item settles both applications once and ignores late revision at hour {hour}"
+            );
+            let moved_total = totals.iter().find(|row| row.holder == 8 && row.ordinal == 0).expect("moved settled total");
+            assert_eq!((moved_total.days, moved_total.day_payments, moved_total.day_charge), (Recorded::Value(1), Recorded::Value(1), Recorded::Value(Q / 5)));
+            assert!(totals.iter().all(|row| row.holder != TagHolderRow::NONE || row.ordinal == PowerSpendTotalRow::GAINS), "no cost settles under NONE");
+        }
+    }
 }

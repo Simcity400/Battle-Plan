@@ -6,4 +6,4 @@ Character-scope triggers need country-leader, advisor and scientist traits and e
 
 Sizing can observe the live walk without row storage and raises retained demand with headroom. Each trait operand carries its token and optional definition value. The captured role key already contains the character, kind and role, leaving the payload comparison to the trait values. Capture failures and out-of-range spans produce explicit unavailable outcomes.
 
-[Active abilities](../../crates/collector/src/extended/active_abilities.rs) · [Character operands](../../crates/collector/src/extended/character_inputs.rs)
+[Active abilities](../../crates/collector-characters/src/extended/active_abilities.rs) · [Character operands](../../crates/collector-characters/src/extended/character_inputs.rs)

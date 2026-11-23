@@ -1,242 +1,111 @@
 use super::super::rules::Lines;
 use super::*;
-use content_reader_core::{parser::Item, scripted_triggers::Lookup};
-use std::collections::BTreeSet;
-use viewer_foundation::tooltip_text::ensure_newlines;
+use content_reader_parser::parser::Item;
+use content_reader_script::scope::Scope as Parsed;
+use dashboard_text::triggers::{
+    Evaluator,
+    description::{self, Host},
+};
+use std::cell::RefCell;
+
+struct RaidHost<'c, 'a, 'w> {
+    context: &'c Context<'a, 'w>,
+    graph: RefCell<EventScopes>,
+    stack: RefCell<Vec<usize>>,
+}
+
+impl<'a> Host<'a> for RaidHost<'_, 'a, '_> {
+    fn country_name(&self, country: u32) -> Result<String> {
+        self.context.countries.name(country)
+    }
+
+    fn country_tag(&self, country: u32) -> Result<String> {
+        Ok(self
+            .context
+            .countries
+            .operands(country)
+            .ok_or("trigger country naming operands absent")?
+            .as_ref()
+            .map_err(Clone::clone)?
+            .tag
+            .clone())
+    }
+
+    fn state_name(&self, state: u32) -> Result<String> {
+        self.context.state_name(state)
+    }
+
+    fn leader_name(&self, reference: u64) -> Result<String> {
+        self.context.leader_name(reference)
+    }
+
+    fn enter_scope(&self, parsed: &Parsed, entered: Scopes) {
+        let caller = *self.stack.borrow().last().unwrap_or(&0);
+        let mut graph = self.graph.borrow_mut();
+        let next = description::step_event_scope(&mut graph, caller, parsed, entered.this)
+            .unwrap_or(caller);
+        self.stack.borrow_mut().push(next);
+    }
+
+    fn leave_scope(&self) {
+        let mut stack = self.stack.borrow_mut();
+        if stack.len() > 1 {
+            stack.pop();
+        }
+    }
+
+    fn scripted_text(&self) -> Result<&dashboard_text::scripted_text::ScriptedText<'a>> {
+        self.context.scripted_text()
+    }
+
+    fn expand(
+        &self,
+        text: &str,
+        _scopes: Scopes,
+        evaluator: &Evaluator<'_, 'a>,
+    ) -> Result<String> {
+        let scripted = self.context.scripted_text()?;
+        let at = *self.stack.borrow().last().unwrap_or(&0);
+        scripted.expand_in_session(text, &self.graph.borrow(), at, evaluator)
+    }
+
+    fn project_name(&self, name: &str, country: u32) -> Result<String> {
+        self.context.project_name(name, country)
+    }
+}
 
 impl Context<'_, '_> {
     pub(super) fn trigger_text(&self, triggers: &[Item], scopes: Scopes, name: &str) -> Lines {
-        let mut out = Vec::new();
-        self.trigger_children(
-            triggers,
-            scopes,
-            (false, 0),
-            &mut BTreeSet::new(),
-            &mut out,
-            name,
-        );
-        out
+        let evaluator = Evaluator::new(self.world, None);
+        let host = RaidHost {
+            context: self,
+            graph: RefCell::new(event_scopes(scopes)),
+            stack: RefCell::new(vec![0]),
+        };
+        description::describe_lines(triggers, &evaluator, &host, self.loc, scopes, 0, 1)
+            .into_iter()
+            .map(|(key, text)| (format!("{name}: {key}"), text))
+            .collect()
     }
-    fn trigger_children(
-        &self,
-        triggers: &[Item],
-        scopes: Scopes,
-        mode: (bool, usize),
-        path: &mut BTreeSet<String>,
-        out: &mut Lines,
-        name: &str,
-    ) {
-        let (invert, indent) = mode;
-        for trigger in triggers {
-            let key = key_text(trigger);
-            let line = format!("{name}: {key}");
-            let children = trigger.value.items();
-            match key.as_str() {
-                "hidden_trigger" => {}
-                "AND" | "and" | "OR" | "or" | "NOT" | "not" => {
-                    let Some(children) = children else {
-                        out.push((line, Err("logical trigger requires block".into())));
-                        continue;
-                    };
-                    let not = key.eq_ignore_ascii_case("NOT");
-                    let or = key.eq_ignore_ascii_case("OR");
-                    let heading = or || (!not && indent > 0 && children.len() >= 2);
-                    if heading {
-                        let key = if or != invert {
-                            "TRIGGER_OR_STARTS"
-                        } else {
-                            "TRIGGER_AND_STARTS"
-                        };
-                        let result = self
-                            .trigger_prefix(trigger, scopes, invert, indent)
-                            .and_then(|prefix| {
-                                localise(self.loc, key, &[])
-                                    .map(|text| format!("{prefix}{text}:\n"))
-                            });
-                        out.push((line, result));
-                    }
-                    self.trigger_children(
-                        children,
-                        scopes,
-                        (invert ^ not, indent + usize::from(heading)),
-                        path,
-                        out,
-                        name,
-                    );
-                }
-                key if matches!(
-                    self.assets
-                        .trigger_content
-                        .triggers
-                        .scripted
-                        .lookup(key.as_bytes()),
-                    Lookup::Template(_)
-                ) =>
-                {
-                    let expected = match trigger
-                        .value
-                        .scalar()
-                        .and_then(content_reader_core::parser::read_bool)
-                    {
-                        Some(expected) => expected,
-                        None => {
-                            out.push((line, Err(format!("scripted trigger {key} is not yes/no"))));
-                            continue;
-                        }
-                    };
-                    let Lookup::Template(template) = self
-                        .assets
-                        .trigger_content
-                        .triggers
-                        .scripted
-                        .lookup(key.as_bytes())
-                    else {
-                        continue;
-                    };
-                    let body = match &template.body {
-                        Ok(body) => body,
-                        Err(why) => {
-                            out.push((line, Err(format!("scripted trigger {key}: {why}"))));
-                            continue;
-                        }
-                    };
-                    if !path.insert(key.to_owned()) {
-                        out.push((line, Err(format!("recursive scripted trigger {key}"))));
-                        continue;
-                    }
-                    self.trigger_children(
-                        body,
-                        scopes,
-                        (invert == expected, indent),
-                        path,
-                        out,
-                        name,
-                    );
-                    path.remove(key);
-                }
-                _ => {
-                    let text = self
-                        .trigger_leaf(trigger, scopes, invert)
-                        .and_then(|mut text| {
-                            if text.is_empty() {
-                                return Ok(text);
-                            }
-                            ensure_newlines(&mut text, 1);
-                            self.trigger_prefix(trigger, scopes, invert, indent)
-                                .map(|prefix| format!("{prefix}{text}"))
-                        });
-                    out.push((line, text));
-                }
-            }
+
+    fn leader_name(&self, reference: u64) -> Result<String> {
+        let leaders = self
+            .world
+            .frame()
+            .complete::<tables::UnitLeaders>()
+            .map_err(|e| e.to_string())?;
+        let leader = leaders
+            .iter()
+            .find(|r| (u64::from(r.id) << 32 | u64::from(r.reference_type)) == reference)
+            .ok_or_else(|| format!("unit leader {reference:#x} is absent from UnitLeaders"))?;
+        if leader.inherited_text_a.is_empty() {
+            return Err(format!("unit leader {reference:#x} has no recorded name"));
         }
-    }
-    fn trigger_prefix(
-        &self,
-        trigger: &Item,
-        scopes: Scopes,
-        invert: bool,
-        indent: usize,
-    ) -> Result<String> {
-        let mut text = "   ".repeat(indent);
-        if indent == 0 {
-            let value = known(self.world.evaluate(std::slice::from_ref(trigger), scopes))?;
-            text.push_str(&localise(
-                self.loc,
-                if value == invert {
-                    "TRIGGER_UNFULLFILLED_PREFIX"
-                } else {
-                    "TRIGGER_FULLFILLED_PREFIX"
-                },
-                &[],
-            )?);
-        }
-        Ok(text)
-    }
-    fn trigger_leaf(&self, trigger: &Item, scopes: Scopes, invert: bool) -> Result<String> {
-        let scalar = trigger.value.scalar_str();
-        let key = key_text(trigger);
-        match key.as_str() {
-            "always" | "has_war" => {
-                let expected = trigger
-                    .value
-                    .scalar()
-                    .and_then(content_reader_core::parser::read_bool)
-                    .ok_or("boolean trigger has unsupported value")?;
-                let key = match (key.as_str(), invert == expected) {
-                    ("always", true) => "TRIGGER_ALWAYS_FALSE",
-                    ("always", false) => "TRIGGER_ALWAYS_TRUE",
-                    (_, true) => "TRIGGER_HAS_NOT_WAR",
-                    (_, false) => "TRIGGER_HAS_WAR",
-                };
-                localise(self.loc, key, &[])
-            }
-            "has_war_with" => {
-                scalar.ok_or("has_war_with requires country")?;
-                let country = self
-                    .world
-                    .country_of(trigger, scopes)?
-                    .ok_or("has_war_with country does not resolve")?;
-                let tag = self
-                    .countries
-                    .operands(country)
-                    .ok_or("trigger country naming operands absent")?
-                    .as_ref()
-                    .map_err(Clone::clone)?
-                    .tag
-                    .clone();
-                localise(
-                    self.loc,
-                    if invert {
-                        "TRIGGER_HAS_NOT_WAR_WITH"
-                    } else {
-                        "TRIGGER_HAS_WAR_WITH"
-                    },
-                    &[
-                        ("TAG", Arg::Text(&tag)),
-                        ("COUNTRY", Arg::Text(&self.countries.name(country)?)),
-                    ],
-                )
-            }
-            "is_special_project_completed" => {
-                let name = scalar
-                    .and_then(|value| value.strip_prefix("sp:"))
-                    .ok_or("special project tooltip requires an sp: project operand")?;
-                let Scope::Country(country) = scopes.this else {
-                    return Err("special project tooltip THIS is not a country".into());
-                };
-                localise(
-                    self.loc,
-                    if invert {
-                        "TRIGGER_IS_NOT_SPECIAL_PROJECT_COMPLETED"
-                    } else {
-                        "TRIGGER_IS_SPECIAL_PROJECT_COMPLETED"
-                    },
-                    &[("PROJECT", Arg::Text(&self.project_name(name, country)?))],
-                )
-            }
-            "custom_override_tooltip" | "custom_trigger_tooltip" => {
-                let Some(children) = trigger.value.items() else {
-                    return Err("custom trigger tooltip requires block".into());
-                };
-                let field = if invert { "not_tooltip" } else { "tooltip" };
-                let explicit = children.iter().rev().find(|c| key_text(c) == field);
-                let fallback = children.iter().rev().find(|c| key_text(c) == "tooltip");
-                let Some(t) = explicit.or(fallback) else {
-                    return Ok(String::new());
-                };
-                let key = t
-                    .value
-                    .scalar_str()
-                    .ok_or("bound tooltip requires scalar key")?;
-                let key = if invert && explicit.is_none() {
-                    format!("{key}_NOT")
-                } else {
-                    key.into()
-                };
-                self.scoped_text(&key, scopes)
-            }
-            name => Err(format!("unsupported native trigger text form {name}")),
-        }
+        localise(
+            self.loc,
+            std::str::from_utf8(&leader.inherited_text_a).map_err(|e| e.to_string())?,
+            &[],
+        )
     }
 
     fn project_name(&self, name: &str, country: u32) -> Result<String> {
@@ -258,8 +127,4 @@ impl Context<'_, '_> {
         }
         self.project_tooltip_name(name, country)
     }
-}
-
-fn key_text(item: &Item) -> String {
-    String::from_utf8_lossy(item.key.as_deref().unwrap_or_default()).into_owned()
 }

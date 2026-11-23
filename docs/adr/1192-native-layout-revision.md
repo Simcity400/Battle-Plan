@@ -6,4 +6,4 @@ A native GUI instance's layout is at its own origin. Moving the window changes p
 
 `Shading::as_drawn` disregards a settled part's clock for drawing identity because the same program gives it the same output at each clock once settled. Active draw programs still use their own clocks.
 
-[Layout cache](../../crates/viewer-foundation/src/map/native_gui/lifecycle.rs) · [Drawn shading](../../crates/viewer-foundation/src/map/native_gui.rs) · [Window pool consumer](../../crates/viewer-foundation/src/map/icon_windows.rs)
+[Layout cache](../../crates/viewer-native-gui/src/native_gui/lifecycle.rs) · [Drawn shading](../../crates/viewer-native-gui/src/native_gui.rs) · [Window pool consumer](../../crates/viewer-native-gui/src/icon_windows.rs)

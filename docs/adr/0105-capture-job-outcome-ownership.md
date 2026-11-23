@@ -10,4 +10,4 @@ The daily production jobs retain Slow's admission and completion decision as a c
 
 Capture mode gates jobs and sub-walks that supply no requested table, including the masked portions of mixed packs. Map marks excluded families as unavailable without walking them and leaves its included tables alone. Full runs every gated walk. Variant lanes are claimed only after the primary Variant job and all jobs in the DivisionStatus chain. This avoids a burst of claimable variant ranges occupying all workers while the division ranges are still waiting. It does not change what the Variant job reads or publishes.
 
-[Capture handoff and assembly regressions](../../crates/collector/src/extended/tests.rs) · [Acquisition job order](../../crates/collector/src/acquisition_jobs.rs)
+[Capture handoff and assembly regressions](../../crates/collector-capture/src/extended/tests.rs) · [Acquisition job order](../../crates/collector-capture/src/acquisition_jobs.rs)

@@ -23,6 +23,10 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
+pub fn params_walk() -> crate::fields::Walk {
+    crate::fields::walk::<Params>()
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Params {
@@ -103,7 +107,7 @@ pub fn level_of(bin_hours: i64) -> io::Result<u8> {
         return Err(invalid("Invalid tile bin hours"));
     }
     if bin_hours < BASE_HOURS {
-        return Ok(replay::lanes::WALKED);
+        return Ok(replay_lanes::lanes::WALKED);
     }
     let mut level = 0u8;
     while bucket_hours(level + 1) <= bin_hours {
@@ -130,7 +134,7 @@ pub fn closure(first: i32, last: i32, timeline_last: i32) -> (bool, Option<i32>)
 }
 
 pub fn reply(line: &Line<'_, '_>, branch_id: &str, params: &serde_json::Value) -> io::Result<SeriesTileReply> {
-    let params: Params = serde_json::from_value(params.clone()).map_err(|error| invalid(format!("Invalid tile request: {error}")))?;
+    let params: Params = crate::named::named(params).map_err(|error| invalid(format!("Invalid tile request: {error}")))?;
     let asks = line.asks(&params.countries, &params.lines)?;
     tile(line, branch_id, &asks, params.within.as_deref(), params.bin_hours, params.index, params.with_marks)
 }

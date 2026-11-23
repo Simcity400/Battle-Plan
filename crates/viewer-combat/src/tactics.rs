@@ -1,11 +1,11 @@
+use dashboard_effects::ScriptedEffects;
 use dashboard_text::triggers::{
     Combat, Eval, Evaluator, Scope, Scopes, World, compare, shown, trigger_boolean,
 };
-use content_reader_core::{
-    combat_tactics::effect_slot, leader_traits::LeaderTraits, parser::Item, parser::Operator,
-    parser::c_string, scripted_triggers::ScriptedTriggers, trigger_keys::CountTriggerNames,
-    trigger_keys::TriggerNames, unit_leader::SubUnits, unit_leader::Traits,
-};
+use content_reader_script::{trigger_grammar::effect_slot, scripted_trigger_grammar::ScriptedTriggers, trigger_keys::{CountTriggerNames, TriggerNames}, sub_units::SubUnits};
+use content_reader_military::leader_traits::LeaderTraits;
+use content_reader_parser::parser::{Item, Operator, c_string};
+use content_reader_key_names::unit_leader::Traits;
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
     rows::LandCombatDetailsRow, rows::LandCombatDivisionRow, rows::LexicalTokenRow, rows::tables,
@@ -16,13 +16,12 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_foundation::engagement_progress::sides as engagement_progress_sides;
+use viewer_engagements::engagement_progress::sides as engagement_progress_sides;
 #[cfg(test)]
 use viewer_foundation::tooltip_text::NoIcons;
-use {
-    super::content::Content as StaticContent,
-    viewer_foundation::{map::perspective::Vision, table_access::rows},
-};
+use super::content::Content as StaticContent;
+use viewer_foundation::perspective::Vision;
+use dashboard_text::table_access::rows;
 use {
     super::{
         Selection, Values,
@@ -120,8 +119,8 @@ impl Content {
         &self.leader_traits
     }
 
-    pub(super) fn from_database(database: content_reader_core::combat_tactics::Database) -> Self {
-        let content_reader_core::combat_tactics::Database {
+    pub(super) fn from_database(database: content_reader_military::combat_tactics::Database) -> Self {
+        let content_reader_military::combat_tactics::Database {
             phases,
             tactics,
             unsupported,
@@ -298,7 +297,7 @@ const PICTURE_PREFIX: &str = "combat_tactic:";
 pub const NULL_PICTURE: &str = PICTURE_PREFIX;
 
 fn definition(
-    tactic: &content_reader_core::combat_tactics::Tactic,
+    tactic: &content_reader_military::combat_tactics::Tactic,
     warnings: &mut Vec<String>,
 ) -> Result<Definition, String> {
     let name = String::from_utf8_lossy(&tactic.token);
@@ -341,7 +340,7 @@ fn field_boolean(
 ) -> bool {
     let mut state = default;
     for item in items.iter().filter(|item| item.keyword_is(key)) {
-        match item.value.scalar().and_then(content_reader_core::parser::read_bool) {
+        match item.value.scalar().and_then(content_reader_parser::parser::read_bool) {
             Some(value) => state = value,
             _ => warnings.push(format!(
                 "Combat tactics: tactic {tactic}'s {key} = {} is not exactly yes or no; the game logs an error and keeps {}.",
@@ -1092,8 +1091,8 @@ pub(super) fn bind(
         },
     };
     let division_rows = rows::<tables::LandCombatDivisions>(frame)?;
-    let combat_members = viewer_foundation::land_combat_math::combat_rows(division_rows.rows(), id);
-    let member_values = viewer_foundation::land_combat_math::member_values(frame, combat_members)?;
+    let combat_members = viewer_engagements::land_combat_math::combat_rows(division_rows.rows(), id);
+    let member_values = viewer_engagements::land_combat_math::member_values(frame, combat_members)?;
     let context = Context {
         detail,
         marker_flags,
@@ -1310,7 +1309,7 @@ pub(super) fn bind(
                     .as_ref()
                     .map_err(Clone::clone)?;
                 let effects = scripted_content.effects()?;
-                let effect_context = dashboard_text::effect_description::Context::new(
+                let effect_context = dashboard_effects::effect_description::Context::new(
                     text,
                     loc,
                     vision.ours(),
@@ -1318,7 +1317,7 @@ pub(super) fn bind(
                     effects.view(None),
                 );
                 let mut refused = BTreeMap::new();
-                let sources = dashboard_text::effect_description::doctrine_tactic_sources(
+                let sources = dashboard_effects::effect_description::doctrine_tactic_sources(
                     &effect_context,
                     vision.ours(),
                     candidate.tactic_id,
@@ -1594,7 +1593,7 @@ fn entry_values(
 
 fn preferred_description(
     values: &mut Values,
-    popup: &content_reader_core::gui::native::Element,
+    popup: &content_reader_gui::gui::native::Element,
     icons: &dyn TextIcons,
     loc: &Localisation,
     unavailable: &mut BTreeSet<String>,
@@ -1840,8 +1839,8 @@ fn repair_heap<T: Clone, F: Fn(&T, &T) -> bool>(
 mod tests {
     use super::*;
     use dashboard_text::triggers::ContentFacts;
-    use content_reader_core::key_names::KeyNames;
-    use content_reader_core::{fixed5::decimal_fixed5, fixed5::script_fixed5};
+    use content_reader_script::key_names::KeyNames;
+    use content_reader_parser::fixed5::{decimal_fixed5, script_fixed5};
     use replay_data::{
         rows::BuildingRow, rows::CountryResourceRow, rows::PoliticalPartyRow, rows::ProvinceRow,
         rows::ResourceDefinitionRow, rows::StateRow, rows::TableId, rows::TableRows,
@@ -1850,7 +1849,7 @@ mod tests {
 
     #[test]
     fn tactic_scripted_caller_keeps_viewer_nato_through_nested_effect_unit_icons() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_tactic_nato_{}_{:?}",
             std::process::id(),
@@ -1876,9 +1875,9 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, contents).unwrap();
         }
-        let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-        let content = Ok(dashboard_text::scripted_text::ScriptedContent::read(
-            Arc::new(content_reader_core::content::ResolvedContent {
+        let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let content = Ok(dashboard_base::catalogue::read_scripted_content(
+            Arc::new(content_reader_layers::content::ResolvedContent {
                 layers,
                 stats: Default::default(),
                 changed: Vec::new(),
@@ -1955,15 +1954,15 @@ mod tests {
             active,
             attacker,
             items: Vec::new(),
-            phase: content_reader_core::combat_tactics::UNKNOWN_PHASE,
-            display_phase: content_reader_core::combat_tactics::UNKNOWN_PHASE,
+            phase: content_reader_military::combat_tactics::UNKNOWN_PHASE,
+            display_phase: content_reader_military::combat_tactics::UNKNOWN_PHASE,
             effects: no_effects(),
             picture: Err("tactic t has no picture field".into()),
         }
     }
 
     fn trigger(text: &str) -> Vec<Item> {
-        let database = content_reader_core::combat_tactics::parse(
+        let database = content_reader_military::combat_tactics::parse(
             format!("t = {{ trigger = {{ {text} }} }}").as_bytes(),
             &names(&ScriptedTriggers::default()),
         );
@@ -2029,7 +2028,7 @@ mod tests {
                         "GER_lost_agent",
                         "GER_miscounted",
                     ]
-                    .map(|tag| content_reader_core::characters::LeaderTemplate {
+                    .map(|tag| content_reader_key_names::characters::LeaderTemplate {
                         path: "common/characters/GER.txt".into(),
                         tag: tag.into(),
                         line: None,
@@ -2148,7 +2147,7 @@ mod tests {
     }
 
     fn names(scripted: &ScriptedTriggers) -> KeyNames {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         KeyNames {
             scripted: scripted.templates.keys().cloned().collect(),
             countries: [&b"GER"[..], b"SOV", b"ENG"].map(<[u8]>::to_vec).into(),
@@ -2172,8 +2171,8 @@ mod tests {
     }
 
     fn parsed_with(text: &[u8], names: &KeyNames) -> Content {
-        content_reader_core::test_game::enter_viewer();
-        Content::from_database(content_reader_core::combat_tactics::parse(text, names))
+        content_reader_script::test_game::enter_viewer();
+        Content::from_database(content_reader_military::combat_tactics::parse(text, names))
     }
 
     #[test]
@@ -2317,8 +2316,8 @@ mod tests {
 
     #[test]
     fn popup_preferred_description_retains_authored_text_without_selector_arguments() {
-        content_reader_core::test_game::enter_viewer();
-        let gui = content_reader_core::gui::native::read(
+        content_reader_script::test_game::enter_viewer();
+        let gui = content_reader_gui::gui::native::read(
             br#"guiTypes = { containerWindowType = {
                 name = tactics_list_view
                 instantTextboxType = {
@@ -2361,7 +2360,7 @@ mod tests {
             ])
         );
 
-        let scoped = content_reader_core::gui::native::read(
+        let scoped = content_reader_gui::gui::native::read(
             br#"guiTypes = { containerWindowType = {
                 name = tactics_list_view instantTextboxType = {
                     name = preferred_tactic_desc_text text = MOD_PREFERRED_DESC
@@ -2397,7 +2396,7 @@ mod tests {
         .map(|(k, v)| (k.to_owned(), v.to_owned()))
         .collect();
         let phases = [b"opening".to_vec()];
-        use content_reader_core::{combat_tactics::NO_PHASE, combat_tactics::UNKNOWN_PHASE};
+        use content_reader_military::combat_tactics::{NO_PHASE, UNKNOWN_PHASE};
         let run = |(display_phase, phase): (i32, i32)| {
             let definition = Definition {
                 phase,
@@ -2853,7 +2852,7 @@ mod tests {
 
     #[test]
     fn terrain_and_sub_unit_names_match_without_case() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let mut units = SubUnits::default();
         units.read(
             b"sub_units = { artillery = { is_artillery_brigade = yes } infantry = { } \
@@ -3076,15 +3075,15 @@ mod tests {
 
     #[test]
     fn blocks_under_one_value_names_are_read_as_one_value() {
-        let mut buildings = content_reader_core::buildings::Buildings::default();
+        let mut buildings = content_reader_key_names::buildings::Buildings::default();
         buildings.types.insert(
             "arms_factory".into(),
-            content_reader_core::buildings::BuildingType::default(),
+            content_reader_key_names::buildings::BuildingType::default(),
         );
         let mut names = names(&ScriptedTriggers::default());
-        names.counts = CountTriggerNames::new(
+        names.counts = content_reader_key_names::key_name_products::count_trigger_names(
             &buildings,
-            &content_reader_core::ideologies::Ideologies::default(),
+            &content_reader_key_names::ideologies::Ideologies::default(),
             &Default::default(),
         );
         let content = parsed_with(
@@ -3397,7 +3396,7 @@ mod tests {
 
     #[test]
     fn scripted_triggers_evaluate_their_body_in_the_current_scope() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_scripted_triggers_{}_{:?}",
             std::process::id(),
@@ -3424,12 +3423,12 @@ mod tests {
             "common/scripted_triggers/cycles.txt",
             "cycle_a = { CYCLE_B = yes }\ncycle_b = { cycle_a = yes }",
         );
-        let layers = content_reader_core::ResolvedLayers::from_folders(&[
+        let layers = content_reader_layers::ResolvedLayers::from_folders(&[
             (&root.join("vanilla"), &[][..]),
             (&root.join("mod"), &[][..]),
         ])
         .unwrap();
-        let scripted = content_reader_core::scripted_triggers::read(&layers).unwrap();
+        let scripted = content_reader_key_names::scripted_triggers::read(&layers).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
         let tokens: &[(&[u8], u32)] = &[
             (b"my_check", 0x6001),
@@ -3456,7 +3455,7 @@ mod tests {
 
     #[test]
     fn content_blocks_follow_load_keys_order_in_every_body_read() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_scripted_order_{}_{:?}",
             std::process::id(),
@@ -3479,9 +3478,9 @@ mod tests {
              tooltip = { is_attacker = no }\nnot_tooltip = { is_attacker = no }",
         );
         let layers =
-            content_reader_core::ResolvedLayers::from_folders(&[(&root.join("vanilla"), &[][..])])
+            content_reader_layers::ResolvedLayers::from_folders(&[(&root.join("vanilla"), &[][..])])
                 .unwrap();
-        let scripted = content_reader_core::scripted_triggers::read(&layers).unwrap();
+        let scripted = content_reader_key_names::scripted_triggers::read(&layers).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
         let weigh = |trigger: &str| {
             weigh_with(
@@ -3518,7 +3517,7 @@ mod tests {
 
     #[test]
     fn character_scopes_read_the_recorded_character() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         use replay_data::{
             rows::CharacterOperativeRow, rows::CharacterRoleTraitRow, rows::CharacterRow,
             rows::CountryCharacterRow, rows::CountryLinkRow, rows::CountryRow, rows::TableId,
@@ -3545,10 +3544,10 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, text).unwrap();
         }
-        let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
         let traits = Traits::registered(&layers).unwrap();
         let country_leader_traits =
-            Arc::new(content_reader_core::leader_traits::read(&layers).unwrap().0);
+            Arc::new(content_reader_military::leader_traits::read(&layers).unwrap().0);
         std::fs::remove_dir_all(&root).unwrap();
 
         let mut frame = DecodedFrame {
@@ -3961,7 +3960,7 @@ mod tests {
 
     #[test]
     fn count_triggers_read_the_recorded_hour_in_the_scope_they_accept() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         use replay_data::{
             rows::CountryBuildingResourceRow, rows::CountryCounterInputRow, rows::CountryLinkRow,
             rows::CountryRow, rows::StateBaseResourceRow, rows::StateResourceInputRow,
@@ -4004,16 +4003,16 @@ mod tests {
             "common/ideologies/mod_ideologies.txt",
             "ideologies = { Technocracy = { types = { planners = { } } } }",
         );
-        let layers = content_reader_core::ResolvedLayers::from_folders(&[
+        let layers = content_reader_layers::ResolvedLayers::from_folders(&[
             (&root.join("vanilla"), &[][..]),
             (&root.join("mod"), &[][..]),
         ])
         .unwrap();
-        let buildings = content_reader_core::buildings::read(&layers).unwrap();
-        let (ideologies, _) = content_reader_core::ideologies::read(&layers).unwrap();
+        let buildings = content_reader_key_names::buildings::read(&layers).unwrap();
+        let (ideologies, _) = content_reader_key_names::ideologies::read(&layers).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
         let &(land_cruiser, land_cruiser_mask, _) =
-            content_reader_core::trigger_keys::EQUIPMENT_CATEGORIES
+            content_reader_script::trigger_keys::EQUIPMENT_CATEGORIES
                 .iter()
                 .find(|&&(_, _, name)| name == "land_cruiser")
                 .unwrap();
@@ -4235,7 +4234,7 @@ mod tests {
         };
         let detail = skilled();
         let aliases = BTreeMap::from([(100, 1), (200, 2)]);
-        let other = content_reader_core::test_game::category("infantry");
+        let other = content_reader_script::test_game::category("infantry");
         let units = [
             (1, land_cruiser_mask),
             (2, land_cruiser_mask | other),
@@ -4254,7 +4253,7 @@ mod tests {
         let weigh_with_units = |hour, participants: &[u64], trigger: &str| {
             let frame = frame_at(hour);
             let mut content = parsed(format!("t = {{ trigger = {{ {trigger} }} }}").as_bytes());
-            content.set_count_names(CountTriggerNames::new(
+            content.set_count_names(content_reader_key_names::key_name_products::count_trigger_names(
                 &buildings,
                 &ideologies,
                 &Default::default(),

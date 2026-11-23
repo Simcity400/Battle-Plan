@@ -50,8 +50,9 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
     if countries.len() < 2 {
         return Err(invalid("--countries needs at least two tags to switch between"));
     }
-    if !(run.refresh_hz.is_finite() && run.refresh_hz > 0.0) || !(run.play_speed.is_finite() && run.play_speed > 0.0) {
-        return Err(invalid("--refresh-hz and --play-speed need a positive rate"));
+    run.refresh_hz = super::refresh_rate(run.refresh_hz)?;
+    if !(run.play_speed.is_finite() && run.play_speed > 0.0) {
+        return Err(invalid("--play-speed needs a positive rate"));
     }
     run.countries = countries;
     let options = Options::parse(translated.into_iter())?;
@@ -68,7 +69,7 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
     fs::create_dir(output)?;
     let output = fs::canonicalize(output)?;
     let _locks = lock(&output)?;
-    let mut config = dashboard::Config::load()?;
+    let mut config = dashboard_core::config::Config::load()?;
     if let Some(path) = &options.game_dir {
         config.game_dir = path.clone();
     }

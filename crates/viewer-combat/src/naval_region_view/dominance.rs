@@ -2,7 +2,7 @@ use super::{Content, Element, links};
 use crate::binding::{self, Bindings};
 use crate::state_view::{paths_named, withhold_named};
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::map::perspective::Vision;
+use viewer_foundation::perspective::Vision;
 
 const BARS: [&str; 3] = ["progress", "progress_enemy", "neutral_progress"];
 

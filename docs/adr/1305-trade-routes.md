@@ -22,4 +22,4 @@ Convoys show only when the mode permits routes, units are shown and the camera i
 
 The Windows presentation counter passes two distinct writable `i64` locals to the synchronous performance-counter calls. Each call writes its scalar output before returning and does not retain the pointer.
 
-[Route layers and retention](../../crates/viewer-world/src/map/trade_routes.rs) · [Path search and ribbons](../../crates/viewer-world/src/map/trade_routes/geometry.rs) · [Convoy presentation](../../crates/viewer-world/src/map/trade_routes/convoys.rs)
+[Route layers and retention](../../crates/viewer-unit-models/src/trade_routes.rs) · [Path search and ribbons](../../crates/viewer-unit-models/src/trade_routes/geometry.rs) · [Convoy presentation](../../crates/viewer-unit-models/src/trade_routes/convoys.rs)

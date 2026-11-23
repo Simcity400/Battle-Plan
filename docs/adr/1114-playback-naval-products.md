@@ -6,4 +6,4 @@ Camera grouping remains separate from the recorded naval counter inputs. The cou
 
 Naval combat markers rebuild together because spill-over and transfers can move icons outside their combat's own province. The layer limits invalidation to watched rows and columns, and reads engaged flags from the prior layer. The retained frame index identifies which combat history changed over a step. An index provenance change rereads all live frames, while an unchanged hour reads none. The comparison tool uses the same history and perspective. Its counter proof names the operands it does not compare.
 
-[Naval control](../../crates/viewer-playback/src/layers/naval.rs) · [Counters](../../crates/viewer-playback/src/layers/naval_counters.rs) · [Markers](../../crates/viewer-playback/src/layers/naval_markers.rs)
+[Naval control](../../crates/viewer-layers-political/src/naval.rs) · [Counters](../../crates/viewer-layers-counters/src/naval_counters.rs) · [Markers](../../crates/viewer-layers-counters/src/naval_markers.rs)

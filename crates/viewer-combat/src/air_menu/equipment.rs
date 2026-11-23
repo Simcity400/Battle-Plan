@@ -1,12 +1,12 @@
 use super::{Content, DecodedFrame, State, loc};
 use dashboard_base::products::equipment_icon::{self, Icon, IconHour};
 use content_reader_localisation::localisation::Argument;
-use replay_data::rows::{VariantDefinitionRow, tables};
+use replay_data::rows::{VariantDefinitionRow, VariantStatsRow, tables};
 use replay_derive::air_region_derive::{
     self as derive, EquipmentOrder, EquipmentPool, EquipmentPools, Filter, Retained,
 };
 use std::collections::BTreeMap;
-use viewer_foundation::table_access::TokenNames;
+use dashboard_text::table_access::TokenNames;
 
 pub(super) struct Sources<'a> {
     content: &'a Content,
@@ -51,7 +51,7 @@ impl<'a> Sources<'a> {
     fn definition(
         &self,
         variant: &VariantDefinitionRow,
-    ) -> Result<(usize, &content_reader_core::equipment::Database), String> {
+    ) -> Result<(usize, &content_reader_key_names::equipment::Database), String> {
         let database = self
             .content
             .assets
@@ -236,8 +236,9 @@ impl<'a> Sources<'a> {
                 .ok()
                 .map(|at| &stats[at])
                 .ok_or_else(|| format!("retained aircraft variant {id} has no recorded stats"))?;
+            let value = row.stat(stat)?;
             amount = amount.wrapping_add(count);
-            total = total.wrapping_add(count.wrapping_mul(row.values[stat]) / 100_000);
+            total = total.wrapping_add(count.wrapping_mul(value) / 100_000);
         }
         Ok(if amount <= 0 {
             0
@@ -258,11 +259,27 @@ impl<'a> Sources<'a> {
         for (key, our_stat, enemy_stat) in [
             (
                 if attack { "ATTACK" } else { "DEFENSE" },
-                if attack { 2 } else { 1 },
-                if attack { 1 } else { 2 },
+                if attack {
+                    VariantStatsRow::AIR_ATTACK
+                } else {
+                    VariantStatsRow::AIR_DEFENCE
+                },
+                if attack {
+                    VariantStatsRow::AIR_DEFENCE
+                } else {
+                    VariantStatsRow::AIR_ATTACK
+                },
             ),
-            ("AGILITY", 3, 3),
-            ("SPEED", 4, 4),
+            (
+                "AGILITY",
+                VariantStatsRow::AIR_AGILITY,
+                VariantStatsRow::AIR_AGILITY,
+            ),
+            (
+                "SPEED",
+                VariantStatsRow::MAXIMUM_SPEED,
+                VariantStatsRow::MAXIMUM_SPEED,
+            ),
         ] {
             let ours = self.average(ours, our_stat)?;
             let enemy = self.average(enemy, enemy_stat)?;
@@ -360,5 +377,24 @@ fn newlines(text: &mut String, count: usize) {
     let present = text.bytes().rev().take_while(|&byte| byte == b'\n').count();
     for _ in present..count {
         text.push('\n');
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn variant_stat_lane_withholding_is_named_and_never_coerced_to_zero() {
+        let mut row = VariantStatsRow {
+            variant: 42,
+            values: [Some(250_000); 10],
+            ..Default::default()
+        };
+        assert_eq!(row.stat(VariantStatsRow::AIR_DEFENCE), Ok(250_000));
+        row.values[VariantStatsRow::AIR_DEFENCE] = None;
+        let error = row.stat(VariantStatsRow::AIR_DEFENCE).unwrap_err();
+        assert!(error.contains("air_defence"), "{error}");
+        assert!(error.contains("42"), "{error}");
     }
 }

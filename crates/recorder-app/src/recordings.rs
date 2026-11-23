@@ -1,10 +1,8 @@
 use crate::flags::{BackgroundPriority, FlagImage};
 use recorder::controller::{self, Waiting, WaitingCampaign, WaitingName, WaitingNames};
-use replay::{
-    campaign::Replay,
-    recorder_settings::{self, RecorderSettings},
-    recording_files,
-};
+use replay::campaign::Replay;
+use replay_settings::recorder_settings::{self, RecorderSettings};
+use replay_files::recording_files;
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -81,6 +79,7 @@ pub struct Library {
     names: Arc<Mutex<Names>>,
     namer: Option<Arc<Namer>>,
     installation: Arc<dyn Fn() -> Result<(PathBuf, PathBuf), String> + Send + Sync>,
+    clock: Arc<dyn Fn() -> Instant + Send + Sync>,
     settings: PathBuf,
 }
 
@@ -91,6 +90,7 @@ impl Default for Library {
             names: Arc::default(),
             namer: None,
             installation: Arc::new(WaitingNames::installation_key),
+            clock: Arc::new(Instant::now),
             settings: RecorderSettings::path(),
         }
     }
@@ -298,7 +298,7 @@ fn forget_settled(path: &Path, folders: &[PathBuf]) -> std::io::Result<()> {
             }
         }
     })
-    .map(drop)
+    .map(|applied| drop(applied.logged("Earlier save folders")))
 }
 
 fn version(path: &Path) -> Option<(SystemTime, u64)> {
@@ -314,6 +314,7 @@ impl Library {
             names: Arc::default(),
             namer: Some(namer),
             installation: Arc::new(|| Err("custom recording namer".into())),
+            clock: Arc::new(Instant::now),
             settings: std::env::temp_dir().join(format!(
                 "hoi4-library-settings-{}-{}.json",
                 std::process::id(),
@@ -507,6 +508,35 @@ impl Library {
         }
         let settings_stamp = version(&RecorderSettings::path());
         let installation = (self.installation)();
+        let keys: Vec<Option<NameKey>> = unsaved
+            .iter_mut()
+            .map(|(target, sessions, row)| {
+                row.recording = cache
+                    .continued(target, &row.campaign)
+                    .map(|path| path.display().to_string());
+                if live.target == Some(target.as_path()) {
+                    row.name = live.names.get(&row.campaign).cloned();
+                    return None;
+                }
+                view.as_ref()?;
+                sessions.sort();
+                Some(NameKey {
+                    recordings: cache.recordings(target).0.clone(),
+                    unsaved: recording_files::listing(&replay_settings::publication::unsaved_folder(target))
+                        .ok(),
+                    sessions: sessions
+                        .iter()
+                        .map(|session| waiting_revision(session))
+                        .collect(),
+                    chosen: target
+                        .canonicalize()
+                        .is_ok_and(|folder| settings.name_chosen(&folder, row.campaign.as_bytes())),
+                    user_folder: settings.user_folder.clone(),
+                    installation: installation.clone(),
+                    settings: settings_stamp,
+                })
+            })
+            .collect();
         let mut names = self.names.lock().unwrap_or_else(|error| error.into_inner());
         let view_open = view.is_some_and(|view| view.0 == names.request);
         if view_open {
@@ -517,33 +547,10 @@ impl Library {
         }
         let mut wanted = Vec::new();
         let mut refresh = false;
-        let now = Instant::now();
-        for (target, sessions, row) in &mut unsaved {
-            row.recording = cache
-                .continued(target, &row.campaign)
-                .map(|path| path.display().to_string());
-            if live.target == Some(target.as_path()) {
-                row.name = live.names.get(&row.campaign).cloned();
+        let now = (self.clock)();
+        for ((target, _, row), key) in unsaved.iter_mut().zip(keys) {
+            let Some(key) = key.filter(|_| view_open) else {
                 continue;
-            }
-            if !view_open {
-                continue;
-            }
-            sessions.sort();
-            let key = NameKey {
-                recordings: cache.recordings(target).0.clone(),
-                unsaved: recording_files::listing(&replay::publication::unsaved_folder(target))
-                    .ok(),
-                sessions: sessions
-                    .iter()
-                    .map(|session| waiting_revision(session))
-                    .collect(),
-                chosen: target
-                    .canonicalize()
-                    .is_ok_and(|folder| settings.name_chosen(&folder, row.campaign.as_bytes())),
-                user_folder: settings.user_folder.clone(),
-                installation: installation.clone(),
-                settings: settings_stamp,
             };
             let id = (target.clone(), row.campaign.clone());
             match names.known.get(&id) {
@@ -567,6 +574,7 @@ impl Library {
             names.busy = true;
             let previous_waiting = std::mem::replace(&mut names.waiting, asked.clone());
             let (shared, namer) = (Arc::clone(&self.names), self.namer.clone());
+            let clock = Arc::clone(&self.clock);
             let (content, generation) = (Arc::clone(&names.content), names.generation);
             let spawned = std::thread::Builder::new()
                 .name("recording-names".into())
@@ -587,7 +595,7 @@ impl Library {
                     if names.generation == generation {
                         for ((id, key, _), name) in wanted.into_iter().zip(named) {
                             let known =
-                                KnownName::new(key, name, names.known.get(&id), Instant::now());
+                                KnownName::new(key, name, names.known.get(&id), clock());
                             names.known.insert(id, known);
                         }
                     }
@@ -618,7 +626,7 @@ impl Library {
                 Some((bytes, time, span, level)) if (*bytes, *time) == version => (*span, *level),
                 _ => {
                     let span = Replay::read_hour_span(&path).ok().flatten();
-                    let level = replay::recompress::level_of(&path).ok().flatten();
+                    let level = replay_files::recompress::level_of(&path).ok().flatten();
                     cache
                         .spans
                         .insert(path.clone(), (version.0, version.1, span, level));
@@ -768,9 +776,9 @@ mod tests {
     }
 
     fn journal(campaign: &Path, segment: u32, bytes: usize) {
-        let mut name = [0; replay::columnar_journal::SEGMENT_NAME_BYTES];
+        let mut name = [0; replay_journal::columnar_journal::SEGMENT_NAME_BYTES];
         write(
-            &campaign.join(replay::columnar_journal::segment_name(
+            &campaign.join(replay_journal::columnar_journal::segment_name(
                 0, segment, &mut name,
             )),
             bytes,
@@ -818,7 +826,8 @@ mod tests {
             earlier_save_folders: vec![earlier.clone(), gone.clone()],
             ..RecorderSettings::default()
         };
-        settings.save_to(&path).unwrap();
+        let saved = settings.clone();
+        let _ = RecorderSettings::update_at(&path, move |held| *held = saved).unwrap();
         let ended = earlier.join("sessions").join("1-1");
         journal(&ended.join(OTHER), 0, 100);
         let waiting = |waiting: serde_json::Value| {
@@ -930,7 +939,8 @@ mod tests {
             earlier_save_folders: vec![earlier.clone()],
             ..RecorderSettings::default()
         };
-        settings.save_to(&path).unwrap();
+        let saved = settings.clone();
+        let _ = RecorderSettings::update_at(&path, move |held| *held = saved).unwrap();
         assert!(settled(&earlier));
         fs::create_dir_all(earlier.join("sessions").join("3-3")).unwrap();
         forget_settled(&path, std::slice::from_ref(&earlier)).unwrap();
@@ -1136,7 +1146,7 @@ mod tests {
         let map = format!("{CAMPAIGN} (2)");
         settings.campaigns.insert(
             CAMPAIGN.into(),
-            replay::recorder_settings::CampaignChoice {
+            replay_settings::recorder_settings::CampaignChoice {
                 folder: Some(map.clone()),
                 ..Default::default()
             },
@@ -1152,13 +1162,13 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let staged = replay::publication::unsaved_path(&root, CAMPAIGN);
+        let staged = replay_settings::publication::unsaved_path(&root, CAMPAIGN);
         recording(&staged, CAMPAIGN, 100);
         let running = root.join("sessions").join("2-2");
         journal(&running.join(CAMPAIGN), 0, 4000);
         let target = root.join(&map);
         recording(
-            &replay::publication::unsaved_path(&target, CAMPAIGN),
+            &replay_settings::publication::unsaved_path(&target, CAMPAIGN),
             CAMPAIGN,
             100,
         );
@@ -1222,7 +1232,7 @@ mod tests {
         };
         let session = root.join("sessions/1-1");
         fs::create_dir_all(&session).unwrap();
-        let waiting = replay::publication::unsaved_path(&root, CAMPAIGN);
+        let waiting = replay_settings::publication::unsaved_path(&root, CAMPAIGN);
         recording(&waiting, CAMPAIGN, 100);
         fs::write(
             session.join("completed.json"),
@@ -1254,6 +1264,11 @@ mod tests {
             let installation = Arc::clone(&installation);
             Arc::new(move || installation.lock().unwrap().clone())
         };
+        let ahead = Arc::new(Mutex::new(Duration::ZERO));
+        library.clock = {
+            let ahead = Arc::clone(&ahead);
+            Arc::new(move || Instant::now() + *ahead.lock().unwrap())
+        };
         let live = Live {
             session: None,
             target: None,
@@ -1274,7 +1289,7 @@ mod tests {
             {
                 let mut names = library.names.lock().unwrap();
                 for known in names.known.values_mut() {
-                    known.checked = Instant::now() + Duration::from_secs(86_400);
+                    known.checked = (library.clock)() + Duration::from_secs(86_400);
                 }
             }
             let view = library.view("panel", visit.get(), true);
@@ -1298,14 +1313,18 @@ mod tests {
         write(&session.join("admitted.json"), 20);
         refresh(&settings, Some("Z01"));
         *response.lock().unwrap() = Some("Repaired country".into());
+        let now = (library.clock)();
         for known in library.names.lock().unwrap().known.values_mut() {
-            known.checked = Instant::now() - NAME_RETRY;
+            known.checked = now;
         }
+        *ahead.lock().unwrap() += NAME_RETRY;
         refresh(&settings, Some("Repaired country"));
         *response.lock().unwrap() = Some("Changed game installation".into());
+        let now = (library.clock)();
         for known in library.names.lock().unwrap().known.values_mut() {
-            known.checked = Instant::now() - NAME_RETRY_MAX;
+            known.checked = now;
         }
+        *ahead.lock().unwrap() += NAME_RETRY_MAX;
         let view = library.view("panel", visit.get(), true);
         let listed = library.list(&settings, view, &live, &BTreeMap::new(), || {});
         assert_eq!(listed.unsaved[0].name.as_deref(), Some("Repaired country"));

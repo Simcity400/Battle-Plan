@@ -3,12 +3,13 @@ use super::{
     ADVISOR_MODIFIER, AIR_STATISTICS, Context, DEFINE_RVAS, DEFINES, DIPLOMACY_HOSTING,
     DYNAMIC_CONSTANT, DYNAMIC_VALUE_ROW_STRIDE, DYNAMIC_VALUE_ROWS, IDEA_MODIFIER,
     IDEOLOGY_GROUP_MODIFIER, InputRow, Keys, Kind, LEADER_MODIFIER, LineRow, MODIFIER_CHILDREN,
-    Memo, RING, RING_DATA, RING_SIZE, STATIC_DATABASE_RVA, STATIC_NAME, STATIC_SLOTS, Scratch,
-    TRACKED, walk_country_memo,
+    Memo, PRIDE_OF_THE_FLEET_SUNK_ACTIVE, RING, RING_DATA, RING_SIZE, STATIC_DATABASE_RVA,
+    STATIC_NAME, STATIC_SLOTS, Scratch, TRACKED, walk_country_memo,
 };
 use crate::{
-    cadvisor, ccharacter, ccountry, ccountry_characters, ccountry_leader, cdiplomacy_status,
-    cdynamic_modifier, cdynamic_modifier_container, cgame_state, cidea, cideology_group, cmodifier,
+    cadvisor, cattache_relation, ccharacter, ccountry, ccountry_characters, ccountry_leader,
+    cdiplomacy_status, cdynamic_modifier, cdynamic_modifier_container, cgame_state, cidea,
+    cideology_group, cmodifier,
     country_memory::{Cache, CountryMemory, SeedStatus},
     cpdx_array::Array,
     cpolitical_party, cpolitical_status, crelation, cstatic_modifier, cwar_relation, cworld_threat,
@@ -30,8 +31,8 @@ const STABILITY_KEY: u32 = 1;
 const WAR_SUPPORT_KEY: u32 = 6;
 const UNTRACKED_KEY: u32 = TRACKED as u32 + 1;
 const IMAGE: usize = (localization_root_layout::SINGLETON_RVA.0 + 8 + 15) & !15;
-const ACTIVE_STATICS: [usize; 5] = [0, 1, 2, 4, 5];
-const ACTIVE_SCALED: [usize; 3] = [6, 8, 9];
+const ACTIVE_STATICS: [usize; 3] = [0, 2, 3];
+const ACTIVE_SCALED: [usize; 0] = [];
 
 struct Arena {
     bytes: Vec<u8>,
@@ -249,6 +250,7 @@ impl Fixture {
             arena.i64(country + ccountry::WAR_SUPPORT, 40_000);
             arena.i64(country + super::PROPAGANDA_STABILITY_PENALTY, -3277);
             arena.i64(country + super::COASTAL_PROTECTION_STABILITY, 2500);
+            arena.u8(country + PRIDE_OF_THE_FLEET_SUNK_ACTIVE, 1);
 
             let diplomacy = arena.alloc(cdiplomacy_status::COUNTRY + 8);
             arena.pointer(country + ccountry::DIPLOMACY_STATUS, diplomacy);
@@ -256,14 +258,20 @@ impl Fixture {
             arena.pointer(diplomacy + cdiplomacy_status::COUNTRY, country);
             arena.u32(diplomacy + DIPLOMACY_HOSTING, 0);
             let relation = arena.alloc(cwar_relation::FIRST_WAS_INSTIGATOR + 1);
-            let owned = arena.alloc(8);
+            let attache = arena.alloc(0x18);
+            let owned = arena.alloc(16);
             arena.pointer(owned, relation);
-            arena.array(diplomacy + cdiplomacy_status::OWNED_RELATIONS, owned, 1);
+            arena.pointer(owned + 8, attache);
+            arena.array(diplomacy + cdiplomacy_status::OWNED_RELATIONS, owned, 2);
             arena.vtable(relation, cwar_relation::VTABLE_RVA.0);
             arena.u32(relation + crelation::TYPE_ID, cwar_relation::TYPE);
             arena.u32(relation + crelation::FIRST_COUNTRY, slot as u32);
             arena.u32(relation + crelation::SECOND_COUNTRY, (slot % n + 1) as u32);
             arena.u8(relation + cwar_relation::FIRST_WAS_INSTIGATOR, 1);
+            arena.vtable(attache, cattache_relation::VTABLE_RVA.0);
+            arena.u32(attache + crelation::TYPE_ID, cattache_relation::TYPE);
+            arena.u32(attache + crelation::FIRST_COUNTRY, slot as u32);
+            arena.u32(attache + crelation::SECOND_COUNTRY, (slot % n + 1) as u32);
 
             let stats = arena.alloc(RING + 8);
             let ring = arena.alloc(RING_SIZE + 9);
@@ -595,7 +603,7 @@ impl Run {
             };
             kinds[index] += 1;
         }
-        assert_eq!(kinds, [104, 30, 2, 2, 6, 10, 6, 20, 20]);
+        assert_eq!(kinds, [114, 30, 2, 2, 6, 6, 0, 20, 20]);
     }
 
     fn report(&self, n: usize, times: &mut [u128], reads: ReadCounts) {

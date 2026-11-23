@@ -6,4 +6,4 @@ Mission arrows retain their prepared geometry and vary hover tint independently.
 
 Range preparation visits task-force members in recorded order and uses the first carrier on each. Grouping uses the game's fixed scratch capacity and combines equal origins and ranges. An empty wing selects the group's empty color. Hovered ranges replace selected ranges only if at least one group is admitted. The reached base list used for tinting is separate from the retained base references used for gold icon frames.
 
-[Assignments](../../crates/viewer-world/src/map/air_assignment.rs) · [Mission arrows](../../crates/viewer-world/src/map/air_orders.rs) · [Ranges](../../crates/viewer-world/src/map/air_ranges.rs) · [Relocations](../../crates/viewer-world/src/map/air_transfers.rs)
+[Assignments](../../crates/viewer-map-modes/src/air_assignment.rs) · [Mission arrows](../../crates/viewer-aircraft/src/air_orders.rs) · [Ranges](../../crates/viewer-aircraft/src/air_ranges.rs) · [Relocations](../../crates/viewer-aircraft/src/air_transfers.rs)

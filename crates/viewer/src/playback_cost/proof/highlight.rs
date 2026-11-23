@@ -1,20 +1,14 @@
 
 use super::{Compared, political, political_fresh, political_marked};
-use crate::{
-    app::faction_highlight::Picture,
-    document::Document,
-    layers::{Layer, political::Political},
-    playhead_host::mirror::Mirrors,
-};
+use crate::{app::faction_highlight::Picture, document::Document, playhead_host::mirror::Mirrors};
+use viewer_layer_core::layers::Layer;
+use viewer_layers_political::political::Political;
 use map_display_data::landscape::Regions;
 use serde_json::json;
 use std::{collections::BTreeSet, io, sync::Arc, time::Instant};
-use viewer_foundation::map::perspective;
-use viewer_world::map::{
-    border_pass::ClassPlan,
-    demilitarized::{Zone, ZonePlan},
-    map_mode::MapMode,
-};
+use viewer_foundation::perspective;
+use viewer_borders::{border_pass::ClassPlan, demilitarized::{Zone, ZonePlan}};
+use viewer_map_modes::map_mode::MapMode;
 
 fn cycle_hz() -> f64 {
     static HZ: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
@@ -28,10 +22,10 @@ fn cycle_hz() -> f64 {
 const POINTED: usize = 20;
 
 pub(super) fn make(document: &Document) -> Box<dyn Layer> {
-    Box::new(Political::new(Arc::new(crate::layers::political::Content::new(Arc::clone(&document.content.map), Arc::clone(&document.border_meshes)))))
+    Box::new(Political::new(Arc::new(viewer_layers_political::political::Content::new(Arc::clone(&document.content.map), Arc::clone(&document.border_meshes)))))
 }
 
-fn plans(meshes: &viewer_world::map::borders::BorderMeshes, regions: &Regions, zone: &Zone, provinces: &BTreeSet<u32>) -> (ClassPlan, ZonePlan, ZonePlan) {
+fn plans(meshes: &viewer_borders::borders::BorderMeshes, regions: &Regions, zone: &Zone, provinces: &BTreeSet<u32>) -> (ClassPlan, ZonePlan, ZonePlan) {
     let highlight = |a, b| provinces.contains(&a) != provinces.contains(&b);
     (
         ClassPlan::matching(meshes, regions, |a, b| !zone.splits(a, b) && !highlight(a, b)),
@@ -88,7 +82,7 @@ pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compar
     Ok(compared)
 }
 
-pub(super) fn fresh(layer: &dyn Layer, mirrors: &Mirrors, upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+pub(super) fn fresh(layer: &dyn Layer, mirrors: &Mirrors, upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     political_fresh(layer, mirrors, upstream)
 }
 

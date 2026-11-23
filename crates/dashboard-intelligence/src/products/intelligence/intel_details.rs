@@ -1,6 +1,6 @@
 
-use crate::{Source, products::{LoadContext, Product}};
-use content_reader_core::defines::Defines;
+use dashboard_base::{Source, products::{LoadContext, Product}};
+use content_reader_defines::defines::Defines;
 use replay_data::rows::{self, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -201,7 +201,7 @@ fn project(
     selected: Option<u32>,
     viewing: Option<u32>,
     defines: Result<&Defines, &str>,
-    subunits: Result<&content_reader_core::unit_leader::SubUnits, &str>,
+    subunits: Result<&content_reader_script::sub_units::SubUnits, &str>,
 ) -> io::Result<IntelDetailsReply> {
     let countries = frame.complete::<tables::Countries>()?;
 
@@ -670,7 +670,7 @@ fn project(
     Ok(reply)
 }
 
-fn fuel_frame(recording: &replay::columnar_frames::Recording, run: u32, frame: &DecodedFrame) -> Result<Box<DecodedFrame>, String> {
+fn fuel_frame(recording: &replay_recording::columnar_frames::Recording, run: u32, frame: &DecodedFrame) -> Result<Box<DecodedFrame>, String> {
     let Some(hour) = frame.tables[TableId::CountryFuel.index()].sampled_at() else {
         frame.complete::<tables::CountryFuel>().map_err(|e| format!("country fuel for its read hour: {e}"))?;
         return Err("country fuel's read hour is not carried at this hour".into());
@@ -681,8 +681,8 @@ fn fuel_frame(recording: &replay::columnar_frames::Recording, run: u32, frame: &
     if hour == frame.hour {
         return Ok(Box::new(frame.clone()));
     }
-    let reads: Vec<replay::at::Read<'_>> = super::intel_ranges::FUEL_TABLES.iter().map(|&table| replay::at::Read::all(table)).collect();
-    dashboard_query::cost::storage(|| replay::at::frame(recording, run, hour, &reads))
+    let reads: Vec<replay_lanes::at::Read<'_>> = super::intel_ranges::FUEL_TABLES.iter().map(|&table| replay_lanes::at::Read::all(table)).collect();
+    dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, hour, &reads))
         .map(Box::new)
         .map_err(|e| format!("country fuel supplying hour {hour}: {e}"))
 }
@@ -693,6 +693,7 @@ impl Product for IntelDetails {
     const INTERACTIVE: bool = true;
 
     type Params = IntelDetailsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![viewer, branchId, hour: Read, country];
     type Reply = IntelDetailsReply;
 
     fn validate(p: &Self::Params) -> Result<(), &'static str> {
@@ -714,13 +715,13 @@ impl Product for IntelDetails {
     }
 
     fn load(source: &Source, p: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        crate::metadata::check_cancel(cancelled)?;
-        let query = crate::answer::query(source, p.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid intel branch"))?)?;
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let query = dashboard_base::queries::query(source, p.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid intel branch"))?)?;
         let stretch = *query.timeline.at(p.hour).ok_or_else(|| dashboard_core::refused("Intel hour was not recorded"))?;
         let recording = query.replay.recording();
-        let reads: Vec<replay::at::Read<'_>> = TABLES.iter().map(|&table| replay::at::Read::all(table)).collect();
-        let frame = dashboard_query::cost::storage(|| replay::at::frame(recording, stretch.run, p.hour, &reads))?;
-        crate::metadata::check_cancel(cancelled)?;
+        let reads: Vec<replay_lanes::at::Read<'_>> = TABLES.iter().map(|&table| replay_lanes::at::Read::all(table)).collect();
+        let frame = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, stretch.run, p.hour, &reads))?;
+        dashboard_text::metadata::check_cancel(cancelled)?;
         let catalogue = context
             .content()
             .map_err(|e| e.to_string())
@@ -729,11 +730,11 @@ impl Product for IntelDetails {
         let defines = catalogue
             .as_ref()
             .map_err(Clone::clone)
-            .and_then(|catalogue| content_reader_core::defines::read(&catalogue.content.layers).map_err(|e| e.to_string()));
+            .and_then(|catalogue| content_reader_defines::defines::read(&catalogue.content.layers).map_err(|e| e.to_string()));
         let subunits = catalogue
             .as_ref()
             .map_err(Clone::clone)
-            .and_then(|catalogue| content_reader_core::unit_leader::sub_units(&catalogue.content.layers).map_err(|e| e.to_string()));
+            .and_then(|catalogue| content_reader_key_names::unit_leader::sub_units(&catalogue.content.layers).map_err(|e| e.to_string()));
         let fuel = fuel_frame(recording, stretch.run, &frame);
         project(
             &frame,

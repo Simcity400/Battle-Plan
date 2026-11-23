@@ -2,8 +2,8 @@ use super::*;
 use std::cell::RefCell;
 use std::time::Duration;
 use std::time::Instant;
-use viewer_foundation::map::text::GlyphBox;
-use viewer_foundation::map::text::GlyphMetrics;
+use viewer_native_gui::text::GlyphBox;
+use viewer_native_gui::text::GlyphMetrics;
 
 #[test]
 fn each_order_kind_draws_in_the_family_a_viewer_hides_it_with() {
@@ -1040,7 +1040,7 @@ fn bench_synthetic_1943_plan() {
 
 #[test]
 fn one_hour_builds_the_paradrop_and_counts_every_refusal_once() {
-    use content_reader_core::{movement::Neighbour, movement::ProvinceTerrain};
+    use content_reader_map::movement::{Neighbour, ProvinceTerrain};
     use replay_data::{
         rows::OrderExecutionInputs, rows::ProvinceRow, rows::Recorded, rows::TableRows,
     };

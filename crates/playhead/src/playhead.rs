@@ -509,6 +509,8 @@ struct Control {
     lands: Vec<usize>,
     done: Vec<Done>,
     newest: Option<Hour>,
+    published_steps: u64,
+    caught_up_at: Option<Hour>,
     stood: u64,
     stop: bool,
     error: Option<String>,
@@ -536,9 +538,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn try_lock<T>(mutex: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
-    if cfg!(any(test, feature = "test-support")) {
-        return Some(lock(mutex));
-    }
     match mutex.try_lock() {
         Ok(held) => Some(held),
         Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
@@ -602,6 +601,7 @@ impl Shared {
             control.head = hour;
             control.asks.clear();
             control.newest = None;
+            control.caught_up_at = None;
         });
     }
 
@@ -800,6 +800,22 @@ enum Help {
     Prepares,
 }
 
+struct StepperExit {
+    shared: Arc<Shared>,
+}
+
+impl Drop for StepperExit {
+    fn drop(&mut self) {
+        let panicked = std::thread::panicking();
+        self.shared.nudge(|control| {
+            control.stop = true;
+            if panicked && control.error.is_none() {
+                control.error = Some("playhead stepper panicked".into());
+            }
+        });
+    }
+}
+
 pub struct Playhead {
     shared: Arc<Shared>,
     stepper: Option<JoinHandle<Vec<Lane>>>,
@@ -811,14 +827,19 @@ pub struct Consumer {
     id: usize,
     reader: Reader,
     asked: std::sync::atomic::AtomicBool,
+    blocking: bool,
 }
 
 impl Consumer {
-    pub fn take(&mut self, head: Hour, out: &mut Vec<Arc<Step>>) -> usize {
+    fn lock_ring(&self) -> Option<MutexGuard<'_, Ring>> {
+        if self.blocking {
+            return Some(lock(&self.shared.ring));
+        }
+        try_lock(&self.shared.ring)
+    }
+
+    fn take_from(&self, mut ring: MutexGuard<'_, Ring>, head: Hour, out: &mut Vec<Arc<Step>>) -> usize {
         let from = out.len();
-        let Some(mut ring) = try_lock(&self.shared.ring) else {
-            return 0;
-        };
         let taken = ring.take(self.id, head, out);
         drop(ring);
         if taken > 0 {
@@ -831,13 +852,36 @@ impl Consumer {
         taken
     }
 
+    fn ask_blocking(&self, head: Hour) {
+        let head = self.shared.timeline.clamp(head);
+        let mut control = lock(&self.shared.control);
+        control.ask(Some(self.id), head);
+        drop(control);
+        self.shared.wake.notify_all();
+        if !self.asked.load(Ordering::Relaxed) {
+            lock(&self.shared.ring).asks(self.id);
+            self.asked.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub fn take(&mut self, head: Hour, out: &mut Vec<Arc<Step>>) -> usize {
+        let Some(ring) = self.lock_ring() else {
+            return 0;
+        };
+        self.take_from(ring, head, out)
+    }
+
     pub fn ahead(&self, out: &mut Vec<Arc<Step>>) {
-        if let Some(ring) = try_lock(&self.shared.ring) {
+        if let Some(ring) = self.lock_ring() {
             ring.ahead(self.id, out);
         }
     }
 
     pub fn advance(&self, head: Hour) {
+        if self.blocking {
+            self.ask_blocking(head);
+            return;
+        }
         if !self.shared.ask(Some(self.id), head) {
             return;
         }
@@ -859,7 +903,10 @@ impl Consumer {
 
     pub fn land(&mut self) {
         let id = self.id;
-        self.shared.nudge(|control| control.lands.push(id));
+        self.shared.nudge(|control| {
+            control.lands.push(id);
+            control.caught_up_at = None;
+        });
     }
 
     pub fn state(&self, step: &Step, table: usize) -> Option<State> {
@@ -873,6 +920,58 @@ impl Consumer {
 
     pub fn reader(&self) -> Reader {
         self.reader
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Consumer {
+    pub fn set_blocking(&mut self, blocking: bool) -> bool {
+        std::mem::replace(&mut self.blocking, blocking)
+    }
+
+    pub fn take_blocking(&mut self, head: Hour, out: &mut Vec<Arc<Step>>) -> usize {
+        let ring = lock(&self.shared.ring);
+        self.take_from(ring, head, out)
+    }
+
+    pub fn advance_blocking(&self, head: Hour) {
+        self.ask_blocking(head);
+    }
+
+    pub fn wait_step_after(&self, before: (Option<Hour>, u64), cap: Hour) -> Result<bool, String> {
+        loop {
+            let seen = lock(&self.shared.control).version;
+            if lock(&self.shared.ring).has_ready(self.id, cap) {
+                return Ok(true);
+            }
+            let mut control = lock(&self.shared.control);
+            if let Some(error) = &control.error {
+                return Err(error.clone());
+            }
+            if control.stop {
+                return Err("the playhead stopped".into());
+            }
+            if control.published_steps > before.1 {
+                return Ok(true);
+            }
+            if control.version != seen {
+                continue;
+            }
+            if control.newest.is_some_and(|newest| newest >= cap)
+                && control.caught_up_at.is_some_and(|at| at >= cap)
+            {
+                return Ok(false);
+            }
+            while control.version == seen {
+                if let Some(error) = &control.error {
+                    return Err(error.clone());
+                }
+                if control.stop {
+                    return Err("the playhead stopped".into());
+                }
+                control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        }
     }
 }
 
@@ -915,6 +1014,8 @@ impl Playhead {
                 lands: Vec::new(),
                 done: Vec::new(),
                 newest: None,
+                published_steps: 0,
+                caught_up_at: None,
                 stood: 0,
                 stop: false,
                 error: None,
@@ -955,6 +1056,7 @@ impl Playhead {
         }
         let held = Arc::clone(&shared);
         let stepper = std::thread::Builder::new().name("playhead stepper".into()).spawn(move || {
+            let _exit = StepperExit { shared: Arc::clone(&held) };
             entered(Thread::Stepper);
             Stepper::new(held, hook, helpers).run()
         })?;
@@ -972,6 +1074,7 @@ impl Playhead {
             id = control.next_reader;
             control.next_reader += 1;
             control.selection += 1;
+            control.caught_up_at = None;
             let since = vec![control.selection; tables.len()];
             control.readers.insert(Reader(id), Declaration { tables, since, rebuild });
         });
@@ -996,6 +1099,7 @@ impl Playhead {
                 held.since = tables.iter().map(|declared| held.tables.iter().position(|before| before == declared).map_or(stamp, |at| held.since[at])).collect();
                 held.tables = tables;
                 control.selection = stamp;
+                control.caught_up_at = None;
                 found = true;
             }
         });
@@ -1031,13 +1135,20 @@ impl Playhead {
         self.shared.nudge(|control| {
             if control.readers.remove(&reader).is_some() {
                 control.selection += 1;
+                control.caught_up_at = None;
             }
         });
     }
 
     pub fn consumer(&self, reader: Reader) -> Consumer {
         let id = lock(&self.shared.ring).join(reader);
-        Consumer { shared: Arc::clone(&self.shared), id, reader, asked: std::sync::atomic::AtomicBool::new(false) }
+        Consumer {
+            shared: Arc::clone(&self.shared),
+            id,
+            reader,
+            asked: std::sync::atomic::AtomicBool::new(false),
+            blocking: false,
+        }
     }
 
     pub fn head(&self, now: Instant) -> Hour {
@@ -1177,21 +1288,127 @@ impl Playhead {
             if let Some(error) = &control.error {
                 return Err(error.clone());
             }
+            if control.stop {
+                return Err("the playhead stopped".into());
+            }
             control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn step_state(&self) -> (Option<Hour>, u64) {
+        let control = lock(&self.shared.control);
+        (control.newest, control.published_steps)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn wait_declarations(&self) -> Result<(), String> {
+        loop {
+            let version = lock(&self.shared.control).version;
+            let (declared, counters) = (self.declarations(), self.held().2);
+            if counters.declarations_applied == declared && counters.joins_open == 0 {
+                return Ok(());
+            }
+            let mut control = lock(&self.shared.control);
+            while control.version == version {
+                if let Some(error) = &control.error {
+                    return Err(error.clone());
+                }
+                if control.stop {
+                    return Err("the playhead stopped".into());
+                }
+                control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
         }
     }
 
     #[cfg(feature = "test-support")]
     pub fn wait_for(&self, mut ready: impl FnMut() -> bool) -> Result<(), String> {
         loop {
+            let version = {
+                let control = lock(&self.shared.control);
+                if let Some(error) = &control.error {
+                    return Err(error.clone());
+                }
+                if control.stop {
+                    return Err("the playhead stopped".into());
+                }
+                control.version
+            };
             if ready() {
                 return Ok(());
             }
-            let control = lock(&self.shared.control);
+            let mut control = lock(&self.shared.control);
             if let Some(error) = &control.error {
                 return Err(error.clone());
             }
-            drop(self.shared.wake.wait_timeout(control, Duration::from_millis(50)).unwrap_or_else(std::sync::PoisonError::into_inner));
+            if control.stop {
+                return Err("the playhead stopped".into());
+            }
+            while control.version == version {
+                control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(error) = &control.error {
+                    return Err(error.clone());
+                }
+                if control.stop {
+                    return Err("the playhead stopped".into());
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn drive_until(
+        &self,
+        consumer: &mut Consumer,
+        head: Hour,
+        mut ready: impl FnMut() -> std::ops::ControlFlow<Result<(), String>>,
+    ) -> Result<(), String> {
+        let clamped = self.shared.timeline.clamp(head);
+        let mut out = Vec::new();
+        loop {
+            self.advance(head);
+            out.clear();
+            let taken = consumer.take(head, &mut out);
+            let version = {
+                let mut control = lock(&self.shared.control);
+                if control.asks.get(&None) != Some(&clamped) {
+                    if let Some(error) = &control.error {
+                        return Err(error.clone());
+                    }
+                    if control.stop {
+                        return Err("playhead stopped".into());
+                    }
+                    drop(control);
+                    std::thread::yield_now();
+                    continue;
+                }
+                if taken > 0 {
+                    control.version += 1;
+                    self.shared.wake.notify_all();
+                }
+                control.version
+            };
+            if consumer.reaches(head) != Some(false) {
+                std::thread::yield_now();
+                continue;
+            }
+            if let std::ops::ControlFlow::Break(result) = ready() {
+                return result;
+            }
+            let mut control = lock(&self.shared.control);
+            loop {
+                if let Some(error) = &control.error {
+                    return Err(error.clone());
+                }
+                if control.stop {
+                    return Err("playhead stopped".into());
+                }
+                if control.version != version {
+                    break;
+                }
+                control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
         }
     }
 
@@ -2039,8 +2256,44 @@ impl Stepper {
             self.joins_published = now;
             self.counters.joins_open = now.0;
             lock(&self.shared.report).2 = self.counters;
-            self.shared.nudge(|_| {});
+            let caught_up = self.caught_up_at();
+            self.shared.nudge(|control| self.publish_caught_up(control, caught_up));
         }
+    }
+
+    fn current(&self) -> bool {
+        self.shared.epoch.load(Ordering::Acquire) == self.epoch
+    }
+
+    fn publish_newest(&self, control: &mut Control, newest: Hour) {
+        if self.current() {
+            control.newest = Some(newest);
+        }
+    }
+
+    fn publish_caught_up(&self, control: &mut Control, caught_up: Option<Hour>) {
+        let current = control.selection == self.selection_seen
+            && control.seek.is_none()
+            && control.lands.is_empty()
+            && self.current();
+        control.caught_up_at = if current { caught_up } else { None };
+    }
+
+    fn caught_up_at(&self) -> Option<Hour> {
+        let newest = self.newest?;
+        if !self.selection_applied
+            || !self.joining.is_empty()
+            || !self.catching.is_empty()
+            || !self.owed.is_empty()
+            || !self.lands.is_empty()
+        {
+            return None;
+        }
+        self.slots
+            .iter()
+            .filter_map(|slot| slot.lane.head())
+            .min()
+            .map_or(Some(newest), |head| Some(head.min(newest)))
     }
 
     fn ends_kept(&self) -> usize {
@@ -2259,7 +2512,11 @@ impl Stepper {
         self.counters.joins_at_head += ready.len() as u64;
         self.counters.joins_open = self.joining.len() as u64;
         lock(&self.shared.report).2 = self.counters;
-        self.shared.nudge(|_| {});
+        let caught_up = self.caught_up_at();
+        self.shared.nudge(|control| {
+            control.published_steps += 1;
+            self.publish_caught_up(control, caught_up);
+        });
         Ok(true)
     }
 
@@ -2301,7 +2558,7 @@ impl Stepper {
         self.shared.queue_joins(jobs);
         self.lend_join_threads(count);
         lock(&self.shared.report).2 = self.counters;
-        self.shared.nudge(|_| {});
+        self.shared.nudge(|control| control.caught_up_at = None);
         true
     }
 
@@ -2320,6 +2577,7 @@ impl Stepper {
             let ring = lock(&self.shared.ring);
             std::mem::take(&mut self.lands).into_iter().map(|id| (id, ring.reader_of(id))).collect()
         };
+        let had_lands = !asked.is_empty();
         for (id, reader) in asked {
             let Some(reader) = reader else { continue };
             let tables: Vec<usize> = self.selection.iter().filter(|(_, selected)| selected.readings.iter().any(|reading| reading.reader == reader)).map(|(&table, _)| table).collect();
@@ -2339,6 +2597,10 @@ impl Stepper {
             jobs.push(self.join(table, &selected, readers));
         }
         let count = jobs.len();
+        if count == 0 && had_lands && self.lands.is_empty() {
+            let caught_up = self.caught_up_at();
+            self.shared.nudge(|control| self.publish_caught_up(control, caught_up));
+        }
         self.shared.queue_joins(jobs);
         self.lend_join_threads(count);
         count > 0
@@ -2466,7 +2728,11 @@ impl Stepper {
         }
         self.lands.extend(landing);
         lock(&self.shared.report).2 = self.counters;
-        self.shared.nudge(|control| control.newest = Some(hour));
+        let caught_up = self.caught_up_at();
+        self.shared.nudge(|control| {
+            self.publish_newest(control, hour);
+            self.publish_caught_up(control, caught_up);
+        });
         Ok(true)
     }
 
@@ -2519,6 +2785,7 @@ impl Stepper {
             let ring = lock(&self.shared.ring);
             self.lands.iter().map(|&id| (id, ring.reader_of(id))).collect()
         };
+        let had_lands = !asked.is_empty();
         self.lands.clear();
         for (id, reader) in asked {
             let Some(reader) = reader else { continue };
@@ -2530,6 +2797,10 @@ impl Stepper {
             targets.push((Some(id), reader, tables.into_iter().filter(|&table| self.slot_of(table).is_some()).collect()));
         }
         if targets.is_empty() {
+            if had_lands && self.lands.is_empty() {
+                let caught_up = self.caught_up_at();
+                self.shared.nudge(|control| self.publish_caught_up(control, caught_up));
+            }
             return Ok(false);
         }
         let mut work: Vec<(usize, usize, Reader, Vec<usize>, Rebuild)> = Vec::new();
@@ -2592,7 +2863,11 @@ impl Stepper {
         }
         drop(ring);
         lock(&self.shared.report).2 = self.counters;
-        self.shared.nudge(|_| {});
+        let caught_up = self.caught_up_at();
+        self.shared.nudge(|control| {
+            control.published_steps += 1;
+            self.publish_caught_up(control, caught_up);
+        });
         Ok(true)
     }
 
@@ -2726,7 +3001,11 @@ impl Stepper {
         let held = catch.lanes();
         self.shared.free(held);
         lock(&self.shared.report).2 = self.counters;
-        self.shared.nudge(|_| {});
+        let caught_up = self.caught_up_at();
+        self.shared.nudge(|control| {
+            control.published_steps += 1;
+            self.publish_caught_up(control, caught_up);
+        });
         Ok(true)
     }
 
@@ -2748,6 +3027,9 @@ impl Stepper {
             }
             self.counters.landed_behind += 1;
             moved = true;
+        }
+        if moved {
+            self.shared.nudge(|control| control.caught_up_at = None);
         }
         moved
     }
@@ -2907,7 +3189,11 @@ impl Stepper {
                     let held = catch.lanes();
                     self.shared.free(held);
                     lock(&self.shared.report).2 = self.counters;
-                    self.shared.nudge(|_| {});
+                    let caught_up = self.caught_up_at();
+                    self.shared.nudge(|control| {
+                        control.published_steps += 1;
+                        self.publish_caught_up(control, caught_up);
+                    });
                     moved = true;
                 }
                 Err(steps) => {
@@ -2938,7 +3224,12 @@ impl Stepper {
                 self.newest = Some(last);
                 self.counters.steps += 1;
                 lock(&self.shared.report).2 = self.counters;
-                self.shared.nudge(|control| control.newest = Some(last));
+                let caught_up = self.caught_up_at();
+                self.shared.nudge(|control| {
+                    self.publish_newest(control, last);
+                    control.published_steps += 1;
+                    self.publish_caught_up(control, caught_up);
+                });
             }
             Err(step) => self.shared.free(step),
         }

@@ -82,7 +82,7 @@ pub(super) fn parse(countries: CountriesView<'_>) -> io::Result<BTreeMap<Vec<u8>
 mod tests {
     use super::*;
     fn sample(input: &[u8]) -> io::Result<BTreeMap<Vec<u8>, Vec<Report>>> {
-        let tree = content_reader_core::parser::parse_save(input)?;
+        let tree = content_reader_parser::parser::parse_save(input)?;
         parse(CountriesView::from_root(&tree.items)?)
     }
     #[test]

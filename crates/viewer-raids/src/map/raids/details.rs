@@ -1,8 +1,8 @@
 use super::tooltips::Details;
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use std::collections::BTreeMap;
-use viewer_foundation::map::{
-    gui_resources::hit_rectangle,
+use viewer_native_gui::{
+    gui_resources::{hit_rectangle, hit_rectangles},
     native_gui::{self, SpriteSetter, lifecycle::Instance},
     native_resources::Context,
     native_windows::{RAID_DETAILS_ITEM_WINDOW, RAID_DETAILS_WINDOW, RAID_TYPE_ICON_WINDOW},
@@ -134,7 +134,7 @@ pub(super) fn draw(
     origin: [i32; 2],
     batch: &mut Batch,
     notes: &mut BTreeMap<String, usize>,
-) -> Option<(Option<[f32; 4]>, Vec<TypeHit>)> {
+) -> Option<(Vec<[f32; 4]>, Vec<TypeHit>)> {
     match draw_inner(context, details, origin, batch, notes) {
         Ok(drawn) => drawn,
         Err(why) => {
@@ -150,7 +150,7 @@ fn draw_inner(
     origin: [i32; 2],
     batch: &mut Batch,
     notes: &mut BTreeMap<String, usize>,
-) -> Result<Option<(Option<[f32; 4]>, Vec<TypeHit>)>, String> {
+) -> Result<Option<(Vec<[f32; 4]>, Vec<TypeHit>)>, String> {
     let error = |refusals: native_gui::Refusals| format!("{refusals:?}");
     let controls = controls(context)?;
     let resources = context.resources;
@@ -206,20 +206,24 @@ fn draw_inner(
         parts[at].extend(holder.place_scrollbar(&rows));
     }
     native_gui::draw_composed(&layout, &parts, origin, resources, batch).map_err(|why| format!("{why:?}"))?;
-    Ok(Some((hit_rectangle(controls.panel, &layout, origin, resources, notes).map(|hit| hit.rect), hits)))
+    Ok(Some((
+        hit_rectangles(controls.panel, &layout, origin, resources, notes)
+            .into_iter()
+            .map(|hit| hit.rect)
+            .collect(),
+        hits,
+    )))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use super::super::tooltips::DetailEntry;
-    use viewer_foundation::map::{native_resources::Context, test_support::gui};
+    use viewer_native_gui::{native_resources::Context, test_support::gui};
 
     #[test]
-    // quarantine: #161 the drawn background does not contribute the panel's pointer hit
-    #[ignore]
     fn an_opened_details_window_draws_its_panel_rows_and_type_buttons() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let windows = gui::windows(
             br#"guiTypes = {
             containerWindowType = { name = raid_map_target_details_window size = { width = 0 height = 0 }
@@ -235,7 +239,7 @@ mod tests {
                     maxWidth = 180 maxHeight = 16 fixedsize = yes }
                 gridboxtype = { name = raid_type_icons_grid position = { x = 10 y = 20 }
                     size = { width = 210 height = 38 } slotsize = { width = 38 height = 38 }
-                    add_horizontal = yes } }
+                    format = UPPER_LEFT add_horizontal = yes } }
             containerWindowType = { name = raid_type_icon_entry size = { width = 38 height = 38 }
                 buttonType = { name = raid_type_button spriteType = GFX_odd } } }"#,
         );
@@ -255,7 +259,8 @@ mod tests {
         let drawn = draw(&context, &details, [400, 300], &mut batch, &mut notes);
         assert!(notes.is_empty(), "{notes:?}");
         let (panel, buttons) = drawn.expect("the opened window draws its panel");
-        let panel = panel.expect("a panel drawn with a sprite that takes the pointer blocks it");
+        assert_eq!(panel.len(), 1, "a panel drawn with a sprite that takes the pointer blocks it");
+        let panel = panel[0];
         assert!(!batch.quads.is_empty());
         assert_eq!(buttons.iter().map(|button| (button.entry, button.kind)).collect::<Vec<_>>(), [(0, 3)]);
         assert_eq!(
@@ -271,8 +276,138 @@ mod tests {
         let context = Context { resources: &resources, windows: &windows, viewport: [2048, 1152], time: Some(0.0) };
         let mut batch = Batch::default();
         let (panel, through) = draw(&context, &details, [400, 300], &mut batch, &mut notes).expect("the opened window draws");
-        assert_eq!(panel, None, "an always-transparent panel blocks nothing");
+        assert!(panel.is_empty(), "an always-transparent panel blocks nothing");
         assert!(!batch.quads.is_empty());
         assert_eq!(through.iter().map(|button| (button.entry, button.kind, button.rect)).collect::<Vec<_>>(), [(0, 3, button)]);
+        let transparent_windows = gui::windows(
+            br#"guiTypes = {
+            containerWindowType = { name = raid_map_target_details_window size = { width = 0 height = 0 }
+                clipping = no orientation = center
+                containerWindowType = { name = raid_target_details position = { x = 20 y = -70 }
+                    size = { width = 200 height = 85 } orientation = center_left clipping = no
+                    background = { name = Background spriteType = GFX_even alwaystransparent = yes }
+                    instantTextboxType = { name = raid_targets_text font = Main_14 maxWidth = 200 }
+                    smoothListBoxType = { name = raid_target_entries position = { x = 0 y = 25 }
+                        size = { x = 240 y = 275 } } } }
+            containerWindowType = { name = raid_target_entries_item size = { width = 240 height = 62 }
+                instantTextboxType = { name = raid_target_text position = { x = 10 y = 0 } font = Main_14
+                    maxWidth = 180 maxHeight = 16 fixedsize = yes }
+                gridboxtype = { name = raid_type_icons_grid position = { x = 10 y = 20 }
+                    size = { width = 210 height = 38 } slotsize = { width = 38 height = 38 }
+                    format = UPPER_LEFT add_horizontal = yes } }
+            containerWindowType = { name = raid_type_icon_entry size = { width = 38 height = 38 }
+                buttonType = { name = raid_type_button spriteType = GFX_odd } } }"#,
+        );
+        resources.sprites.get_mut("GFX_even").expect("the fixture's background sprite").hit = native_gui::Hit::Frame;
+        let context = Context { resources: &resources, windows: &transparent_windows, viewport: [2048, 1152], time: Some(0.0) };
+        let mut batch = Batch::default();
+        let (panel, through) = draw(&context, &details, [400, 300], &mut batch, &mut notes).expect("the opened window draws");
+        assert!(notes.is_empty(), "{notes:?}");
+        assert!(panel.is_empty(), "an always_transparent background passes the pointer through");
+        assert_eq!(through.iter().map(|button| (button.entry, button.kind, button.rect)).collect::<Vec<_>>(), [(0, 3, button)]);
+    }
+
+    #[test]
+    fn separated_panel_backgrounds_do_not_block_the_gap_between_them() {
+        content_reader_script::test_game::enter();
+        let windows = gui::windows(
+            br#"guiTypes = {
+            containerWindowType = { name = raid_map_target_details_window size = { width = 0 height = 0 }
+                clipping = no orientation = center
+                containerWindowType = { name = raid_target_details position = { x = 20 y = -70 }
+                    size = { width = 200 height = 85 } orientation = center_left clipping = no
+                    background = { name = Left position = { x = 0 y = 0 } spriteType = GFX_even }
+                    background = { name = Right position = { x = 40 y = 0 } spriteType = GFX_even }
+                    instantTextboxType = { name = raid_targets_text font = Main_14 maxWidth = 200 }
+                    smoothListBoxType = { name = raid_target_entries position = { x = 0 y = 25 }
+                        size = { x = 240 y = 275 } } } }
+            containerWindowType = { name = raid_target_entries_item size = { width = 240 height = 62 }
+                instantTextboxType = { name = raid_target_text position = { x = 10 y = 0 } font = Main_14
+                    maxWidth = 180 maxHeight = 16 fixedsize = yes }
+                gridboxtype = { name = raid_type_icons_grid position = { x = 10 y = 20 }
+                    size = { width = 210 height = 38 } slotsize = { width = 38 height = 38 }
+                    format = UPPER_LEFT add_horizontal = yes } }
+            containerWindowType = { name = raid_type_icon_entry size = { width = 38 height = 38 }
+                buttonType = { name = raid_type_button spriteType = GFX_odd } } }"#,
+        );
+        let mut resources = gui::fixture();
+        resources.physical = Some([2048, 1152]);
+        let context = Context { resources: &resources, windows: &windows, viewport: [2048, 1152], time: Some(0.0) };
+        let details = super::super::tooltips::Details {
+            header: Ok("A".into()),
+            entries: vec![DetailEntry {
+                scope: replay_data::rows::RaidScope { building_type: 7, ..Default::default() },
+                name: Ok("A".into()),
+                icons: Ok(vec![(3, "GFX_odd".into(), true)]),
+            }],
+        };
+        let mut batch = Batch::default();
+        let mut notes = BTreeMap::new();
+        let (rects, _) = draw(&context, &details, [400, 300], &mut batch, &mut notes)
+            .expect("the opened window draws its panel");
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(rects.len(), 2, "{rects:?}");
+        let left = rects[0][0];
+        let top = rects[0][1];
+        let hits = |point: [f32; 2]| {
+            rects
+                .iter()
+                .any(|rect| viewer_runtime::geometry::contains(*rect, point))
+        };
+        assert!(hits([left + 10.0, top + 5.0]), "{rects:?}");
+        assert!(hits([left + 50.0, top + 5.0]), "{rects:?}");
+        assert!(!hits([left + 30.0, top + 5.0]), "gap must pass through: {rects:?}");
+    }
+
+    #[test]
+    fn unnamed_separated_panel_backgrounds_hit_independently() {
+        content_reader_script::test_game::enter();
+        let windows = gui::windows(
+            br#"guiTypes = {
+            containerWindowType = { name = raid_map_target_details_window size = { width = 0 height = 0 }
+                clipping = no orientation = center
+                containerWindowType = { name = raid_target_details position = { x = 20 y = -70 }
+                    size = { width = 200 height = 85 } orientation = center_left clipping = no
+                    background = { position = { x = 0 y = 0 } spriteType = GFX_even }
+                    background = { position = { x = 40 y = 0 } spriteType = GFX_even }
+                    instantTextboxType = { name = raid_targets_text font = Main_14 maxWidth = 200 }
+                    smoothListBoxType = { name = raid_target_entries position = { x = 0 y = 25 }
+                        size = { x = 240 y = 275 } } } }
+            containerWindowType = { name = raid_target_entries_item size = { width = 240 height = 62 }
+                instantTextboxType = { name = raid_target_text position = { x = 10 y = 0 } font = Main_14
+                    maxWidth = 180 maxHeight = 16 fixedsize = yes }
+                gridboxtype = { name = raid_type_icons_grid position = { x = 10 y = 20 }
+                    size = { width = 210 height = 38 } slotsize = { width = 38 height = 38 }
+                    format = UPPER_LEFT add_horizontal = yes } }
+            containerWindowType = { name = raid_type_icon_entry size = { width = 38 height = 38 }
+                buttonType = { name = raid_type_button spriteType = GFX_odd } } }"#,
+        );
+        let mut resources = gui::fixture();
+        resources.physical = Some([2048, 1152]);
+        let context = Context { resources: &resources, windows: &windows, viewport: [2048, 1152], time: Some(0.0) };
+        let details = super::super::tooltips::Details {
+            header: Ok("A".into()),
+            entries: vec![DetailEntry {
+                scope: replay_data::rows::RaidScope { building_type: 7, ..Default::default() },
+                name: Ok("A".into()),
+                icons: Ok(vec![(3, "GFX_odd".into(), true)]),
+            }],
+        };
+        let mut batch = Batch::default();
+        let mut notes = BTreeMap::new();
+        let (rects, _) = draw(&context, &details, [400, 300], &mut batch, &mut notes)
+            .expect("the opened window draws its panel");
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(rects.len(), 2, "{rects:?}");
+        let left = rects[0][0];
+        let top = rects[0][1];
+        let hits = |point: [f32; 2]| {
+            rects
+                .iter()
+                .any(|rect| viewer_runtime::geometry::contains(*rect, point))
+        };
+        assert!(hits([left + 10.0, top + 5.0]), "{rects:?}");
+        assert!(hits([left + 50.0, top + 5.0]), "{rects:?}");
+        assert!(!hits([left + 30.0, top + 5.0]), "gap must pass through: {rects:?}");
     }
 }

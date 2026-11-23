@@ -2,20 +2,25 @@ import { useMemo, useRef } from 'react';
 import type { OptionChoices, WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
 import { resolveWindow } from './model';
+import { useGate } from './regionGate.ts';
+import { SPEC } from './regionTime.ts';
 import { windowOf, windowsOf } from './heldWindows.ts';
 import { useFrameWindows } from '../widgets/army-size/frameWindows.ts';
 import { airCauseName, validateMilitaryAirWindow } from './militaryAirLedger';
 import { LedgerJoin, ledgerWindows } from './militaryAirJoin.ts';
 import type { LedgerReach } from './militaryAirJoin.ts';
 import type { MilitaryAirFamily, MilitaryAirMetric, MilitaryAirReply } from '../generated/dashboard';
+import { productRequest } from './request.ts';
 
 export function useMilitaryAirLedger(widget: WidgetSpec, runtime: WidgetRuntime, family: MilitaryAirFamily, active: boolean,
   query?: { regions?: readonly number[]; causes?: readonly number[]; metric: MilitaryAirMetric }, reach: LedgerReach = 'end') {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const range = track && widget.time.mode === 'range' ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
+  const gate = useGate(runtime, widget, SPEC, active);
+  const ranged = widget.time.mode === 'range';
+  const range = ranged ? gate.window : null;
   const top = query && widget.countries.kind === 'group' && widget.countries.group.type === 'top' ? { count: widget.countries.group.count, metric: query.metric } : null;
   const start = range?.firstHour ?? track?.branch.firstHour ?? 0, end = range?.lastHour ?? track?.branch.lastHour ?? 0;
-  const params = track ? { branchId: track.branch.id, family, regions: query?.regions ?? [], causes: query?.causes ?? [], fromHour: range?.firstHour ?? null, top } : null;
+  const params = track && (!ranged || range) ? { branchId: track.branch.id, family, regions: query?.regions ?? [], causes: query?.causes ?? [], fromHour: range?.firstHour ?? null, top } : null;
   const identity = track && params ? JSON.stringify([track.source.id, track.source.revision, params]) : null;
   const following = widget.time.mode === 'follow';
   const shownAt = (hour: number) => Math.min(end, Math.max(start, (track && resolveWindow(widget, track, runtime.tracks, hour)?.lastHour) ?? end));
@@ -24,8 +29,8 @@ export function useMilitaryAirLedger(widget: WidgetSpec, runtime: WidgetRuntime,
     const stops = [runtime.clock.subscribeFrame(changed), runtime.clock.subscribe(changed)];
     return () => { for (const stop of stops) stop(); };
   }, [runtime.clock]);
-  const windows = useFrameWindows<MilitaryAirReply>(runtime.client, identity, window => ({ sourceId: track!.source.id, revision: track!.source.revision,
-    product: 'military-air-ledger', params: { ...params!, window } }), () => wantedAt(runtime.clock.getHour()), subscribe, active, validateMilitaryAirWindow, track?.source);
+  const windows = useFrameWindows<MilitaryAirReply>(runtime.client, identity, window => (productRequest({ sourceId: track!.source.id, revision: track!.source.revision,
+    product: 'military-air-ledger', params: { ...params!, window } })), () => wantedAt(runtime.clock.getHour()), subscribe, active, validateMilitaryAirWindow, track?.source);
   const shown = windowOf(shownAt(runtime.clock.getHour()));
   const first = reach === 'end' ? windowOf(start) : shown;
   const joiner = useRef<LedgerJoin | null>(null);

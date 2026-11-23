@@ -1033,3 +1033,92 @@ fn texts_sharing_a_digest_each_reuse_their_own_id_across_a_trim() {
     assert_eq!(strings.next(), 3);
     COLLIDING.set(false);
 }
+
+#[test]
+fn key_index_and_strings_use_keyed_hashing_and_preserve_pack_lookup_parity() {
+    use std::hash::BuildHasher;
+
+    let index = KeyIndex::default();
+    let _: &foldhash::fast::RandomState = &index.hasher;
+    let mut strings = Strings::default();
+    let _: &foldhash::fast::RandomState = strings.held.hasher();
+    let _: &foldhash::fast::RandomState = strings.pinned.hasher();
+    strings.intern(b"alpha").unwrap();
+    let text_index = strings.by_text.as_ref().expect("by_text built on intern");
+    let _: &foldhash::fast::RandomState = &text_index.hasher;
+    let _: &foldhash::fast::RandomState = text_index.first.hasher();
+    let _: &foldhash::fast::RandomState = text_index.more.hasher();
+
+    let legacy_bucket = |key: u128, mask: usize| -> usize {
+        let mixed = (key as u64 ^ (key >> 64) as u64 ^ (key >> 64) as u64 >> 29).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        (mixed >> 32) as usize & mask
+    };
+    let count = 512usize;
+    let buckets = count.next_power_of_two();
+    let mask = buckets - 1;
+    let mut adversarial = Vec::with_capacity(count);
+    let mut candidate = 1u128;
+    while adversarial.len() < count {
+        if legacy_bucket(candidate, mask) == 0 {
+            adversarial.push(candidate);
+        }
+        candidate += 1;
+    }
+    assert!(adversarial.iter().all(|&key| legacy_bucket(key, mask) == 0));
+
+    let seeded = foldhash::fast::FixedState::with_seed(0x9e37_79b9_7f4a_7c15);
+    let mut load = vec![0u32; buckets];
+    for &key in &adversarial {
+        load[seeded.hash_one(key) as usize & mask] += 1;
+    }
+    let longest = *load.iter().max().unwrap();
+    assert!(longest <= 12, "{longest} legacy-bucket keys shared a bucket under explicit foldhash seed");
+
+    let mut table = TableState::new(&KINDS);
+    let mut twin = TableState::new(&KINDS);
+    for (slot, &key) in adversarial.iter().enumerate() {
+        table.insert_at(slot as u32, key).unwrap();
+        twin.insert_at(slot as u32, key).unwrap();
+    }
+    table.index_keys();
+    twin.index_keys();
+    assert_eq!(table, twin);
+    for (slot, &key) in adversarial.iter().enumerate() {
+        assert_eq!(table.find(key), Some(slot as u32));
+        assert_eq!(table.slot(key), Some(slot as u32));
+    }
+    assert_eq!(table.find(u128::MAX), None);
+
+    for slot in (0..count as u32).step_by(2) {
+        assert_eq!(table.delete(slot).unwrap(), adversarial[slot as usize]);
+    }
+    table.pack().unwrap();
+    table.index_keys();
+    for (slot, &key) in adversarial.iter().enumerate() {
+        if slot % 2 == 0 {
+            assert_eq!(table.find(key), None);
+        } else {
+            assert_eq!(table.find(key), Some((slot / 2) as u32));
+            assert_eq!(table.key((slot / 2) as u32), Some(key));
+        }
+    }
+}
+
+#[test]
+fn put_rows_rejects_duplicate_live_keys_by_name() {
+    let mut table = TableState::new(&KINDS);
+    table.set_slots(3);
+    let refused = table.put_rows(0, 3, &[0b101], &[0x77, 0x77]).unwrap_err().to_string();
+    assert!(refused.contains("0x77") && refused.contains("already held"), "{refused}");
+
+    let mut unindexed = TableState::new(&KINDS);
+    unindexed.insert_at(0, 0x88).unwrap();
+    unindexed.insert_at(2, 0x88).unwrap();
+    assert_eq!(unindexed.slot(0x88), Some(0));
+    let refused = unindexed.try_index_keys().unwrap_err().to_string();
+    assert!(refused.contains("0x88") && refused.contains("already held"), "{refused}");
+    assert_eq!(unindexed.delete(0).unwrap(), 0x88);
+    assert_eq!(unindexed.find(0x88), Some(2));
+    assert_eq!(unindexed.slot(0x88), Some(2));
+    unindexed.try_index_keys().unwrap();
+}

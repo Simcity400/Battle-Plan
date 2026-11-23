@@ -4,4 +4,4 @@ Keep a terrain block list independently for each wrap view. Compare the drawn bl
 
 Reuse the exact previous block-list allocation when that test succeeds. Retained draw preparation can compare its per-view keys by allocation identity and keep bindings even if another part of the cover changed. Every new keyed view still needs its own compatible attachments, sampled textures and draw state. The regression test changes a block and replaces a rim with a byte-equal allocation separately, so both invalidation paths are exercised.
 
-[Retained per-view cuts and render bindings](../../crates/viewer-world/src/map/terrain_shader.rs)
+[Retained per-view cuts and render bindings](../../crates/viewer-terrain/src/terrain_shader.rs)

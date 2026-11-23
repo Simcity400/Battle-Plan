@@ -134,26 +134,42 @@ pub fn presize(demand: usize) {
         LEDGER.prepare(demand);
     }
 }
-pub fn lost_drain() {
+/// # Safety
+/// Caller must own the active session's recovery or publication failure path (or an isolated test
+/// owning nuclear-strike observation) when invalidating nuclear-strike drains.
+pub unsafe fn lost_drain() {
     if !foreign_test() {
-        LEDGER.lost_drain();
+        // SAFETY: Caller owns the nuclear-strike recovery or publication failure path.
+        unsafe { LEDGER.lost_drain() };
     }
 }
-pub fn lost_output(entries: usize) {
+/// # Safety
+/// Caller must own the active session's projection or publication failure path (or an isolated
+/// test owning nuclear-strike observation) when recording lost nuclear-strike output.
+pub unsafe fn lost_output(entries: usize) {
     if !foreign_test() {
-        LEDGER.lost_output(entries);
+        // SAFETY: Caller owns the nuclear-strike projection or publication failure path.
+        unsafe { LEDGER.lost_output(entries) };
     }
 }
-pub fn boundary(clock: Option<Clock>) {
+/// # Safety
+/// Caller must run on the admitted hourly capture boundary as the sole consumer advancing
+/// nuclear-strike observation (or an isolated test owning nuclear-strike observation).
+pub unsafe fn boundary(clock: Option<Clock>) {
     if !foreign_test() {
-        LEDGER.boundary(clock);
+        // SAFETY: Caller runs on the admitted hourly capture boundary for nuclear-strike observation.
+        unsafe { LEDGER.boundary(clock) };
     }
 }
-pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
+/// # Safety
+/// Caller must be the admitted hourly capture consumer draining nuclear-strike events while
+/// observer storage stays live and teardown is excluded.
+pub unsafe fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
     if foreign_test() || UNHOOKED.get().is_some() || !ENABLED.load(Ordering::SeqCst) {
         return Err("nuclear strike hooks unavailable (see status unhooked)");
     }
-    LEDGER.drain(output)
+    // SAFETY: Caller holds hourly capture admission as the sole nuclear-strikes consumer.
+    unsafe { LEDGER.drain(output) }
 }
 
 pub fn forwarder(part: Part, forwarding: bool) {

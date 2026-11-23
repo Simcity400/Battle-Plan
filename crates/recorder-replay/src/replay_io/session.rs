@@ -4,18 +4,11 @@ use super::{
     session_admissions, write_json,
 };
 use crate::recording_name::{self, Contents};
-use replay::{
-    campaign::{
-        RecoveryNote, Replay, Revision, Summary,
-        live::{Admit, Applied, Asked, Committed, FactsFile, Host, LiveWriter, Progress},
-        writer,
-    },
-    columnar_frames::{Open, is_not_saved},
-    columnar_journal::{Journal, Source},
-    publication,
-    recorder_settings::RecorderSettings,
-    recording_files::{self, NamesLock},
-};
+use replay_recording::{records::RecoveryNote, columnar_frames::{Open, is_not_saved}};
+use replay::campaign::{Replay, Revision, Summary, live::{Admit, Applied, Asked, Committed, FactsFile, Host, LiveWriter, Progress}, writer};
+use replay_journal::columnar_journal::{Journal, Source};
+use replay_settings::{publication, recorder_settings::RecorderSettings};
+use replay_files::recording_files::{self, NamesLock};
 use replay_columnar::{manifest::Status, store::Store};
 use replay_data::{
     BranchId, Hour, format::FormatVersion, identity::Identity, identity::is_campaign_uuid,
@@ -238,7 +231,7 @@ pub fn journal_campaigns(session_dir: &Path) -> Result<Vec<String>> {
             continue;
         }
         let held =
-            replay::columnar_journal::segments(&path).map_err(|error| failure(&path, error))?;
+            replay_journal::columnar_journal::segments(&path).map_err(|error| failure(&path, error))?;
         if !held.is_empty()
             && let Some(name) = entry.file_name().to_str()
         {
@@ -558,13 +551,14 @@ impl Campaign {
         let state_path = campaign_dir.join(STATE_FILE);
         let source = source_of(session_dir)?;
         let open = || {
-            LiveWriter::open(
+            LiveWriter::open_with(
                 &path,
                 &state_path,
                 &source,
                 capture,
                 block_settings(),
                 Vec::new(),
+                recorder_derive::writers(),
             )
         };
         let writing = read_writing(&campaign_dir)?;
@@ -574,7 +568,7 @@ impl Campaign {
                     && is_unsaved_recording(&path)
                     && writing.is_some_and(|writing| writing.before.is_none())
                     && no_revision(&path)
-                    && replay::columnar_journal::segments(&campaign_dir).is_ok_and(|held| {
+                    && replay_journal::columnar_journal::segments(&campaign_dir).is_ok_and(|held| {
                         held.iter()
                             .any(|(held, segment, _)| *held == capture && *segment == 0)
                     }) =>
@@ -810,6 +804,12 @@ impl Live {
         }))
     }
 
+    pub fn forget_save(&mut self, campaign: &str) {
+        if let Some(held) = self.campaigns.get_mut(campaign) {
+            held.saving = false;
+        }
+    }
+
     pub fn discard(
         &mut self,
         session_dir: &Path,
@@ -965,10 +965,11 @@ fn place(
         .map_err(|error| failure(naming.settings, error))?;
     if is_unsaved_recording(path) {
         if settings.name_chosen(&folder, campaign.as_bytes()) {
-            RecorderSettings::update_at(naming.settings, |settings| {
-                settings.choose_name(&folder, campaign, false)
-            })
-            .map_err(|error| failure(naming.settings, error))?;
+            drop(
+                RecorderSettings::update_at(naming.settings, |settings| settings.choose_name(&folder, campaign, false))
+                    .map_err(|error| failure(naming.settings, error))?
+                    .logged("The recording’s chosen name"),
+            );
         }
         let placed = recording_files::place_new(path, replay_dir, &stem)
             .map_err(|error| failure(path, error))?;
@@ -1094,7 +1095,7 @@ fn note_discard_locked(
     campaign: &str,
     dropped: Discarded,
 ) -> Result<()> {
-    let newest = || -> Result<Option<replay::columnar_frames::Recording>> {
+    let newest = || -> Result<Option<replay_recording::columnar_frames::Recording>> {
         locate(replay_dir, campaign)?
             .map(|path| newest_log(&path).map_err(|error| failure(&path, error)))
             .transpose()
@@ -1176,7 +1177,7 @@ fn finish_discard(campaign_dir: &Path, replay_dir: &Path, campaign: &str) -> Res
         _ => Ok(()),
     };
     gone(&campaign_dir.join(STATE_FILE))?;
-    for (_, _, path) in replay::columnar_journal::segments(campaign_dir)
+    for (_, _, path) in replay_journal::columnar_journal::segments(campaign_dir)
         .map_err(|error| failure(campaign_dir, error))?
     {
         gone(&path)?;
@@ -1238,7 +1239,7 @@ pub fn unsaved(replay_dir: &Path, campaign: &str) -> Result<Option<Unsaved>> {
 
 pub fn unsaved_bytes(session_dir: &Path, replay_dir: &Path, campaign: &str) -> Option<u64> {
     let mut bytes = 0;
-    for (_, _, path) in replay::columnar_journal::segments(&session_dir.join(campaign)).ok()? {
+    for (_, _, path) in replay_journal::columnar_journal::segments(&session_dir.join(campaign)).ok()? {
         bytes += fs::metadata(&path).ok()?.len();
     }
     if let Some(path) = locate(replay_dir, campaign).ok()? {
@@ -1377,8 +1378,8 @@ pub(super) fn attach_facts(session_dir: &Path, path: &Path) -> Result<bool> {
     Ok(true)
 }
 
-fn newest_log(path: &Path) -> std::io::Result<replay::columnar_frames::Recording> {
-    replay::columnar_frames::Recording::open_path_as(path, Open::Newest)
+fn newest_log(path: &Path) -> std::io::Result<replay_recording::columnar_frames::Recording> {
+    replay_recording::columnar_frames::Recording::open_path_as(path, Open::Newest)
 }
 
 fn no_revision(path: &Path) -> bool {

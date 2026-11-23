@@ -34,7 +34,7 @@ fn fixture() -> (super::super::Content, DecodedFrame, BTreeMap<u32, u32>) {
         .into_iter()
         .collect(),
         labels: std::sync::Arc::new(
-            viewer_foundation::recorded_labels::RecordedLabels::from_localisation(
+            viewer_runtime::recorded_labels::RecordedLabels::from_localisation(
                 &Default::default(),
             ),
         ),

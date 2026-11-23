@@ -1,6 +1,6 @@
 use super::test_support::*;
 use super::*;
-use content_reader_core::buildings::BuildingType;
+use content_reader_key_names::buildings::BuildingType;
 use content_reader_raids::{raids::RaidType as Kind, raids::TargetType};
 use replay_data::{
     rows::BuildingRow, rows::CountryBuildingResourceRow, rows::CountryLinkRow, rows::CountryRow,
@@ -14,22 +14,22 @@ use replay_frame::{frame::DecodedFrame, frame::TableView};
 use script::LeaderRoles;
 use std::sync::Arc;
 use std::sync::Mutex;
-use viewer_foundation::map::camera::MapDefines;
-use viewer_foundation::map::camera::MapSize;
-use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
-use viewer_foundation::map::icon_windows::PoolView;
-use viewer_foundation::map::native_resources::Context;
+use viewer_gpu::camera::MapDefines;
+use viewer_gpu::camera::MapSize;
+use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
+use viewer_native_gui::icon_windows::PoolView;
+use viewer_native_gui::native_resources::Context;
 #[cfg(test)]
-use viewer_foundation::map::test_support::gui;
-use viewer_foundation::parallel::Workers;
-use viewer_foundation::table_access::Refusals;
+use viewer_native_gui::test_support::gui;
+use viewer_runtime::parallel::Workers;
+use dashboard_text::table_access::Refusals;
 
 
 fn scripted(assets: &mut RaidAssets, text: &str) {
     let mut triggers = (*assets.trigger_content.triggers).clone();
-    triggers.scripted = content_reader_core::scripted_triggers::ScriptedTriggers::parse(
+    triggers.scripted = content_reader_script::scripted_trigger_grammar::ScriptedTriggers::parse(
         &[("common/scripted_triggers/test.txt", text.as_bytes())],
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     );
     assets.trigger_content.triggers = Arc::new(triggers);
 }
@@ -46,7 +46,7 @@ fn the_raid_priority_is_the_define_as_a_signed_byte() {
 #[test]
 fn the_target_batch_is_at_least_one() {
     let batch = |source: &str| {
-        let defines = content_reader_core::defines::Defines::new().unwrap();
+        let defines = content_reader_defines::defines::Defines::new().unwrap();
         defines
             .load("common/defines/00_defines.lua", source.as_bytes())
             .unwrap();
@@ -352,7 +352,7 @@ fn offered(assets: &RaidAssets, frame: &DecodedFrame) -> (Vec<String>, RaidRepor
 
 #[test]
 fn the_cache_country_uses_the_recorded_list_and_others_evaluate_allowed() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let mut assets = assets();
     assets.catalog.types[0].allowed = parse("always = no");
     let mut frame = frame();
@@ -577,7 +577,7 @@ fn a_state_target_resolves_to_the_province_nearest_its_centre() {
 
 #[test]
 fn icons_draw_at_the_top_priority_inside_the_height_band_nearest_last() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let icons = RaidIcons {
         icons: vec![
             RaidIcon {
@@ -614,7 +614,7 @@ fn icons_draw_at_the_top_priority_inside_the_height_band_nearest_last() {
                     height,
                     map: MapSize::TEST,
                     defines: MapDefines::test(),
-                    pose: viewer_foundation::map::camera::Pose::Map,
+                    pose: viewer_gpu::camera::Pose::Map,
                 },
                 viewport: [2048, 1152],
                 ui_scale: 1.0,
@@ -695,7 +695,7 @@ fn a_type_the_port_cannot_use_leaves_its_targets_undecided_by_name() {
     let declaration = kind("mine", TargetType::Provinces(vec![4]));
     assets.catalog.uncertain = vec![content_reader_raids::raids::UncertainType {
         name: "mine".into(),
-        kind: content_reader_core::DiagnosticKind::Refused,
+        kind: content_reader_parser::DiagnosticKind::Refused,
         reason: "it is declared more than once".into(),
         declarations: vec![declaration.clone(), declaration],
     }];
@@ -781,7 +781,7 @@ fn an_incoming_raid_of_an_unknown_type_counts_its_stand_in_glyph() {
 
 #[test]
 fn a_scripted_trigger_with_parameters_reads_as_no_like_the_game() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let mut assets = assets();
     scripted(
         &mut assets,
@@ -809,7 +809,7 @@ fn a_scripted_trigger_with_parameters_reads_as_no_like_the_game() {
 
 #[test]
 fn has_tech_is_unknown_when_a_completed_row_has_no_definition() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     use replay_data::{rows::ResearchTechnologyRow, rows::TechnologyDefinitionRow};
     let assets = assets();
     let mut frame = frame();
@@ -847,7 +847,7 @@ fn has_tech_is_unknown_when_a_completed_row_has_no_definition() {
 
 #[test]
 fn has_tech_uses_first_indexed_case_insensitive_name_and_exact_classifier() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     use replay_data::{rows::ResearchTechnologyRow, rows::TechnologyDefinitionRow};
     let assets = assets();
     let mut frame = frame();
@@ -888,7 +888,7 @@ fn has_tech_uses_first_indexed_case_insensitive_name_and_exact_classifier() {
 
 #[test]
 fn missing_trigger_inputs_are_unknown_rather_than_false() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let assets = assets();
     let mut frame = frame();
     let unknown = |frame: &DecodedFrame, source: &str| {
@@ -964,7 +964,7 @@ fn military_access_reads_only_the_owner_asked() {
 
 #[test]
 fn incomplete_raid_tables_withhold_the_hours_offers() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let assets = assets();
     let mut frame = frame();
     put::<tables::RaidTargetStatuses>(&mut frame, vec![status(0, 3), status(1, 4)]);
@@ -984,7 +984,7 @@ fn incomplete_raid_tables_withhold_the_hours_offers() {
 
 #[test]
 fn unlinked_focus_project_and_party_rows_leave_their_triggers_unknown() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     use replay_data::{rows::CompletedFocusRow, rows::PoliticalPartyRow};
     let mut assets = assets();
     assets.trigger_content.ideologies = Some(raid_ideologies());
@@ -1053,7 +1053,7 @@ fn unlinked_focus_project_and_party_rows_leave_their_triggers_unknown() {
     );
 }
 
-fn raid_ideologies() -> content_reader_core::ideologies::Ideologies {
+fn raid_ideologies() -> content_reader_key_names::ideologies::Ideologies {
     let root = std::env::temp_dir().join(format!(
         "raid-ideologies-{}-{:?}",
         std::process::id(),
@@ -1062,15 +1062,15 @@ fn raid_ideologies() -> content_reader_core::ideologies::Ideologies {
     let file = root.join("common/ideologies/synthetic.txt");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, "ideologies = { mod_party = { types = { mod_type = {} } } mod_other = { types = { other_type = {} } } }").unwrap();
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let ideologies = content_reader_core::ideologies::read(&layers).unwrap().0;
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let ideologies = content_reader_key_names::ideologies::read(&layers).unwrap().0;
     std::fs::remove_dir_all(root).unwrap();
     ideologies
 }
 
 #[test]
 fn raid_facts_keep_loaded_ideologies_for_government_and_leader_subtypes() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     use replay_data::{rows::CountryAppearanceRow, rows::PoliticalPartyRow};
     use script::Eval::{False, True};
     let mut assets = unnamed_assets();
@@ -1127,7 +1127,7 @@ fn raid_facts_keep_loaded_ideologies_for_government_and_leader_subtypes() {
 
 #[test]
 fn raid_type_tokens_without_a_literal_leave_the_types_undecided() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let assets = assets();
     let mut frame = frame();
     put::<tables::RaidTargetStatuses>(&mut frame, vec![status(0, 3)]);
@@ -1205,7 +1205,7 @@ fn drawn_in(
                 height,
                 map: MapSize::TEST,
                 defines: MapDefines::test(),
-                pose: viewer_foundation::map::camera::Pose::Map,
+                pose: viewer_gpu::camera::Pose::Map,
             },
             viewport,
             ui_scale,
@@ -1219,7 +1219,7 @@ fn drawn_in(
 
 #[test]
 fn the_camera_band_includes_both_edges() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let viewport = [2048, 1152];
     assert!(drawn(10.0, viewport, 1.0).0 > 0);
     assert_eq!(drawn(500.0, viewport, 1.0).0, 2);
@@ -1229,7 +1229,7 @@ fn the_camera_band_includes_both_edges() {
 
 #[test]
 fn the_map_mode_decides_whether_and_how_far_raid_icons_show() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let viewport = [2048, 1152];
     let raids = Some(RaidReach::RaidMode);
     assert_eq!(drawn_in(raids, 1600.0, viewport, 1.0).0, 2);
@@ -1252,7 +1252,7 @@ fn the_map_mode_decides_whether_and_how_far_raid_icons_show() {
 
 #[test]
 fn icons_lay_out_in_interface_pixels_at_any_ui_scale() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let (count, single) = drawn(300.0, [2048, 1152], 1.0);
     let (_, double) = drawn(300.0, [4096, 2304], 2.0);
     assert_eq!(count, 2);
@@ -1394,7 +1394,7 @@ fn on_state(assets: &RaidAssets, frame: &DecodedFrame, source: &str) -> script::
 
 #[test]
 fn oil_and_the_damaged_modifier_decide_the_state_selector() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let assets = resource_assets();
     let mut frame = resource_frame();
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
@@ -1465,7 +1465,7 @@ fn controller_overrides_replace_building_grants_by_their_first_entry() {
 
 #[test]
 fn missing_inputs_and_unsupported_forms_stay_unknown() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let assets = resource_assets();
     let mut frame = resource_frame();
     assert!(matches!(
@@ -1490,7 +1490,7 @@ fn missing_inputs_and_unsupported_forms_stay_unknown() {
 
 #[test]
 fn every_content_building_type_is_a_count_trigger() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let mut assets = resource_assets();
     assets.trigger_content.buildings.types.insert(
         "dock".into(),
@@ -1556,7 +1556,7 @@ fn every_content_building_type_is_a_count_trigger() {
 
 #[test]
 fn exists_reads_the_owned_state_count() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     use replay_data::rows::CountryCounterInputRow;
     let assets = assets();
     let mut frame = positive_frame();
@@ -1589,7 +1589,7 @@ fn exists_reads_the_owned_state_count() {
 
 #[test]
 fn a_daily_fact_decides_from_its_latest_recorded_rows() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let assets = assets();
     let mut frame = frame();
     put::<tables::CompletedFocuses>(
@@ -1635,7 +1635,7 @@ fn a_memo_row_found_from_a_hint_is_the_binary_searchs() {
 
 #[test]
 fn if_else_chains_take_the_first_branch_whose_limit_holds() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let assets = assets();
     let frame = positive_frame();
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
@@ -1668,7 +1668,7 @@ fn if_else_chains_take_the_first_branch_whose_limit_holds() {
 
 #[test]
 fn from_and_prev_follow_the_scope_chain() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let assets = assets();
     let frame = positive_frame();
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
@@ -1699,7 +1699,7 @@ fn from_and_prev_follow_the_scope_chain() {
 
 #[test]
 fn a_state_scope_from_resolves_to_the_state_owner() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let assets = assets();
     let frame = frame();
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
@@ -1869,7 +1869,7 @@ mod launch_gate {
 
     fn launch_assets() -> RaidAssets {
         let mut assets = assets();
-        assets.equipment = content_reader_core::equipment::fixture::load(&[(
+        assets.equipment = content_reader_key_names::equipment::fixture::load(&[(
             "common/units/equipment/a.txt",
             "equipments = { large_plane_airframe = { is_archetype = yes type = strategic_bomber } convoy = { is_archetype = yes type = convoy } }",
         )])
@@ -2047,7 +2047,7 @@ mod launch_gate {
         }
     }
 
-    fn airborne(values: [i64; 10]) -> Eval {
+    fn airborne(values: [Option<i64>; 10]) -> Eval {
         use replay_data::{
             rows::StockpileArchetypeRow, rows::StockpileRow, rows::VariantDefinitionRow,
             rows::VariantStatsRow,
@@ -2056,7 +2056,7 @@ mod launch_gate {
         const TRANSPORT: u32 = 311;
         const TRANSPORT_VARIANT: u64 = 0x0000_0008_0000_0046;
         let mut assets = launch_assets();
-        assets.equipment = content_reader_core::equipment::fixture::load(&[(
+        assets.equipment = content_reader_key_names::equipment::fixture::load(&[(
             "common/units/equipment/a.txt",
             "equipments = { transport_plane = { is_archetype = yes type = air_transport } }",
         )])
@@ -2157,22 +2157,33 @@ mod launch_gate {
 
     #[test]
     fn transport_range_reads_the_first_variant_stat() {
-        content_reader_core::test_game::enter_viewer();
-        let mut long_first = [1; 10];
-        long_first[0] = 100 * 100_000;
+        content_reader_script::test_game::enter_viewer();
+        let mut long_first = [Some(1); 10];
+        long_first[0] = Some(100 * 100_000);
         assert_eq!(airborne(long_first), Eval::True);
-        let mut long_second = [1; 10];
-        long_second[1] = 100 * 100_000;
+        let mut long_second = [Some(1); 10];
+        long_second[1] = Some(100 * 100_000);
         assert_eq!(airborne(long_second), Eval::False);
+        let mut withheld = [Some(100 * 100_000); 10];
+        withheld[0] = None;
+        match airborne(withheld) {
+            Eval::Unknown(reasons) => {
+                assert!(
+                    reasons.iter().any(|reason| reason.contains("air_range")),
+                    "{reasons:?}"
+                );
+            }
+            other => panic!("withheld air_range must stay unknown, got {other:?}"),
+        }
     }
 
     #[test]
     fn a_lost_equipment_database_leaves_only_equipment_queries_unknown() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let mut assets = launch_assets();
         assert_eq!(
             assets.equipment_category("convoy"),
-            Ok(content_reader_core::test_game::category("convoy")),
+            Ok(content_reader_script::test_game::category("convoy")),
         );
         assets.equipment_lost = Some("the equipment database cannot be followed past x".into());
         let unknown = assets.equipment_category("convoy").unwrap_err();
@@ -2190,7 +2201,7 @@ mod launch_gate {
 
     #[test]
     fn a_refused_cooldown_type_leaves_its_target_undecided() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         put::<tables::RaidCooldowns>(
@@ -2219,7 +2230,7 @@ mod launch_gate {
 
     #[test]
     fn a_bomber_wing_at_an_air_base_in_range_makes_the_offer_launchable() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         assert_eq!(
             gate(&launch_assets(), &launch_frame(), &bomber(), 3),
             Eval::True
@@ -2228,9 +2239,9 @@ mod launch_gate {
 
     #[test]
     fn a_requirement_naming_an_equipment_group_admits_through_its_members() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let mut assets = launch_assets();
-        let (_, groups) = content_reader_core::equipment::fixture::load(&[(
+        let (_, groups) = content_reader_key_names::equipment::fixture::load(&[(
             "common/equipment_groups/raids.txt",
             "heavy = { equipment_type = { Large_Plane_Airframe } }
              by_category = { equipment_type = { STRATEGIC_BOMBER } }
@@ -2257,7 +2268,7 @@ mod launch_gate {
 
     #[test]
     fn command_power_below_the_cost_or_the_free_capacity_disables_the_offer() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let assets = launch_assets();
         let mut kind = bomber();
         kind.command_power_raw = 60 * 100_000;
@@ -2277,7 +2288,7 @@ mod launch_gate {
 
     #[test]
     fn an_unregistered_capacity_modifier_leaves_the_command_power_gate_unknown() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         put::<tables::CountryCommandPower>(
@@ -2298,7 +2309,7 @@ mod launch_gate {
 
     #[test]
     fn convoys_count_after_reservations_up_to_the_invasion_priority() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let assets = launch_assets();
         let mut kind = bomber();
         kind.essential_equipment = vec![("convoy".into(), 10)];
@@ -2309,7 +2320,7 @@ mod launch_gate {
 
     #[test]
     fn an_assigned_small_or_unmatched_wing_is_not_a_raid_unit() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         put::<tables::Raids>(
@@ -2342,7 +2353,7 @@ mod launch_gate {
 
     #[test]
     fn range_and_max_distance_bound_the_source_unless_the_ai_is_unlimited() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         let mut wings = frame.complete::<tables::AirWings>().unwrap().to_vec();
@@ -2373,7 +2384,7 @@ mod launch_gate {
 
     #[test]
     fn own_sources_demand_faction_members_only_on_native_faction_branches() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         put::<tables::FactionMembers>(
@@ -2562,7 +2573,7 @@ mod launch_gate {
 
     #[test]
     fn mixed_air_success_defers_later_faction_and_prefetch_preserves_it() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         *frame.tables[TableId::FactionMembers.index()] = TableView::Unavailable {
@@ -2600,7 +2611,7 @@ mod launch_gate {
 
     #[test]
     fn mixed_air_failure_reaches_the_later_faction_refusal() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         *frame.tables[TableId::FactionMembers.index()] = TableView::Unavailable {
@@ -2617,7 +2628,7 @@ mod launch_gate {
 
     #[test]
     fn mixed_earlier_unknown_still_queries_the_later_source() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         use replay_data::rows::NavalBaseRow;
         let assets = launch_assets();
         let mut frame = launch_frame();
@@ -2658,7 +2669,7 @@ mod launch_gate {
 
     #[test]
     fn mixed_naval_success_defers_later_building_inputs() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         use replay_data::rows::NavalBaseRow;
         let assets = launch_assets();
         let mut frame = launch_frame();
@@ -2696,7 +2707,7 @@ mod launch_gate {
 
     #[test]
     fn mixed_naval_refusal_can_reach_independent_own_buildings() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         let mut kind = marine_sources(&mut frame, true);
@@ -2733,7 +2744,7 @@ mod launch_gate {
 
     #[test]
     fn mixed_walk_prefix_order_and_reach_memo_remain_stable() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         use replay_data::rows::LaunchNavalBase;
         let assets = launch_assets();
         let mut frame = launch_frame();
@@ -2794,7 +2805,7 @@ mod launch_gate {
 
     #[test]
     fn actual_zero_naval_occurrences_keep_member_order_and_repeats() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         use replay_data::{rows::LaunchNavalBase, rows::NavalBaseRow};
         let assets = launch_assets();
         for zero_at in 0..3 {
@@ -2867,7 +2878,7 @@ mod launch_gate {
 
     #[test]
     fn actual_zero_null_sources_skip_provider_path_and_army_demands() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         use replay_data::rows::LaunchNavalBase;
         let assets = launch_assets();
         for stored in [0, u32::MAX, 0x8000_0000] {
@@ -2927,7 +2938,7 @@ mod launch_gate {
 
     #[test]
     fn actual_zero_native_null_stays_unknown_and_never_uses_global_owner_zero_bases() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         use replay_data::{rows::LaunchNavalBases, rows::NavalBaseRow};
 
         let assets = launch_assets();
@@ -2981,7 +2992,7 @@ mod launch_gate {
 
     #[test]
     fn actual_zero_positive_provider_and_packet_gaps_stay_named_at_their_position() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         use replay_data::{rows::LaunchNavalBase, rows::NavalBaseRow, rows::Recorded};
         let assets = launch_assets();
         let mut base = launch_frame();
@@ -3083,7 +3094,7 @@ mod launch_gate {
 
     #[test]
     fn actual_zero_state_sources_use_ordered_roster_and_independent_domains() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         let kind = marine_sources(&mut frame, false);
@@ -3188,7 +3199,7 @@ mod launch_gate {
 
     #[test]
     fn actual_zero_buildings_require_the_full_province_census_after_nonzero_count() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         let kind = marine_sources(&mut frame, false);
@@ -3250,7 +3261,7 @@ mod launch_gate {
 
     #[test]
     fn launch_zero_packet_and_provider_changes_do_not_reuse_other_frame_sources() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         use replay_data::rows::LaunchNavalBase;
         let assets = launch_assets();
         let mut first = launch_frame();
@@ -3304,7 +3315,7 @@ mod launch_gate {
 
     #[test]
     fn air_sources_in_range_decide_and_types_share_only_an_equal_range() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let assets = launch_assets();
         let frame = launch_frame();
         let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
@@ -3347,7 +3358,7 @@ mod launch_gate {
 
     #[test]
     fn a_marine_division_waits_on_the_path_search_but_wings_cannot_use_a_naval_base() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         put::<tables::NavalBases>(
@@ -3409,7 +3420,7 @@ mod launch_gate {
 
     #[test]
     fn launch_inputs_read_before_the_hour_still_decide_the_gate() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         assert_eq!(gate(&assets, &frame, &bomber(), 3), Eval::True);
@@ -3441,7 +3452,7 @@ mod launch_gate {
 
     #[test]
     fn a_carrier_launching_a_live_raid_is_no_source() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         const SHIP: u64 = 0x0000_0007_0000_0033;
@@ -3804,7 +3815,7 @@ fn enemy_sets_derive_from_war_relations_unless_the_vector_was_read() {
 
 mod reach_bench;
 fn strait_assets() -> RaidAssets {
-    let mut graph = content_reader_core::province_graph::ProvinceGraph::default();
+    let mut graph = content_reader_map::province_graph::ProvinceGraph::default();
     for (id, next) in [(1, vec![2]), (2, vec![1, 3]), (3, vec![2])] {
         graph
             .edges
@@ -4109,7 +4120,7 @@ mod unlinked {
 
     #[test]
     fn an_unlinked_modifier_owner_leaves_the_trigger_undecided() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let assets = assets();
         let mut frame = frame();
         let row = |country: u32, token: &[u8]| DynamicModifierRow {
@@ -4188,7 +4199,7 @@ fn invasion_frame(army_group: u8) -> DecodedFrame {
 
 #[test]
 fn naval_invasions_are_found_through_the_successor_graph() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let assets = assets();
     let eval = |frame: &DecodedFrame, source: &str, state: u32| {
         let world = World::new(frame, assets.trigger_content.facts()).unwrap();
@@ -4223,7 +4234,7 @@ fn naval_invasions_are_found_through_the_successor_graph() {
 
 #[test]
 fn is_ally_with_follows_the_friend_relation() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     use replay_data::{
         rows::CountryCounterInputRow, rows::Recorded, rows::ReservedCountryNamingRow,
         rows::SubjectRow, rows::WarRelationRow,
@@ -4300,7 +4311,7 @@ fn is_ally_with_follows_the_friend_relation() {
 
 #[test]
 fn any_state_in_reads_a_global_array() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     use replay_data::{rows::ScriptVariableEntry, rows::ScriptVariablesRow};
     let mut assets = assets();
     scripted(&mut assets, "helper = { always = yes }");
@@ -4386,7 +4397,7 @@ fn any_state_in_reads_a_global_array() {
 
 #[test]
 fn neighbour_state_triggers_walk_the_content_neighbours() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let frame = positive_frame();
     let eval = |assets: &RaidAssets, scope: Scope, source: &str| {
         let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
@@ -4434,7 +4445,7 @@ fn neighbour_state_triggers_walk_the_content_neighbours() {
 
 #[test]
 fn custom_tooltips_and_is_subject_of() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     use replay_data::rows::SubjectRow;
     let assets = assets();
     let eval = |frame: &DecodedFrame, source: &str| {
@@ -4508,7 +4519,7 @@ fn leader_row(id: u32, owner: u32, captured: u8) -> replay_data::rows::UnitLeade
 
 #[test]
 fn captured_general_triggers_read_the_recorded_leaders() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     let assets = assets();
     let mut frame = frame();
     let reference = (5_u64 << 32) | 7;
@@ -4564,7 +4575,7 @@ fn captured_general_triggers_read_the_recorded_leaders() {
 
 #[test]
 fn is_core_of_reads_the_recorded_state_cores() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     use replay_data::rows::StateCoreRow;
     let assets = assets();
     let mut frame = positive_frame();
@@ -4669,13 +4680,13 @@ fn a_prepared_raids_launch_triggers_follow_the_native_chain() {
 
 #[test]
 fn leader_visibility_evaluates_the_recorded_template_role() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     use replay_data::rows::CharacterRow;
     use script::RecordedTemplate;
     let path = "common/characters/X.txt";
     let mut assets = assets();
     assets.trigger_content.leader_roles = Ok(Arc::new(LeaderRoles::new(
-        content_reader_core::characters::parse_leader_templates(
+        content_reader_key_names::characters::parse_leader_templates(
             &path.into(),
             br#"characters = {
     GER_rommel = { field_marshal = { visible = { tag = GER } } }
@@ -4851,7 +4862,7 @@ fn leader_visibility_evaluates_the_recorded_template_role() {
 
 #[test]
 fn character_scope_global_flag_overlord_and_cosmetic_triggers() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     use replay_data::{rows::CountryAppearanceRow, rows::ScriptFlagRow};
     let assets = assets();
     let mut frame = positive_frame();
@@ -4959,7 +4970,7 @@ fn character_scope_global_flag_overlord_and_cosmetic_triggers() {
     );
 }
 
-fn country_leader_traits() -> content_reader_core::leader_traits::LeaderTraits {
+fn country_leader_traits() -> content_reader_military::leader_traits::LeaderTraits {
     let root = std::env::temp_dir().join(format!(
         "raid-ruling-trait-{}-{:?}",
         std::process::id(),
@@ -4968,15 +4979,15 @@ fn country_leader_traits() -> content_reader_core::leader_traits::LeaderTraits {
     let file = root.join("common/country_leader/traits.txt");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, "leader_traits = { dictator = {} }").unwrap();
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let traits = content_reader_core::leader_traits::read(&layers).unwrap().0;
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let traits = content_reader_military::leader_traits::read(&layers).unwrap().0;
     std::fs::remove_dir_all(root).unwrap();
     traits
 }
 
 #[test]
 fn country_leader_civil_war_and_idea_triggers() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     use replay_data::{
         rows::ActiveIdeaRow, rows::CharacterRow, rows::CountryAppearanceRow, rows::HiredAdvisorRow,
         rows::WarRelationRow,
@@ -5259,7 +5270,7 @@ fn country_leader_civil_war_and_idea_triggers() {
 
 #[test]
 fn recorded_political_tables_decide_country_leader_triggers() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     use replay_data::{
         rows::CharacterRow, rows::CountryAppearanceRow, rows::CountryCharacterRow,
         rows::PartyLeaderRow, rows::PoliticalPartyRow,
@@ -5514,7 +5525,7 @@ fn recorded_political_tables_decide_country_leader_triggers() {
 
 #[test]
 fn countries_with_original_tag_visit_the_recorded_bucket_then_append_the_selected_raw() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     use replay_data::{rows::CountryAppearanceRow, rows::Recorded, rows::ReservedCountryNamingRow};
     let assets = assets();
     let mut frame = positive_frame();
@@ -5669,7 +5680,7 @@ fn countries_with_original_tag_visit_the_recorded_bucket_then_append_the_selecte
 
 #[test]
 fn naval_invasion_preparation_reads_the_recorded_operands() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_script::test_game::enter_viewer();
     use replay_data::rows::InvasionPreparationRow;
     let assets = assets();
     let eval = |frame: &DecodedFrame, source: &str| {

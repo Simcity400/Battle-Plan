@@ -10,4 +10,4 @@ Waits use a retained event and an owned timer. The worker releases them after jo
 
 Hour timing diagnostics keep an allocation-free span log while capture jobs run. A span identifies the worker and its role or serial substage. The live log uses performance-counter ticks and the status snapshot uses nanoseconds. A new hour starts after the previous jobs finish. Status keeps the latest forced hour and the slowest other hour, and a concurrent status read can cause a sample to be skipped. Status sorts the owned snapshot in place under the allocation guard to keep the callback independent of serialization.
 
-[Priority and CPU-set reconciler](../../crates/collector/src/frame_priority.rs) · [Hourly diagnostics](../../crates/collector/src/hour_stages.rs)
+[Priority and CPU-set reconciler](../../crates/collector-workers/src/frame_priority.rs) · [Hourly diagnostics](../../crates/collector-workers/src/hour_stages.rs)

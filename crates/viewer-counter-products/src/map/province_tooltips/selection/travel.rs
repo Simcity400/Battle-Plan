@@ -219,7 +219,7 @@ mod tests {
     use replay_data::{
         rows::DivisionRow, rows::RailwayGunCounterInputRow, rows::TableRows, rows::TaskForceRow,
     };
-    use viewer_foundation::map::test_support::{test_frame, test_put as put};
+    use viewer_foundation::test_support::{test_frame, test_put as put};
 
     fn preview(duration: Result<i64, String>, route: &[u32]) -> Result<CounterPreview, String> {
         Ok(CounterPreview {

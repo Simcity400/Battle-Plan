@@ -1,19 +1,10 @@
 
-use crate::{
-    document::{Document, InitialHour},
-    layers::{
-        Carried, Inputs, Layer, Settling, View,
-        counters::{fed::Fed, proof as counters_line},
-        resource_icons::proof as resource_icons_line,
-        occupation_marks::proof as occupation_marks_line,
-        naval_counters::{NavalCounters, proof as naval_counters_line},
-        gun_counters::proof as gun_counters_line,
-        air_mission_counters::proof as air_mission_counters_line,
-        political::{self, BUCKETS, LEFT_OUT, Political},
-        units::{Figure, Ground, Units, Withheld},
-    },
-    playhead_host::{self, Frame, MapSide, mirror::Mirrors, units},
-};
+use crate::{playhead_host, document::{Document, InitialHour}, playhead_host::{Frame, MapSide, mirror::Mirrors, units}};
+use viewer_layer_core::layers::{Carried, Inputs, Layer, Settling, View};
+use viewer_layers_counters::{counters::fed::Fed, naval_counters::NavalCounters};
+use viewer_playback::proofs::{counters as counters_line, resource_icons as resource_icons_line, occupation_marks as occupation_marks_line, naval_counters as naval_counters_line, gun_counters as gun_counters_line, air_mission_counters as air_mission_counters_line};
+use viewer_layers_political::political::{self, BUCKETS, LEFT_OUT, Political};
+use viewer_layers_forces::units::{Figure, Ground, Units, Withheld};
 use map_display_data::{
     landscape::Regions,
     province_field::{ProvinceField, Storage},
@@ -31,12 +22,9 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use viewer_foundation::map::{perspective, tables};
-use viewer_world::map::{
-    border_pass::{ClassPlan, land_class},
-    demilitarized::{Zone, ZonePlan},
-    map_mode::MapMode,
-};
+use viewer_foundation::{perspective, tables};
+use viewer_borders::{border_pass::{ClassPlan, land_class}, demilitarized::{Zone, ZonePlan}};
+use viewer_map_modes::map_mode::MapMode;
 
 mod intel_icons;
 mod p6;
@@ -53,7 +41,7 @@ struct Line {
     name: &'static str,
     make: fn(&Document) -> Box<dyn Layer>,
     today: fn(&dyn Layer, &Document) -> io::Result<Compared>,
-    fresh: fn(&dyn Layer, &Mirrors, &crate::layers::Upstream<'_>) -> io::Result<Compared>,
+    fresh: fn(&dyn Layer, &Mirrors, &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared>,
     marked: fn(&dyn Layer) -> Vec<(&'static str, u64)>,
 }
 
@@ -66,7 +54,7 @@ const LINES: &[Line] = &[
     Line { name: "snow", make: p6::snow_make, today: p6::snow_today, fresh: p6::snow_fresh, marked: p6::snow_marked },
     Line { name: "sounds", make: sounds_line::make, today: sounds_line::today, fresh: sounds_line::fresh, marked: sounds_line::marked },
     Line { name: "strikes", make: strikes_line::make, today: strikes_line::today, fresh: strikes_line::fresh, marked: strikes_line::marked },
-    Line { name: "map_text", make: crate::layers::map_text::proof::make, today: crate::layers::map_text::proof::today, fresh: crate::layers::map_text::proof::fresh, marked: crate::layers::map_text::proof::marked },
+    Line { name: "map_text", make: viewer_playback::proofs::map_text::make, today: viewer_playback::proofs::map_text::today, fresh: viewer_playback::proofs::map_text::fresh, marked: viewer_playback::proofs::map_text::marked },
     Line { name: "engagements", make: engagements_line::make, today: engagements_line::today, fresh: engagements_line::fresh, marked: engagements_line::marked },
     Line { name: "units", make: units_make, today: units_today, fresh: units_fresh, marked: units_marked },
     Line { name: "convoys", make: convoys_make, today: convoys_today, fresh: convoys_fresh, marked: convoys_marked },
@@ -78,16 +66,16 @@ const LINES: &[Line] = &[
     Line { name: "ships", make: p8c::ships_make, today: p8c::ships_today, fresh: p8c::ships_fresh, marked: p8c::ships_marked },
     Line { name: "aircraft", make: p8c::aircraft_make, today: p8c::aircraft_today, fresh: p8c::aircraft_fresh, marked: p8c::aircraft_marked },
     Line { name: "mode_fills", make: mode_fills::make, today: mode_fills::today, fresh: mode_fills::fresh, marked: mode_fills::marked },
-    Line { name: "relations", make: crate::layers::relations::proof::make, today: crate::layers::relations::proof::today, fresh: crate::layers::relations::proof::fresh, marked: crate::layers::relations::proof::marked },
-    Line { name: "counters", make: counters_line::make, today: counters_line::today, fresh: counters_line::fresh, marked: counters_line::marked },
+    Line { name: "relations", make: viewer_playback::proofs::relations::make, today: viewer_playback::proofs::relations::today, fresh: viewer_playback::proofs::relations::fresh, marked: viewer_playback::proofs::relations::marked },
+    Line { name: "counters", make: counters_line::make, today: counters_line::today, fresh: viewer_layers_counters::counters::fresh, marked: counters_line::marked },
     Line { name: "trains", make: p7::trains_make, today: p7::trains_today, fresh: p7::trains_fresh, marked: p7::trains_marked },
     Line { name: "resource_icons", make: resource_icons_line::make, today: resource_icons_line::today, fresh: resource_icons_line::fresh, marked: resource_icons_line::marked },
     Line { name: "occupation_marks", make: occupation_marks_line::make, today: occupation_marks_line::today, fresh: occupation_marks_line::fresh, marked: occupation_marks_line::marked },
     Line { name: "intel_icons", make: intel_icons::make, today: intel_icons::today, fresh: intel_icons::fresh, marked: intel_icons::marked },
     Line { name: "naval_counters", make: naval_counters_line::make, today: naval_counters_line::today, fresh: naval_counters_line::fresh, marked: naval_counters_line::marked },
-    Line { name: "land_markers", make: land_markers_line::make, today: land_markers_line::today, fresh: crate::layers::land_markers::proof::fresh, marked: crate::layers::land_markers::proof::marked },
-    Line { name: "base_counters", make: crate::layers::base_counters::proof::make, today: crate::layers::base_counters::proof::today, fresh: crate::layers::base_counters::proof::fresh, marked: crate::layers::base_counters::proof::marked },
-    Line { name: "naval_markers", make: land_markers_line::make_naval, today: land_markers_line::today_naval, fresh: crate::layers::naval_markers::proof::fresh, marked: crate::layers::naval_markers::proof::marked },
+    Line { name: "land_markers", make: land_markers_line::make, today: land_markers_line::today, fresh: viewer_playback::proofs::land_markers::fresh, marked: viewer_playback::proofs::land_markers::marked },
+    Line { name: "base_counters", make: viewer_playback::proofs::base_counters::make, today: viewer_playback::proofs::base_counters::today, fresh: viewer_playback::proofs::base_counters::fresh, marked: viewer_playback::proofs::base_counters::marked },
+    Line { name: "naval_markers", make: land_markers_line::make_naval, today: land_markers_line::today_naval, fresh: viewer_playback::proofs::naval_markers::fresh, marked: viewer_playback::proofs::naval_markers::marked },
     Line { name: "naval", make: naval::make, today: naval::today, fresh: naval::fresh, marked: naval::marked },
     Line { name: "highlight", make: highlight::make, today: highlight::today, fresh: highlight::fresh, marked: highlight::marked },
     Line { name: "gun_counters", make: gun_counters_line::make, today: gun_counters_line::today, fresh: gun_counters_line::fresh, marked: gun_counters_line::marked },
@@ -104,7 +92,7 @@ mod p8c;
 
 mod mode_fills;
 
-pub(crate) use viewer_playback::comparison::{Compared, behind_at};
+pub(crate) use viewer_layer_core::comparison::{Compared, behind_at};
 
 struct Options {
     recording: PathBuf,
@@ -219,7 +207,7 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
     }
     fs::create_dir(&options.out)?;
     let out = fs::canonicalize(&options.out)?;
-    let config = dashboard::Config::load()?;
+    let config = dashboard_core::config::Config::load()?;
     let mut resolve = config.resolve_options()?;
     resolve.cache_dir = out.join("cache/content");
     fs::create_dir_all(&resolve.cache_dir)?;
@@ -251,12 +239,12 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
         if options.view.viewport == [0, 0] {
             options.view.viewport = [2048, 1152];
         }
-        let (size, defines) = (viewer_foundation::map::camera::MapSize::of(&document.content.map), document.content.map_defines);
+        let (size, defines) = (viewer_gpu::camera::MapSize::of(&document.content.map), document.content.map_defines);
         let camera = match spec.as_str() {
-            "fit" => viewer_foundation::map::camera::Camera::fit(size, defines, options.view.viewport),
+            "fit" => viewer_gpu::camera::Camera::fit(size, defines, options.view.viewport),
             placed => crate::parse_placement(placed)?.on(size, defines),
         };
-        let placement = viewer_foundation::map::camera::Placement { center: camera.center, height: camera.height, pose: camera.pose };
+        let placement = viewer_gpu::camera::Placement { center: camera.center, height: camera.height, pose: camera.pose };
         (options.view.camera, options.view.camera_height) = (Some(placement), camera.height);
     }
     let options = options;
@@ -285,7 +273,7 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
     let entry = playhead_host::open(units, playhead_host::settings())?;
     entry.set_capture(document.capture_mode());
     document.playback.read_rosters_of(&entry);
-    let mut side = MapSide::new(Arc::clone(&entry), layers, options.view.clone())?;
+    let mut side = MapSide::with_products(Arc::clone(&entry), layers, options.view.clone())?;
     if let Some((name, why)) = side.refusals().next() {
         return Err(invalid(format!("The {name} layer is refused: {why}")));
     }
@@ -315,7 +303,7 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
             None => None,
         },
         scripts: match &options.scripts {
-            Some((on, primed)) => Some(crate::layers::scripts::proof::Line::open(&entry, playhead_host::views::Recording { branch: document.playback.branch() }, *on, primed.as_deref())?),
+            Some((on, primed)) => Some(viewer_playback::proofs::scripts::Line::open(&entry, playhead_host::views::Recording { branch: document.playback.branch() }, *on, primed.as_deref())?),
             None => None,
         },
         combat: match options.combat.as_deref().map(|value| value.split_once('@').unwrap_or((value, ""))) {
@@ -336,7 +324,7 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
     };
     let branch = document.playback.branch();
     for layer in side.parts().map_or(&[][..], |(_, layers)| layers) {
-        if let Some(text) = layer.any().downcast_ref::<crate::layers::map_text::MapText>() {
+        if let Some(text) = layer.any().downcast_ref::<viewer_layers_political::map_text::MapText>() {
             text.attach(Arc::clone(&entry));
         }
     }
@@ -404,7 +392,7 @@ struct Proof<'a> {
     combat: Option<playhead_host::views::combat::Line>,
     stepper: Option<playhead_host::views::combat::StepTimer>,
     hovers: Option<crate::app::hover_rows::proof::Line>,
-    scripts: Option<crate::layers::scripts::proof::Line>,
+    scripts: Option<viewer_playback::proofs::scripts::Line>,
 }
 
 struct Record {
@@ -655,7 +643,7 @@ impl Proof<'_> {
         }
         let source = source_check(mirrors, document)?;
         for (at, (line, layer)) in self.options.layers.iter().zip(layers).enumerate() {
-            let upstream = crate::layers::Upstream::new(&layers[..at]);
+            let upstream = viewer_layer_core::layers::Upstream::new(&layers[..at]);
             for (kind, compared) in [("today", (line.today)(&**layer, document)?), ("composed", (line.fresh)(&**layer, mirrors, &upstream)?)] {
                 let name = format!("{}:{kind}", line.name);
                 let total = self.totals.entry(name.clone()).or_default();
@@ -680,7 +668,7 @@ impl Proof<'_> {
             writeln!(self.compares, "{}", json!({"hour": hour, "why": why, "compare": "details:today", "entries": entries, "differing": differing, "first": first, "not_in_the_units": absent}))?;
         }
         let today = document.limitations(&self.options.view.perspective)?.into_lines();
-        let compared = playhead_host::limitations::differ(side, &every, &today);
+        let compared = viewer_playback::limitations::differ(side, &every, &today);
         let total = self.totals.entry("limitations:today".into()).or_default();
         (total.0, total.1, total.2) = (total.0 + compared.entries, total.1 + compared.differing, total.2 + 1);
         for (owner, &count) in &compared.not_registered {
@@ -691,7 +679,7 @@ impl Proof<'_> {
         let total = self.totals.entry("limitations:order".into()).or_default();
         (total.0, total.1, total.2) = (total.0 + compared.matched, total.1 + compared.reordered, total.2 + 1);
         writeln!(self.compares, "{}", json!({"hour": hour, "why": why, "compare": "limitations:order", "entries": compared.matched, "differing": compared.reordered}))?;
-        let (entries, differing, first) = playhead_host::limitations::differ_composed(side)?;
+        let (entries, differing, first) = viewer_playback::limitations::differ_composed(side)?;
         let total = self.totals.entry("limitations:composed".into()).or_default();
         (total.0, total.1, total.2) = (total.0 + entries, total.1 + differing, total.2 + 1);
         writeln!(self.compares, "{}", json!({"hour": hour, "why": why, "compare": "limitations:composed", "entries": entries, "differing": differing, "first": first}))?;
@@ -928,7 +916,7 @@ fn political_today(layer: &dyn Layer, document: &Document) -> io::Result<Compare
     Ok(compared)
 }
 
-fn political_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+fn political_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = political(layer);
     let mut fresh = layer.fresh();
     fresh.compose(mirrors)?;
@@ -942,7 +930,7 @@ fn give_vision(side: &MapSide, document: &Document, choice: &perspective::Choice
             units.set_vision(choice.clone(), document.vision(choice)?);
         }
         p7b::give(&**layer, document, choice)?;
-        if let Some(convoys) = layer.any().downcast_ref::<crate::layers::convoys::Convoys>() {
+        if let Some(convoys) = layer.any().downcast_ref::<viewer_layers_forces::convoys::Convoys>() {
             convoys.set_vision(choice.clone(), document.vision(choice)?);
         }
         p8c::give(&**layer, side, document, choice)?;
@@ -950,20 +938,20 @@ fn give_vision(side: &MapSide, document: &Document, choice: &perspective::Choice
         if let Some(counters) = layer.any().downcast_ref::<Fed>() {
             counters.set_vision(choice.clone(), document.vision(choice)?);
         }
-        if let Some(markers) = layer.any().downcast_ref::<crate::layers::land_markers::LandMarkers>() {
+        if let Some(markers) = layer.any().downcast_ref::<viewer_layers_counters::land_markers::LandMarkers>() {
             markers.set_vision(choice.clone(), document.vision(choice)?);
         }
-        if let Some(markers) = layer.any().downcast_ref::<crate::layers::naval_markers::NavalMarkers>() {
+        if let Some(markers) = layer.any().downcast_ref::<viewer_layers_counters::naval_markers::NavalMarkers>() {
             markers.set_vision(choice.clone(), document.vision(choice)?);
         }
-        if let Some(bases) = layer.any().downcast_ref::<crate::layers::base_counters::BaseCountersFed>() {
+        if let Some(bases) = layer.any().downcast_ref::<viewer_layers_counters::base_counters::BaseCountersFed>() {
             bases.set_vision(choice.clone(), document.vision(choice)?);
         }
         if let Some(naval) = layer.any().downcast_ref::<NavalCounters>() {
             naval.set_vision(choice.clone(), document.vision(choice)?);
             naval.set_relations(Arc::clone(document.hour()?.hour_tables(choice, None)?.counters().type_tints()));
         }
-        if let Some(orders) = layer.any().downcast_ref::<crate::layers::orders::Orders>() {
+        if let Some(orders) = layer.any().downcast_ref::<viewer_layers_forces::orders::Orders>() {
             orders.set_vision(choice.clone(), document.vision(choice)?);
         }
         gun_counters_line::give(&**layer, document, choice)?;
@@ -973,11 +961,11 @@ fn give_vision(side: &MapSide, document: &Document, choice: &perspective::Choice
 }
 
 fn convoys_make(document: &Document) -> Box<dyn Layer> {
-    use crate::layers::convoys::{Convoys, Routes};
+    use viewer_layers_forces::convoys::{Convoys, Routes};
     Box::new(Convoys::new(Arc::clone(&document.content) as Arc<dyn Routes>))
 }
 
-fn convoys_of(layer: &dyn Layer) -> &crate::layers::convoys::Convoys {
+fn convoys_of(layer: &dyn Layer) -> &viewer_layers_forces::convoys::Convoys {
     layer.any().downcast_ref().expect("the convoys line's layer")
 }
 
@@ -1020,7 +1008,7 @@ fn convoys_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared>
     Ok(compared)
 }
 
-fn convoys_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+fn convoys_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = convoys_of(layer);
     let mut fresh = layer.fresh();
     fresh.compose(mirrors)?;
@@ -1029,11 +1017,11 @@ fn convoys_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers
 }
 
 fn orders_make(document: &Document) -> Box<dyn Layer> {
-    use crate::layers::orders::{Orders, Plans};
+    use viewer_layers_forces::orders::{Orders, Plans};
     Box::new(Orders::new(Arc::clone(&document.content) as Arc<dyn Plans>))
 }
 
-fn orders_of(layer: &dyn Layer) -> &crate::layers::orders::Orders {
+fn orders_of(layer: &dyn Layer) -> &viewer_layers_forces::orders::Orders {
     layer.any().downcast_ref().expect("the orders line's layer")
 }
 
@@ -1054,7 +1042,7 @@ fn orders_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> 
     match layer.plan() {
         None => note(format!("the layer has no plan: {:?}", layer.refused())),
         Some((_, plan)) => {
-            let parts = |field: &viewer_foundation::map::ribbon_content::OrderField| {
+            let parts = |field: &viewer_gpu::ribbon_content::OrderField| {
                 [
                     ("vertices", format!("{:?}", field.vertices)),
                     ("native vertices", format!("{:?}", field.native_vertices)),
@@ -1069,7 +1057,7 @@ fn orders_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> 
                     note(format!("{name}: today {} the layer {}", theirs.chars().take(400).collect::<String>(), ours.chars().take(400).collect::<String>()));
                 }
             }
-            if let Some(part) = crate::layers::orders::differ_labels(&today.labels, &plan.labels) {
+            if let Some(part) = viewer_layers_forces::orders::differ_labels(&today.labels, &plan.labels) {
                 note(format!("labels: {part}"));
             }
         }
@@ -1078,7 +1066,7 @@ fn orders_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> 
     Ok(compared)
 }
 
-fn orders_fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+fn orders_fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = orders_of(layer);
     Ok(Compared { entries: 1, differing: u64::from(layer.plan().is_none()), first: layer.plan().is_none().then(|| "no plan".to_owned()), notes: json!({"built": "whole, from rows at the head"}) })
 }
@@ -1097,7 +1085,7 @@ fn units_marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
 }
 
 fn units_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
-    use viewer_world::map::unit_history::Kind;
+    use viewer_unit_history::unit_history::Kind;
     let layer = units(layer);
     let mut compared = Compared::default();
     if !layer.drawn() {
@@ -1154,7 +1142,7 @@ fn units_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
         compared.entries += 1;
         match figure.map(|figure| &figure.placed) {
             Some(Some(Ok((ours, _)))) => {
-                let ours = viewer_world::map::unit_history::Target { mesh: target.mesh, ..*ours };
+                let ours = viewer_unit_history::unit_history::Target { mesh: target.mesh, ..*ours };
                 if ours != *target {
                     note(&mut compared, format!("stack of {}: today {target:?}, the layer {ours:?}", target.identity));
                 }
@@ -1175,8 +1163,8 @@ fn units_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     }
     compared.notes = json!({
         "stacks": report.stacks, "land_targets": today.len(), "placed_not_selected": extra, "today_selection_omissions": omitted,
-        "withheld_status": withheld(Withheld::Status), "withheld_unanchored": withheld(Withheld::Unplaced(viewer_world::map::unit_models::Unplaced::Unanchored)),
-        "withheld_exercise": withheld(Withheld::Unplaced(viewer_world::map::unit_models::Unplaced::Exercise)),
+        "withheld_status": withheld(Withheld::Status), "withheld_unanchored": withheld(Withheld::Unplaced(viewer_unit_models::unit_models::Unplaced::Unanchored)),
+        "withheld_exercise": withheld(Withheld::Unplaced(viewer_unit_models::unit_models::Unplaced::Exercise)),
         "today_unanchored": report.unanchored, "today_errors": report.selection_errors, "today_moving": report.moving, "today_transports": report.transports,
         "admitted": layer.admitted(), "outside_compared": outside, "deferred": layer.deferred(), "front": layer.front(256.0), "units_cutoff": layer.cutoff(),
         "left_out": {"ships": field.targets.len() - today.len(), "raid_units": "P9", "convoys": "trade routes"},
@@ -1184,7 +1172,7 @@ fn units_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     Ok(compared)
 }
 
-fn units_fresh(layer: &dyn Layer, mirrors: &Mirrors, upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+fn units_fresh(layer: &dyn Layer, mirrors: &Mirrors, upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = units(layer);
     let mut fresh = layer.fresh();
     fresh.compose_with(mirrors, upstream)?;
@@ -1215,7 +1203,7 @@ impl Layer for Declare {
     }
 
     fn inputs(&mut self, _view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
-        let kinds = replay::columnar_frames::schema()?;
+        let kinds = replay_recording::schema::schema()?;
         for (table, columns) in &self.lines {
             inputs.table(*table, false)?;
             let held = &kinds[table.index()];
@@ -1260,7 +1248,7 @@ impl Layer for Declare {
 
 mod sounds_line {
     use super::{Compared, Document, Layer, Mirrors};
-    use crate::layers::sounds::{Sounds, SoundsFed, differ_battles};
+    use viewer_layers_infrastructure::sounds::{Sounds, SoundsFed, differ_battles};
     use serde_json::json;
     use std::{io, sync::Arc};
 
@@ -1273,14 +1261,14 @@ mod sounds_line {
     }
 
     pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
-        let fog = document.hour()?.fog_products(&viewer_foundation::map::perspective::Choice::default(), &map_products::FogMemos::new(), &mut viewer_foundation::profiling::BuilderSpans::new(false), true)?;
+        let fog = document.hour()?.fog_products(&viewer_foundation::perspective::Choice::default(), &map_products::FogMemos::new(), &mut viewer_runtime::profiling::BuilderSpans::new(false), true)?;
         let (today, ours) = (fog.battles.as_deref(), of(layer).battles());
         let (differing, first) = differ_battles(ours.map(Arc::as_ref), today);
         let battles = today.map_or(0, |battles| battles.battles.len());
         Ok(Compared { entries: battles as u64 + 1, differing, first, notes: json!({"battles": battles, "divisions": today.map(|battles| battles.battles.iter().map(|battle| battle.divisions).sum::<usize>()), "refusals": today.map(|battles| battles.refusals.clone())}) })
     }
 
-    pub(super) fn fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+    pub(super) fn fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
         let layer = of(layer);
         let mut fresh = layer.fresh();
         fresh.compose(mirrors)?;
@@ -1296,7 +1284,7 @@ mod sounds_line {
 
 mod strikes_line {
     use super::{Compared, Document, Layer, Mirrors};
-    use crate::layers::strikes::{Strikes, differ_impacts};
+    use viewer_layers_infrastructure::strikes::{Strikes, differ_impacts};
     use serde_json::json;
     use std::{io, sync::Arc};
 
@@ -1315,7 +1303,7 @@ mod strikes_line {
         Ok(Compared { entries: today.impacts.len() as u64 + 1, differing, first, notes: json!({"impacts": today.impacts.len(), "refused": today.refused}) })
     }
 
-    pub(super) fn fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+    pub(super) fn fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
         let layer = of(layer);
         let mut fresh = layer.fresh();
         fresh.compose(mirrors)?;
@@ -1331,7 +1319,8 @@ mod strikes_line {
 
 mod land_markers_line {
     use super::{Compared, Document, Layer, engagements_line::FOLDED};
-    use crate::layers::{engagements::Index, land_markers::proof};
+    use viewer_layer_core::engagements::Index;
+    use viewer_playback::proofs::land_markers as proof;
     use std::{io, sync::Arc};
 
     pub(super) fn make(document: &Document) -> Box<dyn Layer> {
@@ -1347,25 +1336,23 @@ mod land_markers_line {
 
     pub(super) fn make_naval(document: &Document) -> Box<dyn Layer> {
         let held = FOLDED.lock().unwrap_or_else(|p| p.into_inner());
-        crate::layers::naval_markers::proof::make_with(document, held.as_ref().map(|(folded, _)| Index { history: Arc::clone(&folded.lanes), branch: folded.branch }))
+        viewer_playback::proofs::naval_markers::make_with(document, held.as_ref().map(|(folded, _)| Index { history: Arc::clone(&folded.lanes), branch: folded.branch }))
     }
 
     pub(super) fn today_naval(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
         let held = FOLDED.lock().unwrap_or_else(|p| p.into_inner());
         let Some((folded, _)) = held.as_ref() else { return Err(io::Error::other("the naval markers line needs --engaged-fold recorded")) };
-        crate::layers::naval_markers::proof::today_with(layer, document, &folded.today)
+        viewer_playback::proofs::naval_markers::today_with(layer, document, &folded.today)
     }
 }
 
 mod engagements_line {
     use super::{Compared, Document, Layer, Mirrors, engaged::Folded};
-    use crate::layers::engagements::{Engagements, Index};
+    use viewer_layer_core::engagements::{Engagements, Index};
     use serde_json::json;
     use std::{collections::BTreeMap, io, sync::{Arc, Mutex}};
-    use viewer_foundation::{
-        engagement_history::CombatFlags,
-        map::{tables::core, visibility::Relations},
-    };
+    use viewer_engagements::engagement_history::CombatFlags;
+    use viewer_foundation::{tables::core, visibility::Relations};
 
     pub(super) static FOLDED: Mutex<Option<(Folded, u32)>> = Mutex::new(None);
 
@@ -1403,11 +1390,11 @@ mod engagements_line {
             compared.differing += 1;
             compared.first.get_or_insert(format!("provenance {provenance:?} against today's {:?}", [today.land_provenance, today.naval_provenance]));
         }
-        compared.notes = json!({"land": today.land.len(), "naval": today.naval.len(), "engaged": today.land.values().chain(today.naval.values()).filter(|flag| **flag == viewer_foundation::engaged::Engaged::Yes).count()});
+        compared.notes = json!({"land": today.land.len(), "naval": today.naval.len(), "engaged": today.land.values().chain(today.naval.values()).filter(|flag| **flag == viewer_engagements::engaged::Engaged::Yes).count()});
         Ok(compared)
     }
 
-    pub(super) fn fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+    pub(super) fn fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
         let layer = of(layer);
         let mut fresh = layer.fresh();
         fresh.compose(mirrors)?;

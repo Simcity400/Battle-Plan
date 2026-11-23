@@ -10,4 +10,4 @@ Content belongs to one recorded stack. Shared readers can run in parallel once t
 
 An ability adds raw modifier and adjuster lines in authored order. Each effect callback has its own variable session, and the map caller supplies its own scope and communications fragment. A nonempty description begins with a newline. The ability's heading calls preserve their own appended newline, while the effect result is appended as produced. Project outputs similarly keep the assignment's actual scientist and facility scopes and preserve missing assignments.
 
-[Shared effects renderer](../../crates/dashboard-text/src/effect_description.rs) · [Ability descriptions](../../crates/dashboard-text/src/effect_description/ability.rs)
+[Shared effects renderer](../../crates/dashboard-effects/src/effect_description.rs) · [Ability descriptions](../../crates/dashboard-effects/src/effect_description/ability.rs)

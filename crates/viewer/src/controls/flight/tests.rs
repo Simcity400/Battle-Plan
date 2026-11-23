@@ -3,7 +3,7 @@ use crate::controls::Pad;
 use eframe::egui;
 use std::collections::BTreeSet;
 use std::f32::consts::FRAC_PI_2;
-use viewer_foundation::map::camera::{MapDefines, MapSize};
+use viewer_gpu::camera::{MapDefines, MapSize};
 
 const SIZE: f32 = 1.2;
 const STEP: f32 = 1.0 / 60.0;
@@ -412,7 +412,7 @@ fn flying_into_a_ridge_crashes_explodes_for_the_content_s_time_and_flies_again_a
     let exploding = held.aircraft.expect("exploding");
     assert_eq!(
         exploding.animation,
-        viewer_world::map::entity_animation::named_request(EXPLODE)
+        viewer_models::entity_animation::named_request(EXPLODE)
     );
     assert_eq!(exploding.position, struck);
     fly(&mut flight, &idle(), &cliff, PLANE.ground.explosion + STEP);
@@ -523,7 +523,7 @@ fn drawn(width: u32, height: u32, heights: impl Fn(u32) -> f32) -> Vec<u8> {
 #[test]
 fn a_crest_between_two_steps_is_still_met() {
     let values = drawn(16, 2048, |bottom| if bottom == 1100 { 25.5 } else { 9.5 });
-    let field = viewer_foundation::map::province_map::HeightField {
+    let field = viewer_gpu::province_map::HeightField {
         width: 16,
         height: 2048,
         values: &values,

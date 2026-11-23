@@ -282,7 +282,10 @@ await phase('visual', async () => {
   } catch (error) { visual.fail('state/tooltip', 'state', error.message); }
   await app.mouse('mouseMoved', 1, 1);
   const native = new NativeInput(desktop, appPid, input);
-  try { await mapPictures(s, native, visual, meta.viewport.dpr, work, SEEKS); } finally { native.close(); }
+  try {
+    const pictures = await mapPictures(s, native, visual, meta.viewport.dpr, work, SEEKS);
+    await zoomedMapPicture(s, native, visual, meta.viewport.dpr, work, SEEKS.at(-1), pictures.at(-1)?.state ?? null);
+  } finally { native.close(); }
 });
 
 await phase('map', async () => {
@@ -378,7 +381,12 @@ const DASHBOARD_INVENTORY = `(() => {
     const kind = [...a.classList].find(c => c.startsWith('kind-'))?.slice(5);
     const placeholder = a.querySelector('.dash-empty[role="status"]');
     const notMigrated = !!placeholder && /isn't playing back yet$/i.test(placeholder.textContent.trim());
-    const surfaces = [...new Set([...a.querySelectorAll('canvas[data-surface]')].map(c => c.dataset.surface).filter(Boolean))];
+    const byPlacement = new Map();
+    for (const c of a.querySelectorAll('[data-surface]')) {
+      const id = c.dataset.placement ?? c.dataset.surface, held = byPlacement.get(id);
+      if (!held || held === 'page') byPlacement.set(id, c.dataset.surface);
+    }
+    const surfaces = [...new Set([...byPlacement.values()].filter(Boolean))];
     return { id: a.dataset.widget, title: a.getAttribute('aria-label'), kind, visible: visible(a), surfaces, notMigrated };
   });
 })()`;
@@ -388,7 +396,7 @@ async function playbackInputs() {
     const visibility = [], actions = [];
     const scan = () => {
       const shown = [];
-      for (const c of document.querySelectorAll('article canvas[data-placement]')) {
+      for (const c of document.querySelectorAll('article [data-placement]')) {
         if (c.hidden || !c.checkVisibility({ visibilityProperty: true, opacityProperty: true })) continue;
         const bounds = c;
         const article = c.closest('article'), pin = article.getAttribute('data-fixed-hour');
@@ -407,9 +415,9 @@ async function playbackInputs() {
     observer.observe(document.querySelector('.dash-grid-scroll'), { subtree: true, childList: true, attributes: true,
       attributeFilter: ['hidden','style','data-fixed-hour','data-placement'] });
     addEventListener('scroll', scan, true); scan();
-    __e2e.inputMark = (kind, notApplicable = null) => actions.push({ kind,
+    __e2e.inputMark = (kind, notApplicable = null, at = null) => actions.push({ kind,
       ...(notApplicable ? { notApplicable } : {}),
-      at: performance.timeOrigin + performance.now() });
+      at: at ?? performance.timeOrigin + performance.now() });
     __e2e.setPinWidget = widget => {
       const action = actions.at(-1);
       if (action?.kind === 'pin') action.pinWidget = widget;
@@ -417,7 +425,7 @@ async function playbackInputs() {
     __e2e.endInputs = () => { observer.disconnect(); removeEventListener('scroll', scan, true);
       return { actions, visibility, to: performance.timeOrigin + performance.now() }; };
   })()`);
-  const mark = kind => app.evaluate(`__e2e.inputMark(${JSON.stringify(kind)})`);
+  const mark = (kind, notApplicable = null, at = null) => app.evaluate(`__e2e.inputMark(${JSON.stringify(kind)}, ${JSON.stringify(notApplicable)}, ${JSON.stringify(at)})`);
   const unsettled = `(() => {
     const grid = document.querySelector('.dash-grid-scroll'), viewport = grid.getBoundingClientRect();
     const visible = node => {
@@ -436,7 +444,7 @@ async function playbackInputs() {
     const lacking = article => {
       if (loading(article)) return 'loading';
       if ([...article.querySelectorAll('[data-state="error"], [role="alert"]')].some(visible)) return 'error';
-      const canvases = [...article.querySelectorAll('canvas[data-placement]')].filter(visible);
+      const canvases = [...article.querySelectorAll('[data-placement]')].filter(visible);
       if (canvases.some(canvas => canvas.closest('[data-table-pending]'))) return 'pending rows';
       if (canvases.length) return null;
       const content = article.querySelector('.dash-widget-content');
@@ -451,7 +459,7 @@ async function playbackInputs() {
     };
     const articles = [...grid.querySelectorAll('article.dash-widget')].filter(visible);
     if (!articles.length) return ['no visible widget'];
-    return articles.filter(article => article.querySelector('canvas[data-placement]'))
+    return articles.filter(article => article.querySelector('[data-placement]'))
       .map(article => [article.getAttribute('aria-label') || article.dataset.widget, lacking(article)])
       .filter(([, why]) => why).map(([widget, reason]) => ({ widget, reason }));
   })()`;
@@ -494,27 +502,50 @@ async function playbackInputs() {
   const article = 'article.dash-widget';
   const config = article + ' [data-widget-settings]', time = '.widget-settings-menu:popover-open [aria-label="Time"] button';
   let pinApplied = false, pinWidget = null;
-  if (await s.holds(`document.querySelector(${JSON.stringify(config)})`)) {
-    await s.click(config);
-    if (await s.until(`document.querySelector('${time}')`)) {
-      const pinned = await s.app.evaluate(`!![...document.querySelectorAll('${time}')].find(button => button.textContent.trim() === 'Pinned')`);
-      if (pinned) {
-        await mark('pin');
-        await s.click(time, { text: 'Pinned' }); await s.until(`document.querySelector('${article}[data-fixed-hour]')`); await s.frames(4);
-        pinWidget = await app.evaluate(`document.querySelector('${article}[data-fixed-hour]')?.dataset.widget ?? null`);
-        await app.evaluate(`__e2e.setPinWidget(${JSON.stringify(pinWidget)})`);
-        pinApplied = true;
-      } else await mark('pin', 'no widget offers a pinnable time setting');
-    } else {
-      await mark('pin', 'no widget offers a pinnable time setting');
+  const { owners, maps } = await app.evaluate(`(() => {
+    for (const node of document.querySelectorAll('[data-e2e-settings]')) node.removeAttribute('data-e2e-settings');
+    const view = document.querySelector('.dash-grid-scroll')?.getBoundingClientRect();
+    const inside = box => box.width && box.height && view && box.top >= view.top && box.bottom <= view.bottom && box.left >= view.left && box.right <= view.right;
+    const owners = [];
+    const seen = box => box.width && box.height && view && box.bottom > view.top && box.top < view.bottom && box.right > view.left && box.left < view.right;
+    const maps = [...document.querySelectorAll('article.dash-widget.kind-map')].filter(map => seen(map.getBoundingClientRect())).length;
+    for (const node of document.querySelectorAll(${JSON.stringify(config)})) {
+      const owner = node.closest('article.dash-widget');
+      if (!owner || owner.classList.contains('kind-map') || !inside(node.getBoundingClientRect())) continue;
+      node.setAttribute('data-e2e-settings', String(owners.length));
+      owners.push(owner.dataset.widget ?? null);
+    }
+    return { owners, maps };
+  })()`);
+  let unread = 0;
+  for (let index = 0; index < owners.length && !pinApplied; index++) {
+    const at = await s.locate(`[data-e2e-settings="${index}"]`);
+    if (!at) continue;
+    await app.click(at.x, at.y);
+    if (!await s.until("document.querySelector('.widget-settings-menu:popover-open')")) { unread++; await s.escape(); continue; }
+    const pinned = await s.until(`[...document.querySelectorAll('${time}')].some(button => button.textContent.trim() === 'Pinned')`);
+    if (pinned) {
+      const owner = `${article}[data-widget=${JSON.stringify(owners[index])}]`;
+      const held = await app.evaluate(`document.querySelector(${JSON.stringify(owner)})?.dataset.fixedHour ?? null`);
+      await mark('pin');
+      await s.click(time, { text: 'Pinned' });
+      if (!await s.until(`(hour => hour !== undefined && hour !== ${JSON.stringify(held)})(document.querySelector(${JSON.stringify(owner)})?.dataset.fixedHour)`))
+        throw new Error(`Pinning widget ${owners[index]} did not fix its hour`);
+      await s.frames(4);
+      pinWidget = owners[index];
+      await app.evaluate(`__e2e.setPinWidget(${JSON.stringify(pinWidget)})`);
+      pinApplied = true;
     }
     await s.escape();
-  } else await mark('pin', 'no widget offers a pinnable time setting');
+  }
+  if (!pinApplied && (unread || maps)) throw new Error(`Pin was not exercised: ${unread} settings menus did not open and ${maps} map widgets keep their time setting elsewhere`);
+  if (!pinApplied) await mark('pin', 'no widget offers a pinnable time setting');
   await s.click('button.header-play[aria-label="Play"]');
   await mark('speed'); await setSpeed(168); await s.frames(5);
-  const selector = await s.app.evaluate(`(() => {
+  const candidates = await s.app.evaluate(`(() => {
     for (const node of document.querySelectorAll('[data-e2e-scroll]')) node.removeAttribute('data-e2e-scroll');
-    const scrolls = node => node.scrollHeight - node.clientHeight - node.scrollTop > 2 && /(auto|scroll)/.test(getComputedStyle(node).overflowY);
+    const scrolls = node => node.scrollHeight - node.clientHeight > 2 && /(auto|scroll)/.test(getComputedStyle(node).overflowY);
+    let count = 0;
     for (const node of document.querySelectorAll('.dash-widget *')) {
       if (!scrolls(node)) continue;
       const box = node.getBoundingClientRect(), x = box.left + box.width / 2, y = box.top + box.height / 2;
@@ -522,18 +553,24 @@ async function playbackInputs() {
       let hit = document.elementFromPoint(x, y);
       while (hit && hit !== node && !scrolls(hit)) hit = hit.parentElement;
       if (hit !== node) continue;
-      node.setAttribute('data-e2e-scroll', 'true'); return '[data-e2e-scroll="true"]';
+      node.setAttribute('data-e2e-scroll', String(count++));
     }
-    return null;
+    return count;
   })()`);
-  if (selector) {
-    const target = selector;
-    await mark('scroll');
-    const point = await s.need(target);
-    const before = await app.evaluate(`document.querySelector(${JSON.stringify(target)})?.scrollTop ?? 0`);
-    await app.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY: 250 });
-    if (!await s.until(`(document.querySelector(${JSON.stringify(target)})?.scrollTop ?? 0) > ${before}`))
-      throw new Error('Playback scroll target did not move');
+  if (candidates) {
+    let scrolled = false;
+    for (let candidate = 0; candidate < candidates && !scrolled; candidate++) {
+      const target = `[data-e2e-scroll="${candidate}"]`;
+      const point = await s.locate(target);
+      if (!point) continue;
+      const [before, wheel, at] = await app.evaluate(`(() => { const node = document.querySelector(${JSON.stringify(target)});
+        const down = node ? node.scrollHeight - node.clientHeight - node.scrollTop > 2 : true;
+        return [node?.scrollTop ?? 0, down ? 250 : -250, performance.timeOrigin + performance.now()]; })()`);
+      await app.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY: wheel });
+      scrolled = await s.until(`((document.querySelector(${JSON.stringify(target)})?.scrollTop ?? ${before}) - ${before}) * ${Math.sign(wheel)} > 0`, 2_000);
+      if (scrolled) await mark('scroll', null, at);
+    }
+    if (!scrolled) throw new Error(`None of ${candidates} scrollable widget areas moved under the wheel`);
   } else await mark('scroll', 'nothing to scroll');
   await s.frames(5);
   await mark('pause'); await s.click('button.header-play[aria-label="Pause"]');
@@ -569,7 +606,7 @@ async function playbackVisibility() {
         observer.unobserve(canvas); observed.delete(canvas);
         reports.push({ id: held.id, placement: held.placement, at: performance.timeOrigin + performance.now(), visible: false });
       }
-      for (const canvas of grid.querySelectorAll('article.dash-widget canvas[data-placement]'))
+      for (const canvas of grid.querySelectorAll('article.dash-widget [data-placement]'))
         if (!observed.has(canvas)) { observed.set(canvas, { id: canvas.closest('article.dash-widget').dataset.widget, placement: Number(canvas.dataset.placement) }); observer.observe(canvas); }
     };
     const layout = new MutationObserver(scan);
@@ -696,7 +733,6 @@ await phase('playback', async () => {
     await save();
   }
   await setSpeed(1);
-  if (phases.includes('visual')) zoomedMapPicture(visual, SEEKS.at(-1));
 });
 
 await phase('catalogue', async () => {

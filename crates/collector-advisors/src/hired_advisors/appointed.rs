@@ -121,7 +121,8 @@ pub fn capture(
         held.published = Some(held.generation);
         counts.reused = 1;
         counts.reused_rows = held.rows.len() as u64;
-        crate::advisor_pool_changes::record(Table::HiredAdvisors, &counts, None);
+        // SAFETY: Called from admitted hired-advisor capture with no pool-demand override.
+        unsafe { crate::advisor_pool_changes::record(Table::HiredAdvisors, &counts, None) };
         return NameWalk {
             outcome: Outcome::Rows {
                 len: held.rows.len(),
@@ -145,7 +146,8 @@ pub fn capture(
         }
         _ => held.forget(),
     }
-    crate::advisor_pool_changes::record(Table::HiredAdvisors, &counts, None);
+    // SAFETY: Called from admitted hired-advisor capture with no pool-demand override.
+    unsafe { crate::advisor_pool_changes::record(Table::HiredAdvisors, &counts, None) };
     walk
 }
 

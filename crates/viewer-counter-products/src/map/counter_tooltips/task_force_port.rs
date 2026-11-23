@@ -1,10 +1,10 @@
 
 use super::*;
 #[cfg(test)]
-use viewer_foundation::map::counter_hovers::gui_authored::Authored;
-use viewer_foundation::map::counter_hovers::task_force_port::{Control, Hover, Metadata};
+use viewer_native_gui::counter_hovers::gui_authored::Authored;
+use viewer_native_gui::counter_hovers::task_force_port::{Control, Hover, Metadata};
 #[cfg(test)]
-use viewer_foundation::map::counter_inputs::NavalMember;
+use viewer_unit_reads::counter_inputs::NavalMember;
 
 fn append_flag(
     context: &Context<'_>,
@@ -199,7 +199,7 @@ fn pride(context: &Context<'_>, metadata: &Metadata, out: &mut Tooltip) -> bool 
 mod tests {
     use super::*;
     use replay_data::{rows::TableRows, rows::TaskForceCounterInputRow, rows::TaskForceRow};
-    use viewer_foundation::map::test_support::{test_frame, test_put};
+    use viewer_foundation::test_support::{test_frame, test_put};
 
     fn metadata() -> Metadata {
         Metadata {
@@ -337,12 +337,12 @@ mod tests {
             unit_hit: 3,
             ..hover(Control::Normal, &[7])
         };
-        let mut hit = viewer_foundation::map::counter_hovers::unit_hits::Hit {
+        let mut hit = viewer_native_gui::counter_hovers::unit_hits::Hit {
             plate: None,
             ours: true,
             port: true,
             rect: [0.; 4],
-            kind: viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce,
+            kind: viewer_native_gui::counter_hovers::unit_hits::Kind::TaskForce,
             members: Arc::clone(&hover.members),
             layer: 0,
         };
@@ -350,15 +350,15 @@ mod tests {
         hit.port = false;
         assert!(!hover.matches(&hit));
         hit.port = true;
-        hit.kind = viewer_foundation::map::counter_hovers::unit_hits::Kind::RailwayGun;
+        hit.kind = viewer_native_gui::counter_hovers::unit_hits::Kind::RailwayGun;
         assert!(!hover.matches(&hit));
     }
 
     #[test]
     fn unbound_port_authored_fallback_keeps_raw_lookup_and_bound_localisation_distinct() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let frame = test_frame(0);
-        let gui = content_reader_core::gui::native::read(
+        let gui = content_reader_gui::gui::native::read(
             br#"guiTypes = {
             guiButtonType = { name = raw pdx_tooltip = RAW }
             guiButtonType = { name = missing pdx_tooltip = MISSING }
@@ -390,8 +390,8 @@ mod tests {
 
     #[test]
     fn port_callback_handled_empty_controls_suppress_authored_fallback() {
-        content_reader_core::test_game::enter();
-        let gui = content_reader_core::gui::native::read(
+        content_reader_script::test_game::enter();
+        let gui = content_reader_gui::gui::native::read(
             b"guiTypes = { guiButtonType = { name = authored pdx_tooltip = RAW } }",
         );
         let authored = Authored::read(gui.template("authored").unwrap(), false);
@@ -430,8 +430,8 @@ mod tests {
 
     #[test]
     fn port_callback_false_allows_fallback_but_unknown_admission_does_not() {
-        content_reader_core::test_game::enter();
-        let gui = content_reader_core::gui::native::read(
+        content_reader_script::test_game::enter();
+        let gui = content_reader_gui::gui::native::read(
             b"guiTypes = { guiButtonType = { name = authored pdx_tooltip = RAW } }",
         );
         let input = Hover {
@@ -463,8 +463,8 @@ mod tests {
 
     #[test]
     fn authored_fallback_replaces_only_present_hash_fields_and_appends_unscoped_bound() {
-        content_reader_core::test_game::enter();
-        let gui = content_reader_core::gui::native::read(
+        content_reader_script::test_game::enter();
+        let gui = content_reader_gui::gui::native::read(
             br#"guiTypes = {
             guiButtonType = { name = absent pdx_tooltip = MISSING pdx_tooltip_delayed = BODY }
             guiButtonType = { name = empty pdx_tooltip = EMPTY }

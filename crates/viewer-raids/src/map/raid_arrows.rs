@@ -1,20 +1,31 @@
 
 use content_reader_equipment_graphics::equipment_graphics::countries as model_countries;
 use std::collections::BTreeMap;
-use viewer_foundation::map::aircraft_model;
+use viewer_unit_reads::aircraft_model;
 #[cfg(test)]
-use viewer_foundation::map::aircraft_model::designer_entity;
-use viewer_foundation::map::ribbon_content::RaidArrowReport;
-use viewer_foundation::map::ribbon_geometry::smooth_sharp_turns;
-use viewer_foundation::map::unit_pose::{
-    Ends, UnitPlacement, UnitTrack, air_height, ballistic_height, fixed, straight_controls, unwrap,
+use viewer_unit_reads::aircraft_model::designer_entity;
+use viewer_gpu::ribbon_content::RaidArrowReport;
+use viewer_gpu::ribbon_geometry::smooth_sharp_turns;
+use viewer_gpu::unit_pose::{
+    Ends,
+    UnitPlacement,
+    UnitTrack,
+    air_height,
+    ballistic_height,
+    fixed,
+    straight_controls,
+    unwrap,
 };
 #[cfg(test)]
-use viewer_foundation::map::unit_pose::{
-    elapsed_hours, movement_progress, next_hour_progress, phase_progress, remaining_hours,
+use viewer_gpu::unit_pose::{
+    elapsed_hours,
+    movement_progress,
+    next_hour_progress,
+    phase_progress,
+    remaining_hours,
 };
 
-use content_reader_core::{movement::MovementMap, province_graph::RaidPath, province_graph::raid_route};
+use content_reader_map::{movement::MovementMap, province_graph::{RaidPath, raid_route}};
 use content_reader_raids::{
     raids::PathArrowDefines, raids::RaidArrowKind, raids::RaidGraphicsDefines, raids::RaidType,
 };
@@ -27,10 +38,7 @@ use {
     crate::map::raids::script::Eval, crate::map::raids::unit_inputs::*,
     dashboard_text::triggers::World,
 };
-use {
-    viewer_foundation::map::province_map::HeightField,
-    viewer_foundation::map::ribbon_content::{ArrowType, OrderAssets, OrderField},
-};
+use viewer_gpu::{province_map::HeightField, ribbon_content::{ArrowType, OrderAssets, OrderField}};
 
 type Point = [i64; 2];
 
@@ -139,7 +147,7 @@ fn build_into(
         let Some(arrow) = inputs.orders.types.get(arrow_kind.arrow_type()) else {
             report.refuse(format!(
                 "{} declares no arrowType {}",
-                viewer_foundation::map::ribbon_content::MAPARROWS,
+                viewer_gpu::ribbon_content::MAPARROWS,
                 arrow_kind.arrow_type()
             ));
             continue;
@@ -205,7 +213,7 @@ fn build_into(
             }
         }
     }
-    viewer_foundation::map::ribbon_mesh::sort_draws(&mut field.draws);
+    viewer_gpu::ribbon_mesh::sort_draws(&mut field.draws);
     Ok(())
 }
 
@@ -418,14 +426,14 @@ fn emit(
     };
     let lifted = |_: f32, _: f32, control: usize| lift(control as i32);
     let terrain = |x: f32, z: f32, _: usize| {
-        viewer_foundation::map::ribbon_mesh::ribbon_height(heights, x, z)
+        viewer_gpu::ribbon_mesh::ribbon_height(heights, x, z)
     };
     let height: &dyn Fn(f32, f32, usize) -> f32 = match kind {
         RaidArrowKind::Air | RaidArrowKind::Ballistic => &lifted,
         _ => &terrain,
     };
     let draw =
-        viewer_foundation::map::ribbon_mesh::emit(field, arrow, controls, scale, color, height)?;
+        viewer_gpu::ribbon_mesh::emit(field, arrow, controls, scale, color, height)?;
     let draw = &mut field.draws[draw];
     draw.culling_offset = f32::from(u8::from(arrow.culling_direction != 0));
     draw.kind = dashboard_core::protocol::PlanKind::Raid;

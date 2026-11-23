@@ -7,7 +7,7 @@ struct Content(std::path::PathBuf);
 
 impl Content {
     fn new(history: &[(&str, &str)]) -> Self {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -40,6 +40,15 @@ impl Content {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, bytes).unwrap();
         }
+        let mut bmp = vec![0_u8; 58];
+        bmp[..2].copy_from_slice(b"BM");
+        for (at, value) in [(2, 58_u32), (10, 54), (14, 40), (18, 1), (22, 1)] {
+            bmp[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        bmp[26..28].copy_from_slice(&1_u16.to_le_bytes());
+        bmp[28..30].copy_from_slice(&24_u16.to_le_bytes());
+        bmp[54..57].copy_from_slice(&[0, 0, 1]);
+        std::fs::write(content.0.join("map/unused.bmp"), bmp).unwrap();
         content
     }
 
@@ -418,4 +427,39 @@ equipments={convoy_1={id={id=1 type=70}} convoy_1={id={id=2 type=70}}}
             .to_string()
             .contains("lacks state")
     );
+}
+
+#[test]
+fn synthesized_unclaimed_bmp_province_is_accepted_by_state_history_and_save_control() {
+    let content = Content::new(&[(
+        "history/states/unclaimed.txt",
+        "state={id=1 provinces={1 5}}",
+    )]);
+    let mut bmp = vec![0_u8; 62];
+    bmp[..2].copy_from_slice(b"BM");
+    for (at, value) in [(2, 62_u32), (10, 54), (14, 40), (18, 2), (22, 1)] {
+        bmp[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bmp[26..28].copy_from_slice(&1_u16.to_le_bytes());
+    bmp[28..30].copy_from_slice(&24_u16.to_le_bytes());
+    bmp[54..60].copy_from_slice(&[0, 0, 1, 7, 8, 9]);
+    std::fs::write(content.0.join("map/unused.bmp"), bmp).unwrap();
+
+    let membership = read_partial_map_membership(&content.layers()).unwrap();
+    assert_eq!(membership.known_states, BTreeSet::from([1]));
+    assert_eq!(membership.provinces[&5], ProvinceMembership::Known(Some(1)));
+
+    let save = parse(
+        br#"HOI4txt
+date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
+countries={ GER={} D01={} } states={1={owner=GER}} provinces={5={controller=D01}}
+"#,
+    )
+    .unwrap();
+    let rows = save.province_control(&membership).unwrap();
+    let synthesized = rows.iter().find(|row| row.id == 5).unwrap();
+    assert!(synthesized.membership_known);
+    assert_eq!(synthesized.owner.as_deref(), Some(b"GER".as_slice()));
+    assert_eq!(synthesized.controller.as_deref(), Some(b"D01".as_slice()));
+    assert!(synthesized.controller_explicit);
 }

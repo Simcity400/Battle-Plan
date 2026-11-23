@@ -9,12 +9,12 @@ slow-timeout = { period = "60s", terminate-after = 60 }
 filter = '''
 test(/5000|5_000|five_thousand/)
 | (package(replay) & test(/^acceptance::/))
-| (package(collector) & test(/oob_entry_tests|oob_root_fields|role_capture_cost/))
+| (package(collector-naval-history) & test(/oob_entry_tests|oob_root_fields/))
 '''
 priority = 60
 
 [[profile.default.overrides]]
-filter = 'package(dashboard)'
+filter = 'package(/^dashboard(?:-(?:air|economy|effects|intelligence|land|naval|players|politics|production|research|wars|world))?$/)'
 priority = 50
 
 [profile.hosted]

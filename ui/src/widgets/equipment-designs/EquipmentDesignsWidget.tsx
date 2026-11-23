@@ -1,10 +1,10 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { createPortal } from 'react-dom';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo,  useRef, useState } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import Table from '../../charts/table/Table';
@@ -30,6 +30,8 @@ import { designRevision, designTypes, designsAt, designsKnown, designsSince, see
 import type { DesignRow } from './designsData';
 import './equipmentDesigns.css';
 import type { EquipmentDesignsReply } from '../../generated/dashboard';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_ROWS: readonly DesignRow[] = [];
 const NO_WARNINGS: readonly string[] = [];
@@ -39,7 +41,7 @@ const UNNAMED = 'Design name unavailable';
 function useDesigns(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-designs', params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null;
+  const request = track && tag ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'equipment-designs', params: { branchId: track.branch.id, country: countryFromKey(tag) } }) : null;
   return { track, tag, ...useProduct<EquipmentDesignsReply>(runtime.client, request, active, validateDesigns, track?.source) };
 }
 
@@ -75,7 +77,9 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
   const rows = useMemo(() => data && hour !== null ? designsAt(data, hour, included) : NO_ROWS, [data, hour, included]);
   const names = useCountryNamesAt(runtime.client, track, useMemo(() => tag && hour !== null ? [{ hour, tag }] : [], [tag, hour]), active);
   const anchor = useRef<HTMLDivElement>(null);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag]);
   const owner = useMemo(() => ({ client: runtime.client, scope }), [runtime.client, scope]);
   const [stored, setPicked] = useState<{ owner: object; row: DesignRow } | null>(null);
@@ -107,12 +111,13 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
   const open = (row: DesignRow) => {
     if (hour === null) return;
     setPicked({ owner, row });
-    dispatch({ type: 'open', breakdown: SHEET.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
+    dispatch({ type: 'open', breakdown: SHEET.id, hour, follow: drillControl.followsAt(hour) });
   };
-  const at = hour === null ? null : drillHour(drill, hour) ?? hour;
+  const drillRegion = drillControl.region;
+  const at = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null);
 
   if (!track) return <WidgetState kind="empty" icon="layers" message="Load a campaign to see designs." />;
-  if (hour === null) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (hour === null) return <WidgetState kind="outside" />;
   if (!tag) return <WidgetState kind="empty" message="Choose a country in widget settings." />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading designs…" />;
@@ -135,9 +140,9 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
     </div>;
   return <div ref={anchor} data-detail={failureDetails([...names.values()].map(nameReadFailure))} className="equipment-designs">
     {header}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}
-      title={picked ? picked.name ?? UNNAMED : SHEET.label} day={dayLabel(at ?? hour)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
-      onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}>
+    <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null && !!picked} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
+      title={picked ? picked.name ?? UNNAMED : SHEET.label} day={at === null ? '' : dayLabel(at)} canFollow
+      onClose={() => dispatch({ type: 'close' })} main={main}>
       {picked && <DesignSheet />}
     </DrillHost>
   </div>;

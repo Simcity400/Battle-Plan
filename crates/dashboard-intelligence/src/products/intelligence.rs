@@ -10,7 +10,7 @@ pub mod operative_content;
 pub mod placements;
 pub mod roster;
 
-use crate::Source;
+use dashboard_base::Source;
 use dashboard_core::config::LoadContext;
 use dashboard_text::cryptology;
 use content_reader_localisation::localisation::Localisation;
@@ -95,7 +95,7 @@ impl Content {
         let defines = source
             .content(&content.options)
             .map_err(|error| error.to_string())
-            .and_then(|bound| content_reader_core::defines::read(&bound.layers).map_err(|error| error.to_string()))
+            .and_then(|bound| content_reader_defines::defines::read(&bound.layers).map_err(|error| error.to_string()))
             .and_then(|defines| cryptology::Defines::read(&defines));
         Self { localisation, defines }
     }

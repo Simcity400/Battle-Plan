@@ -387,4 +387,27 @@ mod tests {
             "unverified"
         );
     }
+
+    #[test]
+    fn retired_transport_families_never_appear_in_status_while_shared_keys_refuse_consumers() {
+        for index in [
+            modifier_keys::SPOTTING_CHANCE_AGAINST,
+            modifier_keys::AIR_ATTACK_FACTOR,
+        ] {
+            let name = format!("synthetic_modifier_{index}");
+            let report = mismatched(index as usize);
+            let status = serde_json::to_value(status(Some(&report))).unwrap();
+            assert_eq!(status["state"], "refused");
+            let refusals = status["refusals"].as_array().unwrap();
+            assert!(refusals.iter().all(|entry| {
+                let reason = entry["reason"].as_str().unwrap();
+                !reason.contains("selected transport risk")
+                    && !reason.contains("selected transport air normalization")
+            }));
+            let mut input = inputs();
+            apply(&mut input, &Ok(report)).unwrap();
+            assert!(refused(&input, TableId::NavalMissionTaskForces, &name));
+            assert!(refused(&input, TableId::CountryCounterInputs, &name));
+        }
+    }
 }

@@ -3,7 +3,7 @@ use super::fresh_search::Inputs;
 use game_model::movement::{army::MovementSpeedInputs, unit::eta_ratio};
 use content_reader_unit_path::{unit_path::CounterRequest, unit_path::Fact, unit_path::MoveWorld};
 use replay_data::{rows::FreshRailwayCounterEta, rows::RailwayGunCounterInputRow, rows::tables};
-use viewer_foundation::map::movement_reads::Moves;
+use viewer_unit_reads::movement_reads::Moves;
 
 const NOT_RECORDED: &str = "fresh railway ETA sea-leg transport speed is not recorded for the leg's region: capture records only the regions the owner's guns stand in or route through";
 
@@ -179,20 +179,16 @@ fn remaining(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::{
-        movement::MovementMap, movement::Neighbour, movement::ProvinceTerrain,
-        movement::RailMovementDefines,
-    };
+    use content_reader_map::movement::{MovementMap, Neighbour, ProvinceTerrain, RailMovementDefines};
     use replay_data::{
         rows::OwnerTransportSpeedRow, rows::RailCooldownRow, rows::RailEdgeRow,
         rows::RailwayBuildingHealth, rows::RailwayBuildingState, rows::RailwayGunEtaOperands,
         rows::Recorded, rows::TableRows,
     };
     use replay_frame::frame::DecodedFrame;
-    use {
-        viewer_foundation::map::test_support::test_frame,
-        viewer_foundation::map::test_support::test_put as put,
-        viewer_foundation::movement_timing::MovementContent,
+    use viewer_foundation::{
+        test_support::{test_frame, test_put as put},
+        movement_timing::MovementContent,
     };
 
     fn frame() -> DecodedFrame {
@@ -324,7 +320,7 @@ mod tests {
 
     #[test]
     fn railway_bonus_is_directed_and_applies_supply_after_land_scale() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = frame();
         rails(&mut frame);
         let mut content = content(1);
@@ -445,7 +441,7 @@ mod tests {
 
     #[test]
     fn actual_progress_is_demanded_only_for_the_same_first_edge() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = frame();
         rails(&mut frame);
         let content = content(1);
@@ -471,7 +467,7 @@ mod tests {
 
     #[test]
     fn zero_speed_stops_before_progress_or_later_land_operands() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = frame();
         rails(&mut frame);
         let mut content = content(1);
@@ -492,7 +488,7 @@ mod tests {
 
     #[test]
     fn earlier_edge_division_overflow_is_not_hidden_by_later_zero_speed() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = frame();
         put(
             &mut frame,
@@ -567,7 +563,7 @@ mod tests {
 
     #[test]
     fn land_common_refusals_never_become_an_army_fallback() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = frame();
         rails(&mut frame);
         let content = content(1);

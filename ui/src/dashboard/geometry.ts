@@ -16,7 +16,7 @@ import type { PlaybackController, PlaybackSnapshot } from './playback';
 
 const TOGGLE_NAMES: Record<MapToggle['setting'], string> = { dayNight: 'Day/night cycle', alliedPlans: 'Allied battle plans', fog: 'Fog of war' };
 
-export type MapTarget = Omit<DashboardMapView, 'id' | 'bounds' | 'clip' | 'visible' | 'composedAt'>;
+export type MapTarget = Omit<DashboardMapView, 'id' | 'bounds' | 'clip' | 'visible' | 'composedAt' | 'clockId'>;
 interface Layout { bounds: MapBounds; clip: MapBounds; onScreen: boolean }
 interface Surface { element: HTMLElement; target: (clock: PlaybackSnapshot) => MapTarget | null; layout: Layout | null; present: boolean }
 interface Rect { left: number; top: number; right: number; bottom: number }
@@ -49,7 +49,7 @@ export class MapViewsStore {
   private observer: ResizeObserver | null = null;
   private frame: (() => void) | null = null;
   private layoutDirty = true;
-  private pending: DashboardMapView[] | null = null;
+  private pending: { clockId: string; views: DashboardMapView[] } | null = null;
   private busy = false;
   private applied = '';
   private active = false;
@@ -83,7 +83,7 @@ export class MapViewsStore {
     return () => { if (this.toggleFailures.get(viewId) === entry) this.toggleFailures.delete(viewId); };
   }
 
-  saveToggle(view: DashboardMapView, toggle: MapToggle, save: () => Promise<void>): void {
+  saveToggle(view: DashboardMapView, toggle: MapToggle, save: () => Promise<string | null>): void {
     const recording = `${view.sourceId}:${view.revision}`;
     const key = JSON.stringify([view.id, recording, toggle.setting]);
     const sequence = ++this.toggleSaved;
@@ -94,7 +94,7 @@ export class MapViewsStore {
       const listener = this.toggleFailures.get(view.id);
       if (listener?.recording === recording) listener.report(toggle.setting, failure);
     };
-    save().then(() => tell(null), (error: unknown) => tell(new ShownError(
+    save().then(warning => tell(warning ? new ShownError(`${TOGGLE_NAMES[toggle.setting]}: changed, but Windows didn’t confirm the change reached the disk.`, warning) : null), (error: unknown) => tell(new ShownError(
       `${TOGGLE_NAMES[toggle.setting]}: this change may not have been kept. Toggling it again makes a new change.`, errorMessage(error))));
   }
 
@@ -138,6 +138,7 @@ export class MapViewsStore {
       perfLog?.mapStates(states, this.expectation);
       let errorChanged = false;
       for (const state of states) {
+        if (state.clockId !== this.clock.clockId) continue;
         const old = this.states.get(state.id);
         if (old && (state.requestedSequence ?? state.sequence) < (old.requestedSequence ?? old.sequence)
           && old.sourceId === state.sourceId && old.revision === state.revision) continue;
@@ -173,7 +174,7 @@ export class MapViewsStore {
       window.visualViewport?.removeEventListener('scroll', this.schedule);
       document.removeEventListener('visibilitychange', this.schedule);
       resolution?.removeEventListener('change', changedResolution);
-      this.pending = [];
+      this.pending = { clockId: this.clock.clockId, views: [] };
       perfLog?.mapViews([]);
       void this.drain();
     };
@@ -274,7 +275,7 @@ export class MapViewsStore {
     for (const id of this.surfaces.keys()) {
       const old = this.states.get(id);
       changed ||= old?.error !== error;
-      this.states.set(id, old ? { ...old, error } : { id, sourceId: null, revision: null, branchId: null, hour: null,
+      this.states.set(id, old ? { ...old, error } : { id, clockId: this.clock.clockId, sourceId: null, revision: null, branchId: null, hour: null,
         fraction: null, sequence: 0, requestedSequence: 0, loading: false, error });
       this.present(id);
     }
@@ -298,6 +299,7 @@ export class MapViewsStore {
     if (this.layoutDirty) { this.layoutDirty = false; this.measure(this.viewport); }
     const clock = this.clock.getSnapshot();
     const composedAt = this.clock.composedAt();
+    const clockId = this.clock.clockId;
     const views: DashboardMapView[] = [];
     for (const [id, surface] of this.surfaces) {
       const target = surface.target(clock);
@@ -305,12 +307,12 @@ export class MapViewsStore {
       if (!target || !surface.layout) continue;
       const { bounds, clip, onScreen } = surface.layout;
       const visible = onScreen && !this.hidden && !document.hidden && !this.states.get(id)?.error;
-      const view = { id, ...target, composedAt, options: this.viewOptions(id, target.options), bounds, clip, visible };
+      const view = { id, ...target, composedAt, clockId, options: this.viewOptions(id, target.options), bounds, clip, visible };
       views.push(view);
       this.lastViews.set(id, view);
     }
     perfLog?.mapViews(views);
-    this.pending = views;
+    this.pending = { clockId, views };
     void this.drain();
   }
 
@@ -319,11 +321,11 @@ export class MapViewsStore {
     this.busy = true;
     try {
       while (this.pending) {
-        const views = this.pending;
+        const snapshot = this.pending;
         this.pending = null;
-        const key = viewsKey(views);
+        const key = viewsKey(snapshot.clockId, snapshot.views);
         if (key === this.applied) continue;
-        try { await this.client.setMapViews(views); this.applied = key; }
+        try { await this.client.setMapViews(snapshot.clockId, snapshot.views); this.applied = key; }
         catch (cause) { this.applied = ''; this.fail(errorMessage(cause)); }
       }
     } finally { this.busy = false; }

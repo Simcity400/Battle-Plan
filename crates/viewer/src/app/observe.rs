@@ -1,9 +1,9 @@
-use dashboard::protocol::{MapOptions, ObservedCountry};
-use content_reader_core::map::ProvinceKind;
+use dashboard_core::protocol::{MapOptions, ObservedCountry};
+use content_reader_map::map::ProvinceKind;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::map::perspective::Country;
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_foundation::perspective::Country;
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 pub(crate) fn ctrl_click_target(
     frame: &DecodedFrame,
@@ -149,7 +149,7 @@ fn now_micros() -> u64 {
 mod tests {
     use super::*;
     use replay_data::rows::{CountryLinkRow, CountryRow, ProvinceRow, StateRow, TableRows};
-    use viewer_foundation::map::test_support::{test_frame, test_put};
+    use viewer_foundation::test_support::{test_frame, test_put};
 
     fn frame() -> DecodedFrame {
         let mut frame = test_frame(7);
@@ -246,7 +246,7 @@ mod tests {
     #[test]
     fn a_ctrl_click_switches_at_once_and_the_host_follows() {
         use crate::app::picker::ViewEvent;
-        use dashboard::protocol::MapAction;
+        use dashboard_core::protocol::MapAction;
         let mut viewer = super::super::Viewer::create(crate::Config::default(), crate::Options::default(), None, std::sync::Arc::new(std::sync::Mutex::new(None)), None, None);
         viewer.dashboard_map = true;
         let mut frame = eframe::Frame::_new_kittest();

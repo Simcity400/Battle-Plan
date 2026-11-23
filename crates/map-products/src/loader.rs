@@ -1,11 +1,8 @@
 use crate::{ProductContent, ProductInputs};
-use content_reader_core::ResolvedLayers;
+use content_reader_layers::ResolvedLayers;
 pub use map_content::loader::*;
 use std::{io, path::Path, sync::Arc};
-use viewer_foundation::map::{
-    province_geometry::ProvinceGeometry,
-    province_map::{HeightField, ProvinceMap},
-};
+use viewer_gpu::{province_geometry::ProvinceGeometry, province_map::{HeightField, ProvinceMap}};
 
 pub fn load(layers: &ResolvedLayers, user: &Path, language: &str) -> io::Result<ProductContent> {
     let loader = Loader::new(layers);
@@ -46,7 +43,7 @@ pub fn load(layers: &ResolvedLayers, user: &Path, language: &str) -> io::Result<
             fog,
             anchors: Arc::new(anchors.positions),
             default_anchors: Arc::new(default_anchors),
-            bounds: Arc::new(viewer_foundation::map::province_admission::province_boxes(
+            bounds: Arc::new(viewer_gpu::province_admission::province_boxes(
                 &ProvinceMap {
                     width: map.width,
                     height: map.height,
@@ -54,7 +51,7 @@ pub fn load(layers: &ResolvedLayers, user: &Path, language: &str) -> io::Result<
                 },
             )),
             localisation,
-            map_text: viewer_world::map::animated_map_text::events::Content::new(&buildings),
+            map_text: viewer_map_text::animated_map_text::events::Content::new(&buildings),
             audio: audio.map(|source| Arc::clone(&source.content)),
             triggers: Arc::new(triggers),
         },

@@ -1,16 +1,25 @@
 import type { LiveValues } from '../../charts/live';
-import { ArsenalPicture } from '../arsenal.ts';
 import type { PanelGeometry, PanelView } from './view';
-import type { SpecialProjectsReply, DoctrineMasteryReply, ResearchSlotsReply, SpecialProjectDetails } from '../../generated/dashboard';
+import type { Structure } from '../views/fields';
+import type { SpecialProjectsReply, DoctrineMasteryReply, ResearchSlotsReply, SpecialProjectDetails, WargoalsReply } from '../../generated/dashboard';
 import { arsenalNotice, arsenalStructure, arsenalStructureRows, validateNuclearArsenal } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import { liveKey } from '../../charts/live.ts';
 import { slotsStructure, slotValues } from '../../widgets/research/researchSlots.ts';
 import { validateResearchSlots } from '../../widgets/research/researchData.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
-import { detailTexts, detailsStructure, effectsStructure, effectTexts, validateProjectEffects, validateProjectDetails } from '../../widgets/special-projects/projectDetailsData.ts';
-import { projectStructure, currentKey, currentProjects, runningValues, validateSpecialProjectsReply } from '../../widgets/special-projects/specialProjectsData.ts';
+import { REWARDS_PANEL, detailTexts, detailsStructure, effectsStructure, rewardsStructure, validateProjectDetails, validateProjectEffects } from '../../widgets/special-projects/projectDetailsData.ts';
+import { technologyEffectsStructure, validateTechnologyEffects } from '../../widgets/research/technologyEffects.ts';
+import { entityStatsStructure, validateEntityStats } from '../../widgets/research/entityStats.ts';
+import { HISTORY_PANEL, historyStructure, projectStructure, currentKey, currentProjects, runningValues, validateSpecialProjectsReply } from '../../widgets/special-projects/specialProjectsData.ts';
 import { occupiedStructure, validateOccupiedStates } from '../../widgets/occupied-states/occupiedStatesData.ts';
 import { masteryStructure, trackKey, trackNumbers, trackTexts, trackRatio, validateDoctrineMastery } from '../../widgets/doctrine-mastery/doctrineMasteryData.ts';
+
+function detailValues(reply: SpecialProjectDetails) {
+  const values = detailTexts(reply);
+  if (reply.scientists) values.set('Scientists', String(reply.scientists.length));
+  if (reply.programs) values.set('Facility assignments', String(reply.programs.length));
+  return values;
+}
 
 function recordView<T extends object>(validate: (raw: unknown) => T, shapeOf: (record: T) => string,
   fields: (record: T, values: LiveValues<number>, hour: number) => Map<string, string>, geometry: PanelGeometry, nextChange?: (reply: T, hour: number) => number) {
@@ -39,12 +48,23 @@ function recordView<T extends object>(validate: (raw: unknown) => T, shapeOf: (r
   };
 }
 
-const tableStructures: Readonly<Record<string, (raw: unknown) => string>> = {
+const tableStructures: Readonly<Record<string, (raw: unknown, hour: number) => string>> = {
   'occupied-states': raw => occupiedStructure(validateOccupiedStates(raw)),
+  'special-project-effects': raw => effectsStructure(validateProjectEffects(raw)),
+  'technology-effects': raw => technologyEffectsStructure(validateTechnologyEffects(raw)),
+  'content-entity-stats': raw => entityStatsStructure(validateEntityStats(raw)),
+  [HISTORY_PANEL]: (raw, hour) => historyStructure(validateSpecialProjectsReply(raw), hour),
 };
 
 export function panelStructure(product: string, raw: unknown, hour: number): string {
-  return panelViews[product]?.structure?.(raw, hour) ?? tableStructures[product]?.(raw) ?? 'present';
+  return panelViews[product]?.structure?.(raw, hour) ?? tableStructures[product]?.(raw, hour) ?? 'present';
+}
+
+export function readingStructure(product: string | undefined): Structure | undefined {
+  const view = product === undefined ? undefined : panelViews[product]?.structure, table = product === undefined ? undefined : tableStructures[product];
+  if (view) return (panel, hour) => panel.data === undefined ? undefined : view(panel.data, hour);
+  if (table) return (panel, hour) => panel.data === undefined ? undefined : table(panel.data, hour);
+  return undefined;
 }
 
 export function panelValues(product: string, raw: unknown, live: LiveValues<number> | null, hour: number, structure: string) {
@@ -55,6 +75,11 @@ export function panelValues(product: string, raw: unknown, live: LiveValues<numb
 
 export function recordedPanelRows(product: string, raw: unknown): string[] {
   if (product === 'nuclear-arsenal') return arsenalStructureRows(validateNuclearArsenal(raw));
+  if (product === 'wargoals') {
+    const r = raw as WargoalsReply;
+    return [...r.goals.map(g => JSON.stringify(['goal', g.handle, g.actor, g.recipient, g.name, g.available, g.expires])),
+      ...r.justifications.map(j => JSON.stringify(['justification', j.id, j.recipient, j.name, j.paused]))];
+  }
   if (product === 'research-slots') {
     const r = raw as ResearchSlotsReply;
     return r.slots.map(s => JSON.stringify([s.index, s.state.token, s.state.entryFirstObservedHour]));
@@ -77,9 +102,7 @@ export function recordedPanelRows(product: string, raw: unknown): string[] {
   return [];
 }
 
-export const raceViews = { 'nuclear-arsenal': ArsenalPicture };
 const nextDay = (hour: number) => (Math.floor(hour / 24) + 1) * 24;
-const effectsLayer = '[data-effects-ink]';
 const extendInline = '.project-details [data-paint]:last-child';
 
 export const panelViews: Readonly<Record<string, PanelView>> = {
@@ -91,8 +114,6 @@ export const panelViews: Readonly<Record<string, PanelView>> = {
       return new Map([['empty', arsenalNotice(reply, hour)]]);
     },
   },
-  'special-project-effects': recordView(validateProjectEffects, effectsStructure, effectTexts,
-    { layers: effectsLayer, owns: field => !!field.closest(effectsLayer), extendInline }),
   'research-slots': recordView(validateResearchSlots, slotsStructure, (reply, source, hour) =>
     slotValues(reply, hour, slot => source.get(liveKey(String(slot), 'progress'))),
     { rowAttribute: 'data-research-slot', layers: '.research-lanes,.active-rows', meters: '.research-now-meter' },
@@ -103,13 +124,8 @@ export const panelViews: Readonly<Record<string, PanelView>> = {
       }
       return next;
     }),
-  'special-project-details': recordView(validateProjectDetails, detailsStructure, reply => {
-    const values = detailTexts(reply);
-    if (reply.scientists) values.set('Scientists', String(reply.scientists.length));
-    if (reply.programs) values.set('Facility assignments', String(reply.programs.length));
-    if (reply.projects) values.set('Project rewards and variables', String(reply.projects.length));
-    return values;
-  }, { owns: field => !field.closest(effectsLayer), extendInline }),
+  'special-project-details': recordView(validateProjectDetails, detailsStructure, detailValues, { extendInline }),
+  [REWARDS_PANEL]: recordView(validateProjectDetails, rewardsStructure, detailValues, { extendInline }),
   'doctrine-mastery': recordView(validateDoctrineMastery, masteryStructure, (reply, values) => {
     const fields = new Map<string, string>();
     for (const folder of reply.folders) for (const track of folder.tracks) {
@@ -125,14 +141,14 @@ export const panelViews: Readonly<Record<string, PanelView>> = {
     structure: (raw, hour) => projectStructure(projectHistory(raw), hour),
     nextChange: (raw, hour) => projectChangeAfter(projectHistory(raw), hour),
     geometry: { rowAttribute: 'data-project', extraFields: '.special-project-progress > span', meters: '.special-project-progress',
-      knob: field => !!field.closest('.special-project-progress') && !field.closest('.is-paused,.is-unknown') },
+      barVariable: { host: '[data-project]', name: '--project-progress' } },
     values(raw, _live, hour, shape) {
       const reply = projectHistory(raw);
       if (currentKey(reply, hour) !== shape && projectStructure(reply, hour) !== shape) return null;
       const cells = new Map<string, string>();
-      const { running, completed, cancelled } = currentProjects(reply, hour);
+      const { running, completed } = currentProjects(reply, hour);
       if (!running.length) cells.set('none', 'No projects in progress.');
-      for (const card of [...completed, ...cancelled]) cells.set(card.project.id, card.info.name);
+      for (const card of completed) cells.set(card.project.id, card.info.name);
       for (const { project } of running) {
         const at = runningValues(project, hour);
         if (!at) continue;
@@ -157,9 +173,11 @@ export function projectChangeAfter(reply: SpecialProjectsReply, hour: number) {
   let edges = boundaries.get(reply);
   if (!edges) {
     const all = new Set<number>();
-    for (const spans of [reply.available, ...reply.projects.map(p => p.runs)]) {
+    for (const spans of [reply.available, reply.reads, ...reply.projects.map(p => p.statuses)]) {
       for (const span of spans) { all.add(span.firstHour); all.add(span.lastHour + 1); }
     }
+    for (const read of reply.reads) all.add(read.readHour + 1);
+    for (const run of reply.projects.flatMap(p => p.statuses)) if (run.scientistRead !== null) all.add(run.scientistRead + 1);
     edges = Array.from(all).sort((a, b) => a - b);
     boundaries.set(reply, edges);
   }

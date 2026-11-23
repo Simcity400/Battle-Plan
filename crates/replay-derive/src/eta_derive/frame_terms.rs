@@ -763,7 +763,11 @@ impl<'a> FrameTerms<'a> {
         }))
     }
 
-    fn supply_operands(&self, status: &DivisionStatusRow) -> Result<SupplyOperands, String> {
+    fn supply_operands(
+        &self,
+        status: &DivisionStatusRow,
+        attrition_threshold: Option<i64>,
+    ) -> Result<SupplyOperands, String> {
         let recorded = self.recorded_defines()?;
         let define = |value: Option<i64>, name: &str| {
             value.ok_or_else(|| format!("the {name} define was refused when recorded"))
@@ -773,36 +777,60 @@ impl<'a> FrameTerms<'a> {
             .require("DivisionStatus.out_of_supply_days")?
             .ok_or("the division's days out of supply were refused when recorded")?;
         let supply_days = define(recorded.supply_days, "supply days")?;
-        let [ratio, grace_remaining] = if days == 0 {
-            if supply_days == 0 {
-                return Err(SUPPLY_DAYS_ZERO.into());
-            }
+        let grace_maximum = *status
+            .supply_grace_maximum
+            .require("DivisionStatus.supply_grace_maximum")?;
+        let supply_grace = define(recorded.supply_grace, "supply grace")? as i32;
+        let penalty = define(recorded.out_of_supply_speed, "out-of-supply speed")?;
+        let [ratio, grace_remaining] = if let Some(exact) = status.supply_exact() {
+            exact
+        } else if days != 0 {
+            status
+                .supply_ratio_exact
+                .require("DivisionStatus.supply_ratio_exact")?;
+            return Err(
+                "the division's exact supply was not recorded with its days out of supply".into(),
+            );
+        } else if supply_days != 0 {
             [
                 status
                     .supply_ratio
-                    .ok_or("the division's supply ratio is held exact without days out of supply")?,
+                    .ok_or("the division's supply ratio is not recorded")?,
                 *status
                     .supply_grace_remaining
                     .require("DivisionStatus.supply_grace_remaining")?,
             ]
+        } else if grace_maximum < 1 || attrition_threshold == Some(0) {
+            [0, 0]
         } else {
-            status
-                .supply_ratio_exact
-                .require("DivisionStatus.supply_ratio_exact")?;
-            status
-                .supply_exact()
-                .ok_or("the division's exact supply was not recorded with its days out of supply")?
+            let ratio_bounds = status
+                .recorded_supply_ratio_bounds()
+                .ok_or("the division's supply ratio is not recorded")?;
+            let grace_bounds = status
+                .recorded_supply_grace_bounds(supply_grace)
+                .ok_or("DivisionStatus.supply_grace_remaining is not recorded")?;
+            let [eff_low, eff_high] = DivisionStatusRow::effective_supply_bounds(
+                ratio_bounds,
+                grace_maximum,
+                grace_bounds,
+                supply_grace,
+            );
+            let proven = eff_low == eff_high
+                || attrition_threshold
+                    .is_some_and(|threshold| threshold > 0 && eff_low >= threshold);
+            if !proven {
+                return Err(SUPPLY_DAYS_ZERO.into());
+            }
+            [ratio_bounds[0], grace_bounds[0]]
         };
         Ok(SupplyOperands {
-            grace_maximum: *status
-                .supply_grace_maximum
-                .require("DivisionStatus.supply_grace_maximum")?,
+            grace_maximum,
             grace_remaining,
             ratio,
             days,
             supply_days: supply_days as i32,
-            supply_grace: define(recorded.supply_grace, "supply grace")? as i32,
-            penalty: define(recorded.out_of_supply_speed, "out-of-supply speed")?,
+            supply_grace,
+            penalty,
         })
     }
 
@@ -819,7 +847,7 @@ impl<'a> FrameTerms<'a> {
         }
         self.validate_layout()?;
         let status = self.status_row(division.id)?;
-        let operands = self.supply_operands(status)?;
+        let operands = self.supply_operands(status, Some(threshold))?;
         let country = self.country_modifiers(Self::owner(division))?;
         let leader = self.leader_block(status)?;
         let leader_value =
@@ -1224,7 +1252,7 @@ impl<'a> FrameTerms<'a> {
         let supply = if exiled {
             0
         } else {
-            let operands = self.supply_operands(status)?;
+            let operands = self.supply_operands(status, None)?;
             let share = || self.special_share(division, geography);
             let factors = SupplyFactors {
                 country: self

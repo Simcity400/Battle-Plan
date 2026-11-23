@@ -3,11 +3,12 @@ import test from 'node:test';
 import { createServer } from 'vite';
 import type { DashboardClient, ProductReply, ProductRequest } from './client';
 import type { ProductState } from './products';
+import { productRequest } from './request.ts';
 
 type Effect = { deps: readonly unknown[]; run: () => void | (() => void); cleanup?: () => void };
 type Payload = { owner: string };
-const request: ProductRequest = { sourceId: 'same-source', revision: 'same-revision', product: 'country-fuel',
-  params: { branchId: 'same-branch', tag: 'ONE' } };
+const request: ProductRequest = productRequest({ sourceId: 'same-source', revision: 'same-revision', product: 'country-fuel',
+  params: { branchId: 'same-branch', tag: 'ONE' } });
 const frames = new Map<number, FrameRequestCallback>();
 let frameIds = 0;
 const settle = async () => {
@@ -70,8 +71,8 @@ test.skip('actual product and window hooks scope ready, late and retried results
           assert.notEqual(hooked, source, `${path} imports its hooks from React`);
           return hooked;
         }
-        if (path.endsWith('/dashboard/heldFailures.ts')) return source.replace("import { createContext, useContext, useEffect, useState } from 'react';",
-          "import { createContext } from 'react'; const { useEffect, useState } = globalThis.__productClientHooks; const useContext = () => null;");
+        if (path.endsWith('/dashboard/heldFailures.ts')) return source.replace("import { createContext, useContext, useEffect, useRef, useState } from 'react';",
+          "import { createContext } from 'react'; const { useEffect, useRef, useState } = globalThis.__productClientHooks; const useContext = () => null;");
         if (path.endsWith('/dashboard/contentRevision.ts')) return source.replace(
           'return useSyncExternalStore(revision.subscribe, revision.snapshot, revision.snapshot);', 'return revision.snapshot();');
       },

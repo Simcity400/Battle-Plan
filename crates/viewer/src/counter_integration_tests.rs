@@ -1,12 +1,12 @@
 use replay_data::{rows::TableId, rows::TableRows};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::collections::{BTreeMap, BTreeSet};
-use viewer_counters::map::counters::test_support::{LandMarkers, kept_frames_at};
-use viewer_foundation::{
+use viewer_counter_kit::{combat_markers::LandMarkers, test_support::kept_frames_at};
+use viewer_engagements::{
     engaged::Engaged,
     engagement_history::{LAND_ICON, Provenance, kept_frames},
-    map::perspective::Country,
 };
+use viewer_foundation::perspective::Country;
 
 fn kept_frame_hour(
     hour: replay_data::Hour,
@@ -73,7 +73,11 @@ fn kept_frame_hour(
             Vec::new()
         }),
     );
-    for table in [TableId::WarRelations, TableId::Subjects] {
+    for table in [
+        TableId::WarRelations,
+        TableId::Subjects,
+        TableId::CombatEngagementRefreshes,
+    ] {
         set(table, TableRows::empty(table));
     }
     set(
@@ -194,8 +198,9 @@ fn kept_frame_hour(
 
 #[test]
 fn an_unseen_combat_icon_keeps_its_last_seen_frame_through_the_index() {
-    use viewer_foundation::icon_frames::{CARRIED, Kept, LAND_NO_HISTORY};
-    let hours = [
+    use replay_data::rows::CombatEngagementRefreshRow;
+    use viewer_engagements::icon_frames::{CARRIED, Kept, LAND_NO_HISTORY};
+    let mut hours = [
         kept_frame_hour(0, true, &[(62, vec![7], true, 1)], &[(70, 2)]),
         kept_frame_hour(1, false, &[(62, vec![7], true, 1)], &[(70, 2)]),
         kept_frame_hour(
@@ -207,6 +212,15 @@ fn an_unseen_combat_icon_keeps_its_last_seen_frame_through_the_index() {
         kept_frame_hour(3, false, &[(62, vec![7, 8], false, 0)], &[(70, 2)]),
         kept_frame_hour(4, false, &[(62, vec![7, 8], true, 0)], &[(70, 2)]),
     ];
+    *hours[2].tables[TableId::CombatEngagementRefreshes.index()] = TableView::Complete(
+        TableRows::CombatEngagementRefreshes(vec![CombatEngagementRefreshRow {
+            kind: CombatEngagementRefreshRow::LAND_SIDE,
+            target: 62,
+            side: 0,
+            viewer: 1,
+            triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+        }]),
+    );
     let index =
         crate::engaged_index::EngagedIndex::folded(&hours, Country::Tag("AAA".into()), Some(0));
     let marker = |land: &LandMarkers, id| {

@@ -6,4 +6,4 @@ A declaration's presence controls custom selection, even when the corresponding 
 
 Pack the selected icon families onto one atlas page to avoid texture switches between counters. Decode block-compressed files before packing and use loaded, block-rounded extents and the authored frame direction for the grid. Hit geometry uses the original texture size and frame grid independently of integer frame extents. A missing or broken visual replacement can be drawn from the recording with a named fallback.
 
-[Template icon selection and atlas](../../crates/viewer-foundation/src/map/templates.rs)
+[Template icon selection and atlas](../../crates/viewer-foundation/src/templates.rs)

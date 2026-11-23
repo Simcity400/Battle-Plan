@@ -21,24 +21,18 @@ files = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", "clippy
 [pipeline]
 implementation = ["tools/ci.py", "tools/ci.toml", ".github/workflows/ci.yml"]
 
-[group.repo]
-setup = ["python"]
+[group.linux]
+setup = ["python", "node"]
 
-[group.tools]
-setup = ["python", "toolchain"]
-
-[group.ui]
-setup = ["node"]
-
-[group.browser]
-setup = ["node"]
+[group.windows]
+setup = ["python", "toolchain", "node"]
 
 [group.rust]
-setup = ["python", "rust"]
+setup = ["rust"]
 
 [[job]]
 name = "machine-paths"
-group = "repo"
+group = "linux"
 tier = "check"
 toolchain = "python"
 inputs = ["**"]
@@ -46,7 +40,7 @@ command = ["{python}", "tools/check-machine-paths.py"]
 
 [[job]]
 name = "agent-context"
-group = "repo"
+group = "linux"
 tier = "check"
 toolchain = "python"
 base = true
@@ -55,7 +49,7 @@ command = ["{python}", "tools/check-agent-context.py", "--against", "{base}"]
 
 [[job]]
 name = "comments"
-group = "repo"
+group = "linux"
 tier = "check"
 toolchain = "comments"
 base = true
@@ -64,7 +58,7 @@ command = ["{python}", "tools/check-comments.py", "--against", "{base}"]
 
 [[job]]
 name = "patterns"
-group = "repo"
+group = "linux"
 tier = "check"
 toolchain = "python"
 base = true
@@ -73,7 +67,7 @@ command = ["{python}", "tools/check-patterns.py", "--against", "{base}"]
 
 [[job]]
 name = "workflows"
-group = "repo"
+group = "linux"
 tier = "check"
 toolchain = "workflows"
 inputs = [".github/**", "tools/check-workflows.py"]
@@ -81,7 +75,7 @@ command = ["{python}", "tools/check-workflows.py"]
 
 [[job]]
 name = "suppressions"
-group = "repo"
+group = "linux"
 tier = "check"
 toolchain = "python"
 base = true
@@ -90,7 +84,7 @@ command = ["{python}", "tools/check-suppressions.py", "--against", "{base}"]
 
 [[job]]
 name = "citations"
-group = "repo"
+group = "linux"
 tier = "check"
 kind = "files"
 toolchain = "python"
@@ -101,7 +95,7 @@ whole = ["{python}", "tools/check-citations.py"]
 
 [[job]]
 name = "build-dependencies"
-group = "repo"
+group = "linux"
 tier = "check"
 toolchain = "python"
 inputs = ["Cargo.toml", "Cargo.lock", "crates/*/Cargo.toml", "tools/check-build-dependencies.py"]
@@ -109,7 +103,7 @@ command = ["{python}", "tools/check-build-dependencies.py"]
 
 [[job]]
 name = "content-dependencies"
-group = "repo"
+group = "linux"
 tier = "check"
 toolchain = "python"
 inputs = ["Cargo.toml", "Cargo.lock", "crates/*/Cargo.toml", "tools/check-content-dependencies.py"]
@@ -117,15 +111,16 @@ command = ["{python}", "tools/check-content-dependencies.py"]
 
 [[job]]
 name = "feature-unification"
-group = "tools"
+group = "windows"
 tier = "check"
 toolchain = "rust"
 inputs = ["Cargo.toml", "Cargo.lock", "crates/*/Cargo.toml", "vendor/*/Cargo.toml", "tools/check-feature-unification.py"]
+ci-only = true
 command = ["{python}", "tools/check-feature-unification.py"]
 
 [[job]]
 name = "nextest-config"
-group = "repo"
+group = "linux"
 tier = "check"
 toolchain = "python"
 inputs = [".config/nextest.toml", "Cargo.toml", "crates/*/Cargo.toml", "tools/check-nextest-config.py"]
@@ -133,17 +128,26 @@ command = ["{python}", "tools/check-nextest-config.py"]
 
 [[job]]
 name = "tool-tests"
-group = "tools"
+group = "windows"
 tier = "check"
 toolchain = "tools"
-inputs = ["tools/**"]
+inputs = ["tools/**", ".github/workflows/**"]
 ci-only = true
 unset = ["WARM_TARGET_END_TO_END"]
 command = ["{python}", "tools/test-python.py"]
 
 [[job]]
+name = "smoke-tests"
+group = "windows"
+tier = "check"
+toolchain = "python"
+inputs = ["tools/smoke.ps1", "tools/smoke.tests.ps1", "tools/game-clock.ps1"]
+ci-only = true
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "tools/smoke.tests.ps1"]
+
+[[job]]
 name = "ui-typecheck"
-group = "ui"
+group = "linux"
 tier = "check"
 toolchain = "node"
 inputs = ["ui/**", "tools/**/*.ts", "tools/**/*.mjs", "tools/**/*.js"]
@@ -151,7 +155,7 @@ command = ["{npm}", "run", "check:ui"]
 
 [[job]]
 name = "ui-tests"
-group = "ui"
+group = "linux"
 tier = "check"
 toolchain = "node"
 inputs = ["ui/**", "tools/**/*.ts", "tools/**/*.mjs", "tools/**/*.js", "crates/**/*.json", "crates/**/*.golden"]
@@ -160,7 +164,7 @@ command = ["{node}", "tools/test-ui.mjs", "--group", "node"]
 
 [[job]]
 name = "ui-parity-tests"
-group = "browser"
+group = "windows"
 tier = "check"
 toolchain = "node"
 ci-only = true
@@ -169,7 +173,7 @@ command = ["{npm}", "run", "test:parity"]
 
 [[job]]
 name = "ui-browser-tests"
-group = "browser"
+group = "windows"
 tier = "main"
 toolchain = "node"
 ci-only = true
@@ -186,8 +190,8 @@ base = true
 dependents = false
 shared = ["tools/check-clippy.py"]
 command = ["{python}", "tools/check-clippy.py", "--against", "{base}", "--", "cargo", "clippy", "--all-targets", "--keep-going", "--no-deps", "{packages}"]
-local = ["{python}", "tools/check-clippy.py", "--against", "{base}", "--", "{python}", "tools/boat.py", "clippy", "--all-targets", "--keep-going", "--no-deps", "{packages}"]
-shards = 2
+ci-only = true
+shards = 1
 warm = ["cargo", "clippy", "--workspace", "--all-targets", "--keep-going", "--no-deps"]
 
 [[job]]
@@ -195,9 +199,20 @@ name = "fuzz-build"
 group = "rust"
 tier = "check"
 toolchain = "rust"
-inputs = ["fuzz/**", "crates/replay/**", "crates/replay-columnar/**", "crates/replay-data/**", "crates/replay-frame/**", "crates/dashboard-base/**"]
+inputs = ["fuzz/**", "crates/replay-files/**"]
+manifest = "fuzz/Cargo.toml"
 command = ["cargo", "check", "--all-targets", "--manifest-path", "fuzz/Cargo.toml"]
-local = ["{python}", "tools/boat.py", "check", "--all-targets", "--manifest-path", "fuzz/Cargo.toml"]
+ci-only = true
+warm = ["cargo", "check", "--all-targets", "--manifest-path", "fuzz/Cargo.toml"]
+
+[[job]]
+name = "dashboard-contract"
+group = "rust"
+tier = "check"
+toolchain = "rust"
+inputs = ["crates/**", "ui/src/generated/dashboard.ts"]
+ci-only = true
+command = ["cargo", "run", "--profile", "ci", "-p", "dashboard", "--features", "export-types", "--bin", "export-types", "--", "--check"]
 
 [[job]]
 name = "rust-test"
@@ -209,5 +224,5 @@ command = ["cargo", "nextest", "run", "--cargo-profile", "ci", "--profile", "hos
 report = "target/nextest/hosted/junit.xml"
 shards = 8
 warm = ["cargo", "test", "--profile", "ci", "--workspace", "--no-run", "--no-fail-fast"]
-not-run = { "needs the game install until the dashboard rework (#169)" = { crates = ["dashboard", "dashboard-base", "dashboard-core", "dashboard-text"], panic = '^(?:.*: Custom \{ kind: NotFound, error: "BATTLEPLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation" \}|[\w -]+ requires? BATTLEPLAN_GAME_DIR with the supported installation|BATTLEPLAN_GAME_DIR(?: must name the installed game| must name the supported installation for executable metadata)?)$' } }
+not-run = { "needs the game install until the dashboard rework (#169)" = { crates = ["dashboard", "dashboard-air", "dashboard-base", "dashboard-core", "dashboard-effects", "dashboard-land", "dashboard-politics", "dashboard-research", "dashboard-text", "dashboard-wars", "dashboard-world"], panic = '^(?:.*: Custom \{ kind: NotFound, error: "BATTLEPLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation" \}|[\w -]+ requires? BATTLEPLAN_GAME_DIR with the supported installation|BATTLEPLAN_GAME_DIR(?: must name the installed game| must name the supported installation for executable metadata)?)$' } }
 widen = [".config/nextest.toml"]

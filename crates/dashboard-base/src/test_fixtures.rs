@@ -1,6 +1,6 @@
 
 pub use dashboard_core::test_fixtures::*;
-use replay::spool::Record;
+use replay_capture_spool::spool::Record;
 use replay_frame::frame::DecodedFrame;
 
 pub fn file_source(replay: replay::campaign::Replay) -> (crate::Source, std::path::PathBuf) {
@@ -40,7 +40,7 @@ pub fn content_identity(
     replay_data::identity::Identity,
 ) {
     let options = crate::products::ContentOptions {
-        options: content_reader_core::ResolveOptions {
+        options: content_reader_layers::ResolveOptions {
             game_dir: root.to_owned(),
             user_dir: root.join("user"),
             cache_dir: root.join("cache"),
@@ -50,7 +50,7 @@ pub fn content_identity(
     };
     std::fs::create_dir_all(root.join("dlc")).unwrap();
     declare_languages(root);
-    let gathered = content_reader_core::gather(&content_reader_core::GatherOptions {
+    let gathered = content_reader_layers::gather(&content_reader_layers::GatherOptions {
         game_dir: options.options.game_dir.clone(),
         user_dir: options.options.user_dir.clone(),
         cache_dir: options.options.cache_dir.clone(),
@@ -79,15 +79,15 @@ pub fn write_with_facts(
     identity: &replay_data::identity::Identity,
     input: Vec<Record>,
 ) {
-    let gathered = content_reader_core::gather(&content_reader_core::GatherOptions {
+    let gathered = content_reader_layers::gather(&content_reader_layers::GatherOptions {
         game_dir: options.options.game_dir.clone(),
         user_dir: options.options.user_dir.clone(),
         cache_dir: options.options.cache_dir.clone(),
         dlc_order: Some(Vec::new()),
     })
     .unwrap();
-    let (pack, _) = content_reader_core::content::facts::write(
-        &content_reader_core::content::facts::Source {
+    let (pack, _) = content_reader_layers::content::facts::write(
+        &content_reader_layers::content::facts::Source {
             layers: &gathered.layers,
             withheld: Default::default(),
         },
@@ -95,9 +95,10 @@ pub fn write_with_facts(
         Err("a test carries no executable tables".to_owned()),
         &options.options.cache_dir,
         &|| false,
+        content_reader_key_names::equipment_facts::gather,
     )
     .unwrap();
-    let replay = replay::campaign::Replay::from_records(CAMPAIGN.into(), &[input]).unwrap();
+    let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[input]).unwrap();
     std::fs::write(path, replay.bytes()).unwrap();
     replay::campaign::writer::revise(
         path,

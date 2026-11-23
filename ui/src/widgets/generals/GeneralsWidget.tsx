@@ -1,8 +1,9 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { jumpItem } from '../../charts/jump';
 import Table from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
@@ -16,7 +17,6 @@ import { useHeadProduct } from '../../dashboard/headProduct';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt';
-import { countriesAt } from './generalsSelection.ts';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { resolveOptions } from '../../dashboard/options';
 import CareerView from '../general-career/CareerView';
@@ -29,7 +29,8 @@ import { attributeNames, leaderKey as rowKey, leaderRequestSelection, leaderRows
   recordedSince, validateLeaders, withheldLeaderState, withheldLeaders } from './generalsData';
 import type { LeaderRow } from './generalsData';
 import './generals.css';
-import type { LeaderKinds, UnitLeadersReply } from '../../generated/dashboard';
+import type { LeaderKinds } from '../../generated/dashboard';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const EMPTY: readonly LeaderRow[] = [];
 const wonValue = (row: LeaderRow) => row.won;
@@ -47,26 +48,30 @@ export default function GeneralsWidget(props: WidgetProps) {
   const currentOwner = useRef(owner);
   currentOwner.current = owner;
   const [drillOwner, setDrillOwner] = useState<object | null>(null);
-  const [savedDrill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const savedDrill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const drill = drillOwner === owner ? savedDrill : CLOSED;
+  const drillRegion = drillControl.region;
+  const drillAt = useRegionHour(runtime, drillRegion, active && drill.breakdown != null);
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const options = resolveOptions(OPTIONS, widget.options);
   const kind = String(options.leaders) as LeaderKinds;
-  const lastHour = track?.branch.lastHour ?? 0;
-  const asked = useCountriesSelectionAt(widget, runtime, lastHour, active);
-  const params = useMemo(() => asked.requestTags === undefined ? null : { selection: leaderRequestSelection(asked.requestTags), leaders: kind },
-    [asked.requestTags, kind]);
-  const head = useHeadProduct<UnitLeadersReply>(runtime, widget, 'unit-leaders', params, { active, validate: validateLeaders, structure: leadersStructure });
-  const hour = head.at ?? lastHour;
-  const selection = useMemo(() => ({ ...asked, ...countriesAt(widget, asked.track, asked.group.data ?? undefined, hour) }), [asked, widget, hour]);
+  const members = useCountriesSelectionAt(widget, runtime, active);
+  const params = useMemo(() => members.requestTags === undefined ? null : { selection: leaderRequestSelection(members.requestTags), leaders: kind },
+    [members.requestTags, kind]);
+  const head = useHeadProduct(runtime, members.gate, 'unit-leaders', params, { active, validate: validateLeaders, structure: leadersStructure });
+  const hour = members.outside ? null : head.at ?? members.hour;
+  const landed = hour === null ? { countries: members.countries, reason: null } : members.countriesAt(hour);
+  const selection = { group: members.group, countries: landed.countries, selectionReason: members.selectionReason ?? landed.reason };
   const shown = useShownHour();
   shown(head.data ? hour : null);
   const data = head.data;
-  const rows = useMemo(() => data && selection.countries !== undefined ? leaderRows(data, hour, selection.countries, kind) : EMPTY, [data, hour, selection.countries, kind]);
+  const rows = useMemo(() => data && hour !== null && selection.countries !== undefined ? leaderRows(data, hour, selection.countries, kind) : EMPTY, [data, hour, selection.countries, kind]);
   const [visible, setVisible] = useState<readonly LeaderRow[]>(EMPTY);
-  const portraitsAt = useMemo<PortraitAt[]>(() => visible.map(row => ({ reference: row.key, hour: row.row.firstSeenHour ?? hour })), [visible, hour]);
+  const portraitsAt = useMemo<PortraitAt[]>(() => visible.flatMap(row => { const at = row.row.firstSeenHour ?? hour; return at === null ? [] : [{ reference: row.key, hour: at }]; }), [visible, hour]);
   const portraits = useLeaderPortraits(runtime, track, portraitsAt, 86, active && drill.breakdown == null);
-  const portraitOf = (row: LeaderRow) => portraits.at({ reference: row.key, hour: row.row.firstSeenHour ?? hour });
+  const portraitOf = (row: LeaderRow) => { const at = row.row.firstSeenHour ?? hour; return at === null ? undefined : portraits.at({ reference: row.key, hour: at }); };
   const attributeMaxima = useMemo(() => [0, 1, 2, 3].map(i => rows.reduce((max, row) => Math.max(max, row.row.components[i] ?? 0), 0)), [rows]);
   const wanted = useMemo(() => visible.flatMap(row => row.role.owner ? [{ hour: row.hour, tag: row.role.owner }] : []), [visible]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
@@ -75,10 +80,8 @@ export default function GeneralsWidget(props: WidgetProps) {
   const open = useCallback((row: LeaderRow) => {
     if (currentOwner.current !== owner) return;
     setDrillOwner(owner);
-    dispatch({ type: 'open', breakdown: row.key, hour: row.hour,
-      playing: widget.time.mode === 'follow' && runtime.clock.getSnapshot().playing,
-      playhead: widget.time.mode === 'follow' ? hour : null });
-  }, [owner, runtime.clock, hour, widget.time.mode]);
+    drillControl.show(row.key, row.hour);
+  }, [owner, drillControl]);
   useEffect(() => { dispatch({ type: 'close' }); setDrillOwner(null); }, [owner]);
   const diagnostics = useMemo(() => [...new Set([...(data?.warnings ?? []), ...portraits.warnings])], [data, portraits.warnings]);
   useDiagnostics(onDiagnostics, drill.breakdown == null ? diagnostics : null);
@@ -114,7 +117,7 @@ export default function GeneralsWidget(props: WidgetProps) {
   const tooltip = useCallback((row: LeaderRow) => fitTooltip([leaderTooltip(row, country(row))], viewportHeight), [country, viewportHeight]);
   const body = () => {
     if (!track) return <WidgetState kind="empty" message="Load a campaign to see its leaders." />;
-    if (head.read === 'off') return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+    if (head.outside || members.outside) return <WidgetState kind="outside" read={head} />;
     if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
     if (selection.group.error) return <WidgetState kind="error" failure={selection.group.error} onRetry={selection.group.retry} />;
     if (selection.selectionReason) return <WidgetState kind="unavailable" message={selection.selectionReason} />;
@@ -136,16 +139,16 @@ export default function GeneralsWidget(props: WidgetProps) {
       {withheld.length > 0 && <details className="career-note"><summary>Some leaders are missing.</summary><p className="leader-withheld-detail">{withheldState.detail}</p></details>}
     </div>;
   };
-  const pickedHour = drillHour(drill, hour) ?? hour;
-  return <div ref={anchor} className="generals-widget"><DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null}
-    title="General career" day={formatDateTime(pickedHour)} following={drill.follow} canFollow anchor={anchor}
+  return <div ref={anchor} className="generals-widget"><DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown != null} mode={options.drill === 'popout' ? 'popout' : 'inline'}
+    title="General career" day={drillAt === null ? '' : formatDateTime(drillAt)} canFollow anchor={anchor}
     onClose={() => { if (currentOwner.current === owner) dispatch({ type: 'close' }); }}
-    onFollow={() => { if (currentOwner.current === owner && drill.breakdown) dispatch({ type: 'follow' }); }}
-    onPin={drill.breakdown && track ? () => {
-      if (currentOwner.current === owner) runtime.addWidgetBelow(widget.id, pinnedCareer(widget, drill.breakdown!, track, pickedHour, drill.follow));
+    pinRefused={drillControl.pinRefused} onPin={drill.breakdown && track && drillControl.time() ? () => {
+      const time = drillControl.time();
+      const history = time?.value.mode === 'pin' ? drillControl.gate.span(track.branch.firstHour, drillControl.hour ?? Number.NaN) : null;
+      const kept = history ? drillControl.time(history) : time;
+      if (currentOwner.current === owner && kept) runtime.addWidgetBelow(widget.id, pinnedCareer(widget, drill.breakdown!, track, kept));
     } : undefined} main={<div ref={head.root} className="generals-main">{body()}</div>}>
-    {drill.breakdown && <CareerView {...props} widget={{ ...widget, time: drill.follow ? { mode: 'follow' } : { mode: 'pin', windows: track ? {
-      [track.id]: { firstOffset: 0, lastOffset: Math.floor(pickedHour) - track.branch.firstHour } } : {} } }}
+    {drill.breakdown && <CareerView {...props} time={drillRegion.action}
       reference={drill.breakdown} onPick={h => {
         if (currentOwner.current === owner) dispatch({ type: 'pick', hour: h });
       }} />}

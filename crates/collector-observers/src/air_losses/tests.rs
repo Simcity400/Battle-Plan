@@ -431,9 +431,9 @@ fn setup(world: &World) {
     BASE.store(world.base(), Ordering::Relaxed);
     ENABLED.store(true, Ordering::SeqCst);
     ORIGINAL.store(native_write as *const () as usize, Ordering::Release);
-    boundary(clock(47));
-    assert!(drain(&mut Vec::new()).is_err());
-    boundary(clock(48));
+    unsafe { boundary(clock(47)) };
+    assert!(unsafe { drain(&mut Vec::new()) }.is_err());
+    unsafe { boundary(clock(48)) };
 }
 #[test]
 fn production_observers_keep_family_cause_opponent_and_refuse_saturation() {
@@ -446,15 +446,15 @@ fn production_observers_keep_family_cause_opponent_and_refuse_saturation() {
     world.invoke(1, 6);
     world.invoke(1, 3);
     std::thread::spawn(|| {
-        boundary(clock(49));
-        lost_drain();
-        lost_output(1);
-        assert!(drain(&mut Vec::new()).is_err());
+        unsafe { boundary(clock(49)) };
+        unsafe { lost_drain() };
+        unsafe { lost_output(1) };
+        assert!(unsafe { drain(&mut Vec::new()) }.is_err());
     })
     .join()
     .unwrap();
     let mut rows = Vec::with_capacity(capacity());
-    assert_eq!(drain(&mut rows).unwrap(), 2);
+    assert_eq!(unsafe { drain(&mut rows) }.unwrap(), 2);
     assert_eq!(
         (
             rows[0].country,
@@ -471,7 +471,7 @@ fn production_observers_keep_family_cause_opponent_and_refuse_saturation() {
     assert!(rows.iter().all(|row| row.daily_slot == 29));
     world.word(World::VALUES + 30 * 8, 0x53e2_d620_fb40);
     world.invoke(0, 1);
-    assert!(drain(&mut rows).unwrap_err().contains("saturated"));
+    assert!(unsafe { drain(&mut rows) }.unwrap_err().contains("saturated"));
     assert_eq!(LEDGER.refusals.load(Ordering::Relaxed), 1);
     assert_eq!(active(), 0);
 }
@@ -491,14 +491,14 @@ fn gathered_and_serial_operands_publish_identical_rows() {
         let fallbacks = SERIAL_FALLBACKS.load(Ordering::Relaxed);
         world.invoke(0, 1);
         world.invoke(1, 6);
-        boundary(clock(49));
+        unsafe { boundary(clock(49)) };
         FORCE_SERIAL.store(false, Ordering::SeqCst);
         assert_eq!(
             SERIAL_FALLBACKS.load(Ordering::Relaxed) - fallbacks,
             if serial { 2 } else { 0 }
         );
         let mut rows = Vec::with_capacity(capacity());
-        assert_eq!(drain(&mut rows).unwrap(), 2);
+        assert_eq!(unsafe { drain(&mut rows) }.unwrap(), 2);
         assert_eq!(
             (
                 rows[0].country,
@@ -527,17 +527,17 @@ fn hook_cost_air_losses() {
     let mut world = World::new(COUNTRIES);
     setup(&world);
     LEDGER.prepare(8 * COUNTRIES);
-    boundary(clock(49));
-    assert_eq!(drain(&mut Vec::new()), Ok(0));
+    unsafe { boundary(clock(49)) };
+    assert_eq!(unsafe { drain(&mut Vec::new()) }, Ok(0));
     let hooked = crate::test_support::per_call_ns(COUNTRIES, || {
         for country in 1..=COUNTRIES {
             world.owner(country as u32);
             world.invoke(0, 1);
         }
     });
-    boundary(clock(50));
+    unsafe { boundary(clock(50)) };
     let mut rows = Vec::with_capacity(capacity());
-    assert_eq!(drain(&mut rows), Ok(8 * COUNTRIES));
+    assert_eq!(unsafe { drain(&mut rows) }, Ok(8 * COUNTRIES));
     assert_eq!(LEDGER.refusals.load(Ordering::Relaxed), 0);
     let native = crate::test_support::per_call_ns(COUNTRIES, || {
         for _ in 1..=COUNTRIES {

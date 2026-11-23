@@ -1,10 +1,6 @@
 
 use std::{io, sync::Arc};
-use viewer_foundation::{
-    builder_pool::Pool,
-    parallel::Workers,
-    retirement::{Dropper, builder_count},
-};
+use viewer_runtime::{builder_pool::Pool, parallel::Workers, retirement::{Dropper, builder_count}};
 
 pub struct WorkerPool {
     pool: Arc<Pool>,

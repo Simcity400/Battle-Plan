@@ -1,12 +1,6 @@
 
 use super::{Country, IDENTITY, Tags, agency_content::{self, AgencyContent}, branch, missing};
-use crate::{
-    Source,
-    products::{
-        LoadContext,
-        at_hour::{At, AtHour, Owner, Read},
-    },
-};
+use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Owner, Read}}};
 use replay_data::rows::{AgencyUpgradeLevelRow, IntelligenceAgencyRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -121,7 +115,7 @@ pub fn upgrades(rows: &[&AgencyUpgradeLevelRow], tokens: &HashMap<u32, String>, 
 }
 
 fn stored_name(row: &IntelligenceAgencyRow) -> Option<String> {
-    std::str::from_utf8(content_reader_core::parser::c_string(&row.name)).ok().and_then(|name| dashboard_base::catalogue::plain_text(name).ok())
+    std::str::from_utf8(content_reader_parser::parser::c_string(&row.name)).ok().and_then(|name| dashboard_base::catalogue::plain_text(name).ok())
 }
 
 pub fn agencies(frame: &DecodedFrame, include_uncreated: bool, content: Result<&AgencyContent, &str>, warnings: &mut Vec<String>) -> io::Result<(Vec<Agency>, Option<String>)> {
@@ -186,6 +180,7 @@ impl AtHour for AgencyComparison {
     const TITLE: &'static str = "Agency comparison";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AgencyComparisonParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, includeUncreated];
     type Reply = AgencyComparisonReply;
     type Context = Result<Arc<AgencyContent>, String>;
 

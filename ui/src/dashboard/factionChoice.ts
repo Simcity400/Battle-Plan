@@ -1,7 +1,7 @@
 import { countryFromKey } from './countryKey.ts';
 import { countryIdentityIndex } from './countryIdentity.ts';
 import { useCallback, useMemo } from 'react';
-import type { CountryGroupReply, FactionDetailReply, FactionGroup } from '../generated/dashboard';
+import type { CountryGroupReply, FactionGroup } from '../generated/dashboard';
 import type { BoundTrack } from './model';
 import type { OptionChoices, WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
@@ -9,10 +9,12 @@ import { contentKey, setToken } from './options.ts';
 import { selectedCountryKeys } from './countrySelection.ts';
 import { factionNameAt as recordedNameAt } from './factionNames.ts';
 import { headRead, useHeadProduct } from './headProduct.ts';
+import { useGate } from './regionGate';
 import { detailsStructure, validateFactionDetails } from './factionDetails.ts';
 import { useCountryGroups } from './useCountryGroups';
 import { useCampaignSettings } from './campaignSettings';
 import { useHeadHour } from '../widgets/army-size/headHour.ts';
+import { SPEC, axisAt } from './regionTime.ts';
 
 export { FACTION_OPTION } from './factionOption.ts';
 
@@ -62,15 +64,15 @@ export function useChosenFaction(widget: WidgetSpec, runtime: WidgetRuntime, tra
   const groups = useCountryGroups(runtime, track, active);
   const saved = typeof widget.options?.faction === 'string' && widget.options.faction ? contentKey(widget.options.faction) : null;
   const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
-  const { hourAt } = headRead(widget, track, runtime.tracks, null);
+  const { hourAt } = headRead({ widget, action: SPEC }, track, runtime.tracks);
   const data = groups.data;
   const following = active && widget.time.mode === 'follow' && !!data;
   const key = useCallback((clockHour: number) => {
-    const hour = hourAt(clockHour);
+    const hour = hourAt(axisAt(clockHour));
     return hour === null || !data ? 'outside' : pickKey(chosenFaction(data, saved, tag, hour));
   }, [hourAt, data, saved, tag]);
   const clockHour = useHeadHour(runtime.clock, following, key);
-  const hour = hourAt(following ? clockHour : runtime.clock.getHour());
+  const hour = hourAt(axisAt(following ? clockHour : runtime.clock.getHour()));
   const pick = useMemo(() => data && hour !== null ? chosenFaction(data, saved, tag, hour) : null, [data, saved, tag, hour]);
   return { groups, pick, tag, hour };
 }
@@ -79,7 +81,7 @@ export function useFactionDetails(runtime: WidgetRuntime, widget: WidgetSpec, fa
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const viewpointTag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const params = useMemo(() => faction ? { faction, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } : null, [faction, viewpointTag]);
-  return useHeadProduct<FactionDetailReply>(runtime, widget, 'faction-details', params,
+  return useHeadProduct(runtime, useGate(runtime, widget), 'faction-details', params,
     { active, validate: validateFactionDetails, structure: detailsStructure });
 }
 

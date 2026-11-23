@@ -1,14 +1,7 @@
-use crate::{
-    BranchId, Hour, SessionId,
-    branches::{BranchReason, BranchStart, BranchTracker, Gap},
-    codec::{Decoder, invalid, invalid_static},
-    columnar_frames::Recording,
-    format::FormatVersion,
-    frame::DecodedFrame,
-    identity::{Identity, IdentityCodec, SessionStart, Verification},
-    scope::CaptureMode,
-    spool::ControlRecord,
-};
+use replay_recording::{recording_identity::decode_identity, records::{CaptureStop, Cursor, Records, RecoveryNote}};
+use replay_data::{BranchId, Hour, SessionId, codec::{invalid, invalid_static}, format::FormatVersion, identity::{Identity, IdentityCodec, SessionStart, Verification}, scope::CaptureMode};
+use replay_frame::{branches::{BranchReason, BranchStart, BranchTracker, Gap}, frame::DecodedFrame};
+use replay_recording::{columnar_frames::Recording, control::ControlRecord};
 use replay_columnar::envelope::{self, Extent};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -18,20 +11,21 @@ use std::{
 };
 
 mod changes;
+pub mod commands;
 pub mod collect;
+#[cfg(any(test, feature = "recording"))]
+pub mod encode_report;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
 #[cfg(any(test, feature = "recording"))]
 pub mod live;
 pub mod read;
-pub mod records;
 pub mod timelines;
 pub mod writer;
 
 pub use changes::{BlockChange, QuietHours, TableFields};
 pub use collect::records_of;
-pub use read::{HourCursor, Parallel};
-pub use records::{CaptureStop, Cursor, Records, RecoveryNote};
+pub use read::HourCursor;
 
 pub const SESSION_FACTS_MAGIC: &[u8; 4] = b"H4SF";
 pub const SESSION_FACTS_FILE: &str = "facts.bin";
@@ -44,7 +38,7 @@ pub fn encode_session_facts(identity: &Identity, pack: &[u8]) -> io::Result<Vec<
     identity.encode(&mut encoded)?;
     let mut out = Vec::with_capacity(8 + encoded.len() + pack.len());
     out.extend_from_slice(SESSION_FACTS_MAGIC);
-    crate::codec::put_bytes(&mut out, &encoded)?;
+    replay_data::codec::put_bytes(&mut out, &encoded)?;
     out.extend_from_slice(pack);
     Ok(out)
 }
@@ -160,7 +154,7 @@ pub enum SeekResult {
     },
 }
 
-pub use crate::columnar_frames::{NotSaved, Open, is_not_saved};
+use replay_recording::columnar_frames::Open;
 pub use replay_columnar::container::Revision;
 
 pub struct Replay {
@@ -187,7 +181,7 @@ pub struct Replay {
     saved: Option<Revision>,
     partial_control: Option<usize>,
     physical: Option<Box<timelines::Physical>>,
-    pool: Option<std::sync::Arc<crate::columnar_frames::Pool>>,
+    pool: Option<std::sync::Arc<replay_recording::columnar_frames::Pool>>,
 }
 
 impl Replay {
@@ -269,7 +263,7 @@ impl Replay {
         let held_segments = recording.segments();
         for damage in recording.damage() {
             engine_allocation::reserve(&mut warnings, 1)?;
-            warnings.push(crate::codec::try_format(format_args!("{damage}"))?);
+            warnings.push(replay_data::codec::try_format(format_args!("{damage}"))?);
             damaged_parts += 1;
         }
         for run in 0..recording.run_count() {
@@ -278,7 +272,7 @@ impl Replay {
             };
             if !known.contains(&held.branch) {
                 engine_allocation::reserve(&mut warnings, 1)?;
-                warnings.push(crate::codec::try_format(format_args!(
+                warnings.push(replay_data::codec::try_format(format_args!(
                     "Run {run} records branch {}, which no branch start names",
                     held.branch
                 ))?);
@@ -347,7 +341,7 @@ impl Replay {
         })
     }
 
-    pub fn set_pool(&mut self, pool: Option<std::sync::Arc<crate::columnar_frames::Pool>>) {
+    pub fn set_pool(&mut self, pool: Option<std::sync::Arc<replay_recording::columnar_frames::Pool>>) {
         self.pool = pool;
     }
 
@@ -548,7 +542,7 @@ impl Replay {
         let mut at = 0;
         self.visit_blocks(
             &blocks,
-            &[crate::rows::TableId::Clock],
+            &[replay_data::rows::TableId::Clock],
             |block, _, frame| {
                 while blocks[at] != block {
                     at += 1;
@@ -581,7 +575,7 @@ impl Replay {
 
     pub fn read_campaign_uuid(path: &Path) -> io::Result<Option<Vec<u8>>> {
         let id = Self::read_campaign_id(path)?;
-        Ok(crate::identity::is_campaign_uuid(&id).then_some(id))
+        Ok(replay_data::identity::is_campaign_uuid(&id).then_some(id))
     }
 
     pub fn read_campaign_id(path: &Path) -> io::Result<Vec<u8>> {
@@ -681,12 +675,6 @@ fn read_prefix(input: &mut impl Read, header: &mut [u8]) -> io::Result<usize> {
     Ok(held)
 }
 
-pub(crate) fn decode_identity(content: &[u8]) -> io::Result<Identity> {
-    let mut decoder = Decoder::new(content);
-    let identity = Identity::decode(&mut decoder)?;
-    decoder.finish()?;
-    Ok(identity)
-}
 
 fn root_digest(recording: &Recording) -> io::Result<[u8; 16]> {
     recording.root_footer_digest()
@@ -786,8 +774,8 @@ impl CampaignHistory {
 }
 
 fn clock_signal(frame: &DecodedFrame) -> Option<i64> {
-    match &*frame.tables[crate::rows::TableId::Clock.index()] {
-        crate::frame::TableView::Complete(crate::rows::TableRows::Clock(rows)) => {
+    match &*frame.tables[replay_data::rows::TableId::Clock.index()] {
+        replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::Clock(rows)) => {
             rows.first().map(|clock| clock.play_session_started_at)
         }
         _ => None,
@@ -797,10 +785,10 @@ fn clock_signal(frame: &DecodedFrame) -> Option<i64> {
 impl CampaignHistory {
     pub fn from_spool(
         campaign_id: &[u8],
-        segments: &[(u32, crate::spool::Recovery<crate::spool::Recovered>)],
+        segments: &[(u32, replay_capture_spool::spool::Recovery<replay_capture_spool::spool::Recovered>)],
     ) -> io::Result<Self> {
-        use crate::spool::Recovered;
-        let clock_decoder = || crate::frame::FrameDecoder::for_tables(&[crate::rows::TableId::Clock]);
+        use replay_capture_spool::spool::Recovered;
+        let clock_decoder = || replay_frame::frame::FrameDecoder::for_tables(&[replay_data::rows::TableId::Clock]);
         let mut sorted: Vec<_> = segments.iter().collect();
         sorted.sort_unstable_by_key(|(number, _)| *number);
         let mut sessions: Vec<SessionStart> = Vec::new();
@@ -1062,7 +1050,7 @@ fn validate_records(
     })();
     if let Err(error) = checked {
         engine_allocation::reserve(warnings, 1)?;
-        warnings.push(crate::codec::try_format(format_args!(
+        warnings.push(replay_data::codec::try_format(format_args!(
             "Unreadable controls: {error}"
         ))?);
         controls.clear();
@@ -1084,3 +1072,6 @@ pub(crate) fn validate_partial_controls(controls: &[ControlRecord]) -> io::Resul
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod spool_tests;

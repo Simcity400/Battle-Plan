@@ -33,6 +33,7 @@ pub enum SectionKind {
     FamilyAnswers,
     Catalogue,
     FinalState,
+    DerivedVersion,
 }
 
 impl SectionKind {
@@ -45,6 +46,7 @@ impl SectionKind {
             Self::FamilyAnswers => 5,
             Self::Catalogue => 6,
             Self::FinalState => 7,
+            Self::DerivedVersion => 8,
         }
     }
 
@@ -57,6 +59,7 @@ impl SectionKind {
             5 => Self::FamilyAnswers,
             6 => Self::Catalogue,
             7 => Self::FinalState,
+            8 => Self::DerivedVersion,
             _ => {
                 return Err(invalid(format!(
                     "The recording holds a section of kind {code}, which this build does not know and has no decoder for"
@@ -73,6 +76,7 @@ impl SectionKind {
             Self::MapRestore | Self::FamilyAnswers | Self::Catalogue | Self::FinalState => {
                 matches!(kind, Kind::Data | Kind::Stored)
             }
+            Self::DerivedVersion => kind == Kind::Stored,
         }
     }
 
@@ -100,6 +104,10 @@ impl SectionKey {
         Self { kind, id }
     }
 
+    pub const fn derived(table: u32) -> Self {
+        Self::new(SectionKind::DerivedVersion, table)
+    }
+
     fn check(self) -> io::Result<()> {
         if self.kind.single() && self.id != 0 {
             return Err(invalid(format!("{self} has an id, which its kind has not")));
@@ -118,6 +126,7 @@ impl fmt::Display for SectionKey {
             SectionKind::FamilyAnswers => write!(f, "Family {}'s answers section", self.id),
             SectionKind::Catalogue => write!(f, "Catalogue {}", self.id),
             SectionKind::FinalState => write!(f, "Family {}'s final state section", self.id),
+            SectionKind::DerivedVersion => write!(f, "Derived table {}'s version", self.id),
         }
     }
 }

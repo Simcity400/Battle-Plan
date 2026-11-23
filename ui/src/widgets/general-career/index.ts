@@ -8,14 +8,15 @@ import { useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt
 import { leaderRequestSelection } from '../generals/generalsData';
 import { leaderChoices, validateLeaderChoicesReply } from './choicesData';
 import GeneralCareerWidget from './GeneralCareerWidget';
+import { productRequest } from '../../dashboard/request.ts';
 
 const LOADING = { loading: true } as const;
 
 function useLeaderChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const { requestTags, selectionReason, group } = useCountriesSelectionAt(widget, runtime, track?.branch.lastHour ?? 0, true);
-  const request = track && requestTags !== undefined ? { sourceId: track.source.id, revision: track.source.revision, product: 'unit-leader-choices',
-    params: { branchId: track.branch.id, selection: leaderRequestSelection(requestTags) } } : null;
+  const { requestTags, selectionReason, group } = useCountriesSelectionAt(widget, runtime, true);
+  const request = track && requestTags !== undefined ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'unit-leader-choices',
+    params: { branchId: track.branch.id, selection: leaderRequestSelection(requestTags) } }) : null;
   const { data, error, retry } = useProduct(runtime.client, request, true, validateLeaderChoicesReply, track?.source);
   const choices = data?.choices;
   const wanted = useMemo(() => choices?.flatMap(([, , owner, hour]) => owner === null ? [] : [{ hour, tag: owner }]) ?? [], [choices]);

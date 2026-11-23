@@ -1,3 +1,6 @@
+import { useGate } from '../../dashboard/regionGate';
+import { axisAt, SPEC, type GatedHour } from '../../dashboard/regionTime';
+import GateState from '../../dashboard/GateState';
 import { answersKey, countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { narrowTableOf } from '../../charts/table/options.ts';
@@ -37,6 +40,8 @@ import { useProducedAt, useProducedTypes } from './useProduced';
 import './equipmentProduced.css';
 import type { EquipmentProducedReply, ProducedCountryReply } from '../../generated/dashboard';
 import { useChangedState } from '../../dashboard/changedState.ts';
+import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const same = <T,>(reply: T) => reply;
 
@@ -51,6 +56,7 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const offset = track?.axisOffset ?? 0;
   const following = widget.time.mode === 'follow';
+  const gate = useGate(runtime, widget, SPEC, active);
   const structure = useRef<() => string>(() => '');
   const headHour = useHeadHour(runtime.clock, active && following,
     hour => pausedKey(structure.current(), hour, runtime.clock.getSnapshot().playing));
@@ -59,6 +65,7 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const playhead = window && (following || widget.time.mode === 'pin') ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const moment = Math.floor(playhead ?? extent[1]);
+  const coverage = useRegionCoverage(runtime, useRegion(widget));
   const lastHour = track?.branch.lastHour ?? 0;
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groups = useCountryGroups(runtime, track, active && grouped);
@@ -70,8 +77,8 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const pickingDefault = count === 'units' && !included.length;
   const mostType = types.data?.mostDelivered ?? null;
   const shownTypes = useMemo(() => pickingDefault ? mostType ? [mostType] : [] : included, [pickingDefault, mostType, included]);
-  const rankedAt = useRef<number | null>(null);
-  const rankHour = producedRankHour(widget.time.mode, playhead, runtime.clock.getSnapshot().playing, rankedAt.current, extent[1]);
+  const rankedAt = useRef<GatedHour | null>(null);
+  const rankHour = producedRankHour(following, following ? gate.hourAt(axisAt(headHour)) : gate.hour, runtime.clock.getSnapshot().playing, rankedAt.current);
   rankedAt.current = following ? rankHour : null;
   const params = track && (resolved.top != null || resolved.tags.length > 0) && !(pickingDefault && !mostType)
     ? producedRequest(track.branch.id, resolved, rankHour, count, measure, shownTypes, refits) : null;
@@ -95,8 +102,8 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
     const stops = [runtime.clock.subscribeFrame(changed), runtime.clock.subscribe(changed)];
     return () => { for (const stop of stops) stop(); };
   }, [runtime.clock]);
-  const windows = useFrameWindows<EquipmentProducedReply>(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision,
-    product: 'equipment-produced', params: { ...params!, window: index } }), () => windowsAt(runtime.clock.getHour()), subscribeClock, active,
+  const windows = useFrameWindows<EquipmentProducedReply>(runtime.client, identity, index => (productRequest({ sourceId: track!.source.id, revision: track!.source.revision,
+    product: 'equipment-produced', params: { ...params!, window: index } })), () => windowsAt(runtime.clock.getHour()), subscribeClock, active,
   validateProducedWindow, track?.source);
   const windowsCheck = useRef(windows.check);
   windowsCheck.current = windows.check;
@@ -157,7 +164,7 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   </div>;
 
   const [hovered, setHovered] = useChangedState<{ tag: string; hour: number } | null>(null);
-  const hoveredAt = useProducedAt(runtime, track, hovered?.tag ?? null, hovered?.hour ?? null, measure, refits, active);
+  const hoveredAt = useProducedAt(runtime, track, hovered?.tag ?? null, gate.recorded(hovered?.hour), measure, refits, active);
   const point = (tag: string, hour: number) => {
     if (hovered?.tag === tag && hovered.hour === hour) return;
     queueMicrotask(() => setHovered(held => held?.tag === tag && held.hour === hour ? held : { tag, hour }));
@@ -193,10 +200,10 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
 
   const warnings = useMemo(() => [...(merged?.warnings ?? []), ...(types.data?.warnings ?? []), ...(groups.data?.warnings ?? [])],
     [merged, types.data, groups.data]);
-  const none = noMembersAt(widget.countries, resolved, groups.data, moment, lastHour);
+  const none = coverage.outside ? null : noMembersAt(widget.countries, resolved, groups.data, moment, lastHour);
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="layers" message="Load a campaign to see the equipment it produced." />;
-    if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+    if (gate.outside && (view === 'race' || widget.time.mode !== 'follow')) return <GateState gate={gate} loading="Loading equipment produced…" />;
     if (failure) return <WidgetState kind="error" failure={failure} onRetry={windows.retry} />;
     if (types.error && pickingDefault) return <WidgetState kind="error" failure={types.error} onRetry={types.retry} />;
     if (grouped && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
@@ -228,9 +235,9 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   return <CountryPartsDrill {...props} widget={widget} runtime={runtime} active={active} track={track}
     options={options} extent={extent} playhead={playhead} moment={moment} product="equipment-produced-country" params={drillParams}
     validate={validateCountryReply} decode={decodeDrill} numbers={same} defaultTag={mixTag} pickTag={pickDrillTag}
-    title="Equipment types" measure={measureLabel} positiveGeometry warnings={warnings} state={state}
+    title="Equipment types" measure={measureLabel} positiveGeometry warnings={warnings}
     resetKey={JSON.stringify([track?.source.id, track?.branch.id, measure, count, included, refits, widget.countries])}
-    details={({ tag, hour, tagAt, key }) => track && <ProducedDrillTable runtime={runtime} track={track} active={active} tag={tag} hour={hour} tagAt={tagAt}
+    details={({ gate: drillGate, tag, hour, tagAt, key }) => track && <ProducedDrillTable runtime={runtime} gate={drillGate} track={track} active={active} tag={tag} hour={hour} tagAt={tagAt}
       narrow={narrowTableOf(options)} measure={measure} refits={refits} count={count} chartType={chartSpec.type} chartKey={key}
       chartTitle={chartSpec.type == null ? `IC put into equipment ${measureLabel.toLowerCase()}, by type`
         : `${typeName(chartSpec.type)}: ${count === 'ic' ? 'IC put in' : 'units delivered'} ${measureLabel.toLowerCase()}, by model`}

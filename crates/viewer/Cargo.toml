@@ -8,7 +8,51 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+content-reader-defines.workspace = true
+content-reader-gui.workspace = true
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-map.workspace = true
+content-reader-mesh.workspace = true
+content-reader-military.workspace = true
+content-reader-parser.workspace = true
+content-reader-politics.workspace = true
+content-reader-script.workspace = true
+replay.workspace = true
+replay-settings.workspace = true
+replay-files.workspace = true
+replay-recording.workspace = true
+viewer-counter-kit.workspace = true
+viewer-engagements.workspace = true
+viewer-foundation.workspace = true
+viewer-gpu.workspace = true
+viewer-native-gui.workspace = true
+viewer-runtime.workspace = true
+viewer-unit-reads.workspace = true
+dashboard-core.workspace = true
+dashboard-text.workspace = true
+dashboard-land.workspace = true
+dashboard-politics.workspace = true
+viewer-aircraft.workspace = true
+viewer-borders.workspace = true
+viewer-buildings.workspace = true
+viewer-map-icons.workspace = true
+viewer-map-modes.workspace = true
+viewer-map-text.workspace = true
+viewer-models.workspace = true
+viewer-rail.workspace = true
+viewer-scene-base.workspace = true
+viewer-terrain.workspace = true
+viewer-unit-history.workspace = true
+viewer-unit-models.workspace = true
+viewer-weather-effects.workspace = true
+viewer-world.workspace = true
 viewer-playback.workspace = true
+viewer-layer-core.workspace = true
+viewer-layers-counters.workspace = true
+viewer-layers-forces.workspace = true
+viewer-layers-political.workspace = true
+viewer-layers-infrastructure.workspace = true
 map-content.workspace = true
 foldhash = "0.2"
 dashboard-base.workspace = true
@@ -17,12 +61,10 @@ engine-allocation.workspace = true
 map-display-data.workspace = true
 map-products.workspace = true
 map-snow.workspace = true
-replay.workspace = true
 replay-columnar.workspace = true
 playhead = { path = "../playhead" }
 engine-executable.workspace = true
 content-reader-abilities.workspace = true
-content-reader-core.workspace = true
 content-reader-country-names.workspace = true
 content-reader-division-names.workspace = true
 content-reader-focus.workspace = true
@@ -39,12 +81,10 @@ content-reader-weather.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 viewer-counter-products = { path = "../viewer-counter-products" }
-viewer-world = { path = "../viewer-world" }
 viewer-audio = { path = "../viewer-audio" }
-viewer-counters = { path = "../viewer-counters" }
+viewer-counters.workspace = true
 viewer-raids = { path = "../viewer-raids" }
 viewer-combat = { path = "../viewer-combat" }
-viewer-foundation = { path = "../viewer-foundation" }
 shader-pipeline = { path = "../shader-pipeline" }
 content-reader-sound.workspace = true
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts"] }
@@ -61,11 +101,25 @@ raw-window-handle = "0.6"
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
+content-reader-layers = { workspace = true, features = ["test-support"] }
+content-reader-script = { workspace = true, features = ["test-support"] }
+replay-capture-spool.workspace = true
+replay = { workspace = true, features = ["test-support"] }
+viewer-counter-kit = { workspace = true, features = ["test-support"] }
+viewer-engagements = { workspace = true, features = ["test-support"] }
+viewer-foundation = { workspace = true, features = ["test-support"] }
+viewer-gpu = { workspace = true, features = ["test-support"] }
+viewer-native-gui = { workspace = true, features = ["test-support"] }
+viewer-runtime = { workspace = true, features = ["test-support"] }
+viewer-unit-reads = { workspace = true, features = ["test-support"] }
+recorder-derive.workspace = true
+viewer-buildings = { workspace = true, features = ["test-support"] }
+viewer-models = { workspace = true, features = ["test-support"] }
+viewer-unit-models = { workspace = true, features = ["test-support"] }
 viewer-playback = { workspace = true, features = ["test-support"] }
 engine-native.workspace = true
 playhead = { path = "../playhead", features = ["test-support"] }
 content-reader-abilities = { workspace = true, features = ["test-support"] }
-content-reader-core = { workspace = true, features = ["test-support"] }
 content-reader-division-names = { workspace = true, features = ["test-support"] }
 content-reader-focus = { workspace = true, features = ["test-support"] }
 content-reader-gfx = { workspace = true, features = ["test-support"] }
@@ -80,28 +134,37 @@ content-reader-states = { workspace = true, features = ["test-support"] }
 content-reader-weather = { workspace = true, features = ["test-support"] }
 shader-pipeline = { path = "../shader-pipeline", features = ["test-support"] }
 viewer-counter-products = { path = "../viewer-counter-products", features = ["test-support"] }
-viewer-world = { path = "../viewer-world", features = ["test-support"] }
-viewer-counters = { path = "../viewer-counters", features = ["test-support"] }
+viewer-world = { workspace = true, features = ["test-support"] }
+viewer-counters = { workspace = true, features = ["test-support"] }
 viewer-raids = { path = "../viewer-raids", features = ["test-support"] }
 viewer-combat = { path = "../viewer-combat", features = ["test-support"] }
-viewer-foundation = { path = "../viewer-foundation", features = ["test-support"] }
 uuid = { workspace = true, features = ["v4"] }
+
+[lints]
+workspace = true
 
 # Generated by tools/check-feature-unification.py --fix (do not edit): the features
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
 content-reader-naval-combat-defines = { workspace = true, features = ["test-support"] }
 content-reader-naval-path = { workspace = true, features = ["test-support"] }
+content-reader-politics = { workspace = true, features = ["test-support"] }
+content-reader-sound = { workspace = true, features = ["test-support"] }
 dashboard = { workspace = true, features = ["export-types"] }
-dashboard-base = { workspace = true, features = ["export-types", "test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
-map-content = { workspace = true, features = ["test-support"] }
+dashboard-air = { workspace = true, features = ["export-types", "test-support"] }
+dashboard-land = { workspace = true, features = ["export-types", "test-support"] }
+dashboard-politics = { workspace = true, features = ["export-types", "test-support"] }
+dashboard-wars = { workspace = true, features = ["export-types", "test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
+replay-tools = { workspace = true, features = ["default", "journal"] }
 test-unify = { workspace = true }
-unify-bitflags-2 = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-once_cell = { workspace = true }
@@ -111,6 +174,4 @@ unify-windows = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }
 uuid = { version = "1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }
-
-[lints]
-workspace = true
+viewer-scene-base = { workspace = true, features = ["test-support"] }

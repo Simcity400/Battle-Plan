@@ -170,7 +170,7 @@ fn consistent() -> Vec<ProvinceRow> {
 }
 
 fn check(rows: Vec<ProvinceRow>) -> Report {
-    let geometry = content_reader_core::province_geometry::ProvinceGeometry {
+    let geometry = content_reader_map::province_geometry::ProvinceGeometry {
         nonsea_indices: (1..=3).map(|id| (id, id as i32)).collect(),
         ..Default::default()
     };

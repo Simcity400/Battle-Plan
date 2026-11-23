@@ -108,6 +108,7 @@ product! {
     pub struct WorldName {
         pub key: String, pub strategic_provinces: Option<Arc<[u32]>>, pub text: String,
         pub pages: Vec<usize>, pub corners: Vec<[f32; 3]>, pub uvs: Vec<[f32; 4]>,
+        pub colors: Vec<[f32; 4]>,
         pub aabb: [f32; 4], pub wrapped: bool, pub font_size: f32, pub spaces: usize, pub alpha: f32
     }
     #[derive(Clone, Debug, PartialEq)]
@@ -608,14 +609,15 @@ impl WorldName {
     pub fn from_glyphs(
         key: String,
         text: String,
-        glyphs: impl IntoIterator<Item = ([[f32; 3]; 4], [f32; 4], usize)>,
+        glyphs: impl IntoIterator<Item = ([[f32; 3]; 4], [f32; 4], usize, [f32; 4])>,
         alpha: f32,
     ) -> Option<Self> {
         let mut corners = Vec::new();
         let mut uvs = Vec::new();
         let mut pages = Vec::new();
+        let mut colors = Vec::new();
         let mut aabb = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
-        for (quad, uv, page) in glyphs {
+        for (quad, uv, page, color) in glyphs {
             for corner in quad {
                 aabb[0] = aabb[0].min(corner[0]);
                 aabb[1] = aabb[1].min(corner[2]);
@@ -625,6 +627,7 @@ impl WorldName {
             }
             uvs.push(uv);
             pages.push(page);
+            colors.push(color);
         }
         (!uvs.is_empty()).then_some(Self {
             key,
@@ -633,6 +636,7 @@ impl WorldName {
             pages,
             corners,
             uvs,
+            colors,
             aabb,
             wrapped: false,
             font_size: 0.0,

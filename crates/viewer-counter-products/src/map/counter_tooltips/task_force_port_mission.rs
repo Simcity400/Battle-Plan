@@ -4,9 +4,9 @@ use replay_data::{
     rows::NavalPortMissionInputs, rows::ShipModelRow, rows::ShipRow,
     rows::TaskForceCounterInputRow, rows::TaskForceRow,
 };
-use viewer_foundation::map::port_mission_defines::Defines;
+use viewer_unit_reads::port_mission_defines::Defines;
 #[cfg(test)]
-use viewer_foundation::map::port_mission_defines::ScoreDefines;
+use viewer_unit_reads::port_mission_defines::ScoreDefines;
 use viewer_foundation::tooltip_text::ensure_newlines;
 
 const SCALE: i64 = 100_000;
@@ -688,7 +688,7 @@ mod tests {
         rows::CountryLinkRow, rows::CountryRow, rows::NavalEngagementTarget, rows::NavalSearcher,
         rows::ShipCounterInputs, rows::TableRows,
     };
-    use viewer_foundation::map::test_support::{test_frame, test_put};
+    use viewer_foundation::test_support::{test_frame, test_put};
 
     fn with_context(frame: &DecodedFrame, run: impl FnOnce(&Context<'_>)) {
         let mut loc: Localisation = [

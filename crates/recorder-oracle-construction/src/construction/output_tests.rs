@@ -86,7 +86,7 @@ fn output(frame: &mut DecodedFrame) -> &mut ConstructionLineOutputRow {
     &mut rows[0]
 }
 fn replay_of(frames: Vec<DecodedFrame>) -> Replay {
-    use replay::spool::Record;
+    use replay_capture_spool::spool::Record;
     use replay_data::{
         identity::Identity, identity::Roster, identity::SessionStart, identity::Verification,
     };
@@ -147,7 +147,7 @@ fn replay_of(frames: Vec<DecodedFrame>) -> Replay {
             }]));
         records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
     }
-    Replay::from_records(b"campaign".to_vec(), &[records]).unwrap()
+    Replay::from_records(recorder_derive::writers(), b"campaign".to_vec(), &[records]).unwrap()
 }
 
 fn checked(frames: &[DecodedFrame]) -> Report {

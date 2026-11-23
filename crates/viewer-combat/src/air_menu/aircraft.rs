@@ -1,5 +1,5 @@
 use super::{Content, DecodedFrame};
-use content_reader_core::map::ProvinceKind;
+use content_reader_map::map::ProvinceKind;
 use replay_data::rows::{AirCountryRelationRow, AirWingRow, tables};
 use replay_derive::{
     air_mission_sources::{AirRegistrySources, MissionCountrySources},
@@ -9,7 +9,7 @@ use std::{
     cell::OnceCell,
     collections::{BTreeMap, BTreeSet},
 };
-use viewer_foundation::map::air_reachability::*;
+use viewer_unit_reads::air_reachability::*;
 
 pub(super) struct Figures {
     pub counts: [Result<[i32; 3], String>; 3],
@@ -150,7 +150,7 @@ fn read(
                     .as_ref()
                     .map_err(Clone::clone)?;
                 let families = families.get_or_init(|| {
-                    viewer_foundation::map::visibility::Families::read(frame, &links).ok()
+                    viewer_foundation::visibility::Families::read(frame, &links).ok()
                 });
                 let fog = fog.get_or_init(|| {
                     families
@@ -158,7 +158,7 @@ fn read(
                         .and_then(|families| families.with_attaches(frame, &links).ok())
                 });
                 let regions = regions
-                    .get_or_init(|| viewer_foundation::map::air_reachability::RegionStates::read(frame, members).map_err(|why| why.to_string()))
+                    .get_or_init(|| viewer_unit_reads::air_reachability::RegionStates::read(frame, members).map_err(|why| why.to_string()))
                     .as_ref()
                     .map_err(Clone::clone)?;
                 let needs = |mask| {

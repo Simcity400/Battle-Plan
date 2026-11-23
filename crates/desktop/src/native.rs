@@ -3,11 +3,9 @@ mod gamepad;
 mod lifecycle;
 mod pending;
 
-use dashboard::protocol::{
-    DashboardMapView, ViewBounds, ViewerState, validate_map_views,
-};
+use dashboard_core::protocol::{DashboardMapView, ViewBounds, ViewerState, validate_map_views};
 pub use gamepad::start_gamepad;
-use pending::{Pending, SeekTarget};
+use pending::{DashboardSnapshot, Pending, SeekTarget};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use tauri::WebviewWindow;
@@ -15,15 +13,15 @@ use tauri::WebviewWindow;
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostStatus {
-    pub map_details: Option<dashboard::protocol::MapDetails>,
+    pub map_details: Option<dashboard_core::protocol::MapDetails>,
     pub running: bool,
     pub ready: bool,
     pub visible: bool,
     pub viewer: ViewerState,
     pub error: Option<String>,
-    pub camera_mode: dashboard::protocol::CameraMode,
+    pub camera_mode: dashboard_core::protocol::CameraMode,
     pub camera_overlays: bool,
-    pub fly_aircraft: Option<dashboard::protocol::FlyAircraftStatus>,
+    pub fly_aircraft: Option<dashboard_core::protocol::FlyAircraftStatus>,
 }
 
 #[derive(Default)]
@@ -39,24 +37,17 @@ struct Inner {
     requested_path: Option<String>,
     requested_revision: Option<String>,
     requested_seek: Option<SeekTarget>,
-    dashboard_views: Option<Vec<DashboardMapView>>,
+    dashboard_views: Option<DashboardSnapshot>,
     active_dashboard: bool,
     shutting_down: bool,
     last_diagnostic: Option<String>,
     diagnostics: Option<bool>,
-    folders: Option<dashboard::Config>,
-    display: Vec<(u64, dashboard::protocol::MapAction)>,
+    folders: Option<dashboard_core::config::Config>,
+    display: Vec<(u64, dashboard_core::protocol::MapAction)>,
     display_sent: u64,
     popout: Option<PopOutWindow>,
     muted: Option<bool>,
-    exports: Vec<Export>,
-    export_requests: u64,
-}
-
-struct Export {
-    request: u64,
-    generation: u64,
-    answer: tokio::sync::oneshot::Sender<Result<String, String>>,
+    clock_origins: viewer::page_clock::OriginGate,
 }
 
 pub type StatusChanged = Arc<dyn Fn() + Send + Sync>;
@@ -68,19 +59,6 @@ struct PopOutWindow {
 }
 
 impl Inner {
-    fn export_ended(&mut self, generation: u64, request: u64, answer: Result<String, String>) {
-        if let Some(at) = self.exports.iter().position(|export| export.request == request && export.generation == generation) {
-            let _ = self.exports.remove(at).answer.send(answer);
-        }
-    }
-
-    fn refuse_exports(&mut self, why: &str) {
-        self.pending.actions.retain(|action| !matches!(action, dashboard::protocol::MapAction::Export { .. }));
-        for export in self.exports.drain(..) {
-            let _ = export.answer.send(Err(why.to_owned()));
-        }
-    }
-
     fn flush(&mut self) {
         let Some(map) = self.map.as_ref() else {
             return;
@@ -96,20 +74,64 @@ impl Inner {
         }
     }
 
-    fn ask_export(&mut self, path: String, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<Result<String, String>>, String> {
+    fn ask_export(&mut self, path: String, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<viewer::host::Answer>, String> {
         if self.map.is_none() || !self.status.ready || self.shutting_down {
             return Err("The map isn’t ready yet".into());
         }
         self.pending.action_room()?;
-        let request = self.export_requests + 1;
-        let action = dashboard::protocol::MapAction::Export { path, view_id, request };
-        action.validate().map_err(str::to_owned)?;
-        self.export_requests = request;
+        dashboard_core::protocol::validate_export(&path, view_id.as_deref()).map_err(str::to_owned)?;
+        let receipt = replay_settings::exit::EXIT.admit(replay_settings::exit::What::Export).map_err(|error| error.to_string())?;
         let (answer, answered) = tokio::sync::oneshot::channel();
-        self.exports.push(Export { request, generation: self.generation, answer });
-        self.pending.actions.push_back(action);
+        let reply = viewer::host::Reply::new(move |result| drop(answer.send(result)));
+        let job = viewer::host::ExportJob::new(path, view_id, receipt, reply);
         self.flush();
+        if let Some(Err(job)) = self.map.as_ref().map(|map| map.send_export(job)) {
+            job.answer(Err(viewer::host::STOPPED.to_owned()));
+        }
         Ok(answered)
+    }
+
+    pub(super) fn dashboard_snapshot(&self) -> DashboardSnapshot {
+        self.dashboard_views
+            .clone()
+            .unwrap_or_else(|| DashboardSnapshot {
+                clock_id: self.clock_origins.active().map(str::to_owned),
+                views: Vec::new(),
+            })
+    }
+
+    fn apply_dashboard_views(
+        &mut self,
+        clock_id: &str,
+        views: &[DashboardMapView],
+    ) -> Result<bool, String> {
+        validate_map_views(clock_id, views).map_err(str::to_owned)?;
+        if self.shutting_down {
+            return Err("BattlePlan is closing.".into());
+        }
+        if self.clock_origins.admit(clock_id) == viewer::page_clock::OriginStatus::Retired {
+            return Ok(false);
+        }
+        let snapshot = DashboardSnapshot {
+            clock_id: Some(clock_id.to_owned()),
+            views: views.to_vec(),
+        };
+        self.dashboard_views = Some(snapshot.clone());
+        if !self.active_dashboard {
+            return Ok(false);
+        }
+        self.status.visible = views
+            .iter()
+            .any(|view| view.visible && view.clip.width > 0 && view.clip.height > 0);
+        self.pending.maps = Some(snapshot);
+        self.pending.bounds = None;
+        self.pending.visibility = None;
+        self.pending.open = None;
+        self.pending.seek = None;
+        self.requested_path = None;
+        self.requested_revision = None;
+        self.requested_seek = None;
+        Ok(true)
     }
 
     fn publish(&self, app: &tauri::AppHandle) {
@@ -123,8 +145,8 @@ impl Inner {
     }
 }
 
-fn same_display(a: &dashboard::protocol::MapAction, b: &dashboard::protocol::MapAction) -> bool {
-    use dashboard::protocol::MapAction;
+fn same_display(a: &dashboard_core::protocol::MapAction, b: &dashboard_core::protocol::MapAction) -> bool {
+    use dashboard_core::protocol::MapAction;
     matches!(
         (a, b),
         (MapAction::Vsync { .. }, MapAction::Vsync { .. })
@@ -134,10 +156,10 @@ fn same_display(a: &dashboard::protocol::MapAction, b: &dashboard::protocol::Map
 }
 
 fn launch_display(
-    read: impl IntoIterator<Item = dashboard::protocol::MapAction>,
-    sent: &[(u64, dashboard::protocol::MapAction)],
+    read: impl IntoIterator<Item = dashboard_core::protocol::MapAction>,
+    sent: &[(u64, dashboard_core::protocol::MapAction)],
     since: u64,
-) -> Vec<dashboard::protocol::MapAction> {
+) -> Vec<dashboard_core::protocol::MapAction> {
     let newer: Vec<_> = sent
         .iter()
         .filter(|(number, _)| *number > since)
@@ -181,7 +203,7 @@ impl NativeHost {
             inner.pending.visibility = None;
             inner.pending.open = None;
             inner.pending.seek = None;
-            inner.pending.maps = Some(inner.dashboard_views.clone().unwrap_or_default());
+            inner.pending.maps = Some(inner.dashboard_snapshot());
         } else {
             inner.pending.maps = None;
             inner.pending.campaign_map = true;
@@ -197,29 +219,15 @@ impl NativeHost {
     pub fn set_dashboard_views(
         &self,
         window: &WebviewWindow,
+        clock_id: &str,
         views: &[DashboardMapView],
     ) -> Result<(), String> {
-        validate_map_views(views).map_err(str::to_owned)?;
-        {
+        let admitted = {
             let mut inner = self.shared.lock().map_err(|error| error.to_string())?;
-            if inner.shutting_down {
-                return Err("BattlePlan is closing.".into());
-            }
-            inner.dashboard_views = Some(views.to_vec());
-            if !inner.active_dashboard {
-                return Ok(());
-            }
-            inner.status.visible = views
-                .iter()
-                .any(|view| view.visible && view.clip.width > 0 && view.clip.height > 0);
-            inner.pending.maps = Some(views.to_vec());
-            inner.pending.bounds = None;
-            inner.pending.visibility = None;
-            inner.pending.open = None;
-            inner.pending.seek = None;
-            inner.requested_path = None;
-            inner.requested_revision = None;
-            inner.requested_seek = None;
+            inner.apply_dashboard_views(clock_id, views)?
+        };
+        if !admitted {
+            return Ok(());
         }
         if !views.is_empty() {
             self.ensure_started(window)?;
@@ -236,18 +244,15 @@ impl NativeHost {
             .clone()
     }
 
-    pub fn export(&self, path: String, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<Result<String, String>>, String> {
+    pub fn export(&self, path: String, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<viewer::host::Answer>, String> {
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         inner.ask_export(path, view_id)
     }
 
-    pub fn map_action(&self, action: dashboard::protocol::MapAction) -> Result<(), String> {
+    pub fn map_action(&self, action: dashboard_core::protocol::MapAction) -> Result<(), String> {
         action.validate().map_err(str::to_owned)?;
-        if matches!(action, dashboard::protocol::MapAction::Export { .. }) {
-            return Err("An export is asked for with export_map, which answers it".into());
-        }
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-        if let dashboard::protocol::MapAction::Unload { path } = &action
+        if let dashboard_core::protocol::MapAction::Unload { path } = &action
             && inner.map.is_none()
         {
             inner.forget_recording(path);
@@ -258,8 +263,8 @@ impl NativeHost {
         }
         if matches!(
             action,
-            dashboard::protocol::MapAction::CameraMode { .. }
-                | dashboard::protocol::MapAction::FlyAircraft { .. }
+            dashboard_core::protocol::MapAction::CameraMode { .. }
+                | dashboard_core::protocol::MapAction::FlyAircraft { .. }
         ) {
             let kind = std::mem::discriminant(&action);
             inner
@@ -268,7 +273,7 @@ impl NativeHost {
                 .retain(|queued| std::mem::discriminant(queued) != kind);
         }
         inner.pending.action_room()?;
-        if let dashboard::protocol::MapAction::Unload { path } = &action {
+        if let dashboard_core::protocol::MapAction::Unload { path } = &action {
             inner.forget_recording(path);
         }
         inner.pending.actions.push_back(action);
@@ -278,7 +283,7 @@ impl NativeHost {
     }
 
     pub fn set_diagnostics(&self, enabled: bool) {
-        use dashboard::protocol::MapAction;
+        use dashboard_core::protocol::MapAction;
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         inner.diagnostics = Some(enabled);
         if inner.map.is_none() || inner.shutting_down {
@@ -296,7 +301,7 @@ impl NativeHost {
         self.flush();
     }
 
-    pub fn set_display(&self, action: dashboard::protocol::MapAction) {
+    pub fn set_display(&self, action: dashboard_core::protocol::MapAction) {
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         inner.display_sent += 1;
         let number = inner.display_sent;
@@ -329,14 +334,14 @@ impl NativeHost {
     }
 
     pub fn map_settings_saved(&self) {
-        self.queue_once(dashboard::protocol::MapAction::MapSettingsSaved);
+        self.queue_once(dashboard_core::protocol::MapAction::MapSettingsSaved);
     }
 
     pub fn refresh_visual_mods(&self) {
-        self.queue_once(dashboard::protocol::MapAction::RefreshVisualMods);
+        self.queue_once(dashboard_core::protocol::MapAction::RefreshVisualMods);
     }
 
-    fn queue_once(&self, action: dashboard::protocol::MapAction) {
+    fn queue_once(&self, action: dashboard_core::protocol::MapAction) {
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         if (inner.map.is_none() && !inner.starting) || inner.shutting_down {
             return;
@@ -355,7 +360,7 @@ impl NativeHost {
     }
 
     pub fn set_muted(&self, muted: bool) {
-        use dashboard::protocol::MapAction;
+        use dashboard_core::protocol::MapAction;
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         inner.muted = Some(muted);
         if inner.map.is_none() || inner.shutting_down {
@@ -370,8 +375,8 @@ impl NativeHost {
         self.flush();
     }
 
-    pub fn set_folders(&self, config: &dashboard::Config) {
-        use dashboard::protocol::MapAction;
+    pub fn set_folders(&self, config: &dashboard_core::config::Config) {
+        use dashboard_core::protocol::MapAction;
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         inner.folders = Some(config.clone());
         if inner.map.is_none() || inner.shutting_down {
@@ -445,9 +450,9 @@ impl NativeHost {
         revision: String,
         branch: String,
         hour: i32,
-        playback: Option<dashboard::protocol::MapPlayback>,
+        playback: Option<dashboard_core::protocol::MapPlayback>,
     ) -> Result<(), String> {
-        if let Some(playback) = playback {
+        if let Some(playback) = &playback {
             playback.validate()?;
         }
         branch.parse::<u64>().map_err(|_| "Invalid campaign history")?;
@@ -455,6 +460,12 @@ impl NativeHost {
             return Err("A map seek must carry the revision its analysis read".into());
         }
         let mut inner = self.shared.lock().map_err(|e| e.to_string())?;
+        if playback.as_ref().is_some_and(|clock| {
+            inner.clock_origins.admit(&clock.clock_id)
+                == viewer::page_clock::OriginStatus::Retired
+        }) {
+            return Ok(());
+        }
         inner.dashboard_views = None;
         inner.pending.maps = None;
         let current_matches = inner.status.viewer.path.as_ref() == Some(&path)

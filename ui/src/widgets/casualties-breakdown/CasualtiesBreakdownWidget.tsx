@@ -8,7 +8,8 @@ import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
 import { dayLabel, drawBands } from '../../charts/draw';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
+import { pinnedBreakdown } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { jumpItem } from '../../charts/jump';
 import { stackedSegments, stackExtent } from '../../charts/stack';
 import Sunburst from '../../charts/sunburst/Sunburst';
@@ -44,6 +45,9 @@ import './casualtiesBreakdown.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
 import type { CasualtyBreakdownReply } from '../../generated/dashboard';
+import { regionHour, axisAt, recordedHour } from '../../dashboard/regionTime.ts';
+import { useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const ROOT = { id: 'positive-losses', label: 'Positive known losses' };
 const TEXT: SunburstText = { format: (value, exact) => exactLosses(exact ?? BigInt(Math.round(value))), unit: 'casualties', valueLabel: 'Positive amounts' };
@@ -58,16 +62,17 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   const options = resolveOptions(definition.options, widget.options);
   const anchor = useRef<HTMLDivElement>(null);
   const menu = useContextMenu('Casualty breakdown actions');
-  const [drill, setDrill] = useState(CLOSED);
   const [visible, setVisible] = useState<readonly LossRow[]>([]);
   const [chartRange, setChartRange] = useState<readonly [number, number] | null>(null);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
 useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
+  const drillControl = useDrill(runtime, useRegion(widget), options.show === DETAIL.id ? DETAIL.id : null);
+  const drill = drillControl.state;
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'casualty-breakdown', params: { branchId: track.branch.id, country: countryFromKey(tag), window: null } } : null;
+  const request = track && tag ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'casualty-breakdown', params: { branchId: track.branch.id, country: countryFromKey(tag), window: null } }) : null;
   const manifest = useProduct<CasualtyBreakdownReply>(runtime.client, request, active, validateBreakdown, track?.source);
-  const drillFollows = drill.breakdown !== null && drill.follow;
+  const drillFollows = drill.breakdown !== null && !drill.spec && drillControl.following;
   const drillRows = useRef<() => string>(() => '');
   const headWindow = (at: number) => String(breakdownWindows(manifest.data, at, false)[0] ?? -1);
   const playback = useHeadHour(runtime.clock, active && (widget.time.mode === 'follow' || drillFollows),
@@ -75,19 +80,18 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const hour = window?.lastHour ?? track?.branch.lastHour ?? 0;
   const pinned = options.show === DETAIL.id;
-  const open = pinned || drill.breakdown !== null;
-  const effectiveDrill = drill.breakdown ? drill : pinned
-    ? { breakdown: DETAIL.id, follow: widget.time.mode === 'follow', hour } : CLOSED;
+  const open = drillControl.open;
   const clockHour = track ? Math.floor(playback) + track.axisOffset : null;
-  const detailHour = (open ? drillHour(effectiveDrill, clockHour) : hour) ?? hour;
+  const drillRegion = drillControl.region;
+  const detailAt = open ? regionHour(drillRegion, track, runtime.tracks, axisAt(playback)) : recordedHour(track, hour);
+  const detailHour = detailAt ?? hour;
   const pinSlots = useSlotTags(runtime.client, track, active && !!tag && isSlotKey(tag));
   const pinTag = tag && isSlotKey(tag) ? countryTagAt(pinSlots, countryFromKey(tag), Math.floor(detailHour)) : tag;
   const outside = !!track && (hour < track.branch.firstHour || hour > track.branch.lastHour);
-  const detailOutside = !!track && (detailHour < track.branch.firstHour || detailHour > track.branch.lastHour);
-  const pickDay = (at: number) => setDrill(state => reduceDrill(state.breakdown ? state : effectiveDrill, { type: 'pick', hour: at }));
-  const follow = () => setDrill(state => reduceDrill(state.breakdown ? state : effectiveDrill, { type: 'follow' }));
+  const detailOutside = !!track && detailAt === null;
+  const pickDay = drillControl.pick;
   const currentWindows = breakdownWindows(manifest.data, hour, widget.time.mode === 'follow');
-  const detailWindows = breakdownWindows(manifest.data, detailHour, effectiveDrill.follow);
+  const detailWindows = breakdownWindows(manifest.data, detailHour, drillControl.following);
   const finalIndex = manifest.data ? manifest.data.windows.length - 1 : -1;
   const chartWindows = open && manifest.data ? viewWindows(manifest.data.windows, chartRange) : [];
   const onChartView = useCallback((range: readonly [number, number]) => setChartRange(viewChange(manifest.data?.windows ?? [], range)), [manifest.data]);
@@ -120,10 +124,10 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
       return now ? { items: lossItems(now, end, (tag, hour) => nameReadText(names.get(nameKey(hour, tag)))) }
         : { items: [], unavailableReason: 'Casualty counters were not recorded at this moment.' };
     }), [widget.time.mode, manifest.data, runtime.clock, axisOffset, histories.data, end, names]);
-  const drillLive = useMemo(() => open && effectiveDrill.follow ? liveAt(runtime.clock, position => Math.floor(position) + axisOffset, at => {
+  const drillLive = useMemo(() => open && drillControl.following ? liveAt(runtime.clock, position => Math.floor(position) + axisOffset, at => {
     const index = breakdownWindows(manifest.data, at, false)[0];
     return lossDrillAt(index === undefined ? undefined : histories.data.get(index), at);
-  }) : undefined, [open, effectiveDrill.follow, runtime.clock, axisOffset, manifest.data, histories.data]);
+  }) : undefined, [open, drillControl.following, runtime.clock, axisOffset, manifest.data, histories.data]);
   drillRows.current = () => drillLive?.read().rows ?? '';
   const drillValues = useMemo(() => drillLive && mapLive(drillLive, made => valuesOf<SortValue>(made.values, 'Not recorded')), [drillLive]);
   const drillTexts = useMemo<LiveTexts | undefined>(() => drillLive && {
@@ -147,7 +151,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
       render: row => <CountryCell {...casualtyCountryCell(row, names, flags)} /> },
     { ...LOSSES, paint: (value, key) => lossText({ value: BigInt(value), incomplete: drillLive?.read().incomplete.has(key.split('\u0000')[0]) ?? false }) },
   ], [names, flags, drillLive]);
-  useEffect(() => { setDrill(CLOSED); setVisible([]); setChartRange(null); }, [runtime.client, identity, widget.time, options.show]);
+  useEffect(() => { drillControl.close(); setVisible([]); setChartRange(null); }, [runtime.client, identity, widget.time, options.show]);
   const diagnostics = useMemo(() => [...new Set([...(manifest.data?.warnings ?? []), ...[...histories.data.values()].flatMap(reply => reply.warnings)])],
     [manifest.data, histories.data]);
   useDiagnostics(onDiagnostics, diagnostics);
@@ -164,9 +168,9 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const drillSummary = (value: typeof snapshot) => drillTexts ? <p className="casualty-breakdown-total"><b><LiveText live={drillTexts} at="total" /></b></p> : summary(value);
   const dayShown = drillTexts ? <LiveText live={drillTexts} at="day" /> : dayLabel(detailHour);
   const detailBody = <div className="casualty-breakdown-details">
-    {pinned && <p className="casualty-breakdown-total">{dayShown} {!effectiveDrill.follow
-      && <button type="button" className="button small" onClick={follow}>Follow playback</button>}</p>}
-    {detailOutside ? <WidgetState kind="unavailable" message="This time is outside the recording." />
+    {pinned && <p className="casualty-breakdown-total">{dayShown} {!drillControl.following
+      && <button type="button" className="button small" onClick={drillControl.follow}>Follow playback</button>}</p>}
+    {detailOutside ? <WidgetState kind="outside" />
       : error ? <WidgetState kind="error" failure={error} onRetry={histories.retry} />
       : !detail ? <WidgetState kind="loading" label="Loading this moment…" />
         : !details ? <p className="drill-empty">{detail.observed.some(span => span.firstHour <= detailThrough && detailThrough <= span.lastHour)
@@ -181,7 +185,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
             ] }], height)} /></div></>}
     <div className="casualty-breakdown-history"><TimeChart label="Positive recorded casualties by war over time"
       extent={[track.branch.firstHour, track.branch.lastHour]} branchStart={track.branch.firstHour}
-      playhead={effectiveDrill.follow ? clockHour : null} playback="cursor" hoursPerSecond={speed}
+      playhead={drillControl.following ? clockHour : null} playback="cursor" hoursPerSecond={speed}
       axes={{ xFrom: null, xTo: null, yMin: 0, yMax: null, log: false }} layers={layers}
       active={active && open} revision={stack} onViewChange={onChartView}
       onPick={pickDay}
@@ -196,7 +200,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     {chartWindows.some(index => !histories.data.has(index) && !histories.errors.has(index)) && <p className="drill-empty">Loading history in the visible time range…</p>}
     {chartWindows.some(index => histories.errors.has(index)) && <button type="button" className="button small" onClick={histories.retry}>Retry history</button>}
   </div>;
-  const main = outside ? <WidgetState kind="unavailable" message="This time is outside the recording." />
+  const main = outside ? <WidgetState kind="outside" />
     : currentError ? <WidgetState kind="error" failure={currentError} onRetry={histories.retry} />
       : !current ? <WidgetState kind="loading" label="Loading casualty history…" />
         : <div className="casualty-breakdown-main" onContextMenu={event => { event.preventDefault(); menu.open(event.clientX, event.clientY, [jumpItem(runtime, track.id, hour)]); }}
@@ -211,19 +215,16 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
         widget.time.mode === 'follow' ? runtime.clock.getSnapshot().seekSequence : 0])}
         label="Positive casualties by war and enemy" root={ROOT} items={items} levels={levels} text={TEXT}
         settings={sunburstSettings(options)} hoursPerSecond={speed} active={active && (!open || options.drill === 'popout')} live={liveSlices} />}
-    <button type="button" className="button small" onClick={() => setDrill(state => reduceDrill(state,
-      { type: 'open', breakdown: DETAIL.id, hour, playing: widget.time.mode === 'follow' && runtime.clock.getSnapshot().playing,
-        playhead: widget.time.mode === 'follow' ? hour : null }))}>All losses</button>
+    <button type="button" className="button small" onClick={() => drillControl.show(DETAIL.id, hour)}>All losses</button>
   </div>;
   return <div ref={anchor} className="casualty-breakdown" data-detail={failureDetails([...names.values()].map(nameReadFailure))}>
-    {pinned ? detailBody : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={open} title="Recorded losses"
-      day={dayShown} following={effectiveDrill.follow} canFollow
-      onClose={() => setDrill(CLOSED)} onFollow={follow}
-      onPin={pinTag && runtime.addWidgetBelow ? () => {
-        const pin = pinnedBreakdown(widget, DETAIL, track.id);
-        const offset = Math.floor(detailHour) - track.branch.firstHour;
-        runtime.addWidgetBelow?.(widget.id, { ...pin, countries: { kind: 'tags', tags: [pinTag] },
-          time: effectiveDrill.follow ? { mode: 'follow' } : { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } } });
+    {pinned ? detailBody : <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} title="Recorded losses"
+      day={dayShown} canFollow
+      pinRefused={drillControl.pinRefused} onPin={pinTag && drillControl.time() ? () => {
+        const time = drillControl.time();
+        if (!time) return;
+        const pin = pinnedBreakdown(widget, DETAIL, track.id, time);
+        runtime.addWidgetBelow(widget.id, { ...pin, countries: { kind: 'tags', tags: [pinTag] } });
       } : undefined}
       anchor={anchor} main={main}>{detailBody}</DrillHost>}
     {menu.menu}

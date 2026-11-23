@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { sleep } from './cdp.mjs';
+import { assertValidPng } from './map.mjs';
 import { Coverage, controlBase, placementKey } from './coverage.mjs';
 import { Session, TOOLTIP_DELAY_MS } from './session.mjs';
 
@@ -622,13 +623,23 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
     await mkdir(folder, { recursive: true });
     const file = path.join(folder, `${name.replace(/[^\w.-]+/g, '_').slice(0, 80)}.png`);
     if (existsSync(file)) await unlink(file);
+    const exportSince = Date.now();
     await step(name, async () => {
       await s.click(IN_MENU('button.map-menu-action'), { text: 'Export map image', partial: true });
       await s.native.ask({ op: 'save_dialog', path: file, seconds: 20 });
     }, { awaits: false, check: false, timeout: 3000 });
-    for (const end = Date.now() + 20_000; !existsSync(file) && Date.now() < end;) await sleep(100);
-    if (existsSync(file)) await s.record({ area: 'controls', item: 'widget/settings', label: `${name}: written`, ...id, ms: null, pass: true, reasons: [], screenshot: false });
-    else await s.fail('controls', 'widget/settings', `${name}: written`, 'the export wrote no image within 20 s');
+    const done = await s.app.waitForIpc('export_map', exportSince, 20_000);
+    if (!done) await s.fail('controls', 'widget/settings', `${name}: written`, 'export_map did not finish within 20 s');
+    else if (!done.ok) await s.fail('controls', 'widget/settings', `${name}: written`, `export_map failed: ${done.error ?? `status ${done.status}`}`);
+    else if (done.result === null) await s.fail('controls', 'widget/settings', `${name}: written`, 'export_map was cancelled before writing an image');
+    else {
+      try {
+        await assertValidPng(file);
+        await s.record({ area: 'controls', item: 'widget/settings', label: `${name}: written`, ...id, ms: null, pass: true, reasons: [], screenshot: false });
+      } catch (error) {
+        await s.fail('controls', 'widget/settings', `${name}: written`, `exported PNG is invalid: ${error.message}`);
+      }
+    }
   } else if (c.kind === 'country') {
     await exerciseCountry(s, c, name, id, step, set, reopenHere);
   } else if (c.kind === 'pin') {

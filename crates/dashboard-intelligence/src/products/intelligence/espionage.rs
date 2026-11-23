@@ -1,21 +1,13 @@
 
 use super::{Country, IDENTITY, Tags, branch, missing, operative_content};
-use crate::{
-    Source,
-    products::{
-        LoadContext, Product,
-        at_hour::{At, AtHour, Owner, Read as RowRead},
-        country_ids::{Names, RunLinks},
-        logs::{self, LogCell, LogPageParams, LogPageReply, LogPageRow},
-    },
-};
+use dashboard_base::{Source, products::{LoadContext, Product, at_hour::{At, AtHour, Owner, Read as RowRead}, log_page::{self as logs, LogCell, LogPageParams, LogPageReply, LogPageRow}}, queries::country_ids::{Names, RunLinks}};
 use dashboard_query::{
     Query,
     log::{Cell, FacetFilter},
     read::{self, Keys, Read},
 };
 use game_model::calendar::HOUR_EPOCH;
-use replay::{lanes, points};
+use replay_lanes::{lanes, points};
 use replay_columnar::manifest::Status;
 use replay_data::rows::{OperationAssignmentRow, OperationCompletionRow, OperationRow, OperativeMembershipRow, TableId, TableSchema, tables};
 use replay_frame::frame::{DecodedFrame, cells_rows};
@@ -167,7 +159,7 @@ pub fn operatives(row: &OperationRow, slots: Option<&[OperationAssignmentRow]>, 
                         .ok_or_else(|| "Assigned operative name missing or contradictory at this read".to_owned())
                         .and_then(|member| member.name.require("name of operative memberships").cloned())
                         .and_then(|bytes| {
-                            std::str::from_utf8(content_reader_core::parser::c_string(&bytes))
+                            std::str::from_utf8(content_reader_parser::parser::c_string(&bytes))
                                 .map(str::to_owned)
                                 .map_err(|_| "Assigned operative name has non-text bytes".to_owned())
                         }),
@@ -190,7 +182,7 @@ fn literal(bytes: &[u8]) -> Option<String> {
     std::str::from_utf8(bytes).ok().filter(|text| !text.is_empty()).map(str::to_owned)
 }
 
-fn literals(recording: &replay::columnar_frames::Recording, run: u32, hour: i32, tokens: &[u128]) -> io::Result<HashMap<u32, String>> {
+fn literals(recording: &replay_recording::columnar_frames::Recording, run: u32, hour: i32, tokens: &[u128]) -> io::Result<HashMap<u32, String>> {
     if tokens.is_empty() {
         return Ok(HashMap::new());
     }
@@ -254,6 +246,7 @@ impl AtHour for EspionageOperations {
     const TITLE: &'static str = "Espionage operations";
     const CONTENT_DEPENDENT: bool = false;
     type Params = EspionageOperationsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = EspionageOperationsReply;
     type Context = ();
 
@@ -361,6 +354,7 @@ impl Product for EspionageOperation {
     const CONTENT_DEPENDENT: bool = false;
     const INTERACTIVE: bool = true;
     type Params = EspionageOperationParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, id, hour: Read];
     type Reply = EspionageOperationReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -374,11 +368,11 @@ impl Product for EspionageOperation {
     }
 
     fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        crate::metadata::check_cancel(cancelled)?;
-        let query = crate::answer::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
         let id: u64 = params.id.parse().map_err(|_| dashboard_core::invalid("Invalid operation id"))?;
         let stretch = *query.timeline.at(params.hour).ok_or_else(|| dashboard_core::refused("The operation's hour is not recorded"))?;
-        let lives = crate::answer::lifetimes(source, stretch.run, TableId::Operations)?;
+        let lives = dashboard_base::queries::lifetimes(source, stretch.run, TableId::Operations)?;
         let (first, last) = lives
             .iter()
             .find(|(key, ..)| *key == u128::from(id))
@@ -448,9 +442,9 @@ pub struct EndedOperation {
     pub operation: Option<String>,
     pub first_seen: i32,
     pub last_seen: i32,
-    #[doc = " The first read that no longer held it."]
+    #[doc = " The first complete read that no longer held it."]
     pub by_hour: i32,
-    #[doc = " Whether completions were recorded every hour of its life: where not, a completion may have"]
+    #[doc = " Whether completions were read whole every hour of its life: where not, a completion may have"]
     #[doc = " gone unseen and its end is not known to be a cancellation."]
     pub completions_recorded: bool,
     #[doc = " As last read."]
@@ -514,6 +508,7 @@ impl Product for EspionageEnded {
     const CONTENT_DEPENDENT: bool = false;
     const INTERACTIVE: bool = true;
     type Params = EspionageEndedParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, from: Start, to: End];
     type Reply = EspionageEndedReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -527,8 +522,8 @@ impl Product for EspionageEnded {
     }
 
     fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        crate::metadata::check_cancel(cancelled)?;
-        let query = crate::answer::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
         let from = params.from.unwrap_or(query.timeline.first);
         let recording = query.replay.recording();
         let names = Names::new(&query.holders);
@@ -536,22 +531,22 @@ impl Product for EspionageEnded {
         let mut warnings = Vec::new();
         let stretches: Vec<_> = query.timeline.stretches.iter().filter(|stretch| stretch.last >= from && stretch.first <= params.to).copied().collect();
         for stretch in stretches {
-            crate::metadata::check_cancel(cancelled)?;
+            dashboard_text::metadata::check_cancel(cancelled)?;
             let end = stretch.last.min(params.to);
-            let lives = crate::answer::lifetimes(source, stretch.run, TableId::Operations)?;
-            let reads = dashboard_query::cost::storage(|| lanes::available_reads(recording, stretch.run, TableId::Operations, stretch.first, end))?;
+            let lives = dashboard_base::queries::lifetimes(source, stretch.run, TableId::Operations)?;
+            let reads = dashboard_query::cost::storage(|| lanes::complete_reads(recording, stretch.run, TableId::Operations, stretch.first, end))?;
             let ended = endings(&lives, (stretch.first, stretch.last), &reads, from, end);
             if ended.is_empty() {
                 continue;
             }
             let (low, high) = ended.iter().fold((i32::MAX, i32::MIN), |(low, high), ending| (low.min(ending.first), high.max(ending.by)));
             let completions = completed(&query, stretch.run, low, high)?;
-            let recorded = dashboard_query::cost::storage(|| lanes::available_reads(recording, stretch.run, TableId::OperationCompletions, low, high))?;
+            let recorded = dashboard_query::cost::storage(|| lanes::complete_reads(recording, stretch.run, TableId::OperationCompletions, low, high))?;
             let ended: Vec<Ending> = ended.into_iter().filter(|ending| !completions.contains(&(ending.key as u64))).collect();
             let rows = rows_at(recording, stretch.run, &ended.iter().map(|ending| (ending.last, ending.key)).collect::<Vec<_>>())?;
             let tokens: Vec<u128> = rows.values().map(|row| u128::from(row.definition_token)).collect::<BTreeSet<_>>().into_iter().collect();
             let keys = literals(recording, stretch.run, end, &tokens)?;
-            let links = crate::answer::links(source, stretch.run)?;
+            let links = dashboard_base::queries::links(source, stretch.run)?;
             let mut unread = 0usize;
             for ending in ended {
                 let Some(row) = rows.get(&(ending.last, ending.key)) else {
@@ -596,7 +591,7 @@ fn completed(query: &Query<'_>, run: u32, from: i32, to: i32) -> io::Result<Hash
         .collect())
 }
 
-fn rows_at(recording: &replay::columnar_frames::Recording, run: u32, asks: &[(i32, u128)]) -> io::Result<HashMap<(i32, u128), OperationRow>> {
+fn rows_at(recording: &replay_recording::columnar_frames::Recording, run: u32, asks: &[(i32, u128)]) -> io::Result<HashMap<(i32, u128), OperationRow>> {
     let format = recording.format();
     let mut rows = HashMap::new();
     if asks.is_empty() {
@@ -657,6 +652,7 @@ impl Product for EspionageTypes {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = EspionageTypesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = EspionageTypesReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -669,7 +665,7 @@ impl Product for EspionageTypes {
     }
 
     fn load(source: &Source, _params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        crate::metadata::check_cancel(cancelled)?;
+        dashboard_text::metadata::check_cancel(cancelled)?;
         let content = match operative_content::content(source, context) {
             Ok(content) => content,
             Err(why) => return Ok(EspionageTypesReply { types: Vec::new(), missing: Some(why), warnings: Vec::new() }),
@@ -716,6 +712,7 @@ impl Product for EspionageTypeTokens {
     const KEY: &'static str = "espionage-type-tokens";
     const CONTENT_DEPENDENT: bool = true;
     type Params = EspionageTypesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = EspionageTypeTokensReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -728,8 +725,8 @@ impl Product for EspionageTypeTokens {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        crate::metadata::check_cancel(cancelled)?;
-        let query = crate::answer::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
         let content = match operative_content::content(source, context) {
             Ok(content) => content,
             Err(why) => return Ok(EspionageTypeTokensReply { types: Vec::new(), missing: Some(why), warnings: Vec::new() }),
@@ -743,8 +740,8 @@ impl Product for EspionageTypeTokens {
         }
         let mut lexicons = Vec::with_capacity(runs.len());
         for &(run, first, last) in &runs {
-            crate::metadata::check_cancel(cancelled)?;
-            lexicons.push((crate::answer::lexicon(source, run)?, first, last));
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            lexicons.push((dashboard_base::queries::lexicon(source, run)?, first, last));
         }
         let types = content
             .operation_tokens()
@@ -814,7 +811,7 @@ impl Sightings {
         let recording = query.replay.recording();
         let mut out = HashMap::new();
         for (run, (first, last, ids)) in by_run {
-            let lives = crate::answer::lifetimes(source, run, TableId::Operations)?;
+            let lives = dashboard_base::queries::lifetimes(source, run, TableId::Operations)?;
             let mine: HashMap<u128, (i32, i32)> = lives
                 .iter()
                 .filter(|(key, ..)| ids.contains(key))
@@ -854,6 +851,7 @@ impl Product for EspionageLog {
     const KEY: &'static str = "espionage-log";
     const CONTENT_DEPENDENT: bool = false;
     type Params = EspionageLogParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, facets, from: Start, to: End, cursor, pageSize, "facets[].countries[]", "facets[].values[]"];
     type Reply = LogPageReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -866,8 +864,8 @@ impl Product for EspionageLog {
     }
 
     fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        crate::metadata::check_cancel(cancelled)?;
-        let query = crate::answer::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
         let asked = LogPageParams {
             branch_id: params.branch_id.clone(),
             log: LOG.to_owned(),
@@ -887,7 +885,7 @@ impl Product for EspionageLog {
         for (row, ..) in &rows {
             if let Some(stretch) = query.timeline.at(row.hour) {
                 if !links.contains_key(&stretch.run) {
-                    links.insert(stretch.run, crate::answer::links(source, stretch.run)?);
+                    links.insert(stretch.run, dashboard_base::queries::links(source, stretch.run)?);
                 }
                 if let Some(token) = number(&row.cells, DEFINITION) {
                     tokens.entry(stretch.run).or_default().insert(u128::from(token as u32));

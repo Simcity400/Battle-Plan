@@ -6,4 +6,4 @@ On a perspective change, the worker restarts from the mirrors at the applied hou
 
 Weather is derived from recorded flags in priority order, with no region kind in a gap or from a table that supplied no usable row. It stages its region field off the frame thread and installs only after a kind change. The particle pass retains particles belonging to regions whose kind remained the same. The branch and hour supply continuity and seeds, so rerendering a frame or applying an hour with unchanged weather does not restart the field.
 
-[Vision fold](../../crates/viewer-playback/src/layers/vision/worker.rs) · [Weather effects](../../crates/viewer-playback/src/layers/weather.rs)
+[Vision fold](../../crates/viewer-layer-core/src/vision/worker.rs) · [Weather effects](../../crates/viewer-layers-infrastructure/src/weather.rs)

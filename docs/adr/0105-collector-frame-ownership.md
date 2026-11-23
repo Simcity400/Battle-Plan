@@ -12,4 +12,4 @@ Sizing, the frame builder, and the spool change allocation capacities under one 
 
 The status gauge reports installed, free, and in-flight frames and memory. Slot allocation bytes include embedded decode jobs, and the frame byte gauge is the latest measured size. Timing and count fields distinguish callback growth, prepared frames, and loss during stalls.
 
-[Capacity publication](../../crates/collector/src/frame_capacities.rs) · [Frame fence](../../crates/collector/src/frame_fence.rs) · [Frame pool](../../crates/collector/src/frame_pool.rs)
+[Capacity publication](../../crates/collector-capture/src/frame_capacities.rs) · [Frame fence](../../crates/collector-workers/src/frame_fence.rs) · [Frame pool](../../crates/collector-capture/src/frame_pool.rs)

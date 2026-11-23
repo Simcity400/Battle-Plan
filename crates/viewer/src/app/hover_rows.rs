@@ -16,14 +16,9 @@ use viewer_counter_products::map::{
     faction_theatre_tooltips, occupation_modifier_tooltips,
     province_tooltips::{self, ModeHover, naval_accidents, naval_base, naval_mines},
 };
-use viewer_foundation::{
-    map::{
-        counter_hovers::{land::CounterHover, task_force, task_force_port},
-        perspective::Vision,
-    },
-    tooltip_text::Tooltip,
-    unit_handle::Unit,
-};
+use viewer_native_gui::counter_hovers::{land::CounterHover, task_force, task_force_port};
+use viewer_foundation::{perspective::Vision, tooltip_text::Tooltip};
+use viewer_runtime::unit_handle::Unit;
 use viewer_raids::map::raids::RaidAssets;
 
 pub(crate) trait Prepare: Send + Sync {
@@ -79,7 +74,7 @@ pub(crate) enum What {
     NavalBase { province: u32, fleet_selected: bool },
     FactionTheatre { faction: u64, ordinal: u32 },
     Location(u32),
-    Province { province: u32, mode: ModeHover, routes: Vec<viewer_foundation::map::ribbon_content::TradeRouteLine> },
+    Province { province: u32, mode: ModeHover, routes: Vec<viewer_gpu::ribbon_content::TradeRouteLine> },
     Mines(u32),
     Accidents(u32),
     Occupation { state: u32, token: String },
@@ -313,10 +308,10 @@ impl HoverRows {
     }
 
     fn timed_ask(&mut self, family: Family, ask: impl FnOnce(&mut Self) -> Option<Arc<Tooltip>>) -> Option<Arc<Tooltip>> {
-        let before = self.timed.is_some().then(viewer_foundation::profiling::current_thread_cpu_time).flatten();
+        let before = self.timed.is_some().then(viewer_runtime::profiling::current_thread_cpu_time).flatten();
         let text = ask(self);
         if let (Some((spent, shown, loading)), Some(before)) = (&mut self.timed, before) {
-            *spent += viewer_foundation::profiling::current_thread_cpu_time().map_or(Duration::ZERO, |now| now.saturating_sub(before));
+            *spent += viewer_runtime::profiling::current_thread_cpu_time().map_or(Duration::ZERO, |now| now.saturating_sub(before));
             let hover = &self.hovers[family as usize];
             *shown = text.as_ref().and(hover.newest()).map(|made| made.hour);
             *loading = hover.loading.state().map(str::to_owned);
@@ -551,7 +546,7 @@ impl Worker {
         let shared = Arc::new(Shared::default());
         let working = Arc::clone(&shared);
         let handle = std::thread::Builder::new().name(format!("{} hover", family.name())).spawn(move || {
-            viewer_foundation::worker_priority::background_priority();
+            viewer_runtime::worker_priority::background_priority();
             run(&working);
         })?;
         #[cfg(test)]
@@ -679,7 +674,7 @@ pub(crate) fn make(posted: &mut Posted, retry: &Retry) -> Made {
 }
 
 impl super::Viewer {
-    pub(super) fn open_map(&self) -> Option<&crate::playhead_host::side::SideThread> {
+    pub(super) fn open_map(&self) -> Option<&viewer_playback::side::SideThread> {
         self.playhead_map.as_ref().filter(|side| side.on_screen().is_some())
     }
 
@@ -705,8 +700,8 @@ impl super::Viewer {
                 }).find(|&point| self.map_hit(point).is_none())
             }
             Family::Counters => self.counter_report.land_hovers.first().map(|hover| middle(hover.rect)),
-            Family::Naval => self.counter_report.naval_region_hovers.iter().find(|hover| matches!(hover.control, viewer_counters::map::counters::NavalRegionalControl::Mines | viewer_counters::map::counters::NavalRegionalControl::Accidents)).map(|hover| middle(hover.rect)),
-            Family::Occupation => self.overlay_hits.occupation.iter().find(|hit| matches!(hit.hover, viewer_world::map::occupation_icons::Hover::Modifier { .. })).and_then(|hit| hit.bounds()).map(middle),
+            Family::Naval => self.counter_report.naval_region_hovers.iter().find(|hover| matches!(hover.control, viewer_counter_kit::NavalRegionalControl::Mines | viewer_counter_kit::NavalRegionalControl::Accidents)).map(|hover| middle(hover.rect)),
+            Family::Occupation => self.overlay_hits.occupation.iter().find(|hit| matches!(hit.hover, viewer_map_icons::occupation_icons::Hover::Modifier { .. })).and_then(|hit| hit.bounds()).map(middle),
             Family::Capture => None,
         }
     }
@@ -775,12 +770,12 @@ impl Inputs {
         self.job(Box::new(move |frame, _| Arc::new(if mines { naval_mines::build(&inputs.content, frame, &inputs.vision, region, false) } else { naval_accidents::build(&inputs.content, frame, &inputs.vision, region) })))
     }
 
-    pub(crate) fn occupation(&self, state: u32, definition: content_reader_core::occupation_modifiers::Definition) -> Job {
+    pub(crate) fn occupation(&self, state: u32, definition: content_reader_politics::occupation_modifiers::Definition) -> Job {
         let inputs = self.clone();
         self.job(Box::new(move |frame, _| Arc::new(occupation_modifier_tooltips::build(&inputs.content, frame, state, &definition, inputs.vision.ours()))))
     }
 
-    pub(crate) fn province(&self, caches: &Caches, province: u32, mode: ModeHover, routes: Vec<viewer_foundation::map::ribbon_content::TradeRouteLine>, selected: Arc<Vec<Unit>>, rosters: Arc<province_tooltips::air_region::Sampler>) -> Job {
+    pub(crate) fn province(&self, caches: &Caches, province: u32, mode: ModeHover, routes: Vec<viewer_gpu::ribbon_content::TradeRouteLine>, selected: Arc<Vec<Unit>>, rosters: Arc<province_tooltips::air_region::Sampler>) -> Job {
         let (inputs, cache) = (self.clone(), Arc::clone(&caches.provinces));
         let build: Build = Box::new(move |frame, retry| {
             let retry = Arc::clone(retry);
@@ -789,7 +784,7 @@ impl Inputs {
         self.job(build).preparing(Arc::clone(&self.content.province_hover) as Arc<dyn Prepare>)
     }
 
-    pub(crate) fn terrain(&self, combat: Arc<viewer_combat::Content>, province: u32, region: bool, routes: Vec<viewer_foundation::map::ribbon_content::TradeRouteLine>) -> Job {
+    pub(crate) fn terrain(&self, combat: Arc<viewer_combat::Content>, province: u32, region: bool, routes: Vec<viewer_gpu::ribbon_content::TradeRouteLine>) -> Job {
         let inputs = self.clone();
         self.job(Box::new(move |frame, _| {
             let below = || viewer_combat::terrain_mode::hover(&combat, frame, province, &inputs.vision);

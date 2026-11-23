@@ -1,20 +1,20 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useMemo, useSyncExternalStore } from 'react';
 import type { Span } from '../../charts/series';
-import type { DashboardClient } from '../../dashboard/client';
 import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { datedCountrySpans } from '../../dashboard/datedCountry';
 import type { DatedCountrySelection } from '../../dashboard/datedCountry';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { useHeadProduct } from '../../dashboard/headProduct.ts';
+import { useCampaignGate, useGate } from '../../dashboard/regionGate';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { NumericReply } from '../../dashboard/numericReply';
 import { contentKey, contentSet, setToken } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { failureText } from '../../dashboard/queryError.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import type { CountryGroupReply, StockpileAtReply, StockpileHolder } from '../../generated/dashboard';
+import type { CountryGroupReply, StockpileHolder } from '../../generated/dashboard';
 import { atReply, validateStockpileAt } from './stockpileAt.ts';
 import { holderAt, stockpileHolders, stockpileView } from './stockpileCatalogue';
 import type { PreparedStockpileReply } from './stockpileCatalogue';
@@ -22,12 +22,20 @@ import { chartChoices, choiceKey, CHOSEN_KEYS, stockGroups, typeName, validateSt
 import type { Grouping } from './stockpileData';
 import { pinnedGrouping } from './stockpileDrill';
 import type { StockpileCatalogueReply } from './types';
+import { SPEC, type RegionAction, regionFollows, axisAt } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHourAt } from '../../dashboard/widgetTime.ts';
+import { useAtHead } from '../../dashboard/atHead.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 export const includedTypes = (widget: WidgetSpec) => contentSet(typeof widget.options?.included === 'string' ? widget.options.included : '').map(contentKey);
 
-export function useStockpileCatalogue(client: DashboardClient, track: BoundTrack | undefined, holders: readonly StockpileHolder[], included: readonly string[], active: boolean) {
-  const request = track && holders.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-stockpile-catalogue',
-    params: { branchId: track.branch.id, holders, included } } : null;
+export function useStockpileCatalogue(runtime: WidgetRuntime, widget: WidgetSpec, track: BoundTrack | undefined, holders: readonly StockpileHolder[], included: readonly string[], active: boolean) {
+  const client = runtime.client;
+  const gate = useCampaignGate(runtime, widget, active);
+  const bounded = useMemo(() => holders.map(holder => ({ country: holder.country,
+    ...(holder.within ? { within: holder.within.flatMap(span => gate.span(span.firstHour, span.lastHour) ?? []) } : {}) })), [holders, gate.span]);
+  const request = track && holders.length && gate.open ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'equipment-stockpile-catalogue',
+    params: { branchId: track.branch.id, holders: bounded, included } }) : null;
   const tags = JSON.stringify(holders.map(holder => holder.country));
   return useProduct<StockpileCatalogueReply>(client, request, active, value => {
     const reply = validateStockpileCatalogue(value);
@@ -37,16 +45,16 @@ export function useStockpileCatalogue(client: DashboardClient, track: BoundTrack
   }, track?.source);
 }
 
-export function useStockpileAt(runtime: WidgetRuntime, widget: WidgetSpec, tag: string | null, active: boolean, hoverHour: number | null = null) {
-  return useHeadProduct<StockpileAtReply>(runtime, widget, 'equipment-stockpile-at', tag ? { country: countryFromKey(tag) } : null,
-    { active, validate: validateStockpileAt, structure: reply => JSON.stringify(reply), hoverHour });
+export function useStockpileAt(runtime: WidgetRuntime, widget: WidgetSpec, tag: string | null, active: boolean, time: RegionAction = SPEC) {
+  return useHeadProduct(runtime, useGate(runtime, widget, time), 'equipment-stockpile-at', tag ? { country: countryFromKey(tag) } : null,
+    { active, validate: validateStockpileAt, structure: reply => JSON.stringify(reply) });
 }
 
 function useView(catalogue: StockpileCatalogueReply | undefined, at: ReturnType<typeof useStockpileAt>, track: BoundTrack | undefined, tag?: string) {
   const values = useSyncExternalStore(at.live.subscribe, at.live.read, at.live.read);
-  const hour = (at.read === 'followed' ? at.shownAt() ?? at.at : at.hour) ?? track?.branch.lastHour ?? 0;
-  const view = useMemo<PreparedStockpileReply | undefined>(() => catalogue && track
-    ? stockpileView(catalogue, at.data ? atReply(at.data, values, hour, track.branch.id) : undefined, hour, tag) : undefined,
+  const hour = at.read === 'followed' ? at.shownAt() ?? at.at : at.hour;
+  const view = useMemo<PreparedStockpileReply | undefined>(() => catalogue && track && hour !== null && at.data
+    ? stockpileView(catalogue, atReply(at.data, values, hour, track.branch.id), hour, tag) : undefined,
   [catalogue, at.data, values, hour, track, tag]);
   return { view, hour };
 }
@@ -59,7 +67,7 @@ export function useEquipmentStockpile(widget: WidgetSpec, runtime: WidgetRuntime
   const withinKey = JSON.stringify(within ?? null);
   const holders = useMemo<StockpileHolder[]>(() => tag ? [{ country: countryFromKey(tag), ...(within ? { within: within.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour })) } : {}) }] : [],
     [tag, withinKey]);
-  const catalogue = useStockpileCatalogue(runtime.client, track, holders, included, active);
+  const catalogue = useStockpileCatalogue(runtime, widget, track, holders, included, active);
   const at = useStockpileAt(runtime, widget, tag ?? null, active);
   const { view, hour } = useView(catalogue.data, at, track);
   return { track, tag, holders, included, catalogue: catalogue.data, data: view, hour, at, error: catalogue.error ?? at.error,
@@ -82,7 +90,7 @@ export function useStockpileChoices(widget: WidgetSpec, runtime: WidgetRuntime):
 }
 
 export function useStockpileCountry(selection: DatedCountrySelection | null, runtime: WidgetRuntime, track: BoundTrack | undefined, widget: WidgetSpec,
-  active: boolean, hour: number, follows: boolean, included: readonly string[]) {
+  active: boolean, time: RegionAction, included: readonly string[]) {
   const groups = useCountryGroups(runtime, track, active && !!selection);
   const identities = useMemo(() => new NumericReply<CountryGroupReply>(), [runtime.client]);
   const history = identities.update(JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id]), groups.data, groupNumbers);
@@ -92,10 +100,11 @@ export function useStockpileCountry(selection: DatedCountrySelection | null, run
   [selection, history, track?.source.metadata.campaignKey, track?.branch.id, track?.branch.firstHour, track?.branch.lastHour]);
   const holders = useMemo(() => spans ? stockpileHolders(spans) : [], [spans]);
   const live = active && !!selection;
-  const catalogue = useStockpileCatalogue(runtime.client, track, holders, included, live);
-  const tag = holderAt(holders, follows ? Math.floor(runtime.clock.getHour()) + (track?.axisOffset ?? 0) : hour);
-  const spec = useMemo<WidgetSpec>(() => ({ ...widget, time: follows ? { mode: 'follow' } : widget.time }), [widget, follows]);
-  const at = useStockpileAt(runtime, spec, tag, live, follows ? null : hour);
+  const catalogue = useStockpileCatalogue(runtime, widget, track, holders, included, live);
+  const region = useRegion(widget, time);
+  const hourAt = useRegionHourAt(runtime, region);
+  const tag = useAtHead(runtime.clock, live && regionFollows(region), clockHour => { const at = hourAt(axisAt(clockHour)); return at === null ? null : holderAt(holders, at); });
+  const at = useStockpileAt(runtime, widget, tag, live, time);
   const { view, hour: shownHour } = useView(catalogue.data, at, track, selection?.tag);
   const error = catalogue.error ?? at.error;
   const failure = (history ? undefined : groups.error) ?? error;

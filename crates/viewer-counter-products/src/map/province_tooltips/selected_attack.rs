@@ -15,10 +15,9 @@ use replay_derive::{
 };
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeSet;
-use {
-    crate::map::division_eta::CounterQueries,
-    viewer_foundation::{map::directed_wars::Owner, table_access::TokenNames},
-};
+use crate::map::division_eta::CounterQueries;
+use replay_derive::directed_wars::Owner;
+use dashboard_text::table_access::TokenNames;
 
 fn keyed<'a, T: TableSchema>(
     frame: &'a DecodedFrame,
@@ -205,7 +204,7 @@ impl attack_derive::Context for Content<'_> {
 }
 
 fn fallback_key(bytes: &[u8]) -> Fact<&str> {
-    std::str::from_utf8(content_reader_core::parser::c_string(bytes))
+    std::str::from_utf8(content_reader_parser::parser::c_string(bytes))
         .map_err(|_| "template fallback localisation key is not UTF-8".to_owned())
 }
 
@@ -300,7 +299,7 @@ pub fn template_display_name(
 }
 
 fn modifier_text(name: &str, value: i64) -> String {
-    let percent = content_reader_core::fixed5::fixed5_percent(value, 2, true);
+    let percent = content_reader_parser::fixed5::fixed5_percent(value, 2, true);
     if value > 0 {
         format!("{name}: \u{11}G+{percent}\u{11}!")
     } else {

@@ -14,6 +14,7 @@ import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { worldFilter } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { shownHour, useIntelLabels } from '../../dashboard/IntelCountry';
 import { usePushedLooksHour } from '../../dashboard/pushedLooks.ts';
 import { tagsOf, validatePlacements } from '../../dashboard/intelligence';
@@ -37,7 +38,7 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
   const params = useMemo(() => track ? {} : null, [track]);
   const live = useMemo(() => new LiveCell<ChordFrame>({ data: null }), []);
   const paint = useRef<(reply: OperativePlacementReply) => void>(() => {});
-  const head = useHeadProduct<OperativePlacementReply>(runtime, widget, 'operative-placements', params,
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'operative-placements', params,
     { active, validate: validatePlacements, structure: placementStructure, paint: reply => paint.current(reply) });
   const hour = shownHour(runtime, widget, head);
   const groups = useCountryGroups(runtime, track, active);
@@ -72,7 +73,7 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
   useDiagnostics(onDiagnostics, head.data?.warnings ?? null);
   const body = () => {
     if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its operative placements." />;
-    if (head.read === 'off') return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    if (head.read === 'off') return <WidgetState kind="outside" />;
     if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
     if (groups.error && !groups.data && selection.kind === 'group') return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
     if (!head.data) return <WidgetState kind="loading" label="Loading operative placements…" />;

@@ -1,13 +1,13 @@
 use super::*;
 use replay_data::rows::Recorded;
-use viewer_foundation::diagnostics_panel::test_support::assert_diagnostics;
-use viewer_foundation::map::test_support::gui as tests;
+use viewer_runtime::diagnostics_panel::test_support::assert_diagnostics;
+use viewer_native_gui::test_support::gui as tests;
 use viewer_foundation::tooltip_text::NoIcons;
 
 #[test]
 fn naval_trait_hovers_refuse_each_shown_entry_by_name_and_clear_authored_seeds() {
-    content_reader_core::test_game::enter();
-    use viewer_foundation::map::test_support::gui::windows;
+    content_reader_script::test_game::enter();
+    use viewer_native_gui::test_support::gui::windows;
     let windows = windows(
         br#"guiTypes={
         containerWindowType={name=entry buttonType={name=Background pdx_tooltip=SEED}
@@ -284,18 +284,18 @@ fn naval_component_skill_icons_and_text_share_native_tooltips() {
     assert!(out.refused().is_empty(), "{:?}", out.refused());
 }
 
-fn modifiers(entries: &[(&str, &str)]) -> content_reader_core::modifiers::Modifiers {
+fn modifiers(entries: &[(&str, &str)]) -> content_reader_script::modifiers::Modifiers {
     let items: Vec<_> = entries
         .iter()
-        .map(|(key, value)| content_reader_core::parser::Item {
+        .map(|(key, value)| content_reader_parser::parser::Item {
             key: Some(key.as_bytes().to_vec()),
             key_quoted: false,
-            operator: content_reader_core::parser::Operator::Equals,
-            value: content_reader_core::parser::Value::Scalar(value.as_bytes().to_vec()),
-            kind: content_reader_core::parser::Kind::Bare,
+            operator: content_reader_parser::parser::Operator::Equals,
+            value: content_reader_parser::parser::Value::Scalar(value.as_bytes().to_vec()),
+            kind: content_reader_parser::parser::Kind::Bare,
         })
         .collect();
-    content_reader_core::modifiers::values(&items)
+    content_reader_script::modifiers::values(&items)
 }
 
 fn exile_localisation() -> Localisation {
@@ -437,10 +437,10 @@ fn exile_windows() -> NativeWindows {
 
 #[test]
 fn exile_badge_hover_has_native_modifier_lines_and_delayed_description() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use std::time::{Duration, Instant};
-    use viewer_foundation::map::{native_gui::lifecycle::Instance, test_support::gui::fixture};
-    use viewer_foundation::tooltip_painter::HoverState;
+    use viewer_native_gui::{native_gui::lifecycle::Instance, test_support::gui::fixture};
+    use viewer_native_gui::tooltip_painter::HoverState;
 
     let windows = exile_windows();
     let out = exile_assigned(exile_files(), &exile_localisation(), &windows);
@@ -513,7 +513,7 @@ fn exile_badge_hover_has_native_modifier_lines_and_delayed_description() {
 
 #[test]
 fn exile_badge_hover_uses_mod_values_and_counts_named_refusals() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let windows = exile_windows();
     let mut files = exile_files();
     files.push((
@@ -619,7 +619,7 @@ fn learning_ratio_preserves_native_sentinel_and_integer_arithmetic() {
 
 #[test]
 fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let loc: Localisation = [
         ("MODIFIER_ATTACK", "Division Attack"),
         ("forest", "Forest"),
@@ -697,7 +697,7 @@ fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
     definition.unsupported = vec!["a script value".into()];
     assert!(effects(&context, &definition, &mut dropped).is_err());
     definition.unsupported.clear();
-    let condition = |modifier: &str| content_reader_core::unit_leader::Conditional {
+    let condition = |modifier: &str| content_reader_key_names::unit_leader::Conditional {
         modifier: modifier.into(),
         place: "file.txt trait t modifier".into(),
     };
@@ -711,7 +711,7 @@ fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
     );
     definition.conditions.clear();
     let sub_unit = |key: &str, attack: i64, entries: &[(&str, &str)]| {
-        content_reader_core::unit_leader::SubUnitModifiers {
+        content_reader_key_names::unit_leader::SubUnitModifiers {
             adjuster: Adjuster {
                 key: key.into(),
                 attack,
@@ -931,7 +931,7 @@ fn timed_trait_uses_the_first_matching_entry_and_nonnegative_days() {
 
 #[test]
 fn naval_timed_trait_hover_shows_zero_days_and_refuses_old_format_absence() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let loc: Localisation = exile_localisation()
         .iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -1009,7 +1009,7 @@ fn naval_timed_trait_hover_shows_zero_days_and_refuses_old_format_absence() {
 
 #[test]
 fn naval_bind_uses_live_and_result_grid_paths_and_skips_null_commanders() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use replay_data::{
         rows::CountryLinkRow, rows::NavalCombatDetailsRow, rows::NavalCombatResultDetailsRow,
         rows::NavalCombatSideDetails, rows::NavalResultSideDetails, rows::SimulationFeatureRow,
@@ -1208,8 +1208,8 @@ fn advisor_traits_resolve_through_the_country_leader_traits() {
             "leader_traits = { valid_specialist = { } valid_genius_name = { } valid_expert = { } valid_genius_name = { } }",
         )
         .unwrap();
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let (traits, _) = content_reader_core::leader_traits::read(&layers).unwrap();
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let (traits, _) = content_reader_military::leader_traits::read(&layers).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
     let leaders = Leaders::from_files(
             vec![(

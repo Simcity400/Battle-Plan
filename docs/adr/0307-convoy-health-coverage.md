@@ -6,4 +6,4 @@ The game multiplies the two fixed5 trade efficiency factors at a denominator of 
 
 Resolve strategic-region labels from recorded content, reporting an unnamed region by its reason. Resource tokens are keyed by native index and come from the timeline's last hour. An unspecified filter requests all recorded resources.
 
-[Convoy product](../../crates/dashboard/src/products/convoys.rs) · [Convoy coverage tests](../../crates/dashboard/src/products/convoys/tests.rs)
+[Convoy product](../../crates/dashboard-economy/src/products/convoys.rs) · [Convoy coverage tests](../../crates/dashboard-economy/src/products/convoys/tests.rs)

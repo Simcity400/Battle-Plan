@@ -17,6 +17,7 @@ import type { SpiritSort } from '../national-spirits/spiritsData';
 import { OPTIONS } from './definition';
 import './spiritHistory.css';
 import { motionOf } from '../../charts/easing.ts';
+import { recordedHour } from '../../dashboard/regionTime.ts';
 
 const NO_WARNINGS: string[] = [];
 
@@ -31,7 +32,7 @@ export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnos
   const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 1;
   const liveHead = useMemo(() => track && widget.time.mode === 'follow' ? { read: () => runtime.clock.getSnapshot().position + track.axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [track, widget.time.mode, runtime.clock]);
-  useShownEachFrame(runtime.clock, () => data ? liveHead ? Math.min(liveHead.read(), track?.branch.lastHour ?? 0) : playhead ?? last : null);
+  useShownEachFrame(runtime.clock, () => data ? liveHead ? recordedHour(track, liveHead.read()) : playhead ?? last : null);
   const at = Math.floor(playhead ?? last);
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
   const list = useMemo(() => data ? spirits(data) : [], [data]);
@@ -50,7 +51,7 @@ export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnos
 
   if (!track || !tag) return <WidgetState kind="empty" icon="history" message="Load a campaign and choose a country to see its national spirits." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (following && hour == null) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (following && hour == null) return <WidgetState kind="outside" />;
   const failure = error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : null;
   if (failure && !data) return failure;
   if (!data) return <WidgetState kind="loading" label="Loading national spirits…" />;

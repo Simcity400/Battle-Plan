@@ -8,4 +8,4 @@ Store the raw accumulator entries the attack, movement and attrition calculation
 
 The historical domain keeps ascending terrain indices and expresses a whole-terrain read failure separately from an individual missing term. Only a known null division template has a present zero handle. Retain fresh acclimatization and the native wrapping signed sum of healthy land fort levels.
 
-[Attack row operands](../../crates/replay-rows/src/extended_rows/attack_inputs.rs) · [Compatibility formats](../../crates/replay-rows/src/rows/compatibility.rs)
+[Attack row operands](../../crates/replay-rows-world/src/attack_inputs.rs) · [Compatibility formats](../../crates/replay-rows/src/rows/compatibility.rs)

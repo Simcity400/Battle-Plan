@@ -21,4 +21,4 @@ Sprite constants place colors and UV offsets after the matrix, followed by time 
 
 Installed-effect tests compare actual submission with separately populated native records. Their projection, topology, constants and texture layout come from independent test inputs so reusing a production calculation cannot hide a regression.
 
-[Draw submission](../../crates/viewer-foundation/src/map/native_shader/draw.rs) · [Direct installed-effect records](../../crates/viewer-foundation/src/map/native_shader/tests/models.rs)
+[Draw submission](../../crates/viewer-native-gui/src/native_shader/draw.rs) · [Direct installed-effect records](../../crates/viewer-native-gui/src/native_shader/tests/models.rs)

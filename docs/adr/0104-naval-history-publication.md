@@ -12,4 +12,4 @@ The supremacy worker takes whole dominance vectors as bulk spans because the typ
 
 The ignored live-shape benchmark times theatre header and OOB acquisition through both slice and guarded readers. It sizes log and roster storage outside the measurement, counts guarded requests separately, and measures owned decoding without a live memory source.
 
-[Naval pack](../../crates/collector/src/extended/naval_history.rs) · [Supremacy payload](../../crates/collector/src/extended/naval_history/supremacy.rs) · [Sunk-ship payload](../../crates/collector/src/extended/naval_history/sunk.rs)
+[Naval pack](../../crates/collector-naval-history/src/extended/naval_history.rs) · [Supremacy payload](../../crates/collector-naval-history/src/extended/naval_history/supremacy.rs) · [Sunk-ship payload](../../crates/collector-naval-history/src/extended/naval_history/sunk.rs)

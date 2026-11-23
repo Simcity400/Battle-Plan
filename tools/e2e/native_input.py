@@ -14,6 +14,7 @@ carries the epoch milliseconds each event was sent at, the clock the viewer stam
     {"op": "drag", "points": [[x, y], ...], "interval_ms": 16}          (a middle-button drag)
     {"op": "click", "x": x, "y": y}                                     (a primary click on the map)
     {"op": "mods", "ctrl": b, "shift": b, "alt": b}                     (the modifiers held from then on)
+    {"op": "camera", "view": id, "center": [x, z], "height": h}         (sets a repeatable map camera pose; or "reset": true)
     {"op": "save_dialog", "path": "C:/...png", "seconds": 20}          (fills and confirms the host's save dialog)
     {"op": "color_dialog", "rgb": [r, g, b], "seconds": 10}            (fills and confirms a colour input's dialog)
 """
@@ -21,6 +22,7 @@ carries the epoch milliseconds each event was sent at, the clock the viewer stam
 import argparse
 import ctypes as c
 import json
+import math
 import socket
 import sys
 import time
@@ -46,6 +48,7 @@ u.ScreenToClient.argtypes = [w.HWND, c.POINTER(w.POINT)]
 u.SendMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
 u.SendMessageW.restype = w.LPARAM
 WM_SETTEXT, BM_CLICK = 0x000C, 0x00F5
+APP_TITLES = ("BattlePlan (Alpha)", "BattlePlan (Nightly)")
 MAP_TITLE = "BattlePlan map"
 
 
@@ -66,16 +69,44 @@ class Desktop:
         self.app_pid = app_pid
         self.address = address
         self.channel = None
+        self.channel_reader = None
+
+    def close_channel(self):
+        reader, channel = self.channel_reader, self.channel
+        self.channel_reader = None
+        self.channel = None
+        for handle in (reader, channel):
+            if handle is not None:
+                try:
+                    handle.close()
+                except OSError:
+                    pass
 
     def send(self, *lines):
         """Sends events to the viewer's suite input channel; the epoch milliseconds the first left at."""
-        if self.channel is None:
-            host, port = self.address.rsplit(":", 1)
-            self.channel = socket.create_connection((host, int(port)), timeout=10)
-            self.channel.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        at = epoch_ms()
-        self.channel.sendall("".join(json.dumps(line) + "\n" for line in lines).encode())
-        return at
+        try:
+            if self.channel is None:
+                host, port = self.address.rsplit(":", 1)
+                self.channel = socket.create_connection((host, int(port)), timeout=10)
+                self.channel.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                self.channel_reader = self.channel.makefile("r", encoding="utf-8")
+            at = epoch_ms()
+            self.channel.sendall("".join(json.dumps(line) + "\n" for line in lines).encode())
+            return at
+        except Exception:
+            self.close_channel()
+            raise
+
+    def send_and_receive(self, line):
+        at = self.send(line)
+        try:
+            raw = self.channel_reader.readline()
+            if not raw:
+                raise RuntimeError("the viewer closed the suite input channel before replying")
+            return at, json.loads(raw)
+        except Exception:
+            self.close_channel()
+            raise
 
     def windows(self):
         """Every visible window on the desktop, children included: (hwnd, pid, rect, title, class, id)."""
@@ -100,7 +131,7 @@ class Desktop:
 
     def point(self, x, y):
         """The app client point (x, y) in client pixels of the map's window under it."""
-        main = next((hwnd for hwnd, pid, _, title, _, _ in self.windows() if pid == self.app_pid and title == "BattlePlan"), None)
+        main = next((hwnd for hwnd, pid, _, title, _, _ in self.windows() if pid == self.app_pid and title in APP_TITLES), None)
         if main is None:
             raise RuntimeError("the app's window is gone")
         point = w.POINT(round(x), round(y))
@@ -156,6 +187,40 @@ class Desktop:
 
     def mods(self, ctrl=False, shift=False, alt=False):
         return {"posted": [self.send({"ctrl": ctrl, "shift": shift, "alt": alt})]}
+
+    def camera(self, view=None, center=None, height=None, reset=False):
+        payload = {}
+        if view is not None:
+            payload["view"] = str(view)
+        if reset:
+            if center is not None or height is not None:
+                raise ValueError("camera reset takes neither center nor height")
+            payload["reset"] = True
+        else:
+            if not isinstance(center, (list, tuple)) or len(center) != 2 or height is None:
+                raise ValueError("camera placement requires center [x, z] and height")
+            cx, cz, h = float(center[0]), float(center[1]), float(height)
+            if not (math.isfinite(cx) and math.isfinite(cz) and math.isfinite(h) and h > 0):
+                raise ValueError("camera placement requires finite center and positive height")
+            payload["center"] = [cx, cz]
+            payload["height"] = h
+        at, reply = self.send_and_receive({"camera": payload})
+        if not isinstance(reply, dict):
+            raise RuntimeError("viewer returned a non-object camera reply")
+        if reply.get("error"):
+            raise RuntimeError(str(reply["error"]))
+        resolved_center = reply.get("center")
+        resolved_height = reply.get("height")
+        if (
+            not isinstance(resolved_center, (list, tuple))
+            or len(resolved_center) != 2
+            or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in resolved_center)
+            or not isinstance(resolved_height, (int, float))
+            or not math.isfinite(resolved_height)
+            or resolved_height <= 0
+        ):
+            raise RuntimeError(f"viewer returned an invalid resolved camera pose: {reply!r}")
+        return {"posted": [at], "center": [float(resolved_center[0]), float(resolved_center[1])], "height": float(resolved_height)}
 
     def save_dialog(self, path, seconds):
         """Fills the host's save dialog's file name and confirms it, as a user does."""
@@ -219,17 +284,20 @@ def main():
     parser.add_argument("--input", required=True, help="the viewer's suite input address")
     args = parser.parse_args()
     desktop = Desktop(args.desktop, args.app_pid, args.input)
-    for line in sys.stdin:
-        if not line.strip():
-            continue
-        try:
-            command = json.loads(line)
-            op = command.pop("op")
-            reply = {"move": desktop.move, "wheel": desktop.wheel, "keys": desktop.keys, "drag": desktop.drag, "click": desktop.click,
-                     "mods": desktop.mods, "save_dialog": desktop.save_dialog, "color_dialog": desktop.color_dialog}[op](**command)
-        except Exception as error:
-            reply = {"error": f"{type(error).__name__}: {error}"}
-        print(json.dumps(reply), flush=True)
+    try:
+        for line in sys.stdin:
+            if not line.strip():
+                continue
+            try:
+                command = json.loads(line)
+                op = command.pop("op")
+                reply = {"move": desktop.move, "wheel": desktop.wheel, "keys": desktop.keys, "drag": desktop.drag, "click": desktop.click,
+                         "mods": desktop.mods, "camera": desktop.camera, "save_dialog": desktop.save_dialog, "color_dialog": desktop.color_dialog}[op](**command)
+            except Exception as error:
+                reply = {"error": f"{type(error).__name__}: {error}"}
+            print(json.dumps(reply), flush=True)
+    finally:
+        desktop.close_channel()
 
 
 if __name__ == "__main__":

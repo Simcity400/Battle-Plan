@@ -439,6 +439,14 @@ impl Log {
     fn consumed_frontier(&self) -> u64 {
         self.base_cursor.load(Ordering::Acquire) + self.consumed.load(Ordering::Acquire)
     }
+    #[cfg(test)]
+    fn spill_pending(&self) -> usize {
+        let spill = self
+            .spill
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        spill.len().saturating_add(self.pushed.len())
+    }
     fn held(&self) -> std::sync::MutexGuard<'_, Vec<(Record, Vec<u8>)>> {
         let mut spill = self
             .spill
@@ -449,7 +457,7 @@ impl Log {
                 Ok(()) => spill.sort_unstable_by_key(|(record, _)| record.sequence),
                 Err(_) => {
                     COUNTERS[10].fetch_add(1, Ordering::Relaxed);
-                    invalidate();
+                    invalidate_epoch();
                 }
             }
         }
@@ -551,7 +559,10 @@ impl Drop for Call {
         drop(self.0.take());
     }
 }
-pub fn restore_epoch(previous: u64) -> Result<(), &'static str> {
+/// # Safety
+/// Caller must own session attach before enabling politics hooks (or hold `staging_test()` in an
+/// isolated test) when restoring the process-wide politics observation epoch.
+pub unsafe fn restore_epoch(previous: u64) -> Result<(), &'static str> {
     let epoch = previous
         .checked_add(1)
         .ok_or("politics observation epoch exhausted")?;
@@ -559,13 +570,19 @@ pub fn restore_epoch(previous: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
-pub fn invalidate() {
+fn invalidate_epoch() {
     #[cfg(any(test, feature = "test-support"))]
     if !STAGING_OWNER.get() {
         return;
     }
     crate::event_feed_observer::decisions::political_balance_lost();
     EPOCH.fetch_add(1, Ordering::SeqCst);
+}
+/// # Safety
+/// Caller must own the active session's capture, recovery, or publication failure path (or hold
+/// `staging_test()` in an isolated test) when invalidating live politics observation.
+pub unsafe fn invalidate() {
+    invalidate_epoch();
 }
 fn failed(reason: &'static str) {
     if let Some(index) = FAILURE_NAMES.iter().position(|name| *name == reason) {
@@ -575,7 +592,7 @@ fn failed(reason: &'static str) {
         UNLISTED_FAILURES.fetch_add(1, Ordering::Relaxed);
     }
     COUNTERS[3].fetch_add(1, Ordering::Relaxed);
-    invalidate();
+    invalidate_epoch();
 }
 fn memory() -> engine_native::memory::LiveMemory {
     unsafe { engine_native::memory::LiveMemory::new() }
@@ -616,14 +633,17 @@ fn log() -> Option<&'static Log> {
         Some(unsafe { &*pointer })
     }
 }
-pub fn resize(entries: usize, keys: usize) {
+/// # Safety
+/// Run only while politics staging remains live for the active session (or an isolated test holding
+/// `staging_test()`) and [`release`] is excluded; concurrent growth calls are serialized by `LOGS`.
+pub unsafe fn resize(entries: usize, keys: usize) {
     engine_allocation::advisory(|| resize_storage(entries, keys));
 }
 
 fn resize_storage(entries: usize, keys: usize) {
     if resize_checked(entries, keys).is_err() {
         COUNTERS[10].fetch_add(1, Ordering::Relaxed);
-        invalidate();
+        invalidate_epoch();
     }
 }
 fn resize_checked(entries: usize, keys: usize) -> io::Result<()> {
@@ -711,9 +731,13 @@ fn resize_checked(entries: usize, keys: usize) -> io::Result<()> {
     Ok(())
 }
 
-pub fn prepare() {
+/// # Safety
+/// Run only while politics staging remains live for the active session (or an isolated test holding
+/// `staging_test()`) and [`release`] is excluded; concurrent calls are serialized by `LOGS`.
+pub unsafe fn prepare() {
     if let Some(log) = log() {
-        resize(log.entries, log.key_stride);
+        // SAFETY: Caller guarantees live politics staging with `release` excluded.
+        unsafe { resize(log.entries, log.key_stride) };
     }
 }
 /// Release staging after disabled hooks and all callback/capture workers are
@@ -953,7 +977,7 @@ fn spill(log: &Log, record: Record, mut keys: [native::Literal; 3], memory: &imp
         });
     let Ok(mut spilled) = reserved else {
         COUNTERS[10].fetch_add(1, Ordering::Relaxed);
-        invalidate();
+        invalidate_epoch();
         return;
     };
     let (record, bytes) = &mut *spilled;
@@ -1002,7 +1026,7 @@ fn copy_keys(
     }
     Ok(())
 }
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[inline(always)]
 fn append_raw_lane(
     log: &Log,
@@ -1078,7 +1102,7 @@ pub struct Handoff {
     lanes: usize,
     shared_rejected: u64,
 }
-pub fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
+pub(crate) fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
     handoff_buffer(engine_native::walk::Buffer::Growing(cursors))
 }
 fn handoff_buffer(
@@ -1149,11 +1173,11 @@ fn handoff_from_buffer(
     })
 }
 impl Handoff {
-    pub fn pending(self) -> usize {
+    pub(crate) fn pending(self) -> usize {
         let log = unsafe { &*(self.log as *const Log) };
         self.cursor.wrapping_sub(log.consumed_frontier()) as usize
     }
-    pub fn key_capacity(self) -> usize {
+    pub(crate) fn key_capacity(self) -> usize {
         let log = unsafe { &*(self.log as *const Log) };
         let spilled = log
             .held()
@@ -1164,7 +1188,12 @@ impl Handoff {
             .saturating_mul(log.key_stride)
             .saturating_add(spilled)
     }
-    pub fn drain(
+    /// # Safety
+    /// The log captured by this [`Handoff`] must remain live at its original address (`release`
+    /// excluded), `cursors` must be the exact unmodified slice populated when this [`Handoff`] was
+    /// sealed (covering at least `self.lanes`), and only the single spool consumer (or isolated
+    /// fixture) may drain handoffs in strict seal order without concurrent consumption.
+    pub unsafe fn drain(
         self,
         cursors: &[LaneCursor],
         output: &mut [Event],
@@ -1422,7 +1451,7 @@ impl Drop for ScopeRestore {
         if !self.completed {
             PENDING.set(None);
             COUNTERS[9].fetch_add(1, Ordering::Relaxed);
-            invalidate();
+            invalidate_epoch();
         }
     }
 }
@@ -2445,18 +2474,18 @@ fn upkeep_identity_with(memory: &impl Memory, record: usize) -> Identity {
     }
     identity
 }
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[inline(always)]
-pub fn bench_identity(kind: PowerDailyCostKind, receiver: usize) -> Identity {
+pub(crate) fn bench_identity(kind: PowerDailyCostKind, receiver: usize) -> Identity {
     if kind == PowerDailyCostKind::Relation {
         relation_identity(receiver)
     } else {
         mio_identity(receiver)
     }
 }
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[inline(always)]
-pub fn bench_upkeep_identity(record: usize) -> Identity {
+pub(crate) fn bench_upkeep_identity(record: usize) -> Identity {
     upkeep_identity(record)
 }
 
@@ -2839,35 +2868,158 @@ pub fn refusals() -> impl serde::Serialize {
         "first_unlisted_native_read_reason": UNLISTED_FAILURE.get(),
     })
 }
-pub fn status() -> impl serde::Serialize {
+#[cfg(test)]
+struct ActiveStatusMeta {
+    events: u64,
+    spill_pending: usize,
+    staging_entries: usize,
+    staging_threads: usize,
+    shared_lane_entries: usize,
+    required_shared_lane_entries: usize,
+    staging_key_stride: usize,
+}
+
+#[cfg(test)]
+struct StatusSnapshot {
+    counters: [u64; 13],
+    epoch: u64,
+    failures: [u64; FAILURE_NAMES.len()],
+    unlisted_failures: u64,
+    required_keys: usize,
+    active: Option<ActiveStatusMeta>,
+}
+
+#[cfg(test)]
+fn snapshot_status(
+    required_entries: &mut Vec<usize>,
+    staging_entries: &mut Vec<usize>,
+) -> StatusSnapshot {
+    required_entries.clear();
+    staging_entries.clear();
+    let retained = LOGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let counters = COUNTERS
         .each_ref()
         .map(|value| value.load(Ordering::Relaxed));
+    let epoch = EPOCH.load(Ordering::SeqCst);
+    let failures = FAILURES
+        .each_ref()
+        .map(|count| count.load(Ordering::Relaxed));
+    let unlisted_failures = UNLISTED_FAILURES.load(Ordering::Relaxed);
+    let required_keys = REQUIRED_KEYS.load(Ordering::Relaxed);
+    let pointer = LOG.load(Ordering::Acquire) as *const Log;
+    let active = retained
+        .iter()
+        .flat_map(|batch| batch.iter())
+        .find(|log| std::ptr::eq(*log, pointer))
+        .map(|log| {
+            required_entries.extend(
+                log.lanes
+                    .iter()
+                    .map(|lane| lane.required_entries.load(Ordering::Relaxed)),
+            );
+            staging_entries.extend(log.lanes.iter().map(|lane| lane.slots.len()));
+            ActiveStatusMeta {
+                events: log.frontier(),
+                spill_pending: log.spill_pending(),
+                staging_entries: log.entries,
+                staging_threads: log.lanes.len(),
+                shared_lane_entries: log.shared.len(),
+                required_shared_lane_entries: log.shared.required_entries(),
+                staging_key_stride: log.key_stride,
+            }
+        });
+    StatusSnapshot {
+        counters,
+        epoch,
+        failures,
+        unlisted_failures,
+        required_keys,
+        active,
+    }
+}
+
+#[cfg(test)]
+fn format_status<L: serde::Serialize>(
+    snapshot: StatusSnapshot,
+    required_entries: L,
+    staging_entries: L,
+) -> impl serde::Serialize {
+    let StatusSnapshot {
+        counters,
+        epoch,
+        failures,
+        unlisted_failures,
+        required_keys,
+        active,
+    } = snapshot;
+    let (
+        events,
+        spill_pending,
+        required_entries_per_lane,
+        staging_entries_per_lane,
+        staging_entries_count,
+        staging_threads,
+        shared_lane_entries,
+        required_shared_lane_entries,
+        staging_key_stride,
+    ) = match active {
+        Some(active) => (
+            Some(active.events),
+            Some(active.spill_pending),
+            Some(required_entries),
+            Some(staging_entries),
+            Some(active.staging_entries),
+            Some(active.staging_threads),
+            Some(active.shared_lane_entries),
+            Some(active.required_shared_lane_entries),
+            Some(active.staging_key_stride),
+        ),
+        None => (None, None, None, None, None, None, None, None, None),
+    };
     crate::status::status!({
         "unhooked": UNHOOKED.get(), "enabled": ENABLED.load(Ordering::Acquire),
         "feature_enabled": cfg!(feature = "politics_capture"), "runtime_enabled": RUNTIME_ENABLED.load(Ordering::Relaxed), "release_refusals": counters[8], "unwound_observers": counters[9],
-        "epoch": EPOCH.load(Ordering::SeqCst), "events": log().map(Log::frontier),
+        "epoch": epoch, "events": events,
         "spilled_records": counters[1], "sentinel_failures": counters[2],
-        "spill_pending": log().map(|log| log.held().len()),
-        "native_read_reasons": crate::status::map(FAILURE_NAMES.into_iter().zip(FAILURES.iter().map(|count| count.load(Ordering::Relaxed))).filter(|(_, count)| *count != 0)),
+        "spill_pending": spill_pending,
+        "native_read_reasons": crate::status::map(FAILURE_NAMES.into_iter().zip(failures).filter(|(_, count)| *count != 0)),
         "first_unlisted_native_read_reason": UNLISTED_FAILURE.get(),
-        "unlisted_native_read_reasons": UNLISTED_FAILURES.load(Ordering::Relaxed),
+        "unlisted_native_read_reasons": unlisted_failures,
         "failed_native_reads": counters[3], "missing_item_identities": counters[4],
-        "required_entries_per_lane": log().map(|log| crate::status::sequence(log.lanes.iter().map(|lane| lane.required_entries.load(Ordering::Relaxed)))),
-        "staging_entries_per_lane": log().map(|log| crate::status::sequence(log.lanes.iter().map(|lane| lane.slots.len()))),
-        "required_key_bytes": REQUIRED_KEYS.load(Ordering::Relaxed),
-        "staging_entries": log().map(|log| log.entries),
-        "staging_threads": log().map(|log| log.lanes.len()),
+        "required_entries_per_lane": required_entries_per_lane,
+        "staging_entries_per_lane": staging_entries_per_lane,
+        "required_key_bytes": required_keys,
+        "staging_entries": staging_entries_count,
+        "staging_threads": staging_threads,
         "shared_lane_threads": counters[11], "shared_lane_full": counters[12],
-        "shared_lane_entries": log().map(|log| log.shared.len()),
-        "required_shared_lane_entries": log().map(|log| log.shared.required_entries()),
-        "staging_key_stride": log().map(|log| log.key_stride),
+        "shared_lane_entries": shared_lane_entries,
+        "required_shared_lane_entries": required_shared_lane_entries,
+        "staging_key_stride": staging_key_stride,
         "observer_timing": "offline and matched live run; no per-detour clock instrumentation",
         "staging_allocation_failures": counters[10],
         "staging_error": (counters[10] != 0).then_some("politics staging allocation failed"),
-        "short_handoffs": counters[6], "daily_decomposition_failures":counters[7],
-        "conservation": conservation_status(), "government_endpoint_mismatches":counters[5],
+        "short_handoffs": counters[6], "daily_decomposition_failures": counters[7],
+        "conservation": conservation_status(), "government_endpoint_mismatches": counters[5],
     })
+}
+
+#[cfg(test)]
+fn status_into<'a>(
+    required_entries: &'a mut Vec<usize>,
+    staging_entries: &'a mut Vec<usize>,
+) -> impl serde::Serialize + use<'a> {
+    let snapshot = snapshot_status(required_entries, staging_entries);
+    format_status(snapshot, required_entries.as_slice(), staging_entries.as_slice())
+}
+
+#[cfg(test)]
+fn status() -> impl serde::Serialize {
+    let mut required_entries = Vec::new();
+    let mut staging_entries = Vec::new();
+    let snapshot = snapshot_status(&mut required_entries, &mut staging_entries);
+    format_status(snapshot, required_entries, staging_entries)
 }
 #[derive(Clone, Copy)]
 struct ConservationExample {
@@ -2889,7 +3041,7 @@ static CONSERVATION: Mutex<Conservation> = Mutex::new(Conservation {
     absolute_amounts: [0; 2],
     examples: [None; 16],
 });
-pub fn mismatch(country: u32, hour: i32, currency: PowerCurrency, amount: i128) {
+pub(crate) fn mismatch(country: u32, hour: i32, currency: PowerCurrency, amount: i128) {
     let mut metrics = CONSERVATION
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2917,7 +3069,7 @@ pub fn mismatch(country: u32, hour: i32, currency: PowerCurrency, amount: i128) 
         });
     }
 }
-fn conservation_status() -> impl serde::Serialize {
+pub fn conservation_status() -> impl serde::Serialize {
     use crate::status::{DebugValue, DisplayValue, sequence, status};
     let metrics = *CONSERVATION
         .lock()
@@ -3034,8 +3186,8 @@ impl Hooks {
                 false,
             );
         }
-        if !crate::hook::shared::defer_preparation(invalidate) {
-            invalidate();
+        if !crate::hook::shared::defer_preparation(invalidate_epoch) {
+            invalidate_epoch();
         }
         let outcome = match crate::hook::shared::attach_outcome() {
             Some(outcome) => outcome,
@@ -3119,7 +3271,10 @@ impl StagingFixture {
         event.epoch = EPOCH.load(Ordering::Acquire);
         append_to(&self.0, event, memory);
     }
-    pub fn handoff(&self, cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
+    /// # Safety
+    /// Keep `self` alive and unmoved at its current address for every subsequent call on the
+    /// returned [`Handoff`].
+    pub unsafe fn handoff(&self, cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
         handoff_from_buffer(&self.0, engine_native::walk::Buffer::Growing(cursors))
     }
     pub fn registered_lanes(&self) -> usize {
@@ -3139,10 +3294,11 @@ pub fn stage_fixture(events: &[Event], memory: &impl Memory) -> (Drained, Vec<Ev
     bytes.truncate(drain.bytes);
     (drain, output, bytes)
 }
-#[cfg(any(test, feature = "test-support"))]
-pub fn bench_begin(base: usize, entries: usize, keys: usize) {
+#[cfg(test)]
+pub(crate) unsafe fn bench_begin(base: usize, entries: usize, keys: usize) {
     BASE.store(base, Ordering::Relaxed);
-    resize(entries, keys);
+    // SAFETY: Caller holds `staging_test()` and owns the global politics staging log.
+    unsafe { resize(entries, keys) };
     ENABLED.store(true, Ordering::SeqCst);
     let mut cursors = vec![LaneCursor::default(); thread_slots()];
     let _ = handoff_buffer(engine_native::walk::Buffer::Growing(&mut cursors));
@@ -3157,23 +3313,23 @@ pub fn bench_begin(base: usize, entries: usize, keys: usize) {
         .store(EPOCH.load(Ordering::SeqCst), Ordering::SeqCst);
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[inline(always)]
-pub fn bench_scope(f: impl FnOnce()) {
+pub(crate) fn bench_scope(f: impl FnOnce()) {
     let _active = Call::enter();
     DAILY_HOUR.set(event_hour());
     f();
     DAILY_HOUR.set(None);
 }
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[inline(always)]
-pub fn bench_observe(event: Event) {
+pub(crate) fn bench_observe(event: Event) {
     let _active = Call::enter();
     append_record(fixture_record(&event), event.identity.keys);
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn bench_daily_country(country: u32, receivers: &[usize]) {
+#[cfg(test)]
+pub(crate) fn bench_daily_country(country: u32, receivers: &[usize]) {
     let owner = native::Owner {
         country,
         instance: 0,
@@ -3252,8 +3408,8 @@ pub fn bench_daily_country(country: u32, receivers: &[usize]) {
     });
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn bench_daily_taps(status: usize, modifier_frame: usize, rate_frame: usize) {
+#[cfg(test)]
+pub(crate) fn bench_daily_taps(status: usize, modifier_frame: usize, rate_frame: usize) {
     let mut registers: Registers = unsafe { std::mem::zeroed() };
     registers.r13 = status;
     registers.rbp = modifier_frame;
@@ -3267,13 +3423,13 @@ pub fn bench_daily_taps(status: usize, modifier_frame: usize, rate_frame: usize)
     });
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn bench_drain(events: &mut [Event], bytes: &mut [u8]) -> Drained {
+#[cfg(test)]
+pub(crate) unsafe fn bench_drain(events: &mut [Event], bytes: &mut [u8]) -> Drained {
     drain_from(log().unwrap(), events, bytes).unwrap()
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn bench_staging_parts(events: &[Event]) {
+#[cfg(test)]
+pub(crate) unsafe fn bench_staging_parts(events: &[Event]) {
     use std::{hint::black_box, time::Instant};
     let packed: Vec<_> = events
         .iter()
@@ -3282,7 +3438,8 @@ pub fn bench_staging_parts(events: &[Event]) {
     for mode in ["guard", "direct_lane", "append_record", "expanded_fixture"] {
         let mut times = Vec::new();
         for _ in 0..100 {
-            bench_begin(base(), events.len(), 32);
+            // SAFETY: Caller holds `staging_test()` for the duration of this benchmark.
+            unsafe { bench_begin(base(), events.len(), 32) };
             let log = log().unwrap();
             let index = lane_index(log).unwrap();
             let start = Instant::now();
@@ -3320,13 +3477,13 @@ pub fn bench_staging_parts(events: &[Event]) {
         );
     }
 }
-#[cfg(any(test, feature = "test-support"))]
-pub fn bench_end() {
+#[cfg(test)]
+pub(crate) fn bench_end() {
     ENABLED.store(false, Ordering::SeqCst);
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn bench_midnight_parts(receivers: &[usize]) {
+#[cfg(test)]
+pub(crate) unsafe fn bench_midnight_parts(receivers: &[usize]) {
     use std::{hint::black_box, time::Instant};
     let count = receivers.len() / 8;
     let owners: Vec<_> = receivers.chunks_exact(8).map(|r| r[0] - 0x2200).collect();
@@ -3369,7 +3526,8 @@ pub fn bench_midnight_parts(receivers: &[usize]) {
     ] {
         let mut times = Vec::new();
         for iteration in 0..110 {
-            bench_begin(base(), events.len(), 32);
+            // SAFETY: Caller holds `staging_test()` for the duration of this benchmark.
+            unsafe { bench_begin(base(), events.len(), 32) };
             let start = Instant::now();
             bench_scope(|| match mode {
                 "owner_status" => {
@@ -3539,8 +3697,11 @@ mod tests {
         assert_eq!(LOG.load(Ordering::Acquire), offered);
         assert!(cursors.len() >= log().unwrap().lanes.len());
         let mut events = [Event::default()];
+        // SAFETY: test holds `staging_test()` and is the sole consumer of `sealed`.
         assert_eq!(
-            sealed.drain(&cursors, &mut events, &mut []).unwrap().copied,
+            unsafe { sealed.drain(&cursors, &mut events, &mut []) }
+                .unwrap()
+                .copied,
             1
         );
         assert_eq!(events[0].country, 5000);
@@ -3643,7 +3804,7 @@ mod tests {
         let _guard = staging_test();
         clear_staging();
         let prior = EPOCH.load(Ordering::Acquire).max(99);
-        restore_epoch(prior).unwrap();
+        unsafe { restore_epoch(prior) }.unwrap();
         resize_checked(16, 257).unwrap();
         let first = log().unwrap();
         let stride = first.key_stride;
@@ -3662,7 +3823,7 @@ mod tests {
         seal_staging();
         assert!(log().unwrap().entries > entries);
         let epoch = EPOCH.load(Ordering::Acquire);
-        assert!(restore_epoch(u64::MAX).is_err());
+        assert!(unsafe { restore_epoch(u64::MAX) }.is_err());
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
     }
 
@@ -3718,7 +3879,8 @@ mod tests {
             append_lane(before, 0, Event::default(), &memory);
         }
         let pointer = LOG.load(Ordering::Acquire);
-        prepare();
+        // SAFETY: test holds `staging_test()` as the sole politics-log sizer.
+        unsafe { prepare() };
         assert_eq!(LOG.load(Ordering::Acquire), pointer);
         assert_ne!(OFFERED.load(Ordering::Acquire), 0);
         seal_staging();
@@ -3728,7 +3890,8 @@ mod tests {
         assert!(after.entries >= before.entries);
         assert!(after.key_stride >= before.key_stride);
         let pointer = LOG.load(Ordering::Acquire);
-        prepare();
+        // SAFETY: test holds `staging_test()` as the sole politics-log sizer.
+        unsafe { prepare() };
         assert_eq!(LOG.load(Ordering::Acquire), pointer);
     }
 
@@ -3803,7 +3966,8 @@ mod tests {
             (1, first, first_cursors),
             (HALF + 1, second, second_cursors),
         ] {
-            let drained = sealed.drain(&cursors, &mut output, &mut bytes).unwrap();
+            // SAFETY: test holds `staging_test()` and drains each sealed interval in order.
+            let drained = unsafe { sealed.drain(&cursors, &mut output, &mut bytes) }.unwrap();
             assert_eq!(
                 (
                     drained.first,
@@ -3826,9 +3990,8 @@ mod tests {
                 assert_eq!(&bytes[key.address..key.address + key.len], b"mod_itemx");
             }
         }
-        let drained = third
-            .drain(&third_cursors, &mut output, &mut bytes)
-            .unwrap();
+        // SAFETY: test holds `staging_test()` and drains `third` in order.
+        let drained = unsafe { third.drain(&third_cursors, &mut output, &mut bytes) }.unwrap();
         assert_eq!(
             (
                 drained.first,
@@ -3926,7 +4089,8 @@ mod tests {
         assert!(combined.entries >= first.entries);
         assert!(combined.key_stride > old.key_stride);
         let offered = OFFERED.load(Ordering::Acquire);
-        prepare();
+        // SAFETY: test holds `staging_test()` as the sole politics-log sizer.
+        unsafe { prepare() };
         assert_eq!(OFFERED.load(Ordering::Acquire), offered);
         seal_staging();
         assert_eq!(LOG.load(Ordering::Acquire), offered);
@@ -3974,10 +4138,11 @@ mod tests {
         );
         let (sealed, cursors) = seal_staging();
         resize_checked(old.entries + 1, 0).unwrap();
-        invalidate();
+        invalidate_epoch();
         let mut output = [Event::default()];
+        // SAFETY: test holds `staging_test()` as the sole consumer of `sealed`.
         assert_eq!(
-            sealed.drain(&cursors, &mut output, &mut []),
+            unsafe { sealed.drain(&cursors, &mut output, &mut []) },
             Err("politics observation restarted")
         );
         seal_staging();
@@ -3991,8 +4156,11 @@ mod tests {
             },
         );
         let (sealed, cursors) = seal_staging();
+        // SAFETY: test holds `staging_test()` as the sole consumer of `sealed`.
         assert_eq!(
-            sealed.drain(&cursors, &mut output, &mut []).unwrap().copied,
+            unsafe { sealed.drain(&cursors, &mut output, &mut []) }
+                .unwrap()
+                .copied,
             1
         );
         clear_staging();
@@ -4537,7 +4705,8 @@ mod tests {
         assert_eq!(handoff.pending(), 20);
         let mut output = [Event::default(); 20];
         let mut bytes = [0; 20 * 16];
-        let drained = handoff.drain(&cursors, &mut output, &mut bytes).unwrap();
+        // SAFETY: all producer threads have joined and test holds `staging_test()`.
+        let drained = unsafe { handoff.drain(&cursors, &mut output, &mut bytes) }.unwrap();
         assert_eq!(drained.copied, 20);
         assert_eq!(
             output
@@ -4627,7 +4796,7 @@ mod tests {
         publish(1);
         let frontier = log.frontier();
         publish(2);
-        invalidate();
+        invalidate_epoch();
         let cursors = [LaneCursor::default()];
         let mut output = [Event::default(); 2];
         assert_eq!(
@@ -4700,7 +4869,8 @@ mod tests {
             serde_json::json!("politics staging allocation failed")
         );
         drop(held);
-        prepare();
+        // SAFETY: test holds `staging_test()` as the sole politics-log sizer.
+        unsafe { prepare() };
         assert_ne!(OFFERED.load(Ordering::Acquire), 0);
         seal_staging();
         assert!(super::log().unwrap().shared.len() > capacity);
@@ -4805,5 +4975,73 @@ mod tests {
             assert_eq!(&bytes[key.address..key.address + key.len], &name);
         }
         assert!(log.held().is_empty());
+    }
+
+    #[test]
+    fn status_reads_active_log_without_allocating_or_popping_spilled_records() {
+        let _guard = staging_test();
+        clear_staging();
+        struct Cleanup(usize);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                REQUIRED_LANES.store(self.0, Ordering::Relaxed);
+                clear_staging();
+            }
+        }
+        let _cleanup = Cleanup(REQUIRED_LANES.load(Ordering::Relaxed));
+        let target_lanes = thread_slots().max(257);
+        REQUIRED_LANES.store(target_lanes, Ordering::Relaxed);
+        // SAFETY: Unit test owns politics staging with no concurrent teardown.
+        unsafe { resize(8, 16) };
+        let active = log().unwrap();
+        assert!(active.lanes.len() >= 257);
+        active
+            .pushed
+            .push((Record::default(), Vec::new()))
+            .unwrap();
+        let epoch_before = EPOCH.load(Ordering::SeqCst);
+        let failures_before = COUNTERS[10].load(Ordering::Relaxed);
+        struct LockCheckingWriter<'a> {
+            cursor: std::io::Cursor<&'a mut [u8]>,
+            writes: usize,
+        }
+        impl std::io::Write for LockCheckingWriter<'_> {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                assert!(LOGS.try_lock().is_ok());
+                self.writes += 1;
+                self.cursor.write(buf)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                assert!(LOGS.try_lock().is_ok());
+                self.cursor.flush()
+            }
+        }
+        let mut required_scratch = Vec::with_capacity(active.lanes.len());
+        let mut staging_scratch = Vec::with_capacity(active.lanes.len());
+        let mut scratch = vec![0u8; 16384];
+        let (written, writes) = collector_test_support::with_allocations_denied(|| {
+            let snapshot = status_into(&mut required_scratch, &mut staging_scratch);
+            assert!(LOGS.try_lock().is_ok());
+            let mut writer = LockCheckingWriter {
+                cursor: std::io::Cursor::new(scratch.as_mut_slice()),
+                writes: 0,
+            };
+            serde_json::to_writer(&mut writer, &snapshot).unwrap();
+            (writer.cursor.position() as usize, writer.writes)
+        });
+        assert!(writes > 0);
+        assert_eq!(active.pushed.len(), 1);
+        assert_eq!(EPOCH.load(Ordering::SeqCst), epoch_before);
+        assert_eq!(COUNTERS[10].load(Ordering::Relaxed), failures_before);
+        let parsed: serde_json::Value = serde_json::from_slice(&scratch[..written]).unwrap();
+        assert_eq!(parsed["spill_pending"], 1);
+        assert_eq!(
+            parsed["staging_entries_per_lane"].as_array().unwrap().len(),
+            active.lanes.len()
+        );
+        assert_eq!(
+            parsed["required_entries_per_lane"].as_array().unwrap().len(),
+            active.lanes.len()
+        );
     }
 }

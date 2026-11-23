@@ -12,6 +12,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveOptions } from '../../dashboard/options';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useShownHour } from '../../dashboard/widgetPerf';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
@@ -32,7 +33,7 @@ export default function DockyardsWidget({ widget, runtime, active, onDiagnostics
   const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const root = useRef<HTMLDivElement | null>(null);
-  const head = useHeadProduct(runtime, widget, 'naval-repairs', tag ? { country: countryFromKey(tag) } : null, { active, validate: validateRepairs, structure: repairsStructure });
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'naval-repairs', tag ? { country: countryFromKey(tag) } : null, { active, validate: validateRepairs, structure: repairsStructure });
   const { data, error, retry } = head;
   const shown = useShownHour();
   const painted = useCallback(() => shown(head.shownAt()), [shown, head.shownAt]);
@@ -73,7 +74,6 @@ export default function DockyardsWidget({ widget, runtime, active, onDiagnostics
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
   if (!track) return <WidgetState kind="empty" icon="anchor" message="Load a campaign to see dockyards and repairs." />;
   if (!tag) return <WidgetState kind="empty" icon="anchor" message="Choose a country in the widget's header." />;
-  if (head.read === 'off' && !data) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <div ref={attach} className="yards"><WidgetState kind="loading" label="Loading dockyards…" /></div>;
   return <div ref={attach} className="yards">

@@ -8,7 +8,7 @@ use super::*;
 pub fn compare(
     frame: &DecodedFrame,
     save: &Save,
-    geometry: ContentRead<'_, content_reader_core::province_geometry::ProvinceGeometry>,
+    geometry: ContentRead<'_, content_reader_map::province_geometry::ProvinceGeometry>,
     report: &mut Report,
 ) {
     report.attempt("Provinces selected route areas", |r| {
@@ -24,7 +24,7 @@ pub fn compare(
 
 fn areas(
     frame: &DecodedFrame,
-    geometry: ContentRead<'_, content_reader_core::province_geometry::ProvinceGeometry>,
+    geometry: ContentRead<'_, content_reader_map::province_geometry::ProvinceGeometry>,
     report: &mut Report,
 ) -> io::Result<()> {
     let rows = frame.complete::<tables::Provinces>()?;

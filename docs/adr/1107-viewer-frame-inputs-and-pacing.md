@@ -10,4 +10,4 @@ Use raw replay-hour modulo for the day/night phase. Its offset from the interfac
 
 Read the recorded mod stack's speed table as single-precision intervals in game order. Keep the authored padding and truncation to five positions, and an interval of zero or less admits any rate. The slowest sufficient speed classifies the replay rate. At the fastest speed the cycle fades out so it does not flash, while pause retains it. One speed right on a nominal boundary can classify differently after the recorded precision conversion. Unreadable content gets a named refusal.
 
-[Country identity index](../../crates/viewer-foundation/src/map/country_index.rs) · [Device cache](../../crates/viewer-foundation/src/map/device_shared.rs) · [Display pacing](../../crates/viewer-foundation/src/map/display_refresh.rs) · [Frame constants](../../crates/viewer-foundation/src/map/frame.rs)
+[Country identity index](../../crates/viewer-foundation/src/country_index.rs) · [Device cache](../../crates/viewer-runtime/src/device_shared.rs) · [Display pacing](../../crates/viewer-runtime/src/display_refresh.rs) · [Frame constants](../../crates/viewer-gpu/src/frame.rs)

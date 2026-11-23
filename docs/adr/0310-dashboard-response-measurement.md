@@ -8,4 +8,4 @@ Time the live service only if a host installs its timing sink. Queue time ends a
 
 Time-series windows use a fixed grid of four recording blocks, independent of campaign duration. Request visible windows and the one ahead. Window endpoints are inclusive and intersected with the timeline. Focus replies keep completion hours as observed upper bounds and compress equal adjacent progress. Focus progress is exact signed fixed5 days of work, including the daily increment and any work banked on idle days.
 
-[Reply checker](../../crates/dashboard/src/reply_check.rs) · [Request timing](../../crates/dashboard/src/service/perf.rs) · [Window grid](../../crates/dashboard/src/products/windows.rs) · [Focus reply types](../../crates/dashboard/src/reply_dto.rs)
+[Reply checker](../../crates/dashboard/src/reply_check.rs) · [Request timing](../../crates/dashboard/src/service/perf.rs) · [Window grid](../../crates/dashboard-world/src/products/windows.rs) · [Focus reply types](../../crates/dashboard-politics/src/products/focus_dto.rs)

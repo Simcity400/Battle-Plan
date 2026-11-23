@@ -1,9 +1,7 @@
 
 use crate::document::Document;
-use viewer_foundation::{
-    map::movement_reads::{self, OrderCursor},
-    unit_handle::Unit,
-};
+use viewer_unit_reads::movement_reads::{self, OrderCursor};
+use viewer_runtime::unit_handle::Unit;
 use viewer_playback::cursors::MapCursor;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,7 +31,7 @@ fn shown(cursor: OrderCursor) -> MapCursor {
 
 impl super::Viewer {
     pub(super) fn ground_cursor(&mut self, document: &Document, point: [f32; 2], shift: bool) -> MapCursor {
-        use viewer_world::map::map_mode::{MapMode, Stock};
+        use viewer_map_modes::map_mode::{MapMode, Stock};
         if matches!(self.shown_mode(), MapMode::Stock(Stock::StrategicAir | Stock::StrategicNavy)) {
             return MapCursor::Normal;
         }

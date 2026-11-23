@@ -1,5 +1,6 @@
 
-use replay::{columnar_frames::Recording, lanes::Keys, points};
+use replay_recording::columnar_frames::Recording;
+use replay_lanes::{lanes::Keys, points};
 use replay_data::rows::TableId;
 use std::{collections::HashMap, io};
 
@@ -52,3 +53,6 @@ impl RunLexicon {
         spans.iter().filter(move |span| span.first <= to && span.last >= from).map(|span| span.token).filter(move |token| last.replace(*token) != Some(*token))
     }
 }
+
+#[cfg(test)]
+mod tests;

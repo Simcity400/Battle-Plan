@@ -1,7 +1,7 @@
 use engine_allocation as allocation;
 use replay_rows::codec::{Decoder, invalid_static as invalid, put_varint};
 use replay_rows::rows::*;
-use replay_rows::{row_codec, typed_codec};
+use replay_rows::row_codec;
 use std::io;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -343,6 +343,7 @@ pub struct EquipmentLossCoverageRow {
     pub ended_from: Recorded<Option<i32>>,
     pub unresolved: Recorded<u32>,
     pub unresolved_all: Recorded<u32>,
+    pub drain_state: Recorded<u8>,
 }
 
 impl EquipmentLossCoverageRow {
@@ -356,6 +357,20 @@ impl EquipmentLossCoverageRow {
     pub const UNREAD_SHIPS: u8 = 2;
     pub const UNREAD_CONVOYS: u8 = 4;
     pub const UNREAD_LEND_LEASE: u8 = 8;
+    pub const DRAIN_STATE_COMPLETE: u8 = 0;
+    pub const DRAIN_STATE_PARTIAL_INTERVAL: u8 = 1;
+    pub const DRAIN_STATE_NOT_READ: u8 = 2;
+    pub const DRAIN_STATE_LOST: u8 = 4;
+    pub const DRAIN_STATE_OWNER_UNKNOWN: u8 = 8;
+    pub const DRAIN_STATE_SUPPLEMENTAL_UNAVAILABLE: u8 = 16;
+    pub const DRAIN_STATE_WITHHELD: u8 = 32;
+    pub const DRAIN_STATE_MASK: u8 = Self::DRAIN_STATE_PARTIAL_INTERVAL
+        | Self::DRAIN_STATE_NOT_READ
+        | Self::DRAIN_STATE_LOST
+        | Self::DRAIN_STATE_OWNER_UNKNOWN
+        | Self::DRAIN_STATE_SUPPLEMENTAL_UNAVAILABLE
+        | Self::DRAIN_STATE_WITHHELD;
+    pub const DRAIN_WITHHELD: &'static str = "Equipment destruction drain is withheld for the run";
     pub const DRAIN_TRUNCATED: &'static str = "Equipment destruction drain is truncated; withheld for the run";
     pub const DRAIN_SUPPLEMENTAL_NOT_RECORDED: &'static str = "EquipmentDestruction supplemental coverage not recorded";
     pub const DRAIN_OWNER_UNKNOWN: &'static str = "Equipment destruction ownership is unknown: raw country references have no CountryLink";
@@ -701,6 +716,26 @@ impl PowerSpendTotalRow {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct PowerSpendDayRow {
+    pub holder: u32,
+    pub hour: i32,
+    pub currency: u8,
+    pub entry: u32,
+    pub ordinal: u32,
+    pub day: i32,
+    pub days: i64,
+    pub payments: i64,
+    pub charge: Recorded<i64>,
+    pub unknown: i64,
+    pub uncovered: i64,
+    pub realized_gained: Recorded<i64>,
+    pub realized_lost: Recorded<i64>,
+    pub realized_unknown: i64,
+    pub credits: i64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct PowerItemRow {
     pub holder: u32,
     pub ordinal: u32,
@@ -852,7 +887,7 @@ pub struct FeedEventRow {
     pub numeric_target: Option<i32>,
     pub lifecycle: Option<i32>,
     pub days: Option<i32>,
-    pub scopes: Recorded<Vec<replay_rows::event_feed_rows::EventFeedScope>>,
+    pub scopes: Recorded<Vec<replay_rows::event_feed_values::EventFeedScope>>,
     pub opener: Option<u64>,
     pub opener_hour: Option<i32>,
     pub dated: Option<i32>,
@@ -1984,7 +2019,7 @@ row_codec!(ThreatEventRow, 104, |row| (row.kind as u128) << 96 | (row.slot as u1
 row_codec!(EquipmentLossTotalRow, 105, |row| (row.slot as u128) << 73 | (row.country as u128) << 41 | (row.source as u128) << 33 | match row.variant { Some(variant) => 1 << 32 | variant as u128, None => 0 }, |key| { slot: (key >> 73) as u32, country: (key >> 41) as u32, source: (key >> 33) as u8, variant: if (key >> 32) & 1 == 1 { Some(key as u32) } else { None } }, {0 => total: I64, 1 => incomplete_from: OptionalI32, 2 => freed: I64}, |_row| Ok(()));
 row_codec!(CombatLogDroppedRow, 120, |row| (row.country as u128) << 88 | (row.group as u128) << 56 | (row.kind as u128) << 48 | (row.month as u128) << 32 | row.variant as u128, |key| { country: (key >> 88) as u32, group: (key >> 56) as u32, kind: (key >> 48) as u8, month: (key >> 32) as u16, variant: key as u32 }, {0 => date: I32, 1 => amount: I64}, |_row| Ok(()));
 row_codec!(ShipLossRow, 128, |row| (row.slot as u128) << 104 | (row.country as u128) << 80 | (row.hour as u32 as u128) << 48 | row.signature as u128, |key| { slot: (key >> 104) as u32 & ShipLossRow::FIELD, country: (key >> 80) as u32 & ShipLossRow::FIELD, hour: (key >> 48) as u32 as i32, signature: key as u64 & ShipLossRow::SIGNATURE }, {0 => sink_hour: I32, 1 => variant: U64, 2 => count: U32, 3 => check: U64}, |row| if row.slot > ShipLossRow::FIELD || row.country > ShipLossRow::FIELD || row.signature > ShipLossRow::SIGNATURE { Err(invalid("a ship loss's slot or country passes 24 bits, or its signature 48")) } else { Ok(()) });
-row_codec!(EquipmentLossCoverageRow, 64, |row| (row.slot as u128) << 32 | row.country as u128, |key| { slot: (key >> 32) as u32, country: key as u32 }, {0 => land: U8, 1 => ungrouped: U32, 2 => resolved: U8, 3 => convoy_drops: U32, 4 => drain: Bytes, 5 => unread: U8, 6 => counted_from: OptionalI32, 7 => withheld_from: OptionalI32, 8 => incomplete_from: OptionalI32, 9 => convoys_from: OptionalI32, 10 => lend_from: OptionalI32, 11 => exchanges_ended: U32, 12 => ended_from: OptionalI32, 13 => unresolved: U32, 14 => unresolved_all: U32}, |_row| Ok(()));
+row_codec!(EquipmentLossCoverageRow, 64, |row| (row.slot as u128) << 32 | row.country as u128, |key| { slot: (key >> 32) as u32, country: key as u32 }, {0 => land: U8, 1 => ungrouped: U32, 2 => resolved: U8, 3 => convoy_drops: U32, 4 => drain: Bytes, 5 => unread: U8, 6 => counted_from: OptionalI32, 7 => withheld_from: OptionalI32, 8 => incomplete_from: OptionalI32, 9 => convoys_from: OptionalI32, 10 => lend_from: OptionalI32, 11 => exchanges_ended: U32, 12 => ended_from: OptionalI32, 13 => unresolved: U32, 14 => unresolved_all: U32, 15 => drain_state: U8}, |row| if matches!(row.drain_state, Recorded::Value(state) if state & !EquipmentLossCoverageRow::DRAIN_STATE_MASK != 0) { Err(invalid("equipment loss coverage drain state has unsupported bits")) } else { Ok(()) });
 row_codec!(StockByVariantRow, 96, |row| (row.slot as u128) << 64 | row.variant as u128, |key| { slot: (key >> 64) as u32, variant: key as u64 }, {0 => amount: I64, 1 => positions: I64}, |_row| Ok(()));
 row_codec!(DivisionEquipmentCountRow, 40, |row| (row.slot as u128) << 8 | row.side as u128, |key| { slot: (key >> 8) as u32, side: key as u8 }, {0 => divisions: I64, 1 => short: I64, 2 => unknown: I64, 3 => unpooled: I64, 4 => unclassified: I64, 5 => unresolved: I64, 6 => pool_hour: OptionalI32, 7 => stock_hour: OptionalI32}, |row| if row.side > DivisionEquipmentCountRow::HOST { Err(invalid("a division equipment row's side is past host")) } else { Ok(()) });
 row_codec!(DivisionEquipmentTypeRow, 73, |row| (row.slot as u128) << 41 | (row.side as u128) << 33 | match row.archetype { Some(token) => 1 << 32 | token as u128, None => 0 }, |key| { slot: (key >> 41) as u32, side: (key >> 33) as u8, archetype: if (key >> 32) & 1 == 1 { Some(key as u32) } else { None } }, {0 => held: I64, 1 => needed: I64, 2 => filled: I64, 3 => missing: I64, 4 => short: I64, 5 => stock: I64}, |row| if row.side > DivisionEquipmentCountRow::HOST { Err(invalid("a division equipment row's side is past host")) } else { Ok(()) });
@@ -2010,6 +2045,7 @@ row_codec!(DivisionEventRow, 104, |row| (row.kind as u128) << 96 | (row.hour as 
 row_codec!(LeaderBattleRow, 128, |row| (row.leader as u128) << 64 | (row.hour as u32 as u128) << 32 | row.ordinal as u128, |key| { leader: (key >> 64) as u64, hour: (key >> 32) as u32 as i32, ordinal: key as u32 }, {0 => entry: U8, 1 => kind: U8, 2 => combat: U64, 3 => sides: U8, 4 => start_hour: I32, 5 => start_unknown: Bool, 6 => winners: U8, 7 => result_hour: I32, 8 => outcome: U8}, |row| if row.entry > LeaderBattleRow::RESULT || !matches!(row.kind, LeaderBattleRow::LAND | LeaderBattleRow::NAVAL) { Err(invalid("a leader battle's entry or kind is unknown")) } else { Ok(()) });
 row_codec!(LeaderTraitGainRow, 128, |row| (row.leader as u128) << 64 | (row.hour as u32 as u128) << 32 | row.token as u128, |key| { leader: (key >> 64) as u64, hour: (key >> 32) as u32 as i32, token: key as u32 }, {0 => class: U8, 1 => spelling: Bytes}, |row| if row.class > LeaderTraitGainRow::FIRST_OBSERVED { Err(invalid("a trait gain's class is past first observed")) } else { Ok(()) });
 row_codec!(PowerSpendTotalRow, 72, |row| (row.holder as u128) << 40 | (row.currency as u128) << 32 | row.ordinal as u128, |key| { holder: (key >> 40) as u32, currency: (key >> 32) as u8, ordinal: key as u32 }, {0 => known: I64, 1 => payments: I64, 2 => entries: I64, 3 => unknown: I64, 4 => uncovered: I64, 5 => latest_hour: OptionalI32, 6 => latest_sequence: OptionalU64, 7 => latest_ordinal: OptionalU32, 8 => latest_read: OptionalI32, 9 => days: I64, 10 => day_payments: I64, 11 => day_entries: I64, 12 => day_charge: I64, 13 => day_unknown: I64, 14 => days_uncovered: I64, 15 => realized_gained: I64, 16 => realized_lost: I64, 17 => realized_unknown: I64, 18 => first_day: OptionalI32, 19 => last_day: OptionalI32, 20 => last_lag: OptionalI32, 21 => last_hour: OptionalI32, 22 => last_sequence: OptionalU64, 23 => last_ordinal: OptionalU32, 24 => last_covered: Bool, 25 => balances: I64, 26 => credits: I64, 27 => gained: I64, 28 => capped: I64, 29 => gain_days: I64, 30 => gain_unknown_days: I64, 31 => unmatched: I64}, |row| if row.currency > PowerCurrency::Command as u8 { Err(invalid("a power total's currency is past command")) } else { Ok(()) });
+row_codec!(PowerSpendDayRow, 104, |row| (row.holder as u128) << 72 | (row.hour as u32 as u128) << 40 | (row.currency as u128) << 32 | row.entry as u128, |key| { holder: (key >> 72) as u32, hour: (key >> 40) as u32 as i32, currency: (key >> 32) as u8, entry: key as u32 }, {0 => ordinal: U32, 1 => day: I32, 2 => days: I64, 3 => payments: I64, 4 => charge: I64, 5 => unknown: I64, 6 => uncovered: I64, 7 => realized_gained: I64, 8 => realized_lost: I64, 9 => realized_unknown: I64, 10 => credits: I64}, |row| if row.currency > PowerCurrency::Command as u8 || row.day.rem_euclid(24) != 0 { Err(invalid("a power spend day's currency is past command or its day is not a midnight")) } else { Ok(()) });
 row_codec!(PowerItemRow, 64, |row| (row.holder as u128) << 32 | row.ordinal as u128, |key| { holder: (key >> 32) as u32, ordinal: key as u32 }, {0 => kind: U8, 1 => currency: U8, 2 => cause: U16, 3 => component: OptionalU32, 4 => charged: Bool, 5 => site: U16, 6 => action: U8, 7 => item_token: OptionalU32, 8 => item_key: Bytes, 9 => slot_key: Bytes, 10 => character: OptionalU32, 11 => object_kind: U8, 12 => object_reference: OptionalU64, 13 => target_country: OptionalU32, 14 => target_state: OptionalU32, 15 => target_region: OptionalU32, 16 => origin_kind: U8, 17 => origin_token: OptionalU32, 18 => origin_key: Bytes, 19 => first_hour: I32, 20 => first_read: I32, 21 => first_country: U32, 22 => first_epoch: U64, 23 => first_sequence: U64}, |row| if row.kind > PowerItemRow::ABILITY_UPKEEP { Err(invalid("a power item's kind is past ability upkeep")) } else { Ok(()) });
 row_codec!(PowerDayPartRow, 72, |row| (row.holder as u128) << 40 | (row.currency as u128) << 32 | row.ordinal as u128, |key| { holder: (key >> 40) as u32, currency: (key >> 32) as u8, ordinal: key as u32 }, {0 => day: I32, 1 => spent: I64, 2 => payments: I64, 3 => covered: Bool, 4 => sequence: OptionalU64, 5 => cost_ordinal: OptionalU32, 6 => read: I32}, |row| if row.day.rem_euclid(24) != 0 { Err(invalid("a power day part's day is not a midnight")) } else { Ok(()) });
 row_codec!(PowerHoldRow, 96, |row| (row.holder as u128) << 64 | row.hold as u128, |key| { holder: (key >> 64) as u32, hold: key as u64 }, {0 => amount: I64, 1 => check: U64, 2 => cause: U16, 3 => object_kind: U8, 4 => object_reference: OptionalU64, 5 => ability: Bool, 6 => item_token: OptionalU32, 7 => item_key: Bytes, 8 => slot_key: Bytes, 9 => character: OptionalU32, 10 => target_country: OptionalU32, 11 => target_state: OptionalU32, 12 => target_region: OptionalU32, 13 => capture_country: U32, 14 => capture_epoch: U64}, |_row| Ok(()));

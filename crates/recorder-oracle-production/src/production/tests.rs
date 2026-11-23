@@ -1,6 +1,6 @@
 use super::super::lexical_tokens;
 use super::*;
-use content_reader_core::parser;
+use content_reader_parser::parser;
 use content_reader_save::Decimal;
 use replay_data::{
     rows::ArmyUpgradeDeliveryRow, rows::ArmyUpgradeGroupRow, rows::ArmyUpgradeProducedRow,
@@ -130,7 +130,7 @@ fn output_frame(
 }
 
 fn output_replay(frames: Vec<DecodedFrame>) -> Replay {
-    use replay::spool::Record;
+    use replay_capture_spool::spool::Record;
     use replay_data::{
         identity::Identity, identity::Roster, identity::SessionStart, identity::Verification,
     };
@@ -191,7 +191,7 @@ fn output_replay(frames: Vec<DecodedFrame>) -> Replay {
             }]));
         records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
     }
-    Replay::from_records(b"campaign".to_vec(), &[records]).unwrap()
+    Replay::from_records(recorder_derive::writers(), b"campaign".to_vec(), &[records]).unwrap()
 }
 
 #[test]
@@ -1613,7 +1613,7 @@ fn lexical_writers_keep_exact_bytes_and_scope_unproved_nul_literals() {
 
 #[test]
 fn variant_archetypes_follow_the_content_equipment_types() {
-    let (equipment, _) = content_reader_core::equipment::fixture::load(&[(
+    let (equipment, _) = content_reader_key_names::equipment::fixture::load(&[(
         "common/units/equipment/planes.txt",
         "equipments = {
             airframe = { is_archetype = yes }
@@ -1671,8 +1671,8 @@ fn variant_archetypes_follow_the_content_equipment_types() {
 
 #[test]
 fn duplicated_archetype_variants_of_the_live_save_match_the_content() {
-    content_reader_core::test_game::enter();
-    let (equipment, _) = content_reader_core::equipment::fixture::load(&[
+    content_reader_script::test_game::enter();
+    let (equipment, _) = content_reader_key_names::equipment::fixture::load(&[
         (
             "common/units/equipment/plane_airframes.txt",
             "equipments = {
@@ -1983,7 +1983,7 @@ fn typed_variants_keep_independent_checks_when_lexical_tokens_are_unavailable() 
     *frame.tables[TableId::VariantStats.index()] =
         TableView::Complete(TableRows::VariantStats(vec![VariantStatsRow {
             variant,
-            values: [i64::MIN; 10],
+            values: [Some(100_000); 10],
             ..Default::default()
         }]));
     *frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
@@ -2522,4 +2522,108 @@ fn organisations_compare_every_saved_detail_and_detect_queue_points_policy_store
     let mut report = Report::default();
     mios::compare(&frame, &saved, &links, &tokens, &mut report).unwrap();
     assert_eq!(report.differences.len(), 5, "{:?}", report.differences);
+}
+
+#[test]
+fn variant_stats_oracle_checks_published_invariants_and_reports_withheld_lanes() {
+    let variant = (1_u64 << 32) | 70;
+    let country = CountryRow {
+        id: 1,
+        tag: b"SYN".to_vec(),
+        ..Default::default()
+    };
+    let links = BTreeMap::from([(1, &country)]);
+    let tokens = TokenNames::from([(17, b"plane".as_slice())]);
+    let saved = production::parse(
+        &parser::parse(b"equipments={plane={id={id=1 type=70} creator=SYN origin=SYN is_frame=no max_version=0}}")
+            .unwrap()
+            .items,
+    )
+    .unwrap();
+    let mut frame = output_frame(22, false, &[], &[]);
+    *frame.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+            id: variant,
+            equipment_token: 17,
+            creator_link: 1,
+            origin_link: 1,
+            append_variant_name: 1,
+            classifier_flags: 1 << 20,
+            ..Default::default()
+        }]));
+    let mut values = [Some(100_000); 10];
+    values[VariantStatsRow::WEIGHT] = None;
+    *frame.tables[TableId::VariantStats.index()] =
+        TableView::Complete(TableRows::VariantStats(vec![VariantStatsRow {
+            variant,
+            values,
+            ..Default::default()
+        }]));
+    let mut report = Report::default();
+    compare_variants(&frame, &saved, &links, &tokens, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        report
+            .limitations
+            .contains_key("VariantStats.weight native witness withheld"),
+        "{:?}",
+        report.limitations
+    );
+
+    let TableView::Complete(TableRows::VariantStats(rows)) =
+        &mut *frame.tables[TableId::VariantStats.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].values[VariantStatsRow::AIR_DEFENCE] = Some(50_000);
+    rows[0].values[VariantStatsRow::MAXIMUM_SPEED] = Some(-1);
+    let mut bad = Report::default();
+    compare_variants(&frame, &saved, &links, &tokens, &mut bad).unwrap();
+    assert!(
+        bad.differences
+            .iter()
+            .any(|line| line.contains("air_defence plane minimum")),
+        "{:?}",
+        bad.differences
+    );
+    assert!(
+        bad.differences
+            .iter()
+            .any(|line| line.contains("maximum_speed non-negative")),
+        "{:?}",
+        bad.differences
+    );
+
+    let TableView::Complete(TableRows::VariantDefinitions(defs)) =
+        &mut *frame.tables[TableId::VariantDefinitions.index()]
+    else {
+        unreachable!()
+    };
+    defs[0].classifier_flags = 0x400;
+    let TableView::Complete(TableRows::VariantStats(rows)) =
+        &mut *frame.tables[TableId::VariantStats.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].values[VariantStatsRow::MAXIMUM_SPEED] = Some(100_000);
+    rows[0].values[VariantStatsRow::AIR_DEFENCE] = Some(50_000);
+    rows[0].values[VariantStatsRow::AIR_AGILITY] = Some(50_000);
+    let mut fighter_bad = Report::default();
+    compare_variants(&frame, &saved, &links, &tokens, &mut fighter_bad).unwrap();
+    assert!(
+        fighter_bad
+            .differences
+            .iter()
+            .any(|line| line.contains("air_defence plane minimum")),
+        "{:?}",
+        fighter_bad.differences
+    );
+    assert!(
+        fighter_bad
+            .differences
+            .iter()
+            .any(|line| line.contains("air_agility plane minimum")),
+        "{:?}",
+        fighter_bad.differences
+    );
 }

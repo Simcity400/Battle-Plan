@@ -8,6 +8,7 @@ import { levelsShown, sunburstSettings } from '../../charts/sunburst/sunburstOpt
 import { liveAt } from '../../charts/live';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
+import type { GatedHour } from '../../dashboard/regionTime';
 import type { OptionValue } from '../../dashboard/options';
 import { jumpItem } from '../../charts/jump';
 import { usePlaybackMotion } from '../../dashboard/playback';
@@ -20,11 +21,12 @@ import { useProduct } from '../../dashboard/products';
 import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
 import type { PlaceNamesReply, PlaceStateName } from '../../generated/dashboard';
 import type { MilitaryAirLedger } from '../../dashboard/militaryAirLedger';
+import { productRequest } from '../../dashboard/request.ts';
 
 const UNRECORDED = 'This country’s bombing damage was not recorded at this moment.';
 
-export default function BombingBreakdown({ data, index: given, runtime, track, tag, identity, countrySlot, headerSelection, from, hour, end, dealt, options, active, headAt }: {
-  data: MilitaryAirLedger; index?: LedgerIndex; runtime: WidgetRuntime; track: BoundTrack; tag: string; identity?: string; from: number; hour: number; end: number;
+export default function BombingBreakdown({ data, index: given, runtime, namedAt, track, tag, identity, countrySlot, headerSelection, from, hour, end, dealt, options, active, headAt }: {
+  data: MilitaryAirLedger; index?: LedgerIndex; runtime: WidgetRuntime; namedAt: GatedHour | null; track: BoundTrack; tag: string; identity?: string; from: number; hour: number; end: number;
   countrySlot?: HTMLElement | null; headerSelection?: { tag: string; identity: string } | null;
   dealt: boolean; options: Readonly<Record<string, OptionValue>>; active: boolean;
   headAt?: ((position: number) => number | null) | null;
@@ -39,11 +41,11 @@ export default function BombingBreakdown({ data, index: given, runtime, track, t
   const finalRow = useMemo(() => ledgerCountryAt(index, tag, from, end, identity), [index, tag, from, end, identity]);
   const stateIds = useMemo(() => [...new Set((row?.series.parts ?? []).flatMap(leaf => leaf.dealt === dealt && leaf.buildingId !== null && leaf.state ? [leaf.state] : []))]
     .sort((a, b) => a - b), [row?.series, dealt]);
-  const stateRequest = stateIds.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'place-names',
-    params: { branchId: track.branch.id, places: [], states: stateIds.map(stateId => ({ stateId, hour: end })) } } : null;
+  const stateRequest = stateIds.length && namedAt !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'place-names',
+    params: { branchId: track.branch.id, places: [], states: stateIds.map(stateId => ({ stateId, hour: namedAt })) } }) : null;
   const stateNames = useProduct<PlaceNamesReply>(runtime.client, stateRequest, active, validatePlaceNamesReply, track.source);
   const names = useMemo(() => new Map<number, PlaceStateName>(stateNames.data?.states.map(item => [item.stateId, item]) ?? []), [stateNames.data]);
-  const namesPending = !stateNames.data && !stateNames.error;
+  const namesPending = stateRequest !== null && !stateNames.data && !stateNames.error;
   const valuesAt = (at: number): SunburstValues => {
     const shown = ledgerCountryAt(index, tag, from, at, identity);
     if (!shown) return { items: [], unavailableReason: UNRECORDED };

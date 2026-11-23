@@ -1,7 +1,8 @@
+use dashboard_effects::ScriptedEffects;
 use super::{loc, paths_named, withhold_named};
 use crate::binding::{self, Bindings, Flags};
 use crate::content::Content;
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{ProvinceRow, Recorded, StateRow, tables};
 use replay_frame::frame::DecodedFrame;
@@ -109,7 +110,7 @@ fn dynamic_modifiers(content: &Content, frame: &DecodedFrame, root: &native::Ele
         mine.sort_by_key(|row| row.ordinal);
         let mut entries = Vec::new();
         for row in mine {
-            let token = String::from_utf8_lossy(content_reader_core::parser::c_string(&row.token)).into_owned();
+            let token = String::from_utf8_lossy(content_reader_parser::parser::c_string(&row.token)).into_owned();
             let definition = database
                 .find(&token)?
                 .ok_or_else(|| format!("dynamic modifier {token} is not in the content"))?;
@@ -348,7 +349,7 @@ fn strategic_locations(content: &Content, frame: &DecodedFrame, root: &native::E
             .filter(|&&pair| pair as u32 == id)
             .map(|&pair| (pair >> 32) as u32)
             .chain(provinces.iter().filter(|&&pair| (pair >> 32) as u32 == id).map(|&pair| pair as u32));
-        let names = viewer_foundation::table_access::TokenNames::new(frame).map_err(|e| e.to_string())?;
+        let names = dashboard_text::table_access::TokenNames::new(frame).map_err(|e| e.to_string())?;
         tokens
             .map(|token| {
                 let spelling = names.name(token).map_err(|e| e.to_string())?;
@@ -380,7 +381,7 @@ mod tests {
 
     #[test]
     fn custom_icons_are_the_containers_children_named_by_present_static_modifiers() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let gui = native::read(
             b"guiTypes={containerWindowType={name=countrystateview containerWindowType={name=province_info_window containerWindowType={name=custom_icon_container iconType={name=flooded_icon} iconType={name=the_great_wall_icon}}}}}",
         );

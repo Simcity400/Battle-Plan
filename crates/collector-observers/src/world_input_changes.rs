@@ -287,6 +287,10 @@ pub fn design_forwarder_active() -> usize {
     WATCHES[Domain::DesignIndustrialOrganisation as usize].active()
 }
 
+pub fn design_quiet() -> Option<Token> {
+    WATCHES[Domain::DesignIndustrialOrganisation as usize].quiet()
+}
+
 pub fn boundary(invalidate: bool) {
     if invalidate {
         WATCHES[Domain::GameFog as usize].boundary(true);
@@ -680,6 +684,17 @@ unsafe extern "system-unwind" fn fog_enter_game(
 pub fn design_bonus_refresh_for_test(original: Original) -> Original {
     ORIGINAL[17].store(original as usize, Ordering::Release);
     design_mio_bonuses
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn design_mio_read_for_test(original: Original) -> Original {
+    ORIGINAL[21].store(original as usize, Ordering::Release);
+    design_mio_read
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_design_watch_enabled_for_test(enabled: bool) {
+    WATCHES[Domain::DesignIndustrialOrganisation as usize].set_enabled(enabled);
 }
 
 #[cfg(any(test, feature = "test-support"))]

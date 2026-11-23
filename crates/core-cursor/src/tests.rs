@@ -237,6 +237,96 @@ fn splits_in_one_hour_restore_the_value_before_all_splits() {
     assert!(cursor.rewind(0).unwrap().applied);
     assert_eq!(value(cursor.values(), 0).value, ValueRef::Number(0.0));
     assert_eq!(value(cursor.values(), 1).value, ValueRef::Number(0.0));
+
+    struct SplitEntry {
+        info: PageInfo,
+        coverage: Vec<Coverage>,
+        runs: usize,
+    }
+    impl crate::window::Entry for SplitEntry {
+        fn info(&self) -> PageInfo {
+            self.info
+        }
+        fn bytes(&self) -> usize {
+            0
+        }
+        fn coverage(&self) -> &[Coverage] {
+            &self.coverage
+        }
+        fn coverage_runs(&self) -> usize {
+            self.runs
+        }
+    }
+    let split_memory = Memory::new(16_000_000).unwrap();
+    let missing_hour_2 = Coverage {
+        hours: Hours { first: 2, last: 2 },
+        missing: Some(Missing {
+            kind: MissingKind::NotRecorded,
+            reason: Text::copy_from(&split_memory, Owner::State, "missing").unwrap(),
+            hours: Hours { first: 2, last: 2 },
+        }),
+        accepted_before: 2,
+    };
+    let left_cov = vec![prepared(0, 1)];
+    let right_cov = vec![prepared(1, 1), missing_hour_2.clone()];
+    for order in [[0u64, 1], [1, 0]] {
+        let mut tree = crate::window::Tree::default();
+        for id in order {
+            let (hours, coverage) = if id == 0 {
+                (Hours { first: 0, last: 1 }, left_cov.clone())
+            } else {
+                (Hours { first: 1, last: 2 }, right_cov.clone())
+            };
+            let runs = crate::window::coverage_runs(&coverage);
+            tree.insert(
+                Arc::new(SplitEntry {
+                    info: PageInfo {
+                        id,
+                        hours,
+                        records: 0,
+                        coverage: coverage.len(),
+                        resident_bytes: 0,
+                    },
+                    coverage,
+                    runs,
+                }),
+                &split_memory,
+            )
+            .unwrap();
+        }
+        assert_eq!(tree.coverage_runs_for(Hours { first: 0, last: 2 }), 2);
+        assert_eq!(tree.coverage_runs_for(Hours { first: 1, last: 2 }), 2);
+    }
+    let split_source = Arc::new(
+        InMemory::new(
+            &split_memory,
+            -1,
+            vec![],
+            vec![
+                page(0, 0, 1, vec![], left_cov),
+                page(1, 1, 2, vec![], right_cov),
+            ],
+        )
+        .unwrap(),
+    );
+    for origin in [0, 1] {
+        let mut split_cursor = Cursor::open_with(
+            &split_source,
+            KeyFilter::All,
+            origin,
+            options(&split_memory, 1.0, 1.0),
+        )
+        .unwrap();
+        split_cursor.wait_read_ahead().unwrap();
+        let delta = split_cursor.advance(2).unwrap();
+        assert!(delta.applied);
+        assert_eq!(delta.coverage().len(), 2);
+        split_cursor.wait_read_ahead().unwrap();
+        assert_eq!(
+            split_memory.owner_used(Owner::Delta),
+            2 * std::mem::size_of::<Coverage>()
+        );
+    }
 }
 #[test]
 fn filter_selection_and_shared_pages_do_not_read_or_expand_a_second_copy() {
@@ -259,9 +349,7 @@ fn filter_selection_and_shared_pages_do_not_read_or_expand_a_second_copy() {
     ));
     assert!(first.values().store().resident_bytes() < 10_000);
 }
-// quarantine: #149 the cursor or index store disagrees with the test
 #[test]
-#[ignore = "quarantined under #149"]
 fn rates_use_accepted_hours_change_on_quiet_frames_and_keep_unknown_anchors() {
     let memory = Memory::new(16_000_000).unwrap();
     let missing = Missing {
@@ -358,9 +446,7 @@ fn rates_use_accepted_hours_change_on_quiet_frames_and_keep_unknown_anchors() {
     assert!(cursor.rewind(2).unwrap().applied);
     assert_eq!(value(cursor.values(), 0).value, ValueRef::Fixed(14));
 }
-// quarantine: #149 the cursor or index store disagrees with the test
 #[test]
-#[ignore = "quarantined under #149"]
 fn missing_values_keep_each_kind_reason_hours_and_provenance_in_both_directions() {
     let memory = Memory::new(16_000_000).unwrap();
     let mut changes = vec![];
@@ -669,9 +755,7 @@ fn scope_switch_at_full_memory_reclaims_its_own_far_edge_without_catching_up() {
     assert!(memory.peak() <= memory.limit());
 }
 
-// quarantine: #149 the cursor or index store disagrees with the test
 #[test]
-#[ignore = "quarantined under #149"]
 fn a_resident_span_that_grows_after_a_miss_gets_a_larger_workspace() {
     let memory = Memory::new(16_000_000).unwrap();
     let source = Arc::new(
@@ -705,6 +789,175 @@ fn a_resident_span_that_grows_after_a_miss_gets_a_larger_workspace() {
     cursor.wait_read_ahead().unwrap();
     assert!(cursor.rewind(4).unwrap().applied);
     assert_eq!(cursor.values().hour(), 4);
+}
+#[test]
+fn oom_workspace_retry_drops_unclaimed_maxima_and_fits_the_new_window() {
+    let memory = Memory::new(64_000_000).unwrap();
+    let keys = 50_000usize;
+    let pairs = 550_000 / (2 * std::mem::size_of::<Coverage>());
+    let half = (pairs * 2) as Hour;
+    let ended = Record {
+        hour: 2,
+        value: Value::End,
+        provenance: Provenance::default(),
+        break_before: false,
+    };
+    let mut dense_coverage = Vec::with_capacity(pairs * 2);
+    let reason = Text::copy_from(&memory, Owner::State, "").unwrap();
+    for pair in 0..pairs {
+        let even = half + 1 + (pair * 2) as Hour;
+        let odd = even + 1;
+        dense_coverage.push(Coverage {
+            hours: Hours { first: even, last: even },
+            missing: None,
+            accepted_before: (half + 1) as u64 + pair as u64,
+        });
+        dense_coverage.push(Coverage {
+            hours: Hours { first: odd, last: odd },
+            missing: Some(Missing {
+                kind: MissingKind::NotRecorded,
+                reason: reason.clone(),
+                hours: Hours { first: odd, last: odd },
+            }),
+            accepted_before: (half + 1) as u64 + pair as u64 + 1,
+        });
+    }
+    let last_hour = half * 2;
+    let pages = vec![
+        page(0, 0, 0, vec![], vec![prepared(0, 0)]),
+        page(1, 1, 1, vec![], vec![prepared(1, 1)]),
+        page(
+            2,
+            2,
+            2,
+            (0..keys).map(|key| (2, key as u64, ended.clone())).collect(),
+            vec![prepared(2, 2)],
+        ),
+        page(3, 3, half, vec![], vec![prepared(3, half)]),
+        page(4, half + 1, last_hour, vec![], dense_coverage),
+    ];
+    let source = Arc::new(InMemory::new(&memory, -1, vec![], pages).unwrap());
+    let mut page4 = None;
+    source
+        .pages(
+            &KeyFilter::All,
+            Hours {
+                first: half + 1,
+                last: half + 1,
+            },
+            &mut |info| {
+                page4 = Some(info);
+                ControlFlow::Break(())
+            },
+        )
+        .unwrap();
+    let page4 = page4.unwrap();
+    let open_speed = f64::from(half) / 2.0;
+    let mut cursor = Cursor::open_with(
+        &source,
+        KeyFilter::All,
+        0,
+        options(&memory, open_speed, open_speed / 2.0),
+    )
+    .unwrap();
+    cursor.wait_read_ahead().unwrap();
+    let window_bytes = cursor.stats().window_bytes;
+    let coverage_bytes = (pairs * 2 + 1) * std::mem::size_of::<Coverage>();
+    let changes_bytes = keys * std::mem::size_of::<usize>();
+    assert!(window_bytes + 32_768 < coverage_bytes);
+    assert!(coverage_bytes + 32_768 < window_bytes + changes_bytes);
+    let headroom = window_bytes + page4.resident_bytes + 32_768;
+    let _pressure = memory
+        .soft()
+        .reserve(Owner::Transient, memory.limit() - memory.used() - headroom)
+        .unwrap();
+    cursor.playback(f64::from(half), f64::from(half)).unwrap();
+    cursor.wait_read_ahead().unwrap();
+    assert_eq!(cursor.stats().scope_changes, 0);
+    assert_eq!(cursor.stats().shortened_windows, 0);
+    assert_eq!(cursor.stats().window_hours, last_hour as u64);
+    assert!(cursor.advance(1).unwrap().applied);
+    assert_eq!(cursor.stats().capacity_misses, 0);
+    assert!(memory.peak() <= memory.limit());
+}
+#[test]
+fn serving_a_short_prefix_of_a_dense_coverage_page_sizes_the_workspace_to_served_runs() {
+    let memory = Memory::new(16_000_000).unwrap();
+    let pairs = 5_000usize;
+    let reason = Text::copy_from(&memory, Owner::State, "").unwrap();
+    let mut dense_coverage = Vec::with_capacity(pairs * 2);
+    for pair in 0..pairs {
+        let even = (pair * 2) as Hour;
+        let odd = even + 1;
+        dense_coverage.push(Coverage {
+            hours: Hours { first: even, last: even },
+            missing: None,
+            accepted_before: pair as u64,
+        });
+        dense_coverage.push(Coverage {
+            hours: Hours { first: odd, last: odd },
+            missing: Some(Missing {
+                kind: MissingKind::NotRecorded,
+                reason: reason.clone(),
+                hours: Hours { first: odd, last: odd },
+            }),
+            accepted_before: pair as u64 + 1,
+        });
+    }
+    let last_hour = (pairs * 2) as Hour - 1;
+    let source = Arc::new(
+        InMemory::new(
+            &memory,
+            -1,
+            vec![],
+            vec![page(0, 0, last_hour, vec![], dense_coverage)],
+        )
+        .unwrap(),
+    );
+    let mut page0 = None;
+    source
+        .pages(&KeyFilter::All, Hours { first: 0, last: 0 }, &mut |info| {
+            page0 = Some(info);
+            ControlFlow::Break(())
+        })
+        .unwrap();
+    let page0 = page0.unwrap();
+    let full_page_workspace = pairs * 2 * std::mem::size_of::<Coverage>();
+    assert!(full_page_workspace > 200_000);
+    let headroom = page0.resident_bytes + 256 * 1024 + 32_768;
+    let _pressure = memory
+        .soft()
+        .reserve(Owner::Transient, memory.limit() - memory.used() - headroom)
+        .unwrap();
+    let mut cursor =
+        Cursor::open_with(&source, KeyFilter::All, 0, options(&memory, 1.0, 1.0)).unwrap();
+    cursor.wait_read_ahead().unwrap();
+    assert_eq!(cursor.stats().shortened_windows, 0);
+    assert_eq!(cursor.stats().window_hours, 2);
+    assert!(cursor.advance(2).unwrap().applied);
+    assert_eq!(cursor.stats().capacity_misses, 0);
+    assert!(memory.peak() <= memory.limit());
+}
+#[test]
+fn reverse_chunk_with_an_internal_page_gap_is_rejected_before_publication() {
+    let memory = Memory::new(16_000_000).unwrap();
+    let source = Arc::new(
+        InMemory::new(
+            &memory,
+            -1,
+            vec![],
+            vec![
+                page(0, 0, 1, vec![], vec![prepared(0, 1)]),
+                page(1, 3, 4, vec![], vec![prepared(3, 4)]),
+            ],
+        )
+        .unwrap(),
+    );
+    let cursor =
+        Cursor::open_with(&source, KeyFilter::All, 4, options(&memory, -4.0, 2.0)).unwrap();
+    let error = cursor.wait_read_ahead().unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(cursor.stats().window_hours, 0);
 }
 #[test]
 fn dictionary_slots_preserve_identities_wider_than_a_machine_word() {
@@ -946,6 +1199,61 @@ fn an_underrun_inside_the_previous_window_recovers_once_and_plays_on_both_ways()
         assert_eq!(cursor.stats().catch_ups, 1);
         assert_eq!(cursor.stats().catch_up_drops, 1);
     }
+}
+#[test]
+fn reverse_catch_up_into_a_quiet_frame_with_an_active_rate_reserves_its_change_slot() {
+    let memory = Memory::new(16_000_000).unwrap();
+    let pages = (0..=100)
+        .map(|hour| {
+            let changes = if hour == 17 {
+                vec![(
+                    17,
+                    0,
+                    record(
+                        17,
+                        Value::Accumulating(Accumulation {
+                            total: Total::Known(10),
+                            rate: 2,
+                            anchor_hour: 17,
+                            accepted_at_anchor: 18,
+                            rate_began: 17,
+                        }),
+                    ),
+                )]
+            } else if hour == 30 {
+                vec![(30, 0, number(30, 100.0))]
+            } else {
+                vec![]
+            };
+            page(hour as u64, hour, hour, changes, vec![prepared(hour, hour)])
+        })
+        .collect();
+    let source = Arc::new(
+        InMemory::new(
+            &memory,
+            -1,
+            vec![Row {
+                address: address(0),
+                record: number(-1, 0.0),
+            }],
+            pages,
+        )
+        .unwrap(),
+    );
+    let mut cursor =
+        Cursor::open_with(&source, KeyFilter::All, 100, options(&memory, -2.0, 2.0)).unwrap();
+    cursor.wait_read_ahead().unwrap();
+    assert_eq!(cursor.rewind(20).unwrap().status, DeltaStatus::CatchingUp);
+    cursor.wait_read_ahead().unwrap();
+    let delta = cursor.rewind(20).unwrap();
+    assert!(delta.applied && delta.full_refresh);
+    assert_eq!(cursor.values().hour(), 20);
+    assert_eq!(value(cursor.values(), 0).value, ValueRef::Fixed(16));
+    let delta = cursor.rewind(19).unwrap();
+    assert!(delta.applied && !delta.full_refresh);
+    assert_eq!(delta.changes().len(), 1);
+    assert_eq!(value(cursor.values(), 0).value, ValueRef::Fixed(14));
+    assert_eq!(cursor.stats().catch_ups, 1);
 }
 #[test]
 fn a_catch_up_joins_before_the_rest_of_its_window_is_read() {

@@ -13,10 +13,11 @@ export const ZERO_DIVISOR = 'Its divisor is zero at this hour';
 
 export type LiveOp = 'value' | 'sum' | 'difference' | 'ratio';
 export interface LiveKind { id: string; op: LiveOp; scale: number }
-export interface LiveGroupSpec { table: number; columns: number[]; keys: string[]; values?: (number | string)[]; follow?: number; seedHour?: number; unavailable?: string }
+export interface LiveGroupSpec { table: number; columns: number[]; keys: string[]; values?: (number | string)[]; rawValues?: (string | null)[]; follow?: number; seedHour?: number; unavailable?: string }
 export interface LiveSection { groups: LiveGroupSpec[]; rows: string[]; kinds: LiveKind[]; cells: number[] }
 
 const OPS = new Set<LiveOp>(['value', 'sum', 'difference', 'ratio']);
+const RAW_INT = /^-?\d+$/;
 const integer = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 const texts = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
 
@@ -32,6 +33,8 @@ export function liveSection(reply: unknown): LiveSection | null {
       || (group.values !== undefined || group.follow !== undefined) === (group.unavailable !== undefined)
       || (group.values !== undefined && group.follow !== undefined) !== (group.seedHour !== undefined)
       || group.values !== undefined && (!Array.isArray(group.values) || group.values.length !== size || !group.values.every(value => typeof value === 'string' || Number.isFinite(value)))
+      || group.rawValues !== undefined && (group.values === undefined || !Array.isArray(group.rawValues) || group.rawValues.length !== size
+        || !group.rawValues.every((value, at) => value === null || typeof value === 'string' && RAW_INT.test(value) && typeof group.values![at] === 'number'))
       || group.seedHour !== undefined && (!Number.isSafeInteger(group.seedHour) || !group.values?.every(value => typeof value === 'string' || Number.isSafeInteger(value)))
       || group.follow !== undefined && !(integer(group.follow) && isCellsId(group.follow))
       || group.unavailable !== undefined && typeof group.unavailable !== 'string')
@@ -62,15 +65,25 @@ export function sectionOf(reply: unknown): LiveSection | null {
 
 export interface GroupValues {
   get(row: number, column: number): number | undefined;
+  raw?(row: number, column: number): bigint | undefined;
   missing(row: number, column: number): string;
 }
 
 const missingGroup = (reason: string): GroupValues => ({ get: () => undefined, missing: () => reason });
 
-function valuedGroup(spec: LiveGroupSpec, values: readonly (number | string)[]): GroupValues {
+export function valuedGroup(spec: LiveGroupSpec, values: readonly (number | string)[]): GroupValues {
   const width = spec.columns.length;
+  const rawValues = spec.rawValues;
   return {
     get: (row, column) => { const value = values[row * width + column]; return typeof value === 'number' ? value : undefined; },
+    raw: (row, column) => {
+      const at = row * width + column;
+      const value = values[at];
+      if (typeof value !== 'number') return undefined;
+      const exact = rawValues?.[at];
+      if (typeof exact === 'string') return BigInt(exact);
+      return Number.isSafeInteger(value) ? BigInt(value) : undefined;
+    },
     missing: (row, column) => { const value = values[row * width + column]; return typeof value === 'string' ? value : NOT_READ; },
   };
 }
@@ -96,22 +109,34 @@ export class CellGroup implements GroupValues {
   route: number | null = null;
   private width = 0;
   private values = new Float64Array(0);
+  private exact: Map<number, bigint> | null = null;
   private states = new Uint8Array(0);
   private reasons: (string | null)[] = [];
   private whole: string | null = NOT_READ;
 
   land(answer: FollowedAnswer): void {
-    if (answer.kind === 'notRecorded') { this.whole = answer.reason; return; }
+    if (answer.kind === 'notRecorded') { this.whole = answer.reason; this.exact = null; return; }
     this.whole = null;
     this.width = answer.columns;
     this.values = new Float64Array(answer.rows * answer.columns);
+    this.exact = null;
     this.states = new Uint8Array(answer.rows * answer.columns);
     this.reasons = new Array<string | null>(answer.rows).fill(null);
     for (let row = 0; row < answer.rows; row++) {
       for (let column = 0; column < this.width; column++) {
         const at = row * this.width + column;
-        this.states[at] = cellState(answer, at);
-        this.values[at] = cellNumber(answer, at) ?? Number(cellValue(answer, at));
+        const state = cellState(answer, at);
+        this.states[at] = state;
+        const safe = cellNumber(answer, at);
+        if (safe !== null) {
+          this.values[at] = safe;
+        } else {
+          const big = cellValue(answer, at);
+          this.values[at] = Number(big);
+          if (state === CELL.value) {
+            (this.exact ??= new Map()).set(at, big);
+          }
+        }
       }
       this.reasons[row] = rowReason(answer, row);
     }
@@ -122,6 +147,14 @@ export class CellGroup implements GroupValues {
     if (this.whole !== null || row >= this.reasons.length) return undefined;
     const at = row * this.width + column;
     return this.states[at] === CELL.value ? this.values[at] : undefined;
+  }
+
+  raw(row: number, column: number): bigint | undefined {
+    if (this.seeded) return this.seeded.raw?.(row, column);
+    if (this.whole !== null || row >= this.reasons.length) return undefined;
+    const at = row * this.width + column;
+    if (this.states[at] !== CELL.value) return undefined;
+    return this.exact?.get(at) ?? BigInt(Math.round(this.values[at]!));
   }
 
   missing(row: number, column: number): string {
@@ -174,6 +207,14 @@ export function sectionValues(section: LiveSection, groups: readonly GroupValues
   };
   return {
     get: key => { const at = byKey.get(key); if (at === undefined) return undefined; const value = evaluate(at); return typeof value === 'number' ? value : undefined; },
+    raw: key => {
+      const at = byKey.get(key);
+      if (at === undefined) return undefined;
+      const kind = kinds[cells[at + 1]!]!, count = cells[at + 2]!;
+      if (kind.op !== 'value' || kind.scale !== 1 || count !== 1) return undefined;
+      const { group, row, column } = operand(at, 0);
+      return group.raw?.(row, column);
+    },
     missing: key => { const at = byKey.get(key); if (at === undefined) return 'Not a live cell of this reply'; const value = evaluate(at); return typeof value === 'string' ? value : ''; },
   };
 }

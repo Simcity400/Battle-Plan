@@ -141,6 +141,7 @@ fn withdraw_baselines() {
 }
 
 fn update_enabled() {
+    collector_observers::variant_stat_witness::install(stat_timing_quiet);
     let enabled = OWN_ENABLED.load(Ordering::Acquire)
         && WORLD_ENABLED.load(Ordering::Acquire)
         && source_hooks::enabled()
@@ -278,6 +279,121 @@ struct Store {
 }
 static RECOVER: AtomicBool = AtomicBool::new(true);
 static RECOVERY_READ: AtomicBool = AtomicBool::new(true);
+static STAT_WITHHELD_BY_LANE: [AtomicU64; native::STAT_LANE_COUNT] =
+    [const { AtomicU64::new(0) }; native::STAT_LANE_COUNT];
+static LAST_STAT_WITHHELD: Mutex<Option<(&'static str, &'static str)>> = Mutex::new(None);
+
+pub(super) fn stat_timing_quiet() -> Result<native::QuietToken, &'static str> {
+    if native::mutations::WRITER_AUDIT_REFUSAL.is_some() {
+        return Err("variant stat writer audit failed");
+    }
+    if !enabled() {
+        return Err("variant stat writer hooks disabled");
+    }
+    if active() != 0 {
+        return Err("variant stat writer active");
+    }
+    let Some((world_epoch, world_revision)) =
+        collector_observers::world_input_changes::design_quiet()
+    else {
+        return Err(
+            if collector_observers::world_input_changes::design_forwarder_active() != 0 {
+                "variant stat writer active"
+            } else {
+                "variant stat writer hooks disabled"
+            },
+        );
+    };
+    let epoch = EPOCH.load(Ordering::SeqCst);
+    let revision = DESIGN_GATE.revision();
+    if active() != 0 {
+        return Err("variant stat writer active");
+    }
+    if !enabled() {
+        return Err("variant stat writer hooks disabled");
+    }
+    Ok(native::QuietToken {
+        epoch,
+        revision,
+        world_epoch,
+        world_revision,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct StatWitnessSnapshot {
+    total_withheld: u64,
+    by_lane: [u64; native::STAT_LANE_COUNT],
+    last_lane: Option<&'static str>,
+    last_reason: Option<&'static str>,
+}
+
+fn stat_witness_snapshot() -> StatWitnessSnapshot {
+    let mut total_withheld = 0_u64;
+    let mut by_lane = [0_u64; native::STAT_LANE_COUNT];
+    for (slot, counter) in by_lane.iter_mut().zip(&STAT_WITHHELD_BY_LANE) {
+        let count = counter.load(Ordering::Relaxed);
+        *slot = count;
+        total_withheld = total_withheld.saturating_add(count);
+    }
+    let last = *LAST_STAT_WITHHELD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    StatWitnessSnapshot {
+        total_withheld,
+        by_lane,
+        last_lane: last.map(|(lane, _)| lane),
+        last_reason: last.map(|(_, reason)| reason),
+    }
+}
+
+pub fn stat_witness_status() -> impl serde::Serialize {
+    struct LaneCounts([u64; native::STAT_LANE_COUNT]);
+    impl serde::Serialize for LaneCounts {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeMap;
+            let mut map = serializer.serialize_map(Some(native::STAT_LANE_COUNT))?;
+            for (lane, count) in native::STAT_LANES.into_iter().zip(self.0) {
+                map.serialize_entry(lane.name, &count)?;
+            }
+            map.end()
+        }
+    }
+    #[derive(serde::Serialize)]
+    struct StatWitnessStatus {
+        total_withheld: u64,
+        by_lane: LaneCounts,
+        last_lane: Option<&'static str>,
+        last_reason: Option<&'static str>,
+    }
+    let snapshot = stat_witness_snapshot();
+    StatWitnessStatus {
+        total_withheld: snapshot.total_withheld,
+        by_lane: LaneCounts(snapshot.by_lane),
+        last_lane: snapshot.last_lane,
+        last_reason: snapshot.last_reason,
+    }
+}
+
+pub(super) struct StatLaneWitness;
+
+impl native::StatWitness for StatLaneWitness {
+    fn quiet(&self) -> Result<native::QuietToken, &'static str> {
+        stat_timing_quiet()
+    }
+    fn record_withheld(&mut self, lane: usize, reason: &'static str) {
+        if let Some(counter) = STAT_WITHHELD_BY_LANE.get(lane) {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some(stat_lane) = native::STAT_LANES.get(lane) {
+            *LAST_STAT_WITHHELD
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some((stat_lane.name, reason));
+        }
+    }
+}
+
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Acquire)
 }
@@ -2688,7 +2804,8 @@ fn walk_snapshot(
         engine_equipment::equipment_module_container::walk(memory, base, source, rows)
     });
     super::capture_source(&mut walk.stats, Ok(&source[..]), |source, rows| {
-        native::walk_stats_carried(memory, source, rows, &mut ())
+        let mut witness = StatLaneWitness;
+        native::walk_stats_carried(memory, base, source, rows, &mut (), &mut witness)
     });
     super::capture_source(&mut walk.upgrades, Ok(&source[..]), |source, rows| {
         engine_equipment::cequipment_upgrades_instance::walk(memory, base, source, rows)

@@ -6,4 +6,4 @@ Pool exhaustion starts growth and leaves the ungranted owner to retry. The recor
 
 A refused update leaves part of the window unknown. The window keeps its pool slot, position and membership, but draws nothing until its unknown state is repaired. A complete update recovers the fields it writes every time. Parts written only under a specific condition recover when that write or its observed transition happens. A structurally invalid call withholds the window until it is rebuilt. Refusals stay with the slot across owners because the next owner inherits the same window state.
 
-[Map icon pool](../../crates/viewer-foundation/src/map/native_gui/lifecycle.rs) · [Icon window manager](../../crates/viewer-foundation/src/map/icon_windows.rs)
+[Map icon pool](../../crates/viewer-native-gui/src/native_gui/lifecycle.rs) · [Icon window manager](../../crates/viewer-native-gui/src/icon_windows.rs)

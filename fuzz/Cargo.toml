@@ -11,7 +11,10 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 tempfile = "3"
-replay = { path = "../crates/replay", features = ["test-support"] }
+replay = { path = "../crates/replay", default-features = false, features = ["test-support"] }
+replay-capture-spool = { path = "../crates/replay-capture-spool" }
+replay-recording = { path = "../crates/replay-recording" }
+recorder-derive = { path = "../crates/recorder-derive" }
 replay-columnar = { path = "../crates/replay-columnar" }
 replay-data = { path = "../crates/replay-data" }
 replay-frame = { path = "../crates/replay-frame" }

@@ -1,5 +1,5 @@
 use super::{breakdown::Histories, *};
-use crate::{products::at_hour::Owner, test_fixtures::source};
+use dashboard_base::{products::at_hour::Owner, test_fixtures::source};
 use replay_data::rows::{
     CountryLinkRow, LexicalTokenRow, Recorded, ResearchAssignmentRow as A, ResearchCoverageRow, ResearchModifierRow, SliceReadRow, TableRows,
 };
@@ -152,15 +152,18 @@ fn slots_at_an_hour_join_the_active_assignment_and_say_why_they_are_unknown() {
     assert_eq!(json["kinds"][0]["id"], "progress");
     assert_eq!(json["kinds"][0]["op"], "ratio");
     assert_eq!(researching.state.entry_first_observed_hour, Some(72));
-    assert_eq!(researching.state.token.as_deref(), Some("radio"));
+    assert_eq!((researching.state.token.as_deref(), researching.state.database_index), (Some("radio"), Some(9)));
     let progress = researching.progress.as_ref().unwrap();
     assert_eq!((progress.progress_raw.as_str(), progress.base_days_raw.as_deref()), ("4000000", Some("10000000")));
     assert_eq!(researching.state.details.as_ref().unwrap().remaining_days, None);
-    assert_eq!((slots[1].state.token.as_ref(), slots[1].progress.as_ref()), (None, None));
+    assert_eq!((slots[1].state.token.as_ref(), slots[1].state.database_index, slots[1].progress.as_ref()), (None, None, None));
     assert_eq!(grants.grants.len(), 1);
     assert_eq!(grants.grants[0].technologies[0].token, "radar");
-    let (_, slots, _) = slots::slots(&frame(130, 120, vec![input(0, 32, 10, b"radar", 0)], Vec::new()), owner, 130, &none, &Cells::default()).unwrap();
-    assert_eq!((slots[0].state.entry_first_observed_hour, slots[0].progress.as_ref()), (None, None));
+    let (_, mut slots, _) = slots::slots(&frame(130, 120, vec![input(0, 31, 9, b"radio", 0), input(1, 32, 10, b"radar", 0)], Vec::new()), owner, 130, &none, &Cells::default()).unwrap();
+    assert_eq!((slots[1].state.entry_first_observed_hour, slots[1].state.database_index, slots[1].progress.as_ref()), (None, Some(10), None), "an unjoined read keeps the definition it read");
+    slots::defined(&mut slots, &|token, index| (Some(format!("{token} #{index}")), None));
+    assert_eq!(slots[1].definition.as_ref().map(|text| (text.database_index, text.name.as_deref())), Some((10, Some("radar #10"))), "its text is looked up by its own template");
+    assert_eq!(slots[0].definition, None, "a joined read takes its text from its assignment");
     assert!(slots::slots(&frame(130, 120, rows.clone(), Vec::new()), owner, 130, &none, &Cells::default()).unwrap().2.unavailable.is_some());
     let mut uncovered = frame(130, 120, rows.clone(), Vec::new());
     *uncovered.tables[TableId::ResearchCoverage.index()] = TableView::Complete(TableRows::ResearchCoverage(Vec::new()));
@@ -224,15 +227,26 @@ fn a_state_read_again_continues_while_only_its_days_left_count_down() {
         first_hour,
         last_hour,
         token: Some("radio".into()),
+        database_index: Some(9),
         entry_first_observed_hour: Some(100),
         speed_multiplier_raw: "100000".into(),
         banked_days_raw: "0".into(),
         applied_days_raw: "0".into(),
         ahead_reduction_years_raw: Some("0".into()),
-        details: Some(ResearchDetails { remaining_days, bonuses: Some(Vec::new()), modifiers: None }),
+        details: Some(ResearchDetails { remaining_days, estimate_raw: None, bonuses: Some(Vec::new()), modifiers: None }),
     };
     assert!(continues(&read(100, 123, Some(10)), &read(124, 147, Some(9))));
     assert!(continues(&read(100, 123, Some(10)), &read(124, 147, Some(10))));
     assert!(!continues(&read(100, 123, Some(10)), &read(124, 147, Some(7))));
     assert!(!continues(&read(100, 120, Some(10)), &read(124, 147, Some(9))));
+}
+
+#[test]
+fn the_days_left_estimate_keeps_the_fraction_the_game_rounds_up() {
+    let row = |left: i64| ResearchInputRow { progress_raw: 100 * 100_000 - left, ..input(0, 31, 9, b"radio", 0) };
+    assert_eq!(super::remaining(&row(1_050_000), 150_000), Some((7, 700_000)), "10.5 base days at 1.5x is exactly 7 days");
+    assert_eq!(super::remaining(&row(1_000_000), 300_000), Some((4, 333_334)), "10 base days at 3x is 3 1/3 days, which the game shows as 4");
+    assert_eq!(super::remaining(&row(300_001), 300_000), Some((2, 100_001)), "3.00001 base days at 3x is just over a day, which the game shows as 2");
+    assert_eq!(super::remaining(&row(0), 300_000), Some((0, 0)));
+    assert_eq!(super::remaining(&row(1_000_000), 0), None);
 }

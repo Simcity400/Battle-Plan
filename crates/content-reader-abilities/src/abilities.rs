@@ -1,13 +1,14 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
 use crate::key_names::KeyNames;
 use std::{collections::BTreeMap, io};
 
+use content_reader_script::native::{self, Shape};
 use crate::{
     ResolvedLayers,
     fields::{block, invalid},
     modifiers::{self, Modifiers},
     parser::Item,
-    parser::native::{self, Shape},
     scope::ScopeKind,
 };
 
@@ -270,7 +271,7 @@ fn apply_with_terrain(
 }
 
 pub fn read(layers: &ResolvedLayers) -> io::Result<AbilitySprites> {
-    let paths = content_reader_core::script_files::database_paths(layers, "common/abilities/")?;
+    let paths = content_reader_layers::script_files::database_paths(layers, "common/abilities/")?;
     let terrains = crate::terrain::read_definitions(layers)?
         .categories
         .into_iter()
@@ -294,7 +295,7 @@ mod tests {
 
     #[test]
     fn ability_notes_keep_kind() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let notes = apply_with_terrain(
             b"ability = { a = { duration = { x = 1 } } }",
             &mut AbilitySprites::default(),
@@ -318,7 +319,7 @@ mod tests {
 
     #[test]
     fn unknown_fields_leave_contents_in_the_ability() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut sprites = AbilitySprites::default();
         apply(
             br#"@sprite=custom ability={a={"icon"=ignored unknown={ICON=@sprite}}}"#,
@@ -343,7 +344,7 @@ mod tests {
 
     #[test]
     fn default_and_authored_sprites_take_the_animated_suffix() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut sprites = AbilitySprites::default();
         apply(
             b"ability={ force_attack={ duration=168 } special={ icon=GFX_custom } }",
@@ -360,7 +361,7 @@ mod tests {
 
     #[test]
     fn lookup_keeps_the_first_exact_token_and_later_malformed_fields_still_fail() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut sprites = AbilitySprites::default();
         apply(b"ability={ special={ icon=GFX_old } }", &mut sprites).unwrap();
         apply(b"ability={ special={ icon=GFX_new } }", &mut sprites).unwrap();
@@ -376,7 +377,7 @@ mod tests {
 
     #[test]
     fn repeated_adjusters_are_read_again_only_on_the_default_token() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let terrains = BTreeMap::from([
             (b"none".to_vec(), b"none".to_vec()),
             (b"plains".to_vec(), b"plains".to_vec()),
@@ -410,7 +411,7 @@ mod tests {
 
     #[test]
     fn a_comment_only_file_declares_nothing() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut sprites = AbilitySprites::default();
         apply(b"# no abilities in this layer\n", &mut sprites).unwrap();
         assert!(sprites.by_token.is_empty());
@@ -418,7 +419,7 @@ mod tests {
 
     #[test]
     fn value_effect_scopes_follow_ability_type_in_authored_order() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut sprites = AbilitySprites::default();
         let notes = apply_with_terrain(br#"
         ability={
@@ -438,7 +439,7 @@ mod tests {
 
     #[test]
     fn description_keeps_accumulators_adjusters_and_appended_effect_order() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut catalog = AbilitySprites::default();
         let terrains = BTreeMap::from([(b"synthetic".to_vec(), b"SYNTHETIC".to_vec())]);
         apply_with_terrain(
@@ -496,7 +497,7 @@ mod tests {
 
     #[test]
     fn description_defaults_and_duplicate_lookup_preserve_exact_case() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut catalog = AbilitySprites::default();
         apply(
             b"ability={a={name=FIRST} a={name=LATER} A={name=UPPER}}",

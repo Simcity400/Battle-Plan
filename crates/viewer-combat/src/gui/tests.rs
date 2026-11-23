@@ -1,6 +1,6 @@
 use super::*;
 use std::sync::Arc;
-use viewer_foundation::map::test_support::gui::{Fixture, fixture, fixture_with, windows};
+use viewer_native_gui::test_support::gui::{Fixture, fixture, fixture_with, windows};
 
 thread_local! {
     static ARRIVED: std::cell::Cell<(Option<native_gui::Texture>, u64)> = const { std::cell::Cell::new((None, 0)) };
@@ -23,8 +23,8 @@ impl CombatResources for Fixture {
 
     fn button_sounds(
         &self,
-        _: &content_reader_core::gui::native::Button,
-    ) -> content_reader_core::gui::native::ButtonSounds {
+        _: &content_reader_gui::gui::native::Button,
+    ) -> content_reader_gui::gui::native::ButtonSounds {
         Default::default()
     }
 }
@@ -32,7 +32,7 @@ impl CombatResources for Fixture {
 #[test]
 fn naval_air_labels_keep_their_own_side_specific_geometry() {
     use crate::binding::NavalLayout;
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let windows = windows(
         br#"guiTypes={containerWindowType={name=entry size={width=1 height=3}
         instantTextboxType={name=desc_left position={x=-12 y=0} maxWidth=61}
@@ -53,7 +53,7 @@ fn naval_air_labels_keep_their_own_side_specific_geometry() {
 
 #[test]
 fn naval_boxes_use_authored_grid_geometry_and_runtime_escape_height() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let windows = windows(
         br#"guiTypes={
         containerWindowType={name=view size={width=300 height=200}
@@ -119,7 +119,7 @@ fn naval_boxes_use_authored_grid_geometry_and_runtime_escape_height() {
 
 #[test]
 fn retained_null_tactic_keeps_the_previous_drawable_and_initial_authored_image() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use super::super::{presentation::land_tactics, tactics::Content};
     use replay_data::rows::LandCombatSideDetails;
     let windows = windows(
@@ -135,9 +135,9 @@ fn retained_null_tactic_keeps_the_previous_drawable_and_initial_authored_image()
         "combat_tactic:fixture",
         resources.sprites["GFX_odd"].clone(),
     );
-    let content = Content::from_database(content_reader_core::combat_tactics::parse(
+    let content = Content::from_database(content_reader_military::combat_tactics::parse(
         b"fixture={picture=fixture}",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     ));
     let null = LandCombatSideDetails {
         tactic_kind: 1,
@@ -202,8 +202,8 @@ fn retained_null_tactic_keeps_the_previous_drawable_and_initial_authored_image()
 
 #[test]
 fn result_controls_include_both_close_buttons_outside_panels_and_text_scrollbars() {
-    content_reader_core::test_game::enter();
-    let resources = fixture_with(content_reader_core::gui::native::read(br#"guiTypes={
+    content_reader_script::test_game::enter();
+    let resources = fixture_with(content_reader_gui::gui::native::read(br#"guiTypes={
         scrollbarType={name=details_bar size={x=10 y=60} minValue=0 maxValue=1 stepSize=1
             rightButton=up leftButton=down track=track slider=slider
             guiButtonType={name=up spriteType=GFX_even}
@@ -257,7 +257,7 @@ fn result_controls_include_both_close_buttons_outside_panels_and_text_scrollbars
 
 #[test]
 fn retained_result_mixed_templates_keep_nested_air_loss_counts_and_tint() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use super::super::Widget;
     let windows = windows(
         br#"guiTypes={
@@ -365,7 +365,7 @@ fn retained_result_mixed_templates_keep_nested_air_loss_counts_and_tint() {
 
 #[test]
 fn tactics_entry_provider_fills_child_hits_and_preserves_explicit_hovers() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use super::super::tooltips::set_hover;
     let windows = windows(
         b"guiTypes={containerWindowType={name=tactics_list_entry
@@ -451,7 +451,7 @@ fn tactics_entry_provider_fills_child_hits_and_preserves_explicit_hovers() {
 
 #[test]
 fn combat_box_hovers_pass_through_counts_and_keep_ship_icons_on_both_sides() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use super::super::{Widget, tooltips::set_hover};
     for (transparent, cover) in [(true, false), (false, false), (true, true)] {
         let mut source =
@@ -565,7 +565,7 @@ fn combat_box_hovers_pass_through_counts_and_keep_ship_icons_on_both_sides() {
 
 #[test]
 fn combat_mixed_grid_rows_are_counted_without_losing_compatible_entries() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let windows = windows(
         br#"guiTypes={
         containerWindowType={name=view size={width=400 height=200}
@@ -644,7 +644,7 @@ fn combat_mixed_grid_rows_are_counted_without_losing_compatible_entries() {
 
 #[test]
 fn naval_loss_grid_uses_authored_slots_and_runtime_bounds() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use super::super::{Widget, binding::NavalEntry, naval_details::entry_offset};
     let windows = windows(
         br#"guiTypes={
@@ -723,7 +723,7 @@ fn naval_loss_grid_uses_authored_slots_and_runtime_bounds() {
 
 #[test]
 fn combat_button_enabled_binding_draws_native_disabled_state_and_resets() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use super::super::Widget;
 
     let windows = windows(
@@ -834,8 +834,8 @@ fn hover_geometry_uses_native_container_clip() {
 
 #[test]
 fn native_paths_include_container_backgrounds() {
-    content_reader_core::test_game::enter();
-    let gui = content_reader_core::gui::native::read(b"guiTypes={containerWindowType={name=view size={width=20 height=20} background={name=Background spriteType=bg} containerWindowType={name=inner size={width=5 height=5} iconType={name=icon spriteType=s}}}}");
+    content_reader_script::test_game::enter();
+    let gui = content_reader_gui::gui::native::read(b"guiTypes={containerWindowType={name=view size={width=20 height=20} background={name=Background spriteType=bg} containerWindowType={name=inner size={width=5 height=5} iconType={name=icon spriteType=s}}}}");
     let root = gui
         .templates()
         .iter()
@@ -848,7 +848,7 @@ fn native_paths_include_container_backgrounds() {
 
 #[test]
 fn unchanged_generation_keeps_runtime_controls_until_refresh() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let windows = windows(
         br#"guiTypes={containerWindowType={name=view size={width=20 height=20}
             iconType={name=icon spriteType=GFX_even}}}"#,
@@ -890,7 +890,7 @@ fn unchanged_generation_keeps_runtime_controls_until_refresh() {
 
 #[test]
 fn combat_prepare_draws_percentage_grid_slots_natively() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let windows = windows(
         br#"guiTypes={
             containerWindowType={name=entry size={width=20 height=10}
@@ -964,7 +964,7 @@ fn combat_prepare_draws_percentage_grid_slots_natively() {
 
 #[test]
 fn combat_prepare_composes_nested_entries_clips_hovers_and_counts_missing_templates() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let windows = windows(
         br#"guiTypes={
             containerWindowType={name=leaf size={width=20 height=10}
@@ -1103,7 +1103,7 @@ fn combat_prepare_composes_nested_entries_clips_hovers_and_counts_missing_templa
 
 #[test]
 fn combat_prepare_sizes_escape_entries_from_the_native_drawable() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let windows = windows(
         br#"guiTypes={
             containerWindowType={name=entry size={width=1 height=3}
@@ -1171,7 +1171,7 @@ fn combat_prepare_sizes_escape_entries_from_the_native_drawable() {
 
 #[test]
 fn combat_controls_keep_native_scroll_paths_axes_and_popup_mask() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let body = r#"size={width=300 height=160}
             containerWindowType={name=BattleReport size={width=100 height=80}
                 verticalScrollbar=shared autohide_scrollbars=no}
@@ -1198,7 +1198,7 @@ fn combat_controls_keep_native_scroll_paths_axes_and_popup_mask() {
             containerWindowType={{name=tactics_list_view {body}}}
         }}"#
     );
-    let resources = fixture_with(content_reader_core::gui::native::read(document.as_bytes()));
+    let resources = fixture_with(content_reader_gui::gui::native::read(document.as_bytes()));
     let popup = resources.gui_type(b"tactics_list_view").unwrap();
     let mut popup_instance = Instance::construct(popup, [800, 600], &resources).unwrap();
     popup_instance.gui_show(popup, popup).unwrap();
@@ -1267,7 +1267,7 @@ fn combat_controls_keep_native_scroll_paths_axes_and_popup_mask() {
 
 #[test]
 fn combat_hit_prepare_does_not_tick_before_native_scroll_input() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let source = br#"guiTypes={
             extendedScrollbarType={name=sb size={width=10 height=50} smooth_scrolling=0.5
                 background={name=bg spriteType=GFX_even}
@@ -1284,7 +1284,7 @@ fn combat_hit_prepare_does_not_tick_before_native_scroll_input() {
                     slotsize={width=100 height=40} max_slots_horizontal=1}}
         }"#;
     let windows = windows(source);
-    let resources = fixture_with(content_reader_core::gui::native::read(source));
+    let resources = fixture_with(content_reader_gui::gui::native::read(source));
     let view = windows.gui_type(b"view").unwrap();
     let values = Values::from([(
         "rows".into(),
@@ -1391,7 +1391,7 @@ fn combat_hit_prepare_does_not_tick_before_native_scroll_input() {
 
 #[test]
 fn combat_prepare_resolves_bound_control_and_holder_names_without_case() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let windows = windows(
         br#"guiTypes={
             containerWindowType={name=Entry size={width=100 height=40}
@@ -1504,7 +1504,7 @@ fn combat_prepare_resolves_bound_control_and_holder_names_without_case() {
 
 #[test]
 fn authored_tooltip_anchors_resolve_from_the_controls_unclipped_corner() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use super::super::{TooltipAnchor, tooltips::set_hover};
     let windows = windows(
         b"guiTypes={containerWindowType={name=anchored size={width=300 height=60}
@@ -1535,7 +1535,7 @@ fn authored_tooltip_anchors_resolve_from_the_controls_unclipped_corner() {
 
 #[test]
 fn an_opened_window_slides_from_its_position_to_its_show_position_and_keeps_its_drag() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let windows = windows(
         br#"guiTypes={containerWindowType={name=countrystateview position={x=-416 y=-549}
             show_position={x=-6 y=-655} show_animation_type=decelerated animation_time=300
@@ -1578,7 +1578,7 @@ fn an_opened_window_slides_from_its_position_to_its_show_position_and_keeps_its_
 
 #[test]
 fn a_flag_whose_art_arrives_is_drawn_at_the_same_hour() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let windows = windows(
         br#"guiTypes={containerWindowType={name=countrystateview size={width=100 height=50}
             iconType={name=flag spriteType=GFX_even}}}"#,
@@ -1616,7 +1616,7 @@ fn entry_flag_parts(retained: &mut Retained, windows: &NativeWindows, resources:
 
 #[test]
 fn art_arriving_rebinds_the_window_and_its_entries_at_the_same_generation() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let windows = windows(
         br#"guiTypes={containerWindowType={name=view size={width=200 height=100}
             gridBoxType={name=grid size={width=200 height=50} slotsize={width=200 height=50}
@@ -1645,7 +1645,7 @@ fn art_arriving_rebinds_the_window_and_its_entries_at_the_same_generation() {
 
 #[test]
 fn a_window_whose_template_is_missing_is_refused_by_name() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let windows = windows(br#"guiTypes={containerWindowType={name=another size={width=10 height=10}}}"#);
     let resources = fixture();
     let drawn = Windows::default()
@@ -1657,7 +1657,7 @@ fn a_window_whose_template_is_missing_is_refused_by_name() {
 
 #[test]
 fn a_window_takes_the_pointer_over_every_child_it_draws_beyond_its_own_size() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let windows = windows(
         br#"guiTypes={containerWindowType={name=countrystateview size={width=100 height=50}
             containerWindowType={name=lower position={x=10 y=48} size={width=60 height=30}

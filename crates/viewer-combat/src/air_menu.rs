@@ -9,9 +9,8 @@ use super::{binding::Bindings, content::Content};
 use content_reader_localisation::localisation::Argument;
 use replay_frame::frame::DecodedFrame;
 use std::io;
-use viewer_foundation::{
-    combat_selection::Selection, map::perspective::Vision, tooltip_text::displayable,
-};
+use viewer_engagements::combat_selection::Selection;
+use viewer_foundation::{perspective::Vision, tooltip_text::displayable};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Action {

@@ -297,7 +297,7 @@ fn read_design_fields(
     if !result.named_bonuses.is_empty() {
         let cache = word::<[u8; STAT_COUNT * 8]>(memory, object, STATS)?;
         for index in 0..STAT_COUNT {
-            if [0x2e, 0x2f, 0x30, 0x31, 0x3e, 0x41, 0x43, 0x44, 0x45, 0x4d].contains(&index) {
+            if STAT_LANES.iter().any(|lane| lane.stat_index == index) {
                 continue;
             }
             let value = i64::from_le_bytes(cache[index * 8..index * 8 + 8].try_into().unwrap());

@@ -320,21 +320,22 @@ impl Scratch {
                             .filter(|hook| hook.needs_flush)
                             .all(|hook| hook.bytes_match(hook.enabled))
                     {
-                        for hook in hooks.iter_mut() {
+                        for hook in hooks.iter_mut().filter(|hook| hook.needs_flush) {
                             hook.needs_flush = false;
+                            hook.verification_failed = false;
                         }
                     }
                     return Err(code);
                 }
-                if hooks
-                    .iter()
-                    .zip(&self.previous)
-                    .any(|(hook, (_, owned))| *owned && !hook.bytes_match(false))
-                {
-                    return Err(0);
+                for (hook, (_, owned)) in hooks.iter_mut().zip(&self.previous) {
+                    if *owned && !hook.bytes_match(false) {
+                        hook.verification_failed = true;
+                        return Err(0);
+                    }
                 }
                 for hook in hooks.iter_mut() {
                     hook.needs_flush = false;
+                    hook.verification_failed = false;
                 }
                 Ok(true)
             })()
@@ -549,19 +550,23 @@ impl Scratch {
                         .filter(|hook| hook.needs_flush)
                         .all(|hook| hook.bytes_match(hook.enabled))
                 {
-                    for hook in hooks.iter_mut() {
+                    for hook in hooks.iter_mut().filter(|hook| hook.needs_flush) {
                         hook.needs_flush = false;
+                        hook.verification_failed = false;
                     }
                 }
             } else {
                 for group in groups.iter_mut().filter(|group| restored(group)) {
                     let owned = group.start..group.start + group.len;
                     let members = &mut hooks[owned.clone()];
-                    if members
-                        .iter()
-                        .zip(&previous[owned])
-                        .any(|(hook, (_, owned))| *owned && !hook.bytes_match(false))
-                    {
+                    let mut verified = true;
+                    for (hook, (_, owned)) in members.iter_mut().zip(&previous[owned]) {
+                        if *owned && !hook.bytes_match(false) {
+                            hook.verification_failed = true;
+                            verified = false;
+                        }
+                    }
+                    if !verified {
                         group.outcome = Some(Outcome::Refused(Refusal {
                             reason: "restore hook bytes differ",
                             code: 0,
@@ -569,6 +574,7 @@ impl Scratch {
                     } else {
                         for hook in members.iter_mut() {
                             hook.needs_flush = false;
+                            hook.verification_failed = false;
                         }
                     }
                 }
@@ -667,6 +673,14 @@ impl Drop for Guard {
 
 pub fn active() -> bool {
     SCRATCH.with_borrow(|scratch| scratch.is_some())
+}
+
+pub fn collecting() -> bool {
+    SCRATCH.with_borrow(|scratch| {
+        scratch
+            .as_ref()
+            .is_some_and(|scratch| scratch.mode == Mode::Collect)
+    })
 }
 
 pub struct Batch(std::marker::PhantomData<*const ()>);

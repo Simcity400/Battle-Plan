@@ -6,4 +6,4 @@ The frame accepts grids through the applied hour, accumulates their differences 
 
 Changed sets record bounding column ranges for fixed bands of rows. An unknown difference forces a whole upload. Contiguous changed bands are written as bounded rectangles to amortize the cost of GPU write calls. Out-of-view bands stay owed and draw from the newest grid when they enter view. The visible window includes one band of margin and can span both ends of the map's horizontal seam. Without a useful camera window, the upload covers the whole grid. This limits queue traffic while preserving the effect of a full write for every visible texel, including while the hour is paused and the camera moves.
 
-[Weather layer](../../crates/viewer-playback/src/layers/snow.rs) · [Fold](../../crates/viewer-playback/src/layers/snow/fold.rs) · [Tests](../../crates/viewer-playback/src/layers/snow/tests.rs)
+[Weather layer](../../crates/viewer-layers-infrastructure/src/snow.rs) · [Fold](../../crates/viewer-layers-infrastructure/src/snow/fold.rs) · [Tests](../../crates/viewer-layers-infrastructure/src/snow/tests.rs)

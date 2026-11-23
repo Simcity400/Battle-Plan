@@ -2,7 +2,7 @@ use super::*;
 use std::collections::BTreeMap;
 
 pub(crate) fn initialize_runtime_tables() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
 }
 
 pub(crate) static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -14,15 +14,41 @@ fn the_compiler_is_the_named_dll_and_nothing_else() {
     assert_eq!(Compiler::at(&library).err().as_deref(), Some(MISSING_COMPILER));
     std::fs::write(&library, b"not a library").unwrap();
     assert_eq!(Compiler::at(&library).err().as_deref(), Some("dxcompiler.dll carries no product version"));
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        let system_dll = std::path::PathBuf::from(root).join("System32").join("kernel32.dll");
+        if system_dll.is_file() {
+            let version = dxc::product_version(&system_dll).unwrap();
+            assert!(!version.is_empty());
+            assert_eq!(
+                Compiler::at(&system_dll).err().as_deref(),
+                Some(format!("dxcompiler.dll is {version:?}, not the pinned {DXC_VERSION}").as_str())
+            );
+        }
+    }
 }
 
-// quarantine: #1453 needs the pinned dxcompiler.dll beside the test program
 #[test]
-#[ignore = "requires the pinned shader compiler"]
 fn the_pinned_dll_beside_the_program_reports_the_pinned_version() {
     let exe = std::env::current_exe().unwrap();
-    assert_eq!(dxc::product_version(&exe.with_file_name("dxcompiler.dll")).unwrap(), DXC_VERSION);
+    let dll = exe.with_file_name("dxcompiler.dll");
+    assert!(
+        dll.is_file(),
+        "the_pinned_dll_beside_the_program_reports_the_pinned_version requires the pinned dxcompiler.dll beside the test program (missing: {}; run tools/install-shader-compiler.ps1)",
+        dll.display()
+    );
+    assert_eq!(dxc::product_version(&dll).unwrap(), DXC_VERSION);
     Compiler::discover().unwrap();
+}
+
+#[test]
+fn shader_module_labels_avoid_dxc_path_and_flag_characters() {
+    assert_eq!(gpu::shader_module_label("named.shader:Water"), "named.shader_Water");
+    assert_eq!(
+        gpu::shader_module_label("gfx/FX/river.shader:Water"),
+        "gfx_FX_river.shader_Water"
+    );
+    assert_eq!(gpu::shader_module_label("-flag.shader:Up"), "_-flag.shader_Up");
+    assert_eq!(gpu::shader_module_label(""), "_");
 }
 
 mod arena;
@@ -77,7 +103,7 @@ PixelShader = {{ MainCode P [[ float4 main(O v) : SV_TARGET {{ {body} }} ]] }}
 Effect Test {{ VertexShader = V PixelShader = P }}
 "#
         );
-        let program = content_reader_core::pdxshader::program::read_with(b"reads.shader", &|path| {
+        let program = content_reader_gui::pdxshader::program::read_with(b"reads.shader", &|path| {
             Some(if path == b"reads.shader" {
                 source.as_bytes().to_vec()
             } else {
@@ -116,7 +142,7 @@ Effect Test {{ VertexShader = V PixelShader = P }}
 fn blend_defaults_inherit_alpha_and_masks_follow_native_substring_matching() {
     crate::tests::initialize_runtime_tables();
     let source = b"BlendState BlendState { BlendEnable = yes SourceBlend = src_alpha DestBlend = inv_src_alpha WriteMask = \"RED|BLUE\" } Effect Up { }\n";
-    let mut program = content_reader_core::pdxshader::program::read_with(b"custom.shader", &|path| {
+    let mut program = content_reader_gui::pdxshader::program::read_with(b"custom.shader", &|path| {
         Some(if path == b"custom.shader" {
             source.to_vec()
         } else {
@@ -148,7 +174,7 @@ Effect Stencil { DepthStencilState = STENCIL RasterizerState = lines }
 Effect Off { DepthStencilState = Off }
 Effect Default { }
 ";
-    let program = content_reader_core::pdxshader::program::read_with(b"states.shader", &|path| {
+    let program = content_reader_gui::pdxshader::program::read_with(b"states.shader", &|path| {
         Some(if path == b"states.shader" {
             source.to_vec()
         } else {
@@ -275,7 +301,7 @@ Effect Prefix { VertexShader = V PixelShader = Prefix }
 Effect Raw { VertexShader = V PixelShader = Raw }
 "#;
     let program =
-        content_reader_core::pdxshader::program::read_with(b"gfx/FX/linkage.lua", &|path| match path {
+        content_reader_gui::pdxshader::program::read_with(b"gfx/FX/linkage.lua", &|path| match path {
             b"gfx/FX/linkage.shader" => Some(source.as_bytes().to_vec()),
             b"gfx/FX/defines_hlsl_dx11.fxh" => {
                 Some(b"#define PDX_POSITION SV_POSITION\n#define PDX_COLOR SV_TARGET\n".to_vec())
@@ -301,7 +327,7 @@ Effect Raw { VertexShader = V PixelShader = Raw }
         let source = format!(
             "VertexShader = {{ MainCode V [[ float4 main() : SV_POSITION {{ return 0; }} ]] }}\nPixelShader = {{\n{declaration}\nMainCode P [[ float4 main() : SV_TARGET {{ return 1; }} ]] }}\nEffect Up {{ VertexShader = V PixelShader = P }}\n"
         );
-        let program = content_reader_core::pdxshader::program::read_with(b"limits.shader", &|path| {
+        let program = content_reader_gui::pdxshader::program::read_with(b"limits.shader", &|path| {
             Some(if path == b"limits.shader" {
                 source.as_bytes().to_vec()
             } else {
@@ -362,7 +388,7 @@ Effect Rise {{ VertexShader = Plain PixelShader = Rise }}
 "#
     );
     let program =
-        content_reader_core::pdxshader::program::read_with(b"gfx/FX/clock.lua", &|path| match path {
+        content_reader_gui::pdxshader::program::read_with(b"gfx/FX/clock.lua", &|path| match path {
             b"gfx/FX/clock.shader" => Some(source.as_bytes().to_vec()),
             b"gfx/FX/defines_hlsl_dx11.fxh" => {
                 Some(b"#define PDX_POSITION SV_POSITION\n#define PDX_COLOR SV_TARGET\n".to_vec())
@@ -423,7 +449,7 @@ Effect Up { VertexShader = V PixelShader = Still }
 Effect Over { VertexShader = V PixelShader = Over }
 Effect Down { VertexShader = V PixelShader = Down }
 "#;
-    let program = content_reader_core::pdxshader::program::read_with(b"button.shader", &|path| {
+    let program = content_reader_gui::pdxshader::program::read_with(b"button.shader", &|path| {
         Some(if path == b"button.shader" {
             source.as_bytes().to_vec()
         } else {
@@ -477,7 +503,7 @@ float4 main(OUTPUT v) : PDX_COLOR { return float4(v.uv.x, v.uv.y, C.b, 1); }
 Effect Mod { VertexShader = V PixelShader = P }
 "#;
     let program =
-        content_reader_core::pdxshader::program::read_with(effect.as_bytes(), &|path| match path {
+        content_reader_gui::pdxshader::program::read_with(effect.as_bytes(), &|path| match path {
             b"gfx/FX/arbitrary-mod.shader" => Some(source.as_bytes().to_vec()),
             b"gfx/FX/defines_hlsl_dx11.fxh" => {
                 Some(b"#define PDX_POSITION SV_POSITION\n#define PDX_COLOR SV_TARGET\n".to_vec())
@@ -534,16 +560,16 @@ Effect Mod { VertexShader = V PixelShader = P }
             _ => {
                 changed.samplers.insert(
                     0,
-                    content_reader_core::pdxshader::program::Sampler {
+                    content_reader_gui::pdxshader::program::Sampler {
                         name: "unused".into(),
                         index: 0,
                         cube: false,
-                        mag: content_reader_core::pdxshader::program::Filter::Point,
-                        min: content_reader_core::pdxshader::program::Filter::Point,
-                        mip: content_reader_core::pdxshader::program::Filter::Point,
-                        u: content_reader_core::pdxshader::Address::Clamp,
-                        v: content_reader_core::pdxshader::Address::Clamp,
-                        w: content_reader_core::pdxshader::Address::Wrap,
+                        mag: content_reader_gui::pdxshader::program::Filter::Point,
+                        min: content_reader_gui::pdxshader::program::Filter::Point,
+                        mip: content_reader_gui::pdxshader::program::Filter::Point,
+                        u: content_reader_gui::pdxshader::Address::Clamp,
+                        v: content_reader_gui::pdxshader::Address::Clamp,
+                        w: content_reader_gui::pdxshader::Address::Wrap,
                         lod_bias: -0.0,
                         min_lod: 0,
                         max_lod: 1000,
@@ -785,7 +811,7 @@ fn arbitrary_map_pass_layouts_registers_and_volume_texture() {
     crate::tests::initialize_runtime_tables();
     use wgpu::util::DeviceExt;
     let _serial = GPU_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-    let program = content_reader_core::pdxshader::program::read_with(b"arbitrary.shader", &|p| Some(if p == b"arbitrary.shader" {
+    let program = content_reader_gui::pdxshader::program::read_with(b"arbitrary.shader", &|p| Some(if p == b"arbitrary.shader" {
         br#"VertexStruct I { float2 position : POSITION;
 uint flag : FLAGS;
 };
@@ -1091,7 +1117,7 @@ Effect Map { VertexShader = V PixelShader = P }
 #[test]
 fn authored_samplers_preserve_independent_vertex_and_pixel_slots() {
     crate::tests::initialize_runtime_tables();
-    let program = content_reader_core::pdxshader::program::read_with(b"stages.shader", &|p| {
+    let program = content_reader_gui::pdxshader::program::read_with(b"stages.shader", &|p| {
         Some(if p == b"stages.shader" {
             br#"VertexShader = { Samplers = { Height { Index = 2 AddressU = Wrap } } }
 PixelShader = { Samplers = { Color { Index = 2 AddressU = Clamp } } }
@@ -1106,10 +1132,10 @@ Effect Pass { VertexShader = V PixelShader = P }
     let state = gpu::State::authored(&program, &program.techniques[0]).unwrap();
     assert_eq!(
         state.samplers[&binding(2, Stage::Vertex)].u,
-        content_reader_core::pdxshader::Address::Wrap
+        content_reader_gui::pdxshader::Address::Wrap
     );
     assert_eq!(
         state.samplers[&binding(2, Stage::Pixel)].u,
-        content_reader_core::pdxshader::Address::Clamp
+        content_reader_gui::pdxshader::Address::Clamp
     );
 }

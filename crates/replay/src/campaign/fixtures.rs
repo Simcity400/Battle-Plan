@@ -1,16 +1,12 @@
-use super::{Records, Replay};
-use crate::{
-    BranchId, Hour,
-    columnar_file::{Capture, FileWriter, HourWriter, Resumed, Settings},
-    columnar_frames::schema,
-    columnar_journal::{JournalWriter, Witness},
-    format::FormatVersion,
-    frame::{DecodedFrame, FrameDecoder, FrameInput, TableInput, TableView},
-    identity::IdentityCodec,
-    native_frame::FrameWriter,
-    rows::TABLE_COUNT,
-    spool::{ControlRecord, Record, Recovery, encode_record},
-};
+use super::Replay;
+use replay_recording::records::Records;
+use replay_data::{BranchId, Hour, format::FormatVersion, identity::IdentityCodec, rows::{TABLE_COUNT, TableId}};
+use replay_recording::{capture::Capture, schema::schema, control::ControlRecord};
+use replay_journal::{columnar_file::{FileWriter, HourWriter, Resumed}, columnar_journal::{JournalWriter, Witness}, native_frame::FrameWriter};
+use replay_settings::compression::Settings;
+use replay_frame::frame::{DecodedFrame, FrameDecoder, FrameInput, TableInput, TableView};
+use replay_capture_spool::spool::{Record, Recovery, encode_record};
+use recorder_derive_framework::framework::Writers;
 use replay_columnar::{
     container::{SectionKey, Tags},
     envelope::{self, Kind, UNIT_ORDINALS},
@@ -22,13 +18,45 @@ use std::{
 };
 
 impl Replay {
-    pub fn from_records(campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Self> {
-        Self::open(encode_records(campaign_id, segments)?)
+    pub fn from_records(writers: Writers, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Self> {
+        Self::open(encode_records(writers, campaign_id, segments)?)
     }
 
-    pub fn from_records_derived(campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<(Self, Vec<DecodedFrame>)> {
+    pub fn from_synthetic(
+        writers: Writers,
+        campaign_id: Vec<u8>,
+        session: replay_data::identity::SessionStart,
+        branch: replay_frame::branches::BranchStart,
+        last: Hour,
+        mut write: impl FnMut(&mut replay_journal::synthetic::Synthetic, Hour) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        use replay_journal::synthetic::Synthetic;
+
+        let (id, first) = (branch.id, branch.first_hour);
+        let mode = session.capture_mode;
+        let format = FormatVersion::CURRENT.version();
+        let in_scope: Vec<_> = TableId::ALL.into_iter().filter(|&table| {
+            table.last_change().present(format) && replay_data::scope::records(mode, table)
+        }).collect();
+        let records = Records { sessions: vec![session], branches: vec![branch], ..Records::default() };
+        let identity = identity_of(campaign_id, &records)?;
+        let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, SETTINGS, None)?;
+        let mut file = HourWriter::new(file, LEVEL, writers)?;
+        let mut synthetic = Synthetic::new(id, first)?;
+        file.start_run(id, envelope::epoch::START, first)?;
+        for hour in first..=last {
+            write(&mut synthetic, hour)?;
+            synthetic.unavailable_unwritten(&in_scope, b"outside the fixture")?;
+            synthetic.end_encoded(|manifest, sections| file.hour(manifest, sections))??;
+        }
+        let mut file = file.finish()?;
+        add_records(&mut file, &records, FormatVersion::CURRENT)?;
+        Self::open(file.finish_runs(&[], true, |_| Ok(()))?.0.into_inner())
+    }
+
+    pub fn from_records_derived(writers: Writers, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<(Self, Vec<DecodedFrame>)> {
         let mut derived = Vec::new();
-        let bytes = encoded(campaign_id, segments, Some(&mut derived))?;
+        let bytes = encoded(writers, campaign_id, segments, Some(&mut derived))?;
         Ok((Self::open(bytes)?, derived))
     }
 
@@ -38,15 +66,15 @@ impl Replay {
         std::fs::rename(&temporary, path)
     }
 
-    pub fn read_block(&self, block: &super::BlockIndex) -> io::Result<Vec<crate::frame::Frame>> {
-        self.read_block_selected(block, &crate::rows::TableId::ALL)
+    pub fn read_block(&self, block: &super::BlockIndex) -> io::Result<Vec<replay_frame::frame::Frame>> {
+        self.read_block_selected(block, &replay_data::rows::TableId::ALL)
     }
 
     pub fn read_block_selected(
         &self,
         block: &super::BlockIndex,
-        tables: &[crate::rows::TableId],
-    ) -> io::Result<Vec<crate::frame::Frame>> {
+        tables: &[replay_data::rows::TableId],
+    ) -> io::Result<Vec<replay_frame::frame::Frame>> {
         let mut frames = Vec::new();
         self.read_block_alone(
             block,
@@ -63,23 +91,23 @@ impl Replay {
     pub fn read_block_recorded_selected(
         &self,
         block: &super::BlockIndex,
-        tables: &[crate::rows::TableId],
-    ) -> io::Result<Vec<crate::frame::RecordedFrame>> {
+        tables: &[replay_data::rows::TableId],
+    ) -> io::Result<Vec<replay_frame::frame::RecordedFrame>> {
         Ok(self
             .read_block_selected(block, tables)?
             .into_iter()
-            .map(crate::frame::RecordedFrame::from)
+            .map(replay_frame::frame::RecordedFrame::from)
             .collect())
     }
 
-    pub fn from_recovered(campaign_id: Vec<u8>, segments: &[(u32, Recovery<Record>)]) -> io::Result<Self> {
+    pub fn from_recovered(writers: Writers, campaign_id: Vec<u8>, segments: &[(u32, Recovery<Record>)]) -> io::Result<Self> {
         let mut ordered: Vec<_> = segments.iter().collect();
         ordered.sort_unstable_by_key(|(number, _)| *number);
         let records: Vec<Vec<Record>> = ordered
             .into_iter()
             .map(|(_, recovery)| recovery.records.clone())
             .collect();
-        Self::from_records(campaign_id, &records)
+        Self::from_records(writers, campaign_id, &records)
     }
 
     pub fn damaged_block(&self, block: &super::BlockIndex) -> io::Result<Vec<u8>> {
@@ -91,7 +119,7 @@ impl Replay {
         Ok(self.damaged(&frames))
     }
 
-    pub fn damaged_table(&self, block: &super::BlockIndex, table: crate::rows::TableId) -> io::Result<Vec<u8>> {
+    pub fn damaged_table(&self, block: &super::BlockIndex, table: replay_data::rows::TableId) -> io::Result<Vec<u8>> {
         let entry = self.recording().table_entry(block.run, block.page, table.index())?;
         let frames: Vec<(u64, u64)> = entry.unit.parts.iter().flat_map(|part| part.frames.iter().map(|frame| (frame.offset, u64::from(frame.stored)))).collect();
         if frames.is_empty() {
@@ -111,44 +139,52 @@ impl Replay {
 
 const SETTINGS: Settings = Settings { level: LEVEL };
 
-pub fn encode_records(campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
-    encoded(campaign_id, segments, None)
+pub fn encode_records(writers: Writers, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
+    encoded(writers, campaign_id, segments, None)
 }
 
-fn encoded(campaign_id: Vec<u8>, segments: &[Vec<Record>], derived: Option<&mut Vec<DecodedFrame>>) -> io::Result<Vec<u8>> {
+fn encoded(writers: Writers, campaign_id: Vec<u8>, segments: &[Vec<Record>], derived: Option<&mut Vec<DecodedFrame>>) -> io::Result<Vec<u8>> {
     let records = records_of(segments, None)?;
     let identity = identity_of(campaign_id, &records)?;
-    let mode = crate::scope::CaptureMode::from_byte(identity.capture_mode)?;
+    let mode = replay_data::scope::CaptureMode::from_byte(identity.capture_mode)?;
     let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, SETTINGS, None)?;
-    let mut file = write_runs(file, segments, false, derived.map(|derived| (derived, mode)))?;
+    let mut file = write_runs(writers, file, segments, false, derived.map(|derived| (derived, mode)))?;
     add_records(&mut file, &records, FormatVersion::CURRENT)?;
     Ok(file.finish_runs(&[], true, |_| Ok(()))?.0.into_inner())
 }
 
-pub fn encode_records_naming(format: u16, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
+pub fn encode_records_naming(writers: Writers, format: u16, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
     let records = records_of(segments, None)?;
     let identity = identity_of(campaign_id, &records)?;
     let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, SETTINGS, None)?;
-    let mut file = write_runs(file, segments, false, None)?;
+    let mut file = write_runs(writers, file, segments, false, None)?;
     let mut bytes = records.encode(FormatVersion::CURRENT)?;
-    bytes[super::records::MAGIC.len()..super::records::MAGIC.len() + 2].copy_from_slice(&format.to_le_bytes());
+    bytes[replay_recording::records::MAGIC.len()..replay_recording::records::MAGIC.len() + 2].copy_from_slice(&format.to_le_bytes());
     let container = file.container();
     let extent = container.put_zstd(Kind::Controls, Tags::default(), &bytes, LEVEL)?;
     container.append(SectionKey::RECORDS, extent)?;
     Ok(file.finish_runs(&[], true, |_| Ok(()))?.0.into_inner())
 }
 
-pub fn encode_records_at(format: u16, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
-    use crate::{
-        columnar_frames::synthetic::{Input, Sample, Synthetic},
-        rows::{TableId, tables},
-    };
+pub fn encode_records_at(writers: impl FnOnce(&[usize], &[usize]) -> Writers, format: u16, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
+    encode_framed_at(writers, format, campaign_id, segments, |_, _| Ok(()))
+}
+
+pub fn encode_framed_at(
+    writers: impl FnOnce(&[usize], &[usize]) -> Writers,
+    format: u16,
+    campaign_id: Vec<u8>,
+    segments: &[Vec<Record>],
+    mut each: impl FnMut(&mut replay_journal::synthetic::Synthetic, &DecodedFrame) -> io::Result<()>,
+) -> io::Result<Vec<u8>> {
+    use replay_journal::synthetic::{Input, Sample, Synthetic};
+    use replay_data::rows::{TableId, tables};
     let records = records_of(segments, None)?;
-    let columns = crate::columnar_frames::columns_at(format)?;
-    let schema = envelope::schema_digest_prefix(&schema()?[..columns.len()], &columns).ok_or_else(|| io::Error::other("the format frames no schema of this build"))?;
+    let columns = replay_recording::schema::columns_at(format)?;
+    let schema = envelope::schema_digest_prefix(&replay_recording::schema::schema_at(format)?[..columns.len()], &columns).ok_or_else(|| io::Error::other("the format frames no schema of this build"))?;
     let identity = envelope::Identity { schema, ..identity_of(campaign_id, &records)? };
     let file = FileWriter::create(Cursor::new(Vec::new()), identity, columns.len(), SETTINGS, None)?;
-    let mut file = HourWriter::framed(file, LEVEL, replay_columnar::unit::Settings::at(LEVEL), &columns)?;
+    let mut file = HourWriter::framed(file, LEVEL, replay_columnar::unit::Settings::at(LEVEL), &columns, writers)?;
     let mut run: Option<(Synthetic, BranchId, Hour)> = None;
     for segment in segments {
         let mut decoder = FrameDecoder::new();
@@ -158,13 +194,14 @@ pub fn encode_records_at(format: u16, campaign_id: Vec<u8>, segments: &[Vec<Reco
             if !run.as_ref().is_some_and(|(_, branch, next)| *branch == decoded.branch && *next == decoded.hour) {
                 let epoch = if run.is_some() { envelope::epoch::GAP } else { envelope::epoch::START };
                 file.start_run(decoded.branch, epoch, decoded.hour)?;
-                run = Some((Synthetic::framed(decoded.branch, decoded.hour, columns.clone())?, decoded.branch, decoded.hour));
+                run = Some((Synthetic::framed_at(decoded.branch, decoded.hour, format, columns.clone())?, decoded.branch, decoded.hour));
             }
             let (synthetic, _, next) = run.as_mut().expect("a run under way");
             let clock = decoded.complete::<tables::Clock>()?;
             synthetic.table(TableId::Clock, Input::Snapshot { rows: clock, partial: None, read: true, sample: Sample::FromReadBit })?;
             let campaign = decoded.complete::<tables::Campaign>()?;
             synthetic.table(TableId::Campaign, Input::Snapshot { rows: campaign, partial: None, read: true, sample: Sample::FromReadBit })?;
+            each(synthetic, &decoded)?;
             synthetic.end_encoded(|manifest, sections| file.hour(manifest, sections))??;
             *next = decoded.hour + 1;
         }
@@ -182,7 +219,7 @@ fn add_records<W: Write + Seek + Read>(file: &mut FileWriter<W>, records: &Recor
 }
 
 impl Replay {
-    pub fn append(&self, segments: &[Vec<Record>]) -> io::Result<Self> {
+    pub fn append(&self, writers: Writers, segments: &[Vec<Record>]) -> io::Result<Self> {
         let records = records_of(segments, Some(self))?;
         let resumed = Resumed {
             root: self.recording().root().clone(),
@@ -192,7 +229,7 @@ impl Replay {
         };
         let held = Cursor::new(self.bytes()[..self.saved_length() as usize].to_vec());
         let file = FileWriter::resume(held, resumed, TABLE_COUNT, SETTINGS, None)?;
-        let mut file = write_runs(file, segments, true, None)?;
+        let mut file = write_runs(writers, file, segments, true, None)?;
         add_records(&mut file, &records, FormatVersion::CURRENT)?;
         Self::open(file.finish_runs(&[], true, |_| Ok(()))?.0.into_inner())
     }
@@ -365,12 +402,13 @@ fn records_of(segments: &[Vec<Record>], existing: Option<&Replay>) -> io::Result
 }
 
 fn write_runs<W: Write + Seek + Read>(
+    writers: Writers,
     file: FileWriter<W>,
     segments: &[Vec<Record>],
     mut started: bool,
-    mut derived: Option<(&mut Vec<DecodedFrame>, crate::scope::CaptureMode)>,
+    mut derived: Option<(&mut Vec<DecodedFrame>, replay_data::scope::CaptureMode)>,
 ) -> io::Result<FileWriter<W>> {
-    let mut file = HourWriter::new(file, LEVEL)?;
+    let mut file = HourWriter::new(file, LEVEL, writers)?;
     let mut run: Option<(FrameWriter, BranchId, Hour)> = None;
     for segment in segments {
         let mut decoder = FrameDecoder::new();
@@ -409,8 +447,8 @@ fn write_runs<W: Write + Seek + Read>(
     file.finish()
 }
 
-fn whole(decoded: &crate::frame::DecodedFrame, keyframe: bool) -> io::Result<crate::frame::Frame> {
-    use crate::frame::TableUpdate;
+fn whole(decoded: &replay_frame::frame::DecodedFrame, keyframe: bool) -> io::Result<replay_frame::frame::Frame> {
+    use replay_frame::frame::TableUpdate;
     let tables = std::array::from_fn(|index| match &*decoded.tables[index] {
         TableView::Complete(rows) => TableUpdate::Snapshot(rows.clone()),
         TableView::Truncated { rows, missing } => TableUpdate::Truncated {
@@ -422,7 +460,7 @@ fn whole(decoded: &crate::frame::DecodedFrame, keyframe: bool) -> io::Result<cra
         },
         TableView::NotRecorded { mode } => TableUpdate::NotRecorded { mode: *mode },
     });
-    Ok(crate::frame::Frame {
+    Ok(replay_frame::frame::Frame {
         branch: decoded.branch,
         hour: decoded.hour,
         keyframe,

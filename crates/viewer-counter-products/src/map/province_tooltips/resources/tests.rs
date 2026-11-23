@@ -1,10 +1,8 @@
 use super::*;
 use replay_data::{rows::TableRows, rows::TradeRouteRow};
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::{
-    map::test_support::localisation::loaded,
-    resource_origins::fixture::{self, AFG, GER, MIXED, ORPHAN},
-};
+use viewer_foundation::test_support::localisation::loaded;
+use viewer_runtime::resource_origins::fixture::{self, AFG, GER, MIXED, ORPHAN};
 
 fn texts() -> Localisation {
     loaded(concat!(
