@@ -32,7 +32,8 @@ import tomllib
 import xml.etree.ElementTree as ElementTree
 
 ROOT = Path(__file__).resolve().parents[1]
-PIPELINE = ROOT / "tools" / "ci.toml"
+PIPELINE_PATH = "tools/ci.toml"
+PIPELINE = ROOT / PIPELINE_PATH
 NEXTEST_TESTS_FAILED = 100
 SHOWN_LINES = 40
 PANIC = re.compile(r"^thread '(?P<thread>[^'\r\n]*)'(?: \(\d+\))? panicked at [^\r\n]*:\r?\n(?P<message>[^\r\n]*)", re.M)
@@ -124,6 +125,7 @@ class Pipeline:
     jobs: list
     groups: dict = field(default_factory=dict)
     implementation: tuple = ()
+    frame: str = ""
 
 
 def load_pipeline(text):
@@ -160,7 +162,8 @@ def load_pipeline(text):
         if problems:
             raise SystemExit(f"tools/ci.toml: job {job.name}: unknown or missing {', '.join(problems)}")
         jobs.append(job)
-    return Pipeline(tiers, toolchains, jobs, groups, tuple(data.get("pipeline", {}).get("implementation", ())))
+    frame = json.dumps({key: value for key, value in data.items() if key != "job"}, sort_keys=True)
+    return Pipeline(tiers, toolchains, jobs, groups, tuple(data.get("pipeline", {}).get("implementation", ())), frame)
 
 
 def glob_pattern(pattern):
@@ -365,12 +368,14 @@ class Context:
     whether the run takes every job across everything it covers, whatever changed (main's nightly,
     or a push to main with no green main commit to compare with), whether a crates job takes
     every crate above a changed one rather than its direct dependents (a push to main), and the
-    workspace crates each job's `manifest` builds (None when it could not be read)."""
+    workspace crates each job's `manifest` builds (None when it could not be read). `frame` is
+    the base pipeline's settings outside its jobs (None when unreadable)."""
     tree: set
     changed: set
     crates: dict | None
     pipeline: Pipeline
     definitions: dict | None = None
+    frame: str | None = None
     everything: bool = False
     transitive: bool = False
     manifests: dict = field(default_factory=dict)
@@ -391,11 +396,15 @@ class Decision:
 def widened(ctx, job):
     """Whether a change reaches every input of the job: its definition differs from the base's, or
     a file every run of it depends on changed (its toolchain's, its shared scripts, the files it
-    names in `widen`, or the pipeline's own implementation)."""
+    names in `widen`, or the pipeline's own implementation). An edit to tools/ci.toml that leaves
+    everything outside its jobs as it was reaches only the jobs whose definition it changed."""
     if ctx.definitions is None or ctx.definitions.get(job.name) != job.definition:
         return True
-    wide = matcher(ctx.pipeline.toolchains[job.toolchain] + ctx.pipeline.implementation + job.shared + job.widen)
-    return any(wide(path) for path in ctx.changed)
+    if PIPELINE_PATH in ctx.changed and ctx.frame != ctx.pipeline.frame:
+        return True
+    implementation = matcher(ctx.pipeline.implementation)
+    own = matcher(ctx.pipeline.toolchains[job.toolchain] + job.shared + job.widen)
+    return any(own(path) or path != PIPELINE_PATH and implementation(path) for path in ctx.changed)
 
 
 def decide(job, ctx, tier):
@@ -717,15 +726,30 @@ def report(outcomes, title):
     return EXIT[state]
 
 
-def definitions_at(base):
-    """Each job's definition in the base's pipeline, or None when it has none that loads."""
-    shown = subprocess.run(["git", "show", f"{base}:tools/ci.toml"], cwd=ROOT, capture_output=True)
+def pipeline_at(base):
+    """The base's pipeline, or None when it has none that loads."""
+    shown = subprocess.run(["git", "show", f"{base}:{PIPELINE_PATH}"], cwd=ROOT, capture_output=True)
     if shown.returncode:
         return None
     try:
-        return {job.name: job.definition for job in load_pipeline(shown.stdout.decode("utf-8")).jobs}
-    except (SystemExit, KeyError, ValueError, TypeError):
+        return base_pipeline(shown.stdout.decode("utf-8"))
+    except UnicodeDecodeError:
         return None
+
+
+def base_pipeline(text):
+    """A base's pipeline from its text, or None when it does not load as one, whatever is wrong
+    with it, so a change repairing a broken pipeline plans against it as unreadable."""
+    try:
+        return load_pipeline(text)
+    except (SystemExit, KeyError, ValueError, TypeError, AttributeError, IndexError):
+        return None
+
+
+def definitions_at(base):
+    """Each job's definition in the base's pipeline, or None when it has none that loads."""
+    pipeline = pipeline_at(base)
+    return None if pipeline is None else {job.name: job.definition for job in pipeline.jobs}
 
 
 def ratchet_base(base):
@@ -759,7 +783,10 @@ def plan(tier, base_ref, exact=False, everything=False):
     needs_crates = any(job.kind == "crates" for job in pipeline.jobs)
     crates = crates_from_manifests(ROOT) if needs_crates or any(job.manifest for job in pipeline.jobs) else {}
     manifests = {job.manifest: manifest_reach(ROOT, job.manifest, crates) for job in pipeline.jobs if job.manifest and crates}
-    ctx = Context(read_tree(), changed_since(base), crates, pipeline, definitions_at(base), everything=everything,
+    at_base = pipeline_at(base)
+    ctx = Context(read_tree(), changed_since(base), crates, pipeline,
+                  None if at_base is None else {job.name: job.definition for job in at_base.jobs},
+                  None if at_base is None else at_base.frame, everything=everything,
                   transitive=tier != pipeline.tiers[0], manifests=manifests)
     decisions = [decide(job, ctx, tier) for job in pipeline.jobs]
     if not ratchet_base(base):
