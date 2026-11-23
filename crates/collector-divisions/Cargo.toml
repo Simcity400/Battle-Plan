@@ -13,7 +13,7 @@ doctest = false
 default = ["province_unit_changes"]
 acquisition_profile = ["engine-native/acquisition_profile", "collector-memory/acquisition_profile"]
 province_unit_changes = []
-test-support = ["dep:collector-test-support"]
+test-support = ["dep:collector-test-support", "engine-native/layout-fixtures"]
 
 [dependencies]
 engine-deployment.workspace = true

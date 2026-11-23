@@ -371,6 +371,13 @@ fn final_inputs_rejected_successor_uses_the_existing_parked_failure_without_nati
         Err(acquisition::Failure::Stopped)
     ));
     assert_eq!(
+        pool.calibration().roles[collector_workers::roles::Role::FinalInputs as usize]
+            .counters
+            .inline_completed,
+        0
+    );
+    #[cfg(feature = "acquisition_profile")]
+    assert_eq!(
         completed.table_reads,
         collector_memory::read_accounting::ZERO
     );
@@ -401,19 +408,23 @@ fn final_inputs_unadopted_successors_drain_on_unwind_and_pool_storage_rearms() {
     for failure in 0..3 {
         let gate = Arc::new(Gate::default());
         let (started, running) = mpsc::channel();
+        let trace = Arc::new(fixtures::ReadTrace::default());
         let pool = acquisition::Pool::with_test_runner(1, {
             let gate = Arc::clone(&gate);
+            let runner_trace = Arc::clone(&trace);
             move |job| {
-                started.send(()).unwrap();
-                gate.wait();
-                if matches!(job, acquisition::Job::Provinces(_)) {
-                    assert_eq!(failure, 2);
-                    return acquisition::Report::ShipModels;
-                }
-                assert!(matches!(job, acquisition::Job::FinalInputs(_)));
-                read_accounting::with_table(TableId::DivisionLandInputs, || fixtures::read(5));
-                assert_ne!(failure, 1, "synthetic final input failure");
-                acquisition::Report::FinalInputs(Default::default())
+                runner_trace.record((), || {
+                    started.send(()).unwrap();
+                    gate.wait();
+                    if matches!(job, acquisition::Job::Provinces(_)) {
+                        assert_eq!(failure, 2);
+                        return acquisition::Report::ShipModels;
+                    }
+                    assert!(matches!(job, acquisition::Job::FinalInputs(_)));
+                    read_accounting::with_table(TableId::DivisionLandInputs, || fixtures::read(5));
+                    assert_ne!(failure, 1, "synthetic final input failure");
+                    acquisition::Report::FinalInputs(Default::default())
+                })
             }
         });
         for hour in 1..=if failure == 0 { 2 } else { 1 } {
@@ -477,6 +488,10 @@ fn final_inputs_unadopted_successors_drain_on_unwind_and_pool_storage_rearms() {
             if failure != 2 {
                 expected[TableId::DivisionLandInputs.index()] = fixtures::copies(1, 5);
             }
+            assert_eq!(trace.take(()), expected);
+            #[cfg(not(feature = "acquisition_profile"))]
+            assert_eq!(reads.finish(), read_accounting::ZERO);
+            #[cfg(feature = "acquisition_profile")]
             assert_eq!(reads.finish(), expected);
         }
     }

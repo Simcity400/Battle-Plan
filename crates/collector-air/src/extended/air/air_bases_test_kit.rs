@@ -462,7 +462,7 @@ pub(super) fn collect_split(
         game_state: GAME_STATE,
     };
     let mut first = AirBasesJob::fixture();
-    let report = super::copy_air_bases_refresh(memory, ctx, &mut first);
+    let report = super::copy_air_bases_fixture(memory, ctx, &mut first);
     assert!(report.raw_ok);
     let split = decode_with(&first, air_rows, ace_names, fog_rows, fog_wings);
     (split, report, first)

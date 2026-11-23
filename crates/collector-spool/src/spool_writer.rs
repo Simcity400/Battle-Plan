@@ -178,8 +178,6 @@ struct State {
     factory_bytes: usize,
     close_receipts: Vec<Weak<Mutex<Option<Result<(), io::ErrorKind>>>>>,
     pool: PoolCharge,
-    #[cfg(any(test, feature = "test-support"))]
-    turn: Option<bool>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -209,23 +207,10 @@ impl Default for State {
             factory_bytes: 0,
             close_receipts: Vec::new(),
             pool: PoolCharge::default(),
-            #[cfg(any(test, feature = "test-support"))]
-            turn: None,
         }
     }
 }
 impl State {
-    fn take_job(&mut self) -> Option<Job> {
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(granted) = &mut self.turn
-            && !self.stop
-            && !self.jobs.is_empty()
-            && !std::mem::take(granted)
-        {
-            return None;
-        }
-        self.jobs.pop_front()
-    }
     fn retire_contexts(&mut self) {
         self.contexts.retain(|context| {
             self.frames
@@ -290,19 +275,11 @@ impl Shared {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
-    #[cfg(any(test, feature = "test-support"))]
-    fn hand_turn(&self, state: &mut State) {
-        if let Some(granted) = &mut state.turn
-            && !*granted
-            && !state.jobs.is_empty()
-            && state.unfinished_jobs == state.jobs.len()
-        {
-            *granted = true;
+    fn hand_turn(&self, state: &State, schedule: &impl Schedule) {
+        if schedule.grant(|| !state.jobs.is_empty() && state.unfinished_jobs == state.jobs.len()) {
             self.changed.notify_all();
         }
     }
-    #[cfg(not(any(test, feature = "test-support")))]
-    fn hand_turn(&self, _: &mut State) {}
 
     fn outstanding(
         state: &State,
@@ -350,8 +327,9 @@ impl Shared {
         generation: u64,
         command: Command,
         receipt_bytes: usize,
+        schedule: &impl Schedule,
     ) -> io::Result<u64> {
-        self.submit_with_wait(campaign, generation, command, receipt_bytes, true)
+        self.submit_with_wait(campaign, generation, command, receipt_bytes, true, schedule)
     }
 
     fn submit_with_wait(
@@ -361,6 +339,7 @@ impl Shared {
         mut command: Command,
         receipt_bytes: usize,
         wait: bool,
+        schedule: &impl Schedule,
     ) -> io::Result<u64> {
         let context = collector_memory::terminal::context();
         let (mut bytes, frame) = match &command {
@@ -448,7 +427,7 @@ impl Shared {
                 state.diagnostics.waiting += 1;
                 self.changed.notify_all();
             }
-            self.hand_turn(&mut state);
+            self.hand_turn(&state, schedule);
             state = self
                 .changed
                 .wait(state)
@@ -539,7 +518,7 @@ impl Shared {
         Ok(ticket)
     }
 
-    fn wait(&self, ticket: u64) -> io::Result<()> {
+    fn wait(&self, ticket: u64, schedule: &impl Schedule) -> io::Result<()> {
         let mut state = self.lock();
         if state.completed >= ticket {
             return Ok(());
@@ -551,7 +530,7 @@ impl Shared {
                 state.drainers -= 1;
                 return Err(io::Error::other("spool writer stopped before drain"));
             }
-            self.hand_turn(&mut state);
+            self.hand_turn(&state, schedule);
             state = self
                 .changed
                 .wait(state)
@@ -562,17 +541,72 @@ impl Shared {
     }
 }
 
-pub struct Writer {
+pub trait Schedule: Clone + Send + 'static {
+    fn take(&self, _needs_turn: impl FnOnce() -> bool) -> bool {
+        true
+    }
+
+    fn grant(&self, _idle_with_jobs: impl FnOnce() -> bool) -> bool {
+        false
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct Unrestricted;
+
+impl Schedule for Unrestricted {}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone)]
+pub struct FixtureSchedule(Option<Arc<std::sync::atomic::AtomicBool>>);
+
+#[cfg(any(test, feature = "test-support"))]
+impl FixtureSchedule {
+    pub(crate) fn new(lockstep: bool) -> Self {
+        Self(lockstep.then(|| Arc::new(std::sync::atomic::AtomicBool::new(false))))
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Schedule for FixtureSchedule {
+    fn take(&self, needs_turn: impl FnOnce() -> bool) -> bool {
+        self.0.as_ref().is_none_or(|turn| {
+            !needs_turn() || turn.swap(false, Ordering::Relaxed)
+        })
+    }
+
+    fn grant(&self, idle_with_jobs: impl FnOnce() -> bool) -> bool {
+        self.0.as_ref().is_some_and(|turn| {
+            idle_with_jobs() && !turn.swap(true, Ordering::Relaxed)
+        })
+    }
+}
+
+pub struct Writer<S: Schedule = Unrestricted> {
+    schedule: S,
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
 }
 impl Writer {
     pub(crate) fn start(root: PathBuf) -> io::Result<Self> {
+        Self::start_scheduled(root, Unrestricted)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn start_with<B: SegmentBackend + 'static>(
+        create: impl FnMut(&CampaignId) -> io::Result<B> + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::start_backend(create, Unrestricted)
+    }
+}
+
+impl<S: Schedule> Writer<S> {
+    pub(crate) fn start_scheduled(root: PathBuf, schedule: S) -> io::Result<Self> {
         let factory_bytes = root.capacity();
-        let writer = Self::start_with(move |campaign| {
+        let writer = Self::start_backend(move |campaign| {
             let id = std::str::from_utf8(campaign).map_err(|_| io::ErrorKind::InvalidData)?;
             FileBackend::ordered(root.join(id))
-        })?;
+        }, schedule)?;
         {
             let mut state = writer.shared.lock();
             state.factory_bytes = factory_bytes;
@@ -581,21 +615,23 @@ impl Writer {
         Ok(writer)
     }
 
-    pub(crate) fn start_with<B: SegmentBackend + 'static>(
+    fn start_backend<B: SegmentBackend + 'static>(
         create: impl FnMut(&CampaignId) -> io::Result<B> + Send + 'static,
+        schedule: S,
     ) -> io::Result<Self> {
         let shared = Arc::new(Shared {
             state: Mutex::default(),
             changed: Condvar::new(),
         });
         let worker = Arc::clone(&shared);
+        let worker_schedule = schedule.clone();
         let thread = std::thread::Builder::new()
             .name("replay-spool-writer".into())
             .stack_size(collector_workers::priority::BACKGROUND_STACK_BYTES)
             .spawn(move || {
                 collector_workers::private_heap::off_hold_path();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    serve(&worker, create)
+                    serve(&worker, create, &worker_schedule)
                 }));
                 if result.is_err() {
                     collector_memory::terminal::fail(
@@ -614,6 +650,7 @@ impl Writer {
             })
             .map_err(engine_allocation::allocation_error)?;
         Ok(Self {
+            schedule,
             shared,
             thread: Some(thread),
         })
@@ -681,7 +718,7 @@ impl Writer {
         state.diagnostics.waiting += 1;
         self.shared.changed.notify_all();
         while state.completions.is_empty() && !state.stopped {
-            self.shared.hand_turn(&mut state);
+            self.shared.hand_turn(&state, &self.schedule);
             state = self
                 .shared
                 .changed
@@ -696,8 +733,9 @@ impl Writer {
         }
     }
 
-    pub fn output(&self, campaign: CampaignId) -> Output<FileBackend> {
+    pub fn output(&self, campaign: CampaignId) -> Output<FileBackend, S> {
         Output::Queued {
+            schedule: self.schedule.clone(),
             shared: Arc::clone(&self.shared),
             campaign,
             generation: 0,
@@ -708,11 +746,7 @@ impl Writer {
     }
     pub fn drain(&self) -> io::Result<()> {
         let last = self.shared.lock().next_ticket - 1;
-        self.shared.wait(last)
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn lockstep(&self) {
-        self.shared.lock().turn = Some(false);
+        self.shared.wait(last, &self.schedule)
     }
     pub(crate) fn resume_after_failure(&self) {
         self.shared.lock().blocked = false;
@@ -743,7 +777,7 @@ impl Writer {
         self.shared.lock().diagnostics.bytes
     }
     #[cfg(test)]
-    pub(crate) fn test_backpressure_probe(&self) -> impl FnOnce() + Send + use<> {
+    pub(crate) fn test_backpressure_probe(&self) -> impl FnOnce() + Send + use<S> {
         let shared = Arc::clone(&self.shared);
         move || {
             let mut state = shared.lock();
@@ -760,7 +794,7 @@ impl Writer {
     pub(crate) fn test_storage_probe(
         &self,
         baseline: u64,
-    ) -> impl FnOnce() -> (usize, usize) + Send + use<> {
+    ) -> impl FnOnce() -> (usize, usize) + Send + use<S> {
         let shared = Arc::clone(&self.shared);
         move || {
             let mut state = shared.lock();
@@ -791,7 +825,7 @@ impl Writer {
         )
     }
     #[cfg(test)]
-    pub(crate) fn test_drain_probe(&self) -> impl FnOnce() + Send + use<> {
+    pub(crate) fn test_drain_probe(&self) -> impl FnOnce() + Send + use<S> {
         let shared = Arc::clone(&self.shared);
         move || {
             let mut state = shared.lock();
@@ -812,16 +846,17 @@ impl Writer {
         }
     }
 }
-impl Drop for Writer {
+impl<S: Schedule> Drop for Writer<S> {
     fn drop(&mut self) {
         self.shutdown();
     }
 }
 
-pub enum Output<B: SegmentBackend = FileBackend> {
+pub enum Output<B: SegmentBackend = FileBackend, S: Schedule = Unrestricted> {
     #[cfg_attr(not(test), allow(dead_code))]
     Direct(SegmentedSpool<B>),
     Queued {
+        schedule: S,
         shared: Arc<Shared>,
         campaign: CampaignId,
         generation: u64,
@@ -830,7 +865,7 @@ pub enum Output<B: SegmentBackend = FileBackend> {
         last_close: Option<CloseReceipt>,
     },
 }
-impl<B: SegmentBackend> Output<B> {
+impl<B: SegmentBackend, S: Schedule> Output<B, S> {
     pub(crate) fn is_queued(&self) -> bool {
         matches!(self, Self::Queued { .. })
     }
@@ -896,6 +931,7 @@ impl<B: SegmentBackend> Output<B> {
                 }
             }
             Self::Queued {
+                schedule,
                 shared,
                 campaign,
                 generation,
@@ -925,6 +961,7 @@ impl<B: SegmentBackend> Output<B> {
                         }
                     },
                     receipt_bytes,
+                    schedule,
                 )?;
                 *generation = next_generation;
                 *last_ticket = Some(ticket);
@@ -942,6 +979,7 @@ impl<B: SegmentBackend> Output<B> {
         match self {
             Self::Direct(spool) => spool.start_sealed_context(sealed),
             Self::Queued {
+                schedule,
                 shared,
                 campaign,
                 generation,
@@ -960,6 +998,7 @@ impl<B: SegmentBackend> Output<B> {
                         frame: false,
                     },
                     0,
+                    schedule,
                 )?;
                 *generation = next;
                 *last_close = None;
@@ -984,6 +1023,7 @@ impl<B: SegmentBackend> Output<B> {
         match self {
             Self::Direct(spool) => spool.append(&record).map(|()| None),
             Self::Queued {
+                schedule,
                 shared,
                 campaign,
                 generation,
@@ -1000,6 +1040,7 @@ impl<B: SegmentBackend> Output<B> {
                             frame: false,
                         },
                         receipt_bytes,
+                        schedule,
                     )
                     .map(Some)
             }
@@ -1009,6 +1050,7 @@ impl<B: SegmentBackend> Output<B> {
         match self {
             Self::Direct(spool) => context.iter().try_for_each(|record| spool.append(record)),
             Self::Queued {
+                schedule,
                 shared,
                 campaign,
                 generation,
@@ -1027,6 +1069,7 @@ impl<B: SegmentBackend> Output<B> {
                             frame: false,
                         },
                         0,
+                        schedule,
                     )
                     .map(|_| ())
             }
@@ -1038,6 +1081,7 @@ impl<B: SegmentBackend> Output<B> {
         restarting: bool,
     ) -> io::Result<CloseReceipt> {
         let Self::Queued {
+            schedule,
             shared,
             campaign,
             generation,
@@ -1072,6 +1116,7 @@ impl<B: SegmentBackend> Output<B> {
             },
             0,
             false,
+            schedule,
         )?;
         *generation = next;
         *last_close = Some(receipt.clone());
@@ -1084,8 +1129,8 @@ impl<B: SegmentBackend> Output<B> {
     }
     pub(crate) fn finish_stopped_segment(&mut self) -> io::Result<()> {
         let receipt = self.close_segment()?;
-        if let Self::Queued { shared, .. } = self {
-            shared.wait(receipt.ticket)?;
+        if let Self::Queued { shared, schedule, .. } = self {
+            shared.wait(receipt.ticket, schedule)?;
         }
         receipt
             .result()
@@ -1103,6 +1148,7 @@ impl<B: SegmentBackend> Output<B> {
                 result.map(|_| receipt)
             }
             Self::Queued {
+                schedule,
                 shared,
                 campaign,
                 generation,
@@ -1119,6 +1165,7 @@ impl<B: SegmentBackend> Output<B> {
                     *generation,
                     Command::FinishSegment(receipt.clone()),
                     0,
+                    schedule,
                 )?;
                 *last_close = Some(receipt.clone());
                 *open = false;
@@ -1133,14 +1180,20 @@ impl<B: SegmentBackend> Output<B> {
     }
 }
 
-fn serve<B: SegmentBackend>(shared: &Shared, mut create: impl FnMut(&CampaignId) -> io::Result<B>) {
+fn serve<B: SegmentBackend>(
+    shared: &Shared,
+    mut create: impl FnMut(&CampaignId) -> io::Result<B>,
+    schedule: &impl Schedule,
+) {
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
     let mut spools: Vec<(CampaignId, u64, SegmentedSpool<B>)> = Vec::new();
     loop {
         let job = {
             let mut state = shared.lock();
             loop {
-                if let Some(job) = state.take_job() {
+                if schedule.take(|| !state.stop && !state.jobs.is_empty())
+                    && let Some(job) = state.jobs.pop_front()
+                {
                     break Some(job);
                 }
                 if state.stop {
@@ -1397,6 +1450,7 @@ mod tests {
             changed: Condvar::new(),
         });
         let mut output: Output = Output::Queued {
+            schedule: Unrestricted,
             shared: Arc::clone(&shared),
             campaign: *b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6",
             generation: 1,
@@ -1503,8 +1557,7 @@ mod tests {
     #[test]
     fn a_lockstep_writer_runs_one_job_for_each_turn_a_waiting_thread_hands_it() {
         let root = std::env::temp_dir().join(format!("hoi4-spool-lockstep-{}", std::process::id()));
-        let writer = Writer::start(root.clone()).unwrap();
-        writer.lockstep();
+        let writer = Writer::start_scheduled(root.clone(), FixtureSchedule::new(true)).unwrap();
         let first = writer
             .output(*b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6")
             .close_segment()
@@ -1514,7 +1567,7 @@ mod tests {
             .close_segment()
             .unwrap();
         assert_eq!(writer.shared.lock().completed, 0, "nothing waited");
-        writer.shared.wait(first.ticket).unwrap();
+        writer.shared.wait(first.ticket, &writer.schedule).unwrap();
         {
             let state = writer.shared.lock();
             assert_eq!(state.completed, first.ticket);

@@ -783,7 +783,7 @@ fn assert_counted_seed_refusal(reason: &'static str) {
         reads: std::cell::Cell::new(0),
     };
     let mut job = super::super::AirBasesJob::fixture();
-    let report = super::super::copy_air_bases_refresh(
+    let report = super::super::copy_air_bases_fixture(
         &memory,
         super::super::AirBasesCopyContext {
             hour: 201,
@@ -1117,7 +1117,7 @@ pub fn coherent_carrier_refresh(
     force_full: bool,
 ) {
     use super::super::air_bases_test_kit as kit;
-    let report = super::super::copy_air_bases_refresh(
+    let report = super::super::copy_air_bases_fixture(
         &CoherentCarrierMemory::new(bytes),
         super::super::AirBasesCopyContext {
             base: kit::BASE,

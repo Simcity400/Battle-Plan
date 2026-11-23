@@ -26,8 +26,6 @@ struct Context {
 thread_local! {
     static CONTEXT: Cell<Option<Context>> = const { Cell::new(None) };
     static PANIC: Cell<Option<&'static str>> = const { Cell::new(None) };
-    #[cfg(any(test, feature = "test-support"))]
-    static FAIL_AT: Cell<Option<&'static str>> = const { Cell::new(None) };
 }
 
 static FIRST: Mutex<Option<&'static str>> = Mutex::new(None);
@@ -182,11 +180,6 @@ pub fn stage(stage: &'static str, part: Option<usize>) {
         context.part = part;
         context
     }));
-    #[cfg(any(test, feature = "test-support"))]
-    if FAIL_AT.get() == Some(stage) {
-        FAIL_AT.set(None);
-        panic!("synthetic decode failure");
-    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -196,14 +189,6 @@ pub fn stage(stage: &'static str, part: Option<usize>) {
 pub unsafe fn reset() {
     *FIRST.lock().unwrap() = None;
     PANIC.set(None);
-}
-
-#[cfg(any(test, feature = "test-support"))]
-/// # Safety
-/// Only an isolated test with exclusive use of the collector's process-wide panic state may change
-/// this setting.
-pub unsafe fn fail_at(stage: &'static str) {
-    FAIL_AT.set(Some(stage));
 }
 
 pub fn owned_failed() -> bool {
