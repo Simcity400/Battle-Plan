@@ -103,7 +103,7 @@ export interface DashboardClient {
   setReplayFolder?(folder: string): Promise<ReplayLibrary>;
   chooseReplayFolder?(initial?: string): Promise<string | null>;
   chooseRecording?(): Promise<string | null>;
-  renameRecording?(path: string, name: string): Promise<string>;
+  renameRecording?(path: string, name: string): Promise<{ path: string; warning: string | null }>;
   locateRecordings?(recordings: { path: string; campaignKey: string }[]): Promise<(string | null)[]>;
   recorderSettings?(): Promise<RecorderSettings>;
   setRecordingCompression?(compression: Compression): Promise<RecorderSettings>;

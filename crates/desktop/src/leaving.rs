@@ -320,6 +320,11 @@ impl Leaving {
             let value = change(&mut state);
             (value, std::mem::take(&mut state.outbox))
         };
+        self.dispatch(outbox);
+        value
+    }
+
+    fn dispatch(&self, outbox: Vec<Out>) {
         self.answered.notify_all();
         for out in outbox {
             match out {
@@ -328,7 +333,6 @@ impl Leaving {
                 Out::Lock(lock) => lock(),
             }
         }
-        value
     }
 
     fn settle(state: &mut State, verdict: Verdict) {
@@ -621,6 +625,10 @@ impl Leaving {
                 None => state = self.answered.wait(state).unwrap_or_else(PoisonError::into_inner),
                 Some(left) if left.is_zero() => {
                     state.questions.retain(|question| question.key != key);
+                    state.send();
+                    let outbox = std::mem::take(&mut state.outbox);
+                    drop(state);
+                    self.dispatch(outbox);
                     return (Verdict::Late, None);
                 }
                 Some(left) => state = self.answered.wait_timeout(state, left).unwrap_or_else(PoisonError::into_inner).0,
@@ -1272,7 +1280,8 @@ mod tests {
         leaving.exit();
         assert_eq!(leaving.launching(), 1, "an exit committed before the launch began still waits for it");
         std::thread::scope(|scope| {
-            let exit = scope.spawn(|| leaving.lock().exit.empty_within(Duration::MAX));
+            let coordinator = leaving.lock().exit;
+            let exit = scope.spawn(move || coordinator.empty_within(Duration::MAX));
             assert_eq!(leaving.leave_after(asking, || Ok(())), Ok(()));
             assert!(exit.join().unwrap());
         });
@@ -1598,6 +1607,8 @@ mod tests {
         let posed = leaving.pose(About::Leave);
         let (_, id, _) = heard(&leaving, &page);
         assert_eq!(leaving.wait_within(posed, Some(Duration::ZERO)).0, Verdict::Late);
+        let (_, given_up) = page.hears(&leaving);
+        assert!(given_up.waiting.is_empty() && given_up.holds.is_empty(), "the page hears at once that setup’s question is gone, so a lock it took for it ends: {given_up:?}");
         assert_eq!(leaving.answer(id, false, &[]), Answered::Unknown, "the page’s late answer closes nothing after setup was told no");
         assert!(!leaving.lock().exit.sealed());
     }

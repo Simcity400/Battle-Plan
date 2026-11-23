@@ -10,11 +10,13 @@ export interface LeavePrompt { title: string; detail: string; discard: string }
 
 const listed = (names: readonly string[]) => names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
 
-export function unsavedDetail(layoutPages: readonly string[], theme: string | null): string | null {
+export function unsavedDetail(layoutPages: readonly string[], theme: string | null, settingsSaving = false): string | null {
   const parts = [layoutPages.length ? `Layout changes on ${listed(layoutPages)}` : null, theme === null ? null : theme ? `the theme “${theme}”` : 'your new theme'].filter(Boolean) as string[];
-  if (!parts.length) return null;
+  const saving = settingsSaving ? 'A settings change is still being saved.' : null;
+  if (!parts.length) return saving;
   const sentence = parts.join(' and ');
-  return `${sentence[0].toUpperCase()}${sentence.slice(1)} ${layoutPages.length || parts.length > 1 ? 'aren’t' : 'isn’t'} saved.`;
+  const unsaved = `${sentence[0].toUpperCase()}${sentence.slice(1)} ${layoutPages.length || parts.length > 1 ? 'aren’t' : 'isn’t'} saved.`;
+  return saving ? `${unsaved} ${saving}` : unsaved;
 }
 
 export function leavePrompt(leaving: Leaving, unsaved: string | null): LeavePrompt | null {

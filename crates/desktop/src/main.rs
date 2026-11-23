@@ -792,7 +792,7 @@ fn start_exit_worker() -> std::io::Result<&'static Exiting> {
     std::thread::Builder::new().name("ordered exit".into()).spawn(move || {
         let exit = &replay::exit::EXIT;
         exit.wait_sealed();
-        app_update::saving::wait_until_empty("BattlePlan", &exit.notices(), &|limit| exit.empty_within(limit), &|| exit.held().map(saving));
+        app_update::saving::wait_until_empty("BattlePlan", &exit.notices(), &|limit| exit.empty_within(limit), &|| exit.held().map(saving), &|| exiting.done.awaited());
         app_update::control::stop();
         exiting.done.set();
         let Some(app) = exiting.app.get().cloned() else { end_now() };

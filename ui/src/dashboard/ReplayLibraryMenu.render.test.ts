@@ -73,7 +73,7 @@ async function fixture(run: (view: any) => Promise<void>) {
       library: { files: [{ path: 'C:/recordings/Archive.battleplan', name: 'Archive', folder: '' }], loading: false, refresh: async () => { refreshed++; } },
       client: { chooseRecording: async () => 'C:/elsewhere/Picked.battleplan', renameRecording: async (path: string, name: string) => {
         renames.push([path, name]); if (failure) throw new Error('This recording is in use.');
-        return path.replace(/[^/]+$/, `${name}.battleplan`);
+        return { path: path.replace(/[^/]+$/, `${name}.battleplan`), warning: null };
       } },
       campaigns: [{ id: 'primary', path: source.path, label: 'Loaded.battleplan' }], bindings: { primary: { source } },
       defaultId: 'primary', countryTags: { primary: 'shown-country' }, slots: { empty: [] }, errors: {},
@@ -360,15 +360,21 @@ test('a sidebar failure names its action, keeps the raw reason as detail, retrie
   view.props.client.renameRecording = async (path: string, name: string) => {
     view.renames.push([path, name]);
     if (name === 'Blocked again') throw new Error('C:\recordings\Loaded.battleplan: Access is denied. (os error 5)');
-    return path.replace(/[^/]+$/, `${name}.battleplan`);
+    return { path: path.replace(/[^/]+$/, `${name}.battleplan`), warning: null };
   };
   view.edit(); await view.blur('Blocked again');
   assert.equal(line().props.message, 'Couldn’t rename the recording.');
   assert.equal(line().props.detail, 'C:\recordings\Loaded.battleplan: Access is denied. (os error 5)');
-  view.props.client.renameRecording = async (path: string, name: string) => { view.renames.push([path, name]); return path.replace(/[^/]+$/, `${name}.battleplan`); };
+  view.props.client.renameRecording = async (path: string, name: string) => { view.renames.push([path, name]); return { path: path.replace(/[^/]+$/, `${name}.battleplan`), warning: null }; };
   line().props.onRetry(); await settle(); view.render();
   assert.deepEqual(view.renames.at(-1), ['C:/recordings/Loaded.battleplan', 'Blocked again'], 'Try again repeats the rename');
   assert.equal(line(), undefined, 'the line clears once the rename succeeds');
+  view.props.client.renameRecording = async (path: string, name: string) => { view.renames.push([path, name]); return { path: path.replace(/[^/]+$/, `${name}.battleplan`), warning: 'the file was replaced, but Windows didn’t confirm it reached the disk' }; };
+  view.edit(); await view.blur('Unconfirmed');
+  assert.deepEqual([line().props.message, line().props.onRetry, typeof line().props.onDismiss], ['Renamed, but Windows didn’t confirm the name was saved.', undefined, 'function'],
+    'a rename Windows applied but didn’t confirm is shown as done, with its warning and nothing to repeat');
+  line().props.onDismiss(); view.render();
+  assert.equal(line(), undefined);
   view.props.client.chooseRecording = async () => { throw new Error('dialog closed unexpectedly'); };
   view.find((node: Element) => node.props['aria-label'] === 'Open a recording').props.onClick(); await settle(); view.render();
   assert.equal(line().props.message, 'Couldn’t open a recording.');

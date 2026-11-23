@@ -64,6 +64,7 @@ struct Inner {
     session: Option<(PathBuf, PathBuf)>,
     game_running: bool,
     set_aside: Vec<Waiting>,
+    unanswered: Vec<(PathBuf, String, bool)>,
     names: BTreeMap<String, String>,
     flag_keys: Option<FlagAsk>,
     flag_folders: Option<(PathBuf, PathBuf)>,
@@ -101,7 +102,7 @@ impl app_update::session::Ending for SessionEnding {
     fn saving(&self) -> Option<&'static str> {
         let recorder = self.0.state::<Arc<Recorder>>();
         let inner = recorder.lock();
-        inner.exit.0.held().map(saving).or(inner.live_session().map(|_| RECORDING))
+        inner.live_session().map(|_| RECORDING).or_else(|| inner.exit.0.held().map(saving))
     }
 }
 
@@ -159,7 +160,7 @@ impl Inner {
         if !self.capturing && self.quit_after_stop.is_some() {
             self.exit();
         }
-        if self.exiting() && self.capturing && (control.stopping() || control.stop(Stop::Save)) && !self.snapshot.stopping {
+        if self.exiting() && self.capturing && (control.stopping() || control.stop(Stop::Save(None))) && !self.snapshot.stopping {
             self.snapshot.stopping = true;
             self.prompts.clear();
             if self.snapshot.phase == Phase::Recording {
@@ -1090,7 +1091,37 @@ impl Recorder {
             return Ended::again();
         };
         self.update(app, |inner| inner.capturing = true);
-        receipt.carry(|| self.capture_admitted(app, game, settings, manual, loaded, probe))
+        receipt.carry(|| {
+            let ended = self.capture_admitted(app, game, settings, manual, loaded, probe);
+            self.finish_unanswered(app);
+            ended
+        })
+    }
+
+    fn finish_unanswered(&self, app: &AppHandle) {
+        let unanswered = std::mem::take(&mut self.lock().unanswered);
+        if unanswered.is_empty() {
+            return;
+        }
+        let jobs = app.state::<Arc<crate::compress::Jobs>>();
+        let failures: Vec<String> = unanswered
+            .into_iter()
+            .filter_map(|(session, campaign, discard)| {
+                recorder::controller::lock_waiting(&session, &campaign)
+                    .and_then(|waiting| crate::commands::finish_waiting(&waiting, discard, &jobs))
+                    .err()
+                    .map(|error| format!("Campaign {campaign}: {error}"))
+            })
+            .collect();
+        if let Some(error) = failures.into_iter().next() {
+            eprintln!("Recording: {error}");
+            self.update(app, |inner| {
+                let problem = Problem::failure(controller::problem_text(&error, true), error);
+                inner.sticky = Some(problem.clone());
+                inner.snapshot.problem = Some(problem);
+            });
+        }
+        recordings_changed(app);
     }
 
     fn capture_admitted(
@@ -1306,6 +1337,13 @@ impl Recorder {
         self.update(app, |inner| {
             if let Some(waiting) = waiting {
                 inner.set_aside = waiting.to_vec();
+            }
+            if let Some((session, _)) = &inner.session {
+                let session = session.clone();
+                inner.unanswered.extend(done.iter().filter_map(|done| match done {
+                    SetAside::Unanswered(campaign, discard) => Some((session.clone(), campaign.clone(), *discard)),
+                    _ => None,
+                }));
             }
             if let Some(error) = failure {
                 let problem = Problem::failure(controller::problem_text(&error, true), error);
@@ -1562,7 +1600,7 @@ fn accept_stop(inner: &mut Inner, control: &Control, discard: bool, session: u64
         .into());
     }
     let stop = match (discard, &inner.snapshot.campaign) {
-        (false, _) => Stop::Save,
+        (false, campaign) => Stop::Save(campaign.clone()),
         (true, Some(campaign)) => Stop::Discard(campaign.clone()),
         (true, None) => return Err(SESSION_ENDED.into()),
     };
@@ -1864,7 +1902,7 @@ mod tests {
         inner.settle(&control);
         assert!(control.stopping(), "the stop is asked for in the transition, before anything waits on the capture");
         assert!(inner.snapshot.stopping && inner.snapshot.phase == Phase::Saving && inner.saving_to_quit());
-        assert!(control.stop(Stop::Save), "and it is a save, never a discard");
+        assert!(control.stop(Stop::Save(None)), "and it is a save, never a discard");
         assert!(inner.exit.0.admit(What::Recording).is_err(), "no capture is admitted once the quit commits, so a refused one consumes no New file");
         drop(capture);
         assert!(inner.exit.0.empty_within(Duration::ZERO));
@@ -1946,7 +1984,7 @@ mod tests {
         inner.new_session();
         let session = inner.snapshot.session_key.unwrap();
         assert_eq!(accept_stop(&mut inner, &control, false, session), Ok(true));
-        assert_eq!(control.seal(), Some(Stop::Save));
+        assert_eq!(control.seal(), Some(Stop::Save(None)));
         assert_eq!(inner.snapshot.phase, Phase::Saving);
         assert!(inner.snapshot.stopping);
         let control = Control::new();
@@ -1984,7 +2022,7 @@ mod tests {
         assert_eq!(inner.quit_after_stop, Some(quit.id), "and the Quit it answered goes ahead");
         assert_eq!(accept_stop(&mut inner, &control, false, live), Ok(false), "the same stop sent again after a lost reply");
         assert_eq!(accept_stop(&mut inner, &control, true, live), Err(SESSION_STOPPING.into()), "a later Discard can’t turn the save into one");
-        assert_eq!(control.seal(), Some(Stop::Save));
+        assert_eq!(control.seal(), Some(Stop::Save(None)));
     }
 
     #[test]

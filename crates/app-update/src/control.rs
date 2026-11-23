@@ -117,14 +117,15 @@ impl Pipe {
         // SAFETY: `overlapped` and the buffer it was started with outlive this call, which returns
         // only once the operation has completed, by success, failure or an observed cancellation.
         unsafe {
-            if !started {
-                let error = GetLastError();
-                if error == ERROR_PIPE_CONNECTED {
-                    return Ok(0);
-                }
-                if error != ERROR_IO_PENDING {
-                    return Err(Ended::Failed(error));
-                }
+            if started {
+                return if GetOverlappedResult(self.handle, overlapped, &mut moved, 0) != 0 { Ok(moved) } else { Err(Ended::Failed(GetLastError())) };
+            }
+            let error = GetLastError();
+            if error == ERROR_PIPE_CONNECTED {
+                return Ok(0);
+            }
+            if error != ERROR_IO_PENDING {
+                return Err(Ended::Failed(error));
             }
             let waits = [self.io, stop.unwrap_or(self.io)];
             let count = if stop.is_some() { 2 } else { 1 };
@@ -242,6 +243,7 @@ fn serve_on(name: &[u16], host: Arc<dyn Host>, publish: impl FnOnce(&Arc<Server>
                 CloseHandle(handle);
                 CloseHandle(io);
             }
+            server.finish();
             error
         })?;
     Ok(server)

@@ -281,17 +281,21 @@ pub fn restore(window: &WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 #[tauri::command]
-pub fn video_settings(
-    window: WebviewWindow,
-    state: State<'_, VideoState>,
-    host: State<'_, NativeHost>,
-) -> Result<VideoReply, String> {
+pub async fn video_settings(window: WebviewWindow) -> Result<VideoReply, String> {
+    tauri::async_runtime::spawn_blocking(move || read_video_settings(&window))
+        .await
+        .map_err(|error| error.to_string())?
+}
+fn read_video_settings(window: &WebviewWindow) -> Result<VideoReply, String> {
+    let state = window.state::<VideoState>();
+    let host = window.state::<NativeHost>();
+    let _changing = changing(&state);
     let mut settings = stored(&state.0)?.clone()?;
     if settings.use_game_settings
         && let Ok(game) = game_settings()
     {
         if game.ui_scale != settings.ui_scale {
-            apply_scale(&window, &game)?;
+            apply_scale(window, &game)?;
         }
         host.set_display(dashboard_core::protocol::MapAction::Vsync {
             enabled: game.vsync,
@@ -323,6 +327,7 @@ pub async fn set_video_settings(
 fn save_video_settings(window: &WebviewWindow, settings: VideoSettings) -> Result<VideoReply, String> {
     let state = window.state::<VideoState>();
     let host = window.state::<NativeHost>();
+    let _changing = changing(&state);
     let mut settings = if settings.use_game_settings {
         game_settings()?
     } else {

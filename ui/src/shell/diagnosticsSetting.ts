@@ -12,7 +12,9 @@ export function setMapDiagnostics(enabled?: boolean): Promise<MapSwitch> {
 export function useMapDiagnostics() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [take] = useState(() => newestSwitch(next => { setEnabled(next.value); setError(next.warning); }));
+  const [warning, setWarning] = useState<string | null>(null);
+  const [asked, setAsked] = useState<boolean | null>(null);
+  const [take] = useState(() => newestSwitch(next => { setEnabled(next.value); setWarning(next.warning); setError(null); setAsked(null); }));
   const [reads, setReads] = useState(0);
   const [pending, setPending] = useState(false);
   useEffect(() => {
@@ -25,10 +27,11 @@ export function useMapDiagnostics() {
     return () => { live = false; void changed.then(stop => stop(), () => {}); void failed.then(stop => stop(), () => {}); };
   }, [take, reads]);
   const set = (value: boolean) => {
-    setError(null); setPending(true);
+    setError(null); setAsked(value); setPending(true);
     void setMapDiagnostics(value).then(take, cause => setError(errorMessage(cause))).finally(() => setPending(false));
   };
-  return { enabled, error, pending, set, reread: () => { setPending(true); setReads(count => count + 1); } };
+  const reread = () => { setPending(true); setReads(count => count + 1); };
+  return { enabled, error, warning, pending, set, retry: () => { if (asked === null) reread(); else set(asked); } };
 }
 
 export function useDiagnosticsShortcut() {

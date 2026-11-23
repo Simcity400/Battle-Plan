@@ -11,6 +11,7 @@ import type { ThemeColors, ThemeMode, ThemeRole } from './themes';
 import { MAX_THEME_NAME } from './themeFile';
 import { ThemeWireframe } from './ThemePreview';
 import type { ThemePreview } from './useAppearance';
+import { keepLatest } from '../latest';
 
 export interface ThemeSaveFailure { text: string; retry: boolean }
 
@@ -53,12 +54,17 @@ export default function ThemeEditor({ draft: initial, original, onDraft, onSave,
   draft: ThemeDraft; original: ThemeDraft; onDraft: (draft: ThemeDraft, typing: boolean) => void; onSave: (draft: ThemeDraft) => ThemeSaveFailure | null; onClose: () => void; onPreview: (preview: ThemePreview | null) => void;
   focusName: boolean; onFocused: () => void; escape: MutableRefObject<((anchor: HTMLElement | null) => void) | null>;
 }) {
-  const [draft, setDraft] = useState(initial);
+  const [draft, showDraft] = useState(initial);
   const [error, setError] = useState<ThemeSaveFailure | null>(null);
-  const [typos, setTypos] = useState<Partial<Record<string, string>>>({});
-  const [pending, setPending] = useState<readonly ThemeRole[]>([]);
+  const [typos, showTypos] = useState<Partial<Record<string, string>>>({});
+  const [pending, showPending] = useState<readonly ThemeRole[]>([]);
   const typing = pending.length > 0 || Object.keys(typos).length > 0;
-  useEffect(() => { onDraft(draft, typing); }, [draft, typing, onDraft]);
+  const draftNow = useRef(initial), typosNow = useRef(typos), pendingNow = useRef(pending);
+  const publish = () => onDraft(draftNow.current, pendingNow.current.length > 0 || Object.keys(typosNow.current).length > 0);
+  const setDraft = keepLatest(draftNow, next => { showDraft(next); publish(); });
+  const setTypos = keepLatest(typosNow, next => { showTypos(next); publish(); });
+  const setPending = keepLatest(pendingNow, next => { showPending(next); publish(); });
+  useEffect(() => { publish(); }, [onDraft]);
   const typo = (role: ThemeRole) => ({ fieldId: `theme-colour-${role}`, typed: typos[`${draft.mode}:${role}`],
     onTyped: (text: string | null) => setTypos(previous => { const next = { ...previous }; if (text === null) delete next[`${draft.mode}:${role}`]; else next[`${draft.mode}:${role}`] = text; return next; }),
     onPending: (on: boolean) => setPending(previous => previous.includes(role) === on ? previous : on ? [...previous, role] : previous.filter(item => item !== role)) });

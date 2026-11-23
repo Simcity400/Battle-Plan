@@ -17,15 +17,30 @@ const CLASS: &str = "BattlePlanSaving";
 const WIDTH: i32 = 420;
 const HEIGHT: i32 = 130;
 const UNSEEN: std::time::Duration = std::time::Duration::from_millis(300);
+const NOTICED: std::time::Duration = std::time::Duration::from_secs(4);
 
-pub fn wait_until_empty(title: &str, notices: &[String], empty_within: &dyn Fn(std::time::Duration) -> bool, held: &dyn Fn() -> Option<&'static str>) {
+pub fn wait_until_empty(
+    title: &str,
+    notices: &[String],
+    empty_within: &dyn Fn(std::time::Duration) -> bool,
+    held: &dyn Fn() -> Option<&'static str>,
+    hurry: &dyn Fn() -> bool,
+) {
     if notices.is_empty() && empty_within(UNSEEN) {
         return;
     }
     let text = || held().into_iter().map(str::to_owned).chain(notices.iter().cloned()).collect::<Vec<_>>().join("\n");
+    let shown = std::time::Instant::now();
     let saving = Saving::show(title, &text());
     while !empty_within(std::time::Duration::from_secs(1)) {
         saving.say(&text());
+    }
+    if notices.is_empty() {
+        return;
+    }
+    saving.say(&text());
+    while shown.elapsed() < NOTICED && !hurry() {
+        thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 

@@ -8745,6 +8745,15 @@ pub(crate) mod tests {
         viewer.refused("the test ends");
         assert_eq!(taken(&answers).len(), 1, "the job is answered");
         assert!(exit.empty_within(std::time::Duration::ZERO), "and lets the exit go once it is");
+        let (job, answers) = crate::host::tests::job("map.png");
+        viewer.capture = Some(Capture { path: "map.png".into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, export: Some(job) });
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            eframe::App::logic(&mut viewer, ui.ctx(), &mut frame);
+            eframe::App::ui(&mut viewer, ui, &mut frame);
+        });
+        output.textures_delta.clear();
+        let answered = taken(&answers);
+        assert!(answered.iter().all(|answer| answer.as_ref().err().is_none_or(|error| !error.contains("hidden"))), "the frame’s drawing pass doesn’t refuse it for the hidden window either: {answered:?}");
         window.destroy();
         parent.destroy();
     }

@@ -12,6 +12,7 @@ import { counterCountries, currentCampaignSettings, saveCampaignSettings, setCou
 import './mapControls.css';
 import type { CampaignMapSettings, DashboardClient, DashboardSource, MapGraphics, MapSettingsReply } from '../dashboard/client';
 import type { CounterFilter, MapAudio } from '../generated/dashboard';
+import { settingsWriting } from '../shell/settingsWrites';
 
 const ANTI_ALIASING = 'Anti-aliasing';
 const TEXTURE_QUALITY = 'Texture quality';
@@ -175,6 +176,7 @@ export default function MapAppearance({ source, client, global = false, viewId, 
     const queue = writes.current;
     if (queue.running || !client.mapSettings) return;
     queue.running = true;
+    const written = settingsWriting();
     setSaving(true);
     while (queue.next) {
       const settings = queue.next; queue.next = null;
@@ -186,6 +188,7 @@ export default function MapAppearance({ source, client, global = false, viewId, 
       }
     }
     queue.running = false;
+    written();
     if (queue.live) setSaving(false);
   };
   const change = (next: CampaignMapSettings) => {
@@ -356,9 +359,11 @@ export default function MapAppearance({ source, client, global = false, viewId, 
               <Icon name="refresh" />Revert to game settings</button>
               : draft && <span className="settings-value">Following the game</span>}
           </div>}
-          {(available && !reply && !error) || reply?.gameSettingsError || video.gameError || failure ? <div className="settings-group-body map-settings-notes">
+          {(available && !reply && !error) || reply?.gameSettingsError || reply?.saveWarning || video.warning || video.gameError || failure ? <div className="settings-group-body map-settings-notes">
             {available && !reply && !error && <p className="settings-help" role="status">Reading map settings…</p>}
             {reply?.gameSettingsError && <div className="notice warning" role="status" data-detail={reply.gameSettingsError}><Icon name="alert" /><span>Couldn’t read your game’s graphics settings.</span></div>}
+            {video.warning && <div className="notice warning" role="status" data-detail={video.warning}><Icon name="alert" /><span>Saved, but Windows didn’t confirm the display change reached the disk.</span></div>}
+            {reply?.saveWarning && <div className="notice warning" role="status" data-detail={reply.saveWarning}><Icon name="alert" /><span>Saved, but Windows didn’t confirm the change reached the disk.</span></div>}
             {video.gameError && <div className="notice warning" role="status" data-detail={video.gameError}><Icon name="alert" /><span>Couldn’t read your game’s display settings.</span></div>}
             {failure}
           </div> : null}

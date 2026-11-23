@@ -180,13 +180,13 @@ impl Store {
         Ok(settings)
     }
 
-    pub fn flip(&mut self, key: String, setting: crate::protocol::MapSetting) -> io::Result<()> {
+    pub fn flip(&mut self, key: String, setting: crate::protocol::MapSetting) -> io::Result<Option<String>> {
         self.update(key, |saved, key| {
             saved.flipped(key, setting).map_err(crate::invalid)
         })
     }
 
-    pub fn save(&mut self, key: String, settings: CampaignMapSettings) -> io::Result<()> {
+    pub fn save(&mut self, key: String, settings: CampaignMapSettings) -> io::Result<Option<String>> {
         self.update(key, |_, _| Ok(settings))
     }
 
@@ -194,7 +194,7 @@ impl Store {
         &mut self,
         key: String,
         choose: impl FnOnce(&Self, &str) -> io::Result<CampaignMapSettings>,
-    ) -> io::Result<()> {
+    ) -> io::Result<Option<String>> {
         self.check().map_err(crate::invalid)?;
         self.update_at(&replay::exit::EXIT, &path()?, key, choose)
     }
@@ -205,8 +205,8 @@ impl Store {
         path: &std::path::Path,
         key: String,
         choose: impl FnOnce(&Self, &str) -> io::Result<CampaignMapSettings>,
-    ) -> io::Result<()> {
-        let entries = exit.under_lock(&path.with_extension("lock"), replay::exit::What::Change, |receipt| {
+    ) -> io::Result<Option<String>> {
+        let (entries, warning) = exit.under_lock(&path.with_extension("lock"), replay::exit::What::Change, |receipt| {
             let saved = Self {
                 entries: Self::load_from(path)?.entries,
                 game: self.game,
@@ -220,12 +220,11 @@ impl Store {
             if bytes.len() > 4 * 1024 * 1024 {
                 return Err(crate::invalid("Map settings exceed their size limit"));
             }
-            receipt.replace(path, |out| io::Write::write_all(out, &bytes))?;
-            Ok(entries)
+            replay::exit::published(entries, receipt.replace(path, |out| io::Write::write_all(out, &bytes)))
         })?;
         self.entries = entries;
         self.generation += 1;
-        Ok(())
+        Ok(warning)
     }
 }
 
@@ -265,6 +264,8 @@ pub struct Reply {
     pub game_graphics: Option<MapGraphics>,
     #[doc = " Why the game's settings (graphics and volumes) could not be read."]
     pub game_settings_error: Option<String>,
+    #[doc = " Why this save, which BattlePlan applied, may not have reached the disk."]
+    pub save_warning: Option<String>,
     #[doc = " The service's presentation generation once this job checked every open source's visual"]
     #[doc = " mods: a later one than a client has seen means widget artwork changed."]
     #[ts(type = "number")]

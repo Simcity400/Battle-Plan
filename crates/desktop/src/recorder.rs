@@ -174,16 +174,23 @@ pub async fn recording_preferences() -> Result<RecordingPreferences, String> {
     .await
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Renamed {
+    path: String,
+    warning: Option<String>,
+}
+
 #[tauri::command]
-pub async fn rename_recording(path: String, name: String) -> Result<String, String> {
+pub async fn rename_recording(path: String, name: String) -> Result<Renamed, String> {
     blocking(move || {
         rename(Path::new(&path), &name, &RecorderSettings::path())
-            .map(|renamed| renamed.display().to_string())
+            .map(|(renamed, warning)| Renamed { path: renamed.display().to_string(), warning })
     })
     .await
 }
 
-fn rename(path: &Path, name: &str, settings: &Path) -> Result<PathBuf, String> {
+fn rename(path: &Path, name: &str, settings: &Path) -> Result<(PathBuf, Option<String>), String> {
     let failed = |error: std::io::Error| format!("The recording couldn’t be renamed: {error}");
     let stem = recording_files::file_stem(name)
         .ok_or("Choose a name with a letter or number Windows allows in file names.")?;
@@ -198,28 +205,28 @@ fn rename(path: &Path, name: &str, settings: &Path) -> Result<PathBuf, String> {
     let campaign = recording_files::campaign_of(path)
         .map_err(failed)?
         .and_then(|id| String::from_utf8(id).ok());
-    let renamed = RecorderSettings::hold_at(settings, |held| {
-        let added = match &campaign {
-            Some(campaign) => {
-                held.update(|settings| {
-                    let before = settings.name_chosen(&folder, campaign.as_bytes());
-                    settings.choose_name(&folder, campaign, true);
-                    !before
-                })?
-                .1
-            }
-            None => false,
-        };
+    let (renamed, warning) = RecorderSettings::hold_at(settings, |held| {
+        let mut added = false;
+        let mut warning = None;
+        if let Some(campaign) = &campaign {
+            let chosen = held.update(|settings| {
+                added = !settings.name_chosen(&folder, campaign.as_bytes());
+                settings.choose_name(&folder, campaign, true);
+            });
+            warning = replay::exit::published((), chosen.map(drop))?.1;
+        }
         let renamed = recording_files::rename(path, &stem);
         if renamed.is_err()
             && let (true, Some(campaign)) = (added, &campaign)
         {
-            held.update(|settings| settings.choose_name(&folder, campaign, false))?;
+            let restored = held.update(|settings| settings.choose_name(&folder, campaign, false));
+            warning = replay::exit::published((), restored.map(drop))?.1;
         }
-        Ok(renamed)
+        Ok((renamed, warning))
     })
     .map_err(failed)?;
-    renamed.map_err(|error| {
+    let warning = warning.map(|warning| format!("The recording was renamed, but BattlePlan Recorder may not keep the name: {warning}"));
+    renamed.map(|renamed| (renamed, warning)).map_err(|error| {
         if error.raw_os_error() == Some(32) {
             "BattlePlan Recorder is recording into this file. Rename it once the session is saved."
                 .to_owned()
@@ -375,7 +382,8 @@ mod tests {
         let path = folder.join("Germany 1936–1941.battleplan");
         recording(&path);
         std::fs::write(folder.join("Barbarossa.battleplan"), b"another").unwrap();
-        let renamed = rename(&path, " Barbarossa? ", &settings).unwrap();
+        let (renamed, warning) = rename(&path, " Barbarossa? ", &settings).unwrap();
+        assert_eq!(warning, None);
         assert_eq!(renamed, folder.join("Barbarossa (2).battleplan"));
         assert!(!path.exists());
         assert_eq!(

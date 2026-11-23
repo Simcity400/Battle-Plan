@@ -7,7 +7,8 @@ import { newestSwitch, type MapSwitch } from './mapSwitch';
 export function useMapMuted() {
   const [muted, setMuted] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [take] = useState(() => newestSwitch(next => { setMuted(next.value); setError(next.warning); }));
+  const [warning, setWarning] = useState<string | null>(null);
+  const [take] = useState(() => newestSwitch(next => { setMuted(next.value); setWarning(next.warning); setError(null); }));
   const [reads, setReads] = useState(0);
   useEffect(() => {
     if (!desktopAvailable) return;
@@ -21,5 +22,5 @@ export function useMapMuted() {
     void invoke<MapSwitch>('set_map_muted', { muted: value }).then(take, cause => setError(errorMessage(cause)));
   };
   const retry = () => setReads(count => count + 1);
-  return { muted, error, set, retry };
+  return { muted, error, warning, set, retry };
 }

@@ -27,7 +27,7 @@ fn start_exit_worker() -> std::io::Result<&'static Exiting> {
     std::thread::Builder::new().name("quitting".into()).spawn(move || {
         let exit = &replay::exit::EXIT;
         exit.wait_sealed();
-        app_update::saving::wait_until_empty("BattlePlan Recorder", &exit.notices(), &|limit| exit.empty_within(limit), &|| exit.held().map(worker::saving));
+        app_update::saving::wait_until_empty("BattlePlan Recorder", &exit.notices(), &|limit| exit.empty_within(limit), &|| exit.held().map(worker::saving), &|| exiting.done.awaited());
         app_update::control::stop();
         exiting.done.set();
         let Some(app) = exiting.app.get() else { std::process::exit(0) };

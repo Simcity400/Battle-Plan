@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import {
@@ -47,6 +47,7 @@ import { commitZone } from './commitCount';
 import { RestartGuardContext, UpdateButton } from '../update/UpdateControl';
 import type { RestartGuard } from '../update/UpdateControl';
 import { leavePrompt, leavingTitle, RESTARTING, unsavedDetail } from './unsaved';
+import { settingsSaving, watchSettingsWrites } from './settingsWrites';
 import { closeGuard, type CloseGuard, type CloseGuardFailure, type LeavingFor } from './closeGuard.ts';
 import { keepLatest } from './latest.ts';
 import type { LeavePrompt, Leaving } from './unsaved';
@@ -254,7 +255,8 @@ export default function App() {
   const restartConfirmed = useRef(false);
   const guard = useRef<CloseGuard | null>(null);
   const layoutReader = useRef<(() => readonly PageId[]) | null>(null);
-  const unsavedNow = useCallback(() => (layoutReader.current?.().length ?? 0) > 0 || themeUnsaved(themeRef.current), []);
+  const unsavedNow = useCallback(() => (layoutReader.current?.().length ?? 0) > 0 || themeUnsaved(themeRef.current) || settingsSaving(), []);
+  const settingsWriting = useSyncExternalStore(watchSettingsWrites, settingsSaving);
   useEffect(() => {
     if (tab !== 'settings' || widgetDefinitions().length) return;
     import('../widgets/definitions').then(() => setWidgetsLoading('loaded'), () => setWidgetsLoading('failed'));
@@ -391,7 +393,7 @@ export default function App() {
   }
 
   const themeChanged = themeUnsaved(themeEditing);
-  const unsavedWork = layoutsUnsaved || themeChanged;
+  const unsavedWork = layoutsUnsaved || themeChanged || settingsWriting;
   useEffect(() => {
     if (!unsavedWork) {
       if (!restartConfirmed.current && !unsavedNow()) setLeaving(null);
@@ -402,7 +404,7 @@ export default function App() {
     window.addEventListener('beforeunload', guard);
     return () => window.removeEventListener('beforeunload', guard);
   }, [unsavedWork, unsavedNow]);
-  const unsavedNames = unsavedDetail(unsavedPages.map(id => pages.find(entry => entry.id === id)?.label ?? id), themeChanged ? themeEditing!.draft.name.trim() : null);
+  const unsavedNames = unsavedDetail(unsavedPages.map(id => pages.find(entry => entry.id === id)?.label ?? id), themeChanged ? themeEditing!.draft.name.trim() : null, settingsWriting);
   const prompt = leaving ? leavePrompt(leaving.kind, unsavedNames) : null;
   const leaveShown = !!prompt || closing !== null;
   useEffect(() => {

@@ -48,6 +48,7 @@ pub enum SetAside {
     Saved(String, Option<PathBuf>),
     Discarded(String),
     Failed(String, String),
+    Unanswered(String, bool),
 }
 
 #[derive(Default)]
@@ -603,7 +604,7 @@ fn requested_stop_counter(control: &Control, directory: &Path) -> Option<u64> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stop {
-    Save,
+    Save(Option<String>),
     Discard(String),
 }
 
@@ -779,7 +780,7 @@ impl Console {
 
     fn interrupt(&self) {
         self.quit.store(true, Ordering::Release);
-        self.capture.stop(Stop::Save);
+        self.capture.stop(Stop::Save(None));
     }
 
     fn quitting(&self) -> bool {
@@ -2604,11 +2605,7 @@ pub(crate) fn capture(
     let discarding = discard.is_some();
     let discarded = discard.and_then(Result::ok);
     let undiscarded = discard.and_then(Result::err);
-    let current = if discarding {
-        discarded.map(str::to_owned)
-    } else {
-        current
-    };
+    let current = stopped_on(ending.as_ref(), discarding, discarded, current);
     let (dropped, others_keep) = match discarded {
         Some(discarded) => {
             let besides = others_admitted(
@@ -3016,6 +3013,14 @@ fn in_progress(
     }
 }
 
+fn stopped_on(ending: Option<&Stop>, discarding: bool, discarded: Option<&str>, current: Option<String>) -> Option<String> {
+    match ending {
+        _ if discarding => discarded.map(str::to_owned),
+        Some(Stop::Save(Some(confirmed))) => Some(confirmed.clone()),
+        _ => current,
+    }
+}
+
 fn saved_at_end(
     campaign: &str,
     current: Option<&str>,
@@ -3040,12 +3045,7 @@ fn finish_ahead(
 }
 
 fn answer_ending(settling: &Settling, requests: Vec<(String, bool)>) {
-    locked(&settling.done).extend(requests.into_iter().map(|(campaign, _)| {
-        SetAside::Failed(
-            campaign,
-            "the session was ending; choose Save or Discard again".to_owned(),
-        )
-    }));
+    locked(&settling.done).extend(requests.into_iter().map(|(campaign, discard)| SetAside::Unanswered(campaign, discard)));
 }
 
 fn report_set_aside(settling: &Settling, stage: &dyn Fn(Stage<'_>)) {
@@ -5271,23 +5271,37 @@ pub struct SavedWaiting {
     pub by_tag: Option<String>,
 }
 
-pub fn save_waiting(session: &Path, campaign: &str) -> Result<SavedWaiting, String> {
-    save_waiting_with(session, campaign, &mut WaitingNames::installed())
+pub struct WaitingLock {
+    session: PathBuf,
+    campaign: String,
+    target: PathBuf,
+    _lock: File,
 }
 
-fn save_waiting_with(
-    session: &Path,
-    campaign: &str,
-    names: &mut WaitingNames,
-) -> Result<SavedWaiting, String> {
+pub fn lock_waiting(session: &Path, campaign: &str) -> Result<WaitingLock, String> {
+    let target = waiting_target(session, campaign)?;
+    fs::create_dir_all(&target).map_err(|error| failure_text(&target, error))?;
+    let lock = finalization_lock(&target)?;
+    Ok(WaitingLock { session: session.to_owned(), campaign: campaign.to_owned(), target, _lock: lock })
+}
+
+impl WaitingLock {
+    pub fn save(&self) -> Result<SavedWaiting, String> {
+        save_waiting_with(self, &mut WaitingNames::installed())
+    }
+
+    pub fn discard(&self) -> Result<(), String> {
+        discard_recording(root_of(&self.session)?, &self.target, &self.campaign)
+    }
+}
+
+fn save_waiting_with(locked: &WaitingLock, names: &mut WaitingNames) -> Result<SavedWaiting, String> {
+    let (session, campaign, target) = (&locked.session, locked.campaign.as_str(), &locked.target);
     replay_io::with_packing(|| {
-        let target = waiting_target(session, campaign)?;
         let localisation = names.localisation(session);
         if let Err(why) = &localisation {
             eprintln!("Countries are named by tag: {why}");
         }
-        fs::create_dir_all(&target).map_err(|error| failure_text(&target, error))?;
-        let _lock = finalization_lock(&target)?;
         let settings = RecorderSettings::path();
         let refusal = Mutex::new(None::<String>);
         let report = |why: Option<&str>| {
@@ -5300,7 +5314,7 @@ fn save_waiting_with(
             settings: &settings,
             report: Some(&report),
         };
-        let recording = save_recording(root_of(session)?, &target, campaign, naming)?;
+        let recording = save_recording(root_of(session)?, target, campaign, naming)?;
         let by_tag = localisation.err().or_else(|| {
             refusal
                 .lock()
@@ -5311,12 +5325,6 @@ fn save_waiting_with(
     })
 }
 
-pub fn discard_waiting(session: &Path, campaign: &str) -> Result<(), String> {
-    let target = waiting_target(session, campaign)?;
-    fs::create_dir_all(&target).map_err(|error| failure_text(&target, error))?;
-    let _lock = finalization_lock(&target)?;
-    discard_recording(root_of(session)?, &target, campaign)
-}
 
 #[cfg(test)]
 mod tests {
@@ -5652,7 +5660,7 @@ mod tests {
             let asked = if discard {
                 Stop::Discard("campaign".into())
             } else {
-                Stop::Save
+                Stop::Save(None)
             };
             let looks = Cell::new(0);
             let finished = || {
@@ -5972,7 +5980,11 @@ mod tests {
             discard_target(Some(&confirmed), None),
             Some(Err(Undiscarded::Unread))
         );
-        assert_eq!(discard_target(Some(&Stop::Save), Some("a")), None);
+        assert_eq!(discard_target(Some(&Stop::Save(None)), Some("a")), None);
+        let read = || Some("b".to_owned());
+        assert_eq!(stopped_on(Some(&Stop::Save(Some("a".into()))), false, None, read()).as_deref(), Some("a"), "a Save keeps the campaign the user confirmed, though the game has loaded another since");
+        assert_eq!(stopped_on(Some(&Stop::Save(None)), false, None, read()).as_deref(), Some("b"), "a Save that names none, as Ctrl+C and a quit ask, keeps the one in progress");
+        assert_eq!(stopped_on(Some(&confirmed), true, Some("a"), read()).as_deref(), Some("a"));
         assert_eq!(discard_target(None, Some("a")), None);
     }
 
@@ -6095,10 +6107,8 @@ mod tests {
         assert!(locked(&settling.requests).is_empty());
         assert_eq!(
             take_done(&settling),
-            [SetAside::Failed(
-                "forwarded".to_owned(),
-                "the session was ending; choose Save or Discard again".to_owned()
-            )]
+            [SetAside::Unanswered("forwarded".to_owned(), false)],
+            "a request the ending session never took is handed back, to be carried out once it is waiting"
         );
     }
 
@@ -7891,7 +7901,7 @@ mod tests {
         let console = Console::new();
         let first = console.next_capture().unwrap();
         console.interrupt();
-        assert_eq!(first.seal(), Some(Stop::Save), "Ctrl+C while recording saves the capture");
+        assert_eq!(first.seal(), Some(Stop::Save(None)), "Ctrl+C while recording saves the capture");
         assert!(console.next_capture().is_none());
     }
 
@@ -7900,13 +7910,13 @@ mod tests {
     {
         let control = Control::new();
         assert!(!control.stopping());
-        assert!(control.stop(Stop::Save));
-        assert!(control.stop(Stop::Save), "the same stop asked again stands");
+        assert!(control.stop(Stop::Save(None)));
+        assert!(control.stop(Stop::Save(None)), "the same stop asked again stands");
         assert!(
             !control.stop(Stop::Discard("a".into())),
             "a later Discard can’t turn the save into one"
         );
-        assert_eq!(control.seal(), Some(Stop::Save));
+        assert_eq!(control.seal(), Some(Stop::Save(None)));
         control.reset();
         assert!(!control.stopping());
         assert_eq!(control.seal(), None, "a capture that ends by itself keeps what it has");

@@ -446,38 +446,34 @@ pub async fn act_on_waiting(
     discard: bool,
 ) -> Result<Option<String>, String> {
     let recorder = Arc::clone(app.state::<Arc<Recorder>>().inner());
-    let receipt = recorder.admit(What::WaitingRecording)?;
     let (session, live) = waiting_part(&recorder, &session, &campaign)?;
-    let target = match live {
-        Some(target) => target,
-        None => {
-            let (session, campaign) = (session.clone(), campaign.clone());
-            blocking(move || recorder::controller::waiting_folder(&session, &campaign)).await?
+    if let Some(target) = live {
+        let _admitted = recorder.admit(What::WaitingRecording)?;
+        if recorder.act_on_recording(&target, &campaign, discard) {
+            return Ok(None);
         }
-    };
-    if recorder.act_on_recording(&target, &campaign, discard) {
-        return Ok(None);
     }
     let jobs = Arc::clone(app.state::<Arc<Jobs>>().inner());
-    let result = blocking(move || receipt.carry(|| {
-        if discard {
-            recorder::controller::discard_waiting(&session, &campaign).map(|()| None)
-        } else {
-            recorder::controller::save_waiting(&session, &campaign).map(|saved| {
-                if let Some(path) = &saved.recording {
-                    jobs.saved(path);
-                }
-                saved.by_tag.map(|why| {
-                    format!(
-                        "Saved. Country names couldn’t be read, so countries show by tag: {why}"
-                    )
-                })
-            })
-        }
-    }))
+    let result = blocking(move || {
+        let waiting = recorder::controller::lock_waiting(&session, &campaign)?;
+        let receipt = recorder.admit(What::WaitingRecording)?;
+        receipt.carry(|| finish_waiting(&waiting, discard, &jobs))
+    })
     .await;
     recordings_changed(&app);
     result
+}
+
+pub fn finish_waiting(waiting: &recorder::controller::WaitingLock, discard: bool, jobs: &Jobs) -> Result<Option<String>, String> {
+    if discard {
+        return waiting.discard().map(|()| None);
+    }
+    waiting.save().map(|saved| {
+        if let Some(path) = &saved.recording {
+            jobs.saved(path);
+        }
+        saved.by_tag.map(|why| format!("Saved. Country names couldn’t be read, so countries show by tag: {why}"))
+    })
 }
 
 #[tauri::command]

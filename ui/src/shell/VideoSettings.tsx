@@ -6,6 +6,7 @@ import { Icon } from '../components/Icons';
 import { FailureLine } from '../components/FailureLine';
 import { FRAME_LIMIT_HINT, MAX_FRAME_LIMIT, MIN_FRAME_LIMIT, frameLimitInput, sameDisplay } from './videoOptions';
 import type { VideoOptions } from './videoOptions';
+import { settingsWriting } from './settingsWrites';
 interface VideoReply { settings: VideoOptions; gameSettings: VideoOptions | null; gameSettingsError: string | null; gameMapUiScale: number | null; mapUiScaleChoices: number[]; warning: string | null }
 
 const VSYNC = 'VSync';
@@ -19,6 +20,7 @@ export function useVideoSettings(enabled: boolean, userFolder?: string) {
   const [reply, setReply] = useState<VideoReply | null>(null);
   const [draft, setDraft] = useState<VideoOptions | null>(null);
   const [error, setError] = useState<{ detail: string; write: VideoOptions | null } | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   const [pending, setPending] = useState(false);
   const writes = useRef<{ next: VideoOptions | null; running: boolean; live: boolean }>({ next: null, running: false, live: true });
@@ -36,17 +38,19 @@ export function useVideoSettings(enabled: boolean, userFolder?: string) {
     const queue = writes.current;
     if (queue.running) return;
     queue.running = true;
+    const written = settingsWriting();
     setPending(true);
     while (queue.next) {
       const settings = queue.next; queue.next = null;
       try {
         const value = await invoke<VideoReply>('set_video_settings', { settings });
-        if (queue.live) { setReply(value); setError(value.warning ? { detail: value.warning, write: null } : null); if (!queue.next) setDraft(value.settings); }
+        if (queue.live) { setReply(value); setError(null); setWarning(value.warning); if (!queue.next) setDraft(value.settings); }
       } catch (cause) {
         if (queue.live) setError({ detail: errorMessage(cause), write: settings });
       }
     }
     queue.running = false;
+    written();
     if (queue.live) setPending(false);
   };
   const apply = (next: VideoOptions) => {
@@ -54,7 +58,7 @@ export function useVideoSettings(enabled: boolean, userFolder?: string) {
     setDraft(next); writes.current.next = next; void write();
   };
   return {
-    draft, error: error?.detail ?? null, writeFailed: !!error?.write, pending, gameError: reply?.gameSettingsError, gameMapUiScale: reply?.gameMapUiScale ?? null, mapUiScaleChoices: reply?.mapUiScaleChoices ?? [],
+    draft, error: error?.detail ?? null, warning, writeFailed: !!error?.write, pending, gameError: reply?.gameSettingsError, gameMapUiScale: reply?.gameMapUiScale ?? null, mapUiScaleChoices: reply?.mapUiScaleChoices ?? [],
     canReset: !!reply?.gameSettings,
     atGame: !!reply?.gameSettings && sameDisplay(draft, reply.gameSettings),
     update: (value: Partial<VideoOptions>) => { if (draft) apply({ ...draft, ...value, useGameSettings: false }); },

@@ -59,12 +59,6 @@ struct PopOutWindow {
 }
 
 impl Inner {
-    fn refuse_exports(&mut self, why: &str) {
-        for job in self.pending.exports.drain(..) {
-            job.answer(Err(why.to_owned()));
-        }
-    }
-
     fn flush(&mut self) {
         let Some(map) = self.map.as_ref() else {
             return;
@@ -78,11 +72,6 @@ impl Inner {
                 break;
             }
         }
-        for job in self.pending.exports.drain(..) {
-            if let Err(job) = map.send_export(job) {
-                job.answer(Err(viewer::host::STOPPED.to_owned()));
-            }
-        }
     }
 
     fn ask_export(&mut self, path: String, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<Result<String, String>>, String> {
@@ -94,8 +83,11 @@ impl Inner {
         let receipt = replay::exit::EXIT.admit(replay::exit::What::Export).map_err(|error| error.to_string())?;
         let (answer, answered) = tokio::sync::oneshot::channel();
         let reply = viewer::host::Reply::new(move |result| drop(answer.send(result)));
-        self.pending.exports.push(viewer::host::ExportJob::new(path, view_id, receipt, reply));
+        let job = viewer::host::ExportJob::new(path, view_id, receipt, reply);
         self.flush();
+        if let Some(Err(job)) = self.map.as_ref().map(|map| map.send_export(job)) {
+            job.answer(Err(viewer::host::STOPPED.to_owned()));
+        }
         Ok(answered)
     }
 

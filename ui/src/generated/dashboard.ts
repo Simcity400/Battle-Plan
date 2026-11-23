@@ -348,6 +348,10 @@ gameGraphics: MapGraphics | null,
  */
 gameSettingsError: string | null,
 /**
+ * Why this save, which BattlePlan applied, may not have reached the disk.
+ */
+saveWarning: string | null,
+/**
  * The service's presentation generation once this job checked every open source's visual
  * mods: a later one than a client has seen means widget artwork changed.
  */

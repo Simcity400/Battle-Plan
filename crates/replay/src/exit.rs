@@ -53,6 +53,14 @@ pub fn is_unconfirmed(error: &io::Error) -> bool {
     error.get_ref().is_some_and(|inner| inner.is::<Unconfirmed>())
 }
 
+pub fn published<T>(value: T, written: io::Result<()>) -> io::Result<(T, Option<String>)> {
+    match written {
+        Ok(()) => Ok((value, None)),
+        Err(error) if is_unconfirmed(&error) => Ok((value, Some(error.to_string()))),
+        Err(error) => Err(error),
+    }
+}
+
 #[derive(Default)]
 struct State {
     sealed: bool,
@@ -365,5 +373,9 @@ mod tests {
         let failed = unconfirmed(io::Error::other("the disk didn’t answer"));
         assert!(is_unconfirmed(&failed));
         assert!(!is_unconfirmed(&io::Error::other("the rename was refused")));
+        let (applied, warning) = published(7, Err(failed)).unwrap();
+        assert_eq!(applied, 7, "a file Windows replaced is applied even when its flush wasn’t confirmed");
+        assert!(warning.is_some_and(|warning| warning.contains("didn’t confirm")));
+        assert!(published(7, Err(io::Error::other("the rename was refused"))).is_err());
     }
 }

@@ -92,6 +92,7 @@ fn save(key: &str, set: &[Choice]) -> io::Result<()> {
             ..Default::default()
         },
     )
+    .map(drop)
 }
 
 pub(super) fn frame(

@@ -24,7 +24,7 @@ use windows_sys::Win32::{
 const SUBCLASS: usize = 0x4250_5345;
 const DRAFTS: u32 = WM_APP + 0x4250;
 
-pub struct Done(HANDLE);
+pub struct Done(HANDLE, std::sync::atomic::AtomicBool);
 
 // SAFETY: an event handle can be waited on and signalled from any thread, and is never closed.
 unsafe impl Send for Done {}
@@ -35,7 +35,7 @@ impl Done {
     pub fn new() -> std::io::Result<Self> {
         // SAFETY: a manual-reset, unsignalled, unnamed event.
         let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
-        if event.is_null() { Err(std::io::Error::last_os_error()) } else { Ok(Self(event)) }
+        if event.is_null() { Err(std::io::Error::last_os_error()) } else { Ok(Self(event, std::sync::atomic::AtomicBool::new(false))) }
     }
 
     pub fn set(&self) {
@@ -53,11 +53,16 @@ impl Done {
         unsafe { WaitForSingleObject(self.0, INFINITE) };
     }
 
+    pub fn awaited(&self) -> bool {
+        self.1.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     pub fn wait_serving_sent_messages(&self) {
         thread_local! { static WAITING: Cell<bool> = const { Cell::new(false) }; }
         if WAITING.replace(true) {
             return;
         }
+        self.1.store(true, std::sync::atomic::Ordering::Release);
         loop {
             // SAFETY: the event lives for the process; the wait returns for it or for a message
             // sent to this thread, which `PeekMessageW` then dispatches without removing anything

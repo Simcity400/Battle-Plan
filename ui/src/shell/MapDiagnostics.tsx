@@ -31,8 +31,9 @@ export default function MapDiagnostics({ native, metadata, branch }: { native: D
         {!desktopAvailable ? <span className="settings-value">Desktop only</span> : overlay.enabled === null ? <span className="settings-value" role="img" aria-label="Technical overlay: loading">—</span>
           : <input type="checkbox" role="switch" checked={overlay.enabled} onChange={event => overlay.set(event.currentTarget.checked)} />}
       </label>
-      {overlay.error && <div className="settings-group-body"><FailureLine message={overlay.enabled === null ? 'Couldn’t read the technical overlay setting.' : 'Couldn’t switch the technical overlay.'}
-        detail={overlay.error} onRetry={overlay.enabled === null ? overlay.reread : () => overlay.set(!overlay.enabled)} retryDisabled={overlay.pending} /></div>}
+      {overlay.error ? <div className="settings-group-body"><FailureLine message={overlay.enabled === null ? 'Couldn’t read the technical overlay setting.' : 'Couldn’t switch the technical overlay.'}
+        detail={overlay.error} onRetry={overlay.retry} retryDisabled={overlay.pending} /></div>
+        : overlay.warning && <div className="settings-group-body"><div className="notice warning" role="status" data-detail={overlay.warning}><Icon name="alert" /><span>Switched, but Windows didn’t confirm the setting was saved.</span></div></div>}
       <div className="settings-row"><span className="settings-row-text"><strong>Problems</strong>
         <small>{!desktopAvailable ? 'Problems the map reports appear here.' : !details?.path ? 'Open the map to check it.'
           : details.messages.length ? `What the map reported${details.hour != null ? ` at ${formatDateTime(details.hour)}` : ''}.` : 'None reported.'}</small></span>

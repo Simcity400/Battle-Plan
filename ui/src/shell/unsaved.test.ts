@@ -18,3 +18,10 @@ test('the unsaved detail names every page and the theme', () => {
   assert.equal(unsavedDetail(['Overview', 'Economy', 'Air war'], null), 'Layout changes on Overview, Economy and Air war aren’t saved.');
   assert.equal(unsavedDetail([], 'Carbon copy'), 'The theme “Carbon copy” isn’t saved.');
 });
+
+test('a settings change still on its way to BattlePlan keeps a close from going ahead unasked', () => {
+  assert.deepEqual(leavePrompt('close', unsavedDetail([], null, true)), {
+    title: 'Close BattlePlan without saving?', detail: 'A settings change is still being saved.', discard: 'Discard and close',
+  });
+  assert.equal(unsavedDetail(['Overview'], null, true), 'Layout changes on Overview aren’t saved. A settings change is still being saved.');
+});

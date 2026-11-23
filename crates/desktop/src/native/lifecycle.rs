@@ -78,7 +78,6 @@ impl super::Inner {
     }
 
     pub(super) fn map_ended(&mut self, ending: Ending) -> bool {
-        self.refuse_exports("The map stopped before the export finished");
         let was_ready = self.status.ready;
         self.map = None;
         self.generation += 1;
@@ -534,37 +533,6 @@ mod tests {
         closing.shutting_down = true;
         assert!(!closing.map_ended(Ending::Failed("late".into())));
         assert!(closing.status.error.is_none());
-    }
-
-    fn asked(inner: &mut Inner, path: &str, exit: &'static replay::exit::Exit) -> tokio::sync::oneshot::Receiver<Result<String, String>> {
-        let (answer, answered) = tokio::sync::oneshot::channel();
-        let reply = viewer::host::Reply::new(move |result| drop(answer.send(result)));
-        inner.pending.exports.push(viewer::host::ExportJob::new(path.into(), None, exit.admit(replay::exit::What::Export).unwrap(), reply));
-        answered
-    }
-
-    #[test]
-    fn a_map_that_ends_answers_the_exports_it_never_took_by_name_and_holds_the_exit_no_longer() {
-        let exit: &'static replay::exit::Exit = Box::leak(Box::new(replay::exit::Exit::new()));
-        let mut inner = showing("A");
-        let (mut first, mut second) = (asked(&mut inner, "first.png", exit), asked(&mut inner, "second.png", exit));
-        exit.seal();
-        assert!(!exit.empty_within(std::time::Duration::ZERO), "the exit waits for both exports, though neither map has read its picture back yet");
-        inner.shutting_down = true;
-        assert!(!inner.map_ended(Ending::Closed));
-        assert_eq!(first.try_recv(), Ok(Err("The map stopped before the export finished".into())));
-        assert_eq!(second.try_recv(), Ok(Err("The map stopped before the export finished".into())));
-        assert!(exit.empty_within(std::time::Duration::ZERO));
-    }
-
-    #[test]
-    fn a_replacement_map_never_runs_an_export_whose_asker_was_refused() {
-        let exit: &'static replay::exit::Exit = Box::leak(Box::new(replay::exit::Exit::new()));
-        let mut inner = showing("A");
-        let mut refused = asked(&mut inner, "map.png", exit);
-        assert!(inner.map_ended(Ending::DeviceLost("The map lost its graphics device: Removed".into())));
-        assert_eq!(refused.try_recv(), Ok(Err("The map stopped before the export finished".into())));
-        assert!(inner.pending.exports.is_empty(), "the next map never inherits it");
     }
 
     #[test]

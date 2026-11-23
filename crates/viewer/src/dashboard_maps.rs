@@ -1061,7 +1061,7 @@ impl DashboardMaps {
                     view.viewer.has_map()
                         && view.admission_error.is_none()
                         && view.error.is_none()
-                        && drawn_clip(&view.target, scale, ui.clip_rect()).is_some()
+                        && view_clip(view, scale, ui.clip_rect()).is_some()
                 })
             })
             .collect();
@@ -1084,7 +1084,7 @@ impl DashboardMaps {
                 continue;
             };
             let body = physical_rect(view.target.bounds, scale);
-            let Some(clip) = drawn_clip(&view.target, scale, ui.clip_rect()) else {
+            let Some(clip) = view_clip(view, scale, ui.clip_rect()) else {
                 continue;
             };
             let mut map_ui = ui.new_child(
@@ -1196,6 +1196,14 @@ fn audio_view(
         .filter(|id| shown(id))
         .or_else(|| order.iter().find(|id| shown(id)))
         .cloned()
+}
+
+fn view_clip(view: &MapView, scale: f32, panel: egui::Rect) -> Option<egui::Rect> {
+    if view.viewer.holds_export() {
+        let body = physical_rect(view.target.bounds, scale);
+        return body.is_positive().then_some(body);
+    }
+    drawn_clip(&view.target, scale, panel)
 }
 
 fn drawn_clip(target: &DashboardMapView, scale: f32, panel: egui::Rect) -> Option<egui::Rect> {

@@ -47,14 +47,13 @@ pub(super) struct Pending {
     pub(super) maps: Option<DashboardSnapshot>,
     pub(super) gamepad: Option<dashboard_core::protocol::GamepadMessage>,
     pub(super) close: bool,
-    pub(super) exports: Vec<viewer::host::ExportJob>,
 }
 
 pub(super) const MAX_QUEUED_ACTIONS: usize = 16;
 
 impl Pending {
     pub(super) fn action_room(&self) -> Result<(), String> {
-        if self.actions.len() + self.exports.len() >= MAX_QUEUED_ACTIONS {
+        if self.actions.len() >= MAX_QUEUED_ACTIONS {
             return Err(format!(
                 "{}; try again",
                 dashboard_core::transport::MAP_CONTROLS_BUSY
@@ -66,7 +65,6 @@ impl Pending {
     pub(super) fn can_send(&self, visible: bool) -> bool {
         self.close
             || !self.actions.is_empty()
-            || !self.exports.is_empty()
             || self.campaign_map
             || self.maps.is_some()
             || self.bounds.is_some()
