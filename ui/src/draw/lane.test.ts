@@ -506,3 +506,14 @@ test('review 9: a lane without the route\'s follower keeps no packets after a re
   for (let hour = 0; hour < 50; hour++) lane.receive('follow', message(hour, [{ id: 5, answer: rows([1n], [BigInt(hour)]) }], hour % 10 === 0, NATIVE, 1));
   assert.deepEqual([(lane as unknown as { early: unknown[] }).early.length, released.length > 0], [0, true], 'the other lane\'s records are released, never queued without limit');
 });
+
+test('review 11: a lane that first binds on a later seek takes the stamped reset count, so the page withdraws pre-reset pictures route-wide', async () => {
+  const { page, lane, mount, step } = rig();
+  mount(1, [{ id: 5, channel: 'followed' }]);
+  await step(10, { playing: false, seek: true });
+  lane.receive('follow', message(10, [], true, NATIVE, 0), 1);
+  lane.receive('follow', message(10, [{ id: 5, answer: rows([1n], [10n]) }], false, NATIVE, 1), 1);
+  lane.bindRoute(5, ROUTE, NATIVE, 1);
+  await step(10);
+  assert.deepEqual([page.view(1).mode, page.widgets.get(1)!.installed?.gen.reset], ['picture', 1], 'the seek-0 reset counted on another lane is in this lane\'s count too');
+});

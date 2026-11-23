@@ -96,3 +96,9 @@ test('review 10: an open tooltip reads its technology and its values from the sa
   assert.equal(inspectedSlot(installed('sonar'), 0)?.token, 'sonar', 'the successor installed with these values is the subject, so Radar\'s tooltip withdraws');
   assert.equal(inspectedSlot({ ...installed('radar'), data: { slots: [] } }, 0)?.token, undefined, 'a slot gone from the installation has no subject');
 });
+
+test('review 11: a slot gone from the installation is an explicit absent result, so the open tooltip closes', () => {
+  const texts = slotValues(reply(day(97), []), day(98));
+  const absent = inspectedSlot({ texts, hour: day(98), data: { slots: [] } }, 0);
+  assert.deepEqual(absent, { fraction: null, left: null, hour: day(98), token: undefined });
+});

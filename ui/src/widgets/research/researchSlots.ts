@@ -49,8 +49,9 @@ export interface SlotInspection { fraction: number | null; left: number | null; 
 
 export function inspectedSlot(shown: { texts: ReadonlyMap<string, string>; hour: number; data: { slots: readonly { index: number; state: { token: string | null } }[] } | undefined } | undefined,
   slot: number): SlotInspection | undefined {
-  const values = shown && slotInspection(shown.texts, slot, shown.hour);
-  return values && { ...values, token: shown.data?.slots.find(read => read.index === slot)?.state.token };
+  if (!shown) return undefined;
+  const values = slotInspection(shown.texts, slot, shown.hour) ?? { fraction: null, left: null, hour: shown.hour };
+  return { ...values, token: shown.data?.slots.find(read => read.index === slot)?.state.token };
 }
 
 export function slotInspection(texts: ReadonlyMap<string, string> | undefined, slot: number, hour: number | null): SlotInspection | undefined {

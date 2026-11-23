@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseDatedPanels, parseFollowed } from './message.ts';
 import { datedPanel, message } from './messages.fixture.ts';
-import { charge, laneOf, splitForLanes } from './split.ts';
+import { charge, laneOf, resetStamps, splitForLanes } from './split.ts';
 
 const one = (key: bigint) => ({ keys: [key], columns: 1, values: [key] });
 
@@ -37,4 +37,13 @@ test('should-fix d: dated panels of a version the page does not read are refused
   const bytes = datedPanel(3, 10, { rows: [1] });
   new DataView(bytes.buffer).setUint16(4, 5, true);
   assert.throws(() => splitForLanes(bytes, 2), /version 5 are not supported/);
+});
+
+test('review 11: a reset is stamped once per route before the split, so every lane carries the same count', () => {
+  const stamp = resetStamps();
+  assert.equal(stamp(message(10, [], true, 3, 1)), 1);
+  assert.equal(stamp(message(11, [], false, 3, 1)), 1, 'a later message carries the count for a lane that joins now');
+  assert.equal(stamp(message(5, [], true, 3, 0)), 1, 'a reset of an older seek is never counted');
+  assert.equal(stamp(message(12, [], true, 3, 2)), 2);
+  assert.equal(stamp(message(12, [], true, 4, 2)), 1, 'each route keeps its own count');
 });

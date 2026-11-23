@@ -23,6 +23,20 @@ export function charge(bytes: Uint8Array): number {
 }
 const COMPLETED = 4;
 
+export function resetStamps() {
+  const held = new Map<number, { seek: number; count: number }>();
+  return (bytes: Uint8Array): number | undefined => {
+    if (bytes.byteLength < 24 || wireKind(bytes) !== DATED_FOLLOW) return undefined;
+    const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), flags = data.getUint32(4, true), seek = data.getUint32(16, true);
+    const at = held.get(flags >>> 1) ?? { seek, count: 0 };
+    if (seek < at.seek) return at.count;
+    at.seek = seek;
+    if (flags & 1) at.count++;
+    held.set(flags >>> 1, at);
+    return at.count;
+  };
+}
+
 export function splitForLanes(bytes: Uint8Array, lanes: number): Split {
   const failure = followFailure(bytes);
   if (failure !== null) return { kind: 'failure', reason: failure };

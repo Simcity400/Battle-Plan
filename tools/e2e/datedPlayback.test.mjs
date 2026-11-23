@@ -587,4 +587,7 @@ test('review 9: a table placement passes exact content only on its own renderer\
   const late = window(-1);
   late.audit = late.audit.map(sample => ({ ...sample, at: 1500 }));
   assert.equal(datedPlaybackVerdict([late], records).pass, false, 'review 10: a comparison from the later idle phase does not stand for the judged window');
+  const paused = { ...window(-1), to: 2000 };
+  paused.audit = paused.audit.map(sample => ({ ...sample, at: 1500 }));
+  assert.equal(datedPlaybackVerdict([paused], records).pass, false, 'review 11: a comparison after the last judged frame, still inside the window, does not count');
 });

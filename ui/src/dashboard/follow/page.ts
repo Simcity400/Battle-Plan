@@ -97,7 +97,7 @@ interface Widget<B extends Bitmap> {
   failed: boolean; face: string; drawn: number;
 }
 
-interface RouteState { resets: number[]; command: number; failed: { seek: number; reason: string } | null }
+interface RouteState { reset: number; command: number; failed: { seek: number; reason: string } | null }
 
 export interface RebindChange { pin?: number | null; offset?: number; subscription?: boolean; bounds?: readonly [number, number] | null }
 
@@ -150,11 +150,11 @@ export class Page<B extends Bitmap = Bitmap> {
 
   private route(id: number): RouteState {
     let route = this.routes.get(id);
-    if (!route) this.routes.set(id, route = { resets: [], command: 0, failed: null });
+    if (!route) this.routes.set(id, route = { reset: 0, command: 0, failed: null });
     return route;
   }
 
-  generation(route: number, lane = 0): Generation { return { seek: this.seek, reset: this.route(route).resets[lane] ?? 0 }; }
+  generation(route: number): Generation { return { seek: this.seek, reset: this.route(route).reset }; }
 
   mount(id: number, mount: Mount<B>) {
     this.route(mount.route);
@@ -271,11 +271,11 @@ export class Page<B extends Bitmap = Bitmap> {
     const queue = this.queue;
     this.queue = [];
     for (const presentation of queue) for (const [id, reset] of presentation.resets ?? []) {
-      const route = this.route(id), lane = presentation.lane;
-      if (reset <= (route.resets[lane] ?? 0)) continue;
-      route.resets[lane] = reset;
+      const route = this.route(id);
+      if (reset <= route.reset) continue;
+      route.reset = reset;
       for (const widget of this.widgets.values())
-        if (widget.route === id && widget.lane === lane && widget.installed?.follows && widget.installed.gen.reset < reset) this.clear(widget, 'reading');
+        if (widget.route === id && widget.installed?.follows && widget.installed.gen.reset < reset) this.clear(widget, 'reading');
     }
     const early = [...this.widgets.values()].flatMap(widget => {
       const held = widget.early;
@@ -290,7 +290,7 @@ export class Page<B extends Bitmap = Bitmap> {
     const route = this.route(widget.route), at = this.target(widget);
     if (widget.pin === null) {
       if (entry.gen.seek !== this.seek) return 'stream';
-      if (entry.gen.reset < (route.resets[widget.lane] ?? 0)) return 'reset';
+      if (entry.gen.reset < route.reset) return 'reset';
       if (route.failed && route.failed.seek >= entry.gen.seek) return 'failed stream';
     }
     if (entry.binding !== widget.binding) return 'binding';
@@ -336,7 +336,7 @@ export class Page<B extends Bitmap = Bitmap> {
     }
     if (why) { this.refuse(widget, entry, why); return; }
     const route = this.route(widget.route);
-    if (entry.gen.reset > (route.resets[widget.lane] ?? 0)) route.resets[widget.lane] = entry.gen.reset;
+    if (entry.gen.reset > route.reset) route.reset = entry.gen.reset;
     if (route.failed && entry.gen.seek > route.failed.seek) route.failed = null;
     try {
       for (let k = 0; k < widget.surfaces.length; k++) {

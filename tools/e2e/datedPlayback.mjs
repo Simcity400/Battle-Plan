@@ -282,7 +282,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
         if (!lag.length || visibleCount !== expected || lag.includes(Infinity)) { missing++; ages.push(Infinity); } else { const worst = Math.max(...lag); ages.push(worst); hours.add(Math.min(...drawn)); if (worst > MAX_PLAYBACK_AGE_HOURS) { late++; if (uncrossedLate) lateWithoutCrossing++; } if (crossed) structureCrossings++; }
         eligibleAges.push(available.length && visibleCount === expected ? Math.max(...available) : Infinity);
       }
-      const audited = auditByWidget.get(widget.id) ?? [], samples = audited.filter(s => Number.isFinite(s.at) && s.at >= w.from && s.at <= w.to);
+      const audited = auditByWidget.get(widget.id) ?? [], samples = audited.filter(s => Number.isFinite(s.at) && timed(s));
       const auditedPairs = new Set(samples.filter(rendered).map(s => `${s.surface}\u0000${s.placement}`));
       const exact = required.size > 0 && [...required].every(surface => observedSurfaces.has(surface))
         && [...required].every(surface => samples.some(s => s.surface === surface && rendered(s)))

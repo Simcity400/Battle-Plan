@@ -28,7 +28,7 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
     });
     port.onmessage = ({ data }: MessageEvent<FromPull>) => {
       if (data.kind === 'failure') { post({ type: 'failure', lane: index, reason: data.reason }); return; }
-      try { made.receive(data.kind, data.bytes); }
+      try { made.receive(data.kind, data.bytes, data.resets); }
       catch (error) { post({ type: 'failure', lane: index, reason: error instanceof Error ? error.message : String(error) }); }
     };
     return made;

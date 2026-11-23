@@ -186,7 +186,7 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   </div>;
 }
 
-interface RowCells { parts: Map<string, HTMLElement>; net: HTMLElement | null; row?: HTMLElement | null; resource?: ResourceInfo }
+interface RowCells { parts: Map<string, HTMLElement>; net: HTMLElement | null; row?: HTMLElement | null; resource?: ResourceInfo; description?: HTMLElement | null }
 
 function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, track, onPick }: ComparisonProps & {
   tag: string; track: BoundTrack; onPick: (resource: ResourceInfo, hour: number | null) => void;
@@ -206,6 +206,7 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
   const head = useHeadProduct<ResourceBalanceReply>(runtime, widget, RESOURCE_BALANCE, { country: countryFromKey(tag), order, ...hideEmpty ? { hideEmpty } : {} },
     { active, validate: validateResourceBalance, structure: barStructure });
   const bars = useRef<HTMLOListElement | null>(null);
+  const described = useRef<(resource: ResourceInfo) => TooltipContent | null>(() => null);
   const data = head.data;
   const report = useShownHour();
   const shownAt = useRef(head.shownAt);
@@ -228,6 +229,7 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
           for (const [property, value] of Object.entries(segmentLook(raw, colours.get(part)))) setStyle(element, property, value);
         }
         if (held.resource) setAttr(held.row, 'aria-label', describeResource(held.resource, balance, data.decimals));
+        if (held.resource) setText(held.description, tooltipText(described.current(held.resource) ?? { title: resourceName(held.resource), rows: [] }));
         if (!held.parts.size || !held.net) continue;
         if (!balance) for (const element of held.parts.values()) setStyle(element, 'width', '0%');
         setText(held.net, balance ? formatSigned(balance.net, data.decimals) : '—');
@@ -252,7 +254,8 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
     return resourceTooltip({ title: resourceName(resource), icon: resource.icon ?? undefined, subtitle: `Per day · ${dayLabel(hour)}` },
       balanceOf(pools), dealsOf(data, resource.id, values), data.decimals, labels.labelAt(hour), viewport);
   }, [data, live, labels, hour, viewport]);
-  const rowTips = useRowTooltips<number>({ owner, active, revision: `${hour}:${data ? barStructure(data) : ''}:${labels.revision}`,
+  described.current = breakdown;
+  const rowTips = useRowTooltips<number>({ owner, active, revision: `${hour}:${data ? barStructure(data) : ''}:${labels.revision}`, refresh: live.subscribe,
     content: id => { const resource = data?.resources.find(item => item.id === id); return resource ? breakdown(resource) : null; },
     onMenu: (_, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)]) });
 
@@ -301,7 +304,7 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
             if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onPick(resource, head.hour); }
             else rowTips.rowProps(resource.id).onKeyDown(event);
           }}>
-          <span id={rowTips.descriptionId(resource.id)} className="sr-only">{tooltipText(breakdown(resource) ?? { title: resourceName(resource), rows: [] })}</span>
+          <span id={rowTips.descriptionId(resource.id)} ref={element => { cellsOf(resource.id).description = element; }} className="sr-only">{tooltipText(breakdown(resource) ?? { title: resourceName(resource), rows: [] })}</span>
           <span className="resource-name">{resource.icon ? <img src={resource.icon} alt="" /> : null}<span>{resourceName(resource)}</span></span>
           {has ? <>
             <span className="resource-track" aria-hidden="true">

@@ -36,6 +36,7 @@ import { loadProduct, useFollowedProduct } from '../../dashboard/products';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { followStore } from '../../dashboard/follow/store.ts';
+import { useInstalledValue } from '../../dashboard/follow/useFollowed.ts';
 import { CELL, cellState, rowName } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer, FollowedRows } from '../../dashboard/follow/message';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
@@ -301,7 +302,8 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const drill = drillState.key === resetKey ? drillState.drill : CLOSED;
   const dispatch = useCallback((action: DrillAction) => setDrill(before => ({ key: resetKey, drill: reduceDrill(before.key === resetKey ? before.drill : CLOSED, action) })), [resetKey]);
   const shownEntries = () => liveRanked ? liveRanked.entries() : entries;
-  const mixTag = parts && raceView === null ? mixCountry(widget.countries, fallbackTag, shownEntries()) : null;
+  const mixTag = useInstalledValue(entry ? changed => entry.subscribe(changed) : undefined,
+    () => parts && raceView === null ? mixCountry(widget.countries, fallbackTag, shownEntries()) : null);
   const breakdownTag = drill.breakdown ?? mixTag;
   const breakdownFollows = following && (drill.breakdown == null || drill.follow);
   const breakdownHour = Math.floor(drill.breakdown != null ? drillHour(drill, moment) ?? moment : moment);

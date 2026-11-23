@@ -1,5 +1,5 @@
 import { PUSH, readStream } from './pull.ts';
-import { charge, splitForLanes } from './follow/split.ts';
+import { charge, resetStamps, splitForLanes } from './follow/split.ts';
 import { credits } from './credits.ts';
 import type { FromPull, ToPull } from '../draw/laneMessages';
 
@@ -12,17 +12,18 @@ self.onmessage = ({ data }: MessageEvent<{ session: string; ports: MessagePort[]
   const credit = (bytes: number) => owed.owe(bytes);
   for (const port of ports) port.onmessage = ({ data }: MessageEvent<ToPull>) => credit(data.release);
   const all = (message: FromPull) => { for (const port of ports) port.postMessage(message); };
+  const stamp = resetStamps();
   void readStream({ session,
     ready: () => self.postMessage('ready'),
     fail: reason => { all({ kind: 'failure', reason }); self.postMessage({ reason }); },
     answer: async buffers => {
       for (const buffer of buffers) {
-        let split;
-        try { split = splitForLanes(new Uint8Array(buffer), ports.length); }
+        let split, resets: number | undefined;
+        try { resets = stamp(new Uint8Array(buffer)); split = splitForLanes(new Uint8Array(buffer), ports.length); }
         catch (error) { all({ kind: 'failure', reason: `A pushed message could not be read: ${error instanceof Error ? error.message : String(error)}` }); credit(charge(new Uint8Array(buffer))); continue; }
         if (split.kind === 'failure') { all({ kind: 'failure', reason: split.reason }); continue; }
         credit(split.header);
-        split.lanes.forEach((bytes, lane) => { if (bytes) ports[lane]!.postMessage({ kind: split.kind, bytes } satisfies FromPull, [bytes.buffer]); });
+        split.lanes.forEach((bytes, lane) => { if (bytes) ports[lane]!.postMessage({ kind: split.kind, bytes, ...resets !== undefined ? { resets } : {} } satisfies FromPull, [bytes.buffer]); });
       }
     },
   });

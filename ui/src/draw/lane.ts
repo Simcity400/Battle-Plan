@@ -118,6 +118,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private readonly offsets = new Map<number, number>();
   private readonly resets = new Map<number, number>();
   private readonly unbound = new Map<number, Map<number, number>>();
+  private readonly stamped = new Map<number, number>();
   private readonly told = new Map<number, number>();
   private held: Held[] = [];
   private early: { native: number; seek: number; bytes: Uint8Array }[] = [];
@@ -232,9 +233,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     for (const widget of this.widgets.values()) if (this.routeOf(widget) === route) widget.inflight = null;
   }
 
-  receive(kind: 'follow' | 'panels', bytes: Uint8Array) {
+  receive(kind: 'follow' | 'panels', bytes: Uint8Array, resets?: number) {
     try {
-      if (kind === 'follow') this.follows(bytes);
+      if (kind === 'follow') this.follows(bytes, resets);
       else this.panels(bytes);
       this.replay();
     } finally { this.after(); }
@@ -305,6 +306,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private settleResets() {
+    for (const [native, stamp] of this.stamped) if (this.routes.has(native)) { this.resets.set(native, stamp); this.unbound.delete(native); }
     for (const [native, seeks] of this.unbound) {
       const route = this.routes.get(native);
       if (route === undefined) continue;
@@ -398,10 +400,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     return { id, hour: at, value, bytes };
   }
 
-  private follows(bytes: Uint8Array) {
+  private follows(bytes: Uint8Array, stamped?: number) {
     let message: ReturnType<typeof parseFollowed>;
     try { message = parseFollowed(bytes); }
     catch (error) { this.freed += recordsCharge(bytes); throw error; }
+    if (stamped !== undefined) this.stamped.set(message.route, Math.max(this.stamped.get(message.route) ?? 0, stamped));
     const order = this.current({ native: message.route, seek: message.seek });
     const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const count = data.getUint32(12, true);
@@ -412,6 +415,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       this.resets.set(message.route, (this.resets.get(message.route) ?? 0) + 1);
       this.drop(message.route);
     }
+    const stamp = this.stamped.get(message.route);
+    if (stamp !== undefined) this.resets.set(message.route, stamp);
     const route = this.routes.get(message.route);
     const limited = new Map<number, number>(), unbound = new Map<number, { records: Uint8Array[]; size: number }>();
     const mine: [number, number, number][] = [];

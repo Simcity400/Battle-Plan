@@ -128,6 +128,7 @@ impl Registry {
                 let branch = branch(params)?;
                 let clock = clock(params)?;
                 let lanes = lanes(params, id)?;
+                if !lock(&self.followed).current(params) { return Ok(unavailable(RETIRED)); }
                 let Some(playheads) = &self.playheads else {
                     return Ok(unavailable("Values at the head are followed only in the map viewer's process, which has no playhead here"));
                 };
