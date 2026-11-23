@@ -131,7 +131,13 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
   const firstHour = track?.branch.firstHour ?? 0;
   const lastHour = track?.branch.lastHour ?? 0;
   const playbackHour = usePlaybackHour(runtime.clock, false);
-  const window = track ? resolveWindow(widget, track, runtime.tracks, playbackHour) : null;
+  const rawWindow = !following && track ? resolveWindow(widget, track, runtime.tracks, playbackHour) : null;
+  const windowFirst = rawWindow?.firstHour ?? null;
+  const windowLast = rawWindow?.lastHour ?? null;
+  const window = useMemo(
+    () => (windowFirst !== null && windowLast !== null ? { firstHour: windowFirst, lastHour: windowLast } : null),
+    [windowFirst, windowLast],
+  );
   const moment = Math.floor(window?.lastHour ?? lastHour);
   const pinHour = !following && track ? gate.hourAt(axisAt(playbackHour)) : null;
 
@@ -548,7 +554,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     const req = productRequest({ sourceId: ctx.track.source.id, revision: ctx.track.source.revision, product: src.exactProduct, params });
     const raw = await perfLog.exactOnce(JSON.stringify(req), async () => (await runtime.client.product(req, new AbortController().signal)).data);
     return { answers: new Map(), panels: new Map([['main', raw]]), live: new Map() };
-  }, [ctx, gate, following, staticRange, widget.time.mode, window, declaration.source, runtime.client]);
+  }, [ctx, gate.recorded, gate.span, following, staticRange, widget.time.mode, window, declaration.source, runtime.client]);
 
   const projectionOptions = useMemo(
     () => (ctx ? declaration.projectionOptions(ctx) : ({} as TProjectionOptions)),
