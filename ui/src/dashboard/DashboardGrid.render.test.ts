@@ -178,13 +178,49 @@ test('header order, view switch slot, narrow drop order, and settings section or
       runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
     assert.match(manyHtml, /dash-view-menu-trigger[^>]*aria-haspopup="menu"/, 'four or more choices render as a menu');
 
-    const full = { hasSummary: true, summaryChars: 18, hasViewSwitch: true, viewChoices: 3, viewChars: 24, viewMenuOnly: false, hasSubject: true, timeChars: 16, titleChars: 16 };
-    const wide = headerDropStage(900, full);
-    assert.deepEqual(wide, { stage: 0, dropPill: false, collapseView: false, compactSubject: false, compactTime: false });
-    const stages = [900, 620, 500, 410, 260].map(w => headerDropStage(w, full));
-    for (let i = 1; i < stages.length; i++) assert.ok(stages[i].stage >= stages[i - 1].stage, 'drop stage increases monotonically as width shrinks');
-    const narrow = headerDropStage(220, full);
-    assert.deepEqual(narrow, { stage: 4, dropPill: true, collapseView: true, compactSubject: true, compactTime: true });
+    const measured = {
+      fixed: 44, titleFull: 120, hasSummary: true, pill: 110,
+      hasViewSwitch: true, viewMenuOnly: false, viewFull: 160, viewMenu: 84,
+      hasSubject: true, subjectFull: 120, subjectCompact: 42,
+      hasTime: true, timeFull: 140, timeCompact: 24,
+    };
+    const wide = headerDropStage(760, measured);
+    assert.deepEqual(wide, { stage: 0, dropPill: false, collapseView: false, compactSubject: false, compactTime: false },
+      'a header with room keeps full subject name, segmented switch, summary pill, and full time label');
+    assert.deepEqual(headerDropStage(504, {
+      fixed: 44, titleFull: 84, hasSummary: false, pill: 0,
+      hasViewSwitch: false, viewFull: 0, viewMenu: 0,
+      hasSubject: true, subjectFull: 116, subjectCompact: 42,
+      hasTime: true, timeFull: 172, timeCompact: 24,
+    }), { stage: 0, dropPill: false, collapseView: false, compactSubject: false, compactTime: false },
+      'Game score at 520 px keeps full subject name and full date range when it fits');
+    assert.deepEqual(headerDropStage(774, {
+      fixed: 44, titleFull: 150, hasSummary: false, pill: 0,
+      hasViewSwitch: true, viewMenuOnly: false, viewFull: 166, viewMenu: 84,
+      hasSubject: true, subjectFull: 126, subjectCompact: 42,
+      hasTime: true, timeFull: 66, timeCompact: 24,
+    }), { stage: 0, dropPill: false, collapseView: false, compactSubject: false, compactTime: false },
+      'Army losses by month at 790 px keeps segmented switch and full subject name');
+    const stages = [760, 620, 550, 440, 260].map(w => headerDropStage(w, measured));
+    assert.deepEqual(stages.map(s => s.stage), [0, 1, 2, 3, 4], 'each drop stage triggers only when the previous stage overflows');
+    assert.deepEqual(stages[4], { stage: 4, dropPill: true, collapseView: true, compactSubject: true, compactTime: true });
+
+    const { timeChipSummary } = await vite.ssrLoadModule('/ui/src/dashboard/WidgetTimeChip.tsx') as typeof import('./WidgetTimeChip');
+    const { engineHour } = await vite.ssrLoadModule('/ui/src/dashboard/calendar.ts') as typeof import('./calendar');
+    const start1939 = engineHour({ year: 1939, month: 1, day: 1, hour: 12 })!;
+    const nov1939 = engineHour({ year: 1939, month: 11, day: 4, hour: 12 })!;
+    const jan4 = engineHour({ year: 1939, month: 1, day: 4, hour: 12 })!;
+    const rangeTrack = { ...tracks[0], branch: { ...tracks[0].branch, firstHour: start1939, lastHour: nov1939 } } as BoundTrack;
+    const rangeWidget: WidgetSpec = { ...switched, time: { mode: 'range', firstOffset: 0, lastOffset: nov1939 - start1939 } };
+    assert.equal(timeChipSummary(rangeWidget, rangeWidget, rangeTrack, [rangeTrack], start1939).label, '1 Jan – 4 Nov 1939');
+    const sameMonthWidget: WidgetSpec = { ...switched, time: { mode: 'range', firstOffset: 0, lastOffset: jan4 - start1939 } };
+    assert.equal(timeChipSummary(sameMonthWidget, sameMonthWidget, rangeTrack, [rangeTrack], start1939).label, '1–4 Jan 1939');
+    const rangeHtml = renderToStaticMarkup(createElement(Grid, {
+      template: { tracks: [rangeTrack], widgets: [rangeWidget], layouts: {} } as unknown as DashboardTemplate,
+      runtime: { ...runtime, tracks: [rangeTrack], campaignTracks: [rangeTrack] }, editing: false, onApply() {}, onRemove() {}, onLayouts() {},
+    }));
+    assert.match(rangeHtml, /1 Jan – 4 Nov 1939/);
+    assert.match(rangeHtml, /role="group"[^>]*aria-label="Switched view"/);
 
     const mapSections = settingsSections({ kind: 'map', data: true, history: false, countrySelection: true, timeModes: ['follow', 'pin'],
       defaultTime: 'follow', factionColours: true, options: [
@@ -195,6 +231,38 @@ test('header order, view switch slot, narrow drop order, and settings section or
     assert.deepEqual(mapSections, ['campaign', 'countries', 'time', 'size', 'options', 'map', 'factionColours', 'axes', 'interaction']);
     assert.equal(SECTION_TITLES.factionColours, 'Colours');
     assert.equal(SECTION_TITLES.map, 'Map');
+  } finally { await vite.close(); }
+});
+
+test('every registered widget kind preserves its default and saved time modes', async () => {
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false } });
+  try {
+    await vite.ssrLoadModule('/ui/src/widgets/index.ts');
+    const { widgetDefinitions } = await vite.ssrLoadModule('/ui/src/dashboard/definitions.ts') as typeof import('./definitions');
+    const { createWidget } = await vite.ssrLoadModule('/ui/src/dashboard/model.ts') as typeof import('./model');
+    const { parseTemplate } = await vite.ssrLoadModule('/ui/src/dashboard/storage.ts') as typeof import('./storage');
+    const definitions = widgetDefinitions();
+    assert.ok(definitions.length >= 100);
+    for (const def of definitions) {
+      const created = createWidget(def.kind, 'track-1', `w-${def.kind}`);
+      const expectedDefault = def.defaultTime ?? def.timeModes[0] ?? 'follow';
+      assert.equal(created.time.mode, expectedDefault, `${def.kind} default time matches definition`);
+      for (const mode of def.timeModes) {
+        const saved = mode === 'pin' ? { mode: 'pin' as const, windows: { 'track-1': { firstOffset: 24, lastOffset: 24 } } }
+          : mode === 'range' ? { mode: 'range' as const, firstOffset: 0, lastOffset: 48 }
+            : { mode };
+        const parsed = parseTemplate({
+          version: 1, name: 'Saved', alignment: 'calendar',
+          roles: [{ id: 'primary', label: 'Primary', selectedTag: null }],
+          tracks: [{ id: 'track-1', roleId: 'primary', label: 'Primary', branchIndex: 0, anchorOffset: null }],
+          widgets: [{ ...created, time: saved }],
+          layouts: { lg: [{ i: created.id, x: 0, y: 0, w: 6, h: 6 }] },
+        });
+        assert.ok(parsed, `${def.kind} parses with saved time mode ${mode}`);
+        assert.equal(parsed.widgets[0]?.time.mode, mode, `${def.kind} saved time mode ${mode} is preserved`);
+      }
+    }
   } finally { await vite.close(); }
 });
 

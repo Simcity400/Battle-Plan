@@ -235,9 +235,8 @@
 .dash-widget-summary { display: inline-flex; align-items: center; flex: none; max-width: 26ch; overflow: hidden; color: var(--muted); font-family: var(--font-ui); font-weight: 500; }
 .dash-widget-summary:empty { display: none; }
 .dash-widget-summary .pill { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-.dash-header-grow { flex: 1 1 0; min-width: 0; }
 .dash-widget-subtitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 0.6875rem; line-height: 1.15; }
-.dash-widget-controls { display: flex; align-items: center; gap: 6px; flex: none; min-width: 0; }
+.dash-widget-controls { display: flex; align-items: center; gap: 6px; margin-left: auto; flex: none; min-width: 0; }
 .dash-widget-country-slot { display: inline-flex; min-width: 0; }
 .dash-widget-country-slot > .dash-widget-country { max-width: 100%; }
 .dash-widget-country { display: inline-flex; align-items: center; gap: 6px; max-width: 180px; min-width: 0; height: 24px; padding: 0 8px 0 5px; border-radius: 999px; background: var(--hover); color: var(--text); font-size: 0.75rem; }

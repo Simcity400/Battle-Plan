@@ -356,7 +356,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
     const shared = headState(arsenal);
     if (shared) return shared;
     if (!track) return <WidgetState kind="empty" icon={icon} message={`Load a campaign to see ${label.toLowerCase()}.`} />;
-    if (refused) return <WidgetState kind="unavailable" message={refused} />;
+    if (refused) return <WidgetState kind="unavailable" technical={refused} />;
     if (gate.outside) return <GateState gate={gate} loading={`Loading ${label.toLowerCase()}…`} />;
     if (grouped && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon={icon} message={resolved.reason} />;

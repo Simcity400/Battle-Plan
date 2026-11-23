@@ -12,6 +12,8 @@ import type { WidgetSkeletonKind } from '../dashboard/definitions';
 import { capitaliseSubject, useWidgetFrame, useWidgetStatePresence } from '../dashboard/widgetFrame.tsx';
 import '../charts/charts.css';
 
+const UNKNOWN_REASON_FALLBACK = 'BattlePlan couldn’t tell why. Details has the technical reason.';
+
 export type WidgetStateScale = 'body' | 'section';
 
 export type WidgetStateProps = (
@@ -149,17 +151,17 @@ export default function WidgetState(props: WidgetStateProps) {
       const classified = classifyFailure(props.failure);
       const subject = props.what ?? frame?.subject;
       if (classified?.kind === 'refused') {
-        const headline = subject ? `${capitaliseSubject(subject)} isn’t in this recording.`
-          : classified.cause ? 'Not in this recording.' : classified.reason;
-        const secondLine = classified.cause ? notInRecordingSentence(classified.cause, subject)
-          : subject ? classified.reason : undefined;
+        const headline = subject ? `${capitaliseSubject(subject)} isn’t in this recording.` : 'Not in this recording.';
+        const secondLine = classified.cause ? notInRecordingSentence(classified.cause, subject) : UNKNOWN_REASON_FALLBACK;
         return <StateBox scale={scale} state="unavailable" icon="info" title={headline} secondLine={secondLine}
           detailAttr={classified.detail}
           actions={classified.detail ? <DetailsAction technical={classified.detail} /> : undefined} />;
       }
       const headline = subject ? `Couldn’t load ${subject}.` : 'Couldn’t load.';
-      const reason = classified?.reason && classified.reason !== headline ? classified.reason : undefined;
       const technical = classified?.detail;
+      const reason = classified?.reason && classified.reason !== headline
+        ? classified.reason
+        : technical ? UNKNOWN_REASON_FALLBACK : undefined;
       return <StateBox scale={scale} state="error" error icon="alert" title={headline} secondLine={reason}
         detailAttr={technical}
         actions={(props.onRetry || technical) && <>
@@ -174,11 +176,11 @@ export default function WidgetState(props: WidgetStateProps) {
           actions={choose && <button type="button" className="button small" onClick={choose}>Choose countries</button>} />;
       }
       const subject = frame?.subject;
-      const title = props.cause
-        ? (props.message ?? (subject ? `${capitaliseSubject(subject)} isn’t in this recording.` : 'Not in this recording.'))
-        : (props.message ?? (subject ? `${capitaliseSubject(subject)} isn’t in this recording.` : 'Not in this recording.'));
-      const secondLine = props.cause ? notInRecordingSentence(props.cause, subject) : props.detail;
+      const title = props.message ?? (subject ? `${capitaliseSubject(subject)} isn’t in this recording.` : 'Not in this recording.');
       const technical = props.technical ?? props.reason;
+      const secondLine = props.cause
+        ? notInRecordingSentence(props.cause, subject)
+        : props.detail ?? (technical ? UNKNOWN_REASON_FALLBACK : undefined);
       return <StateBox scale={scale} state="unavailable" icon="info" title={title} secondLine={secondLine}
         detailAttr={technical}
         actions={technical ? <DetailsAction technical={technical} /> : undefined} />;

@@ -25,14 +25,14 @@ test('map load errors hide diagnostics and retain Retry; an hour not available y
         clock: { getHour: () => 105, getSnapshot: () => ({ position: 105, hour: 105, playing: true, sequence: 0, fraction: 0, hoursPerSecond: 4 }) } } } as unknown as WidgetProps;
     const render = () => renderToStaticMarkup(createElement(Widget, props));
     const failed = render();
-    assert.match(failed, /Couldn’t load\./);
+    assert.match(failed, /Couldn’t load the campaign map\./);
     assert.match(failed, /Retry/);
     assert.doesNotMatch(failed.replace(/<[^>]*>/g, ' '), /Synthetic native failure|Follow the campaign/);
     host.__mapReview.error = null;
     const live = render();
     assert.match(live, /Campaign map/);
-    assert.match(live, /Live/);
-    assert.doesNotMatch(live, /Follow the campaign|Native map/);
+    assert.match(live, /data-map-current="true"/);
+    assert.doesNotMatch(live, /Follow the campaign|Native map|dash-map-footer/);
     host.__mapReview.loading = true;
     host.__mapReview.hour = null;
     host.__mapsHidden = true;
@@ -44,7 +44,6 @@ test('map load errors hide diagnostics and retain Retry; an hour not available y
     host.__mapReview = { ...host.__mapReview, hour: 105, sequence: 2, requestedSequence: 3, loading: true };
     const stale = render();
     assert.doesNotMatch(stale, /spinner|Preparing this map/);
-    assert.match(stale, /Updating…/);
     assert.match(stale, /data-map-current="false"/);
     host.__mapReview = { ...host.__mapReview, hour: null, branchId: null };
     const first = render();

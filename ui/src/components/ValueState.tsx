@@ -1,16 +1,15 @@
 import type { CSSProperties } from 'react';
 import './ValueState.css';
 
-export type ValueStateData =
-  | { kind: 'known'; text: string; unit?: string }
-  | { kind: 'zero'; unit?: string }
-  | { kind: 'missing'; reason: string }
-  | { kind: 'notApplicable'; reason: string }
-  | { kind: 'partial'; text: string; unit?: string; reason: string; atLeast?: boolean };
+export type ValueStateKind = 'known' | 'zero' | 'missing' | 'notApplicable' | 'partial';
 
 export interface ValueStateProps {
-  value: ValueStateData;
-  compact?: boolean;
+  kind: ValueStateKind;
+  text?: string;
+  unit?: string;
+  reason?: string;
+  narrow?: boolean;
+  atLeast?: boolean;
   className?: string;
 }
 
@@ -28,54 +27,56 @@ export interface MissingNameProps {
   className?: string;
 }
 
-export function valueStateText(value: ValueStateData): string {
-  switch (value.kind) {
+export function valueStateText({ kind, text, unit, reason, atLeast }: Pick<ValueStateProps, 'kind' | 'text' | 'unit' | 'reason' | 'atLeast'>): string {
+  switch (kind) {
     case 'known':
-      return value.unit ? `${value.text} ${value.unit}` : value.text;
-    case 'zero':
-      return value.unit ? `0 ${value.unit}` : '0';
+      return unit ? `${text ?? ''} ${unit}` : (text ?? '');
+    case 'zero': {
+      const zero = text ?? '0';
+      return unit ? `${zero} ${unit}` : zero;
+    }
     case 'missing':
-      return value.reason ? `Not recorded: ${value.reason}` : 'Not recorded';
+      return reason ? `Not recorded: ${reason}` : 'Not recorded';
     case 'notApplicable':
-      return value.reason ? `Not applicable: ${value.reason}` : 'Not applicable';
+      return reason ? `Not applicable: ${reason}` : 'Not applicable';
     case 'partial': {
-      const figure = value.unit ? `${value.text} ${value.unit}` : value.text;
-      const lead = value.atLeast ? `at least ${figure}` : figure;
-      return value.reason ? `${lead}, partial: ${value.reason}` : `${lead}, partial`;
+      const figure = unit ? `${text ?? ''} ${unit}` : (text ?? '');
+      const lead = atLeast ? `at least ${figure}` : figure;
+      return reason ? `${lead}, partial: ${reason}` : `${lead}, partial`;
     }
   }
 }
 
-export function ValueState({ value, compact = false, className = '' }: ValueStateProps) {
+export function ValueState({ kind, text, unit, reason, narrow = false, atLeast = false, className = '' }: ValueStateProps) {
   const extra = className ? ` ${className}` : '';
-  switch (value.kind) {
+  switch (kind) {
     case 'known':
       return <span className={`val-state val-known${extra}`} data-value-state="known">
-        <span>{value.text}</span>{value.unit && <span className="val-unit">{value.unit}</span>}
+        <span>{text ?? ''}</span>{unit && <span className="val-unit">{unit}</span>}
       </span>;
     case 'zero':
       return <span className={`val-state val-zero${extra}`} data-value-state="zero">
-        <span>0</span>{value.unit && <span className="val-unit">{value.unit}</span>}
+        <span>{text ?? '0'}</span>{unit && <span className="val-unit">{unit}</span>}
       </span>;
     case 'missing': {
-      const spoken = valueStateText(value);
-      return <span className={`val-state val-missing${compact ? ' is-compact' : ''}${extra}`} data-value-state="missing"
+      const spoken = valueStateText({ kind, reason });
+      return <span className={`val-state val-missing${narrow ? ' is-compact' : ''}${extra}`} data-value-state="missing"
         data-tooltip={spoken} aria-label={spoken}>
         <span className="val-hatch" aria-hidden="true" />
         <span className="val-missing-text" aria-hidden="true">Not recorded</span>
       </span>;
     }
     case 'notApplicable': {
-      const spoken = valueStateText(value);
+      const spoken = valueStateText({ kind, reason });
       return <span className={`val-state val-na${extra}`} data-value-state="not-applicable"
-        data-tooltip={value.reason || 'Not applicable'} aria-label={spoken}>—</span>;
+        data-tooltip={reason || 'Not applicable'} aria-label={spoken}>—</span>;
     }
     case 'partial': {
-      const spoken = valueStateText(value);
-      const tooltip = value.reason ? `Partial: ${value.reason}` : 'Partial';
-      return <span className={`val-state val-partial${compact ? ' is-compact' : ''}${extra}`} data-value-state="partial"
+      const spoken = valueStateText({ kind, text, unit, reason, atLeast });
+      const tooltip = reason ? `Partial: ${reason}` : 'Partial';
+      return <span className={`val-state val-partial${narrow ? ' is-compact' : ''}${extra}`} data-value-state="partial"
         data-tooltip={tooltip} aria-label={spoken}>
-        <span className="val-partial-figure">{value.text}{value.unit && <span className="val-unit">{value.unit}</span>}</span>
+        <span className="val-partial-figure">{text ?? ''}{unit && <span className="val-unit">{unit}</span>}</span>
         <span className="val-partial-tab" aria-hidden="true" />
         <span className="val-partial-word" aria-hidden="true">partial</span>
       </span>;

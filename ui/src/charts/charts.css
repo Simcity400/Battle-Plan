@@ -78,10 +78,14 @@
 .widget-state-detail { color: var(--muted); font-size: var(--type-sm); white-space: pre-line; overflow-wrap: anywhere; }
 .widget-state-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; margin-top: 2px; }
 .widget-state-loading-label { color: var(--muted); font-size: var(--type-sm); text-align: center; }
-.widget-state.is-section { flex: none; flex-direction: row; justify-content: flex-start; align-items: center; gap: 8px; padding: 6px 12px; text-align: left; }
+.widget-state.is-section { flex: none; flex-direction: row; justify-content: flex-start; align-items: center; gap: 8px; max-width: 100%; min-width: 0; box-sizing: border-box; padding: 6px 12px; text-align: left; }
 .widget-state.is-section > svg { width: 14px; height: 14px; }
 .widget-state.is-section .widget-state-copy { flex: 1; flex-direction: row; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; max-width: none; min-width: 0; }
 .widget-state.is-section .widget-state-actions { margin-top: 0; margin-left: auto; flex: none; }
+.log-section-note > .widget-state.is-section { flex: 1 1 0%; padding: 0; }
+.log-section-note > .widget-state.is-section .widget-state-copy { flex-wrap: nowrap; overflow: hidden; }
+.log-section-note > .widget-state.is-section .widget-state-title { flex: none; }
+.log-section-note > .widget-state.is-section .widget-state-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .widget-skeleton { display: flex; flex: 1; flex-direction: column; justify-content: center; gap: 8px; width: 100%; min-height: 60px; }
 .widget-skeleton .skeleton { display: block; height: 12px; border-radius: var(--r-xs); }
 .widget-skeleton-head { height: 16px !important; width: 100%; opacity: .75; }

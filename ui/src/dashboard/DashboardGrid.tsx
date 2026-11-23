@@ -26,8 +26,8 @@ import DefaultCountryChip from './CountryChip';
 import WidgetCountryControl from './WidgetCountryControl';
 import WidgetTimeChip, { timeChipSummary } from './WidgetTimeChip';
 import WidgetViewSwitch from './WidgetViewSwitch';
-import { headerDropStage, WidgetFrameContext, widgetWording } from './widgetFrame';
-import type { DynamicViewSwitch, WidgetFrameValue } from './widgetFrame';
+import { FULL_HEADER_DROP, headerDropStage, WidgetFrameContext, widgetWording } from './widgetFrame';
+import type { DynamicViewSwitch, HeaderDropState, WidgetFrameValue } from './widgetFrame';
 import { formatDateTime } from './calendar';
 import { WidgetBody } from './widgets';
 import { HeldFailures, HeldFailuresContext } from './heldFailures';
@@ -124,7 +124,18 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   const [captionSlot, setCaptionSlot] = useState<HTMLDivElement | null>(null);
   const [headerWidth, setHeaderWidth] = useState<number | null>(null);
   const [titleClipped, setTitleClipped] = useState(false);
-  const [summaryMeta, setSummaryMeta] = useState<{ has: boolean; chars: number }>({ has: false, chars: 0 });
+  const [summaryText, setSummaryText] = useState('');
+  const [subjectText, setSubjectText] = useState('');
+  const [drop, setDrop] = useState<HeaderDropState>(FULL_HEADER_DROP);
+  const measuredHeader = useRef({
+    pillKey: '', pill: 0,
+    viewFullKey: '', viewFull: 0,
+    viewMenuKey: '', viewMenu: 0,
+    subjectFullKey: '', subjectFull: 0,
+    subjectCompact: 0,
+    timeFullKey: '', timeFull: 0,
+    timeCompact: 0,
+  });
   const [hasBodyState, setHasBodyState] = useState(false);
   const stateOwners = useRef(new Set<object>());
   const [dynamicSwitch, setDynamicSwitch] = useState<DynamicViewSwitch | null>(null);
@@ -175,7 +186,7 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     const header = headerRef.current;
     if (!header || typeof ResizeObserver === 'undefined') return;
     const measure = () => {
-      const next = Math.round(header.clientWidth / 4) * 4;
+      const next = Math.floor(header.clientWidth);
       setHeaderWidth(previous => previous === next ? previous : next);
     };
     measure();
@@ -188,15 +199,29 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     if (!headerSlot || typeof MutationObserver === 'undefined') return;
     const inspect = () => {
       const text = (headerSlot.textContent ?? '').trim();
-      const has = text.length > 0;
-      const chars = Math.min(24, text.length);
-      setSummaryMeta(previous => previous.has === has && Math.abs(previous.chars - chars) < 3 ? previous : { has, chars });
+      setSummaryText(previous => previous === text ? previous : text);
     };
     inspect();
     const observer = new MutationObserver(inspect);
     observer.observe(headerSlot, { childList: true, subtree: true, characterData: true });
     return () => observer.disconnect();
   }, [headerSlot]);
+
+  useEffect(() => {
+    const header = headerRef.current;
+    if (!header || typeof MutationObserver === 'undefined') return;
+    const read = () => {
+      const el = header.querySelector<HTMLElement>('.dash-widget-country-button, .dash-widget-controls > .dash-widget-country');
+      const text = (el?.textContent ?? '').trim();
+      setSubjectText(previous => previous === text ? previous : text);
+    };
+    read();
+    const controls = header.querySelector('.dash-widget-controls');
+    if (!controls) return;
+    const observer = new MutationObserver(read);
+    observer.observe(controls, { childList: true, subtree: true, characterData: true });
+    return () => observer.disconnect();
+  }, [widget.id]);
 
   useEffect(() => { if (!prepared) perfLog?.widget(widget.id, widget.kind, widget.title); }, [widget.id, widget.kind, widget.title, prepared]);
   const [mapOptions, setMapOptions] = useState<MapOptions>(DEFAULT_MAP_OPTIONS);
@@ -341,21 +366,94 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   }, [definition, widget.options, widget.countries, widget.time.mode, widget.title, saveOption]);
 
   const activeSwitch = dynamicSwitch ?? declaredSwitch;
+  const viewMenuOnly = (activeSwitch?.options.length ?? 0) >= 4;
+  const viewKey = activeSwitch ? `${activeSwitch.options.map(item => item.label).join('|')}:${activeSwitch.value}` : '';
   const hasSubject = definition?.data !== false && definition?.countrySelection !== false;
   const showTime = definition?.data !== false && (definition?.timeModes.length ?? 0) > 0;
   const timeInfo = showTime ? timeChipSummary(widget, effective, campaignTrack, runtime.tracks, runtime.clock.getHour?.() ?? 0) : null;
+  const timeKey = timeInfo?.label ?? '';
+  const hasSummary = summaryText.length > 0 && !hasBodyState;
+  const effectiveDrop: HeaderDropState = viewMenuOnly && !drop.collapseView
+    ? { ...drop, collapseView: true }
+    : drop;
 
-  const drop = useMemo(() => headerDropStage(headerWidth, {
-    hasSummary: summaryMeta.has && !hasBodyState,
-    summaryChars: summaryMeta.chars,
-    hasViewSwitch: !!activeSwitch,
-    viewChoices: activeSwitch?.options.length ?? 0,
-    viewChars: activeSwitch ? activeSwitch.options.reduce((sum, item) => sum + item.label.length, 0) : 0,
-    viewMenuOnly: (activeSwitch?.options.length ?? 0) >= 4,
-    hasSubject,
-    timeChars: timeInfo?.chars ?? 0,
-    titleChars: widget.title.length,
-  }), [headerWidth, summaryMeta.has, summaryMeta.chars, hasBodyState, activeSwitch, hasSubject, timeInfo?.chars, widget.title.length]);
+  useLayoutEffect(() => {
+    const header = headerRef.current;
+    if (!header || header.clientWidth <= 0) return;
+    const available = header.clientWidth - 16;
+    const widthOf = (el: HTMLElement | null) => el ? Math.ceil(el.getBoundingClientRect().width) : 0;
+    const iconEl = header.querySelector<HTMLElement>('.dash-widget-icon');
+    const gripEl = header.querySelector<HTMLElement>('.dash-drag-grip');
+    const settingsEl = header.querySelector<HTMLElement>('[data-widget-settings]');
+    const summaryEl = header.querySelector<HTMLElement>('.dash-widget-summary');
+    const subjectEl = header.querySelector<HTMLElement>('.dash-widget-country-button, .dash-widget-controls > .dash-widget-country');
+    const viewEl = header.querySelector<HTMLElement>('.dash-view-switch');
+    const timeEl = header.querySelector<HTMLElement>('.dash-time-chip');
+    const heading = titleRef.current;
+    const titleFull = heading ? Math.ceil(heading.scrollWidth) : 0;
+    const fixed = widthOf(iconEl) + widthOf(settingsEl) + widthOf(gripEl);
+    const cache = measuredHeader.current;
+
+    if (hasSummary && !effectiveDrop.dropPill && summaryEl) {
+      cache.pill = Math.ceil(summaryEl.scrollWidth);
+      cache.pillKey = summaryText;
+    }
+    if (activeSwitch && viewEl) {
+      if (!effectiveDrop.collapseView) {
+        cache.viewFull = widthOf(viewEl);
+        cache.viewFullKey = viewKey;
+      } else {
+        cache.viewMenu = widthOf(viewEl);
+        cache.viewMenuKey = viewKey;
+      }
+    }
+    if (hasSubject && subjectEl) {
+      if (!effectiveDrop.compactSubject) {
+        cache.subjectFull = widthOf(subjectEl);
+        cache.subjectFullKey = subjectText;
+      } else {
+        cache.subjectCompact = widthOf(subjectEl);
+      }
+    }
+    if (showTime && timeEl) {
+      if (!effectiveDrop.compactTime) {
+        cache.timeFull = widthOf(timeEl);
+        cache.timeFullKey = timeKey;
+      } else {
+        cache.timeCompact = widthOf(timeEl);
+      }
+    }
+
+    const needsFullMeasure = (hasSummary && cache.pillKey !== summaryText && effectiveDrop.dropPill)
+      || (!!activeSwitch && !viewMenuOnly && cache.viewFullKey !== viewKey && effectiveDrop.collapseView)
+      || (hasSubject && cache.subjectFullKey !== subjectText && effectiveDrop.compactSubject)
+      || (showTime && cache.timeFullKey !== timeKey && effectiveDrop.compactTime);
+
+    const next: HeaderDropState = needsFullMeasure
+      ? { stage: 0, dropPill: false, collapseView: viewMenuOnly, compactSubject: false, compactTime: false }
+      : headerDropStage(available, {
+          fixed,
+          titleFull,
+          hasSummary,
+          pill: cache.pillKey === summaryText ? cache.pill : 0,
+          hasViewSwitch: !!activeSwitch,
+          viewMenuOnly,
+          viewFull: cache.viewFullKey === viewKey ? cache.viewFull : 0,
+          viewMenu: cache.viewMenuKey === viewKey && cache.viewMenu > 0 ? cache.viewMenu : 84,
+          hasSubject,
+          subjectFull: cache.subjectFullKey === subjectText ? cache.subjectFull : 0,
+          subjectCompact: cache.subjectCompact > 0 ? cache.subjectCompact : 42,
+          hasTime: showTime,
+          timeFull: cache.timeFullKey === timeKey ? cache.timeFull : 0,
+          timeCompact: cache.timeCompact > 0 ? cache.timeCompact : 24,
+          editing,
+        });
+
+    setDrop(previous => previous.stage === next.stage && previous.dropPill === next.dropPill
+      && previous.collapseView === next.collapseView && previous.compactSubject === next.compactSubject
+      && previous.compactTime === next.compactTime ? previous : next);
+  }, [headerWidth, widget.title, summaryText, hasSummary, subjectText, hasSubject, activeSwitch, viewKey, viewMenuOnly, showTime, timeKey, editing,
+    effectiveDrop.dropPill, effectiveDrop.collapseView, effectiveDrop.compactSubject, effectiveDrop.compactTime]);
 
   const wording = useMemo(() => widgetWording(definition, widget.title), [definition, widget.title]);
   const registerOpenCountries = useCallback((open: (() => void) | undefined) => { openCountriesRef.current = open; }, []);
@@ -384,13 +482,13 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     if (!heading) return;
     const clipped = heading.scrollWidth > heading.clientWidth;
     setTitleClipped(previous => previous === clipped ? previous : clipped);
-  }, [headerWidth, widget.title, drop.stage]);
+  }, [headerWidth, widget.title, effectiveDrop.stage]);
 
   const drawnHere = !prepared || definition?.preview !== false;
 
   return <article ref={attach} className={`${prepared ? 'dash-widget-prepared' : 'dash-widget'} kind-${widget.kind}`}
     {...(prepared ? {} : { 'data-widget': widget.id, 'data-settings': settings, 'data-fixed-hour': fixedAt === undefined ? undefined : fixedAt - campaignTrack!.axisOffset, 'aria-label': widget.title })}>
-    <header ref={headerRef} className="dash-widget-header" data-header-stage={drop.stage}>
+    <header ref={headerRef} className="dash-widget-header" data-header-stage={effectiveDrop.stage}>
       {editing && <span className="dash-drag-grip" data-tooltip="Drag to move" aria-hidden="true"><Icon name="grip" /></span>}
       <span className="dash-widget-icon" aria-hidden="true" data-widget-icon={widget.id} style={icon.colour ? { color: icon.colour } : undefined}
         onContextMenu={event => {
@@ -402,17 +500,16 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
         <h2 ref={titleRef} data-tooltip-overflow={widget.title} tabIndex={titleClipped ? 0 : undefined}>{widget.title}</h2>
         {source && <span className="dash-widget-subtitle">{recordingDisplayName(source.path)}</span>}
       </div>
-      <span className="dash-widget-summary" ref={slots.header} hidden={drop.dropPill || hasBodyState || undefined} />
-      <span className="dash-header-grow" aria-hidden="true" />
+      <span className="dash-widget-summary" ref={slots.header} hidden={effectiveDrop.dropPill || hasBodyState || undefined} />
       <div className="dash-widget-controls">
         {hasSubject && <WidgetCountryControl widget={widget} template={template} runtime={runtime} onApply={applyWidget}
-          compact={drop.compactSubject} onRegisterOpen={registerOpenCountries}>
-          <CountryChip widget={widget} runtime={runtime} active={active === true} compact={drop.compactSubject} onSlot={slots.country} />
+          compact={effectiveDrop.compactSubject} onRegisterOpen={registerOpenCountries}>
+          <CountryChip widget={widget} runtime={runtime} active={active === true} compact={effectiveDrop.compactSubject} onSlot={slots.country} />
         </WidgetCountryControl>}
         {activeSwitch && <WidgetViewSwitch label={activeSwitch.label} value={activeSwitch.value} options={activeSwitch.options}
-          compact={drop.collapseView} onChange={activeSwitch.onChange} />}
+          compact={effectiveDrop.collapseView} onChange={activeSwitch.onChange} />}
         {showTime && <WidgetTimeChip widget={widget} effective={effective} reference={campaignTrack} runtime={runtime}
-          modes={definition!.timeModes} compact={drop.compactTime}
+          modes={definition!.timeModes} compact={effectiveDrop.compactTime}
           onChange={time => applyWidget({ ...widget, time }, true)} onRegisterOpen={registerOpenTime} />}
         <WidgetSettingsMenu widget={widget} template={template} runtime={runtime} onApply={applyWidget}
           onRemove={editing ? () => onRemove(widget.id) : undefined} onReset={reset}

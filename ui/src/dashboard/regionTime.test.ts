@@ -72,9 +72,9 @@ test('the region follows playback only when its own action, or its widget, follo
     const own = { widget: widget(time), action: SPEC };
     const missing = regionOutside(own, late, tracks, axisAt(2000));
     assert.equal(missing === null, regionHour(own, late, tracks, axisAt(2000)) !== null, `${specName}: outside exactly when it has no recorded hour`);
-    if (missing) assert.equal(missing.detail, time.mode === 'follow' ? undefined : SETTINGS_DETAIL, `${specName}: the remedy is the widget’s own setting`);
-    assert.equal(regionOutside({ widget: widget(time), action: FOLLOW }, late, tracks, axisAt(2000))?.detail, undefined, `${specName}: following playback outside is not a settings problem`);
-    assert.equal(regionOutside({ widget: widget(time), action: at(2000) }, late, tracks, axisAt(2000))?.detail, undefined, `${specName}: a picked hour is not a settings problem`);
+    if (missing) assert.equal(!!missing.pinned, time.mode !== 'follow', `${specName}: the remedy is the widget’s own setting`);
+    assert.equal(regionOutside({ widget: widget(time), action: FOLLOW }, late, tracks, axisAt(2000))?.pinned, undefined, `${specName}: following playback outside is not a settings problem`);
+    assert.equal(regionOutside({ widget: widget(time), action: at(2000) }, late, tracks, axisAt(2000))?.pinned, undefined, `${specName}: a picked hour is not a settings problem`);
     assert.equal(regionOutside({ widget: widget(time), action: at(hour(1005)) }, late, tracks, axisAt(0)), null, `${specName}: a recorded hour needs no remedy`);
   }
 });
@@ -156,21 +156,22 @@ test('a declared gap is not a recorded hour: every region time and pick inside i
   const reason = 'Branch 1 block 1005 – 1006 is unreadable: checksum';
   const gapped = track('late', 1000, 1009, 900, [{ firstHour: 1005, lastHour: 1006, reason }]);
   for (const at of [1004, 1007]) assert.equal(recordedHour(gapped, at), at);
+  const gap = { kind: 'not-recorded' as const, message: UNRECORDED_MESSAGE, detail: reason, span: { firstHour: 1005, lastHour: 1006 } };
   for (const at of [1005, 1006.5]) {
     assert.equal(recordedHour(gapped, at), null, `${at} is in the declared gap`);
-    assert.deepEqual(coverageAt(gapped, at), { hour: null, outside: { message: UNRECORDED_MESSAGE, detail: reason } });
+    assert.deepEqual(coverageAt(gapped, at), { hour: null, outside: gap });
   }
   const pinned = { widget: widget({ mode: 'pin', windows: { late: { firstOffset: 5, lastOffset: 5 } } }), action: SPEC };
   assert.equal(regionHour(pinned, gapped, [gapped], axisAt(0)), null, 'a pin inside the gap has no hour, so nothing is chosen, saved or read there');
-  assert.deepEqual(regionOutside(pinned, gapped, [gapped], axisAt(0)), { message: UNRECORDED_MESSAGE, detail: `${reason} ${SETTINGS_DETAIL}` });
+  assert.deepEqual(regionOutside(pinned, gapped, [gapped], axisAt(0)), { ...gap, pinned: true });
   assert.equal(regionHour({ widget: widget({ mode: 'follow' }), action: FOLLOW }, gapped, [gapped], axisAt(106)), null);
   const picked = { widget: widget({ mode: 'follow' }), action: at(1006.4) };
   assert.equal(regionHour(picked, gapped, [gapped], axisAt(0)), null, 'a pick inside the gap is no hour');
-  assert.deepEqual(regionOutside(picked, gapped, [gapped], axisAt(0)), { message: UNRECORDED_MESSAGE, detail: reason }, 'and keeps the gap and its reason');
-  assert.deepEqual(resolveRegion(picked, gapped, [gapped], axisAt(0)).outside, { message: UNRECORDED_MESSAGE, detail: reason });
+  assert.deepEqual(regionOutside(picked, gapped, [gapped], axisAt(0)), gap, 'and keeps the gap and its reason');
+  assert.deepEqual(resolveRegion(picked, gapped, [gapped], axisAt(0)).outside, gap);
   const drilled = reduceDrill(reduceDrill(CLOSED, { type: 'open', breakdown: 'detail', hour: 1003, follow: false }), { type: 'pick', hour: 1005 });
   assert.deepEqual(regionOutside({ widget: widget({ mode: 'follow' }), action: drillAction(drilled) }, gapped, [gapped], axisAt(0)),
-    { message: UNRECORDED_MESSAGE, detail: reason }, 'a drill picked inside the gap says why, never just “outside”');
+    gap, 'a drill picked inside the gap says why, never just “outside”');
   const overlapping = track('late', 0, 100, 0, [{ firstHour: 10, lastHour: 60, reason: 'a' }, { firstHour: 20, lastHour: 30, reason: 'b' }, { firstHour: 70, lastHour: 71, reason: 'c' }]);
   assert.equal(coverageAt(overlapping, 50).hour, null, 'a gap is found behind a later, shorter one');
   assert.equal(recordedHour(overlapping, 65), 65);

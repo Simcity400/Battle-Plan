@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { actionFailure, classifyFailure, failureText, notInRecordingSentence, plainFailure, queryFailure, RefusedError, ShownError } from './queryError.ts';
+import { panelReply } from './follow/panel.ts';
+import { Page } from './follow/page.ts';
 
 test('a query the transport rejects with a sentence shows that sentence, not an invalid reply', () => {
   const lost = 'BattlePlan couldn’t reach its desktop host for dashboard_product: the IPC request failed (TypeError: Failed to fetch).';
@@ -60,4 +62,16 @@ test('failure classification inspects only error types, never message text, and 
     'Army losses couldn’t be checked against game version 1.15.4, so it was withheld.');
   assert.equal(notInRecordingSentence({ kind: 'damage' }, 'battles'),
     'Part of this recording is damaged, so battles is withheld.');
+});
+
+test('follow panel and page refusals preserve the refusal type instead of turning into retryable failures', () => {
+  const reply = panelReply({ data: undefined, refused: 'Table absent in format 141' }, value => value);
+  assert.ok(reply.error instanceof RefusedError, 'panelReply keeps RefusedError for refused panels');
+  assert.equal(classifyFailure(reply.error)?.kind, 'refused');
+
+  const page = new Page();
+  page.mount(1, { route: 1, lane: 0, surfaces: [] });
+  page.name(1, 'refused', 'SupplyHealth is not in this playhead');
+  assert.equal(page.view(1).mode, 'refused');
+  assert.equal(page.view(1).reason, 'SupplyHealth is not in this playhead');
 });

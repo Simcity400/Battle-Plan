@@ -38,10 +38,11 @@ export function useWidgetFrame(): WidgetFrameValue | null {
 const PRESERVE_LEAD = /^(?:eAPM|PP|IC|VP|AI|DLC)\b/;
 
 export function widgetWording(definition: Pick<WidgetMeta, 'title' | 'subject' | 'things'> | undefined, title?: string): { subject: string; things: string } {
-  const base = definition?.title ?? title ?? 'this widget';
+  const customTitle = title && definition?.title && title !== definition.title;
+  const base = (customTitle ? title : definition?.title ?? title) ?? 'this widget';
   const lowered = PRESERVE_LEAD.test(base) ? base : base[0] ? base[0].toLowerCase() + base.slice(1) : base;
-  const subject = definition?.subject ?? lowered;
-  const things = definition?.things ?? subject;
+  const subject = customTitle ? lowered : (definition?.subject ?? lowered);
+  const things = customTitle ? lowered : (definition?.things ?? subject);
   return { subject, things };
 }
 
@@ -88,17 +89,25 @@ export function WidgetCaption({ children, className = '' }: { children: ReactNod
   return frame?.captionSlot ? createPortal(line, frame.captionSlot) : line;
 }
 
-export interface HeaderBudgetFeatures {
+export interface HeaderMeasuredWidths {
+  fixed: number;
+  titleFull: number;
+  titleMin?: number;
   hasSummary: boolean;
-  summaryChars?: number;
+  pill: number;
   hasViewSwitch: boolean;
-  viewChoices?: number;
-  viewChars?: number;
   viewMenuOnly?: boolean;
+  viewFull: number;
+  viewMenu: number;
   hasSubject: boolean;
-  subjectChars?: number;
-  timeChars?: number;
-  titleChars?: number;
+  subjectFull: number;
+  subjectCompact: number;
+  hasTime: boolean;
+  timeFull: number;
+  timeCompact: number;
+  headerGap?: number;
+  controlsGap?: number;
+  editing?: boolean;
 }
 
 export interface HeaderDropState {
@@ -109,47 +118,49 @@ export interface HeaderDropState {
   compactTime: boolean;
 }
 
-const CHAR_PX = 6.5;
+export const FULL_HEADER_DROP: HeaderDropState = {
+  stage: 0,
+  dropPill: false,
+  collapseView: false,
+  compactSubject: false,
+  compactTime: false,
+};
 
-export function headerDropStage(width: number | null, features: HeaderBudgetFeatures): HeaderDropState {
-  if (width === null || !Number.isFinite(width)) {
-    return { stage: 0, dropPill: false, collapseView: !!features.viewMenuOnly, compactSubject: false, compactTime: false };
+export function headerDropStage(available: number | null, measured: HeaderMeasuredWidths): HeaderDropState {
+  const menuOnly = !!measured.viewMenuOnly;
+  if (available === null || !Number.isFinite(available) || available <= 0) {
+    return { stage: 0, dropPill: false, collapseView: menuOnly, compactSubject: false, compactTime: false };
   }
-  const base = 76;
-  const titleMin = Math.min(Math.max((features.titleChars ?? 14) * 7.5, 96), 175);
-  const pillWidth = features.hasSummary ? Math.min(24, features.summaryChars ?? 12) * 6.5 + 22 : 0;
-  const segmentedWidth = features.hasViewSwitch && !features.viewMenuOnly
-    ? (features.viewChars ?? (features.viewChoices ?? 2) * 8) * CHAR_PX + (features.viewChoices ?? 2) * 20 + 10
-    : 0;
-  const viewMenuWidth = features.hasViewSwitch ? 88 : 0;
-  const subjectFull = features.hasSubject ? Math.min(18, Math.max(12, features.subjectChars ?? 13)) * CHAR_PX + 52 : 0;
-  const subjectCompact = features.hasSubject ? 48 : 0;
-  const timeFull = Math.max(66, (features.timeChars ?? 4) * CHAR_PX + 40);
-  const timeCompact = 32;
-  const gap = 8;
-  const rightCount = (features.hasSubject ? 1 : 0) + (features.hasViewSwitch ? 1 : 0) + 2;
-  const gaps = (rightCount + (features.hasSummary ? 1 : 0) + 2) * gap;
+  const hGap = measured.headerGap ?? 8;
+  const cGap = measured.controlsGap ?? 6;
+  const rightCount = (measured.hasSubject ? 1 : 0) + (measured.hasViewSwitch ? 1 : 0) + (measured.hasTime ? 1 : 0) + 1;
+  const controlsGaps = Math.max(0, rightCount - 1) * cGap;
+  const baseGaps = (measured.editing ? 2 : 1) * hGap + hGap + controlsGaps;
+  const titleFull = Math.max(0, measured.titleFull);
+  const titleMin = Math.min(titleFull, measured.titleMin ?? 64);
+  const pill = measured.hasSummary ? Math.max(0, measured.pill) : 0;
+  const viewFull = measured.hasViewSwitch ? Math.max(0, menuOnly ? measured.viewMenu : measured.viewFull) : 0;
+  const viewMenu = measured.hasViewSwitch ? Math.max(0, measured.viewMenu) : 0;
+  const subjectFull = measured.hasSubject ? Math.max(0, measured.subjectFull) : 0;
+  const subjectCompact = measured.hasSubject ? Math.max(0, measured.subjectCompact) : 0;
+  const timeFull = measured.hasTime ? Math.max(0, measured.timeFull) : 0;
 
-  const fullNeed = base + gaps + titleMin + pillWidth + (features.viewMenuOnly ? viewMenuWidth : segmentedWidth) + subjectFull + timeFull;
-  if (width >= fullNeed) {
-    return { stage: 0, dropPill: false, collapseView: !!features.viewMenuOnly, compactSubject: false, compactTime: false };
+  const base = measured.fixed + baseGaps;
+  const stage0 = base + (measured.hasSummary ? hGap + pill : 0) + titleFull + viewFull + subjectFull + timeFull;
+  if (stage0 <= available) {
+    return { stage: 0, dropPill: false, collapseView: menuOnly, compactSubject: false, compactTime: false };
   }
-  const noPillNeed = base + gaps - (features.hasSummary ? gap : 0) + titleMin + (features.viewMenuOnly ? viewMenuWidth : segmentedWidth) + subjectFull + timeFull;
-  if (width >= noPillNeed) {
-    return { stage: 1, dropPill: true, collapseView: !!features.viewMenuOnly, compactSubject: false, compactTime: false };
+  const stage1 = base + titleFull + viewFull + subjectFull + timeFull;
+  if (measured.hasSummary && stage1 <= available) {
+    return { stage: 1, dropPill: true, collapseView: menuOnly, compactSubject: false, compactTime: false };
   }
-  const viewMenuNeed = base + gaps - (features.hasSummary ? gap : 0) + titleMin + viewMenuWidth + subjectFull + timeFull;
-  if (width >= viewMenuNeed) {
+  const stage2 = base + titleFull + viewMenu + subjectFull + timeFull;
+  if (measured.hasViewSwitch && !menuOnly && stage2 <= available) {
     return { stage: 2, dropPill: true, collapseView: true, compactSubject: false, compactTime: false };
   }
-  const compactSubjectNeed = base + gaps - (features.hasSummary ? gap : 0) + titleMin + viewMenuWidth + subjectCompact + timeFull;
-  if (width >= compactSubjectNeed) {
+  const stage3 = base + titleMin + viewMenu + subjectCompact + timeFull;
+  if (stage3 <= available) {
     return { stage: 3, dropPill: true, collapseView: true, compactSubject: true, compactTime: false };
   }
-  const compactTimeThreshold = base + gaps - (features.hasSummary ? gap : 0) + 72 + viewMenuWidth + subjectCompact + timeFull;
-  if (width >= compactTimeThreshold) {
-    return { stage: 3, dropPill: true, collapseView: true, compactSubject: true, compactTime: false };
-  }
-  const compactTime = width < base + gaps - (features.hasSummary ? gap : 0) + 72 + viewMenuWidth + subjectCompact + timeCompact + 28 || width < compactTimeThreshold;
-  return { stage: 4, dropPill: true, collapseView: true, compactSubject: true, compactTime };
+  return { stage: 4, dropPill: true, collapseView: true, compactSubject: true, compactTime: true };
 }

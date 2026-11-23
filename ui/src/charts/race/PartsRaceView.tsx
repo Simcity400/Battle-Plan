@@ -267,7 +267,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const referenceLabel = config.referenceLabel?.(options);
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon={config.icon} message={`Load a campaign to see its ${config.subject}.`} />;
-    if (refused) return <WidgetState kind="unavailable" message={refused} />;
+    if (refused) return <WidgetState kind="unavailable" technical={refused} />;
     if (gate.outside) return <GateState gate={gate} loading={`Loading ${config.subject}…`} />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (failure) return <WidgetState kind="error" failure={failure} onRetry={() => { manifest.retry(); history.retry(); }} />;

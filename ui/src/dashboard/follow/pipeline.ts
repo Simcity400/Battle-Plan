@@ -336,7 +336,7 @@ export class Pipeline {
     this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: widget.id, binding: widget.binding });
     widget.mounted = true;
     const refused = subs.map(id => this.byId.get(id)).find(sub => sub?.status === 'refused');
-    if (refused) this.page.name(widget.id, 'failed', refused.reason);
+    if (refused) this.page.name(widget.id, 'refused', refused.reason);
     this.flush();
   }
 
@@ -434,7 +434,7 @@ export class Pipeline {
 
   private refuse(sub: SubState, reason: string) {
     sub.status = 'refused'; sub.reason = reason;
-    for (const widget of sub.widgets) this.page.name(widget, 'failed', reason);
+    for (const widget of sub.widgets) this.page.name(widget, 'refused', reason);
     this.flush();
   }
 

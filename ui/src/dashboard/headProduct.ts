@@ -119,8 +119,8 @@ export function useHeadProduct<T, const K extends DeclaredProduct>(runtime: Widg
   const panel = installedPanel(model);
   const pushed = following && view?.mode === 'picture' && panel !== undefined;
   const fromPanel = pushed ? panelReply(panel, validate) : {};
-  const refusedNamed = following && view?.mode === 'refused' ? view.reason ?? 'Not in this recording' : undefined;
-  const failedNamed = checked?.refused ?? (following && view?.mode === 'failed' ? view.reason ?? 'The followed stream failed' : undefined);
+  const refusedNamed = checked?.refused ?? (following && view?.mode === 'refused' ? view.reason ?? 'Not in this recording' : undefined);
+  const failedNamed = following && view?.mode === 'failed' ? view.reason ?? 'The followed stream failed' : undefined;
   const followFailure = useMemo(() => refusedNamed !== undefined ? new RefusedError(refusedNamed)
     : failedNamed !== undefined ? asFailure(new Error(failedNamed)) : undefined, [refusedNamed, failedNamed]);
   const live = useMemo(() => pipeline && pipe !== null && sub !== undefined ? installedLive(pipeline, pipe, sub) : null, [pipeline, pipe, sub]);

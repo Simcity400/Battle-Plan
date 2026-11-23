@@ -441,11 +441,11 @@ export class Page<B extends Bitmap = Bitmap> {
     this.request(true, false);
   }
 
-  name(id: number, status: 'failed' | 'reading', reason?: string) {
+  name(id: number, status: 'failed' | 'refused' | 'reading', reason?: string) {
     const widget = this.widgets.get(id);
     if (!widget) return;
-    if (status === 'failed') widget.failed = true;
-    if (widget.early) { this.refuse(widget, widget.early, status === 'failed' ? 'failed' : 'binding'); widget.early = null; }
+    if (status === 'failed' || status === 'refused') widget.failed = true;
+    if (widget.early) { this.refuse(widget, widget.early, status === 'reading' ? 'binding' : status); widget.early = null; }
     this.clear(widget, status, reason);
     this.tell();
   }

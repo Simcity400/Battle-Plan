@@ -17,6 +17,7 @@ test('technical errors stay generic with Retry and Details, named refusals are n
     const whole = render({ kind: 'error', failure: queryFailure({ kind: 'failed', message: 'The unit leaders reply is malformed.' }), onRetry: () => {} });
     const visible = whole.replace(/<[^>]*>/g, ' ');
     assert.match(visible, /Couldn’t load\./);
+    assert.match(visible, /BattlePlan couldn’t tell why\. Details has the technical reason\./);
     assert.match(visible, /Retry/);
     assert.match(visible, /Details/);
     assert.doesNotMatch(visible, /malformed/, 'internal failure detail is kept inside Details, not on the surface');
@@ -41,21 +42,48 @@ test('technical errors stay generic with Retry and Details, named refusals are n
 
     const refused = render({ kind: 'error', failure: queryFailure({ kind: 'refused', text: 'Land owners are not prepared natively yet' }), onRetry: () => {} });
     const refusedText = refused.replace(/<[^>]*>/g, ' ');
-    assert.match(refusedText, /Land owners are not prepared natively yet/);
+    assert.match(refusedText, /Not in this recording\./);
+    assert.match(refusedText, /BattlePlan couldn’t tell why\. Details has the technical reason\./);
+    assert.match(refused, /data-detail="Land owners are not prepared natively yet"/);
+    assert.doesNotMatch(refusedText, /Land owners are not prepared/, 'raw backend refusal stays in Details');
     assert.doesNotMatch(refusedText, /Retry/);
     assert.doesNotMatch(refusedText, /Couldn’t load/);
     assert.doesNotMatch(refused, /is-error|role="alert"/);
 
-    const causedRefusal = render({ kind: 'error', what: 'research', failure: new RefusedError('Map mode', { kind: 'capture-mode', mode: 'Map' }), onRetry: () => {} });
-    assert.match(causedRefusal, /Research isn’t in this recording\./);
-    assert.match(causedRefusal, /This is a Map recording, which holds the campaign map and battle windows only\./);
-    assert.doesNotMatch(causedRefusal, /Retry|is-error|role="alert"/);
+    const technicalUnavailable = render({ kind: 'unavailable', technical: 'SupplyHealth is not in this playhead\'s files' });
+    assert.match(technicalUnavailable, /Not in this recording\./);
+    assert.match(technicalUnavailable, /BattlePlan couldn’t tell why\. Details has the technical reason\./);
+    assert.match(technicalUnavailable, />Details</);
 
-    const outside = render({ kind: 'outside', pinned: true, onChangeTime: () => {} });
-    assert.match(outside, /data-state="outside"/);
-    assert.match(outside, /This time is outside the recording\./);
-    assert.match(outside, /Change time/);
-    assert.doesNotMatch(outside, /is-error|role="alert"/);
+    const sevenCauses = [
+      [{ kind: 'capture-mode', mode: 'Map' }, /This is a Map recording, which holds the campaign map and battle windows only\./],
+      [{ kind: 'older-format' }, /This recording was made before BattlePlan recorded research\./],
+      [{ kind: 'format-changed' }, /BattlePlan changed how it records research after this recording was made, so it isn’t shown\./],
+      [{ kind: 'mod', modName: 'Kaiserreich', what: 'focus trees' }, /Kaiserreich changes focus trees in a way BattlePlan can’t read yet\./],
+      [{ kind: 'dlc', dlcName: 'No Step Back' }, /This campaign was played without No Step Back, which research needs\./],
+      [{ kind: 'game-build', version: '1.15.4' }, /Research couldn’t be checked against game version 1\.15\.4, so it was withheld\./],
+      [{ kind: 'damage' }, /Part of this recording is damaged, so research is withheld\./],
+    ] as const;
+    for (const [cause, expected] of sevenCauses) {
+      const html = render({ kind: 'error', what: 'research', failure: new RefusedError('raw cause', cause as never), onRetry: () => {} });
+      assert.match(html, /Research isn’t in this recording\./);
+      assert.match(html, expected);
+      assert.doesNotMatch(html, /Retry|is-error|role="alert"/);
+    }
+
+    const { WidgetFrameContext } = await vite.ssrLoadModule('/ui/src/dashboard/widgetFrame.tsx') as typeof import('../dashboard/widgetFrame');
+    const outsideWithBounds = renderToStaticMarkup(createElement(WidgetFrameContext.Provider, {
+      value: {
+        title: 'Factories', subject: 'factories', things: 'factories', timeMode: 'pin', pinned: true,
+        bounds: { firstHour: 43800000, lastHour: 43800024 }, hasSubject: true, captionSlot: null,
+        reportState() {}, announce() {}, setDynamicViewSwitch() {}, skeleton: 'generic', setSkeleton() {},
+      },
+    }, createElement(WidgetState as never, { kind: 'outside', pinned: true, onChangeTime: () => {} } as never)));
+    assert.match(outsideWithBounds, /data-state="outside"/);
+    assert.match(outsideWithBounds, /This time is outside the recording\./);
+    assert.match(outsideWithBounds, /The recording covers /);
+    assert.match(outsideWithBounds, /Change time/);
+    assert.doesNotMatch(outsideWithBounds, /is-error|role="alert"/);
 
     const gap = render({ kind: 'not-recorded', reason: 'Block unreadable', span: { firstHour: 43800000, lastHour: 43800024 }, pinned: true, onChangeTime: () => {} });
     assert.match(gap, /data-state="not-recorded"/);
@@ -105,8 +133,9 @@ test('technical errors stay generic with Retry and Details, named refusals are n
     assert.equal(valueStateText({ kind: 'missing', reason: 'Gap' }), 'Not recorded: Gap');
     assert.equal(valueStateText({ kind: 'notApplicable', reason: 'No navy' }), 'Not applicable: No navy');
     assert.equal(valueStateText({ kind: 'partial', text: '12', reason: '2 countries missing', atLeast: true }), 'at least 12, partial: 2 countries missing');
-    assert.match(renderToStaticMarkup(createElement(ValueState, { value: { kind: 'missing', reason: 'Gap' } })), /data-value-state="missing"/);
-    assert.match(renderToStaticMarkup(createElement(ValueState, { value: { kind: 'partial', text: '12', reason: '2 countries missing' } })), /data-value-state="partial"/);
+    assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'missing', reason: 'Gap', narrow: true })), /data-value-state="missing"/);
+    assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'missing', reason: 'Gap', narrow: true })), /is-compact/);
+    assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'partial', text: '12', reason: '2 countries missing' })), /data-value-state="partial"/);
     assert.match(renderToStaticMarkup(createElement(MissingPicture, { kind: 'flag', width: 20, height: 14 })), /val-picture-missing/);
     assert.match(renderToStaticMarkup(createElement(MissingName, { reason: 'Not recorded' })), /Name not recorded/);
   } finally { await vite.close(); }
