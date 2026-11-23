@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { takesShot } from './session.mjs';
-import { shownHours, catalogueHour, droppedFrames, failedReplies, firstContent, framesLate, frameTimes, freshness, freshnessByKind, item, losses, mapDrew, mapFrames, mapSeek, pageShown, presentedAt, quantiles, UNPRESENTED, windowLosses } from './verdicts.mjs';
+import { shownHours, catalogueHour, classifyWidgetSnapshot, droppedFrames, failedReplies, firstContent, framesLate, frameTimes, freshness, freshnessByKind, item, losses, mapDrew, mapFrames, mapSeek, pageShown, presentedAt, profileLines, quantiles, sessionConfinement, UNPRESENTED, windowLosses } from './verdicts.mjs';
 import { asked, machineLine, noVisibleChange, phaseSeconds, settingDrawn, stepOver, stillInFlight } from './verdicts.mjs';
 
 test('a setting that changed nothing is known once its widget reports drawing it, never while it loads or before it took it', () => {
@@ -299,4 +299,47 @@ test('windowLosses counts only perf log losses overlapping a window, and losses 
   assert.equal(windowLosses(records, 250, 450).count, 0);
   const summary = losses(records, [{ label: 'Overview 1440 h/s', from: 150, to: 300 }]);
   assert.deepEqual(summary[0].windows, ['Overview 1440 h/s']);
+});
+
+test('classifyWidgetSnapshot requires positive refusal text and flags loading or blank states as errors', () => {
+  const errWithoutRetry = classifyWidgetSnapshot({ errorDetail: 'Changed rows arrived without the table they change.' });
+  assert.deepEqual(errWithoutRetry, { outcome: 'error', detail: 'Changed rows arrived without the table they change.', notMigrated: false });
+  const refused = classifyWidgetSnapshot({ errorDetail: 'No table 44 in the schema' });
+  assert.deepEqual(refused, { outcome: 'refusal', detail: 'No table 44 in the schema', notMigrated: false });
+  assert.deepEqual(classifyWidgetSnapshot({ probeState: 'loading' }), { outcome: 'error', detail: 'still loading', notMigrated: false });
+  assert.deepEqual(classifyWidgetSnapshot({ probeState: 'loading', probeDrawing: true }), { outcome: 'content', detail: null, notMigrated: false });
+  assert.deepEqual(classifyWidgetSnapshot({ probeState: 'blank' }), { outcome: 'error', detail: 'blank widget body', notMigrated: false });
+  assert.deepEqual(classifyWidgetSnapshot({ placeholderText: "Scoreboard isn't playing back yet" }),
+    { outcome: 'placeholder', detail: "Scoreboard isn't playing back yet", notMigrated: true });
+});
+
+test('sessionConfinement checks each session Job affinity, hardwareConcurrency, and lane count without cross-pairing', () => {
+  const run = {
+    profile: 'weak',
+    cpuThrottle: 4,
+    cores: { count: 4, mask: '0x55', cpus: [0, 2, 4, 6] },
+    sessions: [
+      { name: 'pages', phases: ['pages'], confinement: { jobProcesses: 4, confinedProcesses: 4, allConfined: true } },
+      { name: 'playback', phases: ['playback'], confinement: { jobProcesses: 4, confinedProcesses: 3, allConfined: false } },
+    ],
+  };
+  const sweep = {
+    meta: {
+      cpuThrottle: 4,
+      sessions: [
+        { session: 'pages', phases: ['pages'], confinement: { hardwareConcurrency: 4, lanes: null } },
+        { session: 'playback', phases: ['playback'], confinement: { hardwareConcurrency: 16, lanes: 4 } },
+      ],
+    },
+  };
+  const pagesConf = sessionConfinement(run, run.sessions[0], sweep.meta.sessions[0]);
+  assert.equal(pagesConf.pass, true);
+  const playbackConf = sessionConfinement(run, run.sessions[1], sweep.meta.sessions[1]);
+  assert.equal(playbackConf.pass, false);
+  assert.ok(playbackConf.reasons.some(r => r.includes('3/4')));
+  assert.ok(playbackConf.reasons.some(r => r.includes('hardwareConcurrency = 16')));
+  assert.ok(playbackConf.reasons.some(r => r.includes('4 drawing lanes, expected 2')));
+  const header = profileLines(run, sweep);
+  assert.ok(header[0].includes('pages: Job 4/4, hardwareConcurrency=4'));
+  assert.ok(header[0].includes('playback: Job 3/4 (NOT ALL CONFINED), hardwareConcurrency=16, 4 lanes'));
 });

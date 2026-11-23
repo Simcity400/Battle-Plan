@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -51,6 +52,38 @@ class CoresAndProfileTests(unittest.TestCase):
         self.assertFalse(stock.ungated)
         ungated = suite.parse(["build-ui", "--out", "C:/nonexistent/ui", "--ungated"])
         self.assertTrue(ungated.ungated)
+
+    def test_build_ui_command_uses_dedicated_mode_only_when_ungated(self):
+        out = Path("C:/nonexistent/ui")
+        stock_cmd = suite.build_ui_command(out, ungated=False)
+        self.assertNotIn("--mode", stock_cmd)
+        self.assertNotIn(suite.UNGATED_VITE_MODE, stock_cmd)
+        ungated_cmd = suite.build_ui_command(out, ungated=True)
+        mode_index = ungated_cmd.index("--mode")
+        self.assertEqual(ungated_cmd[mode_index + 1], suite.UNGATED_VITE_MODE)
+
+    def test_prepare_ui_output_refuses_unmarked_non_empty_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            unmarked = root / "user-data"
+            unmarked.mkdir()
+            precious = unmarked / "campaign.battleplan"
+            precious.write_text("keep", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "battleplan-ui-bundle"):
+                suite.prepare_ui_output(unmarked)
+            self.assertEqual(precious.read_text(encoding="utf-8"), "keep")
+
+            empty_dir = root / "empty-out"
+            empty_dir.mkdir()
+            suite.prepare_ui_output(empty_dir)
+            self.assertTrue(empty_dir.is_dir())
+
+            marked = root / "marked-out"
+            marked.mkdir()
+            (marked / suite.UI_BUNDLE_MARKER).write_text("ui-bundle\n", encoding="utf-8")
+            (marked / "stale.js").write_text("old", encoding="utf-8")
+            suite.prepare_ui_output(marked)
+            self.assertTrue((marked / suite.UI_BUNDLE_MARKER).is_file())
 
 
 if __name__ == "__main__":

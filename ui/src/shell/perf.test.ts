@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { auditInBatches, pictureError } from './perf.ts';
+import { PerfRecorder, auditInBatches, pictureError } from './perf.ts';
 
 test('audit work stays bounded while retaining every result in input order', async () => {
   let active = 0;
@@ -56,4 +56,58 @@ test('capturePicturesBatch freezes its snapshot on the first batch so post-windo
   const second = await capturePicturesBatch(2);
   assert.equal(second.done, true);
   assert.deepEqual(second.records.map(r => r.at), [3]);
+});
+
+test('beginAudit clears any unfinished pictureAudit and cached exactReads before the next window', async () => {
+  const { capturePictures, capturePicturesBatch, recordPicture } = await import('../dashboard/pulled.ts');
+  const recorder = Object.create(PerfRecorder.prototype) as PerfRecorder;
+  Object.assign(recorder as unknown as Record<string, unknown>, {
+    readers: new Map(),
+    exactReads: new Map(),
+    lines: [],
+    buffered: { count: 0, bytes: 0, from: Infinity, to: -Infinity },
+    lost: { count: 0, bytes: 0, from: Infinity, to: -Infinity },
+    sending: 0,
+    stopped: false,
+    push: () => {},
+    flush: async () => {},
+  });
+
+  let reads = 0;
+  await recorder.exactOnce('stale-key', async () => ++reads);
+  assert.equal(reads, 1);
+
+  await recorder.beginAudit();
+  const sample = (widget: string, at: number) => ({ t: 'picture', at, widget, surface: 'table', placement: 1, owner: 0, renderer: 'page', head: at, hour: at, offset: 0, since: at, through: at, eligibleHour: at, entry: at, parts: [], face: '', drawMs: 0, mode: 'picture', dim: false, reset: 0, binding: 0, inspect: null, tooltip: false, rows: [{ row: 'A', key: 'A:v', value: '1' }] }) as never;
+  recordPicture(sample('old-widget', 1));
+  recordPicture(sample('old-widget', 2));
+  const partial = await recorder.auditPicturesBatch(1);
+  assert.equal(partial.done, false);
+  assert.equal(partial.results[0]!.widget, 'old-widget');
+
+  await recorder.beginAudit();
+  await recorder.exactOnce('stale-key', async () => ++reads);
+  assert.equal(reads, 2, 'beginAudit cleared exactReads cache');
+  recordPicture(sample('new-widget', 10));
+  const next = await recorder.auditPicturesBatch(10);
+  assert.equal(next.done, true);
+  assert.deepEqual(next.results.map(r => r.widget), ['new-widget'], 'stale pictureAudit from the abandoned window did not leak');
+  await capturePictures(false);
+  await capturePicturesBatch(100);
+});
+
+test('vite config enables __BATTLEPLAN_MEASURE_UNGATED__ only in measure-ungated mode, never via env in production', async () => {
+  const mod = await import('../../vite.config.ts');
+  const factory = mod.default as (env: { command: string; mode: string }) => { define?: Record<string, string> };
+  const prev = process.env.BATTLEPLAN_MEASURE_UNGATED;
+  try {
+    process.env.BATTLEPLAN_MEASURE_UNGATED = '1';
+    const prod = factory({ command: 'build', mode: 'production' });
+    assert.equal(prod.define?.__BATTLEPLAN_MEASURE_UNGATED__, 'false');
+    const ungated = factory({ command: 'build', mode: mod.MEASURE_UNGATED_MODE });
+    assert.equal(ungated.define?.__BATTLEPLAN_MEASURE_UNGATED__, 'true');
+  } finally {
+    if (prev === undefined) delete process.env.BATTLEPLAN_MEASURE_UNGATED;
+    else process.env.BATTLEPLAN_MEASURE_UNGATED = prev;
+  }
 });

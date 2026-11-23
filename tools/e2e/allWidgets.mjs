@@ -1,4 +1,6 @@
 ﻿
+import { rankWidgetCosts } from './datedPlayback.mjs';
+
 export const FIXTURE = 'AllWidgets';
 export const LEGIBLE = 'AllWidgetsLegible';
 export const REBUILT = 'RebuiltWidgets';
@@ -76,10 +78,13 @@ export function heaviestKinds(costs, count = HEAVIEST_COUNT) {
   const list = Array.isArray(costs) ? costs : costs?.widgets;
   if (!Array.isArray(list) || !list.length) throw new Error('widget-costs.json holds no widgets');
   const limit = Math.max(1, Math.floor(count));
-  const sorted = [...list].sort((a, b) => (b.costScoreMs ?? -1) - (a.costScoreMs ?? -1)
-    || Number(b.outcome === 'content') - Number(a.outcome === 'content')
-    || String(a.kind).localeCompare(String(b.kind)));
-  return [...new Set(sorted.map(entry => entry.kind))].slice(0, limit);
+  const measured = list.filter(entry => entry && typeof entry.kind === 'string' && Number.isFinite(entry.costScoreMs));
+  const ranked = rankWidgetCosts(measured);
+  const distinct = [...new Set(ranked.map(entry => entry.kind))];
+  if (distinct.length < limit) {
+    throw new Error(`Heaviest requested ${limit} kinds, but widget-costs.json has only ${distinct.length} measured kinds with a valid costScoreMs`);
+  }
+  return distinct.slice(0, limit);
 }
 
 export async function allWidgetPages({ costs = null, heaviestCount = HEAVIEST_COUNT } = {}) {

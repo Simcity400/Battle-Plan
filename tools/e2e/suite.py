@@ -784,19 +784,45 @@ def build(args):
     return code
 
 
-def build_ui(args):
-    """Builds a production UI bundle into `--out`; `--ungated` sets the measurement-only build constant."""
-    out = Path(args.out).resolve()
+UI_BUNDLE_MARKER = ".battleplan-ui-bundle"
+UNGATED_VITE_MODE = "measure-ungated"
+
+
+def prepare_ui_output(out):
+    """Refuses to overwrite a non-empty folder unless a previous `suite.py build-ui` created it."""
+    out = Path(out).resolve()
     if out == ROOT or ROOT in out.parents:
         raise RuntimeError("--out for build-ui must be outside the repository")
-    env = dict(os.environ)
-    if args.ungated:
-        env["BATTLEPLAN_MEASURE_UNGATED"] = "1"
-    else:
-        env.pop("BATTLEPLAN_MEASURE_UNGATED", None)
+    if out.exists():
+        if not out.is_dir():
+            raise RuntimeError(f"refusing to overwrite {out}: path exists and is not a directory")
+        marker = out / UI_BUNDLE_MARKER
+        if any(out.iterdir()) and not marker.is_file():
+            raise RuntimeError(
+                f"refusing to overwrite {out}: directory is not empty and does not hold {UI_BUNDLE_MARKER} "
+                "(pass a new or empty folder, or one previously created by `suite.py build-ui`)"
+            )
+    return out
+
+
+def build_ui_command(out, ungated=False):
     command = ["npx.cmd", "vite", "build", "--config", str(ROOT / "ui" / "vite.config.ts"),
                "--outDir", str(out), "--emptyOutDir"]
-    return subprocess.run(command, cwd=ROOT, env=env).returncode
+    if ungated:
+        command.extend(["--mode", UNGATED_VITE_MODE])
+    return command
+
+
+def build_ui(args):
+    """Builds a production UI bundle into `--out`; `--ungated` selects the dedicated measurement Vite mode."""
+    out = prepare_ui_output(args.out)
+    env = dict(os.environ)
+    env.pop("BATTLEPLAN_MEASURE_UNGATED", None)
+    code = subprocess.run(build_ui_command(out, ungated=args.ungated), cwd=ROOT, env=env).returncode
+    if code == 0 or (out.is_dir() and not any(out.iterdir())):
+        out.mkdir(parents=True, exist_ok=True)
+        (out / UI_BUNDLE_MARKER).write_text("built by tools/e2e/suite.py build-ui\n", encoding="utf-8")
+    return code
 
 
 def parse(argv):

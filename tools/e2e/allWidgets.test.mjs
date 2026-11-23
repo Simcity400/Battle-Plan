@@ -132,11 +132,18 @@ test('costPages builds an empty page and one default-size page per requested kin
   await assert.rejects(() => costPages(['no-such-widget']), /no-such-widget/);
 
   const costs = { widgets: [
-    { kind: 'research', costScoreMs: 5, outcome: 'content' },
-    { kind: 'scoreboard', costScoreMs: 12, outcome: 'content' },
-    { kind: 'occupied-states', costScoreMs: 9, outcome: 'content' },
+    { kind: 'research', costScoreMs: 5, mainDelta: { p50: 1 }, worker: { mean: 0 }, outcome: 'content' },
+    { kind: 'scoreboard', costScoreMs: 12, mainDelta: { p50: 4 }, worker: { mean: 2 }, outcome: 'content' },
+    { kind: 'occupied-states', costScoreMs: 9, mainDelta: { p50: 3 }, worker: { mean: 1 }, outcome: 'content' },
+    { kind: 'broken-kind', costScoreMs: null, mainDelta: { p50: null }, worker: { mean: null }, outcome: 'error' },
   ] };
   assert.deepEqual(heaviestKinds(costs, 2), ['scoreboard', 'occupied-states']);
+  assert.throws(() => heaviestKinds(costs, 4), /requested 4 kinds.*only 3 measured kinds/);
+  const tied = { widgets: [
+    { kind: 'alpha', costScoreMs: 10, mainDelta: { p50: 1 }, worker: { mean: 0 }, requestsPerSec: 0, commitsPerSec: 0 },
+    { kind: 'beta', costScoreMs: 10, mainDelta: { p50: 5 }, worker: { mean: 1 }, requestsPerSec: 0, commitsPerSec: 0 },
+  ] };
+  assert.deepEqual(heaviestKinds(tied, 2), ['beta', 'alpha']);
   const withHeaviest = await allWidgetPages({ costs, heaviestCount: 2 });
   assert.ok(withHeaviest.pages[HEAVIEST]);
   assert.deepEqual(withHeaviest.pages[HEAVIEST].widgets.map(w => w.kind).sort(), ['occupied-states', 'scoreboard']);

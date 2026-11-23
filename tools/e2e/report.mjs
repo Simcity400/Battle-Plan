@@ -5,7 +5,7 @@ import readline from 'node:readline';
 import path from 'node:path';
 import { compareCaptures } from '../../ui/e2e/compare.mjs';
 import { mergeHistory, readHistory, slowestCards } from './coverage.mjs';
-import { sought, MAP_FRAME_MS, MAP_P99_MS, UNPRESENTED, asked, catalogueHour, machineLine, profileLines, framesLate, handledAt, freshnessByKind, hoursInstalled, losses, mapFrames, phaseSeconds, popoutPresented, presentedAt, playbackPace, windowLosses } from './verdicts.mjs';
+import { sought, MAP_FRAME_MS, MAP_P99_MS, UNPRESENTED, asked, catalogueHour, machineLine, profileLines, sessionConfinement, framesLate, handledAt, freshnessByKind, hoursInstalled, losses, mapFrames, phaseSeconds, popoutPresented, presentedAt, playbackPace, windowLosses } from './verdicts.mjs';
 import { BUDGET_MS, FRAME_BUDGET_MS, MAX_PLAYBACK_AGE_HOURS, SUSTAINED_DROPS, consoleFailures, failedReplies, firstContent, frameTimes, groupBy, item, mapAcks, mapSeek, quantiles } from './verdicts.mjs';
 import { FAIL, PARTIAL, dashboardRows } from './playbackVerdicts.mjs';
 import { perFrame } from './trace.mjs';
@@ -36,19 +36,21 @@ async function perfRecords(folder, { keepQueries = false } = {}) {
   const records = [], mapRecords = [];
   const wanted = /^\{"t":"(map_state|tick|workerFrame|picture|ink|commit|shown|widget|widget_error|q|frame|lost|page)"/;
   const lost = line => line.includes('"t":"lost"') && JSON.parse(line).t === 'lost';
-  for (const name of pages) await read(name, line => {
-    if (!wanted.test(line) && !lost(line)) return;
-    const record = JSON.parse(line);
-    if (record.t === 'frame' && !record.playing) return;
-    if (record.t === 'q') {
-      if (record.outcome !== 'error' && !keepQueries) return;
-      const session = name.slice('perf-'.length, -'.jsonl'.length);
-      records.push(record.outcome === 'error' ? { ...record, session }
-        : { t: 'q', at: record.at, cmd: record.cmd, product: record.product, cache: record.cache, outcome: record.outcome, hour: record.hour, ms: record.ms, session });
-      return;
-    }
-    records.push(record);
-  });
+  for (const name of pages) {
+    const session = name.slice('perf-'.length, -'.jsonl'.length);
+    await read(name, line => {
+      if (!wanted.test(line) && !lost(line)) return;
+      const record = JSON.parse(line);
+      if (record.t === 'frame' && !record.playing) return;
+      if (record.t === 'q') {
+        if (record.outcome !== 'error' && !keepQueries) return;
+        records.push(record.outcome === 'error' ? { ...record, session }
+          : { t: 'q', at: record.at, cmd: record.cmd, product: record.product, cache: record.cache, outcome: record.outcome, hour: record.hour, ms: record.ms, session });
+        return;
+      }
+      records.push({ ...record, session });
+    });
+  }
   for (const name of viewers) await read(name, line => {
     if (/^\{"t":"map(_open|_upload)?"/.test(line)) mapRecords.push(JSON.parse(line));
     else if (lost(line)) records.push(JSON.parse(line));
@@ -133,13 +135,20 @@ if (sweep) {
         pass: area('trace').filter(result => result.trace).length >= playedPages }] : []),
   ].map(row => ({ ...row, cells: [...row.cells, verdict(row.pass)] })));
 
-  section('Cold sessions (each a fresh app on the profile; everything it times first is timed cold)', ['Session', 'Phases', 'Started with', 'Opened campaign (ms)', 'Took', 'App exit', 'Result'],
+  const sessionMetaBySlug = new Map((sweep.meta.sessions ?? []).map(meta => [meta.session, meta]));
+  section('Cold sessions (each a fresh app on the profile; everything it times first is timed cold)', ['Session', 'Phases', 'Started with', 'Opened campaign (ms)', 'Took', 'App exit', 'Confinement', 'Result'],
     (run.sessions ?? []).map(entry => {
-      const opened = results.find(result => result.area === 'startup' && result.session === entry.name.replace(/ /g, '-'));
-      const pass = !entry.error && entry.sweepExit === 0 && entry.appExit === 0;
-      const failure = entry.error ? `it could not start: ${entry.error}` : entry.sweepExit !== 0 ? `the sweep exited ${entry.sweepExit}` : `the app exited ${entry.appExit ?? 'only when stopped'}`;
+      const slug = entry.name.replace(/ /g, '-');
+      const opened = results.find(result => result.area === 'startup' && result.session === slug);
+      const conf = sessionConfinement(run, entry, sessionMetaBySlug.get(slug) ?? null);
+      const failures = [];
+      if (entry.error) failures.push(`it could not start: ${entry.error}`);
+      else if (entry.sweepExit !== 0) failures.push(`the sweep exited ${entry.sweepExit}`);
+      else if (entry.appExit !== 0) failures.push(`the app exited ${entry.appExit ?? 'only when stopped'}`);
+      failures.push(...conf.reasons);
+      const pass = failures.length === 0;
       return { pass, cells: [entry.name, entry.phases.join(', '), `emptied: ${entry.emptied.join(', ')}; kept only: ${entry.kept.join(', ')}`,
-        fmt(opened?.ms), `${Math.round(entry.seconds)} s`, entry.appExit ?? '–', pass ? 'pass' : `**FAIL**: ${why([failure])}`] };
+        fmt(opened?.ms), `${Math.round(entry.seconds)} s`, entry.appExit ?? '–', conf.summary, pass ? 'pass' : `**FAIL**: ${why(failures)}`] };
     }), 'Before each session the suite deletes the content cache (BattlePlan\\viewer under the profile\'s local app data), the shader cache, the WebView2 profile with its HTTP and code caches, and the app\'s settings, and checks they are gone. Kept: the recording. Reply and answer caches live in the app\'s memory and start empty with each session. The user\'s own BattlePlan folder is never used: the profile has its own local app data.');
 
   section('Opening the campaign (ms from the click on its library row to the dashboard and its visible widgets showing content, in each cold session)', ['Session', 'Step', 'ms', 'Result', 'Why'],
@@ -289,7 +298,7 @@ if (sweep) {
       const ms = value => value?.toFixed(1) ?? '–';
       return { pass, cells: [result.item.slice(13), result.label, frames?.frames ?? '–', ms(frames?.work.p50), ms(frames?.work.p99), ms(frames?.work.max),
         ms(frames?.gpu.p99), ms(frames?.gpu.max), frames ? `${frames.dropped} of ${frames.frames}` : '–', verdict(pass), why(reasons)] };
-    }), "Pointer and key input to the native map (zoom, pan, Fly and Walk, hover, clicks) enters through the viewer's suite input channel (BATTLEPLAN_E2E_INPUT, off for users) as egui's own events, where the windowing library's translated input arrives; everything after it runs as for a user. Only the windowing library's translation of real input is untested: the suite runs on a desktop of its own, without a cursor.");
+    }), "Pointer and key input to the native map (zoom, pan, Fly and Walk, hover, clicks) enters through the viewer's suite input channel (BATTLEPLAN_E2E_INPUT, off for users) as egui's own events, where the windowing library's translated input arrives; everything after it runs as for a user. Only the windowing library's translation of real input is untested: the suite runs on a desktop of its own, without a cursor. Native viewer phases (map and mapfps) run under OS core confinement when profiled, without Chromium JS CPU throttling.");
   under('mapfps');
   const uncapped = area('mapfps');
   section('Map frame rate achieved, presented uncapped (the viewer without vsync, in a session of its own)', ['Interaction', 'While', 'Frames', 'FPS', 'Work p99', 'Note'],
@@ -316,9 +325,10 @@ if (sweep) {
   section(`Playback (frame time: each playing frame's main-thread time to render, against ${FRAME_BUDGET_MS.toFixed(1)} ms; dropped: an interval over 1.5 refreshes of the ${refresh ?? '?'} Hz display, failing on ${SUSTAINED_DROPS} or more in a row)`,
     ['Page', 'h/s', 'Frames', 'Frame p50', 'Frame p95', 'Frame max', 'Interval p95', 'Dropped', 'Longest drop run', 'Result', 'Why'],
     area('playback').map(result => {
-      const { count, main, interval, drops } = frameTimes(records ?? [], result.from, result.to, refresh);
+      const sessionRecords = (records ?? []).filter(r => !result.session || !r.session || r.session === result.session);
+      const { count, main, interval, drops } = frameTimes(sessionRecords, result.from, result.to, refresh);
       const reasons = [...result.reasons];
-      const ticks = records ? records.filter(record => record.t === 'tick' && record.playing && record.at >= result.from && record.at <= result.to) : null;
+      const ticks = records ? sessionRecords.filter(record => record.t === 'tick' && record.playing && record.at >= result.from && record.at <= result.to) : null;
       if (ticks && !ticks.length) reasons.push('the clock recorded no ticks while playing');
       else if (ticks) {
         const other = ticks.find(tick => tick.speed !== result.speed);
@@ -331,8 +341,9 @@ if (sweep) {
         if (seconds < 1) reasons.push(`the clock ticked over only ${seconds.toFixed(2)} s, too little to tell its pace`);
         else if (!pace.pass) reasons.push(`measured clock speed ${pace.hps?.toFixed(1) ?? 'unknown'} h/s, expected ${result.speed} h/s`);
       }
-      const lostWindow = result.from != null && result.to != null ? windowLosses(records ?? [], result.from, result.to) : { count: 0, sources: [] };
-      if (!result.complete || lostWindow.count > 0) {
+      const hasWindowBounds = result.from != null && result.to != null;
+      const lostWindow = hasWindowBounds ? windowLosses(sessionRecords, result.from, result.to) : { count: 0, sources: [] };
+      if (lostWindow.count > 0 || (!hasWindowBounds && !result.complete)) {
         const detail = lostWindow.count > 0
           ? `${lostWindow.count} records (${lostWindow.sources.join(', ')})`
           : JSON.stringify(result.losses);
@@ -368,18 +379,20 @@ if (sweep) {
   }
 
   const ms2 = value => (value === null || value === undefined || !Number.isFinite(value) ? '–' : value.toFixed(2));
-  section("Browser trace (one playing window a page under the DevTools trace, apart from the timed windows; ms a frame on the page's main thread unless named off it; the app's painting from the perf log over the same window)",
+  const traceThrottle = run.cpuThrottle ?? sweep.meta.cpuThrottle ?? 1;
+  section(`Browser trace (one playing window a page under the DevTools trace${traceThrottle > 1 ? `, CPU throttled ×${traceThrottle}` : ''}, apart from the timed windows; ms a frame on the page's main thread unless named off it; the app's painting from the perf log over the same window)`,
     ['Page', 'h/s', 'Frames', 'Main busy', 'App painting', 'Script outside painting', 'Recalc style', 'Layout', 'Pre-paint, layers', 'Paint', 'Composite', 'GC', 'Other', 'Raster (off main)', 'GPU (off main)', 'Raw trace', 'What forces style and layout, and the longest scripts'],
     area('trace').map(result => {
       if (!result.trace) return { pass: false, cells: [result.page, result.speed, '–', '–', '–', '–', '–', '–', '–', '–', '–', '–', '–', '–', '–', '–', why(result.reasons)] };
       const each = perFrame(result.trace);
-      const frames = records ? records.filter(record => record.t === 'frame' && record.at >= result.from && record.at <= result.to) : [];
+      const frames = records ? records.filter(record => record.t === 'frame' && (!result.session || !record.session || record.session === result.session) && record.at >= result.from && record.at <= result.to) : [];
       const painting = frames.length ? frames.reduce((sum, record) => sum + (record.paint_ms ?? 0), 0) / frames.length : null;
       const scripts = (result.trace.scripts ?? []).slice(0, 3).map(entry => `${entry.what} ${entry.ms} ms ×${entry.count}`);
+      const throttleNote = result.cpuThrottle === 1 && traceThrottle > 1 ? ['unthrottled JS trace'] : [];
       return { pass: result.pass, cells: [result.page, result.speed, result.trace.frames ?? '–', ms2(each.main), ms2(painting),
         ms2(each.script === null || painting === null ? null : Math.max(0, each.script - painting)), ms2(each.style), ms2(each.layout), ms2(each.prePaint),
         ms2(each.paint), ms2(each.composite), ms2(each.gc), ms2(each.other), ms2(each.raster), ms2(each.gpu), result.file ? `[trace](${result.file.replaceAll('\\', '/')})` : '–',
-        why([[...result.reasons, ...each.causes.slice(0, 6), ...scripts].join('; ')])] };
+        why([[...result.reasons, ...throttleNote, ...each.causes.slice(0, 6), ...scripts].join('; ')])] };
     }), area('trace').length ? null : 'No playing window was traced.');
 
   const sessionLogs = new Map();
@@ -420,46 +433,68 @@ if (sweep) {
   under('widget-costs');
   const costResults = area('widget-costs');
   if (costResults.length) {
-    const emptyWindow = costResults.find(r => r.isEmpty) ?? null;
+    const emptyWindows = costResults.filter(r => r.isEmpty);
     const widgetWindows = costResults.filter(r => !r.isEmpty);
-    const pageConf = (sweep.meta.sessions ?? []).map(meta => meta.confinement).find(Boolean) ?? sweep.meta.confinement ?? null;
+    const costSessionSlug = costResults[0]?.session ?? null;
+    const pageConf = (costSessionSlug ? sessionMetaBySlug.get(costSessionSlug)?.confinement : null)
+      ?? (sweep.meta.sessions ?? []).map(meta => meta.confinement).find(Boolean) ?? sweep.meta.confinement ?? null;
+    const jobConf = (run.sessions ?? []).find(entry => entry.name.replace(/ /g, '-') === costSessionSlug)?.confinement ?? run.confinement ?? null;
     const ungated = Boolean(pageConf?.ungated || (records ?? []).some(r => r.t === 'page' && r.ungated));
     const costReport = summarizeWidgetCosts(widgetWindows, records ?? [], {
-      baseline: emptyWindow,
+      baselines: emptyWindows,
       profile: { name: run.profile ?? null, cpuThrottle: run.cpuThrottle ?? sweep.meta.cpuThrottle ?? 1, cores: run.cores ?? null },
-      confinement: { job: run.confinement ?? null, page: pageConf },
+      confinement: { job: jobConf, page: pageConf },
       ungated,
     });
     await writeFile(path.join(files.out, 'widget-costs.json'), JSON.stringify(costReport, null, 2));
     const ms1 = value => (value === null || value === undefined || !Number.isFinite(value) ? '–' : value.toFixed(1));
     const signed = value => (value === null || value === undefined || !Number.isFinite(value) ? '–' : `${value >= 0 ? '+' : ''}${value.toFixed(1)}`);
-    const pair = (raw, delta) => `${ms1(raw)} (${signed(delta)})`;
     const byOutcome = new Map();
     for (const w of costReport.widgets) byOutcome.set(w.outcome, (byOutcome.get(w.outcome) ?? 0) + 1);
     const outcomeLine = ['content', 'placeholder', 'refusal', 'error'].map(k => `${byOutcome.get(k) ?? 0} ${k}`).join(', ');
     const baseMain = costReport.baseline.main;
-    const costNote = `Each widget mounted alone at default size, playing at 1,440 h/s. Ranking formula: \`costScoreMs = ${COST_FORMULA}\` (ms/frame). Empty-page baseline: p50 ${ms1(baseMain.p50)} / p95 ${ms1(baseMain.p95)} / max ${ms1(baseMain.max)} ms (${baseMain.n} frames${costReport.baseline.lostRecords ? `, ${costReport.baseline.lostRecords} lost records` : ''}). Outcomes across ${costReport.widgets.length} kinds: ${outcomeLine}. Full data in \`widget-costs.json\`.`;
+    const sampleLine = (costReport.baseline.samples ?? []).map(sample =>
+      `${sample.label}: p50 ${ms1(sample.main.p50)} / p95 ${ms1(sample.main.p95)} / max ${ms1(sample.main.max)} ms (${sample.main.n} frames)`).join('; ');
+    const spreadLine = costReport.baseline.samples?.length >= 2
+      ? ` Spread across samples: Δp50 ${ms1(costReport.baseline.spread?.p50Ms)} ms, Δp95 ${ms1(costReport.baseline.spread?.p95Ms)} ms.` : '';
+    const costNote = `Each widget mounted alone at default size, playing at 1,440 h/s. Ranked by \`costScoreMs = ${COST_FORMULA}\` (ms/frame; \`Δp50\` shown beside \`Δp95\`; negative \`Δp95\` is never clamped to zero and is marked \`below baseline noise\`). Pooled empty-page baseline: p50 ${ms1(baseMain.p50)} / p95 ${ms1(baseMain.p95)} / max ${ms1(baseMain.max)} ms (${baseMain.n} frames${costReport.baseline.lostRecords ? `, ${costReport.baseline.lostRecords} lost records` : ''})${sampleLine ? ` [${sampleLine}]` : ''}.${spreadLine} Outcomes across ${costReport.widgets.length} kinds: ${outcomeLine}. Full data in \`widget-costs.json\`.`;
+    const costRows = [];
+    if (!costReport.baseline.usable) {
+      costRows.push({
+        pass: false,
+        cells: [
+          '–', '__empty__ (baseline)', '**FAIL**', '–',
+          ms1(baseMain.p50), '–', ms1(baseMain.p95), '–',
+          `${baseMain.n} (${ms1(costReport.baseline.seconds)} s)`, '–', '–', '–', '–', 'n/a',
+          why(costReport.baseline.reasons),
+        ],
+      });
+    }
+    for (const [index, w] of costReport.widgets.entries()) {
+      const reqList = Object.entries(w.requestsByProduct ?? {}).slice(0, 4).map(([prod, r]) => `${prod} ${r.toFixed(1)}`).join(', ');
+      const reqCell = w.requestsPerSec == null ? '–' : `${w.requestsPerSec.toFixed(1)}${reqList ? ` (${reqList})` : ''}`;
+      const workerCell = w.worker.changedFrames > 0 ? `${ms1(w.worker.p95)} / ${ms1(w.worker.mean)}` : '–';
+      const framesCell = `${w.main.n} (${ms1(w.seconds)} s)`;
+      const notes = [];
+      if (w.detail) notes.push(w.detail);
+      if (w.belowBaselineNoise) notes.push('below baseline noise');
+      if (w.lowFrameCount) notes.push(`low sample: ${w.main.n} frames in ${ms1(w.seconds)} s`);
+      if (w.futureFrames > 0) notes.push(`${w.futureFrames} future frames`);
+      if (w.exactError) notes.push(`audit: ${w.exactError}`);
+      if (w.incompleteReasons?.length) notes.push(...w.incompleteReasons);
+      costRows.push({
+        pass: w.outcome !== 'error' && w.outcome !== 'placeholder' && w.complete,
+        cells: [
+          index + 1, w.kind, w.outcome, ms1(w.costScoreMs),
+          ms1(w.main.p50), signed(w.mainDelta.p50), ms1(w.main.p95), signed(w.mainDelta.p95),
+          framesCell, workerCell, w.commitsPerSec == null ? '–' : w.commitsPerSec.toFixed(1), reqCell,
+          w.lagP95Hours == null ? '–' : Math.round(w.lagP95Hours), w.exact, why([...new Set(notes)]),
+        ],
+      });
+    }
     section('Per-widget playback cost at 1,440 h/s (sorted most expensive first)',
-      ['Rank', 'Kind', 'Outcome', 'Score (ms)', 'Main p50 (Δ)', 'Main p95 (Δ)', 'Main max (Δ)', 'Worker p95 / mean', 'Commits/s', 'Req/s (by product)', 'Lag p95 (h)', 'Exact', 'Note'],
-      costReport.widgets.map((w, index) => {
-        const reqList = Object.entries(w.requestsByProduct ?? {}).slice(0, 4).map(([prod, r]) => `${prod} ${r.toFixed(1)}`).join(', ');
-        const reqCell = w.requestsPerSec == null ? '–' : `${w.requestsPerSec.toFixed(1)}${reqList ? ` (${reqList})` : ''}`;
-        const workerCell = w.worker.changedFrames > 0 ? `${ms1(w.worker.p95)} / ${ms1(w.worker.mean)}` : '–';
-        const notes = [];
-        if (w.detail) notes.push(w.detail);
-        if (w.futureFrames > 0) notes.push(`${w.futureFrames} future frames`);
-        if (w.exactError) notes.push(`audit: ${w.exactError}`);
-        if (w.lostRecords > 0) notes.push(`perf log lost ${w.lostRecords} records`);
-        return {
-          pass: w.outcome !== 'error' && w.outcome !== 'placeholder' && w.complete,
-          cells: [
-            index + 1, w.kind, w.outcome, ms1(w.costScoreMs),
-            pair(w.main.p50, w.mainDelta.p50), pair(w.main.p95, w.mainDelta.p95), pair(w.main.max, w.mainDelta.max),
-            workerCell, w.commitsPerSec == null ? '–' : w.commitsPerSec.toFixed(1), reqCell,
-            w.lagP95Hours == null ? '–' : Math.round(w.lagP95Hours), w.exact, why(notes),
-          ],
-        };
-      }), costNote);
+      ['Rank', 'Kind', 'Outcome', 'Score (ms)', 'Main p50', 'Δp50', 'Main p95', 'Δp95', 'Frames (s)', 'Worker p95 / mean', 'Commits/s', 'Req/s (by product)', 'Lag p95 (h)', 'Exact', 'Note'],
+      costRows, costNote);
   }
 
   under(...(run.tier === 'quick' ? ['visual'] : ['visual', 'catalogue']));

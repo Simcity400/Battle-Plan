@@ -3,9 +3,11 @@ import react from '@vitejs/plugin-react';
 import { defineConfig, loadEnv } from 'vite';
 import { browserBridge } from './browserBridge.ts';
 
+export const MEASURE_UNGATED_MODE = 'measure-ungated';
+
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, fileURLToPath(new URL('.', import.meta.url)), 'BATTLEPLAN_');
-  const measureUngated = process.env.BATTLEPLAN_MEASURE_UNGATED === '1';
+  const measureUngated = mode === MEASURE_UNGATED_MODE;
+  const env = loadEnv(measureUngated ? 'production' : mode, fileURLToPath(new URL('.', import.meta.url)), 'BATTLEPLAN_');
   return {
     root: fileURLToPath(new URL('.', import.meta.url)),
     define: { __BATTLEPLAN_MEASURE_UNGATED__: JSON.stringify(measureUngated) },

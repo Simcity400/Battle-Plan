@@ -42,32 +42,111 @@ export function machineLine(run) {
   return `Machine (${count(machine.logicalCpus)} logical CPUs): ${sample('before the first app', machine.start)}; ${sample('before the last app closed', machine.end)}.`;
 }
 
+export const REFUSAL_TEXT = /\brefused\b|No table \d+ in the schema|layout or meaning changed at format|this recording is format|not in this recording|not recorded|not in this playhead|not followed at the head/i;
+
+export function classifyWidgetSnapshot({ placeholderText = null, unavailableText = null, errorDetail = null, emptyText = null, probeState = null, probeDrawing = false } = {}) {
+  const clean = value => (typeof value === 'string' && value.trim() ? value.trim() : null);
+  const ph = clean(placeholderText);
+  if (ph && /isn't playing back yet$/i.test(ph)) {
+    return { outcome: 'placeholder', detail: ph, notMigrated: true };
+  }
+  const unavail = clean(unavailableText);
+  if (unavail) {
+    return { outcome: 'refusal', detail: unavail, notMigrated: false };
+  }
+  const err = clean(errorDetail);
+  if (err) {
+    const isRefusal = REFUSAL_TEXT.test(err);
+    return { outcome: isRefusal ? 'refusal' : 'error', detail: err, notMigrated: false };
+  }
+  if (probeState === 'loading' && !probeDrawing) {
+    return { outcome: 'error', detail: 'still loading', notMigrated: false };
+  }
+  if (probeState === 'blank') {
+    return { outcome: 'error', detail: 'blank widget body', notMigrated: false };
+  }
+  if (ph) {
+    return { outcome: REFUSAL_TEXT.test(ph) ? 'refusal' : 'error', detail: ph, notMigrated: false };
+  }
+  const empty = clean(emptyText);
+  if (empty) return { outcome: 'content', detail: empty, notMigrated: false };
+  return { outcome: 'content', detail: null, notMigrated: false };
+}
+
+export function sessionConfinement(run, sessionEntry, sweepMeta = null) {
+  const cores = run?.cores ?? null;
+  const job = sessionEntry?.confinement ?? null;
+  const page = sweepMeta?.confinement ?? null;
+  const reasons = [];
+  if (cores) {
+    const expectedLanes = Math.max(1, Math.min(4, cores.count - 2));
+    if (!job) reasons.push('Job object confinement was not recorded');
+    else if (!job.allConfined || job.confinedProcesses < job.jobProcesses) {
+      reasons.push(`Job object confined ${job.confinedProcesses}/${job.jobProcesses} processes (expected all at ${cores.mask})`);
+    }
+    if (!page) {
+      reasons.push('page confinement observation was not recorded');
+    } else {
+      if (page.hardwareConcurrency !== cores.count) {
+        reasons.push(`page saw navigator.hardwareConcurrency = ${page.hardwareConcurrency}, expected ${cores.count}`);
+      }
+      const phases = sessionEntry?.phases ?? sweepMeta?.phases ?? [];
+      const expectsLanes = phases.some(phase => phase === 'playback' || phase === 'widget-costs');
+      if (page.lanes != null && page.lanes !== expectedLanes) {
+        reasons.push(`created ${page.lanes} drawing lanes, expected ${expectedLanes} for ${cores.count} cores`);
+      } else if (page.lanes == null && expectsLanes) {
+        reasons.push('drawing lane count was not recorded');
+      }
+    }
+  }
+  const parts = [];
+  if (job) parts.push(`Job ${job.confinedProcesses}/${job.jobProcesses}${job.allConfined ? '' : ' (NOT ALL CONFINED)'}`);
+  if (page?.hardwareConcurrency != null) parts.push(`hardwareConcurrency=${page.hardwareConcurrency}`);
+  if (page?.lanes != null) parts.push(`${page.lanes} lane${page.lanes === 1 ? '' : 's'}`);
+  return { pass: reasons.length === 0, reasons, job, page, summary: parts.join(', ') || '–' };
+}
+
 export function profileLines(run, sweep, records = null) {
   const throttle = run?.cpuThrottle ?? sweep?.meta?.cpuThrottle ?? 1;
   const cores = run?.cores ?? null;
   const profile = run?.profile ?? null;
-  const pageConf = (sweep?.meta?.sessions ?? []).map(meta => meta.confinement).find(Boolean) ?? sweep?.meta?.confinement ?? null;
-  const jobConf = run?.confinement ?? (run?.sessions ?? []).map(session => session.confinement).find(Boolean) ?? null;
+  const sweepSessions = sweep?.meta?.sessions ?? (sweep?.meta ? [sweep.meta] : []);
+  const bySlug = new Map(sweepSessions.map(meta => [meta.session, meta]));
+  const paired = (run?.sessions ?? []).map(entry => {
+    const slug = entry.name.replace(/ /g, '-');
+    return { name: entry.name, slug, ...sessionConfinement(run, entry, bySlug.get(slug) ?? null) };
+  });
+  const fallbackPage = sweepSessions.map(meta => meta.confinement).find(Boolean) ?? sweep?.meta?.confinement ?? null;
   const lines = [];
-  if (profile || cores || throttle > 1 || pageConf) {
+  if (profile || cores || throttle > 1 || paired.some(p => p.job || p.page) || fallbackPage) {
     const parts = [];
     if (profile) parts.push(`profile ${profile}`);
     parts.push(`CPU throttle ×${throttle}`);
     if (cores) parts.push(`core affinity ${cores.count} cores (${cores.mask}: CPUs ${cores.cpus.join(', ')})`);
     else parts.push('core affinity unconstrained');
     const measured = [];
-    if (jobConf) measured.push(`Job object confined ${jobConf.confinedProcesses}/${jobConf.jobProcesses} processes${jobConf.allConfined ? '' : ' (NOT ALL CONFINED)'}`);
-    if (pageConf?.hardwareConcurrency != null) measured.push(`page saw navigator.hardwareConcurrency = ${pageConf.hardwareConcurrency}`);
-    if (pageConf?.lanes != null) measured.push(`${pageConf.lanes} drawing lane${pageConf.lanes === 1 ? '' : 's'} created`);
+    if (paired.length === 1) {
+      const only = paired[0];
+      if (only.job) measured.push(`Job object confined ${only.job.confinedProcesses}/${only.job.jobProcesses} processes${only.job.allConfined ? '' : ' (NOT ALL CONFINED)'}`);
+      if (only.page?.hardwareConcurrency != null) measured.push(`page saw navigator.hardwareConcurrency = ${only.page.hardwareConcurrency}`);
+      if (only.page?.lanes != null) measured.push(`${only.page.lanes} drawing lane${only.page.lanes === 1 ? '' : 's'} created`);
+    } else if (paired.length > 1) {
+      for (const item of paired) if (item.job || item.page) measured.push(`${item.name}: ${item.summary}`);
+    } else {
+      const jobConf = run?.confinement ?? null;
+      if (jobConf) measured.push(`Job object confined ${jobConf.confinedProcesses}/${jobConf.jobProcesses} processes${jobConf.allConfined ? '' : ' (NOT ALL CONFINED)'}`);
+      if (fallbackPage?.hardwareConcurrency != null) measured.push(`page saw navigator.hardwareConcurrency = ${fallbackPage.hardwareConcurrency}`);
+      if (fallbackPage?.lanes != null) measured.push(`${fallbackPage.lanes} drawing lane${fallbackPage.lanes === 1 ? '' : 's'} created`);
+    }
     lines.push(`Execution profile: ${parts.join(', ')}.${measured.length ? ` Measured confinement: ${measured.join('; ')}.` : ''}`);
     if (profile || cores || throttle > 1) {
       lines.push('Profile caveat: this profile limits OS core affinity, slows JS main-thread execution via Chromium CPU throttling, and stretches drawing-lane worker work via stretch() in ui/src/draw/weakCpu.ts. It does not imitate a slower graphics card (GPU raster, compositing, or native viewer shaders), slower memory bandwidth or caches, or slower native Rust and IPC decoding.');
     }
   }
-  const ungated = Boolean(run?.ungated || pageConf?.ungated || (sweep?.meta?.sessions ?? []).some(meta => meta.confinement?.ungated)
+  const ungated = Boolean(run?.ungated || fallbackPage?.ungated || sweepSessions.some(meta => meta.confinement?.ungated)
     || (records ?? []).some(record => record.t === 'page' && record.ungated));
   if (ungated) {
-    lines.unshift('> **MEASUREMENT BUILD (UNGATED):** Built with `BATTLEPLAN_MEASURE_UNGATED=1`; the `playsBackDated` placeholder gate was bypassed at build time so unmigrated widgets ran while playing. Never ship this bundle.');
+    lines.unshift('> **MEASUREMENT BUILD (UNGATED):** Built with `suite.py build-ui --ungated` (`--mode measure-ungated`); the `playsBackDated` placeholder gate was bypassed at build time so unmigrated widgets ran while playing. Never ship this bundle.');
   }
   return lines;
 }

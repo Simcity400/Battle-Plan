@@ -154,6 +154,8 @@ export class PerfRecorder {
   }
 
   async beginAudit() {
+    this.pictureAudit = undefined;
+    this.exactReads.clear();
     this.rowChanges = [];
     this.commitAudit = [];
     this.auditReaders = new Map(this.readers);

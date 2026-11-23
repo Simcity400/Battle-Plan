@@ -62,3 +62,19 @@ test('picture audits are consumed through bounded evaluate chunks', () => {
   assert.match(source.slice(start, end), /while|for\s*\(/, 'the audit result is collected in more than one evaluate when needed');
   assert.match(source.slice(start, end), /auditPicturesBatch\([^)]*\d+/, 'each audit evaluate has a bounded picture count');
 });
+
+test('browser traces and non-map measured phases apply CPU throttling and restore it cleanly', () => {
+  const trace = source.indexOf('const traceWindow = async page =>');
+  const traceEnd = source.indexOf('const CLASSIFY_WIDGET =', trace);
+  const traceBody = source.slice(trace, traceEnd);
+  assert.ok(traceBody.indexOf('await throttle(rate);') > 0 && traceBody.indexOf('await throttle(rate);') < traceBody.indexOf('button.header-play[aria-label="Play"]'));
+  assert.match(traceBody, /finally\s*\{[\s\S]*await throttle\(1\)/);
+  assert.match(source, /THROTTLED_PHASES\s*=\s*new Set\(\['pages', 'pages-at', 'glance', 'seeks', 'catalogue', 'controls'\]\)/);
+});
+
+test('idleCost sampling is isolated in its own try/catch after pausePlayback so a failed pause cannot discard completed playback results', () => {
+  const inputsCall = source.indexOf('inputs = await playbackInputs();');
+  const idleStart = source.indexOf('idleCost = { from: start', inputsCall);
+  const block = source.slice(inputsCall, idleStart + 400);
+  assert.match(block, /try\s*\{[\s\S]*await pausePlayback\(\);[\s\S]*idleCost = \{ from: start[\s\S]*\}\s*catch\s*\(idleError\)/);
+});

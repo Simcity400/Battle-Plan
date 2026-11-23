@@ -634,7 +634,15 @@ test('a window with overlapping lost perf records, a refused widget, or a failed
 });
 
 test('per-widget cost ranking combines net main-thread p95 and drawing-lane serve p95 and records all metrics', () => {
-  const empty = { kind: '__empty__', from: 0, to: 2000, seconds: 2, complete: true };
+  const framesOf = (from, to, main, count = 40, commits = 0) => Array.from({ length: count }, (_, i) => ({
+    t: 'frame', at: from + Math.round((to - from) * i / (count - 1)), playing: true, main, dt: 16, commits: i < commits ? 1 : 0,
+  }));
+  const ticksOf = (from, to, startHour = 100) => [
+    { t: 'tick', at: from, hour: startHour, speed: 1440, playing: true },
+    { t: 'tick', at: to, hour: startHour + 1440 * (to - from) / 1000, speed: 1440, playing: true },
+  ];
+  const emptyStart = { kind: '__empty__', sampleLabel: 'start', from: 0, to: 2000, seconds: 2, complete: true };
+  const emptyEnd = { kind: '__empty__', sampleLabel: 'end', from: 12000, to: 14000, seconds: 2, complete: true };
   const windows = [
     { kind: 'worker-heavy', title: 'Worker heavy', widget: 'page-cost-worker-heavy-worker-heavy', from: 3000, to: 5000, seconds: 2, outcome: 'content', detail: null, complete: true,
       surfaces: ['table'], audit: [{ widget: 'page-cost-worker-heavy-worker-heavy', surface: 'table', placement: 1, owner: -1, at: 4000, error: null }] },
@@ -642,28 +650,30 @@ test('per-widget cost ranking combines net main-thread p95 and drawing-lane serv
     { kind: 'refused-widget', title: 'Refused', widget: 'page-cost-refused-widget-refused-widget', from: 9000, to: 11000, seconds: 2, outcome: 'refusal', detail: 'No table 44 in the schema', complete: true, surfaces: [] },
   ];
   const records = [
-    { t: 'tick', at: 0, hour: 0, speed: 1440, playing: true },
-    { t: 'frame', at: 500, playing: true, main: 2, dt: 16, commits: 0 },
-    { t: 'frame', at: 1500, playing: true, main: 2, dt: 16, commits: 0 },
-    { t: 'tick', at: 3000, hour: 100, speed: 1440, playing: true },
-    { t: 'frame', at: 3500, playing: true, main: 4, dt: 16, commits: 0 },
-    { t: 'frame', at: 4500, playing: true, main: 5, dt: 16, commits: 0 },
+    ...ticksOf(0, 2000, 0),
+    ...framesOf(0, 2000, 2, 40),
+    ...ticksOf(3000, 5000, 100),
+    ...framesOf(3000, 5000, 5, 40),
     { t: 'workerFrame', at: 3500, lane: 0, lanes: 2, playing: true, changed: 1, workMs: 12 },
     { t: 'workerFrame', at: 4500, lane: 0, lanes: 2, playing: true, changed: 1, workMs: 14 },
     { t: 'picture', at: 3500, widget: 'page-cost-worker-heavy-worker-heavy', surface: 'table', placement: 1, renderer: 'page', hour: 810, head: 820, eligibleHour: 820, drawMs: 3.2 },
     { t: 'picture', at: 4500, widget: 'page-cost-worker-heavy-worker-heavy', surface: 'table', placement: 1, renderer: 'page', hour: 2250, head: 2260, eligibleHour: 2260, drawMs: 3.4 },
-    { t: 'tick', at: 6000, hour: 100, speed: 1440, playing: true },
-    { t: 'frame', at: 6500, playing: true, main: 12, dt: 20, commits: 10 },
-    { t: 'frame', at: 7500, playing: true, main: 14, dt: 20, commits: 10 },
+    ...ticksOf(6000, 8000, 100),
+    ...framesOf(6000, 8000, 14, 40, 20),
     { t: 'shown', at: 6500, widget: 'page-cost-main-heavy-main-heavy', hour: 700 },
     { t: 'q', at: 6500, cmd: 'dashboard_product', product: 'series-state', outcome: 'ok', ms: 2 },
     { t: 'q', at: 7000, cmd: 'dashboard_product', product: 'series-state', outcome: 'ok', ms: 2 },
     { t: 'q', at: 7100, cmd: 'dashboard_product', product: 'army-size', outcome: 'ok', ms: 2 },
     { t: 'q', at: 7200, product: 'series-state', cache: 'hit' },
-    { t: 'tick', at: 9000, hour: 100, speed: 1440, playing: true },
-    { t: 'frame', at: 9500, playing: true, main: 2.1, dt: 16, commits: 0 },
+    ...ticksOf(9000, 11000, 100),
+    ...framesOf(9000, 11000, 2.1, 40),
+    ...ticksOf(12000, 14000, 0),
+    ...framesOf(12000, 14000, 2, 40),
   ];
-  const report = summarizeWidgetCosts(windows, records, { baseline: empty });
+  const report = summarizeWidgetCosts(windows, records, { baselines: [emptyStart, emptyEnd] });
+  assert.equal(report.baseline.usable, true);
+  assert.equal(report.baseline.spread.p50Ms, 0);
+  assert.equal(report.baseline.spread.p95Ms, 0);
   assert.deepEqual(report.widgets.map(w => w.kind), ['worker-heavy', 'main-heavy', 'refused-widget']);
   assert.equal(report.widgets[0].costScoreMs, 17, 'worker-heavy: (5 - 2) main delta p95 + 14 worker p95 = 17');
   assert.equal(report.widgets[0].exact, 'pass');
@@ -676,4 +686,89 @@ test('per-widget cost ranking combines net main-thread p95 and drawing-lane serv
   assert.equal(report.widgets[2].detail, 'No table 44 in the schema');
   assert.deepEqual(rankWidgetCosts([report.widgets[2], report.widgets[1], report.widgets[0]]).map(w => w.kind),
     ['worker-heavy', 'main-heavy', 'refused-widget']);
+});
+
+test('cost summary rejects unstable, missing, or stopped-clock windows and preserves negative deltas without clamping', () => {
+  const framesOf = (from, to, mainFn, count = 40) => Array.from({ length: count }, (_, i) => ({
+    t: 'frame', at: from + Math.round((to - from) * i / (count - 1)), playing: true, main: typeof mainFn === 'function' ? mainFn(i) : mainFn, dt: 16, commits: 0,
+  }));
+  const ticksOf = (from, to) => [
+    { t: 'tick', at: from, hour: 100, speed: 1440, playing: true },
+    { t: 'tick', at: to, hour: 100 + 1440 * (to - from) / 1000, speed: 1440, playing: true },
+  ];
+  const baseStart = { kind: '__empty__', sampleLabel: 'start', from: 0, to: 4000, seconds: 4, complete: true };
+  const baseEnd = { kind: '__empty__', sampleLabel: 'end', from: 20000, to: 24000, seconds: 4, complete: true };
+  const stableRecords = [
+    ...ticksOf(0, 4000), ...framesOf(0, 4000, 4, 40),
+    ...ticksOf(5000, 9000), ...framesOf(5000, 9000, 3, 40),
+    ...ticksOf(10000, 14000), ...framesOf(10000, 14000, 50, 5),
+    { t: 'tick', at: 15000, hour: 100, speed: 1440, playing: true },
+    { t: 'tick', at: 16000, hour: 1540, speed: 1440, playing: true },
+    { t: 'tick', at: 16100, hour: 1540, speed: 1440, playing: false },
+    ...framesOf(15000, 19000, 8, 40),
+    ...ticksOf(20000, 24000), ...framesOf(20000, 24000, 4, 40),
+  ];
+  const windows = [
+    { kind: 'below-noise', from: 5000, to: 9000, seconds: 4, outcome: 'content', complete: true },
+    { kind: 'slow-low-frames', from: 10000, to: 14000, seconds: 4, outcome: 'content', complete: true },
+    { kind: 'stopped-early', from: 15000, to: 19000, seconds: 4, outcome: 'content', complete: true, playingAtSnap: false },
+    { kind: 'zero-frames', from: 25000, to: 29000, seconds: 4, outcome: 'content', complete: true },
+  ];
+  const stable = summarizeWidgetCosts(windows, stableRecords, { baselines: [baseStart, baseEnd] });
+  assert.equal(stable.baseline.usable, true);
+  const byKind = Object.fromEntries(stable.widgets.map(w => [w.kind, w]));
+  assert.equal(byKind['below-noise'].mainDelta.p95, -1, 'negative delta is preserved, never clamped to 0');
+  assert.equal(byKind['below-noise'].costScoreMs, -1);
+  assert.equal(byKind['below-noise'].belowBaselineNoise, true);
+  assert.equal(byKind['slow-low-frames'].lowFrameCount, true);
+  assert.equal(byKind['slow-low-frames'].main.n, 5);
+  assert.equal(byKind['stopped-early'].complete, false);
+  assert.equal(byKind['stopped-early'].costScoreMs, null);
+  assert.equal(byKind['zero-frames'].complete, false);
+  assert.equal(byKind['zero-frames'].costScoreMs, null);
+  assert.deepEqual(stable.widgets.slice(0, 2).map(w => w.kind), ['slow-low-frames', 'below-noise'], 'measured rows always rank ahead of null-score rows');
+
+  const spikyRecords = [
+    ...ticksOf(0, 4000), ...framesOf(0, 4000, i => i >= 36 ? 30 : 2, 40),
+    ...ticksOf(5000, 9000), ...framesOf(5000, 9000, 5, 40),
+    ...ticksOf(20000, 24000), ...framesOf(20000, 24000, 2, 40),
+  ];
+  const spiky = summarizeWidgetCosts([windows[0]], spikyRecords, { baselines: [baseStart, baseEnd] });
+  assert.equal(spiky.baseline.usable, false);
+  assert.ok(spiky.baseline.reasons.some(r => r.includes('unstable tail')));
+  assert.equal(spiky.widgets[0].costScoreMs, null);
+  assert.equal(spiky.widgets[0].complete, false);
+});
+
+test('dated playback fails on playbackReasons, fails every placement on playing-window loss, and isolates overlapping sessions', () => {
+  const presented = Array.from({ length: 61 }, (_, i) => i * 1000 / 60);
+  const makeRecords = session => [
+    { t: 'tick', at: 0, hour: 0, speed: 1440, playing: true, session },
+    { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true, session },
+    ...presented.map(at => ({ t: 'picture', at, widget: 'w', surface: 'surface', placement: 1, hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page', session })),
+    ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1, session })),
+    ...presented.map((at, i) => ({ t: 'frame', at, playing: true, commits: i === 0 ? 1 : 0, commitSequence: 1, session })),
+    { t: 'commit', at: 0, serial: 1, widgets: ['w'], changes: [{ widget: 'w', source: 'surface', hour: 10, previousHour: 0, before: ['a'], after: ['b'], verified: true }], session },
+  ];
+  const baseWindow = session => ({ session, page: 'Heaviest', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+    widgets: [{ id: 'w', kind: 'ok-kind', title: 'Ok', visible: true, surfaces: ['surface'] }],
+    audit: [{ widget: 'w', surface: 'surface', placement: 1, at: 500, error: null }],
+    inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic', at: 1100 })), to: 1500, presented: [] } });
+
+  const twoSessions = datedPlaybackVerdict([baseWindow('s1'), baseWindow('s2')], [...makeRecords('s1'), ...makeRecords('s2')]);
+  assert.equal(twoSessions.pass, true, 'overlapping commit serials in separate sessions reconcile cleanly');
+
+  const withLoadingPlaceholder = datedPlaybackVerdict([{ ...baseWindow('s1'), playbackReasons: ['showed a loading placeholder for 120 ms (Ok)'] }], makeRecords('s1'));
+  assert.equal(withLoadingPlaceholder.pass, false);
+  assert.ok(withLoadingPlaceholder.reasons.some(r => r.includes('loading placeholder')));
+
+  const withPlayLoss = datedPlaybackVerdict([baseWindow('s1')], [...makeRecords('s1'), { t: 'lost', at: 500, from: 400, to: 600, source: 'ui', count: 5, session: 's1' }]);
+  assert.equal(withPlayLoss.pass, false);
+  assert.equal(withPlayLoss.placements[0].pass, false, 'a playing-window loss fails every placement in that window');
+
+  const withInputOnlyLoss = datedPlaybackVerdict([{ ...baseWindow('s1'), complete: false, losses: [{ source: 'ui', count: 3 }] }],
+    [...makeRecords('s1'), { t: 'lost', at: 1200, from: 1150, to: 1250, source: 'ui', count: 3, session: 's1' }]);
+  assert.equal(withInputOnlyLoss.pass, false);
+  assert.ok(withInputOnlyLoss.reasons.some(r => r.includes('input sequence')));
+  assert.equal(withInputOnlyLoss.placements[0].pass, true, 'an input-only loss fails the verdict without falsely failing playing placements');
 });
