@@ -252,7 +252,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     } }, kinds),
   [markerSources, namesAt, focusText.read, kinds]);
 
-  const breakdownRequest = (hour: GatedHour | null) => track && single && hour !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+  const breakdownRequest = (hour: GatedHour | null) => track && single && hour !== null && isMember(membership?.get(single), hour) ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
     product: 'country-stability-breakdown', params: { branchId: track.branch.id, country: countryFromKey(single), hour } }) : null;
   const hovered = useProduct<StabilityBreakdownReply>(runtime.client, breakdownRequest(!pinnedMeasure ? hoverAt : null), active, validateBreakdown, track?.source);
   const retries = useRef(0);

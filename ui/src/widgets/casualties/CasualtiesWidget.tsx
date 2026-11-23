@@ -60,6 +60,8 @@ function useUnknownLabel(props: WidgetProps): { label: string; warnings: readonl
   return { label: reply.data?.unknownLabel ?? UNKNOWN_FALLBACK, warnings: reply.data?.warnings ?? [] };
 }
 
+const MEMBERS = { members: true };
+
 export default function CasualtiesWidget(props: WidgetProps) {
   const unknown = useUnknownLabel(props);
   const [chartWarnings, setChartWarnings] = useState<readonly string[]>([]);
@@ -111,7 +113,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const family = (measure: string) => ({ kind: FAMILY, measure });
-  const gate = useGate(runtime, widget, SPEC, active);
+  const gate = useGate(runtime, widget, SPEC, active, MEMBERS);
+  const memberTags = useMemo(() => gate.members ? tags.filter(tag => gate.members!.includes(tag)) : tags, [tags, gate.members]);
 
   const rankQuery = useMemo(() => active && following && track && top != null
     ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family: family(RANK), top: Math.min(top, 1500) } }) : null,
@@ -124,7 +127,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     return sticky.current.tags.join(',');
   }, [rankKey, top]);
   const ranked = useFollow(store, rankQuery, root, () => {}, rankShape);
-  const members = useMemo(() => top != null ? ranked.entry && ranked.structure ? ranked.structure.split(',') : [] : tags, [top, ranked.entry, ranked.structure, tags]);
+  const members = useMemo(() => top != null ? ranked.entry && ranked.structure ? ranked.structure.split(',') : [] : memberTags, [top, ranked.entry, ranked.structure, memberTags]);
   const membersKey = members.join(',');
   const measureQuery = (measure: CasualtyMeasure) => active && following && track && members.length
     ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family: family(measure), reads: members.map(tag => ({ country: countryFromKey(tag) })) } }) : null;
@@ -148,7 +151,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const rankRequest = asked && top != null ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
     params: { branchId: track.branch.id, family: family(RANK), hour: moment, top: Math.min(top, 1500) } }) : null;
   const rank = useFollowedProduct<SeriesStateReply>(runtime.client, rankRequest, ['hour'], active, undefined, track?.source);
-  const askedTags = useMemo(() => top != null ? (rank.data?.states ?? []).filter(state => state.run).map(state => countryKey(state.country)) : tags, [top, rank.data, tags]);
+  const askedTags = useMemo(() => top != null ? (rank.data?.states ?? []).filter(state => state.run).map(state => countryKey(state.country)) : memberTags, [top, rank.data, memberTags]);
   const stateRequests = MEASURES.map(measure => asked && askedTags.length ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
     params: { branchId: track.branch.id, family: family(measure), reads: askedTags.map(tag => ({ country: countryFromKey(tag), hour: moment })) } }) : null);
   const states = [
@@ -218,7 +221,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const loading = followedHead ? false : (top != null && !rank.data) || states.some((state, at) => askedTags.length > 0 && stateRequests[at] && !state.data);
   const content = (() => {
     if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see casualties." />;
-    if (gate.stage.stage === 'outside') return <GateState gate={gate} loading="Loading casualties…" />;
+    if (gate.stage.stage === 'outside' || gate.stage.stage === 'no-members') return <GateState gate={gate} loading="Loading casualties…" />;
     if (moment === null) return <WidgetState kind="loading" label="Loading casualties…" />;
     if (grouped && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
     if (resolved?.reason) return <WidgetState kind="unavailable" message={resolved.reason} />;

@@ -89,6 +89,8 @@ function paintLane(ctx: CanvasRenderingContext2D, lane: AutonomyLane, geometry: 
   ctx.restore();
 }
 
+const MEMBERS = { members: true };
+
 export default function AutonomyWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const clock = runtime.clock;
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
@@ -113,11 +115,12 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const product = useProduct<SubjectReply>(runtime.client, request, active, validateSubjectReply, track?.source);
   const data = product.data;
   const selection = useMemo(() => worldFilterQuery(widget.countries, fallback ? [fallback] : [], groups.data, lastHour), [widget.countries, fallback, groups.data, lastHour]);
-  const filter = useMemo(() => selection.at(head), [selection, head]);
+  const gate = useGate(runtime, widget, SPEC, active, MEMBERS);
+  const selectedHour = following && gate.hour !== null ? gate.hour : head;
+  const filter = useMemo(() => selection.at(selectedHour), [selection, selectedHour]);
   const lanesData = useMemo(() => data ? autonomyLanes(data, filter.tags, bySubject) : [], [data, filter.tags, bySubject]);
   const tags = useMemo(() => lanesData.map(lane => lane.tag), [lanesData]);
   const within = useMemo(() => new Map(lanesData.map(lane => [lane.tag, lane.within])), [lanesData]);
-  const gate = useGate(runtime, widget, SPEC, active);
   const lanesByTag = useMemo(() => new Map(lanesData.map(lane => [lane.tag, lane])), [lanesData]);
   const selectedAt = useCallback((tag: string, hour: number) => {
     const at = selection.at(hour);
