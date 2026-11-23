@@ -25,7 +25,7 @@ import type { FamilySources } from '../contract.ts';
 import { holderRunAt, nextHoldersChange, nextRangesChange, nextWindowRangesChange, overlapsHourRanges, resolveSlotHolderRuns } from '../holders.ts';
 import { effectiveCountryUnobserved, resolveDisplayedStaticSnapshot, resolveRetainedHeadSpan, selectionUnobservedReason } from '../sources.ts';
 import { SlotTags } from '../../dashboard/countrySlots.ts';
-import { groupMembers } from '../../dashboard/groups.ts';
+import { groupUnobserved } from '../../dashboard/groups.ts';
 import { capturePictures, capturePicturesBatch } from '../../dashboard/pulled.ts';
 import { isFamilyAuditing, subscribeFamilyAuditing } from '../audit.ts';
 import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue, zeroValue } from '../value.ts';
@@ -1243,15 +1243,22 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
   assert.equal(overlapsHourRanges(shallowFrozenOuter, 50, 60), true, 'N18: indexed overlap includes boundary');
   assert.throws(() => { (shallowFrozenOuter[0] as [number, number])[1] = 999; }, TypeError, 'N18: inner tuple frozen even when outer array was already frozen');
 
-  const partialGroupMembers = groupMembers(
-    [{ tag: 'GER', firstHour: 0, lastHour: 9 }],
-    'ever',
-    20,
-    20,
-    Infinity,
-    [{ firstHour: 10, lastHour: 20 }],
+  const filterGroupUnobserved = groupUnobserved(
+    {
+      humans: [{ tag: 'GER', firstHour: 0, lastHour: 9 }],
+      factions: [],
+      wars: [],
+      unobserved: { humans: [{ firstHour: 10, lastHour: 20 }], factions: [], wars: [] },
+      countryIdentities: [],
+      warnings: [],
+    } as never,
+    { type: 'humans' },
   );
-  assert.equal(partialGroupMembers, null, 'M4: groupMembers returns null for membership ever when unobserved intervals exist');
+  assert.equal(
+    selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false }, filterGroupUnobserved),
+    'Group membership is incomplete for this campaign.',
+    'M4: filter policy applies ever-membership incompleteness refusal when groupUnobserved has gaps',
+  );
 
   const mirrorRows = Array.from({ length: 10 }, (_, i) => ({
     key: `R${i}`,

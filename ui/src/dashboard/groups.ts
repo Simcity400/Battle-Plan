@@ -37,7 +37,7 @@ export function groupMembers(runs: readonly MembershipRun[], membership: GroupMe
   if (membership !== 'ever' && unobserved.some(span => span.firstHour <= at && at <= span.lastHour)) return null;
   const ordered = [...runs].sort((a, b) => a.firstHour - b.firstHour || a.tag.localeCompare(b.tag));
   const tags = ordered.filter(run => membership === 'ever' || (run.firstHour <= at && at <= run.lastHour)).map(run => run.tag);
-  if (membership === 'ever' && unobserved.length) return null;
+  if (membership === 'ever' && !tags.length && unobserved.length) return null;
   return [...new Set(tags)].slice(0, max);
 }
 
