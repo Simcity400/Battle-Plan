@@ -6,4 +6,4 @@ The per-pass scoped resolver keeps successes, null roots and failures with no ev
 
 Handles retain the complete type and identity, including dynamically minted types. The stored word order differs from the order hashed by the registry. Probes compare the complete key rather than the auxiliary hash. A cell behind the required probe distance cannot validate a stale key or pointer. The default invalid handle is a fixed value and is independent of the minted-ID counter.
 
-[Reference registry](../../crates/engine-native/src/creference_registry.rs) · [Province unit order](../../crates/engine-native/src/cprovince.rs)
+[Reference registry](../../crates/engine-native-parts/src/creference_registry.rs) · [Province unit order](../../crates/engine-native/src/cprovince.rs)

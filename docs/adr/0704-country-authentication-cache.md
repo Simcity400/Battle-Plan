@@ -10,4 +10,4 @@ Keep fixed-layout record gathers on the source for their original guarded batch.
 
 Country intel rows preserve all four native signed fixed-point lanes. The target is the canonical link slot resolved from a country reference. The individual consumers select the relevant lane and apply display normalization elsewhere. Serialization omits exact zero lanes but retains the existence of an all-zero entry.
 
-[Authentication snapshot](../../crates/engine-native/src/country_memory.rs) · [Cache tests](../../crates/engine-native/src/country_memory/tests.rs) · [Intel rows](../../crates/engine-native/src/country_intel_row.rs)
+[Authentication snapshot](../../crates/engine-native-intelligence/src/country_memory.rs) · [Cache tests](../../crates/engine-native-intelligence/src/country_memory/tests.rs) · [Intel rows](../../crates/engine-native-intelligence/src/country_intel_row.rs)

@@ -4,4 +4,4 @@ Capture optional battle-plan transport fields from an admitted, quiescent wing c
 
 The fixed pass owns its base and database header observations. It copies the complete stored raid reference and retains the resolved pointer only until this observation ends. This lets another worker consumer use the authentication result without another native lookup. A readable unresolved or null reference remains a known absence rather than a source fault.
 
-[Transport scratch and field capture](../../crates/engine-native/src/cair_wing/transport_operands.rs) · [Wing census admission](../../crates/engine-native/src/cair_wing.rs)
+[Transport scratch and field capture](../../crates/engine-native-air/src/cair_wing/transport_operands.rs) · [Wing census admission](../../crates/engine-native-air/src/cair_wing.rs)

@@ -6,4 +6,4 @@ The scalar rows, upgrade entries, captured operatives, active roster, and crypto
 
 One guarded block normally supplies the fields of an agency. If it cannot be read whole, make the established smaller reads and preserve their first failure. A failed speculative next-link read is retried only when its original visit demands the link. The paired reference and batched fixtures check ordering, fixed capacity and text edges, sparse or aliased slots, and both lasting and transient faults. They give each reader its own one-shot fault so one run cannot consume the other's fault. The real-address cost fixture owns the arena and keeps it allocated and unchanged for the full lifetime of its `LiveMemory` reader. Check stored name lengths and terminators before reporting demand or publishing a row.
 
-[Agency reader](../../crates/engine-native/src/cintelligence_agency.rs) · [Per-field reference](../../crates/engine-native/src/cintelligence_agency_cost_baseline.rs)
+[Agency reader](../../crates/engine-native-intelligence/src/cintelligence_agency.rs) · [Per-field reference](../../crates/engine-native-intelligence/src/cintelligence_agency_cost_baseline.rs)

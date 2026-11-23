@@ -10,4 +10,4 @@ The comparison readers remain test fixtures. They represent the older sequential
 
 The parity tests use sparse process-like memory and a simulated guard. They compare exact rows and errors with and without an authenticated roster. The fixture includes war and friendly ties, fog-network eligibility, weather by region, generated names, supply, transport, and leader cases, so each shared branch is reached. It injects faults at read spans to check distinct failure ordering, incomplete records, and unchanged lanes. The scale test warms the buffers before measuring and reports in-process copies, not the game's guard latency.
 
-[Shared combat sources](../../crates/engine-native/src/combat_sources.rs) · [Comparison fixtures](../../crates/engine-native/src/combat_sources/tests.rs)
+[Shared combat sources](../../crates/engine-native-land/src/combat_sources.rs) · [Comparison fixtures](../../crates/engine-native-land/src/combat_sources/tests.rs)

@@ -8,4 +8,4 @@ The native integer movement calculation depends on all three signed inputs exact
 
 A country-local clone can retain a global definition index. It is global only if the indexed global slot holds that exact object. The null subunit has its own identity, token and database slot. Requirement vectors contain an ordered archetype pointer and amount for each entry. The first reached entry supplies equipment selection, and transient native pointers never become published archetype identity. Category masks, sprite selectors and category modifier keys are separate. Land speed can add the priority subunit's own modifier and the modifiers of its listed categories, retaining native order and repeated occurrences.
 
-[Definition, active stats and movement operands](../../crates/engine-native/src/csub_unit_definition.rs)
+[Definition, active stats and movement operands](../../crates/engine-native-parts/src/csub_unit_definition.rs)
