@@ -114,9 +114,8 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const gate = useGate(runtime, widget);
   const product = useLossHistory(runtime.client, drill.breakdown === null ? gate : drillControl.gate, track, selection, requestedView,
     [...(followView ? [] : [requestedView?.hour ?? 0]), ...(pinnedDetail === null ? [] : [Math.floor(pinnedDetail)])], active, open);
-  const headFollows = drill.breakdown === null ? followView : following;
-  const head = useHeadProduct(runtime, drill.breakdown === null ? gate : drillControl.gate, 'equipment-loss-head',
-    headFollows && selection ? { country: selection.country, identity: selection.identity } : null,
+  const head = useHeadProduct(runtime, gate, 'equipment-loss-head',
+    followView && selection ? { country: selection.country, identity: selection.identity } : null,
     { active, validate: validateHead, structure: reply => reply.leaves.join(',') });
   const retained = useMemo(() => new NumericReply<LossesReply>(), [runtime.client]);
   const identity = JSON.stringify([track?.source.id, track?.source.revision, selection]);
@@ -126,10 +125,10 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const headRoot = head.root;
   const rootRef = useCallback((element: HTMLDivElement | null) => { (anchor as { current: HTMLDivElement | null }).current = element; headRoot(element); }, [headRoot]);
   const named = useMemo(() => new Set(head.data?.leaves ?? []), [head.data]);
-  const structureHour = headFollows ? head.at ?? origin ?? 0 : requestedView?.hour ?? 0;
+  const structureHour = followView ? head.at ?? origin ?? 0 : requestedView?.hour ?? 0;
   const view = requestedView && data ? stretchWindow(data, { ...requestedView, hour: structureHour }) : requestedView;
-  const shownReply = useMemo(() => data && view ? headFollows && head.data ? atHead(data, view.hour, head.live.read(), named) : withShips(data, view.hour) : null,
-    [data, view?.hour, headFollows, head.data, named]);
+  const shownReply = useMemo(() => data && view ? followView && head.data ? atHead(data, view.hour, head.live.read(), named) : withShips(data, view.hour) : null,
+    [data, view?.hour, followView, head.data, named]);
   const selectionPick = useMemo(() => track && tag ? readLossSelection(widget.options?.lossSelection, track.source.metadata.campaignKey, track.branch.id, tag) : null,
     [widget.options?.lossSelection, track?.source.metadata.campaignKey, track?.branch.id, tag]);
   const selected = useMemo(() => picked === undefined ? selectionPick ? new Set(selectionPick.keys) : null : picked === null ? null : new Set(picked), [picked, selectionPick]);
@@ -171,7 +170,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const scale = data?.amountScale ?? 1;
 
   const headLive = useMemo(() => {
-    if (!headFollows || !data || !view || !head.data) return null;
+    if (!followView || !data || !view || !head.data) return null;
     const hourOf = liveAt(runtime.clock, hourAt, at => at);
     let made: { hour: number; cells: LiveValues<number>; reply: LossesReply } | null = null;
     const replyLive: Live<LossesReply> & { hour(): number } = {
@@ -185,7 +184,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
       subscribe: changed => { const stops = [hourOf.subscribe(changed), head.live.subscribe(changed)]; return () => { for (const stop of stops) stop(); }; },
     };
     return replyLive;
-  }, [headFollows, data, view?.first, view?.end, view?.from, head.data, head.live, named, runtime.clock]);
+  }, [followView, data, view?.first, view?.end, view?.from, head.data, head.live, named, runtime.clock]);
   const sunburstLive = useMemo<Live<SunburstValues> | undefined>(() => {
     if (!headLive || !view) return undefined;
     let made: { reply: LossesReply; values: SunburstValues } | null = null;

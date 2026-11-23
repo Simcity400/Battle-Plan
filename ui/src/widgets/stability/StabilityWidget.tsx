@@ -428,7 +428,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
             const notes = [
               ...(hovered.error ? [failureText(hovered.error, 'Couldn’t load the breakdown.')]
                 : hoveredFor && !hoveredFor.breakdown ? [hoveredFor.missing ?? 'No breakdown was recorded for this hour.']
-                  : !hoveredFor ? ['Loading the breakdown…'] : []),
+                  : !hoveredFor ? [single && !isMember(membership?.get(single), Math.floor(hour)) ? 'Not in the group at this date.' : 'Loading the breakdown…'] : []),
               ...(hoveredFor?.breakdown && hoveredFor.breakdown.readHour < hour ? [`As of ${formatDateTime(hoveredFor.breakdown.readHour)}.`] : []),
             ];
             return fitTooltip([{ title: dayLabel(hour), rows, detail: hovered.error?.message, note: notes.length ? notes.join(' ') : undefined }], viewport);
