@@ -1,10 +1,6 @@
 
-use crate::{
-    Config, Options,
-    app::{Playhead, Viewer},
-    layers::{View, recorded, sounds::tests::sought, vision},
-    playhead_host::{MapSide, open, views::tests::hourly_steps},
-};
+use crate::{Config, Options, app::{Playhead, Viewer}, playhead_host::{MapSide, open, views::tests::hourly_steps}};
+use viewer_layer_core::{layers::View, test_support::{recorded, sound_recording::sought}, vision};
 use replay_columnar::{manifest::Status, state::Cell, store::Store};
 use replay_data::rows::TableId;
 use std::{
@@ -43,16 +39,16 @@ fn recording(name: &str) -> crate::playhead_host::units::Units {
 fn the_hovers_read_the_vision_the_maps_vision_layer_shows_and_are_loading_by_name_until_it_shows_one() {
     let deadline = Instant::now() + Duration::from_secs(120);
     let entry = open(recording("hover vision from the layer"), hourly_steps()).unwrap();
-    let side = MapSide::new(Arc::clone(&entry), vec![Box::new(vision::Vision::new(vision_content()))], View::default()).unwrap();
+    let side = MapSide::with_products(Arc::clone(&entry), vec![Box::new(vision::Vision::new(vision_content()))], View::default()).unwrap();
     let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::new(Mutex::new(None)), None, None);
     viewer.playhead = Some(Playhead { branch: 0, hour: 2, fraction: 0.0 });
-    let mut side = crate::playhead_host::side::SideThread::new(side).unwrap();
+    let mut side = viewer_playback::side::SideThread::new(side).unwrap();
     side.driven(|_| ());
     viewer.playhead_map = Some(side);
     let before = viewer.shown_vision().err();
     assert!(before.as_deref().is_some_and(|why| !why.is_empty()), "no vision before the layer composed, and why by name: {before:?}");
     viewer.playhead_map.as_ref().unwrap().with_side_mut(|side| sought(side, 2));
-    let made = crate::layers::vision::seen_made_here();
+    let made = viewer_layer_core::vision::seen_made_here();
     let vision = loop {
         let side = viewer.playhead_map.as_mut().unwrap();
         side.driven(|side| {
@@ -66,9 +62,9 @@ fn the_hovers_read_the_vision_the_maps_vision_layer_shows_and_are_loading_by_nam
         assert!(Instant::now() < deadline, "the vision layer shows a vision at hour 2 within 120 s: {:?}", viewer.shown_vision().err());
         std::thread::yield_now();
     };
-    assert_eq!(crate::layers::vision::seen_made_here(), made, "the frame's thread copied the layer's arrays and made no vision");
+    assert_eq!(viewer_layer_core::vision::seen_made_here(), made, "the frame's thread copied the layer's arrays and made no vision");
     assert_eq!(vision.ours(), 1, "the viewing country the layer resolved");
-    let seen = viewer.playhead_map.as_ref().unwrap().with_side(|side| crate::layers::vision::drawn(side).expect("the vision layer draws").vision().expect("the layer's vision"));
+    let seen = viewer.playhead_map.as_ref().unwrap().with_side(|side| viewer_layer_core::vision::drawn(side).expect("the vision layer draws").vision().expect("the layer's vision"));
     assert_eq!(vision.differences(&seen), (0, Vec::new()), "made off the frame, it is the layer's vision");
     let again = viewer.shown_vision().unwrap_or_else(|why| panic!("still shown: {why}"));
     assert!(Arc::ptr_eq(&vision, &again), "the same value while nothing the layer shows moves");

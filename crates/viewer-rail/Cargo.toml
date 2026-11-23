@@ -69,3 +69,4 @@ viewer-foundation = { workspace = true, features = ["test-support"] }
 viewer-models = { workspace = true, features = ["test-support"] }
 viewer-rail = { workspace = true, features = ["test-support"] }
 viewer-scene-base = { workspace = true, features = ["test-support"] }
+viewer-terrain = { workspace = true, features = ["test-support"] }

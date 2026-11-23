@@ -674,7 +674,7 @@ pub(crate) fn make(posted: &mut Posted, retry: &Retry) -> Made {
 }
 
 impl super::Viewer {
-    pub(super) fn open_map(&self) -> Option<&crate::playhead_host::side::SideThread> {
+    pub(super) fn open_map(&self) -> Option<&viewer_playback::side::SideThread> {
         self.playhead_map.as_ref().filter(|side| side.on_screen().is_some())
     }
 

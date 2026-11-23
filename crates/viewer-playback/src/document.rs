@@ -1,22 +1,21 @@
+use viewer_layers_political::left_to_layers::LeftToLayers;
 
 #[cfg(test)]
 pub mod music_inputs;
-mod trade_route_read;
-pub use trade_route_read::TradeRouteRead;
+use viewer_layer_core::scene_content::{KeptConvoys, OverlayLayers, SceneContent, links_of, trade_route_read::{self, TradeRouteRead}};
 
 use crate::map_icons::MapIcons;
 use crate::map_views::CounterView;
 use crate::map_views::Views;
 use dashboard_text::naval_battle_name::battle_name_candidates;
 use viewer_combat as combat;
-use viewer_gpu::camera::MapSize;
+use viewer_gpu::{camera::MapSize, layers::Omissions};
 use viewer_gpu::camera::{MapDefines, motion::CameraLaw};
 use viewer_native_gui::free_icons;
 use viewer_native_gui::gui_resources::GuiAssets;
 use viewer_native_gui::gui_resources::GuiFlags;
 use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
 use viewer_native_gui::icon_windows::Retry;
-use viewer_gpu::layers::Omissions;
 use viewer_runtime::memo::Keyed;
 use viewer_runtime::memo::Recent;
 use viewer_runtime::memo::TableKey;
@@ -28,13 +27,11 @@ use viewer_gpu::province_schedule::Shared;
 use viewer_native_gui::sprites::Quad;
 use viewer_foundation::movement_timing::EtaCache;
 use viewer_foundation::movement_timing::Etas;
-use viewer_foundation::movement_timing::MovementContent;
 use viewer_native_gui::tooltip_painter::TooltipPosition;
 use viewer_native_gui::tooltip_painter::draw as tooltip_painter_draw;
 use viewer_raids::map::raid_arrows;
 #[cfg(any(test, feature = "test-support"))]
 use viewer_map_text::name_pass;
-use viewer_world::scene_content::MapAssets;
 
 use dashboard_base::content::check_verification;
 use std::{
@@ -45,7 +42,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use content_reader_core::{ResolveOptions, map, map::MapData};
+use content_reader_core::{ResolveOptions, map};
 use replay::{campaign::Replay, campaign::SeekResult};
 use replay_data::{BranchId, rows::tables as row_tables};
 use replay_frame::frame::DecodedFrame;
@@ -55,7 +52,7 @@ use viewer_gpu::province_map::{HeightField, ProvinceMap};
 use viewer_borders::{
     border_pass::{BorderAssets, Topology, strait_quads},
     strait_shader::StraitVertex,
-    borders::{self, BorderMeshes},
+    borders,
     demilitarized::Zone,
 };
 use map_display_data::landscape::Regions;
@@ -77,7 +74,7 @@ use viewer_counters::map::counters::{self, CounterContent, CounterInputs, Counte
 use viewer_counter_products::map::orders;
 use viewer_gpu::{province_geometry::ProvinceGeometry, ribbon_content::{OrderAssets, OrderField}};
 use viewer_foundation::perspective;
-use viewer_foundation::tables::{self, Limitations};
+use viewer_foundation::tables::Limitations;
 use viewer_gpu::textures::IntelMap;
 use map_display_data::SnowMud;
 
@@ -186,8 +183,7 @@ fn load_sprawl(
 pub struct Content {
     loading: content_reader_core::content::Loading,
     first_frame_reported: std::sync::atomic::AtomicBool,
-    pub tables: Option<engine_executable::executable_tables::Tables>,
-    pub products: map_products::ProductContent,
+    scene: SceneContent,
     pub combat: Arc<combat::Content>,
     pub counter_content: Arc<viewer_counter_products::map::counter_content::Content>,
 
@@ -197,8 +193,6 @@ pub struct Content {
     pub visual_mods: Option<Vec<content_reader_core::content::visual::Choice>>,
     pub visual_revision: String,
     pub fallback: Option<crate::visual_fallback::Built>,
-    pub map: Arc<MapData>,
-    pub map_defines: MapDefines,
     pub camera_law: CameraLaw,
     pub minimap_defines: Result<combat::minimap::Defines, String>,
     pub game_speeds: Result<viewer_gpu::frame::GameSpeeds, String>,
@@ -209,13 +203,11 @@ pub struct Content {
     pub game_audio: dashboard_core::protocol::MapAudio,
     pub game_dev_master: f32,
     pub cursors: crate::cursors::Cursors,
-    pub assets: MapAssets,
     pub warnings: Vec<String>,
     pub uncovered_reads: content_reader_core::content::UncoveredReads,
     pub audio: Option<Arc<viewer_audio::Source>>,
     pub source_path: PathBuf,
     pub border_assets: BorderAssets,
-    pub border_meshes: Arc<BorderMeshes>,
     pub straits: Vec<StraitVertex>,
     pub strategic_regions: Arc<BTreeMap<u32, content_reader_regions::regions::StrategicRegion>>,
     pub naval_dominance: viewer_map_modes::naval_dominance::Content,
@@ -237,8 +229,6 @@ pub struct Content {
     pub river_mesh: RiverMesh,
     pub river_trace: rivers::Trace,
     pub river_build: Duration,
-    pub counters: Arc<CounterContent>,
-    pub radar_centers: viewer_aircraft::radar_symbols::Centers,
     pub raid_hover: Arc<raids::tooltips::Content>,
     pub frame_assets: FrameAssets,
     pub tree_assets: TreeAssets,
@@ -247,16 +237,9 @@ pub struct Content {
     pub tree_build: Duration,
     pub sprawl: Sprawl,
     pub sprawl_build: Duration,
-    pub map_buildings: MapBuildingAssets,
-    pub rail_assets: RailAssets,
     pub rail_geometry: rail_layer::RailGeometry,
-    pub aircraft: Arc<viewer_aircraft::aircraft::AircraftAssets>,
-    pub trains: Arc<viewer_rail::trains::TrainAssets>,
     pub rail_build: Duration,
-    pub bridges: Bridges,
-    pub unit_models: UnitModelAssets,
     pub orders: OrderAssets,
-    pub weather_effects: Arc<viewer_weather_effects::weather_effects::Assets>,
     eta_cache: Arc<EtaCache>,
     order_memo: Recent<(TableKey, u32, bool), OrderField>,
     trade_route_memo: Recent<(TableKey, u32), viewer_unit_models::trade_routes::TradeRoutes>,
@@ -264,8 +247,6 @@ pub struct Content {
     type_tint_memo: counters::type_tint::Memo,
     mission_memo: counters::MissionMemo,
     overlay_carry: counters::Carry,
-    pub movement: Option<Arc<MovementContent>>,
-    pub province_geometry: Arc<ProvinceGeometry>,
     pub province_geometry_build: Duration,
 }
 
@@ -273,7 +254,7 @@ pub struct Hour<'a> {
     pub content: &'a Content,
     pub frame: &'a DecodedFrame,
     pub hour_fraction: f32,
-    product_hour: map_products::ProductHour<'a>,
+    pub(crate) product_hour: map_products::ProductHour<'a>,
     pool_limits: viewer_unit_models::equipment_graphics::LimitValues,
     worker_etas: Option<Arc<viewer_foundation::movement_timing::WorkerEtas>>,
     air_rosters: Option<Arc<crate::playback::AirRosters>>,
@@ -288,17 +269,17 @@ impl std::ops::Deref for Hour<'_> {
     }
 }
 
+impl std::ops::Deref for Content {
+    type Target = SceneContent;
+
+    fn deref(&self) -> &Self::Target {
+        &self.scene
+    }
+}
+
 impl Content {
     pub fn naval_dominance_sources(&self, frame: &DecodedFrame, ours: u32, region: u32) -> viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap {
         counters::naval_dominance_sources(frame, &self.map, &self.counters, ours, region, self.icons.raids.movement_reads(), self.icons.raids.mission_topology())
-    }
-
-    pub fn heights(&self) -> HeightField<'_> {
-        HeightField {
-            width: self.assets.heightmap.width,
-            height: self.assets.heightmap.height,
-            values: self.assets.heightmap_texels(),
-        }
     }
 
     pub fn battle_plan(
@@ -402,13 +383,6 @@ impl IntelPart {
             }
         }
     }
-}
-
-pub fn links_of(frame: &DecodedFrame) -> io::Result<BTreeMap<u32, u32>> {
-    Ok(tables::core::<row_tables::CountryLinks>(frame)?
-        .iter()
-        .map(|link| (link.id, link.canonical_slot))
-        .collect())
 }
 
 #[derive(Default)]
@@ -521,24 +495,6 @@ pub enum MadeBy {
 }
 
 const TRADE_ROUTE_TABLES: &[replay_data::rows::TableId] = &trade_route_read::TABLES;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct LeftToLayers {
-    pub resource_icons: bool,
-    pub occupation_marks: bool,
-    pub radar: bool,
-}
-
-impl LeftToLayers {
-    pub fn of(side: Option<&crate::playhead_host::MapSide>) -> Self {
-        Self {
-            resource_icons: side.and_then(crate::layers::resource_icons::drawn).is_some(),
-            occupation_marks: side.and_then(crate::layers::occupation_marks::drawn).is_some(),
-            radar: side.is_some_and(|side| side.draws("radar")),
-        }
-    }
-
-}
 
 fn prepare_counters_with(
     inputs: &CounterInputs<'_>,
@@ -862,7 +818,7 @@ impl PreparedOverlay {
         viewport: [u32; 2],
         ui_scale: f32,
         ours: u32,
-        lay_ins: Option<&crate::playhead_host::side::LayIns>,
+        lay_ins: Option<&crate::side::LayIns>,
     ) {
         placed.icons.keep_drawn(&mut self.icons);
         if let Some(lay_ins) = lay_ins {
@@ -881,7 +837,7 @@ impl PreparedOverlay {
         tables: &OverlayTables,
         view: &CounterView,
         rows: &OverlayRows,
-        lay_ins: Option<&crate::playhead_host::side::LayIns>,
+        lay_ins: Option<&crate::side::LayIns>,
     ) -> io::Result<()> {
         if tables.identity() != self.tables {
             return Err(io::Error::other(format!(
@@ -1465,79 +1421,6 @@ fn compose(
     raids
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OverlayLayers {
-    pub pins: bool,
-    pub bases: bool,
-    pub raids: bool,
-    pub raids_hovered: bool,
-    pub labels: bool,
-    pub counters: counters::CounterDisplay,
-    pub land_combats: bool,
-    pub naval_markers: bool,
-}
-
-impl Default for OverlayLayers {
-    fn default() -> Self {
-        Self {
-            pins: true,
-            bases: true,
-            raids: true,
-            raids_hovered: true,
-            labels: true,
-            counters: counters::CounterDisplay::default(),
-            land_combats: true,
-            naval_markers: true,
-        }
-    }
-}
-
-impl OverlayLayers {
-    pub fn shown(
-        graphics: &dashboard_core::protocol::MapGraphics,
-        owners: Option<Arc<std::collections::BTreeSet<u32>>>,
-    ) -> Self {
-        let part = |shown| graphics.counter(shown);
-        Self {
-            pins: part(graphics.theatre_pins),
-            bases: part(graphics.base_icons),
-            raids: part(graphics.raid_icons),
-            raids_hovered: true,
-            labels: graphics.city_names,
-            counters: counters::CounterDisplay {
-                land: part(graphics.land_counters),
-                railway_guns: part(graphics.railway_gun_counters),
-                naval: part(graphics.naval_counters),
-                ports: part(graphics.port_counters),
-                owners,
-            },
-            land_combats: part(graphics.land_combat_markers),
-            naval_markers: part(graphics.naval_markers),
-        }
-    }
-
-    pub fn omitting(omitted: Omissions) -> Self {
-        let counters = !omitted.counters;
-        let labels = !omitted.labels;
-        Self {
-            pins: counters,
-            bases: counters,
-            raids: labels,
-            raids_hovered: labels,
-            labels,
-            counters: counters::CounterDisplay {
-                land: counters,
-                railway_guns: counters,
-                naval: counters,
-                ports: counters,
-                owners: None,
-            },
-            land_combats: counters,
-            naval_markers: counters,
-        }
-    }
-}
-
 pub fn same_quads(a: &[Quad], b: &[Quad]) -> bool {
     let bits = |values: &[f32]| {
         values
@@ -1689,7 +1572,7 @@ impl Document {
         document.bind_source(&source);
         if !matches!(
             document.playback.current(),
-            crate::playback::Current::Frame(_)
+            crate::map_source::Current::Frame(_)
         ) {
             let (branch, hour) = (document.playback.branch(), document.playback.hour());
             document.playback.seek(branch, hour)?;
@@ -2032,21 +1915,21 @@ impl Document {
             let cursors = crate::cursors::Cursors::load_from_tables(tables, |path| {
                 content.layers.read_uncovered(path)
             });
-            let map_defines = crate::map_assets::graphics_define(
+            let map_defines = viewer_world::map_assets::graphics_define(
                 &content.layers,
                 "camera and map",
                 &art_defines,
                 &defines,
                 |defines| MapDefines::load(defines, camera_tilt),
             )?;
-            let camera_law = crate::map_assets::graphics_define(
+            let camera_law = viewer_world::map_assets::graphics_define(
                 &content.layers,
                 "camera motion",
                 &art_defines,
                 &defines,
                 |defines| CameraLaw::load(defines, &settings),
             )?;
-            let minimap_defines = crate::map_assets::graphics_define(
+            let minimap_defines = viewer_world::map_assets::graphics_define(
                 &content.layers,
                 "minimap",
                 &art_defines,
@@ -2111,7 +1994,7 @@ impl Document {
                 let _stage = viewer_runtime::load_record::stage("wave1.assets");
                 let _startup = crate::perf_log::StartupSpan::new("document_assets");
                 let mut warnings = Vec::new();
-                let assets = crate::map_assets::load_with_products(
+                let assets = viewer_world::map_assets::load_with_products(
                     Some(product_loader),
                     layers,
                     &defines,
@@ -2161,7 +2044,7 @@ impl Document {
             });
             let h_counters = dag.add(&[], || {
                 let _stage = viewer_runtime::load_record::stage("wave1.counters");
-                crate::map_assets::graphics_define(
+                viewer_world::map_assets::graphics_define(
                     layers,
                     "counters",
                     &art_defines,
@@ -2198,7 +2081,7 @@ impl Document {
                 let (cities, city_styles) = content_reader_core::cities::read(layers)?;
                 let buildings_read = content_reader_core::positions::read_buildings(layers)?;
                 let building_types = product_loader.buildings()?;
-                let rail_defines = crate::map_assets::graphics_define(
+                let rail_defines = viewer_world::map_assets::graphics_define(
                     layers,
                     "railways",
                     &art_defines,
@@ -2345,7 +2228,7 @@ impl Document {
                 let icons = h_icons.clone();
                 dag.add(&[playback.id(), icons.id()], move || {
                     let _stage = viewer_runtime::load_record::stage("wave2.initial_flags");
-                    if let crate::playback::Current::Frame(frame) = playback
+                    if let crate::map_source::Current::Frame(frame) = playback
                         .read()?
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())
@@ -2379,7 +2262,7 @@ impl Document {
                 let (defines, art_defines) = (&defines, &art_defines);
                 dag.add(&[], move || {
                     let _stage = viewer_runtime::load_record::stage("wave2.labels");
-                    crate::map_assets::graphics_define(
+                    viewer_world::map_assets::graphics_define(
                         layers,
                         "map labels",
                         &art_defines,
@@ -2754,7 +2637,7 @@ impl Document {
                         .and_then(|movement| movement.map.terrain(province))
                 };
                 let ideologies = Arc::new(counters.ideologies.clone());
-                Arc::new(crate::map_assets::graphics_define(
+                Arc::new(viewer_world::map_assets::graphics_define(
                     &mode_layers,
                     "map modes",
                     &art_defines,
@@ -2796,7 +2679,7 @@ impl Document {
             warnings.extend(intel_assets.warnings.iter().cloned());
             let mut counter_assets = counter_assets;
             let mut icon_images = icon_images;
-            let occupation = crate::map_assets::graphics_define(
+            let occupation = viewer_world::map_assets::graphics_define(
                 &content.layers,
                 "occupation map icons",
                 &art_defines,
@@ -3026,7 +2909,7 @@ impl Document {
                         .with_build(game_version)
                 }
             };
-            let trade_routes = crate::map_assets::graphics_define(
+            let trade_routes = viewer_world::map_assets::graphics_define(
                 &content.layers,
                 "trade-route lines and convoys",
                 &art_defines,
@@ -3034,7 +2917,7 @@ impl Document {
                 viewer_unit_models::trade_routes::TradeRouteDefines::read,
             )
             .map_err(|error| error.to_string());
-            let air_assignment_colors = crate::map_assets::graphics_define(
+            let air_assignment_colors = viewer_world::map_assets::graphics_define(
                 &content.layers,
                 "Air assignment stripes",
                 &art_defines,
@@ -3042,7 +2925,7 @@ impl Document {
                 viewer_map_modes::air_assignment::Colors::read,
             )
             .map_err(|error| error.to_string());
-            let occupation_stripe_alpha = crate::map_assets::graphics_define(
+            let occupation_stripe_alpha = viewer_world::map_assets::graphics_define(
                 &content.layers,
                 "occupation country stripes",
                 &art_defines,
@@ -3054,7 +2937,7 @@ impl Document {
                 &icons.raids.region_provinces,
                 &icons.raids.geometry,
             );
-            let naval_selection_colors = crate::map_assets::graphics_define(
+            let naval_selection_colors = viewer_world::map_assets::graphics_define(
                 &content.layers,
                 "Navy local selection colours",
                 &art_defines,
@@ -3067,7 +2950,7 @@ impl Document {
                 &counters.bounds,
                 map.width as i32,
             );
-            let air_order_colors = crate::map_assets::graphics_define(
+            let air_order_colors = viewer_world::map_assets::graphics_define(
                 &content.layers,
                 "Air mission arrows",
                 &art_defines,
@@ -3075,7 +2958,7 @@ impl Document {
                 viewer_aircraft::air_orders::Colors::read,
             )
             .map_err(|error| error.to_string());
-            let air_transfer_color = crate::map_assets::graphics_define(
+            let air_transfer_color = viewer_world::map_assets::graphics_define(
                 &content.layers,
                 "Air transfer arrows",
                 &art_defines,
@@ -3118,11 +3001,28 @@ impl Document {
                 std::fs::write(path, serde_json::to_vec(&counts).map_err(io::Error::other)?)?;
             }
             let content = Content {
+                scene: SceneContent {
+                    tables,
+                    products,
+                    map,
+                    map_defines,
+                    assets,
+                    border_meshes,
+                    counters,
+                    radar_centers,
+                    map_buildings,
+                    rail_assets,
+                    aircraft,
+                    trains,
+                    bridges,
+                    unit_models,
+                    weather_effects,
+                    movement,
+                    province_geometry,
+                    counter_assets: Arc::clone(&icons.counters),
+                },
                 loading,
                 first_frame_reported: std::sync::atomic::AtomicBool::new(false),
-                tables,
-                products,
-                radar_centers,
                 resource_icons,
                 adjacency_icons,
                 trade_routes,
@@ -3138,9 +3038,6 @@ impl Document {
                 visual_revision,
                 fallback,
                 texture_quality,
-                weather_effects,
-                map,
-                map_defines,
                 camera_law,
                 minimap_defines,
                 game_speeds,
@@ -3151,13 +3048,11 @@ impl Document {
                 game_audio,
                 game_dev_master,
                 cursors,
-                assets,
                 warnings,
                 uncovered_reads,
                 audio,
                 source_path: path.to_path_buf(),
                 border_assets,
-                border_meshes,
                 straits,
                 raid_hover,
                 strategic_regions: regions,
@@ -3172,21 +3067,14 @@ impl Document {
                 river_trace,
                 river_build,
                 frame_assets,
-                counters,
                 tree_assets,
                 tree_geometry,
                 tree_field,
                 tree_build,
                 sprawl,
                 sprawl_build,
-                map_buildings,
-                rail_assets,
                 rail_geometry,
-                trains,
-                aircraft,
                 rail_build,
-                bridges,
-                unit_models,
                 orders: order_assets,
                 political_gpu: viewer_map_modes::political_gpu::Cache::default(),
                 scene_textures: viewer_world::scene::TextureCache::default(),
@@ -3197,8 +3085,6 @@ impl Document {
                 type_tint_memo: Keyed::new(counters::type_tint::TABLES),
                 mission_memo: Recent::new(),
                 overlay_carry: counters::Carry::default(),
-                movement,
-                province_geometry,
                 province_geometry_build,
             };
             Ok(Self {
@@ -3412,15 +3298,15 @@ impl Document {
 
     pub fn frame(&self) -> io::Result<&DecodedFrame> {
         match self.playback.current() {
-            crate::playback::Current::Frame(frame) => Ok(frame),
-            crate::playback::Current::Gap {
+            crate::map_source::Current::Frame(frame) => Ok(frame),
+            crate::map_source::Current::Gap {
                 branch,
                 hour,
                 reason,
             } => Err(invalid(format!(
                 "branch {branch}, hour {hour} is a gap: {reason}"
             ))),
-            crate::playback::Current::Refused {
+            crate::map_source::Current::Refused {
                 branch,
                 hour,
                 reason,
@@ -5276,12 +5162,6 @@ fn song_chances(
     viewer_audio::Chances { weights, refusals }
 }
 
-pub struct KeptConvoys {
-    read: TradeRouteRead,
-    ours: u32,
-    routes: Arc<viewer_unit_models::trade_routes::TradeRoutes>,
-    convoys: Arc<Vec<viewer_unit_models::trade_routes::ConvoyLine>>,
-}
 
 fn load_rivers(
     layers: &content_reader_core::ResolvedLayers,
@@ -5291,7 +5171,7 @@ fn load_rivers(
     heights: &HeightField<'_>,
 ) -> io::Result<(RiverMesh, rivers::Trace, Duration, Option<String>)> {
     let started = Instant::now();
-    match crate::map_assets::graphics_define(
+    match viewer_world::map_assets::graphics_define(
         layers,
         "rivers",
         art_defines,
@@ -6094,7 +5974,7 @@ mod tests {
             viewers: BTreeMap::from([(1, 1)]),
             resistance: None,
         });
-        let lay_ins = crate::playhead_host::side::LayIns::with_icons(
+        let lay_ins = crate::side::LayIns::with_icons(
             Some((hour_icons, 7)),
             Some((marks, 9)),
         );

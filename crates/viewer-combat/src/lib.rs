@@ -77,7 +77,6 @@ mod naval_trees;
 mod naval_variants;
 pub mod picker;
 mod presentation;
-pub mod reads;
 mod state_view;
 mod tactics;
 mod template_icons;

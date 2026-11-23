@@ -737,7 +737,7 @@ pub struct Viewer {
     pub(crate) counter_filter: dashboard_core::protocol::CounterFilter,
     pub(crate) player_counters: bool,
     pub(crate) volumes: dashboard_core::protocol::MapAudio,
-    overlay_layers: crate::document::OverlayLayers,
+    overlay_layers: viewer_layer_core::scene_content::OverlayLayers,
     counter_owners: crate::map_views::CounterOwners,
     resolved_settings: crate::map_views::ResolvedSettings,
     pub(crate) ui_scale: Setting,
@@ -763,7 +763,7 @@ pub struct Viewer {
     frame_head: viewer_native_gui::frame_head::FrameHead,
     animation_seek: bool,
     map_animation_target: Option<Target>,
-    playhead_map: Option<crate::playhead_host::side::SideThread>,
+    playhead_map: Option<viewer_playback::side::SideThread>,
     playhead_refused: Option<String>,
     playhead_opened: bool,
     seek_owed: bool,
@@ -795,8 +795,8 @@ pub struct Viewer {
     overlay_moved: Arc<viewer_unit_reads::counter_move::MovedHours>,
     overlay_tables: Option<Arc<crate::document::OverlayTables>>,
     overlay_routes_pending: bool,
-    overlay_left: crate::document::LeftToLayers,
-    overlay_lay_ins: Option<std::sync::Arc<crate::playhead_host::side::LayIns>>,
+    overlay_left: viewer_layers_political::left_to_layers::LeftToLayers,
+    overlay_lay_ins: Option<std::sync::Arc<viewer_playback::side::LayIns>>,
     overlay_layered: Option<(viewer_counters::map::counters::Layered, viewer_counters::map::counters::Kinds)>,
     overlay_shown: Option<(replay_data::BranchId, replay_data::Hour)>,
     overlay_view: Option<CounterView>,
@@ -1663,7 +1663,7 @@ impl Viewer {
         self.playhead_opened = false;
     }
 
-    fn drop_later(&self, side: crate::playhead_host::side::SideThread) {
+    fn drop_later(&self, side: viewer_playback::side::SideThread) {
         match &self.dropper {
             Some(dropper) => dropper.drop_later(side),
             None => drop(side),
@@ -1873,7 +1873,7 @@ impl Viewer {
         side.anchor(hour, playing, speed, sought);
     }
 
-    fn side_opened(&mut self, side: crate::playhead_host::side::SideThread) {
+    fn side_opened(&mut self, side: viewer_playback::side::SideThread) {
         self.playhead_map = Some(side);
         if let Some(clock) = self.playhead {
             self.give_anchor(clock.hour, self.playing, self.speed);
@@ -1974,8 +1974,8 @@ impl Viewer {
         self.held_within(hour, given_up, what, ctx).map(drop)
     }
 
-    fn install_overlay(&mut self, made: crate::playhead_host::overlay::Made, gaps: &[replay_frame::branches::Gap]) {
-        let crate::playhead_host::overlay::Made {
+    fn install_overlay(&mut self, made: viewer_playback::overlay::Made, gaps: &[replay_frame::branches::Gap]) {
+        let viewer_playback::overlay::Made {
             generation,
             hour,
             branch,
@@ -2058,7 +2058,7 @@ impl Viewer {
         ui_scale: f32,
         tables: &crate::document::OverlayTables,
         rows: &Arc<replay_frame::frame::DecodedFrame>,
-        left: crate::document::LeftToLayers,
+        left: viewer_layers_political::left_to_layers::LeftToLayers,
     ) -> OverlayPlaced {
         if self.overlay_placed == Some(camera)
             && self.overlay_placed_view == Some((pixels, ui_scale.to_bits()))
@@ -2391,7 +2391,7 @@ impl Viewer {
         self.overlay_hour.filter(|_| self.overlay_missed.is_empty())
     }
 
-    fn live_map(&self) -> Option<&crate::playhead_host::side::SideThread> {
+    fn live_map(&self) -> Option<&viewer_playback::side::SideThread> {
         self.playhead_map.as_ref().filter(|side| side.failure().is_none())
     }
 
@@ -2430,7 +2430,7 @@ impl Viewer {
         }
         let clock = self.playhead?;
         let replay = document.playback.replay();
-        replay.block_at(clock.branch, clock.hour).is_none().then(|| crate::playback::gap_reason(replay, clock.branch, clock.hour))
+        replay.block_at(clock.branch, clock.hour).is_none().then(|| viewer_playback::map_source::gap_reason(replay, clock.branch, clock.hour))
     }
 
     fn follow_continuity(&mut self, gaps: &[replay_frame::branches::Gap]) -> Option<(Continuity, viewer_runtime::presentation::UnitRestart)> {
@@ -2572,7 +2572,7 @@ impl Viewer {
     }
 
     pub(crate) fn vision_refusal_line(&self) -> Option<String> {
-        self.live_map().filter(|side| side.on_screen().is_some()).and_then(|side| side.products().vision_refused.clone()).map(|why| format!("{}Viewing country: the vision layer refuses the hour: {why}", crate::playhead_host::limitations::NOT_GIVEN))
+        self.live_map().filter(|side| side.on_screen().is_some()).and_then(|side| side.products().vision_refused.clone()).map(|why| format!("{}Viewing country: the vision layer refuses the hour: {why}", viewer_playback::limitations::NOT_GIVEN))
     }
 
     fn collect_warnings(&self, document: &Document) -> Vec<String> {
@@ -3405,7 +3405,7 @@ impl Viewer {
             {
                 scene.apply(device, queue, SceneInput::SetFactionHighlight { plan: &restore, strategic_regions: &[], color: color.unwrap_or_default() }).map_err(|why| why.to_string())?;
                 if let Some(side) = self.playhead_map.as_mut() {
-                    side.reassert(&mut crate::layers::Gpu { device, queue, scene, content: &document.content, whole: false });
+                    side.reassert(&mut viewer_layer_core::layers::Gpu { device, queue, scene, content: &document.content, whole: false });
                 }
             }
             return Ok(());
@@ -3429,7 +3429,7 @@ impl Viewer {
                 .apply(device, queue, SceneInput::SetFactionHighlight { plan: &restore, strategic_regions: &[], color: color.unwrap_or_default() })
                 .map_err(|why| why.to_string())?;
             if let Some(side) = self.playhead_map.as_mut() {
-                side.reassert(&mut crate::layers::Gpu { device, queue, scene, content: &document.content, whole: false });
+                side.reassert(&mut viewer_layer_core::layers::Gpu { device, queue, scene, content: &document.content, whole: false });
             }
         }
         let content = Arc::clone(&document.content);
@@ -3955,14 +3955,14 @@ impl Viewer {
         {
             self.playhead_opened = true;
             let at = crate::playhead_host::At { branch: clock.branch, hour: clock.hour, playing: self.playing, speed: self.speed };
-            match crate::playhead_host::Opening::start(document, Some(at)) {
+            match viewer_playback::map_open::open_document(document, Some(at)) {
                 Ok(opening) => self.playhead_opening = Some(opening),
                 Err(error) => self.playhead_refused = Some(refusal(&error)),
             }
         }
         if let Some(made) = self.playhead_opening.as_ref().and_then(crate::playhead_host::Opening::poll) {
             self.playhead_opening = None;
-            match made.and_then(crate::playhead_host::side::SideThread::new) {
+            match made.and_then(viewer_playback::side::SideThread::new) {
                 Ok(side) if self.playhead.is_some_and(|clock| side.branch().is_some_and(|branch| branch != clock.branch)) => {
                     self.drop_later(side);
                     self.playhead_opened = false;
@@ -3992,7 +3992,7 @@ impl Viewer {
                 self.options.window_dump,
                 drawing,
             );
-            let view = crate::layers::View {
+            let view = viewer_layer_core::layers::View {
                 map_mode: self.map_mode.clone(),
                 perspective: self.perspective.clone(),
                 camera_height: self.last_view.as_ref().map_or(0.0, |view| view.camera.height),
@@ -4017,7 +4017,7 @@ impl Viewer {
                 view.set_mode(&shown_mode);
                 view
             };
-            let overlay_ask = self.last_view.as_ref().filter(|_| drawing).map(|last| crate::playhead_host::overlay::Ask {
+            let overlay_ask = self.last_view.as_ref().filter(|_| drawing).map(|last| viewer_playback::overlay::Ask {
                 camera: last.camera,
                 target: self.zoom.target().map(|target| target.height),
                 pixels: last.viewport,
@@ -4062,10 +4062,10 @@ impl Viewer {
                             .map(|why| format!("A saved frame draws the models and plan of its own hour {hour}: {why}"));
                     }
                     if let Some(scene) = self.scene.as_mut() {
-                        let mut gpu = crate::layers::Gpu { device: &state.device, queue: &state.queue, scene, content: &document.content, whole: through.is_none() };
+                        let mut gpu = viewer_layer_core::layers::Gpu { device: &state.device, queue: &state.queue, scene, content: &document.content, whole: through.is_none() };
                         window.upload(&mut gpu);
                     }
-                    window.take(crate::playhead_host::side::Wants { warnings: wanted, highlight: self.highlight_wanted });
+                    window.take(viewer_playback::side::Wants { warnings: wanted, highlight: self.highlight_wanted });
                     withdrawn = window.take_overlay_withdrawal();
                     if let Some(made) = window.take_overlay() {
                         if !Arc::ptr_eq(&presentation, &made.on) {
@@ -4105,7 +4105,7 @@ impl Viewer {
             if let Some(scene) = self.scene.as_mut() {
                 let side = self.playhead_map.as_mut().expect("the map's side is open");
                 let written = shown_head.map(|head| head.hour).filter(|_| !saved);
-                let mut gpu = crate::layers::Gpu { device: &state.device, queue: &state.queue, scene, content: &document.content, whole: through.is_none() };
+                let mut gpu = viewer_layer_core::layers::Gpu { device: &state.device, queue: &state.queue, scene, content: &document.content, whole: through.is_none() };
                 side.install(&mut gpu, written);
                 if let Some(installed) = side.installed_through()
                     && shown_head.is_some_and(|head| head.hour != installed)
@@ -5185,7 +5185,7 @@ impl Viewer {
             let ours = Some(tables.ours());
             let head = head_rows::head(live_of(&self.playhead_map));
             let filtered = self.counter_owners.get(frame, head, &self.counter_filter);
-            let layers = crate::document::OverlayLayers::shown(
+            let layers = viewer_layer_core::scene_content::OverlayLayers::shown(
                 &self.graphics,
                 match ours {
                     Some(ours) => self.shown_counter_owners(filtered, ours),
@@ -7233,7 +7233,7 @@ pub(super) fn read_click<T>(lines: &mut Vec<String>, what: &str, read: Option<st
 fn settle_models(side: &mut crate::playhead_host::MapSide, hour: replay_data::Hour, limit: Duration) -> Result<(), String> {
     let until = Instant::now() + limit;
     loop {
-        let Some(units) = side.draws("units").then(|| crate::layers::units::of(side)).flatten() else { return Ok(()) };
+        let Some(units) = side.draws("units").then(|| viewer_layers_forces::units::of(side)).flatten() else { return Ok(()) };
         if units.figures_stand(hour) {
             return Ok(());
         }
@@ -7247,7 +7247,7 @@ fn settle_models(side: &mut crate::playhead_host::MapSide, hour: replay_data::Ho
 fn settle_plan(side: &mut crate::playhead_host::MapSide, hour: replay_data::Hour, limit: Duration) -> Result<(), String> {
     let until = Instant::now() + limit;
     loop {
-        let orders = side.draws("orders").then(|| side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::orders::Orders>()))).flatten();
+        let orders = side.draws("orders").then(|| side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<viewer_layers_forces::orders::Orders>()))).flatten();
         let Some(orders) = orders.filter(|orders| orders.perspective().is_some()) else { return Ok(()) };
         let made = orders.made_for();
         if made == Some(hour) {
@@ -7273,7 +7273,7 @@ fn missed_tables(missed: &[replay_data::rows::TableId]) -> Option<String> {
     (!missed.is_empty()).then(|| missed.iter().map(|table| format!("{table:?}")).collect::<Vec<_>>().join(", "))
 }
 
-fn live_of(map: &Option<crate::playhead_host::side::SideThread>) -> Option<&crate::playhead_host::side::SideThread> {
+fn live_of(map: &Option<viewer_playback::side::SideThread>) -> Option<&viewer_playback::side::SideThread> {
     map.as_ref().filter(|side| side.failure().is_none())
 }
 

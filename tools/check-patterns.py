@@ -37,6 +37,10 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 RULES = ("test-clock", "box-leak", "debug-hash")
+TEST_CLOCK_SPLITS = {
+    "crates/viewer-layer-core/src/playhead_host/shown_vision.rs": "crates/viewer-playback/src/playhead_host/overlay.rs",
+    "crates/viewer-layer-core/src/test_support/rail_recording.rs": "crates/viewer-playback/src/layers/rails/tests.rs",
+}
 JS_TEST = re.compile(r"\.test\.(?:ts|tsx|mts|js|mjs|cjs)$")
 PS_TEST = re.compile(r"\.tests\.ps1$", re.IGNORECASE)
 JS_CLOCK = re.compile(r"\bset(?:Timeout|Interval)\s*\(")
@@ -146,7 +150,7 @@ def item_end(code, at):
             depth += 1
         elif char in ")]":
             depth -= 1
-        elif not depth and char == ";":
+        elif not depth and char in ";}":
             return index + 1
         elif not depth and char == "{":
             return closing(code, index, "{", "}")
@@ -552,13 +556,20 @@ def compare(base, now):
     """A line for each file `now` gives more instances of a rule than `base`."""
     failures = []
     changed = changes(base.rev, now.rev)
+    destinations = {old: new for old, new in changed if old}
     for old, new in changed + reclassified(base, now, changed):
         after = matches(new, now)
         before = matches(old, base) if old and read(old) else {}
         for rule, lines in after.items():
-            if len(lines) > len(before.get(rule, ())):
+            limit = len(before.get(rule, ()))
+            if old is None and rule == "test-clock" and new in TEST_CLOCK_SPLITS:
+                source = TEST_CLOCK_SPLITS[new]
+                previous = matches(source, base).get(rule, ())
+                remaining = matches(destinations.get(source, source), now).get(rule, ())
+                limit += max(0, len(previous) - len(remaining))
+            if len(lines) > limit:
                 fresh = sorted(set(lines) & added_lines(base.text(old) if old else "", now.text(new))) or lines
-                failures.append(f"{new}: {rule}: {len(before.get(rule, ()))} at the base, {len(lines)} now; new at line {', '.join(map(str, fresh))}")
+                failures.append(f"{new}: {rule}: {limit} at the base, {len(lines)} now; new at line {', '.join(map(str, fresh))}")
     return failures
 
 
