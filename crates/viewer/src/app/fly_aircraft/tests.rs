@@ -132,11 +132,13 @@ fn a_chosen_aircraft_reports_loading_then_ready_and_bakes_again_for_a_new_map() 
     assert_eq!(baked.name, "plane_entity");
     assert_eq!(first.library().slot("plane_entity"), Some(baked.slot));
     let second = assets("second");
+    let merging = second.library();
     assert_eq!(
         fly.poll(Some(&second), wakes.repaint()),
         Some(status(Some("plane_entity"), FlyAircraftState::Loading))
     );
     assert!(fly.ready(&second).is_none());
+    drop(merging);
     assert_eq!(
         settle(&mut fly, &second, &wakes),
         status(Some("plane_entity"), FlyAircraftState::Ready)
@@ -152,6 +154,22 @@ fn a_chosen_aircraft_reports_loading_then_ready_and_bakes_again_for_a_new_map() 
         Some(status(None, FlyAircraftState::Ready))
     );
     assert!(fly.ready(&second).is_none());
+}
+
+#[test]
+fn a_bake_that_panics_still_wakes_the_viewer_and_reports_it_stopped() {
+    let wakes = Wakes::new();
+    let Outcome::Waiting(receive) = start(|| panic!("the bake broke"), wakes.repaint()) else {
+        panic!("the bake starts");
+    };
+    wakes
+        .receive
+        .recv()
+        .expect("the wakes hold a sender, so a bake's repaint always arrives");
+    assert!(matches!(
+        receive.try_recv(),
+        Err(mpsc::TryRecvError::Disconnected)
+    ));
 }
 
 #[test]
