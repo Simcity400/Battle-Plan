@@ -8,7 +8,7 @@ use crate::{
 };
 use dashboard_declare::{Measure, Series};
 use replay_recording::columnar_frames::Recording;
-use replay_columnar::{envelope::UNIT_ORDINALS, manifest::Status, summary::Source};
+use replay_columnar::{envelope::UNIT_ORDINALS, manifest::Status, summary::{Computed, Source}};
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -114,6 +114,10 @@ pub struct SeriesState {
     pub drop: Option<SeriesDrop>,
     #[doc = " Why there is no value: never zero, never a guess."]
     pub missing: Option<String>,
+    #[doc = " True when the inputs were recorded and the measure is not applicable (e.g. a share with a zero denominator)."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub not_applicable: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
@@ -915,7 +919,7 @@ impl<'q, 'a> Line<'q, 'a> {
         }
         let mut asks: Vec<(Ask, i32)> = Vec::new();
         let mut planned: Vec<Result<usize, SeriesState>> = Vec::new();
-        let unread = |read: &SeriesRead, missing: String| SeriesState { country: read.country.clone(), part: None, hour: read.hour, run: None, drop: None, missing: Some(missing) };
+        let unread = |read: &SeriesRead, missing: String| SeriesState { country: read.country.clone(), part: None, hour: read.hour, run: None, drop: None, missing: Some(missing), not_applicable: None };
         for read in reads {
             if self.series.parts.is_none() || read.part.is_some() {
                 asks.push((Ask { country: read.country.clone(), part: self.part_of(read.part.as_deref())? }, read.hour));
@@ -957,8 +961,9 @@ impl<'q, 'a> Line<'q, 'a> {
         let mut blocks: HashMap<(u32, u32), Vec<(usize, Part, (i32, i32))>> = HashMap::new();
         let mut out: Vec<SeriesState> = reads
             .iter()
-            .map(|(ask, hour)| SeriesState { country: ask.country.clone(), part: self.part_text(ask), hour: *hour, run: None, drop: None, missing: None })
+            .map(|(ask, hour)| SeriesState { country: ask.country.clone(), part: self.part_text(ask), hour: *hour, run: None, drop: None, missing: None, not_applicable: None })
             .collect();
+        let mut unresolved: HashMap<u32, Vec<(usize, i32, u128)>> = HashMap::new();
         for (at, (ask, hour)) in reads.iter().enumerate() {
             let hour = *hour;
             if let Some(reason) = self.missing_at(&ask.country, hour) {
@@ -1008,7 +1013,11 @@ impl<'q, 'a> Line<'q, 'a> {
                 let Some(found) = runs.iter().position(|run| run.0 <= hour && hour <= run.1) else { continue };
                 let (first, last, value) = runs[found];
                 let Some(value) = value else {
-                    out[at].missing = Some(format!("{}'s {} was not recorded at this hour", self.query.holders.name(&out[at].country, hour), self.measure.name));
+                    if matches!(self.source, Source::Computed { .. }) {
+                        unresolved.entry(run).or_default().push((at, hour, part.key));
+                    } else {
+                        out[at].missing = Some(format!("{}'s {} was not recorded at this hour", self.query.holders.name(&out[at].country, hour), self.measure.name));
+                    }
                     continue;
                 };
                 let (read_first, read_last) = (first, last);
@@ -1030,6 +1039,49 @@ impl<'q, 'a> Line<'q, 'a> {
                         && value < before
                     {
                         out[at].drop = Some(SeriesDrop { hour, before_raw: before.to_string(), after_raw: value.to_string() });
+                    }
+                }
+            }
+        }
+        if !unresolved.is_empty() {
+            enum Resolved {
+                NotApplicable(&'static str),
+                CompleteUnrecorded,
+            }
+            let columns = read::columns_of(&self.source);
+            for (run, items) in unresolved {
+                let mut asks: Vec<(i32, u128)> = items.iter().map(|&(_, hour, key)| (hour, key)).collect();
+                asks.sort_unstable();
+                asks.dedup();
+                let mut resolved: HashMap<(i32, u128), Resolved> = HashMap::new();
+                crate::cost::storage(|| {
+                    replay_lanes::lanes::at_each_with_status(recording, run, self.series.table, Some(&columns), &asks, &mut |hour, key, status, row| {
+                        if matches!(status, Status::Complete) {
+                            let state = match row {
+                                Some((view, slot)) => match self.source.read(&view, slot) {
+                                    Computed::NotApplicable(reason) => Resolved::NotApplicable(reason),
+                                    Computed::Unrecorded | Computed::Value(_) => Resolved::CompleteUnrecorded,
+                                },
+                                None => Resolved::CompleteUnrecorded,
+                            };
+                            resolved.insert((hour, key), state);
+                        }
+                        Ok(())
+                    })
+                })?;
+                for (at, hour, key) in items {
+                    match resolved.get(&(hour, key)) {
+                        Some(Resolved::NotApplicable(reason)) => {
+                            out[at].missing = Some((*reason).to_owned());
+                            out[at].not_applicable = Some(true);
+                        }
+                        Some(Resolved::CompleteUnrecorded) => {
+                            out[at].missing = Some(format!("{}'s {} was not recorded at this hour", self.query.holders.name(&out[at].country, hour), self.measure.name));
+                            out[at].not_applicable = Some(false);
+                        }
+                        None => {
+                            out[at].missing = Some(format!("{}'s {} was not recorded at this hour", self.query.holders.name(&out[at].country, hour), self.measure.name));
+                        }
                     }
                 }
             }

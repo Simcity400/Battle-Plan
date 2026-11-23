@@ -421,7 +421,11 @@ part?: string, hour: number, run: SeriesRun | null, drop: SeriesDrop | null,
 /**
  * Why there is no value: never zero, never a guess.
  */
-missing: string | null, };
+missing: string | null,
+/**
+ * True when the inputs were recorded and the measure is not applicable (e.g. a share with a zero denominator).
+ */
+notApplicable?: boolean, };
 export type SeriesStateReply = { branchId: string, measure: string, decimals: number, states: Array<SeriesState>, };
 export type SeriesKeyReply = { hour: number | null, };
 export type SeriesEvent = { country: CountryRef, hour: number, ordinal: string, row: SeriesDrop, };

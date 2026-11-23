@@ -249,8 +249,9 @@ function FuelBranchesOverTime({ widget, runtime, active, onDiagnostics, within, 
       const reached = reachedByKey.get(keyId(line.key));
       const run = runAt(reached?.runs ?? [], at);
       const missing = reached?.missing.get(at);
+      const unrecorded = reached?.unrecorded.has(at) === true;
       return { label: line.name, strong: true, swatch: line.color,
-        value: run ? percentText(Number(run.valueRaw) / 10 ** SHARE_PLACES) : missing ? 'No share' : gate.recorded(at, within) === null ? UNRECORDED_MESSAGE : 'Loading…',
+        value: run ? percentText(Number(run.valueRaw) / 10 ** SHARE_PLACES) : missing ? (unrecorded ? 'Not recorded' : 'No share') : gate.recorded(at, within) === null ? UNRECORDED_MESSAGE : 'Loading…',
         detail: run ? undefined : missing, tone: run ? undefined : 'muted' as const };
     }) }], viewport);
   };

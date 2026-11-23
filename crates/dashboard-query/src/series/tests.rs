@@ -320,8 +320,8 @@ fn an_owners_parts_over_a_span_are_its_rows_lifetimes() {
 const SPECIAL_TOTAL: usize = 4;
 const PRODUCTION_DEMAND: usize = 5;
 
-fn surplus(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    cells.number(SPECIAL_TOTAL, slot)?.checked_add(cells.number(PRODUCTION_DEMAND, slot)?)
+fn surplus(cells: &dyn Cells, slot: u32) -> replay_columnar::summary::Computed {
+    replay_columnar::summary::Computed::of(cells.number(SPECIAL_TOTAL, slot).zip(cells.number(PRODUCTION_DEMAND, slot)).and_then(|(a, b)| a.checked_add(b)))
 }
 
 static SURPLUS: Series = Series {
@@ -359,8 +359,139 @@ fn a_computed_part_state_is_its_formula_over_the_row() {
 const POWER: usize = 2;
 const COMMAND: usize = 3;
 
-fn negated(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    Some(cells.number(COMMAND, slot)? - cells.number(POWER, slot)?)
+fn negated(cells: &dyn Cells, slot: u32) -> replay_columnar::summary::Computed {
+    replay_columnar::summary::Computed::of(cells.number(COMMAND, slot).zip(cells.number(POWER, slot)).map(|(command, power)| command - power))
+}
+
+fn ratio_of_power(cells: &dyn Cells, slot: u32) -> replay_columnar::summary::Computed {
+    let Some(power) = cells.number(POWER, slot) else {
+        return replay_columnar::summary::Computed::Unrecorded;
+    };
+    let Some(command) = cells.number(COMMAND, slot) else {
+        return replay_columnar::summary::Computed::Unrecorded;
+    };
+    if command <= 0 {
+        return replay_columnar::summary::Computed::NotApplicable("No command power");
+    }
+    replay_columnar::summary::Computed::Value(power / command)
+}
+
+static RATIO_OF_POWER: Series = Series {
+    kind: "test-ratio",
+    table: TableId::Countries,
+    key: Key::Country,
+    parts: None,
+    measures: &[Measure {
+        name: "ratio",
+        column: Column::Computed { id: 901, inputs: &["political_power_raw", "command_power_raw"], value: ratio_of_power },
+        decimals: 0,
+        aggregates: 0,
+        carry: Carry::None,
+        rank: 0,
+    }],
+    drops: false,
+    absent_none: false,
+};
+
+#[test]
+fn a_computed_series_state_distinguishes_not_applicable_from_unrecorded() {
+    use crate::{
+        identity,
+        timeline::{Join, Stretch, Timeline},
+    };
+    use replay::campaign::Replay;
+    use replay_data::{
+        identity::{CaptureMode, Identity, Roster, SampleBoundary, SessionStart, Verification},
+        rows::{CampaignRow, ClockRow, CountryFuelConsumerRow, CountryLinkRow, CountryRow, RowCodec, TableId},
+    };
+    use replay_frame::branches::{BranchReason, BranchStart, Parentage};
+    use replay_journal::synthetic::{Input, Sample, Synthetic};
+
+    let unrecorded = (FIRST..ITA_FROM).find(|&hour| power(9001, hour).is_none()).unwrap();
+    let recorded = (FIRST..ITA_FROM).find(|&hour| power(9001, hour).is_some()).unwrap();
+    let from = unrecorded.min(recorded);
+    let to = (from + 30).max(unrecorded.max(recorded));
+    let fixture = Fixture::new(Data::Power, from..=to);
+    let query = fixture.query();
+    let line = Line::new(&query, &RATIO_OF_POWER, &RATIO_OF_POWER.measures[0]).unwrap();
+    let states = line.states(&[read("GER", recorded, None), read("GER", unrecorded, None)], None).unwrap();
+    assert_eq!(states[0].run, None);
+    assert_eq!(states[0].not_applicable, Some(true), "command_power_raw is 0 on recorded rows, so the ratio is not applicable");
+    assert_eq!(states[0].missing.as_deref(), Some("No command power"));
+    assert_eq!(states[1].run, None);
+    assert_eq!(states[1].not_applicable, Some(false), "an unrecorded input on a complete hour stays unrecorded, never not applicable");
+    assert_eq!(states[1].missing.as_deref(), Some("GER's ratio was not recorded at this hour"));
+
+    let build_fuel = |truncated_first: bool| -> (Replay, Arc<Timeline>, Arc<identity::Holders>) {
+        let first = 10_000;
+        let last = 10_001;
+        let campaign = CampaignRow { id: b"fuel-status".to_vec() };
+        let session = SessionStart {
+            id: 1,
+            process_id: 1,
+            process_start_time: 1,
+            qpc_frequency: 10_000_000,
+            sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: CaptureMode::Full,
+            identity: Identity {
+                game_version: "synthetic".into(),
+                exe_hash: [1; 32],
+                exe_size: 1,
+                vanilla_hash: [2; 32],
+                dlc: vec![],
+                mods: vec![],
+                coverage_policy: 1,
+                language: "l_english".into(),
+                recorder_version: "test".into(),
+                collector_hash: [3; 32],
+                verification: Verification::Verified { launcher: Roster::default(), memory: Roster::default() },
+            },
+        };
+        let start = BranchStart { id: 1, session: 1, loaded_hour: None, first_hour: first, parent: Parentage::Unknown, reason: BranchReason::SessionStart };
+        fn write<R: RowCodec>(frame: &mut Synthetic, table: TableId, rows: &[R], partial: Option<u32>) -> io::Result<()> {
+            let sample = if partial.is_some() { Sample::Reset } else { Sample::FromReadBit };
+            frame.table(table, Input::Snapshot { rows, partial, read: true, sample })
+        }
+        let replay = Replay::from_synthetic(recorder_derive::writers(), campaign.id.clone(), session, start, last, |frame, hour| {
+            write(frame, TableId::Clock, &[ClockRow { hour, ..ClockRow::default() }], None)?;
+            write(frame, TableId::Campaign, std::slice::from_ref(&campaign), None)?;
+            write(frame, TableId::Countries, &[CountryRow { id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), ..CountryRow::default() }], None)?;
+            write(frame, TableId::CountryLinks, &[CountryLinkRow { id: 9001, canonical_slot: 7 }], None)?;
+            let truncated = (hour == first) == truncated_first;
+            write(
+                frame,
+                TableId::CountryFuelConsumers,
+                &[CountryFuelConsumerRow { country: 9001, index: 0, priority: 1, requested_raw: 0, received_raw: 0 }],
+                truncated.then_some(1),
+            )
+        })
+        .unwrap();
+        let timeline = Arc::new(Timeline { id: 1, first, last, stretches: vec![Stretch { run: 0, first, last, join: Join::Start }], unheld: Vec::new() });
+        let holders = Arc::new(identity::holders(replay.recording(), &timeline).unwrap());
+        (replay, timeline, holders)
+    };
+
+    let fuel_series = dashboard_declare::series("fuel-consumers").unwrap();
+    let fuel_measure = fuel_series.measure("receivedShare").unwrap();
+
+    let (replay, timeline, holders) = build_fuel(false);
+    let q = crate::Query { replay: &replay, timeline, holders };
+    let fuel_line = Line::new(&q, fuel_series, fuel_measure).unwrap();
+    let states = fuel_line.states(&[read("GER", 10_000, Some(0)), read("GER", 10_001, Some(0))], None).unwrap();
+    assert_eq!(states[0].not_applicable, Some(true));
+    assert_eq!(states[0].missing.as_deref(), Some("No fuel requested"));
+    assert_eq!(states[1].not_applicable, None, "a truncated hour after a complete restore keeps main's unflagged missing state");
+    assert_eq!(states[1].missing.as_deref(), Some("GER's receivedShare was not recorded at this hour"));
+
+    let (replay, timeline, holders) = build_fuel(true);
+    let q = crate::Query { replay: &replay, timeline, holders };
+    let fuel_line = Line::new(&q, fuel_series, fuel_measure).unwrap();
+    let states = fuel_line.states(&[read("GER", 10_001, Some(0)), read("GER", 10_000, Some(0)), read("GER", 10_001, Some(0))], None).unwrap();
+    assert_eq!(states[0].not_applicable, Some(true), "a complete hour after a truncated restore reports not applicable");
+    assert_eq!(states[0].missing.as_deref(), Some("No fuel requested"));
+    assert_eq!(states[1].not_applicable, None, "the truncated restore keeps main's unflagged missing state");
+    assert_eq!(states[1].missing.as_deref(), Some("GER's receivedShare was not recorded at this hour"));
+    assert_eq!(states[2], states[0], "duplicate out-of-order asks return the same state");
 }
 
 static NEGATED: Series = Series {
