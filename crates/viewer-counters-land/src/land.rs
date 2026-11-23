@@ -710,7 +710,6 @@ impl PreparedLand {
                 .as_ref()
                 .is_none_or(|sprite| sprite.origin != origin || sprite.priority != priority)
         {
-            #[cfg(any(test, feature = "test-support"))]
             viewer_counter_kit::plan_probe::record(|counts| counts.plates_drawn += 1);
             viewer_runtime::redraws::note("plates.drawn", 1);
             let mut sprite = self.sprites[member]
@@ -1936,7 +1935,6 @@ pub fn land_counters<'a>(
             );
             let before = previous.remove(&leader);
             let hit = before.as_ref().is_some_and(|(before, _)| *before == key);
-            #[cfg(any(test, feature = "test-support"))]
             viewer_counter_kit::plan_probe::record(|counts| {
                 let members_equal = before
                     .as_ref()

@@ -88,18 +88,6 @@ impl Key {
     }
 }
 
-#[cfg(test)]
-use viewer_counter_kit::plan_probe;
-
-#[cfg(test)]
-fn count(hit: bool) {
-    plan_probe::record(|counts| {
-        counts.semantic_plans += 1;
-        counts.semantic_plan_hits += u64::from(hit);
-        counts.base_plan_hits += u64::from(hit);
-    });
-}
-
 fn add<K: Ord + Clone>(target: &mut BTreeMap<K, usize>, source: &BTreeMap<K, usize>) {
     for (key, count) in source {
         *target.entry(key.clone()).or_default() += count;
@@ -201,8 +189,11 @@ impl Preparation {
             self.layered.bases = Some(newest);
         }
         let hit = self.bases.as_ref().is_some_and(|layout| layout.rules() == rules);
-        #[cfg(test)]
-        count(hit);
+        viewer_counter_kit::plan_probe::record(|counts| {
+            counts.semantic_plans += 1;
+            counts.semantic_plan_hits += u64::from(hit);
+            counts.base_plan_hits += u64::from(hit);
+        });
         if let Some(layout) = self.bases.as_mut().filter(|_| hit) {
             if !layout.laid_from(self.layered.bases.as_ref()) {
                 layout.update(inputs, frame, &tables.base_hour(), self.layered.bases.as_ref())?;

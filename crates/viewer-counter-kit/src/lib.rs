@@ -2641,9 +2641,11 @@ impl<B, N> Clone for HourTables<B, N> {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub mod plan_probe {
-    use std::cell::RefCell;
+    use std::{
+        cell::RefCell,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     #[derive(Clone, Copy, Debug, Default)]
     pub struct Counts {
@@ -2659,24 +2661,38 @@ pub mod plan_probe {
         pub pools_kept: u64,
     }
 
+    static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
     thread_local! {
         static CURRENT: RefCell<Option<Counts>> = const { RefCell::new(None) };
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn collect<T>(work: impl FnOnce() -> T) -> (T, Counts) {
         struct Restore(Option<Counts>);
         impl Drop for Restore {
             fn drop(&mut self) {
                 CURRENT.with(|current| *current.borrow_mut() = self.0.take());
+                ACTIVE.fetch_sub(1, Ordering::Relaxed);
             }
         }
-        let _restore = Restore(CURRENT.with(|current| current.replace(Some(Counts::default()))));
+        let previous = CURRENT.with(|current| current.replace(Some(Counts::default())));
+        ACTIVE.fetch_add(1, Ordering::Relaxed);
+        let _restore = Restore(previous);
         let result = work();
         let counts = CURRENT.with(|current| current.borrow().unwrap_or_default());
         (result, counts)
     }
 
+    #[inline]
     pub fn record(change: impl FnOnce(&mut Counts)) {
+        if ACTIVE.load(Ordering::Relaxed) != 0 {
+            record_active(change);
+        }
+    }
+
+    #[cold]
+    fn record_active(change: impl FnOnce(&mut Counts)) {
         CURRENT.with(|current| {
             if let Some(counts) = current.borrow_mut().as_mut() {
                 change(counts);
