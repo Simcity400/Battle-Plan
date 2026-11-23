@@ -1,15 +1,19 @@
 import type { Picture } from '../../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '../../draw/lane.ts';
-import type { AuditRow } from '../../draw/notifications';
+import { FamilyArtLoader, type FamilyArtFetcher } from '../artLoader.ts';
 import type { FamilyAuditField } from '../audit.ts';
-import { CadenceGate, TrailingFlushScheduler } from '../cadence.ts';
-import { EMPTY_SOURCES, type FamilySources, type MirrorModel } from '../contract.ts';
-import { buildLogLayout, LOG_MONTH_HEIGHT, scrollGeometryOf, type LogLayout, type LogScrollGeometry } from './layout.ts';
+import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
+import { EMPTY_SOURCES, type FamilySources } from '../contract.ts';
+import type { FamilyNavTuple } from '../host/keyboard.ts';
+import type { ListboxMirrorItem } from '../host/mirror.ts';
+import type { FamilyTooltipField } from '../host/tooltips.ts';
+import { buildLogLayout, LOG_MONTH_HEIGHT, scrollGeometryOf, visibleItemRange, type LogLayout, type LogScrollGeometry } from './layout.ts';
 import {
   deriveGapTooltip,
-  deriveLogMirror,
+  deriveLogMirrorItems,
   deriveLogTooltip,
+  spokenLogRow,
   type FlatLogItem,
   type LogDensity,
   type LogFacetPill,
@@ -17,11 +21,15 @@ import {
 } from './model.ts';
 import { collectLogIcons, createLogPicture, drawLog, hitLogItem, type LogPicture, type LogTheme } from './painter.ts';
 import { logProjection } from './registry.ts';
-import { isLogTailReply, mergeFrozenPageIntoTail } from './tailReply.ts';
+import { isLogTailReply, mergeFrozenPageIntoTail, parseOrdinal } from './tailReply.ts';
+
+export const LOG_FADE_MAX_SPEED = 48;
+export const LOG_FADE_DURATION_MS = 180;
 
 const MIRROR_CADENCE_MS = 1000;
 const TOOLTIP_CADENCE_MS = 250;
 const MIRROR_ROWS = 28;
+const FADE_SCAN_LIMIT = 40;
 
 export interface FamilyLogBinding<TOptions = unknown> {
   readonly family: 'log';
@@ -32,7 +40,9 @@ export interface FamilyLogBinding<TOptions = unknown> {
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
   readonly staticHour?: number | null;
+  readonly frozenGen?: number;
   readonly frozenHour?: number | null;
+  readonly frozenTotal?: number | null;
   readonly frozenPanels?: Readonly<Record<string, unknown>>;
   readonly width: number;
   readonly height: number;
@@ -40,6 +50,8 @@ export interface FamilyLogBinding<TOptions = unknown> {
   readonly theme?: LogTheme;
   readonly selectedKey?: string | null;
   readonly focusedKey?: string | null;
+  readonly reducedMotion?: boolean;
+  readonly fadeEnabled?: boolean;
   readonly audit?: boolean;
   readonly auditId?: number;
   readonly pauseFlush?: number;
@@ -57,6 +69,7 @@ export interface LogMetaField {
   readonly baseOrdinal: number;
   readonly total: number;
   readonly liveTotal: number;
+  readonly loadedCount: number;
   readonly logicalHeight: number;
   readonly physicalHeight: number;
   readonly compressed: boolean;
@@ -65,6 +78,20 @@ export interface LogMetaField {
   readonly geometry: LogScrollGeometry;
   readonly facetPills: readonly LogFacetPill[];
   readonly warnings: readonly string[];
+}
+
+export interface LogPhasesField {
+  readonly kind: string;
+  serves: number;
+  drew: number;
+  incrementalFrames: number;
+  fullFrames: number;
+  paintedRows: number;
+  visitedItems: number;
+  tailAdvanceFrames: number;
+  tailAdvanceVisitedItems: number;
+  tailAdvancePaintedRows: number;
+  fadeActiveFrames: number;
 }
 
 const EMPTY_GEOMETRY: LogScrollGeometry = {
@@ -85,6 +112,7 @@ export interface LogNavEntry {
   readonly hour: number;
   readonly top: number;
   readonly height: number;
+  readonly ordinal: number;
   readonly meta?: unknown;
 }
 
@@ -97,10 +125,12 @@ interface HeldFamilyLog {
   backCtx: OffscreenCanvasRenderingContext2D;
   picture: LogPicture;
   content: string;
-  icons: Map<string, ImageBitmap | null>;
-  iconLoading: Set<string>;
+  art: FamilyArtLoader;
+  wake?: () => void;
+
   mirrorGate: CadenceGate;
-  tooltipGate: CadenceGate;
+  tipGate: CadenceGate;
+  focusTipGate: CadenceGate;
   scheduler: TrailingFlushScheduler;
 
   prevParts: readonly (readonly unknown[])[];
@@ -108,7 +138,9 @@ interface HeldFamilyLog {
   prevStaticPanels: unknown;
   prevFrozenPanels: unknown;
   prevFrozenHour: number | null;
-  lastLiveTail: unknown;
+  prevFrozenGen: number;
+  installedLiveTail: unknown;
+  installedLiveTotal: number;
   frozenSnapTail: unknown;
   prevHour: number | null;
   cachedModel: LogModel | null;
@@ -116,17 +148,37 @@ interface HeldFamilyLog {
   layoutDensity: LogDensity | null;
   layoutMonths: boolean;
 
+  priorFadeHour: number | null;
+  priorFadeKeys: Set<string>;
+  fadingRows: Map<string, number>;
+
   metaSig: string;
   metaField: FieldEntry | null;
+  liveNewCount: number;
+  liveNewCountField: FieldEntry | null;
   navSig: string;
   navField: FieldEntry | null;
+  navEntriesField: FieldEntry | null;
   activeNavSig: string;
   activeNavField: FieldEntry | null;
+  mirrorSig: string;
   mirrorField: FieldEntry | null;
-  tooltipField: FieldEntry | null;
+  tipSig: string;
+  tipField: FieldEntry | null;
+  focusTipSig: string;
+  focusTipField: FieldEntry | null;
   auditSig: string;
   auditField: FieldEntry | null;
+  phases: LogPhasesField;
+  phasesField: FieldEntry | null;
   lastPauseFlush: number;
+}
+
+export interface FamilyLogLaneOptions {
+  readonly cadenceTimers?: CadenceTimers;
+  readonly clock?: () => number;
+  readonly fetchBitmap?: FamilyArtFetcher;
+  readonly artMaxEntries?: number;
 }
 
 function buildSources(
@@ -141,109 +193,100 @@ function buildSources(
   const parts: (readonly unknown[])[] = [];
 
   if (binding.staticPanels) {
-    for (const [name, data] of Object.entries(binding.staticPanels)) panels.set(name, data);
-  }
-  if (overridePanels) {
-    for (const [name, data] of Object.entries(overridePanels)) panels.set(name, data);
+    for (const [name, value] of Object.entries(binding.staticPanels)) {
+      panels.set(name, value);
+    }
   }
 
   let refused: string | null = null;
-  let ready = panels.size > 0;
-  for (const [name, id] of Object.entries(binding.sources)) {
-    const at = subs.findIndex(sub => sub.id === id);
-    if (at < 0) continue;
-    const picture = pictures[at];
-    if (!picture) {
-      ready = false;
+  let subReady = Object.keys(binding.sources).length === 0;
+  for (const [name, subId] of Object.entries(binding.sources)) {
+    const idx = subs.findIndex(sub => sub.id === subId);
+    const pic = idx >= 0 ? pictures[idx] : undefined;
+    if (!pic || pic.parts.length === 0) {
+      parts.push([]);
       continue;
     }
-    parts.push(picture.parts);
-    const val = picture.parts[0]?.value;
-    if (!val) {
-      ready = false;
-      continue;
-    }
-    if (val.kind === 'panel') {
-      if (val.refused !== null) {
-        refused = val.refused;
-      } else if (!overridePanels || !(name in overridePanels)) {
-        panels.set(name, val.data);
-        ready = true;
+    parts.push(pic.parts);
+    const head = pic.parts[0]?.value;
+    if (!head) continue;
+    if (head.kind === 'panel') {
+      if (head.refused !== null) {
+        refused ??= head.refused;
+      } else {
+        panels.set(name, head.data);
+        subReady = true;
       }
-    } else if (val.kind === 'answer') {
-      answers.set(name, val.answer);
-      ready = true;
+    } else if (head.kind === 'answer') {
+      answers.set(name, head.answer);
+      subReady = true;
     }
   }
 
-  if (overridePanels && Object.keys(overridePanels).length > 0) {
-    ready = true;
+  if (overridePanels) {
+    for (const [name, value] of Object.entries(overridePanels)) {
+      panels.set(name, value);
+    }
+    subReady = true;
   }
 
   return {
-    sources: { answers, panels, live },
+    sources: subReady ? { answers, panels, live } : EMPTY_SOURCES,
     parts,
     refused,
-    ready,
+    ready: subReady,
   };
 }
 
 function sameParts(a: readonly (readonly unknown[])[], b: readonly (readonly unknown[])[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
-    const x = a[i]!;
-    const y = b[i]!;
-    if (x.length !== y.length) return false;
-    for (let j = 0; j < x.length; j++) if (x[j] !== y[j]) return false;
+    const left = a[i]!;
+    const right = b[i]!;
+    if (left.length !== right.length) return false;
+    for (let j = 0; j < left.length; j++) {
+      if (left[j] !== right[j]) return false;
+    }
   }
   return true;
 }
 
-function requestIcons(held: HeldFamilyLog, urls: readonly string[], wake: () => void): void {
-  if (typeof fetch !== 'function' || typeof createImageBitmap !== 'function') return;
-  for (const url of urls) {
-    if (held.icons.has(url) || held.iconLoading.has(url)) continue;
-    held.iconLoading.add(url);
-    void fetch(url)
-      .then(res => (res.ok ? res.blob() : null))
-      .then(blob => (blob ? createImageBitmap(blob) : null))
-      .then(bitmap => {
-        held.iconLoading.delete(url);
-        held.icons.set(url, bitmap);
-        if (bitmap) wake();
-      })
-      .catch(() => {
-        held.iconLoading.delete(url);
-        held.icons.set(url, null);
-      });
-  }
+function readRowKeyFromInspect(inspect: string | null | undefined): string | null {
+  if (typeof inspect !== 'string' || !inspect.length) return null;
+  if (inspect.startsWith('row:')) return inspect.slice(4);
+  if (inspect.startsWith('toggle:')) return inspect.slice(7);
+  return inspect;
 }
 
-function totalFromLivePanel(subs: Scene['subs'], pictures: readonly Picture<LaneValue>[], binding: FamilyLogBinding): number | null {
-  const id = binding.sources.tail;
-  if (id === undefined) return null;
-  const at = subs.findIndex(sub => sub.id === id);
-  if (at < 0) return null;
-  const val = pictures[at]?.parts[0]?.value;
-  if (!val || val.kind !== 'panel' || val.refused !== null || !val.data || typeof val.data !== 'object') return null;
-  const total = (val.data as { total?: unknown }).total;
-  if (typeof total === 'string') {
-    const parsed = Number(total);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return typeof total === 'number' && Number.isFinite(total) ? total : null;
+function easeOutQuad(t: number): number {
+  return 1 - (1 - t) * (1 - t);
 }
 
-export function familyLogLaneView(wake: (widget: number) => void): LaneView {
+export function familyLogLaneView(
+  wake: (widget: number) => void,
+  laneOptions?: FamilyLogLaneOptions,
+): LaneView {
   return {
     next(scene: Scene, hour: number): number {
       const binding = scene.model;
       if (!isFamilyLogBinding(binding)) return Infinity;
-      if (binding.frozenHour != null || binding.staticHour != null) return Infinity;
       const projection = logProjection(binding.kind);
-      return projection?.nextChange ? projection.nextChange(EMPTY_SOURCES, hour, binding.options) : Infinity;
+      if (!projection?.nextChange) return Infinity;
+      const built = buildSources(binding, scene.subs, scene.pictures);
+      if (!built.ready || built.refused !== null) return Infinity;
+      return projection.nextChange(built.sources, hour, binding.options);
     },
-    paint(input: PaintInput, state, content): Painted {
+
+    unmount(_widget: number, state: Map<string, unknown>): void {
+      const held = state.get('familyLog') as HeldFamilyLog | undefined;
+      if (held) {
+        held.scheduler.cancel();
+        held.art.dispose();
+        state.delete('familyLog');
+      }
+    },
+
+    paint(input: PaintInput, state: Map<string, unknown>, content: () => string): Painted {
       const binding = input.model;
       const surface = input.binding.surfaces[0];
       if (!isFamilyLogBinding(binding) || !surface) {
@@ -251,19 +294,32 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
       }
       const projection = logProjection(binding.kind);
       if (!projection) {
-        return { surfaces: [], fields: {}, motion: false };
+        return {
+          mode: 'refused',
+          reason: `Unknown log projection: ${binding.kind}`,
+          surfaces: [],
+          fields: {},
+          motion: false,
+        };
       }
+
+      const dpr = surface.dpr || 1;
+      const widthPx = Math.max(1, Math.round(surface.width * dpr));
+      const heightPx = Math.max(1, Math.round(surface.height * dpr));
 
       let held = state.get('familyLog') as HeldFamilyLog | undefined;
       if (!held) {
-        const w = Math.max(1, Math.round(surface.width * surface.dpr));
-        const h = Math.max(1, Math.round(surface.height * surface.dpr));
-        const canvas = new OffscreenCanvas(w, h);
+        const canvas = new OffscreenCanvas(widthPx, heightPx);
         const ctx = canvas.getContext('2d')!;
-        const backCanvas = new OffscreenCanvas(w, h);
+        const backCanvas = new OffscreenCanvas(widthPx, heightPx);
         const backCtx = backCanvas.getContext('2d')!;
         const mirrorGate = new CadenceGate(MIRROR_CADENCE_MS);
-        const tooltipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
+        const tipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
+        const focusTipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
+        const art = new FamilyArtLoader({
+          maxEntries: laneOptions?.artMaxEntries,
+          fetchBitmap: laneOptions?.fetchBitmap,
+        });
         held = {
           canvas,
           ctx,
@@ -271,110 +327,123 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
           backCtx,
           picture: createLogPicture(),
           content: content(),
-          icons: new Map(),
-          iconLoading: new Set(),
+          art,
           mirrorGate,
-          tooltipGate,
-          scheduler: new TrailingFlushScheduler([mirrorGate, tooltipGate]),
+          tipGate,
+          focusTipGate,
+          scheduler: new TrailingFlushScheduler([mirrorGate, tipGate, focusTipGate], laneOptions?.cadenceTimers),
           prevParts: [],
           prevOptions: undefined,
           prevStaticPanels: undefined,
           prevFrozenPanels: undefined,
           prevFrozenHour: null,
-          lastLiveTail: undefined,
-          frozenSnapTail: undefined,
+          prevFrozenGen: -1,
+          installedLiveTail: null,
+          installedLiveTotal: 0,
+          frozenSnapTail: null,
           prevHour: null,
           cachedModel: null,
           cachedLayout: null,
           layoutDensity: null,
           layoutMonths: false,
+          priorFadeHour: null,
+          priorFadeKeys: new Set(),
+          fadingRows: new Map(),
           metaSig: '',
           metaField: null,
+          liveNewCount: -1,
+          liveNewCountField: null,
           navSig: '',
           navField: null,
+          navEntriesField: null,
           activeNavSig: '',
           activeNavField: null,
+          mirrorSig: '',
           mirrorField: null,
-          tooltipField: null,
+          tipSig: '',
+          tipField: null,
+          focusTipSig: '',
+          focusTipField: null,
           auditSig: '',
           auditField: null,
+          phases: {
+            kind: binding.kind,
+            serves: 0,
+            drew: 0,
+            incrementalFrames: 0,
+            fullFrames: 0,
+            paintedRows: 0,
+            visitedItems: 0,
+            tailAdvanceFrames: 0,
+            tailAdvanceVisitedItems: 0,
+            tailAdvancePaintedRows: 0,
+            fadeActiveFrames: 0,
+          },
+          phasesField: null,
           lastPauseFlush: 0,
         };
+        const holder = held;
+        art.setOnLoad(() => {
+          holder.picture.signature = null;
+          holder.picture.lastSlice = null;
+          holder.wake?.();
+        });
         state.set('familyLog', held);
       }
+      held.wake = () => wake(input.widget);
 
-      const targetW = Math.max(1, Math.round(surface.width * surface.dpr));
-      const targetH = Math.max(1, Math.round(surface.height * surface.dpr));
-      if (held.canvas.width !== targetW || held.canvas.height !== targetH) {
-        held.canvas.width = targetW;
-        held.canvas.height = targetH;
-        held.backCanvas.width = targetW;
-        held.backCanvas.height = targetH;
+      if (held.canvas.width !== widthPx || held.canvas.height !== heightPx) {
+        held.canvas.width = widthPx;
+        held.canvas.height = heightPx;
+        held.backCanvas.width = widthPx;
+        held.backCanvas.height = heightPx;
         held.picture.signature = null;
         held.picture.lastSlice = null;
       }
 
-      const fields: Record<string, FieldEntry> = {};
-      const activeHour = binding.frozenHour ?? binding.staticHour ?? input.hour;
-      const liveTotal = totalFromLivePanel(input.subs, input.pictures, binding);
-      const liveTailSub = binding.sources.tail;
-      const liveTailIdx = liveTailSub === undefined ? -1 : input.subs.findIndex(sub => sub.id === liveTailSub);
-      const liveTailVal = liveTailIdx >= 0 ? input.pictures[liveTailIdx]?.parts[0]?.value : undefined;
-      if (liveTailVal && liveTailVal.kind === 'panel' && liveTailVal.refused === null) {
-        held.lastLiveTail = liveTailVal.data;
+      const frozenGen = binding.frozenGen ?? 0;
+      const isFrozen = binding.frozenHour !== null && binding.frozenHour !== undefined;
+      if (isFrozen) {
+        if (held.prevFrozenHour === null || held.prevFrozenGen !== frozenGen) {
+          held.frozenSnapTail = held.installedLiveTail;
+        }
+      } else {
+        held.frozenSnapTail = null;
       }
-      if (binding.frozenHour != null && held.prevFrozenHour === null) {
-        held.frozenSnapTail = held.lastLiveTail;
-      } else if (binding.frozenHour == null) {
-        held.frozenSnapTail = undefined;
-      }
-      held.prevFrozenHour = binding.frozenHour ?? null;
-      let effectiveFrozenPanels: Readonly<Record<string, unknown>> | undefined;
-      if (binding.frozenHour != null) {
+
+      const liveBuilt = buildSources(binding, input.subs, input.pictures);
+      const liveTail = liveBuilt.sources.panels.get('tail');
+      const liveTotal = isLogTailReply(liveTail) ? parseOrdinal(liveTail.total) : held.installedLiveTotal;
+
+      let effectiveOverride: Readonly<Record<string, unknown>> | undefined;
+      if (isFrozen) {
         if (binding.frozenPanels && Object.keys(binding.frozenPanels).length > 0) {
-          const pageTail = binding.frozenPanels.tail;
-          if (isLogTailReply(pageTail) && isLogTailReply(held.frozenSnapTail)) {
-            effectiveFrozenPanels = {
-              ...binding.frozenPanels,
-              tail: mergeFrozenPageIntoTail(held.frozenSnapTail, pageTail),
-            };
-          } else {
-            effectiveFrozenPanels = binding.frozenPanels;
+          const override: Record<string, unknown> = { ...binding.frozenPanels };
+          if (isLogTailReply(override.tail) && isLogTailReply(held.frozenSnapTail)) {
+            override.tail = mergeFrozenPageIntoTail(held.frozenSnapTail, override.tail);
           }
-        } else if (held.frozenSnapTail !== undefined) {
-          effectiveFrozenPanels = { tail: held.frozenSnapTail };
+          effectiveOverride = override;
+        } else if (held.frozenSnapTail) {
+          effectiveOverride = { tail: held.frozenSnapTail };
         }
       }
-      const { sources, parts, refused, ready } = buildSources(binding, input.subs, input.pictures, effectiveFrozenPanels);
 
-      if (refused) {
-        const meta: LogMetaField = {
+      const built = effectiveOverride
+        ? buildSources(binding, input.subs, input.pictures, effectiveOverride)
+        : liveBuilt;
+
+      if (built.refused !== null) {
+        held.scheduler.cancel();
+        return {
           mode: 'refused',
-          reason: refused,
-          empty: null,
-          hour: null,
-          baseOrdinal: 0,
-          total: 0,
-          liveTotal: liveTotal ?? 0,
-          logicalHeight: 0,
-          physicalHeight: 0,
-          compressed: false,
-          rowHeight: 28,
-          offset: 0,
-          geometry: EMPTY_GEOMETRY,
-          facetPills: [],
-          warnings: [],
+          reason: built.refused,
+          surfaces: [],
+          fields: {},
+          motion: false,
         };
-        const sig = `refused:${refused}`;
-        if (sig !== held.metaSig || !held.metaField) {
-          held.metaSig = sig;
-          held.metaField = { value: meta, content: content() };
-        }
-        fields.meta = held.metaField;
-        return { surfaces: [], fields, motion: false };
       }
 
-      if (!ready) {
+      if (!built.ready) {
         const meta: LogMetaField = {
           mode: 'reading',
           reason: null,
@@ -382,7 +451,8 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
           hour: null,
           baseOrdinal: 0,
           total: 0,
-          liveTotal: liveTotal ?? 0,
+          liveTotal: 0,
+          loadedCount: 0,
           logicalHeight: 0,
           physicalHeight: 0,
           compressed: false,
@@ -397,39 +467,125 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
           held.metaSig = sig;
           held.metaField = { value: meta, content: content() };
         }
-        fields.meta = held.metaField;
-        return { surfaces: [], fields, motion: false };
+        return {
+          surfaces: [],
+          fields: { meta: held.metaField },
+          motion: false,
+        };
       }
 
-      const inputsChanged =
-        !held.cachedModel
-        || held.prevHour !== activeHour
-        || held.prevOptions !== binding.options
-        || held.prevStaticPanels !== binding.staticPanels
-        || held.prevFrozenPanels !== binding.frozenPanels
-        || (!effectiveFrozenPanels && !sameParts(held.prevParts, parts));
+      const effectiveHour = isFrozen
+        ? binding.frozenHour!
+        : (binding.staticHour !== null && binding.staticHour !== undefined ? binding.staticHour : input.hour);
 
-      if (inputsChanged) {
-        held.cachedModel = projection.project(sources, activeHour, binding.options);
-        held.prevParts = parts;
+      const sourcesUnchanged = held.cachedModel !== null
+        && sameParts(held.prevParts, built.parts)
+        && held.prevOptions === binding.options
+        && held.prevStaticPanels === binding.staticPanels
+        && held.prevFrozenPanels === binding.frozenPanels
+        && held.prevFrozenHour === (binding.frozenHour ?? null)
+        && held.prevFrozenGen === frozenGen
+        && held.prevHour === effectiveHour;
+
+      const modelChanged = !sourcesUnchanged;
+      const tailAdvanced = modelChanged && !isFrozen && held.prevHour !== null && effectiveHour > held.prevHour && held.prevOptions === binding.options;
+
+      let model: LogModel;
+      if (sourcesUnchanged) {
+        model = held.cachedModel!;
+      } else {
+        model = projection.project(built.sources, effectiveHour, binding.options);
+        held.cachedModel = model;
+        held.prevParts = built.parts;
         held.prevOptions = binding.options;
         held.prevStaticPanels = binding.staticPanels;
         held.prevFrozenPanels = binding.frozenPanels;
-        held.prevHour = activeHour;
+        held.prevFrozenHour = binding.frozenHour ?? null;
+        held.prevFrozenGen = frozenGen;
+        held.prevHour = effectiveHour;
         held.cachedLayout = null;
         held.mirrorGate.invalidate();
-        held.tooltipGate.invalidate();
+        held.tipGate.invalidate();
+        held.focusTipGate.invalidate();
       }
 
-      const model = held.cachedModel!;
-      if (!held.cachedLayout || held.layoutDensity !== binding.density || held.layoutMonths !== binding.months) {
-        held.cachedLayout = buildLogLayout(model, binding.density, binding.months);
+      if (!isFrozen && liveTail !== undefined) {
+        held.installedLiveTail = liveTail;
+        held.installedLiveTotal = liveTotal;
+      }
+
+      const layoutValid = held.cachedLayout !== null
+        && held.layoutDensity === binding.density
+        && held.layoutMonths === binding.months;
+      const layout = layoutValid
+        ? held.cachedLayout!
+        : buildLogLayout(model, binding.density, binding.months);
+      if (!layoutValid) {
+        held.cachedLayout = layout;
         held.layoutDensity = binding.density;
         held.layoutMonths = binding.months;
       }
-      const layout = held.cachedLayout;
-      const isEmpty = model.total === 0 && model.rows.length === 0 && layout.items.length === 0;
 
+      const now = laneOptions?.clock ? laneOptions.clock() : input.now;
+      const speed = input.speed ?? 0;
+      const globalNoFade = (globalThis as { __logNoFade?: boolean }).__logNoFade === true;
+      const fadeEligible = !isFrozen
+        && binding.scrollTop === 0
+        && speed > 0
+        && speed <= LOG_FADE_MAX_SPEED
+        && binding.reducedMotion !== true
+        && binding.fadeEnabled !== false
+        && !globalNoFade;
+
+      let rowAlphas: Map<string, number> | undefined;
+      let activeVisibleFades = 0;
+
+      if (!fadeEligible) {
+        if (held.fadingRows.size > 0) held.fadingRows.clear();
+        if (speed > LOG_FADE_MAX_SPEED || isFrozen || binding.reducedMotion === true || binding.fadeEnabled === false || globalNoFade) {
+          if (held.priorFadeKeys.size > 0) held.priorFadeKeys.clear();
+          held.priorFadeHour = null;
+        }
+      } else {
+        const scanCount = Math.min(model.rows.length, FADE_SCAN_LIMIT);
+        if (modelChanged) {
+          if (held.priorFadeHour !== null && model.hour > held.priorFadeHour) {
+            for (let i = 0; i < scanCount; i++) {
+              const rowKey = model.rows[i]!.key;
+              if (!held.priorFadeKeys.has(rowKey) && !held.fadingRows.has(rowKey)) {
+                held.fadingRows.set(rowKey, now);
+              }
+            }
+          }
+          held.priorFadeKeys.clear();
+          for (let i = 0; i < scanCount; i++) held.priorFadeKeys.add(model.rows[i]!.key);
+          held.priorFadeHour = model.hour;
+        }
+        if (held.fadingRows.size > 0) {
+          for (const [key, started] of held.fadingRows) {
+            const elapsed = now - started;
+            if (elapsed >= LOG_FADE_DURATION_MS) {
+              held.fadingRows.delete(key);
+            } else {
+              if (!rowAlphas) rowAlphas = new Map();
+              rowAlphas.set(key, easeOutQuad(Math.max(0, elapsed) / LOG_FADE_DURATION_MS));
+            }
+          }
+        }
+      }
+
+      const frozenBaseTotal = isFrozen
+        ? (binding.frozenTotal !== null && binding.frozenTotal !== undefined ? binding.frozenTotal : model.total)
+        : liveTotal;
+      const liveNewCount = isFrozen ? Math.max(0, liveTotal - frozenBaseTotal) : 0;
+
+      const isEmpty = model.rows.length === 0 && model.gaps.length === 0;
+      const fields: Record<string, FieldEntry> = {};
+
+      const pillsSig = (model.facetPills ?? [])
+        .map(p => `${p.key}:${p.label}:${p.tone ?? ''}:${p.count.kind}:${p.count.kind === 'known' || p.count.kind === 'zero' || p.count.kind === 'partial' ? String(p.count.value) : ''}:${p.count.kind === 'notRecorded' || p.count.kind === 'notApplicable' || p.count.kind === 'partial' ? p.count.reason : ''}`)
+        .join('|');
+      const warnSig = (model.warnings ?? []).join('|');
       const meta: LogMetaField = {
         mode: isEmpty ? 'empty' : 'picture',
         reason: null,
@@ -437,7 +593,8 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
         hour: model.hour,
         baseOrdinal: model.baseOrdinal,
         total: model.total,
-        liveTotal: liveTotal ?? model.total,
+        liveTotal,
+        loadedCount: model.rows.length,
         logicalHeight: layout.logicalHeight,
         physicalHeight: layout.physicalHeight,
         compressed: layout.compressed,
@@ -447,28 +604,36 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
         facetPills: model.facetPills ?? [],
         warnings: model.warnings ?? [],
       };
-      let pillsSig = '';
-      if (meta.facetPills.length > 0) {
-        for (let i = 0; i < meta.facetPills.length; i++) {
-          const p = meta.facetPills[i]!;
-          const c = p.count;
-          pillsSig += `${p.key}:${c.kind}:${c.kind === 'known' || c.kind === 'zero' || c.kind === 'partial' ? String(c.value) : ''}:${c.kind === 'notRecorded' || c.kind === 'notApplicable' || c.kind === 'partial' ? c.reason : ''};`;
-        }
-      }
-      const warnSig = meta.warnings.length > 0 ? meta.warnings.join('\0') : '';
-      const metaSig = `${meta.mode}|${meta.empty?.kind ?? ''}|${meta.empty?.message ?? ''}|${meta.hour}|${meta.total}|${meta.liveTotal}|${meta.logicalHeight}|${meta.offset}|${pillsSig}|${warnSig}`;
+      const metaSig = `${meta.mode}|${meta.hour}|${meta.baseOrdinal}|${meta.total}|${meta.loadedCount}|${meta.offset}|${meta.logicalHeight}|${meta.physicalHeight}|${meta.rowHeight}|${pillsSig}|${warnSig}|${isEmpty ? model.empty.message : ''}`;
       if (metaSig !== held.metaSig || !held.metaField) {
         held.metaSig = metaSig;
         held.metaField = { value: meta, content: content() };
       }
       fields.meta = held.metaField;
 
-      const theme = binding.theme;
-      let auditRows: AuditRow[] = [];
-      let visibleStart = 0;
-      let visibleEnd = 0;
-      if (theme && !isEmpty) {
-        const result = drawLog(held.backCtx, held.picture, {
+      if (liveNewCount !== held.liveNewCount || !held.liveNewCountField) {
+        held.liveNewCount = liveNewCount;
+        held.liveNewCountField = { value: liveNewCount, content: content() };
+      }
+      fields.liveNewCount = held.liveNewCountField;
+
+      const inspectedKey = readRowKeyFromInspect(input.inspect);
+      const focusedKey = binding.focusedKey ?? null;
+      const selectedKey = binding.selectedKey ?? null;
+
+      let auditRows: readonly { row: string; key: string; value?: string }[] = [];
+      let paintedResult: ReturnType<typeof drawLog> | null = null;
+      if (binding.theme && !isEmpty) {
+        const [visStart, visEnd] = visibleItemRange(layout.items, binding.scrollTop, surface.height);
+        const visibleIcons = collectLogIcons(model, visStart, visEnd, layout.items);
+        held.art.requestVisible(visibleIcons);
+        const canBlit = held.picture.lastSlice !== null;
+        if (canBlit) {
+          held.backCtx.setTransform(1, 0, 0, 1, 0, 0);
+          held.backCtx.clearRect(0, 0, held.backCanvas.width, held.backCanvas.height);
+          held.backCtx.drawImage(held.canvas, 0, 0);
+        }
+        const drawn = drawLog(held.ctx, held.picture, {
           model,
           layout,
           density: binding.density,
@@ -476,44 +641,95 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
           width: surface.width,
           height: surface.height,
           scrollTop: binding.scrollTop,
-          theme,
-          inspectedKey: input.inspect ?? null,
-          focusedKey: binding.focusedKey ?? null,
-          selectedKey: binding.selectedKey ?? null,
-          icons: held.icons,
-          dpr: surface.dpr,
-          prevCanvas: held.canvas,
+          theme: binding.theme,
+          inspectedKey,
+          focusedKey,
+          selectedKey,
+          icons: held.art.map,
+          dpr,
+          prevCanvas: canBlit ? held.backCanvas : null,
           wantAudit: binding.audit === true,
+          newRowCount: liveNewCount,
+          rowAlphas,
         });
-        if (result.drew) {
-          const swapCanvas = held.canvas;
-          const swapCtx = held.ctx;
-          held.canvas = held.backCanvas;
-          held.ctx = held.backCtx;
-          held.backCanvas = swapCanvas;
-          held.backCtx = swapCtx;
+        paintedResult = drawn;
+        auditRows = drawn.auditRows;
+        if (drawn.drew) {
           held.content = content();
+          held.phases.drew++;
+          if (drawn.incremental) held.phases.incrementalFrames++;
+          else held.phases.fullFrames++;
+          held.phases.paintedRows += drawn.paintedRows;
+          held.phases.visitedItems += drawn.visitedItems;
+          if (tailAdvanced) {
+            held.phases.tailAdvanceFrames++;
+            held.phases.tailAdvanceVisitedItems += drawn.visitedItems;
+            held.phases.tailAdvancePaintedRows += drawn.paintedRows;
+          }
         }
-        auditRows = result.auditRows;
-        visibleStart = result.visibleStart;
-        visibleEnd = result.visibleEnd;
-        const neededIcons = collectLogIcons(model, visibleStart, visibleEnd, layout.items);
-        if (neededIcons.length > 0) requestIcons(held, neededIcons, () => wake(input.widget));
-      } else {
-        held.ctx.setTransform(surface.dpr, 0, 0, surface.dpr, 0, 0);
+        if (rowAlphas && rowAlphas.size > 0) {
+          for (let i = drawn.visibleStart; i < drawn.visibleEnd; i++) {
+            const item = layout.items[i]!;
+            if (item.kind === 'row' && rowAlphas.has(item.row.key)) activeVisibleFades++;
+          }
+          if (activeVisibleFades === 0) held.fadingRows.clear();
+          else held.phases.fadeActiveFrames++;
+        }
+      } else if (isEmpty) {
+        held.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         held.ctx.clearRect(0, 0, surface.width, surface.height);
         held.picture.signature = null;
         held.picture.lastSlice = null;
+        if (binding.audit === true) {
+          auditRows = drawLog(held.ctx, held.picture, {
+            model,
+            layout,
+            density: binding.density,
+            showMonths: binding.months,
+            width: surface.width,
+            height: surface.height,
+            scrollTop: binding.scrollTop,
+            theme: binding.theme ?? {
+              surface: '#000',
+              surfaceAlt: '#000',
+              hover: '#000',
+              selected: '#000',
+              text: '#fff',
+              muted: '#888',
+              line: '#333',
+              lineSoft: '#222',
+              accent: '#38f',
+              positive: '#2c5',
+              negative: '#e44',
+              warning: '#fa0',
+              hatch: '#555',
+              font: 'sans-serif',
+              fontSize: { small: 11, body: 13 },
+              hatchSpacing: 6,
+              categories: ['#38f'],
+            },
+            inspectedKey: null,
+            focusedKey: null,
+            selectedKey: null,
+            icons: held.art.map,
+            dpr,
+            wantAudit: true,
+            newRowCount: liveNewCount,
+          }).auditRows;
+        }
       }
 
-      if (binding.audit) {
-        const finalAuditRows: AuditRow[] = isEmpty
-          ? [{ row: '__empty__', key: '__empty__', value: JSON.stringify(['empty', model.empty.kind, model.empty.message]) }]
-          : auditRows;
-        const auditValue: FamilyAuditField = { id: binding.auditId ?? 0, rows: finalAuditRows };
-        let auditSig = `${auditValue.id}|${model.hour}`;
-        for (let i = 0; i < finalAuditRows.length; i++) {
-          const r = finalAuditRows[i]!;
+      held.phases.serves++;
+      if (binding.audit === true || speed === 0 || held.phases.serves % 30 === 0 || !held.phasesField) {
+        held.phasesField = { value: { ...held.phases }, content: content() };
+      }
+      fields.phases = held.phasesField;
+
+      if (binding.audit === true) {
+        const auditValue: FamilyAuditField = { id: binding.auditId ?? 0, rows: auditRows };
+        let auditSig = `${auditValue.id}|${model.hour}|${liveNewCount}`;
+        for (let i = 0; i < auditRows.length; i++) {
+          const r = auditRows[i]!;
           auditSig += `|${r.key}=${r.value}`;
         }
         if (auditSig !== held.auditSig || !held.auditField) {
@@ -521,47 +737,61 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
           held.auditField = { value: auditValue, content: content() };
         }
         fields.audit = held.auditField;
+      } else {
+        held.auditSig = '';
+        held.auditField = null;
       }
 
-      const now = performance.now();
-      const speed = input.speed ?? 0;
       const pauseFlushed = (binding.pauseFlush ?? 0) !== held.lastPauseFlush;
       if (pauseFlushed) held.lastPauseFlush = binding.pauseFlush ?? 0;
 
-      const mirrorKey = `${Math.floor(binding.scrollTop / Math.max(1, layout.rowHeight))}|${binding.focusedKey ?? ''}`;
-      if (held.mirrorGate.due(now, speed, mirrorKey, pauseFlushed)) {
+      const mirrorKey = `${Math.floor(binding.scrollTop / Math.max(1, layout.rowHeight))}|${focusedKey ?? ''}|${selectedKey ?? ''}`;
+      if (!held.mirrorField || held.mirrorGate.due(now, speed, mirrorKey, pauseFlushed)) {
         const firstRowIdx = Math.max(0, Math.floor((binding.scrollTop - layout.offsetTop) / Math.max(1, layout.rowHeight)));
-        const mirror: MirrorModel = deriveLogMirror(layout.items, firstRowIdx, MIRROR_ROWS, model.total);
+        const mirrorItems: ListboxMirrorItem[] = deriveLogMirrorItems(layout.items, firstRowIdx, MIRROR_ROWS, selectedKey);
+        const mSig = JSON.stringify([model.total, mirrorItems]);
+        if (mSig !== held.mirrorSig || !held.mirrorField) {
+          held.mirrorSig = mSig;
+          held.mirrorField = { value: { total: model.total, items: mirrorItems }, content: content() };
+        }
         held.mirrorGate.record(now, mirrorKey);
-        held.mirrorField = { value: mirror, content: content() };
 
+        const navTuples: FamilyNavTuple[] = [];
         const navEntries: LogNavEntry[] = [];
         let navSig = '';
         for (let i = 0; i < layout.items.length; i++) {
           const item = layout.items[i]!;
           if (item.kind === 'row') {
-            navEntries.push({ key: item.row.key, hour: item.row.hour, top: item.top, height: item.height, meta: item.row.meta });
+            navTuples.push([item.row.key, spokenLogRow(item.row), item.index, -1, '', item.row.meta ?? null]);
+            navEntries.push({ key: item.row.key, hour: item.row.hour, top: item.top, height: item.height, ordinal: item.index, meta: item.row.meta });
             navSig += `${item.row.key}@${item.top}|`;
           } else if (item.kind === 'gap') {
-            navEntries.push({ key: item.key, hour: item.span.lastHour, top: item.top, height: item.height });
+            navTuples.push([item.key, `${item.label} — ${item.span.reason}`, model.offset + i, -1, '', null]);
+            navEntries.push({ key: item.key, hour: item.span.lastHour, top: item.top, height: item.height, ordinal: model.offset + i });
             navSig += `${item.key}@${item.top}|`;
           }
         }
         if (navSig !== held.navSig || !held.navField) {
           held.navSig = navSig;
-          held.navField = { value: navEntries, content: content() };
+          const navContent = content();
+          held.navField = { value: navTuples, content: navContent };
+          held.navEntriesField = { value: navEntries, content: navContent };
         }
       }
       if (held.mirrorField) fields.mirror = held.mirrorField;
       if (held.navField) fields.nav = held.navField;
+      if (held.navEntriesField) fields.navEntries = held.navEntriesField;
 
-      const activeKey = input.inspect ?? binding.focusedKey ?? null;
+      const findItem = (key: string): Exclude<FlatLogItem, { kind: 'month' }> | undefined =>
+        layout.items.find((entry): entry is Exclude<FlatLogItem, { kind: 'month' }> => entry.kind !== 'month' && entry.key === key);
+
+      const activeKey = inspectedKey ?? focusedKey;
       if (activeKey) {
-        const item = layout.items.find((entry): entry is Exclude<FlatLogItem, { kind: 'month' }> => entry.kind !== 'month' && entry.key === activeKey);
+        const item = findItem(activeKey);
         const activeEntry: LogNavEntry | null = item
           ? (item.kind === 'row'
-            ? { key: item.row.key, hour: item.row.hour, top: item.top, height: item.height, meta: item.row.meta }
-            : { key: item.key, hour: item.span.lastHour, top: item.top, height: item.height })
+            ? { key: item.row.key, hour: item.row.hour, top: item.top, height: item.height, ordinal: item.index, meta: item.row.meta }
+            : { key: item.key, hour: item.span.lastHour, top: item.top, height: item.height, ordinal: model.offset })
           : null;
         const activeSig = activeEntry ? `${activeEntry.key}@${activeEntry.hour}` : '';
         if (activeSig !== held.activeNavSig || !held.activeNavField) {
@@ -569,35 +799,72 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
           held.activeNavField = { value: activeEntry, content: content() };
         }
         fields.activeNav = held.activeNavField;
-
-        const tipKey = `${activeKey}|${model.hour}`;
-        if (held.tooltipGate.due(now, speed, activeKey, pauseFlushed)) {
-          const tip = item ? (item.kind === 'row' ? deriveLogTooltip(item.row) : deriveGapTooltip(item.span)) : null;
-          held.tooltipGate.record(now, activeKey);
-          held.tooltipField = { value: { key: activeKey, content: tip }, content: `${tipKey}:${content()}` };
-        }
-        if (held.tooltipField) fields.tooltip = held.tooltipField;
       } else {
         if (held.activeNavSig !== '' || !held.activeNavField) {
           held.activeNavSig = '';
           held.activeNavField = { value: null, content: content() };
         }
         fields.activeNav = held.activeNavField;
-        if (held.tooltipField?.value !== null) {
-          held.tooltipGate.reset();
-          held.tooltipField = { value: null, content: content() };
-          fields.tooltip = held.tooltipField;
-        }
       }
 
-      held.scheduler.sync(now, speed, () => wake(input.widget));
+      const buildTipEntry = (key: string) => {
+        const item = findItem(key);
+        if (!item) return null;
+        const tip = item.kind === 'row' ? deriveLogTooltip(item.row) : deriveGapTooltip(item.span);
+        if (!tip) return null;
+        const tipHour = item.kind === 'row' ? item.row.hour : item.span.lastHour;
+        return { hour: tipHour, rowKey: key, content: tip };
+      };
+
+      if (inspectedKey) {
+        if (!held.tipField || held.tipGate.due(now, speed, inspectedKey, pauseFlushed)) {
+          const entry = buildTipEntry(inspectedKey);
+          const payload: FamilyTooltipField = { key: `row:${inspectedKey}`, text: entry };
+          const sig = JSON.stringify(payload, (_k, v) => (typeof v === 'bigint' ? `${v}n` : v));
+          if (sig !== held.tipSig || !held.tipField) {
+            held.tipSig = sig;
+            held.tipField = { value: payload, content: content() };
+          }
+          held.tipGate.record(now, inspectedKey);
+        }
+        if (held.tipField) fields.tooltip = held.tipField;
+      } else {
+        held.tipGate.reset();
+        held.tipSig = '';
+        held.tipField = null;
+      }
+
+      if (focusedKey) {
+        if (!held.focusTipField || held.focusTipGate.due(now, speed, focusedKey, pauseFlushed)) {
+          const entry = buildTipEntry(focusedKey);
+          const payload: FamilyTooltipField = { key: `focus:${focusedKey}`, text: entry };
+          const sig = JSON.stringify(payload, (_k, v) => (typeof v === 'bigint' ? `${v}n` : v));
+          if (sig !== held.focusTipSig || !held.focusTipField) {
+            held.focusTipSig = sig;
+            held.focusTipField = { value: payload, content: content() };
+          }
+          held.focusTipGate.record(now, focusedKey);
+        }
+        if (held.focusTipField) fields.focusTooltip = held.focusTipField;
+      } else {
+        held.focusTipGate.reset();
+        held.focusTipSig = '';
+        held.focusTipField = null;
+      }
+
+      const target = held;
+      held.scheduler.sync(now, speed, () => { target.wake?.(); });
 
       const stickyH = binding.months && layout.monthStarts.length > 0 ? LOG_MONTH_HEIGHT[binding.density] : 0;
       return {
+        mode: 'picture',
         surfaces: isEmpty ? [] : [{ source: held.canvas, content: held.content }],
         fields,
-        motion: false,
-        hit: point => hitLogItem(layout, binding.scrollTop, point[1], stickyH)?.key ?? null,
+        motion: activeVisibleFades > 0 && paintedResult !== null,
+        hit: point => {
+          const hit = hitLogItem(layout, binding.scrollTop, point[1], stickyH);
+          return hit ? `row:${hit.key}` : null;
+        },
       };
     },
   };

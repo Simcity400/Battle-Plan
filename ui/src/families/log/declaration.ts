@@ -5,7 +5,7 @@ import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import type { DashboardSource } from '../../dashboard/client';
 import type { Channel } from '../../dashboard/follow/facts';
 import type { FamilyProjection, FamilySources } from '../contract.ts';
-import { lookAt } from '../table/looks.ts';
+import { lookAt } from '../looks.ts';
 import type { LogDensity, LogLayoutKind, LogModel, LogRowSpec } from './model.ts';
 
 export interface LogCountryLook {

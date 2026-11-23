@@ -294,15 +294,9 @@ export const divisionLogProjection: LogProjection<DivisionLogProjectionOptions> 
             { kind: 'rich', parts },
             { kind: 'pill', label: statusVal, tone: kindTone(kind) },
           ],
-          auditCells: {
+          rawMagnitudes: {
             kind: kindVal,
-            status: statusVal,
-            country: country.value,
             countryTag: country.tagValue,
-            name: nameVal,
-            template: templateVal,
-            place: placeVal,
-            killer: killer.value,
             killerTag: killer.tagValue,
           },
           spoken,
@@ -330,7 +324,7 @@ export const divisionLogProjection: LogProjection<DivisionLogProjectionOptions> 
             return {
               title: nameSpoken,
               icon: icon ?? undefined,
-              dateLine: `${by ? 'By ' : ''}${formatDateTime(eventHour)}`,
+              ...(by || eventHour !== readHour ? { subtitle: `${by ? 'By ' : ''}${formatDateTime(eventHour)}` } : {}),
               rows: tipRows,
             };
           },

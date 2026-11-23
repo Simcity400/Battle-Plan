@@ -1,5 +1,7 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
+import { readTokens } from '../../charts/tokens.ts';
 import type { AuditRow } from '../../draw/notifications';
+import type { FamilyTheme } from '../contract.ts';
 import { drawFormattedValue, drawHatchRect, MISSING_BOX_SIZE, type ValueCanvasContext, type ValueCanvasTheme } from '../valueCanvas.ts';
 import { formatValueState, NOT_RECORDED_LABEL } from '../valueFormat.ts';
 import type { LogCountryLook } from './declaration.ts';
@@ -12,7 +14,16 @@ import {
   type LogLayout,
   type ResolvedLogColumn,
 } from './layout.ts';
-import { canonicalLogRowAudit, type FlatLogItem, type LogBand, type LogDensity, type LogModel, type LogRowSpec, type LogTone } from './model.ts';
+import {
+  canonicalLogRowAudit,
+  deriveLogAuditRows,
+  type FlatLogItem,
+  type LogBand,
+  type LogDensity,
+  type LogModel,
+  type LogRowSpec,
+  type LogTone,
+} from './model.ts';
 
 export interface LogTheme extends ValueCanvasTheme {
   readonly surface: string;
@@ -25,6 +36,34 @@ export interface LogTheme extends ValueCanvasTheme {
   readonly warning: string;
   readonly lineSoft: string;
   readonly categories: readonly string[];
+}
+
+export function logThemeFromFamily(theme: FamilyTheme): LogTheme {
+  const tokens = typeof document !== 'undefined' ? readTokens() : null;
+  const rootStyle = typeof document !== 'undefined' ? getComputedStyle(document.documentElement) : null;
+  const surfaceAlt = rootStyle?.getPropertyValue('--surface-raised').trim() || theme.surface;
+  const hover = rootStyle?.getPropertyValue('--row-hover').trim() || 'rgba(128,128,128,0.12)';
+  const selected = rootStyle?.getPropertyValue('--row-selected').trim() || 'rgba(80,140,255,0.18)';
+  return {
+    surface: theme.surface,
+    surfaceAlt,
+    hover,
+    selected,
+    text: theme.text,
+    muted: theme.muted,
+    line: theme.line,
+    lineSoft: theme.lineSoft,
+    accent: theme.accent,
+    positive: theme.green,
+    negative: theme.red,
+    warning: theme.amber,
+    hatch: theme.hatch,
+    hatchEdge: theme.hatchEdge,
+    font: theme.font,
+    fontSize: theme.fontSize,
+    hatchSpacing: theme.hatchSpacing,
+    categories: tokens?.categories ?? [theme.accent, theme.green, theme.amber, theme.red],
+  };
 }
 
 export interface PaintedSlice {
@@ -69,6 +108,8 @@ export interface DrawLogInput {
   readonly dpr: number;
   readonly prevCanvas?: CanvasImageSource | null;
   readonly wantAudit?: boolean;
+  readonly newRowCount?: number;
+  readonly rowAlphas?: ReadonlyMap<string, number>;
 }
 
 export interface DrawLogResult {
@@ -76,6 +117,7 @@ export interface DrawLogResult {
   readonly incremental: boolean;
   readonly auditRows: AuditRow[];
   readonly paintedRows: number;
+  readonly visitedItems: number;
   readonly visibleStart: number;
   readonly visibleEnd: number;
 }
@@ -420,6 +462,7 @@ function paintItem(
   focusedKey: string | null,
   selectedKey: string | null,
   icons: ReadonlyMap<string, ImageBitmap | null>,
+  alpha = 1,
 ): void {
   const h = item.height;
   if (item.kind === 'month') {
@@ -467,6 +510,12 @@ function paintItem(
   const inspected = inspectedKey === row.key;
   const selected = selectedKey === row.key;
   const focused = focusedKey === row.key;
+  const prevAlpha = alpha < 1 ? ctx.globalAlpha : 1;
+  if (alpha < 1) {
+    ctx.fillStyle = theme.surface;
+    ctx.fillRect(0, y, width, h);
+    ctx.globalAlpha = prevAlpha * alpha;
+  }
 
   if (selected) {
     ctx.fillStyle = theme.selected;
@@ -529,6 +578,7 @@ function paintItem(
       drawBand(ctx, picture, band, col.left, col.width, middleY, col.align, false, theme, icons);
     }
   }
+  if (alpha < 1) ctx.globalAlpha = prevAlpha;
 }
 
 function paintStickyMonth(ctx: ValueCanvasContext, sticky: string, width: number, stickyH: number, theme: LogTheme): void {
@@ -548,12 +598,32 @@ function paintStickyMonth(ctx: ValueCanvasContext, sticky: string, width: number
 }
 
 export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: DrawLogInput): DrawLogResult {
-  const { model, layout, density, showMonths, width, height, scrollTop, theme, inspectedKey, focusedKey, selectedKey, icons, dpr, prevCanvas, wantAudit = true } = input;
+  const {
+    model,
+    layout,
+    density,
+    showMonths,
+    width,
+    height,
+    scrollTop,
+    theme,
+    inspectedKey,
+    focusedKey,
+    selectedKey,
+    icons,
+    dpr,
+    prevCanvas,
+    wantAudit = false,
+    newRowCount = 0,
+    rowAlphas,
+  } = input;
   const [start, end] = visibleItemRange(layout.items, scrollTop, height);
   const sticky = showMonths ? stickyMonthAt(layout, scrollTop) : null;
   const stickyH = sticky ? LOG_MONTH_HEIGHT[density] : 0;
 
-  const auditRows: AuditRow[] = [];
+  const auditRows = wantAudit
+    ? deriveLogAuditRows(model, layout.items, start, end, scrollTop, stickyH, height, newRowCount)
+    : [];
   const visKeys: string[] = [];
   const visTops: number[] = [];
   const visHeights: number[] = [];
@@ -563,31 +633,27 @@ export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: Dra
     const item = layout.items[i]!;
     const y = Math.round(item.top - scrollTop);
     const h = item.height;
-    if (item.kind === 'row' && wantAudit) {
-      auditRows.push({
-        row: item.row.key,
-        key: item.row.key,
-        value: canonicalLogRowAudit(item.row),
-      });
-    }
     if (y + h <= stickyH || y >= height) continue;
     visKeys.push(item.key);
     visTops.push(y);
     visHeights.push(h);
     const hl = (inspectedKey === item.key ? 1 : 0) | (focusedKey === item.key ? 2 : 0) | (selectedKey === item.key ? 4 : 0);
+    const alphaRaw = item.kind === 'row' && rowAlphas ? (rowAlphas.get(item.row.key) ?? 1) : 1;
+    const alphaPart = alphaRaw < 1 ? `#a${Math.round(alphaRaw * 255)}` : '';
     const base = item.kind === 'row'
-      ? `${canonicalLogRowAudit(item.row)}#${hl}#${itemIconSig(item, icons)}`
+      ? `${canonicalLogRowAudit(item.row)}#${hl}#${itemIconSig(item, icons)}${alphaPart}`
       : item.kind === 'month'
         ? `m:${item.label}`
         : `g:${item.label}#${hl}`;
     visSigs.push(base);
   }
 
-  const geomKey = `${width}x${height}@${dpr}|${density}|${showMonths ? 1 : 0}|${model.twoLine ? 1 : 0}`;
+  const themeKey = `${theme.surface}|${theme.surfaceAlt}|${theme.text}|${theme.muted}|${theme.accent}|${theme.font}|${theme.fontSize.body}`;
+  const geomKey = `${width}x${height}@${dpr}|${density}|${showMonths ? 1 : 0}|${model.twoLine ? 1 : 0}|${themeKey}`;
   const sig = `${geomKey}|${sticky ?? ''}|${visKeys.length}|${visTops.join(',')}|${visKeys.join(',')}|${visSigs.join(';')}`;
 
   if (picture.signature === sig) {
-    return { drew: false, incremental: false, auditRows, paintedRows: 0, visibleStart: start, visibleEnd: end };
+    return { drew: false, incremental: false, auditRows, paintedRows: 0, visitedItems: 0, visibleStart: start, visibleEnd: end };
   }
 
   const prev = picture.lastSlice;
@@ -642,6 +708,7 @@ export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: Dra
   const twoLine = model.twoLine === true && width >= 300;
 
   let paintedRows = 0;
+  let visitedItems = 0;
   let incremental = false;
 
   ctx.save();
@@ -666,7 +733,9 @@ export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: Dra
         const item = layout.items[i]!;
         const y = Math.round(item.top - scrollTop);
         if (y + item.height <= stickyH || y >= height) continue;
-        paintItem(ctx, picture, item, y, width, twoLine, dateCol, artCol, contentCols, theme, inspectedKey, focusedKey, selectedKey, icons);
+        const alpha = item.kind === 'row' && rowAlphas ? (rowAlphas.get(item.row.key) ?? 1) : 1;
+        paintItem(ctx, picture, item, y, width, twoLine, dateCol, artCol, contentCols, theme, inspectedKey, focusedKey, selectedKey, icons, alpha);
+        visitedItems++;
         if (item.kind === 'row') paintedRows++;
         visIdx++;
       }
@@ -688,7 +757,9 @@ export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: Dra
       const y = Math.round(item.top - scrollTop);
       const h = item.height;
       if (y + h <= stickyH || y >= height) continue;
-      paintItem(ctx, picture, item, y, width, twoLine, dateCol, artCol, contentCols, theme, inspectedKey, focusedKey, selectedKey, icons);
+      const alpha = item.kind === 'row' && rowAlphas ? (rowAlphas.get(item.row.key) ?? 1) : 1;
+      paintItem(ctx, picture, item, y, width, twoLine, dateCol, artCol, contentCols, theme, inspectedKey, focusedKey, selectedKey, icons, alpha);
+      visitedItems++;
       if (item.kind === 'row') paintedRows++;
     }
 
@@ -708,7 +779,7 @@ export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: Dra
     heights: visHeights,
     sigs: visSigs,
   };
-  return { drew: true, incremental, auditRows, paintedRows, visibleStart: start, visibleEnd: end };
+  return { drew: true, incremental, auditRows, paintedRows, visitedItems, visibleStart: start, visibleEnd: end };
 }
 
 export function hitLogItem(layout: LogLayout, scrollTop: number, y: number, stickyHeight: number): FlatLogItem | null {

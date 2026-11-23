@@ -1,9 +1,18 @@
 import { formatDateTime } from '../../dashboard/calendar.ts';
-import { LEDGER_EMPTY, ledgerFigure, ledgerTitle, type LedgerItem } from '../../dashboard/marketLedger.ts';
+import {
+  LEDGER_EMPTY,
+  ledgerFigure,
+  ledgerPartyName,
+  ledgerTitle,
+  type AmountState,
+  type LedgerItem,
+  type PartyState,
+} from '../../dashboard/marketLedger.ts';
 import type { FamilySources } from '../../families/contract.ts';
 import { logLookAt, type LogLooksMap, type LogProjection } from '../../families/log/declaration.ts';
 import type { LogColumnTrack, LogModel, LogRowSpec, LogTextPart, LogTooltipField } from '../../families/log/model.ts';
 import { registerLogProjection } from '../../families/log/registry.ts';
+import { LogRowProjectionCache } from '../../families/log/rowCache.ts';
 import {
   cellAt,
   cellNumber,
@@ -14,8 +23,8 @@ import {
   nonEmptyText,
   parseOrdinal,
 } from '../../families/log/tailReply.ts';
-import { LogRowProjectionCache } from '../../families/log/rowCache.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, valueFromRawBigInt, type Value } from '../../families/value.ts';
+import type { LogCell } from '../../generated/dashboard';
 
 export const MARKET_LEDGER_PROJECTION_KIND = 'market-ledger';
 const rowCache = new LogRowProjectionCache();
@@ -46,17 +55,31 @@ const KIND_COLOR: Readonly<Record<number, string>> = {
   34: '#4c9aff',
 };
 
+function partyStateOf(cell: LogCell | undefined): PartyState {
+  if (cell?.kind === 'text') return 'tag';
+  if (cell?.kind === 'notRecorded') return 'notRecorded';
+  return 'unavailable';
+}
+
+function amountStateOf(cell: LogCell | undefined): AmountState {
+  if (cell?.kind === 'number') return 'number';
+  if (cell?.kind === 'notRecorded') return 'notRecorded';
+  return 'missing';
+}
+
 function partyValue(
   looks: LogLooksMap,
   tag: string | null,
+  state: PartyState,
   hour: number,
 ): { readonly value: Value<string>; readonly tagValue: Value<string>; readonly look: ReturnType<typeof logLookAt>; readonly spoken: string } {
   if (!tag) {
+    const label = ledgerPartyName(null, state, t => t);
     return {
-      value: notRecorded('Country not recorded'),
-      tagValue: notRecorded('Country not recorded'),
+      value: notRecorded(label),
+      tagValue: notRecorded(label),
       look: null,
-      spoken: 'Country not recorded',
+      spoken: label,
     };
   }
   const look = logLookAt(looks, tag, hour);
@@ -74,14 +97,17 @@ function partyValue(
 }
 
 function amountAuditValue(item: LedgerItem): Value {
-  if (item.kind === null) return notRecorded('Event kind not recorded');
+  if (item.kind === null) return notRecorded('Market event kind not recorded');
   if (item.kind === 34 || (item.amountRaw === null && item.reason !== null)) {
     return notRecorded(item.reason ?? 'Amount unavailable');
   }
   if (item.kind === 6 || item.kind === 10 || item.kind === 11 || item.kind === 12) {
     return notApplicable('No delivery amount for this event');
   }
-  return valueFromRawBigInt(item.amountRaw, { kind: 'notRecorded', reason: 'Amount not recorded' });
+  return valueFromRawBigInt(
+    item.amountRaw,
+    { kind: 'notRecorded', reason: item.amountState === 'notRecorded' ? 'Amount not recorded' : 'Amount unavailable' },
+  );
 }
 
 export const marketLedgerProjection: LogProjection<MarketLedgerProjectionOptions> = {
@@ -120,38 +146,46 @@ export const marketLedgerProjection: LogProjection<MarketLedgerProjectionOptions
     for (let i = 0; i < rawTail.rows.length; i++) {
       const wire = rawTail.rows[i]!;
       rows[i] = rowCache.getOrProject(options.looks, wire, () => {
+        const sellerCell = cellAt(wire, index, 'seller');
+        const buyerCell = cellAt(wire, index, 'buyer');
+        const amountCell = cellAt(wire, index, 'amountRaw');
+        const auxCell = cellAt(wire, index, 'auxiliaryRaw');
         const item: LedgerItem = {
           id: nonEmptyText(cellText(cellAt(wire, index, 'id'))) ?? wire.key,
           kind: cellNumber(cellAt(wire, index, 'kind')),
           mode: cellNumber(cellAt(wire, index, 'mode')),
           contract: nonEmptyText(cellText(cellAt(wire, index, 'contract'))),
-          seller: nonEmptyText(cellText(cellAt(wire, index, 'seller'))),
-          buyer: nonEmptyText(cellText(cellAt(wire, index, 'buyer'))),
+          seller: nonEmptyText(cellText(sellerCell)),
+          sellerState: partyStateOf(sellerCell),
+          buyer: nonEmptyText(cellText(buyerCell)),
+          buyerState: partyStateOf(buyerCell),
           variant: nonEmptyText(cellText(cellAt(wire, index, 'variant'))),
           equipment: nonEmptyText(cellText(cellAt(wire, index, 'equipment'))),
           equipmentMissing: nonEmptyText(cellText(cellAt(wire, index, 'equipmentMissing'))),
-          amountRaw: cellRawNumber(cellAt(wire, index, 'amountRaw')),
-          auxiliaryRaw: cellRawNumber(cellAt(wire, index, 'auxiliaryRaw')),
+          amountRaw: cellRawNumber(amountCell),
+          amountState: amountStateOf(amountCell),
+          auxiliaryRaw: cellRawNumber(auxCell),
+          auxiliaryState: amountStateOf(auxCell),
           totalRaw: cellRawNumber(cellAt(wire, index, 'totalRaw')),
           reason: nonEmptyText(cellText(cellAt(wire, index, 'reason'))),
         };
 
-        const seller = partyValue(options.looks, item.seller, wire.hour);
-        const buyer = partyValue(options.looks, item.buyer, wire.hour);
-        const nameOf = (tag: string | null) => {
-          if (tag === item.buyer) return buyer.spoken;
-          if (tag === item.seller) return seller.spoken;
-          return partyValue(options.looks, tag, wire.hour).spoken;
+        const seller = partyValue(options.looks, item.seller, item.sellerState, wire.hour);
+        const buyer = partyValue(options.looks, item.buyer, item.buyerState, wire.hour);
+        const nameOf = (tag: string | null, state: PartyState = 'notRecorded') => {
+          if (tag === item.buyer && state === item.buyerState) return buyer.spoken;
+          if (tag === item.seller && state === item.sellerState) return seller.spoken;
+          return partyValue(options.looks, tag, state, wire.hour).spoken;
         };
         const titleText = ledgerTitle(item, nameOf);
         const titleVal: Value<string> = item.kind === null
-          ? notRecorded('Event kind not recorded')
+          ? notRecorded('Market event kind not recorded')
           : item.kind === 34 && item.mode === null
             ? partialValue('Delivery amount unavailable', 'Delivery mode not recorded')
             : knownValue(titleText);
         const kindVal: Value = item.kind !== null
           ? knownValue(item.kind)
-          : notRecorded('Event kind not recorded');
+          : notRecorded('Market event kind not recorded');
         const modeVal: Value = item.kind === 34
           ? (item.mode !== null ? knownValue(item.mode) : notRecorded('Delivery mode not recorded'))
           : (item.mode !== null ? knownValue(item.mode) : notApplicable('Mode applies to unavailable deliveries'));
@@ -159,7 +193,7 @@ export const marketLedgerProjection: LogProjection<MarketLedgerProjectionOptions
           ? knownValue(item.contract)
           : notRecorded('Contract not recorded');
         const equipmentVal: Value<string> = item.variant === null
-          ? notRecorded('Equipment variant not recorded')
+          ? notRecorded(item.equipmentMissing ?? 'Equipment design not recorded')
           : item.variant === '0'
             ? notApplicable('No equipment variant for this event')
             : item.equipment !== null
@@ -168,14 +202,16 @@ export const marketLedgerProjection: LogProjection<MarketLedgerProjectionOptions
 
         const figure = ledgerFigure(item);
         const figureVal: Value<string> = item.kind === null
-          ? notRecorded('Event kind not recorded')
+          ? notRecorded('Market event kind not recorded')
           : item.kind === 34 || (item.amountRaw === null && item.reason !== null)
             ? notRecorded(item.reason ?? 'Amount unavailable')
-            : figure !== null
-              ? knownValue(figure.text)
-              : item.kind === 6 || item.kind === 10 || item.kind === 11 || item.kind === 12
-                ? notApplicable('No delivery amount for this event')
-                : notRecorded('Amount not recorded');
+            : item.amountRaw === null && (item.kind === 3 || item.kind === 4 || item.kind === 5 || item.kind === 20 || item.kind === 21)
+              ? notRecorded(item.amountState === 'notRecorded' ? 'Amount not recorded' : 'Amount unavailable')
+              : figure !== null
+                ? knownValue(figure.text)
+                : item.kind === 6 || item.kind === 10 || item.kind === 11 || item.kind === 12
+                  ? notApplicable('No delivery amount for this event')
+                  : notRecorded('Amount not recorded');
 
         const sublineParts: LogTextPart[] = [
           { text: seller.value, flag: item.seller ? seller.look : undefined, tone: 'muted' },
@@ -193,11 +229,17 @@ export const marketLedgerProjection: LogProjection<MarketLedgerProjectionOptions
           formatDateTime(wire.hour),
           titleText,
           `${seller.spoken} → ${buyer.spoken}`,
-          item.variant !== null && item.variant !== '0' ? (item.equipment ?? item.equipmentMissing ?? 'Equipment name unavailable') : null,
+          item.variant !== '0' ? (item.equipment ?? item.equipmentMissing ?? 'Equipment design not recorded') : null,
           figure?.text ?? null,
         ].filter(Boolean).join(' · ');
 
         const amountAudit = amountAuditValue(item);
+        const auxiliaryAudit: Value = item.kind === 5
+          ? valueFromRawBigInt(
+            item.auxiliaryRaw,
+            { kind: 'notRecorded', reason: item.auxiliaryState === 'notRecorded' ? 'Lost fuel not recorded' : 'Lost fuel unavailable' },
+          )
+          : notApplicable('No auxiliary amount for this event');
 
         return {
           key: wire.key,
@@ -205,22 +247,20 @@ export const marketLedgerProjection: LogProjection<MarketLedgerProjectionOptions
           ordinal: parseOrdinal(wire.ordinal),
           art: item.kind !== null && KIND_COLOR[item.kind]
             ? { color: KIND_COLOR[item.kind] }
-            : { missingReason: 'Event kind not recorded' },
+            : { missingReason: 'Market event kind not recorded' },
           slots: [
             { kind: 'text', text: titleVal, weight: 'bold' },
             { kind: 'value', value: figureVal, align: 'end', tone: figure?.negative ? 'negative' : 'default' },
           ],
           subline: { kind: 'rich', parts: sublineParts },
-          auditCells: {
+          rawMagnitudes: {
             kind: kindVal,
             mode: modeVal,
             contract: contractVal,
-            seller: seller.value,
             sellerTag: seller.tagValue,
-            buyer: buyer.value,
             buyerTag: buyer.tagValue,
-            equipment: equipmentVal,
             amount: amountAudit,
+            auxiliary: auxiliaryAudit,
           },
           spoken,
           meta: item,
@@ -240,7 +280,6 @@ export const marketLedgerProjection: LogProjection<MarketLedgerProjectionOptions
             tipRows.push({ label: 'Contract', value: contractVal, tone: 'muted' });
             return {
               title: titleText,
-              dateLine: formatDateTime(wire.hour),
               rows: tipRows,
               note: item.reason ?? undefined,
             };

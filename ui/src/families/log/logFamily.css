@@ -108,6 +108,16 @@
   border-color: var(--accent);
 }
 
+.family-log-state-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+}
+
 .family-log-mirror {
   position: absolute;
   width: 1px;

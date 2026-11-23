@@ -288,18 +288,21 @@ test('division-log projection keeps missing kind as notRecorded, uses inline pla
   };
   const model = divisionLogProjection.project(makeTailSources(reply), hour, opts);
   assert.equal(model.rows.length, 2);
-  assert.equal(model.rows[0]!.auditCells.kind.kind, 'notRecorded');
-  assert.equal(model.rows[0]!.auditCells.status.kind, 'notRecorded');
-  assert.equal(model.rows[0]!.auditCells.place.kind, 'notRecorded');
-  assert.deepEqual(model.rows[1]!.auditCells.place, knownValue('Stalingrad'));
-  assert.deepEqual(model.rows[1]!.auditCells.killer, knownValue('Soviet Union'));
+  const row0 = model.rows[0]!;
+  const row1 = model.rows[1]!;
+  assert.equal(row0.rawMagnitudes?.kind?.kind, 'notRecorded');
+  assert.equal(row0.slots[1]?.kind === 'pill' ? row0.slots[1].label.kind : null, 'notRecorded');
+  assert.ok(canonicalLogRowAudit(row0).includes('Province names unavailable'));
+  assert.ok(canonicalLogRowAudit(row1).includes('Stalingrad'));
+  assert.ok(canonicalLogRowAudit(row1).includes('Soviet Union'));
   assert.ok(model.warnings?.some(w => w.includes('(3)')), 'exact vanished count from facetTotals surfaces in warnings');
 
   const layout = buildLogLayout(model, 'comfortable', false);
   assert.ok(layout.items.some(item => item.kind === 'gap' && item.label.startsWith('Not recorded · ')), 'gap row rendered inline');
 
-  const tip = deriveLogTooltip(model.rows[1]!);
-  assert.ok(tip?.subtitle && tip.subtitle.includes('1940'), `tooltip carries date line: ${tip?.subtitle}`);
+  const tip = deriveLogTooltip(row1);
+  assert.equal(tip?.title, '1st Infantry');
+  assert.equal(tip?.subtitle, undefined, 'tooltip omits static date line so display controller formats date outside audited model');
 });
 
 test('market-ledger projection preserves notRecorded cells, distinguishes zero from notApplicable, and builds canonical ordered audit', () => {
@@ -339,18 +342,18 @@ test('market-ledger projection preserves notRecorded cells, distinguishes zero f
     },
   };
   const model = marketLedgerProjection.project(makeTailSources(reply), hour, opts);
-  assert.equal(model.rows[0]!.auditCells.kind.kind, 'notRecorded');
-  assert.equal(model.rows[0]!.auditCells.contract.kind, 'notRecorded');
-  assert.equal(model.rows[0]!.auditCells.equipment.kind, 'notRecorded');
-  assert.equal(model.rows[0]!.auditCells.amount.kind, 'notRecorded');
+  assert.equal(model.rows[0]!.rawMagnitudes?.kind?.kind, 'notRecorded');
+  assert.equal(model.rows[0]!.rawMagnitudes?.contract?.kind, 'notRecorded');
+  assert.equal(model.rows[0]!.rawMagnitudes?.amount?.kind, 'notRecorded');
+  assert.ok(canonicalLogRowAudit(model.rows[0]!).includes('Equipment design not recorded'));
 
-  assert.deepEqual(model.rows[1]!.auditCells.amount, zeroValue(0n));
-  assert.equal(model.rows[2]!.auditCells.amount.kind, 'notApplicable');
-  assert.equal(model.rows[2]!.auditCells.equipment.kind, 'notApplicable');
+  assert.deepEqual(model.rows[1]!.rawMagnitudes?.amount, zeroValue(0n));
+  assert.equal(model.rows[2]!.rawMagnitudes?.amount?.kind, 'notApplicable');
+  assert.equal(model.rows[2]!.slots[1]?.kind === 'value' ? model.rows[2]!.slots[1].value.kind : null, 'notApplicable');
 
   const auditA = deriveLogAudit(model);
   assert.equal(auditA.ordered, true);
-  assert.deepEqual([...auditA.values.keys()], ['mkt:2', 'mkt:1', 'mkt:0']);
+  assert.deepEqual([...auditA.values.keys()], ['__summary__', 'mkt:2', 'mkt:1', 'mkt:0']);
   assert.notEqual(
     canonicalLogRowAudit(model.rows[0]!),
     canonicalLogRowAudit(model.rows[1]!),
@@ -618,8 +621,9 @@ test('S8: logLookAt returns null before first dated appearance and unresolved co
     manifestWarnings: [],
     manifestGaps: [],
   });
-  assert.equal(divModel.rows[0]!.auditCells.country.kind, 'notRecorded');
-  assert.deepEqual(divModel.rows[0]!.auditCells.countryTag, knownValue('GER'));
+  const divBody = divModel.rows[0]!.slots[0];
+  assert.equal(divBody?.kind === 'rich' ? divBody.parts[0]?.text.kind : null, 'notRecorded');
+  assert.deepEqual(divModel.rows[0]!.rawMagnitudes?.countryTag, knownValue('GER'));
 
   const mktReply: LogTailReplyWire = {
     branchId: '1',
@@ -634,10 +638,11 @@ test('S8: logLookAt returns null before first dated appearance and unresolved co
     warnings: [],
   };
   const mktModel = marketLedgerProjection.project(makeTailSources(mktReply), 150, { looks });
-  assert.equal(mktModel.rows[0]!.auditCells.seller.kind, 'notRecorded');
-  assert.deepEqual(mktModel.rows[0]!.auditCells.sellerTag, knownValue('GER'));
-  assert.equal(mktModel.rows[0]!.auditCells.buyer.kind, 'notRecorded');
-  assert.deepEqual(mktModel.rows[0]!.auditCells.buyerTag, knownValue('FRA'));
+  const mktSub = mktModel.rows[0]!.subline;
+  assert.equal(mktSub?.kind === 'rich' ? mktSub.parts[0]?.text.kind : null, 'notRecorded');
+  assert.deepEqual(mktModel.rows[0]!.rawMagnitudes?.sellerTag, knownValue('GER'));
+  assert.equal(mktSub?.kind === 'rich' ? mktSub.parts[2]?.text.kind : null, 'notRecorded');
+  assert.deepEqual(mktModel.rows[0]!.rawMagnitudes?.buyerTag, knownValue('FRA'));
 });
 
 test('S9: fallback state place name with missing reason is partial across row, tooltip, mirror, and audit', () => {
@@ -666,11 +671,13 @@ test('S9: fallback state place name with missing reason is partial across row, t
     manifestGaps: [],
   });
   const row = model.rows[0]!;
-  assert.equal(row.auditCells.place.kind, 'partial');
-  if (row.auditCells.place.kind === 'partial') {
-    assert.equal(row.auditCells.place.value, 'Brandenburg');
-    assert.equal(row.auditCells.place.reason, 'Province rename table not recorded');
+  const placePart = row.slots[0]?.kind === 'rich' ? row.slots[0].parts[6]?.text : null;
+  assert.equal(placePart?.kind, 'partial');
+  if (placePart?.kind === 'partial') {
+    assert.equal(placePart.value, 'Brandenburg');
+    assert.equal(placePart.reason, 'Province rename table not recorded');
   }
+  assert.ok(canonicalLogRowAudit(row).includes('Province rename table not recorded'));
   assert.ok(row.spoken.includes('Brandenburg') && row.spoken.includes('Province rename table not recorded'));
   const tip = deriveLogTooltip(row);
   const locRow = tip?.rows.find(r => r.label === 'Location');
@@ -733,12 +740,16 @@ test('S11: kind-34 delivery with unknown mode stays unknown and cannot open a dr
     mode: null,
     contract: '0000000000000012',
     seller: 'GER',
+    sellerState: 'tag',
     buyer: 'ITA',
+    buyerState: 'tag',
     variant: '6',
     equipment: 'Rifle',
     equipmentMissing: null,
     amountRaw: null,
+    amountState: 'missing',
     auxiliaryRaw: null,
+    auxiliaryState: 'missing',
     totalRaw: null,
     reason: 'Delivery amount unavailable',
   };

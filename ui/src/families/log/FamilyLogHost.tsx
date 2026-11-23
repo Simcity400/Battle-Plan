@@ -3,41 +3,76 @@ import { createPortal } from 'react-dom';
 import { useContextMenu, type MenuItem } from '../../components/ContextMenu';
 import { ChipSet } from '../../components/ChipSet';
 import ContentSetPicker from '../../components/ContentSetPicker';
-import WidgetState from '../../components/WidgetState';
-import { readTokens } from '../../charts/tokens.ts';
-import { fitTooltip, hideTooltip, showTooltip, type TooltipContent } from '../../charts/tooltip.ts';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import type { WidgetRuntime } from '../../dashboard/definitions';
-import { canonical } from '../../dashboard/follow/canonical.ts';
-import { useElement, useFollowedWidget, usePipeline, useSurfaceLabel } from '../../dashboard/follow/useFollowed.ts';
-import { useWidgetKey } from '../../dashboard/follow/useFollow.ts';
+import type { FailureOrigin } from '../../dashboard/follow/page.ts';
 import type { WidgetSpec } from '../../dashboard/model';
 import { PreparingPage } from '../../dashboard/preparing.ts';
+import { asFailure, type Failure } from '../../dashboard/queryError.ts';
+import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
-import { bitmapSurface, holdElement } from '../../draw/bitmapSurface.ts';
+import { holdElement } from '../../draw/bitmapSurface.ts';
 import { perfLog } from '../../shell/perf.ts';
-import { AuditSnapshotStore, auditRowsOf } from '../audit.ts';
-import type { FamilySources, MirrorModel } from '../contract.ts';
+import type { FamilySources } from '../contract.ts';
+import {
+  attachAuditWatch,
+  bindFamilyPointer,
+  FamilyTooltipController,
+  handleFamilyKeyDown,
+  mountFamilyCanvas,
+  optionElementId,
+  renderFamilyBodyState,
+  reportFamilyShownHour,
+  syncListboxMirror,
+  useFamilyAnnouncer,
+  useFamilyAudit,
+  useFamilyHold,
+  useFamilyPauseFlush,
+  useFamilyPlacement,
+  useFamilyTheme,
+  type FamilyNavTuple,
+  type FamilyTooltipField,
+  type ListboxMirrorItem,
+  type MountedFamilyCanvas,
+} from '../host/index.ts';
 import type { LogControlsSpec, LogExactReader, LogProjection, LogSourceSubscription } from './declaration.ts';
 import type { FamilyLogBinding, LogMetaField, LogNavEntry } from './laneView.ts';
 import {
   buildLogLayout,
   LOG_MIN_TAIL_LIMIT,
+  LOG_MONTH_HEIGHT,
   logicalScrollFromPhysical,
   physicalScrollFromLogical,
   rowIndexAtLogicalY,
+  stickyMonthAt,
   tailLimitForViewport,
   visibleItemRange,
 } from './layout.ts';
-import { canonicalLogRowAudit, type LogDensity, type LogFacetPill } from './model.ts';
-import type { LogTheme } from './painter.ts';
+import { deriveLogAuditRows, type LogDensity, type LogFacetPill } from './model.ts';
+import { logThemeFromFamily } from './painter.ts';
+import { isLogTailReply, mergeFrozenPageIntoTail, parseOrdinal } from './tailReply.ts';
 import './logFamily.css';
 
 const LOG_AUDIT = -1;
-const STATIC_HOLD = {};
-const HOVER_OPEN_MS = 150;
-const HOVER_CLOSE_MS = 100;
-const CLICK_CANCEL_PX = 4;
+
+interface FrozenViewState {
+  readonly gen: number;
+  readonly hour: number;
+  readonly baseOrdinal: number;
+  readonly total: number;
+  offset: number;
+  pageSize: number;
+  panels: Record<string, unknown> | null;
+}
+
+interface ScrollPageRequest {
+  readonly gen: number;
+  readonly frozenHour: number;
+  readonly offset: number;
+  readonly pageSize: number;
+  readonly baseOrdinal: number;
+  readonly total: number;
+}
 
 interface LogAuditSnapshot<TOptions> {
   readonly projection: LogProjection<TOptions>;
@@ -47,7 +82,16 @@ interface LogAuditSnapshot<TOptions> {
   readonly scrollTop: number;
   readonly height: number;
   readonly limit: number;
+  readonly isStatic: boolean;
   readonly exactSources: LogExactReader;
+  readonly onLoadScrollPage?: (frozenHour: number, offset: number, pageSize: number, baseOrdinal: number, total: number) => Promise<unknown>;
+  readonly frozen: {
+    readonly hour: number;
+    readonly baseOrdinal: number;
+    readonly total: number;
+    readonly offset: number;
+    readonly pageSize: number;
+  } | null;
 }
 
 export interface FamilyLogHostProps<TOptions> {
@@ -79,53 +123,16 @@ export interface FamilyLogHostProps<TOptions> {
   readonly extraWarnings?: readonly string[];
   readonly blockedState?: ReactNode;
   readonly held?: boolean;
+  readonly loadingLabel?: string;
   readonly className?: string;
 }
 
-function logThemeOf(): LogTheme | undefined {
-  if (typeof document === 'undefined') return undefined;
-  const tokens = readTokens();
-  const rootStyle = getComputedStyle(document.documentElement);
-  const hatch = rootStyle.getPropertyValue('--hatch').trim() || tokens.muted;
-  const hatchEdge = rootStyle.getPropertyValue('--hatch-edge').trim() || tokens.border;
-  const surfaceAlt = rootStyle.getPropertyValue('--surface-raised').trim() || tokens.surface;
-  const hover = rootStyle.getPropertyValue('--row-hover').trim() || 'rgba(128,128,128,0.12)';
-  const selected = rootStyle.getPropertyValue('--row-selected').trim() || 'rgba(80,140,255,0.18)';
-  return {
-    surface: tokens.surface,
-    surfaceAlt,
-    hover,
-    selected,
-    text: tokens.text,
-    muted: tokens.muted,
-    line: tokens.border,
-    lineSoft: tokens.grid,
-    accent: tokens.accent,
-    positive: tokens.positive,
-    negative: tokens.error,
-    warning: tokens.warning,
-    hatch,
-    hatchEdge,
-    font: tokens.font,
-    fontSize: { small: tokens.fontSize.small, body: tokens.fontSize.body },
-    hatchSpacing: tokens.hatchSpacing,
-    categories: tokens.categories,
-  };
-}
-
-function LogSkeleton() {
-  return (
-    <div className="family-log-skeleton" data-state="loading" aria-busy="true" aria-label="Loading log rows">
-      {Array.from({ length: 8 }, (_, index) => (
-        <div key={index} className="family-log-skeleton-row">
-          <span className="family-log-skeleton-bar" />
-          <span className="family-log-skeleton-bar" />
-          <span className="family-log-skeleton-bar" />
-          <span className="family-log-skeleton-bar" />
-        </div>
-      ))}
-    </div>
-  );
+interface LogHostMetaState {
+  mode: string;
+  reason: string | null;
+  failureOrigin: FailureOrigin;
+  empty: LogMetaField['empty'];
+  warnings: readonly string[];
 }
 
 export default function FamilyLogHost<TOptions>({
@@ -157,9 +164,11 @@ export default function FamilyLogHost<TOptions>({
   extraWarnings,
   blockedState = null,
   held = false,
+  loadingLabel,
   className,
 }: FamilyLogHostProps<TOptions>) {
   const prepared = useContext(PreparingPage);
+  useWidgetSkeleton('log');
   const viewportHeight = useViewportHeight();
   const contextMenu = useContextMenu(`${label} actions`);
   const contextMenuRef = useRef(contextMenu);
@@ -168,54 +177,129 @@ export default function FamilyLogHost<TOptions>({
   const frameRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
-  const liveRegionRef = useRef<HTMLDivElement>(null);
   const pillsRef = useRef<HTMLSpanElement>(null);
+  const jumpLabelRef = useRef<HTMLSpanElement>(null);
   const lastPillsSigRef = useRef('');
   const focusAnchorRef = useRef({ x: 0, y: 0 });
 
   const viewportRef = useRef({ width: 0, height: 0, scrollTop: 0, physicalTop: 0 });
   const limitRef = useRef(LOG_MIN_TAIL_LIMIT);
-  const frozenRef = useRef<{ hour: number; baseOrdinal: number; total: number; panels: Record<string, unknown> } | null>(null);
-  const [jumpCount, setJumpCount] = useState<number | null>(null);
-  const scrollPageFlightRef = useRef<number | null>(null);
-  const scrollPageOffsetRef = useRef<number>(0);
+  const frozenGenRef = useRef(0);
+  const frozenRef = useRef<FrozenViewState | null>(null);
+  const [scrolledBack, setScrolledBack] = useState(false);
+  const lastJumpCountRef = useRef(0);
+  const scrollPageFlightRef = useRef<{ gen: number; offset: number } | null>(null);
+  const [pageError, setPageError] = useState<{ readonly failure: Failure; readonly req: ScrollPageRequest } | null>(null);
+  const pendingFocusOrdinalRef = useRef<number | null>(null);
 
   const focusedKeyRef = useRef<string | null>(null);
   const focusInsideRef = useRef(false);
   const inspectedKeyRef = useRef<string | null>(null);
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
-  const pointerDownRef = useRef<{ key: string | null; x: number; y: number; button: number; cancelled: boolean } | null>(null);
-  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pinnedTipRef = useRef<{ key: string; content: TooltipContent; x: number; y: number } | null>(null);
-  const hoverTipShownRef = useRef(false);
   const heldRef = useRef(held);
   heldRef.current = held;
   const dimRef = useRef(false);
   const pauseFlushRef = useRef(0);
   const lastMirrorKeyRef = useRef('');
   const lastExtentHeightRef = useRef(-1);
-  const navRef = useRef<readonly LogNavEntry[]>([]);
+  const navRef = useRef<readonly FamilyNavTuple[]>([]);
+  const navEntriesRef = useRef<readonly LogNavEntry[]>([]);
   const activeNavRef = useRef<LogNavEntry | null>(null);
   const lastHourRef = useRef<number | null>(staticSources?.hour ?? null);
   const lastMetaRef = useRef<LogMetaField | null>(null);
-  const auditStoreRef = useRef<AuditSnapshotStore<LogAuditSnapshot<TOptions>> | null>(null);
-  if (!auditStoreRef.current) auditStoreRef.current = new AuditSnapshotStore<LogAuditSnapshot<TOptions>>(512);
   const lastAuditRef = useRef<{ id: number; key: string; options: TOptions } | null>(null);
-  const hasPaintedRef = useRef(false);
+  const lastPhasesRef = useRef<unknown>(null);
 
-  const [meta, setMeta] = useState<{
-    mode: LogMetaField['mode'];
-    reason: string | null;
-    empty: LogMetaField['empty'];
-    warnings: readonly string[];
-  }>(() => ({
+  const [meta, setMeta] = useState<LogHostMetaState>(() => ({
     mode: staticSources ? 'picture' : 'reading',
     reason: null,
+    failureOrigin: 'local',
     empty: null,
     warnings: [],
   }));
   const metaSigRef = useRef('');
+
+  const { theme: familyTheme, reducedMotion } = useFamilyTheme();
+  const theme = useMemo(() => (familyTheme ? logThemeFromFamily(familyTheme) : undefined), [familyTheme]);
+  const { announce, hasFrame, liveRegionRef } = useFamilyAnnouncer('log');
+
+  const enabled = active && !prepared && !blockedState && (subscriptions.length > 0 || staticSources !== null);
+  const auditable = !!exactSources;
+  const placement = useFamilyPlacement({
+    family: 'log',
+    declarationKind: projection.kind,
+    widgetId: widget.id,
+    widgetKind: widget.kind,
+    runtime,
+    enabled,
+    auditable,
+    subscriptions,
+    offset,
+    pin: pin ?? (subscriptions.length === 0 && staticSources ? staticSources.hour : null),
+    bounds,
+    frameRef,
+    surfaceLabel: 'log',
+  });
+  const { pipeline, pipe, sourceIdsRef, subsReady, instanceId, tooltipOwner, retryStream, retryLocal } = placement;
+
+  const tooltips = useMemo(() => new FamilyTooltipController(tooltipOwner), [tooltipOwner]);
+  useEffect(() => () => tooltips.dispose(), [tooltips]);
+  useFamilyHold(frameRef, held, tooltips);
+
+  const audit = useFamilyAudit<LogAuditSnapshot<TOptions>>({
+    pipeline,
+    pipe,
+    ownerId: LOG_AUDIT,
+    auditable,
+    exact: async (hour, snap) => {
+      if (snap.frozen) {
+        const frozenExact = await snap.exactSources(snap.frozen.hour, snap.limit);
+        if (!frozenExact) return null;
+        let effectiveSources = frozenExact;
+        if (snap.frozen.offset > 0 && snap.onLoadScrollPage) {
+          const pageTail = await snap.onLoadScrollPage(
+            snap.frozen.hour,
+            snap.frozen.offset,
+            snap.frozen.pageSize,
+            snap.frozen.baseOrdinal,
+            snap.frozen.total,
+          );
+          if (!isLogTailReply(pageTail)) return null;
+          const baseTail = frozenExact.panels.get('tail');
+          const mergedTail = isLogTailReply(baseTail) ? mergeFrozenPageIntoTail(baseTail, pageTail) : pageTail;
+          const panels = new Map(frozenExact.panels);
+          panels.set('tail', mergedTail);
+          panels.set('__offset', snap.frozen.offset);
+          effectiveSources = { ...frozenExact, panels };
+        }
+        let newRowCount = 0;
+        if (!snap.isStatic) {
+          const liveExact = await snap.exactSources(hour, 1);
+          const liveTail = liveExact?.panels.get('tail');
+          if (isLogTailReply(liveTail)) {
+            newRowCount = Math.max(0, parseOrdinal(liveTail.total) - snap.frozen.total);
+          }
+        }
+        const model = snap.projection.project(effectiveSources, snap.frozen.hour, snap.options);
+        const layout = buildLogLayout(model, snap.density, snap.months);
+        const [start, end] = visibleItemRange(layout.items, snap.scrollTop, snap.height);
+        const sticky = snap.months ? stickyMonthAt(layout, snap.scrollTop) : null;
+        const stickyH = sticky ? LOG_MONTH_HEIGHT[snap.density] : 0;
+        const rows = deriveLogAuditRows(model, layout.items, start, end, snap.scrollTop, stickyH, snap.height, newRowCount);
+        return { values: new Map(rows.map(row => [row.key, row.value ?? ''])), ordered: true };
+      }
+
+      const exact = await snap.exactSources(hour, snap.limit);
+      if (!exact) return null;
+      const model = snap.projection.project(exact, hour, snap.options);
+      const layout = buildLogLayout(model, snap.density, snap.months);
+      const [start, end] = visibleItemRange(layout.items, snap.scrollTop, snap.height);
+      const sticky = snap.months ? stickyMonthAt(layout, snap.scrollTop) : null;
+      const stickyH = sticky ? LOG_MONTH_HEIGHT[snap.density] : 0;
+      const rows = deriveLogAuditRows(model, layout.items, start, end, snap.scrollTop, stickyH, snap.height, 0);
+      return { values: new Map(rows.map(row => [row.key, row.value ?? ''])), ordered: true };
+    },
+  });
 
   const paintPills = useCallback((pills: readonly LogFacetPill[]) => {
     if (!pills.length && lastPillsSigRef.current === '') return;
@@ -259,66 +343,11 @@ export default function FamilyLogHost<TOptions>({
     host.replaceChildren(fragment);
   }, []);
 
-  const theme = useMemo(() => logThemeOf(), []);
-  const tooltipOwner = `family-log:${widget.id}`;
-  useEffect(() => () => {
-    hideTooltip(tooltipOwner);
-    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
-    if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current);
-  }, [tooltipOwner]);
-
-  const pipeline = usePipeline(runtime.clock, runtime.client);
-  const widgetKey = useWidgetKey();
-  const enabled = active && !prepared && !blockedState && (subscriptions.length > 0 || staticSources !== null);
-  const pipeKey = enabled && pipeline ? `${widgetKey}|${offset}|${projection.kind}` : null;
-  const pipe = useFollowedWidget(pipeline, pipeKey, {
-    offset,
-    pin: pin ?? (subscriptions.length === 0 && staticSources ? staticSources.hour : null),
-    bounds,
-    widget: widgetKey,
-    key: `${widget.kind}|${projection.kind}`,
-  });
-
-  const frameElement = useElement(frameRef);
-  useSurfaceLabel(frameElement, enabled && !!exactSources, pipe, 'log');
-
-  const subsKey = useMemo(
-    () => JSON.stringify(subscriptions.map(s => [s.name, s.source.id, s.source.revision, s.branch, s.offset, s.channel, s.product ?? '', canonical(s.query)])),
-    [subscriptions],
-  );
-  const subsRef = useRef(subscriptions);
-  subsRef.current = subscriptions;
-  const sourceIdsRef = useRef<Record<string, number>>({});
-  const [subsReady, setSubsReady] = useState(0);
-
-  useLayoutEffect(() => {
-    hasPaintedRef.current = false;
-    if (!pipeline || pipe === null || !enabled || !subsRef.current.length) {
-      sourceIdsRef.current = {};
-      return;
-    }
-    const tokens: object[] = [];
-    const ids: Record<string, number> = {};
-    for (const sub of subsRef.current) {
-      const token = {};
-      tokens.push(token);
-      const id = pipeline.subscribe(pipe, token, sub.source, sub.branch, sub.offset, sub.query, sub.channel, sub.product);
-      if (id !== undefined) ids[sub.name] = id;
-    }
-    sourceIdsRef.current = ids;
-    setSubsReady(n => n + 1);
-    return () => {
-      sourceIdsRef.current = {};
-      for (const token of tokens) pipeline.unsubscribe(pipe, token);
-    };
-  }, [pipeline, pipe, enabled, subsKey]);
-
   const reportShown = useShownHour();
   const reportShownRef = useRef(reportShown);
   reportShownRef.current = reportShown;
 
-  const surfaceRef = useRef<{ canvas: HTMLCanvasElement; extent: HTMLDivElement; surface: ReturnType<typeof bitmapSurface> } | null>(null);
-
+  const surfaceRef = useRef<MountedFamilyCanvas | null>(null);
   const latestRef = useRef({
     projection,
     options,
@@ -326,6 +355,7 @@ export default function FamilyLogHost<TOptions>({
     months,
     twoLine,
     theme,
+    reducedMotion,
     staticSources,
     exactSources,
     onLoadScrollPage,
@@ -334,8 +364,7 @@ export default function FamilyLogHost<TOptions>({
     onActivate,
     contextMenuItems,
     viewportHeight,
-    offset,
-    bounds,
+    captureActive: audit.captureActive,
   });
   latestRef.current = {
     projection,
@@ -344,6 +373,7 @@ export default function FamilyLogHost<TOptions>({
     months,
     twoLine,
     theme,
+    reducedMotion,
     staticSources,
     exactSources,
     onLoadScrollPage,
@@ -352,28 +382,27 @@ export default function FamilyLogHost<TOptions>({
     onActivate,
     contextMenuItems,
     viewportHeight,
-    offset,
-    bounds,
+    captureActive: audit.captureActive,
   };
 
   const bind = useCallback(() => {
-    const heldSurface = surfaceRef.current;
-    if (!heldSurface || !pipeline || pipe === null) return;
+    const mounted = surfaceRef.current;
+    if (!mounted || !pipeline || pipe === null) return;
     const { width, height, scrollTop } = viewportRef.current;
-    const w = Math.max(1, width || 320);
-    const h = Math.max(1, height || 200);
+    const w = Math.max(1, width || 360);
+    const h = Math.max(1, height || 240);
     const cur = latestRef.current;
-    const staticPanels = cur.staticSources ? Object.fromEntries(cur.staticSources.sources.panels) : undefined;
     const frozen = frozenRef.current;
+    const staticPanels = cur.staticSources ? Object.fromEntries(cur.staticSources.sources.panels) : undefined;
 
     let auditId: number | undefined;
-    if (perfLog && cur.exactSources) {
-      const auditKey = `${cur.projection.kind}|${cur.density}|${cur.months ? 1 : 0}|${Math.round(scrollTop)}|${h}|${limitRef.current}`;
-      const prev = lastAuditRef.current;
-      if (prev && prev.key === auditKey && prev.options === cur.options) {
-        auditId = prev.id;
+    if (perfLog && cur.captureActive && cur.exactSources) {
+      const frozenKey = frozen ? `${frozen.gen}:${frozen.hour}:${frozen.offset}:${frozen.pageSize}` : 'live';
+      const snapKey = `${cur.projection.kind}|${cur.density}|${cur.months ? 1 : 0}|${Math.round(scrollTop)}|${h}|${limitRef.current}|${frozenKey}|${cur.staticSources ? 1 : 0}`;
+      if (lastAuditRef.current && lastAuditRef.current.key === snapKey && lastAuditRef.current.options === cur.options) {
+        auditId = lastAuditRef.current.id;
       } else {
-        auditId = auditStoreRef.current!.create({
+        auditId = audit.store.create({
           projection: cur.projection,
           options: cur.options,
           density: cur.density,
@@ -381,9 +410,18 @@ export default function FamilyLogHost<TOptions>({
           scrollTop,
           height: h,
           limit: limitRef.current,
+          isStatic: cur.staticSources !== null,
           exactSources: cur.exactSources,
+          onLoadScrollPage: cur.onLoadScrollPage,
+          frozen: frozen ? {
+            hour: frozen.hour,
+            baseOrdinal: frozen.baseOrdinal,
+            total: frozen.total,
+            offset: frozen.offset,
+            pageSize: frozen.pageSize,
+          } : null,
         });
-        lastAuditRef.current = { id: auditId, key: auditKey, options: cur.options };
+        lastAuditRef.current = { id: auditId, key: snapKey, options: cur.options };
       }
     }
 
@@ -394,27 +432,33 @@ export default function FamilyLogHost<TOptions>({
       density: cur.density,
       months: cur.months,
       sources: sourceIdsRef.current,
-      ...(staticPanels && Object.keys(staticPanels).length ? { staticPanels, staticHour: cur.staticSources?.hour ?? null } : {}),
-      ...(frozen ? { frozenHour: frozen.hour, frozenPanels: frozen.panels } : {}),
+      ...(staticPanels && Object.keys(staticPanels).length ? { staticPanels } : {}),
+      ...(cur.staticSources ? { staticHour: cur.staticSources.hour } : {}),
+      ...(frozen ? {
+        frozenGen: frozen.gen,
+        frozenHour: frozen.hour,
+        frozenTotal: frozen.total,
+        ...(frozen.panels ? { frozenPanels: frozen.panels } : {}),
+      } : {}),
       width: w,
       height: h,
       scrollTop,
       theme: cur.theme,
       selectedKey: cur.selectedKey,
       focusedKey: focusInsideRef.current ? focusedKeyRef.current : null,
+      reducedMotion: cur.reducedMotion,
       pauseFlush: pauseFlushRef.current,
-      ...(perfLog && auditId !== undefined ? { audit: true, auditId } : {}),
+      ...(perfLog && cur.captureActive && auditId !== undefined ? { audit: true, auditId } : {}),
     };
-
-    heldSurface.canvas.style.width = `${w}px`;
-    heldSurface.canvas.style.height = `${h}px`;
+    mounted.canvas.style.width = `${w}px`;
+    mounted.canvas.style.height = `${h}px`;
     pipeline.present(pipe, 'log');
     const dated = Object.keys(sourceIdsRef.current).length === 0 && cur.staticSources
       ? { h: cur.staticSources.hour, c: cur.staticSources.hour }
       : undefined;
     pipeline.bind(
       pipe,
-      [heldSurface.surface],
+      [mounted.surface],
       {
         surfaces: [{ width: w, height: h, dpr: typeof devicePixelRatio === 'number' ? devicePixelRatio : 1 }],
         ...(dated ? { dated } : {}),
@@ -422,42 +466,92 @@ export default function FamilyLogHost<TOptions>({
       {},
       bindingModel,
     );
-  }, [pipeline, pipe]);
+  }, [pipeline, pipe, audit.store, sourceIdsRef]);
 
   const bindRef = useRef(bind);
   bindRef.current = bind;
 
-  const paintMirror = useCallback((mirror: MirrorModel | null) => {
-    const box = mirrorRef.current;
-    if (!box) return;
-    if (!mirror) {
-      if (lastMirrorKeyRef.current !== '') {
-        lastMirrorKeyRef.current = '';
-        box.replaceChildren();
-      }
-      return;
+  const paintMirror = useCallback((mirror: { readonly total: number; readonly items: readonly ListboxMirrorItem[] } | null) => {
+    const mirrorHost = mirrorRef.current;
+    const scrollNode = scrollRef.current;
+    if (!mirrorHost) return;
+    const { activeDescendantId } = syncListboxMirror(mirrorHost, mirror?.items ?? null, {
+      optionIdPrefix: `log-${instanceId}`,
+      total: mirror?.total ?? 0,
+      focusedKey: focusedKeyRef.current,
+      lastMirrorKeyRef,
+    });
+    if (scrollNode) {
+      if (activeDescendantId) scrollNode.setAttribute('aria-activedescendant', activeDescendantId);
+      else scrollNode.removeAttribute('aria-activedescendant');
     }
-    const key = `${mirror.first}:${mirror.total}:${mirror.rows.map(r => `${r.key}|${r.name}`).join(';')}`;
-    if (key === lastMirrorKeyRef.current) return;
-    lastMirrorKeyRef.current = key;
-    const fragment = document.createDocumentFragment();
-    for (const row of mirror.rows) {
-      const div = document.createElement('div');
-      div.setAttribute('role', 'option');
-      div.id = `log-opt-${widget.id}-${row.key}`;
-      div.dataset.rowKey = row.key;
-      div.setAttribute('aria-selected', String(row.key === focusedKeyRef.current));
-      div.textContent = row.name;
-      fragment.append(div);
-    }
-    box.replaceChildren(fragment);
-  }, [widget.id]);
+  }, [instanceId]);
+
+  const refreshFocusAnchor = useCallback(() => {
+    const box = frameRef.current?.getBoundingClientRect();
+    if (box) focusAnchorRef.current = { x: box.left + Math.min(240, box.width / 2), y: box.top + 56 };
+  }, []);
+
+  const requestScrollPage = useCallback((req: ScrollPageRequest) => {
+    const loader = latestRef.current.onLoadScrollPage;
+    if (!loader) return;
+    if (scrollPageFlightRef.current && scrollPageFlightRef.current.gen === req.gen && scrollPageFlightRef.current.offset === req.offset) return;
+    scrollPageFlightRef.current = { gen: req.gen, offset: req.offset };
+    setPageError(null);
+    void loader(req.frozenHour, req.offset, req.pageSize, req.baseOrdinal, req.total).then(
+      pageTail => {
+        if (scrollPageFlightRef.current?.gen === req.gen && scrollPageFlightRef.current.offset === req.offset) {
+          scrollPageFlightRef.current = null;
+        }
+        if (req.gen !== frozenGenRef.current) return;
+        const curFrozen = frozenRef.current;
+        if (!curFrozen || curFrozen.gen !== req.gen || !pageTail) return;
+        curFrozen.offset = req.offset;
+        curFrozen.pageSize = req.pageSize;
+        curFrozen.panels = { tail: pageTail, __offset: req.offset };
+        bindRef.current();
+      },
+      error => {
+        if (scrollPageFlightRef.current?.gen === req.gen && scrollPageFlightRef.current.offset === req.offset) {
+          scrollPageFlightRef.current = null;
+        }
+        if (req.gen !== frozenGenRef.current) return;
+        setPageError({ failure: asFailure(error), req });
+      },
+    );
+  }, []);
+
+  const ensureRangeLoaded = useCallback((wantStart: number, wantEnd: number) => {
+    const frozen = frozenRef.current;
+    const metaNow = lastMetaRef.current;
+    if (!frozen || !metaNow || frozen.total <= 0) return;
+    const loadedStart = metaNow.offset;
+    const loadedEnd = metaNow.offset + metaNow.loadedCount;
+    const clampedStart = Math.max(0, Math.min(frozen.total - 1, wantStart));
+    const clampedEnd = Math.max(clampedStart + 1, Math.min(frozen.total, wantEnd));
+    if (clampedStart >= loadedStart && clampedEnd <= loadedEnd) return;
+    const pageSize = Math.max(limitRef.current, 128);
+    const margin = Math.floor(pageSize / 4);
+    const pageOffset = Math.max(0, Math.min(Math.max(0, frozen.total - pageSize), clampedStart - margin));
+    if (pageOffset === loadedStart && loadedEnd >= clampedEnd) return;
+    requestScrollPage({
+      gen: frozen.gen,
+      frozenHour: frozen.hour,
+      offset: pageOffset,
+      pageSize,
+      baseOrdinal: frozen.baseOrdinal,
+      total: frozen.total,
+    });
+  }, [requestScrollPage]);
 
   const jumpToLatest = useCallback(() => {
+    frozenGenRef.current++;
     frozenRef.current = null;
-    scrollPageOffsetRef.current = 0;
     scrollPageFlightRef.current = null;
-    setJumpCount(null);
+    pendingFocusOrdinalRef.current = null;
+    lastJumpCountRef.current = 0;
+    setPageError(null);
+    setScrolledBack(false);
     const node = scrollRef.current;
     if (node) node.scrollTop = 0;
     viewportRef.current.scrollTop = 0;
@@ -465,345 +559,341 @@ export default function FamilyLogHost<TOptions>({
     bindRef.current();
   }, []);
 
+  const boundsKey = bounds ? `${bounds[0]}:${bounds[1]}` : '';
+  const isStatic = staticSources !== null;
+  const resetScopeKey = `${subsReady}|${pin ?? ''}|${boundsKey}|${isStatic ? 1 : 0}`;
+  const prevResetScopeRef = useRef(resetScopeKey);
   useLayoutEffect(() => {
-    holdElement(frameRef.current, held, STATIC_HOLD);
-    if (held && !pinnedTipRef.current) hideTooltip(tooltipOwner);
-    return () => holdElement(frameRef.current, false, STATIC_HOLD);
-  }, [held, tooltipOwner]);
+    if (prevResetScopeRef.current === resetScopeKey) return;
+    prevResetScopeRef.current = resetScopeKey;
+    frozenGenRef.current++;
+    frozenRef.current = null;
+    scrollPageFlightRef.current = null;
+    pendingFocusOrdinalRef.current = null;
+    lastJumpCountRef.current = 0;
+    setPageError(null);
+    setScrolledBack(false);
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+    viewportRef.current.scrollTop = 0;
+    viewportRef.current.physicalTop = 0;
+  }, [resetScopeKey]);
+
+  const scrollToLogicalTop = useCallback((logicalTop: number) => {
+    const node = scrollRef.current;
+    const geom = lastMetaRef.current?.geometry;
+    if (!node || !geom) return;
+    const clamped = Math.max(0, Math.min(Math.max(0, geom.logicalHeight - viewportRef.current.height), logicalTop));
+    const physical = physicalScrollFromLogical(geom, viewportRef.current.height, clamped);
+    node.scrollTop = physical;
+    viewportRef.current.physicalTop = physical;
+    viewportRef.current.scrollTop = clamped;
+    if (clamped > 0 && !frozenRef.current && lastMetaRef.current && lastMetaRef.current.hour !== null) {
+      const m = lastMetaRef.current;
+      frozenRef.current = {
+        gen: ++frozenGenRef.current,
+        hour: m.hour!,
+        baseOrdinal: m.baseOrdinal,
+        total: m.total,
+        offset: m.offset,
+        pageSize: m.loadedCount,
+        panels: null,
+      };
+      lastJumpCountRef.current = 0;
+      setScrolledBack(true);
+    } else if (clamped === 0 && frozenRef.current) {
+      frozenGenRef.current++;
+      frozenRef.current = null;
+      scrollPageFlightRef.current = null;
+      lastJumpCountRef.current = 0;
+      setPageError(null);
+      setScrolledBack(false);
+    }
+  }, []);
+
+  const focusRowByKey = useCallback((key: string) => {
+    focusedKeyRef.current = key;
+    const entry = navEntriesRef.current.find(item => item.key === key);
+    const node = scrollRef.current;
+    const geom = lastMetaRef.current?.geometry;
+    if (entry && node && geom) {
+      const curTop = viewportRef.current.scrollTop;
+      const vh = viewportRef.current.height;
+      let nextLogical = curTop;
+      if (entry.top < curTop) nextLogical = entry.top;
+      else if (entry.top + entry.height > curTop + vh) nextLogical = entry.top + entry.height - vh;
+      if (nextLogical !== curTop) scrollToLogicalTop(nextLogical);
+    }
+    if (node) {
+      const idx = entry?.ordinal ?? navEntriesRef.current.findIndex(item => item.key === key);
+      if (idx >= 0) node.setAttribute('aria-activedescendant', optionElementId(`log-${instanceId}`, idx));
+    }
+    bindRef.current();
+  }, [instanceId, scrollToLogicalTop]);
+
+  const focusByOrdinal = useCallback((ordinal: number) => {
+    const match = navEntriesRef.current.find(item => item.ordinal === ordinal);
+    if (match) {
+      pendingFocusOrdinalRef.current = null;
+      focusRowByKey(match.key);
+      return;
+    }
+    const metaNow = lastMetaRef.current;
+    if (!metaNow || metaNow.total <= 0) return;
+    const clamped = Math.max(0, Math.min(metaNow.total - 1, ordinal));
+    pendingFocusOrdinalRef.current = clamped;
+    const targetTop = clamped * metaNow.rowHeight;
+    scrollToLogicalTop(Math.max(0, targetTop - Math.floor(viewportRef.current.height / 3)));
+    ensureRangeLoaded(clamped, clamped + 1);
+    bindRef.current();
+  }, [ensureRangeLoaded, focusRowByKey, scrollToLogicalTop]);
 
   useLayoutEffect(() => {
     const node = scrollRef.current;
     if (!node || !pipeline || pipe === null) return;
     lastExtentHeightRef.current = -1;
-    const extent = document.createElement('div');
-    const drawn = pipeline.held(pipe, 'log', () => {
-      const canvas = document.createElement('canvas');
-      canvas.className = 'family-log-canvas';
-      canvas.setAttribute('aria-hidden', 'true');
-      canvas.dataset.surface = 'log';
-      canvas.dataset.placement = String(pipe);
-      return { canvas, surface: bitmapSurface(canvas) };
-    })!;
-    extent.className = 'family-log-extent';
-    extent.append(drawn.canvas);
-    node.append(extent);
-    surfaceRef.current = { canvas: drawn.canvas, extent, surface: drawn.surface };
+    lastPhasesRef.current = null;
 
-    const updateTooltip = (tip: { key: string; content: TooltipContent | null } | null, pos: { x: number; y: number } | null) => {
-      if (pinnedTipRef.current) return;
-      if (!tip?.content || !pos) {
-        hoverTipShownRef.current = false;
-        hideTooltip(tooltipOwner);
-        return;
-      }
-      hoverTipShownRef.current = true;
-      const fitted = fitTooltip([tip.content], latestRef.current.viewportHeight);
-      showTooltip(tooltipOwner, fitted, pos.x, pos.y, tip.key);
-    };
+    const mounted = mountFamilyCanvas(node, pipeline, pipe, 'log', 'family-log-canvas', 'family-log-extent');
+    surfaceRef.current = mounted;
+
+    const auditWatch = attachAuditWatch(pipeline, pipe, {
+      isAuditable: () => !!latestRef.current.exactSources,
+      onCaptureChange: activeAudit => { latestRef.current.captureActive = activeAudit; },
+      bindNow: () => bindRef.current(),
+    });
 
     const install = () => {
       const shown = pipeline.view(pipe);
       const frameNode = frameRef.current;
       dimRef.current = !!shown?.dim;
       holdElement(frameNode, !!shown?.dim);
+      const viewMode = shown?.mode ?? 'reading';
+      const visible = viewMode === 'picture';
       const rawMeta = shown?.fields?.meta as LogMetaField | undefined;
-      lastMetaRef.current = rawMeta ?? null;
+      const effectiveMode = !visible
+        ? viewMode
+        : (rawMeta?.mode === 'empty' ? 'picture' : (rawMeta?.mode ?? 'picture'));
+      const reason = shown?.reason ?? rawMeta?.reason ?? null;
+      const failureOrigin: FailureOrigin = shown?.failureOrigin ?? 'local';
+      const isPictureWithModel = visible && rawMeta !== undefined && rawMeta.mode !== 'reading';
 
-      const rawMode = rawMeta?.mode ?? (shown?.mode === 'refused' ? 'refused' : 'reading');
-      if (rawMode === 'picture' || rawMode === 'empty') hasPaintedRef.current = true;
-      const transientReading = rawMode === 'reading' && hasPaintedRef.current;
-      const mode = transientReading ? 'picture' : rawMode;
-      const reason = rawMeta?.reason ?? shown?.reason ?? null;
-      const paintedHour = rawMode === 'picture' || rawMode === 'empty'
-        ? (shown?.through ?? shown?.painted ?? rawMeta?.hour ?? null)
-        : (transientReading ? lastHourRef.current : null);
-      if (transientReading) holdElement(frameNode, true);
-      lastHourRef.current = rawMode === 'picture' || rawMode === 'empty'
-        ? (shown?.painted ?? rawMeta?.hour ?? shown?.through ?? null)
-        : lastHourRef.current;
-      reportShownRef.current(paintedHour);
+      node.toggleAttribute('data-log-visible', isPictureWithModel && rawMeta.mode !== 'empty');
+      node.toggleAttribute('data-log-pending', !isPictureWithModel);
 
-      if (frozenRef.current && rawMeta) {
-        const delta = Math.max(0, rawMeta.liveTotal - frozenRef.current.total);
-        if (delta > 0 || runtime.clock.getSnapshot().playing) {
-          setJumpCount(prev => (prev === delta ? prev : delta));
-        }
+      if (isPictureWithModel && rawMeta.hour !== null) {
+        lastHourRef.current = rawMeta.hour;
+        reportFamilyShownHour(reportShownRef.current, true, shown, rawMeta.hour);
+      } else {
+        reportFamilyShownHour(reportShownRef.current, false, shown, null);
       }
 
-      if (rawMeta) paintPills(rawMeta.facetPills);
+      auditWatch.settleIfReady(visible, viewMode, shown?.installedBinding, shown?.fields);
 
-      const emptySpec = rawMeta?.empty ?? null;
-      const warningsList = rawMeta?.warnings ?? [];
-      const nextSig = `${mode}|${reason ?? ''}|${emptySpec?.kind ?? ''}|${emptySpec?.message ?? ''}|${warningsList.length > 0 ? warningsList.join('\0') : ''}`;
-      if (nextSig !== metaSigRef.current) {
-        metaSigRef.current = nextSig;
-        setMeta({
-          mode,
-          reason,
-          empty: emptySpec,
-          warnings: warningsList,
-        });
+      if (rawMeta) lastMetaRef.current = rawMeta;
+      const empty = rawMeta?.mode === 'empty' ? rawMeta.empty : null;
+      const warnings = rawMeta?.warnings ?? [];
+      const nextMetaSig = JSON.stringify([effectiveMode, reason, failureOrigin, empty?.kind ?? '', empty?.message ?? '', empty?.detail ?? '', warnings]);
+      if (nextMetaSig !== metaSigRef.current) {
+        metaSigRef.current = nextMetaSig;
+        setMeta({ mode: effectiveMode, reason, failureOrigin, empty, warnings });
       }
 
-      if ((mode !== 'picture' && mode !== 'empty') || !shown?.fields) {
+      if (!isPictureWithModel || !shown?.fields) {
         paintMirror(null);
-        if (!pinnedTipRef.current) {
-          hoverTipShownRef.current = false;
-          hideTooltip(tooltipOwner);
-        }
+        paintPills([]);
+        tooltips.hideIfUnpinned();
         return;
       }
 
-      const nav = shown.fields.nav as readonly LogNavEntry[] | undefined;
-      if (nav) navRef.current = nav;
-      if ('activeNav' in shown.fields) activeNavRef.current = (shown.fields.activeNav as LogNavEntry | null | undefined) ?? null;
+      if (rawMeta.facetPills) paintPills(rawMeta.facetPills);
 
-      if (rawMeta) {
-        const extH = Math.max(viewportRef.current.height, rawMeta.physicalHeight);
-        if (lastExtentHeightRef.current !== extH) {
-          lastExtentHeightRef.current = extH;
-          extent.style.height = `${extH}px`;
+      const extH = Math.max(viewportRef.current.height, rawMeta.physicalHeight);
+      if (extH !== lastExtentHeightRef.current) {
+        lastExtentHeightRef.current = extH;
+        mounted.extent.style.height = `${extH}px`;
+      }
+
+      const liveNewCount = typeof shown.fields.liveNewCount === 'number' ? shown.fields.liveNewCount : 0;
+      if (liveNewCount !== lastJumpCountRef.current || (jumpLabelRef.current && !jumpLabelRef.current.textContent)) {
+        lastJumpCountRef.current = liveNewCount;
+        if (jumpLabelRef.current) {
+          jumpLabelRef.current.textContent = liveNewCount > 0
+            ? `${liveNewCount.toLocaleString()} new · Jump to latest`
+            : 'Jump to latest';
         }
       }
 
-      const mirror = shown.fields.mirror as MirrorModel | undefined;
+      const navTuples = shown.fields.nav as readonly FamilyNavTuple[] | undefined;
+      if (navTuples) navRef.current = navTuples;
+      const navEntries = shown.fields.navEntries as readonly LogNavEntry[] | undefined;
+      if (navEntries) {
+        navEntriesRef.current = navEntries;
+        if (pendingFocusOrdinalRef.current !== null) {
+          const wanted = navEntries.find(item => item.ordinal === pendingFocusOrdinalRef.current);
+          if (wanted) {
+            pendingFocusOrdinalRef.current = null;
+            focusedKeyRef.current = wanted.key;
+            queueMicrotask(() => bindRef.current());
+          }
+        }
+      }
+      const activeNav = shown.fields.activeNav as LogNavEntry | null | undefined;
+      if (activeNav !== undefined) activeNavRef.current = activeNav;
+
+      const mirror = shown.fields.mirror as { readonly total: number; readonly items: readonly ListboxMirrorItem[] } | undefined;
       if (mirror) paintMirror(mirror);
 
-      const tipField = shown.fields.tooltip as { key: string; content: TooltipContent | null } | null | undefined;
-      if (!shown.dim && !heldRef.current) {
-        if (inspectedKeyRef.current && lastPointerRef.current && tipField && tipField.key === inspectedKeyRef.current) {
-          updateTooltip(tipField, lastPointerRef.current);
-        } else if (focusInsideRef.current && focusedKeyRef.current && tipField && tipField.key === focusedKeyRef.current) {
-          updateTooltip(tipField, focusAnchorRef.current);
-        } else if (!pinnedTipRef.current) {
-          hoverTipShownRef.current = false;
-          hideTooltip(tooltipOwner);
-        }
-      } else if (!pinnedTipRef.current) {
-        hoverTipShownRef.current = false;
-        hideTooltip(tooltipOwner);
+      const phases = shown.fields.phases as Record<string, unknown> | undefined;
+      if (phases && phases !== lastPhasesRef.current && frameNode) {
+        lastPhasesRef.current = phases;
+        frameNode.dataset.familyPhases = JSON.stringify(phases);
       }
+
+      const hoverTipField = shown.fields.tooltip as FamilyTooltipField | undefined;
+      const focusTipField = shown.fields.focusTooltip as FamilyTooltipField | undefined;
+      if (focusInsideRef.current && focusedKeyRef.current && focusTipField?.text && focusTipField.text.rowKey === focusedKeyRef.current) {
+        const opt = mirrorRef.current?.querySelector<HTMLElement>(`[data-row-key="${CSS.escape(focusedKeyRef.current)}"]`);
+        if (opt) opt.setAttribute('aria-description', tooltips.describeFocused(focusTipField.text, focusTipField.text.hour, latestRef.current.viewportHeight));
+      }
+      tooltips.syncFromInstall({
+        dim: !!shown.dim,
+        held: heldRef.current,
+        inspectedKey: inspectedKeyRef.current,
+        pointerPos: lastPointerRef.current,
+        hoverTip: hoverTipField?.text ?? null,
+        focusInside: focusInsideRef.current,
+        focusedKey: focusedKeyRef.current,
+        focusAnchor: focusAnchorRef.current,
+        focusTip: focusTipField?.text ?? null,
+        viewportHeight: latestRef.current.viewportHeight,
+      });
     };
 
     install();
     const stopInstall = pipeline.onInstall(pipe, install);
 
-    const requestPageIfNeeded = (logicalTop: number) => {
-      const frozen = frozenRef.current;
-      const loader = latestRef.current.onLoadScrollPage;
-      const curMeta = lastMetaRef.current;
-      if (!frozen || !loader || !curMeta) return;
-      const targetRow = rowIndexAtLogicalY(curMeta.geometry, logicalTop);
-      const pageSize = Math.max(limitRef.current, 128);
-      if (targetRow < curMeta.offset || targetRow + 24 >= curMeta.offset + pageSize) {
-        const aligned = Math.max(0, Math.floor(targetRow / pageSize) * pageSize);
-        if (aligned === 0 && curMeta.offset === 0) return;
-        if (aligned === scrollPageOffsetRef.current || aligned === scrollPageFlightRef.current) return;
-        scrollPageFlightRef.current = aligned;
-        void loader(frozen.hour, aligned, pageSize, frozen.baseOrdinal, frozen.total).then(reply => {
-          if (scrollPageFlightRef.current !== aligned || !frozenRef.current) return;
-          scrollPageFlightRef.current = null;
-          scrollPageOffsetRef.current = aligned;
-          frozenRef.current = { ...frozenRef.current, panels: { ...frozenRef.current.panels, tail: reply, __offset: aligned } };
-          bindRef.current();
-        }).catch(() => {
-          if (scrollPageFlightRef.current === aligned) scrollPageFlightRef.current = null;
-        });
-      }
-    };
+    const stopPointer = bindFamilyPointer({
+      bodyNode: node,
+      menuHost: frameRef.current ?? node,
+      pipeline,
+      pipe,
+      tooltips,
+      inspectedKeyRef,
+      lastPointerRef,
+      focusInsideRef,
+      focusedKeyRef,
+      focusAnchorRef,
+      accessibleRef: scrollRef,
+      isBlocked: () => heldRef.current || dimRef.current,
+      getViewportHeight: () => latestRef.current.viewportHeight,
+      onActivate: key => {
+        const entry = (activeNavRef.current?.key === key ? activeNavRef.current : null)
+          ?? navEntriesRef.current.find(item => item.key === key);
+        latestRef.current.onActivate?.(key, entry?.meta, entry?.hour ?? lastHourRef.current ?? undefined);
+      },
+      onContextMenu: (key, clientX, clientY) => {
+        const builder = latestRef.current.contextMenuItems;
+        if (!builder || !key) return false;
+        const entry = (activeNavRef.current?.key === key ? activeNavRef.current : null)
+          ?? navEntriesRef.current.find(item => item.key === key);
+        const items = builder(key, entry?.hour ?? lastHourRef.current ?? 0, entry?.meta);
+        if (!items.length) return false;
+        contextMenuRef.current.open(clientX, clientY, items);
+        return true;
+      },
+    });
 
     const onScroll = () => {
-      const physTop = node.scrollTop;
-      const curMeta = lastMetaRef.current;
-      const vh = viewportRef.current.height || 200;
-      const logicalTop = curMeta ? logicalScrollFromPhysical(curMeta.geometry, vh, physTop) : physTop;
-      viewportRef.current.physicalTop = physTop;
+      const physicalTop = node.scrollTop;
+      const geom = lastMetaRef.current?.geometry;
+      const logicalTop = geom ? logicalScrollFromPhysical(geom, viewportRef.current.height, physicalTop) : physicalTop;
+      viewportRef.current.physicalTop = physicalTop;
       viewportRef.current.scrollTop = logicalTop;
 
-      if (logicalTop <= 1) {
+      if (logicalTop === 0) {
         if (frozenRef.current) {
+          frozenGenRef.current++;
           frozenRef.current = null;
-          scrollPageOffsetRef.current = 0;
           scrollPageFlightRef.current = null;
-          setJumpCount(null);
+          pendingFocusOrdinalRef.current = null;
+          lastJumpCountRef.current = 0;
+          setPageError(null);
+          setScrolledBack(false);
         }
-      } else if (!frozenRef.current && lastHourRef.current !== null && curMeta) {
-        const snapHour = lastHourRef.current;
-        frozenRef.current = { hour: snapHour, baseOrdinal: curMeta.baseOrdinal, total: curMeta.total, panels: {} };
-        if (runtime.clock.getSnapshot().playing) setJumpCount(0);
-        requestPageIfNeeded(logicalTop);
-      } else if (frozenRef.current) {
-        requestPageIfNeeded(logicalTop);
-      }
-      bindRef.current();
-    };
-
-    const onPointerMove = (event: PointerEvent) => {
-      if (!event.isTrusted) return;
-      const down = pointerDownRef.current;
-      if (down && !down.cancelled && Math.hypot(event.clientX - down.x, event.clientY - down.y) > CLICK_CANCEL_PX) {
-        down.cancelled = true;
-      }
-      if (heldRef.current || dimRef.current) return;
-      const last = lastPointerRef.current;
-      if (last && last.x === event.clientX && last.y === event.clientY) return;
-      lastPointerRef.current = { x: event.clientX, y: event.clientY };
-      if (leaveTimerRef.current) { clearTimeout(leaveTimerRef.current); leaveTimerRef.current = null; }
-      const box = node.getBoundingClientRect();
-      pipeline.pointer(pipe, 0, [event.clientX - box.left, event.clientY - box.top], hitKey => {
-        if (heldRef.current || dimRef.current) return;
-        const changed = hitKey !== inspectedKeyRef.current;
-        inspectedKeyRef.current = hitKey;
-        pipeline.inspect(pipe, hitKey);
-        if (!hitKey) {
-          if (hoverTimerRef.current) { clearTimeout(hoverTimerRef.current); hoverTimerRef.current = null; }
-          if (!pinnedTipRef.current && !focusInsideRef.current) hideTooltip(tooltipOwner);
-          return;
+      } else {
+        if (!frozenRef.current && lastMetaRef.current && lastMetaRef.current.hour !== null) {
+          const m = lastMetaRef.current;
+          frozenRef.current = {
+            gen: ++frozenGenRef.current,
+            hour: m.hour!,
+            baseOrdinal: m.baseOrdinal,
+            total: m.total,
+            offset: m.offset,
+            pageSize: m.loadedCount,
+            panels: null,
+          };
+          lastJumpCountRef.current = 0;
+          setScrolledBack(true);
         }
-        if (changed) {
-          if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
-          const delay = hoverTipShownRef.current ? 0 : HOVER_OPEN_MS;
-          hoverTimerRef.current = setTimeout(() => {
-            hoverTimerRef.current = null;
-            if (heldRef.current || dimRef.current) return;
-            const tipField = pipeline.view(pipe)?.fields?.tooltip as { key: string; content: TooltipContent | null } | null | undefined;
-            if (tipField && tipField.key === inspectedKeyRef.current) updateTooltip(tipField, lastPointerRef.current);
-          }, delay);
+        if (frozenRef.current && geom) {
+          const wantStart = rowIndexAtLogicalY(geom, logicalTop);
+          const wantEnd = rowIndexAtLogicalY(geom, logicalTop + viewportRef.current.height) + 2;
+          ensureRangeLoaded(wantStart, wantEnd);
         }
-      });
-    };
-
-    const onPointerLeave = () => {
-      lastPointerRef.current = null;
-      if (hoverTimerRef.current) { clearTimeout(hoverTimerRef.current); hoverTimerRef.current = null; }
-      leaveTimerRef.current = setTimeout(() => {
-        leaveTimerRef.current = null;
-        inspectedKeyRef.current = null;
-        pipeline.pointer(pipe, 0, null);
-        pipeline.inspect(pipe, null);
-        if (!pinnedTipRef.current && !focusInsideRef.current) {
-          hoverTipShownRef.current = false;
-          hideTooltip(tooltipOwner);
-        }
-      }, HOVER_CLOSE_MS);
-    };
-
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.button !== 0 && event.button !== 2) return;
-      if (heldRef.current || dimRef.current) return;
-      pointerDownRef.current = { key: inspectedKeyRef.current, x: event.clientX, y: event.clientY, button: event.button, cancelled: false };
-    };
-
-    const onPointerUp = () => {
-      const down = pointerDownRef.current;
-      pointerDownRef.current = null;
-      if (!down || down.cancelled || down.button !== 0 || !down.key) return;
-      const active = activeNavRef.current;
-      const entry = active && active.key === down.key ? active : navRef.current.find(item => item.key === down.key);
-      if (entry) latestRef.current.onActivate?.(entry.key, entry.meta, entry.hour);
-    };
-
-    const onContextMenu = (event: MouseEvent) => {
-      const key = inspectedKeyRef.current;
-      const builder = latestRef.current.contextMenuItems;
-      if (!key || !builder || heldRef.current || dimRef.current) return;
-      const active = activeNavRef.current;
-      const entry = active && active.key === key ? active : navRef.current.find(item => item.key === key);
-      if (!entry) return;
-      const items = builder(entry.key, entry.hour, entry.meta);
-      if (items.length) {
-        event.preventDefault();
-        contextMenuRef.current.open(event.clientX, event.clientY, items);
       }
-    };
-
-    const updateSize = (w: number, h: number) => {
-      viewportRef.current.width = w;
-      viewportRef.current.height = h;
-      const needed = tailLimitForViewport(h, latestRef.current.density, latestRef.current.twoLine);
-      if (needed !== limitRef.current) {
-        limitRef.current = needed;
-        latestRef.current.onLimitChange?.(needed);
-      }
-      const box = frameRef.current?.getBoundingClientRect();
-      if (box) focusAnchorRef.current = { x: box.left + Math.min(200, box.width / 2), y: box.top + 48 };
       bindRef.current();
     };
 
     const resizeObserver = new ResizeObserver(entries => {
       const rect = entries[0]?.contentRect;
-      if (!rect) return;
-      updateSize(Math.round(rect.width), Math.round(rect.height));
+      const w = Math.round(rect ? rect.width : node.clientWidth);
+      const h = Math.round(rect ? rect.height : node.clientHeight);
+      refreshFocusAnchor();
+      if (w === viewportRef.current.width && h === viewportRef.current.height) return;
+      viewportRef.current.width = w;
+      viewportRef.current.height = h;
+      const nextLimit = tailLimitForViewport(h, latestRef.current.density, latestRef.current.twoLine);
+      if (nextLimit !== limitRef.current) {
+        limitRef.current = nextLimit;
+        latestRef.current.onLimitChange?.(nextLimit);
+      }
+      bindRef.current();
     });
     resizeObserver.observe(node);
-    updateSize(node.clientWidth, node.clientHeight);
+    viewportRef.current.width = node.clientWidth;
+    viewportRef.current.height = node.clientHeight;
+    const initLimit = tailLimitForViewport(node.clientHeight || 240, latestRef.current.density, latestRef.current.twoLine);
+    if (initLimit !== limitRef.current) {
+      limitRef.current = initLimit;
+      latestRef.current.onLimitChange?.(initLimit);
+    }
+    refreshFocusAnchor();
 
     node.addEventListener('scroll', onScroll, { passive: true });
-    node.addEventListener('pointermove', onPointerMove);
-    node.addEventListener('pointerleave', onPointerLeave);
-    node.addEventListener('pointerdown', onPointerDown);
-    node.addEventListener('pointerup', onPointerUp);
-    node.addEventListener('contextmenu', onContextMenu);
+    bindRef.current();
 
     return () => {
+      auditWatch.dispose();
       stopInstall();
+      stopPointer();
       resizeObserver.disconnect();
       node.removeEventListener('scroll', onScroll);
-      node.removeEventListener('pointermove', onPointerMove);
-      node.removeEventListener('pointerleave', onPointerLeave);
-      node.removeEventListener('pointerdown', onPointerDown);
-      node.removeEventListener('pointerup', onPointerUp);
-      node.removeEventListener('contextmenu', onContextMenu);
-      extent.remove();
+      mounted.unmount();
       surfaceRef.current = null;
       lastExtentHeightRef.current = -1;
       holdElement(frameRef.current, false);
     };
-  }, [pipeline, pipe, paintMirror, runtime.clock, tooltipOwner]);
-
-  const auditable = !!exactSources;
-  useLayoutEffect(() => {
-    if (!perfLog || !pipeline || pipe === null || !auditable) return;
-    pipeline.audit(pipe, LOG_AUDIT, fields => auditRowsOf(fields.audit));
-    perfLog.reader(pipe, LOG_AUDIT, async (hour, auditId) => {
-      const snap = auditStoreRef.current!.require(auditId);
-      const exact = await snap.exactSources(hour, snap.limit);
-      if (!exact) return null;
-      const model = snap.projection.project(exact, hour, snap.options);
-      const layout = buildLogLayout(model, snap.density, snap.months);
-      const [start, end] = visibleItemRange(layout.items, snap.scrollTop, snap.height);
-      const values = new Map<string, string>();
-      if (model.total === 0 && model.rows.length === 0 && layout.items.length === 0) {
-        values.set('__empty__', JSON.stringify(['empty', model.empty.kind, model.empty.message]));
-      } else {
-        for (let i = start; i < end; i++) {
-          const item = layout.items[i]!;
-          if (item.kind !== 'row') continue;
-          values.set(item.row.key, canonicalLogRowAudit(item.row));
-        }
-      }
-      return { values, ordered: true };
-    });
-    return () => pipeline.audit(pipe, LOG_AUDIT, null);
-  }, [pipeline, pipe, auditable]);
+  }, [pipeline, pipe, ensureRangeLoaded, paintMirror, paintPills, refreshFocusAnchor, tooltips]);
 
   useLayoutEffect(() => {
     if (pipe !== null && enabled) bind();
-  }, [pipe, enabled, bind, options, density, months, theme, staticSources, selectedKey, subsReady, auditable, exactSources]);
+  }, [pipe, enabled, bind, options, density, months, theme, reducedMotion, staticSources, selectedKey, subsReady, auditable, exactSources, audit.captureActive]);
 
-  useEffect(() => {
-    let wasPlaying = runtime.clock.getSnapshot().playing;
-    return runtime.clock.subscribe(() => {
-      const nowPlaying = runtime.clock.getSnapshot().playing;
-      if (wasPlaying && !nowPlaying && pipeline && pipe !== null) {
-        pauseFlushRef.current++;
-        bindRef.current();
-        const mirror = pipeline.view(pipe)?.fields?.mirror as MirrorModel | undefined;
-        if (mirror) paintMirror(mirror);
-      }
-      wasPlaying = nowPlaying;
-    });
-  }, [runtime.clock, pipeline, pipe, paintMirror]);
+  useFamilyPauseFlush(runtime.clock, () => {
+    if (!pipeline || pipe === null) return;
+    pauseFlushRef.current++;
+    bindRef.current();
+  });
 
   useEffect(() => {
     if (!onDiagnostics) return;
@@ -813,148 +903,143 @@ export default function FamilyLogHost<TOptions>({
   }, [onDiagnostics, extraWarnings, meta.warnings]);
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent) => {
-    const nav = navRef.current;
-    if (!nav.length) return;
-    const curKey = focusedKeyRef.current ?? nav[0]!.key;
-    const curIdx = nav.findIndex(item => item.key === curKey);
-    const idx = curIdx >= 0 ? curIdx : 0;
-    const curMeta = lastMetaRef.current;
-    const pageStep = Math.max(1, Math.floor((viewportRef.current.height || 200) / Math.max(1, curMeta?.rowHeight ?? 28)) - 1);
-
-    const focusAt = (targetIdx: number) => {
-      const entry = nav[Math.max(0, Math.min(nav.length - 1, targetIdx))];
-      if (!entry) return;
-      focusedKeyRef.current = entry.key;
-      const node = scrollRef.current;
-      if (node && curMeta) {
-        const st = viewportRef.current.scrollTop;
-        const vh = viewportRef.current.height || 200;
-        let nextTop = st;
-        if (entry.top < st) nextTop = entry.top;
-        else if (entry.top + entry.height > st + vh) nextTop = entry.top + entry.height - vh;
-        if (nextTop !== st) {
-          viewportRef.current.scrollTop = nextTop;
-          node.scrollTop = physicalScrollFromLogical(curMeta.geometry, vh, nextTop);
+    const rowHeight = lastMetaRef.current?.rowHeight ?? 28;
+    const pageStep = Math.max(1, Math.floor((viewportRef.current.height || 240) / rowHeight) - 1);
+    const totalCount = lastMetaRef.current?.total ?? navRef.current.length;
+    handleFamilyKeyDown(event, {
+      nav: navRef.current,
+      totalCount,
+      focusedKey: focusedKeyRef.current,
+      focusedIndex: pendingFocusOrdinalRef.current ?? undefined,
+      fallbackToFirstOnActivate: false,
+      pageStep,
+      blocked: heldRef.current || dimRef.current,
+      isPinnedTooltip: () => tooltips.isPinned(),
+      onFocusKey: focusRowByKey,
+      onFocusOrdinal: focusByOrdinal,
+      onActivate: entry => {
+        const navEntry = navEntriesRef.current.find(item => item.key === entry[0]);
+        latestRef.current.onActivate?.(entry[0], entry[5], navEntry?.hour ?? lastHourRef.current ?? undefined);
+      },
+      onContextMenu: entry => {
+        const builder = latestRef.current.contextMenuItems;
+        if (!builder || !entry) return false;
+        const navEntry = navEntriesRef.current.find(item => item.key === entry[0]);
+        const items = builder(entry[0], navEntry?.hour ?? lastHourRef.current ?? 0, entry[5]);
+        if (!items.length) return false;
+        refreshFocusAnchor();
+        contextMenuRef.current.open(focusAnchorRef.current.x, focusAnchorRef.current.y, items);
+        return true;
+      },
+      onTogglePinTooltip: currentKey => {
+        if (!pipeline || pipe === null || heldRef.current || dimRef.current || !currentKey) return;
+        const focusTipField = pipeline.view(pipe)?.fields?.focusTooltip as FamilyTooltipField | undefined;
+        if (focusTipField?.text && focusTipField.text.rowKey === currentKey) {
+          refreshFocusAnchor();
+          tooltips.pinFocused(focusTipField.text, focusTipField.text.hour, focusAnchorRef.current, latestRef.current.viewportHeight, announce);
         }
-      }
-      const box = frameRef.current?.getBoundingClientRect();
-      if (box) focusAnchorRef.current = { x: box.left + Math.min(200, box.width / 2), y: box.top + 48 };
-      bindRef.current();
-    };
+      },
+      onUnpinTooltip: () => tooltips.unpin(announce),
+    });
+  }, [announce, focusByOrdinal, focusRowByKey, pipe, pipeline, refreshFocusAnchor, tooltips]);
 
-    if (event.key === 'ArrowDown') { event.preventDefault(); focusAt(idx + 1); return; }
-    if (event.key === 'ArrowUp') { event.preventDefault(); focusAt(idx - 1); return; }
-    if (event.key === 'Home') { event.preventDefault(); focusAt(0); return; }
-    if (event.key === 'End') { event.preventDefault(); focusAt(nav.length - 1); return; }
-    if (event.key === 'PageDown') { event.preventDefault(); focusAt(idx + pageStep); return; }
-    if (event.key === 'PageUp') { event.preventDefault(); focusAt(idx - pageStep); return; }
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      const entry = nav[idx]!;
-      latestRef.current.onActivate?.(entry.key, entry.meta, entry.hour);
+  const onRetryLocal = useCallback(() => {
+    if (pageError) {
+      const req = pageError.req;
+      setPageError(null);
+      requestScrollPage(req);
       return;
     }
-    if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
-      const entry = nav[idx]!;
-      const items = latestRef.current.contextMenuItems?.(entry.key, entry.hour, entry.meta) ?? [];
-      if (items.length) {
-        event.preventDefault();
-        const box = frameRef.current?.getBoundingClientRect();
-        contextMenuRef.current.open((box?.left ?? 0) + 48, (box?.top ?? 0) + 48, items);
-      }
-      return;
-    }
-    if ((event.key === 'p' || event.key === 'P') && !event.ctrlKey && !event.metaKey && !event.altKey) {
-      event.preventDefault();
-      if (pinnedTipRef.current) {
-        pinnedTipRef.current = null;
-        hideTooltip(tooltipOwner);
-        return;
-      }
-      const tipField = pipeline && pipe !== null ? pipeline.view(pipe)?.fields?.tooltip as { key: string; content: TooltipContent | null } | null | undefined : null;
-      if (tipField?.content) {
-        const box = frameRef.current?.getBoundingClientRect();
-        const pos = { x: (box?.left ?? 0) + 120, y: (box?.top ?? 0) + 48 };
-        const pinned: TooltipContent = { ...tipField.content, subtitle: `Pinned · ${tipField.content.subtitle ?? ''}` };
-        pinnedTipRef.current = { key: tipField.key, content: pinned, x: pos.x, y: pos.y };
-        showTooltip(tooltipOwner, fitTooltip([pinned], latestRef.current.viewportHeight), pos.x, pos.y, tipField.key);
-      }
-    }
-  }, [pipeline, pipe, tooltipOwner]);
+    retryLocal(() => bindRef.current());
+  }, [pageError, requestScrollPage, retryLocal]);
 
-  const pillsNode = headerSlot
-    ? createPortal(<span ref={pillsRef} className="family-log-pills" />, headerSlot)
-    : null;
+  if (blockedState) return <>{blockedState}</>;
+
+  const hasControls = !!controls && ((controls.chipGroups?.length ?? 0) > 0 || (controls.pickers?.length ?? 0) > 0);
+  const pillsNode = <span ref={pillsRef} className="family-log-pills" />;
+
+  const bodyStateNode = renderFamilyBodyState({
+    mode: meta.mode,
+    reason: meta.reason,
+    failureOrigin: meta.failureOrigin,
+    empty: meta.empty?.message ?? null,
+    emptyDetail: meta.empty?.detail ?? null,
+    emptyKind: meta.empty?.kind ?? 'empty',
+    subject,
+    loadingLabel: loadingLabel ?? `Loading ${subject}…`,
+    pipeline,
+    pipe,
+    onRetryStream: retryStream,
+    onRetryLocal,
+    localError: pageError?.failure ?? null,
+  });
 
   return (
-    <div ref={frameRef} className={`family-log${className ? ` ${className}` : ''}`} data-subject={subject}>
-      {pillsNode}
-      {!headerSlot && <span ref={pillsRef} className="family-log-pills family-log-pills-inline" />}
-      {note && <div className="family-log-note">{note}</div>}
-      {controls && ((controls.chipGroups?.length ?? 0) > 0 || (controls.pickers?.length ?? 0) > 0) && (
+    <div ref={frameRef} className={`family-log${className ? ` ${className}` : ''}`} data-density={density}>
+      {headerSlot && createPortal(pillsNode, headerSlot)}
+      {!headerSlot && <div className="family-log-pills-inline">{pillsNode}</div>}
+      {hasControls && (
         <div className="family-log-toolbar">
-          {controls.chipGroups?.map(group => (
+          {controls!.chipGroups?.map(group => (
             <ChipSet
               key={group.key}
               label={group.label}
-              chips={[...group.chips]}
-              selected={[...group.selected]}
+              chips={group.chips}
+              selected={group.selected}
               max={group.max}
               full={group.full}
               onToggle={group.onToggle}
             />
           ))}
-          {controls.pickers?.map(picker => (
+          {controls!.pickers?.map(picker => (
             <ContentSetPicker
               key={picker.key}
               label={picker.label}
               automatic={picker.automatic}
-              choices={[...picker.choices]}
-              selected={[...picker.selected]}
+              choices={picker.choices}
+              selected={picker.selected}
               onToggle={picker.onToggle}
               onReset={picker.onReset}
             />
           ))}
         </div>
       )}
+      {note && <p className="family-log-note">{note}</p>}
       <div className="family-log-body">
-        {blockedState ?? (
-          <>
-            {jumpCount !== null && (
-              <button type="button" className="family-log-jump" onClick={jumpToLatest}>
-                {jumpCount > 0 ? `${jumpCount.toLocaleString()} new · Jump to latest` : 'Jump to latest'}
-              </button>
-            )}
-            <div
-              ref={scrollRef}
-              className="family-log-scroll"
-              role="listbox"
-              aria-label={label}
-              tabIndex={0}
-              onKeyDown={handleKeyDown}
-              onFocus={() => {
-                focusInsideRef.current = true;
-                if (!focusedKeyRef.current && navRef.current.length > 0) {
-                  focusedKeyRef.current = navRef.current[0]!.key;
-                }
-                bindRef.current();
-              }}
-              onBlur={() => {
-                focusInsideRef.current = false;
-                if (!pinnedTipRef.current && !inspectedKeyRef.current) hideTooltip(tooltipOwner);
-                bindRef.current();
-              }}
-            />
-            {meta.mode === 'reading' && <LogSkeleton />}
-            {meta.mode === 'refused' && <WidgetState kind="unavailable" message={meta.reason ?? `Couldn't read ${subject}.`} />}
-            {meta.mode === 'empty' && meta.empty && (
-              <WidgetState kind={meta.empty.kind} message={meta.empty.message} detail={meta.empty.detail} />
-            )}
-            <div ref={mirrorRef} className="family-log-mirror" aria-hidden="false" />
-            <div ref={liveRegionRef} className="family-log-mirror" aria-live="polite" />
-          </>
+        <div
+          ref={scrollRef}
+          className="family-log-scroll"
+          tabIndex={0}
+          role="listbox"
+          aria-label={label}
+          onFocus={() => {
+            focusInsideRef.current = true;
+            refreshFocusAnchor();
+            if (!focusedKeyRef.current && navRef.current.length > 0) {
+              focusedKeyRef.current = navRef.current[0]![0];
+            }
+            bindRef.current();
+          }}
+          onBlur={event => {
+            if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+            focusInsideRef.current = false;
+            if (!inspectedKeyRef.current) tooltips.hideIfUnpinned();
+            bindRef.current();
+          }}
+          onKeyDown={handleKeyDown}
+        >
+          <div ref={mirrorRef} className="family-log-mirror" />
+        </div>
+        {bodyStateNode && <div className="family-log-state-overlay">{bodyStateNode}</div>}
+        {scrolledBack && !bodyStateNode && (
+          <button type="button" className="family-log-jump" onClick={jumpToLatest}>
+            <span ref={jumpLabelRef}>
+              {lastJumpCountRef.current > 0 ? `${lastJumpCountRef.current.toLocaleString()} new · Jump to latest` : 'Jump to latest'}
+            </span>
+          </button>
         )}
       </div>
+      {!hasFrame && <div ref={liveRegionRef} className="family-log-mirror" role="status" aria-live="polite" aria-atomic="true" />}
       {contextMenu.menu}
     </div>
   );
