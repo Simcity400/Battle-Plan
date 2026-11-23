@@ -6,7 +6,7 @@ import { perfLog, type WidgetWork } from '../shell/perf.ts';
 import { noteCause, widgetZones } from '../shell/commitCount.ts';
 
 export const MeasuredWidget = createContext<string | null>(null);
-export const DrillScope = createContext(false);
+export const DrillScope = createContext<false | 'owns' | 'quiet'>(false);
 
 export function measuredWidget(): string | null {
   return perfLog ? use(MeasuredWidget) : null;
@@ -63,7 +63,7 @@ export function shownReporter(widget: string | null, drill = false): (hour: numb
 export function useShownHour(): (hour: number | null) => void {
   const widget = measuredWidget();
   const inDrill = use(DrillScope);
-  return useMemo(() => shownReporter(widget, inDrill), [widget, inDrill]);
+  return useMemo(() => inDrill === 'quiet' ? () => {} : shownReporter(widget, inDrill === 'owns'), [widget, inDrill]);
 }
 
 export function useDrillShown(on: boolean): void {
@@ -79,6 +79,11 @@ export function useDrillShown(on: boolean): void {
     };
   }, [key, owns]);
   useEffect(() => { if (owns) shown(null); }, [owns, shown]);
+}
+
+export function ShownHour({ clock, at }: { clock: Pick<PlaybackController, 'subscribeFrame'>; at: number | null }): null {
+  useShownEachFrame(clock, () => at);
+  return null;
 }
 
 export function useShownEachFrame(clock: Pick<PlaybackController, 'subscribeFrame'>, at: (() => number | null) | null,

@@ -32,7 +32,8 @@ function TopGeneralCareer(props: WidgetProps) {
     [atRead.requestTags]);
   const head = useHeadProduct(runtime, atRead.gate, 'unit-leaders', params, { active, validate: validateLeaders, structure: leadersStructure });
   const read = atRead.outside ? null : head.at ?? atRead.hour;
-  const readCountries = read === null ? atRead.countries : atRead.countriesAt(read);
+  const landed = read === null ? { countries: atRead.countries, reason: null } : atRead.countriesAt(read);
+  const readCountries = landed.countries;
   const rows = useMemo(() => head.data && read !== null && readCountries !== undefined ? leaderRows(head.data, read, readCountries, 'land') : [], [head.data, read, readCountries]);
   const top = useMemo(() => topLeader(rows), [rows]);
   const country = useCountryNameAt(runtime.client, track, tag, read, active);

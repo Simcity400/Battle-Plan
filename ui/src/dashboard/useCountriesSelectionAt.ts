@@ -14,10 +14,10 @@ export function useCountriesSelectionAt(widget: WidgetSpec, runtime: WidgetRunti
   const track = gate.track, groups = gate.groups.data;
   const query = useMemo(() => !ranked && groups && track ? worldFilterQuery(widget.countries, [defaultCountryKey(track)].flatMap(tag => tag ? [tag] : []), groups, track.branch.lastHour) : null,
     [ranked, groups, track, widget.countries]);
-  const countriesAt = useCallback((hour: number): ReadonlySet<string> | null | undefined => {
-    if (ranked) return null;
+  const countriesAt = useCallback((hour: number): { countries: ReadonlySet<string> | null | undefined; reason: string | null } => {
+    if (ranked) return { countries: null, reason: null };
     const filter = query?.at(hour);
-    return filter && !filter.reason ? filter.tags : undefined;
+    return !filter ? { countries: undefined, reason: null } : filter.reason ? { countries: undefined, reason: filter.reason } : { countries: filter.tags, reason: null };
   }, [ranked, query]);
   return { gate, track, group: gate.groups, hour: gate.hour, outside: gate.outside !== null,
     countries: members.countries, countriesAt, requestTags: members.requestTags,

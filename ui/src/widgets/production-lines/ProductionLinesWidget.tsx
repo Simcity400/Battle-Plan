@@ -44,7 +44,8 @@ import type { LineNow, LineOrder, ProductionLineBreakdownReply, ProductionLinesA
 import { bucketEdges, bucketRead, UNRECORDED_MESSAGE, type BoundWindow } from '../../dashboard/regionTime.ts';
 import type { CountryRef } from '../../generated/dashboard';
 import { useRegion } from '../../dashboard/widgetTime.ts';
-import { productRequest } from '../../dashboard/request.ts';
+import { productRequest } from '../../dashboard/request.ts';
+import { ShownHour } from '../../dashboard/widgetPerf';
 
 const NO_WARNINGS: readonly string[] = [];
 const NO_CHANGES: readonly number[] = [];
@@ -142,10 +143,11 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
     : breakdown.error ? <WidgetState kind="error" what="the breakdown" failure={breakdown.error} onRetry={breakdown.retry} />
       : bucketHour === null ? <WidgetState kind="unavailable" message={UNRECORDED_MESSAGE} />
       : !breakdown.data ? <WidgetState kind="loading" label="Loading breakdown…" />
-        : <ProductionDrill clock={runtime.clock} data={breakdown.data} selected={group} onFactor={setFactor} hour={breakdownHour} active={active} hoursPerSecond={motion}
+        : <ProductionDrill data={breakdown.data} selected={group} onFactor={setFactor} hour={breakdownHour} active={active} hoursPerSecond={motion}
           onPick={hour => dispatch({ type: 'pick', hour })} />;
+  const drillBody = <><ShownHour clock={runtime.clock} at={key && detail !== null && bucketHour !== null && breakdown.data ? breakdownHour : null} />{drillView}</>;
   if (pinned) return <div ref={anchor} className="production-lines"><DrillHost drill={drillControl} runtime={runtime} mode="inline" anchor={anchor}
-    title={part === 'output' ? 'Output breakdown' : 'Efficiency breakdown'} day={breakdownHour == null ? '' : dayLabel(breakdownHour)} canFollow main={null}>{drillView}</DrillHost></div>;
+    title={part === 'output' ? 'Output breakdown' : 'Efficiency breakdown'} day={breakdownHour == null ? '' : dayLabel(breakdownHour)} canFollow main={null}>{drillBody}</DrillHost></div>;
   if (error && !live) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   const lineIndex = data?.lines.findIndex(line => line.key === key) ?? -1;
   const lineLabel = data && lineIndex >= 0 ? productionLineLabel(data, data.lines[lineIndex], lineIndex, breakdownHour ?? extent[1]) : 'Production line';
@@ -163,7 +165,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   return <div ref={anchor} className="production-lines">
     <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null && !!opened} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
       title={`${part === 'output' ? 'Output' : 'Efficiency'} · ${lineLabel}`} day={breakdownHour == null ? '' : dayLabel(breakdownHour)} canFollow main={main}
-      onClose={() => { dispatch({ type: 'close' }); setOpened(null); }}>{drillView}</DrillHost>
+      onClose={() => { dispatch({ type: 'close' }); setOpened(null); }}>{drillBody}</DrillHost>
     {menu.menu}
   </div>;
 }

@@ -82,7 +82,7 @@ export default function DrillHost({ mode, drill, runtime, subject = true, title,
 
   const shut = drill.gate.stage.stage !== 'open' && drill.gate.stage.stage !== 'unbound';
   useDrillShown(open && !popout);
-  const body = <DrillScope value={true}><TimeRegion runtime={runtime} region={drill.region}>{shut ? <GateState gate={drill.gate} loading="Loading…" /> : children}</TimeRegion></DrillScope>;
+  const body = <DrillScope value={popout ? 'quiet' : 'owns'}><TimeRegion runtime={runtime} region={drill.region}>{shut ? <GateState gate={drill.gate} loading="Loading…" /> : children}</TimeRegion></DrillScope>;
   const header = <div className="drill-header">
     {popout || saved ? null : <button ref={back} type="button" className="button small quiet" onClick={requestClose}><Icon name="chevron-left" />Back</button>}
     {saved ? null : <strong>{title}</strong>}
