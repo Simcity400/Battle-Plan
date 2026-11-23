@@ -1,6 +1,6 @@
 import type { IconName } from '../../components/Icons';
 import type { Channel } from '../../dashboard/follow/facts';
-import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
+import type { BoundTrack, WidgetSpec, WidgetTime } from '../../dashboard/model';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import type { BoundWindow, GatedHour } from '../../dashboard/regionTime';
 
@@ -11,6 +11,75 @@ import type { TableColumnSpec, TableProjection } from './model.ts';
 import type { TableBase, TableSettings, TableSortDirection } from './settings.ts';
 
 export type HourRanges = readonly (readonly [number, number])[];
+
+export interface HolderRun {
+  readonly tag: string;
+  readonly firstHour: number;
+  readonly lastHour: number;
+}
+
+export function holderTagAt(runs: readonly HolderRun[] | undefined, hour: number): string | null {
+  if (!runs) return null;
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i]!;
+    if (run.firstHour <= hour && hour <= run.lastHour) return run.tag;
+  }
+  return null;
+}
+
+export function nextHoldersChange(holders: Readonly<Record<string, readonly HolderRun[]>> | null | undefined, hour: number): number {
+  if (!holders) return Infinity;
+  let soonest = Infinity;
+  for (const key in holders) {
+    const runs = holders[key]!;
+    for (let i = 0; i < runs.length; i++) {
+      const run = runs[i]!;
+      if (run.firstHour > hour && run.firstHour < soonest) soonest = run.firstHour;
+      const end = run.lastHour + 1;
+      if (end > hour && end < soonest) soonest = end;
+    }
+  }
+  return soonest;
+}
+
+export function nextRangesChange(ranges: HourRanges | null | undefined, hour: number): number {
+  if (!ranges) return Infinity;
+  let soonest = Infinity;
+  for (let i = 0; i < ranges.length; i++) {
+    const [first, last] = ranges[i]!;
+    if (first > hour && first < soonest) soonest = first;
+    const end = last + 1;
+    if (end > hour && end < soonest) soonest = end;
+  }
+  return soonest;
+}
+
+export function resolveHeadSpan(
+  timeShape: 'branch-to-hour' | 'trailing-window',
+  windowHours: number,
+  mode: WidgetTime['mode'],
+  branch: { readonly firstHour: number; readonly lastHour: number },
+  window: { readonly firstHour: number; readonly lastHour: number } | null,
+  hour: number,
+): { readonly first: number; readonly last: number } | null {
+  if (mode === 'follow') {
+    const last = Math.min(Math.floor(hour), branch.lastHour);
+    const first = timeShape === 'branch-to-hour'
+      ? branch.firstHour
+      : Math.max(branch.firstHour, last - (windowHours - 1));
+    return first <= last ? { first, last } : null;
+  }
+  if (!window) return null;
+  const rangeFirst = Math.max(branch.firstHour, Math.floor(window.firstHour));
+  const rangeLast = Math.min(branch.lastHour, Math.floor(window.lastHour));
+  if (rangeFirst > rangeLast) return null;
+  if (timeShape === 'branch-to-hour') {
+    return mode === 'range'
+      ? { first: rangeFirst, last: rangeLast }
+      : { first: branch.firstHour, last: rangeLast };
+  }
+  return { first: rangeFirst, last: rangeLast };
+}
 
 export interface DeclaredCountryFilter {
   readonly passing: Readonly<Record<string, HourRanges>> | null;
@@ -24,17 +93,17 @@ export interface DeclaredFactionRun {
   readonly firstHour: number;
   readonly lastHour: number;
   readonly names: readonly { readonly firstHour: number; readonly lastHour: number; readonly name: string | null }[];
-  readonly fallbackName: string | null;
 }
 
 export interface DeclaredCountryState {
   readonly all: boolean;
   readonly tags: readonly string[];
-  readonly chosenTags: readonly string[];
+  readonly holders: Readonly<Record<string, readonly HolderRun[]>> | null;
   readonly every: readonly string[];
   readonly top: number | null;
   readonly membership: Readonly<Record<string, HourRanges>> | null;
   readonly membershipRuns: readonly { readonly tag: string; readonly firstHour: number; readonly lastHour: number }[] | null;
+  readonly unobserved: HourRanges;
   readonly filter: DeclaredCountryFilter;
   readonly labels: CountryLooksMap;
   readonly factions: readonly DeclaredFactionRun[] | null;
@@ -56,6 +125,7 @@ export interface DeclaredTableContext<TAux = unknown> {
   readonly countries: DeclaredCountryState;
   readonly settings: TableSettings;
   readonly gateSpan: (first: number, last: number) => GatedSpan | null;
+  readonly staticSpan: readonly [number, number] | null;
 }
 
 export type CountryPolicy =

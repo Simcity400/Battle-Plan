@@ -4,13 +4,14 @@ import { tableSortOf, tableSortToken } from '../../charts/table/options.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
+import { EMPTY_SOURCES } from '../../families/contract.ts';
 import { deriveTableAudit, deriveTableTooltip, resolveTableRows } from '../../families/table/model.ts';
-import { tableDefaults } from '../../families/table/settings.ts';
+import { tableDefaults, tableSettingsOf } from '../../families/table/settings.ts';
 import type { ScoreboardColumn, ScoreboardReply } from '../../generated/dashboard';
 import { gatedHour } from '../../test-support/gated.ts';
 import { DEFAULT_SORT, OPTIONS, TABLE_BASE, definition } from './definition.ts';
 import { isPartial, rankedTags, rankingColumn, rankingDescending, scoreboardParams, scoreboardSort, selectedColumns, validateColumnsReply, validateScoreboardReply } from './scoreboardData.ts';
-import { scoreboardProjection } from './scoreboardProjection.ts';
+import { scoreboardColumnsSpec, scoreboardProjection } from './scoreboardProjection.ts';
 
 const family = (kind: string, measure: string) => ({ kind, measure });
 const factories: ScoreboardColumn = { key: 'factories', label: 'Factories', unit: 'factories', decimals: 0, available: true, reason: null,
@@ -110,4 +111,59 @@ test('the registry names the measure behind every available column', () => {
   assert.equal(validateColumnsReply(reply).columns.length, registry.length);
   assert.throws(() => validateColumnsReply({ ...reply, columns: [{ ...factories, family: null }] }), /column/);
   assert.throws(() => validateColumnsReply({ ...reply, defaultSort: 'ships' }), /defaults/);
+});
+
+test('followed scoreboard filters selected countries by holder existence at hour, resolves slot keys to dated tags, and matches exact scoreboard audit', () => {
+  const slotKey = '\u00007';
+  const holders = {
+    [slotKey]: [{ tag: 'GER', firstHour: 0, lastHour: 104 }, { tag: 'GDR', firstHour: 105, lastHour: 200 }],
+    ITA: [{ tag: 'ITA', firstHour: 110, lastHour: 200 }],
+  };
+  const looks = {
+    GER: [{ from: 0, name: 'Germany' }],
+    GDR: [{ from: 105, name: 'East Germany' }],
+    ITA: [{ from: 110, name: 'Italy' }],
+  };
+  const facAns = parseFollowed(message(100, [{
+    id: 1,
+    answer: {
+      keys: [1n, 2n],
+      columns: 1,
+      names: ['7', 'ITA'],
+      values: [0n, 0n],
+      states: [CELL.unrecorded, CELL.noRow],
+      reasons: ['Factories not recorded', 'ITA is held by no country'],
+    },
+  }])).answers[0]!.answer;
+  const exactReply: ScoreboardReply = {
+    branchId: '1',
+    hour: 100,
+    missing: null,
+    warnings: [],
+    rows: [
+      { country: 7, tag: 'GER', cells: [{ valueRaw: null, missing: 'Factories not recorded', partial: false }] },
+    ],
+  };
+  const opts = {
+    shown: [factories],
+    candidates: [slotKey, 'ITA'],
+    holders,
+    top: null,
+    rankMarkers: false,
+    looks,
+  };
+  const followed = scoreboardProjection.project({ answers: new Map([['factories', facAns]]), panels: new Map(), live: new Map() }, 100, opts);
+  const exact = scoreboardProjection.project({ answers: new Map(), panels: new Map([['main', exactReply]]), live: new Map() }, 100, opts);
+
+  assert.deepEqual(followed.rows.map(r => r.key), [slotKey], 'ITA does not exist at hour 100 and is omitted on follow as on exact');
+  assert.deepEqual(followed.rows[0]!.cells.country!.value, { kind: 'known', value: 'Germany' }, 'slot key resolves display label via dated tag GER');
+  assert.deepEqual(followed.rows[0]!.cells.factories!.value, { kind: 'notRecorded', reason: 'Factories not recorded' }, 'existing country with missing measurement stays');
+
+  const specs = scoreboardColumnsSpec([factories], null);
+  const settings = tableSettingsOf(undefined, specs, TABLE_BASE);
+  assert.deepEqual(
+    deriveTableAudit(resolveTableRows(followed, settings), specs, 100),
+    deriveTableAudit(resolveTableRows(exact, settings), specs, 100),
+  );
+  assert.equal(scoreboardProjection.nextChange?.(EMPTY_SOURCES, 100, opts), 105, 'nextChange reports slot tag switch boundary');
 });

@@ -1,8 +1,17 @@
 import { tableSortOf, tableSortToken } from '../../charts/table/options.ts';
-import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
+import { countryFromKey, countryKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { contentKey, contentSet, setToken } from '../../dashboard/options.ts';
 import type { FamilySources } from '../../families/contract.ts';
-import type { DeclaredFollowItem, DeclaredTableContext, HourRanges, TableWidgetDeclaration } from '../../families/table/declaration.ts';
+import {
+  holderTagAt,
+  nextHoldersChange,
+  nextRangesChange,
+  type DeclaredFollowItem,
+  type DeclaredTableContext,
+  type HolderRun,
+  type HourRanges,
+  type TableWidgetDeclaration,
+} from '../../families/table/declaration.ts';
 import { lookAt, type CountryLooksMap } from '../../families/table/looks.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
@@ -37,7 +46,9 @@ export const RANK_SOURCE = 'top:rank';
 export interface ScoreboardProjectionOptions {
   readonly shown: readonly ScoreboardColumn[];
   readonly candidates: readonly string[];
+  readonly holders?: Readonly<Record<string, readonly HolderRun[]>> | null;
   readonly membership?: Readonly<Record<string, HourRanges>> | null;
+  readonly unobserved?: HourRanges;
   readonly top: number | null;
   readonly rankMarkers: boolean;
   readonly looks: CountryLooksMap;
@@ -81,7 +92,7 @@ export function scoreboardColumnsSpec(shown: readonly ScoreboardColumn[], top: n
 function countryNameValue(tag: string, looks: CountryLooksMap, hour: number) {
   const runs = looks[tag];
   const look = lookAt(runs, hour);
-  if (look && look.name) return { value: knownValue(look.name), name: look.name, runs };
+  if (look && look.name && look.name.trim()) return { value: knownValue(look.name), name: look.name, runs };
   return { value: notRecorded(look?.status ?? 'Country name unavailable'), name: tag, runs };
 }
 
@@ -89,12 +100,14 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
   kind: 'scoreboard',
   family: 'table',
   nextChange(_sources, hour, options) {
-    if (!options.membership) return Infinity;
-    let soonest = Infinity;
-    for (const ranges of Object.values(options.membership)) {
-      for (const [first, last] of ranges) {
-        if (first > hour) soonest = Math.min(soonest, first);
-        if (last + 1 > hour) soonest = Math.min(soonest, last + 1);
+    let soonest = Math.min(
+      nextHoldersChange(options.holders, hour),
+      nextRangesChange(options.unobserved, hour),
+    );
+    if (options.membership) {
+      for (const ranges of Object.values(options.membership)) {
+        const next = nextRangesChange(ranges, hour);
+        if (next < soonest) soonest = next;
       }
     }
     return soonest;
@@ -107,6 +120,9 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
       const reply: ScoreboardReply = validateScoreboardReply(panel, options.shown.length);
       if (reply.missing !== null) {
         return { columns, rows: [], hour: reply.hour, empty: reply.missing, emptyKind: 'unavailable', rank: true, rankMarkers: options.rankMarkers, warnings: reply.warnings };
+      }
+      if (options.top == null && options.unobserved?.some(([first, last]) => first <= reply.hour && reply.hour <= last)) {
+        return { columns, rows: [], hour: reply.hour, empty: 'Group membership is unavailable at this time.', emptyKind: 'unavailable', rank: true, rankMarkers: options.rankMarkers, warnings: reply.warnings };
       }
       const rows: TableRow[] = reply.rows.map(row => {
         const key = countryKey(row.country);
@@ -152,43 +168,60 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
       if (rankAnswer.kind === 'notRecorded') {
         return { columns, rows: [], hour, empty: rankAnswer.reason, emptyKind: 'unavailable', rank: true, rankMarkers: options.rankMarkers };
       }
+    } else if (options.unobserved?.some(([first, last]) => first <= hour && hour <= last)) {
+      return { columns, rows: [], hour, empty: 'Group membership is unavailable at this time.', emptyKind: 'unavailable', rank: true, rankMarkers: options.rankMarkers };
     }
 
-    const memberTags = options.top != null && rankAnswer && rankAnswer.kind !== 'notRecorded'
-      ? rankedTags(rankAnswer)
-      : options.membership
-        ? options.candidates.filter(tag => options.membership![tag]?.some(([first, last]) => first <= hour && hour <= last))
-        : options.candidates;
+    const activeEntries: { readonly key: string; readonly displayTag: string; readonly wireName: string }[] = [];
+    if (options.top != null && rankAnswer && rankAnswer.kind !== 'notRecorded') {
+      for (const tag of rankedTags(rankAnswer)) {
+        activeEntries.push({ key: tag, displayTag: tag, wireName: tag });
+      }
+    } else {
+      for (const candidate of options.candidates) {
+        const datedTag = options.holders
+          ? holderTagAt(options.holders[candidate], hour)
+          : (isSlotKey(candidate) ? null : candidate);
+        if (datedTag === null) continue;
+        if (options.membership) {
+          const inMember = options.membership[candidate]?.some(([first, last]) => first <= hour && hour <= last)
+            || options.membership[datedTag]?.some(([first, last]) => first <= hour && hour <= last);
+          if (!inMember) continue;
+        }
+        const wireName = isSlotKey(candidate) ? String(countryFromKey(candidate)) : candidate;
+        activeEntries.push({ key: candidate, displayTag: datedTag, wireName });
+      }
+    }
 
-    const rows: TableRow[] = memberTags.map(tag => {
-      const identity = countryNameValue(tag, options.looks, hour);
+    const rows: TableRow[] = activeEntries.map(({ key, displayTag, wireName }) => {
+      const identity = countryNameValue(displayTag, options.looks, hour);
       const cells: Record<string, TableCell> = {
-        country: { value: identity.value, iconSlot: true, country: tag, ...(identity.runs ? { looks: identity.runs } : {}) },
+        country: { value: identity.value, iconSlot: true, country: displayTag, ...(identity.runs ? { looks: identity.runs } : {}) },
       };
       let hasPartial = false;
       for (const column of options.shown) {
         const format = columnFormat(column);
         if (!column.available || !column.family) {
-          cells[column.key] = { value: notRecorded(column.reason ?? 'Unavailable'), format, country: tag };
+          cells[column.key] = { value: notRecorded(column.reason ?? 'Unavailable'), format, country: displayTag };
           continue;
         }
         const answer = sources.answers.get(column.key);
         const partialAns = column.partial ? sources.answers.get(partialSource(column.key)) : undefined;
         let isPartialCell = false;
         if (partialAns) {
-          const mark = valueFromNamedAnswer(partialAns, tag);
+          const mark = valueFromNamedAnswer(partialAns, wireName);
           if (mark.kind === 'known' && mark.value !== 0 && mark.value !== 0n) isPartialCell = true;
         }
-        const base = valueFromNamedAnswer(answer, tag);
+        const base = valueFromNamedAnswer(answer, wireName);
         let value: Value<NumericScalar> = base;
         if (isPartialCell && (base.kind === 'known' || base.kind === 'zero')) {
           value = partialValue(base.value, 'Some inputs were not recorded at this hour');
           hasPartial = true;
         }
-        cells[column.key] = { value, format, country: tag };
+        cells[column.key] = { value, format, country: displayTag };
       }
       return {
-        key: tag,
+        key,
         name: identity.name,
         cells,
         ...(hasPartial ? { tooltipNote: 'Partial values omit unrecorded inputs at this hour.' } : {}),
@@ -227,6 +260,7 @@ export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionO
   countries: {
     mode: 'multi',
     labels: true,
+    allowSlots: true,
     everyOnTop: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',
   },
@@ -269,7 +303,7 @@ export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionO
       const tags = ctx.countries.top == null ? ctx.countries.rankedAt(hour) : [];
       return scoreboardParams(ctx.branch.id, hour, shown, tags, ctx.countries.top, rank, descending);
     },
-    dynamicKeys: ['hour', 'tags'],
+    dynamicKeys: ['hour', 'countries'],
     validate: (raw, ctx) => validateScoreboardReply(raw, scoreboardState(ctx).shown.length),
   },
   projection: scoreboardProjection,
@@ -303,7 +337,9 @@ export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionO
     return {
       shown,
       candidates: top != null ? ctx.countries.every : ctx.countries.tags,
+      holders: top == null ? ctx.countries.holders : null,
       membership: top == null ? ctx.countries.membership : null,
+      unobserved: top == null ? ctx.countries.unobserved : [],
       top,
       rankMarkers: ctx.options.rankMarkers === true,
       looks: ctx.countries.labels,

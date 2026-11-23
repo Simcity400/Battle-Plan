@@ -52,6 +52,15 @@ export class SlotTags {
     return (this.bySlot.get(slot) ?? []).map(({ tag, firstHour, lastHour }) => ({ tag, firstHour, lastHour }));
   }
 
+  tagExistenceRuns(tag: string): { tag: string; firstHour: number; lastHour: number }[] {
+    return (this.byTag.get(tag) ?? []).map(({ firstHour, lastHour }) => ({ tag, firstHour, lastHour }));
+  }
+
+  runsForKey(key: string): { tag: string; firstHour: number; lastHour: number }[] {
+    const ref = countryFromKey(key);
+    return typeof ref === 'number' ? this.tagRuns(ref) : this.tagExistenceRuns(ref);
+  }
+
   slotOf(tag: string, hour: number): number | null {
     return this.byTag.get(tag)?.find(run => run.firstHour <= hour && hour <= run.lastHour)?.slot ?? null;
   }

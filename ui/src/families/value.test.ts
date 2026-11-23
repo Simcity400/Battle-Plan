@@ -38,6 +38,12 @@ test('value constructors enforce the five states and reject bare null, undefined
   assert.throws(() => knownValue(undefined as unknown as number), InvalidFamilyValueError);
   assert.throws(() => knownValue(Number.NaN), InvalidFamilyValueError);
   assert.throws(() => knownValue(Number.POSITIVE_INFINITY), InvalidFamilyValueError);
+  assert.throws(() => knownValue(''), InvalidFamilyValueError);
+  assert.throws(() => knownValue('   \t\n '), InvalidFamilyValueError);
+  assert.throws(() => partialValue('', 'reason'), InvalidFamilyValueError);
+  assert.throws(() => partialValue('  ', 'reason'), InvalidFamilyValueError);
+  assert.throws(() => assertValue({ kind: 'known', value: '' }), InvalidFamilyValueError);
+  assert.throws(() => assertValue({ kind: 'partial', value: '   ', reason: 'r' }), InvalidFamilyValueError);
   assert.throws(() => notRecorded(''), InvalidFamilyValueError);
   assert.throws(() => notApplicable('   '), InvalidFamilyValueError);
   assert.throws(() => partialValue(Number.NaN, 'reason'), InvalidFamilyValueError);

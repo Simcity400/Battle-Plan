@@ -52,6 +52,10 @@ export interface FamilyTablePicture {
   ranks: (string | undefined)[];
   measures: Map<string, number>;
   fittedTexts: Map<string, string>;
+  maximaRows?: readonly FlatTableRow[];
+  maximaHour?: number;
+  maximaCols?: string;
+  maxima?: Map<string, number>;
 }
 
 export function createTablePicture(): FamilyTablePicture {
@@ -274,7 +278,19 @@ export function drawFamilyTable(
     return cached;
   };
 
-  const maxima = computeColumnMaxima(rows, layout.columns, hour);
+  const maximaCols = layout.columns.map(c => (c.numeric && measuresColumn(c) ? `${c.key}:${c.display}` : '')).join(',');
+  let maxima: Map<string, number>;
+  if (picture && picture.maxima && picture.maximaRows === rows && picture.maximaHour === hour && picture.maximaCols === maximaCols) {
+    maxima = picture.maxima;
+  } else {
+    maxima = computeColumnMaxima(rows, layout.columns, hour);
+    if (picture) {
+      picture.maximaRows = rows;
+      picture.maximaHour = hour;
+      picture.maximaCols = maximaCols;
+      picture.maxima = maxima;
+    }
+  }
   const moving = glideDuration > 0 && glide.size > 0;
   const hasGroupHeaders = rows.some(item => item.kind === 'group-header');
   const frameKey = picture && !moving && !layout.scrollable && !hasGroupHeaders
@@ -681,9 +697,26 @@ export function hitFamilyTable(
   scrollTop: number,
   rankShown: boolean,
   rankWidth: number,
+  glide?: ReadonlyMap<string, GlideOffset>,
+  now?: number,
+  glideDuration?: number,
 ): { readonly kind: 'row' | 'empty'; readonly rowKey?: string; readonly column?: string; readonly toggle?: boolean } {
-  const index = Math.floor((point.y + scrollTop) / rowHeight);
-  const item = rows[index];
+  let item: FlatTableRow | undefined;
+  if (glide && glide.size > 0 && glideDuration && glideDuration > 0 && now !== undefined) {
+    const first = Math.max(0, Math.floor(scrollTop / rowHeight) - 2);
+    const last = Math.min(rows.length, Math.ceil((scrollTop + Math.max(rowHeight * 4, point.y + rowHeight * 2)) / rowHeight) + 2);
+    for (let i = last - 1; i >= first; i--) {
+      const candidate = rows[i]!;
+      const y = i * rowHeight - scrollTop + (candidate.kind === 'data' ? glideOffset(glide.get(candidate.key), now, glideDuration) : 0);
+      if (point.y >= y && point.y < y + rowHeight) {
+        item = candidate;
+        break;
+      }
+    }
+  } else {
+    const index = Math.floor((point.y + scrollTop) / rowHeight);
+    item = rows[index];
+  }
   if (!item || item.kind !== 'data') return { kind: 'empty' };
   const rank = rankShown ? rankWidth : 0;
   const firstWidth = layout.columns[0]?.width ?? 0;

@@ -79,3 +79,46 @@ test('the table says why it shows no rows at the hour, and nothing while it show
   assert.equal(emptyReason(reply([]), view([], { membership: 'Membership not recorded' })), 'Membership not recorded');
   assert.equal(emptyReason({ ...reply([state(1, 'GER', 'POL')]), missing: 'not read' }, view([{}])), 'Occupied states weren’t recorded at this time: not read');
 });
+
+import { deriveTableTooltip, resolveTableRows } from '../../families/table/model.ts';
+import { tableSettingsOf } from '../../families/table/settings.ts';
+import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { occupiedStatesProjection } from './occupiedProjection.ts';
+
+test('missing garrison and unresolved manpower report notRecorded with source reason, never notApplicable, and tooltip keeps exact bigint precision', () => {
+  const missingState = state(1, 'GER', 'POL', {
+    garrisonRequiredSign: null,
+    assignedKnown: false,
+    garrisonMissing: 'No state garrisons row at this hour',
+  });
+  const bigState = state(2, 'GER', 'POL', {
+    garrisonRequiredSign: 1,
+    assignedKnown: true,
+    garrisonMissing: null,
+  });
+  const rep = reply([missingState, bigState]);
+  const big = 9007199254740993n;
+  const live = {
+    get: (k: string) => (k === liveKey('2', 'requiredManpower') || k === liveKey('2', 'assignedManpower') ? Number(big) : undefined),
+    raw: (k: string) => (k === liveKey('2', 'requiredManpower') || k === liveKey('2', 'assignedManpower') ? big : undefined),
+    missing: () => 'Not a live cell of this reply',
+  };
+  const model = occupiedStatesProjection.project(
+    { answers: new Map(), panels: new Map([['main', rep]]), live: new Map([['main', live]]) },
+    50,
+    { filter: { passing: null, unrecorded: [], bounds: [] }, role: 'occupier', labels: { GER: [{ from: 0, name: 'Germany' }], POL: [{ from: 0, name: 'Poland' }] }, lawAs: 'dot', filterAll: true },
+  );
+  const s1 = model.rows.find(r => r.key === '1')!;
+  assert.deepEqual(s1.cells.garrison!.value, { kind: 'notRecorded', reason: 'No state garrisons row at this hour' });
+  const settings = tableSettingsOf(undefined, COLUMNS, TABLE_BASE);
+  const flat = resolveTableRows(model, settings);
+  const tip1 = deriveTableTooltip(flat, '1', model.columns, new Set(), 50)!;
+  assert.equal(tip1.rows.find(r => r.label === 'Required manpower')?.value, 'Not recorded');
+  assert.equal(tip1.rows.find(r => r.label === 'Required manpower')?.detail, 'No state garrisons row at this hour');
+  assert.equal(tip1.rows.find(r => r.label === 'Assigned manpower')?.value, 'Not recorded');
+  assert.equal(tip1.rows.find(r => r.label === 'Assigned manpower')?.detail, 'No state garrisons row at this hour');
+
+  const tip2 = deriveTableTooltip(flat, '2', model.columns, new Set(), 50)!;
+  assert.equal(tip2.rows.find(r => r.label === 'Required manpower')?.value, '9,007,199,254,740,993');
+  assert.equal(tip2.rows.find(r => r.label === 'Assigned manpower')?.value, '9,007,199,254,740,993');
+});

@@ -59,3 +59,59 @@ test.skip('a country’s faction is the one its tag was a member of at the hour,
   assert.equal(factionGroup(groups, 'ENG', 60).key, 'no-faction');
   assert.equal(factionGroup(undefined, 'ENG', 4).key, 'faction-not-recorded');
 });
+
+import { EMPTY_SOURCES } from '../../families/contract.ts';
+import { gameScoreProjection } from './gameScoreProjection.ts';
+
+test('game-score projection resolves slot tag runs at the projected hour and honours faction rename bounds without latest-name fallback', () => {
+  const rep: GameScoreReply = {
+    missing: null,
+    warnings: [],
+    hints: {},
+    multipliers: [{ part: 'total', raw: '100000', missing: null }],
+    rows: [row('GER', true), row('GDR', true)],
+  };
+  const live = { get: () => 50, missing: () => 'Not recorded' };
+  const opts = {
+    all: false,
+    chosenTags: [],
+    holders: { '\u00007': [{ tag: 'GER', firstHour: 0, lastHour: 104 }, { tag: 'GDR', firstHour: 105, lastHour: 200 }] },
+    membership: null,
+    top: null,
+    by: 'total' as const,
+    factions: true,
+    factionRuns: [
+      {
+        id: '1',
+        tag: 'GER',
+        firstHour: 0,
+        lastHour: 104,
+        names: [
+          { firstHour: 0, lastHour: 50, name: 'Old Axis' },
+          { firstHour: 51, lastHour: 80, name: 'New Axis' },
+          { firstHour: 81, lastHour: 104, name: null },
+        ],
+        fallbackName: 'New Axis',
+      },
+    ],
+    rankMarkers: false,
+    cellBars: false,
+    labels: { GER: [{ from: 0, name: 'Germany' }], GDR: [{ from: 105, name: 'East Germany' }] },
+  };
+  const at40 = gameScoreProjection.project({ answers: new Map(), panels: new Map([['main', rep]]), live: new Map([['main', live]]) }, 40, opts);
+  assert.deepEqual(at40.rows.map(r => r.key), ['GER'], 'slot 7 resolves to GER before tag switch at 105');
+  assert.equal(at40.rows[0]!.group?.label, 'Old Axis');
+
+  const at60 = gameScoreProjection.project({ answers: new Map(), panels: new Map([['main', rep]]), live: new Map([['main', live]]) }, 60, opts);
+  assert.equal(at60.rows[0]!.group?.label, 'New Axis', 'rename at hour 51 replaces Old Axis');
+
+  const at90 = gameScoreProjection.project({ answers: new Map(), panels: new Map([['main', rep]]), live: new Map([['main', live]]) }, 90, opts);
+  assert.notEqual(at90.rows[0]!.group?.label, 'New Axis', 'missing historical faction name never falls back to latest name');
+  assert.equal(at90.rows[0]!.group?.order, 1);
+
+  const at110 = gameScoreProjection.project({ answers: new Map(), panels: new Map([['main', rep]]), live: new Map([['main', live]]) }, 110, opts);
+  assert.deepEqual(at110.rows.map(r => r.key), ['GDR'], 'slot 7 resolves to GDR at hour 110');
+
+  assert.equal(gameScoreProjection.nextChange?.(EMPTY_SOURCES, 40, opts), 51, 'nextChange reports faction rename boundary');
+  assert.equal(gameScoreProjection.nextChange?.(EMPTY_SOURCES, 90, opts), 105, 'nextChange reports slot switch / faction end boundary');
+});

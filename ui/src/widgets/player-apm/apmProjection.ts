@@ -1,7 +1,7 @@
 import { rowName, type FollowedAnswer } from '../../dashboard/follow/message.ts';
 import { TRAILING_HOURS } from '../../dashboard/model.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
-import type { DeclaredTableContext, TableWidgetDeclaration } from '../../families/table/declaration.ts';
+import type { DeclaredTableContext, HourRanges, TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { lookAt, type CountryLooksMap } from '../../families/table/looks.ts';
 import {
   declareTableProjection,
@@ -11,7 +11,7 @@ import {
 } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { OFFERED } from '../../families/table/settings.ts';
-import { knownValue, notApplicable, notRecorded, partialValue, wireFloat, wireWhole, type NullableMeaning, type Value } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, valueFromNullable, wireFloat, wireWhole, type NullableMeaning, type Value } from '../../families/value.ts';
 import type { ApmReply, ApmSeries, ApmValue } from '../../generated/dashboard';
 import { GAPS_NOTE, playerNames, validateApm, valueNote } from './apmData.ts';
 import { apmHeadQuery } from './apmHead.ts';
@@ -24,6 +24,10 @@ export interface ApmTableProjectionOptions {
   readonly rankMarkers: boolean;
   readonly playerNames: Readonly<Record<string, string>>;
   readonly labels: CountryLooksMap;
+  readonly unobserved?: HourRanges;
+  readonly branchFirst?: number;
+  readonly windowHours?: number;
+  readonly staticSpan?: readonly [number, number] | null;
 }
 
 interface ParsedApm {
@@ -54,6 +58,9 @@ function rateValue(summary: ApmValue): Value<number> {
   }
   return summary.gaps ? partialValue(summary.apm, GAPS_NOTE) : knownValue(summary.apm);
 }
+
+const observationHour = (row: ApmSeries, fallback: number): number =>
+  (Number.isFinite(row.hour) ? row.hour : fallback);
 
 function parseAnswer(answer: FollowedAnswer): ParsedApm {
   if (answer.kind === 'notRecorded') return { rows: [], refusal: answer.reason, warnings: [] };
@@ -106,35 +113,81 @@ export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = re
     kind: 'apm-table',
     validate: parseReply,
     fromAnswer: parseAnswer,
+    nextChange: (_sources, hour, opt) => {
+      if (opt.staticSpan || !opt.unobserved?.length) return Infinity;
+      const win = opt.windowHours ?? TRAILING_HOURS;
+      let soonest = Infinity;
+      for (const [first, last] of opt.unobserved) {
+        if (first > hour && first < soonest) soonest = first;
+        const leave = last + win;
+        if (leave > hour && leave < soonest) soonest = leave;
+      }
+      return soonest;
+    },
     rank: true,
     rankMarkers: opt => opt.rankMarkers,
     columns: (_parsed, opt): readonly DeclarativeColumnSpec<ApmSeries, ApmTableProjectionOptions>[] => {
       const specs = apmTableColumns(opt.players, opt.showPaused, opt.cellBars);
+      const gapsPartial = (row: ApmSeries) => (row.summary.gaps ? GAPS_NOTE : null);
       return specs.map((spec): DeclarativeColumnSpec<ApmSeries, ApmTableProjectionOptions> => {
         if (spec.key === 'name') {
           return opt.players
-            ? { ...spec, value: row => knownValue(opt.playerNames[row.id] ?? row.name) }
-            : { ...spec, countryField: 'tag' };
+            ? {
+                ...spec,
+                value: row => {
+                  const text = opt.playerNames[row.id] ?? row.name;
+                  return valueFromNullable(text && text.trim() ? text : null, { kind: 'notRecorded', reason: 'Player name unavailable' });
+                },
+              }
+            : { ...spec, countryField: 'tag', lookHour: (row, h) => observationHour(row, h) };
         }
-        if (spec.key === 'country') return { ...spec, countryField: 'tag' };
+        if (spec.key === 'country') return { ...spec, countryField: 'tag', lookHour: (row, h) => observationHour(row, h) };
         if (spec.key === 'apm') return { ...spec, value: row => rateValue(row.summary) };
-        if (spec.key === 'orders') return { ...spec, path: 'summary.orders', rawBigInt: true, whenNull: row => apmReason(row.summary) };
-        if (spec.key === 'paused') return { ...spec, path: 'summary.pausedOrders', rawBigInt: true, whenNull: row => apmReason(row.summary) };
-        return { ...spec, path: 'summary.unpausedMinutes', whenNull: row => apmReason(row.summary) };
+        if (spec.key === 'orders') {
+          return {
+            ...spec,
+            path: 'summary.orders',
+            rawBigInt: true,
+            whenNull: { kind: 'notRecorded', reason: 'Player orders were not recorded for this period.' },
+            partial: gapsPartial,
+          };
+        }
+        if (spec.key === 'paused') {
+          return {
+            ...spec,
+            path: 'summary.pausedOrders',
+            rawBigInt: true,
+            whenNull: { kind: 'notRecorded', reason: 'Paused player orders were not recorded for this period.' },
+            partial: gapsPartial,
+          };
+        }
+        return {
+          ...spec,
+          path: 'summary.unpausedMinutes',
+          whenNull: { kind: 'notRecorded', reason: 'Unpaused play time was not recorded for this period.' },
+          partial: gapsPartial,
+        };
       });
     },
-    rows: parsed => {
+    rows: (parsed, _live, hour, opt) => {
       if (parsed.refusal) return { rows: [], empty: parsed.refusal, emptyKind: 'unavailable', warnings: parsed.warnings };
+      if (opt.unobserved?.length) {
+        const win = opt.windowHours ?? TRAILING_HOURS;
+        const [winFirst, winLast] = opt.staticSpan ?? [Math.max(opt.branchFirst ?? 0, hour - (win - 1)), hour];
+        if (opt.unobserved.some(([first, last]) => first <= winLast && winFirst <= last)) {
+          return { rows: [], empty: 'Country group membership was not recorded throughout this period.', emptyKind: 'unavailable', warnings: parsed.warnings };
+        }
+      }
       if (!parsed.rows.length) return { rows: [], empty: 'No eAPM is available for these countries, players and dates.', emptyKind: 'empty', warnings: parsed.warnings };
       return { rows: parsed.rows, warnings: parsed.warnings };
     },
     rowKey: row => row.id,
     rowName: (row, hour, opt) => opt.players
       ? (opt.playerNames[row.id] ?? row.name)
-      : (lookAt(row.tag ? opt.labels[row.tag] : undefined, row.hour || hour)?.name ?? row.tag ?? row.id),
+      : (lookAt(row.tag ? opt.labels[row.tag] : undefined, observationHour(row, hour))?.name ?? row.tag ?? row.id),
     tooltipTitle: (row, hour, opt) => opt.players
       ? (opt.playerNames[row.id] ?? row.name)
-      : (lookAt(row.tag ? opt.labels[row.tag] : undefined, row.hour || hour)?.name ?? row.tag ?? row.id),
+      : (lookAt(row.tag ? opt.labels[row.tag] : undefined, observationHour(row, hour))?.name ?? row.tag ?? row.id),
     tooltipNote: row => valueNote(row.summary),
   }),
 );
@@ -196,8 +249,12 @@ export const apmTableDeclaration: TableWidgetDeclaration<ApmTableProjectionOptio
     rankMarkers: ctx.options.rankMarkers === true,
     playerNames: Object.fromEntries(playerNames(ctx.aux?.players ?? [])),
     labels: ctx.countries.labels,
+    unobserved: ctx.countries.unobserved,
+    branchFirst: ctx.branch.firstHour,
+    windowHours: TRAILING_HOURS,
+    staticSpan: ctx.staticSpan,
   }),
-  unavailable: (ctx, moment) => ctx.countries.unobservedIn(ctx.branch.firstHour, moment)
+  unavailable: ctx => (!ctx.following && ctx.staticSpan && ctx.countries.unobservedIn(ctx.staticSpan[0], ctx.staticSpan[1]))
     ? 'Country group membership was not recorded throughout this period.'
     : null,
   keyByBranch: true,

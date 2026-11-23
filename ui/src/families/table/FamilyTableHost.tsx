@@ -27,7 +27,7 @@ import { buildColumnLayouts, layoutFamilyTable } from './layout.ts';
 import { deriveTableAudit, resolveTableRows, type TableColumnSpec, type TableProjection } from './model.ts';
 import './tableFamily.css';
 
-const TABLE_AUDIT = -1;
+const STATIC_HOLD = {};
 const OVERSCAN = 4;
 const CLICK_CANCEL_PX = 4;
 const TOOLTIP_THROTTLE_MS = 250;
@@ -36,6 +36,8 @@ const TYPEAHEAD_RESET_MS = 700;
 const HOVER_OPEN_MS = 150;
 const HOVER_CLOSE_MS = 100;
 const HEADER_FALLBACK_WIDTH = 120;
+
+let nextAuditOwner = 1;
 
 export interface FamilySourceSubscription {
   readonly name: string;
@@ -58,6 +60,7 @@ export interface FamilyTableHostProps<TOptions> {
   readonly columns: readonly TableColumnSpec[];
   readonly settings: TableSettings;
   readonly onSettings?: (next: TableSettings) => void;
+  readonly editableColumns?: boolean;
   readonly subscriptions: readonly FamilySourceSubscription[];
   readonly staticSources?: { readonly sources: FamilySources; readonly hour: number } | null;
   readonly exactSources?: (hour: number) => Promise<FamilySources | null>;
@@ -72,6 +75,7 @@ export interface FamilyTableHostProps<TOptions> {
   readonly onDiagnostics?: (warnings: string[]) => void;
   readonly extraWarnings?: readonly string[];
   readonly blockedState?: ReactNode;
+  readonly held?: boolean;
   readonly loadingLabel?: string;
   readonly className?: string;
 }
@@ -147,6 +151,7 @@ export default function FamilyTableHost<TOptions>({
   columns: initialColumns,
   settings,
   onSettings,
+  editableColumns = true,
   subscriptions,
   staticSources = null,
   exactSources,
@@ -161,6 +166,7 @@ export default function FamilyTableHost<TOptions>({
   onDiagnostics,
   extraWarnings,
   blockedState = null,
+  held = false,
   loadingLabel,
   className,
 }: FamilyTableHostProps<TOptions>) {
@@ -185,13 +191,20 @@ export default function FamilyTableHost<TOptions>({
 
   const focusedKeyRef = useRef<string | null>(null);
   const focusInsideRef = useRef(false);
+  const focusAnchorRef = useRef({ x: 0, y: 0 });
   const restoringFocusRef = useRef(false);
   const inspectedKeyRef = useRef<string | null>(null);
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
-  const pointerDownRef = useRef<{ key: string | null; x: number; y: number; button: number; toggle: boolean } | null>(null);
+  const pointerDownRef = useRef<{ key: string | null; x: number; y: number; button: number; toggle: boolean; cancelled: boolean } | null>(null);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pinnedTipRef = useRef<{ key: string; content: TooltipContent; x: number; y: number } | null>(null);
+  const heldRef = useRef(held);
+  heldRef.current = held;
+  const dimRef = useRef(false);
+  const pauseFlushRef = useRef(0);
+  const pendingAuditIdRef = useRef<number | null>(null);
+  const installedAuditIdRef = useRef<number | null>(null);
   const lastTipAtRef = useRef(0);
   const lastMirrorAtRef = useRef(0);
   const lastMirrorKeyRef = useRef('');
@@ -360,11 +373,12 @@ export default function FamilyTableHost<TOptions>({
       scrollTop: st,
       theme: cur.theme,
       selectedKey: cur.selectedKey,
-      focusedKey: focusedKeyRef.current,
+      focusedKey: focusInsideRef.current ? focusedKeyRef.current : null,
       expanded: expandedRef.current,
       reducedMotion: reducedMotionEnabled(),
       window: viewWindowRef.current,
-      ...(perfLog ? { audit: true } : {}),
+      pauseFlush: pauseFlushRef.current,
+      ...(perfLog ? { audit: true, ...(pendingAuditIdRef.current !== null ? { auditId: pendingAuditIdRef.current } : {}) } : {}),
     };
     held.canvas.style.width = `${w}px`;
     held.canvas.style.height = `${h}px`;
@@ -391,7 +405,7 @@ export default function FamilyTableHost<TOptions>({
     const playing = runtime.clock.getSnapshot().playing;
     if (!force && playing && now - lastMirrorAtRef.current < MIRROR_THROTTLE_MS) return;
     const key = mirror ? `${mirror.first}:${mirror.total}:${focusedKeyRef.current ?? ''}:${mirror.rows.map(r => `${r.key}|${r.cells.map(c => c.spoken).join(',')}`).join(';')}` : '';
-    if (!force && key === lastMirrorKeyRef.current) return;
+    if (key === lastMirrorKeyRef.current) return;
     lastMirrorAtRef.current = now;
     lastMirrorKeyRef.current = key;
     if (!mirror) {
@@ -431,10 +445,11 @@ export default function FamilyTableHost<TOptions>({
       if (wasFocused && row.key === focusedKeyRef.current) restore = tr;
       fragment.append(tr);
     });
-    tbody.replaceChildren(fragment);
-    if (restore) {
-      restoringFocusRef.current = true;
-      (restore as HTMLTableRowElement).focus({ preventScroll: true });
+    restoringFocusRef.current = true;
+    try {
+      tbody.replaceChildren(fragment);
+      if (restore) (restore as HTMLTableRowElement).focus({ preventScroll: true });
+    } finally {
       restoringFocusRef.current = false;
     }
   }, [runtime.clock]);
@@ -466,6 +481,11 @@ export default function FamilyTableHost<TOptions>({
     }
   }, []);
 
+  const refreshFocusAnchor = useCallback(() => {
+    const box = frameRef.current?.getBoundingClientRect();
+    if (box) focusAnchorRef.current = { x: box.left + Math.min(200, box.width / 2), y: box.top + 48 };
+  }, []);
+
   const focusRowByKey = useCallback((key: string) => {
     const entry = navRef.current.find(item => item[0] === key);
     if (!entry) return;
@@ -479,9 +499,14 @@ export default function FamilyTableHost<TOptions>({
       tr.tabIndex = 0;
       tr.focus({ preventScroll: true });
     }
-    if (pipeline && pipe !== null) pipeline.inspect(pipe, `row:${key}`);
     bindRef.current();
-  }, [pipeline, pipe, scrollRowIntoView]);
+  }, [scrollRowIntoView]);
+
+  useLayoutEffect(() => {
+    holdElement(frameRef.current, held, STATIC_HOLD);
+    if (held && !pinnedTipRef.current) hideTooltip(tooltipOwner);
+    return () => holdElement(frameRef.current, false, STATIC_HOLD);
+  }, [held, tooltipOwner]);
 
   useLayoutEffect(() => {
     const node = bodyRef.current;
@@ -500,10 +525,13 @@ export default function FamilyTableHost<TOptions>({
     node.append(extent);
     surfaceRef.current = { canvas: drawn.canvas, extent, surface: drawn.surface };
 
-    const updateTooltip = (tip: { hour: number; rowKey: string; content: TooltipContent } | null, force: boolean) => {
+    const updateTooltip = (
+      tip: { hour: number; rowKey: string; content: TooltipContent } | null,
+      pos: { x: number; y: number } | null,
+      force: boolean,
+    ) => {
       if (pinnedTipRef.current) return;
-      const point = lastPointerRef.current;
-      if (!tip || (!point && !focusInsideRef.current)) {
+      if (!tip || !pos) {
         hideTooltip(tooltipOwner);
         return;
       }
@@ -512,20 +540,13 @@ export default function FamilyTableHost<TOptions>({
       if (!force && playing && now - lastTipAtRef.current < TOOLTIP_THROTTLE_MS) return;
       lastTipAtRef.current = now;
       const fitted = fitTooltip([tip.content], latestRef.current.viewportHeight);
-      const pos = point ?? (() => {
-        const box = frameRef.current?.getBoundingClientRect();
-        return box ? { x: box.left + Math.min(200, box.width / 2), y: box.top + 48 } : { x: 0, y: 0 };
-      })();
       showTooltip(tooltipOwner, fitted, pos.x, pos.y, tip.rowKey);
-      if (focusInsideRef.current && focusedKeyRef.current === tip.rowKey) {
-        const tr = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>(`tr[data-row-key="${CSS.escape(tip.rowKey)}"]`);
-        if (tr) tr.setAttribute('aria-description', tooltipText(fitted));
-      }
     };
 
     const install = () => {
       const shown = pipeline.view(pipe);
       const frameNode = frameRef.current;
+      dimRef.current = !!shown?.dim;
       holdElement(frameNode, !!shown?.dim);
       const visible = shown?.mode === 'picture';
       node.toggleAttribute('data-table-visible', visible);
@@ -541,7 +562,21 @@ export default function FamilyTableHost<TOptions>({
       }
 
       const rawMeta = shown?.fields?.meta as Omit<TableMetaState, 'mode' | 'reason'> | undefined;
-      const nextMetaSig = JSON.stringify([mode, reason, rawMeta?.empty ?? null, rawMeta?.emptyDetail ?? null, rawMeta?.summaryPill ?? null, rawMeta?.notes ?? [], rawMeta?.warnings ?? [], rawMeta?.hasTree ?? false, rawMeta?.unsorted ?? false, rawMeta?.rankShown ?? false, rawMeta?.columns?.map(c => c.key) ?? []]);
+      const nextMetaSig = JSON.stringify([
+        mode,
+        reason,
+        rawMeta?.empty ?? null,
+        rawMeta?.emptyDetail ?? null,
+        rawMeta?.emptyKind ?? 'empty',
+        rawMeta?.summaryPill ?? null,
+        rawMeta?.notes ?? [],
+        rawMeta?.warnings ?? [],
+        rawMeta?.hasTree ?? false,
+        rawMeta?.unsorted ?? false,
+        rawMeta?.rankShown ?? false,
+        rawMeta?.rankWidth ?? 0,
+        rawMeta?.columns?.map(c => [c.key, c.label, c.as, c.offered, c.text ?? false, c.hideable ?? true, c.sortable ?? true, c.numeric ?? false, c.hint ?? '']) ?? [],
+      ]);
       if (nextMetaSig !== metaSigRef.current) {
         metaSigRef.current = nextMetaSig;
         setMeta(prev => ({
@@ -565,6 +600,17 @@ export default function FamilyTableHost<TOptions>({
         paintMirror(null, true);
         if (!pinnedTipRef.current) hideTooltip(tooltipOwner);
         return;
+      }
+
+      const auditField = shown.fields.audit as { id: number; rows: readonly AuditRow[] } | undefined;
+      if (perfLog && auditField && typeof auditField.id === 'number' && auditField.id > 0 && installedAuditIdRef.current !== auditField.id) {
+        if (installedAuditIdRef.current !== null) pipeline.audit(pipe, installedAuditIdRef.current, null);
+        installedAuditIdRef.current = auditField.id;
+        const expectedId = auditField.id;
+        pipeline.audit(pipe, expectedId, fields => {
+          const current = fields.audit as { id: number; rows: readonly AuditRow[] } | undefined;
+          return current && current.id === expectedId ? current.rows : undefined;
+        });
       }
 
       const widths = shown.fields.widths as Omit<WidthsState, 'signature'> | undefined;
@@ -595,30 +641,46 @@ export default function FamilyTableHost<TOptions>({
           extent.style.height = `${extHeight}px`;
         }
         if (focusInsideRef.current && focusedKeyRef.current) {
-          if (tableInfo.focusedIndex >= 0) {
-            scrollRowIntoView(tableInfo.focusedIndex);
+          const navEntry = navRef.current.find(item => item[0] === focusedKeyRef.current);
+          if (navEntry) {
+            scrollRowIntoView(navEntry[2]);
           } else if (navRef.current.length > 0) {
-            focusedKeyRef.current = navRef.current[0]![0];
-            queueMicrotask(() => bindRef.current());
+            const fallbackKey = navRef.current[0]![0];
+            if (fallbackKey !== focusedKeyRef.current) {
+              focusedKeyRef.current = fallbackKey;
+              queueMicrotask(() => bindRef.current());
+            }
           }
         }
         if (inspectedKeyRef.current && !tableInfo.inspectedPresent) {
           inspectedKeyRef.current = null;
           pipeline.inspect(pipe, null);
-          if (!pinnedTipRef.current) hideTooltip(tooltipOwner);
+          if (!pinnedTipRef.current && !focusInsideRef.current) hideTooltip(tooltipOwner);
         }
       }
 
+      const playing = runtime.clock.getSnapshot().playing;
       const mirror = shown.fields.mirror as MirrorModel | undefined;
-      if (mirror) paintMirror(mirror, false);
+      if (mirror) paintMirror(mirror, !playing);
 
       const phases = shown.fields.phases as Record<string, unknown> | undefined;
       if (phases && frameNode && perfLog) frameNode.dataset.familyPhases = JSON.stringify(phases);
 
-      const tipField = shown.fields.tooltip as { key: string; text: { hour: number; rowKey: string; content: TooltipContent } | null } | undefined;
-      if (tipField?.text && !shown.dim) {
-        updateTooltip(tipField.text, false);
-      } else if (!pinnedTipRef.current && !inspectedKeyRef.current && !focusInsideRef.current) {
+      const hoverTipField = shown.fields.tooltip as { key: string; text: { hour: number; rowKey: string; content: TooltipContent } | null } | undefined;
+      const focusTipField = shown.fields.focusTooltip as { key: string; text: { hour: number; rowKey: string; content: TooltipContent } | null } | undefined;
+      if (focusInsideRef.current && focusedKeyRef.current && focusTipField?.text && focusTipField.text.rowKey === focusedKeyRef.current) {
+        const tr = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>(`tr[data-row-key="${CSS.escape(focusedKeyRef.current)}"]`);
+        if (tr) tr.setAttribute('aria-description', tooltipText(fitTooltip([focusTipField.text.content], latestRef.current.viewportHeight)));
+      }
+      if (!shown.dim && !heldRef.current) {
+        if (inspectedKeyRef.current && lastPointerRef.current && hoverTipField?.text && hoverTipField.text.rowKey === inspectedKeyRef.current) {
+          updateTooltip(hoverTipField.text, lastPointerRef.current, !playing);
+        } else if (focusInsideRef.current && focusedKeyRef.current && focusTipField?.text && focusTipField.text.rowKey === focusedKeyRef.current) {
+          updateTooltip(focusTipField.text, focusAnchorRef.current, !playing);
+        } else if (!pinnedTipRef.current) {
+          hideTooltip(tooltipOwner);
+        }
+      } else if (!pinnedTipRef.current) {
         hideTooltip(tooltipOwner);
       }
     };
@@ -628,19 +690,25 @@ export default function FamilyTableHost<TOptions>({
 
     const onPointerMove = (event: PointerEvent) => {
       if (!event.isTrusted) return;
+      const down = pointerDownRef.current;
+      if (down && !down.cancelled && Math.hypot(event.clientX - down.x, event.clientY - down.y) > CLICK_CANCEL_PX) {
+        down.cancelled = true;
+      }
+      if (heldRef.current || dimRef.current) return;
       const last = lastPointerRef.current;
       if (last && last.x === event.clientX && last.y === event.clientY) return;
       lastPointerRef.current = { x: event.clientX, y: event.clientY };
       if (leaveTimerRef.current) { clearTimeout(leaveTimerRef.current); leaveTimerRef.current = null; }
       const box = node.getBoundingClientRect();
       pipeline.pointer(pipe, 0, [event.clientX - box.left, event.clientY - box.top], hitKey => {
+        if (heldRef.current || dimRef.current) return;
         const nextKey = hitKey && (hitKey.startsWith('row:') || hitKey.startsWith('toggle:')) ? hitKey.slice(hitKey.indexOf(':') + 1) : null;
         const changed = nextKey !== inspectedKeyRef.current;
         inspectedKeyRef.current = nextKey;
         pipeline.inspect(pipe, nextKey ? `row:${nextKey}` : null);
         if (!nextKey) {
           if (hoverTimerRef.current) { clearTimeout(hoverTimerRef.current); hoverTimerRef.current = null; }
-          if (!pinnedTipRef.current) hideTooltip(tooltipOwner);
+          if (!pinnedTipRef.current && !focusInsideRef.current) hideTooltip(tooltipOwner);
           return;
         }
         if (changed) {
@@ -648,9 +716,10 @@ export default function FamilyTableHost<TOptions>({
           const delay = lastTipAtRef.current > 0 ? 0 : HOVER_OPEN_MS;
           hoverTimerRef.current = setTimeout(() => {
             hoverTimerRef.current = null;
+            if (heldRef.current || dimRef.current) return;
             const currentView = pipeline.view(pipe);
             const tipField = currentView?.fields?.tooltip as { key: string; text: { hour: number; rowKey: string; content: TooltipContent } | null } | undefined;
-            if (tipField?.text && tipField.text.rowKey === inspectedKeyRef.current) updateTooltip(tipField.text, true);
+            if (tipField?.text && tipField.text.rowKey === inspectedKeyRef.current) updateTooltip(tipField.text, lastPointerRef.current, true);
           }, delay);
         }
       });
@@ -663,24 +732,34 @@ export default function FamilyTableHost<TOptions>({
         leaveTimerRef.current = null;
         inspectedKeyRef.current = null;
         pipeline.pointer(pipe, 0, null);
-        pipeline.inspect(pipe, focusInsideRef.current && focusedKeyRef.current ? `row:${focusedKeyRef.current}` : null);
-        if (!pinnedTipRef.current && !focusInsideRef.current) hideTooltip(tooltipOwner);
+        pipeline.inspect(pipe, null);
+        if (!pinnedTipRef.current) {
+          if (focusInsideRef.current && focusedKeyRef.current && !heldRef.current && !dimRef.current) {
+            const focusTipField = pipeline.view(pipe)?.fields?.focusTooltip as { key: string; text: { hour: number; rowKey: string; content: TooltipContent } | null } | undefined;
+            if (focusTipField?.text && focusTipField.text.rowKey === focusedKeyRef.current) {
+              updateTooltip(focusTipField.text, focusAnchorRef.current, true);
+              return;
+            }
+          }
+          hideTooltip(tooltipOwner);
+        }
       }, HOVER_CLOSE_MS);
     };
 
     const onPointerDown = (event: PointerEvent) => {
       if (event.button !== 0 && event.button !== 2) return;
+      if (heldRef.current || dimRef.current) return;
       const box = node.getBoundingClientRect();
       const x = event.clientX, y = event.clientY;
       if (inspectedKeyRef.current) {
-        pointerDownRef.current = { key: inspectedKeyRef.current, x, y, button: event.button, toggle: false };
+        pointerDownRef.current = { key: inspectedKeyRef.current, x, y, button: event.button, toggle: false, cancelled: false };
         pipeline.pointer(pipe, 0, [x - box.left, y - box.top], hitKey => {
           if (pointerDownRef.current && hitKey?.startsWith('toggle:')) pointerDownRef.current.toggle = true;
         });
       } else {
         const hitIdx = Math.floor((y - box.top + viewportRef.current.scrollTop) / latestRef.current.rowHeight);
         const fallbackKey = navRef.current.find(item => item[2] === hitIdx)?.[0] ?? null;
-        pointerDownRef.current = { key: fallbackKey, x, y, button: event.button, toggle: false };
+        pointerDownRef.current = { key: fallbackKey, x, y, button: event.button, toggle: false, cancelled: false };
         pipeline.pointer(pipe, 0, [x - box.left, y - box.top], hitKey => {
           if (!pointerDownRef.current || !hitKey) return;
           const isToggle = hitKey.startsWith('toggle:');
@@ -698,7 +777,7 @@ export default function FamilyTableHost<TOptions>({
     const onPointerUp = (event: PointerEvent) => {
       const down = pointerDownRef.current;
       pointerDownRef.current = null;
-      if (!down || down.button !== 0 || !down.key) return;
+      if (!down || down.cancelled || down.button !== 0 || !down.key || heldRef.current || dimRef.current) return;
       if (Math.hypot(event.clientX - down.x, event.clientY - down.y) > CLICK_CANCEL_PX) return;
       const entry = navRef.current.find(item => item[0] === down.key);
       if (down.toggle || (entry && entry[3] >= 0)) {
@@ -708,7 +787,12 @@ export default function FamilyTableHost<TOptions>({
       latestRef.current.onActivate?.(down.key, entry?.[5], lastHourRef.current);
     };
 
+    const onPointerCancel = () => {
+      pointerDownRef.current = null;
+    };
+
     const onContextMenu = (event: MouseEvent) => {
+      if (heldRef.current || dimRef.current) return;
       const builder = latestRef.current.contextMenuItems;
       if (!builder) return;
       const key = inspectedKeyRef.current ?? focusedKeyRef.current;
@@ -737,6 +821,7 @@ export default function FamilyTableHost<TOptions>({
       const rect = entries[0]?.contentRect;
       const w = Math.round(rect ? rect.width : node.clientWidth);
       const h = Math.round(rect ? rect.height : node.clientHeight);
+      refreshFocusAnchor();
       if (w === viewportRef.current.width && h === viewportRef.current.height) return;
       viewportRef.current.width = w;
       viewportRef.current.height = h;
@@ -748,12 +833,14 @@ export default function FamilyTableHost<TOptions>({
     resizeObserver.observe(node);
     viewportRef.current.width = node.clientWidth;
     viewportRef.current.height = node.clientHeight;
+    refreshFocusAnchor();
     setViewportWidth(node.clientWidth);
 
     node.addEventListener('pointermove', onPointerMove);
     node.addEventListener('pointerleave', onPointerLeave);
     node.addEventListener('pointerdown', onPointerDown);
     node.addEventListener('pointerup', onPointerUp);
+    node.addEventListener('pointercancel', onPointerCancel);
     node.addEventListener('contextmenu', onContextMenu);
     node.addEventListener('scroll', onScroll, { passive: true });
     bindRef.current();
@@ -765,23 +852,59 @@ export default function FamilyTableHost<TOptions>({
       node.removeEventListener('pointerleave', onPointerLeave);
       node.removeEventListener('pointerdown', onPointerDown);
       node.removeEventListener('pointerup', onPointerUp);
+      node.removeEventListener('pointercancel', onPointerCancel);
       node.removeEventListener('contextmenu', onContextMenu);
       node.removeEventListener('scroll', onScroll);
       extent.remove();
       surfaceRef.current = null;
+      if (installedAuditIdRef.current !== null) {
+        pipeline.audit(pipe, installedAuditIdRef.current, null);
+        installedAuditIdRef.current = null;
+      }
       holdElement(frameRef.current, false);
     };
-  }, [pipeline, pipe, paintMirror, runtime.clock, scrollRowIntoView, toggleTreeKey, tooltipOwner]);
+  }, [pipeline, pipe, paintMirror, refreshFocusAnchor, runtime.clock, scrollRowIntoView, toggleTreeKey, tooltipOwner]);
+
+  const auditable = !!exactSources;
+  useLayoutEffect(() => {
+    if (!perfLog || !pipeline || pipe === null || !auditable) {
+      pendingAuditIdRef.current = null;
+      if (pipeline && pipe !== null && installedAuditIdRef.current !== null) {
+        pipeline.audit(pipe, installedAuditIdRef.current, null);
+        installedAuditIdRef.current = null;
+      }
+      return;
+    }
+    const id = nextAuditOwner++;
+    pendingAuditIdRef.current = id;
+    const snapDeclaration = declaration;
+    const snapOptions = options;
+    const snapSettings = settings;
+    const snapExpanded = expanded;
+    const snapExact = exactSources;
+    perfLog.reader(pipe, id, async hour => {
+      const exact = await snapExact(hour);
+      if (!exact) return null;
+      const model = snapDeclaration.project(exact, hour, snapOptions);
+      const flatRows = resolveTableRows(model, snapSettings, snapExpanded);
+      const allLayouts = buildColumnLayouts(model.columns, snapSettings);
+      const enabledSpecs = allLayouts.filter(col => col.shown).map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
+      const rows = deriveTableAudit(flatRows, enabledSpecs, model.hour, model.empty);
+      return { values: new Map(rows.map(row => [row.key, row.value ?? ''])), ordered: true };
+    });
+  }, [pipeline, pipe, auditable, declaration, options, settings, expanded, exactSources]);
 
   useLayoutEffect(() => {
     if (pipe !== null && enabled) bind();
-  }, [pipe, enabled, bind, options, settings, theme, staticSources, selectedKey, expanded, subsReady]);
+  }, [pipe, enabled, bind, options, settings, theme, staticSources, selectedKey, expanded, subsReady, auditable, exactSources]);
 
   useEffect(() => {
     let wasPlaying = runtime.clock.getSnapshot().playing;
     return runtime.clock.subscribe(() => {
       const nowPlaying = runtime.clock.getSnapshot().playing;
       if (wasPlaying && !nowPlaying && pipeline && pipe !== null) {
+        pauseFlushRef.current++;
+        bindRef.current();
         const view = pipeline.view(pipe);
         const mirror = view?.fields?.mirror as MirrorModel | undefined;
         if (mirror) paintMirror(mirror, true);
@@ -789,24 +912,6 @@ export default function FamilyTableHost<TOptions>({
       wasPlaying = nowPlaying;
     });
   }, [runtime.clock, pipeline, pipe, paintMirror]);
-
-  const auditable = !!exactSources;
-  useLayoutEffect(() => {
-    if (!perfLog || !pipeline || pipe === null || !auditable) return;
-    pipeline.audit(pipe, TABLE_AUDIT, fields => fields.audit as readonly AuditRow[] | undefined);
-    perfLog.reader(pipe, TABLE_AUDIT, async hour => {
-      const cur = latestRef.current;
-      const exact = await cur.exactSources?.(hour);
-      if (!exact) return null;
-      const model = cur.declaration.project(exact, hour, cur.options);
-      const flatRows = resolveTableRows(model, cur.settings, expandedRef.current);
-      const allLayouts = buildColumnLayouts(model.columns, cur.settings);
-      const enabledSpecs = allLayouts.filter(col => col.shown).map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
-      const rows = deriveTableAudit(flatRows, enabledSpecs, model.hour, model.empty);
-      return { values: new Map(rows.map(row => [row.key, row.value ?? ''])), ordered: true };
-    });
-    return () => pipeline.audit(pipe, TABLE_AUDIT, null);
-  }, [pipeline, pipe, auditable]);
 
   useEffect(() => {
     if (!onDiagnostics) return;
@@ -878,13 +983,14 @@ export default function FamilyTableHost<TOptions>({
       }
     }
     if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
+      if (heldRef.current || dimRef.current) return;
       const builder = latestRef.current.contextMenuItems;
       if (builder) {
         const items = builder(entry[0], entry[1], lastHourRef.current);
         if (items.length) {
           event.preventDefault();
-          const box = frameRef.current?.getBoundingClientRect();
-          contextMenuRef.current.open(box ? box.left + 60 : 0, box ? box.top + 48 : 0, items);
+          refreshFocusAnchor();
+          contextMenuRef.current.open(focusAnchorRef.current.x, focusAnchorRef.current.y, items);
         }
       }
       return;
@@ -897,14 +1003,14 @@ export default function FamilyTableHost<TOptions>({
         announce('Tooltip unpinned.');
         return;
       }
-      if (pipeline && pipe !== null) {
-        const tipField = pipeline.view(pipe)?.fields?.tooltip as { text: { hour: number; rowKey: string; content: TooltipContent } | null } | undefined;
-        if (tipField?.text) {
-          const pinnedContent: TooltipContent = { ...tipField.text.content, subtitle: `Pinned at ${tipField.text.content.subtitle ?? ''}` };
-          const box = frameRef.current?.getBoundingClientRect();
-          const pos = lastPointerRef.current ?? (box ? { x: box.left + Math.min(200, box.width / 2), y: box.top + 48 } : { x: 0, y: 0 });
-          pinnedTipRef.current = { key: tipField.text.rowKey, content: pinnedContent, x: pos.x, y: pos.y };
-          showTooltip(tooltipOwner, fitTooltip([pinnedContent], latestRef.current.viewportHeight), pos.x, pos.y, `${tipField.text.rowKey}:pinned`);
+      if (pipeline && pipe !== null && !heldRef.current && !dimRef.current) {
+        const focusTipField = pipeline.view(pipe)?.fields?.focusTooltip as { text: { hour: number; rowKey: string; content: TooltipContent } | null } | undefined;
+        if (focusTipField?.text && focusTipField.text.rowKey === currentKey) {
+          const pinnedContent: TooltipContent = { ...focusTipField.text.content, subtitle: `Pinned at ${focusTipField.text.content.subtitle ?? ''}` };
+          refreshFocusAnchor();
+          const pos = focusAnchorRef.current;
+          pinnedTipRef.current = { key: focusTipField.text.rowKey, content: pinnedContent, x: pos.x, y: pos.y };
+          showTooltip(tooltipOwner, fitTooltip([pinnedContent], latestRef.current.viewportHeight), pos.x, pos.y, `${focusTipField.text.rowKey}:pinned`);
           announce('Tooltip pinned.');
         }
       }
@@ -956,6 +1062,7 @@ export default function FamilyTableHost<TOptions>({
       ...col,
       text: spec?.text,
       hideable: spec?.hideable,
+      sortable: spec?.sortable,
       hint: spec?.hint,
       displays: spec && spec.offered.length > 1 ? spec.offered.map(display => [display, DISPLAY_LABELS[display]] as const) : [],
     };
@@ -988,6 +1095,7 @@ export default function FamilyTableHost<TOptions>({
         hiddenColumns={hiddenCols}
         settings={settings}
         unsorted={meta.unsorted}
+        editableColumns={editableColumns}
         rankWidth={meta.rankShown ? meta.rankWidth : 0}
         pinned={layout.scrollable}
         scrollLeft={settings.overflow === 'scroll' ? scrollLeft : 0}
@@ -1018,17 +1126,17 @@ export default function FamilyTableHost<TOptions>({
         if (restoringFocusRef.current) return;
         const wasInside = focusInsideRef.current;
         focusInsideRef.current = true;
+        refreshFocusAnchor();
         const target = (event.target as HTMLElement | null)?.closest<HTMLTableRowElement>('tr[data-row-key]');
         if (target?.dataset.rowKey && (!wasInside || focusedKeyRef.current !== target.dataset.rowKey)) {
           focusedKeyRef.current = target.dataset.rowKey;
-          if (pipeline && pipe !== null) pipeline.inspect(pipe, `row:${target.dataset.rowKey}`);
           bindRef.current();
         }
       }}
       onBlur={event => {
+        if (restoringFocusRef.current) return;
         if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
         focusInsideRef.current = false;
-        if (!inspectedKeyRef.current && pipeline && pipe !== null) pipeline.inspect(pipe, null);
         if (!pinnedTipRef.current && !inspectedKeyRef.current) hideTooltip(tooltipOwner);
         bindRef.current();
       }}

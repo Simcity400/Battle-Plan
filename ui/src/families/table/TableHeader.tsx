@@ -72,6 +72,7 @@ export interface TableHeaderColumn extends TableColumnLayout {
   displays: readonly (readonly [TableDisplay, string])[];
   text?: boolean;
   hideable?: boolean;
+  sortable?: boolean;
   hint?: string;
 }
 
@@ -81,6 +82,7 @@ export interface FamilyTableHeaderProps {
   hiddenColumns: readonly string[];
   settings: TableSettings;
   unsorted?: boolean;
+  editableColumns?: boolean;
   rankWidth?: number;
   pinned: boolean;
   scrollLeft: number;
@@ -134,6 +136,7 @@ export function FamilyTableHeader({
   hiddenColumns,
   settings,
   unsorted = false,
+  editableColumns = true,
   rankWidth = 0,
   pinned,
   scrollLeft,
@@ -150,17 +153,49 @@ export function FamilyTableHeader({
   const sort = settings.sort;
   const firstKey = allColumns[0]?.key;
 
-  if (unsorted) {
-    return <div className="tf-head" role="row" style={{ transform: `translateX(${-scrollLeft}px)` }}>
-      {rankWidth > 0 && <div className="tf-th tf-rank" role="columnheader" style={{ width: rankWidth }}>#</div>}
-      {columns.map((item, index) => {
-        const end = endAligned(item);
-        const stick = pinned && index === 0;
-        return <div key={item.key} role="columnheader" className={`tf-th${end ? ' end' : ''}${stick ? ' pinned' : ''}`}
-          style={{ width: `var(${columnWidthVar(item.key)}, ${item.width}px)`, ...(stick && { transform: `translateX(${scrollLeft}px)` }) }}>
-          <span className="tf-th-static" title={item.hint}>{item.label}</span>
-        </div>;
+  const moreSlot = hiddenColumns.length > 0 && <div className="tf-more-slot">
+    <button type="button" className="tf-more-cols" aria-expanded={chooser.open}
+      aria-label={`Show ${hiddenColumns.length} hidden ${hiddenColumns.length === 1 ? 'column' : 'columns'}`}
+      onClick={event => {
+        const box = event.currentTarget.getBoundingClientRect();
+        chooser.openAt({ left: box.left, right: box.right, top: box.top, bottom: box.bottom });
+      }}>
+      +{hiddenColumns.length} {hiddenColumns.length === 1 ? 'column' : 'columns'}
+    </button>
+    <Popover menu={chooser} className="tf-menu tf-chooser" aria-label="Columns">
+      <div className="tf-menu-title">Columns</div>
+      {allColumns.map(col => {
+        const own = settings.columns[col.key];
+        const shown = own?.show ?? true;
+        const narrowed = shown && hiddenSet.has(col.key);
+        const locked = unsorted || !editableColumns || col.key === firstKey || col.key === sort.column || col.hideable === false;
+        return <button key={col.key} type="button" role="menuitemcheckbox" aria-checked={shown} disabled={locked}
+          className={`tf-menu-item${narrowed ? ' is-narrowed' : ''}`}
+          onClick={() => onChange(draft => {
+            const entry = draft.columns[col.key];
+            if (entry) entry.show = !entry.show;
+          })}>
+          <span className="tf-menu-text">{col.label}{narrowed ? ' (in tooltip)' : ''}</span>
+          <span className="tf-menu-check">{shown ? '\u2713' : ''}</span>
+        </button>;
       })}
+    </Popover>
+  </div>;
+
+  if (unsorted) {
+    return <div className="tf-head-row">
+      <div className="tf-head" role="row" style={{ transform: `translateX(${-scrollLeft}px)` }}>
+        {rankWidth > 0 && <div className="tf-th tf-rank" role="columnheader" style={{ width: rankWidth, ...(pinned && { transform: `translateX(${scrollLeft}px)`, position: 'relative', zIndex: 3 }) }}>#</div>}
+        {columns.map((item, index) => {
+          const end = endAligned(item);
+          const stick = pinned && index === 0;
+          return <div key={item.key} role="columnheader" className={`tf-th${end ? ' end' : ''}${stick ? ' pinned' : ''}`}
+            style={{ width: `var(${columnWidthVar(item.key)}, ${item.width}px)`, ...(stick && { transform: `translateX(${scrollLeft}px)` }) }}>
+            <span className="tf-th-static" title={item.hint}>{item.label}</span>
+          </div>;
+        })}
+      </div>
+      {moreSlot}
     </div>;
   }
 
@@ -171,16 +206,18 @@ export function FamilyTableHeader({
         const active = sort.column === item.key;
         const end = endAligned(item);
         const stick = pinned && index === 0;
-        return <div key={item.key} role="columnheader" aria-sort={active ? sort.direction : 'none'}
+        const canSort = item.sortable !== false;
+        return <div key={item.key} role="columnheader" aria-sort={canSort ? (active ? sort.direction : 'none') : undefined}
           className={`tf-th${end ? ' end' : ''}${active ? ' sorted' : ''}${stick ? ' pinned' : ''}`}
           style={{ width: `var(${columnWidthVar(item.key)}, ${item.width}px)`, ...(stick && { transform: `translateX(${scrollLeft}px)` }) }}>
-          <button type="button" className="tf-th-label" title={item.hint} onClick={() => onChange(next => {
+          {canSort ? <button type="button" className="tf-th-label" title={item.hint} onClick={() => onChange(next => {
             next.sort = active ? { column: item.key, direction: sort.direction === 'descending' ? 'ascending' : 'descending' }
               : { column: item.key, direction: item.text ? 'ascending' : 'descending' };
           })}><span>{item.label}</span>{active && <span className="tf-sort-mark" aria-hidden="true">{sort.direction === 'descending' ? '↓' : '↑'}</span>}</button>
-          <button type="button" className="tf-th-menu" aria-label={`${item.label} options`} aria-expanded={menu.open && target.current === item.key}
-            onClick={event => { target.current = item.key; const box = event.currentTarget.getBoundingClientRect(); menu.openAt({ left: box.left, right: box.right, top: box.top, bottom: box.bottom }); }}>{CARET}</button>
-          <span className="tf-resize" title="Drag to resize. Double-click to fit." style={{ width: 8 }}
+            : <span className="tf-th-static" title={item.hint}>{item.label}</span>}
+          {editableColumns && <button type="button" className="tf-th-menu" aria-label={`${item.label} options`} aria-expanded={menu.open && target.current === item.key}
+            onClick={event => { target.current = item.key; const box = event.currentTarget.getBoundingClientRect(); menu.openAt({ left: box.left, right: box.right, top: box.top, bottom: box.bottom }); }}>{CARET}</button>}
+          {editableColumns && <span className="tf-resize" title="Drag to resize. Double-click to fit." style={{ width: 8 }}
             onPointerDown={event => {
               event.preventDefault(); event.stopPropagation();
               event.currentTarget.setPointerCapture(event.pointerId);
@@ -194,41 +231,14 @@ export function FamilyTableHeader({
             }}
             onPointerUp={() => { const now = drag.current; drag.current = null; if (now && now.current !== now.width) onResize(now.key, now.current); }}
             onPointerCancel={() => { drag.current = null; }}
-            onDoubleClick={() => onResize(item.key, null)} />
+            onDoubleClick={() => onResize(item.key, null)} />}
         </div>;
       })}
-      <Popover menu={menu} className="tf-menu" aria-label={column ? `${column.label} options` : 'Column options'}>
+      {editableColumns && <Popover menu={menu} className="tf-menu" aria-label={column ? `${column.label} options` : 'Column options'}>
         {column && <ColumnMenu column={column} settings={settings} onChange={update => onChange(update)} close={menu.close} />}
-      </Popover>
+      </Popover>}
     </div>
-    {hiddenColumns.length > 0 && <div className="tf-more-slot">
-      <button type="button" className="tf-more-cols" aria-expanded={chooser.open}
-        aria-label={`Show ${hiddenColumns.length} hidden ${hiddenColumns.length === 1 ? 'column' : 'columns'}`}
-        onClick={event => {
-          const box = event.currentTarget.getBoundingClientRect();
-          chooser.openAt({ left: box.left, right: box.right, top: box.top, bottom: box.bottom });
-        }}>
-        +{hiddenColumns.length} {hiddenColumns.length === 1 ? 'column' : 'columns'}
-      </button>
-      <Popover menu={chooser} className="tf-menu tf-chooser" aria-label="Columns">
-        <div className="tf-menu-title">Columns</div>
-        {allColumns.map(col => {
-          const own = settings.columns[col.key];
-          const shown = own?.show ?? true;
-          const narrowed = shown && hiddenSet.has(col.key);
-          const locked = col.key === firstKey || col.key === sort.column || col.hideable === false;
-          return <button key={col.key} type="button" role="menuitemcheckbox" aria-checked={shown} disabled={locked}
-            className={`tf-menu-item${narrowed ? ' is-narrowed' : ''}`}
-            onClick={() => onChange(draft => {
-              const entry = draft.columns[col.key];
-              if (entry) entry.show = !entry.show;
-            })}>
-            <span className="tf-menu-text">{col.label}{narrowed ? ' (in tooltip)' : ''}</span>
-            <span className="tf-menu-check">{shown ? '\u2713' : ''}</span>
-          </button>;
-        })}
-      </Popover>
-    </div>}
+    {moreSlot}
   </div>;
 }
 
@@ -242,6 +252,7 @@ export function buildHeaderColumns(
       ...col,
       text: spec?.text,
       hideable: spec?.hideable,
+      sortable: spec?.sortable,
       hint: spec?.hint,
       displays: spec && spec.offered.length > 1 ? spec.offered.map(display => [display, DISPLAY_LABELS[display]] as const) : [],
     };

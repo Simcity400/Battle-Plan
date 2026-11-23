@@ -1,6 +1,7 @@
 import { Profiler } from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
+import { tooltipStore } from '../../charts/tooltip.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { pipelineFor, type PipelineHost } from '../../dashboard/follow/pipeline.ts';
@@ -124,11 +125,14 @@ let activated: string[] = [];
 let hostNode: HTMLDivElement | null = null;
 let subIds: Record<string, number> = {};
 let pipeId = -1;
+let totalInstallReads = 0;
+let installs = 0;
+let flushWrapped = false;
 
-const waitTick = () => new Promise<void>(resolve => setTimeout(resolve, 16));
+const nextPoll = () => new Promise<void>(resolve => setTimeout(resolve, 16));
 async function until(predicate: () => boolean, limitMs = 6000) {
   const deadline = performance.now() + limitMs;
-  while (!predicate() && performance.now() < deadline) await waitTick();
+  while (!predicate() && performance.now() < deadline) await nextPoll();
   return predicate();
 }
 
@@ -159,6 +163,18 @@ function measureLayoutReadsDuring<T>(fn: () => T): { result: T; reads: number } 
     Object.defineProperty(HTMLElement.prototype, 'offsetWidth', offsetWidthDesc);
     Object.defineProperty(HTMLElement.prototype, 'offsetHeight', offsetHeightDesc);
   }
+}
+
+function ensureFlushInstrumentation() {
+  if (flushWrapped) return;
+  flushWrapped = true;
+  const internal = pipeline as unknown as { flush(): void };
+  const origFlush = internal.flush.bind(pipeline);
+  internal.flush = () => {
+    const { reads } = measureLayoutReadsDuring(() => origFlush());
+    totalInstallReads += reads;
+  };
+  pipeline.onInstall(pipeId, () => { installs++; });
 }
 
 function sendHour(hour: number, fac: [bigint, bigint, bigint, bigint], cas: [bigint, bigint, bigint, bigint], reset = false) {
@@ -195,6 +211,8 @@ window.tableFamilyDom = {
   async mount() {
     commits = 0;
     activated = [];
+    totalInstallReads = 0;
+    installs = 0;
     hostNode = document.createElement('div');
     hostNode.style.cssText = 'width:460px;height:260px;display:flex;flex-direction:column;';
     document.body.append(hostNode);
@@ -242,40 +260,78 @@ window.tableFamilyDom = {
       const view = pipeline.view(pipeId);
       return view?.mode === 'picture' && !view.dim && (hostNode?.querySelectorAll('.table-accessibility tbody tr').length ?? 0) === 4;
     });
+    ensureFlushInstrumentation();
     return { painted, initialRows: [...hostNode.querySelectorAll('.table-accessibility tbody tr')].map(tr => tr.getAttribute('data-row-key')) };
   },
 
-  async playAndCount(steps: number) {
+  async playLive(targetHour: number) {
     commits = 0;
-    let totalInstallReads = 0;
-    let installs = 0;
-    const internal = pipeline as unknown as { page: { frame(): void }; flush(): void };
-    const origFlush = internal.flush.bind(pipeline);
-    internal.flush = () => {
-      const { reads } = measureLayoutReadsDuring(() => origFlush());
-      totalInstallReads += reads;
-    };
-    const stopInstall = pipeline.onInstall(pipeId, () => { installs++; });
-
-    try {
-      for (let i = 1; i <= steps; i++) {
-        const hour = 10 + i;
-        const swap = i % 2 === 1;
-        sendHour(hour, swap ? [35n, 60n, 30n, -1n] : [70n, 40n, 30n, -1n], [BigInt(i * 10), BigInt(i * 20), 0n, 0n]);
-        clock.step(1);
-        await until(() => pipeline.view(pipeId)?.h === hour && !pipeline.view(pipeId)?.dim);
+    totalInstallReads = 0;
+    installs = 0;
+    let sentThrough = 10;
+    const feed = (hour: number) => {
+      while (sentThrough < hour + 6) {
+        sentThrough++;
+        const swap = sentThrough % 2 === 1;
+        sendHour(sentThrough, swap ? [35n, 60n, 30n, -1n] : [70n, 40n, 30n, -1n], [BigInt(sentThrough * 10), BigInt(sentThrough * 20), 0n, 0n]);
       }
-    } finally {
-      internal.flush = origFlush;
-      stopInstall();
-    }
+    };
+    feed(10);
+    const stopFeed = clock.onPublish((_prev, next) => feed(next.hour));
+    clock.setSpeed(24);
+    clock.setPlaying(true);
 
-    const view = pipeline.view(pipeId);
-    const mirrorRows = [...(hostNode?.querySelectorAll('.table-accessibility tbody tr') ?? [])].map(tr => ({
-      key: tr.getAttribute('data-row-key'),
-      cells: [...tr.querySelectorAll('td')].map(td => td.textContent),
-    }));
-    return { commits, totalInstallReads, installs, finalHour: view?.h ?? null, mirrorRows };
+    let playingDuringAdvance = false;
+    try {
+      const reached = await until(() => {
+        const snap = clock.getSnapshot();
+        const view = pipeline.view(pipeId);
+        if (snap.playing && (view?.h ?? 0) >= 14) playingDuringAdvance = true;
+        return snap.playing && (view?.h ?? 0) >= targetHour && !view?.dim;
+      }, 8000);
+      if (!reached) throw new Error(`Live playback did not reach hour ${targetHour} (at ${pipeline.view(pipeId)?.h})`);
+      const playingBeforePause = clock.getSnapshot().playing;
+      const playCommits = commits;
+      const playReads = totalInstallReads;
+      const playInstalls = installs;
+
+      const pauseHour = (pipeline.view(pipeId)?.h ?? targetHour) + 1;
+      const beforePauseTop = hostNode?.querySelector('.table-accessibility tbody tr')?.getAttribute('data-row-key') ?? null;
+      const wantTop = beforePauseTop === 'FRA' ? 'GER' : 'FRA';
+      const fac: [bigint, bigint, bigint, bigint] = wantTop === 'FRA' ? [15n, 95n, 30n, -1n] : [95n, 15n, 30n, -1n];
+      for (let h = sentThrough + 1; h <= pauseHour + 3; h++) {
+        sendHour(h, fac, [BigInt(h * 10), BigInt(h * 20), 0n, 0n]);
+      }
+      sentThrough = Math.max(sentThrough, pauseHour + 3);
+      await until(() => (pipeline.view(pipeId)?.h ?? 0) >= pauseHour && !pipeline.view(pipeId)?.dim, 4000);
+
+      clock.setPlaying(false);
+      const flushedOnPause = await until(
+        () => hostNode?.querySelector('.table-accessibility tbody tr')?.getAttribute('data-row-key') === wantTop,
+        800,
+      );
+
+      const view = pipeline.view(pipeId);
+      const mirrorRows = [...(hostNode?.querySelectorAll('.table-accessibility tbody tr') ?? [])].map(tr => ({
+        key: tr.getAttribute('data-row-key'),
+        cells: [...tr.querySelectorAll('td')].map(td => td.textContent),
+      }));
+      return {
+        playingDuringAdvance,
+        playingBeforePause,
+        commits: playCommits,
+        totalInstallReads: playReads,
+        pauseInstallReads: totalInstallReads,
+        installs: playInstalls,
+        flushedOnPause,
+        wantTop,
+        finalHour: view?.h ?? null,
+        mirrorRows,
+      };
+    } finally {
+      stopFeed();
+      clock.setPlaying(false);
+    }
   },
 
   async verifyRepaintAndHeld() {
@@ -290,18 +346,32 @@ window.tableFamilyDom = {
       for (let i = 0; i < data.length; i++) hash = Math.imul(hash ^ data[i]!, 16777619);
       return `${bitmap.width}x${bitmap.height}:${(hash >>> 0).toString(16)}`;
     };
-    const beforeHash = await hashCanvas();
-    sendHour(23, [75n, 40n, 30n, -1n], [100n, 200n, 0n, 0n]);
+    const baseHour = (pipeline.view(pipeId)?.h ?? 30) + 5;
+    clock.seek(baseHour);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(baseHour, [70n, 40n, 30n, -1n], [100n, 200n, 0n, 0n], true);
+    await until(() => pipeline.view(pipeId)?.h === baseHour && !pipeline.view(pipeId)?.dim);
+    let prevHash = await hashCanvas();
+    let stableCount = 0;
+    const settleDeadline = performance.now() + 2000;
+    while (stableCount < 3 && performance.now() < settleDeadline) {
+      await nextPoll();
+      const curHash = await hashCanvas();
+      if (curHash === prevHash) stableCount++;
+      else { stableCount = 0; prevHash = curHash; }
+    }
+    const beforeHash = prevHash;
+    sendHour(baseHour + 1, [75n, 40n, 30n, -1n], [100n, 200n, 0n, 0n]);
     clock.step(1);
-    await until(() => pipeline.view(pipeId)?.h === 23 && !pipeline.view(pipeId)?.dim);
+    await until(() => pipeline.view(pipeId)?.h === baseHour + 1 && !pipeline.view(pipeId)?.dim);
     const afterHash = await hashCanvas();
     for (let s = 0; s < 5; s++) clock.step(1);
     await until(() => pipeline.view(pipeId)?.dim === true, 3000);
     const dimView = pipeline.view(pipeId);
     const held = !!hostNode!.querySelector('[data-held]');
-    sendHour(28, [70n, 40n, 30n, -1n], [100n, 200n, 0n, 0n]);
-    await until(() => pipeline.view(pipeId)?.h === 28 && !pipeline.view(pipeId)?.dim, 3000);
-    return { pixelsChanged: beforeHash !== afterHash, dim: !!dimView?.dim, held, through: dimView?.through ?? null };
+    sendHour(baseHour + 6, [70n, 40n, 30n, -1n], [100n, 200n, 0n, 0n]);
+    const recovered = await until(() => pipeline.view(pipeId)?.h === baseHour + 6 && !pipeline.view(pipeId)?.dim, 3000);
+    return { pixelsChanged: beforeHash !== afterHash, dim: !!dimView?.dim, held, recovered, through: dimView?.through ?? null, expectedThrough: baseHour + 1 };
   },
 
   bodyBox() {
@@ -309,16 +379,46 @@ window.tableFamilyDom = {
     return { left: box.left, top: box.top, width: box.width, height: box.height };
   },
 
-  async waitInspected() {
-    return await until(() => pipeline.view(pipeId)?.fields?.tooltip !== undefined);
+  async waitInspected(expectedKey?: string) {
+    const ok = await until(() => {
+      const tip = pipeline.view(pipeId)?.fields?.tooltip as { text?: { rowKey?: string } | null } | undefined;
+      if (!tip?.text?.rowKey) return false;
+      return expectedKey ? tip.text.rowKey === expectedKey : true;
+    }, 3000);
+    if (!ok) {
+      const view = pipeline.view(pipeId);
+      throw new Error(`waitInspected(${expectedKey}) failed: mode=${view?.mode} h=${view?.h} dim=${view?.dim} inspect=${(pipeline as unknown as { page: { widgets: Map<number, { inspect: string | null }> } }).page.widgets.get(pipeId)?.inspect} tip=${JSON.stringify(view?.fields?.tooltip)}`);
+    }
+    return ok;
   },
 
   async resortUnderPointer() {
     activated = [];
-    clock.seek(30);
-    seek = clock.getSnapshot().seekSequence;
-    sendHour(30, [20n, 90n, 80n, -1n], [1n, 2n, 3n, 4n], true);
-    await until(() => pipeline.view(pipeId)?.h === 30 && !pipeline.view(pipeId)?.dim);
+    const nextHour = (pipeline.view(pipeId)?.h ?? 50) + 1;
+    sendHour(nextHour, [20n, 90n, 80n, -1n], [1n, 2n, 3n, 4n]);
+    clock.step(1);
+    await until(() => pipeline.view(pipeId)?.h === nextHour && !pipeline.view(pipeId)?.dim);
+    await until(() => hostNode?.querySelector('.table-accessibility tbody tr')?.getAttribute('data-row-key') === 'FRA');
+    const hashCanvas = async () => {
+      const canvas = hostNode!.querySelector<HTMLCanvasElement>('canvas.tf-canvas')!;
+      const bitmap = await createImageBitmap(canvas);
+      const out = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const ctx = out.getContext('2d')!;
+      ctx.drawImage(bitmap, 0, 0);
+      const data = ctx.getImageData(0, 0, bitmap.width, bitmap.height).data;
+      let hash = 2166136261;
+      for (let i = 0; i < data.length; i++) hash = Math.imul(hash ^ data[i]!, 16777619);
+      return `${bitmap.width}x${bitmap.height}:${(hash >>> 0).toString(16)}`;
+    };
+    let prevHash = await hashCanvas();
+    let stableCount = 0;
+    const settleDeadline = performance.now() + 2000;
+    while (stableCount < 3 && performance.now() < settleDeadline) {
+      await nextPoll();
+      const curHash = await hashCanvas();
+      if (curHash === prevHash) stableCount++;
+      else { stableCount = 0; prevHash = curHash; }
+    }
     return [...(hostNode?.querySelectorAll('.table-accessibility tbody tr') ?? [])].map(tr => tr.getAttribute('data-row-key'));
   },
 
@@ -326,17 +426,49 @@ window.tableFamilyDom = {
     return [...activated];
   },
 
+  async focusFirstAndWaitTooltip() {
+    const firstRow = hostNode!.querySelector<HTMLTableRowElement>('.table-accessibility tbody tr')!;
+    const key = firstRow.getAttribute('data-row-key')!;
+    firstRow.focus();
+    const ready = await until(() => {
+      const tip = pipeline.view(pipeId)?.fields?.focusTooltip as { text?: { rowKey?: string } | null } | undefined;
+      return tip?.text?.rowKey === key;
+    }, 2000);
+    if (!ready) {
+      const view = pipeline.view(pipeId);
+      throw new Error(`focusFirstAndWaitTooltip(${key}) failed: active=${(document.activeElement as HTMLElement | null)?.outerHTML?.slice(0, 120)} dim=${view?.dim} focusTooltip=${JSON.stringify(view?.fields?.focusTooltip)} tooltip=${JSON.stringify(view?.fields?.tooltip)}`);
+    }
+    return { key, ready };
+  },
+
+  async pinFocusedRow() {
+    const active = document.activeElement as HTMLElement | null;
+    active?.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', bubbles: true }));
+    await until(() => (tooltipStore.get()?.content.subtitle ?? '').startsWith('Pinned at '), 2000);
+    const pinned = tooltipStore.get();
+    const result = {
+      title: pinned?.content.title ?? null,
+      subtitle: pinned?.content.subtitle ?? null,
+      installReads: totalInstallReads,
+    };
+    active?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await until(() => tooltipStore.get() === null || !(tooltipStore.get()?.content.subtitle ?? '').startsWith('Pinned at '), 2000);
+    return result;
+  },
+
   async testKeyboardAndNarrow() {
     activated = [];
     const firstRow = hostNode!.querySelector<HTMLTableRowElement>('.table-accessibility tbody tr')!;
+    const firstKey = firstRow.getAttribute('data-row-key');
     firstRow.focus();
     firstRow.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
-    await waitTick();
+    await until(() => {
+      const cur = (document.activeElement as HTMLElement | null)?.getAttribute('data-row-key');
+      return !!cur && cur !== firstKey;
+    }, 2000);
     const afterDown = (document.activeElement as HTMLElement | null)?.getAttribute('data-row-key') ?? null;
     document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    await waitTick();
-    document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', bubbles: true }));
-    await waitTick();
+    await until(() => activated.length === 1, 2000);
     const liveStatus = hostNode!.querySelector('.tf-live-region')?.textContent ?? '';
 
     hostNode!.style.width = '210px';
@@ -344,8 +476,8 @@ window.tableFamilyDom = {
     const moreBtn = hostNode!.querySelector<HTMLButtonElement>('.tf-more-cols');
     const moreText = moreBtn?.textContent ?? '';
     moreBtn?.click();
-    await waitTick();
+    await until(() => !!document.querySelector('.tf-chooser'), 2000);
     const menuOpen = !!document.querySelector('.tf-chooser');
-    return { afterDown, activated: [...activated], liveStatus, moreText, menuOpen };
+    return { afterDown, activated: [...activated], liveStatus, moreText, menuOpen, totalInstallReads };
   },
 };

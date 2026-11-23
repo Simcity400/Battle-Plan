@@ -45,6 +45,7 @@ export interface TableCell {
   readonly icon?: string;
   readonly iconSlot?: boolean;
   readonly looks?: readonly CountryLook[];
+  readonly lookHour?: number;
   readonly country?: string;
   readonly tone?: string;
   readonly status?: 'dot' | 'outline' | 'fill';
@@ -129,8 +130,8 @@ export type TableProjection<TOptions = unknown> = FamilyProjection<TableModel, T
 
 export function resolveCellAtHour(cell: TableCell, hour: number): { readonly value: Value; readonly icon?: string; readonly missingName: boolean } {
   if (cell.looks) {
-    const look = lookAt(cell.looks, hour);
-    if (look && look.name !== null && look.name !== '') {
+    const look = lookAt(cell.looks, cell.lookHour ?? hour);
+    if (look && look.name !== null && look.name.trim() !== '') {
       return { value: knownValue(look.name), icon: look.flag, missingName: false };
     }
     return { value: notRecorded(look?.status ?? 'Country name unavailable'), icon: look?.flag, missingName: true };
@@ -145,8 +146,8 @@ export function rowNameAtHour(row: TableRow, firstColumnKey: string | undefined,
   if (firstColumnKey) {
     const first = row.cells[firstColumnKey];
     if (first?.looks) {
-      const look = lookAt(first.looks, hour);
-      if (look && look.name) return look.name;
+      const look = lookAt(first.looks, first.lookHour ?? hour);
+      if (look && look.name && look.name.trim()) return look.name;
     }
   }
   return row.name;
@@ -470,6 +471,7 @@ export interface DeclarativeColumnSpec<TRow, TOptions = unknown> extends TableCo
   readonly iconSlot?: boolean;
   readonly country?: string | ((row: TRow, options: TOptions) => string | null);
   readonly looks?: (row: TRow, options: TOptions) => readonly CountryLook[] | undefined;
+  readonly lookHour?: (row: TRow, hour: number, options: TOptions) => number;
   readonly status?: (row: TRow, options: TOptions) => 'dot' | 'outline' | 'fill' | undefined;
   readonly bar?: (row: TRow, live: LiveValues<number | bigint | string> | null, options: TOptions) => TableCellBar | null | undefined;
   readonly maximum?: number;
@@ -604,17 +606,19 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
             bar = null;
             if (col.sortValue) sortValue = col.sortValue(row, live, hour, options);
           } else {
+            let cellLookHour: number | undefined;
             if (col.countryField) {
               const rawTag = readPath(row, col.countryField);
               const tag = typeof rawTag === 'string' && rawTag ? rawTag : null;
               iconSlot = true;
               countryTag = tag ?? undefined;
               looks = tag ? labels?.[tag] : undefined;
+              if (col.lookHour) cellLookHour = col.lookHour(row, hour, options);
               if (tag === null) {
                 cellValue = notRecorded('Unknown country');
               } else {
-                const look = lookAt(looks, hour);
-                cellValue = look && look.name ? knownValue(look.name) : notRecorded(look?.status ?? 'Country name unavailable');
+                const look = lookAt(looks, cellLookHour ?? hour);
+                cellValue = look && look.name && look.name.trim() ? knownValue(look.name) : notRecorded(look?.status ?? 'Country name unavailable');
               }
             } else if (col.value) {
               cellValue = col.value(row, live, hour, options);
@@ -625,13 +629,15 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
               const raw = col.path ? readPath(row, col.path) : row[col.field!];
               const whenNull = resolveNullable(col.whenNull, row, options);
               const partial = col.partial?.(row, live, options) ?? null;
+              const cleaned = typeof raw === 'string' && !col.rawBigInt && !raw.trim() ? null : raw;
               cellValue = col.rawBigInt
                 ? valueFromRawBigInt(raw as string | null | undefined, whenNull, { partial })
-                : valueFromNullable(raw as Scalar | null | undefined, whenNull, { partial });
+                : valueFromNullable(cleaned as Scalar | null | undefined, whenNull, { partial });
             } else {
               cellValue = notRecorded('No value source declared');
             }
             if (col.looks) looks = col.looks(row, options);
+            if (col.lookHour && cellLookHour === undefined) cellLookHour = col.lookHour(row, hour, options);
             if (col.country) {
               const resolvedCountry = typeof col.country === 'string' ? readPath(row, col.country) : col.country(row, options);
               countryTag = typeof resolvedCountry === 'string' && resolvedCountry ? resolvedCountry : undefined;
@@ -643,6 +649,20 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
               const rawSort = readPath(row, col.sortPath);
               sortValue = valueFromNullable(rawSort as Scalar | null | undefined, resolveNullable(col.whenNull, row, options));
             }
+            cells[col.key] = {
+              value: cellValue,
+              ...(col.format ? { format: col.format } : {}),
+              ...(col.icon ? { icon: col.icon(row, options) } : {}),
+              ...(iconSlot ? { iconSlot: true } : {}),
+              ...(looks ? { looks } : {}),
+              ...(cellLookHour !== undefined ? { lookHour: cellLookHour } : {}),
+              ...(countryTag ? { country: countryTag } : {}),
+              ...(col.status ? { status: col.status(row, options) } : {}),
+              ...(bar !== undefined ? { bar } : {}),
+              ...(col.maximum !== undefined ? { maximum: col.maximum } : {}),
+              ...(sortValue ? { sortValue } : {}),
+            };
+            continue;
           }
           cells[col.key] = {
             value: cellValue,

@@ -1,7 +1,15 @@
 import { dayLabel } from '../../charts/draw.ts';
 import { liveKey } from '../../charts/live.ts';
 import { formatRaw } from '../../charts/race/measureRaceData.ts';
-import type { DeclaredFactionRun, HourRanges, TableWidgetDeclaration } from '../../families/table/declaration.ts';
+import {
+  holderTagAt,
+  nextHoldersChange,
+  nextRangesChange,
+  type DeclaredFactionRun,
+  type HolderRun,
+  type HourRanges,
+  type TableWidgetDeclaration,
+} from '../../families/table/declaration.ts';
 import { lookAt, type CountryLooksMap } from '../../families/table/looks.ts';
 import {
   declareTableProjection,
@@ -13,7 +21,7 @@ import {
 } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { OFFERED } from '../../families/table/settings.ts';
-import { knownValue, notRecorded, valueFromLive, valueNumber, type Value } from '../../families/value.ts';
+import { compareValues, hasMeasuredValue, knownValue, notRecorded, valueFromLive, type Value } from '../../families/value.ts';
 import type { GameScoreRow } from '../../generated/dashboard';
 import { DEFAULT_SORT, OPTIONS } from './definition.ts';
 import { SCORE_LABELS, SCORE_PARTS, scoreHint, scorePart, validateGameScore, type GameScoreReply, type ScorePart } from './gameScoreData.ts';
@@ -22,8 +30,10 @@ export type FactionRun = DeclaredFactionRun;
 
 export interface GameScoreProjectionOptions {
   readonly all: boolean;
-  readonly chosenTags: readonly string[];
+  readonly chosenTags?: readonly string[];
+  readonly holders?: Readonly<Record<string, readonly HolderRun[]>> | null;
   readonly membership: Readonly<Record<string, HourRanges>> | null;
+  readonly unobserved?: HourRanges;
   readonly top: number | null;
   readonly by: ScorePart;
   readonly factions: boolean;
@@ -35,15 +45,50 @@ export interface GameScoreProjectionOptions {
 
 const inRanges = (ranges: HourRanges | undefined, hour: number) => !!ranges?.some(([first, last]) => first <= hour && hour <= last);
 
-function factionAt(runs: readonly FactionRun[] | null, tag: string, hour: number): TableGroupSpec {
-  if (!runs) return { key: 'faction-not-recorded', label: 'Faction not known yet', order: 2 };
+interface ResolvedFaction extends TableGroupSpec {
+  readonly missingReason?: string;
+}
+
+function factionAt(runs: readonly FactionRun[] | null, tag: string, hour: number): ResolvedFaction {
+  if (!runs) return { key: 'faction-not-recorded', label: 'Faction not known yet', order: 2, missingReason: 'Faction membership not loaded' };
   for (const run of runs) {
     if (run.tag === tag && run.firstHour <= hour && hour <= run.lastHour) {
-      const name = run.names.find(n => n.firstHour <= hour && hour <= run.lastHour)?.name ?? run.fallbackName;
-      return { key: `faction:${run.id}`, label: name ?? 'Name not recorded', order: name === null ? 1 : 0, orderKey: BigInt(run.id) };
+      const entry = run.names.find(n => n.firstHour <= hour && hour <= n.lastHour);
+      const name = entry?.name && entry.name.trim() ? entry.name : null;
+      return {
+        key: `faction:${run.id}`,
+        label: name ?? 'Name not recorded',
+        order: name === null ? 1 : 0,
+        orderKey: BigInt(run.id),
+        ...(name === null ? { missingReason: 'Faction name not recorded at this hour' } : {}),
+      };
     }
   }
   return { key: 'no-faction', label: 'No faction', order: 3 };
+}
+
+function nextGameScoreChange(hour: number, options: GameScoreProjectionOptions): number {
+  let soonest = Math.min(
+    nextHoldersChange(options.holders, hour),
+    nextRangesChange(options.unobserved, hour),
+  );
+  if (options.membership) {
+    for (const ranges of Object.values(options.membership)) {
+      const next = nextRangesChange(ranges, hour);
+      if (next < soonest) soonest = next;
+    }
+  }
+  if (options.factions && options.factionRuns) {
+    for (const run of options.factionRuns) {
+      if (run.firstHour > hour && run.firstHour < soonest) soonest = run.firstHour;
+      if (run.lastHour + 1 > hour && run.lastHour + 1 < soonest) soonest = run.lastHour + 1;
+      for (const n of run.names) {
+        if (n.firstHour > hour && n.firstHour < soonest) soonest = n.firstHour;
+        if (n.lastHour + 1 > hour && n.lastHour + 1 < soonest) soonest = n.lastHour + 1;
+      }
+    }
+  }
+  return soonest;
 }
 
 export function gameScoreColumns(hints?: GameScoreReply['hints'], cellBars = false): TableColumnSpec[] {
@@ -79,6 +124,7 @@ export const gameScoreProjection: TableProjection<GameScoreProjectionOptions> = 
   declareTableProjection<GameScoreReply, GameScoreRow, GameScoreProjectionOptions>({
     kind: 'game-score',
     validate: validateGameScore,
+    nextChange: (_sources, hour, options) => nextGameScoreChange(hour, options),
     rank: true,
     rankMarkers: options => options.rankMarkers,
     columns: (reply, options): readonly DeclarativeColumnSpec<GameScoreRow, GameScoreProjectionOptions>[] => {
@@ -96,22 +142,32 @@ export const gameScoreProjection: TableProjection<GameScoreProjectionOptions> = 
       if (reply.missing !== null) {
         return { rows: [], empty: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
       }
+      if (options.unobserved?.some(([first, last]) => first <= hour && hour <= last)) {
+        return { rows: [], empty: 'Group membership is unavailable at this time.', emptyKind: 'unavailable', warnings: reply.warnings };
+      }
       let filtered: GameScoreRow[];
       if (options.top != null) {
-        const scored: { row: GameScoreRow; val: number }[] = [];
+        const scored: { row: GameScoreRow; val: Value }[] = [];
         for (const row of reply.rows) {
           if (row[options.by].missing !== null) continue;
-          const v = valueNumber(valueFromLive(live, liveKey(row.tag, options.by)));
-          if (v !== undefined) scored.push({ row, val: v });
+          const v = valueFromLive(live, liveKey(row.tag, options.by));
+          if (hasMeasuredValue(v)) scored.push({ row, val: v });
         }
-        scored.sort((a, b) => b.val - a.val || (a.row.tag < b.row.tag ? -1 : a.row.tag > b.row.tag ? 1 : 0));
+        scored.sort((a, b) => compareValues(a.val, b.val, 'descending') || (a.row.tag < b.row.tag ? -1 : a.row.tag > b.row.tag ? 1 : 0));
         filtered = scored.slice(0, options.top).map(item => item.row);
       } else if (options.all) {
         filtered = reply.rows;
       } else if (options.membership) {
         filtered = reply.rows.filter(row => inRanges(options.membership![row.tag], hour));
+      } else if (options.holders) {
+        const activeTags = new Set<string>();
+        for (const runs of Object.values(options.holders)) {
+          const tag = holderTagAt(runs, hour);
+          if (tag !== null) activeTags.add(tag);
+        }
+        filtered = reply.rows.filter(row => activeTags.has(row.tag));
       } else {
-        const chosen = new Set(options.chosenTags);
+        const chosen = new Set(options.chosenTags ?? []);
         filtered = reply.rows.filter(row => chosen.has(row.tag));
       }
       if (!filtered.length) {
@@ -121,15 +177,22 @@ export const gameScoreProjection: TableProjection<GameScoreProjectionOptions> = 
     },
     rowKey: row => row.tag,
     rowName: (row, hour, options) => lookAt(options.labels[row.tag], hour)?.name ?? row.tag,
-    group: (row, hour, options) => (options.factions ? factionAt(options.factionRuns, row.tag, hour) : undefined),
-    tooltipExtra: (row, reply, _live, hour, options): TooltipExtraRow[] => [
-      { label: 'Faction', value: knownValue(factionAt(options.factionRuns, row.tag, hour).label), divider: true },
-      ...reply.multipliers.map((multiplier, index): TooltipExtraRow => ({
-        label: `${SCORE_LABELS[scorePart(multiplier.part)]} multiplier`,
-        value: multiplier.raw === null ? notRecorded(multiplier.missing ?? 'Not recorded') : knownValue(formatRaw(multiplier.raw, 5, 5)),
-        ...(index === 0 ? { divider: true } : {}),
-      })),
-    ],
+    group: (row, hour, options) => {
+      if (!options.factions) return undefined;
+      const f = factionAt(options.factionRuns, row.tag, hour);
+      return { key: f.key, label: f.label, order: f.order, ...(f.orderKey !== undefined ? { orderKey: f.orderKey } : {}) };
+    },
+    tooltipExtra: (row, reply, _live, hour, options): TooltipExtraRow[] => {
+      const f = factionAt(options.factionRuns, row.tag, hour);
+      return [
+        { label: 'Faction', value: f.missingReason ? notRecorded(f.missingReason) : knownValue(f.label), divider: true },
+        ...reply.multipliers.map((multiplier, index): TooltipExtraRow => ({
+          label: `${SCORE_LABELS[scorePart(multiplier.part)]} multiplier`,
+          value: multiplier.raw === null ? notRecorded(multiplier.missing ?? 'Not recorded') : knownValue(formatRaw(multiplier.raw, 5, 5)),
+          ...(index === 0 ? { divider: true } : {}),
+        })),
+      ];
+    },
   }),
 );
 
@@ -160,8 +223,9 @@ export const gameScoreDeclaration: TableWidgetDeclaration<GameScoreProjectionOpt
   settings: { kind: 'options', defaultSort: DEFAULT_SORT },
   projectionOptions: ctx => ({
     all: ctx.countries.all,
-    chosenTags: ctx.countries.chosenTags,
+    holders: ctx.countries.holders,
     membership: ctx.countries.membership,
+    unobserved: ctx.countries.unobserved,
     top: ctx.countries.top,
     by: scorePart(ctx.options.topMeasure),
     factions: ctx.options.factions === true,

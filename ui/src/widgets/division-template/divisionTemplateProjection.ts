@@ -45,7 +45,12 @@ const TEMPLATE_COLUMNS: readonly DeclarativeColumnSpec<TemplateRow, DivisionTemp
     hint: 'Sorted by the game’s roster order',
     iconSlot: true,
     icon: row => (row.kind === 'template' ? row.entry.icon ?? undefined : undefined),
-    value: row => knownValue(row.kind === 'obsolete' ? `Obsolete templates (${row.count})` : templateName(row.entry)),
+    value: row => row.kind === 'obsolete'
+      ? knownValue(`Obsolete templates (${row.count})`)
+      : valueFromNullable(
+        row.entry.name && row.entry.name.trim() ? row.entry.name : null,
+        { kind: 'notRecorded', reason: row.entry.nameMissing ?? 'Template name unavailable' },
+      ),
     sortValue: row => row.kind === 'obsolete'
       ? knownValue(Number.MAX_SAFE_INTEGER)
       : valueFromNullable(row.entry.rosterOrdinal, { kind: 'notRecorded', reason: 'Roster order not recorded' }),

@@ -13,7 +13,7 @@ import {
 } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { strengthBar, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notApplicable, notRecorded, partialValue, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
+import { knownValue, notRecorded, partialValue, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import { COLUMNS, OPTIONS, TABLE_BASE } from './definition.ts';
 import {
   emptyReason,
@@ -56,8 +56,12 @@ export function filterStretch(filter: OccupiedFilter, hour: number): number {
 
 export const filterNext = (filter: OccupiedFilter, hour: number): number => filter.bounds[filterStretch(filter, hour)] ?? Infinity;
 
-function strengthFraction(raw: number): number {
-  if (Math.abs(raw) >= 2 ** 40) return Math.max(0, Math.min(1, Number(strengthBar(BigInt(Math.trunc(raw)))) / 100000));
+const toBigIntExact = (raw: number | bigint): bigint => (typeof raw === 'bigint' ? raw : BigInt(Math.trunc(raw)));
+
+function strengthFraction(raw: number | bigint): number {
+  if (typeof raw === 'bigint' || Math.abs(raw) >= 2 ** 40) {
+    return Math.max(0, Math.min(1, Number(strengthBar(toBigIntExact(raw))) / 100000));
+  }
   const percent = Math.trunc(raw) * 100;
   const rounded = Math.trunc((percent + (percent < 0 ? -50000 : 50000)) / 100000) * 1000;
   return Math.max(0, Math.min(1, rounded / 100000));
@@ -95,7 +99,7 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
     nextChange: (_sources, hour, options) => filterNext(options.filter, hour),
     columns: (reply, options): readonly DeclarativeColumnSpec<OccupiedRow, OccupiedProjectionOptions>[] => {
       const laws = lawsOf(reply);
-      const redBelow = reply.garrisonRedRaw === null ? undefined : Number(reply.garrisonRedRaw);
+      const redBelow = reply.garrisonRedRaw === null ? undefined : BigInt(reply.garrisonRedRaw);
       return [
         { ...OCCUPIED_COLUMNS[0]!, path: 'value.name', whenNull: { kind: 'notRecorded', reasonField: 'value.nameMissing', reason: 'Not recorded' } },
         { ...OCCUPIED_COLUMNS[1]!, countryField: 'value.owner' },
@@ -107,7 +111,7 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
           country: 'value.occupier',
           value: (row, live) => {
             if (row.value.garrisonRequiredSign === null) {
-              return row.value.garrisonMissing !== null ? notRecorded(row.value.garrisonMissing) : notApplicable('No garrison requirement');
+              return notRecorded(row.value.garrisonMissing ?? 'Garrison data not recorded');
             }
             if (row.value.garrisonRequiredSign === 0) return zeroValue(0);
             return valueFromLive(live, liveKey(row.key, 'garrison'), { overrideMissing: row.value.garrisonMissing });
@@ -118,9 +122,9 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
             if (shape.bar === 0n) return { fraction: zeroValue(0), alert: true };
             const strengthVal = valueFromLive(live, liveKey(row.key, STRENGTH));
             if (strengthVal.kind === 'known' || strengthVal.kind === 'zero') {
-              const rawNum = Number(strengthVal.value);
-              const frac = strengthFraction(rawNum);
-              return { fraction: frac === 0 ? zeroValue(0) : knownValue(frac), alert: redBelow !== undefined && rawNum < redBelow };
+              const rawBig = toBigIntExact(strengthVal.value);
+              const frac = strengthFraction(strengthVal.value);
+              return { fraction: frac === 0 ? zeroValue(0) : knownValue(frac), alert: redBelow !== undefined && rawBig < redBelow };
             }
             return { fraction: notRecorded(strengthVal.kind === 'notRecorded' ? strengthVal.reason : reply.strengthMissing) };
           },
@@ -164,32 +168,39 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
       const v = row.value;
       const liveText = (column: string, fmt: (s: string) => string): Value<string> => {
         const val = valueFromLive(live, liveKey(row.key, column));
-        if (val.kind === 'known' || val.kind === 'zero') return knownValue(fmt(BigInt(Math.trunc(Number(val.value))).toString()));
-        if (val.kind === 'partial') return partialValue(fmt(BigInt(Math.trunc(Number(val.value))).toString()), val.reason);
+        if (val.kind === 'known' || val.kind === 'zero') return knownValue(fmt(toBigIntExact(val.value).toString()));
+        if (val.kind === 'partial') return partialValue(fmt(toBigIntExact(val.value).toString()), val.reason);
         return val;
       };
       const reqManpower: Value<string> = v.garrisonRequiredSign === null
-        ? notApplicable('No garrison requirement')
+        ? notRecorded(v.garrisonMissing ?? 'Garrison data not recorded')
         : liveText('requiredManpower', r => formatFixed(BigInt(r), 0, 0));
-      let assignedManpower: Value<string>;
+      let assignedManpower: Value<string | bigint | number>;
+      let assignedFormat: 'integer' | undefined;
       if (!v.assignedKnown) {
-        assignedManpower = notApplicable('Assigned manpower does not apply');
+        assignedManpower = notRecorded(v.garrisonMissing ?? 'Assigned manpower not recorded');
       } else {
         const rawAssigned = valueFromLive(live, liveKey(row.key, 'assignedManpower'));
-        if (rawAssigned.kind === 'notRecorded' && rawAssigned.reason === NOT_NAMED) assignedManpower = knownValue('0');
-        else if (rawAssigned.kind === 'known' || rawAssigned.kind === 'zero') assignedManpower = knownValue(formatFixed(BigInt(Math.trunc(Number(rawAssigned.value))), 0, 0));
-        else if (rawAssigned.kind === 'partial') assignedManpower = partialValue(formatFixed(BigInt(Math.trunc(Number(rawAssigned.value))), 0, 0), rawAssigned.reason);
-        else assignedManpower = rawAssigned;
+        if (rawAssigned.kind === 'notRecorded' && rawAssigned.reason === NOT_NAMED) {
+          assignedManpower = zeroValue(0);
+          assignedFormat = 'integer';
+        } else if (rawAssigned.kind === 'known' || rawAssigned.kind === 'zero') {
+          assignedManpower = knownValue(formatFixed(toBigIntExact(rawAssigned.value), 0, 0));
+        } else if (rawAssigned.kind === 'partial') {
+          assignedManpower = partialValue(formatFixed(toBigIntExact(rawAssigned.value), 0, 0), rawAssigned.reason);
+        } else {
+          assignedManpower = rawAssigned;
+        }
       }
       const strengthVal = valueFromLive(live, liveKey(row.key, STRENGTH));
       const strength: Value<string> = strengthVal.kind === 'known' || strengthVal.kind === 'zero'
-        ? knownValue(`${formatAmount((BigInt(Math.trunc(Number(strengthVal.value))) * 100n).toString(), 5, 5)}%`)
+        ? knownValue(`${formatAmount((toBigIntExact(strengthVal.value) * 100n).toString(), 5, 5)}%`)
         : notRecorded(v.garrisonMissing ?? (strengthVal.kind === 'notRecorded' && strengthVal.reason !== NOT_NAMED ? strengthVal.reason : reply.strengthMissing));
       const extra: TooltipExtraRow[] = [
         { label: 'Resistance speed', value: liveText('resistanceSpeed', r => `${formatSigned(r, 5, 5)} pp/day`), divider: true },
         { label: 'Compliance speed', value: liveText('complianceSpeed', r => `${formatSigned(r, 5, 5)} pp/day`) },
         { label: 'Required manpower', value: reqManpower },
-        { label: 'Assigned manpower', value: assignedManpower },
+        { label: 'Assigned manpower', value: assignedManpower, ...(assignedFormat ? { format: assignedFormat } : {}) },
         { label: 'Garrison strength', value: strength },
         { label: 'Occupied country', value: countryLabel(v.occupied, options.labels, hour) },
       ];

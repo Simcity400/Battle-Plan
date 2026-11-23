@@ -1,7 +1,5 @@
 import type { LiveValues } from '../charts/live';
-import type { TooltipContent } from '../charts/tooltip';
 import type { FollowedAnswer } from '../dashboard/follow/message';
-import type { AuditRow } from '../draw/notifications';
 
 export type FamilyId = 'table' | 'race' | 'series' | 'log' | 'timeline' | 'parts' | 'pairs' | 'meters';
 
@@ -44,17 +42,4 @@ export interface MirrorModel {
   readonly first: number;
   readonly total: number;
   readonly rows: readonly MirrorRow[];
-}
-
-export interface FamilyDefinition<TModel, TOptions> {
-  readonly kind: FamilyId;
-  audit(model: TModel, options: TOptions): readonly AuditRow[];
-  mirror(model: TModel, options: TOptions, window?: { readonly first: number; readonly count: number }): MirrorModel;
-  tooltip(model: TModel, itemKey: string, hour: number, options: TOptions): TooltipContent | null;
-}
-
-export interface WidgetDeclaration<TFamily extends FamilyId, TModel, TOptions> extends FamilyProjection<TModel, TOptions> {
-  readonly family: TFamily;
-  readonly subject: string;
-  readonly things: string;
 }

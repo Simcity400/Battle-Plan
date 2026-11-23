@@ -30,7 +30,11 @@ function validScalar(value: unknown, context: string): asserts value is Scalar {
     if (!Number.isFinite(value)) throw new InvalidFamilyValueError(`${context}: non-finite number (${String(value)}) is not a valid family value`);
     return;
   }
-  if (typeof value === 'bigint' || typeof value === 'string') return;
+  if (typeof value === 'bigint') return;
+  if (typeof value === 'string') {
+    if (!value.trim()) throw new InvalidFamilyValueError(`${context}: blank text is not a valid family value`);
+    return;
+  }
   throw new InvalidFamilyValueError(`${context}: unsupported scalar type ${typeof value}`);
 }
 

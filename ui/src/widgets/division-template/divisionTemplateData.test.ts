@@ -51,3 +51,15 @@ test('a stored priority shows only as the game’s name for it, never as its num
 test('invalid replies are refused', () => {
   assert.throws(() => validateDivisionTemplates({ tag: 'GER', countFor: 'both', templates: [], fieldedMissing: null, warnings: [] }));
 });
+
+import { divisionTemplateProjection } from './divisionTemplateProjection.ts';
+
+test('missing template name projects as notRecorded with nameMissing instead of a known placeholder', () => {
+  const rep = reply([entry('1', { name: null, nameMissing: 'Localisation missing for template 1' })]);
+  const model = divisionTemplateProjection.project(
+    { answers: new Map(), panels: new Map([['main', rep]]), live: new Map() },
+    50,
+    { countryName: 'Germany', cellBars: false, canOpenDesigner: false },
+  );
+  assert.deepEqual(model.rows[0]!.cells.template!.value, { kind: 'notRecorded', reason: 'Localisation missing for template 1' });
+});

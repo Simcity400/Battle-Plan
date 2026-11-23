@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
-import { repliedCells } from '../../dashboard/follow/liveCells.ts';
+import { NOT_LIVE_CELL, NOT_RECORDED, repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import { tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
 import { nextLookChange } from './looks.ts';
-import { familyTableLaneView } from './laneView.ts';
+import { resolveHeadSpan } from './declaration.ts';
+import { familyTableLaneView, liveAdapter } from './laneView.ts';
 import { registerTableProjection } from './registry.ts';
 import type { ApmReply, CampaignClockReply, DivisionTemplatesReply, ScoreboardColumn, ScoreboardReply } from '../../generated/dashboard';
 import { pictureError } from '../../shell/perf.ts';
@@ -22,7 +23,7 @@ import type { FamilySources } from '../contract.ts';
 import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue } from '../value.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
 import { declareTableProjection, deriveTableAudit, deriveTableTooltip, resolveTableRows, type TableColumnSpec } from './model.ts';
-import { createTablePicture, drawFamilyTable } from './painter.ts';
+import { createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
 import { NOT_NAMED } from '../../widgets/occupied-states/occupiedStatesData.ts';
 
 const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
@@ -308,14 +309,14 @@ test('occupied-states, game-score (with faction groups), and division-template (
     live: new Map([['main', { get: k => (k.startsWith('GER') ? 300 : 200), missing: () => 'Not recorded' }]]),
   }, 50, {
     all: true,
-    chosenTags: [],
+    holders: null,
     membership: null,
     top: null,
     by: 'total',
     factions: true,
     factionRuns: [
-      { id: '1', tag: 'GER', firstHour: 0, lastHour: 100, names: [], fallbackName: 'Axis' },
-      { id: '2', tag: 'ENG', firstHour: 0, lastHour: 100, names: [], fallbackName: 'Allies' },
+      { id: '1', tag: 'GER', firstHour: 0, lastHour: 100, names: [{ firstHour: 0, lastHour: 100, name: 'Axis' }] },
+      { id: '2', tag: 'ENG', firstHour: 0, lastHour: 100, names: [{ firstHour: 0, lastHour: 100, name: 'Allies' }] },
     ],
     rankMarkers: false,
     cellBars: true,
@@ -596,7 +597,138 @@ test('lane view skips projection on next(), caches unchanged sources across serv
     assert.equal(second.fields.mirror!.content, firstMirrorContent, 'mirror stays cached under 1 Hz while playing');
 
     const withAudit = view.paint(mkInput(1200, 1440, true), state, content);
-    assert.ok(Array.isArray(withAudit.fields.audit?.value), 'audit built only when requested');
+    const auditVal = withAudit.fields.audit?.value as { id: number; rows: unknown[] } | undefined;
+    assert.ok(auditVal && Array.isArray(auditVal.rows), 'audit built only when requested');
+  } finally {
+    (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
+  }
+});
+
+test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay independent, animated hit testing uses painted Y, and meta/audit/liveAdapter/headSpan hold invariants', () => {
+  const prevOffscreen = globalThis.OffscreenCanvas;
+  class FakeOffscreenCanvas {
+    width: number;
+    height: number;
+    constructor(w: number, h: number) { this.width = w; this.height = h; }
+    getContext() { return { ...instrumentedContext().ctx, setTransform() {} }; }
+  }
+  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
+  let wakes = 0;
+  try {
+    const view = familyTableLaneView(() => { wakes++; });
+    const settings = tableSettingsOf(undefined, [
+      { key: 'name', label: 'Name', as: 'plain', offered: ['plain'] },
+      { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
+    ], { density: 'comfortable', overflow: 'tooltip', sort: { column: 'v', direction: 'descending' } });
+    const makeModel = (rows: { id: string; v: number }[], focusedKey: string | null = null, extra: Record<string, unknown> = {}) => ({
+      family: 'table' as const,
+      kind: 'test-lane-cache',
+      options: {},
+      settings,
+      sources: {},
+      staticPanels: { main: { rows } },
+      width: 320,
+      height: 200,
+      scrollLeft: 0,
+      scrollTop: 0,
+      focusedKey,
+      window: { first: 0, count: 10 },
+      ...extra,
+    });
+    const state = new Map<string, unknown>();
+    let seq = 1;
+    const content = () => `c${seq++}`;
+    const paintAt = (rows: { id: string; v: number }[], now: number, speed: number, inspect: string | null = null, focusedKey: string | null = null, extra: Record<string, unknown> = {}) =>
+      view.paint({
+        widget: 1,
+        subs: [],
+        pictures: [],
+        model: makeModel(rows, focusedKey, extra),
+        hour: 10,
+        speed,
+        binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
+        inspect,
+        now,
+      }, state, content);
+
+    const rowsA = [{ id: 'GER', v: 20 }, { id: 'FRA', v: 10 }];
+    const rowsB = [{ id: 'GER', v: 5 }, { id: 'FRA', v: 30 }];
+    const p1 = paintAt(rowsA, 1000, 1440, 'row:FRA', 'GER');
+    assert.deepEqual((p1.fields.mirror!.value as { rows: { key: string }[] }).rows.map(r => r.key), ['GER', 'FRA']);
+    assert.equal((p1.fields.tooltip!.value as { text: { rowKey: string } }).text.rowKey, 'FRA', 'hover tooltip tracks inspected FRA');
+    assert.equal((p1.fields.focusTooltip?.value as { text: { rowKey: string } } | undefined)?.text.rowKey, 'GER', 'focusTooltip tracks focused GER independently of hover');
+
+    const p2 = paintAt(rowsB, 1100, 1440, 'row:FRA', 'GER');
+    assert.deepEqual((p2.fields.mirror!.value as { rows: { key: string }[] }).rows.map(r => r.key), ['GER', 'FRA'], 'throttled inside 1s window');
+
+    const p3 = paintAt(rowsB, 2100, 1440, 'row:FRA', 'GER');
+    assert.deepEqual((p3.fields.mirror!.value as { rows: { key: string }[] }).rows.map(r => r.key), ['FRA', 'GER'], 'dirty mirror flushes when due even without a new model change');
+
+    paintAt(rowsA, 2200, 1440, 'row:FRA', 'GER');
+    const pPause = paintAt(rowsA, 2250, 0, 'row:FRA', 'GER');
+    assert.deepEqual((pPause.fields.mirror!.value as { rows: { key: string }[] }).rows.map(r => r.key), ['GER', 'FRA'], 'pause immediately flushes pending mirror revision');
+    assert.ok(wakes >= 0);
+
+    const audit1 = paintAt(rowsA, 2300, 0, null, null, { audit: true, auditId: 7 });
+    const audit2 = paintAt(rowsA, 2310, 0, null, null, { audit: true, auditId: 8 });
+    assert.equal((audit1.fields.audit!.value as { id: number }).id, 7, 'audit carries snapshot id 7');
+    assert.equal((audit2.fields.audit!.value as { id: number }).id, 8, 'audit carries snapshot id 8 when snapshot changes');
+
+    const cols: TableColumnSpec[] = [{ key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true }];
+    const hitSettings = tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'name', direction: 'ascending' } });
+    const hitLayout = layoutFamilyTable(buildColumnLayouts(cols, hitSettings, { name: 160 }), 320, 'tooltip');
+    const hitRows = resolveTableRows({
+      columns: cols,
+      hour: 1,
+      rows: [
+        { key: 'A', name: 'Alpha', cells: { name: { value: knownValue('Alpha') } } },
+        { key: 'B', name: 'Bravo', cells: { name: { value: knownValue('Bravo') } } },
+      ],
+    }, hitSettings);
+    const glide = new Map([
+      ['A', { from: 34, to: 0, started: 100 }],
+      ['B', { from: -34, to: 0, started: 100 }],
+    ]);
+    const hitTop = hitFamilyTable(hitLayout, hitRows, { x: 20, y: 10 }, 34, 0, 0, false, 0, glide, 100, 180);
+    assert.equal(hitTop.rowKey, 'B', 'clicking y=10 during glide hits B which is painted at y=0, not destination A');
+
+    const branch = { firstHour: 10, lastHour: 500 };
+    assert.deepEqual(resolveHeadSpan('trailing-window', 168, 'campaign', branch, { firstHour: 10, lastHour: 500 }, 500), { first: 10, last: 500 }, 'campaign mode keeps whole branch span');
+    assert.deepEqual(resolveHeadSpan('trailing-window', 168, 'range', branch, { firstHour: 50, lastHour: 120 }, 120), { first: 50, last: 120 }, 'range mode keeps explicit range');
+    assert.deepEqual(resolveHeadSpan('trailing-window', 168, 'follow', branch, { firstHour: 10, lastHour: 500 }, 300), { first: 133, last: 300 }, 'follow mode uses trailing window');
+    assert.deepEqual(resolveHeadSpan('branch-to-hour', 168, 'pin', branch, { firstHour: 10, lastHour: 240 }, 240), { first: 10, last: 240 }, 'branch-to-hour pin runs from branch start to pinned hour');
+    assert.deepEqual(resolveHeadSpan('branch-to-hour', 168, 'range', branch, { firstHour: 40, lastHour: 240 }, 240), { first: 40, last: 240 }, 'branch-to-hour range keeps explicit range');
+
+    const adapted = liveAdapter(new Map<string, number | bigint | string>([
+      ['present', 42],
+      ['missing-reason', 'Sensor offline'],
+      ['missing-empty', ''],
+    ]))!;
+    assert.equal(adapted.get('present'), 42);
+    assert.equal(adapted.missing('missing-reason'), 'Sensor offline');
+    assert.equal(adapted.missing('missing-empty'), NOT_RECORDED);
+    assert.equal(adapted.missing('undeclared'), NOT_LIVE_CELL);
+
+    const { ctx } = instrumentedContext();
+    const numCols: TableColumnSpec[] = [
+      { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true },
+      { key: 'v', label: 'Val', as: 'faint', tone: 'blue', offered: ['faint'], priority: 1, numeric: true, format: 'integer' },
+    ];
+    const numSettings = tableSettingsOf(undefined, numCols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'v', direction: 'descending' } });
+    const numLayout = layoutFamilyTable(buildColumnLayouts(numCols, numSettings, { name: 120, v: 120 }), 320, 'tooltip');
+    const numRows = resolveTableRows({
+      columns: numCols,
+      hour: 1,
+      rows: [
+        { key: 'A', name: 'A', cells: { name: { value: knownValue('A') }, v: { value: knownValue(100), format: 'integer' } } },
+        { key: 'B', name: 'B', cells: { name: { value: knownValue('B') }, v: { value: knownValue(50), format: 'integer' } } },
+      ],
+    }, numSettings);
+    const pic = createTablePicture();
+    drawFamilyTable(ctx, { layout: numLayout, rows: numRows, settings: numSettings, hour: 1, width: 320, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 1, glideDuration: 0, glide: new Map(), markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, icons: new Map(), dpr: 1 }, pic);
+    const firstMaxima = pic.maxima;
+    drawFamilyTable(ctx, { layout: numLayout, rows: numRows, settings: numSettings, hour: 1, width: 320, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 2, glideDuration: 0, glide: new Map(), markers: new Map(), inspectedKey: 'A', selectedKey: null, focusedKey: null, icons: new Map(), dpr: 1 }, pic);
+    assert.equal(pic.maxima, firstMaxima, 'hover repaint reuses cached column maxima without scanning all rows');
   } finally {
     (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
   }
