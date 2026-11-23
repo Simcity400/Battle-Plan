@@ -1004,15 +1004,27 @@ impl History {
                 .then_some(primary_viewer)
                 .flatten()
                 .map(|v| vec![v]),
-            Continuity::Next => {
+            Continuity::Next => next.and_then(|prev_state| {
                 if sample.recording && matches!(sample.refreshes, RefreshWitness::Complete { .. }) {
-                    next.and_then(|p| p.manager_viewers.as_ref()).map(|prev| {
-                        let mut known = prev.clone();
-                        for &raw in local_viewers {
-                            push_unique(&mut known, CandidateViewer::RawLocal(raw));
+                    match prev_state.manager_viewers.as_ref() {
+                        Some(prev) => {
+                            let mut known = prev.clone();
+                            for &raw in local_viewers {
+                                push_unique(&mut known, CandidateViewer::RawLocal(raw));
+                            }
+                            Some(known)
                         }
-                        known
-                    })
+                        None => primary_viewer.map(|pv| {
+                            let mut known = vec![pv];
+                            if let Some(alt) = secondary_viewer {
+                                push_unique(&mut known, alt);
+                            }
+                            for &raw in local_viewers {
+                                push_unique(&mut known, CandidateViewer::RawLocal(raw));
+                            }
+                            known
+                        }),
+                    }
                 } else if every.is_some_and(|e| e.other_proven) {
                     primary_viewer.map(|v| {
                         let mut known = vec![v];
@@ -1022,22 +1034,19 @@ impl History {
                         known
                     })
                 } else {
-                    match (
-                        next.and_then(|p| p.manager_viewers.as_ref()),
-                        primary_viewer,
-                    ) {
-                        (Some(prev), Some(pv)) => {
-                            let mut known = prev.clone();
-                            push_unique(&mut known, pv);
-                            if let Some(alt) = secondary_viewer {
-                                push_unique(&mut known, alt);
-                            }
-                            Some(known)
+                    primary_viewer.map(|pv| {
+                        let mut known = prev_state
+                            .manager_viewers
+                            .clone()
+                            .unwrap_or_default();
+                        push_unique(&mut known, pv);
+                        if let Some(alt) = secondary_viewer {
+                            push_unique(&mut known, alt);
                         }
-                        _ => None,
-                    }
+                        known
+                    })
                 }
-            }
+            }),
         };
         let mut earlier = previous.map(|previous| previous.sides).unwrap_or_default();
         self.previous = Some(Previous {

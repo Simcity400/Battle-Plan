@@ -73,7 +73,11 @@ fn kept_frame_hour(
             Vec::new()
         }),
     );
-    for table in [TableId::WarRelations, TableId::Subjects] {
+    for table in [
+        TableId::WarRelations,
+        TableId::Subjects,
+        TableId::CombatEngagementRefreshes,
+    ] {
         set(table, TableRows::empty(table));
     }
     set(

@@ -1245,3 +1245,106 @@ fn gap_does_not_establish_recording_manager_cache() {
     );
     assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Scope));
 }
+
+#[test]
+fn mid_campaign_gap_recovers_recording_manager_cache_after_full_tick() {
+    let links = BTreeMap::from([(1, 1), (2, 2), (3, 3), (5, 5)]);
+    let shares_with_one = Relations::factions_for_tests(&[(1, 3)]);
+    let mut history = History::default();
+    history.advance(
+        Sample {
+            viewer: Some(1),
+            viewer_raw: Some(1),
+            recording: true,
+            ..sample(&links, &shares_with_one, &[7], &[3])
+        },
+        Continuity::Gap,
+    );
+    assert_eq!(history.side(62, 0), Engaged::Unknown);
+    history.advance(
+        Sample {
+            viewer: Some(1),
+            viewer_raw: Some(1),
+            recording: true,
+            refreshes: RefreshWitness::Complete {
+                sides: BTreeMap::from([(
+                    (62, 0),
+                    SideWitness {
+                        lists: RECORDED,
+                        recorded_viewers: vec![1],
+                        units_viewers: Vec::new(),
+                    },
+                )]),
+                controller_targets: Vec::new(),
+                local_viewers: Vec::new(),
+            },
+            ..sample(&links, &shares_with_one, &[7], &[3])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(history.side(62, 0), Engaged::Yes);
+    history.advance(
+        Sample {
+            viewer: Some(1),
+            viewer_raw: Some(1),
+            alternate_viewer: Some(2),
+            alternate_viewer_raw: Some(2),
+            recording: true,
+            refreshes: complete_witness(),
+            ..sample(&links, &shares_with_one, &[7], &[3])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(history.side(62, 0), Engaged::Yes);
+    history.advance(
+        Sample {
+            viewer: Some(2),
+            viewer_raw: Some(2),
+            recording: true,
+            refreshes: RefreshWitness::Unavailable,
+            ..sample(&links, &shares_with_one, &[7], &[3])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(history.side(62, 0), Engaged::No);
+
+    let mut local_after_gap = History::default();
+    local_after_gap.advance(
+        Sample {
+            viewer: Some(1),
+            viewer_raw: Some(1),
+            recording: true,
+            ..sample(&links, &shares_with_one, &[7], &[3])
+        },
+        Continuity::Gap,
+    );
+    local_after_gap.advance(
+        Sample {
+            viewer: Some(1),
+            viewer_raw: Some(1),
+            recording: true,
+            refreshes: RefreshWitness::Complete {
+                sides: BTreeMap::new(),
+                controller_targets: Vec::new(),
+                local_viewers: vec![2],
+            },
+            ..sample(&links, &shares_with_one, &[7], &[3])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(local_after_gap.side(62, 0), Engaged::No);
+    local_after_gap.advance(
+        Sample {
+            viewer: Some(1),
+            viewer_raw: Some(1),
+            recording: true,
+            refreshes: RefreshWitness::Unavailable,
+            ..sample(&links, &shares_with_one, &[7], &[3])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(
+        local_after_gap.side(62, 0),
+        Engaged::Ambiguous(Ambiguity::Scope)
+    );
+}
