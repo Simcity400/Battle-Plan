@@ -33,14 +33,6 @@ Keep the recording format unchanged and express missing and not-applicable state
   - Unread end `kind` produces `"Ending kind not recorded"` and unread `end_hour` produces `"Ending hour not recorded"` (including when `kind == UNKNOWN`, while `kind == UNKNOWN` with a recorded hour keeps `"Ending not recorded"` and `kind == RESULT_ONLY` intentionally emits `end: None` because it carries only a standalone result). A recorded winner still displays in the list, tooltip, and drill once settled, with `"Ending hour not recorded"` confined to the end-date field; the drill caps plotted curves at the settlement bound (`settledHour`) while keeping the end hour unknown. Ranking and displayed length keep `main`'s settlement-hour fallback (`result.hour ?? settledHour ?? read`); duration/length semantics are tracked in issue #285 (item 9).
   - Unread or corrupt side lists on `LandBattleEnds` (with a result ID) or `LandCombatSides` mark that side unknown in both ranking and display so country filters never exclude the battle, and winning-side labels stay visible at narrow widths (`.lb-winner-side`) without inheriting earlier run rosters. Merged result-only rows without a single result ID remain discarded as on `main` and are tracked in issue #285 (item 13).
   - Per-side manpower losses on shaped battles render and paint independently during playback with a hatched comparison bar when either side is missing.
-
-## Consequences
-
-- No recording-format, collector, or recorder changes are required; older recordings remain compatible while exposing honest missing states.
-- Market ledger rows display a missing party or amount as text carrying its own state and reason, instead of fabricated zeroes or bare dashes. A hidden column's tooltip entry shows and speaks the reason itself.
-- For construction log rows, a rise from 1 to 2 at the first read of a new window now displays 2 instead of `main`'s 1 because `joinProject` no longer discards incoming `carried: true` counts.
-- `ConstructionLogWidget` paints live level counts through `LiveText` (and factories through `LiveFactories`) alongside separate source-uncertainty text when `source === 'unknown'`, and `projectTooltip` formats count rows through `builtLabel`.
-- `LandBattlesWidget`, `LandBattleList`, `LandBattleDrill`, and `BattleLog` render missing provinces, endings, rosters, and per-side losses without fabricating zeroes, hiding recorded winners, extending drill curves past settlement, or querying province `0`.
 - **Computed measures (`replay-columnar`, `dashboard-declare`, `dashboard-query`, `dashboard-follow`)**:
   - `summary::Source::Computed` returns `Computed::{Value(i64), NotApplicable(&'static str), Unrecorded}` via `Source::read`, while `Source::value` keeps returning `Option<i64>` so on-disk summary pieces are unaffected. Every computed measure reads all required operands before declaring `NotApplicable`, so an unrecorded numerator or operand never masks as `NotApplicable`.
   - On the columnar follow wire (`dashboard-follow/src/evaluate.rs`), `Computed::NotApplicable(reason)` maps to `State::Missing` with `table.explain(reason)`, while `Computed::Unrecorded` maps to `State::Unrecorded`.
@@ -50,6 +42,9 @@ Keep the recording format unchanged and express missing and not-applicable state
 
 ## Consequences
 
-- No recording-format, collector, or recorder changes are required; older recordings remain compatible while exposing honest missing and not-applicable states on exact reads, follow, and scoreboards.
+- No recording-format, collector, or recorder changes are required; older recordings remain compatible while exposing honest missing and not-applicable states.
 - Market ledger rows display a missing party or amount as text carrying its own state and reason, instead of fabricated zeroes or bare dashes. A hidden column's tooltip entry shows and speaks the reason itself.
+- For construction log rows, a rise from 1 to 2 at the first read of a new window now displays 2 instead of `main`'s 1 because `joinProject` no longer discards incoming `carried: true` counts.
+- `ConstructionLogWidget` paints live level counts through `LiveText` (and factories through `LiveFactories`) alongside separate source-uncertainty text when `source === 'unknown'`, and `projectTooltip` formats count rows through `builtLabel`.
+- `LandBattlesWidget`, `LandBattleList`, `LandBattleDrill`, and `BattleLog` render missing provinces, endings, rosters, and per-side losses without fabricating zeroes, hiding recorded winners, extending drill curves past settlement, or querying province `0`.
 - `AutonomyWidget` passes the not-applicable reason to `formatProgress` only when `line.notApplicable.has(hour)` is true (keeping `"Not recorded"` on truncated hours and older hosts), and `FuelBranchesWidget` formats tooltip rows as `'No share'` vs `'Not recorded'` with `detail: missing` from `keyedSeriesData`.
