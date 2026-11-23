@@ -10,11 +10,8 @@ use engine_native::{
     cbuilding_template,
     ccountry,
     ccountry_supply_system,
-    ccryptology,
     cdynamic_modifier,
     cgame_state,
-    cintelligence_agency,
-    coperative_leader,
     cpdx_array,
     cprovince,
     craid_system,
@@ -29,12 +26,17 @@ use engine_native::{
     modifier_accumulator,
     modifier_definition,
     modifier_entry,
-    operative_action,
-    operative_action_implementation,
     read,
     read_slice,
     supply_companion,
     walk,
+};
+use engine_native_intelligence::{
+    ccryptology,
+    cintelligence_agency,
+    coperative_leader,
+    operative_action,
+    operative_action_implementation,
 };
 use engine_native_land::supply_node;
 #[cfg(test)]

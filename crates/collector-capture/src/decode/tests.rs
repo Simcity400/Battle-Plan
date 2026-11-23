@@ -701,7 +701,7 @@ fn lazy_world_request_acquires_only_scheduled_parts_and_retires_them_once() {
     let idle = pool_lengths();
     let retired = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(16).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(16).unwrap(),
     )
     .unwrap();
     let shared =
@@ -810,7 +810,7 @@ fn the_economy_rest_is_its_own_job_and_each_failure_refuses_only_its_tables() {
     reset_for_test();
     let retired = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(16).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(16).unwrap(),
     )
     .unwrap();
     let reason = "acquisition worker panicked";

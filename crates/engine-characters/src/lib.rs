@@ -6,7 +6,8 @@ use engine_native::{
     msvc_tree_node, null_unit_leader_skill, read, read_slice, walk,
 };
 #[cfg(test)]
-use engine_native::{coperative_leader, reference_bucket};
+use engine_native_intelligence::coperative_leader;
+use engine_native::reference_bucket;
 
 pub mod advisor_tokens;
 pub mod ccharacter_portraits;

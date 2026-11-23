@@ -740,7 +740,7 @@ fn transport_intel_lane(
     target: usize,
     target_country: ccountry::Country,
 ) -> Result<i64, &'static str> {
-    use engine_native::{ccountry_intel, country_intel_row};
+    use engine_native_intelligence::{ccountry_intel, country_intel_row};
     let raw = field::<i32>(memory, target, ccountry_intel::OWNER)?;
     if raw <= 0 {
         return Ok(0);
@@ -771,7 +771,8 @@ fn transport_owner(
     owner: ccountry::Country,
     arena: &mut Vec<TransportEnemy>,
 ) -> Result<TransportOwner, &'static str> {
-    use engine_native::{ccountry_intel, cdiplomacy_status, cstrategic_navy_manager};
+    use engine_native_intelligence::ccountry_intel;
+    use engine_native::{cdiplomacy_status, cstrategic_navy_manager};
     cstrategic_navy_manager::authenticate(memory, base, game, owner)?;
     let owner_intel = pointer(memory, owner.pointer, ccountry::INTEL_TABLE)?;
     auth(memory, base, owner_intel, ccountry_intel::VTABLE_RVA)?;

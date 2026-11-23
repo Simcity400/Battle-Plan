@@ -167,9 +167,9 @@ impl Memory for World {
 }
 
 #[cfg(test)]
-fn roster(world: &World) -> engine_native::country_memory::Cache {
-    let mut cache = engine_native::country_memory::Cache::try_with_capacity(
-        engine_native::country_memory::Cache::cells_for_countries(8192, 1024),
+fn roster(world: &World) -> engine_native_intelligence::country_memory::Cache {
+    let mut cache = engine_native_intelligence::country_memory::Cache::try_with_capacity(
+        engine_native_intelligence::country_memory::Cache::cells_for_countries(8192, 1024),
     )
     .unwrap();
     cache.prepare(world, 0, GAME);
@@ -203,7 +203,7 @@ impl Memory for Shared<'_> {
 }
 
 #[cfg(test)]
-type Rostered<'a> = engine_native::country_memory::CountryMemory<
+type Rostered<'a> = engine_native_intelligence::country_memory::CountryMemory<
     'a,
     engine_native::memory::CountedMemory<Shared<'a>>,
     false,
@@ -212,7 +212,7 @@ type Rostered<'a> = engine_native::country_memory::CountryMemory<
 #[cfg(test)]
 fn per_table(
     world: &World,
-    cache: &engine_native::country_memory::Cache,
+    cache: &engine_native_intelligence::country_memory::Cache,
     work: impl FnOnce(&Rostered<'_>),
 ) -> [u64; N] {
     let counted = engine_native::memory::CountedMemory::new(Shared(world));

@@ -185,7 +185,7 @@ fn an_unwinding_callback_settles_a_contained_stitch_panic_beside_its_siblings() 
         use collector_plans::extended::plans::{Capacities, Captured};
         Job::OrdersStitch(OrdersRequest {
             countries: engine_allocation::shared(
-                engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+                engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
             )
             .unwrap(),
             base: 0,

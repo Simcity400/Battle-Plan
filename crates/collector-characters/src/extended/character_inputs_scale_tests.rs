@@ -186,9 +186,8 @@ impl Populated {
 }
 
 pub(super) fn resolved_operatives(countries: usize) -> (Populated, Vec<usize>) {
-    use engine_native::{
-        cname_group_member as naming, coperative_leader, reference_bucket as bucket,
-    };
+    use engine_native::{cname_group_member as naming, reference_bucket as bucket};
+    use engine_native_intelligence::coperative_leader;
     let mut world = Populated::new(countries);
     let first = world.data.len();
     let registry = first + countries * 0x1100;

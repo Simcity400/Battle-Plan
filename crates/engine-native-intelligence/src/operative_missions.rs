@@ -1,9 +1,17 @@
 
-use crate::{
-    Memory,
+use engine_native_memory::{Memory, cpdx_array::Array, memory::Raw, read, walk::Outcome};
+use engine_native::{
     ccharacter::Literal,
     ccountry,
+    cstate,
+    crelation::subject::{Name, NameWalk},
+};
+use engine_native_parts::{
     cideology_group,
+    modifier_accumulator,
+    modifier_definition::NamedKey,
+};
+use crate::{
     cintelligence_agency,
     coperative_leader::{
         ACTION,
@@ -22,16 +30,8 @@ use crate::{
         PORTRAIT_GFX,
         VTABLE_RVA,
     },
-    cpdx_array::Array,
-    cstate,
-    crelation::subject::{Name, NameWalk},
-    memory::Raw,
-    modifier_accumulator,
-    modifier_definition::NamedKey,
     operative_action,
     operative_action_implementation,
-    read,
-    walk::Outcome,
 };
 use engine_sites::Rva;
 
@@ -48,7 +48,7 @@ const CLIENT_COUNTRY: usize = 0x520;
 const CLIENT_COUNTRY_FALLBACK: usize = 0x524;
 
 fn warning_handles(memory: &impl Memory, base: usize) -> Result<Vec<u64>, &'static str> {
-    use crate::command_inputs::{IDLER_RVA, IN_GAME_IDLER_VTABLE_RVA};
+    use engine_native::command_inputs::{IDLER_RVA, IN_GAME_IDLER_VTABLE_RVA};
     let idler = field::<u64>(memory, site(base, IDLER_RVA)?, 0)? as usize;
     if idler == 0
         || read::<u64>(memory, idler)
@@ -124,8 +124,8 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(bytes),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(bytes),
         root_out,
     )
 }
@@ -134,8 +134,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, Row>,
-    bytes: crate::walk::Buffer<'_, u8>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
+    bytes: engine_native_memory::walk::Buffer<'_, u8>,
     root_out: &mut NamedKey,
 ) -> Walk {
     walk_keyed(memory, base, game_state, output, bytes, &mut || {
@@ -160,8 +160,8 @@ fn walk_keyed(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut bytes: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut bytes: engine_native_memory::walk::Buffer<'_, u8>,
     root_out: &mut impl FnMut() -> Result<u32, &'static str>,
 ) -> Walk {
     let mut failed_operative = None;
@@ -277,7 +277,7 @@ fn walk_keyed(
             required_bytes,
         })
     })();
-    let read = result.unwrap_or_else(crate::crelation::subject::unavailable);
+    let read = result.unwrap_or_else(engine_native::crelation::subject::unavailable);
     Walk {
         outcome: read.outcome,
         bytes_len: read.bytes_len,
@@ -510,7 +510,7 @@ pub fn effect_roots<M: Memory>(
     if variant == operative_action::ROOT_OUT_RESISTANCE
         && let Some(id) = state.filter(|&id| id > 0)
     {
-        let states = Array::read(memory, at(game, crate::cgame_state::STATES)?, 8)
+        let states = Array::read(memory, at(game, engine_native::cgame_state::STATES)?, 8)
             .ok_or("operative effect states invalid")?;
         let state = states
             .element(id as u32, 8)
@@ -540,11 +540,11 @@ pub fn effect_roots<M: Memory>(
             let modifier = field::<u64>(memory, database, NATIONALITY_MODIFIER)? as usize;
             if modifier != 0 {
                 if field::<u64>(memory, modifier, 0)?
-                    != site(base, crate::cstatic_modifier::VTABLE_RVA)? as u64
+                    != site(base, engine_native_parts::cstatic_modifier::VTABLE_RVA)? as u64
                 {
                     return Err("operative nationality modifier identity mismatch");
                 }
-                roots[2] = at(modifier, crate::cstatic_modifier::ACCUMULATOR)?;
+                roots[2] = at(modifier, engine_native_parts::cstatic_modifier::ACCUMULATOR)?;
             }
         }
     }

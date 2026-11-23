@@ -6,7 +6,7 @@ pub(super) fn walk(
     game_state: usize,
     output: &mut Vec<Row>,
 ) -> Outcome {
-    walk_inner(memory, base, game_state, crate::walk::Buffer::Growing(output))
+    walk_inner(memory, base, game_state, engine_native_memory::walk::Buffer::Growing(output))
         .unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
@@ -14,13 +14,13 @@ fn walk_inner(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Result<Outcome, &'static str> {
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     let mut found_country = false;
     let mut len = 0_usize;
     let mut unread_rows = 0_u32;
-    let mut seen = crate::slot_set::SlotSet::new();
+    let mut seen = engine_native_memory::slot_set::SlotSet::new();
     for slot in 1..countries.count() {
         let Some(country) = countries.at(slot)? else {
             continue;

@@ -439,7 +439,7 @@ impl OwnedBatch {
     }
 }
 
-pub(crate) fn unavailable(reason: &'static str) -> NameWalk {
+pub fn unavailable(reason: &'static str) -> NameWalk {
     NameWalk {
         outcome: Outcome::Unavailable { reason },
         bytes_len: 0,

@@ -1,5 +1,6 @@
 use collector_states::acquisition_gather::{Report as GatherReport, Request as GatherRequest};
-use engine_native::{Memory, ccountry, country_memory::Cache, walk::Outcome};
+use engine_native::{Memory, ccountry, walk::Outcome};
+use engine_native_intelligence::country_memory::Cache;
 
 pub(crate) struct Request {
     countries: engine_allocation::SharedBox<Cache>,
@@ -133,7 +134,7 @@ impl Request {
         let begin = collector_primitives::clock::qpc();
         if let Some(naming) = &mut self.naming {
             naming.appearance.raw.begin(naming.hour);
-            if let engine_native::country_memory::SeedStatus::Unavailable { reason } =
+            if let engine_native_intelligence::country_memory::SeedStatus::Unavailable { reason } =
                 cached.seed_status()
             {
                 naming.appearance.raw.link_controls(Err(reason));

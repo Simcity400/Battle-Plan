@@ -3,7 +3,8 @@ use collector_primitives::clock::qpc;
 use crate::acquisition_gather;
 use collector_observers::war_changes::{Changes, Counts};
 use engine_allocation as allocation;
-use engine_native::{Memory, ccountry, country_memory::Cache, cwar_relation, walk::Outcome};
+use engine_native::{Memory, ccountry, cwar_relation, walk::Outcome};
+use engine_native_intelligence::country_memory::Cache;
 
 pub struct Request {
     pub countries: engine_allocation::SharedBox<Cache>,
@@ -214,7 +215,7 @@ mod tests {
             countries
                 .prepare(&memory, kit::BASE, kit::GAME_STATE)
                 .seed_status(),
-            engine_native::country_memory::SeedStatus::Ready
+            engine_native_intelligence::country_memory::SeedStatus::Ready
         );
         let mut snapshot = cwar_relation::OwnedSnapshotScratch::try_with_capacity(5).unwrap();
         cwar_relation::walk_owned(

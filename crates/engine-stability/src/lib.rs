@@ -22,6 +22,7 @@ pub mod original_tag_lists;
 pub mod political_runtime_scalars;
 
 #[cfg(test)]
-use engine_native::{country_memory, read_counts};
+use engine_native_intelligence::country_memory;
+use engine_native::read_counts;
 
 use engine_native::ccountry_manpower;

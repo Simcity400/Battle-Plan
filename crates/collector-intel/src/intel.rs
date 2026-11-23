@@ -16,11 +16,31 @@ use engine_intelligence::{
     ccountry_operation_token_manager, strategic_operatives,
 };
 use engine_native::{
-    Memory, agency_upgrade_levels, ccharacter, ccharacter_manager, ccountry, ccountry_intel,
-    ccryptology, ccurrent_autonomy_status, cdiplomacy_status, cgame_state, cintelligence_agency,
-    coperation_instance, coperative_leader, cpdx_array::Array, crelation_status, cstate,
-    csubject_relation, csubject_relation::Name, cwar_relation, operation_assigned_operative,
-    operative_missions, read, read_slice, walk::Outcome,
+    Memory,
+    ccharacter,
+    ccharacter_manager,
+    ccountry,
+    ccurrent_autonomy_status,
+    cdiplomacy_status,
+    cgame_state,
+    cpdx_array::Array,
+    crelation_status,
+    cstate,
+    csubject_relation::{self, Name},
+    cwar_relation,
+    read,
+    read_slice,
+    walk::Outcome,
+};
+use engine_native_intelligence::{
+    agency_upgrade_levels,
+    ccountry_intel,
+    ccryptology,
+    cintelligence_agency,
+    coperation_instance,
+    coperative_leader,
+    operation_assigned_operative,
+    operative_missions,
 };
 use engine_scripts::{cflag_manager, cscript_flag, cvariables};
 use replay_data::{
@@ -1809,7 +1829,7 @@ impl Captured {
                         let _reads = read_accounting::table(TABLES[15]);
                         if grow_vec(
                             &mut buffer.scratch,
-                            engine_native::country_intel_row::STRIDE,
+                            engine_native_intelligence::country_intel_row::STRIDE,
                         ) {
                             ccountry_intel::walk_with_reserved_visit(
                                 memory,
@@ -4868,7 +4888,7 @@ pub fn intel_shadow_fixture(value: i64) -> Captured {
         unreachable!("a new frame holds its own buffer")
     };
     for (index, row) in buffer.rows.rows.iter_mut().enumerate() {
-        *row = engine_native::country_intel_row::Row {
+        *row = engine_native_intelligence::country_intel_row::Row {
             owner_country: 7,
             target_index: index as u32,
             army: value,
@@ -5810,7 +5830,7 @@ mod tests {
     fn small() -> (Capacities, Captured) {
         let capacities = Capacities {
             rows: [3; N],
-            intel_scratch: 2 * engine_native::country_intel_row::STRIDE,
+            intel_scratch: 2 * engine_native_intelligence::country_intel_row::STRIDE,
             subject_names: 8,
             autonomy_names: 8,
             agency_names: 8,
@@ -8329,7 +8349,7 @@ mod tests {
     fn cap_capacities() -> Capacities {
         let mut capacities = Capacities {
             rows: [2; N],
-            intel_scratch: 2 * engine_native::country_intel_row::STRIDE,
+            intel_scratch: 2 * engine_native_intelligence::country_intel_row::STRIDE,
             subject_names: 8,
             autonomy_names: 8,
             agency_names: 8,

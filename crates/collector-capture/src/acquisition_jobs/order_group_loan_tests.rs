@@ -27,7 +27,7 @@ fn request(count: i32) -> OrdersRequest {
     }
     OrdersRequest {
         countries: engine_allocation::shared(
-            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+            engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
         )
         .unwrap(),
         base: 0,

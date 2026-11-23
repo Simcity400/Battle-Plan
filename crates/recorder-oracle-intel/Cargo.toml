@@ -10,6 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+engine-native-intelligence.workspace = true
 content-reader-layers.workspace = true
 content-reader-military.workspace = true
 content-reader-parser.workspace = true

@@ -38,7 +38,7 @@ fn abandoned_orders_loan_retires_once_on_drop_and_callback_unwind() {
         let identity = payload.log.bytes.as_ptr();
         let request = OrdersRequest {
             countries: engine_allocation::shared(
-                engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+                engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
             )
             .unwrap(),
             base: 0,

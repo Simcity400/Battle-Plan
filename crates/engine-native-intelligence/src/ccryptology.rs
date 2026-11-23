@@ -1,13 +1,20 @@
 
-use crate::{
+use engine_native_memory::{
     Memory,
     batch_fallback::Batch,
-    ccountry::{self, Ahead}, ccountry_decryption_state as state, cintelligence_agency as agency,
     cpdx_array::Array,
-    memory::{Raw, RecordField, RecordLayout, RecordSources, packed_fields},
+    memory::{
+        Raw,
+        RecordField,
+        RecordLayout,
+        RecordSources,
+        packed_fields,
+    },
     read,
     walk::Outcome,
 };
+use engine_native::ccountry::{self, Ahead};
+use crate::{ccountry_decryption_state as state, cintelligence_agency as agency};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x02a3_7ef0);
@@ -32,7 +39,7 @@ pub struct Row {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -45,7 +52,7 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -53,7 +60,7 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, Row>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     walk_inner(memory, base, game_state, output)
         .unwrap_or_else(|reason| Outcome::Unavailable { reason })
@@ -63,13 +70,13 @@ fn walk_inner(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Result<Outcome, &'static str> {
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     let mut found_country = false;
     let mut len = 0_usize;
     let mut unread_rows = 0_u32;
-    let mut seen = crate::slot_set::SlotSet::new();
+    let mut seen = engine_native_memory::slot_set::SlotSet::new();
     let mut ahead = None;
     let mut block = [0_u8; STATE_CHUNK * state::STRIDE];
     for slot in 1..countries.count() {
@@ -122,7 +129,7 @@ fn walk_inner(
                     .min(u32::try_from(output.len() - len).unwrap_or(u32::MAX));
                 whole = state_block(memory, states, first, chunk, &mut block);
                 if !whole {
-                    crate::batch_fallback::record(Batch::Cryptology);
+                    engine_native_memory::batch_fallback::record(Batch::Cryptology);
                 }
             }
             let mut row = if whole {
@@ -314,12 +321,13 @@ mod baseline;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_state, memory::SliceMemory};
+    use engine_native::cgame_state;
+    use engine_native_memory::memory::SliceMemory;
 
     fn both(
         memory: &impl Memory,
         serial_memory: &impl Memory,
-        w: &crate::ccountry::synthetic::World,
+        w: &engine_native::ccountry::synthetic::World,
         rows: usize,
     ) -> [(Outcome, Vec<Row>); 2] {
         let mut batched = vec![Row::default(); rows];
@@ -331,7 +339,7 @@ mod tests {
 
     #[test]
     fn batched_states_match_the_serial_walk() {
-        use crate::memory::{CountedMemory, ReadCounts};
+        use engine_native_memory::memory::{CountedMemory, ReadCounts};
         const COUNT: u32 = 130;
         const STATES: u32 = 3;
         let w = crate::cintelligence_agency::test_support::intel_world(COUNT, STATES);
@@ -353,7 +361,7 @@ mod tests {
         assert_eq!(new_reads.spans + 2 * n, old_reads.spans);
     }
 
-    fn state_at(w: &crate::ccountry::synthetic::World, slot: u32, index: usize) -> usize {
+    fn state_at(w: &engine_native::ccountry::synthetic::World, slot: u32, index: usize) -> usize {
         let memory = w.memory();
         let agency =
             read::<u64>(&memory, w.object(slot) + ccountry::INTELLIGENCE_AGENCY).unwrap() as usize;
@@ -362,7 +370,7 @@ mod tests {
         rows + index * state::STRIDE
     }
 
-    fn fault_sites(w: &crate::ccountry::synthetic::World) -> [std::ops::Range<usize>; 3] {
+    fn fault_sites(w: &engine_native::ccountry::synthetic::World) -> [std::ops::Range<usize>; 3] {
         let tail = state_at(w, 3, 0) + 32;
         let prefix = state_at(w, 3, 1) + 24;
         let link = w.object(4) + ccountry::INTELLIGENCE_AGENCY;
@@ -370,12 +378,12 @@ mod tests {
     }
 
     fn fallbacks() -> u64 {
-        crate::batch_fallback::count(crate::batch_fallback::Batch::Cryptology)
+        engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::Cryptology)
     }
 
     #[test]
     fn a_persistent_state_fault_gives_the_serial_result() {
-        use crate::batch_fallback::Faulty;
+        use engine_native_memory::batch_fallback::Faulty;
         let w = crate::cintelligence_agency::test_support::intel_world(6, 3);
         for (site, range) in fault_sites(&w).into_iter().enumerate() {
             let before = fallbacks();
@@ -396,7 +404,7 @@ mod tests {
 
     #[test]
     fn a_one_shot_state_fault_refuses_no_more_than_the_serial_walk() {
-        use crate::batch_fallback::Faulty;
+        use engine_native_memory::batch_fallback::Faulty;
         let w = crate::cintelligence_agency::test_support::intel_world(6, 3);
         let [healthy, _] = both(&w.memory(), &w.memory(), &w, 18);
         for (site, range) in fault_sites(&w).into_iter().enumerate() {
@@ -415,7 +423,7 @@ mod tests {
 
     #[test]
     fn batched_states_cross_the_block_edge_as_the_serial_walk() {
-        use crate::batch_fallback::Faulty;
+        use engine_native_memory::batch_fallback::Faulty;
         const STATES: u32 = 66;
         let w = crate::cintelligence_agency::test_support::intel_world(70, STATES);
         let all = 70 * STATES as usize;
@@ -462,7 +470,7 @@ mod tests {
     #[ignore = "synthetic acquisition cost; release, affinity 0xF"]
     #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
     fn acquisition_cost() {
-        use crate::memory::{CountedMemory, LiveMemory, ReadCounts};
+        use engine_native_memory::memory::{CountedMemory, LiveMemory, ReadCounts};
         let countries = std::env::var("BATTLEPLAN_INTEL_COST_COUNTRIES").or_else(|_| std::env::var("HOI4_INTEL_COST_COUNTRIES"))
             .ok()
             .and_then(|v| v.parse().ok())

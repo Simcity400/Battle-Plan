@@ -50,8 +50,8 @@ fn l3b_bench_hourly_land_theatres_and_order_of_battle_ordinals() {
                 },
             );
             let slice = world.slice();
-            let mut countries_cache = engine_native::country_memory::Cache::try_with_capacity(
-                engine_native::country_memory::Cache::cells_for_countries(
+            let mut countries_cache = engine_native_intelligence::country_memory::Cache::try_with_capacity(
+                engine_native_intelligence::country_memory::Cache::cells_for_countries(
                     countries as usize + 1,
                     collector_primitives::country_slots::MIN_COUNTRY_CELLS,
                 ),

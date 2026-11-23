@@ -422,13 +422,13 @@ fn failed_selected_root_alias_survives_cold_and_cached_copy_and_decode() {
                 fault,
                 attempts: std::cell::Cell::new(0),
             };
-            let mut cache = engine_native::country_memory::Cache::try_with_capacity(128)
+            let mut cache = engine_native_intelligence::country_memory::Cache::try_with_capacity(128)
                 .expect("reserved-land fixture cache allocation");
             if cached {
                 let view = cache.prepare(&source, kit::BASE, kit::GAME_STATE);
                 assert_eq!(
                     view.seed_status(),
-                    engine_native::country_memory::SeedStatus::Unavailable { reason }
+                    engine_native_intelligence::country_memory::SeedStatus::Unavailable { reason }
                 );
             }
             let mut job = NavalJob::fixture();

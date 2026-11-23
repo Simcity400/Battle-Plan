@@ -265,8 +265,8 @@ fn hourly_cost_at_1500_and_5000_countries() {
         let mut goals = vec![cwar_goal::relation::Row::default(); count as usize * 2];
         let mut scores = vec![CountryRow::default(); count as usize];
         let mut cache = DiscoveryCache::new(count as usize + 1, count as usize * 25);
-        let mut census = crate::country_memory::Cache::with_capacity(
-            crate::country_memory::Cache::cells_for_countries(count as usize + 1, 0),
+        let mut census = engine_native_intelligence::country_memory::Cache::with_capacity(
+            engine_native_intelligence::country_memory::Cache::cells_for_countries(count as usize + 1, 0),
         );
         census.prepare(&memory, 0, w.game_state());
         let memory = census.roster_view(&memory);

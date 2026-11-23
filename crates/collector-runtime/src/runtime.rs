@@ -17,7 +17,8 @@ use collector_spool::spooling::HistoryReply;
 use collector_spool::spooling::Processor;
 use collector_workers::spool_phases::Phase;
 use engine_executable::build::hash_executable;
-use engine_native::{cgame_state, country_memory::SeedStatus, memory::LiveMemory, read};
+use engine_native::{cgame_state, memory::LiveMemory, read};
+use engine_native_intelligence::country_memory::SeedStatus;
 use replay_data::identity::IdentityCodec;
 use replay_data::{codec::Decoder, identity::SessionStart};
 

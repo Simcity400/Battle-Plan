@@ -173,13 +173,13 @@ pub fn walk_buffer(
                         None => 0,
                         Some(pointer) => {
                             if field::<u64>(memory, pointer, 0)?
-                                != engine_sites::at(base, engine_native::coperative_leader::VTABLE_RVA)
+                                != engine_sites::at(base, engine_native_intelligence::coperative_leader::VTABLE_RVA)
                                     .ok_or("strategic operative mission vtable overflow")?
                                     as u64
                                 || field::<u64>(
                                     memory,
                                     pointer,
-                                    engine_native::coperative_leader::IDENTITY,
+                                    engine_native_intelligence::coperative_leader::IDENTITY,
                                 )? != handle
                             {
                                 return Err("strategic operative mission identity mismatch");

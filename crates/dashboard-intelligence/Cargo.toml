@@ -14,6 +14,7 @@ export-types = ["dashboard-base/export-types"]
 test-support = ["dashboard-base/test-support"]
 
 [dependencies]
+engine-native-intelligence.workspace = true
 content-reader-defines.workspace = true
 content-reader-key-names.workspace = true
 content-reader-military.workspace = true

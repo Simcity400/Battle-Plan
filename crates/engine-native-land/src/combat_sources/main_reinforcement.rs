@@ -440,7 +440,7 @@ fn transport_intel_lane(
     target: usize,
     target_country: ccountry::Country,
 ) -> Result<i64, &'static str> {
-    use engine_native::{ccountry_intel, country_intel_row};
+    use engine_native_intelligence::{ccountry_intel, country_intel_row};
     let raw = field::<i32>(memory, target, ccountry_intel::OWNER)?;
     if raw <= 0 {
         return Ok(0);
@@ -474,8 +474,8 @@ fn transport_context(
     terms: &mut Vec<TransportTerm>,
     start: usize,
 ) -> Result<ContextRow, &'static str> {
+    use engine_native_intelligence::ccountry_intel;
     use engine_native::{
-        ccountry_intel,
         cdiplomacy_status,
         cstrategic_navy_manager,
         cweather_manager::{self, region_weather as sweather_per_region},

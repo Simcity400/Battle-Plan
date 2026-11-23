@@ -17,6 +17,7 @@ engine-sites.workspace = true
 engine-native.workspace = true
 
 [dev-dependencies]
+engine-native-intelligence = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["test-support"] }
 
 [lints]

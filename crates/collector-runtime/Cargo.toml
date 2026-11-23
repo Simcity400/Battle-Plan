@@ -80,6 +80,7 @@ worker_sampler = ["collector-workers/worker_sampler", "collector-capture/worker_
 world_input_changes = ["collector-observers/world_input_changes", "collector-capture/world_input_changes", "collector-spool/world_input_changes"]
 
 [dependencies]
+engine-native-intelligence.workspace = true
 engine-native-land.workspace = true
 replay-files.workspace = true
 replay-settings.workspace = true

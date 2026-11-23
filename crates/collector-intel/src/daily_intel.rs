@@ -1,7 +1,7 @@
 
 use crate::table_capture::{CaptureRows, grow_capacity};
 use engine_allocation::{SharedBox, filled, oom};
-use engine_native::country_intel_row::Row;
+use engine_native_intelligence::country_intel_row::Row;
 use std::sync::{
     Mutex, MutexGuard, PoisonError,
     atomic::{AtomicUsize, Ordering},

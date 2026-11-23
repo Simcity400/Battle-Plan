@@ -12,7 +12,7 @@ fn ordinary_strict_missions_grow_on_first_and_later_publications() {
     let mut owner = Captured::with_capacities(&Capacities::default());
     use_fixture_certificates(&mut owner.naval_mission_inputs);
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     let mut loan = NavalMissionLoan {

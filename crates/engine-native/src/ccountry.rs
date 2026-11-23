@@ -668,7 +668,7 @@ pub fn read_reserved_root(
     read_reserved_observation(memory, base, game_state).result()
 }
 
-pub(crate) fn cached_reserved_observation(
+pub fn cached_reserved_observation(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -708,7 +708,7 @@ pub fn reserved_from_array(
     observe_reserved_from_array(memory, base, countries).result()
 }
 
-pub(crate) fn observe_reserved_from_array(
+pub fn observe_reserved_from_array(
     memory: &impl Memory,
     base: usize,
     countries: Array,
@@ -1902,7 +1902,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         self.read_slot(slot, false)
     }
 
-    pub(crate) fn read_physical_at(&self, slot: u32) -> Result<Option<Country>, &'static str> {
+    pub fn read_physical_at(&self, slot: u32) -> Result<Option<Country>, &'static str> {
         self.read_slot(slot, true)
     }
 

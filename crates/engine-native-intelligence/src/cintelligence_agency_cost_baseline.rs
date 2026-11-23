@@ -6,13 +6,13 @@ pub(super) fn walk(
     game_state: usize,
     output: &mut Vec<Row>,
     names: &mut Vec<u8>,
-) -> crate::crelation::subject::NameWalk {
+) -> engine_native::crelation::subject::NameWalk {
     walk_shared(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(names),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(names),
         |_, _| {},
     )
 }
@@ -21,11 +21,11 @@ pub(super) fn walk_shared(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut names: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut names: engine_native_memory::walk::Buffer<'_, u8>,
     mut each: impl FnMut(u32, usize),
-) -> crate::crelation::subject::NameWalk {
-    use crate::{ccharacter::Literal, crelation::subject::{Name, NameWalk}};
+) -> engine_native::crelation::subject::NameWalk {
+    use engine_native::{ccharacter::Literal, crelation::subject::{Name, NameWalk}};
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let (mut len, mut bytes_len, mut required_bytes) = (0_usize, 0_usize, 0_usize);
@@ -80,7 +80,7 @@ pub(super) fn walk_shared(
             required_bytes,
         })
     })();
-    result.unwrap_or_else(crate::crelation::subject::unavailable)
+    result.unwrap_or_else(engine_native::crelation::subject::unavailable)
 }
 
 fn root(

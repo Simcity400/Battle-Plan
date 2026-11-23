@@ -14,6 +14,7 @@ default = []
 test-support = ["dep:collector-test-support"]
 
 [dependencies]
+engine-native-intelligence.workspace = true
 collector-test-support = { workspace = true, optional = true }
 collector-certificates.workspace = true
 collector-extended-support.workspace = true

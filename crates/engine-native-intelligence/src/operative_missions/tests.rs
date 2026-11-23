@@ -1,10 +1,15 @@
 use super::*;
+use engine_native::cgame_state;
 use crate::{
-    cgame_state, coperative_leader,
-    memory::SliceMemory,
-    modifier_definition,
-    operative_action_implementation::{COUNTRY_GETTER_RVA, COUNTRY_GETTER_SLOT, VTABLE_RVAS},
+    coperative_leader,
+    operative_action_implementation::{
+        COUNTRY_GETTER_RVA,
+        COUNTRY_GETTER_SLOT,
+        VTABLE_RVAS,
+    },
 };
+use engine_native_memory::memory::SliceMemory;
+use engine_native_parts::modifier_definition;
 
 const STATE: usize = 0x100;
 const OPERATIVE: usize = 0x7000;
@@ -152,8 +157,8 @@ fn read(bytes: &[u8], rows: &mut Vec<Row>, arena: &mut Vec<u8>) -> Walk {
         &World(bytes.to_vec()),
         0,
         STATE,
-        crate::walk::Buffer::Growing(rows),
-        crate::walk::Buffer::Growing(arena),
+        engine_native_memory::walk::Buffer::Growing(rows),
+        engine_native_memory::walk::Buffer::Growing(arena),
         &mut || Ok(KEY),
     )
 }
@@ -163,8 +168,8 @@ fn count(bytes: &[u8]) -> Walk {
         &World(bytes.to_vec()),
         0,
         STATE,
-        crate::walk::Buffer::Count,
-        crate::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
         &mut || Ok(KEY),
     )
 }
@@ -925,8 +930,8 @@ fn the_root_out_key_is_resolved_by_name_only_for_root_out_missions() {
         &memory,
         0,
         STATE,
-        crate::walk::Buffer::Growing(&mut vec![Row::default(); 1]),
-        crate::walk::Buffer::Growing(&mut vec![0; 64]),
+        engine_native_memory::walk::Buffer::Growing(&mut vec![Row::default(); 1]),
+        engine_native_memory::walk::Buffer::Growing(&mut vec![0; 64]),
         &mut || {
             asked += 1;
             Err("root out resistance factor modifier is not registered")

@@ -29,7 +29,6 @@ use engine_native::{
     cnaval_combatant,
     cnavy_leader,
     cnull_combat_tactic,
-    coperative_leader,
     corder_instance,
     corders_group,
     cpdx_array,
@@ -57,9 +56,11 @@ use engine_native::{
     sweather_per_province,
     walk,
 };
+use engine_native_intelligence::coperative_leader;
 use engine_native_land::combat_sources;
 #[cfg(test)]
-use engine_native::{chuman, country_memory, modifier_definition, read_census, reference_bucket};
+use engine_native::{chuman, modifier_definition, read_census, reference_bucket};
+use engine_native_intelligence::country_memory;
 
 pub mod active_ability_record;
 pub mod cability;

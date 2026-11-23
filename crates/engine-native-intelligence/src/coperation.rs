@@ -1,6 +1,6 @@
 
 use engine_sites::Rva;
-use crate::{Memory, read};
+use engine_native_memory::{Memory, read};
 
 pub const VTABLE_RVA: Rva = Rva(0x029b_cc48);
 pub const PREPARATION_TIME: usize = 0x10;

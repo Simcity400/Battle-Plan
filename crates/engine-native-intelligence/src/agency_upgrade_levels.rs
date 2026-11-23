@@ -1,10 +1,13 @@
 
-use crate::{
-    Memory, ccountry, cintelligence_agency,
+use engine_native_memory::{
+    Memory,
     cpdx_array::{self, Array},
-    cpdx_lexer, read,
+    cpdx_lexer,
+    read,
     walk::Outcome,
 };
+use engine_native::ccountry;
+use crate::cintelligence_agency;
 
 pub const ACQUIRED: usize = 0x60;
 pub const ENTRY_STRIDE: usize = 16;
@@ -154,7 +157,7 @@ pub struct Catalog {
 impl Catalog {
     pub fn new(definition_capacity: usize) -> Self {
         Self {
-            definitions: crate::allocation::owned_vec(crate::allocation::default_vec(
+            definitions: engine_allocation::owned_vec(engine_allocation::default_vec(
                 definition_capacity,
             )),
             growing: false,
@@ -175,7 +178,7 @@ impl Catalog {
         self.definitions.capacity() * std::mem::size_of::<Identity>()
     }
     pub fn resize(&mut self, definition_capacity: usize) {
-        if crate::allocation::resize_default(&mut self.definitions, definition_capacity).is_err() {
+        if engine_allocation::resize_default(&mut self.definitions, definition_capacity).is_err() {
             return;
         }
         self.reset();
@@ -207,7 +210,7 @@ impl Catalog {
                     .checked_add(members.count as usize)
                     .ok_or("agency upgrade catalog demand overflow")?;
                 if self.growing {
-                    crate::walk::Buffer::Growing(&mut self.definitions).ensure(self.required)?;
+                    engine_native_memory::walk::Buffer::Growing(&mut self.definitions).ensure(self.required)?;
                 }
                 let branch_token = token(memory, tokens, branch).ok();
                 cpdx_array::pointers(
@@ -280,7 +283,7 @@ impl Catalog {
 }
 
 pub(crate) struct Capture<'a> {
-    output: crate::walk::Buffer<'a, Row>,
+    output: engine_native_memory::walk::Buffer<'a, Row>,
     catalog: &'a mut Catalog,
     len: usize,
     required_rows: usize,
@@ -295,7 +298,7 @@ pub(crate) struct Capture<'a> {
 
 impl<'a> Capture<'a> {
     pub(crate) fn new_buffer(
-        output: crate::walk::Buffer<'a, Row>,
+        output: engine_native_memory::walk::Buffer<'a, Row>,
         catalog: &'a mut Catalog,
     ) -> Self {
         catalog.reset();

@@ -339,17 +339,17 @@ fn world(shape: &Shape) -> Built {
     let mut intel_tables = Vec::new();
     let mut enemy_lists = Vec::new();
     for (index, (&country, &diplomacy)) in objects.iter().zip(&diplomacies).enumerate() {
-        let intel = w.object(0x100, engine_native::ccountry_intel::VTABLE_RVA.0);
-        w.u32(intel + engine_native::ccountry_intel::OWNER, owners[index]);
-        let rows = w.alloc(slots * engine_native::country_intel_row::STRIDE);
+        let intel = w.object(0x100, engine_native_intelligence::ccountry_intel::VTABLE_RVA.0);
+        w.u32(intel + engine_native_intelligence::ccountry_intel::OWNER, owners[index]);
+        let rows = w.alloc(slots * engine_native_intelligence::country_intel_row::STRIDE);
         for (other, &slot) in owners.iter().enumerate() {
             w.u64(
-                rows + slot as usize * engine_native::country_intel_row::STRIDE
-                    + engine_native::country_intel_row::NAVY,
+                rows + slot as usize * engine_native_intelligence::country_intel_row::STRIDE
+                    + engine_native_intelligence::country_intel_row::NAVY,
                 (index * 100 + other) as u64,
             );
         }
-        w.array(intel + engine_native::ccountry_intel::DATA, rows, slots as u32);
+        w.array(intel + engine_native_intelligence::ccountry_intel::DATA, rows, slots as u32);
         w.u64(country + ccountry::INTEL_TABLE, intel as u64);
         intel_tables.push(intel);
         let enemies: Vec<usize> = if index % 3 == 0 {
@@ -917,7 +917,7 @@ fn staged_sources_keep_main_failure_order() {
             let [first, second] = [built.enemies[owner][0], built.enemies[owner][1]];
             vec![
                 (built.regional[first], 16),
-                (built.intel[second] + engine_native::ccountry_intel::OWNER, 4),
+                (built.intel[second] + engine_native_intelligence::ccountry_intel::OWNER, 4),
             ]
         }),
         ("regional before own intel", |built| {
@@ -927,7 +927,7 @@ fn staged_sources_keep_main_failure_order() {
             let enemy = built.enemies[owner][0];
             vec![
                 (built.regional[enemy], 16),
-                (built.intel[enemy] + engine_native::ccountry_intel::OWNER, 4),
+                (built.intel[enemy] + engine_native_intelligence::ccountry_intel::OWNER, 4),
             ]
         }),
         ("token before categories", |built| {

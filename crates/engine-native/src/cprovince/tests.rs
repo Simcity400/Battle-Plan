@@ -1754,7 +1754,7 @@ fn dense_records_preserve_invalid_source_prefix_without_retry() {
 fn allocation_capacity_overflow_owned_capture_buffers() {
     let oom = std::io::ErrorKind::OutOfMemory;
     assert_eq!(
-        crate::country_memory::Cache::try_with_capacity(usize::MAX)
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(usize::MAX)
             .err()
             .unwrap()
             .kind(),

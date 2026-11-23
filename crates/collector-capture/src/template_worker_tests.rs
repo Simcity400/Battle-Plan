@@ -11,7 +11,7 @@ use std::sync::Arc;
 #[test]
 fn hourly_template_job_publishes_direct_walk_rows() {
     use crate::acquisition_countries::TemplatesRequest;
-    use engine_native::country_memory::Cache;
+    use engine_native_intelligence::country_memory::Cache;
 
     let mut source = fixture();
     let mut capture = Captured::vacant();
@@ -70,7 +70,7 @@ fn hourly_template_job_publishes_direct_walk_rows() {
 fn promoted_template_worker_matches_direct_rows_and_faults() {
     use crate::acquisition_jobs::{Batch, Job, Pool, Report, TemplatesRequest};
     use collector_workers::roles::Role;
-    use engine_native::country_memory::Cache;
+    use engine_native_intelligence::country_memory::Cache;
 
     fn word(source: &Fixture, at: usize) -> usize {
         u64::from_le_bytes(source.bytes[at..at + 8].try_into().unwrap()) as usize

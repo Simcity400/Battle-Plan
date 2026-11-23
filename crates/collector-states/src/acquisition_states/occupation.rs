@@ -45,7 +45,7 @@ trait CertificatesSource {
     }
 }
 struct NativeCertificates<'a> {
-    countries: Option<&'a engine_native::country_memory::Cache>,
+    countries: Option<&'a engine_native_intelligence::country_memory::Cache>,
     base: usize,
     state: usize,
 }
@@ -61,7 +61,7 @@ impl CertificatesSource for NativeCertificates<'_> {
     }
     fn quiet(&self) -> Option<(u64, u64)> {
         let cache = self.countries?;
-        if cache.view(&CacheOnly).seed_status() != engine_native::country_memory::SeedStatus::Ready
+        if cache.view(&CacheOnly).seed_status() != engine_native_intelligence::country_memory::SeedStatus::Ready
         {
             return None;
         }
@@ -328,7 +328,7 @@ impl Store {
         state: usize,
         sources: &[cstate::Source],
         outcome: Outcome,
-        countries: Option<&engine_native::country_memory::Cache>,
+        countries: Option<&engine_native_intelligence::country_memory::Cache>,
     ) {
         self.acquire_observed(
             memory,

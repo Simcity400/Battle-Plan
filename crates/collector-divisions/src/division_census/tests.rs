@@ -299,7 +299,7 @@ fn entries_past_the_initial_storage_grow_to_the_exact_count_in_one_capture() {
 
 #[test]
 fn census_reuses_the_callback_country_roster_and_matches_the_native_checks() {
-    use engine_native::{country_memory::Cache, country_memory::SeedStatus};
+    use engine_native_intelligence::country_memory::{Cache, SeedStatus};
     const COUNTRIES: u32 = 5000;
     let bytes = many::world(COUNTRIES, 1);
     let plain = kit::memory(&bytes);

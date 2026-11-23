@@ -724,7 +724,8 @@ impl Drop for Hooks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::{country_memory::Cache, memory::SliceMemory};
+    use engine_native_intelligence::country_memory::Cache;
+    use engine_native::memory::SliceMemory;
 
     fn owner(pointer: usize, country: u32) -> native::Owner {
         native::Owner { pointer, country }

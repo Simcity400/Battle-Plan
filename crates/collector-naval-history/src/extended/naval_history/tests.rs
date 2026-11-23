@@ -806,7 +806,8 @@ fn hourly_land_theatre_headers_need_no_daily_details_or_wing_storage() {
 #[test]
 fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
     use super::naval_test_kit as kit;
-    use engine_native::{ccountry, cgame_state, country_memory::Cache, memory::SliceMemory};
+    use engine_native::{ccountry, cgame_state, memory::SliceMemory};
+    use engine_native_intelligence::country_memory::Cache;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: Option<usize>,

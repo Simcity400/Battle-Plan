@@ -75,17 +75,17 @@ impl Owner {
         self.seed = seed;
         self.image_base = base;
         seed.root
-            .checked_add(engine_native::ccountry_intel::SIZE)
+            .checked_add(engine_native_intelligence::ccountry_intel::SIZE)
             .ok_or("intel source root span overflow")?;
         seed.country
             .checked_add(engine_native::ccountry::OPERATION_TOKEN_MANAGER + 8)
             .ok_or("intel source country span overflow")?;
-        let root_vtable = engine_sites::at(base, engine_native::ccountry_intel::VTABLE_RVA)
+        let root_vtable = engine_sites::at(base, engine_native_intelligence::ccountry_intel::VTABLE_RVA)
             .ok_or("intel source bootstrap root identity mismatch")?;
         if read::<u64>(memory, seed.root) != Some(root_vtable as u64) {
             return Err("intel source bootstrap root identity mismatch");
         }
-        self.raw_owner = read(memory, seed.root + engine_native::ccountry_intel::OWNER)
+        self.raw_owner = read(memory, seed.root + engine_native_intelligence::ccountry_intel::OWNER)
             .ok_or("intel source owner unreadable")?;
         self.lifetime =
             read(memory, seed.root + native::LIFETIME).ok_or("intel source lifetime unreadable")?;
@@ -599,7 +599,7 @@ mod tests {
                 .max(engine_native::ccountry::RADARS_POOL + native::RADAR_REFERENCE + 24)
                 .max(engine_native::ccountry::INTEL_TABLE + 8),
         );
-        let root = world.alloc(engine_native::ccountry_intel::SIZE);
+        let root = world.alloc(engine_native_intelligence::ccountry_intel::SIZE);
         world.u64(country + engine_native::ccountry::INTEL_TABLE, root as u64);
         let token = world.alloc(
             (native::TOKEN_REFERENCE + 24)

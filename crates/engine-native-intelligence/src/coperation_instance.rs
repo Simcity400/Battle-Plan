@@ -1,16 +1,14 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory,
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::{
     ccharacter::Literal,
-    cequipment_type,
     cequipment_variant::pool as cequipment_variant_pool,
-    coperation,
-    cpdx_array::Array,
     cprovince,
     crelation::subject::Name,
-    read,
 };
+use engine_native_parts::cequipment_type;
+use crate::coperation;
 
 pub const VTABLE_RVA: Rva = Rva(0x02a3_8fc0);
 pub const HANDLE: usize = 0x08;
@@ -189,12 +187,12 @@ impl Instance {
         for ordinal in 0..self.equipment.count {
             let address = self
                 .equipment
-                .element(ordinal, crate::equipment_entry::STRIDE)
+                .element(ordinal, engine_native_parts::equipment_entry::STRIDE)
                 .ok_or("operation equipment entry address overflow")?;
-            let entry = crate::equipment_entry::read(memory, base, address, ordinal)?;
+            let entry = engine_native_parts::equipment_entry::read(memory, base, address, ordinal)?;
             let equipment = entry
                 .variant_pointer
-                .checked_add(crate::cequipment_variant::DEFINITION)
+                .checked_add(engine_native::cequipment_variant::DEFINITION)
                 .and_then(|address| read::<u64>(memory, address))
                 .and_then(|pointer| usize::try_from(pointer).ok())
                 .filter(|&pointer| pointer != 0)
@@ -214,9 +212,9 @@ impl Instance {
         for ordinal in 0..self.equipment_totals.count {
             let address = self
                 .equipment_totals
-                .element(ordinal, crate::allocation_equipment_row::STRIDE)
+                .element(ordinal, engine_native_parts::allocation_equipment_row::STRIDE)
                 .ok_or("operation equipment total address overflow")?;
-            let total = crate::allocation_equipment_row::read(memory, base, address, ordinal)?;
+            let total = engine_native_parts::allocation_equipment_row::read(memory, base, address, ordinal)?;
             each(Part::EquipmentTotal(EquipmentTotal {
                 archetype: archetype_token(memory, base, total.archetype_pointer)?,
                 amount: total.amount_raw,

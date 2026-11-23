@@ -408,10 +408,10 @@ fn owned_split_keeps_native_id_alias_cached_and_routes_only_payload_to_source() 
         base: 0,
         bytes: &bytes,
     };
-    let mut cache = crate::country_memory::Cache::with_capacity(1024);
+    let mut cache = engine_native_intelligence::country_memory::Cache::with_capacity(1024);
     assert_eq!(
         cache.prepare(&seed, 0, GS).seed_status(),
-        crate::country_memory::SeedStatus::Ready
+        engine_native_intelligence::country_memory::SeedStatus::Ready
     );
     let alias = LINKS + 7 * 4;
     let country_source = ObservedMemory {
@@ -476,7 +476,7 @@ fn owned_split_preserves_alias_and_payload_first_faults_with_or_without_snapshot
         bytes: &bytes,
     };
     for cells in [0, 1024] {
-        let mut cache = crate::country_memory::Cache::with_capacity(cells);
+        let mut cache = engine_native_intelligence::country_memory::Cache::with_capacity(cells);
         cache.prepare(&seed, 0, GS);
         for blocked in [
             LINKS + 7 * 4..LINKS + 7 * 4 + 4,

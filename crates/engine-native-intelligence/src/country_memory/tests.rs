@@ -1,7 +1,8 @@
 use std::cell::Cell;
 
 use super::*;
-use crate::{cgame_state, read, walk::Outcome};
+use engine_native::cgame_state;
+use engine_native_memory::{read, walk::Outcome};
 
 #[test]
 fn reserved_observation_does_not_preauthenticate_unrelated_positive_objects() {
@@ -504,7 +505,7 @@ impl Synthetic {
                 self.put(address, &2_u32.to_le_bytes());
             }
         }
-        crate::memory::SliceMemory {
+        engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &self.bytes.borrow(),
         }
@@ -513,13 +514,13 @@ impl Synthetic {
 }
 
 impl Memory for Synthetic {
-    fn read_scalar<T: crate::memory::Raw>(&self, address: usize) -> Option<T> {
+    fn read_scalar<T: engine_native_memory::memory::Raw>(&self, address: usize) -> Option<T> {
         self.scalar_reads.set(self.scalar_reads.get() + 1);
         let mut bytes = vec![0; size_of::<T>()];
         if !self.copy(address, &mut bytes) {
             return None;
         }
-        crate::memory::scalar_from_bytes(&bytes)
+        engine_native_memory::memory::scalar_from_bytes(&bytes)
     }
 
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
@@ -871,8 +872,8 @@ impl<M: Memory> Memory for ByteOnly<'_, M> {
 
     fn copy_records(
         &self,
-        sources: crate::memory::RecordSources<'_>,
-        layout: &crate::memory::RecordLayout<'_>,
+        sources: engine_native_memory::memory::RecordSources<'_>,
+        layout: &engine_native_memory::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         self.0.copy_records(sources, layout, destination)
@@ -1202,11 +1203,11 @@ fn authenticated_roster_keeps_typed_rows_from_any_starting_storage() {
         let mut actual = vec![ccountry::VolunteerHostRow::default(); capacity];
         let mut expected = actual.clone();
         source.observations.borrow_mut().clear();
-        let actual_outcome = ccountry::walk_volunteer_hosts_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut actual));
+        let actual_outcome = ccountry::walk_volunteer_hosts_buffer(&memory, 0, 0x1000, engine_native_memory::walk::Buffer::Growing(&mut actual));
         let actual_reads = source.observations.borrow().clone();
         source.observations.borrow_mut().clear();
         let expected_outcome =
-            ccountry::walk_volunteer_hosts_buffer(&ByteOnly(&memory), 0, 0x1000, crate::walk::Buffer::Growing(&mut expected));
+            ccountry::walk_volunteer_hosts_buffer(&ByteOnly(&memory), 0, 0x1000, engine_native_memory::walk::Buffer::Growing(&mut expected));
         assert_eq!(actual_outcome, expected_outcome);
         assert_eq!(actual, expected);
         assert_eq!(&*source.observations.borrow(), &actual_reads);

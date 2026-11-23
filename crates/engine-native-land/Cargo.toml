@@ -14,6 +14,7 @@ test-support = ["engine-native/test-support", "engine-native-memory/test-support
 alloc-fault-injection = ["engine-allocation/alloc-fault-injection"]
 
 [dependencies]
+engine-native-intelligence.workspace = true
 engine-allocation.workspace = true
 engine-executable.workspace = true
 engine-native.workspace = true
@@ -22,6 +23,7 @@ engine-native-parts.workspace = true
 engine-sites.workspace = true
 
 [dev-dependencies]
+engine-native-intelligence = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["test-support"] }
 engine-native-memory = { workspace = true, features = ["test-support"] }

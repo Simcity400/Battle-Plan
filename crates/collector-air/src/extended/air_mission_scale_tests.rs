@@ -721,9 +721,9 @@ fn the_mission_joins_take_country_bytes_from_the_hours_snapshot() {
     let scale = Scale::new();
     let game_state = scale.world.game_state;
     let mut storage = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(1 << 18).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(1 << 18).unwrap(),
     ).unwrap();
-    let snapshot = engine_native::country_memory::Cache::prepare_shared(
+    let snapshot = engine_native_intelligence::country_memory::Cache::prepare_shared(
         &mut storage,
         &scale.world,
         BASE,

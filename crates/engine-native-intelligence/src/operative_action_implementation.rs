@@ -42,7 +42,7 @@ impl Vtables {
 
     pub(crate) fn country(
         &mut self,
-        memory: &impl crate::Memory,
+        memory: &impl engine_native_memory::Memory,
         mission: usize,
         variant: u32,
     ) -> Result<u32, &'static str> {
@@ -52,7 +52,7 @@ impl Vtables {
 
     pub(crate) fn targets(
         &mut self,
-        memory: &impl crate::Memory,
+        memory: &impl engine_native_memory::Memory,
         mission: usize,
         variant: u32,
     ) -> Result<Targets, &'static str> {
@@ -61,7 +61,7 @@ impl Vtables {
         let state = if crate::operative_action::targets_state(variant) {
             let raw = pointer
                 .checked_add(TARGET_POINTER)
-                .and_then(|at| crate::read::<u64>(memory, at))
+                .and_then(|at| engine_native_memory::read::<u64>(memory, at))
                 .ok_or("operative mission target state unreadable")?;
             Some(usize::try_from(raw).map_err(|_| "operative mission target state overflow")?)
                 .filter(|&state| state != 0)
@@ -73,7 +73,7 @@ impl Vtables {
 
     fn implementation(
         &mut self,
-        memory: &impl crate::Memory,
+        memory: &impl engine_native_memory::Memory,
         mission: usize,
         variant: u32,
     ) -> Result<usize, &'static str> {
@@ -84,13 +84,13 @@ impl Vtables {
             .ok_or("unsupported operative mission variant")?;
         let pointer = mission
             .checked_add(crate::operative_action::IMPLEMENTATION)
-            .and_then(|at| crate::read::<u64>(memory, at))
+            .and_then(|at| engine_native_memory::read::<u64>(memory, at))
             .and_then(|raw| usize::try_from(raw).ok())
             .filter(|&at| at != 0)
             .ok_or("operative mission implementation unreadable or null")?;
         let expected = engine_sites::at(self.base, VTABLE_RVAS[index])
             .ok_or("operative mission vtable withheld")?;
-        if crate::read::<u64>(memory, pointer) != Some(expected as u64) {
+        if engine_native_memory::read::<u64>(memory, pointer) != Some(expected as u64) {
             return Err("unsupported operative mission implementation vtable");
         }
         let authentication = self.authenticated[index].get_or_insert_with(|| {
@@ -99,7 +99,7 @@ impl Vtables {
                 .ok_or("operative mission getter slot overflow")?;
             let getter = engine_sites::at(self.base, COUNTRY_GETTER_RVA)
                 .ok_or("operative mission getter withheld")?;
-            if crate::read::<u64>(memory, slot) != Some(getter as u64) {
+            if engine_native_memory::read::<u64>(memory, slot) != Some(getter as u64) {
                 return Err("unsupported operative mission country getter");
             }
             Ok(())
@@ -109,9 +109,9 @@ impl Vtables {
     }
 }
 
-fn target_country(memory: &impl crate::Memory, implementation: usize) -> Result<u32, &'static str> {
+fn target_country(memory: &impl engine_native_memory::Memory, implementation: usize) -> Result<u32, &'static str> {
     implementation
         .checked_add(TARGET_COUNTRY)
-        .and_then(|at| crate::read(memory, at))
+        .and_then(|at| engine_native_memory::read(memory, at))
         .ok_or("operative mission target country unreadable")
 }

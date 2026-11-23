@@ -14,7 +14,7 @@ pub struct Request {
     pub visitor: state_flags::Captured,
     pub inputs: Inputs,
     pub store: Option<Box<StateStore>>,
-    pub countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
+    pub countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
     pub occupation_store: Option<Box<OccupationStore>>,
 }
 

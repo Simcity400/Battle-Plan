@@ -577,10 +577,9 @@ fn diplomacy_at(slot: usize) -> usize {
 }
 
 fn transport_fixture(enemies: u32) -> (Sparse, Vec<TransportTerm>) {
+    use engine_native_intelligence::{ccountry_intel, country_intel_row};
     use engine_native::{
-        ccountry_intel,
         cdiplomacy_status,
-        country_intel_row,
         cstrategic_navy,
         cstrategic_navy_manager,
         cweather_manager,

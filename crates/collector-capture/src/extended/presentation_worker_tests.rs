@@ -17,7 +17,7 @@ fn map_presentation_reads_only_the_movement_full_reads() {
     };
     let memory = engine_native::read_counts::CountedMemory::new(populated.world.live());
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     let mut runs = Vec::new();
@@ -108,7 +108,7 @@ fn a_failed_presentation_job_publishes_no_presentation_table() {
     };
     let memory = populated.world.live();
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     for (status_failure, movement_failure, speed_failure) in [
@@ -221,7 +221,7 @@ fn failed_presentation_passes_keep_the_merged_failure_order() {
         let mut request = crate::acquisition_jobs::PresentationRequest {
             dispatch: Default::default(),
             countries: engine_allocation::shared(
-                engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+                engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
             )
             .unwrap(),
             context,

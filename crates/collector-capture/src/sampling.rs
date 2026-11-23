@@ -28,11 +28,21 @@ use engine_native::memory::CountedMemory;
 #[cfg(test)]
 use engine_native::memory::ReadCounts;
 use engine_native::{
-    Memory, capture_text::Owned, carmy, ccountry, cfaction, cfaction_system, cgame_state,
-    cgame_state::Clock, country_memory::Cache, country_memory::SeedStatus, cprovince, cstate,
-    cwar_relation, memory::LiveMemory, save_allocation_counters,
-    save_allocation_counters::AllocationCounters, walk::Outcome,
+    Memory,
+    capture_text::Owned,
+    carmy,
+    ccountry,
+    cfaction,
+    cfaction_system,
+    cgame_state::{self, Clock},
+    cprovince,
+    cstate,
+    cwar_relation,
+    memory::LiveMemory,
+    save_allocation_counters::{self, AllocationCounters},
+    walk::Outcome,
 };
+use engine_native_intelligence::country_memory::{Cache, SeedStatus};
 use replay_data::rows::TABLE_COUNT;
 use replay_data::rows::TableId;
 use std::{

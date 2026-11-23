@@ -1247,7 +1247,8 @@ impl Hooks {
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests {
     use super::*;
-    use engine_native::{ccountry, cgame_state, coperation, coperation_instance as operation};
+    use engine_native::{ccountry, cgame_state};
+    use engine_native_intelligence::{coperation, coperation_instance as operation};
     use std::cell::RefCell;
 
     static TEST: Mutex<()> = Mutex::new(());

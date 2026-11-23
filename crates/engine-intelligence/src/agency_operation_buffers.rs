@@ -6,8 +6,12 @@ use crate::{
     read,
     walk::{Buffer, Outcome},
 };
+use engine_native_intelligence::coperation;
 use engine_native::{
-    coperation, cprovince, creference_registry, cstate, modifier_definition::NamedKey,
+    cprovince,
+    creference_registry,
+    cstate,
+    modifier_definition::NamedKey,
 };
 
 pub const BUFFER_RVA: Rva = Rva(0x033e_b190);
@@ -253,7 +257,8 @@ fn map_extent(mask: u32, overflow: u8) -> Result<usize, &'static str> {
 }
 
 fn offer_duration<M: Memory>(memory: &M, base: usize, countries: &ccountry::Reader<'_, M>, owner: u32, definition: usize, token: u32, target: u32, speed_key: u32) -> Result<i32, &'static str> {
-    use engine_native::{cintelligence_agency, modifier_accumulator};
+    use engine_native_intelligence::cintelligence_agency;
+    use engine_native::modifier_accumulator;
     let owner = countries.resolve(owner)?;
     let speed = modifier_accumulator::lookup_effective_at(memory, base, owner.pointer.checked_add(ccountry::MODIFIER_ACCUMULATOR).ok_or("operation owner accumulator overflow")?, speed_key)?.effective;
     let multiplier = if word::<u8>(memory, definition, HAS_TIME_MULTIPLIER)? != 0 {

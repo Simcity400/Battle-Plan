@@ -457,7 +457,7 @@ fn batched_factories_equal_the_serial_walk() {
         bytes: &bytes,
     };
     assert_eq!(serial(&source, count), Outcome::Rows { len: count });
-    let mut cache = crate::country_memory::Cache::with_capacity(1 << 16);
+    let mut cache = engine_native_intelligence::country_memory::Cache::with_capacity(1 << 16);
     let view = cache.prepare(&source, 0, MEMORY_BASE);
     let counted = Counted {
         memory: SliceMemory {

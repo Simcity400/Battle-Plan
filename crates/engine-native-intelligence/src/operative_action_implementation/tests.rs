@@ -6,7 +6,7 @@ struct Fixture {
     getter_reads: Cell<usize>,
 }
 
-impl crate::Memory for Fixture {
+impl engine_native_memory::Memory for Fixture {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         if address == VTABLE_RVAS[0].0 + COUNTRY_GETTER_SLOT {
             self.getter_reads.set(self.getter_reads.get() + 1);

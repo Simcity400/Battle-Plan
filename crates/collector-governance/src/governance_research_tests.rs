@@ -946,12 +946,12 @@ fn research_quiet_hours_bench() {
         for (label, stated) in [("all owning a state", 1), ("1/6 owning a state", 6)] {
             let world = World::scaled(countries, stated);
             run(&world, countries, label);
-            let mut cache = engine_native::country_memory::Cache::try_with_capacity(
-                engine_native::country_memory::Cache::cells_for_countries(countries + 1, 64),
+            let mut cache = engine_native_intelligence::country_memory::Cache::try_with_capacity(
+                engine_native_intelligence::country_memory::Cache::cells_for_countries(countries + 1, 64),
             )
             .unwrap();
             let seed = cache.prepare(&world, BASE, GAME_STATE).seed_status();
-            assert_eq!(seed, engine_native::country_memory::SeedStatus::Ready);
+            assert_eq!(seed, engine_native_intelligence::country_memory::SeedStatus::Ready);
             let roster = cache.roster_view(&world);
             assert!(
                 engine_native::Memory::authenticated_countries(&roster, BASE, GAME_STATE).is_some(),

@@ -1,23 +1,19 @@
 pub use engine_native_parts::coperative_leader_layout::{CODENAME, VTABLE_RVA};
 
 use engine_sites::Rva;
+use engine_native_memory::{Memory, cpdx_array::Array, memory::Raw, read, walk::Outcome};
+use engine_native::{ccharacter::Literal, ccountry, crelation::subject::{Name, NameWalk}};
 use crate::{
-    Memory,
-    ccharacter::Literal,
-    ccountry,
     cintelligence_agency,
     coperation_instance,
     coperative_recruitment,
-    cpdx_array::Array,
-    creference_registry,
-    crelation::subject::{Name, NameWalk},
-    cunit_leader_skill,
-    memory::Raw,
-    null_unit_leader_skill,
     operative_action,
     operative_action_implementation,
-    read,
-    walk::Outcome,
+};
+use engine_native_parts::{
+    creference_registry,
+    cunit_leader_skill,
+    null_unit_leader_skill,
 };
 
 pub const IDENTITY: usize = 0x08;
@@ -115,8 +111,8 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(names),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(names),
     )
 }
 
@@ -125,8 +121,8 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Count,
-        crate::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
     )
 }
 
@@ -134,8 +130,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut names: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut names: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> Walk {
     let mut failed_membership = None;
     let mut refused_rows = 0_u32;
@@ -272,7 +268,7 @@ pub fn walk_buffer(
             required_bytes,
         })
     })();
-    let names = result.unwrap_or_else(crate::crelation::subject::unavailable);
+    let names = result.unwrap_or_else(engine_native::crelation::subject::unavailable);
     Walk {
         outcome: names.outcome,
         bytes_len: names.bytes_len,
@@ -414,7 +410,8 @@ fn field<T: Raw>(memory: &impl Memory, pointer: usize, offset: usize) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_state, memory::SliceMemory};
+    use engine_native::cgame_state;
+    use engine_native_memory::memory::SliceMemory;
     fn walk(memory: &impl Memory, base: usize, state: usize, rows: &mut Vec<Row>) -> Outcome {
         super::walk(memory, base, state, rows, &mut Vec::new()).outcome
     }
@@ -423,8 +420,8 @@ mod tests {
             memory,
             base,
             state,
-            crate::walk::Buffer::Count,
-            crate::walk::Buffer::Count,
+            engine_native_memory::walk::Buffer::Count,
+            engine_native_memory::walk::Buffer::Count,
         )
         .outcome
     }
@@ -904,7 +901,7 @@ mod tests {
 
     #[test]
     fn own_operation_reference_is_independent_of_reservation_and_resolved_for_assignment_four() {
-        use crate::reference_bucket as bucket;
+        use engine_native_parts::reference_bucket as bucket;
         let mut bytes = fixture();
         bytes.resize(creference_registry::HIGH_ROOT_RVA.0 + 8, 0);
         let handle = (99_u64 << 32) | 4713;

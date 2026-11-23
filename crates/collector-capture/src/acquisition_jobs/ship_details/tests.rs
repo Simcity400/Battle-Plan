@@ -24,7 +24,7 @@ fn request(ships: usize) -> ShipModelsRequest {
     captured.finish_sources(Outcome::Rows { len: ships });
     ShipModelsRequest {
         countries: engine_allocation::shared(
-            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+            engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
         )
         .unwrap(),
         context: ship_models::CaptureContext::new(11),

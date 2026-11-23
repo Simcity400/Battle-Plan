@@ -90,11 +90,11 @@ pub fn upgrades(rows: &[&AgencyUpgradeLevelRow], tokens: &HashMap<u32, String>, 
     let mut items: Vec<(UpgradeItem, bool)> = rows
         .iter()
         .map(|row| {
-            let authenticated = row.identity_status == engine_native::agency_upgrade_levels::AUTHENTICATED;
+            let authenticated = row.identity_status == engine_native_intelligence::agency_upgrade_levels::AUTHENTICATED;
             let branch = row.branch_token.and_then(|token| tokens.get(&token).cloned());
             let token = row.upgrade_token.and_then(|token| tokens.get(&token).cloned());
             let name = match (authenticated, content, branch.as_deref(), token.as_deref()) {
-                (false, ..) => Err(format!("Acquired upgrade identity refused: {}", engine_native::agency_upgrade_levels::status_name(row.identity_status))),
+                (false, ..) => Err(format!("Acquired upgrade identity refused: {}", engine_native_intelligence::agency_upgrade_levels::status_name(row.identity_status))),
                 (true, Some(content), Some(branch), Some(token)) => content.upgrade_name(branch, token),
                 (true, None, ..) => Err("Acquired upgrade content unavailable".to_owned()),
                 _ => Err("Acquired upgrade branch or definition token not recorded".to_owned()),

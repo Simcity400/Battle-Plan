@@ -118,7 +118,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_countries_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         rows: &mut Vec<engine_native::ccountry::Row>,
@@ -150,7 +150,7 @@ impl Captured {
 
     pub(crate) fn take_templates_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         clock: (i32, bool),
@@ -175,7 +175,7 @@ impl Captured {
 
     pub(crate) fn take_ordinary_parts(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -204,7 +204,7 @@ impl Captured {
 
     pub(crate) fn take_ordinary_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -285,7 +285,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn capture_ordinary_inline(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         memory: &impl Memory,
         base: usize,
         state: usize,
@@ -345,7 +345,7 @@ impl Captured {
 
     pub(crate) fn take_slow_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -414,7 +414,7 @@ impl Captured {
 
     pub(crate) fn take_stability_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -472,7 +472,7 @@ impl Captured {
 
     pub(crate) fn take_industrial_organisations_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -506,7 +506,7 @@ impl Captured {
 
     pub(crate) fn take_production_daily_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -563,7 +563,7 @@ impl Captured {
     pub(crate) fn take_production_modifier_part(
         &mut self,
         part: usize,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -621,7 +621,7 @@ impl Captured {
 
     pub(crate) fn take_war_overview_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -664,7 +664,7 @@ impl Captured {
 
     pub(crate) fn take_raid_targets_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -714,7 +714,7 @@ impl Captured {
 
     pub(crate) fn take_raid_state_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -780,7 +780,7 @@ impl Captured {
 
     pub(crate) fn take_raid_launch_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -871,7 +871,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_late_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         orders: &mut Orders,
         naval_raw: bool,
         base: usize,
@@ -953,7 +953,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_scores_rails_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -980,7 +980,7 @@ impl Captured {
     #[allow(clippy::type_complexity)]
     pub(crate) fn take_air_supply_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
     ) -> crate::acquisition_jobs::AirSupplyRequest {
@@ -1042,7 +1042,7 @@ impl Captured {
         hour: i32,
         force_full: bool,
         project_fingerprints: Box<collector_certificates::slicing::SliceFingerprints>,
-        countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
+        countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
     ) -> crate::acquisition_jobs::GatedRequest {
         self.gated_ticks = None;
         let mut packs = self.gated_spare.take().expect("gated spare present");
@@ -2445,7 +2445,7 @@ pub(crate) struct FinalInputsReport {
 }
 
 pub(crate) struct FinalInputsRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     base: usize,
     state: usize,
     hour: i32,
@@ -2586,7 +2586,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_final_inputs_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,

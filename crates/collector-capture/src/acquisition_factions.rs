@@ -1,6 +1,7 @@
 use collector_primitives::clock::qpc;
 use collector_states::acquisition_gather::{Report as GatherReport, Request as GatherRequest};
-use engine_native::{Memory, cfaction, cfaction_system, country_memory::Cache, walk::Outcome};
+use engine_native::{Memory, cfaction, cfaction_system, walk::Outcome};
+use engine_native_intelligence::country_memory::Cache;
 
 #[derive(Default)]
 pub(crate) struct Names {

@@ -2,7 +2,8 @@
 use engine_allocation::SharedBox;
 use std::cell::RefCell;
 
-use crate::{Memory, ccountry, cpdx_array::Array};
+use engine_native_memory::{Memory, cpdx_array::Array};
+use engine_native::ccountry;
 
 const MAX_BYTES: usize = 32;
 #[derive(Clone, Copy)]
@@ -88,22 +89,22 @@ impl Cache {
         } else {
             cells
                 .checked_next_power_of_two()
-                .ok_or_else(crate::allocation::oom)?
+                .ok_or_else(engine_allocation::oom)?
         };
         let words = cells.div_ceil(u64::BITS as usize);
         Ok(Self {
-            entries: crate::allocation::boxed_slice(crate::allocation::filled(
+            entries: engine_allocation::boxed_slice(engine_allocation::filled(
                 cells,
                 Entry::EMPTY,
             )?)?,
-            filter: crate::allocation::boxed_slice(crate::allocation::filled(words, 0)?)?,
-            front_filter: crate::allocation::boxed_slice(crate::allocation::filled(words, 0)?)?,
+            filter: engine_allocation::boxed_slice(engine_allocation::filled(words, 0)?)?,
+            front_filter: engine_allocation::boxed_slice(engine_allocation::filled(words, 0)?)?,
             filter_mask: (words * u64::BITS as usize).saturating_sub(1),
             lengths: 0,
             len: 0,
             observed_reads: 0,
             status: SeedStatus::Capacity { required_cells: 1 },
-            roster: crate::allocation::boxed_slice(crate::allocation::filled(cells, None)?)?,
+            roster: engine_allocation::boxed_slice(engine_allocation::filled(cells, None)?)?,
             roster_len: 0,
             roster_base: 0,
             roster_game_state: 0,
@@ -172,7 +173,7 @@ impl Cache {
             };
             (|| {
                 let country_array = game_state
-                    .checked_add(crate::cgame_state::COUNTRIES)
+                    .checked_add(engine_native::cgame_state::COUNTRIES)
                     .and_then(|address| Array::read(&recording, address, 8))
                     .ok_or("country array unreadable or invalid");
                 let root = match country_array {
@@ -191,7 +192,7 @@ impl Cache {
                 }
                 let country_array = country_array?;
                 let links = game_state
-                    .checked_add(crate::cgame_state::COUNTRY_LINKS)
+                    .checked_add(engine_native::cgame_state::COUNTRY_LINKS)
                     .and_then(|address| Array::read(&recording, address, 4))
                     .ok_or("country links unreadable or invalid")?;
                 let countries = ccountry::Reader::from_arrays(
@@ -367,11 +368,11 @@ impl<M: Memory> Memory for RecordingMemory<'_, M> {
             .flatten()
     }
 
-    fn read_scalar<T: crate::memory::Raw>(&self, address: usize) -> Option<T> {
+    fn read_scalar<T: engine_native_memory::memory::Raw>(&self, address: usize) -> Option<T> {
         let value = self.source.read_scalar::<T>(address);
         let mut cache = self.cache.borrow_mut();
         if let Some(value) = value {
-            cache.observe(address, crate::memory::scalar_bytes(&value));
+            cache.observe(address, engine_native_memory::memory::scalar_bytes(&value));
         } else {
             cache.status = SeedStatus::Unavailable {
                 reason: "country authentication source unreadable during census",
@@ -461,9 +462,9 @@ impl<M: Memory, const CACHED_BYTES: bool, const ROSTER: bool> Memory
     }
 
     #[inline]
-    fn read_scalar<T: crate::memory::Raw>(&self, address: usize) -> Option<T> {
+    fn read_scalar<T: engine_native_memory::memory::Raw>(&self, address: usize) -> Option<T> {
         if CACHED_BYTES && let Some(entry) = self.cache.find(address, size_of::<T>()) {
-            crate::memory::scalar_from_bytes(&entry.bytes[..entry.len])
+            engine_native_memory::memory::scalar_from_bytes(&entry.bytes[..entry.len])
         } else {
             self.source.read_scalar(address)
         }
@@ -492,8 +493,8 @@ impl<M: Memory, const CACHED_BYTES: bool, const ROSTER: bool> Memory
     #[inline(always)]
     fn copy_records(
         &self,
-        sources: crate::memory::RecordSources<'_>,
-        layout: &crate::memory::RecordLayout<'_>,
+        sources: engine_native_memory::memory::RecordSources<'_>,
+        layout: &engine_native_memory::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         self.source.copy_records(sources, layout, destination)
@@ -564,7 +565,7 @@ impl<M: Memory, const CACHED_BYTES: bool, const ROSTER: bool> Memory
                 if address == 0 || address.checked_add(destination.len()).is_none() {
                     break;
                 }
-                crate::prefetch::span(address, destination.len());
+                engine_native_memory::prefetch::span(address, destination.len());
             }
             self.copy_scattered(addresses, destinations)
         } else {

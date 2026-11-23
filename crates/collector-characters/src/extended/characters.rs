@@ -23,11 +23,28 @@ use collector_primitives::{
 use collector_projection::table_conversion::{table, unavailable};
 use engine_land_inputs::active_ability_record;
 use engine_native::{
-    Memory, cadvisor, carmy_leader, ccharacter, ccharacter_manager, ccharacter_template, ccountry,
-    ccountry_leader, cgame_state, character_advisor_node, character_leader_node, cnavy_leader,
-    coperative_leader, cpdx_array::Array, cunit_leader, cunit_leader_skill, cunit_leader_trait,
-    msvc_string, msvc_tree_node, read, walk::Outcome,
+    Memory,
+    cadvisor,
+    carmy_leader,
+    ccharacter,
+    ccharacter_manager,
+    ccharacter_template,
+    ccountry,
+    ccountry_leader,
+    cgame_state,
+    character_advisor_node,
+    character_leader_node,
+    cnavy_leader,
+    cpdx_array::Array,
+    cunit_leader,
+    cunit_leader_skill,
+    cunit_leader_trait,
+    msvc_string,
+    msvc_tree_node,
+    read,
+    walk::Outcome,
 };
+use engine_native_intelligence::coperative_leader;
 use replay_data::{
     BranchId, rows::ActiveAbilityRow, rows::AdvisorRoleRow, rows::CharacterRow,
     rows::CountryLeaderRoleRow, rows::TableId, rows::TableRows, rows::TableSchema,

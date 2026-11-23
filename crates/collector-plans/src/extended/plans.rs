@@ -1529,10 +1529,10 @@ pub mod tests {
                 calls: Cell::new(0),
             };
             let mut storage = engine_allocation::shared(
-                engine_native::country_memory::Cache::try_with_capacity(64).unwrap(),
+                engine_native_intelligence::country_memory::Cache::try_with_capacity(64).unwrap(),
             )
             .unwrap();
-            let countries = engine_native::country_memory::Cache::prepare_shared(
+            let countries = engine_native_intelligence::country_memory::Cache::prepare_shared(
                 &mut storage,
                 &memory,
                 kit::BASE,

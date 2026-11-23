@@ -1,7 +1,13 @@
 
-use crate::{
-    Memory, ccountry, country_intel_row, cpdx_array::Array, memory::read_slice, read, walk::Outcome,
+use engine_native_memory::{
+    Memory,
+    cpdx_array::Array,
+    memory::read_slice,
+    read,
+    walk::Outcome,
 };
+use engine_native::ccountry;
+use crate::country_intel_row;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029d_bb28);
@@ -60,7 +66,7 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
         scratch,
     )
 }
@@ -69,7 +75,7 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, country_intel_row::Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, country_intel_row::Row>,
     scratch: &mut [u8],
 ) -> Outcome {
     match ccountry::Reader::new(memory, base, game_state) {
@@ -89,7 +95,7 @@ fn walk_in_reader(
     memory: &impl Memory,
     base: usize,
     countries: &ccountry::Reader<'_, impl Memory>,
-    mut output: crate::walk::Buffer<'_, country_intel_row::Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, country_intel_row::Row>,
     scratch: &mut [u8],
     visit: &mut dyn FnMut(u32, usize, usize),
 ) -> Outcome {
@@ -181,7 +187,7 @@ pub fn walk_with_reserved(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
         scratch,
     )
 }
@@ -191,7 +197,7 @@ pub fn walk_with_reserved_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, country_intel_row::Row>,
+    output: engine_native_memory::walk::Buffer<'_, country_intel_row::Row>,
     scratch: &mut [u8],
 ) -> ReservedCapture {
     walk_with_reserved_visit(memory, base, game_state, output, scratch, &mut |_, _, _| {})
@@ -201,7 +207,7 @@ pub fn walk_with_reserved_visit(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, country_intel_row::Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, country_intel_row::Row>,
     scratch: &mut [u8],
     visit: &mut dyn FnMut(u32, usize, usize),
 ) -> ReservedCapture {
@@ -316,7 +322,7 @@ fn copy_rows(
     owner: u32,
     data: usize,
     count: u32,
-    mut output: crate::walk::Buffer<'_, country_intel_row::Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, country_intel_row::Row>,
     scratch: &mut [u8],
 ) -> Result<(usize, u32), &'static str> {
     let batch = scratch.len() / country_intel_row::STRIDE;
@@ -361,7 +367,8 @@ fn copy_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_state, memory::SliceMemory};
+    use engine_native::cgame_state;
+    use engine_native_memory::memory::SliceMemory;
 
     const BASE: usize = 0;
     const GS: usize = 0x1000;
@@ -455,7 +462,7 @@ mod tests {
             &memory(&bytes),
             BASE,
             GS,
-            crate::walk::Buffer::Growing(&mut output),
+            engine_native_memory::walk::Buffer::Growing(&mut output),
             &mut scratch,
             &mut |owner, pointer, _| roots.push((owner, pointer)),
         );
@@ -1080,7 +1087,7 @@ mod tests {
                     &view,
                     BASE,
                     &reader,
-                    crate::walk::Buffer::Growing(&mut rows),
+                    engine_native_memory::walk::Buffer::Growing(&mut rows),
                     &mut scratch,
                     &mut |_, _, _| {},
                 ),

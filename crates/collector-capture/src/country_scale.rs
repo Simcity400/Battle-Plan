@@ -4,7 +4,8 @@ use crate::extended;
 use crate::sampling;
 use collector_map_capture::map_capture::MapCapacities;
 use collector_primitives::country_slots::{raise, rows};
-use engine_native::{Memory, cgame_state, country_memory::Cache};
+use engine_native::{Memory, cgame_state};
+use engine_native_intelligence::country_memory::Cache;
 mod navies;
 pub mod source_demand;
 pub mod table_demand;
@@ -36,7 +37,7 @@ pub fn observe_country_intel(
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
-    let rows = engine_native::ccountry_intel::native_rows(memory, base, state)
+    let rows = engine_native_intelligence::ccountry_intel::native_rows(memory, base, state)
         .ok_or("country intel sizing census unreadable or invalid")?;
     Ok(Some(rows))
 }
@@ -535,9 +536,9 @@ pub fn observe_politics(
     let [active, retired] = engine_native::ccountry_characters::count_records(memory, base, state);
     let active_characters = demand(active)?;
     let retired_characters = demand(retired)?;
-    let agencies = engine_native::cintelligence_agency::count(memory, base, state);
+    let agencies = engine_native_intelligence::cintelligence_agency::count(memory, base, state);
     demand(agencies.outcome)?;
-    let operatives = engine_native::coperative_leader::count(memory, base, state);
+    let operatives = engine_native_intelligence::coperative_leader::count(memory, base, state);
     let operative_memberships = demand(operatives.outcome)?
         .checked_sub(operatives.refused_rows as usize)
         .ok_or("operative refusal count exceeds demand")?;
@@ -572,7 +573,7 @@ pub fn observe_politics(
             }
         },
     )?;
-    let upgrades = engine_native::agency_upgrade_levels::native_demand(memory, base, state)?;
+    let upgrades = engine_native_intelligence::agency_upgrade_levels::native_demand(memory, base, state)?;
     let operations = engine_intelligence::ccountry_operation_manager::demand(memory, base, state)?;
     let reserved_naming_bytes =
         engine_native::ccountry::read_country_naming_demand(memory, base, state);
@@ -606,7 +607,7 @@ pub fn observe_politics(
             memory, base, state,
         )?,
         effect_rosters: engine_native::ccountry::counter_effect_roster_demand(memory, base, state)?,
-        captured_operatives: engine_native::cintelligence_agency::captured_operative_demand(
+        captured_operatives: engine_native_intelligence::cintelligence_agency::captured_operative_demand(
             memory, base, state,
         )?,
         occupied_countries: engine_occupation::ccountry_occupation_status::occupied_demand(
@@ -1162,9 +1163,8 @@ mod tests {
         assert_eq!(demand_air_game_state(&loaded, 0), Ok(Some(0x1000)));
     }
 
-    use engine_native::{
-        ccountry, ccountry_intel, cgame_state as gs, country_intel_row, msvc_string, walk::Outcome,
-    };
+    use engine_native::{ccountry, cgame_state as gs, msvc_string, walk::Outcome};
+    use engine_native_intelligence::{ccountry_intel, country_intel_row};
 
     const COUNTRIES: usize = 5_000;
     const BASE: usize = 0x1_0000_0000;

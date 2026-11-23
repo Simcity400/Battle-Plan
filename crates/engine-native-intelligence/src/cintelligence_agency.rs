@@ -1,14 +1,20 @@
 
 use engine_sites::Rva;
-use crate::{
+use engine_native_memory::{
     Memory,
     batch_fallback::{Batch, Link},
-    ccountry::{self, Ahead},
     cpdx_array::Array,
-    memory::{Raw, RecordField, RecordLayout, RecordSources, packed_fields},
+    memory::{
+        Raw,
+        RecordField,
+        RecordLayout,
+        RecordSources,
+        packed_fields,
+    },
     read,
     walk::Outcome,
 };
+use engine_native::ccountry::{self, Ahead};
 
 pub const VTABLE_RVA: Rva = Rva(0x029f_e450);
 pub const RECRUITMENT: usize = 0x08;
@@ -37,15 +43,15 @@ pub struct Row {
     pub admission_ceiling: i32,
     pub unknown_f0: u32,
     pub created: u8,
-    pub name: crate::crelation::subject::Name,
+    pub name: engine_native::crelation::subject::Name,
 }
 
-pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> crate::crelation::subject::NameWalk {
-    walk_shared(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, |_, _| {})
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> engine_native::crelation::subject::NameWalk {
+    walk_shared(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count, |_, _| {})
 }
 
 pub struct UpgradeWalk {
-    pub agencies: crate::crelation::subject::NameWalk,
+    pub agencies: engine_native::crelation::subject::NameWalk,
     pub upgrades: crate::agency_upgrade_levels::Walk,
 }
 
@@ -62,9 +68,9 @@ pub fn walk_with_upgrades(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(names),
-        crate::walk::Buffer::Growing(upgrades),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(names),
+        engine_native_memory::walk::Buffer::Growing(upgrades),
         catalog,
     )
 }
@@ -73,9 +79,9 @@ pub fn walk_with_upgrades_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, Row>,
-    names: crate::walk::Buffer<'_, u8>,
-    upgrades: crate::walk::Buffer<'_, crate::agency_upgrade_levels::Row>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
+    names: engine_native_memory::walk::Buffer<'_, u8>,
+    upgrades: engine_native_memory::walk::Buffer<'_, crate::agency_upgrade_levels::Row>,
     catalog: &mut crate::agency_upgrade_levels::Catalog,
 ) -> UpgradeWalk {
     let mut capture = crate::agency_upgrade_levels::Capture::new_buffer(upgrades, catalog);
@@ -102,11 +108,11 @@ fn walk_shared(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut names: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut names: engine_native_memory::walk::Buffer<'_, u8>,
     mut each: impl FnMut(u32, usize),
-) -> crate::crelation::subject::NameWalk {
-    use crate::{ccharacter::Literal, crelation::subject::{Name, NameWalk}};
+) -> engine_native::crelation::subject::NameWalk {
+    use engine_native::{ccharacter::Literal, crelation::subject::{Name, NameWalk}};
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let (mut len, mut bytes_len, mut required_bytes) = (0_usize, 0_usize, 0_usize);
@@ -188,7 +194,7 @@ fn walk_shared(
             required_bytes,
         })
     })();
-    result.unwrap_or_else(crate::crelation::subject::unavailable)
+    result.unwrap_or_else(engine_native::crelation::subject::unavailable)
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -214,7 +220,7 @@ pub fn captured_operative_demand(
 }
 
 pub fn count_captured_operatives(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-    walk_captured_operatives_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+    walk_captured_operatives_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk_captured_operatives(
@@ -227,7 +233,7 @@ pub fn walk_captured_operatives(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -235,11 +241,10 @@ pub fn walk_captured_operatives_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, CapturedOperativeRow>,
+    mut output: engine_native_memory::walk::Buffer<'_, CapturedOperativeRow>,
 ) -> Outcome {
-    use crate::{
-        ccaptured_operative_reference as captured, coperative_leader, creference_registry,
-    };
+    use crate::{ccaptured_operative_reference as captured, coperative_leader};
+    use engine_native_parts::creference_registry;
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let (mut len, mut unread_rows) = (0_usize, 0_u32);
@@ -330,7 +335,7 @@ fn root_block(
         return Ok(None);
     }
     if !memory.copy(pointer, block) {
-        crate::batch_fallback::record(Batch::IntelligenceAgencies);
+        engine_native_memory::batch_fallback::record(Batch::IntelligenceAgencies);
         return Ok(authenticate(memory, base, country, pointer)?.map(|pointer| (pointer, false)));
     }
     let expected = engine_sites::at(base, VTABLE_RVA)
@@ -477,9 +482,9 @@ mod baseline;
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
-    use crate::{
-        ccountry::synthetic::World, ccountry_decryption_state as state, ccryptology, msvc_string,
-    };
+    use engine_native::ccountry::synthetic::World;
+    use crate::{ccountry_decryption_state as state, ccryptology};
+    use engine_native_memory::msvc_string;
 
     pub(crate) trait Image {
         fn alloc(&mut self, len: usize) -> usize;
@@ -508,15 +513,15 @@ pub(crate) mod test_support {
     }
 
     #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
-    impl Image for crate::crelation::status::bench::Arena {
+    impl Image for engine_native::crelation::status::bench::Arena {
         fn alloc(&mut self, len: usize) -> usize {
-            crate::crelation::status::bench::Arena::alloc(self, len)
+            engine_native::crelation::status::bench::Arena::alloc(self, len)
         }
         fn u64(&mut self, address: usize, value: u64) {
-            crate::crelation::status::bench::Arena::u64(self, address, value);
+            engine_native::crelation::status::bench::Arena::u64(self, address, value);
         }
         fn u32(&mut self, address: usize, value: u32) {
-            crate::crelation::status::bench::Arena::u32(self, address, value);
+            engine_native::crelation::status::bench::Arena::u32(self, address, value);
         }
         fn array(&mut self, header: usize, data: usize, count: u32) {
             self.vector(header, data, count);
@@ -571,8 +576,8 @@ pub(crate) mod test_support {
     pub(crate) fn intel_arena(
         countries: usize,
         states: u32,
-    ) -> (crate::crelation::status::bench::Arena, usize) {
-        use crate::crelation::status::bench::{Arena, countries as census};
+    ) -> (engine_native::crelation::status::bench::Arena, usize) {
+        use engine_native::crelation::status::bench::{Arena, countries as census};
         let object = ccountry::INTELLIGENCE_AGENCY + 8;
         let per_country = 12 + object + 16 + 0x160 + 0x40 + states as usize * state::STRIDE + 48;
         let mut arena = Arena::new(0x10_0000 + (countries + 1) * per_country);
@@ -585,22 +590,23 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_state, memory::SliceMemory};
+    use engine_native::cgame_state;
+    use engine_native_memory::memory::SliceMemory;
 
-    fn agency(w: &crate::ccountry::synthetic::World, slot: u32) -> usize {
+    fn agency(w: &engine_native::ccountry::synthetic::World, slot: u32) -> usize {
         read::<u64>(&w.memory(), w.object(slot) + ccountry::INTELLIGENCE_AGENCY).unwrap() as usize
     }
 
     fn both(
         memory: &impl Memory,
         serial_memory: &impl Memory,
-        w: &crate::ccountry::synthetic::World,
+        w: &engine_native::ccountry::synthetic::World,
         rows: usize,
         names: usize,
-    ) -> [(crate::crelation::subject::NameWalk, Vec<Row>, Vec<u8>); 2] {
+    ) -> [(engine_native::crelation::subject::NameWalk, Vec<Row>, Vec<u8>); 2] {
         let mut walks = [(); 2].map(|_| (vec![Row::default(); rows], vec![0; names]));
         let [(new_rows, new_names), (old_rows, old_names)] = &mut walks;
-        let new = super::walk_shared(memory, 0, w.game_state(), crate::walk::Buffer::Growing(new_rows), crate::walk::Buffer::Growing(new_names), |_, _| {});
+        let new = super::walk_shared(memory, 0, w.game_state(), engine_native_memory::walk::Buffer::Growing(new_rows), engine_native_memory::walk::Buffer::Growing(new_names), |_, _| {});
         let old = baseline::walk(serial_memory, 0, w.game_state(), old_rows, old_names);
         let [(new_rows, new_names), (old_rows, old_names)] = walks;
         [(new, new_rows, new_names), (old, old_rows, old_names)]
@@ -608,14 +614,14 @@ mod tests {
 
     #[test]
     fn batched_agencies_match_the_serial_walk() {
-        use crate::memory::{CountedMemory, ReadCounts};
+        use engine_native_memory::memory::{CountedMemory, ReadCounts};
         const COUNT: u32 = 130;
         let w = test_support::intel_world(COUNT, 2);
         let memory = CountedMemory::new(w.memory());
         let prior = ReadCounts::take_current();
         let mut rows = vec![Row::default(); COUNT as usize];
         let mut names = vec![0; COUNT as usize * 6];
-        let new = super::walk_shared(&memory, 0, w.game_state(), crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut names), |_, _| {});
+        let new = super::walk_shared(&memory, 0, w.game_state(), engine_native_memory::walk::Buffer::Growing(&mut rows), engine_native_memory::walk::Buffer::Growing(&mut names), |_, _| {});
         let new_reads = ReadCounts::take_current();
         let mut old_rows = vec![Row::default(); COUNT as usize];
         let mut old_names = vec![0; COUNT as usize * 6];
@@ -635,7 +641,7 @@ mod tests {
         assert_eq!(new_reads.spans + 8 * n, old_reads.spans);
     }
 
-    fn fault_sites(w: &crate::ccountry::synthetic::World) -> [std::ops::Range<usize>; 4] {
+    fn fault_sites(w: &engine_native::ccountry::synthetic::World) -> [std::ops::Range<usize>; 4] {
         let agency = agency(w, 3);
         let link = w.object(4) + ccountry::INTELLIGENCE_AGENCY;
         [
@@ -647,12 +653,12 @@ mod tests {
     }
 
     fn fallbacks() -> u64 {
-        crate::batch_fallback::count(crate::batch_fallback::Batch::IntelligenceAgencies)
+        engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::IntelligenceAgencies)
     }
 
     #[test]
     fn a_persistent_agency_fault_gives_the_serial_result() {
-        use crate::batch_fallback::Faulty;
+        use engine_native_memory::batch_fallback::Faulty;
         let w = test_support::intel_world(6, 2);
         for (site, range) in fault_sites(&w).into_iter().enumerate() {
             let before = fallbacks();
@@ -673,7 +679,7 @@ mod tests {
 
     #[test]
     fn a_one_shot_agency_fault_refuses_no_more_than_the_serial_walk() {
-        use crate::batch_fallback::Faulty;
+        use engine_native_memory::batch_fallback::Faulty;
         let w = test_support::intel_world(6, 2);
         let [healthy, _] = both(&w.memory(), &w.memory(), &w, 6, 36);
         for (site, range) in fault_sites(&w).into_iter().enumerate() {
@@ -690,10 +696,10 @@ mod tests {
         }
     }
 
-    fn edge_world() -> crate::ccountry::synthetic::World {
-        use crate::msvc_string;
+    fn edge_world() -> engine_native::ccountry::synthetic::World {
+        use engine_native_memory::msvc_string;
         let mut w = test_support::intel_world(8, 2);
-        let table = crate::ccountry::synthetic::START + 0x1000;
+        let table = engine_native::ccountry::synthetic::START + 0x1000;
         let links = table + 9 * 8;
         w.u64(table + 3 * 8, 0);
         w.u64(table + 5 * 8, w.object(4) as u64);
@@ -726,8 +732,8 @@ mod tests {
 
     #[test]
     fn upgrade_visits_match_the_serial_walk_under_persistent_faults() {
-        use crate::batch_fallback::Faulty;
-        use crate::walk::Buffer;
+        use engine_native_memory::batch_fallback::Faulty;
+        use engine_native_memory::walk::Buffer;
         let w = edge_world();
         let agency_six = agency(&w, 6);
         let link = w.object(7) + ccountry::INTELLIGENCE_AGENCY;
@@ -774,7 +780,7 @@ mod tests {
     #[ignore = "synthetic acquisition cost; release, affinity 0xF"]
     #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
     fn acquisition_cost() {
-        use crate::memory::{CountedMemory, LiveMemory, ReadCounts};
+        use engine_native_memory::memory::{CountedMemory, LiveMemory, ReadCounts};
         let countries = std::env::var("BATTLEPLAN_INTEL_COST_COUNTRIES").or_else(|_| std::env::var("HOI4_INTEL_COST_COUNTRIES"))
             .ok()
             .and_then(|v| v.parse().ok())
@@ -791,7 +797,7 @@ mod tests {
                 ReadCounts::take_current();
                 let start = std::time::Instant::now();
                 let walk = if gathered {
-                    super::walk_shared(&memory, offset, state, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut names), |_, _| {})
+                    super::walk_shared(&memory, offset, state, engine_native_memory::walk::Buffer::Growing(&mut rows), engine_native_memory::walk::Buffer::Growing(&mut names), |_, _| {})
                 } else {
                     baseline::walk(&memory, offset, state, &mut rows, &mut names)
                 };
@@ -817,11 +823,11 @@ mod tests {
     }
 
     fn walk(memory: &impl Memory, base: usize, state: usize, rows: &mut Vec<Row>) -> Outcome {
-        super::walk_shared(memory, base, state, crate::walk::Buffer::Growing(rows), crate::walk::Buffer::Count, |_, _| {}).outcome
+        super::walk_shared(memory, base, state, engine_native_memory::walk::Buffer::Growing(rows), engine_native_memory::walk::Buffer::Count, |_, _| {}).outcome
     }
 
     fn count(memory: &impl Memory, base: usize, state: usize) -> Outcome {
-        super::walk_shared(memory, base, state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, |_, _| {}).outcome
+        super::walk_shared(memory, base, state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count, |_, _| {}).outcome
     }
 
     fn put<const N: usize>(bytes: &mut [u8], offset: usize, value: [u8; N]) {
@@ -904,7 +910,7 @@ mod tests {
             };
             let mut expected_rows = vec![Row::default(); 1];
             let mut expected_names = vec![0; count];
-            let expected = super::walk_shared(&memory, 0, 0x100, crate::walk::Buffer::Growing(&mut expected_rows), crate::walk::Buffer::Growing(&mut expected_names), |_, _| {});
+            let expected = super::walk_shared(&memory, 0, 0x100, engine_native_memory::walk::Buffer::Growing(&mut expected_rows), engine_native_memory::walk::Buffer::Growing(&mut expected_names), |_, _| {});
             assert_eq!(expected.outcome, Outcome::Rows { len: 1 });
             let actual = walk_with_upgrades(
                 &memory,
@@ -923,10 +929,8 @@ mod tests {
 
     #[test]
     fn captured_roster_preserves_nulls_order_and_resolved_owner_without_active_membership() {
-        use crate::{
-            ccaptured_operative_reference as captured, coperative_leader,
-            creference_registry as registry, reference_bucket,
-        };
+        use crate::{ccaptured_operative_reference as captured, coperative_leader};
+        use engine_native_parts::{creference_registry as registry, reference_bucket};
         let handle = (17_u64 << 32) | 54;
         let mut bytes = fixture();
         bytes.resize(0x7000, 0);
@@ -1121,7 +1125,7 @@ mod tests {
         let read = super::walk_shared(&SliceMemory {
                 base: 0,
                 bytes: &bytes,
-            }, 0, 0x100, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut names), |_, _| {});
+            }, 0, 0x100, engine_native_memory::walk::Buffer::Growing(&mut rows), engine_native_memory::walk::Buffer::Growing(&mut names), |_, _| {});
         assert_eq!(read.outcome, Outcome::Rows { len: 1 });
         assert_eq!(read.required_bytes, text.len());
         assert_eq!(names, text);
@@ -1130,7 +1134,7 @@ mod tests {
             super::walk_shared(&SliceMemory {
                     base: 0,
                     bytes: &bytes
-                }, 0, 0x100, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut names), |_, _| {})
+                }, 0, 0x100, engine_native_memory::walk::Buffer::Growing(&mut rows), engine_native_memory::walk::Buffer::Growing(&mut names), |_, _| {})
             .outcome,
             Outcome::Unavailable { .. }
         ));

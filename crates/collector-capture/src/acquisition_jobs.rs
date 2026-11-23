@@ -47,7 +47,7 @@ use std::{
 };
 
 pub(crate) struct RawRequest<J, C> {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: C,
     pub payload: J,
 }
@@ -63,7 +63,7 @@ pub(crate) struct WorldPart<J, C> {
     pub payload: J,
 }
 pub(crate) struct WorldRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub construction: Option<
         WorldPart<construction::ConstructionRestJob, construction::ConstructionRestCopyContext>,
     >,
@@ -80,7 +80,7 @@ pub(crate) type EconomyRequest =
     RawRequest<economy::EconomyRestJob, economy::EconomyRestCopyContext>;
 pub(crate) struct GovernanceRequest {
     pub workers: variant_workers::Dispatch,
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: governance::CaptureContext,
     pub captured: governance::Captured,
     pub buildings: construction::Buildings,
@@ -91,7 +91,7 @@ pub(crate) struct GovernanceRequest {
     pub(crate) focus_fingerprints: Box<collector_certificates::slicing::SliceFingerprints>,
 }
 pub(crate) struct BuildingsPart {
-    countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     context: governance::CaptureContext,
     buildings: construction::Buildings,
     store: Option<Box<construction::BuildingStore>>,
@@ -167,7 +167,7 @@ fn variant_read_plan(hour: i32, force_full: bool, recovery: bool) -> (bool, bool
     )
 }
 pub(crate) struct ResearchRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: governance::CaptureContext,
     pub(crate) part: governance::ResearchPart,
     pub(crate) fingerprints: Box<collector_certificates::slicing::SliceFingerprints>,
@@ -177,19 +177,19 @@ pub(crate) struct ResearchReport {
     pub ticks: [u64; 3],
 }
 pub(crate) struct IntelResidualRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: intel::CaptureContext,
     pub captured: intel::Captured,
     pub flags: Option<Box<intel::FlagStore>>,
 }
 pub(crate) struct ScriptVariablesRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: intel::CaptureContext,
     pub(crate) part: intel::VariablePart,
     pub store: Option<Box<intel::VariableStore>>,
 }
 pub(crate) struct SupplyTrainsRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: supply_trains::CaptureContext,
     pub(crate) part: usize,
     pub nodes: supply_trains::Part,
@@ -204,7 +204,7 @@ pub(crate) struct CharacterPortraitsRequest {
         Option<engine_allocation::SharedBox<engine_native::ccharacter_manager::PortraitCensus>>,
 }
 pub(crate) struct OrdinaryRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -223,7 +223,7 @@ impl OrdinaryRequest {
     }
 }
 pub(crate) struct OrdinaryPartRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -242,7 +242,7 @@ impl OrdinaryPartRequest {
     }
 }
 pub(crate) struct SlowRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -251,7 +251,7 @@ pub(crate) struct SlowRequest {
     pub stores: crate::extended::SlowStores,
 }
 pub(crate) struct AirRelationsRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub(crate) part: usize,
@@ -260,7 +260,7 @@ pub(crate) struct AirRelationsRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct AirRelationsReport;
 pub(crate) struct AirMissionsRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub parent: engine_native::walk::Outcome,
@@ -277,7 +277,7 @@ impl AirMissionsRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct AirMissionsReport;
 pub(crate) struct AirHistoriesRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub(crate) part: usize,
@@ -288,7 +288,7 @@ pub(crate) struct AirHistoriesReport;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SlowReport;
 pub(crate) struct StabilityRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -299,7 +299,7 @@ pub(crate) struct StabilityRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct StabilityReport;
 pub(crate) struct ProductionDailyRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -309,7 +309,7 @@ pub(crate) struct ProductionDailyRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ProductionDailyReport;
 pub(crate) struct IndustrialOrganisationsRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -321,7 +321,7 @@ pub(crate) struct IndustrialOrganisationsReport {
     pub ticks: [u64; collector_production_daily::industrial_organisations::N],
 }
 pub(crate) struct ProductionModifierPartRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -337,7 +337,7 @@ pub(crate) struct ProductionModifierPartReport {
     pub ticks: u64,
 }
 pub(crate) struct WarOverviewRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -347,7 +347,7 @@ pub(crate) struct WarOverviewRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct WarOverviewReport;
 pub(crate) struct RaidStateRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -358,7 +358,7 @@ pub(crate) struct RaidStateRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RaidStateReport;
 pub(crate) struct RaidLaunchRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -369,7 +369,7 @@ pub(crate) struct RaidLaunchRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RaidLaunchReport;
 pub(crate) struct RaidTargetsRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -381,7 +381,7 @@ pub(crate) struct RaidTargetsReport;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct OrdinaryReport;
 pub(crate) struct LateRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub inputs:
         Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
     pub base: usize,
@@ -396,7 +396,7 @@ pub(crate) struct LateReport;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ScoresRailsReport;
 pub(crate) struct AirSupplyRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub capture: Box<engine_map_air::map_air_supply::Capture>,
@@ -445,7 +445,7 @@ pub(crate) struct DivisionModelInputsRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct DivisionModelInputsReport;
 pub(crate) struct ScoresRailsRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -456,7 +456,7 @@ pub(crate) struct ScoresRailsRequest {
     pub(crate) rail_store: Option<Box<naval_history::RailStore>>,
 }
 pub(crate) struct OrdersRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub orders: collector_divisions::orders::Orders,
@@ -529,7 +529,7 @@ pub(crate) struct GatedRequest {
     pub packs: Box<crate::extended::GatedPacks>,
     pub(crate) project_fingerprints:
         Option<Box<collector_certificates::slicing::SliceFingerprints>>,
-    pub countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
+    pub countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
 }
 pub(crate) struct GatedProjectsRequest {
     pub workers: variant_workers::Dispatch,
@@ -539,7 +539,7 @@ pub(crate) struct GatedProjectsRequest {
     pub force_full: bool,
     pub captured: projects::Captured,
     pub(crate) fingerprints: Box<collector_certificates::slicing::SliceFingerprints>,
-    pub countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
+    pub countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
     pub recorded: bool,
     pub ticks: [u64; projects::N],
 }
@@ -640,7 +640,7 @@ pub(crate) struct ProvinceUnitOrderRequest {
 pub(crate) type ProvincesRequest = GatherRequest<engine_native::cprovince::Capture>;
 pub(crate) type ProvincesReport = GatherReport;
 pub(crate) struct ShipModelsRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: ship_models::CaptureContext,
     pub game_state: usize,
     pub captured: ship_models::Captured,
@@ -648,13 +648,13 @@ pub(crate) struct ShipModelsRequest {
     pub details: Option<Arc<ShipDetailsDispatch>>,
 }
 pub(crate) struct ShipModelDetailsRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: ship_models::CaptureContext,
     pub(crate) part: usize,
     pub captured: ship_models::Captured,
 }
 pub(crate) struct PresentationRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
     pub captured: division_presentation::Captured,
     pub dispatch: PresentationDispatch,
@@ -710,7 +710,7 @@ impl PresentationRequest {
     }
 }
 pub(crate) struct PresentationStatusRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
     pub inputs:
         Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
@@ -720,7 +720,7 @@ pub(crate) struct PresentationStatusRequest {
 }
 
 pub(crate) struct PresentationSpeedTermsRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
     pub inputs:
         Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
@@ -734,14 +734,14 @@ impl PresentationSpeedTermsRequest {
 }
 
 pub(crate) struct PresentationMovementRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
     pub inputs:
         Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
     pub pass: division_presentation::MovementPass,
 }
 pub(crate) struct IntelRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: fog::IntelCopyContext,
     pub payload: fog::IntelJob,
     pub inputs:
@@ -775,7 +775,7 @@ pub(crate) type DivisionsRequest =
     RawRequest<sampling::DivisionsJob, sampling::DivisionsCopyContext>;
 
 pub(crate) struct DivisionPartRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub slots: (u32, u32),
@@ -2663,16 +2663,16 @@ mod tests {
     fn country_snapshot(
         memory: &impl engine_native::Memory,
         cells: usize,
-    ) -> engine_allocation::SharedBox<engine_native::country_memory::Cache> {
+    ) -> engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache> {
         let mut storage = engine_allocation::shared(
-            engine_native::country_memory::Cache::try_with_capacity(cells).unwrap(),
+            engine_native_intelligence::country_memory::Cache::try_with_capacity(cells).unwrap(),
         )
         .unwrap();
-        engine_native::country_memory::Cache::prepare_shared(&mut storage, memory, 0, 0x1000)
+        engine_native_intelligence::country_memory::Cache::prepare_shared(&mut storage, memory, 0, 0x1000)
             .unwrap()
     }
 
-    fn empty_country_snapshot() -> engine_allocation::SharedBox<engine_native::country_memory::Cache>
+    fn empty_country_snapshot() -> engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>
     {
         country_snapshot(
             &engine_native::memory::SliceMemory {
@@ -2776,7 +2776,7 @@ mod tests {
     #[test]
     fn presentation_stages_have_distinct_roles_and_complete_chain_slots() {
         let countries = engine_allocation::shared(
-            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+            engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
         )
         .unwrap();
         let context = division_presentation::CaptureContext {
@@ -3135,12 +3135,12 @@ mod tests {
         cells: usize,
         base: usize,
         game_state: usize,
-    ) -> engine_allocation::SharedBox<engine_native::country_memory::Cache> {
+    ) -> engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache> {
         let mut storage = engine_allocation::shared(
-            engine_native::country_memory::Cache::try_with_capacity(cells).unwrap(),
+            engine_native_intelligence::country_memory::Cache::try_with_capacity(cells).unwrap(),
         )
         .unwrap();
-        engine_native::country_memory::Cache::prepare_shared(&mut storage, memory, base, game_state)
+        engine_native_intelligence::country_memory::Cache::prepare_shared(&mut storage, memory, base, game_state)
             .unwrap()
     }
 
@@ -3384,10 +3384,10 @@ mod tests {
                 faults: &[],
             };
             let mut storage = engine_allocation::shared(
-                engine_native::country_memory::Cache::try_with_capacity(cells).unwrap(),
+                engine_native_intelligence::country_memory::Cache::try_with_capacity(cells).unwrap(),
             )
             .unwrap();
-            let countries = engine_native::country_memory::Cache::prepare_shared(
+            let countries = engine_native_intelligence::country_memory::Cache::prepare_shared(
                 &mut storage,
                 &seed,
                 kit::BASE,

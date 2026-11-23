@@ -357,11 +357,11 @@ fn only_current_country_authentication_is_forwarded_for_matching_context() {
     let source = Source::from_bytes(0, vec![0; 0x8000]);
     source.array(STATE + engine_native::cgame_state::COUNTRIES, 0x5000, 2);
     source.array(STATE + engine_native::cgame_state::COUNTRY_LINKS, 0x5100, 2);
-    let mut cache = engine_native::country_memory::Cache::try_with_capacity(64).unwrap();
+    let mut cache = engine_native_intelligence::country_memory::Cache::try_with_capacity(64).unwrap();
     let cached = cache.prepare(&source, 0, STATE);
     assert_eq!(
         cached.seed_status(),
-        engine_native::country_memory::SeedStatus::Ready
+        engine_native_intelligence::country_memory::SeedStatus::Ready
     );
     let arena = RefCell::new(SnapshotArena::try_new(SnapshotCapacity::default()).unwrap());
     let memory = ModifierMemory {
