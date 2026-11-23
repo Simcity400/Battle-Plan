@@ -91,15 +91,17 @@ pub fn hour_after(prepared: PreparedBuildings) -> PreparedBuildings {
 }
 
 pub fn destruction(prepared: &mut PreparedBuildings, destroyed: bool, uncertain: bool) {
-    let entity = prepared.slots.get_mut(0).entity_mut();
-    entity.destroyed |= destroyed;
-    entity.uncertain |= uncertain;
+    prepared.slots.edit(0, |slot| {
+        let entity = slot.entity_mut();
+        entity.destroyed |= destroyed;
+        entity.uncertain |= uncertain;
+    });
 }
 
 pub fn exempt_growth(buildings: &mut BuildingHistory) {
-    for slot in buildings.prepared.as_mut().unwrap().slots.iter_mut() {
+    buildings.prepared.as_mut().unwrap().slots.edit_all(|slot| {
         slot.entity_mut().disable_grow_animation = true;
-    }
+    });
 }
 
 pub fn generation(buildings: &BuildingHistory) -> u32 {
@@ -107,19 +109,23 @@ pub fn generation(buildings: &BuildingHistory) -> u32 {
 }
 
 pub fn damage(prepared: &mut PreparedBuildings, mesh: usize) {
-    let entity = prepared.slots.get_mut(0).entity_mut();
-    entity.healthy.mesh = mesh;
-    entity.damaged = true;
+    prepared.slots.edit(0, |slot| {
+        let entity = slot.entity_mut();
+        entity.healthy.mesh = mesh;
+        entity.damaged = true;
+    });
 }
 
 pub fn variant(prepared: &mut PreparedBuildings, variant: usize) {
-    prepared.slots.get_mut(0).entity_mut().healthy.variant = variant;
+    prepared.slots.edit(0, |slot| slot.entity_mut().healthy.variant = variant);
 }
 
 pub fn replace(prepared: &mut PreparedBuildings, mesh: usize, definition: usize) {
-    let entity = prepared.slots.get_mut(0).entity_mut();
-    entity.healthy.mesh = mesh;
-    entity.healthy.definition = definition;
+    prepared.slots.edit(0, |slot| {
+        let entity = slot.entity_mut();
+        entity.healthy.mesh = mesh;
+        entity.healthy.definition = definition;
+    });
 }
 
 pub fn file_order(buildings: &mut BuildingHistory, order: Vec<u32>) {

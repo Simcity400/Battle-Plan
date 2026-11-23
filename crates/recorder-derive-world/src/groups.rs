@@ -439,29 +439,22 @@ impl Writer for Groups {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn written(out: &Rows) -> (Vec<u128>, Vec<u128>) {
-        out.keys(TableId::GroupSpans)
-    }
-
-    fn store() -> replay_columnar::store::Store {
-        replay_columnar::store::Store::new(vec![Vec::new(); replay_data::rows::TABLE_COUNT], vec![false; replay_data::rows::TABLE_COUNT])
-    }
+    use recorder_derive_framework::testing;
 
     #[test]
     fn a_fact_held_lives_on_a_fact_gone_closes_and_one_back_is_a_new_stretch() {
         let mut groups = Groups::default();
         let member = |slot| ((Span::MEMBER, Span::HUMANS, slot), 0);
-        let store = store();
-        let mut out = Rows::logging(&store);
-        groups.settle(0, BTreeMap::from([member(5), member(6)]), &mut out).unwrap();
-        assert_eq!(written(&out).0, vec![span_key((Span::MEMBER, 0, 5), 0), span_key((Span::MEMBER, 0, 6), 1)]);
-        let mut out = Rows::logging(&store);
-        groups.settle(0, BTreeMap::from([member(5)]), &mut out).unwrap();
-        assert_eq!(written(&out), (vec![], vec![span_key((Span::MEMBER, 0, 6), 1)]));
-        let mut out = Rows::logging(&store);
-        groups.settle(0, BTreeMap::from([member(5), member(6)]), &mut out).unwrap();
-        assert_eq!(written(&out), (vec![span_key((Span::MEMBER, 0, 6), 2)], vec![]));
+        let store = testing::store();
+        let mut written = |facts| {
+            testing::logging(&store, groups.tables(), |out| {
+                groups.settle(0, facts, out)?;
+                Ok(out.keys(TableId::GroupSpans))
+            }).unwrap()
+        };
+        assert_eq!(written(BTreeMap::from([member(5), member(6)])).0, vec![span_key((Span::MEMBER, 0, 5), 0), span_key((Span::MEMBER, 0, 6), 1)]);
+        assert_eq!(written(BTreeMap::from([member(5)])), (vec![], vec![span_key((Span::MEMBER, 0, 6), 1)]));
+        assert_eq!(written(BTreeMap::from([member(5), member(6)])), (vec![span_key((Span::MEMBER, 0, 6), 2)], vec![]));
     }
 
     #[test]
