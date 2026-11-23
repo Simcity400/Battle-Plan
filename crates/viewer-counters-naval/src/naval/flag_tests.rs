@@ -1,4 +1,9 @@
-use super::{Arc, BTreeMap, CounterReport, DEFENDING, NativeInputs, NavalContext, NavalUnit, Sight, Vision, naval_members, port_flag_owner, set_frame_argument, type_tint, unit_flag_owner};
+use super::{
+    Arc, BTreeMap, CounterReport, NativeInputs, NavalContext, NavalUnit, Sight, Vision,
+    naval_members, port_flag_owner, set_frame_argument, type_tint,
+};
+use viewer_counter_kit::unit_flag_owner;
+use viewer_foundation::unit_rules::DEFENDING;
 use replay_data::rows::TaskForceRow;
 
 fn unit(force: &TaskForceRow, slot: u32, strength: i64) -> NavalUnit<'_> {

@@ -501,7 +501,7 @@ fn cached_base_joins_equal_fresh_hour_derivations() {
         viewer_counter_kit::fixtures::action_gui(false),
         |_| {},
         |_| {},
-        |inputs| {
+        |_| {
             let mut frame = test_frame(1);
             test_put(&mut frame, TableRows::CountryLinks(Vec::new()));
             test_put(

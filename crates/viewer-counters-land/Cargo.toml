@@ -26,6 +26,7 @@ replay-derive.workspace = true
 replay-frame.workspace = true
 dashboard-text.workspace = true
 [dev-dependencies]
+content-reader-gfx = { workspace = true, features = ["test-support"] }
 viewer-counter-kit = { workspace = true, features = ["test-support"] }
 viewer-counters-naval = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }

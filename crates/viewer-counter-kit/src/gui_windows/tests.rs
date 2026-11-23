@@ -1,16 +1,22 @@
-use super::test_support::{at_sea_flotilla, countries, navy_fixture, port_flotilla, production, production_selected, sprite_frame, windows};
+use super::test_support::{at_sea_flotilla, navy_fixture, port_flotilla, production, production_selected, sprite_frame, windows};
+use content_reader_core::ResolvedLayers;
+use crate::{CounterColorMode, CounterSettings, LAND_WINDOW, Layouts, STACK_WINDOW, type_tint};
+use std::path::Path;
 use super::{
-    Allegiance, Arc, BTreeMap, BTreeSet, Call, CounterDefines, CounterSettings, Countries, Cow,
-    Instance, Layout, NativeWindows, NavyArt, NavyContext, NavyState, Texture, UiColors, Unit,
-    Update, apply, counter_inputs, counter_order, mission_item_setup, native, navy_calls, type_tint,
+    Allegiance, Arc, BARS, BG_FRAME, BTreeSet, CAPITALS, CARRIER, CARRIER_SPRITE, CARRIER_UNDEFINED,
+    COUNT, Call, CombatProgress, CombatState, Engaged, FRAME_BTN, HULL_AMBIGUOUS, HULL_UNDEFINED,
+    HULL_UNRECORDED, IDEOLOGY, Instance, Layout, MARKER, NO_INTEL_SPRITE, NativeWindows, ORDERS,
+    PLATE, PLATE_FRAME, PRIDE, PROGRESS, Rotation, SUPPLY, TYPE_SPRITE, Update, Writes, apply,
+    combat_calls, counter_inputs, counter_order, mission_item_setup, native, native_gui,
+    window_assets,
 };
-use viewer_native_gui::native_gui::{PartKind, lifecycle::Tick};
+use viewer_foundation::allegiance;
+use viewer_native_gui::gui_resources::GuiAssets;
+use viewer_native_gui::native_gui::PartKind;
+use viewer_native_gui::native_gui::lifecycle::Tick;
+use viewer_native_gui::native_resources::GuiResources;
 use viewer_native_gui::test_support::{
-    Fixture,
-    SYNTHETIC_NAVAL_GUI,
-    SYNTHETIC_NAVY_GUI,
-    VIEWPORT,
-    part,
+    Fixture, SYNTHETIC_NAVAL_GUI, SYNTHETIC_NAVY_GUI, VIEWPORT, part,
 };
 
 const STILL: Tick = Tick { time: 0.0, dt: 0.0 };

@@ -10,9 +10,7 @@ use std::sync::Arc;
 use viewer_counter_kit::CounterMap;
 use viewer_unit_reads::counter_inputs::NativeInputs;
 #[cfg(test)]
-use content_reader_core::gui::native;
 #[cfg(test)]
-use crate::bases::BuildingIconContent;
 use engine_executable::modifier_keys as keys;
 use replay_data::rows::*;
 use replay_derive::naval_mission_derive as derive;

@@ -18,11 +18,6 @@ use viewer_native_gui::native_windows::{
 };
 use viewer_native_gui::sprites::Batch;
 use viewer_unit_reads::{counter_inputs, counter_order, counter_status};
-#[cfg(any(test, feature = "test-support"))]
-use content_reader_core::ResolvedLayers;
-use crate::type_tint;
-use super::{LAND_WINDOW, Layouts, STACK_WINDOW, UiColors};
-use viewer_foundation::allegiance;
 use viewer_native_gui::gui_resources::GuiAssets;
 use viewer_native_gui::gui_resources::GuiFlags;
 use viewer_native_gui::gui_resources::HitMode;

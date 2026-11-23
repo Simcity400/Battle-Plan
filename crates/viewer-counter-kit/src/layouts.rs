@@ -328,7 +328,11 @@ pub fn column_layout(guis: &native::Guis) -> io::Result<ColumnLayout> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActionContent, GUN_WINDOW, LAND_WINDOW, Layouts, MAPICONS_GUI, NativeWindows, STACK_WINDOW, ability_grid, child, column_layout, land_counter, native, text_child, window, zoom_lift};
+    use super::{
+        ActionContent, GUN_WINDOW, LAND_WINDOW, Layouts, NativeWindows, STACK_WINDOW, ability_grid,
+        child, column_layout, land_counter, native, text_child, window, zoom_lift,
+    };
+    use viewer_native_gui::native_windows::MAPICONS_GUI;
 
     #[test]
     fn counter_action_land_child_loads_its_authored_sprite() {

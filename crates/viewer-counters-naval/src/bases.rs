@@ -23,8 +23,6 @@ use viewer_native_gui::native_windows::{
 };
 use viewer_runtime::label_reads::VICTORY_POINT;
 use viewer_unit_reads::counter_order;
-#[cfg(test)]
-use viewer_counter_kit::{Kinds, type_tint};
 use content_reader_core::{buildings::BuildingType, buildings::Buildings, buildings::SpawnPoint};
 use replay_data::{rows::BuildingRow, rows::ProvinceRow};
 use viewer_gpu::province_map::ProvinceMap;

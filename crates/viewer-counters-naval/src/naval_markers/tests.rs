@@ -1,4 +1,16 @@
-use super::{Allegiance, Arc, BTreeMap, Census, Combat, CombatFlags, CounterColorMode, CounterDefines, CounterReport, Countries, Decision, DecodedFrame, Direct, Engaged, ForceInput, FrameSource, Icon, Kept, MarkerContext, NAVAL_RESULT_SPRITES, NativeInputs, NavalCombatDetailsRow, NavalContext, NavalMarkerTables, NavalProvinceCombatRow, NavalResultRow, Omitted, ProvinceKind, REFUSED_RESULT_WINDOW, ResultFacts, ResultTables, Sources, Transfers, UiColors, Units, Viewer, Vision, allegiance, combat_pass, convoy_color, convoy_result_for_test, decide, grid, hq_frame, layer, occurrences, refused_results, result_presentation, rotates, rows, sprites, tables, two_engaged, unconstructed};
+use super::{
+    Allegiance, Arc, BTreeMap, Census, Combat, CombatFlags, CounterColorMode, CounterDefines,
+    CounterReport, Countries, Decision, DecodedFrame, Direct, Engaged, ForceInput, FrameSource,
+    Icon, Kept, MarkerContext, NAVAL_RESULT_SPRITES, NavalCombatDetailsRow, NavalContext,
+    NavalMarkerTables, NavalProvinceCombatRow, NavalResultRow, Omitted, ProvinceKind,
+    REFUSED_RESULT_WINDOW, ResultFacts, ResultTables, Sources, Transfers, UiColors, Units, Viewer,
+    Vision, allegiance, combat_pass, convoy_color, convoy_result_for_test, decide, grid, hq_frame,
+    occurrences, refused_results, result_presentation, rotates, rows, tables, two_engaged,
+    unconstructed,
+};
+use viewer_native_gui::sprites;
+use viewer_native_gui::sprites::layer;
+use viewer_unit_reads::counter_inputs::NativeInputs;
 use replay_data::rows::NavalCombatShipRow;
 use replay_frame::{frame::Metrics, frame::TableView};
 use viewer_engagements::engaged::Ambiguity;
@@ -85,7 +97,7 @@ fn with_context<T>(test: impl FnOnce(&MarkerContext<'_>) -> T) -> T {
     let native = NativeInputs::read(&frame).unwrap();
     let country_ids = BTreeMap::new();
     let naval = NavalContext {
-        type_tints: &crate::type_tint::Index::default(),
+        type_tints: &viewer_counter_kit::type_tint::Index::default(),
         vision: &vision,
         native: &native,
         ship_inputs: None,

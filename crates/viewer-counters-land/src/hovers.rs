@@ -471,7 +471,13 @@ fn control(element: &native::Element, railway_gun: bool) -> CounterControl {
 
 #[cfg(test)]
 mod tests {
-    use super::{Arc, Child, Frame, Hit, ResolvedLayers, SpriteSet, contains, draw_bar, land, native, presented, sprites, templates, test_tga_rgba8};
+    use content_reader_gfx::gfx::SpriteSet;
+    use std::sync::Arc;
+    use super::{
+        Frame, Hit, ResolvedLayers, contains, land, native, presented, sprites, test_tga_rgba8,
+    };
+    use viewer_counter_kit::{Child, draw_bar};
+    use viewer_foundation::templates;
 
     #[test]
     fn vertical_counter_hover_uses_the_native_grid_and_scale_order() {

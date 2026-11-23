@@ -760,7 +760,15 @@ fn air_text(
 
 #[cfg(test)]
 mod tests {
-    use super::{Arc, BTreeMap, CounterFrame, CounterInputs, CounterReport, Family, IconAnchor, IconFamily, Instance, NavalBaseIcon, PreparedBases, RADAR_WINDOW, State, VICTORY_POINT, air_text, bases, bind, building_facts, hit_rectangle, layer, native, native_gui, naval_repairs, naval_windows, record_hit, update};
+    use crate::bases::NavalBaseIcon;
+    use super::{
+        Arc, BTreeMap, CounterInputs, CounterReport, Family, IconAnchor, IconFamily, Instance,
+        PreparedBases, RADAR_WINDOW, State, air_text, bases, bind, hit_rectangle, layer, native,
+        native_gui, naval_repairs, naval_windows, record_hit, update,
+    };
+    use viewer_counter_kit::CounterFrame;
+    use viewer_foundation::building_facts;
+    use viewer_runtime::label_reads::VICTORY_POINT;
     use native_gui::{PartKind, lifecycle::Tick};
     use viewer_native_gui::test_support::gui::fixture;
 

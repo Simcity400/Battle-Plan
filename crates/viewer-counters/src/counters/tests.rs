@@ -872,7 +872,7 @@ fn dump_census_excludes_combat_window_quads() {
     assert_eq!(assets.census(&map, &fonts, 1.), expected);
 }
 use replay_data::{
-    Hour, rows::AirBaseRegistrationRow, rows::AirBaseRow, rows::AirWingRow, rows::CountryLinkRow,
+    Hour, rows::AirBaseRegistrationRow, rows::AirWingRow, rows::CountryLinkRow,
     rows::LocalPlayerRow, rows::ProvinceRow, rows::StateFlagRow, rows::TableId, rows::TableRows,
 };
 use replay_frame::{frame::Metrics, frame::TableView};

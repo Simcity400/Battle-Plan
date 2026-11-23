@@ -1,10 +1,12 @@
 use viewer_counter_kit::CounterMap;
 use replay_data::rows::{FleetRow, NavalMissionCommanderRow, NavalMissionCountryRow, NavalMissionLedgerRow, NavalMissionTaskForceRow, Recorded, ShipModelRow, ShipRow, SimulationFeatureRow, TableId, TableRows, TaskForceCounterInputRow, TaskForceMissionRow, TaskForceRow};
 use super::{
-    Arc, BTreeMap, BTreeSet, Content, CounterDefines, DecodedFrame, HashMap, Hour, LexicalTokenRow,
-    MapSize, ModifierDefinitionRow, NativeInputs, OnceLock, SliceReadRow, data, derive, hover, keys,
+    Arc, BTreeMap, BTreeSet, Content, DecodedFrame, HashMap, Hour, LexicalTokenRow,
+    ModifierDefinitionRow, NativeInputs, OnceLock, SliceReadRow, data, derive, hover, keys,
     naval_missions, tables,
 };
+use viewer_counter_kit::CounterDefines;
+use viewer_gpu::camera::MapSize;
 use replay_frame::{frame::Metrics, frame::TableView};
 use dashboard_text::table_access::TokenKeys;
 

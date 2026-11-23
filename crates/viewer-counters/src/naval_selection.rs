@@ -261,6 +261,7 @@ pub fn mission_members(
 
 #[cfg(test)]
 mod tests {
+    use viewer_counters_naval::naval::home_bases;
     use super::*;
     use replay_data::{
         rows::CountryLinkRow, rows::NavalMissionLedgerRow, rows::TableRows, rows::TaskForceRow,

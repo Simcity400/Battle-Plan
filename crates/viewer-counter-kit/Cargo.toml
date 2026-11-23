@@ -13,6 +13,7 @@ doctest = false
 test-support = ["viewer-gpu/test-support", "viewer-native-gui/test-support", "viewer-engagements/test-support", "viewer-foundation/test-support", "viewer-unit-reads/test-support"]
 
 [dependencies]
+serde_json.workspace = true
 viewer-engagements.workspace = true
 viewer-foundation.workspace = true
 viewer-gpu.workspace = true
