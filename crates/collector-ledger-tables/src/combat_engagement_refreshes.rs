@@ -88,16 +88,22 @@ fn project(entries: &[Entry]) -> Result<Vec<CombatEngagementRefreshRow>, &'stati
     for entry in entries {
         let valid = match entry.kind {
             CombatEngagementRefreshRow::LAND_SIDE | CombatEngagementRefreshRow::NAVAL_SIDE => {
-                entry.target != 0 && entry.side <= 1 && entry.triggers != 0 && (entry.triggers & !3) == 0
+                entry.target != 0
+                    && entry.side <= 1
+                    && entry.viewer <= i32::MAX as u32
+                    && entry.triggers != 0
+                    && (entry.triggers & !3) == 0
             }
             CombatEngagementRefreshRow::CONTROLLER_TARGET => {
                 entry.side == 0
+                    && entry.viewer == 0
                     && entry.target >= 1
                     && entry.target <= i32::MAX as u64
                     && entry.triggers == CombatEngagementRefreshRow::TRIGGER_RECORDED
             }
             CombatEngagementRefreshRow::LOCAL_ALL_SIDES => {
                 entry.side == 0
+                    && entry.viewer == 0
                     && entry.target <= i32::MAX as u64
                     && entry.triggers == CombatEngagementRefreshRow::TRIGGER_RECORDED
             }
@@ -110,15 +116,24 @@ fn project(entries: &[Entry]) -> Result<Vec<CombatEngagementRefreshRow>, &'stati
             kind: entry.kind,
             target: entry.target,
             side: entry.side,
+            viewer: entry.viewer,
             triggers: entry.triggers,
         });
     }
     rows.sort_unstable_by_key(RowCodec::key);
     let mut write = 0;
     for read in 1..rows.len() {
-        if (rows[write].kind, rows[write].target, rows[write].side)
-            == (rows[read].kind, rows[read].target, rows[read].side)
-        {
+        if (
+            rows[write].kind,
+            rows[write].target,
+            rows[write].side,
+            rows[write].viewer,
+        ) == (
+            rows[read].kind,
+            rows[read].target,
+            rows[read].side,
+            rows[read].viewer,
+        ) {
             rows[write].triggers |= rows[read].triggers;
         } else {
             write += 1;
@@ -140,30 +155,42 @@ mod tests {
                 kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
                 target: 7,
                 side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },
             Entry {
                 kind: CombatEngagementRefreshRow::LAND_SIDE,
                 target: 62,
                 side: 1,
+                viewer: 3,
                 triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
             },
             Entry {
                 kind: CombatEngagementRefreshRow::LAND_SIDE,
                 target: 62,
                 side: 1,
+                viewer: 4,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            Entry {
+                kind: CombatEngagementRefreshRow::LAND_SIDE,
+                target: 62,
+                side: 1,
+                viewer: 3,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },
             Entry {
                 kind: CombatEngagementRefreshRow::LAND_SIDE,
                 target: 10,
                 side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },
             Entry {
                 kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
                 target: 0,
                 side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },
         ];
@@ -175,25 +202,36 @@ mod tests {
                     kind: CombatEngagementRefreshRow::LAND_SIDE,
                     target: 10,
                     side: 0,
+                    viewer: 0,
                     triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
                 },
                 CombatEngagementRefreshRow {
                     kind: CombatEngagementRefreshRow::LAND_SIDE,
                     target: 62,
                     side: 1,
+                    viewer: 3,
                     triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED
                         | CombatEngagementRefreshRow::TRIGGER_UNITS,
+                },
+                CombatEngagementRefreshRow {
+                    kind: CombatEngagementRefreshRow::LAND_SIDE,
+                    target: 62,
+                    side: 1,
+                    viewer: 4,
+                    triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
                 },
                 CombatEngagementRefreshRow {
                     kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
                     target: 7,
                     side: 0,
+                    viewer: 0,
                     triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
                 },
                 CombatEngagementRefreshRow {
                     kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
                     target: 0,
                     side: 0,
+                    viewer: 0,
                     triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
                 },
             ]
@@ -204,6 +242,7 @@ mod tests {
                 kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
                 target: 7,
                 side: 1,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             }])
             .is_err()
@@ -213,6 +252,7 @@ mod tests {
                 kind: CombatEngagementRefreshRow::LAND_SIDE,
                 target: 62,
                 side: 0,
+                viewer: 0,
                 triggers: 0,
             }])
             .is_err()
@@ -222,42 +262,70 @@ mod tests {
                 kind: CombatEngagementRefreshRow::LAND_SIDE,
                 target: 0,
                 side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },
             Entry {
                 kind: CombatEngagementRefreshRow::NAVAL_SIDE,
                 target: 0,
                 side: 1,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
+            },
+            Entry {
+                kind: CombatEngagementRefreshRow::LAND_SIDE,
+                target: 62,
+                side: 0,
+                viewer: i32::MAX as u32 + 1,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },
             Entry {
                 kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
                 target: i32::MAX as u64 + 1,
                 side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },
             Entry {
                 kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
                 target: 0,
                 side: 0,
+                viewer: 1,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            Entry {
+                kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                target: 0,
+                side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
             },
             Entry {
                 kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
                 target: 0,
                 side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },
             Entry {
                 kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
                 target: i32::MAX as u64 + 1,
                 side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },
             Entry {
                 kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
                 target: 7,
                 side: 0,
+                viewer: 1,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            Entry {
+                kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
+                target: 7,
+                side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
             },
         ] {
@@ -287,6 +355,7 @@ mod tests {
             kind: CombatEngagementRefreshRow::LAND_SIDE,
             target: 62,
             side: 0,
+            viewer: 1,
             triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
         });
         producer::boundary(Some(clock(101)));

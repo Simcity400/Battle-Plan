@@ -1072,6 +1072,7 @@ pub struct CombatEngagementRefreshRow {
     pub kind: u8,
     pub target: u64,
     pub side: u8,
+    pub viewer: u32,
     pub triggers: u8,
 }
 
@@ -1086,16 +1087,18 @@ impl CombatEngagementRefreshRow {
 
 typed_codec!(
     CombatEngagementRefreshRow,
-    67,
+    99,
     |row| {
-        (((row.kind & 3) as u128) << 65)
-            | ((row.target as u128) << 1)
-            | ((row.side & 1) as u128)
+        (((row.kind & 3) as u128) << 97)
+            | ((row.target as u128) << 33)
+            | (((row.side & 1) as u128) << 32)
+            | (row.viewer as u128)
     },
     |key| Self {
-        kind: (key >> 65) as u8,
-        target: (key >> 1) as u64,
-        side: (key & 1) as u8,
+        kind: (key >> 97) as u8,
+        target: (key >> 33) as u64,
+        side: ((key >> 32) & 1) as u8,
+        viewer: key as u32,
         ..Default::default()
     },
     { 0 => (triggers): U8 },
@@ -1108,6 +1111,9 @@ typed_codec!(
                 if row.side > 1 {
                     return Err(invalid("invalid combat engagement refresh side"));
                 }
+                if row.viewer > i32::MAX as u32 {
+                    return Err(invalid("invalid combat engagement refresh side viewer"));
+                }
                 if mask & 1 != 0 && (row.triggers == 0 || (row.triggers & !3) != 0) {
                     return Err(invalid("invalid combat engagement refresh triggers"));
                 }
@@ -1115,6 +1121,9 @@ typed_codec!(
             CombatEngagementRefreshRow::CONTROLLER_TARGET => {
                 if row.side != 0 {
                     return Err(invalid("invalid combat engagement refresh side for kind"));
+                }
+                if row.viewer != 0 {
+                    return Err(invalid("invalid combat engagement refresh viewer for kind"));
                 }
                 if row.target == 0 || row.target > i32::MAX as u64 {
                     return Err(invalid("invalid combat engagement refresh controller target"));
@@ -1126,6 +1135,9 @@ typed_codec!(
             CombatEngagementRefreshRow::LOCAL_ALL_SIDES => {
                 if row.side != 0 {
                     return Err(invalid("invalid combat engagement refresh side for kind"));
+                }
+                if row.viewer != 0 {
+                    return Err(invalid("invalid combat engagement refresh viewer for kind"));
                 }
                 if row.target > i32::MAX as u64 {
                     return Err(invalid("invalid combat engagement refresh local viewer"));
@@ -1268,42 +1280,70 @@ mod combat_engagement_refresh_tests {
                 kind: CombatEngagementRefreshRow::LAND_SIDE,
                 target: 0,
                 side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },
             CombatEngagementRefreshRow {
                 kind: CombatEngagementRefreshRow::NAVAL_SIDE,
                 target: 0,
                 side: 1,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
+            },
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::LAND_SIDE,
+                target: 7,
+                side: 0,
+                viewer: i32::MAX as u32 + 1,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },
             CombatEngagementRefreshRow {
                 kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
                 target: i32::MAX as u64 + 1,
                 side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },
             CombatEngagementRefreshRow {
                 kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
                 target: 0,
                 side: 0,
+                viewer: 1,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                target: 0,
+                side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
             },
             CombatEngagementRefreshRow {
                 kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
                 target: 0,
                 side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },
             CombatEngagementRefreshRow {
                 kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
                 target: i32::MAX as u64 + 1,
                 side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },
             CombatEngagementRefreshRow {
                 kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
                 target: 7,
                 side: 0,
+                viewer: 1,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
+                target: 7,
+                side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
             },
         ] {

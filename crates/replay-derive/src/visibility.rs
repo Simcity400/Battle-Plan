@@ -262,6 +262,103 @@ pub fn reserved_faction(row: &ReservedCountryNamingRow) -> Result<u64, &'static 
     }
 }
 
+fn reserved_faction_tables<F: Tables + ?Sized>(frame: &F) -> Result<u64, &'static str> {
+    let mut found = None;
+    each::<tables::ReservedCountryNaming, F>(frame, "ReservedCountryNaming", |row| {
+        if found.is_some() {
+            return Err("ReservedCountryNaming singleton");
+        }
+        found = Some(reserved_faction(row));
+        Ok(())
+    })?;
+    found.ok_or("ReservedCountryNaming singleton")?
+}
+
+fn map_intel_factions_tables<F: Tables + ?Sized>(
+    frame: &F,
+    links: &BTreeMap<u32, u32>,
+) -> Result<BTreeMap<u32, Result<u64, &'static str>>, &'static str> {
+    let mut out: BTreeMap<u32, Result<u64, &'static str>> = BTreeMap::new();
+    each::<tables::FactionMembers, F>(frame, "FactionMembers", |row| {
+        let country = map_intel_slot(links, row.country)?;
+        if row.faction == 0 {
+            return Err("FactionMembers has null faction identity");
+        }
+        match out.entry(country) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(Ok(row.faction));
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                if *entry.get() != Ok(row.faction) {
+                    *entry.get_mut() = Err("FactionMembers has inconsistent faction identity");
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+#[derive(Clone, Default)]
+pub struct ZeroVisibility {
+    shared: BTreeMap<u32, Result<bool, &'static str>>,
+}
+
+impl ZeroVisibility {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_tests(shared: impl IntoIterator<Item = (u32, Result<bool, &'static str>)>) -> Self {
+        Self {
+            shared: shared.into_iter().collect(),
+        }
+    }
+
+    pub fn read_tables<F: Tables + ?Sized>(
+        frame: &F,
+        links: &BTreeMap<u32, u32>,
+    ) -> Result<Self, &'static str> {
+        let factions = map_intel_factions_tables(frame, links);
+        let reserved = reserved_faction_tables(frame);
+        let mut shared = BTreeMap::new();
+        each::<tables::CountryCounterInputs, F>(frame, "CountryCounterInputs", |row| {
+            let Some(&owner) = links.get(&row.country) else {
+                return Ok(());
+            };
+            let result = forward_zero_shared_of(
+                links,
+                &row.forward_visibility,
+                &row.zero_war,
+                &row.zero_subject,
+                || match &factions {
+                    Ok(map) => match map.get(&owner) {
+                        Some(&Ok(faction)) => Ok(Some(faction)),
+                        Some(&Err(reason)) => Err(reason),
+                        None => Ok(None),
+                    },
+                    Err(reason) => Err(reason),
+                },
+                || reserved,
+            );
+            match shared.entry(owner) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(result);
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    *entry.get_mut() = Err("CountryCounterInputs visibility owner duplicated");
+                }
+            }
+            Ok(())
+        })?;
+        Ok(Self { shared })
+    }
+
+    pub fn shared(&self, owner: u32) -> Result<bool, &'static str> {
+        self.shared
+            .get(&owner)
+            .copied()
+            .unwrap_or(Err("CountryCounterInputs visibility owner missing"))
+    }
+}
+
 fn reverse_cell<'a>(
     frame: &dyn DecodedSource,
     row: &'a ReservedCountryNamingRow,

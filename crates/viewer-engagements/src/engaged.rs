@@ -1,5 +1,5 @@
 
-use viewer_foundation::visibility::Relations;
+use viewer_foundation::visibility::{Relations, ZeroVisibility};
 use replay_data::rows::TableId;
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
@@ -118,16 +118,24 @@ impl Lists {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SideWitness {
+    pub lists: Lists,
+    pub recorded_viewers: Vec<u32>,
+    pub units_viewers: Vec<u32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum RefreshWitness {
     #[default]
     Unavailable,
     Complete {
-        sides: BTreeMap<(u64, u8), Lists>,
+        sides: BTreeMap<(u64, u8), SideWitness>,
         controller_targets: Vec<u32>,
         local_viewers: Vec<u32>,
     },
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Refresh {
     Load,
@@ -206,8 +214,10 @@ impl Controllers {
 pub struct Sample<'a> {
     pub viewer: u32,
     pub alternate_viewer: Option<u32>,
+    pub recording: bool,
     pub links: &'a BTreeMap<u32, u32>,
     pub relations: Result<&'a Relations, &'static str>,
+    pub zero_visibility: Result<&'a ZeroVisibility, &'static str>,
     pub controllers: Option<Controllers>,
     pub refreshes: RefreshWitness,
     pub sides: BTreeMap<(u64, u8), Side>,
@@ -252,6 +262,7 @@ struct Previous {
     alternate_viewer_refreshed: Option<u32>,
     links: BTreeMap<u32, u32>,
     relations: Result<Relations, &'static str>,
+    zero_visibility: Result<ZeroVisibility, &'static str>,
     controllers: Option<Controllers>,
     sides: BTreeMap<(u64, u8), Kept>,
     complete: bool,
@@ -291,7 +302,9 @@ impl Previous {
         let mut other_proven = false;
         let mut local_proven = false;
         let mut possible = false;
-        if self.viewer != sample.viewer {
+        if self.viewer != sample.viewer
+            && !(sample.recording && matches!(sample.refreshes, RefreshWitness::Complete { .. }))
+        {
             if self.alternate_viewer_refreshed == Some(sample.viewer) {
                 possible = true;
             } else {
@@ -353,12 +366,13 @@ impl Previous {
         key: (u64, u8),
         side: &Side,
         every: EverySide,
-    ) -> Option<(Lists, Lists, bool)> {
-        let (own_proven, own_possible) = match self.own_refresh(sample, key, side) {
+    ) -> Option<(Lists, Lists, bool, bool, bool)> {
+        let (own_proven, own_possible, other_lost_units) = match self.own_refresh(sample, key, side)
+        {
             Some(own) => own,
             None if every.proven() => {
                 if matches!(sample.refreshes, RefreshWitness::Complete { .. }) {
-                    (Lists::default(), Lists::default())
+                    (Lists::default(), Lists::default(), false)
                 } else {
                     (
                         Lists::default(),
@@ -366,13 +380,14 @@ impl Previous {
                             recorded: true,
                             units: true,
                         },
+                        false,
                     )
                 }
             }
             None => return None,
         };
-        let non_local_recorded =
-            own_proven.recorded || own_possible.recorded || every.other_proven || every.possible;
+        let own_recorded = own_proven.recorded || own_possible.recorded;
+        let non_local_recorded = own_recorded || every.other_proven || every.possible;
         let proven = Lists {
             recorded: own_proven.recorded || every.proven(),
             units: own_proven.units,
@@ -381,7 +396,7 @@ impl Previous {
             recorded: own_possible.recorded || every.possible,
             units: own_possible.units,
         };
-        Some((proven, possible, non_local_recorded))
+        Some((proven, possible, own_recorded, non_local_recorded, other_lost_units))
     }
 
     fn own_refresh(
@@ -389,9 +404,11 @@ impl Previous {
         sample: &Sample<'_>,
         key: (u64, u8),
         side: &Side,
-    ) -> Option<(Lists, Lists)> {
+    ) -> Option<(Lists, Lists, bool)> {
         let witnessed = match &sample.refreshes {
-            RefreshWitness::Complete { sides, .. } => Some(sides.get(&key).copied().unwrap_or_default()),
+            RefreshWitness::Complete { sides, .. } => {
+                Some(sides.get(&key).map_or(Lists::default(), |witness| witness.lists))
+            }
             RefreshWitness::Unavailable => None,
         };
         let Some(before) = self.sides.get(&key) else {
@@ -403,15 +420,17 @@ impl Previous {
                         units: extra.units,
                     },
                     Lists::default(),
+                    false,
                 ));
             }
             if extra.any() {
-                return Some((extra, Lists::default()));
+                return Some((extra, Lists::default(), false));
             }
             return None;
         };
         if let Some(witnessed) = witnessed {
             let mut proven = witnessed;
+            let mut other_lost_units = false;
             if let (Some(was), Some(now)) = (before.units.as_deref(), side.units.as_deref()) {
                 let (added, _) = before.added.refresh(&side.added);
                 proven.recorded |= gained(was, now) || added;
@@ -432,10 +451,11 @@ impl Previous {
                     };
                     if other_lost == Some(true) {
                         proven.units = true;
+                        other_lost_units = true;
                     }
                 }
             }
-            return Some((proven, Lists::default()));
+            return Some((proven, Lists::default(), other_lost_units));
         }
         let (Some(was), Some(now)) = (before.units.as_deref(), side.units.as_deref()) else {
             return None;
@@ -479,7 +499,7 @@ impl Previous {
         if side.unit_lists != side.lists {
             possible.units = true;
         }
-        Some((proven, possible))
+        Some((proven, possible, other_lost == Some(true)))
     }
 }
 
@@ -525,18 +545,29 @@ impl History {
         let next = previous.as_ref().filter(|_| continuity == Continuity::Next);
         let every = next.map(|previous| previous.every_side(&sample));
         let mut held = BTreeMap::new();
-        let local_viewers: &[u32] = match &sample.refreshes {
-            RefreshWitness::Complete { local_viewers, .. } => local_viewers.as_slice(),
-            RefreshWitness::Unavailable => &[],
-        };
+        let (side_witnesses, local_viewers): (Option<&BTreeMap<(u64, u8), SideWitness>>, &[u32]) =
+            match &sample.refreshes {
+                RefreshWitness::Complete {
+                    sides,
+                    local_viewers,
+                    ..
+                } => (Some(sides), local_viewers.as_slice()),
+                RefreshWitness::Unavailable => (None, &[]),
+            };
         let alternate = sample.alternate_viewer.filter(|&alt| alt != sample.viewer);
-        let before = next.map(|p| (&p.links, p.relations.as_ref().map_err(|reason| *reason)));
+        let before = next.map(|p| {
+            (
+                &p.links,
+                p.relations.as_ref().map_err(|reason| *reason),
+                p.zero_visibility.as_ref().map_err(|reason| *reason),
+            )
+        });
         let mut evaluated = Vec::new();
         let mut viewers = Vec::new();
         for (key, side) in &sample.sides {
             let eval = |lists: Tested, when: usize, viewer: CandidateViewer| {
                 let snapshot = if when == 0 {
-                    Some((sample.links, sample.relations))
+                    Some((sample.links, sample.relations, sample.zero_visibility))
                 } else {
                     before
                 };
@@ -544,19 +575,59 @@ impl History {
                     Tested::Recorded => side.lists.as_ref(),
                     Tested::Units => side.unit_lists.as_ref(),
                 }?;
-                let (links, relations) = snapshot?;
-                let slot = match viewer {
-                    CandidateViewer::Slot(slot) => slot,
-                    CandidateViewer::RawLocal(0) => return Some(false),
-                    CandidateViewer::RawLocal(raw) => *links.get(&raw)?,
-                };
-                test(primary, secondary, |raw| {
-                    let member = *links.get(&raw)?;
-                    if member == slot {
-                        return Some((true, true));
+                let (links, relations, zero_visibility) = snapshot?;
+                match viewer {
+                    CandidateViewer::RawLocal(0) => {
+                        let mut unknown = false;
+                        for &raw in primary {
+                            if raw == 0 {
+                                return Some(true);
+                            }
+                            let Some(&member) = links.get(&raw) else {
+                                unknown = true;
+                                continue;
+                            };
+                            if member == 0 {
+                                return Some(true);
+                            }
+                            match zero_visibility.ok().and_then(|zero| zero.shared(member).ok()) {
+                                Some(true) => return Some(true),
+                                Some(false) => {}
+                                None => unknown = true,
+                            }
+                        }
+                        for &raw in secondary {
+                            if raw == 0 {
+                                return Some(true);
+                            }
+                            let Some(&member) = links.get(&raw) else {
+                                unknown = true;
+                                continue;
+                            };
+                            if member == 0 {
+                                return Some(true);
+                            }
+                        }
+                        (!unknown).then_some(false)
                     }
-                    Some((false, relations.ok()?.shared(member, slot)))
-                })
+                    CandidateViewer::Slot(slot) => test(primary, secondary, |raw| {
+                        let member = *links.get(&raw)?;
+                        if member == slot {
+                            return Some((true, true));
+                        }
+                        Some((false, relations.ok()?.shared(member, slot)))
+                    }),
+                    CandidateViewer::RawLocal(raw) => {
+                        let slot = *links.get(&raw)?;
+                        test(primary, secondary, |raw| {
+                            let member = *links.get(&raw)?;
+                            if member == slot {
+                                return Some((true, true));
+                            }
+                            Some((false, relations.ok()?.shared(member, slot)))
+                        })
+                    }
+                }
             };
             let held_before = self.held.get(key).copied().unwrap_or(Engaged::Unknown);
             let value = match (continuity, next, every) {
@@ -566,23 +637,64 @@ impl History {
                 (_, Some(previous), Some(every)) => {
                     match previous.refresh(&sample, *key, side, every) {
                         None => Engaged::Unknown,
-                        Some((proven, possible, non_local_recorded)) => {
+                        Some((
+                            proven,
+                            possible,
+                            own_recorded,
+                            non_local_recorded,
+                            other_lost_units,
+                        )) => {
                             if !proven.any() && !possible.any() {
                                 held_before
                             } else {
                                 evaluated.clear();
                                 if proven.recorded || possible.recorded {
                                     viewers.clear();
-                                    for &raw in local_viewers {
-                                        push_unique(&mut viewers, CandidateViewer::RawLocal(raw));
-                                    }
-                                    if non_local_recorded || local_viewers.is_empty() {
-                                        push_unique(
-                                            &mut viewers,
-                                            CandidateViewer::Slot(sample.viewer),
-                                        );
-                                        if let Some(alt) = alternate {
-                                            push_unique(&mut viewers, CandidateViewer::Slot(alt));
+                                    if sample.recording
+                                        && let Some(sides) = side_witnesses
+                                    {
+                                        for &raw in local_viewers {
+                                            push_unique(&mut viewers, CandidateViewer::RawLocal(raw));
+                                        }
+                                        if own_recorded {
+                                            let side_rec = sides
+                                                .get(key)
+                                                .map_or(&[][..], |w| w.recorded_viewers.as_slice());
+                                            if !side_rec.is_empty() {
+                                                for &raw in side_rec {
+                                                    push_unique(
+                                                        &mut viewers,
+                                                        CandidateViewer::RawLocal(raw),
+                                                    );
+                                                }
+                                            } else {
+                                                push_unique(
+                                                    &mut viewers,
+                                                    CandidateViewer::Slot(sample.viewer),
+                                                );
+                                                if let Some(alt) = alternate {
+                                                    push_unique(
+                                                        &mut viewers,
+                                                        CandidateViewer::Slot(alt),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        for &raw in local_viewers {
+                                            push_unique(&mut viewers, CandidateViewer::RawLocal(raw));
+                                        }
+                                        if non_local_recorded || local_viewers.is_empty() {
+                                            push_unique(
+                                                &mut viewers,
+                                                CandidateViewer::Slot(sample.viewer),
+                                            );
+                                            if let Some(alt) = alternate {
+                                                push_unique(
+                                                    &mut viewers,
+                                                    CandidateViewer::Slot(alt),
+                                                );
+                                            }
                                         }
                                     }
                                     for &viewer in &viewers {
@@ -597,12 +709,54 @@ impl History {
                                 }
                                 if proven.units || possible.units {
                                     viewers.clear();
-                                    push_unique(&mut viewers, CandidateViewer::Slot(sample.viewer));
-                                    if let Some(alt) = alternate {
-                                        push_unique(&mut viewers, CandidateViewer::Slot(alt));
-                                    }
-                                    for &raw in local_viewers {
-                                        push_unique(&mut viewers, CandidateViewer::RawLocal(raw));
+                                    if sample.recording
+                                        && let Some(sides) = side_witnesses
+                                    {
+                                        if let Some(witness) = sides.get(key) {
+                                            for &raw in &witness.units_viewers {
+                                                push_unique(
+                                                    &mut viewers,
+                                                    CandidateViewer::RawLocal(raw),
+                                                );
+                                            }
+                                        }
+                                        if other_lost_units
+                                            && sample.removal == Removal::BothSides
+                                            && let Some(other) = sides.get(&(key.0, 1 - key.1))
+                                        {
+                                            for &raw in &other.units_viewers {
+                                                push_unique(
+                                                    &mut viewers,
+                                                    CandidateViewer::RawLocal(raw),
+                                                );
+                                            }
+                                        }
+                                        if viewers.is_empty() {
+                                            push_unique(
+                                                &mut viewers,
+                                                CandidateViewer::Slot(sample.viewer),
+                                            );
+                                            if let Some(alt) = alternate {
+                                                push_unique(
+                                                    &mut viewers,
+                                                    CandidateViewer::Slot(alt),
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        push_unique(
+                                            &mut viewers,
+                                            CandidateViewer::Slot(sample.viewer),
+                                        );
+                                        if let Some(alt) = alternate {
+                                            push_unique(&mut viewers, CandidateViewer::Slot(alt));
+                                        }
+                                        for &raw in local_viewers {
+                                            push_unique(
+                                                &mut viewers,
+                                                CandidateViewer::RawLocal(raw),
+                                            );
+                                        }
                                     }
                                     for &viewer in &viewers {
                                         for when in 0..2 {
@@ -635,6 +789,7 @@ impl History {
             alternate_viewer_refreshed,
             links: sample.links.clone(),
             relations: sample.relations.cloned(),
+            zero_visibility: sample.zero_visibility.cloned(),
             controllers: sample.controllers,
             sides: sample
                 .sides

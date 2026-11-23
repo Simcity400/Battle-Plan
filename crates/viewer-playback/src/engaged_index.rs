@@ -36,7 +36,11 @@ use viewer_engagements::{
     icon_frames::{IconFold, Kept},
     naval_check::{self, ByteCheck, Summary},
 };
-use viewer_foundation::{perspective::Country, tables::{Available, core}, visibility::Relations};
+use viewer_foundation::{
+    perspective::Country,
+    tables::{Available, core},
+    visibility::{Relations, ZeroVisibility},
+};
 
 const ICON_TABLES: [TableId; 5] = [
     TableId::LandCombats,
@@ -46,7 +50,7 @@ const ICON_TABLES: [TableId; 5] = [
     TableId::NavalCombatDetails,
 ];
 
-const VIEWER_TABLES: [TableId; 10] = [
+const VIEWER_TABLES: [TableId; 12] = [
     TableId::Campaign,
     TableId::CountryLinks,
     TableId::Countries,
@@ -56,14 +60,16 @@ const VIEWER_TABLES: [TableId; 10] = [
     TableId::FactionMembers,
     TableId::WarRelations,
     TableId::Subjects,
+    TableId::CountryCounterInputs,
+    TableId::ReservedCountryNaming,
     TableId::CombatEngagementRefreshes,
 ];
 
 enum Witness {
     Unavailable,
     Complete {
-        land: BTreeMap<(u64, u8), engaged::Lists>,
-        naval: BTreeMap<(u64, u8), engaged::Lists>,
+        land: BTreeMap<(u64, u8), engaged::SideWitness>,
+        naval: BTreeMap<(u64, u8), engaged::SideWitness>,
         controller_targets: Vec<u32>,
         local_viewers: Vec<u32>,
     },
@@ -72,6 +78,7 @@ enum Witness {
 struct Inputs {
     links: BTreeMap<u32, u32>,
     relations: Result<Relations, &'static str>,
+    zero_visibility: Result<ZeroVisibility, &'static str>,
     controllers: Option<engaged::Controllers>,
     witness: Witness,
 }
@@ -80,9 +87,16 @@ impl Inputs {
     fn read<F: Tables + ?Sized>(frame: &F) -> io::Result<Self> {
         let links: BTreeMap<u32, u32> = whole_core::<tables::CountryLinks, F>(frame)?.iter().map(|link| (link.id, link.canonical_slot)).collect();
         let relations = Relations::read_tables(frame, &links);
+        let zero_visibility = ZeroVisibility::read_tables(frame, &links);
         let controllers = controllers(frame, &links)?;
         let witness = witness(frame)?;
-        Ok(Self { links, relations, controllers, witness })
+        Ok(Self { links, relations, zero_visibility, controllers, witness })
+    }
+}
+
+fn push_unique(list: &mut Vec<u32>, value: u32) {
+    if !list.contains(&value) {
+        list.push(value);
     }
 }
 
@@ -91,8 +105,8 @@ fn witness<F: Tables + ?Sized>(frame: &F) -> io::Result<Witness> {
     let Available::Complete(rows) = available::<tables::CombatEngagementRefreshes, F>(frame)? else {
         return Ok(Witness::Unavailable);
     };
-    let mut land = BTreeMap::<(u64, u8), engaged::Lists>::new();
-    let mut naval = BTreeMap::<(u64, u8), engaged::Lists>::new();
+    let mut land = BTreeMap::<(u64, u8), engaged::SideWitness>::new();
+    let mut naval = BTreeMap::<(u64, u8), engaged::SideWitness>::new();
     let mut controller_targets = Vec::new();
     let mut local_viewers = Vec::new();
     for row in rows {
@@ -100,23 +114,46 @@ fn witness<F: Tables + ?Sized>(frame: &F) -> io::Result<Witness> {
         let units = (row.triggers & CombatEngagementRefreshRow::TRIGGER_UNITS) != 0;
         match row.kind {
             CombatEngagementRefreshRow::LAND_SIDE => {
-                if row.target == 0 || row.side > 1 || row.triggers == 0 || (row.triggers & !3) != 0 {
+                if row.target == 0
+                    || row.side > 1
+                    || row.viewer > i32::MAX as u32
+                    || row.triggers == 0
+                    || (row.triggers & !3) != 0
+                {
                     return Ok(Witness::Unavailable);
                 }
                 let entry = land.entry((row.target, row.side)).or_default();
-                entry.recorded |= recorded;
-                entry.units |= units;
+                entry.lists.recorded |= recorded;
+                entry.lists.units |= units;
+                if recorded {
+                    push_unique(&mut entry.recorded_viewers, row.viewer);
+                }
+                if units {
+                    push_unique(&mut entry.units_viewers, row.viewer);
+                }
             }
             CombatEngagementRefreshRow::NAVAL_SIDE => {
-                if row.target == 0 || row.side > 1 || row.triggers == 0 || (row.triggers & !3) != 0 {
+                if row.target == 0
+                    || row.side > 1
+                    || row.viewer > i32::MAX as u32
+                    || row.triggers == 0
+                    || (row.triggers & !3) != 0
+                {
                     return Ok(Witness::Unavailable);
                 }
                 let entry = naval.entry((row.target, row.side)).or_default();
-                entry.recorded |= recorded;
-                entry.units |= units;
+                entry.lists.recorded |= recorded;
+                entry.lists.units |= units;
+                if recorded {
+                    push_unique(&mut entry.recorded_viewers, row.viewer);
+                }
+                if units {
+                    push_unique(&mut entry.units_viewers, row.viewer);
+                }
             }
             CombatEngagementRefreshRow::CONTROLLER_TARGET => {
                 if row.side != 0
+                    || row.viewer != 0
                     || row.target == 0
                     || row.target > i32::MAX as u64
                     || row.triggers != CombatEngagementRefreshRow::TRIGGER_RECORDED
@@ -127,6 +164,7 @@ fn witness<F: Tables + ?Sized>(frame: &F) -> io::Result<Witness> {
             }
             CombatEngagementRefreshRow::LOCAL_ALL_SIDES => {
                 if row.side != 0
+                    || row.viewer != 0
                     || row.target > i32::MAX as u64
                     || row.triggers != CombatEngagementRefreshRow::TRIGGER_RECORDED
                 {
@@ -256,8 +294,14 @@ impl Viewer {
         engaged::Sample {
             viewer: self.slot,
             alternate_viewer: self.alternate_slot,
+            recording,
             links: &self.inputs.links,
             relations: self.inputs.relations.as_ref().map_err(|reason| *reason),
+            zero_visibility: self
+                .inputs
+                .zero_visibility
+                .as_ref()
+                .map_err(|reason| *reason),
             controllers: self.inputs.controllers.clone(),
             refreshes,
             sides: sides.sides,

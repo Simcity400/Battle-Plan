@@ -149,8 +149,10 @@ pub fn combats(
         engaged::Sample {
             viewer,
             alternate_viewer: None,
+            recording: false,
             links,
             relations,
+            zero_visibility: Err("zero visibility unused on load fallback"),
             controllers: None,
             refreshes: engaged::RefreshWitness::Unavailable,
             sides: sides.sides,

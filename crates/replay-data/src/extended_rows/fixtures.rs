@@ -2429,15 +2429,16 @@ impl Fixture for LandCombatDivisionModifierRow {
 }
 impl Fixture for CombatEngagementRefreshRow {
     fn smallest_key() -> u128 {
-        1 << 1
+        1_u128 << 33
     }
     fn largest_key() -> u128 {
-        (u128::from(Self::LOCAL_ALL_SIDES) << 65) | (u128::from(i32::MAX as u64) << 1)
+        (u128::from(Self::LOCAL_ALL_SIDES) << 97) | (u128::from(i32::MAX as u64) << 33)
     }
     fn fixture(key: u128, tick: usize) -> Self {
-        let kind = ((key >> 65) & 3) as u8;
-        let target = (key >> 1) as u64;
-        let side = (key & 1) as u8;
+        let kind = ((key >> 97) & 3) as u8;
+        let target = (key >> 33) as u64;
+        let side = ((key >> 32) & 1) as u8;
+        let viewer = key as u32;
         let triggers = if kind >= Self::CONTROLLER_TARGET {
             Self::TRIGGER_RECORDED
         } else {
@@ -2447,6 +2448,7 @@ impl Fixture for CombatEngagementRefreshRow {
             kind,
             target,
             side,
+            viewer,
             triggers,
         }
     }

@@ -193,6 +193,14 @@ fn complete_witness() -> RefreshWitness {
     }
 }
 
+fn side_witness(lists: Lists) -> SideWitness {
+    SideWitness {
+        lists,
+        recorded_viewers: Vec::new(),
+        units_viewers: Vec::new(),
+    }
+}
+
 fn defended<'a>(
     links: &'a BTreeMap<u32, u32>,
     relations: &'a Relations,
@@ -203,8 +211,10 @@ fn defended<'a>(
     Sample {
         viewer: 1,
         alternate_viewer: None,
+        recording: false,
         links,
         relations: Ok(relations),
+        zero_visibility: Err("unused"),
         controllers: Some(Controllers::default()),
         refreshes: complete_witness(),
         sides: BTreeMap::from([
@@ -233,7 +243,7 @@ fn a_land_removal_may_rebuild_the_other_side() {
     assert_eq!(history.side(62, 1), Engaged::No);
     let witnessed = Sample {
         refreshes: RefreshWitness::Complete {
-            sides: BTreeMap::from([((62, 0), UNITS)]),
+            sides: BTreeMap::from([((62, 0), side_witness(UNITS))]),
             controller_targets: Vec::new(),
             local_viewers: Vec::new(),
         },
@@ -388,7 +398,7 @@ fn unavailable_added_ids_leave_a_possible_rebuild_until_two_observations_compare
     assert_eq!(witnessed.side(62, 0), Engaged::No);
     let transfer = Sample {
         refreshes: RefreshWitness::Complete {
-            sides: BTreeMap::from([((62, 0), RECORDED)]),
+            sides: BTreeMap::from([((62, 0), side_witness(RECORDED))]),
             controller_targets: Vec::new(),
             local_viewers: Vec::new(),
         },
@@ -614,7 +624,7 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     readd.advance(
         Sample {
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::from([((62, 0), RECORDED)]),
+                sides: BTreeMap::from([((62, 0), side_witness(RECORDED))]),
                 controller_targets: Vec::new(),
                 local_viewers: Vec::new(),
             },
@@ -626,7 +636,7 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     readd.advance(
         Sample {
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::from([((62, 0), RECORDED)]),
+                sides: BTreeMap::from([((62, 0), side_witness(RECORDED))]),
                 controller_targets: Vec::new(),
                 local_viewers: Vec::new(),
             },
@@ -663,7 +673,7 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
             &apart,
             &naval_side,
             RefreshWitness::Complete {
-                sides: BTreeMap::from([((62, 0), UNITS)]),
+                sides: BTreeMap::from([((62, 0), side_witness(UNITS))]),
                 controller_targets: Vec::new(),
                 local_viewers: Vec::new(),
             },
@@ -672,12 +682,30 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     );
     assert_eq!(bounce.side(62, 0), Engaged::No);
 
+    let zero_no = ZeroVisibility::for_tests([(2, Ok(false)), (5, Ok(false))]);
+    let zero_yes = ZeroVisibility::for_tests([(2, Ok(true)), (5, Ok(false))]);
     let mut local = History::default();
-    local.advance(sample(&links, &apart, &[7], &[2]), Continuity::Load);
-    local.advance(sample(&links, &allied, &[7], &[2]), Continuity::Next);
+    local.advance(
+        Sample {
+            recording: true,
+            zero_visibility: Ok(&zero_no),
+            ..sample(&links, &apart, &[7], &[2])
+        },
+        Continuity::Load,
+    );
+    local.advance(
+        Sample {
+            recording: true,
+            zero_visibility: Ok(&zero_no),
+            ..sample(&links, &allied, &[7], &[2])
+        },
+        Continuity::Next,
+    );
     assert_eq!(local.side(62, 0), Engaged::No);
     local.advance(
         Sample {
+            recording: true,
+            zero_visibility: Ok(&zero_no),
             refreshes: RefreshWitness::Complete {
                 sides: BTreeMap::new(),
                 controller_targets: Vec::new(),
@@ -690,6 +718,8 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     assert_eq!(local.side(62, 0), Engaged::Yes);
     local.advance(
         Sample {
+            recording: true,
+            zero_visibility: Ok(&zero_no),
             refreshes: RefreshWitness::Complete {
                 sides: BTreeMap::new(),
                 controller_targets: Vec::new(),
@@ -702,6 +732,50 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     assert_eq!(local.side(62, 0), Engaged::No);
     local.advance(
         Sample {
+            recording: true,
+            zero_visibility: Ok(&zero_yes),
+            refreshes: RefreshWitness::Complete {
+                sides: BTreeMap::new(),
+                controller_targets: Vec::new(),
+                local_viewers: vec![0],
+            },
+            ..sample(&links, &allied, &[7], &[2])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(local.side(62, 0), Engaged::Ambiguous(Ambiguity::Order));
+    local.advance(
+        Sample {
+            recording: true,
+            zero_visibility: Ok(&zero_yes),
+            refreshes: RefreshWitness::Complete {
+                sides: BTreeMap::new(),
+                controller_targets: Vec::new(),
+                local_viewers: vec![0],
+            },
+            ..sample(&links, &allied, &[7], &[2])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(local.side(62, 0), Engaged::Yes);
+    local.advance(
+        Sample {
+            recording: true,
+            zero_visibility: Err("missing"),
+            refreshes: RefreshWitness::Complete {
+                sides: BTreeMap::new(),
+                controller_targets: Vec::new(),
+                local_viewers: vec![0],
+            },
+            ..sample(&links, &allied, &[7], &[2])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(local.side(62, 0), Engaged::Unknown);
+    local.advance(
+        Sample {
+            recording: true,
+            zero_visibility: Ok(&zero_no),
             refreshes: RefreshWitness::Complete {
                 sides: BTreeMap::new(),
                 controller_targets: Vec::new(),
@@ -761,7 +835,7 @@ fn partial_previous_census_still_applies_witnessed_side_refresh() {
     history.advance(
         Sample {
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::from([((62, 0), RECORDED)]),
+                sides: BTreeMap::from([((62, 0), side_witness(RECORDED))]),
                 controller_targets: Vec::new(),
                 local_viewers: Vec::new(),
             },

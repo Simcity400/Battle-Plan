@@ -24,6 +24,7 @@ pub struct Entry {
     pub kind: u8,
     pub target: u64,
     pub side: u8,
+    pub viewer: u32,
     pub triggers: u8,
 }
 
@@ -186,10 +187,12 @@ fn identify_side(
             cnaval_combat::DEFENDER,
             combatant,
         )?;
+        let viewer = read_local_viewing_country(memory, base)?;
         Ok(Entry {
             kind: CombatEngagementRefreshRow::NAVAL_SIDE,
             target: handle,
             side,
+            viewer,
             triggers,
         })
     } else {
@@ -229,10 +232,12 @@ fn identify_side(
             cland_combat::DEFENDER,
             combatant,
         )?;
+        let viewer = read_local_viewing_country(memory, base)?;
         Ok(Entry {
             kind: CombatEngagementRefreshRow::LAND_SIDE,
             target: handle,
             side,
+            viewer,
             triggers,
         })
     }
@@ -256,11 +261,12 @@ fn identify_controller_target(
         kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
         target: u64::from(target),
         side: 0,
+        viewer: 0,
         triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
     }))
 }
 
-fn read_local_viewing_country(memory: &impl Memory, base: usize) -> Result<u64, &'static str> {
+fn read_local_viewing_country(memory: &impl Memory, base: usize) -> Result<u32, &'static str> {
     let game = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
         .and_then(|at| engine_native::read::<u64>(memory, at))
         .and_then(|pointer| usize::try_from(pointer).ok())
@@ -275,7 +281,7 @@ fn read_local_viewing_country(memory: &impl Memory, base: usize) -> Result<u64, 
     } else {
         0
     };
-    Ok(u64::from(raw))
+    Ok(raw)
 }
 
 fn identify_all_combats(
@@ -294,11 +300,12 @@ fn identify_all_combats(
     if vtable != expected {
         return Err("combat engagement refresh combat manager unauthenticated");
     }
-    let target = read_local_viewing_country(memory, base)?;
+    let target = u64::from(read_local_viewing_country(memory, base)?);
     Ok(Some(Entry {
         kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
         target,
         side: 0,
+        viewer: 0,
         triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
     }))
 }
@@ -334,6 +341,7 @@ fn identify_hourly_viewer_change(before: u32, after: u32) -> Option<Entry> {
             0
         },
         side: 0,
+        viewer: 0,
         triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
     })
 }
@@ -957,6 +965,7 @@ mod tests {
                 kind: CombatEngagementRefreshRow::LAND_SIDE,
                 target: 77,
                 side: 0,
+                viewer: 17,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             })
         );
@@ -972,6 +981,7 @@ mod tests {
                 kind: CombatEngagementRefreshRow::LAND_SIDE,
                 target: 88,
                 side: 1,
+                viewer: 17,
                 triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
             })
         );
@@ -997,8 +1007,19 @@ mod tests {
                 kind: CombatEngagementRefreshRow::NAVAL_SIDE,
                 target: 99,
                 side: 0,
+                viewer: 17,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             })
+        );
+        assert!(
+            identify_side(
+                &memory.slice,
+                base,
+                addr(land_att),
+                CombatEngagementRefreshRow::TRIGGER_RECORDED,
+                false
+            )
+            .is_err()
         );
         assert_eq!(
             identify_controller_target(&memory, addr(cmd_pos)),
@@ -1006,6 +1027,7 @@ mod tests {
                 kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
                 target: 42,
                 side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             }))
         );
@@ -1016,6 +1038,7 @@ mod tests {
                 kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
                 target: 17,
                 side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             }))
         );
@@ -1030,6 +1053,7 @@ mod tests {
                 kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
                 target: 12,
                 side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             })
         );
@@ -1039,6 +1063,7 @@ mod tests {
                 kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
                 target: 0,
                 side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             })
         );
@@ -1068,6 +1093,7 @@ mod tests {
                     kind: CombatEngagementRefreshRow::LAND_SIDE,
                     target: 62,
                     side: 0,
+                    viewer: 1,
                     triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
                 }))
             },
@@ -1113,6 +1139,7 @@ mod tests {
                         kind: CombatEngagementRefreshRow::LAND_SIDE,
                         target: 62,
                         side: 0,
+                        viewer: 1,
                         triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
                     }))
                 },
@@ -1154,6 +1181,7 @@ mod tests {
                             kind: CombatEngagementRefreshRow::LAND_SIDE,
                             target: 62,
                             side: 0,
+                            viewer: 1,
                             triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
                         }))
                     },

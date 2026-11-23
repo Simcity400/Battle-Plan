@@ -267,21 +267,22 @@ fn a_viewer_who_is_the_recording_player_takes_its_player_change_rebuilds() {
     let none: &[(u32, u32)] = &[];
     let allied: &[(u32, u32)] = &[(1, 2)];
     let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
-    for (hour, players, factions, bytes, refreshes) in [
-        (10, &[1][..], none, [0, 0], false),
-        (11, &[2][..], none, [1, 0], false),
-        (12, &[2][..], allied, [1, 0], false),
-        (13, &[1][..], allied, [1, 0], true),
+    for (hour, players, factions, bytes, local_sweep) in [
+        (10, &[1][..], none, [0, 0], None),
+        (11, &[2][..], none, [1, 0], Some(2)),
+        (12, &[2][..], allied, [1, 0], None),
+        (13, &[1][..], allied, [1, 0], Some(1)),
     ] {
         let mut frame = naval_frame(6, players, factions, 1, bytes);
-        if refreshes {
+        if let Some(target) = local_sweep {
             *frame.tables[TableId::CombatEngagementRefreshes.index()] =
                 replay_frame::frame::TableView::Complete(
                     replay_data::rows::TableRows::CombatEngagementRefreshes(vec![
                         replay_data::rows::CombatEngagementRefreshRow {
                             kind: replay_data::rows::CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
-                            target: 1,
+                            target,
                             side: 0,
+                            viewer: 0,
                             triggers:
                                 replay_data::rows::CombatEngagementRefreshRow::TRIGGER_RECORDED,
                         },
@@ -311,10 +312,28 @@ fn a_viewer_who_is_the_recording_player_takes_its_player_change_rebuilds() {
 fn a_player_change_rebuilds_nothing_for_another_viewer() {
     let none: &[(u32, u32)] = &[];
     let allied: &[(u32, u32)] = &[(2, 5)];
-    let pass = fold_hours(
-        "C5",
-        &[(10, &[1], none, [0, 0]), (11, &[2], allied, [1, 1])],
+    let mut pass = Pass::new(Arc::default(), Country::Tag("C5".into()));
+    pass.fold_hour(
+        3,
+        10,
+        Some(&naval_frame(6, &[1], none, 1, [0, 0])),
+        Some(10),
+        false,
     );
+    let mut hour11 = naval_frame(6, &[2], allied, 1, [1, 1]);
+    *hour11.tables[TableId::CombatEngagementRefreshes.index()] =
+        replay_frame::frame::TableView::Complete(
+            replay_data::rows::TableRows::CombatEngagementRefreshes(vec![
+                replay_data::rows::CombatEngagementRefreshRow {
+                    kind: replay_data::rows::CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                    target: 2,
+                    side: 0,
+                    viewer: 0,
+                    triggers: replay_data::rows::CombatEngagementRefreshRow::TRIGGER_RECORDED,
+                },
+            ]),
+        );
+    pass.fold_hour(3, 11, Some(&hour11), Some(10), false);
     let index = index(&pass);
     let mut frame = naval_frame(6, &[2], allied, 1, [1, 1]);
     let branches = pass.shared.branches.lock().unwrap();
@@ -428,24 +447,39 @@ fn unread_and_unnamed_hours_are_counted_through_the_pass() {
 
 #[test]
 fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
+    use replay_data::rows::{CombatEngagementRefreshRow, LocalPlayerRow, TableRows};
+    use replay_frame::frame::TableView;
     let allied: &[(u32, u32)] = &[(2, 3)];
-    let fold = |views: [(u32, u32, [u8; 2]); 3]| {
+    let fold = |views: [(u32, u32, [u8; 2], Option<u64>); 3]| {
         let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
-        for (hour, (country, observer_country, bytes)) in (10..).zip(views) {
+        for (hour, (country, observer_country, bytes, local_sweep)) in (10..).zip(views) {
             let mut frame = naval_frame(6, &[1], allied, 1, bytes);
-            *frame.tables[TableId::LocalPlayer.index()] = replay_frame::frame::TableView::Complete(
-                replay_data::rows::TableRows::LocalPlayer(vec![
-                    replay_data::rows::LocalPlayerRow {
-                        country,
-                        observer_country,
-                    },
-                ]),
+            *frame.tables[TableId::LocalPlayer.index()] = TableView::Complete(
+                TableRows::LocalPlayer(vec![LocalPlayerRow {
+                    country,
+                    observer_country,
+                }]),
             );
+            if let Some(target) = local_sweep {
+                *frame.tables[TableId::CombatEngagementRefreshes.index()] = TableView::Complete(
+                    TableRows::CombatEngagementRefreshes(vec![CombatEngagementRefreshRow {
+                        kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                        target,
+                        side: 0,
+                        viewer: 0,
+                        triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+                    }]),
+                );
+            }
             pass.fold_hour(3, hour, Some(&frame), Some(10), false);
         }
         pass
     };
-    let pass = fold([(0, 3, [1, 0]), (0, 4, [1, 0]), (0, 4, [0, 0])]);
+    let pass = fold([
+        (0, 3, [1, 0], None),
+        (0, 4, [1, 0], None),
+        (0, 4, [0, 0], Some(4)),
+    ]);
     let summary = &pass.check.summary;
     assert_eq!(
         (summary.agreements, summary.mismatches, summary.undecided),
@@ -453,21 +487,27 @@ fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
         "{:?}",
         summary.first
     );
-    let index = index(&pass);
+    let index_obs = index(&pass);
     let mut frame = naval_frame(6, &[1], allied, 1, [1, 0]);
     *frame.tables[TableId::LocalPlayer.index()] =
-        replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::LocalPlayer(vec![
-            replay_data::rows::LocalPlayerRow {
-                country: 0,
-                observer_country: 4,
-            },
-        ]));
-    assert_eq!(naval_flag(&index, &mut frame, 11, 4), Engaged::Yes);
-    assert_eq!(naval_flag(&index, &mut frame, 12, 4), Engaged::No);
-    let pass = fold([(3, 0, [1, 0]), (4, 0, [0, 0]), (4, 0, [0, 0])]);
+        TableView::Complete(TableRows::LocalPlayer(vec![LocalPlayerRow {
+            country: 0,
+            observer_country: 4,
+        }]));
+    assert_eq!(naval_flag(&index_obs, &mut frame, 11, 4), Engaged::Yes);
+    assert_eq!(naval_flag(&index_obs, &mut frame, 12, 4), Engaged::No);
+    let pass = fold([
+        (3, 0, [1, 0], None),
+        (4, 0, [0, 0], Some(4)),
+        (4, 0, [0, 0], None),
+    ]);
     let summary = &pass.check.summary;
     assert_eq!((summary.agreements, summary.mismatches), (6, 0));
-    let pass = fold([(3, 0, [1, 0]), (0, 4, [1, 0]), (0, 4, [0, 0])]);
+    let pass = fold([
+        (3, 0, [1, 0], None),
+        (0, 4, [1, 0], None),
+        (0, 4, [0, 0], Some(4)),
+    ]);
     let summary = &pass.check.summary;
     assert_eq!(
         (summary.agreements, summary.mismatches),
@@ -475,6 +515,26 @@ fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
         "{:?}",
         summary.first
     );
+
+    let mut legacy = Pass::new(Arc::default(), Country::Tag("C1".into()));
+    for (hour, (country, observer_country, bytes)) in (10..).zip([
+        (0, 3, [1, 0]),
+        (0, 4, [1, 0]),
+        (0, 4, [0, 0]),
+    ]) {
+        let mut frame = naval_frame(6, &[1], allied, 1, bytes);
+        *frame.tables[TableId::LocalPlayer.index()] =
+            TableView::Complete(TableRows::LocalPlayer(vec![LocalPlayerRow {
+                country,
+                observer_country,
+            }]));
+        *frame.tables[TableId::CombatEngagementRefreshes.index()] = TableView::Unavailable {
+            reason: "pre-146".into(),
+        };
+        legacy.fold_hour(3, hour, Some(&frame), Some(10), false);
+    }
+    let legacy_index = index(&legacy);
+    assert_eq!(naval_flag(&legacy_index, &mut frame, 12, 4), Engaged::No);
 }
 
 #[test]
@@ -506,12 +566,14 @@ fn an_observer_switch_with_a_refresh_does_not_serve_the_old_viewers_definite_fla
                 kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
                 target: 4,
                 side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },
             CombatEngagementRefreshRow {
                 kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
                 target: 4,
                 side: 0,
+                viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },
         ]),
@@ -538,14 +600,41 @@ fn an_observer_switch_with_a_refresh_does_not_serve_the_old_viewers_definite_fla
             kind: CombatEngagementRefreshRow::LAND_SIDE,
             target: 100,
             side: 0,
+            viewer: 4,
             triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
         }]),
     );
     side_pass.fold_hour(3, 11, Some(&side_frame11), Some(10), false);
     let side_index = index(&side_pass);
     let side_served = flags(&side_index, &mut side_frame11, 11, 4);
+    assert_eq!(side_served.land[&100], Engaged::No);
+
+    let mut both_pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
+    both_pass.fold_hour(3, 10, Some(&frame10), Some(10), false);
+    let mut both_frame11 = side_frame11.clone();
+    *both_frame11.tables[TableId::CombatEngagementRefreshes.index()] = TableView::Complete(
+        TableRows::CombatEngagementRefreshes(vec![
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::LAND_SIDE,
+                target: 100,
+                side: 0,
+                viewer: 3,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::LAND_SIDE,
+                target: 100,
+                side: 0,
+                viewer: 4,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+        ]),
+    );
+    both_pass.fold_hour(3, 11, Some(&both_frame11), Some(10), false);
+    let both_index = index(&both_pass);
+    let both_served = flags(&both_index, &mut both_frame11, 11, 4);
     assert_eq!(
-        side_served.land[&100],
+        both_served.land[&100],
         Engaged::Ambiguous(engaged::Ambiguity::Order)
     );
 }
@@ -559,42 +648,70 @@ fn malformed_refresh_witness_rows_withhold_witness() {
             kind: CombatEngagementRefreshRow::LAND_SIDE,
             target: 0,
             side: 0,
+            viewer: 0,
             triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
         },
         CombatEngagementRefreshRow {
             kind: CombatEngagementRefreshRow::NAVAL_SIDE,
             target: 0,
             side: 1,
+            viewer: 0,
             triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
+        },
+        CombatEngagementRefreshRow {
+            kind: CombatEngagementRefreshRow::LAND_SIDE,
+            target: 100,
+            side: 0,
+            viewer: i32::MAX as u32 + 1,
+            triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
         },
         CombatEngagementRefreshRow {
             kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
             target: i32::MAX as u64 + 1,
             side: 0,
+            viewer: 0,
             triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
         },
         CombatEngagementRefreshRow {
             kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
             target: 0,
             side: 0,
+            viewer: 1,
+            triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+        },
+        CombatEngagementRefreshRow {
+            kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+            target: 0,
+            side: 0,
+            viewer: 0,
             triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
         },
         CombatEngagementRefreshRow {
             kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
             target: 0,
             side: 0,
+            viewer: 0,
             triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
         },
         CombatEngagementRefreshRow {
             kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
             target: i32::MAX as u64 + 1,
             side: 0,
+            viewer: 0,
             triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
         },
         CombatEngagementRefreshRow {
             kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
             target: 4,
             side: 0,
+            viewer: 1,
+            triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+        },
+        CombatEngagementRefreshRow {
+            kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
+            target: 4,
+            side: 0,
+            viewer: 0,
             triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
         },
     ] {
@@ -633,6 +750,7 @@ fn recording_track_does_not_prove_refresh_from_remote_controller_target_without_
             kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
             target: 3,
             side: 0,
+            viewer: 0,
             triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
         }],
     );
@@ -677,6 +795,7 @@ fn local_all_sides_sweep_evaluates_recorded_execution_viewpoint_not_hourly_obser
             kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
             target: 3,
             side: 0,
+            viewer: 0,
             triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
         }],
     );
@@ -690,10 +809,144 @@ fn local_all_sides_sweep_evaluates_recorded_execution_viewpoint_not_hourly_obser
 }
 
 #[test]
+fn side_refresh_evaluates_recorded_execution_viewpoint_on_recording_track_and_perspective_viewer_otherwise() {
+    use replay_data::rows::{CombatEngagementRefreshRow, LocalPlayerRow, TableRows};
+    use replay_frame::frame::TableView;
+    let allied: &[(u32, u32)] = &[(2, 3)];
+    let observer_frame = |bytes: [u8; 2], refreshes: Vec<CombatEngagementRefreshRow>| {
+        let mut frame = naval_frame(6, &[1], allied, 1, bytes);
+        if let TableView::Complete(TableRows::NavalCombats(rows)) =
+            &mut *frame.tables[TableId::NavalCombats.index()]
+        {
+            rows[0].id = 1;
+        }
+        if let TableView::Complete(TableRows::NavalCombatDetails(rows)) =
+            &mut *frame.tables[TableId::NavalCombatDetails.index()]
+        {
+            rows[0].combat = 1;
+        }
+        *frame.tables[TableId::LocalPlayer.index()] = TableView::Complete(TableRows::LocalPlayer(
+            vec![LocalPlayerRow {
+                country: 0,
+                observer_country: 4,
+            }],
+        ));
+        *frame.tables[TableId::CombatEngagementRefreshes.index()] = TableView::Complete(
+            TableRows::CombatEngagementRefreshes(refreshes),
+        );
+        frame
+    };
+
+    let mut pass = Pass::new(Arc::default(), Country::Tag("C4".into()));
+    let frame10 = observer_frame([0, 0], Vec::new());
+    let mut frame11 = observer_frame(
+        [1, 0],
+        vec![
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::LAND_SIDE,
+                target: 100,
+                side: 0,
+                viewer: 3,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::NAVAL_SIDE,
+                target: 1,
+                side: 0,
+                viewer: 3,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+        ],
+    );
+    pass.fold_hour(3, 10, Some(&frame10), Some(10), false);
+    pass.fold_hour(3, 11, Some(&frame11), Some(10), false);
+
+    assert_eq!(
+        (
+            pass.check.summary.agreements,
+            pass.check.summary.mismatches,
+            pass.check.summary.undecided,
+        ),
+        (4, 0, 0),
+        "{:?}",
+        pass.check.summary.first
+    );
+    let idx = index(&pass);
+    let served = flags(&idx, &mut frame11, 11, 4);
+    assert_eq!((served.land[&100], served.naval[&1]), (Engaged::Yes, Engaged::Yes));
+
+    let branches = pass.shared.branches.lock().unwrap();
+    let perspective = &branches[&3].folds()[0];
+    assert_eq!(at(&perspective.points()[LAND][&(100, 0)], 11), Some(Engaged::No));
+    assert_eq!(at(&perspective.points()[NAVAL][&(1, 0)], 11), Some(Engaged::No));
+    drop(branches);
+
+    let mut unknown_pass = Pass::new(Arc::default(), Country::Tag("C4".into()));
+    let mut unknown11 = observer_frame(
+        [0, 0],
+        vec![CombatEngagementRefreshRow {
+            kind: CombatEngagementRefreshRow::LAND_SIDE,
+            target: 100,
+            side: 0,
+            viewer: 99,
+            triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
+        }],
+    );
+    unknown_pass.fold_hour(3, 10, Some(&frame10), Some(10), false);
+    unknown_pass.fold_hour(3, 11, Some(&unknown11), Some(10), false);
+    let unknown_idx = index(&unknown_pass);
+    let unknown_served = flags(&unknown_idx, &mut unknown11, 11, 4);
+    assert_eq!(unknown_served.land[&100], Engaged::Unknown);
+    let branches = unknown_pass.shared.branches.lock().unwrap();
+    assert_eq!(
+        at(&branches[&3].folds()[0].points()[LAND][&(100, 0)], 11),
+        Some(Engaged::No)
+    );
+}
+
+#[test]
+fn complete_empty_witness_does_not_infer_all_sides_refresh_from_observer_lag() {
+    use replay_data::rows::{LocalPlayerRow, TableRows};
+    use replay_frame::frame::TableView;
+    let allied: &[(u32, u32)] = &[(2, 4)];
+    let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
+    let observer_frame = |observer: u32, bytes: [u8; 2]| {
+        let mut frame = naval_frame(6, &[1], allied, 1, bytes);
+        *frame.tables[TableId::LocalPlayer.index()] = TableView::Complete(TableRows::LocalPlayer(
+            vec![LocalPlayerRow {
+                country: 0,
+                observer_country: observer,
+            }],
+        ));
+        frame
+    };
+    let frame10 = observer_frame(3, [0, 0]);
+    let frame11 = observer_frame(4, [0, 0]);
+    let mut frame12 = observer_frame(3, [0, 0]);
+    pass.fold_hour(3, 10, Some(&frame10), Some(10), false);
+    pass.fold_hour(3, 11, Some(&frame11), Some(10), false);
+    pass.fold_hour(3, 12, Some(&frame12), Some(10), false);
+
+    assert_eq!(
+        (
+            pass.check.summary.agreements,
+            pass.check.summary.mismatches,
+            pass.check.summary.undecided,
+        ),
+        (6, 0, 0),
+        "{:?}",
+        pass.check.summary.first
+    );
+    let index = index(&pass);
+    let served = flags(&index, &mut frame12, 12, 3);
+    assert_eq!((served.land[&100], served.naval[&0]), (Engaged::No, Engaged::No));
+}
+
+#[test]
 fn the_recording_players_icons_keep_the_clients_carried_frame() {
     use replay_data::{rows::NavalCombatShipRow, rows::TableRows};
     use replay_frame::frame::TableView;
-    let hour = |hour: Hour, player: u32, bytes: [u8; 2]| {
+    let hour = |hour: Hour, player: u32, bytes: [u8; 2], local_sweep: Option<u64>| {
         let mut frame = naval_frame(6, &[player], &[], 1, bytes);
         frame.hour = hour;
         *frame.tables[TableId::NavalCombatShips.index()] =
@@ -703,12 +956,25 @@ fn the_recording_players_icons_keep_the_clients_carried_frame() {
                 live_convoy: 1,
                 ..Default::default()
             }]));
+        if let Some(target) = local_sweep {
+            *frame.tables[TableId::CombatEngagementRefreshes.index()] = TableView::Complete(
+                TableRows::CombatEngagementRefreshes(vec![
+                    replay_data::rows::CombatEngagementRefreshRow {
+                        kind: replay_data::rows::CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                        target,
+                        side: 0,
+                        viewer: 0,
+                        triggers: replay_data::rows::CombatEngagementRefreshRow::TRIGGER_RECORDED,
+                    },
+                ]),
+            );
+        }
         frame
     };
     let frames = [
-        hour(10, 2, [1, 0]),
-        hour(11, 2, [1, 0]),
-        hour(12, 3, [0, 0]),
+        hour(10, 2, [1, 0], None),
+        hour(11, 2, [1, 0], None),
+        hour(12, 3, [0, 0], Some(3)),
     ];
     let mut pass = Pass::new(Arc::default(), Country::Tag("C3".into()));
     for frame in &frames {
@@ -912,8 +1178,10 @@ fn a_side_whose_combat_ends_is_reported_once() {
             engaged::Sample {
                 viewer: 1,
                 alternate_viewer: None,
+                recording: false,
                 links: &links,
                 relations: Ok(&relations),
+                zero_visibility: Err("unused"),
                 controllers: Some(Default::default()),
                 refreshes: engaged::RefreshWitness::Unavailable,
                 sides: sides.into_iter().map(|key| (key, side())).collect(),
@@ -1123,6 +1391,7 @@ fn a_controller_joining_the_viewer_reaches_the_index_as_a_possible_refresh() {
             kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
             target: 1,
             side: 0,
+            viewer: 0,
             triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
         }]),
     );

@@ -51,7 +51,7 @@ fn hour_rows(hour: Hour) -> Vec<TableRows> {
     ]
 }
 
-const NAMES: [&[u8]; 3] = [b"C1", b"C2", b"C3"];
+const NAMES: [&[u8]; 4] = [b"C1", b"C2", b"C3", b""];
 
 const EMPTY: [TableId; 10] = [
     TableId::Players,
@@ -359,6 +359,7 @@ fn lane_fold_invalidates_cached_inputs_when_refresh_witness_changes() {
                 kind: CombatEngagementRefreshRow::LAND_SIDE,
                 target: 101,
                 side: 0,
+                viewer: 1,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             }]
         } else {
@@ -415,7 +416,7 @@ fn lanes_fold_reads_format_145_recording_without_refresh_witness_table() {
     use crate::layers::sounds::tests::record_runs_at;
     use playhead::pages::{Pages, Run};
     use replay_columnar::{state::Kind, unit::reader::Extents};
-    use viewer_foundation::engaged::Ambiguity;
+    use viewer_engagements::engaged::Ambiguity;
     struct WithoutTable {
         inner: Arc<dyn Pages>,
         omitted: usize,
@@ -494,4 +495,115 @@ fn lanes_fold_reads_format_145_recording_without_refresh_witness_table() {
     assert_eq!(lookup(8, 101), Ok(Engaged::Ambiguous(Ambiguity::Order)));
     assert_eq!(lookup(9, 101), Ok(Engaged::Ambiguous(Ambiguity::Scope)));
     assert_eq!(lookup(10, 101), Ok(Engaged::Yes));
+}
+
+#[test]
+fn lanes_fold_evaluates_zero_viewer_sweep_from_reserved_country_operands() {
+    use replay_data::rows::{
+        CombatEngagementRefreshRow, CountryCounterInputRow, Recorded, ReservedCountryNamingRow,
+        ReverseZeroVisibilityInputs, ZeroSubjectInputs,
+    };
+    let run = |reserved_faction: Option<u64>, include_counter_inputs: bool| {
+        let mut held = HashMap::new();
+        let recording = record_runs(&[(0, 12)], &NAMES, |at, store| {
+            if at == 0 {
+                held.clear();
+            }
+            written(at, store, &mut held);
+            if let Some(faction) = reserved_faction {
+                store
+                    .status(
+                        TableId::ReservedCountryNaming.index(),
+                        Status::Complete,
+                        true,
+                        Some(at),
+                        true,
+                    )
+                    .unwrap();
+                let entry = held.entry(TableId::ReservedCountryNaming).or_default();
+                write::<tables::ReservedCountryNaming>(
+                    store,
+                    &[ReservedCountryNamingRow {
+                        faction: Recorded::Value(Some(faction)),
+                        ..Default::default()
+                    }],
+                    entry,
+                );
+            }
+            if include_counter_inputs {
+                store
+                    .status(
+                        TableId::CountryCounterInputs.index(),
+                        Status::Complete,
+                        true,
+                        Some(at),
+                        true,
+                    )
+                    .unwrap();
+                let entry = held.entry(TableId::CountryCounterInputs).or_default();
+                let rows: Vec<CountryCounterInputRow> = (1..=3)
+                    .map(|country| CountryCounterInputRow {
+                        country,
+                        forward_visibility: Recorded::Value(Some(ReverseZeroVisibilityInputs {
+                            war: Some([0, 0]),
+                            military_access: Some(0),
+                            target: Some(0),
+                            subject: Some(ZeroSubjectInputs {
+                                relation_type: None,
+                                parties: None,
+                            }),
+                        })),
+                        ..Default::default()
+                    })
+                    .collect();
+                write::<tables::CountryCounterInputs>(store, &rows, entry);
+            }
+            store
+                .status(
+                    TableId::CombatEngagementRefreshes.index(),
+                    Status::Complete,
+                    true,
+                    Some(at),
+                    true,
+                )
+                .unwrap();
+            let witness_rows = if at == 9 {
+                vec![CombatEngagementRefreshRow {
+                    kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                    target: 0,
+                    side: 0,
+                    viewer: 0,
+                    triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+                }]
+            } else {
+                Vec::new()
+            };
+            let entry = held.entry(TableId::CombatEngagementRefreshes).or_default();
+            write::<tables::CombatEngagementRefreshes>(store, &witness_rows, entry);
+        });
+        let units = units(recording, "engaged-zero-view");
+        let shared = Arc::new(History::default());
+        let started = |_: usize| PieceStart {
+            branch: 3,
+            load: false,
+            restart: false,
+        };
+        fold(
+            &units.pages,
+            &units.timeline,
+            &started,
+            None,
+            Country::Recorded,
+            Arc::clone(&shared),
+            None,
+            |_, _, _| {},
+        )
+        .unwrap();
+        let lookup = |hour: Hour| shared.lookup(0, 3, hour, 1, &[101]).map(|flags| flags[&101]);
+        (lookup(8), lookup(9))
+    };
+    assert_eq!(run(Some(9), true), (Ok(Engaged::No), Ok(Engaged::Yes)));
+    assert_eq!(run(Some(77), true), (Ok(Engaged::No), Ok(Engaged::No)));
+    assert_eq!(run(Some(9), false), (Ok(Engaged::No), Ok(Engaged::Unknown)));
+    assert_eq!(run(None, true), (Ok(Engaged::No), Ok(Engaged::Unknown)));
 }
