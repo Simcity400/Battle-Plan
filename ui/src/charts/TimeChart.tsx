@@ -148,6 +148,7 @@ export default function TimeChart(props: TimeChartProps) {
   useEffect(() => {
     const element = canvas.current!;
     const drawing = drawingSurface(element), context = drawing.context!;
+    const measure = canvasMeasureText(context);
     const sheet = overlay.current ? drawingSurface(overlay.current) : null, overlayContext = sheet?.context ?? null;
     let tokens = readTokens();
     let view: ViewState = EMPTY_VIEW;
@@ -238,7 +239,6 @@ export default function TimeChart(props: TimeChartProps) {
         y[0] = targetY.range[0]; y[1] = targetY.range[1];
       }
       eased = { x, y };
-      const measure = canvasMeasureText(context);
       frame = fitTimeChartFrame({
         layoutWidth,
         layoutHeight,
@@ -279,6 +279,7 @@ export default function TimeChart(props: TimeChartProps) {
             afterPlayhead: p.afterPlayhead,
             until,
             markSummaries: summaries,
+            markSummariesMatched: true,
             badges: p.badges,
             rowLabels: p.rows?.labels,
             formatValue: p.formatValue,

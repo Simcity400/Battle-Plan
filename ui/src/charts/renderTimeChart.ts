@@ -4,8 +4,8 @@ import {
   clipToPlot,
   drawAxes,
   drawPlayhead,
-  measureValueLabelWidth,
   placeEndLabels,
+  valueLabelWidth,
   type LineEnd,
 } from './draw.ts';
 import { plotFrame, STRIP_GAP, type Padding, type PlotFrame } from './frame.ts';
@@ -26,15 +26,20 @@ export type ChartFitId = 'none' | 'stabilityZoom';
 export type AxisValueFormatter = (value: number, ticks: readonly number[]) => string;
 export type ValueFit = (shown: Range | null) => Range | null;
 
-const powerAxisFormat: AxisValueFormatter = value =>
+export const powerAxisFormat: AxisValueFormatter = value =>
   Math.abs(value) >= 1000 ? `${Math.round(value / 100) / 10}k` : String(Math.round(value));
 
-const stabilityZoomFit: ValueFit = shown => {
+export const stabilityZoomFit: ValueFit = shown => {
   if (!shown) return null;
-  const [low, high] = shown;
+  const low = shown[0] * 100;
+  const high = shown[1] * 100;
   const room = Math.max(1, (high - low) * 0.1);
-  return [Math.floor(low - room), Math.ceil(high + room)];
+  return [Math.floor(low - room) / 100, Math.ceil(high + room) / 100];
 };
+
+export function normalizeStripHeight(height?: number): number {
+  return height ? Math.max(0, Math.round(height)) : 0;
+}
 
 const FORMATTERS: Record<ChartAxisFormatterId, AxisValueFormatter> = {
   axisValue: formatAxisValue,
@@ -74,7 +79,8 @@ export interface TimeChartPaddingInput {
 }
 
 export function resolveTimeChartPadding(input: TimeChartPaddingInput): Padding {
-  const { layoutWidth, tokens, stripHeight, hasBadges, hasBadgeSummary, padding: custom, rowLabelWidth } = input;
+  const { layoutWidth, tokens, hasBadges, hasBadgeSummary, padding: custom, rowLabelWidth } = input;
+  const stripHeight = normalizeStripHeight(input.stripHeight);
   const padding: Padding = {
     ...TIME_CHART_DEFAULT_PADDING,
     ...(hasBadges || hasBadgeSummary ? { top: BADGE_STRIP } : {}),
@@ -156,13 +162,14 @@ export function fitTimeChartFrame(input: FitTimeChartFrameInput): PlotFrame {
     formatValue,
     measure,
   } = input;
-  let frame = plotFrame(layoutWidth, layoutHeight, padding, x, y, log, stripHeight, hasRows);
+  const normalizedStrip = normalizeStripHeight(stripHeight);
+  let frame = plotFrame(layoutWidth, layoutHeight, padding, x, y, log, normalizedStrip, hasRows);
   frame.valueTicks = valueTicks;
   if (!hasRows && !hasExplicitLeftPadding) {
     const formatter = resolveAxisFormatter(formatValue);
-    const needed = Math.ceil(measureValueLabelWidth(frame, tokens, formatter, measure)) + VALUE_LABEL_GAP + TIME_CHART_LABEL_MARGIN;
+    const needed = Math.ceil(valueLabelWidth(null, frame, tokens, formatter, measure)) + VALUE_LABEL_GAP + TIME_CHART_LABEL_MARGIN;
     if (needed > padding.left) {
-      frame = plotFrame(layoutWidth, layoutHeight, { ...padding, left: needed }, x, y, log, stripHeight, hasRows);
+      frame = plotFrame(layoutWidth, layoutHeight, { ...padding, left: needed }, x, y, log, normalizedStrip, hasRows);
       frame.valueTicks = valueTicks;
     }
   }
@@ -191,7 +198,7 @@ export function resolveTimeChartFrame(input: ResolveTimeChartFrameInput): {
   readonly targetY: { readonly range: Range; readonly log: boolean };
   readonly padding: Padding;
 } {
-  const stripHeight = input.stripHeight ?? 0;
+  const stripHeight = normalizeStripHeight(input.stripHeight);
   const padding = resolveTimeChartPadding({
     layoutWidth: input.layoutWidth,
     tokens: input.tokens,
@@ -234,6 +241,7 @@ export interface TimeChartScene<C extends Canvas2D = Canvas2D> {
   readonly afterPlayhead?: boolean;
   readonly until?: number | null;
   readonly markSummaries?: readonly MarkSummary[];
+  readonly markSummariesMatched?: boolean;
   readonly badges?: readonly EventBadge[];
   readonly rowLabels?: readonly string[];
   readonly formatValue?: ChartAxisFormatterId | AxisValueFormatter;
@@ -275,7 +283,7 @@ export function drawTimeChartScene<C extends Canvas2D>(
   if (scene.playhead != null && scene.playback === 'cursor') drawPlayhead(ctx, frame, tokens, scene.playhead);
   if (scene.markSummaries) {
     for (const summary of scene.markSummaries) {
-      if (markSummaryMatches(summary, frame, until)) drawMarkSummary(ctx, frame, tokens, summary, until);
+      if (scene.markSummariesMatched || markSummaryMatches(summary, frame, until)) drawMarkSummary(ctx, frame, tokens, summary, until);
     }
   }
   if (scene.badges) drawBadges(ctx, frame, tokens, scene.badges, until);

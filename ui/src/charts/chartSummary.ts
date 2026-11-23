@@ -224,7 +224,7 @@ export function emitBucketCorners(
 export function bucketsStream(buckets: readonly (ChartBucket | null)[]): BucketStreamReader {
   return {
     count: buckets.length,
-    present: i => buckets[i] !== null,
+    present: i => buckets[i] != null,
     firstHour: i => buckets[i]!.firstHour,
     lastHour: i => buckets[i]!.lastHour,
     firstValue: i => buckets[i]!.firstValue,
@@ -414,12 +414,41 @@ export function drawApproximateSpans(ctx: Canvas2D, frame: PlotFrame,
 
 export type SummaryLineOptions = { area?: boolean; dash?: readonly number[]; endDot?: boolean };
 
+function withHourClip<T>(ctx: Canvas2D, frame: PlotFrame, hours: readonly [number, number] | undefined, paint: () => T): T {
+  if (!hours) return paint();
+  const left = Math.max(frame.plotLeft, frame.toX(hours[0]));
+  const right = frame.toX(hours[1]);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(left, frame.plotTop, Math.max(0, right - left), frame.plotHeight);
+  ctx.clip();
+  try {
+    return paint();
+  } finally {
+    ctx.restore();
+  }
+}
+
+export function drawSummaryShape(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens,
+  shape: SummaryShape, color: string, options: SummaryLineOptions = {},
+  hours?: readonly [number, number],
+  fallback?: { readonly stream: BucketStreamReader; readonly held: boolean; readonly to: number }): Point | null {
+  const drawn = hours ? { ...options, endDot: false } : options;
+  if (placeable(frame, shape)) {
+    return withHourClip(ctx, frame, hours, () => strokeShape(ctx, frame, tokens, shape, color, drawn, hours));
+  }
+  if (!fallback) return null;
+  return withHourClip(ctx, frame, hours, () => {
+    const geometry = columnGeometryFromStream(frame, fallback.stream, fallback.held, fallback.to, hours ? hours[1] : Infinity);
+    return strokeColumns(ctx, frame, tokens, hours ? { ...geometry, end: null } : geometry, color, drawn);
+  });
+}
+
 export function drawBucketStream(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens,
   stream: BucketStreamReader, color: string, held = false, to = Infinity,
-  options: SummaryLineOptions = {}, hours?: readonly [number, number]): Point | null {
-  const shape = buildSummaryShape(stream, held, to);
-  if (placeable(frame, shape)) return strokeShape(ctx, frame, tokens, shape, color, options, hours);
-  return strokeColumns(ctx, frame, tokens, columnGeometryFromStream(frame, stream, held, to, hours ? hours[1] : Infinity), color, options);
+  options: SummaryLineOptions = {}, hours?: readonly [number, number], shape?: SummaryShape): Point | null {
+  const resolved = shape ?? buildSummaryShape(stream, held, to);
+  return drawSummaryShape(ctx, frame, tokens, resolved, color, options, hours, { stream, held, to });
 }
 
 export function drawLineSummary(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens,
@@ -430,8 +459,7 @@ export function drawLineSummary(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTo
   const runs = exactRuns(summary);
   const shape = runs ? null : summaryShape(summary, held);
   const paint = (drawn: SummaryLineOptions) => !shape ? drawLine(ctx, frame, tokens, runs!, color, { ...drawn, held, until: until ?? undefined })
-    : placeable(frame, shape) ? strokeShape(ctx, frame, tokens, shape, color, drawn)
-      : strokeColumns(ctx, frame, tokens, columnGeometry(frame, summary, held), color, drawn);
+    : drawSummaryShape(ctx, frame, tokens, shape, color, drawn, undefined, { stream: bucketsStream(summary.buckets), held, to: summary.to });
   if (!summary.approximate?.length) return paint(options);
   let end: Point | null = null;
   drawApproximateSpans(ctx, frame, summary.approximate, until, approximate => {
@@ -504,11 +532,7 @@ function drawTiledHead(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, sum
   tiles: TiledSummary, color: string, held: boolean, until: number, options: SummaryLineOptions): Point | null {
   const cut = Math.floor(until / tiles.binHours) * tiles.binHours;
   const shape = summaryShape(summary, held);
-  ctx.save();
-  ctx.beginPath(); ctx.rect(frame.plotLeft, frame.plotTop, Math.max(0, frame.toX(cut) - frame.plotLeft), frame.plotHeight); ctx.clip();
-  if (placeable(frame, shape)) strokeShape(ctx, frame, tokens, shape, color, { ...options, endDot: false }, [frame.x[0], cut]);
-  else strokeColumns(ctx, frame, tokens, columnGeometry(frame, summary, held, cut), color, { ...options, endDot: false });
-  ctx.restore();
+  drawSummaryShape(ctx, frame, tokens, shape, color, options, [frame.x[0], cut], { stream: bucketsStream(summary.buckets), held, to: summary.to });
   const value = tiles.valueAt(until), y = value === null ? NaN : frame.toY(value);
   if (!Number.isFinite(y)) return null;
   const baseline = lineStyle(ctx, frame, tokens, color, options);

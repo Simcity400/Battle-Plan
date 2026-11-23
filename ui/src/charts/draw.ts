@@ -9,7 +9,7 @@ import type { PathCommand, Run } from './series.ts';
 import { timeTicks } from './timeAxis.ts';
 import type { ChartTokens } from './tokens.ts';
 import { linearTicks, logTicks, thinLogTicks } from './valueAxis.ts';
-import { type Canvas2D, type MeasureText, canvasMeasureText } from './textWidth.ts';
+import { type Canvas2D, type MeasureText, canvasMeasureText, textWidthRevision } from './textWidth.ts';
 
 
 export const font = (tokens: ChartTokens, size: number, weight = 400) => `${weight} ${size}px ${tokens.font}`;
@@ -57,18 +57,19 @@ export function measureValueLabelWidth(frame: PlotFrame, tokens: ChartTokens, fo
   return Math.max(0, ...values.map(value => measure(formatValue(value, values), labelFont)));
 }
 
-export function valueLabelWidth(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, formatValue: (value: number, ticks: readonly number[]) => string,
+export function valueLabelWidth(ctx: Canvas2D | null, frame: PlotFrame, tokens: ChartTokens, formatValue: (value: number, ticks: readonly number[]) => string,
   measure?: MeasureText): number {
   if (measure) return measureValueLabelWidth(frame, tokens, formatValue, measure);
-  ctx.save();
+  const context = ctx!;
+  context.save();
   const labelFont = font(tokens, tokens.fontSize.small);
-  ctx.font = labelFont;
-  const width = measureValueLabelWidth(frame, tokens, formatValue, canvasMeasureText(ctx));
-  ctx.restore();
+  context.font = labelFont;
+  const width = measureValueLabelWidth(frame, tokens, formatValue, canvasMeasureText(context));
+  context.restore();
   return width;
 }
 
-const rowLabels = new WeakMap<Canvas2D, { font: string; width: number; labels: Map<string, string> }>();
+const rowLabels = new WeakMap<Canvas2D, { font: string; width: number; measure: MeasureText; revision: number; labels: Map<string, string> }>();
 export function drawAxes(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, formatValue: (value: number, ticks: readonly number[]) => string,
   rows?: readonly string[], measure?: MeasureText): void {
   const { plotLeft, plotTop, plotWidth, plotHeight } = frame;
@@ -91,8 +92,12 @@ export function drawAxes(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, f
     const rowFont = font(tokens, tokens.fontSize.small, 500);
     ctx.font = rowFont;
     const width = plotLeft - VALUE_LABEL_GAP * 2;
+    const revision = textWidthRevision();
     let cached = rowLabels.get(ctx);
-    if (!cached || cached.font !== rowFont || cached.width !== width) { cached = { font: rowFont, width, labels: new Map() }; rowLabels.set(ctx, cached); }
+    if (!cached || cached.font !== rowFont || cached.width !== width || cached.measure !== measureText || cached.revision !== revision) {
+      cached = { font: rowFont, width, measure: measureText, revision, labels: new Map() };
+      rowLabels.set(ctx, cached);
+    }
     rows.forEach((label, index) => {
       let fitted = cached.labels.get(label);
       if (fitted === undefined) { fitted = ellipsise(label, width, text => measureText(text, rowFont)); cached.labels.set(label, fitted); }
