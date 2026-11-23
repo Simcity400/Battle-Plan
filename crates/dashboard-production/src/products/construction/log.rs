@@ -316,6 +316,12 @@ fn window(source: &Source, run: u32, from: i32, to: i32, lines: &RunLines, names
     }
     keys.sort_unstable();
     let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, run, TableId::ConstructionProjects, &col::ALL, Keys::These(&keys), from, to))?;
+    let statuses = dashboard_query::cost::storage(|| replay_lanes::lanes::statuses(recording, run, TableId::ConstructionProjects, from, to))?;
+    let truncated: Vec<(i32, i32)> = statuses
+        .into_iter()
+        .filter(|span| matches!(span.status, replay_columnar::manifest::Status::Truncated { .. }))
+        .map(|span| (span.first, span.last))
+        .collect();
     let mut asks = Vec::new();
     for (key, steps) in &history.keys {
         asks.extend(rise_hours(steps).into_iter().map(|hour| (hour, *key)));
@@ -342,7 +348,7 @@ fn window(source: &Source, run: u32, from: i32, to: i32, lines: &RunLines, names
     let mut out = Vec::new();
     for (key, steps) in &history.keys {
         let tag = |country: u32, at: i32| names.tag_at(links, country, at).map(str::to_owned);
-        match assemble(*key as u64, steps, history.to, &|hour| rises.get(&(*key, hour)), &tag) {
+        match assemble(*key as u64, steps, history.to, &truncated, &|hour| rises.get(&(*key, hour)), &tag) {
             Assembled::Project(project) => out.push(*project),
             Assembled::Unnamed => unnamed += 1,
             Assembled::Hidden => {}
@@ -376,20 +382,59 @@ fn shown<'a>(steps: &'a [Step], to: i32) -> Vec<(i32, i32, &'a [Cell])> {
 pub(crate) fn rise_hours(steps: &[Step]) -> Vec<i32> {
     let mut out = Vec::new();
     let mut held: (Option<i64>, Option<i64>) = (None, None);
+    let mut saw_unread = (false, false);
     for step in steps {
         let Some(cells) = step.cells.as_deref() else { continue };
         let built = number(cells, col::BUILT);
         let repaired = number(cells, col::REPAIRED);
         let rose = matches!((held.0, built), (Some(before), Some(now)) if now > before)
-            || matches!((held.1, repaired), (Some(before), Some(now)) if now > before);
+            || matches!((held.1, repaired), (Some(before), Some(now)) if now > before)
+            || (held.0.is_none() && saw_unread.0 && built.is_some_and(|now| now > 0))
+            || (held.1.is_none() && saw_unread.1 && repaired.is_some_and(|now| now > 0));
         if rose {
             out.push(step.hour);
         }
-        if let Some(now) = built {
-            held.0 = Some(now);
+        match built {
+            Some(now) => held.0 = Some(now),
+            None => saw_unread.0 = true,
         }
-        if let Some(now) = repaired {
-            held.1 = Some(now);
+        match repaired {
+            Some(now) => held.1 = Some(now),
+            None => saw_unread.1 = true,
+        }
+    }
+    out
+}
+
+fn in_runs(runs: &[(i32, i32)], hour: i32) -> bool {
+    runs.get(runs.partition_point(|&(_, last)| last < hour)).is_some_and(|&(first, _)| first <= hour)
+}
+
+fn without_spans(spans: Vec<(i32, i32)>, excluded: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    if excluded.is_empty() {
+        return spans;
+    }
+    let mut out = Vec::with_capacity(spans.len());
+    for (mut start, end) in spans {
+        let mut done = false;
+        for &(ex_first, ex_last) in excluded {
+            if ex_last < start {
+                continue;
+            }
+            if ex_first > end {
+                break;
+            }
+            if ex_first > start {
+                out.push((start, ex_first - 1));
+            }
+            if ex_last >= end {
+                done = true;
+                break;
+            }
+            start = ex_last + 1;
+        }
+        if !done && start <= end {
+            out.push((start, end));
         }
     }
     out
@@ -421,10 +466,27 @@ fn end_of(cells: &[Cell], at: i32) -> Option<ProjectEnd> {
 fn rises_of(shown: &[(i32, i32, &[Cell])], column: usize, repair: bool, dated: &dyn Fn(i32) -> Option<Vec<ConstructionRise>>) -> Vec<LevelsBuilt> {
     let mut out = Vec::new();
     let mut held: Option<i64> = None;
+    let mut saw_unread = false;
     for &(at, _, cells) in shown {
-        let Some(now) = number(cells, column) else { continue };
+        let Some(now) = number(cells, column) else {
+            saw_unread = true;
+            continue;
+        };
         match held {
-            None if now > 0 => out.push(LevelsBuilt { hour: None, known_at: at, count: u32::try_from(now).unwrap_or(u32::MAX), repair, carried: true }),
+            None if now > 0 => {
+                let total = u32::try_from(now).unwrap_or(u32::MAX);
+                let list = if saw_unread { dated(at).unwrap_or_default() } else { Vec::new() };
+                let list_sum: u64 = list.iter().map(|rise| u64::from(rise.count)).sum();
+                if !list.is_empty() && list_sum <= u64::from(total) {
+                    let carried = total - list_sum as u32;
+                    if carried > 0 {
+                        out.push(LevelsBuilt { hour: None, known_at: at, count: carried, repair, carried: true });
+                    }
+                    out.extend(list.iter().map(|rise| LevelsBuilt { hour: Some(rise.hour), known_at: at, count: rise.count, repair, carried: false }));
+                } else {
+                    out.push(LevelsBuilt { hour: None, known_at: at, count: total, repair, carried: true });
+                }
+            }
             Some(before) if now > before => {
                 let delta = u32::try_from(now - before).unwrap_or(u32::MAX);
                 let list = dated(at).unwrap_or_default();
@@ -451,6 +513,7 @@ pub(crate) fn assemble<'r>(
     id: u64,
     steps: &[Step],
     to: i32,
+    truncated: &[(i32, i32)],
     rises: &dyn Fn(i32) -> Option<&'r Rises>,
     tag: &dyn Fn(u32, i32) -> Option<String>,
 ) -> Assembled {
@@ -464,27 +527,31 @@ pub(crate) fn assemble<'r>(
         Some(1) => Some(true),
         _ => None,
     };
-    let output_origin = (output_alone(first) == Some(true) && output_alone(last) == Some(false)).then(|| OutputOrigin {
+    let source = match shown.iter().rev().find_map(|(_, _, cells)| output_alone(cells)) {
+        Some(false) => ProjectSource::Census,
+        Some(true) => ProjectSource::OutputAlone,
+        None => ProjectSource::Unknown,
+    };
+    let output_origin = (output_alone(first) == Some(true) && source == ProjectSource::Census).then(|| OutputOrigin {
         tag: id32(first, col::COUNTRY).and_then(|country| tag(country, first_read)).unwrap_or_else(|| owner.clone()),
         building: id32(first, col::BUILDING_TYPE),
         state: id32(first, col::TARGET_STATE),
         to_state: id32(first, col::TO_STATE),
         province: id32(first, col::PROVINCE),
     });
-    let source = match output_alone(last) {
-        Some(false) => ProjectSource::Census,
-        Some(true) => ProjectSource::OutputAlone,
-        None => ProjectSource::Unknown,
-    };
-    let kind = match number(last, col::KIND).and_then(|value| u8::try_from(value).ok()) {
-        Some(P::BUILDING) => ProjectKind::Building,
-        Some(P::RAILWAY) => ProjectKind::Railway,
-        _ => ProjectKind::Unknown,
-    };
-    let open = |cells: &[Cell]| number(cells, col::END) == Some(i64::from(P::OPEN));
+    let kind = shown
+        .iter()
+        .rev()
+        .find_map(|(_, _, cells)| match number(cells, col::KIND).and_then(|value| u8::try_from(value).ok()) {
+            Some(P::BUILDING) => Some(ProjectKind::Building),
+            Some(P::RAILWAY) => Some(ProjectKind::Railway),
+            _ => None,
+        })
+        .unwrap_or(ProjectKind::Unknown);
+    let open = |cells: &[Cell]| number(cells, col::END).is_none_or(|end| end == i64::from(P::OPEN));
     let mut runs: Vec<ProjectRun> = Vec::new();
     for &(at, through, cells) in &shown {
-        if output_alone(cells) != Some(false) || !open(cells) {
+        if output_alone(cells) == Some(true) || !open(cells) {
             continue;
         }
         let (Some(factories), Some(remaining), Some(repair_levels)) = (hour(cells, col::FACTORIES), hour(cells, col::REMAINING), hour(cells, col::REPAIR_LEVELS)) else { continue };
@@ -527,28 +594,37 @@ pub(crate) fn assemble<'r>(
     let counter_unread = |column: usize| -> Option<Vec<(i32, i32)>> {
         let mut spans: Vec<(i32, i32)> = Vec::new();
         let mut uncertain_since: Option<i32> = None;
-        for &(at, _, cells) in &shown {
+        for step in steps {
+            let Some(cells) = step.cells.as_deref() else {
+                if in_runs(truncated, step.hour)
+                    && let Some(start) = uncertain_since.take()
+                {
+                    spans.push((start, step.hour - 1));
+                }
+                continue;
+            };
             if output_alone(cells) == Some(true) {
                 continue;
             }
             if number(cells, column).is_some() {
                 if let Some(start) = uncertain_since.take() {
-                    spans.push((start, at - 1));
+                    spans.push((start, step.hour - 1));
                 }
             } else {
-                uncertain_since.get_or_insert(at);
+                uncertain_since.get_or_insert(step.hour);
             }
         }
         if let Some(start) = uncertain_since {
             spans.push((start, to));
         }
+        let spans = without_spans(spans, truncated);
         (!spans.is_empty()).then_some(spans)
     };
     Assembled::Project(Box::new(ConstructionProject {
         id: id.to_string(),
         kind,
         source,
-        census_read: hour(last, col::CENSUS_READ),
+        census_read: shown.iter().rev().find_map(|(_, _, cells)| hour(cells, col::CENSUS_READ)),
         output_origin,
         queue_ordinal: id32(last, col::QUEUE_ORDINAL),
         tag: owner,

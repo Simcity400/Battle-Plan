@@ -365,8 +365,12 @@ export function kindLabel(kind: ProjectKind): string {
   return kind === 'repair' ? 'Repair' : kind === 'repairThenNew' ? 'Repair, then new' : 'New';
 }
 
+const hasCountEvidence = (at: ProjectAt) =>
+  at.project.source === 'census'
+  || (at.project.source === 'unknown' && (at.project.censusRead != null || at.last != null || at.built > 0 || at.unknown > 0 || at.possible > 0));
+
 export function levelsLabel(at: ProjectAt): string | null {
-  if (at.project.source === 'outputAlone' || at.project.source === 'unknown') return null;
+  if (!hasCountEvidence(at)) return null;
   if (at.countersUnread || at.earlierUnknown || at.unknown > 0 || at.possible > 0) return builtLabel(at);
   if (at.levels <= 1) return null;
   return (at.status === 'building' || at.status === 'unread') && at.built > 0 ? builtLabel(at) : `×${at.levels}`;
@@ -383,11 +387,11 @@ export function placeTitle(project: ConstructionProject, stateAt: StateNameAt): 
 export function describeRow(log: ConstructionLog, row: LogRow<ProjectAt>, country: string): string {
   const at = row.item;
   const levels = levelsLabel(at);
-  return `${country}, ${typeName(projectType(log, at.project))}${levels ? ` ${levels}` : ''} in ${placeLabel(at.project, log.states)}, ${statusLabel(at).toLowerCase()}, ${row.by ? 'by ' : ''}${dayLabel(row.hour)}${at.project.source === 'outputAlone' ? ', known from output' : ''}${at.earlierUnknown ? ', earlier progress unknown' : ''}`;
+  return `${country}, ${typeName(projectType(log, at.project))}${levels ? ` ${levels}` : ''} in ${placeLabel(at.project, log.states)}, ${statusLabel(at).toLowerCase()}, ${row.by ? 'by ' : ''}${dayLabel(row.hour)}${at.project.source === 'outputAlone' ? ', known from output' : ''}${at.project.source === 'unknown' ? ', source not recorded' : ''}${at.earlierUnknown ? ', earlier progress unknown' : ''}`;
 }
 
 export function builtLabel(at: ProjectAt): string {
-  if (at.project.source === 'outputAlone' || at.project.source === 'unknown') return 'Not recorded';
+  if (!hasCountEvidence(at)) return 'Not recorded';
   if (at.countersUnread && at.built === 0 && at.unknown === 0 && at.possible === 0) return 'Not recorded';
   const more = at.earlierUnknown || at.countersUnread ? '+' : '';
   const extra = at.unknown + at.possible;
@@ -467,7 +471,8 @@ export function projectTooltip(log: ConstructionLog, at: ProjectAt, hour: number
   const end = project.end && project.end.knownAt <= hour ? project.end : null;
   const pending = at.status === 'unread' ? 'Not recorded' : 'Not yet';
   const rows: TooltipRow[] = project.createdHour != null
-    ? [{ label: 'Started', value: dayLabel(project.createdHour) }]
+    ? [{ label: 'Started', value: dayLabel(project.createdHour) },
+      ...(project.source === 'unknown' ? [{ label: 'Source', value: 'Not recorded', tone: 'muted' as const }] : [])]
     : project.source === 'census'
       ? [{ label: 'Started', value: 'Not recorded', tone: 'muted' }, { label: 'First seen', value: dayLabel(project.firstRead) }]
       : [{ label: 'Source', value: project.source === 'unknown' ? 'Not recorded' : 'Known from output', ...(project.source === 'unknown' ? { tone: 'muted' as const } : {}) }, { label: 'First evidence', value: dayLabel(project.firstRead) }];
@@ -495,7 +500,7 @@ export function projectTooltip(log: ConstructionLog, at: ProjectAt, hour: number
   }
   if (at.unknown) rows.push({ label: 'Built or dropped, not recorded', value: `${at.unknown} ${unit}${at.unknown === 1 ? '' : 's'}`, tone: 'muted' });
   const factories = factoriesShown(at);
-  if (project.source === 'census') rows.push(inQueue(at) ? { label: 'Factories', value: factories == null ? 'Not recorded' : String(factories) }
+  if (project.source === 'census' || at.last != null) rows.push(inQueue(at) ? { label: 'Factories', value: factories == null ? 'Not recorded' : String(factories) }
     : { label: 'Factories at its last read', value: at.last == null ? 'Not recorded' : String(at.last.factories) });
   const scale = Math.round(Math.log10(log.manifest.costScale));
   if (project.costRaw != null) {

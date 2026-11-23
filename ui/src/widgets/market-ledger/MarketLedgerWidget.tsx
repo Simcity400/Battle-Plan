@@ -13,7 +13,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatchFilter } from '../../dashboard/groups';
 import { partyTags } from '../../dashboard/market.ts';
 import MarketDrill from '../../dashboard/MarketDrill';
-import { KINDS, ledgerSelection, ledgerTitle, shownKinds } from '../../dashboard/marketLedger.ts';
+import { KINDS, ledgerPartyName, ledgerSelection, ledgerTitle, shownKinds } from '../../dashboard/marketLedger.ts';
 import type { KindKey, LedgerItem } from '../../dashboard/marketLedger';
 import MarketOccurrences from '../../dashboard/MarketOccurrences';
 import { resolveWindow } from '../../dashboard/model';
@@ -85,7 +85,7 @@ export default function MarketLedgerWidget({ widget, runtime, active, setOption 
   </div>;
   return <div ref={anchor} className="market-ledger-host">
     <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
-      title={picked ? ledgerTitle(picked, tag => tag ?? 'Country not recorded') : DETAILS.label} day={drillDay == null ? '' : dayLabel(drillDay)} canFollow onClose={() => dispatch({ type: 'close' })}
+      title={picked ? ledgerTitle(picked, (tag, state) => ledgerPartyName(tag, state ?? 'notRecorded', t => t)) : DETAILS.label} day={drillDay == null ? '' : dayLabel(drillDay)} canFollow onClose={() => dispatch({ type: 'close' })}
       main={main}>
       {picked && (pickedTags ? <MarketDrill runtime={runtime} widget={widget} time={drillTime} active={active} onAnswered={setDrillShown}
         tags={pickedTags} selected={ledgerSelection(picked)} />
