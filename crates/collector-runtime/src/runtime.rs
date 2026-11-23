@@ -4119,7 +4119,7 @@ fn strategic_regions(memory: &impl engine_native::Memory, base: usize) -> usize 
 }
 
 struct CombatHints {
-    land: Option<engine_native::cland_combat::DetailDemand>,
+    land: Option<engine_native_land::land_combat_details::DetailDemand>,
     naval: Option<engine_naval_history::naval_combat_demand::Demand>,
     failures: [Option<&'static str>; 2],
 }
@@ -8462,7 +8462,7 @@ mod tests {
         let capacities = collector_capture::extended::Capacities::default();
         let mut applied = AppliedHints::default();
         let hints = CombatHints {
-            land: Some(engine_native::cland_combat::DetailDemand {
+            land: Some(engine_native_land::land_combat_details::DetailDemand {
                 rows: usize::MAX,
                 ..Default::default()
             }),
@@ -8494,7 +8494,7 @@ mod tests {
         assert!(capacities == collector_capture::extended::Capacities::default());
         let before = shared.pool_owned();
         let valid = CombatHints {
-            land: Some(engine_native::cland_combat::DetailDemand {
+            land: Some(engine_native_land::land_combat_details::DetailDemand {
                 rows: 600,
                 ..Default::default()
             }),
@@ -8540,7 +8540,7 @@ mod tests {
         let capacities = collector_capture::extended::Capacities::default();
         let mut applied = AppliedHints::default();
         let hints = CombatHints {
-            land: Some(engine_native::cland_combat::DetailDemand {
+            land: Some(engine_native_land::land_combat_details::DetailDemand {
                 rows: 600,
                 ..Default::default()
             }),
@@ -8633,7 +8633,7 @@ mod tests {
             )
         };
         let mut hints = CombatHints {
-            land: Some(engine_native::cland_combat::DetailDemand {
+            land: Some(engine_native_land::land_combat_details::DetailDemand {
                 rows: 600,
                 ..Default::default()
             }),

@@ -6,9 +6,14 @@ use collector_projection::table_conversion::table;
 use engine_allocation::{copy_vec, owned_vec};
 use engine_land_inputs::{cfront, cfront_section};
 use engine_native::{
-    Memory, ccountry, corder_instance, corders_group, invasion_preparations,
-    modifier_definition::DefinitionMemo, order_execution, walk::Outcome,
+    Memory,
+    ccountry,
+    corder_instance,
+    corders_group,
+    modifier_definition::DefinitionMemo,
+    walk::Outcome,
 };
+use engine_native_land::{invasion_preparations, order_execution};
 use replay_data::{
     rows::ArmyOrderPlanRow, rows::FrontRow, rows::InvasionPreparationRow, rows::OrderChildFront,
     rows::OrderChildFrontInputs, rows::OrdersGroupPlanRow, rows::Recorded, rows::TableId,

@@ -16,6 +16,7 @@ army_stat_changes = []
 attack_witness = []
 
 [dependencies]
+engine-native-land.workspace = true
 game-model.workspace = true
 engine-naval-history.workspace = true
 engine-allocation.workspace = true

@@ -13,6 +13,7 @@ doctest = false
 test-support = []
 
 [dependencies]
+engine-native-land.workspace = true
 content-reader-defines.workspace = true
 content-reader-gui.workspace = true
 content-reader-key-names.workspace = true

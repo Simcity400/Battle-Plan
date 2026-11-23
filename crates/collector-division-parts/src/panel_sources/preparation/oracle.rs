@@ -2,9 +2,15 @@ use super::reference::ReferenceReads;
 use super::*;
 use crate::army_stat_changes::{MEMBERSHIP_TEST, serial};
 use engine_native::{
-    carmy, ccountry, cequipment_variant as variant, cequipment_variant_pool as pool, cstate,
-    division_panel_operands, modifier_accumulator::Value, modifier_definition as definition,
+    carmy,
+    ccountry,
+    cequipment_variant as variant,
+    cequipment_variant_pool as pool,
+    cstate,
+    modifier_accumulator::Value,
+    modifier_definition as definition,
 };
+use engine_native_land::division_panel_operands;
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},

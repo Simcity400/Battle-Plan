@@ -5,10 +5,11 @@ use crate::{
 };
 use collector_observers::naval_tree_changes;
 use engine_allocation as allocation;
-use engine_native::land_tactic_inputs;
-use engine_native::{
-    Memory, carmy_combat_inputs, cland_combat, combat_sources::Images, combat_sources::Sources,
-    land_reinforcement_inputs::speed as reserve_speed, walk::Outcome,
+use engine_native_land::land_tactic_inputs;
+use engine_native::{Memory, carmy_combat_inputs, cland_combat, walk::Outcome};
+use engine_native_land::{
+    combat_sources::{Images, Sources},
+    land_reinforcement_inputs::speed as reserve_speed,
 };
 use replay_data::{
     rows::CombatModifierValue, rows::LandCombatCommanderTimedTrait, rows::LandCombatCommanderTrait,
@@ -93,7 +94,7 @@ collector_primitives::capacity_max!(Capacities {
     learning_traits,
 });
 impl Capacities {
-    pub fn raise_for_live_details(&mut self, demand: cland_combat::DetailDemand) {
+    pub fn raise_for_live_details(&mut self, demand: engine_native_land::land_combat_details::DetailDemand) {
         for (capacity, required) in [
             (&mut self.combats, demand.rows),
             (&mut self.details, demand.rows),
@@ -121,7 +122,7 @@ impl Capacities {
 }
 #[derive(Default, Clone, PartialEq, Eq)]
 struct Detail {
-    row: cland_combat::DetailsRow,
+    row: engine_native_land::land_combat_details::DetailsRow,
     tactic_context: land_tactic_inputs::ContextRow,
 }
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -132,9 +133,9 @@ struct Division {
     ordinal: u32,
     province: u32,
     role: u8,
-    stats: carmy_combat_inputs::Row,
-    exile: Option<carmy_combat_inputs::ExileRow>,
-    context: carmy_combat_inputs::ContextRow,
+    stats: engine_native_land::division_combat_inputs::Row,
+    exile: Option<engine_native_land::division_combat_inputs::ExileRow>,
+    context: engine_native_land::division_combat_inputs::ContextRow,
     width_start: usize,
     reserve_speed: Option<Result<i64, &'static str>>,
     reserve_observation: Option<usize>,
@@ -196,9 +197,9 @@ struct Placement {
     exile_start: usize,
 }
 struct Acquired {
-    stats: carmy_combat_inputs::Row,
-    exile: carmy_combat_inputs::Exile,
-    context: carmy_combat_inputs::ContextRow,
+    stats: engine_native_land::division_combat_inputs::Row,
+    exile: engine_native_land::division_combat_inputs::Exile,
+    context: engine_native_land::division_combat_inputs::ContextRow,
     reserve_speed: Option<Result<ReserveSpeed, &'static str>>,
 }
 
@@ -209,25 +210,25 @@ enum ReserveSpeed {
 
 #[derive(Default)]
 struct Scratch {
-    widths: Vec<carmy_combat_inputs::WidthTerm>,
-    modifiers: Vec<carmy_combat_inputs::Modifier>,
+    widths: Vec<engine_native_land::division_combat_inputs::WidthTerm>,
+    modifiers: Vec<engine_native_land::division_combat_inputs::Modifier>,
     reinforcement: reserve_speed::Scratch,
     observations: reserve_speed::Observations,
     defer_speed: bool,
 }
 impl Scratch {
     fn allocated_bytes(&self) -> usize {
-        self.widths.capacity() * size_of::<carmy_combat_inputs::WidthTerm>()
-            + self.modifiers.capacity() * size_of::<carmy_combat_inputs::Modifier>()
+        self.widths.capacity() * size_of::<engine_native_land::division_combat_inputs::WidthTerm>()
+            + self.modifiers.capacity() * size_of::<engine_native_land::division_combat_inputs::Modifier>()
             + self.reinforcement.allocated_bytes()
             + self.observations.allocated_bytes()
     }
 }
 
 type DivisionRead = (
-    carmy_combat_inputs::Row,
-    carmy_combat_inputs::Exile,
-    carmy_combat_inputs::ContextRow,
+    engine_native_land::division_combat_inputs::Row,
+    engine_native_land::division_combat_inputs::Exile,
+    engine_native_land::division_combat_inputs::ContextRow,
     Option<Result<ReserveSpeed, &'static str>>,
 );
 
@@ -250,7 +251,7 @@ fn read_division<M: Memory, C: Memory>(
     pointer: usize,
     handle: u64,
 ) -> Result<DivisionRead, &'static str> {
-    let stats = carmy_combat_inputs::capture_stats(
+    let stats = engine_native_land::division_combat_inputs::capture_stats(
         memory,
         base,
         sources,
@@ -261,15 +262,15 @@ fn read_division<M: Memory, C: Memory>(
     )?;
     let countries = countries.as_ref().map_err(|reason| *reason)?;
     let exile = match role {
-        1 => carmy_combat_inputs::capture_exile_buffer(
+        1 => engine_native_land::division_combat_inputs::capture_exile_buffer(
             memory,
             countries,
             pointer,
             outputs.exile_tags,
         )?,
-        _ => carmy_combat_inputs::Exile::Absent,
+        _ => engine_native_land::division_combat_inputs::Exile::Absent,
     };
-    let context = carmy_combat_inputs::capture_context_buffer(
+    let context = engine_native_land::division_combat_inputs::capture_context_buffer(
         memory,
         base,
         countries,
@@ -311,8 +312,8 @@ fn read_division<M: Memory, C: Memory>(
 
 struct Destination<'a> {
     sources: &'a mut Sources,
-    commanders: cland_combat::Commanders,
-    leaders: &'a mut cland_combat::Leaders,
+    commanders: engine_native_land::land_combat_details::Commanders,
+    leaders: &'a mut engine_native_land::land_combat_details::Leaders,
     images: &'a mut Images,
     scratch: &'a mut Scratch,
     name_groups: &'a mut engine_native::cname_group_member::GroupKeys,
@@ -327,17 +328,17 @@ struct Destination<'a> {
     country_tags_progress: Progress,
     country_set_limit: Result<usize, &'static str>,
     rosters: &'a mut Vec<u64>,
-    commander_traits: &'a mut Vec<cland_combat::CommanderTrait>,
+    commander_traits: &'a mut Vec<engine_native_land::land_combat_details::CommanderTrait>,
     detail_text: &'a mut Vec<u8>,
-    timed_traits: &'a mut Vec<cland_combat::CommanderTimedTrait>,
+    timed_traits: &'a mut Vec<engine_native_land::land_combat_details::CommanderTimedTrait>,
     air_counts: &'a mut Vec<i32>,
-    learning_traits: &'a mut Vec<cland_combat::CommanderLearningTrait>,
+    learning_traits: &'a mut Vec<engine_native_land::land_combat_details::CommanderLearningTrait>,
     unit_scratch: &'a mut Vec<usize>,
-    detail_used: cland_combat::DetailCounts,
-    detail_required: cland_combat::DetailCounts,
+    detail_used: engine_native_land::land_combat_details::DetailCounts,
+    detail_required: engine_native_land::land_combat_details::DetailCounts,
     members: &'a mut Vec<ModifierMember>,
-    modifiers: &'a mut Vec<carmy_combat_inputs::Modifier>,
-    width_terms: &'a mut Vec<carmy_combat_inputs::WidthTerm>,
+    modifiers: &'a mut Vec<engine_native_land::division_combat_inputs::Modifier>,
+    width_terms: &'a mut Vec<engine_native_land::division_combat_inputs::WidthTerm>,
     width_progress: Progress,
     exile_tags: &'a mut Vec<u32>,
     exile_progress: Progress,
@@ -354,13 +355,13 @@ impl Destination<'_> {
             reserve_speed,
         } = acquired;
         let (exile, exile_len) = match exile {
-            carmy_combat_inputs::Exile::Absent => (Some(None), 0),
-            carmy_combat_inputs::Exile::Row(mut row) => {
+            engine_native_land::division_combat_inputs::Exile::Absent => (Some(None), 0),
+            engine_native_land::division_combat_inputs::Exile::Row(mut row) => {
                 row.cores.0 += at.exile_start;
                 row.occupiers.0 += at.exile_start;
                 (Some(Some(row)), row.cores.1 + row.occupiers.1)
             }
-            carmy_combat_inputs::Exile::DoesNotFit { required } => (None, required),
+            engine_native_land::division_combat_inputs::Exile::DoesNotFit { required } => (None, required),
         };
         self.exile_progress.required += exile_len;
         self.width_progress.required += context.width_term_count;
@@ -412,7 +413,7 @@ impl Destination<'_> {
         if crate::allocation::failed() {
             return;
         }
-        self.commanders = cland_combat::Commanders::default();
+        self.commanders = engine_native_land::land_combat_details::Commanders::default();
         let bound =
             (source.attackers.count as usize).saturating_add(source.defenders.count as usize);
         if !grow_vec(self.divisions, self.progress[1].required + bound) {
@@ -641,7 +642,7 @@ impl Destination<'_> {
         }
         let at = self.detail_used;
         let roster = self.arenas[0].len;
-        let mut arenas = cland_combat::DetailArenas::with_buffers(
+        let mut arenas = engine_native_land::land_combat_details::DetailArenas::with_buffers(
             engine_native::walk::Buffer::GrowingFrom(self.rosters, roster),
             engine_native::walk::Buffer::GrowingFrom(self.air_counts, at.air),
             engine_native::walk::Buffer::GrowingFrom(self.detail_text, at.text),
@@ -649,7 +650,7 @@ impl Destination<'_> {
             engine_native::walk::Buffer::GrowingFrom(self.timed_traits, at.timed),
             engine_native::walk::Buffer::GrowingFrom(self.learning_traits, at.learning),
         );
-        let result = cland_combat::read_details_sharing(
+        let result = engine_native_land::land_combat_details::read_details_sharing(
             memory,
             base,
             source,
@@ -745,7 +746,7 @@ impl Destination<'_> {
             return;
         }
         let scratch = &mut self.scratch.modifiers;
-        match carmy_combat_inputs::capture_modifiers_buffer(
+        match engine_native_land::division_combat_inputs::capture_modifiers_buffer(
             memory,
             base,
             pointer,
@@ -801,7 +802,7 @@ pub struct MemberReads<'a> {
     pub naming: engine_native::cname_group_member::Inputs,
     pub custom: &'a [u8],
     pub group: &'a [u8],
-    pub stats: &'a carmy_combat_inputs::Row,
+    pub stats: &'a engine_native_land::division_combat_inputs::Row,
     pub base_speed: i64,
 }
 
@@ -814,17 +815,17 @@ pub struct Captured {
     country_tags: Arena<u32>,
     rosters: Arena<u64>,
     members: Arena<ModifierMember>,
-    modifiers: Arena<carmy_combat_inputs::Modifier>,
-    width_terms: Arena<carmy_combat_inputs::WidthTerm>,
+    modifiers: Arena<engine_native_land::division_combat_inputs::Modifier>,
+    width_terms: Arena<engine_native_land::division_combat_inputs::WidthTerm>,
     exile_tags: Arena<u32>,
     division_names: Arena<u8>,
     name_cache: engine_native::cname_group_member::GroupKeys,
-    leaders: cland_combat::Leaders,
-    commander_traits: Arena<cland_combat::CommanderTrait>,
+    leaders: engine_native_land::land_combat_details::Leaders,
+    commander_traits: Arena<engine_native_land::land_combat_details::CommanderTrait>,
     detail_text: Arena<u8>,
-    timed_traits: Arena<cland_combat::CommanderTimedTrait>,
+    timed_traits: Arena<engine_native_land::land_combat_details::CommanderTimedTrait>,
     air_counts: Arena<i32>,
-    learning_traits: Arena<cland_combat::CommanderLearningTrait>,
+    learning_traits: Arena<engine_native_land::land_combat_details::CommanderLearningTrait>,
     unit_scratch: Vec<usize>,
     census: Vec<cland_combat::Row>,
     census_participants: Vec<u64>,
@@ -992,7 +993,7 @@ impl Captured {
             )
             .map_err(crate::allocation::io)
             .unwrap_or_default(),
-            leaders: cland_combat::Leaders::default(),
+            leaders: engine_native_land::land_combat_details::Leaders::default(),
             commander_traits: Arena::new(c.commander_traits),
             detail_text: Arena::new(c.detail_text),
             timed_traits: Arena::new(c.timed_traits),
@@ -1155,7 +1156,7 @@ impl Captured {
         let started = qpc();
         let mut destination = Destination {
             sources: &mut self.sources,
-            commanders: cland_combat::Commanders::default(),
+            commanders: engine_native_land::land_combat_details::Commanders::default(),
             leaders: &mut self.leaders,
             images: &mut self.images,
             scratch: &mut self.scratch,
@@ -1182,8 +1183,8 @@ impl Captured {
             air_counts: &mut self.air_counts.first,
             learning_traits: &mut self.learning_traits.first,
             unit_scratch: &mut self.unit_scratch,
-            detail_used: cland_combat::DetailCounts::default(),
-            detail_required: cland_combat::DetailCounts::default(),
+            detail_used: engine_native_land::land_combat_details::DetailCounts::default(),
+            detail_required: engine_native_land::land_combat_details::DetailCounts::default(),
             members: &mut self.members.first,
             modifiers: &mut self.modifiers.first,
             width_terms: &mut self.width_terms.first,
@@ -1604,7 +1605,7 @@ impl Captured {
             country_weight_present: context.country_weight_present,
         }
     }
-    fn side_inputs(&self, s: &cland_combat::SideDetails) -> LandCombatSideInputs {
+    fn side_inputs(&self, s: &engine_native_land::land_combat_details::SideDetails) -> LandCombatSideInputs {
         let text = |start: usize, len: usize| {
             allocation::owned_vec(allocation::copy_vec(
                 &self.detail_text.first[start..start + len],

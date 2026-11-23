@@ -79,6 +79,7 @@ worker_sampler = ["collector-workers/worker_sampler", "collector-map-capture/wor
 world_input_changes = ["collector-observers/world_input_changes", "collector-map-capture/world_input_changes"]
 
 [dependencies]
+engine-native-land.workspace = true
 collector-advisors.workspace = true
 collector-air.workspace = true
 collector-air-histories.workspace = true

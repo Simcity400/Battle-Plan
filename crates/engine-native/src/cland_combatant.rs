@@ -4,7 +4,7 @@ pub const VTABLE_RVA: Rva = Rva(0x02a2_36a0);
 pub const FLAGS: usize = 0x08;
 pub const COMBAT: usize = 0x18;
 pub const UNITS: usize = 0x20;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub const UNIT_COUNT: usize = 0x2c;
 pub const COUNTRIES: usize = 0x38;
 pub const SECONDARY_COUNTRIES: usize = 0x50;

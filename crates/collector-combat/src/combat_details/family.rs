@@ -873,7 +873,7 @@ fn live_detail_demand_presizes_attach_and_later_combat_arena_growth() {
             divisions,
             ..Shape::small()
         });
-        let demand = engine_native::cland_combat::detail_demand(&built.world, 0, GAME).unwrap();
+        let demand = engine_native_land::land_combat_details::detail_demand(&built.world, 0, GAME).unwrap();
         assert_eq!(demand.rows, combats);
         assert_eq!(demand.census_participants, combats * divisions);
         let old = capacities;
@@ -1650,7 +1650,7 @@ fn family_cost_at_scale() {
 
 #[cfg(test)]
 fn stages(w: &World, memory: &impl Memory, tables: [u64; N]) -> Vec<(&'static str, u64)> {
-    use engine_native::land_tactic_inputs as tactic;
+    use engine_native_land::land_tactic_inputs as tactic;
     let through = |stage: u8| {
         let mut air = vec![0; 1 << 12];
         let mut text = vec![0; 1 << 16];
@@ -1661,7 +1661,7 @@ fn stages(w: &World, memory: &impl Memory, tables: [u64; N]) -> Vec<(&'static st
         let mut participants = vec![0; 1 << 17];
         let mut pointers = vec![0; 1 << 17];
         let mut roles = vec![0; 1 << 12];
-        let mut images = engine_native::combat_sources::Images::default();
+        let mut images = engine_native_land::combat_sources::Images::default();
         let mut rosters = vec![0; 1 << 12];
         w.calls.store(0, Ordering::Relaxed);
         let walk = cland_combat::walk_members(

@@ -16,6 +16,7 @@ province_unit_changes = []
 test-support = ["dep:collector-test-support", "engine-native/layout-fixtures"]
 
 [dependencies]
+engine-native-land.workspace = true
 engine-deployment.workspace = true
 collector-test-support = { workspace = true, optional = true }
 collector-certificates.workspace = true

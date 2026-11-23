@@ -119,7 +119,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(self.canonical_slot(left)? == self.canonical_slot(right)?)
     }
 
-    pub(crate) fn country(&self, slot: u32) -> Result<Option<ccountry::Country>, &'static str> {
+    pub fn country(&self, slot: u32) -> Result<Option<ccountry::Country>, &'static str> {
         self.countries.at(slot)
     }
 

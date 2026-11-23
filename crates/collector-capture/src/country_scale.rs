@@ -132,11 +132,11 @@ pub fn observe_production_output(memory: &impl Memory, base: usize) -> Option<us
 pub fn observe_land_details(
     memory: &impl Memory,
     base: usize,
-) -> Result<Option<engine_native::cland_combat::DetailDemand>, &'static str> {
+) -> Result<Option<engine_native_land::land_combat_details::DetailDemand>, &'static str> {
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
-    engine_native::cland_combat::detail_demand(memory, base, state).map(Some)
+    engine_native_land::land_combat_details::detail_demand(memory, base, state).map(Some)
 }
 pub fn observe_naval_details(
     memory: &impl Memory,

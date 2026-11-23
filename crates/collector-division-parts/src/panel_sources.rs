@@ -274,7 +274,7 @@ impl Preparation {
                     (receiver, handle)
                 }),
         };
-        let province = engine_native::division_panel_operands::selected_province_in(
+        let province = engine_native_land::division_panel_operands::selected_province_in(
             memory,
             &mut self.roster,
             state,
@@ -299,7 +299,7 @@ impl Preparation {
                     return Ok(*context);
                 }
                 let context =
-                    engine_native::division_panel_operands::province_state(memory, base, province);
+                    engine_native_land::division_panel_operands::province_state(memory, base, province);
                 if let Ok(context) = context {
                     self.provinces.insert(province, context);
                 }
@@ -857,7 +857,7 @@ impl Store {
             let context_result = (|| {
                 let province = match prepared {
                     Some(prepared) => prepared.province,
-                    None => engine_native::division_panel_operands::selected_province_in(
+                    None => engine_native_land::division_panel_operands::selected_province_in(
                         memory,
                         &mut roster,
                         state,
@@ -883,7 +883,7 @@ impl Store {
                     Some(context) => *context,
                     None => {
                         let context = prepared.and_then(|p| p.context).unwrap_or_else(|| {
-                            engine_native::division_panel_operands::province_state(
+                            engine_native_land::division_panel_operands::province_state(
                                 memory, base, province,
                             )
                         })?;
@@ -1178,7 +1178,7 @@ impl Store {
                 }
                 observed.result
             } else {
-                engine_native::division_panel_operands::terrain(
+                engine_native_land::division_panel_operands::terrain(
                     memory,
                     base,
                     pointer,
@@ -1293,7 +1293,7 @@ impl Store {
                 scratch.extend_from_slice(&observed.variants);
                 return observed.result;
             }
-            let count = engine_native::division_panel_operands::held_variants(
+            let count = engine_native_land::division_panel_operands::held_variants(
                 memory,
                 base,
                 seed,
@@ -2332,7 +2332,8 @@ mod tests {
 
     #[test]
     fn first_multi_entry_failures_withdraw_all_ordinals_and_publication_checks_the_rows() {
-        use engine_native::{cequipment_variant as variant, division_panel_operands};
+        use engine_native::cequipment_variant as variant;
+        use engine_native_land::division_panel_operands;
         let _serial = serial(&MEMBERSHIP_TEST);
         operands::demand(0, 1, 0);
         operands::presize();
@@ -2463,7 +2464,8 @@ mod tests {
 
     #[test]
     fn source_invalidation_replaces_carried_terrain_and_quiet_values_need_no_reads() {
-        use engine_native::{cequipment_variant as variant, division_panel_operands};
+        use engine_native::cequipment_variant as variant;
+        use engine_native_land::division_panel_operands;
         let _serial = serial(&MEMBERSHIP_TEST);
         operands::demand(0, 1, 0);
         operands::presize();
@@ -2634,7 +2636,8 @@ mod tests {
 
     #[test]
     fn an_equal_terrain_reread_allocates_nothing_and_each_change_publishes_only_its_rows() {
-        use engine_native::{cequipment_variant as variant, division_panel_operands};
+        use engine_native::cequipment_variant as variant;
+        use engine_native_land::division_panel_operands;
         let _serial = serial(&MEMBERSHIP_TEST);
         operands::demand(0, 1, 0);
         operands::presize();

@@ -541,8 +541,8 @@ mod tests {
             let army = 0x1000 + index * 0x1000;
             for receiver in [
                 army,
-                army + engine_native::unit_history::OFFICER,
-                army + engine_native::unit_history::DIVISION_HISTORY,
+                army + engine_native_land::unit_history::OFFICER,
+                army + engine_native_land::unit_history::DIVISION_HISTORY,
                 0x1000_0000 + index * 0x1000,
             ] {
                 assert!(unit_history_changes::sequence(receiver).is_some());
@@ -550,7 +550,7 @@ mod tests {
             assert!(WATCHES.experience.sequence(army).is_some());
             assert!(WATCHES.progression.sequence(army).is_some());
         }
-        let receiver = 0x1000 + engine_native::unit_history::OFFICER;
+        let receiver = 0x1000 + engine_native_land::unit_history::OFFICER;
         let held = unit_history_changes::sequence(receiver).unwrap();
         boundary(false);
         assert_eq!(unit_history_changes::sequence(receiver), Some(held));

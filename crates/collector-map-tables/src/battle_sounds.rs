@@ -4,7 +4,8 @@ use crate::{
     table_conversion::{table, unavailable},
 };
 use engine_allocation::{copy_vec, owned_vec};
-use engine_native::{Memory, battle_sounds as native, walk::Outcome};
+use engine_native::{Memory, walk::Outcome};
+use engine_native_land::battle_sounds as native;
 use replay_data::{rows::BattleSoundRow, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 

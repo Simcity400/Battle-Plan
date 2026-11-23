@@ -514,7 +514,7 @@ fn skill_tooltip(
         let definitions = definitions
             .map_err(|refusal| format!("the skill hover's offence and defence lines: {refusal}"))?;
         let block = Block {
-            values: engine_native::cland_combat::SKILL_HOVER_KEYS
+            values: engine_native_land::land_combat_details::SKILL_HOVER_KEYS
                 .into_iter()
                 .zip(values)
                 .collect(),

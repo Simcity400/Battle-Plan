@@ -143,8 +143,8 @@ impl AssignedSources {
     pub fn pointers(&self) -> &[usize] {
         &self.pointers[..self.used]
     }
-    #[cfg(test)]
-    pub(crate) fn fixture(pointers: Vec<usize>) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fixture(pointers: Vec<usize>) -> Self {
         let used = pointers.len();
         Self {
             pointers,
@@ -1107,8 +1107,8 @@ impl Row {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Visit {
-    pub(crate) pointer: usize,
-    pub(crate) owner: usize,
+    pub pointer: usize,
+    pub owner: usize,
     instance: u32,
     successor_data: usize,
     successor_count: u32,
@@ -1121,11 +1121,11 @@ pub struct Visit {
     active: bool,
 }
 impl Visit {
-    pub(crate) fn instance(self) -> u32 {
+    pub fn instance(self) -> u32 {
         self.instance
     }
-    #[cfg(test)]
-    pub(crate) fn fixture(pointer: usize, owner: usize, instance: u32) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fixture(pointer: usize, owner: usize, instance: u32) -> Self {
         Self {
             pointer,
             owner,

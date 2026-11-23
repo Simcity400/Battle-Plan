@@ -240,7 +240,7 @@ impl GroupKeys {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_capacity(templates: usize, groups: usize) -> Self {
         Self::try_with_capacity(templates, groups).unwrap()
     }
@@ -347,7 +347,7 @@ const CACHED: StringErrors = [
 ];
 
 
-pub(crate) fn copy_string(
+pub fn copy_string(
     memory: &impl Memory,
     header: &[u8],
     names: &mut Names<'_>,
@@ -845,7 +845,7 @@ fn place_string(
     Ok(Some((start, len)))
 }
 
-pub(crate) fn read_inputs(
+pub fn read_inputs(
     memory: &impl Memory,
     base: usize,
     pointer: usize,

@@ -640,7 +640,7 @@ unsafe extern "system-unwind" fn requisition_hq_from_army(
     let state = || {
         engine_native::read::<u64>(
             &memory,
-            first.wrapping_add(engine_native::template_hq_context::HOLDER),
+            first.wrapping_add(engine_native_land::template_hq_context::HOLDER),
         )
         .and_then(|holder| usize::try_from(holder).ok())
         .and_then(|holder| {
@@ -649,7 +649,7 @@ unsafe extern "system-unwind" fn requisition_hq_from_army(
             } else {
                 engine_native::read::<u8>(
                     &memory,
-                    holder.wrapping_add(engine_native::template_hq_context::REQUISITIONED),
+                    holder.wrapping_add(engine_native_land::template_hq_context::REQUISITIONED),
                 )
                 .map(|flag| (holder, flag))
             }
@@ -676,7 +676,7 @@ unsafe extern "system-unwind" fn rebuild_hq_requirements(
     let timing = collector_timing::hook_timing::enter(
         collector_timing::hook_timing::Family::TemplateChanges,
     );
-    let template = second.wrapping_sub(engine_native::template_hq_context::TEMPLATE_REQUIREMENTS);
+    let template = second.wrapping_sub(engine_native_land::template_hq_context::TEMPLATE_REQUIREMENTS);
     let running = ManuallyDrop::new(WATCHES.registry.running());
     let before = HqSource {
         source: second,

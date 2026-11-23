@@ -630,7 +630,7 @@ impl Captured {
             if officer_ready {
                 let receiver = seed
                     .pointer
-                    .checked_add(engine_native::unit_history::OFFICER);
+                    .checked_add(engine_native_land::unit_history::OFFICER);
                 let quiet = receiver.filter(|_| prepared.is_none_or(|p| !p.acquired[2])).and_then(
                     |receiver| store.officer.quiet(seed, receiver, &observations.history, 2),
                 );
@@ -653,7 +653,7 @@ impl Captured {
                                 })
                                 .and_then(|p| p.officer)
                                 .unwrap_or_else(|| {
-                                    engine_native::unit_history::officer_experience(
+                                    engine_native_land::unit_history::officer_experience(
                                         memory,
                                         base,
                                         seed.pointer,
@@ -699,7 +699,7 @@ impl Captured {
                                 })
                                 .and_then(|p| p.career)
                                 .unwrap_or_else(|| {
-                                    engine_native::unit_history::career_counter(memory, seed.pointer)
+                                    engine_native_land::unit_history::career_counter(memory, seed.pointer)
                                 })
                         })
                     }

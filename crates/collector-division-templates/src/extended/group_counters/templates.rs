@@ -1,5 +1,6 @@
 use crate::template_changes::Changes;
-use engine_native::{Memory, corders_group::Root, template_hq_context as native};
+use engine_native::{Memory, corders_group::Root};
+use engine_native_land::template_hq_context as native;
 use replay_data::rows::{HqDeployment, HqEquipment, HqRequirement, TemplateHqContext};
 use std::sync::Arc;
 

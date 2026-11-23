@@ -6,8 +6,12 @@ use crate::{
 };
 use engine_allocation::{collect_vec, copy_vec, owned_vec, reserve};
 use engine_native::{
-    Memory, ccountry_supply_system, supply_node, supply_train_entry, walk::Buffer, walk::Outcome,
+    Memory,
+    ccountry_supply_system,
+    supply_train_entry,
+    walk::{Buffer, Outcome},
 };
+use engine_native_land::supply_node;
 use replay_data::{
     rows::ByteRun, rows::Recorded, rows::SparseBytes, rows::SupplyNodeRow, rows::TableId,
     rows::TrainAllocation, rows::TrainInventoryRow, rows::tables,
@@ -742,7 +746,7 @@ mod tests {
                 available: i64::MIN,
                 consumed: i64::MAX,
                 parent: -1,
-                route: engine_native::supply_route::Row {
+                route: engine_native_land::supply_route::Row {
                     from: 1,
                     to: u16::MAX,
                     break_after: 255,
@@ -987,7 +991,7 @@ mod tests {
             country: 1,
             province: 2,
             parent: 3,
-            route: engine_native::supply_route::Row {
+            route: engine_native_land::supply_route::Row {
                 from: 3,
                 to: 2,
                 len: 2,
@@ -1033,7 +1037,7 @@ mod tests {
             index: supply_node::VERTEX | 5,
             province: 5,
             parent: 2,
-            route: engine_native::supply_route::Row {
+            route: engine_native_land::supply_route::Row {
                 from: 2,
                 to: 5,
                 len: 2,

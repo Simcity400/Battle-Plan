@@ -38,7 +38,7 @@ fn with_navy<T>(
     consume(navy as usize)
 }
 
-pub(crate) fn authenticate(
+pub fn authenticate(
     memory: &impl Memory,
     base: usize,
     state: usize,

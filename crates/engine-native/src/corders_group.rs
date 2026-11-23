@@ -45,7 +45,7 @@ mod counter_tooltips;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Root {
-    pub(crate) pointer: usize,
+    pub pointer: usize,
     pub handle: u64,
     pub country: u32,
 }

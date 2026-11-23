@@ -10,12 +10,6 @@ mod country_sets;
 pub use country_sets::{
     CountrySetError, CountrySetsRow, read_country_sets_buffer,
 };
-pub use crate::land_combat_details::{DetailDemand, detail_demand};
-pub use crate::land_combat_details::{
-    BorderWarInputs, CommanderLearningTrait, CommanderSource, CommanderTimedTrait, CommanderTrait,
-    Commanders, DetailArenas, DetailCounts, DetailsRow, Leaders, SKILL_HOVER_KEYS, SideDetails,
-    Span, commander_sources, read_details, read_details_sharing,
-};
 
 pub const VTABLE_RVA: Rva = Rva(0x02a2_37b8);
 pub const BODY_VTABLE_RVA: Rva = Rva(0x02a2_3898);
@@ -40,7 +34,7 @@ pub const TASK_FORCE_CLASS: u32 = 1;
 pub const RAILWAY_GUN_CLASS: u32 = 13;
 pub const MOVEMENT_MODIFIER: usize = 0xb8;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn movement_combat(
     memory: &impl Memory,
     base: usize,
@@ -837,13 +831,10 @@ impl<M: Memory> Reader<'_, M> {
         }
     }
 
-    fn division(&self, pointer: usize) -> Result<u64, &'static str> {
+    pub fn division(&self, pointer: usize) -> Result<u64, &'static str> {
         match self.unit(pointer)? {
             (handle, DIVISION_CLASS) => Ok(handle),
             _ => Err("land combat participant is not a division"),
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

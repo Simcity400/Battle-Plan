@@ -863,7 +863,7 @@ pub fn movement_definition(
     Ok(definition)
 }
 
-pub(crate) fn movement_route_province(
+pub fn movement_route_province(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -940,7 +940,7 @@ pub fn movement_attacking(
     )
 }
 
-pub(crate) fn movement_priority_unit(
+pub fn movement_priority_unit(
     memory: &impl Memory,
     base: usize,
     template: usize,
