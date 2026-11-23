@@ -168,12 +168,12 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   const error = view === 'race' ? (fixed ? groups.error : rosters.error) ?? (pushed ? undefined : asked.error) : lines.error;
   const pinnedMembers = options.show === 'members';
   const resetKey = JSON.stringify([track?.source.id, track?.branch.id, kind, measure, widget.countries]);
-  const drillControl = useDrill(runtime, useRegion(widget));
+  const drillControl = useDrill(runtime, useRegion(widget), pinnedMembers && only ? only : null);
   const drill = drillControl.state, dispatch = drillControl.dispatch;
   useEffect(() => { drillControl.close(); }, [resetKey]);
   useWhyCommit('FactionTotalsView', { rosters: rosters.data, rostersAt: rosters.at, groups: groups.data, members: followed, valuesEntry, live, named,
     asked: asked.data, looks, lines: lines.data, chartView, drill });
-  const memberFaction = drill.breakdown ?? (pinnedMembers ? only ?? null : null);
+  const memberFaction = drill.breakdown;
   const allGroups = useCountryGroups(runtime, track, active && memberFaction !== null);
   const factionGroup = useMemo(() => allGroups.data?.factions.find(faction => faction.id === memberFaction) ?? null, [allGroups.data, memberFaction]);
   const membersFollow = pushed && (drill.breakdown == null || drillControl.following);
@@ -187,17 +187,18 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   const anchor = useRef<HTMLDivElement | null>(null);
   const membersOf = (picked: boolean) => track ? membersGate.outside ? <GateState gate={membersGate} loading="Loading faction members…" /> : <FactionMembers runtime={runtime} gate={membersGate} at={membersAt} track={track} active={active} options={options} kind={kind} measure={measure}
     label={`${memberFaction ? entityLooks.name(memberFaction, membersHour) : label} · ${measureLabel}`} format={format} faction={factionGroup}
-    extent={extent} playhead={playhead} hour={membersHour} head={membersHead} onPick={picked ? hour => dispatch({ type: 'pick', hour }) : undefined} /> : null;
+    extent={extent} playhead={drill.breakdown != null ? membersHour : playhead} hour={membersHour} head={membersHead} onPick={picked ? hour => dispatch({ type: 'pick', hour }) : undefined} /> : null;
   const state = !track ? <WidgetState kind="empty" icon="shield" message="Load a campaign to see its factions." />
     : gate.outside ? <GateState gate={gate} loading={`Loading ${label.toLowerCase()}…`} />
       : error ? <WidgetState kind="error" failure={error} onRetry={view === 'race' ? () => { rosters.retry(); groups.retry(); asked.retry(); } : lines.retry} />
         : looks.loading && !group ? <WidgetState kind="loading" label="Loading factions…" />
           : view === 'race' && rosterData?.missing ? <WidgetState kind="unavailable" message={rosterData.missing} />
             : view === 'race' && (!rosterData || !live && members.length > 0 && !asked.data) ? <WidgetState kind="loading" label={`Loading ${label.toLowerCase()}…`} /> : undefined;
-  if (pinnedMembers) return <div className="country-race" ref={element => { setRoot(element); rosters.root(element); }}>
+  if (pinnedMembers) return <div className="country-race" ref={element => { setRoot(element); rosters.root(element); anchor.current = element; }}>
     {!only ? <WidgetState kind="empty" icon="shield" message="Choose a faction group shown as one total in the widget settings." />
-      : allGroups.error && !allGroups.data ? <WidgetState kind="error" failure={allGroups.error} onRetry={allGroups.retry} />
-        : !allGroups.data ? <WidgetState kind="loading" label="Loading faction members…" /> : membersOf(false)}
+      : <DrillHost drill={drillControl} runtime={runtime} mode="inline" anchor={anchor} title={`${entityLooks.name(only, membersHour)}: members`} day={dayLabel(membersHour)} canFollow main={null}>
+        {allGroups.error && !allGroups.data ? <WidgetState kind="error" failure={allGroups.error} onRetry={allGroups.retry} />
+          : !allGroups.data ? <WidgetState kind="loading" label="Loading faction members…" /> : membersOf(true)}</DrillHost>}
   </div>;
   const openMembers = !group && track ? (hour: number, id?: string) => {
     if (id) drillControl.show(id, hour);

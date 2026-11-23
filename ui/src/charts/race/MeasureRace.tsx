@@ -235,13 +235,19 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const rankRequest = !arsenal && racing && track && !entry && (top != null || asked) && askHour !== null ? productRequest({
     sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
     params: top != null ? { branchId: track.branch.id, family: measure, hour: askHour, top }
-      : { branchId: track.branch.id, family: measure, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: askHour })) },
+      : { branchId: track.branch.id, family: measure, reads: tags.filter(tag => !member || member(tag, askHour)).map(tag => ({ country: countryFromKey(tag), hour: askHour })) },
   }) : null;
   const ranked = useFollowedProduct<SeriesStateReply>(runtime.client, rankRequest, ['hour', 'reads'], active,
     top != null ? validateRankReply : value => value as SeriesStateReply, track?.source);
-  const unsplit = useMemo(() => ranked.data
-    ? stateEntries(ranked.data.states.filter(state => !member || member(countryKey(state.country), moment)), ranked.data.decimals, format, moment, slots) : [],
-  [ranked.data, member, moment, slots, format]);
+  const rankedAt = useMemo(() => {
+    if (!ranked.moment) return null;
+    const [at, reads] = JSON.parse(ranked.moment) as [unknown, { hour?: unknown }[] | undefined];
+    return typeof at === 'number' ? at : typeof reads?.[0]?.hour === 'number' ? reads[0].hour : null;
+  }, [ranked.moment]);
+  const rankedFits = !!ranked.data && rankedAt !== null && (following || rankedAt === askHour);
+  const unsplit = useMemo(() => ranked.data && rankedFits && rankedAt !== null
+    ? stateEntries(ranked.data.states.filter(state => !member || member(countryKey(state.country), rankedAt)), ranked.data.decimals, format, rankedAt, slots) : [],
+  [ranked.data, rankedFits, member, rankedAt, slots, format]);
   const rankedTags = useMemo(() => unsplit.map(item => item.tag), [unsplit]);
   const askedParts = usePartStates(runtime.client, track?.source, track?.branch.id, parts, rankedTags, askHour, active && partsRead && !entry);
   const selection = useMemo(() => ({ top, tags, membership, split: splitting }), [top, tags, membership, splitting]);
@@ -348,7 +354,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
     if (resolved.reason) return <WidgetState kind="empty" icon={icon} message={resolved.reason} />;
     if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
     if (grouped && !groups.data) return <WidgetState kind="loading" label={`Loading ${label.toLowerCase()}…`} />;
-    if (raceView === 'race' && !entry && !ranked.data && !arsenal?.data) return <WidgetState kind="loading" label={`Loading ${label.toLowerCase()}…`} />;
+    if (raceView === 'race' && !entry && !rankedFits && !arsenal?.data) return <WidgetState kind="loading" label={`Loading ${label.toLowerCase()}…`} />;
     return undefined;
   })();
   const partValuesOf = (tag: string): PartValues | undefined => !parts ? undefined
