@@ -2,10 +2,38 @@
 use engine_sites::Rva;
 use crate::{
     Memory, ccountry, cgame_state, cpdx_array::Array, cstrategic_navy, cstrategic_navy_manager,
-    read,
+    memory::{RecordField, RecordLayout, RecordSources},
+    read, read_slice,
 };
 
 pub const MANAGER: usize = 0x60;
+
+const NAVY_BATCH: usize = 64;
+const NAVY_FIELDS: [RecordField; 4] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: cstrategic_navy::SECONDARY,
+        destination_offset: 8,
+        len: 8,
+    },
+    RecordField {
+        source_offset: MANAGER,
+        destination_offset: 16,
+        len: 8,
+    },
+    RecordField {
+        source_offset: cstrategic_navy::REGION_MISSIONS,
+        destination_offset: 24,
+        len: 16,
+    },
+];
+const NAVY_BYTES: usize = 40;
+const NAVY_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&NAVY_FIELDS, NAVY_BYTES).expect("valid navy layout");
 
 const CONSUMED: &str = "naval movement input already consumed";
 
@@ -144,6 +172,129 @@ impl<'a, M: Memory> Reader<'a, M> {
                 cstrategic_navy::REGION_MISSIONS_STRIDE,
             )),
         })
+    }
+
+    pub fn observe_navies_range(
+        &self,
+        count: usize,
+        mut each: impl FnMut(u32, Result<NavyInputs, &'static str>),
+    ) {
+        let Ok(Some(manager)) = self.manager else {
+            for index in 0..count {
+                if let Ok(slot) = u32::try_from(index) {
+                    each(slot, self.observe_navy(slot));
+                }
+            }
+            return;
+        };
+        if manager.navies.count == 0 {
+            for index in 0..count {
+                if let Ok(slot) = u32::try_from(index) {
+                    each(slot, Ok(NavyInputs::absent(slot)));
+                }
+            }
+            return;
+        }
+        let expected = engine_sites::at(self.base, cstrategic_navy::VTABLE_RVA).map(|v| v as u64);
+        let secondary_expected =
+            engine_sites::at(self.base, cstrategic_navy::SECONDARY_VTABLE_RVA).map(|v| v as u64);
+        let (Some(expected), Some(secondary_expected)) = (expected, secondary_expected) else {
+            for index in 0..count {
+                if let Ok(slot) = u32::try_from(index) {
+                    each(slot, self.observe_navy(slot));
+                }
+            }
+            return;
+        };
+        let mut ptr_bytes = [0_u8; NAVY_BATCH * 8];
+        let mut pointers = [0_usize; NAVY_BATCH];
+        let mut records = [0_u8; NAVY_BATCH * NAVY_BYTES];
+        let mut first = 0_usize;
+        while first < count {
+            let n = (count - first).min(NAVY_BATCH);
+            let contiguous = u32::try_from(first)
+                .ok()
+                .filter(|_| (first + n) as u64 <= u64::from(manager.navies.count))
+                .and_then(|start_slot| manager.navies.element(start_slot, 8))
+                .filter(|&start| {
+                    start.checked_add(n * 8).is_some()
+                        && read_slice(self.memory, start, &mut ptr_bytes[..n * 8])
+                })
+                .is_some();
+            if !contiguous {
+                for offset in 0..n {
+                    if let Ok(slot) = u32::try_from(first + offset) {
+                        each(slot, self.observe_navy(slot));
+                    }
+                }
+                first += n;
+                continue;
+            }
+            let mut live = 0_usize;
+            let mut map = [usize::MAX; NAVY_BATCH];
+            let mut raw_ptrs = [0_usize; NAVY_BATCH];
+            for offset in 0..n {
+                let navy =
+                    u64::from_le_bytes(ptr_bytes[offset * 8..(offset + 1) * 8].try_into().unwrap())
+                        as usize;
+                raw_ptrs[offset] = navy;
+                if navy != 0 {
+                    map[offset] = live;
+                    pointers[live] = navy;
+                    live += 1;
+                }
+            }
+            let copied = if live != 0 {
+                self.memory.copy_records(
+                    RecordSources::Pointers(&pointers[..live]),
+                    &NAVY_LAYOUT,
+                    &mut records[..live * NAVY_BYTES],
+                )
+            } else {
+                0
+            };
+            let complete = copied / NAVY_FIELDS.len();
+            for offset in 0..n {
+                let slot = (first + offset) as u32;
+                let navy = raw_ptrs[offset];
+                if navy == 0 {
+                    each(slot, Ok(NavyInputs::absent(slot)));
+                    continue;
+                }
+                let at = map[offset];
+                if at < complete {
+                    let rec = &records[at * NAVY_BYTES..(at + 1) * NAVY_BYTES];
+                    let primary = u64::from_le_bytes(rec[0..8].try_into().unwrap());
+                    let secondary = u64::from_le_bytes(rec[8..16].try_into().unwrap());
+                    let backlink = u64::from_le_bytes(rec[16..24].try_into().unwrap());
+                    if primary != expected
+                        || secondary != secondary_expected
+                        || backlink != manager.pointer as u64
+                    {
+                        each(slot, Err("naval movement navy identity or manager mismatch"));
+                    } else {
+                        let ledgers = Array::from_header(
+                            rec[24..40].try_into().unwrap(),
+                            cstrategic_navy::REGION_MISSIONS_STRIDE,
+                        )
+                        .ok_or("naval movement array unreadable or invalid");
+                        each(
+                            slot,
+                            Ok(NavyInputs {
+                                slot,
+                                present: true,
+                                launch_navy: Some(navy),
+                                ledger_navy: Some(navy),
+                                ledgers: Some(ledgers),
+                            }),
+                        );
+                    }
+                } else {
+                    each(slot, self.observe_navy(slot));
+                }
+            }
+            first += n;
+        }
     }
 }
 

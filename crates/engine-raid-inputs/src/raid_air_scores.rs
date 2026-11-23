@@ -485,6 +485,9 @@ fn carry_row(output: &mut Vec<Row>, len: &mut usize, row: &Row) -> Result<(), &'
 
 const MENU_REDUCTIONS: usize = 0x30;
 const FULL_ENTRY: usize = AIR_SPOTTING_SCALE + 8;
+const FULL_CONTIGUOUS: [RecordField; 1] = [field(0, 0, FULL_ENTRY)];
+const FULL_CONTIGUOUS_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&FULL_CONTIGUOUS, FULL_ENTRY).expect("valid contiguous raid air score layout");
 const FULL: [RecordField; 3] = [
     field(0, 0, ENTRY),
     field(MENU_REDUCTIONS, MENU_REDUCTIONS, 64),
@@ -493,6 +496,30 @@ const FULL: [RecordField; 3] = [
 const FULL_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&FULL, FULL_ENTRY).expect("valid full raid air score layout");
 const BATCH: usize = 128;
+
+#[inline]
+fn is_fast_zero(entry: &[u8]) -> bool {
+    let u64_at = |o: usize| u64::from_le_bytes(entry[o..o + 8].try_into().unwrap());
+    let missions = u32::from_le_bytes(
+        entry[FRIENDLY_MISSIONS..FRIENDLY_MISSIONS + 4]
+            .try_into()
+            .unwrap(),
+    );
+    (u64_at(0)
+        | u64_at(8)
+        | u64_at(0x10)
+        | u64_at(0x30)
+        | u64_at(0x38)
+        | u64_at(0x40)
+        | u64_at(0x48)
+        | u64_at(0x58)
+        | u64_at(0x68)
+        | u64_at(AIR_SPOTTING_SCALE)
+        | u64::from(missions))
+        == 0
+        && usize::try_from(u64_at(0x50)).is_ok_and(|head| head != 0)
+        && usize::try_from(u64_at(0x60)).is_ok_and(|head| head != 0)
+}
 
 fn read_entries<'a>(
     memory: &impl Memory,
@@ -506,6 +533,22 @@ fn read_entries<'a>(
     let mut all_menus = true;
     let mut at = 0;
     while at < count {
+        let fast = memory.copy_records(
+            sources(at)?,
+            &FULL_CONTIGUOUS_LAYOUT,
+            &mut full[at * FULL_ENTRY..count * FULL_ENTRY],
+        );
+        for index in at..at + fast {
+            let entry = &full[index * FULL_ENTRY..(index + 1) * FULL_ENTRY];
+            scales[index] = Some(i64::from_le_bytes(
+                entry[AIR_SPOTTING_SCALE..FULL_ENTRY].try_into().unwrap(),
+            ));
+            menu_ok[index] = true;
+        }
+        at += fast;
+        if at == count {
+            break;
+        }
         let copied = memory.copy_records(
             sources(at)?,
             &FULL_LAYOUT,
@@ -552,60 +595,92 @@ fn read_all(
     output: &mut Vec<Row>,
     len: &mut usize,
 ) -> Result<(), &'static str> {
-    let mut full = [0_u8; BATCH * FULL_ENTRY];
-    let mut scales = [None; BATCH];
-    let mut menu_ok = [false; BATCH];
-    for first in (0..scores.count as usize).step_by(BATCH) {
-        let count = (scores.count as usize - first).min(BATCH);
-        let all_menus = read_entries(
-            memory,
-            count,
-            |at| {
-                let base = scores
-                    .element((first + at) as u32, STRIDE)
-                    .ok_or("raid air score address overflow")?;
-                Ok(RecordSources::Strided {
-                    base,
-                    stride: STRIDE,
-                    count: count - at,
-                })
-            },
-            |at| {
-                scores
-                    .element((first + at) as u32, STRIDE)
-                    .ok_or("raid air scale address overflow")
-            },
-            &mut full,
-            &mut scales,
-            &mut menu_ok,
-        )?;
-        let menus = menu::read_from_entries(
-            memory,
-            &full[..count * FULL_ENTRY],
-            FULL_ENTRY,
-            (!all_menus).then_some(&menu_ok[..count]),
-            &[],
-            scratch,
-        );
-        for (index, (entry, read)) in full[..count * FULL_ENTRY]
-            .chunks_exact(FULL_ENTRY)
-            .zip(menus)
-            .enumerate()
-        {
-            if target.regions[first + index].present {
-                target.push(
-                    first + index,
-                    &entry[..ENTRY],
-                    scales[index],
-                    read,
-                    None,
-                    output,
-                    len,
-                )?;
+    let mut reads = scratch.take_reads();
+    let result = (|| -> Result<(), &'static str> {
+        for first in (0..scores.count as usize).step_by(BATCH) {
+            let count = (scores.count as usize - first).min(BATCH);
+            let buffers = scratch.buffers();
+            let all_menus = read_entries(
+                memory,
+                count,
+                |at| {
+                    let base = scores
+                        .element((first + at) as u32, STRIDE)
+                        .ok_or("raid air score address overflow")?;
+                    Ok(RecordSources::Strided {
+                        base,
+                        stride: STRIDE,
+                        count: count - at,
+                    })
+                },
+                |at| {
+                    scores
+                        .element((first + at) as u32, STRIDE)
+                        .ok_or("raid air scale address overflow")
+                },
+                &mut buffers.full,
+                &mut buffers.scales,
+                &mut buffers.menu_ok,
+            )?;
+            let mut active_len = 0;
+            for index in 0..count {
+                let slot = first + index;
+                if !target.regions[slot].present {
+                    continue;
+                }
+                let entry = &buffers.full[index * FULL_ENTRY..(index + 1) * FULL_ENTRY];
+                if (all_menus || buffers.menu_ok[index]) && is_fast_zero(entry) {
+                    continue;
+                }
+                buffers.active[active_len] = index;
+                active_len += 1;
+            }
+            menu::read_selected_entries(
+                memory,
+                FULL_ENTRY,
+                active_len,
+                all_menus,
+                &[],
+                scratch,
+                &mut reads,
+            );
+            let buffers = scratch.buffers();
+            let mut cursor = 0;
+            for index in 0..count {
+                let slot = first + index;
+                if !target.regions[slot].present {
+                    continue;
+                }
+                let entry = &buffers.full[index * FULL_ENTRY..(index + 1) * FULL_ENTRY];
+                if cursor < active_len && buffers.active[cursor] == index {
+                    let read = std::mem::replace(&mut reads[cursor], menu::Read::Unavailable);
+                    cursor += 1;
+                    target.push(
+                        slot,
+                        &entry[..ENTRY],
+                        buffers.scales[index],
+                        read,
+                        None,
+                        output,
+                        len,
+                    )?;
+                } else if slot == target.last {
+                    target.push(
+                        slot,
+                        &entry[..ENTRY],
+                        buffers.scales[index],
+                        menu::Read::Zero,
+                        None,
+                        output,
+                        len,
+                    )?;
+                }
             }
         }
-    }
-    Ok(())
+        Ok(())
+    })();
+    scratch.return_reads(reads);
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -622,76 +697,98 @@ fn carry(
 ) -> Result<(), &'static str> {
     let updated = |row: &Row| target.regions[row.slot as usize].updated(row.slot as usize, phase);
     let mut next = 0;
-    let mut addresses = [0_usize; BATCH];
-    let mut full = [0_u8; BATCH * FULL_ENTRY];
-    let mut scales = [None; BATCH];
-    let mut menu_ok = [false; BATCH];
-    for batch in slots.chunks(BATCH) {
-        let count = batch.len();
-        for (address, slot) in addresses.iter_mut().zip(batch) {
-            *address = scores
-                .element(*slot, STRIDE)
-                .ok_or("raid air score address overflow")?;
-        }
-        let mut previous: [Option<&Row>; BATCH] = [None; BATCH];
-        let mut ahead = next;
-        for (found, slot) in previous.iter_mut().zip(batch) {
-            while held.get(ahead).is_some_and(|row| row.slot < *slot) {
-                ahead += 1;
+    let mut reads = scratch.take_reads();
+    let result = (|| -> Result<(), &'static str> {
+        for batch in slots.chunks(BATCH) {
+            let count = batch.len();
+            let buffers = scratch.buffers();
+            for (address, slot) in buffers.addresses[..count].iter_mut().zip(batch) {
+                *address = scores
+                    .element(*slot, STRIDE)
+                    .ok_or("raid air score address overflow")?;
             }
-            *found = held.get(ahead).filter(|row| row.slot == *slot);
-        }
-        let mut menus: [Option<&Arc<Menu>>; BATCH] = [None; BATCH];
-        for (menu, row) in menus.iter_mut().zip(&previous) {
-            *menu = row.and_then(|row| row.menu.as_ref());
-        }
-        let slice = &addresses[..count];
-        let all_menus = read_entries(
-            memory,
-            count,
-            |at| Ok(RecordSources::Pointers(&slice[at..])),
-            |at| Ok(slice[at]),
-            &mut full,
-            &mut scales,
-            &mut menu_ok,
-        )?;
-        let reads = menu::read_from_entries(
-            memory,
-            &full[..count * FULL_ENTRY],
-            FULL_ENTRY,
-            (!all_menus).then_some(&menu_ok[..count]),
-            &menus[..count],
-            scratch,
-        );
-        for (index, ((slot, entry), read)) in batch
-            .iter()
-            .zip(full[..count * FULL_ENTRY].chunks_exact(FULL_ENTRY))
-            .zip(reads)
-            .enumerate()
-        {
-            while let Some(row) = held.get(next).filter(|row| row.slot <= *slot) {
-                next += 1;
-                if row.slot < *slot && !updated(row) {
-                    carry_row(output, len, row)?;
+            let slice = &buffers.addresses[..count];
+            let all_menus = read_entries(
+                memory,
+                count,
+                |at| Ok(RecordSources::Pointers(&slice[at..])),
+                |at| Ok(slice[at]),
+                &mut buffers.full,
+                &mut buffers.scales,
+                &mut buffers.menu_ok,
+            )?;
+            let mut active_len = 0;
+            let mut active_prev: [Option<&Row>; BATCH] = [None; BATCH];
+            let mut active_menus: [Option<&Arc<Menu>>; BATCH] = [None; BATCH];
+            let mut ahead = next;
+            for (index, &slot) in batch.iter().enumerate() {
+                let entry = &buffers.full[index * FULL_ENTRY..(index + 1) * FULL_ENTRY];
+                if (all_menus || buffers.menu_ok[index]) && is_fast_zero(entry) {
+                    continue;
+                }
+                while held.get(ahead).is_some_and(|row| row.slot < slot) {
+                    ahead += 1;
+                }
+                let prev = held.get(ahead).filter(|row| row.slot == slot);
+                buffers.active[active_len] = index;
+                active_prev[active_len] = prev;
+                active_menus[active_len] = prev.and_then(|row| row.menu.as_ref());
+                active_len += 1;
+            }
+            menu::read_selected_entries(
+                memory,
+                FULL_ENTRY,
+                active_len,
+                all_menus,
+                &active_menus[..active_len],
+                scratch,
+                &mut reads,
+            );
+            let buffers = scratch.buffers();
+            let mut cursor = 0;
+            for (index, &slot) in batch.iter().enumerate() {
+                while let Some(row) = held.get(next).filter(|row| row.slot <= slot) {
+                    next += 1;
+                    if row.slot < slot && !updated(row) {
+                        carry_row(output, len, row)?;
+                    }
+                }
+                let entry = &buffers.full[index * FULL_ENTRY..(index + 1) * FULL_ENTRY];
+                if cursor < active_len && buffers.active[cursor] == index {
+                    let read = std::mem::replace(&mut reads[cursor], menu::Read::Unavailable);
+                    let prev = active_prev[cursor];
+                    cursor += 1;
+                    target.push(
+                        slot as usize,
+                        &entry[..ENTRY],
+                        buffers.scales[index],
+                        read,
+                        prev,
+                        output,
+                        len,
+                    )?;
+                } else if slot as usize == target.last {
+                    target.push(
+                        slot as usize,
+                        &entry[..ENTRY],
+                        buffers.scales[index],
+                        menu::Read::Zero,
+                        None,
+                        output,
+                        len,
+                    )?;
                 }
             }
-            target.push(
-                *slot as usize,
-                &entry[..ENTRY],
-                scales[index],
-                read,
-                previous[index],
-                output,
-                len,
-            )?;
         }
-    }
-    for row in &held[next..] {
-        if !updated(row) {
-            carry_row(output, len, row)?;
+        for row in &held[next..] {
+            if !updated(row) {
+                carry_row(output, len, row)?;
+            }
         }
-    }
-    Ok(())
+        Ok(())
+    })();
+    scratch.return_reads(reads);
+    result
 }
 
 #[cfg(test)]

@@ -46,6 +46,9 @@ const UNCAPTURED: Outcome = Outcome::Unavailable {
     reason: "division speed terms not captured",
 };
 const ALLOCATION: &str = "division speed term allocation failed";
+const UNFETCHED_CONTROLLER: &str = "movement province controller not fetched";
+const UNFETCHED_AREA: &str = "movement province area not fetched";
+const DENSE_PROVINCE_LIMIT: usize = 32_768;
 
 #[derive(Clone, Copy)]
 struct Mover {
@@ -251,7 +254,7 @@ impl Hostility {
         logical: Option<u32>,
     ) -> Result<bool, &'static str> {
         let mut countries = None;
-        self.attacking_with(memory, base, game, &mut countries, &[], last, logical)
+        self.attacking_with(memory, base, game, &mut countries, &[], &[], last, logical)
     }
 
     #[allow(
@@ -265,11 +268,12 @@ impl Hostility {
         game: usize,
         countries: &mut Option<Result<ccountry::Reader<'a, M>, &'static str>>,
         provinces: &[(u32, Result<cprovince::MovementProvince, &'static str>)],
+        province_slot: &[u32],
         last: Result<u32, &'static str>,
         logical: Option<u32>,
     ) -> Result<bool, &'static str> {
         let last = last?;
-        let destination = if let Some(Ok(facts)) = memo(provinces, last)
+        let destination = if let Ok(facts) = province_at(provinces, province_slot, last)
             && let Ok(controller) = facts.controller
         {
             Some(controller as i32)
@@ -332,13 +336,11 @@ impl Hostility {
 #[derive(Default)]
 struct Scratch {
     ids: Vec<u32>,
-    cached_provinces: Vec<(usize, cprovince::StaticMovementProvince)>,
     cached_pointers: Vec<usize>,
-    #[allow(
-        clippy::type_complexity,
-        reason = "reused per-hour scratch for batched province controller and controller area reads"
-    )]
-    cached_controllers: Vec<(Result<u32, &'static str>, Result<usize, &'static str>)>,
+    ctrl_slots: Vec<usize>,
+    ctrl_results: Vec<Result<u32, &'static str>>,
+    area_slots: Vec<usize>,
+    area_results: Vec<Result<usize, &'static str>>,
     missing_ids: Vec<(usize, u32)>,
     missing_query: Vec<u32>,
     states: Vec<usize>,
@@ -354,6 +356,7 @@ struct Scratch {
     )]
     branches: Vec<((u32, u32), Result<u8, &'static str>)>,
     wanted_rivers: Vec<(u32, u32)>,
+    pending_rivers: Vec<(u32, usize)>,
     pointers: Vec<usize>,
     located: Vec<(usize, u32)>,
     wanted_transport: Vec<(u32, usize)>,
@@ -363,11 +366,11 @@ struct Scratch {
 impl Scratch {
     fn allocated_bytes(&self) -> usize {
         self.ids.capacity() * size_of::<u32>()
-            + self.cached_provinces.capacity()
-                * size_of::<(usize, cprovince::StaticMovementProvince)>()
             + self.cached_pointers.capacity() * size_of::<usize>()
-            + self.cached_controllers.capacity()
-                * size_of::<(Result<u32, &'static str>, Result<usize, &'static str>)>()
+            + self.ctrl_slots.capacity() * size_of::<usize>()
+            + self.ctrl_results.capacity() * size_of::<Result<u32, &'static str>>()
+            + self.area_slots.capacity() * size_of::<usize>()
+            + self.area_results.capacity() * size_of::<Result<usize, &'static str>>()
             + self.missing_ids.capacity() * size_of::<(usize, u32)>()
             + self.missing_query.capacity() * size_of::<u32>()
             + self.states.capacity() * size_of::<usize>()
@@ -375,6 +378,7 @@ impl Scratch {
             + self.wanted_states.capacity() * size_of::<(u32, u32, u32, usize, u32, bool)>()
             + self.branches.capacity() * size_of::<((u32, u32), Result<u8, &'static str>)>()
             + self.wanted_rivers.capacity() * size_of::<(u32, u32)>()
+            + self.pending_rivers.capacity() * size_of::<(u32, usize)>()
             + self.pointers.capacity() * size_of::<usize>()
             + self.located.capacity() * size_of::<(usize, u32)>()
             + self.wanted_transport.capacity() * size_of::<(u32, usize)>()
@@ -398,6 +402,8 @@ pub(super) struct SpeedTerms {
     route_values: Vec<u32>,
     crossings: cprovince::GeometryPacket,
     provinces: Vec<(u32, Result<cprovince::MovementProvince, &'static str>)>,
+    province_slot: Vec<u32>,
+    province_pointers: Vec<usize>,
     #[allow(clippy::type_complexity)]
     state_facts: Vec<(usize, Result<(u32, u32), &'static str>)>,
     #[allow(clippy::type_complexity)]
@@ -437,6 +443,8 @@ impl Default for SpeedTerms {
             route_values: Vec::new(),
             crossings: cprovince::GeometryPacket::default(),
             provinces: Vec::new(),
+            province_slot: Vec::new(),
+            province_pointers: Vec::new(),
             state_facts: Vec::new(),
             templates: Vec::new(),
             keys: Vec::new(),
@@ -458,11 +466,38 @@ impl Default for SpeedTerms {
     }
 }
 
-fn province(
+#[inline]
+fn province_slot_of(
     provinces: &[(u32, Result<cprovince::MovementProvince, &'static str>)],
+    province_slot: &[u32],
+    id: u32,
+) -> Option<usize> {
+    let idx = id as usize;
+    if idx < province_slot.len() {
+        let slot = province_slot[idx];
+        return (slot < provinces.len() as u32).then_some(slot as usize);
+    }
+    provinces.binary_search_by_key(&id, |entry| entry.0).ok()
+}
+
+#[inline]
+fn province_at(
+    provinces: &[(u32, Result<cprovince::MovementProvince, &'static str>)],
+    province_slot: &[u32],
     id: u32,
 ) -> Result<cprovince::MovementProvince, &'static str> {
-    memo(provinces, id).ok_or("movement province unread")?
+    let at = province_slot_of(provinces, province_slot, id).ok_or("movement province unread")?;
+    provinces[at].1
+}
+
+#[inline]
+fn is_unfetched(result: &Result<u32, &'static str>) -> bool {
+    matches!(result, Err(reason) if std::ptr::eq(*reason, UNFETCHED_CONTROLLER))
+}
+
+#[inline]
+fn is_unfetched_area(result: &Result<usize, &'static str>) -> bool {
+    matches!(result, Err(reason) if std::ptr::eq(*reason, UNFETCHED_AREA))
 }
 
 fn route<'a>(
@@ -505,6 +540,8 @@ impl SpeedTerms {
             + self.crossings.allocated_bytes()
             + self.provinces.capacity()
                 * size_of::<(u32, Result<cprovince::MovementProvince, &'static str>)>()
+            + self.province_slot.capacity() * size_of::<u32>()
+            + self.province_pointers.capacity() * size_of::<usize>()
             + self.state_facts.capacity() * size_of::<(usize, Result<(u32, u32), &'static str>)>()
             + self.templates.capacity() * size_of::<(usize, Result<(usize, usize), &'static str>)>()
             + self.keys.capacity() * size_of::<u32>()
@@ -781,6 +818,8 @@ impl SpeedTerms {
                 movers: std::mem::take(&mut self.movers),
                 route: std::mem::take(&mut self.route),
                 provinces: std::mem::take(&mut self.provinces),
+                province_slot: std::mem::take(&mut self.province_slot),
+                province_pointers: std::mem::take(&mut self.province_pointers),
                 state_facts: std::mem::take(&mut self.state_facts),
                 templates: std::mem::take(&mut self.templates),
                 keys: std::mem::take(&mut self.keys),
@@ -814,6 +853,7 @@ impl SpeedTerms {
                 transport_demand: std::mem::take(&mut self.transport_demand),
                 speed_cache: std::mem::take(&mut self.speed_cache),
                 wanted_rivers: std::mem::take(&mut self.scratch.wanted_rivers),
+                pending_rivers: std::mem::take(&mut self.scratch.pending_rivers),
                 pointers: std::mem::take(&mut self.scratch.pointers),
                 located: std::mem::take(&mut self.scratch.located),
                 wanted_transport: std::mem::take(&mut self.scratch.wanted_transport),
@@ -844,6 +884,7 @@ impl SpeedTerms {
                         &mut countries,
                         &shared.movers,
                         &shared.provinces,
+                        &shared.province_slot,
                         &shared.state_facts,
                     )
                 };
@@ -881,6 +922,7 @@ impl SpeedTerms {
                     self.transport_demand = aux_work.transport_demand;
                     self.speed_cache = aux_work.speed_cache;
                     self.scratch.wanted_rivers = aux_work.wanted_rivers;
+                    self.scratch.pending_rivers = aux_work.pending_rivers;
                     self.scratch.pointers = aux_work.pointers;
                     self.scratch.located = aux_work.located;
                     self.scratch.wanted_transport = aux_work.wanted_transport;
@@ -906,6 +948,8 @@ impl SpeedTerms {
                 self.movers = prepared.movers;
                 self.route = prepared.route;
                 self.provinces = prepared.provinces;
+                self.province_slot = prepared.province_slot;
+                self.province_pointers = prepared.province_pointers;
                 self.state_facts = prepared.state_facts;
                 self.templates = prepared.templates;
                 self.keys = prepared.keys;
@@ -1114,7 +1158,14 @@ impl SpeedTerms {
     ) -> Result<(), &'static str> {
         self.movers.clear();
         self.route.clear();
+        for &(id, _) in &self.provinces {
+            let idx = id as usize;
+            if idx < self.province_slot.len() {
+                self.province_slot[idx] = u32::MAX;
+            }
+        }
         self.provinces.clear();
+        self.province_pointers.clear();
         self.state_facts.clear();
         self.templates.clear();
         self.keys.clear();
@@ -1167,12 +1218,57 @@ impl SpeedTerms {
         }
         let ids = &mut self.scratch.ids;
         ids.clear();
-        reserve(ids, self.movers.len() + self.route.len())?;
-        ids.extend(self.movers.iter().filter_map(|mover| mover.location.ok()));
-        ids.extend(self.route.iter().filter_map(|id| id.ok()));
+        let mut max_dense = 0_usize;
+        for id in self
+            .movers
+            .iter()
+            .filter_map(|mover| mover.location.ok())
+            .chain(self.route.iter().filter_map(|id| id.ok()))
+        {
+            let idx = id as usize;
+            if idx < DENSE_PROVINCE_LIMIT && idx + 1 > max_dense {
+                max_dense = idx + 1;
+            }
+        }
+        if max_dense > self.province_slot.len() {
+            let extra = max_dense - self.province_slot.len();
+            reserve(&mut self.province_slot, extra)?;
+            self.province_slot.resize(max_dense, u32::MAX);
+        }
+        let mut has_sparse = false;
+        let seen_mark = u32::MAX - 1;
+        for id in self
+            .movers
+            .iter()
+            .filter_map(|mover| mover.location.ok())
+            .chain(self.route.iter().filter_map(|id| id.ok()))
+        {
+            let idx = id as usize;
+            if idx < self.province_slot.len() {
+                if self.province_slot[idx] == u32::MAX {
+                    self.province_slot[idx] = seen_mark;
+                    reserve(ids, 1)?;
+                    ids.push(id);
+                }
+            } else {
+                has_sparse = true;
+                reserve(ids, 1)?;
+                ids.push(id);
+            }
+        }
         ids.sort_unstable();
-        ids.dedup();
+        if has_sparse {
+            ids.dedup();
+        }
+        for (slot, &id) in ids.iter().enumerate() {
+            let idx = id as usize;
+            if idx < self.province_slot.len() {
+                self.province_slot[idx] = slot as u32;
+            }
+        }
         reserve(&mut self.provinces, ids.len())?;
+        reserve(&mut self.province_pointers, ids.len())?;
+        self.province_pointers.resize(ids.len(), 0);
         let provinces = game
             .checked_add(engine_native::cgame_state::PROVINCES)
             .and_then(|address| Array::read(memory, address, 8))
@@ -1182,22 +1278,11 @@ impl SpeedTerms {
                 let world = crate::world_lifetime::token()
                     .filter(|_| crate::world_input_changes::map_content_stable());
                 if let Some(world) = world {
-                    let key = (world, base, provinces);
-                    let cached_provinces = &mut self.scratch.cached_provinces;
-                    let cached_pointers = &mut self.scratch.cached_pointers;
-                    let cached_controllers = &mut self.scratch.cached_controllers;
                     let missing_ids = &mut self.scratch.missing_ids;
                     let missing_query = &mut self.scratch.missing_query;
-                    cached_provinces.clear();
-                    cached_pointers.clear();
-                    cached_controllers.clear();
                     missing_ids.clear();
                     missing_query.clear();
-                    reserve(cached_provinces, ids.len())?;
-                    reserve(cached_pointers, ids.len())?;
-                    reserve(cached_controllers, ids.len())?;
-                    reserve(missing_ids, ids.len())?;
-                    reserve(missing_query, ids.len())?;
+                    let key = (world, base, provinces);
                     held_map(|held| {
                         if held.provinces_key != Some(key) {
                             held.provinces.clear();
@@ -1205,41 +1290,28 @@ impl SpeedTerms {
                         }
                         for (slot, &id) in ids.iter().enumerate() {
                             if let Some(entry) = held.provinces.get(id as usize).copied().flatten() {
-                                cached_provinces.push((slot, entry));
-                                cached_pointers.push(entry.pointer);
+                                self.province_pointers[slot] = entry.pointer;
+                                self.provinces.push((
+                                    id,
+                                    Ok(cprovince::MovementProvince {
+                                        state: Ok(entry.state),
+                                        controller: Err(UNFETCHED_CONTROLLER),
+                                        controller_area: Err(UNFETCHED_AREA),
+                                        strategic_region: Ok(entry.strategic_region),
+                                        terrain_flags: entry.terrain_flags,
+                                    }),
+                                ));
                             } else {
-                                missing_ids.push((slot, id));
-                                missing_query.push(id);
+                                self.provinces.push((id, Err("movement province unread")));
+                                if reserve(missing_ids, 1).is_ok()
+                                    && reserve(missing_query, 1).is_ok()
+                                {
+                                    missing_ids.push((slot, id));
+                                    missing_query.push(id);
+                                }
                             }
                         }
                     });
-                    self.provinces
-                        .extend(ids.iter().map(|&id| (id, Err("movement province unread"))));
-                    if !cached_pointers.is_empty() {
-                        cached_controllers.resize(
-                            cached_pointers.len(),
-                            (
-                                Err("movement province controller unreadable"),
-                                Err("movement province field unreadable"),
-                            ),
-                        );
-                        cprovince::movement_province_controllers(
-                            memory,
-                            cached_pointers,
-                            cached_controllers,
-                        );
-                        for (&(slot, entry), &(controller, controller_area)) in
-                            cached_provinces.iter().zip(cached_controllers.iter())
-                        {
-                            self.provinces[slot].1 = Ok(cprovince::MovementProvince {
-                                state: Ok(entry.state),
-                                controller,
-                                controller_area,
-                                strategic_region: Ok(entry.strategic_region),
-                                terrain_flags: entry.terrain_flags,
-                            });
-                        }
-                    }
                     if !missing_query.is_empty() {
                         let mut index = 0;
                         held_map(|held| {
@@ -1265,6 +1337,9 @@ impl SpeedTerms {
                                     let (slot, expected) = missing_ids[index];
                                     debug_assert_eq!(id, expected);
                                     index += 1;
+                                    if let Some(pointer) = pointer {
+                                        self.province_pointers[slot] = pointer;
+                                    }
                                     if store
                                         && let (Some(pointer), Ok(facts)) = (pointer, facts)
                                         && let (Ok(state), Ok(strategic_region)) =
@@ -1305,7 +1380,7 @@ impl SpeedTerms {
                     mover.land == Ok(true) && mover.roster.is_some() && mover.owner.is_some()
                 })
                 .filter_map(|mover| mover.location.ok())
-                .filter_map(|id| province(&self.provinces, id).ok())
+                .filter_map(|id| province_at(&self.provinces, &self.province_slot, id).ok())
                 .filter_map(|facts| facts.state.ok())
                 .filter(|&state| state != 0),
         );
@@ -1403,13 +1478,17 @@ impl SpeedTerms {
         game: usize,
         countries: &mut Option<Result<ccountry::Reader<'a, M>, &'static str>>,
     ) -> Result<(), &'static str> {
+        let ctrl_slots = &mut self.scratch.ctrl_slots;
+        let area_slots = &mut self.scratch.area_slots;
+        ctrl_slots.clear();
+        area_slots.clear();
         for mover in &mut self.movers {
             mover.land = (|| {
                 if mover.transfer == Some(true) {
                     return Ok(false);
                 }
                 let path = route(&self.route, mover)?;
-                let location = province(&self.provinces, mover.location?)?;
+                let location = province_at(&self.provinces, &self.province_slot, mover.location?)?;
                 let (normal, refused) =
                     engine_native::carmy::organisation_movement::land_speed_demand(
                         mover
@@ -1417,7 +1496,7 @@ impl SpeedTerms {
                             .and_then(|id| location.terrain_flags.map(|flags| (id, flags))),
                         path.iter().map(|id| {
                             id.and_then(|id| {
-                                province(&self.provinces, id)
+                                province_at(&self.provinces, &self.province_slot, id)
                                     .and_then(|p| p.terrain_flags.map(|flags| (id, flags)))
                             })
                         }),
@@ -1452,6 +1531,74 @@ impl SpeedTerms {
                 Ok(true)
             })();
             if mover.land == Ok(true) {
+                if let Ok(path) = route(&self.route, mover)
+                    && let Some(&Ok(last_id)) = path.last()
+                    && let Some(slot) = province_slot_of(&self.provinces, &self.province_slot, last_id)
+                    && let Ok(facts) = self.provinces[slot].1
+                    && is_unfetched(&facts.controller)
+                    && self.province_pointers.get(slot).copied().unwrap_or(0) != 0
+                {
+                    reserve(ctrl_slots, 1)?;
+                    ctrl_slots.push(slot);
+                }
+                if mover.noncore == Some(true)
+                    && let Ok(loc_id) = mover.location
+                    && let Some(slot) = province_slot_of(&self.provinces, &self.province_slot, loc_id)
+                    && let Ok(facts) = self.provinces[slot].1
+                    && is_unfetched_area(&facts.controller_area)
+                    && self.province_pointers.get(slot).copied().unwrap_or(0) != 0
+                {
+                    reserve(area_slots, 1)?;
+                    area_slots.push(slot);
+                }
+            }
+            if mover.land.is_err() {
+                for family in &mut self.counts[..4] {
+                    family[2] += 1;
+                }
+            }
+        }
+        if !ctrl_slots.is_empty() {
+            ctrl_slots.sort_unstable();
+            ctrl_slots.dedup();
+            let pointers = &mut self.scratch.cached_pointers;
+            let results = &mut self.scratch.ctrl_results;
+            pointers.clear();
+            results.clear();
+            reserve(pointers, ctrl_slots.len())?;
+            reserve(results, ctrl_slots.len())?;
+            pointers.extend(ctrl_slots.iter().map(|&slot| self.province_pointers[slot]));
+            results.resize(
+                ctrl_slots.len(),
+                Err("movement province controller unreadable"),
+            );
+            cprovince::movement_province_controllers_only(memory, pointers, results);
+            for (&slot, &controller) in ctrl_slots.iter().zip(results.iter()) {
+                if let Ok(facts) = &mut self.provinces[slot].1 {
+                    facts.controller = controller;
+                }
+            }
+        }
+        if !area_slots.is_empty() {
+            area_slots.sort_unstable();
+            area_slots.dedup();
+            let pointers = &mut self.scratch.cached_pointers;
+            let results = &mut self.scratch.area_results;
+            pointers.clear();
+            results.clear();
+            reserve(pointers, area_slots.len())?;
+            reserve(results, area_slots.len())?;
+            pointers.extend(area_slots.iter().map(|&slot| self.province_pointers[slot]));
+            results.resize(area_slots.len(), Err("movement province field unreadable"));
+            cprovince::movement_province_controller_areas(memory, pointers, results);
+            for (&slot, &area) in area_slots.iter().zip(results.iter()) {
+                if let Ok(facts) = &mut self.provinces[slot].1 {
+                    facts.controller_area = area;
+                }
+            }
+        }
+        for mover in &mut self.movers {
+            if mover.land == Ok(true) {
                 let last = route(&self.route, mover)
                     .and_then(|path| path.last().copied().unwrap_or(Err("division route empty")));
                 mover.attacking = self.hostility.attacking_with(
@@ -1460,14 +1607,10 @@ impl SpeedTerms {
                     game,
                     countries,
                     &self.provinces,
+                    &self.province_slot,
                     last,
                     mover.logical,
                 );
-            }
-            if mover.land.is_err() {
-                for family in &mut self.counts[..4] {
-                    family[2] += 1;
-                }
             }
         }
         self.combat_demand.clear();
@@ -1494,6 +1637,7 @@ impl SpeedTerms {
     ) -> Outcome {
         let movers = std::mem::take(&mut self.movers);
         let provinces = std::mem::take(&mut self.provinces);
+        let province_slot = std::mem::take(&mut self.province_slot);
         let state_facts = std::mem::take(&mut self.state_facts);
         let outcome = self.capture_states_from(
             memory,
@@ -1502,10 +1646,12 @@ impl SpeedTerms {
             countries,
             &movers,
             &provinces,
+            &province_slot,
             &state_facts,
         );
         self.movers = movers;
         self.provinces = provinces;
+        self.province_slot = province_slot;
         self.state_facts = state_facts;
         outcome
     }
@@ -1523,6 +1669,7 @@ impl SpeedTerms {
         countries: &mut Option<Result<ccountry::Reader<'a, M>, &'static str>>,
         movers: &[Mover],
         provinces: &[(u32, Result<cprovince::MovementProvince, &'static str>)],
+        province_slot: &[u32],
         state_facts: &[(usize, Result<(u32, u32), &'static str>)],
     ) -> Outcome {
         let result = (|| -> Result<usize, &'static str> {
@@ -1532,7 +1679,7 @@ impl SpeedTerms {
             for mover in movers.iter().filter(|mover| mover.land == Ok(true)) {
                 let key =
                     (|| -> Result<Option<(u32, u32, u32, usize, u32, bool)>, &'static str> {
-                        let province = province(provinces, mover.location?)?;
+                        let province = province_at(provinces, province_slot, mover.location?)?;
                         let state = province.state?;
                         if state == 0 {
                             return Ok(None);
@@ -1729,7 +1876,7 @@ impl SpeedTerms {
             wanted.dedup();
             reserve(&mut areas, wanted.len())?;
             for &(owner, province) in &wanted {
-                if let Ok(facts) = self::province(&self.provinces, province)
+                if let Ok(facts) = province_at(&self.provinces, &self.province_slot, province)
                     && let Ok(area) = facts.controller_area
                 {
                     areas.push(((owner, area), Ok(false)));
@@ -1809,6 +1956,7 @@ impl SpeedTerms {
             ..Counts::default()
         };
         self.observed_entries.clear();
+        let mut pairs = std::mem::take(&mut self.observed_entries.pairs);
         let mut wanted = std::mem::take(&mut self.observed_entries.wanted);
         let mut values = std::mem::take(&mut self.observed_entries.values);
         let mut observed = std::mem::take(&mut self.observed_entries.countries);
@@ -1826,15 +1974,21 @@ impl SpeedTerms {
                     });
                 match keys {
                     Ok((start, len)) => {
-                        reserve(&mut wanted, len)?;
-                        wanted.extend(
-                            self.keys[start..start + len]
-                                .iter()
-                                .map(|&key| (owner, key)),
-                        );
+                        reserve(&mut pairs, 1)?;
+                        pairs.push((owner, start, len));
                     }
                     Err(_) => self.counts[2][2] += 1,
                 }
+            }
+            pairs.sort_unstable();
+            pairs.dedup();
+            for &(owner, start, len) in &pairs {
+                reserve(&mut wanted, len)?;
+                wanted.extend(
+                    self.keys[start..start + len]
+                        .iter()
+                        .map(|&key| (owner, key)),
+                );
             }
             wanted.sort_unstable();
             wanted.dedup();
@@ -1913,6 +2067,7 @@ impl SpeedTerms {
             }
             Ok(wanted.len())
         })();
+        self.observed_entries.pairs = pairs;
         self.observed_entries.wanted = wanted;
         self.observed_entries.values = values;
         self.observed_entries.countries = observed;
@@ -1982,77 +2137,24 @@ impl SpeedTerms {
         memory: &impl Memory,
         base: usize,
         countries: &Result<ccountry::Reader<'_, impl Memory>, &'static str>,
-        mut crossing: impl FnMut(u32, u32) -> Result<Option<u8>, &'static str>,
+        crossing: impl FnMut(u32, u32) -> Result<Option<u8>, &'static str>,
     ) -> Outcome {
-        let result = (|| -> Result<usize, &'static str> {
-            let wanted = &mut self.scratch.wanted_rivers;
-            wanted.clear();
-            for mover in self.movers.iter().filter(|mover| mover.land == Ok(true)) {
-                let Ok(route) = route(&self.route, mover) else {
-                    self.counts[3][2] += 1;
-                    continue;
-                };
-                let mut from_id = mover.location;
-                for (index, &to_id) in route.iter().enumerate() {
-                    let edge = (|| -> Result<Option<(u32, u32)>, &'static str> {
-                        let from_id = from_id?;
-                        let to_id = to_id?;
-                        if index != 0 && from_id == to_id {
-                            return Ok(None);
-                        }
-                        let from = province(&self.provinces, from_id)?;
-                        let to = province(&self.provinces, to_id)?;
-                        if !from.land()? || !to.land()? {
-                            return Ok(None);
-                        }
-                        match crossing(from_id, to_id)? {
-                            Some(1..=3) => Ok(Some((
-                                mover.owner.ok_or("division speed owner unreadable")?,
-                                to.controller?,
-                            ))),
-                            _ => Ok(None),
-                        }
-                    })();
-                    match edge {
-                        Ok(Some(key)) => {
-                            reserve(wanted, 1)?;
-                            wanted.push(key);
-                        }
-                        Ok(None) => {}
-                        Err(_) => self.counts[3][2] += 1,
-                    }
-                    from_id = to_id;
-                }
-            }
-            wanted.sort_unstable();
-            wanted.dedup();
-            reserve(&mut self.rivers, wanted.len())?;
-            reserve(&mut self.observed_rows.rivers, wanted.len())?;
-            let mut owner: Option<(u32, Result<ccountry::Country, &'static str>)> = None;
-            for &(raw, controller) in wanted.iter() {
-                let country = match owner {
-                    Some((known, country)) if known == raw => country,
-                    _ => {
-                        let country = countries
-                            .as_ref()
-                            .map_err(|reason| *reason)
-                            .and_then(|reader| reader.resolve(raw));
-                        owner = Some((raw, country));
-                        country
-                    }
-                };
-                let entry = countries
-                    .as_ref()
-                    .map_err(|reason| *reason)
-                    .and_then(|reader| {
-                        ccountry::river_crossing_against_with(
-                            memory, base, reader, country?, controller,
-                        )
-                    });
-                self.observed_rows.rivers.push(((raw, controller), entry));
-            }
-            Ok(self.rivers.len() + self.observed_rows.rivers.len())
-        })();
+        let result = capture_rivers_with_crossings_into(
+            memory,
+            base,
+            countries,
+            &self.movers,
+            &self.route,
+            &self.provinces,
+            &self.province_slot,
+            &self.province_pointers,
+            &mut self.scratch.wanted_rivers,
+            &mut self.scratch.pending_rivers,
+            &mut self.rivers,
+            &mut self.observed_rows.rivers,
+            &mut self.counts[3],
+            crossing,
+        );
         if !self.settle_pending {
             self.settle_family(3);
         }
@@ -2067,6 +2169,7 @@ impl SpeedTerms {
                     &mut self.transport_demand,
                     &self.route,
                     &self.provinces,
+                    &self.province_slot,
                     mover,
                 );
                 match provinces {
@@ -2217,6 +2320,7 @@ fn append_transport_demand(
     demand: &mut Vec<(u32, usize)>,
     arena: &[Result<u32, &'static str>],
     provinces: &[(u32, Result<cprovince::MovementProvince, &'static str>)],
+    province_slot: &[u32],
     mover: &Mover,
 ) -> Result<u64, &'static str> {
     let path = match route(arena, mover) {
@@ -2226,8 +2330,8 @@ fn append_transport_demand(
     let mut from_id = mover.location;
     let mut refused = 0;
     for (index, &to_id) in path.iter().enumerate() {
-        let from = from_id.and_then(|id| province(provinces, id));
-        let to = to_id.and_then(|id| province(provinces, id));
+        let from = from_id.and_then(|id| province_at(provinces, province_slot, id));
+        let to = to_id.and_then(|id| province_at(provinces, province_slot, id));
         let edge = (|| -> Result<Option<(u32, usize)>, &'static str> {
             if index != 0 && from_id.is_ok() && from_id == to_id {
                 return Ok(None);
@@ -2306,6 +2410,8 @@ struct PreparedInputs {
     movers: Vec<Mover>,
     route: Vec<Result<u32, &'static str>>,
     provinces: Vec<(u32, Result<cprovince::MovementProvince, &'static str>)>,
+    province_slot: Vec<u32>,
+    province_pointers: Vec<usize>,
     state_facts: Vec<(usize, Result<(u32, u32), &'static str>)>,
     templates: Vec<(usize, Result<(usize, usize), &'static str>)>,
     keys: Vec<u32>,
@@ -2386,6 +2492,7 @@ fn acquire_entries_into(
         ..Counts::default()
     };
     parts.observed.clear();
+    let mut pairs = std::mem::take(&mut parts.observed.pairs);
     let mut wanted = std::mem::take(&mut parts.observed.wanted);
     let mut values = std::mem::take(&mut parts.observed.values);
     let mut observed = std::mem::take(&mut parts.observed.countries);
@@ -2401,11 +2508,17 @@ fn acquire_entries_into(
                 .and_then(|template| memo(templates, template).ok_or("division template unread")?);
             match span {
                 Ok((start, len)) => {
-                    reserve(&mut wanted, len)?;
-                    wanted.extend(keys[start..start + len].iter().map(|&key| (owner, key)));
+                    reserve(&mut pairs, 1)?;
+                    pairs.push((owner, start, len));
                 }
                 Err(_) => parts.counts[2] += 1,
             }
+        }
+        pairs.sort_unstable();
+        pairs.dedup();
+        for &(owner, start, len) in &pairs {
+            reserve(&mut wanted, len)?;
+            wanted.extend(keys[start..start + len].iter().map(|&key| (owner, key)));
         }
         wanted.sort_unstable();
         wanted.dedup();
@@ -2484,6 +2597,7 @@ fn acquire_entries_into(
         }
         Ok(wanted.len())
     })();
+    parts.observed.pairs = pairs;
     parts.observed.wanted = wanted;
     parts.observed.values = values;
     parts.observed.countries = observed;
@@ -2523,6 +2637,7 @@ pub(crate) struct SpeedTermsAuxWork {
     transport_demand: Vec<(u32, usize)>,
     speed_cache: SpeedCache,
     wanted_rivers: Vec<(u32, u32)>,
+    pending_rivers: Vec<(u32, usize)>,
     pointers: Vec<usize>,
     located: Vec<(usize, u32)>,
     wanted_transport: Vec<(u32, usize)>,
@@ -2547,6 +2662,7 @@ impl SpeedTermsAuxWork {
                 &mut countries,
                 &self.shared.movers,
                 &self.shared.provinces,
+                &self.shared.province_slot,
                 AccessParts {
                     access: &mut self.access,
                     wanted: &mut self.observed_access,
@@ -2570,9 +2686,12 @@ impl SpeedTermsAuxWork {
                 &self.shared.movers,
                 &self.shared.route,
                 &self.shared.provinces,
+                &self.shared.province_slot,
+                &self.shared.province_pointers,
                 RiversParts {
                     crossings: &mut self.crossings,
                     wanted: &mut self.wanted_rivers,
+                    pending: &mut self.pending_rivers,
                     rivers: &mut self.rivers,
                     observed: &mut self.observed_rivers,
                     counts: &mut self.counts[1],
@@ -2591,6 +2710,7 @@ impl SpeedTermsAuxWork {
                 &self.shared.movers,
                 &self.shared.route,
                 &self.shared.provinces,
+                &self.shared.province_slot,
                 TransportParts {
                     demand: &mut self.transport_demand,
                     pointers: &mut self.pointers,
@@ -2635,6 +2755,7 @@ fn capture_access_into<'a, M: Memory>(
     countries: &mut Option<Result<ccountry::Reader<'a, M>, &'static str>>,
     movers: &[Mover],
     provinces: &[(u32, Result<cprovince::MovementProvince, &'static str>)],
+    province_slot: &[u32],
     parts: AccessParts<'_>,
 ) -> Outcome {
     parts.wanted.clear();
@@ -2656,7 +2777,7 @@ fn capture_access_into<'a, M: Memory>(
         parts.wanted.dedup();
         reserve(parts.areas, parts.wanted.len())?;
         for &(owner, province) in parts.wanted.iter() {
-            if let Ok(facts) = self::province(provinces, province)
+            if let Ok(facts) = province_at(provinces, province_slot, province)
                 && let Ok(area) = facts.controller_area
             {
                 parts.areas.push(((owner, area), Ok(false)));
@@ -2715,6 +2836,7 @@ fn capture_access_into<'a, M: Memory>(
 struct RiversParts<'a> {
     crossings: &'a mut cprovince::GeometryPacket,
     wanted: &'a mut Vec<(u32, u32)>,
+    pending: &'a mut Vec<(u32, usize)>,
     rivers: &'a mut Vec<RiverRelationRow>,
     observed: &'a mut Vec<((u32, u32), Result<Option<i64>, &'static str>)>,
     counts: &'a mut [u64; 3],
@@ -2732,6 +2854,8 @@ fn capture_rivers_into(
     movers: &[Mover],
     route_arena: &[Result<u32, &'static str>],
     provinces: &[(u32, Result<cprovince::MovementProvince, &'static str>)],
+    province_slot: &[u32],
+    province_pointers: &[usize],
     parts: RiversParts<'_>,
 ) -> Outcome {
     if !movers.iter().any(|mover| mover.land == Ok(true)) {
@@ -2751,7 +2875,10 @@ fn capture_rivers_into(
             movers,
             route_arena,
             provinces,
+            province_slot,
+            province_pointers,
             parts.wanted,
+            parts.pending,
             parts.rivers,
             parts.observed,
             parts.counts,
@@ -2804,13 +2931,17 @@ fn capture_rivers_with_crossings_into(
     movers: &[Mover],
     route_arena: &[Result<u32, &'static str>],
     provinces: &[(u32, Result<cprovince::MovementProvince, &'static str>)],
+    province_slot: &[u32],
+    province_pointers: &[usize],
     wanted: &mut Vec<(u32, u32)>,
+    pending: &mut Vec<(u32, usize)>,
     rivers: &mut Vec<RiverRelationRow>,
     observed: &mut Vec<((u32, u32), Result<Option<i64>, &'static str>)>,
     counts: &mut [u64; 3],
     mut crossing: impl FnMut(u32, u32) -> Result<Option<u8>, &'static str>,
 ) -> Result<usize, &'static str> {
     wanted.clear();
+    pending.clear();
     for mover in movers.iter().filter(|mover| mover.land == Ok(true)) {
         let Ok(route) = route(route_arena, mover) else {
             counts[2] += 1;
@@ -2818,34 +2949,79 @@ fn capture_rivers_with_crossings_into(
         };
         let mut from_id = mover.location;
         for (index, &to_id) in route.iter().enumerate() {
-            let edge = (|| -> Result<Option<(u32, u32)>, &'static str> {
+            enum Edge {
+                None,
+                Ready((u32, u32)),
+                Pending((u32, usize)),
+            }
+            let edge = (|| -> Result<Edge, &'static str> {
                 let from_id = from_id?;
                 let to_id = to_id?;
                 if index != 0 && from_id == to_id {
-                    return Ok(None);
+                    return Ok(Edge::None);
                 }
-                let from = province(provinces, from_id)?;
-                let to = province(provinces, to_id)?;
+                let from = province_at(provinces, province_slot, from_id)?;
+                let to_slot = province_slot_of(provinces, province_slot, to_id)
+                    .ok_or("movement province unread")?;
+                let to = provinces[to_slot].1?;
                 if !from.land()? || !to.land()? {
-                    return Ok(None);
+                    return Ok(Edge::None);
                 }
                 match crossing(from_id, to_id)? {
-                    Some(1..=3) => Ok(Some((
-                        mover.owner.ok_or("division speed owner unreadable")?,
-                        to.controller?,
-                    ))),
-                    _ => Ok(None),
+                    Some(1..=3) => {
+                        let owner = mover.owner.ok_or("division speed owner unreadable")?;
+                        if is_unfetched(&to.controller) {
+                            Ok(Edge::Pending((owner, to_slot)))
+                        } else {
+                            Ok(Edge::Ready((owner, to.controller?)))
+                        }
+                    }
+                    _ => Ok(Edge::None),
                 }
             })();
             match edge {
-                Ok(Some(key)) => {
+                Ok(Edge::Ready(key)) => {
                     reserve(wanted, 1)?;
                     wanted.push(key);
                 }
-                Ok(None) => {}
+                Ok(Edge::Pending(key)) => {
+                    reserve(pending, 1)?;
+                    pending.push(key);
+                }
+                Ok(Edge::None) => {}
                 Err(_) => counts[2] += 1,
             }
             from_id = to_id;
+        }
+    }
+    if !pending.is_empty() {
+        let mut slots = Vec::new();
+        reserve(&mut slots, pending.len())?;
+        slots.extend(pending.iter().map(|&(_, slot)| slot));
+        slots.sort_unstable();
+        slots.dedup();
+        let mut pointers = Vec::new();
+        let mut fetched = Vec::new();
+        reserve(&mut pointers, slots.len())?;
+        reserve(&mut fetched, slots.len())?;
+        pointers.extend(
+            slots
+                .iter()
+                .map(|&slot| province_pointers.get(slot).copied().unwrap_or(0)),
+        );
+        fetched.resize(slots.len(), Err("movement province controller unreadable"));
+        cprovince::movement_province_controllers_only(memory, &pointers, &mut fetched);
+        for &(owner, slot) in pending.iter() {
+            let at = slots
+                .binary_search(&slot)
+                .expect("pending river slot collected");
+            match fetched[at] {
+                Ok(controller) => {
+                    reserve(wanted, 1)?;
+                    wanted.push((owner, controller));
+                }
+                Err(_) => counts[2] += 1,
+            }
         }
     }
     wanted.sort_unstable();
@@ -2907,12 +3083,14 @@ fn capture_transport_into(
     movers: &[Mover],
     route_arena: &[Result<u32, &'static str>],
     provinces: &[(u32, Result<cprovince::MovementProvince, &'static str>)],
+    province_slot: &[u32],
     parts: TransportParts<'_>,
 ) -> Outcome {
     let result = (|| -> Result<usize, &'static str> {
         parts.demand.clear();
         for mover in movers {
-            let rows = append_transport_demand(parts.demand, route_arena, provinces, mover);
+            let rows =
+                append_transport_demand(parts.demand, route_arena, provinces, province_slot, mover);
             match rows {
                 Ok(refused) => parts.counts[2] += refused,
                 Err(ALLOCATION) => return Err(ALLOCATION),

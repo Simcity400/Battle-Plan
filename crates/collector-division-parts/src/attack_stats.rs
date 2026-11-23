@@ -1494,6 +1494,13 @@ impl RowView<'_> {
                 })
             })
     }
+    pub fn panel_stamp(&self) -> Option<u64> {
+        match self.row.and_then(|row| row.scalars.map(|_| row.stamp)) {
+            None => Some(u64::MAX),
+            Some(0) => None,
+            Some(stamp) => Some(stamp),
+        }
+    }
     pub fn panel_stat(&self, index: usize) -> Option<i64> {
         let scalars = self.row?.scalars?;
         match index {

@@ -1312,6 +1312,7 @@ pub fn walk_buffer(
         tables[CLIENTS].failed.get_or_insert(reason);
     }
     let mut found_country = false;
+    let mut batch = OriginBatch::default();
     for slot in 1..countries.count() {
         let country = match countries.at(slot) {
             Ok(Some(country)) => country,
@@ -1358,7 +1359,6 @@ pub fn walk_buffer(
         };
         let [origins_table, rights_table, _, clients_table] = &mut tables;
         let mut owner_canonical = None;
-        let mut batch = OriginBatch::default();
         if rights_table.failed.is_none() || origins_table.failed.is_none() {
             match at(resources, ccountry_resources::RESOURCE_ORIGINS)
                 .and_then(|address| array(memory, address, 8, "origin list unreadable"))
@@ -2034,32 +2034,46 @@ fn route_path(
     }];
     let id_layout = RecordLayout::new(&id_fields, 4).ok_or("route path layout invalid")?;
     let mut first = 0;
+    let mut raw = [0_u8; BATCH * 8];
+    let mut items = [0_usize; BATCH];
+    let mut ids = [0_u8; BATCH * 4];
     while first < elements.count {
         let batch = ((elements.count - first) as usize).min(BATCH);
-        let mut addresses = [0_usize; BATCH];
-        let mut words = [[0_u8; 8]; BATCH];
-        let mut spans = batch;
-        for (index, address) in addresses[..batch].iter_mut().enumerate() {
-            match elements.element(first + index as u32, 8) {
-                Some(slot) => *address = slot,
-                None => {
-                    spans = index;
-                    break;
+        let copied = if let Some(start) = elements.element(first, 8)
+            && start.checked_add(batch * 8).is_some()
+            && engine_native::read_slice(memory, start, &mut raw[..batch * 8])
+        {
+            batch
+        } else {
+            let mut addresses = [0_usize; BATCH];
+            let mut words = [[0_u8; 8]; BATCH];
+            let mut spans = batch;
+            for (index, address) in addresses[..batch].iter_mut().enumerate() {
+                match elements.element(first + index as u32, 8) {
+                    Some(slot) => *address = slot,
+                    None => {
+                        spans = index;
+                        break;
+                    }
                 }
             }
-        }
-        let mut destinations: [&mut [u8]; BATCH] = std::array::from_fn(|_| <&mut [u8]>::default());
-        for (destination, word) in destinations.iter_mut().zip(words[..spans].iter_mut()) {
-            *destination = word.as_mut_slice();
-        }
-        let copied = memory
-            .copy_scattered(addresses, &mut destinations)
-            .min(spans);
-        let mut items = [0_usize; BATCH];
+            let mut destinations: [&mut [u8]; BATCH] =
+                std::array::from_fn(|_| <&mut [u8]>::default());
+            for (destination, word) in destinations.iter_mut().zip(words[..spans].iter_mut()) {
+                *destination = word.as_mut_slice();
+            }
+            let copied = memory
+                .copy_scattered(addresses, &mut destinations)
+                .min(spans);
+            for (index, word) in words[..copied].iter().enumerate() {
+                raw[index * 8..(index + 1) * 8].copy_from_slice(word);
+            }
+            copied
+        };
         let mut stop = None;
         let mut live = 0;
-        for (index, word) in words[..copied].iter().enumerate() {
-            let item = u64::from_le_bytes(*word) as usize;
+        for (index, chunk) in raw[..copied * 8].chunks_exact(8).enumerate() {
+            let item = u64::from_le_bytes(chunk.try_into().unwrap()) as usize;
             if item == 0 {
                 stop = Some(Err("null route path element"));
                 break;
@@ -2076,14 +2090,14 @@ fn route_path(
         } else {
             Ok(())
         });
-        let mut ids = [0_u8; BATCH * 4];
         let read = memory.copy_records(
             RecordSources::Pointers(&items[..live]),
             &id_layout,
             &mut ids[..live * 4],
         );
-        for id in ids[..read.min(live) * 4].chunks_exact(4) {
-            allocation::reserve(path, 1).map_err(|_| "route path allocation failed")?;
+        let ready = read.min(live);
+        allocation::reserve(path, ready).map_err(|_| "route path allocation failed")?;
+        for id in ids[..ready * 4].chunks_exact(4) {
             path.push(u32::from_le_bytes(id.try_into().expect("four bytes")));
         }
         if read < live {

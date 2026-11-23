@@ -231,6 +231,8 @@ pub struct Captured {
     mission_headquarters: Vec<(u64, Arc<Vec<u64>>)>,
     empty_headquarters: Option<Arc<Vec<u64>>>,
     member_index: Vec<(u64, usize)>,
+    member_index_ready: bool,
+    entries_keys_len: Option<usize>,
     task_index: Vec<(u64, usize)>,
     escort_owners: Vec<u32>,
     escort_trees: super::naval_escort_trees::Trees,
@@ -413,6 +415,8 @@ impl Captured {
             mission_headquarters: Vec::new(),
             empty_headquarters: None,
             member_index: Vec::new(),
+            member_index_ready: false,
+            entries_keys_len: None,
             task_index: Vec::new(),
             escort_owners: Vec::new(),
             escort_trees: Default::default(),
@@ -494,6 +498,8 @@ impl Captured {
         self.map_ticks = [0; 2];
         self.map_roster_complete = false;
         self.entries.reset();
+        self.member_index_ready = false;
+        self.entries_keys_len = None;
         self.countries.reset();
         self.hubs.reset();
         self.commanders.reset();
@@ -1075,9 +1081,11 @@ impl Captured {
         Ok(finish(len, unread))
     }
 
-    fn index_members(&mut self) -> Result<(), &'static str> {
+    fn ensure_member_index(&mut self) -> Result<(), &'static str> {
+        if self.member_index_ready {
+            return Ok(());
+        }
         self.member_index.clear();
-        self.task_index.clear();
         reserve(&mut self.member_index, self.census.len)
             .map_err(|_| "naval member index allocation failed")?;
         self.member_index.extend(
@@ -1087,6 +1095,13 @@ impl Captured {
                 .map(|(index, member)| (member.id, index)),
         );
         self.member_index.sort_unstable_by_key(|entry| entry.0);
+        self.member_index_ready = true;
+        Ok(())
+    }
+
+    fn index_members(&mut self) -> Result<(), &'static str> {
+        self.ensure_member_index()?;
+        self.task_index.clear();
         let len = self.task_forces.outcome.len();
         reserve(&mut self.task_index, len).map_err(|_| "naval source index allocation failed")?;
         self.task_index.extend(
@@ -1240,9 +1255,16 @@ impl Captured {
         let original_hq = self.headquarters.len;
         let original_named = (self.named.len, self.named.required);
         let result = (|| {
-            engine_native::walk::Buffer::Growing(&mut self.keys).ensure(self.entries.len)?;
-            self.keys[..self.entries.len].copy_from_slice(&self.entries.first[..self.entries.len]);
-            let count = distinct(&mut self.keys[..self.entries.len], |key| key);
+            let count = if let Some(count) = self.entries_keys_len {
+                count
+            } else {
+                engine_native::walk::Buffer::Growing(&mut self.keys).ensure(self.entries.len)?;
+                self.keys[..self.entries.len]
+                    .copy_from_slice(&self.entries.first[..self.entries.len]);
+                let count = distinct(&mut self.keys[..self.entries.len], |key| key);
+                self.entries_keys_len = Some(count);
+                count
+            };
             reserve(&mut self.patrol, count)
                 .map_err(|_| "naval patrol source allocation failed")?;
             let mut len = original.len();
@@ -1417,7 +1439,7 @@ impl Captured {
         base: usize,
         countries: &ccountry::Reader<'_, M>,
     ) -> Result<(), &'static str> {
-        self.index_members()?;
+        self.ensure_member_index()?;
         for index in 0..self.ledgers.outcome.len() {
             let ledger = self.ledgers.rows[index];
             let handles = &self.entries.first[ledger.first..ledger.first + ledger.count];
@@ -1492,12 +1514,15 @@ impl Captured {
             let entries = self.entries.len;
             engine_native::walk::Buffer::Growing(&mut self.keys).ensure(entries)?;
             self.keys[..entries].copy_from_slice(&self.entries.first[..entries]);
-            self.keys[..entries].sort_unstable();
+            let distinct_entries = distinct(&mut self.keys[..entries], |key| key);
+            self.entries_keys_len = Some(distinct_entries);
             for member in &self.census.first[..self.census.len] {
                 let Some(visit) = member.visit else {
                     continue;
                 };
-                if visit.kind == 2 && self.keys[..entries].binary_search(&visit.id).is_ok() {
+                if visit.kind == 2
+                    && self.keys[..distinct_entries].binary_search(&visit.id).is_ok()
+                {
                     reserve(&mut self.dominance_fleets, 1)
                         .map_err(|_| "naval dominance fleet demand allocation failed")?;
                     self.dominance_fleets.push(visit.fleet_handle);
@@ -1682,7 +1707,7 @@ impl Captured {
             }
         };
         let census = &mut self.census.first[..self.census.len];
-        census.sort_unstable_by_key(|member| member.task);
+        let mut census_sorted = false;
         let mut len = 0_usize;
         let mut unread = 0_u32;
         for index in 0..count {
@@ -1805,6 +1830,10 @@ impl Captured {
                 continue;
             }
             self.ledger_counts.read += 1;
+            if !census_sorted {
+                census.sort_unstable_by_key(|member| member.task);
+                census_sorted = true;
+            }
             inputs::ledger_regions_in(memory, outer, |region, ledger| {
                 engine_native::walk::Buffer::Growing(&mut self.scratch)
                     .ensure(ledger.count as usize)?;

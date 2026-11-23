@@ -2830,6 +2830,89 @@ const CONTROLLER_FIELDS: [RecordField; 2] = [
 const CONTROLLER_BYTES: usize = 16;
 const CONTROLLER_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&CONTROLLER_FIELDS, CONTROLLER_BYTES).expect("valid record layout");
+const CONTROLLER_ONLY_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: CONTROLLER,
+    destination_offset: 0,
+    len: 4,
+}];
+const CONTROLLER_ONLY_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&CONTROLLER_ONLY_FIELDS, 4).expect("valid record layout");
+const CONTROLLER_AREA_ONLY_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: CONTROLLER_AREA,
+    destination_offset: 0,
+    len: 8,
+}];
+const CONTROLLER_AREA_ONLY_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&CONTROLLER_AREA_ONLY_FIELDS, 8).expect("valid record layout");
+
+pub fn movement_province_controllers_only(
+    memory: &impl Memory,
+    pointers: &[usize],
+    out: &mut [Result<u32, &'static str>],
+) {
+    debug_assert_eq!(pointers.len(), out.len());
+    for (chunk_pointers, chunk_out) in pointers
+        .chunks(BATCH_ROWS)
+        .zip(out.chunks_mut(BATCH_ROWS))
+    {
+        let mut payload = [0u8; BATCH_ROWS * 4];
+        let mut failed = [false; BATCH_ROWS];
+        gather_rows(
+            memory,
+            chunk_pointers,
+            &CONTROLLER_ONLY_LAYOUT,
+            &mut payload[..chunk_pointers.len() * 4],
+            |slot| failed[slot] = true,
+        );
+        for slot in 0..chunk_pointers.len() {
+            if failed[slot] {
+                chunk_out[slot] = chunk_pointers[slot]
+                    .checked_add(CONTROLLER)
+                    .and_then(|address| crate::read::<u32>(memory, address))
+                    .ok_or("movement province controller unreadable");
+            } else {
+                chunk_out[slot] = Ok(u32::from_le_bytes(
+                    payload[slot * 4..slot * 4 + 4].try_into().unwrap(),
+                ));
+            }
+        }
+    }
+}
+
+pub fn movement_province_controller_areas(
+    memory: &impl Memory,
+    pointers: &[usize],
+    out: &mut [Result<usize, &'static str>],
+) {
+    debug_assert_eq!(pointers.len(), out.len());
+    for (chunk_pointers, chunk_out) in pointers
+        .chunks(BATCH_ROWS)
+        .zip(out.chunks_mut(BATCH_ROWS))
+    {
+        let mut payload = [0u8; BATCH_ROWS * 8];
+        let mut failed = [false; BATCH_ROWS];
+        gather_rows(
+            memory,
+            chunk_pointers,
+            &CONTROLLER_AREA_ONLY_LAYOUT,
+            &mut payload[..chunk_pointers.len() * 8],
+            |slot| failed[slot] = true,
+        );
+        for slot in 0..chunk_pointers.len() {
+            if failed[slot] {
+                chunk_out[slot] = chunk_pointers[slot]
+                    .checked_add(CONTROLLER_AREA)
+                    .and_then(|address| crate::read::<u64>(memory, address))
+                    .map(|value| value as usize)
+                    .ok_or("movement province field unreadable");
+            } else {
+                chunk_out[slot] = Ok(u64::from_le_bytes(
+                    payload[slot * 8..slot * 8 + 8].try_into().unwrap(),
+                ) as usize);
+            }
+        }
+    }
+}
 
 pub fn movement_province_controllers(
     memory: &impl Memory,

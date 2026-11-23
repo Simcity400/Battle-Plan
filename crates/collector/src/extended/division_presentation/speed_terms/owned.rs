@@ -179,6 +179,7 @@ impl Rows {
 
 #[derive(Default)]
 pub(super) struct Entries {
+    pub pairs: Vec<(u32, usize, usize)>,
     pub wanted: Vec<(u32, u32)>,
     pub countries: Vec<Country>,
     pub values: Vec<Result<Value, &'static str>>,
@@ -192,6 +193,7 @@ pub(super) struct Entries {
 }
 impl Entries {
     pub(super) fn clear(&mut self) {
+        self.pairs.clear();
         self.wanted.clear();
         self.countries.clear();
         self.values.clear();
@@ -200,7 +202,8 @@ impl Entries {
         self.result = None;
     }
     pub(super) fn bytes(&self) -> usize {
-        self.wanted.capacity() * size_of::<(u32, u32)>()
+        self.pairs.capacity() * size_of::<(u32, usize, usize)>()
+            + self.wanted.capacity() * size_of::<(u32, u32)>()
             + self.countries.capacity() * size_of::<Country>()
             + self.values.capacity() * size_of::<Result<Value, &'static str>>()
             + self.next.bytes()
@@ -230,13 +233,14 @@ impl SpeedTerms {
                     if !self.observed_rows.access_ready {
                         continue;
                     }
-                    let access = super::province(&self.provinces, province).and_then(|facts| {
-                        memo(
-                            &self.observed_rows.access_areas,
-                            (owner, facts.controller_area?),
-                        )
-                        .ok_or("core supply area unread")?
-                    });
+                    let access = super::province_at(&self.provinces, &self.province_slot, province)
+                        .and_then(|facts| {
+                            memo(
+                                &self.observed_rows.access_areas,
+                                (owner, facts.controller_area?),
+                            )
+                            .ok_or("core supply area unread")?
+                        });
                     count(&mut self.counts[1], access.is_err());
                     self.access.push(CoreSupplyAccessRow {
                         owner,

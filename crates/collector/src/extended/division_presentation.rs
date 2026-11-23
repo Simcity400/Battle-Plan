@@ -160,6 +160,14 @@ macro_rules! project_status_fields {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+struct PanelInputs {
+    division: u64,
+    stamp: u64,
+    max_hp: i64,
+    max_org: i64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct StatusInputs {
     entrenchment: i64,
     supply_ratio: i64,
@@ -2648,26 +2656,19 @@ impl Captured {
                 (DivisionPanelStatsRow::maximum(words[at]) != Some(stored)).then_some(stored)
             })
         };
-        let panel = project_table::<tables::DivisionPanelStats, _>(
+        let panel = ledger_table::<tables::DivisionPanelStats, _, PanelInputs>(
             projection.as_deref_mut(),
             status_outcome,
             &self.status.rows,
             |r| u128::from(r.division),
-            |r, previous| {
-                let DivisionPanelStatsRow {
-                    division,
-                    panel_stats,
-                    suppression,
-                    status_maxima: prev_maxima,
-                } = previous;
-                if *division != r.division {
-                    return false;
-                }
-                let at = position(&self.status.rows, r);
-                let words = self.attack.view_at(at, r.division).panel();
-                *suppression == words[22].into()
-                    && *prev_maxima == status_maxima(r, &words)
-                    && panel_stats[..] == words[..22]
+            |at, r, _record| {
+                let stamp = self.attack.view_at(at, r.division).panel_stamp()?;
+                Some(PanelInputs {
+                    division: r.division,
+                    stamp,
+                    max_hp: DivisionStatusRow::MAXIMUM_STEP.round(r.maximum_hit_points),
+                    max_org: DivisionStatusRow::MAXIMUM_STEP.round(r.maximum_organisation),
+                })
             },
             |r| {
                 let at = position(&self.status.rows, r);

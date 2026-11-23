@@ -214,29 +214,29 @@ impl Captured {
                 self.physical_count = Err(reason);
                 return reader;
             }
-            for index in 0..count {
-                let Ok(slot) = u32::try_from(index) else {
-                    self.physical_count = Err("physical navy slot overflow");
-                    break;
-                };
-                let mut observed = reader.observe_navy(slot);
-                if slot == 0 {
-                    launch.capture_launch(memory, base, &mut observed);
-                }
-                if let Some(row) = self.navies.first.get_mut(index) {
-                    *row = NavyRow {
-                        slot,
-                        ..Default::default()
-                    };
-                    match observed {
-                        Ok(inputs) => {
-                            row.present = inputs.present;
-                            row.inputs = Some(inputs);
-                        }
-                        Err(reason) => row.identity_reason = Some(reason),
+            if u32::try_from(count.saturating_sub(1)).is_err() {
+                self.physical_count = Err("physical navy slot overflow");
+            } else {
+                reader.observe_navies_range(count, |slot, mut observed| {
+                    let index = slot as usize;
+                    if slot == 0 {
+                        launch.capture_launch(memory, base, &mut observed);
                     }
-                    self.navies.len += 1;
-                }
+                    if let Some(row) = self.navies.first.get_mut(index) {
+                        *row = NavyRow {
+                            slot,
+                            ..Default::default()
+                        };
+                        match observed {
+                            Ok(inputs) => {
+                                row.present = inputs.present;
+                                row.inputs = Some(inputs);
+                            }
+                            Err(reason) => row.identity_reason = Some(reason),
+                        }
+                        self.navies.len += 1;
+                    }
+                });
             }
             if count == 0 {
                 let mut zero = reader.observe_navy(0);
