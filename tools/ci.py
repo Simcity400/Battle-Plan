@@ -400,11 +400,11 @@ def widened(ctx, job):
     everything outside its jobs as it was reaches only the jobs whose definition it changed."""
     if ctx.definitions is None or ctx.definitions.get(job.name) != job.definition:
         return True
-    implementation = ctx.pipeline.implementation
-    if ctx.frame is not None and ctx.frame == ctx.pipeline.frame:
-        implementation = tuple(path for path in implementation if path != PIPELINE_PATH)
-    wide = matcher(ctx.pipeline.toolchains[job.toolchain] + implementation + job.shared + job.widen)
-    return any(wide(path) for path in ctx.changed)
+    if PIPELINE_PATH in ctx.changed and ctx.frame != ctx.pipeline.frame:
+        return True
+    implementation = matcher(ctx.pipeline.implementation)
+    own = matcher(ctx.pipeline.toolchains[job.toolchain] + job.shared + job.widen)
+    return any(own(path) or path != PIPELINE_PATH and implementation(path) for path in ctx.changed)
 
 
 def decide(job, ctx, tier):
@@ -729,11 +729,15 @@ def report(outcomes, title):
 def pipeline_at(base):
     """The base's pipeline, or None when it has none that loads."""
     shown = subprocess.run(["git", "show", f"{base}:{PIPELINE_PATH}"], cwd=ROOT, capture_output=True)
-    if shown.returncode:
-        return None
+    return None if shown.returncode else base_pipeline(shown.stdout.decode("utf-8", errors="replace"))
+
+
+def base_pipeline(text):
+    """A base's pipeline from its text, or None when it does not load as one, whatever is wrong
+    with it, so a change repairing a broken pipeline plans against it as unreadable."""
     try:
-        return load_pipeline(shown.stdout.decode("utf-8"))
-    except (SystemExit, KeyError, ValueError, TypeError):
+        return load_pipeline(text)
+    except (SystemExit, KeyError, ValueError, TypeError, AttributeError, IndexError):
         return None
 
 

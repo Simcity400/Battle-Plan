@@ -143,6 +143,18 @@ class Gates(unittest.TestCase):
         self.assertEqual(decide("clippy", ctx).arguments, ["--workspace"], "an edit outside the jobs reaches every job")
         ctx.frame = None
         self.assertEqual(decide("clippy", ctx).arguments, ["--workspace"], "so does a base whose pipeline cannot be read")
+        ctx.pipeline = ci.load_pipeline(PIPELINE)
+        ctx.definitions = {job.name: job.definition for job in ctx.pipeline.jobs}
+        ctx.frame = ci.load_pipeline(listed).frame
+        self.assertEqual(decide("clippy", ctx).arguments, ["--workspace"], "an edit that drops tools/ci.toml from the implementation still reaches every job")
+        globbed = ci.load_pipeline(listed.replace('"tools/ci.py", "tools/ci.toml"', '"tools/**"'))
+        ctx.pipeline, ctx.frame = globbed, globbed.frame
+        ctx.definitions = {job.name: job.definition for job in globbed.jobs}
+        self.assertEqual(decide("clippy", ctx).state, "skipped", "an implementation glob covering tools/ci.toml leaves a job-only edit to the jobs it redefines")
+        ctx.changed = {"tools/ci.toml", "tools/ci.py"}
+        self.assertEqual(decide("clippy", ctx).arguments, ["--workspace"], "and still widens on the rest of the implementation")
+        self.assertIsNone(ci.base_pipeline(PIPELINE.replace("[toolchain.python]\nfiles = []\n[toolchain.rust]\nfiles = [\"Cargo.lock\"]\n", "toolchain = []\n")),
+                          "a base whose tables have the wrong shape is unreadable, so a change repairing it still plans")
 
     def test_a_changed_group_redefines_its_jobs(self):
         changed = ci.load_pipeline(PIPELINE.replace('[group.all]\nsetup = ["python"]', '[group.all]\nsetup = ["python", "node"]'))
