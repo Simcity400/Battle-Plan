@@ -43,7 +43,7 @@ function TopGeneralCareer(props: WidgetProps) {
     if (head.outside || atRead.outside) return <WidgetState kind="outside" read={head} />;
     if (atRead.group.error) return <WidgetState kind="error" failure={atRead.group.error} onRetry={atRead.group.retry} />;
     if (atRead.selectionReason) return <WidgetState kind="unavailable" message={atRead.selectionReason} />;
-    if (atRead.selectionReason) return <WidgetState kind="unavailable" message={atRead.selectionReason} />;
+    if (landed.reason) return <WidgetState kind="unavailable" message={landed.reason} />;
     if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
     if (!head.data || readCountries === undefined) return <WidgetState kind="loading" label="Loading leaders…" />;
     if (top) return <CareerView {...props} reference={top.key} caption={dashboard ? nameDetail ?? `Following ${country.name}’s top general.` : 'Following the top general of these countries.'} />;
