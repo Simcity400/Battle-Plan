@@ -10,7 +10,7 @@ export type ToLane =
   | { type: 'unfollow'; sub: number }
   | { type: 'mount'; widget: number; subs: number[]; view: string; model?: unknown }
   | { type: 'unmount'; widget: number }
-  | { type: 'bind'; widget: number; binding: Binding; model?: unknown }
+  | { type: 'bind'; widget: number; binding: Binding; model?: unknown; retry?: boolean }
   | { type: 'exact'; sub: number; hour: number; data: unknown; refused: string | null }
   | { type: 'stream'; route: number; seek: number; target: number }
   | { type: 'fail'; route: number; seek: number; command: number; reason: string }
@@ -20,8 +20,10 @@ export type ToLane =
 export type FromLane =
   | ({ type: 'presentation' } & Presented<ImageBitmap>)
   | { type: 'failure'; lane: number; reason: string }
+  | { type: 'sub-failed'; lane: number; sub: number; reason: string }
+  | { type: 'widget-failed'; lane: number; widget: number; reason: string }
   | { type: 'hit'; widget: number; key: string | null }
-  | { type: 'served'; seek: number; target: number; exact: boolean; changed: number; ms: number };
+  | { type: 'served'; seek: number; target: number; exact: boolean; changed: number; ms: number; costs?: [widget: number, cost: number][] };
 
 export type FromPull = { kind: 'follow'; bytes: Uint8Array; resets: number } | { kind: 'panels'; bytes: Uint8Array } | { kind: 'failure'; reason: string };
 

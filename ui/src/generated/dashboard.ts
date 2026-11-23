@@ -591,7 +591,7 @@ export type DoctrineTrack = { ordinal: number, name: string, subDoctrine: string
 export type DoctrineFolder = { ordinal: number, name: string, grandDoctrine: string | null, benefits: string, authoredCost: string, milestones: Array<DoctrineReward>, completed: Array<string>, tracks: Array<DoctrineTrack>, };
 export type DoctrineInventory = { kind: string, ordinal: number, fields: Array<DoctrineFact>, };
 export type DoctrineReply = { branchId: string, hour: number, tag: string, folders: Array<DoctrineFolder>, inventory: Array<DoctrineInventory>, warnings: Array<string>, };
-export type AircraftCatalogueParams = { scope: AircraftScope,
+export type AircraftCatalogueParams = {
 /**
  * Matched without case against names, titles and what references them;
  * empty matches every name.
@@ -604,26 +604,35 @@ first: number,
 /**
  * How many matching entries to answer from `first`.
  */
-count: number, };
+count: number,
+/**
+ * Only the base game's entries, with its DLC's, or only one mod's; absent
+ * matches every origin.
+ */
+origin: AircraftOriginFilter | null, };
 export type AircraftCatalogueReply = {
 /**
- * How many of the scope's entries match the query.
+ * How many aircraft match the query and origin.
  */
 matching: number,
 /**
- * How many names are an aircraft's, and how many the complete listing has.
+ * How many aircraft match the query, whatever their origin.
  */
-aircraft: number, all: number, first: number,
+found: number, first: number,
 /**
  * Matching entries from `first`: flyable ones first, then refused ones,
- * each by name bytes.
+ * each without case by the first title, else the readable name.
  */
 entries: Array<AircraftEntry>,
 /**
- * The scope's refused entries, whatever the query, by kind of reason.
+ * The matching entries that cannot be flown, by kind of reason.
  */
-refusals: Array<AircraftRefusalCount>, warnings: Array<string>, };
-export type AircraftScope = "aircraft" | "all";
+refusals: Array<AircraftRefusalCount>,
+/**
+ * Every origin with an aircraft, the base game first and then mods in load
+ * order, each with how many of its aircraft match the query.
+ */
+origins: Array<AircraftOriginCount>, warnings: Array<string>, };
 export type AircraftKind = "entity" | "mesh" | "unregistered";
 export type AircraftReference = { "kind": "pool", bucket: string, equipment: string, file: string, } | { "kind": "ladder", key: string, prefix: string | null, } | { "kind": "design", equipment: string, } | { "kind": "cloneOf", of: string, } | { "kind": "clonedBy", by: string, };
 export type AircraftRefusalKind = "unregistered" | "declaration" | "noGeometry";
@@ -639,14 +648,22 @@ name: string, kind: AircraftKind,
  */
 titles: Array<string>,
 /**
- * Why it is an aircraft's; empty for a name only the complete listing has.
+ * Why it is an aircraft's.
  */
 references: Array<AircraftReference>,
 /**
  * Why it cannot be flown.
  */
-refusal: AircraftRefusal | null, };
+refusal: AircraftRefusal | null,
+/**
+ * Who supplies the files it is declared in and drawn from: a mod when any
+ * of them is a mod's; null when no descriptor registers it.
+ */
+origin: AircraftOrigin | null, };
 export type AircraftRefusalCount = { kind: AircraftRefusalKind, label: string, count: number, };
+export type AircraftOriginFilter = "game" | { "mod": string };
+export type AircraftOrigin = { "kind": "game", dlc: string | null, } | { "kind": "mod", id: string, name: string, };
+export type AircraftOriginCount = { origin: AircraftOrigin, count: number, };
 export type SpriteArtworkParams = { sprites: Array<SpriteFrame>, };
 export type SpriteArtworkReply = { items: Array<SpriteImage>, warnings: Array<string>, };
 export type SpriteFrame = {
@@ -2589,8 +2606,8 @@ export type ConstructionLogParams = { branchId: string,
  */
 window: number, };
 export type ConstructionStateName = { id: number, name: string | null, };
-export type ProjectKind = "building" | "railway";
-export type ProjectSource = "census" | "outputAlone";
+export type ProjectKind = "building" | "railway" | "unknown";
+export type ProjectSource = "census" | "outputAlone" | "unknown";
 export type SpendingGap = "notRecorded" | "linkedOutput" | "inexactOutput" | "observationRestart" | "finalOutputMissing" | "ownerUnknown";
 export type EndKind = "finished" | "removed" | "unknown";
 export type UnknownEnd = "notRecorded" | "sharedTarget" | "nothingLeft" | "completionNotRecorded";
@@ -2660,6 +2677,14 @@ earlierUnknown: boolean, runs: Array<ProjectRun>,
  * New levels built and levels repaired (`repair`).
  */
 built: Array<LevelsBuilt>,
+/**
+ * Hour spans where a non-output-alone step had an unrecorded built counter.
+ */
+builtUnread?: Array<[number, number]>,
+/**
+ * Hour spans where a non-output-alone step had an unrecorded repaired counter.
+ */
+repairedUnread?: Array<[number, number]>,
 /**
  * Levels that cannot be told built or dropped.
  */
@@ -2769,8 +2794,8 @@ export type LandManpower = number | string;
 export type LandLossTotal = { manpower: LandManpower, equipment: string, } | { manpower: LandManpower, unknown: string, };
 export type LandLossTotals = [LandLossTotal, LandLossTotal] | string;
 export type LandBattleLossRead = { hour: number, terminal: boolean, sides: LandLossTotals, };
-export type LandBattleResultRead = { hour: number, duration: number, winner: BattleWinner, countries: [Array<string>, Array<string>], countriesUnknown: [boolean, boolean], };
-export type LandBattleHistory = { id: string, provinceId: number, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number,
+export type LandBattleResultRead = { hour: number | null, duration: number, winner: BattleWinner, countries: [Array<string>, Array<string>], countriesUnknown: [boolean, boolean], };
+export type LandBattleHistory = { id: string, provinceId: number | null, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number,
 /**
  * The battle's most divisions at once as of the reply's first hour.
  */
@@ -2816,7 +2841,7 @@ export type LandEquipmentDesign = { name: string | null, variant: string, };
 export type LandLossSide = { manpower: LandManpower, variants: Array<[number, string]>, } | { manpower: LandManpower, changed: Array<[number, string]>, } | { manpower: LandManpower, unknown: string, };
 export type LandLossSides = [LandLossSide, LandLossSide] | string;
 export type LandBattleCourseRead = { hour: number, terminal: boolean, sides: LandLossSides, };
-export type LandBattleCourse = { id: string, provinceId: number, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number, runs: Array<LandBattleRun>, losses: Array<LandBattleCourseRead>, result: LandBattleResultRead | null, };
+export type LandBattleCourse = { id: string, provinceId: number | null, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number, runs: Array<LandBattleRun>, losses: Array<LandBattleCourseRead>, result: LandBattleResultRead | null, };
 export type LandBattleCourseReply = { battle: LandBattleCourse,
 /**
  * The designs the course's reads name by index.
@@ -6373,7 +6398,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "air-superiority-choices": { "branchId": "leaf" },
   "air-superiority-ranking": { "branchId": "leaf", "firstHour": "leaf", "lastHour": "leaf", "mode": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "tile": "leaf", "top": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
   "air-superiority-timeline": { "branchId": "leaf", "firstHour": "leaf", "lastHour": "leaf", "mode": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "tile": "leaf", "top": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
-  "aircraft-catalogue": { "count": "leaf", "first": "leaf", "query": "leaf", "scope": "leaf" },
+  "aircraft-catalogue": { "count": "leaf", "first": "leaf", "origin": "node", "origin.mod": "leaf", "query": "leaf" },
   "army-losses": { "branchId": "leaf", "country": "any", "hour": "leaf", "view": "node", "view.kind": "leaf", "view.ledgers": "node", "view.ledgers[]": "leaf", "view.month": "leaf" },
   "army-size": { "branchId": "leaf", "byType": "leaf", "countFor": "leaf", "countries": "node", "countries[]": "any", "measure": "leaf", "top": "leaf", "window": "leaf" },
   "campaign-clock": { "branchId": "leaf", "firstHour": "leaf", "lastHour": "leaf" },

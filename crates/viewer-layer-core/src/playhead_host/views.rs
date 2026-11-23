@@ -772,8 +772,21 @@ struct Shared {
     entry: Arc<Entry>,
     learned: Mutex<BTreeMap<(&'static str, usize), (Option<Hour>, u64)>>,
     asked: Mutex<Vec<Asked>>,
+    demand: AtomicU64,
+    wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    on_publish: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     chosen: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl Shared {
+    fn note_demand(&self) {
+        self.demand.fetch_add(1, Ordering::Release);
+        let wake = lock(&self.wake).clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
 }
 
 enum Asked {
@@ -826,10 +839,25 @@ impl Store {
             entry: Arc::clone(entry),
             learned: Mutex::default(),
             asked: Mutex::default(),
+            demand: AtomicU64::new(0),
+            wake: Mutex::default(),
+            on_publish: Mutex::default(),
             #[cfg(test)]
             chosen: Mutex::default(),
         };
         Self { shared: Arc::new(shared), threads: Vec::new(), order: Vec::new(), record: Record::default() }
+    }
+
+    pub fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        *lock(&self.shared.wake) = Some(wake);
+    }
+
+    pub fn demand(&self) -> u64 {
+        self.shared.demand.load(Ordering::Acquire)
+    }
+
+    pub fn has_readers(&self) -> bool {
+        lock(&self.shared.readers).iter().any(|reading| reading.open) || !lock(&self.shared.asked).is_empty()
     }
 
     pub fn reader(&self, name: &'static str, needs: &[Need]) -> Reader {
@@ -1080,6 +1108,7 @@ impl Views {
     pub fn reader_later(&self, name: &'static str, needs: &[Need], pace: Pace) -> Reader {
         let id = self.shared.next.fetch_add(1, Ordering::AcqRel);
         lock(&self.shared.asked).push(Asked::Open { id, name, needs: needs.to_vec(), pace });
+        self.shared.note_demand();
         Reader { shared: Arc::clone(&self.shared), id, later: true }
     }
 
@@ -1091,6 +1120,14 @@ impl Views {
         Arc::ptr_eq(&self.shared, &reader.shared)
     }
 
+
+    pub fn set_on_publish(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        *lock(&self.shared.on_publish) = Some(wake);
+    }
+
+    pub fn demand(&self) -> u64 {
+        self.shared.demand.load(Ordering::Acquire)
+    }
 
     pub fn held(&self) -> Vec<(TableId, usize)> {
         reading(&self.shared).iter().enumerate().filter_map(|(table, held)| held.as_ref().map(|held| (TableId::ALL[table], held.bytes()))).collect()
@@ -1376,6 +1413,7 @@ fn make_views(shared: &Shared) {
 fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[usize], (hour, branch, epoch): (Hour, BranchId, u64)) {
     let (mut order, mut made) = (Vec::new(), Made::default());
     let mut readers = lock(&shared.readers);
+    let mut published = false;
     for &place in places {
         let Some(reading) = readers.get(place) else { continue };
         let home = |&(table, columns): &(usize, u64)| !shared.written[table] || kept[table].as_ref().is_some_and(|kept| kept.answers(columns, mirrors.get(TableId::ALL[table]), hour));
@@ -1456,6 +1494,7 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
             older.truncate(FRAMES_KEPT);
         }
         reading.frame = Some(Arc::new(frame));
+        published = true;
         reading.failures = Arc::from(failures);
         reading.stands = Some((hour, epoch));
         reading.published += 1;
@@ -1478,6 +1517,13 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
     }
     drop(readers);
     shared.made.notify_all();
+    if published {
+        shared.entry.playhead().wake_waiters();
+        let on_publish = lock(&shared.on_publish).clone();
+        if let Some(wake) = on_publish {
+            wake();
+        }
+    }
 }
 
 fn republish(shared: &Shared, id: u64) {
@@ -1660,8 +1706,12 @@ impl Reader {
         let now = Instant::now();
         let until = now + limit;
         let mut readers = lock(&self.shared.readers);
+        let mut woke = false;
         if let Some(at) = Self::place(&readers, self.id) {
-            readers[at].ready = true;
+            if !readers[at].ready {
+                readers[at].ready = true;
+                woke = true;
+            }
         }
         if let Some(at) = Self::place(&readers, self.id)
             && let Some(made) = readers[at].published_at.filter(|_| readers[at].published == seen && !readers[at].costed)
@@ -1672,6 +1722,11 @@ impl Reader {
             reading.marks.build_ns += took;
             reading.marks.builds += 1;
             reading.costed = true;
+        }
+        if woke {
+            drop(readers);
+            self.shared.note_demand();
+            readers = lock(&self.shared.readers);
         }
         loop {
             let published = Self::place(&readers, self.id).map_or(0, |at| readers[at].published);
@@ -1685,8 +1740,10 @@ impl Reader {
 
     pub fn ready(&self) {
         let mut readers = lock(&self.shared.readers);
-        if let Some(at) = Self::place(&readers, self.id) {
-            readers[at].ready = true;
+        let woke = Self::place(&readers, self.id).is_some_and(|at| !std::mem::replace(&mut readers[at].ready, true));
+        drop(readers);
+        if woke {
+            self.shared.note_demand();
         }
     }
 
@@ -1744,6 +1801,8 @@ impl Reader {
         drop(readers);
         if joined {
             self.declared(&needs);
+        } else {
+            self.shared.note_demand();
         }
         republish(&self.shared, self.id);
     }
@@ -1760,13 +1819,17 @@ impl Reader {
 
     pub fn declare_only_needs(&self, needs: &[Need]) {
         match self.later {
-            true => lock(&self.shared.asked).push(Asked::Declare { id: self.id, needs: needs.to_vec() }),
+            true => {
+                lock(&self.shared.asked).push(Asked::Declare { id: self.id, needs: needs.to_vec() });
+                self.shared.note_demand();
+            }
             false => self.declared(needs),
         }
     }
 
     fn declared(&self, needs: &[Need]) {
         declare(&self.shared, self.id, needs, true);
+        self.shared.note_demand();
     }
 }
 
@@ -1985,6 +2048,7 @@ impl Drop for Reader {
             true => lock(&self.shared.asked).push(Asked::Close { id: self.id }),
             false => close(&self.shared, self.id),
         }
+        self.shared.note_demand();
     }
 }
 

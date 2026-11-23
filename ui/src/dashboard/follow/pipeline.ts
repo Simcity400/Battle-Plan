@@ -31,7 +31,7 @@ export type SubStatus = 'pending' | 'followed' | 'refused' | 'failed';
 
 interface SubState {
   id: number; key: string; lane: number; channel: Channel; route: RouteState; holders: number; status: SubStatus; reason?: string; error?: Failure;
-  widgets: Set<number>; released: boolean;
+  widgets: Map<number, number>; released: boolean;
 }
 
 interface RouteState {
@@ -40,17 +40,19 @@ interface RouteState {
 }
 
 interface WidgetState {
-  id: number; lane: number; subs: Map<object, number>; view: string; model?: unknown; mounted: boolean; route: RouteState | null;
+  id: number; lane: number; kind?: string; cost: number; subs: Map<object, number>; view: string; model?: unknown; mounted: boolean; route: RouteState | null;
   installListeners: Set<() => void>; dateListeners: Set<() => void>; binding: Binding; surfaces: readonly PageSurface<ImageBitmap>[];
-  held: Map<string, unknown>;
+  held: Map<string, unknown>; error?: Failure;
 }
 
-export interface MountOptions { offset: number; pin: number | null; bounds?: readonly [number, number] | null; view?: string; model?: unknown; key?: string; widget?: string }
+export interface MountOptions { offset: number; pin: number | null; bounds?: readonly [number, number] | null; view?: string; model?: unknown; key?: string; widget?: string; kind?: string }
 
 const NO_CHANNEL = 'This connection has no channel for pushed answers';
+const DEFAULT_COST = 0.5;
 
 export class Pipeline {
   readonly page: Page<ImageBitmap>;
+  readonly stats = { dateVisits: 0 };
   readonly generation: number;
   private readonly host: PipelineHost;
   private readonly clock: PlaybackController;
@@ -60,7 +62,10 @@ export class Pipeline {
   private readonly byId = new Map<number, SubState>();
   private readonly routes = new Map<string, RouteState>();
   private readonly widgets = new Map<number, WidgetState>();
+  private readonly dateWatchers = new Set<WidgetState>();
   private readonly loads: number[];
+  private readonly costLoads: number[];
+  private readonly kindCost = new Map<string, number>();
   private readonly placed = new Map<string, number>();
   private readonly nextSub: number[];
   private nextWidget = 1;
@@ -82,6 +87,7 @@ export class Pipeline {
     const count = host.lanes.length;
     perfLog?.lanes(count);
     this.loads = Array.from({ length: count }, () => 0);
+    this.costLoads = Array.from({ length: count }, () => 0);
     this.nextSub = Array.from({ length: count }, () => 1);
     this.page = new Page<ImageBitmap>({ lanes: count, seek: clock.getSnapshot().seekSequence, post: (lane, message) => this.post(lane, message) });
     host.lanes.forEach((lane, index) => { lane.onmessage = ({ data }) => this.receive(index, data); });
@@ -109,6 +115,7 @@ export class Pipeline {
     this.page.dispose();
     perfLog?.dropGeneration(this.generation);
     this.widgets.clear(); this.shared.clear(); this.subs.clear(); this.byId.clear(); this.routes.clear();
+    this.dateWatchers.clear(); this.placed.clear(); this.kindCost.clear();
     this.audits.clear(); this.answered.clear(); this.hits.clear(); this.changed.clear(); this.redated.clear();
   }
 
@@ -148,7 +155,10 @@ export class Pipeline {
     if (this.closed) return;
     const rate = this.host.rate();
     if (rate !== this.rate) { this.rate = rate; for (const lane of this.host.lanes) lane.postMessage({ type: 'options', rate }); }
-    const step = next.playing && previous.playing && next.seekSequence === previous.seekSequence ? Math.max(0, next.hour - previous.hour) : this.page.step;
+    const fps = Math.max(1, this.host.frameRate());
+    const nominal = Math.max(1, Math.ceil(next.hoursPerSecond / fps * 1.5));
+    const rawStep = next.playing && previous.playing && next.seekSequence === previous.seekSequence ? Math.max(0, next.hour - previous.hour) : this.page.step;
+    const step = next.playing ? Math.min(rawStep, nominal) : rawStep;
     this.page.publish(next.hour, { playing: next.playing, seek: next.seekSequence, step, speed: next.hoursPerSecond });
     this.dated = true;
     this.flush();
@@ -221,7 +231,17 @@ export class Pipeline {
     this.changed = new Set(); this.redated = new Set();
     this.dated = false;
     if (changed.size) flushSync(() => { for (const widget of changed) for (const listener of [...widget.installListeners]) listener(); });
-    for (const widget of dated ? this.widgets.values() : redated) for (const listener of [...widget.dateListeners]) listener();
+    if (dated) {
+      for (const widget of this.dateWatchers) {
+        this.stats.dateVisits++;
+        for (const listener of [...widget.dateListeners]) listener();
+      }
+    } else if (redated.size) {
+      for (const widget of redated) if (widget.dateListeners.size) {
+        this.stats.dateVisits++;
+        for (const listener of [...widget.dateListeners]) listener();
+      }
+    }
   }
 
   private receive(lane: number, message: FromLane) {
@@ -237,6 +257,32 @@ export class Pipeline {
       this.flush();
       return;
     }
+    if (message.type === 'sub-failed') {
+      const held = this.byId.get(message.sub);
+      if (held && held.status !== 'failed' && held.status !== 'refused') {
+        if (held.channel !== 'pinned' && held.status === 'followed') {
+          void this.ask('unfollow', { id: held.id }, held.route, new AbortController().signal).catch(() => {});
+        }
+        this.fail(held, asFailure(new Error(message.reason)));
+        if (!this.holds(held.route)) {
+          held.route.told = null;
+          const page = this.nextRoute++;
+          this.page.carry(held.route.page, page);
+          held.route.page = page;
+        }
+      }
+      return;
+    }
+    if (message.type === 'widget-failed') {
+      const widget = this.widgets.get(message.widget);
+      if (widget) {
+        const failure = asFailure(new Error(message.reason));
+        widget.error = failure;
+        this.page.name(message.widget, 'failed', failure.message, 'local');
+        this.flush();
+      }
+      return;
+    }
     if (message.type === 'hit') {
       const told = this.hits.get(message.widget)?.shift();
       this.page.inspect(message.widget, message.key); this.flush();
@@ -244,6 +290,19 @@ export class Pipeline {
       return;
     }
     if (message.type === 'served') {
+      if (message.costs) {
+        for (const [id, cost] of message.costs) {
+          const widget = this.widgets.get(id);
+          if (!widget || !Number.isFinite(cost)) continue;
+          const clamped = Math.max(0.05, cost);
+          this.costLoads[widget.lane] = Math.max(0, this.costLoads[widget.lane]! + clamped - widget.cost);
+          widget.cost = clamped;
+          if (widget.kind !== undefined) {
+            const prev = this.kindCost.get(widget.kind);
+            this.kindCost.set(widget.kind, prev === undefined ? clamped : prev * 0.7 + clamped * 0.3);
+          }
+        }
+      }
       if (auditing()) recordPicture({ t: 'workerFrame', at: performance.timeOrigin + performance.now(), lane, lanes: this.lanes, seek: message.seek, head: message.target,
         playing: !message.exact && this.page.playing, changed: message.changed, workMs: message.ms });
       return;
@@ -258,20 +317,27 @@ export class Pipeline {
     engine.next('commit', () => { this.framing = false; if (this.closed) return; this.page.frame(); this.flush(); if (auditing()) this.sample(this.page.seek); });
   }
 
-  private place(key: string | undefined) {
-    const average = this.loads.reduce((sum, load) => sum + load, 0) / this.loads.length;
+  private place(key: string | undefined, kind: string | undefined): { lane: number; cost: number } {
+    const cost = (kind !== undefined ? this.kindCost.get(kind) : undefined) ?? DEFAULT_COST;
+    const average = this.costLoads.reduce((sum, load) => sum + load, 0) / this.costLoads.length;
     const held = key === undefined ? undefined : this.placed.get(key);
-    if (held !== undefined && this.loads[held]! <= average + 1) return held;
+    if (held !== undefined && this.costLoads[held]! + cost <= average + Math.max(cost, 1)) return { lane: held, cost };
     let lane = 0;
-    for (let at = 1; at < this.loads.length; at++) if (this.loads[at]! < this.loads[lane]!) lane = at;
+    for (let at = 1; at < this.costLoads.length; at++) {
+      if (this.costLoads[at]! < this.costLoads[lane]! - 1e-6
+        || (Math.abs(this.costLoads[at]! - this.costLoads[lane]!) <= 1e-6 && this.loads[at]! < this.loads[lane]!)) lane = at;
+    }
     if (key !== undefined) this.placed.set(key, lane);
-    return lane;
+    return { lane, cost };
   }
 
   mount(options: MountOptions) {
-    const lane = this.place(options.key), id = this.nextWidget++;
+    const kind = options.kind;
+    const { lane, cost } = this.place(options.key, kind);
+    const id = this.nextWidget++;
     this.loads[lane]!++;
-    const widget: WidgetState = { id, lane, subs: new Map(), view: options.view ?? 'fields', model: options.model, mounted: false, route: null,
+    this.costLoads[lane]! += cost;
+    const widget: WidgetState = { id, lane, kind, cost, subs: new Map(), view: options.view ?? 'fields', model: options.model, mounted: false, route: null,
       installListeners: new Set(), dateListeners: new Set(), binding: { generation: 1, surfaces: [], offset: options.offset, pin: options.pin }, surfaces: [], held: new Map() };
     this.widgets.set(id, widget);
     this.page.mount(id, { route: 0, lane, offset: options.offset, pin: options.pin, bounds: options.bounds, surfaces: [], changed: () => this.changed.add(widget),
@@ -302,9 +368,11 @@ export class Pipeline {
     if (!widget) return;
     this.audits.delete(id);
     this.hits.delete(id);
+    this.dateWatchers.delete(widget);
     for (const sub of widget.subs.values()) this.release(sub, id);
     this.widgets.delete(id);
     this.loads[widget.lane]!--;
+    this.costLoads[widget.lane] = Math.max(0, this.costLoads[widget.lane]! - widget.cost);
     this.page.unmount(id);
     this.host.lanes[widget.lane]!.postMessage({ type: 'unmount', widget: id });
   }
@@ -322,6 +390,7 @@ export class Pipeline {
   widgetError(id: number): Failure | undefined {
     const widget = this.widgets.get(id);
     if (!widget) return undefined;
+    if (widget.error) return widget.error;
     for (const sub of widget.subs.values()) {
       const error = this.status(sub).error;
       if (error) return error;
@@ -335,9 +404,10 @@ export class Pipeline {
     if (this.closed) return;
     const widget = this.widgets.get(id);
     if (!widget) return;
+    widget.error = undefined;
     this.page.retryLocal(id);
     widget.binding = this.timed(widget, widget.binding);
-    this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: id, binding: widget.binding, ...widget.model !== undefined ? { model: widget.model } : {} });
+    this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: id, binding: widget.binding, retry: true, ...widget.model !== undefined ? { model: widget.model } : {} });
     this.flush();
   }
 
@@ -351,8 +421,15 @@ export class Pipeline {
 
   onDate(id: number, listener: () => void) {
     const widget = this.widgets.get(id);
-    widget?.dateListeners.add(listener);
-    return () => { widget?.dateListeners.delete(listener); };
+    if (widget) {
+      widget.dateListeners.add(listener);
+      this.dateWatchers.add(widget);
+    }
+    return () => {
+      if (!widget) return;
+      widget.dateListeners.delete(listener);
+      if (!widget.dateListeners.size) this.dateWatchers.delete(widget);
+    };
   }
 
   private routeOf(source: DashboardSource, branch: string, offset: number): RouteState {
@@ -371,12 +448,12 @@ export class Pipeline {
     let sub = this.subs.get(key);
     if (!sub) {
       const id = this.nextSub[widget.lane]!++ * this.lanes + widget.lane;
-      sub = { id, key, lane: widget.lane, channel, route, holders: 0, status: 'pending', widgets: new Set(), released: false };
+      sub = { id, key, lane: widget.lane, channel, route, holders: 0, status: 'pending', widgets: new Map(), released: false };
       this.subs.set(key, sub); this.byId.set(id, sub);
       this.register(sub, query, product);
     }
     sub.holders++;
-    sub.widgets.add(widgetId);
+    sub.widgets.set(widgetId, (sub.widgets.get(widgetId) ?? 0) + 1);
     const was = widget.subs.get(token);
     widget.subs.set(token, sub.id);
     if (was !== undefined) this.release(was, widgetId);
@@ -398,7 +475,11 @@ export class Pipeline {
   private release(id: number, widget: number) {
     const sub = this.byId.get(id);
     if (!sub) return;
-    sub.widgets.delete(widget);
+    const count = sub.widgets.get(widget);
+    if (count !== undefined) {
+      if (count <= 1) sub.widgets.delete(widget);
+      else sub.widgets.set(widget, count - 1);
+    }
     if (--sub.holders > 0) return;
     this.subs.delete(sub.key); this.byId.delete(id);
     sub.released = true;
@@ -416,10 +497,12 @@ export class Pipeline {
     widget.binding = this.timed(widget, widget.binding);
     this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: widget.id, binding: widget.binding });
     widget.mounted = true;
-    const refused = subs.map(id => this.byId.get(id)).find(sub => sub?.status === 'refused');
-    const failed = subs.map(id => this.byId.get(id)).find(sub => sub?.status === 'failed');
+    const subStates = subs.map(id => this.byId.get(id));
+    const refused = subStates.find(sub => sub?.status === 'refused');
+    const failed = subStates.find(sub => sub?.status === 'failed');
     if (refused) this.page.name(widget.id, 'refused', refused.reason);
     else if (failed) this.page.name(widget.id, 'failed', failed.reason, 'stream');
+    else if (widget.error) this.page.name(widget.id, 'failed', widget.error.message, 'local');
     this.flush();
   }
 
@@ -429,11 +512,20 @@ export class Pipeline {
   }
 
   bind(id: number, surfaces: readonly PageSurface<ImageBitmap>[], binding: Omit<Binding, 'generation' | 'offset' | 'pin'>, change: RebindChange = {}, model?: unknown) {
+    if (this.closed) return;
     const widget = this.widgets.get(id);
     if (!widget) return;
     const same = surfaces.length === widget.surfaces.length && surfaces.every((surface, at) => surface === widget.surfaces[at]);
     if (!same) { widget.surfaces = surfaces; this.page.remount(id, surfaces); }
     else this.page.rebind(id, change);
+    if (!same || change.subscription) {
+      const subStates = [...widget.subs.values()].map(sub => this.byId.get(sub));
+      const refused = subStates.find(sub => sub?.status === 'refused');
+      const failed = subStates.find(sub => sub?.status === 'failed');
+      if (refused) this.page.name(id, 'refused', refused.reason);
+      else if (failed) this.page.name(id, 'failed', failed.reason, 'stream');
+      else if (widget.error) this.page.name(id, 'failed', widget.error.message, 'local');
+    }
     if (model !== undefined) widget.model = model;
     widget.binding = this.timed(widget, binding);
     this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: id, binding: widget.binding, ...model !== undefined ? { model } : {} });
@@ -441,6 +533,7 @@ export class Pipeline {
   }
 
   present(id: number, view: string, model?: unknown) {
+    if (this.closed) return;
     const widget = this.widgets.get(id);
     if (!widget || widget.view === view && model === undefined) return;
     widget.view = view;
@@ -460,6 +553,7 @@ export class Pipeline {
   }
 
   retime(id: number, change: RebindChange) {
+    if (this.closed) return;
     const widget = this.widgets.get(id);
     if (!widget) return;
     this.page.rebind(id, change);
@@ -475,6 +569,7 @@ export class Pipeline {
   private readonly hits = new Map<number, (((key: string | null) => void) | undefined)[]>();
 
   pointer(id: number, surface: number, point: [number, number] | null, hit?: (key: string | null) => void) {
+    if (this.closed) return;
     const widget = this.widgets.get(id);
     if (!widget) return;
     let waiting = this.hits.get(id);
@@ -484,6 +579,7 @@ export class Pipeline {
   }
 
   exact(sub: number, hour: number, data: unknown, refused: string | null) {
+    if (this.closed) return;
     const held = this.byId.get(sub);
     if (held) this.host.lanes[held.lane]!.postMessage({ type: 'exact', sub, hour, data, refused });
   }
@@ -503,18 +599,21 @@ export class Pipeline {
       : this.ask('follow', { id: sub.id, query, branchId: sub.route.branch, clock: sub.route.offset, lane: sub.lane, lanes: this.lanes }, sub.route))
       .then(reply => {
         const data = reply as { available?: boolean; reason?: string; route?: number } | null;
-        if (this.closed || sub.released) { if (data?.available === true) void this.ask('unfollow', { id: sub.id }, sub.route, new AbortController().signal).catch(() => {}); return; }
+        if (this.closed || sub.released || sub.status === 'failed' || sub.status === 'refused') {
+          if (data?.available === true) void this.ask('unfollow', { id: sub.id }, sub.route, new AbortController().signal).catch(() => {});
+          return;
+        }
         if (data?.available !== true || !Number.isInteger(data.route)) { this.refuse(sub, data?.reason ?? 'The service did not say whether it follows this'); return; }
         const first = !this.holds(sub.route), moved = sub.route.native !== null && sub.route.native !== data.route;
         if (moved) sub.route.page = this.nextRoute++;
         sub.status = 'followed';
         sub.route.native = data.route!;
         this.host.lanes[sub.lane]!.postMessage({ type: 'route', sub: sub.id, route: sub.route.page, native: data.route!, seek: this.page.seek, offset: sub.route.offset });
-        for (const widget of sub.widgets) this.page.mountRoute(widget, sub.route.page);
+        for (const widget of sub.widgets.keys()) this.page.mountRoute(widget, sub.route.page);
         if (first || moved) sub.route.told = null;
         this.anchor();
       }, error => {
-        if (this.closed || sub.released) return;
+        if (this.closed || sub.released || sub.status === 'failed' || sub.status === 'refused') return;
         const failure = asFailure(error);
         if (error instanceof RefusedError) this.refuse(sub, failure.message);
         else this.fail(sub, failure);
@@ -524,14 +623,14 @@ export class Pipeline {
   private refuse(sub: SubState, reason: string) {
     if (this.closed) return;
     sub.status = 'refused'; sub.reason = reason; sub.error = undefined;
-    for (const widget of sub.widgets) this.page.name(widget, 'refused', reason);
+    for (const widget of sub.widgets.keys()) this.page.name(widget, 'refused', reason);
     this.flush();
   }
 
   private fail(sub: SubState, failure: Failure) {
     if (this.closed) return;
     sub.status = 'failed'; sub.reason = failure.message; sub.error = failure;
-    for (const widget of sub.widgets) this.page.name(widget, 'failed', failure.message, 'stream');
+    for (const widget of sub.widgets.keys()) this.page.name(widget, 'failed', failure.message, 'stream');
     this.flush();
   }
 

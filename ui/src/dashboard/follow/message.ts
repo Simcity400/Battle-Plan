@@ -15,6 +15,19 @@ export interface MessageViews {
   u64: BigUint64Array;
 }
 
+export interface RowChunk {
+  values: BigInt64Array;
+  states: Uint8Array;
+  reasons: (string | null)[];
+}
+
+export type PatchNode = (PatchNode | RowChunk | undefined)[];
+
+export interface RowPatches {
+  root: PatchNode;
+  shift: number;
+}
+
 export interface FollowedRows {
   kind: 'rows' | 'log' | 'changed';
   canonical: boolean;
@@ -30,6 +43,7 @@ export interface FollowedRows {
   ends: Uint32Array;
   text: number;
   decoded: (string | undefined)[];
+  patches?: RowPatches;
 }
 
 export type FollowedAnswer = { kind: 'notRecorded'; reason: string } | FollowedRows;
@@ -126,6 +140,30 @@ export function wireKind(bytes: ArrayBuffer | Uint8Array): number {
   return v.byteLength < 4 ? 0 : new DataView(v.buffer, v.byteOffset, 4).getUint32(0, true);
 }
 
+export interface FollowedFrame {
+  route: number;
+  hour: number;
+  reset: boolean;
+  seek: number;
+  clock: number;
+  count: number;
+}
+
+export function parseFollowedFrame(bytes: ArrayBuffer | Uint8Array): FollowedFrame {
+  const { data, byteLength } = viewsOf(bytes);
+  if (byteLength < 24 || data.getUint32(0, true) !== DATED_FOLLOW) throw new Error('Not a followed message.');
+  const flags = data.getUint32(4, true), count = data.getUint32(12, true);
+  let at = 24;
+  for (let i = 0; i < count; i++) {
+    if (at + 16 > byteLength) throw new Error('A followed message ends early.');
+    const length = data.getUint32(at + 8, true), end = at + 16 + length;
+    if (end > byteLength) throw new Error('A followed message ends early.');
+    at = end;
+  }
+  if (at !== byteLength) throw new Error('A followed message holds bytes past its answers.');
+  return { route: flags >>> 1, hour: data.getInt32(8, true), reset: (flags & RESET) !== 0, seek: data.getUint32(16, true), clock: data.getInt32(20, true), count };
+}
+
 export function parseFollowed(bytes: ArrayBuffer | Uint8Array): FollowedMessage {
   const { views, data, byteLength } = viewsOf(bytes);
   if (byteLength < 24 || data.getUint32(0, true) !== DATED_FOLLOW) throw new Error('Not a followed message.');
@@ -146,16 +184,51 @@ export function parseFollowed(bytes: ArrayBuffer | Uint8Array): FollowedMessage 
   return message;
 }
 
-export const cellState = (answer: FollowedRows, at: number): number => answer.views.u8[answer.states + at]!;
+const chunkAt = (answer: FollowedRows, row: number): RowChunk | undefined => {
+  const patches = answer.patches;
+  if (!patches) return undefined;
+  let node: PatchNode | undefined = patches.root;
+  const chunk = row >>> 3;
+  for (let shift = patches.shift; shift > 0; shift -= 3) {
+    node = node[(chunk >>> shift) & 7] as PatchNode | undefined;
+    if (!node) return undefined;
+  }
+  return node[chunk & 7] as RowChunk | undefined;
+};
 
-export const cellValue = (answer: FollowedRows, at: number): bigint => answer.views.i64[answer.values + at]!;
+export const cellState = (answer: FollowedRows, at: number): number => {
+  if (answer.patches) {
+    const row = Math.floor(at / answer.columns), chunk = chunkAt(answer, row);
+    if (chunk) return chunk.states[(row & 7) * answer.columns + (at - row * answer.columns)]!;
+  }
+  return answer.views.u8[answer.states + at]!;
+};
+
+export const cellValue = (answer: FollowedRows, at: number): bigint => {
+  if (answer.patches) {
+    const row = Math.floor(at / answer.columns), chunk = chunkAt(answer, row);
+    if (chunk) return chunk.values[(row & 7) * answer.columns + (at - row * answer.columns)]!;
+  }
+  return answer.views.i64[answer.values + at]!;
+};
 
 export function cellNumber(answer: FollowedRows, at: number): number | null {
+  if (answer.patches) {
+    const row = Math.floor(at / answer.columns), chunk = chunkAt(answer, row);
+    if (chunk) {
+      const value = chunk.values[(row & 7) * answer.columns + (at - row * answer.columns)]!;
+      return value >= -9_007_199_254_740_991n && value <= 9_007_199_254_740_991n ? Number(value) : null;
+    }
+  }
   const word = (answer.values + at) * 2, high = answer.views.i32[word + 1]!;
   return high >= -0x200000 && high < 0x200000 ? high * 0x1_0000_0000 + (answer.views.i32[word]! >>> 0) : null;
 }
 
 export function rowReason(answer: FollowedRows, row: number): string | null {
+  if (answer.patches) {
+    const chunk = chunkAt(answer, row);
+    if (chunk) return chunk.reasons[row & 7]!;
+  }
   const at = answer.views.u32[answer.reasons + row]!;
   return at === NO_REASON ? null : textAt(answer, at);
 }
