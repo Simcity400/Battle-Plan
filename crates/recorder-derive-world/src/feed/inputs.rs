@@ -165,7 +165,7 @@ pub(super) struct Guarantees {
 }
 
 fn is_guarantee(key: u128) -> bool {
-    (key >> 16) as u32 == engine_native::cguarantee_relation::TYPE
+    (key >> 16) as u32 == engine_native_parts::cguarantee_relation::TYPE
 }
 
 fn guarantee([first, second, start]: [Option<i64>; 3]) -> Option<Guarantee> {

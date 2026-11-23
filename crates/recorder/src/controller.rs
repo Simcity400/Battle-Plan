@@ -103,7 +103,7 @@ impl Probe {
     }
 
     pub fn presentation_sites(&self) -> Result<(), &'static str> {
-        engine_native::command_inputs::idler_sites(self.base)
+        engine_native_air::command_inputs::idler_sites(self.base)
     }
 
     pub(crate) fn clock(&self, presentation: bool) -> Option<crate::clock::Sample> {

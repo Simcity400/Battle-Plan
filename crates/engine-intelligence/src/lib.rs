@@ -1,10 +1,5 @@
 
-#[cfg(test)]
-use engine_native::coperation;
-use engine_native::{
-    Memory, ccharacter, ccountry, cgame_state, coperation_instance, cpdx_array, csubject_relation,
-    memory, operation_assigned_operative, read, read_slice, slot_set, walk,
-};
+use engine_native::crelation::subject as csubject_relation;
 
 pub mod agency_operation_buffers;
 pub mod ccountry_collaboration_data;

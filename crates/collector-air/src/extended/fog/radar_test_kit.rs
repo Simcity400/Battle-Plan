@@ -1,7 +1,7 @@
 use super::{
     Capacities, Captured, RadarCopyContext, RadarCopyReport, RadarJob, copy_radar_refresh,
 };
-use engine_native::{Memory, memory::SliceMemory, walk::Outcome};
+use engine_native_memory::{Memory, memory::SliceMemory, walk::Outcome};
 
 pub const BASE: usize = 0;
 pub const GAME_STATE: usize = 0x10000;
@@ -29,7 +29,8 @@ fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
 
 pub fn fixture() -> Vec<u8> {
     use engine_map_air::radar_group;
-    use engine_native::{ccountry, cgame_state, cradars_pool, cstate};
+    use engine_native::{ccountry, cgame_state, cstate};
+    use engine_native_parts::cradars_pool;
     let mut bytes = vec![0; 0x80000];
     header(&mut bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 2);
     put64(&mut bytes, CTAB, 0);

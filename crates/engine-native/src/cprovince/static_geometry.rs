@@ -30,9 +30,9 @@ fn observe_static_key(
 ) -> (Option<StaticGeometryKey>, Option<Array>) {
     let root = state
         .checked_add(cgame_state::PROVINCES)
-        .and_then(|address| crate::read::<[u8; 16]>(memory, address));
+        .and_then(|address| engine_native_memory::read::<[u8; 16]>(memory, address));
     let session = engine_sites::at(base, cgame_state::PLAY_SESSION_STARTED_AT_RVA)
-        .and_then(|address| crate::read::<i64>(memory, address));
+        .and_then(|address| engine_native_memory::read::<i64>(memory, address));
     let key = root.zip(session).map(|(root, session)| StaticGeometryKey {
         base,
         state,
@@ -106,7 +106,7 @@ impl StaticGeometry {
 
     pub fn reserve_slots(&mut self, count: usize) -> std::io::Result<()> {
         if self.provinces.len() < count {
-            crate::allocation::resize(&mut self.provinces, count, None)?;
+            engine_allocation::resize(&mut self.provinces, count, None)?;
         }
         Ok(())
     }
@@ -148,7 +148,7 @@ impl StaticGeometry {
         let province = self.read_province(memory, base, id)?;
         if self.usable() {
             if self.provinces.len() <= id as usize {
-                crate::allocation::resize(&mut self.provinces, id as usize + 1, None)
+                engine_allocation::resize(&mut self.provinces, id as usize + 1, None)
                     .map_err(|_| "static geometry allocation failed")?;
             }
             self.provinces[id as usize] = Some(province);
@@ -165,7 +165,7 @@ impl StaticGeometry {
         let root = self.root.ok_or("static geometry province root invalid")?;
         let pointer = root
             .element(id, 8)
-            .and_then(|address| crate::read::<u64>(memory, address))
+            .and_then(|address| engine_native_memory::read::<u64>(memory, address))
             .map(|pointer| pointer as usize)
             .ok_or("static geometry province outside census or unreadable")?;
         if id == 0 || pointer == 0 {
@@ -195,13 +195,13 @@ impl StaticGeometry {
         let (mut definition_id, mut flags, mut terrain) = ([0_u8; 4], [0_u8; 1], [0_u8; 8]);
         let fields = [
             definition
-                .checked_add(crate::province_definition::ID)
+                .checked_add(crate::cprovince::definition::ID)
                 .ok_or("province address overflow")?,
             definition
-                .checked_add(crate::province_definition::TERRAIN_FLAGS)
+                .checked_add(crate::cprovince::definition::TERRAIN_FLAGS)
                 .ok_or("province address overflow")?,
             definition
-                .checked_add(crate::province_definition::TERRAIN)
+                .checked_add(crate::cprovince::definition::TERRAIN)
                 .ok_or("province address overflow")?,
         ];
         if definition == 0
@@ -219,7 +219,7 @@ impl StaticGeometry {
             definition,
             flags: flags[0],
             terrain,
-            terrain_index: geometry_field(memory, terrain, crate::cterrain_type::DATABASE_INDEX)?,
+            terrain_index: geometry_field(memory, terrain, engine_native_parts::cterrain_type::DATABASE_INDEX)?,
         })
     }
 
@@ -239,34 +239,34 @@ impl StaticGeometry {
         }
         self.counters.misses = self.counters.misses.saturating_add(1);
         let definition = self.province(memory, base, from)?.definition;
-        let header = geometry_field(memory, definition, crate::province_definition::NEIGHBOURS)?;
-        let neighbours = Array::from_header(header, crate::province_neighbour::STRIDE)
+        let header = geometry_field(memory, definition, crate::cprovince::definition::NEIGHBOURS)?;
+        let neighbours = Array::from_header(header, engine_native_parts::province_neighbour::STRIDE)
             .ok_or("static geometry adjacency header invalid")?;
         let mut edge = StaticEdge {
             distance: 100_000,
             crossing: None,
         };
-        if let Some(first) = neighbours.element(0, crate::province_neighbour::STRIDE) {
-            crate::prefetch::span(
+        if let Some(first) = neighbours.element(0, engine_native_parts::province_neighbour::STRIDE) {
+            engine_native_memory::prefetch::span(
                 first,
                 (neighbours.count as usize)
-                    .saturating_mul(crate::province_neighbour::STRIDE)
+                    .saturating_mul(engine_native_parts::province_neighbour::STRIDE)
                     .min(4096),
             );
         }
         for slot in 0..neighbours.count {
             let address = neighbours
-                .element(slot, crate::province_neighbour::STRIDE)
+                .element(slot, engine_native_parts::province_neighbour::STRIDE)
                 .ok_or("static geometry adjacency overflow")?;
-            if geometry_field::<u32>(memory, address, crate::province_neighbour::PROVINCE_ID)? == to
+            if geometry_field::<u32>(memory, address, engine_native_parts::province_neighbour::PROVINCE_ID)? == to
             {
                 let (mut distance, mut crossing) = ([0_u8; 8], [0_u8; 1]);
                 let fields = [
                     address
-                        .checked_add(crate::province_neighbour::MOVEMENT_DISTANCE)
+                        .checked_add(engine_native_parts::province_neighbour::MOVEMENT_DISTANCE)
                         .ok_or("adjacency address overflow")?,
                     address
-                        .checked_add(crate::province_neighbour::CROSSING_KIND)
+                        .checked_add(engine_native_parts::province_neighbour::CROSSING_KIND)
                         .ok_or("adjacency address overflow")?,
                 ];
                 if memory.copy_scattered_prefetched(fields, &mut [&mut distance, &mut crossing])
@@ -282,7 +282,7 @@ impl StaticGeometry {
             }
         }
         if self.usable() {
-            crate::allocation::reserve_map(&mut self.edges, 1)
+            engine_allocation::reserve_map(&mut self.edges, 1)
                 .map_err(|_| "static geometry allocation failed")?;
             self.edges.insert(key, edge);
         }
@@ -298,7 +298,7 @@ impl StaticGeometry {
         }
         self.counters.misses = self.counters.misses.saturating_add(1);
         let distance = engine_sites::at(base, crate::cunit::EMBARK_MOVEMENT_DISTANCE_RVA)
-            .and_then(|address| crate::read(memory, address))
+            .and_then(|address| engine_native_memory::read(memory, address))
             .ok_or("unit geometry field unreadable")?;
         if self.usable() {
             self.embark = Some(distance);

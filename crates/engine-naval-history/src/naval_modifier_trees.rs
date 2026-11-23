@@ -1,9 +1,8 @@
 use engine_sites::Rva;
-use crate::{
-    Memory, ccountry, cfex_air, cfex_member, cnaval_combat, cnaval_combatant, cpdx_array::Array,
-    modifier_accumulator, modifier_definition, msvc_string,
-    naval_ship_modifier_inputs, read,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, msvc_string, read};
+use engine_native::{ccountry, cnaval_combat, cnaval_combatant};
+use engine_native_parts::{modifier_accumulator, modifier_definition};
+use engine_native_naval::naval_ship_modifier_inputs;
 
 pub use engine_executable::native_values::naval_modifiers::KEYS;
 
@@ -37,7 +36,7 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .ok_or("naval tree pointer overflow")
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -53,9 +52,9 @@ pub fn enumerate(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    combats: &[cnaval_combat::DetailsRow],
-    members: &[cfex_member::DetailsRow],
-    planes: &[cfex_air::Row],
+    combats: &[engine_native_naval::naval_combat_details::DetailsRow],
+    members: &[engine_native_naval::naval_member_details::DetailsRow],
+    planes: &[engine_native_naval::naval_air_details::Row],
     sources: &[naval_ship_modifier_inputs::SourceRow],
     emit: &mut impl FnMut(Request) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
@@ -168,7 +167,7 @@ pub fn enumerate(
     Ok(())
 }
 
-fn linked_air(plane: &cfex_air::Row) -> bool {
+fn linked_air(plane: &engine_native_naval::naval_air_details::Row) -> bool {
     plane.source == 0
         && plane.group_index != u32::MAX
         && plane.variant != 0
@@ -181,7 +180,7 @@ fn side_requests(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    combat: &cnaval_combat::DetailsRow,
+    combat: &engine_native_naval::naval_combat_details::DetailsRow,
     emit: &mut impl FnMut(Request) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
     let body = combat.native_combat;
@@ -206,7 +205,7 @@ fn side_requests(
     let leader = |side: usize| -> Result<usize, &'static str> {
         let leader = field::<u64>(memory, side, cnaval_combatant::COMMANDER)? as usize;
         if leader != 0
-            && field::<u64>(memory, leader, 0)? != key(base, crate::cnavy_leader::VTABLE_RVA)? as u64
+            && field::<u64>(memory, leader, 0)? != key(base, engine_native_parts::cnavy_leader::VTABLE_RVA)? as u64
         {
             return Err("naval side tree commander identity mismatch");
         }
@@ -215,11 +214,11 @@ fn side_requests(
     let province = field::<u64>(memory, body, cnaval_combat::PROVINCE)? as usize;
     let definition = field::<u64>(memory, province, 0xc8)? as usize;
     let region: u32 = field(memory, definition, 0x58)?;
-    let weather = field::<u64>(memory, game_state, crate::cgame_state::WEATHER_MANAGER)? as usize;
+    let weather = field::<u64>(memory, game_state, engine_native::cgame_state::WEATHER_MANAGER)? as usize;
     let regions = Array::read(memory, at(weather, 0x40)?, 0x160)
         .ok_or("naval side tree weather region array invalid")?;
     let region_at = regions.element(region, 0x160);
-    let terrain = naval_ship_modifier_inputs::terrain(memory, base, definition)?;
+    let terrain = engine_native::cship::modifier_sources::terrain(memory, base, definition)?;
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     for (index, &side) in sides.iter().enumerate() {
         if field::<i32>(memory, side, 0x48)? == 0 {
@@ -234,7 +233,7 @@ fn side_requests(
             if leader == 0 {
                 Ok(0)
             } else {
-                field(memory, leader, crate::cunit_leader::TYPE)
+                field(memory, leader, engine_native::cunit_leader::TYPE)
             }
         };
         let (own_handle, opposing_handle) = (handle(own)?, handle(opposing)?);
@@ -379,7 +378,7 @@ pub fn capture_nonzero_tree<const N: usize>(
     text: &mut Vec<u8>,
     stack: &mut Vec<Frame>,
 ) -> Result<(), &'static str> {
-    let mut raw = [modifier_accumulator::Value::default(); N];
+    let mut raw = [engine_native_memory::modifier_cache::Value::default(); N];
     modifier_accumulator::lookup_many_at(memory, root, &definitions.keys, &mut raw)?;
     if raw
         .into_iter()
@@ -400,7 +399,7 @@ fn capture_node<const N: usize>(
 ) -> Result<Array, &'static str> {
     let children = Array::read(memory, at(address, 0x18)?, 8)
         .ok_or("naval modifier children unreadable or invalid")?;
-    let mut raw = [modifier_accumulator::Value::default(); N];
+    let mut raw = [engine_native_memory::modifier_cache::Value::default(); N];
     modifier_accumulator::lookup_many_at(memory, address, &definitions.keys, &mut raw)?;
     let mut values = [0_i64; N];
     for ((value, raw), operands) in values.iter_mut().zip(raw).zip(definitions.operands) {
@@ -433,7 +432,7 @@ mod tests {
     #[test]
     fn zero_hover_root_reads_no_children_or_labels() {
         let bytes = vec![0_u8; 0x110];
-        let memory = crate::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         };
@@ -491,7 +490,7 @@ mod tests {
 
     #[test]
     fn capture_walks_preorder_and_names_only_nonzero_leaves() {
-        use crate::memory::SliceMemory;
+        use engine_native_memory::memory::SliceMemory;
         let mut bytes = vec![0_u8; 0x4000];
         let put = |bytes: &mut Vec<u8>, at: usize, value: &[u8]| {
             bytes[at..at + value.len()].copy_from_slice(value);

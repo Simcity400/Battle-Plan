@@ -5,10 +5,9 @@ use collector_primitives::clock::qpc;
 use collector_primitives::first_reason::FirstReason;
 use collector_primitives::shared_lane::SharedLane;
 use engine_executable::executable_tables::commands::{self, Target, Token};
-use engine_native::{
-    Memory, cgame_state, chuman, command_inputs as native, cpdx_array::Array, memory::LiveMemory,
-    read,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, memory::LiveMemory, read};
+use engine_native::cgame_state;
+use engine_native_air::command_inputs as native;
 use replay_recording::command_packet::{Actor, Batch, Category, Event, Kind, Origin, Span};
 use std::{
     borrow::Cow,
@@ -253,7 +252,7 @@ impl Live {
         let roster = Array::read(
             memory,
             state.saturating_add(cgame_state::PLAYER_RECORDS),
-            chuman::STRIDE,
+            engine_native_parts::chuman_layout::STRIDE,
         );
         let count = roster.map_or(0, |array| array.count as usize);
         let slots = count
@@ -265,7 +264,7 @@ impl Live {
         if let Some(roster) = roster {
             for index in 0..roster.count {
                 let at = roster
-                    .element(index, chuman::STRIDE)
+                    .element(index, engine_native_parts::chuman_layout::STRIDE)
                     .ok_or(io::ErrorKind::InvalidData)?;
                 if let Ok(player) = native::player_at(memory, base, at) {
                     let tag = native::country_tag(memory, base, state, player.country)
@@ -449,7 +448,7 @@ impl Live {
         let rows = Array::read(
             memory,
             producer.state + cgame_state::PLAYER_RECORDS,
-            chuman::STRIDE,
+            engine_native_parts::chuman_layout::STRIDE,
         )
         .ok_or("command roster invalid")?;
         if !producer.dirty && producer.roster == (rows.data, rows.count) {
@@ -463,7 +462,7 @@ impl Live {
         producer.previous_players.fill(CachedPlayer::default());
         for index in 0..rows.count {
             let pointer = rows
-                .element(index, chuman::STRIDE)
+                .element(index, engine_native_parts::chuman_layout::STRIDE)
                 .ok_or("command player offset overflow")?;
             let player = native::player_at(memory, self.base, pointer)?;
             let key = player.key;
@@ -663,7 +662,7 @@ impl Live {
                 .and_then(|at| read::<u64>(memory, at))
                 .filter(|&pointer| pointer != 0)
                 .ok_or("command world unreadable")? as usize;
-            let campaign = engine_native::msvc_string::read_text::<36>(
+            let campaign = engine_native_memory::msvc_string::read_text::<36>(
                 memory,
                 state + cgame_state::CAMPAIGN_ID,
             )
@@ -1683,6 +1682,7 @@ impl Drop for Hooks {
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests {
+    use engine_native_politics::chuman;
     use super::*;
     use std::collections::BTreeMap;
     fn live() -> Live {
@@ -2513,7 +2513,7 @@ pub mod tests {
 
     #[test]
     fn a_roster_past_the_prepared_lanes_and_tables_commits_every_player_whole() {
-        use engine_native::msvc_string;
+        use engine_native_memory::msvc_string;
         let live = live();
         unsafe {
             (*live.producer.get()).active = false;
@@ -2533,10 +2533,10 @@ pub mod tests {
                 }
             })
             .collect();
-        let mut block = vec![0_u8; count * chuman::STRIDE];
+        let mut block = vec![0_u8; count * engine_native_parts::chuman_layout::STRIDE];
         for (index, (user, name)) in texts.iter().enumerate() {
-            let human = &mut block[index * chuman::STRIDE..][..chuman::STRIDE];
-            human[..8].copy_from_slice(&(chuman::VTABLE_RVA.0 as u64).to_le_bytes());
+            let human = &mut block[index * engine_native_parts::chuman_layout::STRIDE..][..engine_native_parts::chuman_layout::STRIDE];
+            human[..8].copy_from_slice(&(engine_native_parts::chuman_layout::VTABLE_RVA.0 as u64).to_le_bytes());
             human[chuman::PLAYER_KEY..][..4].copy_from_slice(&(index as i32 + 1).to_le_bytes());
             for (at, text) in [(chuman::FIRST_STRING, user), (chuman::NAME, name)] {
                 let string = &mut human[at..][..msvc_string::STRIDE];

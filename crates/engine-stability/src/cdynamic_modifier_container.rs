@@ -1,8 +1,8 @@
 
-use crate::{
-    Memory, ccountry, cdynamic_modifier, cpdx_array::Array, dynamic_modifier_entry, read,
-    read_slice, walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice, walk::Outcome};
+use engine_native::ccountry;
+use engine_native_parts::cdynamic_modifier;
+use crate::dynamic_modifier_entry;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x0285_3f18);
@@ -72,7 +72,7 @@ pub fn demand(
 }
 
 pub fn count(memory: &impl Memory, base: usize, country: usize, country_id: u32) -> Walk {
-    walk_into(memory, base, country, country_id, crate::walk::Buffer::Count, 0, crate::walk::Buffer::Count, 0, crate::walk::Buffer::Count, 0)
+    walk_into(memory, base, country, country_id, engine_native_memory::walk::Buffer::Count, 0, engine_native_memory::walk::Buffer::Count, 0, engine_native_memory::walk::Buffer::Count, 0)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -93,11 +93,11 @@ pub fn walk(
         base,
         country,
         country_id,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
         row_start,
-        crate::walk::Buffer::Growing(tokens),
+        engine_native_memory::walk::Buffer::Growing(tokens),
         byte_start,
-        crate::walk::Buffer::Growing(values),
+        engine_native_memory::walk::Buffer::Growing(values),
         value_start,
     )
 }
@@ -108,11 +108,11 @@ fn walk_into(
     base: usize,
     country: usize,
     country_id: u32,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
     row_start: usize,
-    mut tokens: crate::walk::Buffer<'_, u8>,
+    mut tokens: engine_native_memory::walk::Buffer<'_, u8>,
     byte_start: usize,
-    mut values: crate::walk::Buffer<'_, i64>,
+    mut values: engine_native_memory::walk::Buffer<'_, i64>,
     value_start: usize,
 ) -> Walk {
     let result = (|| {
@@ -236,7 +236,7 @@ fn walk_into(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const BASE: usize = 0x140000000;
     const COUNTRY_PTR: usize = 0x1000;

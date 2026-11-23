@@ -2,7 +2,7 @@ use collector_plans::extended::plans::{
     Capacities,
     tests::{execution_capture, execution_image, pass},
 };
-use engine_native::walk::Outcome;
+use engine_native_memory::walk::Outcome;
 
 #[test]
 fn completed_plans_survive_late_success_panic_stop_and_admission_rejection() {
@@ -23,7 +23,7 @@ fn completed_plans_survive_late_success_panic_stop_and_admission_rejection() {
         let orders_outcome = orders.rows.outcome;
         let order_storage = orders.geometry.as_ptr();
         let countries = engine_allocation::shared(
-            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+            engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
         )
         .unwrap();
         let bytes = captured.allocated_bytes() + orders.allocated_bytes();

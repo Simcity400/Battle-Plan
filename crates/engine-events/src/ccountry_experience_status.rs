@@ -1,5 +1,6 @@
 
-use crate::{Memory, ccountry, read, walk::Outcome};
+use engine_native_memory::{Memory, read, walk::Outcome};
+use engine_native::ccountry;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x02a2_34f0);
@@ -39,7 +40,7 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -47,7 +48,7 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
@@ -79,7 +80,7 @@ pub fn walk_buffer(
 fn read_country(
     memory: &impl Memory,
     vtable: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<Row, &'static str> {
     let status = country
         .pointer
@@ -117,7 +118,8 @@ fn read_country(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_state, memory::SliceMemory};
+    use engine_native::cgame_state;
+    use engine_native_memory::memory::SliceMemory;
 
     const MEMORY_BASE: usize = 0x1000;
 
@@ -198,7 +200,7 @@ mod tests {
             },
             0,
             MEMORY_BASE,
-            crate::walk::Buffer::Count,
+            engine_native_memory::walk::Buffer::Count,
         )
     }
 

@@ -8,8 +8,8 @@ fn owned_log_copies_multiple_conferences_and_retains_failures() {
     let mut f = Fixture::new(2, 3);
     assert_eq!(
         f.copy(
-            engine_native::walk::Buffer::Growing(&mut vec![0; 2]),
-            engine_native::walk::Buffer::Growing(&mut vec![
+            engine_native_memory::walk::Buffer::Growing(&mut vec![0; 2]),
+            engine_native_memory::walk::Buffer::Growing(&mut vec![
                 engine_peace::peace_settlement::Action::default();
                 3
             ])
@@ -26,7 +26,7 @@ fn owned_log_copies_multiple_conferences_and_retains_failures() {
     })
     .unwrap();
     let bytes = storage.allocated_bytes();
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &f.bytes,
     };
@@ -36,7 +36,7 @@ fn owned_log_copies_multiple_conferences_and_retains_failures() {
     assert_eq!(storage.events[0].snapshot.actions, 3);
     f.u64(0x20000, 99);
     assert!(storage.observe(
-        &engine_native::memory::SliceMemory {
+        &engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &f.bytes
         },
@@ -52,7 +52,7 @@ fn owned_log_copies_multiple_conferences_and_retains_failures() {
     );
     assert!(storage.allocated_bytes() > bytes);
     assert!(storage.observe(
-        &engine_native::memory::SliceMemory {
+        &engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &f.bytes
         },

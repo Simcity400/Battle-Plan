@@ -1,5 +1,7 @@
 use crate::template_changes::Changes;
-use engine_native::{Memory, corders_group::Root, template_hq_context as native};
+use engine_native_memory::Memory;
+use engine_native::corders_group::Root;
+use engine_native_land::template_hq_context as native;
 use replay_data::rows::{HqDeployment, HqEquipment, HqRequirement, TemplateHqContext};
 use std::sync::Arc;
 
@@ -168,7 +170,7 @@ impl Store {
             let holder = root
                 .pointer()
                 .checked_add(native::HOLDER)
-                .and_then(|at| engine_native::read::<u64>(memory, at))
+                .and_then(|at| engine_native_memory::read::<u64>(memory, at))
                 .and_then(|holder| usize::try_from(holder).ok())
                 .ok_or("headquarters deployment holder pointer unreadable")?;
             if holder != entry.attempted_holder {
@@ -257,8 +259,10 @@ impl Store {
 mod tests {
     use super::*;
     use crate::template_changes::Watches;
-    use engine_native::{
-        corders_group, creference_registry as registry, reference_bucket as bucket,
+    use engine_native::corders_group;
+    use engine_native_parts::{
+        creference_registry as registry,
+        reference_bucket as bucket,
     };
     struct Fixture(Vec<u8>);
     impl Memory for Fixture {
@@ -269,7 +273,7 @@ mod tests {
                 out.copy_from_slice(&0x3000_u64.to_le_bytes());
                 return true;
             }
-            engine_native::memory::SliceMemory {
+            engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &self.0,
             }
@@ -295,7 +299,7 @@ mod tests {
         let mut roots = vec![Root::default(); 1];
         assert_eq!(
             corders_group::walk_roots(&memory, 0, &mut roots),
-            engine_native::walk::Outcome::Rows { len: 1 }
+            engine_native_memory::walk::Outcome::Rows { len: 1 }
         );
         (memory, roots[0], handle)
     }

@@ -4,8 +4,8 @@ fn access(
     candidate: bool,
     observe: impl FnOnce(
         &mut Store,
-        &native::provenance::World<'_, engine_native::memory::LiveMemory>,
-        &engine_native::memory::LiveMemory,
+        &native::provenance::World<'_, engine_native_memory::memory::LiveMemory>,
+        &engine_native_memory::memory::LiveMemory,
         usize,
         u64,
     ) -> Result<(), &'static str>,
@@ -20,7 +20,7 @@ fn access(
         if !store.decisions.matches(generation) {
             return;
         }
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let result = native::provenance::World::new(&memory, owner.base)
             .and_then(|world| observe(store, &world, &memory, owner.base, generation));
         if let Err(reason) = result {
@@ -37,13 +37,13 @@ fn access(
 }
 fn country(memory: &impl Memory, base: usize, status: usize) -> Result<usize, &'static str> {
     if engine_sites::at(base, engine_decisions::cdecision_status::VTABLE_RVA)
-        .is_none_or(|vtable| engine_native::read::<u64>(memory, status) != Some(vtable as u64))
+        .is_none_or(|vtable| engine_native_memory::read::<u64>(memory, status) != Some(vtable as u64))
     {
         return Err("decision writer owner status differs");
     }
     status
         .checked_add(engine_decisions::cdecision_status::COUNTRY)
-        .and_then(|p| engine_native::read::<u64>(memory, p))
+        .and_then(|p| engine_native_memory::read::<u64>(memory, p))
         .map(|p| p as usize)
         .ok_or("decision writer owner unreadable")
 }
@@ -170,7 +170,7 @@ pub fn taken_erase(status: usize, definition: usize, ordinal: Option<u32>, swap:
             Some(0),
         );
         value.actor = world.country_object(country(memory, base, status)?)?;
-        value.token = engine_native::msvc_string::Descriptor::read(
+        value.token = engine_native_memory::msvc_string::Descriptor::read(
             memory,
             definition + engine_decisions::cdecision::TOKEN,
         )?;
@@ -192,7 +192,7 @@ pub fn candidate(status: usize, kind: u8, definition: usize, target: u32, root: 
                 ordinal: target,
                 political_power: None,
             },
-            engine_native::msvc_string::Descriptor::read(
+            engine_native_memory::msvc_string::Descriptor::read(
                 memory,
                 definition + engine_decisions::cdecision::TOKEN,
             )?,
@@ -219,7 +219,7 @@ pub fn ignored(country: usize, token: usize, ignored: bool) {
                 ordinal: 0,
                 political_power: None,
             },
-            engine_native::msvc_string::Descriptor::read(memory, token)?,
+            engine_native_memory::msvc_string::Descriptor::read(memory, token)?,
             None,
         )
     });

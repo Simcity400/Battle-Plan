@@ -1,4 +1,6 @@
-use engine_native::{Memory, cair_wing, cship, read};
+use engine_native_memory::{Memory, read};
+use engine_native::cship;
+use engine_native_air::cair_wing;
 
 pub fn ship(
     memory: &impl Memory,
@@ -41,7 +43,7 @@ fn certified(
 mod tests {
     use super::*;
     use collector_certificates::watch_registry::WatchRegistry;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const SHIP: usize = 0x1000;
     const WING: usize = 0x4000;

@@ -1,14 +1,19 @@
 
 use engine_sites::Rva;
 use super::{eta_address, eta_array, eta_building_efficiency, eta_global, eta_global_pointer, eta_key, eta_pointer, eta_ratio, eta_read};
-use crate::{
-    Memory, cbuilding as building, cbuilding_database as database, cbuilding_status as status,
-    cbuilding_template as template,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cprovince_railway_info as info, cstate,
     memory::{RecordField, RecordLayout, RecordSources},
     walk::Outcome,
 };
+use engine_native_parts::{
+    cbuilding as building,
+    cbuilding_database as database,
+    cbuilding_template as template,
+};
+use engine_native::{cprovince::buildings as status, cstate};
+use crate::cprovince_railway_info as info;
 
 type Input<T> = Result<T, &'static str>;
 const BATCH: usize = 64;

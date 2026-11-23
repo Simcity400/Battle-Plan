@@ -14,4 +14,4 @@ The portrait walk takes a contiguous share of the roster, including characters w
 
 The [save comparison](../../crates/recorder-oracle-characters/src/characters.rs) can verify the saved name and template tag. Runtime-only strings, template source fields and native country aliases cannot be checked against the save.
 
-[Character reader](../../crates/engine-native/src/ccharacter.rs) · [Character manager](../../crates/engine-native/src/ccharacter_manager.rs) · [Template reader](../../crates/engine-native/src/ccharacter_template.rs) · [Portrait reader](../../crates/engine-native/src/ccharacter/portraits.rs)
+[Character reader](../../crates/engine-native/src/ccharacter.rs) · [Character manager](../../crates/engine-native/src/ccharacter/manager.rs) · [Template reader](../../crates/engine-native/src/ccharacter/template.rs) · [Portrait reader](../../crates/engine-native-politics/src/character_portraits.rs)

@@ -1,6 +1,7 @@
 use crate::faction_goal_changes::Changes;
 use engine_allocation as allocation;
-use engine_native::{Memory, cfaction_goal_status as native};
+use engine_native_memory::Memory;
+use engine_native_parts::cfaction_goal_status as native;
 use replay_data::{
     rows::FactionGoalEntryRow, rows::FactionGoalStatusRow, rows::RowCodec, rows::TableRows,
     rows::tables,
@@ -490,7 +491,7 @@ impl Store {
 mod tests {
     use super::*;
     use collector_certificates::watch_registry::WatchRegistry;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     use std::cell::Cell;
     use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
     const FIRST: usize = 0x1000;
@@ -680,12 +681,12 @@ mod tests {
             put(
                 &mut bytes,
                 date,
-                (engine_native::cgame_date::VTABLE_RVA.0 as u64).to_le_bytes(),
+                (engine_native_memory::cgame_date::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
-                date + engine_native::cgame_date::PERSISTENT_BASE,
-                (engine_native::cgame_date::PERSISTENT_VTABLE_RVA.0 as u64).to_le_bytes(),
+                date + engine_native_memory::cgame_date::PERSISTENT_BASE,
+                (engine_native_memory::cgame_date::PERSISTENT_VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,

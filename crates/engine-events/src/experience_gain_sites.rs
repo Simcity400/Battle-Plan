@@ -1,5 +1,7 @@
 
-use crate::{Memory, ccountry, ccountry_experience_status as status, read};
+use engine_native_memory::{Memory, read};
+use engine_native::ccountry;
+use crate::ccountry_experience_status as status;
 use engine_sites::Rva;
 
 pub struct Site {
@@ -93,7 +95,7 @@ pub fn owner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     const STATUS: usize = 0x1000;
     const COUNTRY: usize = 0x3000;
     fn fixture() -> Vec<u8> {

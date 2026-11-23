@@ -26,7 +26,7 @@ fn a_rejoin_order_shows_only_while_its_destination_task_force_lives() {
     let mut frame = frame();
     set::<tables::NavalRepairTaskForces>(
         &mut frame,
-        vec![NavalRepairTaskForceRow { task_force: task, merge_after_repair: destination, composition_token: engine_native::naval_management::NO_AI_COMPOSITION_TOKEN, ..Default::default() }],
+        vec![NavalRepairTaskForceRow { task_force: task, merge_after_repair: destination, composition_token: engine_native_naval::naval_management::NO_AI_COMPOSITION_TOKEN, ..Default::default() }],
     );
     set::<tables::TaskForces>(&mut frame, vec![TaskForceRow { id: task, fleet: 1, roster_owner: 101, ..Default::default() }, TaskForceRow { id: destination, fleet: 1, ..Default::default() }]);
     let reply = project(&frame, 7, None, &Cells::default()).unwrap();

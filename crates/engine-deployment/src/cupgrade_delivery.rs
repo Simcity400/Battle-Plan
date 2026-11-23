@@ -8,9 +8,9 @@ pub const TOTAL_PROGRESS: usize = 0x18;
 pub const PRODUCED_EQUIPMENT_POOL: usize = 0x20;
 pub const FIXED_POINT_SCALE: i64 = 100_000;
 
-use crate::{
-    Memory, cequipment_variant, cequipment_variant_pool, cpdx_array::Array, equipment_entry, read,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::cequipment_variant::{self, pool as cequipment_variant_pool};
+use engine_native_parts::equipment_entry;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -152,7 +152,7 @@ pub(crate) fn produced_row(
         army: parent.1,
         delivery_ordinal: parent.2,
         ordinal,
-        equipment: cequipment_variant::identity(memory, base, pointer)?,
+        equipment: engine_native_parts::equipment_variant_identity::identity(memory, base, pointer)?,
         amount_raw: i64::from_le_bytes(bytes[8..16].try_into().unwrap()),
     })
 }

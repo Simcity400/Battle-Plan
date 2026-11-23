@@ -2,7 +2,7 @@
 pub(crate) use crate::script_event_observer::staging::Witness;
 use engine_allocation as allocation;
 use engine_events::event_feed_sites as native;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use replay_data::{
     event_feed_rows::{
         EventFeedCause, EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent,
@@ -98,7 +98,7 @@ pub(crate) struct OwnerRefusal {
 
 #[derive(Clone, Copy)]
 enum Token {
-    Native(engine_native::msvc_string::Descriptor),
+    Native(engine_native_memory::msvc_string::Descriptor),
     Text(&'static str),
 }
 impl Token {
@@ -687,7 +687,7 @@ impl Store {
         generation: u64,
         state: usize,
         hour: i32,
-        country: engine_native::ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
     ) {
         let work = self.owner_work(memory, base, generation, state, hour, country);
         if !work.into_iter().any(|work| work) {
@@ -1409,7 +1409,7 @@ impl Store {
         output: &mut Snapshot,
         boundary: OwnerBoundary,
     ) -> Result<(), &'static str> {
-        self.prepare_boundary::<engine_native::memory::LiveMemory>(boundary, None)?;
+        self.prepare_boundary::<engine_native_memory::memory::LiveMemory>(boundary, None)?;
         self.seal(output, boundary)
     }
     #[cfg(test)]
@@ -1680,7 +1680,7 @@ fn country_names(
     use engine_native::ccountry::{ADJECTIVE, DEFINITE_NAME, NAME};
     let text = |offset: usize| {
         let descriptor =
-            engine_native::msvc_string::Descriptor::read(memory, country.checked_add(offset)?)
+            engine_native_memory::msvc_string::Descriptor::read(memory, country.checked_add(offset)?)
                 .ok()?;
         replay_data::event_feed_rows::EventFeedText::filled(descriptor.len, |output| {
             descriptor.copy(memory, output).is_ok()
@@ -1732,7 +1732,7 @@ pub struct ScriptFact {
     pub actor: native::CountryIdentity,
     pub target: native::CountryIdentity,
     pub cause: EventFeedCause,
-    pub token: engine_native::msvc_string::Descriptor,
+    pub token: engine_native_memory::msvc_string::Descriptor,
     pub scope: Option<usize>,
     pub dispatch_frame: usize,
     pub dispatch_definition: usize,

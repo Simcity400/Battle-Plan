@@ -1,5 +1,5 @@
 use super::*;
-use crate::{creference_registry as registry, reference_bucket};
+use engine_native_parts::{creference_registry as registry, reference_bucket};
 
 const COMBAT_REFERENCE: u64 = 0xffff_fffe_0000_1b59;
 const TABLE: usize = 0x1b000;
@@ -54,7 +54,7 @@ fn reference_fixture() -> (PresentationMemory, [super::super::DivisionSeed; 3]) 
 }
 
 fn run(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     seeds: &[super::super::DivisionSeed],
     packet: &mut super::super::MovementPacket,
     hour: Option<i32>,

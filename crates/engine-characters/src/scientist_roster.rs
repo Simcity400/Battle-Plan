@@ -1,8 +1,7 @@
 
-use crate::{
-    Memory, ccharacter, ccountry, cpdx_array::Array, cscientist, read, scientist_roster_entry,
-    scientist_skill_entry, walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
+use engine_native::{ccharacter, ccountry};
+use crate::{cscientist, scientist_roster_entry, scientist_skill_entry};
 
 pub const ENTRIES: usize = 0xa0;
 pub const CAPACITY: usize = 0xa8;
@@ -37,17 +36,17 @@ pub struct Buffers<'a> {
 }
 
 pub struct BuffersBuffer<'a> {
-    pub scientists: crate::walk::Buffer<'a, Row>,
-    pub skills: crate::walk::Buffer<'a, SkillRow>,
-    pub names: crate::walk::Buffer<'a, u8>,
+    pub scientists: engine_native_memory::walk::Buffer<'a, Row>,
+    pub skills: engine_native_memory::walk::Buffer<'a, SkillRow>,
+    pub names: engine_native_memory::walk::Buffer<'a, u8>,
 }
 
 impl<'a> From<Buffers<'a>> for BuffersBuffer<'a> {
     fn from(value: Buffers<'a>) -> Self {
         Self {
-            scientists: crate::walk::Buffer::Growing(value.scientists),
-            skills: crate::walk::Buffer::Growing(value.skills),
-            names: crate::walk::Buffer::Growing(value.names),
+            scientists: engine_native_memory::walk::Buffer::Growing(value.scientists),
+            skills: engine_native_memory::walk::Buffer::Growing(value.skills),
+            names: engine_native_memory::walk::Buffer::Growing(value.names),
         }
     }
 }
@@ -67,7 +66,7 @@ struct Count {
 impl Count {
     fn push<T: Default>(
         &mut self,
-        output: &mut crate::walk::Buffer<'_, T>,
+        output: &mut engine_native_memory::walk::Buffer<'_, T>,
         row: T,
     ) -> Result<(), &'static str> {
         output.ensure(
@@ -106,9 +105,9 @@ pub fn walk(
     output: &mut Buffers<'_>,
 ) -> Walk {
     let mut buffers = BuffersBuffer {
-        scientists: crate::walk::Buffer::Growing(&mut *output.scientists),
-        skills: crate::walk::Buffer::Growing(&mut *output.skills),
-        names: crate::walk::Buffer::Growing(&mut *output.names),
+        scientists: engine_native_memory::walk::Buffer::Growing(&mut *output.scientists),
+        skills: engine_native_memory::walk::Buffer::Growing(&mut *output.skills),
+        names: engine_native_memory::walk::Buffer::Growing(&mut *output.names),
     };
     walk_buffer(memory, base, game_state, &mut buffers)
 }
@@ -130,9 +129,9 @@ pub fn walk_with_injury(
     injury: bool,
 ) -> Walk {
     let mut buffers = BuffersBuffer {
-        scientists: crate::walk::Buffer::Growing(&mut *output.scientists),
-        skills: crate::walk::Buffer::Growing(&mut *output.skills),
-        names: crate::walk::Buffer::Growing(&mut *output.names),
+        scientists: engine_native_memory::walk::Buffer::Growing(&mut *output.scientists),
+        skills: engine_native_memory::walk::Buffer::Growing(&mut *output.skills),
+        names: engine_native_memory::walk::Buffer::Growing(&mut *output.names),
     };
     walk_buffer_with_injury(memory, base, game_state, &mut buffers, injury)
 }
@@ -255,7 +254,7 @@ struct Reader<'a, M> {
 }
 
 impl<M: Memory> Reader<'_, M> {
-    fn field<T: crate::memory::Raw>(
+    fn field<T: engine_native_memory::memory::Raw>(
         &self,
         pointer: usize,
         offset: usize,
@@ -312,7 +311,8 @@ impl<M: Memory> Reader<'_, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_state, memory::SliceMemory};
+    use engine_native::cgame_state;
+    use engine_native_memory::memory::SliceMemory;
 
     const GS: usize = 0x1000;
     const COUNTRIES: usize = 0x2000;

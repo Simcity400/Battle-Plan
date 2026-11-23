@@ -1,4 +1,5 @@
-use crate::{Memory, carmy_attrition, read};
+use engine_native_memory::{Memory, read};
+use crate::carmy_attrition;
 use engine_sites::Rva;
 
 #[derive(Clone, Copy, Debug)]
@@ -35,11 +36,11 @@ pub const DEFINES: [Define; 11] = [
     wide("air_speed", AIR_SPEED_RVA),
     wide(
         "air_defense_denominator",
-        crate::csub_unit_definition::AIR_DEFENSE_DENOMINATOR_RVA,
+        engine_native_parts::csub_unit_definition::AIR_DEFENSE_DENOMINATOR_RVA,
     ),
     wide(
         "air_defense_reduction",
-        crate::csub_unit_definition::AIR_DEFENSE_REDUCTION_RVA,
+        engine_native_parts::csub_unit_definition::AIR_DEFENSE_REDUCTION_RVA,
     ),
     wide(
         "out_of_supply_attrition",

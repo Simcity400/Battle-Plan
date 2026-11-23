@@ -1,8 +1,8 @@
 
-use crate::{
-    Memory, cair_base, cbuilding, cbuilding_status, cbuilding_template, cpdx_array::Array, cstate,
-    read,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native_air::cair_base;
+use engine_native_parts::{cbuilding, cbuilding_template};
+use engine_native::{cprovince::buildings as cbuilding_status, cstate};
 use engine_sites::Rva;
 
 const MISSILE_SLOT_WEIGHT: usize = 0x310;
@@ -17,14 +17,14 @@ pub fn state_rocket_slots(
     module_base: usize,
     air_base: usize,
 ) -> Result<Option<i16>, &'static str> {
-    require_vtable(memory, module_base, air_base, cair_base::VTABLE_RVA)?;
+    require_vtable(memory, module_base, air_base, engine_native_parts::cair_base_layout::VTABLE_RVA)?;
     let handle = field::<u64>(
         memory,
         air_base,
-        cair_base::HANDLE,
+        engine_native_parts::cair_base_layout::HANDLE,
         "rocket base handle unreadable",
     )?;
-    if handle == 0 || handle as u32 != cair_base::TYPE {
+    if handle == 0 || handle as u32 != engine_native_parts::cair_base_layout::TYPE {
         return Err("rocket base handle invalid");
     }
     let kind = field::<i32>(
@@ -46,7 +46,7 @@ pub fn state_rocket_slots(
         let host = field::<u64>(
             memory,
             air_base,
-            cair_base::HOST_REFERENCE,
+            engine_native_parts::cair_base_layout::HOST_REFERENCE,
             "rocket host reference unreadable",
         )?;
         if host == 0 {
@@ -242,7 +242,7 @@ fn pointer(
     usize::try_from(field::<u64>(memory, object, offset, error)?).map_err(|_| error)
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,
@@ -271,7 +271,7 @@ fn require_vtable(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const MODULE: usize = 0x1000;
     const BASE: usize = 0x2000;
@@ -327,11 +327,11 @@ mod tests {
 
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x12000];
-        put(&mut bytes, BASE, (MODULE + cair_base::VTABLE_RVA.0) as u64);
+        put(&mut bytes, BASE, (MODULE + engine_native_parts::cair_base_layout::VTABLE_RVA.0) as u64);
         put(
             &mut bytes,
-            BASE + cair_base::HANDLE,
-            ((9_u64) << 32) | u64::from(cair_base::TYPE),
+            BASE + engine_native_parts::cair_base_layout::HANDLE,
+            ((9_u64) << 32) | u64::from(engine_native_parts::cair_base_layout::TYPE),
         );
         put(&mut bytes, BASE + cair_base::KIND, 1_i32);
         put(&mut bytes, BASE + cair_base::STATE, STATE as u64);
@@ -422,7 +422,7 @@ mod tests {
     fn host_base_has_no_state_operand_and_unqualified_state_is_zero() {
         let mut bytes = fixture();
         put(&mut bytes, BASE + cair_base::STATE, 0_u64);
-        put(&mut bytes, BASE + cair_base::HOST_REFERENCE, 123_u64);
+        put(&mut bytes, BASE + engine_native_parts::cair_base_layout::HOST_REFERENCE, 123_u64);
         assert_eq!(slots(&bytes), Ok(None));
         put(&mut bytes, BASE + cair_base::STATE, STATE as u64);
         put(&mut bytes, ROCKET_TEMPLATE + MISSILE_SLOT_WEIGHT, 0_i32);

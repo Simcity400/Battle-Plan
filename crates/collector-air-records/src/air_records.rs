@@ -1,5 +1,5 @@
 use crate::{air_record_changes as family, clock::qpc, table_conversion::unavailable};
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use replay_data::{rows::TableId, rows::TableRows};
 use replay_frame::frame::TableInput;
 use std::sync::Arc;

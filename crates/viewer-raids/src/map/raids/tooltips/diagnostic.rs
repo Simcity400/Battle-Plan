@@ -1,8 +1,9 @@
 use super::super::rules::Lines;
 use super::*;
-use engine_native::{
-    raid_tooltip_operands::ADDITIONAL_ORDER, raid_tooltip_operands::ESSENTIAL_ORDER,
-    raid_tooltip_operands::definition_key,
+use engine_native_air::raid_tooltip_operands::{
+    ADDITIONAL_ORDER,
+    ESSENTIAL_ORDER,
+    definition_key,
 };
 use content_reader_parser::parser::Item;
 use std::collections::BTreeMap;
@@ -38,7 +39,7 @@ impl Context<'_, '_> {
                     .iter()
                     .filter(|r| {
                         r.raid == 0
-                            && r.kind == engine_native::raid_tooltip_operands::SUBUNIT_ACTIVE
+                            && r.kind == engine_native_air::raid_tooltip_operands::SUBUNIT_ACTIVE
                     })
                     .collect::<Vec<_>>();
                 active.sort_unstable_by_key(|r| r.ordinal);
@@ -350,9 +351,9 @@ impl Context<'_, '_> {
             kind.nukes
         };
         let nuke_key = if kind.thermonuclear {
-            engine_native::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN
+            engine_native_air::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN
         } else {
-            engine_native::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN
+            engine_native_air::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN
         };
         let name = || {
             self.world
@@ -665,7 +666,7 @@ mod tests {
         let mut frame = frame();
         let mut tokens = frame.complete::<tables::LexicalTokens>().unwrap().to_vec();
         tokens.push(LexicalTokenRow {
-            token: engine_native::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN,
+            token: engine_native_air::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN,
             literal: b"nuclear_bomb".to_vec(),
         });
         tokens.sort_by_key(|r| r.token);

@@ -1,8 +1,14 @@
 
-use crate::modifier_keys as keys;
+use engine_executable::modifier_keys as keys;
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
+use engine_native_parts::carmy_group;
 use crate::{
-    Memory, carmy_group, ccountry, cgame_state, corders_group, cpdx_array::Array, cprovince,
-    creferenced_division_template, cunit, read, walk::Outcome,
+    ccountry,
+    cgame_state,
+    corders_group,
+    cprovince,
+    creferenced_division_template,
+    cunit,
 };
 use engine_sites::Rva;
 
@@ -32,7 +38,7 @@ pub const STANDARD_TEMPLATE: usize = 0x3b8;
 pub const PREVIOUS_TEMPLATE: usize = 0x3c0;
 pub const FAKE_INTEL_TEMPLATE: usize = 0x3c8;
 pub const MANPOWER_VALUES: usize = 0x3d8;
-pub const MANPOWER_DATA: usize = MANPOWER_VALUES + crate::carmy_manpower_values::DATA;
+pub const MANPOWER_DATA: usize = MANPOWER_VALUES + engine_native_parts::carmy_manpower_values::DATA;
 pub const STRENGTH: usize = 0x420;
 pub const ORGANISATION: usize = 0x428;
 pub const EXPERIENCE: usize = 0x430;
@@ -81,7 +87,7 @@ pub struct IconInputsRow {
 pub fn read_icon_inputs(
     memory: &impl Memory,
     base: usize,
-    source: crate::cequipment_variant_pool::DivisionSource,
+    source: crate::cequipment_variant::pool::DivisionSource,
     seed: Option<&DivisionSeed>,
 ) -> Result<IconInputsRow, &'static str> {
     let at = |offset| {
@@ -437,9 +443,9 @@ const DIVISION_SEED_SPANS: [(usize, usize); 46] = [
     (cunit::THEATRE, 8),
     (cunit::QUEUED_ACTION_COUNT, 4),
 ];
-const DIVISION_SEED_FIELDS: [crate::memory::RecordField; 46] =
-    crate::memory::packed_fields(DIVISION_SEED_SPANS);
-const DIVISION_SEED_STRIDE: usize = crate::memory::packed_stride(DIVISION_SEED_SPANS);
+const DIVISION_SEED_FIELDS: [engine_native_memory::memory::RecordField; 46] =
+    engine_native_memory::memory::packed_fields(DIVISION_SEED_SPANS);
+const DIVISION_SEED_STRIDE: usize = engine_native_memory::memory::packed_stride(DIVISION_SEED_SPANS);
 
 pub fn capture_division_seeds(memory: &impl Memory, seeds: &mut [DivisionSeed]) -> u64 {
     const BATCH: usize = 64;
@@ -452,11 +458,11 @@ pub fn capture_division_seeds(memory: &impl Memory, seeds: &mut [DivisionSeed]) 
         for (pointer, seed) in pointers.iter_mut().zip(chunk.iter()) {
             *pointer = seed.pointer;
         }
-        const LAYOUT: crate::memory::RecordLayout<'static> =
-            crate::memory::RecordLayout::new(&DIVISION_SEED_FIELDS, DIVISION_SEED_STRIDE)
+        const LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+            engine_native_memory::memory::RecordLayout::new(&DIVISION_SEED_FIELDS, DIVISION_SEED_STRIDE)
                 .expect("valid division seed layout");
         let copied = memory.copy_records(
-            crate::memory::RecordSources::Pointers(&pointers[..chunk.len()]),
+            engine_native_memory::memory::RecordSources::Pointers(&pointers[..chunk.len()]),
             &LAYOUT,
             &mut bytes,
         );
@@ -582,17 +588,17 @@ fn gather_u32s(
     output: &mut [Option<u32>],
 ) -> u64 {
     const BATCH: usize = 64;
-    let fields = [crate::memory::RecordField {
+    let fields = [engine_native_memory::memory::RecordField {
         source_offset: offset,
         destination_offset: 0,
         len: 4,
     }];
-    let layout = crate::memory::RecordLayout::new(&fields, 4).expect("valid four-byte layout");
+    let layout = engine_native_memory::memory::RecordLayout::new(&fields, 4).expect("valid four-byte layout");
     let mut bytes = [0_u8; BATCH * 4];
     let mut complete = [false; BATCH];
     let mut total = 0;
     for (pointers, output) in pointers.chunks(BATCH).zip(output.chunks_mut(BATCH)) {
-        crate::memory::gather_records(
+        engine_native_memory::memory::gather_records(
             memory,
             pointers,
             &layout,
@@ -699,7 +705,7 @@ pub(crate) struct PresentationInputs {
 impl PresentationInputs {
     pub(crate) fn new(capacity: usize) -> std::io::Result<Self> {
         let mut entries = std::collections::HashMap::new();
-        crate::allocation::reserve_map(&mut entries, capacity)?;
+        engine_allocation::reserve_map(&mut entries, capacity)?;
         Ok(Self {
             entries,
             refused: false,
@@ -721,7 +727,7 @@ impl PresentationInputs {
     pub(crate) fn refused(&self) -> bool {
         self.refused
     }
-    pub(crate) fn read<T: crate::memory::Raw>(
+    pub(crate) fn read<T: engine_native_memory::memory::Raw>(
         &mut self,
         memory: &impl Memory,
         address: usize,
@@ -734,11 +740,11 @@ impl PresentationInputs {
             return Ok(Some(unsafe { entry.bytes.as_ptr().cast::<T>().read_unaligned() }));
         }
         let mut entry = PresentationInput::default();
-        if !crate::read_slice(memory, address, &mut entry.bytes[..len]) {
+        if !engine_native_memory::read_slice(memory, address, &mut entry.bytes[..len]) {
             return Ok(None);
         }
         let value = unsafe { entry.bytes.as_ptr().cast::<T>().read_unaligned() };
-        if let Err(error) = crate::allocation::reserve_map(&mut self.entries, 1) {
+        if let Err(error) = engine_allocation::reserve_map(&mut self.entries, 1) {
             self.refused = true;
             return Err(error);
         }
@@ -764,7 +770,7 @@ impl MovementInputs {
 }
 
 #[cfg(test)]
-fn shared_presentation_read<T: crate::memory::Raw>(
+fn shared_presentation_read<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     inputs: Option<&MovementInputs>,
     address: usize,
@@ -775,7 +781,7 @@ fn shared_presentation_read<T: crate::memory::Raw>(
     }
 }
 
-fn presentation_global<T: crate::memory::Raw>(
+fn presentation_global<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     base: usize,
     key: Rva,
@@ -785,7 +791,7 @@ fn presentation_global<T: crate::memory::Raw>(
         .ok_or("division presentation field unreadable")
 }
 
-fn presentation_field<T: crate::memory::Raw>(
+fn presentation_field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -811,16 +817,16 @@ fn presentation_array(
 fn presentation_batch<const N: usize>(
     memory: &impl Memory,
     fields: [(usize, usize, usize); N],
-) -> crate::memory::FieldBatch<N> {
-    crate::memory::FieldBatch::gather(
+) -> engine_native_memory::memory::FieldBatch<N> {
+    engine_native_memory::memory::FieldBatch::gather(
         memory,
         fields.map(|(object, offset, len)| (object.checked_add(offset).unwrap_or(0), len)),
     )
 }
 
-fn presentation_batched<T: crate::memory::Raw, const N: usize>(
+fn presentation_batched<T: engine_native_memory::memory::Raw, const N: usize>(
     memory: &impl Memory,
-    fields: &crate::memory::FieldBatch<N>,
+    fields: &engine_native_memory::memory::FieldBatch<N>,
     index: usize,
 ) -> Result<T, &'static str> {
     fields
@@ -855,7 +861,7 @@ pub fn movement_definition(
     }
     let definition = movement_pointer(memory, province, cprovince::DEFINITION)?;
     if definition == 0
-        || presentation_field::<u32>(memory, definition, crate::province_definition::ID)?
+        || presentation_field::<u32>(memory, definition, crate::cprovince::definition::ID)?
             != presentation_field::<u32>(memory, province, cprovince::ID)?
     {
         return Err("movement province definition mismatch");
@@ -863,7 +869,7 @@ pub fn movement_definition(
     Ok(definition)
 }
 
-pub(crate) fn movement_route_province(
+pub fn movement_route_province(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -940,7 +946,7 @@ pub fn movement_attacking(
     )
 }
 
-pub(crate) fn movement_priority_unit(
+pub fn movement_priority_unit(
     memory: &impl Memory,
     base: usize,
     template: usize,
@@ -976,7 +982,7 @@ pub(crate) fn movement_priority_unit(
             )?;
             if p != 0 {
                 count = count.wrapping_add(u16::from(
-                    presentation_field::<u8>(memory, p, crate::csub_unit_definition::IS_REAL)? != 0,
+                    presentation_field::<u8>(memory, p, engine_native_parts::csub_unit_definition::IS_REAL)? != 0,
                 ));
             }
         }
@@ -987,16 +993,16 @@ pub(crate) fn movement_priority_unit(
                 0,
             )?
         } else {
-            presentation_global::<u64>(memory, base, crate::csub_unit_definition::NULL_OBJECT_RVA)?
+            presentation_global::<u64>(memory, base, engine_native_parts::csub_unit_definition::NULL_OBJECT_RVA)?
                 as usize
         };
     }
     let vtable = read::<u64>(memory, selected);
     if selected == 0
         || (vtable
-            != engine_sites::at(base, crate::csub_unit_definition::VTABLE_RVA).map(|p| p as u64)
+            != engine_sites::at(base, engine_native_parts::csub_unit_definition::VTABLE_RVA).map(|p| p as u64)
             && vtable
-                != engine_sites::at(base, crate::csub_unit_definition::NULL_VTABLE_RVA)
+                != engine_sites::at(base, engine_native_parts::csub_unit_definition::NULL_VTABLE_RVA)
                     .map(|p| p as u64))
     {
         return Err("movement selected unit identity mismatch");
@@ -1024,16 +1030,16 @@ pub fn movement_speed_key_demands(
     template: usize,
     keys: &mut Vec<u32>,
 ) -> Result<(), &'static str> {
-    use crate::csub_unit_definition as unit;
+    use engine_native_parts::csub_unit_definition as unit;
 
     let selected = movement_priority_unit(memory, base, template)?;
     let token = presentation_field::<u32>(memory, selected, unit::SPEED_MODIFIER_KEY)?;
     if token != 0 {
-        crate::allocation::reserve(keys, 1).map_err(|_| "movement speed key allocation failed")?;
+        engine_allocation::reserve(keys, 1).map_err(|_| "movement speed key allocation failed")?;
         keys.push(token);
     }
     let categories = presentation_array(memory, selected, unit::CATEGORIES, 8)?;
-    crate::allocation::reserve(keys, categories.count as usize)
+    engine_allocation::reserve(keys, categories.count as usize)
         .map_err(|_| "movement speed key allocation failed")?;
     for index in 0..categories.count {
         let category = movement_pointer(
@@ -1077,7 +1083,7 @@ fn movement_seed_value<T>(value: Option<T>) -> Result<T, &'static str> {
 
 #[cfg(test)]
 fn movement_scalar_tail(memory: &impl Memory, army: usize) -> Result<(u8, u8), &'static str> {
-    use crate::memory::RecordField;
+    use engine_native_memory::memory::RecordField;
     const FIELDS: [RecordField; 2] = [
         RecordField {
             source_offset: RETREAT,
@@ -1091,10 +1097,10 @@ fn movement_scalar_tail(memory: &impl Memory, army: usize) -> Result<(u8, u8), &
         },
     ];
     let mut bytes = [0; 2];
-    const LAYOUT: crate::memory::RecordLayout<'static> =
-        crate::memory::RecordLayout::new(&FIELDS, 2).expect("valid movement scalar layout");
+    const LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+        engine_native_memory::memory::RecordLayout::new(&FIELDS, 2).expect("valid movement scalar layout");
     if memory.copy_records(
-        crate::memory::RecordSources::Pointers(&[army]),
+        engine_native_memory::memory::RecordSources::Pointers(&[army]),
         &LAYOUT,
         &mut bytes,
     ) != FIELDS.len()
@@ -1131,9 +1137,9 @@ pub struct StatusRow {
     pub border_combat_stats: Option<[i64; 3]>,
     pub naming: Option<crate::cname_group_member::Inputs>,
     pub country_ordinal: Option<u32>,
-    pub supply: Option<crate::cunit_supply_inputs::Inputs>,
+    pub supply: Option<engine_native_parts::cunit_supply_inputs::Inputs>,
     pub supply_origins_start: usize,
-    pub supply_failure: Option<crate::cunit_supply_inputs::Failure>,
+    pub supply_failure: Option<engine_native_parts::cunit_supply_inputs::Failure>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -1173,7 +1179,7 @@ pub struct StatusCapacities {
     pub manpower: usize,
     pub acclimatization_categories: usize,
     pub thresholds: usize,
-    pub modifiers: crate::modifier_accumulator::SnapshotCapacity,
+    pub modifiers: engine_native_parts::modifier_accumulator::SnapshotCapacity,
     pub membership: MembershipCapacity,
 }
 
@@ -1185,7 +1191,7 @@ impl StatusCapacities {
             manpower: 0,
             acclimatization_categories: 0,
             thresholds: 0,
-            modifiers: crate::modifier_accumulator::SnapshotCapacity::default(),
+            modifiers: engine_native_parts::modifier_accumulator::SnapshotCapacity::default(),
             membership: MembershipCapacity {
                 queries: units,
                 ..Default::default()
@@ -1248,7 +1254,7 @@ struct StatusUnitInputs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StatusCountryInputs {
     pointer: usize,
-    modifier: crate::modifier_accumulator::SnapshotObservation,
+    modifier: engine_native_parts::modifier_accumulator::SnapshotObservation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1271,13 +1277,13 @@ pub struct StatusPacket {
     prepared_experience: Vec<Option<i64>>,
     supply_requested: Vec<bool>,
     organisation_memo: organisation_movement::OrganisationMemo,
-    supply: Vec<crate::cunit_supply_inputs::UnitCapture>,
+    supply: Vec<engine_native_parts::cunit_supply_inputs::UnitCapture>,
     supply_len: usize,
-    supply_origins: Vec<crate::cunit_supply_inputs::Origin>,
+    supply_origins: Vec<engine_native_parts::cunit_supply_inputs::Origin>,
     supply_origins_len: usize,
     border_index: Vec<(u64, usize)>,
     border_stats: Vec<Option<[i64; 3]>>,
-    maxima: Vec<crate::csub_unit_definition::DivisionMaxima>,
+    maxima: Vec<engine_native_parts::csub_unit_definition::DivisionMaxima>,
     maxima_index: Vec<usize>,
     #[cfg(test)]
     maxima_probes: std::sync::atomic::AtomicUsize,
@@ -1292,13 +1298,13 @@ pub struct StatusPacket {
     commander_index: Vec<usize>,
     commander_divisions: Vec<(u64, usize)>,
     commander_order: Vec<(u64, u32)>,
-    commander_memo: std::sync::Mutex<crate::modifier_definition::DefinitionMemo>,
-    modifiers: crate::modifier_accumulator::SnapshotArena,
+    commander_memo: std::sync::Mutex<engine_native_parts::modifier_definition::DefinitionMemo>,
+    modifiers: engine_native_parts::modifier_accumulator::SnapshotArena,
     membership: MembershipPacket,
     manpower: Vec<i32>,
     exercise_control: Option<cgame_state::AiControl>,
     exercise_autonomy: std::collections::HashMap<u32, bool>,
-    categories: crate::acclimatization_category::Categories,
+    categories: engine_native_parts::acclimatization_category::Categories,
     categories_loaded: Option<Result<(), &'static str>>,
     camouflage_show_at: Option<Result<i64, &'static str>>,
     category_factors: CategoryFactors,
@@ -1312,7 +1318,7 @@ pub struct StatusPacket {
 }
 
 pub type StagedDivisionMaxima<'a> =
-    dyn Fn(usize) -> Option<Result<crate::csub_unit_definition::DivisionMaxima, &'static str>> + 'a;
+    dyn Fn(usize) -> Option<Result<engine_native_parts::csub_unit_definition::DivisionMaxima, &'static str>> + 'a;
 
 #[derive(Clone, Copy)]
 struct SelectedMaxima {
@@ -1357,7 +1363,7 @@ impl StatusPacket {
             manpower: 0,
             acclimatization_categories: 0,
             thresholds: 0,
-            modifiers: crate::modifier_accumulator::SnapshotCapacity::default(),
+            modifiers: engine_native_parts::modifier_accumulator::SnapshotCapacity::default(),
             membership: MembershipCapacity::default(),
         };
         Self {
@@ -1389,14 +1395,14 @@ impl StatusPacket {
             commander_divisions: Vec::new(),
             commander_order: Vec::new(),
             commander_memo: std::sync::Mutex::new(
-                crate::modifier_definition::DefinitionMemo::default(),
+                engine_native_parts::modifier_definition::DefinitionMemo::default(),
             ),
-            modifiers: crate::modifier_accumulator::SnapshotArena::vacant(),
+            modifiers: engine_native_parts::modifier_accumulator::SnapshotArena::vacant(),
             membership: MembershipPacket::vacant(),
             manpower: Vec::new(),
             exercise_control: None,
             exercise_autonomy: std::collections::HashMap::new(),
-            categories: crate::acclimatization_category::Categories::default(),
+            categories: engine_native_parts::acclimatization_category::Categories::default(),
             categories_loaded: None,
             camouflage_show_at: None,
             category_factors: CategoryFactors::default(),
@@ -1414,71 +1420,71 @@ impl StatusPacket {
         let index_capacity = capacities
             .units
             .checked_mul(2)
-            .ok_or_else(crate::allocation::oom)?;
+            .ok_or_else(engine_allocation::oom)?;
         let mut exercise_autonomy = std::collections::HashMap::new();
-        crate::allocation::reserve_map(&mut exercise_autonomy, capacities.units)?;
+        engine_allocation::reserve_map(&mut exercise_autonomy, capacities.units)?;
         Ok(Self {
             capacities,
             required: capacities,
-            units: crate::allocation::vec(capacities.units)?,
+            units: engine_allocation::vec(capacities.units)?,
             prepared_experience: Vec::new(),
             supply_requested: Vec::new(),
             organisation_memo: organisation_movement::OrganisationMemo::new(capacities.units)
                 .unwrap_or_else(|_| organisation_movement::OrganisationMemo::vacant()),
-            supply: crate::allocation::filled(
+            supply: engine_allocation::filled(
                 capacities.units,
-                crate::cunit_supply_inputs::UnitCapture::default(),
+                engine_native_parts::cunit_supply_inputs::UnitCapture::default(),
             )?,
             supply_len: 0,
-            supply_origins: crate::allocation::filled(
+            supply_origins: engine_allocation::filled(
                 capacities.supply_origins,
-                crate::cunit_supply_inputs::Origin::default(),
+                engine_native_parts::cunit_supply_inputs::Origin::default(),
             )?,
             supply_origins_len: 0,
-            border_index: crate::allocation::vec(capacities.units)?,
-            border_stats: crate::allocation::filled(capacities.units, None)?,
-            maxima: crate::allocation::vec(capacities.units)?,
-            maxima_index: crate::allocation::filled(index_capacity, 0)?,
+            border_index: engine_allocation::vec(capacities.units)?,
+            border_stats: engine_allocation::filled(capacities.units, None)?,
+            maxima: engine_allocation::vec(capacities.units)?,
+            maxima_index: engine_allocation::filled(index_capacity, 0)?,
             #[cfg(test)]
             maxima_probes: std::sync::atomic::AtomicUsize::new(0),
             acclimatization: if capacities.units == 0 {
                 None
             } else {
-                Some(crate::allocation::boxed(AcclimatizationBatch::new())?)
+                Some(engine_allocation::boxed(AcclimatizationBatch::new())?)
             },
-            countries: crate::allocation::vec(capacities.units)?,
-            country_index: crate::allocation::filled(index_capacity, 0)?,
-            groups: crate::allocation::vec(capacities.units)?,
-            group_index: crate::allocation::filled(index_capacity, 0)?,
-            commander_groups: crate::allocation::vec(capacities.units)?,
-            commander_leaders: crate::allocation::vec(capacities.units)?,
-            commander_bans: crate::allocation::vec(capacities.units)?,
-            commander_index: crate::allocation::filled(index_capacity, 0)?,
-            commander_divisions: crate::allocation::vec(capacities.units)?,
-            commander_order: crate::allocation::vec(capacities.units)?,
+            countries: engine_allocation::vec(capacities.units)?,
+            country_index: engine_allocation::filled(index_capacity, 0)?,
+            groups: engine_allocation::vec(capacities.units)?,
+            group_index: engine_allocation::filled(index_capacity, 0)?,
+            commander_groups: engine_allocation::vec(capacities.units)?,
+            commander_leaders: engine_allocation::vec(capacities.units)?,
+            commander_bans: engine_allocation::vec(capacities.units)?,
+            commander_index: engine_allocation::filled(index_capacity, 0)?,
+            commander_divisions: engine_allocation::vec(capacities.units)?,
+            commander_order: engine_allocation::vec(capacities.units)?,
             commander_memo: std::sync::Mutex::new(
-                crate::modifier_definition::DefinitionMemo::try_with_capacity(
+                engine_native_parts::modifier_definition::DefinitionMemo::try_with_capacity(
                     if capacities.units == 0 { 0 } else { 2 },
                 )?,
             ),
-            modifiers: crate::modifier_accumulator::SnapshotArena::try_new(capacities.modifiers)?,
+            modifiers: engine_native_parts::modifier_accumulator::SnapshotArena::try_new(capacities.modifiers)?,
             membership: MembershipPacket::try_with_capacity(
                 capacities.membership.queries,
                 capacities.membership.groups,
                 capacities.membership.roots,
                 capacities.membership.chunks,
             )?,
-            manpower: crate::allocation::vec(capacities.manpower)?,
+            manpower: engine_allocation::vec(capacities.manpower)?,
             exercise_control: None,
             exercise_autonomy,
-            categories: crate::acclimatization_category::Categories::try_with_capacity(
+            categories: engine_native_parts::acclimatization_category::Categories::try_with_capacity(
                 capacities.acclimatization_categories,
             )?,
             categories_loaded: None,
             camouflage_show_at: None,
             category_factors: CategoryFactors::default(),
             thresholds_header: None,
-            thresholds: crate::allocation::vec(capacities.thresholds)?,
+            thresholds: engine_allocation::vec(capacities.thresholds)?,
             attrition_metadata: None,
             attrition_define: None,
             maximum_level: None,
@@ -1540,7 +1546,7 @@ impl StatusPacket {
         project_status(self, output)
     }
 
-    pub fn supply_origins(&self, row: &StatusRow) -> Option<&[crate::cunit_supply_inputs::Origin]> {
+    pub fn supply_origins(&self, row: &StatusRow) -> Option<&[engine_native_parts::cunit_supply_inputs::Origin]> {
         let len = row.supply?.origins_len.ok()?;
         let end = row.supply_origins_start.checked_add(len)?;
         self.supply_origins
@@ -1550,7 +1556,7 @@ impl StatusPacket {
 
     pub fn select_supply(&mut self, requested: &[bool]) -> Result<(), &'static str> {
         self.supply_requested.clear();
-        crate::allocation::reserve(&mut self.supply_requested, requested.len())
+        engine_allocation::reserve(&mut self.supply_requested, requested.len())
             .map_err(|_| "division supply selection allocation failed")?;
         self.supply_requested.extend_from_slice(requested);
         Ok(())
@@ -1559,9 +1565,9 @@ impl StatusPacket {
         &self,
         index: usize,
     ) -> (
-        Option<crate::cunit_supply_inputs::Inputs>,
-        Option<crate::cunit_supply_inputs::Failure>,
-        Option<&[crate::cunit_supply_inputs::Origin]>,
+        Option<engine_native_parts::cunit_supply_inputs::Inputs>,
+        Option<engine_native_parts::cunit_supply_inputs::Failure>,
+        Option<&[engine_native_parts::cunit_supply_inputs::Origin]>,
     ) {
         let unit = self
             .supply
@@ -1639,11 +1645,11 @@ impl StatusPacket {
             + self.prepared_experience.capacity() * size_of::<Option<i64>>()
             + self.supply_requested.capacity() * size_of::<bool>()
             + self.organisation_memo.allocated_bytes()
-            + self.supply.capacity() * size_of::<crate::cunit_supply_inputs::UnitCapture>()
-            + self.supply_origins.capacity() * size_of::<crate::cunit_supply_inputs::Origin>()
+            + self.supply.capacity() * size_of::<engine_native_parts::cunit_supply_inputs::UnitCapture>()
+            + self.supply_origins.capacity() * size_of::<engine_native_parts::cunit_supply_inputs::Origin>()
             + self.border_index.capacity() * size_of::<(u64, usize)>()
             + self.border_stats.capacity() * size_of::<Option<[i64; 3]>>()
-            + self.maxima.capacity() * size_of::<crate::csub_unit_definition::DivisionMaxima>()
+            + self.maxima.capacity() * size_of::<engine_native_parts::csub_unit_definition::DivisionMaxima>()
             + self.countries.capacity() * size_of::<StatusCountryInputs>()
             + self.groups.capacity() * size_of::<StatusGroupInputs>()
             + self.commander_groups.capacity() * size_of::<usize>()
@@ -1686,9 +1692,9 @@ impl StatusPacket {
         memory: &impl Memory,
         base: usize,
         seeds: &[DivisionSeed],
-        held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
+        held: &[Option<engine_native_parts::csub_unit_definition::DivisionMaxima>],
         staged_reads: impl Fn(usize) -> bool,
-        batch: &mut crate::csub_unit_definition::MaximaBatch,
+        batch: &mut engine_native_parts::csub_unit_definition::MaximaBatch,
     ) -> [SelectedMaxima; 64] {
         let mut selected = [SelectedMaxima::default(); 64];
         let mut staged = [StagedMaxima::default(); 64];
@@ -1755,9 +1761,9 @@ impl StatusPacket {
         base: usize,
         pointer: usize,
         selected: SelectedMaxima,
-        held: Option<crate::csub_unit_definition::DivisionMaxima>,
-        staged: Option<Result<crate::csub_unit_definition::DivisionMaxima, &'static str>>,
-        batch: &crate::csub_unit_definition::MaximaBatch,
+        held: Option<engine_native_parts::csub_unit_definition::DivisionMaxima>,
+        staged: Option<Result<engine_native_parts::csub_unit_definition::DivisionMaxima, &'static str>>,
+        batch: &engine_native_parts::csub_unit_definition::MaximaBatch,
     ) -> Result<usize, &'static str> {
         let slot = selected.slot;
         debug_assert_ne!(slot, usize::MAX);
@@ -1777,7 +1783,7 @@ impl StatusPacket {
         Ok(index)
     }
 
-    pub fn unit_maxima(&self, index: usize) -> Option<crate::csub_unit_definition::DivisionMaxima> {
+    pub fn unit_maxima(&self, index: usize) -> Option<engine_native_parts::csub_unit_definition::DivisionMaxima> {
         let unit = self
             .units
             .get(index)
@@ -1801,7 +1807,7 @@ impl StatusPacket {
         if self.modifiers.value(modifier)?.present {
             if self.attrition_metadata.is_none() {
                 self.attrition_metadata = Some((|| {
-                    use crate::modifier_definition as metadata;
+                    use engine_native_parts::modifier_definition as metadata;
                     let table =
                         presentation_global::<u64>(memory, base, metadata::TABLE_RVA)? as usize;
                     let entry = table
@@ -2138,17 +2144,17 @@ impl StatusPacket {
             .checked_add(values.count as usize)
             .ok_or("exercise manpower count overflow")?;
         self.required.manpower = self.required.manpower.max(required);
-        crate::allocation::reserve(&mut self.manpower, required - start)
+        engine_allocation::reserve(&mut self.manpower, required - start)
             .map_err(|_| "status manpower allocation failed")?;
         self.capacities.manpower = self.capacities.manpower.max(required);
         const BATCH: usize = 64;
-        const FIELDS: [crate::memory::RecordField; 1] = [crate::memory::RecordField {
+        const FIELDS: [engine_native_memory::memory::RecordField; 1] = [engine_native_memory::memory::RecordField {
             source_offset: 4,
             destination_offset: 0,
             len: 4,
         }];
-        const LAYOUT: crate::memory::RecordLayout<'static> =
-            crate::memory::RecordLayout::new(&FIELDS, 4).expect("valid status manpower layout");
+        const LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+            engine_native_memory::memory::RecordLayout::new(&FIELDS, 4).expect("valid status manpower layout");
         let mut bytes = [0; BATCH * 4];
         let mut manpower = 0_i32;
         for first in (0..values.count).step_by(BATCH) {
@@ -2157,7 +2163,7 @@ impl StatusPacket {
                 .element(first, 8)
                 .ok_or("exercise manpower entry overflow")?;
             let copied = memory.copy_records(
-                crate::memory::RecordSources::Strided {
+                engine_native_memory::memory::RecordSources::Strided {
                     base: entry,
                     stride: 8,
                     count,
@@ -2193,7 +2199,7 @@ impl StatusPacket {
         let thresholds = Array::from_header(self.thresholds_header.unwrap()?, 8)
             .ok_or("exercise thresholds invalid")?;
         let additional = (thresholds.count as usize).saturating_sub(self.thresholds.len());
-        crate::allocation::reserve(&mut self.thresholds, additional)
+        engine_allocation::reserve(&mut self.thresholds, additional)
             .map_err(|_| "status threshold allocation failed")?;
         self.capacities.thresholds = self.capacities.thresholds.max(thresholds.count as usize);
         if thresholds.count == 0 {
@@ -2281,7 +2287,7 @@ impl StatusPacket {
         }
         let deployment = presentation_field::<u64>(memory, seed.pointer, DEPLOYMENT_TYPE)?;
         inputs.deployment_present =
-            Some(crate::creference_registry::resolve(memory, base, deployment)?.is_some());
+            Some(engine_native_parts::creference_registry::resolve(memory, base, deployment)?.is_some());
         if inputs.deployment_present == Some(true) {
             return Ok(inputs);
         }
@@ -2431,7 +2437,7 @@ impl StatusPacket {
         object: &[u8; 0x40],
         winner: Option<(u64, i64)>,
     ) -> Result<Camouflage, &'static str> {
-        use crate::acclimatization_data as data;
+        use engine_native_parts::acclimatization_data as data;
         let Some((category, weight)) = winner.filter(|(category, _)| *category != 0) else {
             return Ok(Camouflage { category: None });
         };
@@ -2476,7 +2482,7 @@ impl StatusPacket {
         state: usize,
         seeds: &[DivisionSeed],
         source_outcome: Outcome,
-        held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
+        held: &[Option<engine_native_parts::csub_unit_definition::DivisionMaxima>],
         experience: &[Option<i64>],
     ) -> Outcome {
         let prepared = self.prepare_holding_inner(
@@ -2509,7 +2515,7 @@ impl StatusPacket {
         state: usize,
         seeds: &[DivisionSeed],
         source_outcome: Outcome,
-        held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
+        held: &[Option<engine_native_parts::csub_unit_definition::DivisionMaxima>],
         staged: &StagedDivisionMaxima<'_>,
         defer_membership: bool,
     ) -> Result<(usize, ccountry::Reader<'a, M>), &'static str> {
@@ -2526,7 +2532,7 @@ impl StatusPacket {
             let countries = ccountry::Reader::new(memory, base, state)?;
             self.required.units = self.required.units.max(seeds.len());
             let count = seeds.len();
-            let mut batch = crate::csub_unit_definition::MaximaBatch::new();
+            let mut batch = engine_native_parts::csub_unit_definition::MaximaBatch::new();
             let mut selected = [SelectedMaxima::default(); 64];
             let identity = engine_sites::at(base, VTABLE_RVA).map(|at| at as u64);
             for (index, seed) in seeds[..count].iter().enumerate() {
@@ -2623,7 +2629,7 @@ impl StatusPacket {
         state: usize,
         seeds: &[DivisionSeed],
         source_outcome: Outcome,
-        held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
+        held: &[Option<engine_native_parts::csub_unit_definition::DivisionMaxima>],
         experience: &[Option<i64>],
     ) -> Outcome {
         self.prepare_holding_staged(
@@ -2649,7 +2655,7 @@ impl StatusPacket {
         state: usize,
         seeds: &[DivisionSeed],
         source_outcome: Outcome,
-        held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
+        held: &[Option<engine_native_parts::csub_unit_definition::DivisionMaxima>],
         experience: &[Option<i64>],
         staged: &StagedDivisionMaxima<'_>,
     ) -> Outcome {
@@ -2665,7 +2671,7 @@ impl StatusPacket {
         );
         self.outcome = match prepared {
             Ok((count, _)) => {
-                if crate::allocation::reserve(&mut self.prepared_experience, experience.len())
+                if engine_allocation::reserve(&mut self.prepared_experience, experience.len())
                     .is_err()
                 {
                     Outcome::Unavailable {
@@ -2833,7 +2839,7 @@ impl StatusPacket {
             }
         }
         self.supply_len = self.outcome.len().min(self.supply.len());
-        let used = crate::cunit_supply_inputs::capture_selected_units(
+        let used = engine_native_parts::cunit_supply_inputs::capture_selected_units(
             memory,
             |index| seeds[index].pointer,
             |index| self.supply_requested.get(index).copied().unwrap_or(true),
@@ -2880,7 +2886,7 @@ impl StatusPacket {
                             .get(cache)
                             .ok_or("border combat stat source outside packet")?
                             .pointer;
-                        let value = crate::csub_unit_definition::capture_division_combat_stats(
+                        let value = engine_native_parts::csub_unit_definition::capture_division_combat_stats(
                             memory, base, pointer,
                         )?;
                         *stats = Some(value);
@@ -2967,7 +2973,7 @@ pub fn project_status(packet: &StatusPacket, output: &mut [StatusRow]) -> Outcom
                 if metadata
                     .flags
                     .ok_or("division status metadata flags missing")?
-                    & crate::modifier_definition::CLAMP_MAXIMUM
+                    & engine_native_parts::modifier_definition::CLAMP_MAXIMUM
                     != 0
                 {
                     value = value.clamp(0, 100_000);
@@ -3029,7 +3035,7 @@ pub fn project_status(packet: &StatusPacket, output: &mut [StatusRow]) -> Outcom
 type AcclimatizationWinner = ([u8; 0x40], Option<(u64, i64)>);
 
 struct AcclimatizationBatch {
-    bytes: [[u8; 32 * crate::acclimatization_entry::STRIDE]; 64],
+    bytes: [[u8; 32 * engine_native_parts::acclimatization_entry::STRIDE]; 64],
     lengths: [usize; 64],
     copied: usize,
 }
@@ -3037,14 +3043,17 @@ struct AcclimatizationBatch {
 impl AcclimatizationBatch {
     fn new() -> Self {
         Self {
-            bytes: [[0; 32 * crate::acclimatization_entry::STRIDE]; 64],
+            bytes: [[0; 32 * engine_native_parts::acclimatization_entry::STRIDE]; 64],
             lengths: [0; 64],
             copied: 0,
         }
     }
 
     fn capture(&mut self, memory: &impl Memory, base: usize, seeds: &[DivisionSeed]) {
-        use crate::{acclimatization_data as data, acclimatization_entry as entry};
+        use engine_native_parts::{
+            acclimatization_data as data,
+            acclimatization_entry as entry,
+        };
         self.lengths.fill(0);
         let mut addresses = [0_usize; 64];
         for (index, seed) in seeds.iter().enumerate() {
@@ -3074,7 +3083,7 @@ impl AcclimatizationBatch {
             std::array::from_fn(|index| &mut rows.next().unwrap()[..self.lengths[index]]);
         self.copied = memory.copy_scattered_prefetched(addresses, &mut destinations);
         if self.copied < 64 {
-            crate::batch_fallback::record(crate::batch_fallback::Batch::DivisionAcclimatization);
+            engine_native_memory::batch_fallback::record(engine_native_memory::batch_fallback::Batch::DivisionAcclimatization);
         }
     }
 
@@ -3090,7 +3099,10 @@ fn acclimatization_winner(
     seed: &DivisionSeed,
     gathered_first: Option<&[u8]>,
 ) -> Result<AcclimatizationWinner, &'static str> {
-    use crate::{acclimatization_data as data, acclimatization_entry as entry};
+    use engine_native_parts::{
+        acclimatization_data as data,
+        acclimatization_entry as entry,
+    };
     let object = seed
         .acclimatization
         .ok_or("division presentation field unreadable")?;
@@ -3115,7 +3127,7 @@ fn acclimatization_winner(
             .ok_or("division acclimatization entries invalid")?;
         let raw_entries = match gathered_first.filter(|_| first == 0) {
             Some(gathered) => gathered,
-            None => crate::memory::read_slice_uninit(memory, at, &mut bytes[..len * entry::STRIDE])
+            None => engine_native_memory::memory::read_slice_uninit(memory, at, &mut bytes[..len * entry::STRIDE])
                 .ok_or("division acclimatization entries unreadable")?,
         };
         for raw in raw_entries.chunks_exact(entry::STRIDE) {
@@ -3148,8 +3160,8 @@ impl CategoryFactors {
         }
         let factor = usize::try_from(category)
             .ok()
-            .and_then(|at| at.checked_add(crate::acclimatization_data::CATEGORY_FACTOR))
-            .and_then(|address| crate::read::<i64>(memory, address))
+            .and_then(|at| at.checked_add(engine_native_parts::acclimatization_data::CATEGORY_FACTOR))
+            .and_then(|address| engine_native_memory::read::<i64>(memory, address))
             .ok_or("division acclimatization category factor unreadable")?;
         if let Some(entry) = self.entries.get_mut(self.len) {
             *entry = (category, factor);
@@ -3165,7 +3177,7 @@ fn weather_factor(
     winner: Option<(u64, i64)>,
     factors: &mut CategoryFactors,
 ) -> Result<i64, &'static str> {
-    use crate::acclimatization_data as data;
+    use engine_native_parts::acclimatization_data as data;
     let active = u64::from_le_bytes(object[data::ACTIVE..data::ACTIVE + 8].try_into().unwrap());
     let Some((_, weight)) = winner.filter(|(category, _)| active != 0 && *category == active)
     else {
@@ -3187,11 +3199,11 @@ pub fn counter_dig_in_factor(
     let Some(root) = crate::carmy_leader::movement_accumulator_seeded(memory, base, seed)? else {
         return Ok(100_000);
     };
-    crate::modifier_accumulator::requested_effective_at(
+    engine_native_parts::modifier_accumulator::requested_effective_at(
         memory,
         base,
         root,
-        crate::modifier_keys::COMBAT_ENTRENCHMENT,
+        engine_executable::modifier_keys::COMBAT_ENTRENCHMENT,
     )
     .map(|value| 100_000_i64.wrapping_add(value))
 }
@@ -3291,11 +3303,11 @@ pub fn commander_entrenchment(
     base: usize,
     root: usize,
 ) -> Result<i64, &'static str> {
-    crate::modifier_accumulator::requested_effective_at(
+    engine_native_parts::modifier_accumulator::requested_effective_at(
         memory,
         base,
         root,
-        crate::modifier_keys::COMBAT_ENTRENCHMENT,
+        engine_executable::modifier_keys::COMBAT_ENTRENCHMENT,
     )
 }
 
@@ -3304,7 +3316,7 @@ fn status_counter_scalars(
     memory: &impl Memory,
     army: usize,
 ) -> Result<(i64, i64, i64, i64), &'static str> {
-    use crate::memory::RecordField;
+    use engine_native_memory::memory::RecordField;
     const FIELDS: [RecordField; 4] = [
         RecordField {
             source_offset: COUNTER_ATTRITION,
@@ -3329,8 +3341,8 @@ fn status_counter_scalars(
     ];
     let mut bytes = [0; 32];
     if memory.copy_records(
-        crate::memory::RecordSources::Pointers(&[army]),
-        &crate::memory::RecordLayout::new(&FIELDS, bytes.len()).unwrap(),
+        engine_native_memory::memory::RecordSources::Pointers(&[army]),
+        &engine_native_memory::memory::RecordLayout::new(&FIELDS, bytes.len()).unwrap(),
         &mut bytes,
     ) != FIELDS.len()
     {
@@ -3375,9 +3387,9 @@ fn exercising(
     });
     packet
         .maxima
-        .push(crate::csub_unit_definition::DivisionMaxima {
+        .push(engine_native_parts::csub_unit_definition::DivisionMaxima {
             strength: maximum_hp,
-            ..crate::csub_unit_definition::DivisionMaxima::default()
+            ..engine_native_parts::csub_unit_definition::DivisionMaxima::default()
         });
     let inputs = packet.capture_exercise(
         memory,
@@ -3396,7 +3408,7 @@ pub fn walk_status(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    sources: &[crate::cequipment_variant_pool::DivisionSource],
+    sources: &[crate::cequipment_variant::pool::DivisionSource],
     source_outcome: Outcome,
     output: &mut [StatusRow],
 ) -> Outcome {
@@ -3418,7 +3430,7 @@ fn status_test_capture(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    sources: &[crate::cequipment_variant_pool::DivisionSource],
+    sources: &[crate::cequipment_variant::pool::DivisionSource],
     source_outcome: Outcome,
     output: &mut [StatusRow],
     packet: &mut StatusPacket,
@@ -3463,7 +3475,7 @@ pub fn walk_status_with_membership(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    sources: &[crate::cequipment_variant_pool::DivisionSource],
+    sources: &[crate::cequipment_variant::pool::DivisionSource],
     source_outcome: Outcome,
     output: &mut [StatusRow],
     membership: &mut MembershipPacket,

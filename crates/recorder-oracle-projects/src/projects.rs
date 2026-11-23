@@ -25,7 +25,7 @@ fn token<'a>(
     report: &mut Report,
     label: &str,
 ) -> Option<&'a [u8]> {
-    if value == engine_native::cpdx_lexer::FIXED15_TOKEN {
+    if value == engine_native_memory::cpdx_lexer::FIXED15_TOKEN {
         report.limitation("the token writer formats reserved lexical token 0x167 as fixed15 numeric text; its raw dictionary literal cannot certify this saved field", label);
         return None;
     }

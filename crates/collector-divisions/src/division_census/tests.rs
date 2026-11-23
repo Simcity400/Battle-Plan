@@ -299,7 +299,7 @@ fn entries_past_the_initial_storage_grow_to_the_exact_count_in_one_capture() {
 
 #[test]
 fn census_reuses_the_callback_country_roster_and_matches_the_native_checks() {
-    use engine_native::{country_memory::Cache, country_memory::SeedStatus};
+    use engine_native_intelligence::country_memory::{Cache, SeedStatus};
     const COUNTRIES: u32 = 5000;
     let bytes = many::world(COUNTRIES, 1);
     let plain = kit::memory(&bytes);
@@ -644,7 +644,7 @@ fn core_identity_collisions_failures_and_next_walk_use_original_sources() {
         (colliding[1] + creferenced_division_template::TYPE, u64::MAX),
         (
             colliding[2],
-            engine_native::carmy_group::VTABLE_RVA.0 as u64,
+            engine_native_parts::carmy_group::VTABLE_RVA.0 as u64,
         ),
         (colliding[2] + 8, group_handle),
     ] {
@@ -1010,9 +1010,12 @@ fn input_stage_gathers_the_mover_packet_and_each_group_once() {
 #[test]
 fn refused_selection_storage_never_ends_the_recording() {
     use engine_native::{
-        corders_group as group, corders_group_member as member, cunit, cunit_leader,
-        modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+        corders_group as group,
+        corders_group_member as member,
+        cunit,
+        cunit_leader,
     };
+    use engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA;
     const CHILD: &str = "BATTLEPLAN_DIVISION_SELECTION_ALLOCATION_TEST";
     if std::env::var_os(CHILD).is_none() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())

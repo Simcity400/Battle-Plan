@@ -7,8 +7,9 @@ pub const DAMAGE: usize = 0x38;
 pub const MANPOWER_LOSS: usize = 0x60;
 pub const EQUIPMENT_LOSSES: usize = 0x70;
 
-use crate::memory::{RecordField, RecordLayout, RecordSources};
-use crate::{Memory, cequipment_variant, cequipment_variant_pool, cpdx_array::Array};
+use engine_native_memory::memory::{RecordField, RecordLayout, RecordSources};
+use engine_native_memory::{Memory, cpdx_array::Array};
+use engine_native::cequipment_variant::{self, pool as cequipment_variant_pool};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
@@ -63,7 +64,7 @@ impl LossPlan {
             return Err("land loss side null");
         }
         let observer = side
-            .checked_add(crate::cland_combatant::STATS_OBSERVER)
+            .checked_add(engine_native::cland_combatant::STATS_OBSERVER)
             .ok_or("land loss observer address overflow")?;
         let mut header = [0; 36];
         if memory.copy_records(
@@ -93,7 +94,7 @@ impl LossPlan {
         let manpower = i32::from_le_bytes(header[8..12].try_into().unwrap());
         let equipment = Array::from_header(
             header[20..].try_into().unwrap(),
-            crate::equipment_entry::STRIDE,
+            engine_native_parts::equipment_entry::STRIDE,
         )
         .ok_or("land loss pool array invalid")?;
         Ok(Self {
@@ -113,7 +114,7 @@ impl LossPlan {
                 return Err("land loss side null");
             }
             *at = side
-                .checked_add(crate::cland_combatant::STATS_OBSERVER)
+                .checked_add(engine_native::cland_combatant::STATS_OBSERVER)
                 .ok_or("land loss observer address overflow")?;
         }
         let mut headers = [[0; 36]; 2];
@@ -174,9 +175,9 @@ impl LossPlan {
         for ordinal in 0..self.equipment.count {
             let at = self
                 .equipment
-                .element(ordinal, crate::equipment_entry::STRIDE)
+                .element(ordinal, engine_native_parts::equipment_entry::STRIDE)
                 .ok_or("land loss equipment address overflow")?;
-            let entry = crate::equipment_entry::read(memory, base, at, ordinal)?;
+            let entry = engine_native_parts::equipment_entry::read(memory, base, at, ordinal)?;
             put(entry.variant_handle);
             put(entry.amount_raw as u64);
         }
@@ -186,11 +187,11 @@ impl LossPlan {
 
 fn entry_bytes(entries: &mut [LossEntry]) -> Result<&mut [u8], &'static str> {
     const {
-        assert!(std::mem::size_of::<LossEntry>() == crate::equipment_entry::STRIDE);
+        assert!(std::mem::size_of::<LossEntry>() == engine_native_parts::equipment_entry::STRIDE);
     }
     let bytes = entries
         .len()
-        .checked_mul(crate::equipment_entry::STRIDE)
+        .checked_mul(engine_native_parts::equipment_entry::STRIDE)
         .ok_or("land loss entry bytes overflow")?;
     Ok(unsafe { std::slice::from_raw_parts_mut(entries.as_mut_ptr().cast::<u8>(), bytes) })
 }
@@ -223,10 +224,10 @@ fn authenticate(
     {
         return Err("land loss variant identities unreadable");
     }
-    let expected = engine_sites::at(base, cequipment_variant::VTABLE_RVA)
+    let expected = engine_sites::at(base, engine_native_parts::equipment_variant_identity::VTABLE_RVA)
         .ok_or("land loss variant vtable address overflow")?;
     for (entry, identity) in entries.iter_mut().zip(&identities[..count]) {
-        entry.variant = cequipment_variant::identity_from_header(expected, *identity)?;
+        entry.variant = engine_native_parts::equipment_variant_identity::identity_from_header(expected, *identity)?;
     }
     Ok(())
 }
@@ -234,14 +235,14 @@ fn authenticate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     fn put(bytes: &mut [u8], at: usize, value: u64) {
         bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
     }
     #[test]
     fn land_losses_preserve_signed_widths_complete_variants_and_refuse_short_copy() {
         const SIDE: usize = 0x100;
-        let observer = SIDE + crate::cland_combatant::STATS_OBSERVER;
+        let observer = SIDE + engine_native::cland_combatant::STATS_OBSERVER;
         let pool = observer + EQUIPMENT_LOSSES;
         let mut bytes = vec![0; 0x1000];
         put(&mut bytes, observer, VTABLE_RVA.0 as u64);
@@ -264,7 +265,7 @@ mod tests {
             put(
                 &mut bytes,
                 0x900 + n * 16,
-                cequipment_variant::VTABLE_RVA.0 as u64,
+                engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64,
             );
             put(&mut bytes, 0x908 + n * 16, (n as u64 + 1) << 32 | 70);
         }

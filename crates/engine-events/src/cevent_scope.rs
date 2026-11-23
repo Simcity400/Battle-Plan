@@ -54,7 +54,7 @@ pub struct Graph {
 }
 
 pub fn copy_graph(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     root: usize,
     nodes: &mut [Node],
@@ -108,58 +108,58 @@ pub fn copy_graph(
                     .checked_add(offset)
                     .ok_or("event scope field address overflow")
             };
-            if crate::read::<u64>(memory, address) != Some(vtable) {
+            if engine_native_memory::read::<u64>(memory, address) != Some(vtable) {
                 return Err("event scope vtable unreadable or differs");
             }
             let country =
-                crate::read(memory, field(COUNTRY_TAG)?).ok_or("event scope country unreadable")?;
+                engine_native_memory::read(memory, field(COUNTRY_TAG)?).ok_or("event scope country unreadable")?;
             let random = [
-                crate::read(memory, field(RANDOM_A)?)
+                engine_native_memory::read(memory, field(RANDOM_A)?)
                     .ok_or("event scope random word unreadable")?,
-                crate::read(memory, field(RANDOM_B)?)
+                engine_native_memory::read(memory, field(RANDOM_B)?)
                     .ok_or("event scope random word unreadable")?,
             ];
             let mut bindings = [0; 3];
             for (binding, offset) in bindings.iter_mut().zip([ROOT, FROM, PREV]) {
-                let next = crate::read::<u64>(memory, field(offset)?)
+                let next = engine_native_memory::read::<u64>(memory, field(offset)?)
                     .ok_or("event scope binding unreadable")?;
                 *binding = intern(next as usize, nodes)?;
                 discovered = discovered.max(*binding as usize + 1);
             }
             let mut references = [0; 9];
             for (reference, offset) in references.iter_mut().zip(REFERENCE_FIELDS) {
-                *reference = crate::read(memory, field(offset)?)
+                *reference = engine_native_memory::read(memory, field(offset)?)
                     .ok_or("event scope object reference unreadable")?;
             }
-            let region = crate::read::<u64>(memory, field(STRATEGIC_REGION)?)
+            let region = engine_native_memory::read::<u64>(memory, field(STRATEGIC_REGION)?)
                 .ok_or("event scope strategic region pointer unreadable")?;
             let region = region as usize;
             let strategic_region = if region == 0 {
                 None
             } else {
-                use engine_native::cstrategic_region;
+                use engine_native_parts::cstrategic_region;
                 let vtable = engine_sites::at(base, cstrategic_region::VTABLE_RVA)
                     .ok_or("event scope strategic region vtable unreadable or differs")?;
-                if crate::read::<u64>(memory, region) != Some(vtable as u64) {
+                if engine_native_memory::read::<u64>(memory, region) != Some(vtable as u64) {
                     return Err("event scope strategic region vtable unreadable or differs");
                 }
                 Some(
                     region
                         .checked_add(cstrategic_region::ID)
-                        .and_then(|at| crate::read(memory, at))
+                        .and_then(|at| engine_native_memory::read(memory, at))
                         .ok_or("event scope strategic region identity unreadable")?,
                 )
             };
-            let targets = crate::read::<u64>(memory, field(TARGET_STORAGE)?)
+            let targets = engine_native_memory::read::<u64>(memory, field(TARGET_STORAGE)?)
                 .ok_or("event scope target storage pointer unreadable")?
                 as usize;
             let (target_storage_unrecorded, tooltip_storage_unrecorded) = if targets == 0 {
                 (false, false)
             } else {
-                let saved = crate::cpdx_array::Array::read(memory, targets, TARGET_RECORD_BYTES);
+                let saved = engine_native_memory::cpdx_array::Array::read(memory, targets, TARGET_RECORD_BYTES);
                 let tooltip = targets
-                    .checked_add(crate::cpdx_array::STRIDE)
-                    .and_then(|at| crate::cpdx_array::Array::read(memory, at, TARGET_RECORD_BYTES));
+                    .checked_add(engine_native_memory::cpdx_array::STRIDE)
+                    .and_then(|at| engine_native_memory::cpdx_array::Array::read(memory, at, TARGET_RECORD_BYTES));
                 (
                     saved.is_none_or(|rows| rows.count != 0),
                     tooltip.is_none_or(|rows| rows.count != 0),
@@ -171,9 +171,9 @@ pub fn copy_graph(
                 bindings,
                 references,
                 strategic_region,
-                state: crate::read(memory, field(STATE_ID)?)
+                state: engine_native_memory::read(memory, field(STATE_ID)?)
                     .ok_or("event scope state unreadable")?,
-                combat_context_unrecorded: crate::read::<u64>(memory, field(COMBAT_CONTEXT)?)
+                combat_context_unrecorded: engine_native_memory::read::<u64>(memory, field(COMBAT_CONTEXT)?)
                     .ok_or("event scope combat context pointer unreadable")?
                     != 0,
                 target_storage_unrecorded,

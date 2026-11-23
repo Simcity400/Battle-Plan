@@ -57,10 +57,10 @@ pub fn matches(
 ) -> Fact<bool> {
     let parties = match (subject.relation_type, subject.parties) {
         (None, None) => return Ok(false),
-        (Some(kind), None) if kind != engine_native::csubject_relation::TYPE_VALUE => {
+        (Some(kind), None) if kind != engine_native::crelation::subject::TYPE_VALUE => {
             return Ok(false);
         }
-        (Some(kind), Some(parties)) if kind == engine_native::csubject_relation::TYPE_VALUE => {
+        (Some(kind), Some(parties)) if kind == engine_native::crelation::subject::TYPE_VALUE => {
             parties
         }
         _ => return Err("transport subject native branches malformed".into()),
@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn raw_zero_alias_and_unreached_second_preserve_native_order() {
         let subject = |parties| ZeroSubjectInputs {
-            relation_type: Some(engine_native::csubject_relation::TYPE_VALUE),
+            relation_type: Some(engine_native::crelation::subject::TYPE_VALUE),
             parties: Some(parties),
         };
         assert_eq!(
@@ -155,7 +155,7 @@ mod tests {
             sample_hour: crate::rows::PacketHour::Host,
             target_raw: Some(u32::MAX),
             subject: Some(ZeroSubjectInputs {
-                relation_type: Some(engine_native::csubject_relation::TYPE_VALUE),
+                relation_type: Some(engine_native::crelation::subject::TYPE_VALUE),
                 parties: Some([Some(u32::MAX), None]),
             }),
             ..Default::default()

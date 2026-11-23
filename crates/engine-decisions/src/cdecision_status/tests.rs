@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 #[test]
 fn decision_random_items_preserve_full_store_and_signed_words() {
@@ -56,9 +56,9 @@ fn decision_random_items_preserve_full_store_and_signed_words() {
             b"test\xff"
         );
     }
-    let status = crate::read::<u64>(&world.memory(), world.object(1) + ccountry::DECISION_STATUS)
+    let status = engine_native_memory::read::<u64>(&world.memory(), world.object(1) + ccountry::DECISION_STATUS)
         .unwrap() as usize;
-    let items = crate::read::<u64>(&world.memory(), status + RANDOM_ITEMS).unwrap() as usize;
+    let items = engine_native_memory::read::<u64>(&world.memory(), status + RANDOM_ITEMS).unwrap() as usize;
     world.u64(items, 0);
     assert_eq!(
         walk_random_items(
@@ -509,7 +509,7 @@ fn description_seed_reads_only_demanded_targeted_rows_and_preserves_first_match(
         let result = walk_with_description_demand_buffer(&SliceMemory {
                 base: COUNTRY_ADDRESS,
                 bytes,
-            }, IMAGE, 0, COUNTRY_ADDRESS, crate::walk::Buffer::Growing(&mut output), crate::walk::Buffer::Growing(&mut vec![0; 5]), crate::border_effect_demand::Demand {
+            }, IMAGE, 0, COUNTRY_ADDRESS, engine_native_memory::walk::Buffer::Growing(&mut output), engine_native_memory::walk::Buffer::Growing(&mut vec![0; 5]), crate::border_effect_demand::Demand {
                 names: demand,
                 bytes: b"testx",
             });
@@ -543,7 +543,8 @@ fn description_seed_reads_only_demanded_targeted_rows_and_preserves_first_match(
 
 #[test]
 fn country_description_seed_resolves_alias_and_matches_first_definition_key_in_batched_items() {
-    use crate::{border_effect_demand::Name, cgame_state};
+    use crate::border_effect_demand::Name;
+    use engine_native::cgame_state;
     use std::cell::RefCell;
     const GS: usize = 0x4000;
     const COUNTRIES: usize = 0x4800;
@@ -623,7 +624,7 @@ fn country_description_seed_resolves_alias_and_matches_first_definition_key_in_b
     };
     let mut output = vec![Row::default(); 2];
     let demand = [Name { start: 0, len: 5 }];
-    let result = walk_with_description_demand_buffer(&memory, IMAGE, GS, COUNTRY_ADDRESS, crate::walk::Buffer::Growing(&mut output), crate::walk::Buffer::Growing(&mut vec![0; 10]), crate::border_effect_demand::Demand {
+    let result = walk_with_description_demand_buffer(&memory, IMAGE, GS, COUNTRY_ADDRESS, engine_native_memory::walk::Buffer::Growing(&mut output), engine_native_memory::walk::Buffer::Growing(&mut vec![0; 10]), crate::border_effect_demand::Demand {
             names: &demand,
             bytes: b"testx",
         });

@@ -1,5 +1,6 @@
 
-use crate::{Memory, carmy, cpdx_array::Array, memory::FieldBatch, read};
+use engine_native_memory::{Memory, cpdx_array::Array, memory::FieldBatch, read};
+use crate::carmy;
 use engine_sites::Rva;
 
 mod combat_references;
@@ -10,7 +11,7 @@ pub fn counter_identity(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    registry: &mut crate::creference_registry::HeaderResolver,
+    registry: &mut engine_native_parts::creference_registry::HeaderResolver,
 ) -> Result<(u64, u32), &'static str> {
     counter_identity_with(memory, base, pointer, |handle| {
         registry.resolve(memory, base, handle)
@@ -23,7 +24,7 @@ pub fn counter_identity_with(
     pointer: usize,
     resolve: impl FnOnce(u64) -> Result<Option<usize>, &'static str>,
 ) -> Result<(u64, u32), &'static str> {
-    let header = crate::read::<[u8; 32]>(memory, pointer)
+    let header = engine_native_memory::read::<[u8; 32]>(memory, pointer)
         .filter(|_| pointer != 0)
         .ok_or("counter unit header unreadable")?;
     let class = u32::from_le_bytes(header[8..12].try_into().unwrap());
@@ -37,7 +38,7 @@ pub fn counter_identity_with(
                     .ok_or("counter unit module overflow")? as u64)
         || (class == 13
             && vtable
-                != engine_sites::at(base, crate::crailway_gun::VTABLE_RVA)
+                != engine_sites::at(base, engine_native_parts::crailway_gun::VTABLE_RVA)
                     .ok_or("counter railway module overflow")? as u64)
         || (class == 1
             && vtable
@@ -56,11 +57,11 @@ pub fn viewer_land_units(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    mut output: crate::walk::Buffer<'_, u64>,
-) -> crate::walk::Outcome {
+    mut output: engine_native_memory::walk::Buffer<'_, u64>,
+) -> engine_native_memory::walk::Outcome {
     match viewer_land_units_into(memory, base, state, &mut output) {
-        Ok(len) => crate::walk::Outcome::Rows { len },
-        Err(reason) => crate::walk::Outcome::Unavailable { reason },
+        Ok(len) => engine_native_memory::walk::Outcome::Rows { len },
+        Err(reason) => engine_native_memory::walk::Outcome::Unavailable { reason },
     }
 }
 
@@ -68,9 +69,9 @@ fn viewer_land_units_into(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    output: &mut crate::walk::Buffer<'_, u64>,
+    output: &mut engine_native_memory::walk::Buffer<'_, u64>,
 ) -> Result<usize, &'static str> {
-    use crate::memory::{RecordField, RecordLayout, RecordSources};
+    use engine_native_memory::memory::{RecordField, RecordLayout, RecordSources};
     const STRIDE: usize = 24;
     const FIELDS: [RecordField; 3] = [
         RecordField {
@@ -104,11 +105,11 @@ fn viewer_land_units_into(
             .ok_or("viewer unit module address overflow")
     };
     let army = vtable(carmy::VTABLE_RVA)?;
-    let gun = vtable(crate::crailway_gun::VTABLE_RVA)?;
+    let gun = vtable(engine_native_parts::crailway_gun::VTABLE_RVA)?;
     let task_force = vtable(crate::ctask_force::VTABLE_RVA)?;
-    let mut records = [0_u8; crate::cpdx_array::POINTER_PAGE * STRIDE];
+    let mut records = [0_u8; engine_native_memory::cpdx_array::POINTER_PAGE * STRIDE];
     let mut len = 0;
-    crate::cpdx_array::pointer_pages(
+    engine_native_memory::cpdx_array::pointer_pages(
         memory,
         units,
         "viewer unit pointer unreadable",
@@ -281,13 +282,13 @@ impl MapMotion {
             return Err("unit route arena slice is not the route length");
         }
         let (ordinary, alternate) = output.split_at_mut(self.ordinary.count as usize);
-        crate::cpdx_array::copy_u32s(
+        engine_native_memory::cpdx_array::copy_u32s(
             memory,
             self.ordinary,
             ordinary,
             "unit ordinary route unreadable",
         )?;
-        crate::cpdx_array::copy_u32s(
+        engine_native_memory::cpdx_array::copy_u32s(
             memory,
             self.alternate,
             alternate,
@@ -344,7 +345,7 @@ pub fn read_map_motion_observed(
     unit: usize,
     owner: u32,
     combats: &mut FirstCombatMemo,
-    registry: &mut crate::creference_registry::HeaderResolver,
+    registry: &mut engine_native_parts::creference_registry::HeaderResolver,
     references: &mut CombatReferencesCapture<'_>,
 ) -> Result<MapMotion, &'static str> {
     read_map_motion_impl(
@@ -370,7 +371,7 @@ fn read_map_motion_impl(
     owner: u32,
     combats: &mut FirstCombatMemo,
     mut references: Option<(
-        &mut crate::creference_registry::HeaderResolver,
+        &mut engine_native_parts::creference_registry::HeaderResolver,
         &mut CombatReferencesCapture<'_>,
     )>,
     count: Option<&mut Option<Result<i32, &'static str>>>,
@@ -497,7 +498,7 @@ pub(crate) fn read_map_motion_combat_links(
     base: usize,
     unit: usize,
     motion: MapMotion,
-    registry: &mut crate::creference_registry::HeaderResolver,
+    registry: &mut engine_native_parts::creference_registry::HeaderResolver,
 ) -> Result<[u64; 2], &'static str> {
     let vector =
         Array::from_header(motion.combat_header, 8).ok_or("unit combat-link vector invalid")?;
@@ -535,7 +536,7 @@ fn map_combat_identity(
     memory: &impl Memory,
     base: usize,
     combat: usize,
-    registry: &mut crate::creference_registry::HeaderResolver,
+    registry: &mut engine_native_parts::creference_registry::HeaderResolver,
 ) -> Result<(u64, u8), &'static str> {
     let header = read::<[u8; 32]>(memory, combat)
         .filter(|_| combat != 0)
@@ -549,15 +550,15 @@ fn map_combat_identity(
         .ok_or("map combat primary identity invalid")?;
     let classes = [
         crate::cland_combat::VTABLE_RVA,
-        crate::cland_border_war_combat::VTABLE_RVA,
+        engine_native_parts::cland_border_war_combat::VTABLE_RVA,
         crate::cnaval_combat::VTABLE_RVA,
     ];
     let (secondary_rva, kind) = match engine_sites::which(base, primary, &classes) {
         Some(crate::cland_combat::VTABLE_RVA) => {
             (crate::cland_combat::BODY_VTABLE_RVA, COMBAT_LAND)
         }
-        Some(crate::cland_border_war_combat::VTABLE_RVA) => (
-            crate::cland_border_war_combat::BODY_VTABLE_RVA,
+        Some(engine_native_parts::cland_border_war_combat::VTABLE_RVA) => (
+            engine_native_parts::cland_border_war_combat::BODY_VTABLE_RVA,
             COMBAT_BORDER_WAR,
         ),
         Some(crate::cnaval_combat::VTABLE_RVA) => (Rva(0x02a5_6e70), COMBAT_NAVAL),
@@ -757,7 +758,7 @@ fn combat_role(
     let vtable = read::<u64>(memory, combat).ok_or("first combat identity unreadable")?;
     if ![
         combat_layout::VTABLE_RVA,
-        crate::cland_border_war_combat::VTABLE_RVA,
+        engine_native_parts::cland_border_war_combat::VTABLE_RVA,
         crate::cnaval_combat::VTABLE_RVA,
     ]
     .iter()
@@ -769,7 +770,7 @@ fn combat_role(
     let vtable = read::<u64>(memory, side).ok_or("first combat side unreadable")?;
     if ![
         side_layout::VTABLE_RVA,
-        crate::cland_border_war_combatant::VTABLE_RVA,
+        engine_native_parts::cland_border_war_combatant::VTABLE_RVA,
         crate::cnaval_combatant::VTABLE_RVA,
     ]
     .iter()
@@ -812,7 +813,7 @@ impl FirstCombatMemo {
 
     pub fn reserve(&mut self, rows: usize) -> std::io::Result<()> {
         let additional = rows.saturating_sub(self.entries.len());
-        crate::allocation::reserve_map(&mut self.entries, additional)
+        engine_allocation::reserve_map(&mut self.entries, additional)
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -879,7 +880,7 @@ mod arrow_tests {
         bytes[UNIT + RETREAT] = 1;
         bytes[UNIT + WITHDRAWAL] = 2;
         bytes[UNIT + NAVAL_TRANSFER_MEMBERSHIP..][..8].copy_from_slice(&9_u64.to_le_bytes());
-        let memory = crate::memory::CountingMemory::new(&bytes);
+        let memory = engine_native_memory::memory::CountingMemory::new(&bytes);
         assert_eq!(
             read_movement_arrow_scalars(&memory, UNIT),
             MovementArrowScalars {
@@ -896,7 +897,7 @@ mod arrow_tests {
 #[cfg(test)]
 mod viewer_unit_tests {
     use super::*;
-    use crate::walk::{Buffer, Outcome};
+    use engine_native_memory::walk::{Buffer, Outcome};
 
     const BASE: usize = 0x1000;
     const STATE: usize = 0x100;
@@ -925,7 +926,7 @@ mod viewer_unit_tests {
     }
 
     fn read(bytes: &[u8]) -> Result<Vec<u64>, &'static str> {
-        let memory = crate::memory::CountingMemory::new(bytes);
+        let memory = engine_native_memory::memory::CountingMemory::new(bytes);
         let mut output = Vec::new();
         match viewer_land_units(&memory, BASE, STATE, Buffer::Growing(&mut output)) {
             Outcome::Rows { len } => Ok(output[..len].to_vec()),
@@ -937,7 +938,7 @@ mod viewer_unit_tests {
     #[test]
     fn divisions_and_railway_guns_keep_vector_order_without_task_forces() {
         let army = carmy::VTABLE_RVA;
-        let gun = crate::crailway_gun::VTABLE_RVA;
+        let gun = engine_native_parts::crailway_gun::VTABLE_RVA;
         let fleet = crate::ctask_force::VTABLE_RVA;
         let bytes = world(&[
             (army, 0, handle(5)),

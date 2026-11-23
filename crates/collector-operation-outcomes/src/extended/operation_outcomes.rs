@@ -2,7 +2,7 @@ use crate::operation_outcomes as hooks;
 use collector_primitives::table_capture::{grow_capacity, grow_vec};
 use collector_projection::table_conversion::unavailable;
 use engine_allocation::{copy_vec, map_slice, owned_vec};
-use engine_native::walk::Outcome;
+use engine_native_memory::walk::Outcome;
 use replay_data::{rows::OperationCompletionRow, rows::TableId, rows::TableRows};
 use replay_frame::{frame::TableInput, frame::TableView};
 use std::sync::atomic::{AtomicUsize, Ordering};

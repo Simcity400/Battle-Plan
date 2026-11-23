@@ -1,11 +1,11 @@
-import { datedPlaybackVerdict } from './datedPlayback.mjs';
+import { COST_FORMULA, datedPlaybackVerdict, summarizeWidgetCosts } from './datedPlayback.mjs';
 import { createReadStream, existsSync } from 'node:fs';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import readline from 'node:readline';
 import path from 'node:path';
 import { compareCaptures } from '../../ui/e2e/compare.mjs';
 import { mergeHistory, readHistory, slowestCards } from './coverage.mjs';
-import { sought, MAP_FRAME_MS, MAP_P99_MS, UNPRESENTED, asked, catalogueHour, machineLine, framesLate, handledAt, freshnessByKind, hoursInstalled, losses, mapFrames, phaseSeconds, popoutPresented, presentedAt, playbackPace } from './verdicts.mjs';
+import { sought, MAP_FRAME_MS, MAP_P99_MS, UNPRESENTED, asked, catalogueHour, classifyPerfFile, costSessionConfinement, machineLine, profileLines, sessionConfinement, framesLate, handledAt, freshnessByKind, hoursInstalled, losses, mapFrames, phaseSeconds, popoutPresented, presentedAt, playbackPace, windowLosses } from './verdicts.mjs';
 import { BUDGET_MS, FRAME_BUDGET_MS, MAX_PLAYBACK_AGE_HOURS, SUSTAINED_DROPS, consoleFailures, failedReplies, firstContent, frameTimes, groupBy, item, mapAcks, mapSeek, quantiles } from './verdicts.mjs';
 import { FAIL, PARTIAL, dashboardRows } from './playbackVerdicts.mjs';
 import { perFrame } from './trace.mjs';
@@ -26,30 +26,42 @@ async function sweeps(folder) {
 }
 const sweep = await sweeps(files.sweeps);
 
-async function perfRecords(folder) {
+async function perfRecords(folder, { keepQueries = false } = {}) {
   const names = folder ? await readdir(folder).catch(() => []) : [];
-  const pages = names.filter(name => /^perf-.+\.jsonl$/.test(name)), viewers = names.filter(name => /^perf-.+\.jsonl\.map\.\d+\.jsonl$/.test(name));
+  const classified = names.map(name => ({ name, info: classifyPerfFile(name) })).filter(entry => entry.info !== null);
+  const pages = classified.filter(entry => entry.info.kind === 'page');
+  const viewers = classified.filter(entry => entry.info.kind === 'viewer');
   if (!pages.length) return { records: null, mapRecords: [] };
   const read = async (name, keep) => {
     for await (const line of readline.createInterface({ input: createReadStream(path.join(folder, name), 'utf8'), crlfDelay: Infinity })) keep(line);
   };
   const records = [], mapRecords = [];
-  const wanted = /^\{"t":"(map_state|tick|workerFrame|picture|ink|commit|shown|widget|q|frame|lost)"/;
+  const wanted = /^\{"t":"(map_state|tick|workerFrame|picture|ink|commit|shown|widget|widget_error|q|frame|lost|page)"/;
   const lost = line => line.includes('"t":"lost"') && JSON.parse(line).t === 'lost';
-  for (const name of pages) await read(name, line => {
-    if (!wanted.test(line) && !lost(line)) return;
-    const record = JSON.parse(line);
-    if ((record.t === 'q' && record.outcome !== 'error') || (record.t === 'frame' && !record.playing)) return;
-    if (record.t === 'q') record.session = name.slice('perf-'.length, -'.jsonl'.length);
-    records.push(record);
-  });
-  for (const name of viewers) await read(name, line => {
-    if (/^\{"t":"map(_open|_upload)?"/.test(line)) mapRecords.push(JSON.parse(line));
-    else if (lost(line)) records.push(JSON.parse(line));
-  });
+  for (const { name, info: { session } } of pages) {
+    await read(name, line => {
+      if (!wanted.test(line) && !lost(line)) return;
+      const record = JSON.parse(line);
+      if (record.t === 'frame' && !record.playing) return;
+      if (record.t === 'q') {
+        if (record.outcome !== 'error' && !keepQueries) return;
+        records.push(record.outcome === 'error' ? { ...record, session }
+          : { t: 'q', at: record.at, cmd: record.cmd, product: record.product, cache: record.cache, outcome: record.outcome, hour: record.hour, ms: record.ms, session });
+        return;
+      }
+      records.push({ ...record, session });
+    });
+  }
+  for (const { name, info: { session } } of viewers) {
+    await read(name, line => {
+      if (/^\{"t":"map(_open|_upload)?"/.test(line)) mapRecords.push({ ...JSON.parse(line), session });
+      else if (lost(line)) records.push({ ...JSON.parse(line), session });
+    });
+  }
   return { records, mapRecords };
 }
-const { records, mapRecords } = await perfRecords(files.perf);
+const hasWidgetCosts = Boolean(sweep?.results?.some(result => result.area === 'widget-costs'));
+const { records, mapRecords } = await perfRecords(files.perf, { keepQueries: hasWidgetCosts });
 
 async function visualManifest(folder) {
   const names = (await readdir(folder).catch(() => [])).filter(name => /^manifest-.+\.json$/.test(name)).sort();
@@ -126,16 +138,24 @@ if (sweep) {
         pass: area('trace').filter(result => result.trace).length >= playedPages }] : []),
   ].map(row => ({ ...row, cells: [...row.cells, verdict(row.pass)] })));
 
-  section('Cold sessions (each a fresh app on the profile; everything it times first is timed cold)', ['Session', 'Phases', 'Started with', 'Opened campaign (ms)', 'Took', 'App exit', 'Result'],
+  const sessionMetaBySlug = new Map((sweep.meta.sessions ?? []).map(meta => [meta.session, meta]));
+  section('Cold sessions (each a fresh app on the profile; everything it times first is timed cold)', ['Session', 'Phases', 'Started with', 'Opened campaign (ms)', 'Took', 'App exit', 'Confinement', 'Result'],
     (run.sessions ?? []).map(entry => {
-      const opened = results.find(result => result.area === 'startup' && result.session === entry.name.replace(/ /g, '-'));
-      const pass = !entry.error && entry.sweepExit === 0 && entry.appExit === 0;
-      const failure = entry.error ? `it could not start: ${entry.error}` : entry.sweepExit !== 0 ? `the sweep exited ${entry.sweepExit}` : `the app exited ${entry.appExit ?? 'only when stopped'}`;
+      const slug = entry.name.replace(/ /g, '-');
+      const opened = results.find(result => result.area === 'startup' && result.session === slug);
+      const conf = sessionConfinement(run, entry, sessionMetaBySlug.get(slug) ?? null);
+      const failures = [];
+      if (entry.error) failures.push(`it could not start: ${entry.error}`);
+      else if (entry.sweepExit !== 0) failures.push(`the sweep exited ${entry.sweepExit}`);
+      else if (entry.appExit !== 0) failures.push(`the app exited ${entry.appExit ?? 'only when stopped'}`);
+      failures.push(...conf.reasons);
+      const pass = failures.length === 0;
       return { pass, cells: [entry.name, entry.phases.join(', '), `emptied: ${entry.emptied.join(', ')}; kept only: ${entry.kept.join(', ')}`,
-        fmt(opened?.ms), `${Math.round(entry.seconds)} s`, entry.appExit ?? '–', pass ? 'pass' : `**FAIL**: ${why([failure])}`] };
+        fmt(opened?.ms), `${Math.round(entry.seconds)} s`, entry.appExit ?? '–', conf.summary, pass ? 'pass' : `**FAIL**: ${why(failures)}`] };
     }), 'Before each session the suite deletes the content cache (BattlePlan\\viewer under the profile\'s local app data), the shader cache, the WebView2 profile with its HTTP and code caches, and the app\'s settings, and checks they are gone. Kept: the recording. Reply and answer caches live in the app\'s memory and start empty with each session. The user\'s own BattlePlan folder is never used: the profile has its own local app data.');
 
-  section('Opening the campaign (ms from the click on its library row to the dashboard and its visible widgets showing content, in each cold session)', ['Session', 'Step', 'ms', 'Result', 'Why'],
+  const runThrottle = run.cpuThrottle ?? sweep.meta.cpuThrottle ?? 1;
+  section(`Opening the campaign (ms from the click on its library row to the dashboard and its visible widgets showing content, in each cold session${runThrottle > 1 ? `, CPU throttled ×${runThrottle}` : ''})`, ['Session', 'Step', 'ms', 'Result', 'Why'],
     area('startup').map(result => ({ pass: result.pass, cells: [result.session, result.label ?? result.item, fmt(result.ms), verdict(result.pass), why(result.reasons)] })));
 
   under('pages');
@@ -282,7 +302,7 @@ if (sweep) {
       const ms = value => value?.toFixed(1) ?? '–';
       return { pass, cells: [result.item.slice(13), result.label, frames?.frames ?? '–', ms(frames?.work.p50), ms(frames?.work.p99), ms(frames?.work.max),
         ms(frames?.gpu.p99), ms(frames?.gpu.max), frames ? `${frames.dropped} of ${frames.frames}` : '–', verdict(pass), why(reasons)] };
-    }), "Pointer and key input to the native map (zoom, pan, Fly and Walk, hover, clicks) enters through the viewer's suite input channel (BATTLEPLAN_E2E_INPUT, off for users) as egui's own events, where the windowing library's translated input arrives; everything after it runs as for a user. Only the windowing library's translation of real input is untested: the suite runs on a desktop of its own, without a cursor.");
+    }), "Pointer and key input to the native map (zoom, pan, Fly and Walk, hover, clicks) enters through the viewer's suite input channel (BATTLEPLAN_E2E_INPUT, off for users) as egui's own events, where the windowing library's translated input arrives; everything after it runs as for a user. Only the windowing library's translation of real input is untested: the suite runs on a desktop of its own, without a cursor. Native viewer phases (map and mapfps) run under OS core confinement when profiled, without Chromium JS CPU throttling.");
   under('mapfps');
   const uncapped = area('mapfps');
   section('Map frame rate achieved, presented uncapped (the viewer without vsync, in a session of its own)', ['Interaction', 'While', 'Frames', 'FPS', 'Work p99', 'Note'],
@@ -309,9 +329,10 @@ if (sweep) {
   section(`Playback (frame time: each playing frame's main-thread time to render, against ${FRAME_BUDGET_MS.toFixed(1)} ms; dropped: an interval over 1.5 refreshes of the ${refresh ?? '?'} Hz display, failing on ${SUSTAINED_DROPS} or more in a row)`,
     ['Page', 'h/s', 'Frames', 'Frame p50', 'Frame p95', 'Frame max', 'Interval p95', 'Dropped', 'Longest drop run', 'Result', 'Why'],
     area('playback').map(result => {
-      const { count, main, interval, drops } = frameTimes(records ?? [], result.from, result.to, refresh);
+      const sessionRecords = (records ?? []).filter(r => !result.session || !r.session || r.session === result.session);
+      const { count, main, interval, drops } = frameTimes(sessionRecords, result.from, result.to, refresh);
       const reasons = [...result.reasons];
-      const ticks = records ? records.filter(record => record.t === 'tick' && record.playing && record.at >= result.from && record.at <= result.to) : null;
+      const ticks = records ? sessionRecords.filter(record => record.t === 'tick' && record.playing && record.at >= result.from && record.at <= result.to) : null;
       if (ticks && !ticks.length) reasons.push('the clock recorded no ticks while playing');
       else if (ticks) {
         const other = ticks.find(tick => tick.speed !== result.speed);
@@ -324,7 +345,14 @@ if (sweep) {
         if (seconds < 1) reasons.push(`the clock ticked over only ${seconds.toFixed(2)} s, too little to tell its pace`);
         else if (!pace.pass) reasons.push(`measured clock speed ${pace.hps?.toFixed(1) ?? 'unknown'} h/s, expected ${result.speed} h/s`);
       }
-      if (!result.complete) reasons.push(`the perf log lost records: ${JSON.stringify(result.losses)}`);
+      const hasWindowBounds = result.from != null && result.to != null;
+      const lostWindow = hasWindowBounds ? windowLosses(sessionRecords, result.from, result.to) : { count: 0, sources: [] };
+      if (lostWindow.count > 0 || (!hasWindowBounds && !result.complete)) {
+        const detail = lostWindow.count > 0
+          ? `${lostWindow.count} records (${lostWindow.sources.join(', ')})`
+          : JSON.stringify(result.losses);
+        reasons.push(`the perf log lost records: ${detail}`);
+      }
       if (!count) reasons.push('no playing frames recorded');
       const untimed = count - main.n;
       if (untimed) reasons.push(`${untimed} playing frames have no main-thread time, so the frame times are incomplete`);
@@ -345,23 +373,30 @@ if (sweep) {
     const result = datedPlaybackVerdict(datedRuns, records ?? [], { legacy });
     auditedPlacements = result.placements;
     await writeFile(path.join(files.out, 'dated-playback.json'), JSON.stringify(result, null, 2));
+    const passedCount = result.placements.filter(p => p.pass === true).length;
+    const realFailedCount = result.placements.filter(p => p.pass === false && p.status !== 'not migrated').length;
+    const summaryNote = result.placements.length
+      ? `Placements: ${passedCount} passed, ${result.notMigrated} not migrated, ${realFailedCount} failed.`
+      : null;
     section('Dashboard playback at 1,440 game hours per second', ['Result', 'Why'],
-      [{ pass: result.pass, cells: [verdict(result.pass), why(result.reasons)] }]);
+      [{ pass: result.pass, cells: [verdict(result.pass), why(result.reasons)] }], summaryNote);
   }
 
   const ms2 = value => (value === null || value === undefined || !Number.isFinite(value) ? '–' : value.toFixed(2));
-  section("Browser trace (one playing window a page under the DevTools trace, apart from the timed windows; ms a frame on the page's main thread unless named off it; the app's painting from the perf log over the same window)",
+  const traceThrottle = run.cpuThrottle ?? sweep.meta.cpuThrottle ?? 1;
+  section(`Browser trace (one playing window a page under the DevTools trace${traceThrottle > 1 ? `, CPU throttled ×${traceThrottle}` : ''}, apart from the timed windows; ms a frame on the page's main thread unless named off it; the app's painting from the perf log over the same window)`,
     ['Page', 'h/s', 'Frames', 'Main busy', 'App painting', 'Script outside painting', 'Recalc style', 'Layout', 'Pre-paint, layers', 'Paint', 'Composite', 'GC', 'Other', 'Raster (off main)', 'GPU (off main)', 'Raw trace', 'What forces style and layout, and the longest scripts'],
     area('trace').map(result => {
       if (!result.trace) return { pass: false, cells: [result.page, result.speed, '–', '–', '–', '–', '–', '–', '–', '–', '–', '–', '–', '–', '–', '–', why(result.reasons)] };
       const each = perFrame(result.trace);
-      const frames = records ? records.filter(record => record.t === 'frame' && record.at >= result.from && record.at <= result.to) : [];
+      const frames = records ? records.filter(record => record.t === 'frame' && (!result.session || !record.session || record.session === result.session) && record.at >= result.from && record.at <= result.to) : [];
       const painting = frames.length ? frames.reduce((sum, record) => sum + (record.paint_ms ?? 0), 0) / frames.length : null;
       const scripts = (result.trace.scripts ?? []).slice(0, 3).map(entry => `${entry.what} ${entry.ms} ms ×${entry.count}`);
+      const throttleNote = result.cpuThrottle === 1 && traceThrottle > 1 ? ['unthrottled JS trace'] : [];
       return { pass: result.pass, cells: [result.page, result.speed, result.trace.frames ?? '–', ms2(each.main), ms2(painting),
         ms2(each.script === null || painting === null ? null : Math.max(0, each.script - painting)), ms2(each.style), ms2(each.layout), ms2(each.prePaint),
         ms2(each.paint), ms2(each.composite), ms2(each.gc), ms2(each.other), ms2(each.raster), ms2(each.gpu), result.file ? `[trace](${result.file.replaceAll('\\', '/')})` : '–',
-        why([[...result.reasons, ...each.causes.slice(0, 6), ...scripts].join('; ')])] };
+        why([[...result.reasons, ...throttleNote, ...each.causes.slice(0, 6), ...scripts].join('; ')])] };
     }), area('trace').length ? null : 'No playing window was traced.');
 
   const sessionLogs = new Map();
@@ -395,9 +430,77 @@ if (sweep) {
 
   under('playback', 'visual');
   const freshKinds = records ? freshnessByKind(records, area('playback'), area('hours'), starts, auditedPlacements) : null;
-  section(`Freshness by widget kind (exact while paused, worker eligibility within ${MAX_PLAYBACK_AGE_HOURS} h at p95, zero future frames)`, ['Kind', 'Placements', 'Displayed lag p95 (h)', 'Worker eligible lag p95 (h)', 'Result', 'Why'],
+  section(`Freshness by widget kind (exact while paused, worker eligibility within ${MAX_PLAYBACK_AGE_HOURS} h at p95, zero future frames; placeholders fail as not migrated)`, ['Kind', 'Placements', 'Displayed lag p95 (h)', 'Worker eligible lag p95 (h)', 'Result', 'Why'],
     freshKinds === null ? [{ pass: false, cells: ['–', '–', '–', '–', verdict(false), 'no perf log'] }]
-      : freshKinds.sort((a, b) => a.kind.localeCompare(b.kind)).map(kind => ({ pass: kind.pass !== false, cells: [kind.kind, kind.placements, kind.worst === null ? '–' : kind.worst >= Number.MAX_VALUE ? 'none' : kind.worst, kind.eligible ?? '–', kind.pass === null ? 'not migrated' : verdict(kind.pass), why(kind.reasons)] })));
+      : freshKinds.sort((a, b) => a.kind.localeCompare(b.kind)).map(kind => ({ pass: kind.pass, cells: [kind.kind, kind.placements, kind.worst === null ? '–' : kind.worst >= Number.MAX_VALUE ? 'none' : kind.worst, kind.eligible ?? '–', kind.status === 'not migrated' ? '**FAIL** (not migrated)' : verdict(kind.pass), why(kind.reasons)] })));
+
+  under('widget-costs');
+  const costResults = area('widget-costs');
+  if (costResults.length) {
+    const emptyWindows = costResults.filter(r => r.isEmpty);
+    const widgetWindows = costResults.filter(r => !r.isEmpty);
+    const costSessionSlug = costResults[0]?.session ?? null;
+    const costConf = costSessionConfinement(run, sweep, costSessionSlug);
+    const ungated = Boolean(costConf.page?.ungated || (records ?? []).some(r => r.t === 'page' && (!costSessionSlug || !r.session || r.session === costSessionSlug) && r.ungated));
+    const costReport = summarizeWidgetCosts(widgetWindows, records ?? [], {
+      baselines: emptyWindows,
+      profile: { name: run.profile ?? null, cpuThrottle: run.cpuThrottle ?? sweep.meta.cpuThrottle ?? 1, cores: run.cores ?? null },
+      confinement: costConf,
+      ungated,
+    });
+    await writeFile(path.join(files.out, 'widget-costs.json'), JSON.stringify(costReport, null, 2));
+    const ms1 = value => (value === null || value === undefined || !Number.isFinite(value) ? '–' : value.toFixed(1));
+    const signed = value => (value === null || value === undefined || !Number.isFinite(value) ? '–' : `${value >= 0 ? '+' : ''}${value.toFixed(1)}`);
+    const byOutcome = new Map();
+    for (const w of costReport.widgets) byOutcome.set(w.outcome, (byOutcome.get(w.outcome) ?? 0) + 1);
+    const outcomeLine = ['content', 'placeholder', 'refusal', 'error'].map(k => `${byOutcome.get(k) ?? 0} ${k}`).join(', ');
+    const baseMain = costReport.baseline.main;
+    const sampleLine = (costReport.baseline.samples ?? []).map(sample =>
+      `${sample.label}: p50 ${ms1(sample.main.p50)} / p95 ${ms1(sample.main.p95)} / max ${ms1(sample.main.max)} ms (${sample.main.n} frames)`).join('; ');
+    const spreadLine = costReport.baseline.samples?.length >= 2
+      ? ` Spread across samples: Δp50 ${ms1(costReport.baseline.spread?.p50Ms)} ms, Δp95 ${ms1(costReport.baseline.spread?.p95Ms)} ms.` : '';
+    const costNote = `Each widget mounted alone at default size, playing at 1,440 h/s. Ranked by \`costScoreMs = ${COST_FORMULA}\` (ms/frame; \`Δp50\` shown beside \`Δp95\`; negative \`Δp95\` is never clamped to zero and is marked \`below baseline noise\`). Pooled empty-page baseline: p50 ${ms1(baseMain.p50)} / p95 ${ms1(baseMain.p95)} / max ${ms1(baseMain.max)} ms (${baseMain.n} frames${costReport.baseline.lostRecords ? `, ${costReport.baseline.lostRecords} lost records` : ''})${sampleLine ? ` [${sampleLine}]` : ''}.${spreadLine} Outcomes across ${costReport.widgets.length} kinds: ${outcomeLine}. Full data in \`widget-costs.json\`.`;
+    const costRows = [];
+    if (!costReport.baseline.usable) {
+      costRows.push({
+        pass: false,
+        cells: [
+          '–', '__empty__ (baseline)', 'empty', '**FAIL**', '–',
+          ms1(baseMain.p50), '–', ms1(baseMain.p95), '–',
+          `${baseMain.n} (${ms1(costReport.baseline.seconds)} s)`, '–', '–', '–', '–', 'n/a',
+          why(costReport.baseline.reasons),
+        ],
+      });
+    }
+    for (const [index, w] of costReport.widgets.entries()) {
+      const reqList = Object.entries(w.requestsByProduct ?? {}).slice(0, 4).map(([prod, r]) => `${prod} ${r.toFixed(1)}`).join(', ');
+      const reqCell = w.requestsPerSec == null ? '–' : `${w.requestsPerSec.toFixed(1)}${reqList ? ` (${reqList})` : ''}`;
+      const workerCell = w.worker.changedFrames > 0 ? `${ms1(w.worker.p95)} / ${ms1(w.worker.mean)}` : '–';
+      const framesCell = `${w.main.n} (${ms1(w.seconds)} s)`;
+      const notes = [];
+      if (w.detail) notes.push(w.detail);
+      if (w.belowBaselineNoise) notes.push('below baseline noise');
+      if (w.lowFrameCount) notes.push(`low sample: ${w.main.n} frames in ${ms1(w.seconds)} s`);
+      if (w.correctnessErrors?.length) notes.push(...w.correctnessErrors);
+      if (w.postWindowAuditErrors?.length) {
+        const firstPost = w.postWindowAuditErrors[0];
+        notes.push(`post-window audit @ ${new Date(firstPost.at).toISOString()}: ${firstPost.error}`);
+      }
+      if (w.incompleteReasons?.length) notes.push(...w.incompleteReasons);
+      costRows.push({
+        pass: w.pass,
+        cells: [
+          index + 1, w.kind, w.outcome, verdict(w.pass), ms1(w.costScoreMs),
+          ms1(w.main.p50), signed(w.mainDelta.p50), ms1(w.main.p95), signed(w.mainDelta.p95),
+          framesCell, workerCell, w.commitsPerSec == null ? '–' : w.commitsPerSec.toFixed(1), reqCell,
+          w.lagP95Hours == null ? '–' : Math.round(w.lagP95Hours), w.exact, why([...new Set(notes)]),
+        ],
+      });
+    }
+    section('Per-widget playback cost at 1,440 h/s (sorted most expensive first)',
+      ['Rank', 'Kind', 'Outcome', 'Result', 'Score (ms)', 'Main p50', 'Δp50', 'Main p95', 'Δp95', 'Frames (s)', 'Worker p95 / mean', 'Commits/s', 'Req/s (by product)', 'Lag p95 (h)', 'Exact', 'Note'],
+      costRows, costNote);
+  }
 
   under(...(run.tier === 'quick' ? ['visual'] : ['visual', 'catalogue']));
   const visualRows = [];
@@ -417,9 +520,13 @@ if (sweep) {
   section('Visual check (pages, widgets, catalogue views, open states and the map at fixed hours and cameras, against the accepted baseline)', ['Capture', 'Kind', 'Result', 'Why', 'Diff'], visualRows, visualNote ?? (visualRows.length ? null : 'All the same.'));
 
   under();
-  const lost = records ? losses(records) : [];
-  section('Measurement losses (records the perf logs dropped: any can hide a failed reply or a slow frame)', ['Source', 'Records', 'From', 'To'],
-    lost.map(loss => ({ pass: false, cells: [loss.source, loss.count, new Date(loss.from).toISOString(), new Date(loss.to).toISOString()] })), lost.length ? null : 'None.');
+  const timedWindows = [
+    ...area('playback').filter(r => r.from != null && r.to != null).map(r => ({ label: `${r.page} ${r.speed} h/s${r.scroll ? ` (scroll ${r.scroll})` : ''}`, from: r.from, to: r.to })),
+    ...area('widget-costs').filter(r => r.from != null && r.to != null).map(r => ({ label: `cost:${r.kind}`, from: r.from, to: r.to })),
+  ];
+  const lost = records ? losses(records, timedWindows) : [];
+  section('Measurement losses (records the perf logs dropped: any can hide a failed reply or a slow frame)', ['Source', 'Records', 'Windows', 'From', 'To'],
+    lost.map(loss => ({ pass: false, cells: [loss.source, loss.count, why(loss.windows), new Date(loss.from).toISOString(), new Date(loss.to).toISOString()] })), lost.length ? null : 'None.');
 
   const closed = new Set((run.sessions ?? []).filter(s => s.appExit === 0).map(s => s.name.replaceAll(' ', '-')));
   const finished = new Map(sweep.meta.sessions.filter(meta => meta.finished && closed.has(meta.session))
@@ -445,11 +552,15 @@ const failed = judged.flatMap(entry => entry.rows).filter(row => !row.pass).leng
 const passed = failed === 0;
 const duration = run.seconds ? `${Math.round(run.seconds / 60)} min (${Object.entries(run.phases ?? {}).map(([name, seconds]) => `${name} ${Math.round(seconds)} s`).join(', ')})` : 'unknown';
 const phaseLine = phaseSeconds(sweep?.meta.sessions).map(([name, seconds]) => `${name} ${Math.round(seconds)} s`).join(', ');
+const extraHeader = profileLines(run, sweep, records);
 const lines = [
   `# Acceptance suite${run.tier === 'quick' ? ' (quick tier)' : ''}: ${passed ? 'PASSED' : 'FAILED'}`, '',
+  ...extraHeader.filter(line => line.startsWith('> ')),
+  ...(extraHeader.some(line => line.startsWith('> ')) ? [''] : []),
   `${run.commit ? `main ${run.commit.slice(0, 10)}. ` : ''}Duration ${duration}.${sweep ? ` Sweep ${Math.round(sweep.meta.seconds ?? 0)} s, viewport ${sweep.meta.viewport?.width}×${sweep.meta.viewport?.height} at ${sweep.meta.viewport?.dpr}×, display ${run.refreshHz ?? '?'} Hz.` : ''}`,
   `Phases: ${phaseLine || 'none ran'}.`,
   machineLine(run),
+  ...extraHeader.filter(line => !line.startsWith('> ')),
   ...(run.shell ? [`Measuring shell ${run.shell.folder} (${run.shell.revision?.slice(0, 10) ?? 'revision unknown'}) serving the production bundle ${run.shell.ui.folder}, built ${run.shell.ui.built}, ${run.shell.ui.files} files.`] : []),
   `${failed} failing rows. Budget: ${BUDGET_MS} ms for anything a user waits on.`, '',
 ];

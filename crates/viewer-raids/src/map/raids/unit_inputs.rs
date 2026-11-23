@@ -5,10 +5,10 @@ use replay_frame::frame::DecodedSource;
 use std::collections::BTreeMap;
 pub const NO_BUILDING_TYPE: u32 = 0x4c17;
 const SCALE: i64 = 100_000;
-const SOURCE_NAVAL_BASE: u32 = engine_native::craid_source::KIND_NAVAL_BASE;
-const SOURCE_CARRIER: u32 = engine_native::craid_source::KIND_CARRIER;
-const SOURCE_SUBMARINE: u32 = engine_native::craid_source::KIND_SUBMARINE;
-const SOURCE_BUILDING: u32 = engine_native::craid_source::KIND_BUILDING;
+const SOURCE_NAVAL_BASE: u32 = engine_native_air::craid_source::KIND_NAVAL_BASE;
+const SOURCE_CARRIER: u32 = engine_native_air::craid_source::KIND_CARRIER;
+const SOURCE_SUBMARINE: u32 = engine_native_air::craid_source::KIND_SUBMARINE;
+const SOURCE_BUILDING: u32 = engine_native_air::craid_source::KIND_BUILDING;
 use viewer_gpu::unit_pose::PLANE_UNRECORDED;
 pub fn source_province<'a>(
     assets: &RaidAssets,

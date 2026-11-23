@@ -1,9 +1,19 @@
 
-use crate::{
-    Memory, carmy, carmy_leader, ccountry, cdiplomacy_status, cequipment_variant, cgame_state,
-    corders_group, cpdx_array::Array, cprovince, crelation, cstate, cterrain_type,
-    cweather_manager, modifier_accumulator, modifier_keys, read, sweather_per_province,
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::{
+    carmy,
+    carmy_leader,
+    ccountry,
+    cgame_state,
+    corders_group,
+    cprovince,
+    crelation,
+    cstate,
+    cweather_manager::{self, province_weather as sweather_per_province},
 };
+use engine_native_politics::cdiplomacy_status;
+use engine_native_parts::{cterrain_type, modifier_accumulator};
+use crate::modifier_keys;
 use engine_sites::Rva;
 
 pub type Field<T> = Result<T, &'static str>;
@@ -238,11 +248,11 @@ fn at(pointer: usize, offset: usize) -> Field<usize> {
         .ok_or("attrition pointer invalid or overflow")
 }
 
-fn field<T: crate::memory::Raw>(memory: &impl Memory, pointer: usize, offset: usize) -> Field<T> {
+fn field<T: engine_native_memory::memory::Raw>(memory: &impl Memory, pointer: usize, offset: usize) -> Field<T> {
     read(memory, at(pointer, offset)?).ok_or("attrition field unreadable")
 }
 
-fn global<T: crate::memory::Raw>(memory: &impl Memory, base: usize, key: Rva) -> Field<T> {
+fn global<T: engine_native_memory::memory::Raw>(memory: &impl Memory, base: usize, key: Rva) -> Field<T> {
     let address = engine_sites::at(base, key).ok_or("attrition pointer invalid or overflow")?;
     read(memory, address).ok_or("attrition field unreadable")
 }
@@ -271,13 +281,13 @@ fn request(accumulator: usize, key: u32, depth: i32, scale: i64) -> SourceReques
 #[derive(Default)]
 pub struct Memo {
     enabled: bool,
-    modifiers: crate::combat_sources::Map<(usize, u32), Field<i64>>,
-    countries: crate::combat_sources::Map<u32, Field<ccountry::Country>>,
-    at_war: crate::combat_sources::Map<usize, Field<bool>>,
-    states: crate::combat_sources::Map<(usize, u32), Field<i64>>,
-    state_roots: crate::combat_sources::Map<(usize, u32), Field<usize>>,
-    weather: crate::combat_sources::Map<u32, Field<Option<usize>>>,
-    templates: crate::combat_sources::Map<usize, Field<i64>>,
+    modifiers: engine_native_parts::keyed_map::Map<(usize, u32), Field<i64>>,
+    countries: engine_native_parts::keyed_map::Map<u32, Field<engine_native_memory::country_identity::Country>>,
+    at_war: engine_native_parts::keyed_map::Map<usize, Field<bool>>,
+    states: engine_native_parts::keyed_map::Map<(usize, u32), Field<i64>>,
+    state_roots: engine_native_parts::keyed_map::Map<(usize, u32), Field<usize>>,
+    weather: engine_native_parts::keyed_map::Map<u32, Field<Option<usize>>>,
+    templates: engine_native_parts::keyed_map::Map<usize, Field<i64>>,
     requests: u64,
     hits: u64,
 }
@@ -307,7 +317,7 @@ impl Memo {
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        fn bytes<K, V>(map: &crate::combat_sources::Map<K, V>) -> usize {
+        fn bytes<K, V>(map: &engine_native_parts::keyed_map::Map<K, V>) -> usize {
             map.capacity() * (std::mem::size_of::<(K, V)>() + 1)
         }
         bytes(&self.modifiers)
@@ -323,7 +333,7 @@ impl Memo {
 fn remember<K: Copy + Eq + std::hash::Hash, V: Copy>(
     enabled: bool,
     counts: (&mut u64, &mut u64),
-    map: &mut crate::combat_sources::Map<K, Field<V>>,
+    map: &mut engine_native_parts::keyed_map::Map<K, Field<V>>,
     key: K,
     read: impl FnOnce() -> Field<V>,
 ) -> Field<V> {
@@ -362,8 +372,8 @@ impl Memo {
     fn country(
         &mut self,
         raw: u32,
-        read: impl FnOnce() -> Field<ccountry::Country>,
-    ) -> Field<ccountry::Country> {
+        read: impl FnOnce() -> Field<engine_native_memory::country_identity::Country>,
+    ) -> Field<engine_native_memory::country_identity::Country> {
         remember(
             self.enabled,
             (&mut self.requests, &mut self.hits),
@@ -502,7 +512,7 @@ pub fn capture_memoized(
         memo.country(raw, || countries.resolve(raw))
     });
     let country_accumulator =
-        country.and_then(|country| at(country.pointer, ccountry::MODIFIER_ACCUMULATOR));
+        country.and_then(|country| at(country.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR));
     let upkeep_modifier = country_accumulator.and_then(|root| {
         memo.modifier(
             memory,
@@ -762,7 +772,7 @@ fn terrain(
     memo: &mut Memo,
 ) -> Field<Option<Terrain>> {
     let definition = carmy::movement_definition(memory, base, province)?;
-    let terrain = field::<u64>(memory, definition, crate::province_definition::TERRAIN)? as usize;
+    let terrain = field::<u64>(memory, definition, engine_native::cprovince::definition::TERRAIN)? as usize;
     let valid = field::<u8>(memory, terrain, cterrain_type::VALID)?;
     if valid == 0 {
         return Ok(None);
@@ -784,7 +794,7 @@ fn terrain(
                 continue;
             }
             let variant = field::<u64>(memory, entry, 0)? as usize;
-            identity(memory, base, variant, cequipment_variant::VTABLE_RVA)?;
+            identity(memory, base, variant, engine_native_parts::equipment_variant_identity::VTABLE_RVA)?;
             let values = field::<u64>(memory, variant, 0x3a0)? as usize;
             equipment = equipment.wrapping_add(field(memory, values, index as usize * 8)?);
         }
@@ -798,13 +808,13 @@ fn terrain(
 
 fn at_war(memory: &impl Memory, base: usize, country: usize) -> Field<bool> {
     let diplomacy = field::<u64>(memory, country, ccountry::DIPLOMACY_STATUS)? as usize;
-    identity(memory, base, diplomacy, cdiplomacy_status::VTABLE_RVA)?;
+    identity(memory, base, diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)?;
     if field::<i32>(memory, diplomacy, cdiplomacy_status::ENEMY_COUNTRY_COUNT)? != 0 {
         return Ok(true);
     }
     let relations = Array::read(
         memory,
-        at(diplomacy, cdiplomacy_status::OWNED_RELATIONS)?,
+        at(diplomacy, engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS)?,
         8,
     )
     .ok_or("attrition owned relations invalid")?;
@@ -853,7 +863,7 @@ pub fn fresh_acclimatization(
         .acclimatization
         .ok_or("attrition acclimatization unavailable")?;
     if u64::from_le_bytes(header[..8].try_into().unwrap())
-        != engine_sites::at(base, crate::acclimatization_data::VTABLE_RVA)
+        != engine_sites::at(base, engine_native_parts::acclimatization_data::VTABLE_RVA)
             .ok_or("attrition module address overflow")? as u64
     {
         return Err("attrition acclimatization identity mismatch");
@@ -928,7 +938,7 @@ fn thermal(
             0
         } else {
             let vtable = field::<u64>(memory, group, 0)?;
-            let groups = [corders_group::VTABLE_RVA, crate::carmy_group::VTABLE_RVA];
+            let groups = [corders_group::VTABLE_RVA, engine_native_parts::carmy_group::VTABLE_RVA];
             if engine_sites::which(base, vtable as usize, &groups).is_none()
                 || field::<u32>(memory, group, corders_group::HANDLE)?
                     != corders_group::REFERENCE_TYPE
@@ -941,8 +951,8 @@ fn thermal(
             return Ok(None);
         }
         identity(memory, base, leader, carmy_leader::VTABLE_RVA)?;
-        if field::<u32>(memory, leader, crate::cunit_leader::TYPE)?
-            != crate::cunit_leader::REFERENCE_TYPE
+        if field::<u32>(memory, leader, engine_native::cunit_leader::TYPE)?
+            != engine_native::cunit_leader::REFERENCE_TYPE
         {
             return Err("attrition army leader reference type mismatch");
         }
@@ -1060,7 +1070,7 @@ fn template_ratio(memory: &impl Memory, base: usize, template: usize) -> Field<i
         memory,
         base,
         template,
-        crate::creferenced_division_template::VTABLE_RVA,
+        engine_native::creferenced_division_template::VTABLE_RVA,
     )?;
     let entries = Array::read(memory, at(template, 0xc0)?, 16)
         .ok_or("attrition supply composition invalid")?;
@@ -1071,7 +1081,7 @@ fn template_ratio(memory: &impl Memory, base: usize, template: usize) -> Field<i
             .element(ordinal, 16)
             .ok_or("attrition supply composition index invalid")?;
         let unit = field::<u64>(memory, entry, 0)? as usize;
-        identity(memory, base, unit, crate::csub_unit_definition::VTABLE_RVA)?;
+        identity(memory, base, unit, engine_native_parts::csub_unit_definition::VTABLE_RVA)?;
         let count = field::<i32>(memory, entry, 8)?;
         total = total.wrapping_add(count);
         if field::<u8>(memory, unit, 0x5b7)? != 0 {

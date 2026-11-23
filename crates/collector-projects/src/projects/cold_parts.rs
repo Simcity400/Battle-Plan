@@ -38,8 +38,8 @@ impl ProjectPart {
             memory,
             base,
             game_state,
-            engine_native::walk::Buffer::Growing(&mut self.projects),
-            engine_native::walk::Buffer::Growing(&mut self.history),
+            engine_native_memory::walk::Buffer::Growing(&mut self.projects),
+            engine_native_memory::walk::Buffer::Growing(&mut self.history),
             &mut |id| self.owners.binary_search(&id).is_ok(),
         );
         self.outcomes = report.outcomes;
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn refused_country_pool_or_history_uses_the_serial_failure_precedence() {
         struct Fault<'a> {
-            inner: engine_native::memory::SliceMemory<'a>,
+            inner: engine_native_memory::memory::SliceMemory<'a>,
             at: usize,
         }
         impl Memory for Fault<'_> {
@@ -392,8 +392,8 @@ mod tests {
             &world.memory(),
             kit::BASE,
             world.game_state,
-            engine_native::walk::Buffer::Growing(&mut rows),
-            engine_native::walk::Buffer::Growing(&mut history),
+            engine_native_memory::walk::Buffer::Growing(&mut rows),
+            engine_native_memory::walk::Buffer::Growing(&mut history),
             &mut |_| true,
         );
         rows.truncate(outcome.len());
@@ -416,7 +416,7 @@ mod tests {
     fn one_shot_lifecycle_and_history_failures_never_retry_and_keep_independent_tables() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         struct OneShot<'a> {
-            inner: engine_native::memory::SliceMemory<'a>,
+            inner: engine_native_memory::memory::SliceMemory<'a>,
             at: usize,
             reads: AtomicUsize,
         }
@@ -438,21 +438,21 @@ mod tests {
             &world.memory(),
             kit::BASE,
             world.game_state,
-            engine_native::walk::Buffer::Growing(&mut rows),
-            engine_native::walk::Buffer::Growing(&mut history),
+            engine_native_memory::walk::Buffer::Growing(&mut rows),
+            engine_native_memory::walk::Buffer::Growing(&mut history),
             &mut |_| true,
         );
         rows.truncate(outcome.len());
         let history_pointer = rows
             .iter()
             .find_map(|row| {
-                let count = engine_native::read::<u32>(
+                let count = engine_native_memory::read::<u32>(
                     &world.memory(),
                     row.source_pointer + nproject_cproject::HISTORY_COUNT,
                 )?;
                 (count != 0)
                     .then(|| {
-                        engine_native::read::<u64>(
+                        engine_native_memory::read::<u64>(
                             &world.memory(),
                             row.source_pointer + nproject_cproject::HISTORY,
                         )
@@ -492,7 +492,7 @@ mod tests {
     fn a_later_one_shot_native_failure_precedes_global_duplicate_validation() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         struct OneShot<'a> {
-            inner: engine_native::memory::SliceMemory<'a>,
+            inner: engine_native_memory::memory::SliceMemory<'a>,
             at: usize,
             reads: AtomicUsize,
         }
@@ -513,8 +513,8 @@ mod tests {
             &world.memory(),
             kit::BASE,
             world.game_state,
-            engine_native::walk::Buffer::Growing(&mut projects),
-            engine_native::walk::Buffer::Growing(&mut Vec::new()),
+            engine_native_memory::walk::Buffer::Growing(&mut projects),
+            engine_native_memory::walk::Buffer::Growing(&mut Vec::new()),
             &mut |_| true,
         );
         projects.truncate(outcome.len());

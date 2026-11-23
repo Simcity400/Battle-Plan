@@ -1,10 +1,5 @@
 
-#[cfg(test)]
-use engine_native::read_census;
-use engine_native::{
-    Memory, ccharacter, ccharacter_manager, ccountry, cgame_state, cpdx_array, creference_registry,
-    cstate, memory, read, read_slice, walk,
-};
+use engine_native::ccharacter::{self, manager as ccharacter_manager};
 
 pub mod cflag_manager;
 pub mod cscript_flag;

@@ -1,6 +1,10 @@
+use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice, walk::Outcome};
 use crate::{
-    Memory, climited_use_tech_bonus as bonus, cpdx_array::Array, cresearch_slot, ctechnology,
-    ctechnology_status, ctechnology_template, read, read_slice, walk::Outcome,
+    climited_use_tech_bonus as bonus,
+    cresearch_slot,
+    ctechnology,
+    ctechnology_status,
+    ctechnology_template,
 };
 
 mod text;
@@ -98,8 +102,8 @@ pub fn walk_country(
         country_pointer,
         country,
         context,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(bonuses),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(bonuses),
     )
 }
 
@@ -109,8 +113,8 @@ pub fn walk_country_buffer(
     country_pointer: usize,
     country: u32,
     context: Result<Context, &'static str>,
-    output: crate::walk::Buffer<'_, Row>,
-    bonuses: crate::walk::Buffer<'_, BonusRow>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
+    bonuses: engine_native_memory::walk::Buffer<'_, BonusRow>,
 ) -> (Outcome, Outcome) {
     let (inputs, bonuses, _) = walk_country_buffer_with_status(
         memory,
@@ -130,8 +134,8 @@ pub fn walk_country_buffer_with_status(
     country_pointer: usize,
     country: u32,
     context: Result<Context, &'static str>,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut bonuses: crate::walk::Buffer<'_, BonusRow>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut bonuses: engine_native_memory::walk::Buffer<'_, BonusRow>,
 ) -> (Outcome, Outcome, usize) {
     let mut status_pointer = 0;
     let mut bonus_len = 0_usize;
@@ -379,7 +383,7 @@ fn resolve_bonus_roster(
         return Ok(());
     }
     use crate::climited_use_tech_cost_reduction as reduction;
-    use crate::memory::{RecordField, RecordLayout, RecordSources};
+    use engine_native_memory::memory::{RecordField, RecordLayout, RecordSources};
     let fields: [RecordField; 2] = [
         RecordField {
             source_offset: 0,

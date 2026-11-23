@@ -1,12 +1,13 @@
 
-use crate::{
+use engine_native_memory::{
     Memory,
     cpdx_array::Array,
-    cstrategic_air, loop_history_record_fields, loop_history_window,
     memory::{RecordField, RecordLayout, RecordSources},
     read,
     walk::Outcome,
 };
+use engine_native_air::cstrategic_air;
+use crate::{loop_history_record_fields, loop_history_window};
 use engine_sites::Rva;
 
 const SLOT_FIELD: [RecordField; 1] = [RecordField {
@@ -42,7 +43,7 @@ impl Row {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -55,7 +56,7 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -63,7 +64,7 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, Row>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     match walk_inner(memory, base, game_state, output) {
         Ok((len, 0)) => Outcome::Rows { len },
@@ -76,7 +77,7 @@ fn walk_inner(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Result<(usize, u32), &'static str> {
     let mut len = 0_usize;
     let mut unread_rows = 0_u32;
@@ -260,7 +261,7 @@ fn authenticate(
     Ok(())
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,
@@ -349,7 +350,8 @@ pub mod air_stats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ccountry, cgame_state, cstrategic_air_manager};
+    use engine_native::{ccountry, cgame_state};
+    use engine_native_air::cstrategic_air_manager;
     use std::collections::BTreeMap;
 
     const BASE: usize = 0x0001_4000_0000;

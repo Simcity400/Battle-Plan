@@ -21,10 +21,17 @@ pub const ASSISTED_KILL: usize = 0xa1;
 #[cfg(test)]
 pub const SAVE_RVA: usize = 0x00c8_4ef0;
 
-use crate::{
-    Memory, cgame_date, cgame_state, cpdx_array::Array, cprovince, csub_unit_definition,
-    msvc_string, read, read_slice, walk::Outcome,
+use engine_native_memory::{
+    Memory,
+    cgame_date,
+    cpdx_array::Array,
+    msvc_string,
+    read,
+    read_slice,
+    walk::Outcome,
 };
+use engine_native::{cgame_state, cprovince};
+use engine_native_parts::csub_unit_definition;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TextRange {
@@ -74,8 +81,8 @@ pub fn walk(
         base,
         game_state,
         current_hour,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(bytes),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(bytes),
     )
 }
 
@@ -84,8 +91,8 @@ pub fn walk_buffer(
     base: usize,
     game_state: usize,
     current_hour: i32,
-    mut output: crate::walk::Buffer<'_, Record>,
-    mut bytes: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Record>,
+    mut bytes: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> ListWalk {
     let result = (|| {
         if game_state == 0 || current_hour <= 0 {
@@ -167,7 +174,7 @@ pub fn read_one(
         base,
         pointer,
         None,
-        &mut crate::walk::Buffer::Growing(bytes),
+        &mut engine_native_memory::walk::Buffer::Growing(bytes),
         &mut used,
     )? {
         RecordRead::Ready(record) => Ok((record, used)),
@@ -180,7 +187,7 @@ fn read_record(
     base: usize,
     pointer: usize,
     current_hour: Option<i32>,
-    bytes: &mut crate::walk::Buffer<'_, u8>,
+    bytes: &mut engine_native_memory::walk::Buffer<'_, u8>,
     bytes_len: &mut usize,
 ) -> Result<RecordRead, &'static str> {
     let mut used = *bytes_len;
@@ -297,7 +304,7 @@ pub fn storage_demand(
         .ok_or("sunk-ship history address overflow")?;
     let array = Array::read(memory, header, 8).ok_or("sunk-ship history array invalid")?;
     let mut bytes = 0_usize;
-    crate::cpdx_array::pointers(
+    engine_native_memory::cpdx_array::pointers(
         memory,
         array,
         "sunk-ship history pointer unreadable",
@@ -422,7 +429,7 @@ fn u64_at(bytes: &[u8], offset: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const GAME: usize = 0x100;
     const VECTOR: usize = 0x800;

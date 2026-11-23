@@ -234,7 +234,7 @@ fn a_refused_decode_allocation_costs_its_tables_for_the_hour_and_capture_goes_on
 
 #[cfg(feature = "alloc-fault-injection")]
 fn decode_refused(ordinal: usize) {
-    use engine_native::walk::Outcome;
+    use engine_native_memory::walk::Outcome;
     let by_name = Outcome::Unavailable {
         reason: "capture buffer allocation failed",
     };
@@ -1000,7 +1000,7 @@ fn set_aside_witness() -> io::Result<()> {
         // fixture.
         unsafe {
             processor.lost(&collector_capture::sampling::LostObservation {
-                campaign_id: engine_native::capture_text::Owned {
+                campaign_id: engine_native_memory::capture_text::Owned {
                     bytes: CAMPAIGN.to_vec(),
                     len: CAMPAIGN.len(),
                 },

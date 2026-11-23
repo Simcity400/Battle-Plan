@@ -5,7 +5,7 @@ use collector_primitives::{
 use collector_projection::table_conversion::{table, unavailable};
 use engine_allocation::{copy_vec, map_slice, owned_vec, vec};
 use engine_characters::{character_inputs as native, character_inputs::Role};
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows::CharacterOperativeRow,
     rows::CharacterRoleTraitRow, rows::Recorded, rows::TableId, rows::tables,
@@ -712,7 +712,7 @@ mod tests {
 
     #[test]
     fn walks_every_hour() {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

@@ -1,7 +1,13 @@
 use engine_land_inputs::{cstats_observer as stats, land_events as native};
 use engine_native::{
-    carmy, ccountry, cequipment_variant as variant, cequipment_variant_pool as pool, cgame_state,
-    cland_combat as combat, cland_combatant as side, cprovince, cunit,
+    carmy,
+    ccountry,
+    cequipment_variant::{self as variant, pool as pool},
+    cgame_state,
+    cland_combat as combat,
+    cland_combatant as side,
+    cprovince,
+    cunit,
 };
 use std::mem::size_of;
 
@@ -32,7 +38,7 @@ impl Fixture {
         let loss_variants = (0..variants)
             .map(|n| {
                 [
-                    (base + variant::VTABLE_RVA.0) as u64,
+                    (base + engine_native_parts::equipment_variant_identity::VTABLE_RVA.0) as u64,
                     (n as u64 + 1) << 32 | 70,
                 ]
             })
@@ -134,7 +140,7 @@ fn land_event_snapshot_scale() {
         for dispatched in [false, true] {
             let f = Fixture::new(countries, variants);
             assert_eq!(f.loss_variants.len(), variants);
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             const SAMPLES: usize = 201;
             let mut times = Vec::with_capacity(SAMPLES);
             let mut words = 0usize;

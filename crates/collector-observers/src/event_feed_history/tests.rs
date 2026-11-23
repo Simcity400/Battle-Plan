@@ -1,6 +1,9 @@
 use super::*;
 use engine_native::{
-    ccountry, cdiplomacy_status, cgame_state, crelation, crelation_status, cwar_relation,
+    ccountry,
+    cgame_state,
+    crelation::{self, status as crelation_status},
+    cwar_relation,
 };
 use std::collections::BTreeMap;
 
@@ -65,7 +68,7 @@ fn script_fact(frame: usize, scope: usize, option: Option<i32>) -> ScriptFact {
         },
         actor: operands(0, 1).actor,
         target: operands(0, 2).actor,
-        token: engine_native::msvc_string::Descriptor::from_header(&NoReads, 0, header).unwrap(),
+        token: engine_native_memory::msvc_string::Descriptor::from_header(&NoReads, 0, header).unwrap(),
         scope: Some(scope),
         dispatch_frame: frame,
         dispatch_definition: 123,
@@ -320,7 +323,7 @@ fn script_delayed_baseline_reads_only_first_seen_census_owners_and_carries_empty
     let mut store = ready(8);
     store.prepare_delayed(5001).unwrap();
     store.registry_state = Some(GAME);
-    let country = engine_native::ccountry::Country {
+    let country = engine_native_memory::country_identity::Country {
         pointer: 0x80000,
         canonical_slot: 4999,
         id: 5000,
@@ -779,7 +782,7 @@ fn delayed_labels_never_alias_across_an_overlap_and_the_owner_waits_for_its_cens
         id: 2,
         instance: 55,
     };
-    let census = ccountry::Country {
+    let census = engine_native_memory::country_identity::Country {
         pointer: TARGET,
         canonical_slot: 2,
         id: 2,
@@ -1671,9 +1674,9 @@ impl WarImage {
         self.d(pointer + ccountry::ID, id);
         self.d(pointer + ccountry::SURRENDER_TARGET, instance);
         self.q(pointer + ccountry::DIPLOMACY_STATUS, diplomacy);
-        self.q(diplomacy, BASE + cdiplomacy_status::VTABLE_RVA.0);
-        self.q(diplomacy + cdiplomacy_status::COUNTRY, pointer);
-        self.array(diplomacy + cdiplomacy_status::RELATIONS, matrix, 4);
+        self.q(diplomacy, BASE + engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0);
+        self.q(diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY, pointer);
+        self.array(diplomacy + engine_native_parts::cdiplomacy_status_layout::RELATIONS, matrix, 4);
     }
     fn status(&mut self, pointer: usize, diplomacy: usize, target: u32) {
         self.q(pointer, BASE + crelation_status::VTABLE_RVA.0);
@@ -1927,13 +1930,13 @@ const TARGET_OWNER: EventFeedCountry = EventFeedCountry {
     id: 2,
     instance: 55,
 };
-const CENSUS: [ccountry::Country; 2] = [
-    ccountry::Country {
+const CENSUS: [engine_native_memory::country_identity::Country; 2] = [
+    engine_native_memory::country_identity::Country {
         pointer: ACTOR,
         canonical_slot: 1,
         id: 1,
     },
-    ccountry::Country {
+    engine_native_memory::country_identity::Country {
         pointer: TARGET,
         canonical_slot: 2,
         id: 2,
@@ -1998,7 +2001,7 @@ fn census_hour(
     store: &mut Store,
     memory: &impl Memory,
     hour: i32,
-    owners: &[ccountry::Country],
+    owners: &[engine_native_memory::country_identity::Country],
 ) -> Prepared {
     let mut snapshot = Snapshot::new(0);
     store
@@ -2168,7 +2171,7 @@ fn an_unindexed_pass_retirement_refuses_only_its_uncertified_owner() {
         7,
         GAME,
         1,
-        ccountry::Country {
+        engine_native_memory::country_identity::Country {
             pointer: 0x10000,
             canonical_slot: 0,
             id: 0,
@@ -2285,7 +2288,7 @@ fn certified_owners_recover_without_native_reads() {
     store.registry_state = Some(GAME);
     store.decisions.reset(7);
     let census: Vec<_> = (0..countries)
-        .map(|slot| ccountry::Country {
+        .map(|slot| engine_native_memory::country_identity::Country {
             pointer: 0x100000 + slot * 0x2000,
             canonical_slot: slot as u32,
             id: slot as u32 + 1,
@@ -2935,7 +2938,7 @@ fn a_read_error_under_an_unbroken_cut_is_retried_with_its_original_reason() {
     assert!(owner_refusals(quiet.row()).is_empty());
 }
 
-fn visit(store: &mut Store, memory: &impl Memory, owners: &[ccountry::Country]) {
+fn visit(store: &mut Store, memory: &impl Memory, owners: &[engine_native_memory::country_identity::Country]) {
     let epoch = store.begin_recovery(7, GAME).unwrap();
     for country in owners {
         store.recover_owner(memory, BASE, 7, GAME, 1, *country);

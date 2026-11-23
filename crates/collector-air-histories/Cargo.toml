@@ -15,6 +15,7 @@ default = ["history_changes"]
 history_changes = []
 
 [dependencies]
+engine-native-memory.workspace = true
 engine-air-history.workspace = true
 engine-allocation.workspace = true
 engine-native.workspace = true
@@ -32,6 +33,7 @@ collector-status.workspace = true
 collector-timing.workspace = true
 
 [dev-dependencies]
+engine-native-air = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-test-support.workspace = true
 serde_json.workspace = true
@@ -51,6 +53,7 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 collector-air-histories = { workspace = true, features = ["default", "history_changes", "test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

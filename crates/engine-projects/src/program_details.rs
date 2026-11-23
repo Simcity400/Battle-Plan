@@ -1,8 +1,17 @@
-use crate::{Memory, ccountry, cpdx_array::Array, nproject_cprogram as program, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use crate::nproject_cprogram as program;
 use engine_characters::{cscientist, scientist_skill_entry};
+use engine_native_parts::{
+    cbuilding,
+    cbuilding_template,
+    creference_registry,
+    modifier_accumulator,
+};
 use engine_native::{
-    cbuilding, cbuilding_status, cbuilding_template, ccharacter, cgame_state, cprovince,
-    creference_registry, cstate, modifier_accumulator,
+    cprovince::{buildings as cbuilding_status, self},
+    ccharacter,
+    cgame_state,
+    cstate,
 };
 use engine_sites::Rva;
 
@@ -78,7 +87,7 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .checked_add(offset)
         .ok_or("facility detail address overflow")
 }
-fn word<T: engine_native::memory::Raw>(
+fn word<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -91,7 +100,7 @@ fn pointer(memory: &impl Memory, address: usize, offset: usize) -> Result<usize,
         .filter(|p| *p != 0)
         .ok_or("facility detail pointer is null or invalid")
 }
-fn global<T: engine_native::memory::Raw>(
+fn global<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     base: usize,
     key: Rva,
@@ -321,7 +330,7 @@ pub fn observe(
             let country = modifier_accumulator::requested_effective_at(
                 memory,
                 base,
-                at(owner.unwrap(), ccountry::MODIFIER_ACCUMULATOR)?,
+                at(owner.unwrap(), engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?,
                 key,
             )?
             .wrapping_add(ONE);
@@ -519,6 +528,7 @@ pub fn observe(
 
 #[cfg(test)]
 mod tests {
+    use engine_native::ccountry;
     use super::*;
     struct Idle {
         bytes: Vec<u8>,

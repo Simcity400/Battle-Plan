@@ -601,10 +601,12 @@ fn raid_history_without_assigned_army_or_wing_keeps_empty_name_line() {
 fn raid_history_wing_falls_back_from_stale_army_and_preserves_language_refusal() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use engine_native::{
-        raid_tooltip_operands::ARMY_RESOLVED, raid_tooltip_operands::NAME,
-        raid_tooltip_operands::REFERENCES, raid_tooltip_operands::WING_NAME,
-        raid_tooltip_operands::WING_RESOLVED,
+    use engine_native_air::raid_tooltip_operands::{
+        ARMY_RESOLVED,
+        NAME,
+        REFERENCES,
+        WING_NAME,
+        WING_RESOLVED,
     };
     let (mut fixture, _folder) = fixture(1);
     let reference = 9 | 3 << 32;

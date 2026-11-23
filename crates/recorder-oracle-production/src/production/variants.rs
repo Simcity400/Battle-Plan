@@ -425,7 +425,7 @@ fn compare_variant_stats(
         }
         let is_plane = definitions
             .get(&row.variant)
-            .is_some_and(|flags| flags & engine_native::cequipment_type::PLANE_MASK != 0);
+            .is_some_and(|flags| flags & engine_native_parts::cequipment_type::PLANE_MASK != 0);
         for (index, value) in row.values.into_iter().enumerate() {
             let lane = replay_data::rows::VariantStatsRow::LANE_NAMES[index];
             match value {

@@ -42,9 +42,9 @@ impl Image {
         self.d(country + ccountry::ID, id);
         self.d(country + ccountry::SURRENDER_TARGET, instance);
         self.q(country + ccountry::DIPLOMACY_STATUS, diplomacy);
-        self.q(diplomacy, BASE + cdiplomacy_status::VTABLE_RVA.0);
-        self.q(diplomacy + cdiplomacy_status::COUNTRY, country);
-        self.array(diplomacy + cdiplomacy_status::RELATIONS, matrix, 4);
+        self.q(diplomacy, BASE + engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0);
+        self.q(diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY, country);
+        self.array(diplomacy + engine_native_parts::cdiplomacy_status_layout::RELATIONS, matrix, 4);
     }
 
     fn status(&mut self, status: usize, diplomacy: usize, target: u32) {
@@ -259,8 +259,8 @@ fn high_country_references_and_matrix_indices_use_live_header_bounds() {
         image.d(TARGET + ccountry::ID, target);
         image.d(SELECTED + crelation_status::TARGET_COUNTRY, target);
         image.d(CANDIDATE + crelation::SECOND_COUNTRY, target);
-        image.array(0x21000 + cdiplomacy_status::RELATIONS, 0xb0000, slots);
-        image.array(0x31000 + cdiplomacy_status::RELATIONS, 0xc0000, slots);
+        image.array(0x21000 + engine_native_parts::cdiplomacy_status_layout::RELATIONS, 0xb0000, slots);
+        image.array(0x31000 + engine_native_parts::cdiplomacy_status_layout::RELATIONS, 0xc0000, slots);
         image.q(0xb0000 + target as usize * 8, SELECTED);
         image.q(0xc0000 + 8, RECIPROCAL);
         let pending = war_before(&image, BASE, frame()).unwrap();
@@ -443,7 +443,8 @@ fn annex_missing_scope_role_or_wrong_native_frame_is_not_complete_empty() {
 
 mod provenance_sites {
     use super::*;
-    use crate::{cstate, peace_conference};
+    use engine_native::cstate;
+    use crate::peace_conference;
     use provenance::{ENTRIES, STATE_OWNER_CALLERS, World, route, state_owner};
 
     const CONFERENCE: usize = 0x90000;

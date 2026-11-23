@@ -1,5 +1,6 @@
 use super::*;
-use crate::{cgame_state, memory::SliceMemory};
+use crate::cgame_state;
+use engine_native_memory::memory::SliceMemory;
 use std::{cell::RefCell, collections::BTreeMap};
 
 const GS: usize = 0x1000;

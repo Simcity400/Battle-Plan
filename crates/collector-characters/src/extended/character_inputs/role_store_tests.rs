@@ -3,10 +3,13 @@ use super::{Capacities, Captured, RoleStore};
 use crate::extended::characters::census::{FixtureHistory, RoleCensus};
 use collector_observers::character_changes::{Changes, Counting as Lookups, Counts, Watches};
 use engine_characters::cscientist;
+use engine_native_memory::{Memory, cpdx_array::Array, walk::Outcome};
 use engine_native::{
-    Memory, ccharacter, ccharacter_manager, ccountry_leader, cgame_state, cpdx_array::Array,
-    cunit_leader, walk::Outcome,
+    ccharacter::{self, manager as ccharacter_manager},
+    cgame_state,
+    cunit_leader,
 };
+use engine_native_politics::ccountry_leader;
 use replay_data::{rows::CharacterRoleTraitRow, rows::TableRows};
 use replay_frame::frame::TableView;
 use std::{cell::{Cell, RefCell}, ops::Range};
@@ -519,7 +522,7 @@ fn operative_links_are_carried_while_their_leaders_certificates_hold() {
 #[test]
 fn an_operative_link_whose_name_was_refused_is_read_again() {
     use collector_observers::unit_leader_changes::Watches as LeaderWatches;
-    use engine_native::cunit_leader_trait;
+    use engine_native_parts::cunit_leader_trait;
     const OPERATIVES: usize = 4;
     let (mut memory, leaders) = resolved_operatives(OPERATIVES);
     let pointers = memory.data.len();

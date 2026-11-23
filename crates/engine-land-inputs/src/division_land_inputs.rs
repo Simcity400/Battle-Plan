@@ -1,9 +1,7 @@
-use crate::{
-    Memory, carmy, carmy_manpower_values,
-    cpdx_array::Array,
-    manpower_value_entry,
-    walk::{Outcome, grow},
-};
+use engine_native_memory::{Memory, cpdx_array::Array, walk::{Outcome, grow}};
+use engine_native::carmy;
+use engine_native_parts::carmy_manpower_values;
+use crate::manpower_value_entry;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
@@ -55,11 +53,11 @@ pub fn capture(
         grow(rows, source.len())?;
         let mut len = 0_usize;
         let mut used = 0_usize;
-        use crate::memory::{RecordLayout, RecordSources, packed_fields};
+        use engine_native_memory::memory::{RecordLayout, RecordSources, packed_fields};
         const ENTRY: usize = manpower_value_entry::STRIDE;
         const PAIR: usize = 2 * ENTRY;
-        const ONE: [crate::memory::RecordField; 1] = packed_fields([(0, ENTRY)]);
-        const TWO: [crate::memory::RecordField; 1] = packed_fields([(0, PAIR)]);
+        const ONE: [engine_native_memory::memory::RecordField; 1] = packed_fields([(0, ENTRY)]);
+        const TWO: [engine_native_memory::memory::RecordField; 1] = packed_fields([(0, PAIR)]);
         const ONE_LAYOUT: RecordLayout<'static> = RecordLayout::new(&ONE, PAIR).unwrap();
         const TWO_LAYOUT: RecordLayout<'static> = RecordLayout::new(&TWO, PAIR).unwrap();
         let scratch_rows = source.len();
@@ -204,7 +202,7 @@ fn contributor(bytes: &[u8]) -> Contributor {
 #[cfg(test)]
 mod sizing_tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     fn seeds(count: usize, contributors: u32) -> Vec<carmy::DivisionSeed> {
         let mut header = [0; 24];

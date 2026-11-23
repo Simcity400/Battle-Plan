@@ -1,7 +1,6 @@
 use super::*;
-use engine_native::{
-    ccountry, cname_group_member, cprovince, ctask_force, cunit, memory::SliceMemory, msvc_string,
-};
+use engine_native::{ccountry, cname_group_member, cprovince, ctask_force, cunit};
+use engine_native_memory::{memory::SliceMemory, msvc_string};
 use replay_capture_spool::spool::Record;
 use replay_data::{identity::Roster, rows::ShipRow};
 use replay_frame::frame::TableUpdate;

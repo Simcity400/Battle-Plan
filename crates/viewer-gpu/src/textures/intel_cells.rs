@@ -71,7 +71,7 @@ impl IntelCellsCache {
                 let result = match build() {
                     Err(error)
                         if error.kind() == io::ErrorKind::WouldBlock
-                            || engine_native::allocation::is_allocation_error(&error) =>
+                            || engine_allocation::is_allocation_error(&error) =>
                     {
                         return Err(error);
                     }
@@ -100,7 +100,7 @@ impl IntelCells {
         let mut offsets = Vec::new();
         offsets
             .try_reserve_exact(count)
-            .map_err(|_| engine_native::allocation::oom())?;
+            .map_err(|_| engine_allocation::oom())?;
         offsets.push(0);
         let land_count = map
             .definitions
@@ -110,11 +110,11 @@ impl IntelCells {
         let mut land_provinces = Vec::new();
         land_provinces
             .try_reserve_exact(land_count)
-            .map_err(|_| engine_native::allocation::oom())?;
+            .map_err(|_| engine_allocation::oom())?;
         let mut land_indices = HashMap::new();
         land_indices
             .try_reserve(land_count)
-            .map_err(|_| engine_native::allocation::oom())?;
+            .map_err(|_| engine_allocation::oom())?;
         for (&province, definition) in &map.definitions {
             if definition.kind == ProvinceKind::Land {
                 let index = u32::try_from(land_provinces.len())
@@ -141,7 +141,7 @@ impl IntelCells {
                 cell[..used].sort_unstable();
                 entries
                     .try_reserve(used)
-                    .map_err(|_| engine_native::allocation::oom())?;
+                    .map_err(|_| engine_allocation::oom())?;
                 for run in cell[..used].chunk_by(|left, right| left == right) {
                     entries.push(CellProvince {
                         land_index: run[0],

@@ -9,7 +9,7 @@ use replay_data::{
 
 const TEXTS: &[&[u8]] = &[b"GER", b"POL", b"", b"dec_a"];
 const NONE: u32 = TagHolderRow::NONE;
-const GUARANTEE: u32 = engine_native::cguarantee_relation::TYPE;
+const GUARANTEE: u32 = engine_native_parts::cguarantee_relation::TYPE;
 
 fn writers() -> Writers {
     let mut writers = Writers::new(vec![Box::new(Feed::default())]);

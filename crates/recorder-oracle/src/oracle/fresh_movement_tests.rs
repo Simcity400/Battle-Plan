@@ -25,7 +25,7 @@ fn selected_railway_building_level_compares_without_demanding_eta_health() {
     use replay_data::rows::RailwaySelectionInputs;
     let (mut frame, mut saved, _, _) = fixtures::fixture();
     let names = BTreeMap::from([(
-        engine_native::cbuilding_template::RAIL_WAY_TOKEN,
+        engine_native_parts::cbuilding_template::RAIL_WAY_TOKEN,
         b"rail_way".as_slice(),
     )]);
     saved
@@ -79,7 +79,7 @@ fn selected_railway_building_level_compares_without_demanding_eta_health() {
 #[test]
 fn railway_infrastructure_uses_saved_health_and_exact_content_maximum() {
     let (mut frame, mut saved, _, _) = fixtures::fixture();
-    let token = engine_native::cbuilding_database::INFRASTRUCTURE_TOKEN;
+    let token = engine_native_parts::cbuilding_database::INFRASTRUCTURE_TOKEN;
     let names = BTreeMap::from([(token, b"infrastructure".as_slice())]);
     saved.construction.state_buildings.insert(
         (1, b"infrastructure".to_vec()),
@@ -186,7 +186,7 @@ fn railway_infrastructure_uses_saved_health_and_exact_content_maximum() {
 fn selected_rail_building_compares_saved_scalars_without_inventing_cache_presence() {
     let (mut frame, mut saved, _, _) = fixtures::fixture();
     let names = BTreeMap::from([(
-        engine_native::cbuilding_template::RAIL_WAY_TOKEN,
+        engine_native_parts::cbuilding_template::RAIL_WAY_TOKEN,
         b"rail_way".as_slice(),
     )]);
     set(

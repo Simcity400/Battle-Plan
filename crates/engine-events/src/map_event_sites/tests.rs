@@ -50,7 +50,7 @@ impl Map {
             world.u32(province + cprovince::ID, id);
             world.u64(province + cprovince::DEFINITION, definition as u64);
             world.put(
-                definition + engine_native::province_definition::TERRAIN_FLAGS,
+                definition + engine_native::cprovince::definition::TERRAIN_FLAGS,
                 &[flags(id)],
             );
             objects.push(province);

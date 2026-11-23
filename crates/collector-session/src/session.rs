@@ -8,7 +8,7 @@ use crate::{
     table_conversion::{table, unavailable},
 };
 use engine_allocation::{copy_vec, owned_vec};
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use engine_stability::{cthreat_source, cworld_threat};
 use replay_data::{rows, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
@@ -238,8 +238,8 @@ impl Captured {
             Err(reason) => return Pass::unavailable(reason),
         };
         let grown = (|| {
-            engine_native::walk::Buffer::Growing(&mut self.manager.rows).ensure(1)?;
-            engine_native::walk::Buffer::Growing(&mut self.aggregates.rows)
+            engine_native_memory::walk::Buffer::Growing(&mut self.manager.rows).ensure(1)?;
+            engine_native_memory::walk::Buffer::Growing(&mut self.aggregates.rows)
                 .ensure(reader.counts()[1])?;
             Ok::<(), &'static str>(())
         })();
@@ -395,7 +395,7 @@ fn pool_u64(log: &RawLog<3>, start: usize) -> u64 {
 
 fn sspan(
     log: &mut RawLog<3>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     addr: Option<usize>,
     len: usize,
     mask: u32,
@@ -405,7 +405,7 @@ fn sspan(
 
 fn copy_reason_literal(
     log: &mut RawLog<3>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     len: usize,
     source: usize,
     inline: bool,
@@ -419,8 +419,8 @@ fn copy_reason_literal(
     let _ = sspan(log, memory, source.checked_add(len), 1, M_SOURCES);
 }
 
-fn copy_source(log: &mut RawLog<3>, memory: &impl engine_native::Memory, pointer: usize) {
-    use engine_native::msvc_string;
+fn copy_source(log: &mut RawLog<3>, memory: &impl engine_native_memory::Memory, pointer: usize) {
+    use engine_native_memory::msvc_string;
     use engine_stability::cthreat_source;
     let head = match sspan(log, memory, Some(pointer), 0x34, M_SOURCES) {
         Some(start) => start,
@@ -463,12 +463,13 @@ fn copy_source(log: &mut RawLog<3>, memory: &impl engine_native::Memory, pointer
 }
 
 fn copy_pass(
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
     log: &mut RawLog<3>,
 ) {
-    use engine_native::{cgame_state, cpdx_array::Array};
+    use engine_native::cgame_state;
+    use engine_native_memory::cpdx_array::Array;
     use engine_stability::cworld_threat;
     let _reads = read_accounting::table(TableId::WorldTension);
     let _ = base;
@@ -527,7 +528,7 @@ fn copy_pass(
 }
 
 pub fn copy_session_refresh(
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     ctx: SessionCopyContext,
     first: &mut SessionJob,
 ) -> SessionCopyReport {
@@ -617,7 +618,7 @@ impl Captured {
         };
         let tension = held.carried(Domain::Tension);
         let grown = (|| {
-            use engine_native::walk::Buffer::Growing;
+            use engine_native_memory::walk::Buffer::Growing;
             Growing(&mut self.manager.rows).ensure(tension.manager.len())?;
             Growing(&mut self.sources.rows).ensure(tension.sources.len())?;
             Growing(&mut self.aggregates.rows).ensure(tension.aggregates.len())?;

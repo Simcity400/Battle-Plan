@@ -1,7 +1,6 @@
 use super::*;
-use engine_native::{
-    cgame_state, cnaval_base, cprovince, cstrategic_navy, cstrategic_navy_manager,
-};
+use engine_native::{cgame_state, cprovince};
+use engine_native_naval::{cnaval_base, cstrategic_navy, cstrategic_navy_manager};
 use std::cell::RefCell;
 
 mod launch;
@@ -14,7 +13,7 @@ const NAVY: usize = 0xb000;
 const FOREIGN_NAVY: usize = 0xb800;
 const NEAREST_BASES: usize = 0x30;
 const FOREIGN_NAVY_SLOTS: usize = 0x48;
-const SUPPLY_HUBS: usize = engine_native::naval_mission_inputs::HUBS;
+const SUPPLY_HUBS: usize = engine_native_naval::naval_mission_inputs::HUBS;
 const PROVINCES: [usize; 3] = [0xe000, 0xe200, 0xe400];
 
 struct TestMemory {
@@ -117,8 +116,8 @@ fn world() -> TestMemory {
     pointer(&mut bytes, 0xc218, 0xd100);
     pointer(&mut bytes, 0xc300, 0xd100);
     for (base, id) in [(0xd000, 0), (0xd100, 3)] {
-        pointer(&mut bytes, base, cnaval_base::VTABLE_RVA.0);
-        word(&mut bytes, base + cnaval_base::PROVINCE_ID, id);
+        pointer(&mut bytes, base, engine_native_parts::cnaval_base_layout::VTABLE_RVA.0);
+        word(&mut bytes, base + engine_native_parts::cnaval_base_layout::PROVINCE_ID, id);
     }
     header(&mut bytes, STATE + cgame_state::PROVINCES, 0x3200, 4);
     for (id, province, area) in [

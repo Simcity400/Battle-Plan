@@ -14,9 +14,12 @@ pub const STRENGTH_RATIO: usize = 0xf0;
 pub const GARRISON_REQUIRED: usize = 0xf8;
 pub const FIXED_POINT_SCALE: i64 = 100_000;
 
+use engine_native_memory::{Memory, cpdx_array::Array, read};
 use crate::{
-    Memory, ccountry_occupation_data, ccountry_occupation_status::Rows, cpdx_array::Array,
-    manpower_value_entry, pdx_robin_hood_table, read,
+    ccountry_occupation_data,
+    ccountry_occupation_status::Rows,
+    manpower_value_entry,
+    pdx_robin_hood_table,
 };
 
 pub mod equipment;
@@ -177,7 +180,7 @@ pub(crate) fn walk_data(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     #[test]
     fn garrison_native_widths_are_never_narrowed_or_normalized() {

@@ -1,6 +1,7 @@
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
 use engine_allocation::{copy_vec, owned_vec};
-use engine_native::{Memory, cunit_leader, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::cunit_leader;
 use replay_data::{rows::LeaderPortraitPathRow, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 
@@ -24,8 +25,8 @@ impl Capacities {
 }
 
 pub struct Captured {
-    rows: CaptureRows<cunit_leader::PortraitPathRow<engine_native::capture_text::Owned>>,
-    tag_memo: cunit_leader::PortraitTagMemo<engine_native::capture_text::Owned>,
+    rows: CaptureRows<cunit_leader::PortraitPathRow<engine_native_memory::capture_text::Owned>>,
+    tag_memo: cunit_leader::PortraitTagMemo<engine_native_memory::capture_text::Owned>,
 }
 impl Captured {
     pub fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
@@ -105,7 +106,7 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     #[test]
     fn missing_hq_census_is_unavailable_and_tag_bytes_convert_exactly() {
         let memory = SliceMemory {

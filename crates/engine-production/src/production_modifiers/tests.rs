@@ -1,7 +1,11 @@
 use super::*;
-use crate::{
-    ccountry::synthetic::World, cequipment_type as ty, cmilitary_production_line,
-    cnaval_production_line, crailway_gun_production_line, cship_refit_production_line,
+use engine_native::ccountry::synthetic::World;
+use engine_native_parts::{
+    cequipment_type as ty,
+    cmilitary_production_line,
+    cnaval_production_line,
+    crailway_gun_production_line,
+    cship_refit_production_line,
 };
 use std::{cell::Cell, collections::BTreeMap};
 
@@ -25,7 +29,7 @@ impl Fixture {
         let equipment = world.alloc(0x5c0);
         let factories = world.alloc(24);
         let bonuses = world.alloc(9 * 16);
-        world.u64(variant, cequipment_variant::VTABLE_RVA.0 as u64);
+        world.u64(variant, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
         world.u64(
             variant + 8,
             (9 << 32) | u64::from(cequipment_variant::REFERENCE_TYPE),
@@ -237,7 +241,7 @@ fn reader_acquires_authenticated_countries_and_their_ordered_retained_inputs() {
         );
         assert_eq!(
             sample.requests[index * KEYS.len()].accumulator,
-            fixture.world.object(country.country) + ccountry::MODIFIER_ACCUMULATOR
+            fixture.world.object(country.country) + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR
         );
         assert_eq!(
             sample.requests[index * KEYS.len()..(index + 1) * KEYS.len()]
@@ -468,7 +472,7 @@ fn slot_parts_concatenate_to_the_whole_walk_and_meet_its_first_failure() {
 fn slot_parts_match_the_whole_walk_at_scale_and_under_every_fault() {
     let mut fixture = Fixture::new(5_000, true);
     let status = |fixture: &Fixture, slot: u32| {
-        crate::read::<u64>(
+        engine_native_memory::read::<u64>(
             &fixture.world.memory(),
             fixture.world.object(slot) + ccountry::PRODUCTION_STATUS,
         )

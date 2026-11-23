@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 #[test]
 fn held_daylight_direction_keeps_signed_words_and_refuses_short_spans() {
@@ -349,7 +349,7 @@ struct Traced<'a> {
     inner: SliceMemory<'a>,
     reads: std::cell::RefCell<Vec<usize>>,
 }
-impl crate::Memory for Traced<'_> {
+impl engine_native_memory::Memory for Traced<'_> {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         self.reads.borrow_mut().push(address);
         self.inner.copy(address, destination)
@@ -462,16 +462,16 @@ fn movement_weather_uses_authored_region_id_and_native_absence() {
     put(
         &mut bytes,
         region,
-        &(crate::cstrategic_region::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_parts::cstrategic_region::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
-        region + crate::cstrategic_region::ID,
+        region + engine_native_parts::cstrategic_region::ID,
         &1_i32.to_le_bytes(),
     );
     put(
         &mut bytes,
-        region + crate::cstrategic_region::RUNTIME_SLOT,
+        region + engine_native_parts::cstrategic_region::RUNTIME_SLOT,
         &99_i32.to_le_bytes(),
     );
     assert_eq!(
@@ -494,7 +494,7 @@ fn movement_weather_uses_authored_region_id_and_native_absence() {
         );
         put(
             &mut bytes,
-            region + crate::cstrategic_region::ID,
+            region + engine_native_parts::cstrategic_region::ID,
             &2_i32.to_le_bytes(),
         );
         let memory = SliceMemory {

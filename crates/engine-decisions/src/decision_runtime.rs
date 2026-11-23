@@ -1,7 +1,11 @@
 use engine_sites::Rva;
+use engine_native_memory::{Memory, cpdx_array::Array, read};
 use crate::{
-    Memory, cdecision, cdecision_cooldown as cooldown, cdecision_status as status,
-    cpdx_array::Array, ctargeted_decision as targeted, ctimed_decision as timed, read,
+    cdecision,
+    cdecision_cooldown as cooldown,
+    cdecision_status as status,
+    ctargeted_decision as targeted,
+    ctimed_decision as timed,
 };
 pub const PERMANENT: usize = 0x960;
 pub const REMOVE_REQUESTED: usize = 0x2d;
@@ -24,7 +28,7 @@ pub struct Record {
     pub country_target: Option<u32>,
     pub numeric_target: Option<i32>,
 }
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     p: usize,
     offset: usize,
@@ -159,7 +163,7 @@ mod tests {
         bytes[0x30..0x34].copy_from_slice(&i32::MIN.to_le_bytes());
         bytes[0x100..0x108].copy_from_slice(&(cdecision::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[0x100 + PERMANENT] = 1;
-        let memory = crate::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: pointer,
             bytes: &bytes,
         };

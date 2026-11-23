@@ -565,7 +565,7 @@ fn regional(
             &subject,
             row.efficiency,
             saved.get(&row.region).map_or(
-                engine_native::cstrategic_navy::FULL_REGIONAL_CONVOY_EFFICIENCY,
+                engine_native_naval::cstrategic_navy::FULL_REGIONAL_CONVOY_EFFICIENCY,
                 |value| value.raw,
             ),
         );

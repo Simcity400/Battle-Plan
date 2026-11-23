@@ -257,7 +257,7 @@ fn policy_quote_joins_gated_traits_initial_trait_attached_policy_and_owner_modif
     assert_eq!(quote(&content, &frame, 300, 25), Ok((-35_000, 11)));
     assert_eq!(quote(&content, &frame, 0x4c17, 25), Ok((-25_000, 14)));
     let clamped = self::frame(
-        engine_native::modifier_definition::CLAMP_MAXIMUM,
+        engine_native_parts::modifier_definition::CLAMP_MAXIMUM,
         Some(-20_000),
     );
     assert_eq!(quote(&content, &clamped, 300, 25), Ok((5_000, 21)));

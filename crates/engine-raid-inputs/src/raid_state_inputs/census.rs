@@ -40,7 +40,7 @@ pub fn demand(
     let pool_bytes = mul(demand.resources + 1, cstrategic_resource_pool::VALUE_STRIDE)?;
     let mut core_links = 0;
     let vtable = site(base, cstate::VTABLE_RVA)? as u64;
-    crate::cpdx_array::pointers(
+    engine_native_memory::cpdx_array::pointers(
         memory,
         states.slice(1, states.count - 1, 8)?,
         "state sizing pointer unreadable",

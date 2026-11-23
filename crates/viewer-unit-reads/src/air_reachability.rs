@@ -9,7 +9,7 @@ use std::{
 mod scans;
 pub use scans::Scans;
 
-use engine_native::cbuilding_template;
+use engine_native_parts::cbuilding_template;
 use content_reader_map::map::ProvinceKind;
 #[cfg(test)]
 use replay_data::rows::AirBaseRow;

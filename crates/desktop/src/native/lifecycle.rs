@@ -245,6 +245,10 @@ impl NativeHost {
             map_window.destroy();
             return Err("BattlePlan is closing.".into());
         }
+        if inner.popout.is_none() {
+            let app = window.app_handle().clone();
+            map_window.on_press(move || { let _ = app.emit("map-pressed", ()); });
+        }
         let mut args: Vec<std::ffi::OsString> = if inner.popout.is_some() {
             std::env::args_os()
                 .skip(1)

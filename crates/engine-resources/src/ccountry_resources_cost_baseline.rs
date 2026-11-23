@@ -7,7 +7,7 @@ pub(super) fn walk_buffer(
     base: usize,
     game_state: usize,
     descriptors: &[cstrategic_resource::Row],
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     let result = (|| {
         let count = u32::try_from(descriptors.len())
@@ -114,7 +114,7 @@ fn resources<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<usize, &'static str> {
     let pointer = country
         .pointer

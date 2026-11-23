@@ -14,13 +14,13 @@ pub struct MapCombatReference {
 #[derive(Default)]
 pub(crate) struct MapCombatIdentityMemo {
     entries: std::collections::HashMap<(usize, usize), MapCombatReference>,
-    registry: crate::creference_registry::HeaderResolver,
+    registry: engine_native_parts::creference_registry::HeaderResolver,
 }
 
 impl MapCombatIdentityMemo {
     pub(crate) fn reserve(&mut self, capacity: usize) -> std::io::Result<()> {
         let additional = capacity.saturating_sub(self.entries.len());
-        crate::allocation::reserve_map(&mut self.entries, additional)
+        engine_allocation::reserve_map(&mut self.entries, additional)
     }
 
     pub(crate) fn clear(&mut self) {
@@ -52,13 +52,13 @@ impl MapCombatIdentityMemo {
 }
 
 pub struct CombatReferencesCapture<'a> {
-    pub entries: crate::walk::Buffer<'a, MapCombatReference>,
+    pub entries: engine_native_memory::walk::Buffer<'a, MapCombatReference>,
     pub required: usize,
     pub written: usize,
     pub failure: Option<&'static str>,
 }
 impl<'a> CombatReferencesCapture<'a> {
-    pub fn new_buffer(entries: crate::walk::Buffer<'a, MapCombatReference>) -> Self {
+    pub fn new_buffer(entries: engine_native_memory::walk::Buffer<'a, MapCombatReference>) -> Self {
         Self {
             entries,
             required: 0,
@@ -85,7 +85,7 @@ impl<'a> CombatReferencesCapture<'a> {
         memory: &impl Memory,
         base: usize,
         pointer: usize,
-        registry: &mut crate::creference_registry::HeaderResolver,
+        registry: &mut engine_native_parts::creference_registry::HeaderResolver,
     ) {
         if self.failure.is_some() {
             return;
@@ -158,7 +158,7 @@ fn read_unit_combat_references_with(
 ) -> Result<usize, &'static str> {
     let vector = Array::from_header(header, 8).ok_or("unit combat-reference vector invalid")?;
     let mut capture =
-        CombatReferencesCapture::new_buffer(crate::walk::Buffer::GrowingFrom(output, start));
+        CombatReferencesCapture::new_buffer(engine_native_memory::walk::Buffer::GrowingFrom(output, start));
     capture.begin(vector.count);
     if capture.failure.is_none() {
         for index in 0..vector.count {

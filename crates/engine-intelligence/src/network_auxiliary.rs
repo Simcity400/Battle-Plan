@@ -1,9 +1,9 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, ccountry_intel_network as network, cpdx_array::Array, csub_intel_network as sub, read,
-};
-use engine_native::{allocation, cstate};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use crate::{ccountry_intel_network as network, csub_intel_network as sub};
+use engine_allocation as allocation;
+use engine_native::cstate;
 
 const LOCAL_GRAPH: usize = 0x08;
 const LOCAL_SUBNETWORK_COUNT: usize = 0x10;
@@ -73,7 +73,7 @@ impl Entry {
     }
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     at: usize,
     offset: usize,
@@ -501,7 +501,7 @@ pub const SITES: [Site; 7] = [
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     fn word(bytes: &mut [u8], at: usize, value: u64) {
         bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
     }

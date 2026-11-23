@@ -25,7 +25,7 @@ impl Held {
             return self.snapshot.clone();
         }
         let value = engine_sites::at(base, engine_events::map_event_sites::FOG_OF_WAR_RVA)
-            .and_then(|address| engine_native::read::<u8>(memory, address));
+            .and_then(|address| engine_native_memory::read::<u8>(memory, address));
         self.token = None;
         let value = value.filter(|_| changes.token(Domain::GameFog) == before)?;
         let equal = self.snapshot.as_ref().is_some_and(|snapshot| {

@@ -1,6 +1,6 @@
 use crate::faction_companion_changes::Changes;
 use engine_allocation as allocation;
-use engine_native::{Memory, cpdx_array::Array};
+use engine_native_memory::{Memory, cpdx_array::Array};
 use engine_stability::cfaction_upgrade_status as native;
 use replay_data::rows::{TableRows, tables};
 use std::sync::Arc;
@@ -147,7 +147,7 @@ impl Store {
         }
         if !owner.slots.is_empty() && self.null_date.is_none() {
             self.null_date = engine_sites::at(base, native::UNSET_CHANGE_HOUR_RVA)
-                .and_then(|at| engine_native::read(memory, at));
+                .and_then(|at| engine_native_memory::read(memory, at));
             if self.null_date.is_none() {
                 self.null_date_failed = true;
                 self.failure = Some("faction advisor null-date operand unavailable");
@@ -359,10 +359,10 @@ mod tests {
         fn copy(&self, at: usize, out: &mut [u8]) -> bool {
             self.reads.set(self.reads.get() + 1);
             if at == native::UNSET_CHANGE_HOUR_RVA.0 && out.len() == 4 {
-                out.copy_from_slice(&engine_native::cgame_date::NULL_RAW_HOUR.to_le_bytes());
+                out.copy_from_slice(&engine_native_memory::cgame_date::NULL_RAW_HOUR.to_le_bytes());
                 return true;
             }
-            engine_native::memory::SliceMemory {
+            engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &self.bytes,
             }
@@ -399,17 +399,17 @@ mod tests {
             put(
                 &mut bytes,
                 date,
-                (engine_native::cgame_date::VTABLE_RVA.0 as u64).to_le_bytes(),
+                (engine_native_memory::cgame_date::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
-                date + engine_native::cgame_date::PERSISTENT_BASE,
-                (engine_native::cgame_date::PERSISTENT_VTABLE_RVA.0 as u64).to_le_bytes(),
+                date + engine_native_memory::cgame_date::PERSISTENT_BASE,
+                (engine_native_memory::cgame_date::PERSISTENT_VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
-                date + engine_native::cgame_date::DATE_BASE,
-                engine_native::cgame_date::NULL_RAW_HOUR.to_le_bytes(),
+                date + engine_native_memory::cgame_date::DATE_BASE,
+                engine_native_memory::cgame_date::NULL_RAW_HOUR.to_le_bytes(),
             );
             for offset in [native::SLOT_SPYMASTER_MODIFIER, native::SLOT_MODIFIER] {
                 let modifier = slot + offset;
@@ -422,7 +422,7 @@ mod tests {
                     &mut bytes,
                     modifier
                         + engine_stability::cmodifier::DISPLAY_NAME
-                        + engine_native::msvc_string::CAPACITY,
+                        + engine_native_memory::msvc_string::CAPACITY,
                     15u64.to_le_bytes(),
                 );
             }

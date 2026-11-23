@@ -1,6 +1,6 @@
 use collector_primitives::clock::qpc;
 use engine_land_inputs::active_ability_record;
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use replay_data::{rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 
@@ -222,20 +222,20 @@ mod tests {
 
     #[test]
     fn the_hourly_walk_on_the_cached_roster_view_costs_one_call_per_country() {
-        use engine_native::{read_counts::CountedMemory, read_counts::ReadCounts};
+        use engine_native_memory::read_counts::{CountedMemory, ReadCounts};
         for countries in [150_u32, 500] {
             let bytes = world(countries, 10);
-            let memory = engine_native::memory::SliceMemory {
+            let memory = engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             };
             let mut storage = engine_allocation::shared(
-                engine_native::country_memory::Cache::try_with_capacity(
+                engine_native_intelligence::country_memory::Cache::try_with_capacity(
                     (countries as usize + 1) * 16,
                 )
                 .unwrap(),
             ).unwrap();
-            let cache = engine_native::country_memory::Cache::prepare_shared(
+            let cache = engine_native_intelligence::country_memory::Cache::prepare_shared(
                 &mut storage,
                 &memory,
                 0,

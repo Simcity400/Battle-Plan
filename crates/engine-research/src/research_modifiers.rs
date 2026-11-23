@@ -1,7 +1,13 @@
-use crate::{
-    Memory, ccountry, cpdx_array::Array, msvc_string::Descriptor, read, read_slice,
-    research_inputs, research_inputs::Text, walk::Outcome,
+use engine_native_memory::{
+    Memory,
+    cpdx_array::Array,
+    msvc_string::Descriptor,
+    read,
+    read_slice,
+    walk::Outcome,
 };
+use engine_native::ccountry;
+use crate::research_inputs::{self, Text};
 use engine_sites::Rva;
 
 pub mod grants;
@@ -116,19 +122,19 @@ impl Context {
     }
 }
 
-const TECHNOLOGY_FIELDS: [crate::memory::RecordField; 4] =
-    crate::memory::packed_fields([(0x190, 24), (0x1e8, 12), (0x68, 16), (0x110, 64)]);
-const TECHNOLOGY_LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&TECHNOLOGY_FIELDS, 116).unwrap();
-const IDEA_FIELDS: [crate::memory::RecordField; 1] = crate::memory::packed_fields([(0x38, 16)]);
-const IDEA_LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&IDEA_FIELDS, 16).unwrap();
-const SCRIPT_FIELDS: [crate::memory::RecordField; 1] = crate::memory::packed_fields([(0x30, 8)]);
-const SCRIPT_LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&SCRIPT_FIELDS, 8).unwrap();
+const TECHNOLOGY_FIELDS: [engine_native_memory::memory::RecordField; 4] =
+    engine_native_memory::memory::packed_fields([(0x190, 24), (0x1e8, 12), (0x68, 16), (0x110, 64)]);
+const TECHNOLOGY_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&TECHNOLOGY_FIELDS, 116).unwrap();
+const IDEA_FIELDS: [engine_native_memory::memory::RecordField; 1] = engine_native_memory::memory::packed_fields([(0x38, 16)]);
+const IDEA_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&IDEA_FIELDS, 16).unwrap();
+const SCRIPT_FIELDS: [engine_native_memory::memory::RecordField; 1] = engine_native_memory::memory::packed_fields([(0x30, 8)]);
+const SCRIPT_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&SCRIPT_FIELDS, 8).unwrap();
 
 struct Output<'a> {
-    rows: crate::walk::Buffer<'a, Row>,
+    rows: engine_native_memory::walk::Buffer<'a, Row>,
     len: usize,
     omitted: u32,
     current: Row,
@@ -178,7 +184,7 @@ impl Output<'_> {
         &mut self,
         kind: Kind,
         raw: i64,
-        metadata: Option<crate::modifier_definition::Operands>,
+        metadata: Option<engine_native_parts::modifier_definition::Operands>,
         count: u32,
         source_id: u32,
         name: Text,
@@ -206,7 +212,7 @@ pub fn walk_country<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     context: Result<Context, &'static str>,
     inputs: &[research_inputs::Row],
     output: &mut Vec<Row>,
@@ -218,7 +224,7 @@ pub fn walk_country<M: Memory>(
         country,
         context,
         inputs,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -226,10 +232,10 @@ pub fn walk_country_buffer<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     context: Result<Context, &'static str>,
     inputs: &[research_inputs::Row],
-    output: crate::walk::Buffer<'_, Row>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     walk_country_buffer_with_roster(
         memory, base, countries, country, context, inputs, output, false,
@@ -244,10 +250,10 @@ pub fn walk_country_buffer_certified<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     context: Result<Context, &'static str>,
     inputs: &[research_inputs::Row],
-    output: crate::walk::Buffer<'_, Row>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
     certificate_available: bool,
 ) -> Outcome {
     walk_country_buffer_with_roster(
@@ -270,10 +276,10 @@ fn walk_country_buffer_with_roster<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     context: Result<Context, &'static str>,
     inputs: &[research_inputs::Row],
-    output: crate::walk::Buffer<'_, Row>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
     record_roster: bool,
 ) -> Outcome {
     let active = inputs.iter().any(|r| r.slot.technology_present != 0);
@@ -302,7 +308,7 @@ fn walk_country_buffer_with_roster<M: Memory>(
             return sharing::record_roster(memory, base, status, &mut out);
         }
         let context = context?;
-        let accumulator = at(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?;
+        let accumulator = at(country.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?;
         let (raw, metadata) = modifier(
             memory,
             base,
@@ -359,8 +365,8 @@ fn walk_country_buffer_with_roster<M: Memory>(
         .unwrap_or_default();
         let technology_batch = crate::governance_batch::Records::gather(
             memory,
-            crate::batch_fallback::Batch::GovernanceModifierTechnologies,
-            crate::memory::RecordSources::Pointers(&technology_pointers),
+            engine_native_memory::batch_fallback::Batch::GovernanceModifierTechnologies,
+            engine_native_memory::memory::RecordSources::Pointers(&technology_pointers),
             &TECHNOLOGY_LAYOUT,
         );
         let technology_memory = technology_batch.view(memory);
@@ -425,8 +431,8 @@ fn walk_country_buffer_with_roster<M: Memory>(
             let categories = array(&lists[48..64], 4)?;
             let idea_pointers = crate::governance_batch::Records::gather(
                 memory,
-                crate::batch_fallback::Batch::GovernanceModifierIdeas,
-                crate::memory::RecordSources::Strided {
+                engine_native_memory::batch_fallback::Batch::GovernanceModifierIdeas,
+                engine_native_memory::memory::RecordSources::Strided {
                     base: ideas.data,
                     stride: 8,
                     count: ideas.count as usize,
@@ -436,8 +442,8 @@ fn walk_country_buffer_with_roster<M: Memory>(
             let idea_targets = idea_pointers.targets(0);
             let idea_batch = crate::governance_batch::Records::gather(
                 memory,
-                crate::batch_fallback::Batch::GovernanceModifierIdeas,
-                crate::memory::RecordSources::Pointers(&idea_targets),
+                engine_native_memory::batch_fallback::Batch::GovernanceModifierIdeas,
+                engine_native_memory::memory::RecordSources::Pointers(&idea_targets),
                 &IDEA_LAYOUT,
             );
             let idea_pointer_memory = idea_pointers.view(memory);
@@ -449,7 +455,7 @@ fn walk_country_buffer_with_roster<M: Memory>(
                 if raw != 0 {
                     let idea = pointer_from(&bytes[8..])?;
                     if read::<u64>(&idea_memory, idea)
-                        != Some(site(base, crate::cidea::VTABLE_RVA)? as u64)
+                        != Some(site(base, engine_native_parts::cidea::VTABLE_RVA)? as u64)
                     {
                         return Err("research idea identity mismatch");
                     }
@@ -459,15 +465,15 @@ fn walk_country_buffer_with_roster<M: Memory>(
                         0,
                         0,
                         0,
-                        text(&idea_memory, at(idea, crate::cidea::TOKEN)?)?,
+                        text(&idea_memory, at(idea, engine_native_parts::cidea::TOKEN)?)?,
                     )?;
                 }
                 Ok(())
             })?;
             let script_pointers = crate::governance_batch::Records::gather(
                 memory,
-                crate::batch_fallback::Batch::GovernanceModifierScripts,
-                crate::memory::RecordSources::Strided {
+                engine_native_memory::batch_fallback::Batch::GovernanceModifierScripts,
+                engine_native_memory::memory::RecordSources::Strided {
                     base: scripts.data,
                     stride: 40,
                     count: scripts.count as usize,
@@ -477,8 +483,8 @@ fn walk_country_buffer_with_roster<M: Memory>(
             let script_targets = script_pointers.targets(0);
             let script_batch = crate::governance_batch::Records::gather(
                 memory,
-                crate::batch_fallback::Batch::GovernanceModifierScripts,
-                crate::memory::RecordSources::Pointers(&script_targets),
+                engine_native_memory::batch_fallback::Batch::GovernanceModifierScripts,
+                engine_native_memory::memory::RecordSources::Pointers(&script_targets),
                 &SCRIPT_LAYOUT,
             );
             let script_pointer_memory = script_pointers.view(memory);
@@ -626,7 +632,7 @@ fn modifier(
     base: usize,
     accumulator: usize,
     key: u32,
-) -> Result<(i64, Option<crate::modifier_definition::Operands>), &'static str> {
+) -> Result<(i64, Option<engine_native_parts::modifier_definition::Operands>), &'static str> {
     let entries = array_at(memory, accumulator, 16)?;
     let mut first = 0;
     let mut count = entries.count;
@@ -663,7 +669,7 @@ fn modifier(
     let raw = i64_at(&bytes, 8);
     Ok((
         raw,
-        Some(crate::modifier_definition::operands(memory, base, key)?),
+        Some(engine_native_parts::modifier_definition::operands(memory, base, key)?),
     ))
 }
 
@@ -693,7 +699,7 @@ struct Scientist {
 fn scientist_bonus<M: Memory>(
     memory: &M,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     countries: &ccountry::Reader<'_, M>,
     categories: Array,
     cached: &mut Option<Scientist>,
@@ -778,10 +784,10 @@ fn scientist_bonus<M: Memory>(
                         let identity = read::<[u8; 16]>(memory, character)
                             .ok_or("research scientist character unreadable")?;
                         if u64::from_le_bytes(identity[..8].try_into().unwrap())
-                            != site(base, crate::ccharacter::VTABLE_RVA)? as u64
+                            != site(base, engine_native::ccharacter::VTABLE_RVA)? as u64
                             || u32::from_le_bytes(identity[8..12].try_into().unwrap())
-                                != crate::ccharacter::REFERENCE_TYPE
-                            || pointer(memory, at(character, crate::ccharacter::SCIENTIST)?)?
+                                != engine_native::ccharacter::REFERENCE_TYPE
+                            || pointer(memory, at(character, engine_native::ccharacter::SCIENTIST)?)?
                                 != source
                         {
                             return Err("research scientist character identity mismatch");
@@ -800,7 +806,7 @@ fn scientist_bonus<M: Memory>(
                             metadata,
                             category,
                             id,
-                            text(memory, at(character, crate::ccharacter::TOKEN)?)?,
+                            text(memory, at(character, engine_native::ccharacter::TOKEN)?)?,
                         )
                     })?;
                     break;

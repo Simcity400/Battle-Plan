@@ -4,7 +4,7 @@ use crate::{
     table_conversion::table,
 };
 use engine_allocation::{copy_vec, owned_vec};
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use engine_scripts::saved_event_targets as native;
 use replay_data::{rows::GlobalSavedEventTargetRow, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;

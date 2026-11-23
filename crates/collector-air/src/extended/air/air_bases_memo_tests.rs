@@ -164,7 +164,8 @@ fn assert_rows(air: &Captured, fog: &super::super::fog::Captured, expected: &kit
 
 #[test]
 fn memo_ace_presentation_heap_bytes_match_raw_and_typed_with_local_failure() {
-    use engine_native::{cace, cpdx_array, msvc_string};
+    use engine_native_air::cace;
+    use engine_native_memory::{cpdx_array, msvc_string};
     const GUI: usize = 0x74000;
     const DEFINITION: usize = 0x75000;
     const DEFINITION_BYTES: usize = 0x75100;
@@ -188,7 +189,7 @@ fn memo_ace_presentation_heap_bytes_match_raw_and_typed_with_local_failure() {
     kit::put64(
         &mut bytes,
         GUI,
-        engine_native::cgame_gui::VTABLE_RVA.0 as u64,
+        engine_native_politics::cgame_gui::VTABLE_RVA.0 as u64,
     );
     array(&mut bytes, GUI + 0xcb0, POOLS, 3);
     array(&mut bytes, POOLS + cpdx_array::STRIDE, SPRITE, 1);

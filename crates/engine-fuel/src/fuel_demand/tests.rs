@@ -1,5 +1,5 @@
 use super::*;
-use crate::walk::Buffer;
+use engine_native_memory::walk::Buffer;
 use std::{cell::Cell, collections::BTreeMap};
 
 #[derive(Default)]
@@ -104,16 +104,16 @@ fn cold_and_later_context_index_growth_keeps_original_contexts_and_cached_faults
     for count in [8_usize, 40] {
         let mut memory = Map::default();
         memory.span(STATE, 0x800);
-        memory.span(crate::air_fuel_defines::CONTEXT_THRESHOLD_RVA.0, 8);
+        memory.span(engine_native_parts::air_fuel_defines::CONTEXT_THRESHOLD_RVA.0, 8);
         for index in 0..count {
             let region = REGIONS + index * 0x100;
             memory.span(region, 0x80);
             memory.put(
                 region,
-                &(crate::cstrategic_region::VTABLE_RVA.0 as u64).to_le_bytes(),
+                &(engine_native_parts::cstrategic_region::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             memory.put(
-                region + crate::cstrategic_region::ID,
+                region + engine_native_parts::cstrategic_region::ID,
                 &(index as u32 + 1).to_le_bytes(),
             );
         }
@@ -133,7 +133,7 @@ fn cold_and_later_context_index_growth_keeps_original_contexts_and_cached_faults
         }
         let source = Fault {
             memory: &memory,
-            at: REGIONS + 3 * 0x100 + crate::cstrategic_region::PROVINCES_COUNT,
+            at: REGIONS + 3 * 0x100 + engine_native_parts::cstrategic_region::PROVINCES_COUNT,
             failures: Cell::new(0),
         };
         out.contexts.len = 0;
@@ -179,18 +179,18 @@ fn captured_empty_and_negative_region_counts_do_not_dereference_weather_manager(
         let mut memory = Map::default();
         memory.span(STATE, 0x800);
         memory.span(REGION, 0x80);
-        memory.span(crate::air_fuel_defines::CONTEXT_THRESHOLD_RVA.0, 8);
+        memory.span(engine_native_parts::air_fuel_defines::CONTEXT_THRESHOLD_RVA.0, 8);
         memory.put(
             REGION,
-            &(crate::cstrategic_region::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_parts::cstrategic_region::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
-        memory.put(REGION + crate::cstrategic_region::ID, &7_u32.to_le_bytes());
+        memory.put(REGION + engine_native_parts::cstrategic_region::ID, &7_u32.to_le_bytes());
         memory.put(
-            REGION + crate::cstrategic_region::PROVINCES_COUNT,
+            REGION + engine_native_parts::cstrategic_region::PROVINCES_COUNT,
             &count.to_le_bytes(),
         );
         memory.put(
-            crate::air_fuel_defines::CONTEXT_THRESHOLD_RVA.0,
+            engine_native_parts::air_fuel_defines::CONTEXT_THRESHOLD_RVA.0,
             &50_000_i64.to_le_bytes(),
         );
         let mut contexts = Vec::new();
@@ -225,18 +225,21 @@ fn captured_empty_and_negative_region_counts_do_not_dereference_weather_manager(
 
 #[test]
 fn carrier_capacity_acquires_primary_ship_formation_and_reached_module_paths() {
-    use crate::{
-        cair_base, cair_wing, cair_wing_pool, creference_registry as registry, cship,
+    use engine_native_air::cair_base;
+    use engine_native_parts::{
+        cair_wing_pool,
+        creference_registry as registry,
         csub_unit_definition,
     };
+    use engine_native::cship;
     const WING: usize = 0x10000;
     const POOL: usize = 0x20000;
     const BASE: usize = 0x30000;
     const SHIP: usize = 0x40000;
     const DEFINITION: usize = 0x50000;
-    let base_ref = 1_u64 << 32 | u64::from(cair_base::TYPE);
+    let base_ref = 1_u64 << 32 | u64::from(engine_native_parts::cair_base_layout::TYPE);
     let ship_ref = 2_u64 << 32 | u64::from(cship::HANDLE_TYPE);
-    let mut refs = registry::test_support::Fixture::new(cair_base::TYPE);
+    let mut refs = registry::test_support::Fixture::new(engine_native_parts::cair_base_layout::TYPE);
     assert_ne!(
         registry::test_support::Fixture::index(base_ref),
         registry::test_support::Fixture::index(ship_ref)
@@ -272,7 +275,7 @@ fn carrier_capacity_acquires_primary_ship_formation_and_reached_module_paths() {
     ] {
         memory.span(address, len);
     }
-    memory.put(WING + cair_wing::POOL, &(POOL as u64).to_le_bytes());
+    memory.put(WING + engine_native_parts::cair_wing_layout::POOL, &(POOL as u64).to_le_bytes());
     memory.put(POOL, &(cair_wing_pool::VTABLE_RVA.0 as u64).to_le_bytes());
     memory.put(
         POOL + cair_wing_pool::AIR_BASE_REFERENCE,
@@ -282,8 +285,8 @@ fn carrier_capacity_acquires_primary_ship_formation_and_reached_module_paths() {
         POOL + cair_wing_pool::DEFINITION,
         &(DEFINITION as u64).to_le_bytes(),
     );
-    memory.put(BASE, &(cair_base::VTABLE_RVA.0 as u64).to_le_bytes());
-    memory.put(BASE + cair_base::HOST_REFERENCE, &ship_ref.to_le_bytes());
+    memory.put(BASE, &(engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64).to_le_bytes());
+    memory.put(BASE + engine_native_parts::cair_base_layout::HOST_REFERENCE, &ship_ref.to_le_bytes());
     memory.put(BASE + cair_base::CAPACITY, &(-7_i32).to_le_bytes());
     memory.put(SHIP, &(cship::VTABLE_RVA.0 as u64).to_le_bytes());
     memory.put(SHIP + cship::HANDLE, &ship_ref.to_le_bytes());

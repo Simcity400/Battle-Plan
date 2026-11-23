@@ -41,7 +41,7 @@ impl SpottingFactors {
             }
             array
                 .element(index as u32, 8)
-                .and_then(|at| crate::read::<i64>(memory, at))
+                .and_then(|at| engine_native_memory::read::<i64>(memory, at))
                 .map(|value| value != 0)
                 .ok_or("Air patrol mission spotting factor unreadable")
         });
@@ -89,7 +89,7 @@ impl HeldNight {
                 Array::read(
                     memory,
                     at,
-                    engine_native::sweather_per_province::CLOCK_STRIDE,
+                    engine_native::cweather_manager::province_weather::CLOCK_STRIDE,
                 )
             })
             .ok_or("Air patrol held clock array unreadable")?;
@@ -104,13 +104,13 @@ impl HeldNight {
         region: usize,
         expected_region: Option<u32>,
     ) -> Result<i64, &'static str> {
-        if crate::cstrategic_region::id(memory, base, region)? != expected_region
+        if engine_native_parts::cstrategic_region::id(memory, base, region)? != expected_region
             || expected_region.is_none()
         {
             return Err("Air patrol sampled region identity differs from its registration");
         }
         let provinces = region
-            .checked_add(crate::cstrategic_region::PROVINCES)
+            .checked_add(engine_native_parts::cstrategic_region::PROVINCES)
             .and_then(|at| Array::read(memory, at, 8))
             .ok_or("Air patrol sampled region province vector unreadable")?;
         let count = i32::try_from(provinces.count)
@@ -123,18 +123,18 @@ impl HeldNight {
             .ok_or("Air patrol sampled region has no native province index")?;
         let province = provinces
             .element(index, 8)
-            .and_then(|at| crate::read::<u64>(memory, at))
+            .and_then(|at| engine_native_memory::read::<u64>(memory, at))
             .and_then(|at| usize::try_from(at).ok())
             .filter(|&at| at != 0)
             .ok_or("Air patrol sampled province pointer unreadable")?;
-        if field::<u64>(memory, province, 0)? != vtable(base, crate::cprovince::VTABLE_RVA)? {
+        if field::<u64>(memory, province, 0)? != vtable(base, engine_native::cprovince::VTABLE_RVA)? {
             return Err("Air patrol sampled province identity differs");
         }
-        let id: u32 = field(memory, province, crate::cprovince::ID)?;
+        let id: u32 = field(memory, province, engine_native::cprovince::ID)?;
         self.clocks
-            .element(id, engine_native::sweather_per_province::CLOCK_STRIDE)
+            .element(id, engine_native::cweather_manager::province_weather::CLOCK_STRIDE)
             .and_then(|at| at.checked_add(NIGHT_APPLIED))
-            .and_then(|at| crate::read(memory, at))
+            .and_then(|at| engine_native_memory::read(memory, at))
             .ok_or("Air patrol held night application marker unreadable")
     }
 }
@@ -153,7 +153,7 @@ pub(super) fn read(
     }
     inputs.disruption = mission
         .checked_add(DISRUPTION)
-        .and_then(|at| crate::read(memory, at));
+        .and_then(|at| engine_native_memory::read(memory, at));
     if inputs.disruption == Some(0) || mask & 0x4400 != 0 || count <= 0 {
         return inputs;
     }
@@ -162,13 +162,13 @@ pub(super) fn read(
     }
     inputs.attack = record
         .and_then(|at| at.checked_add(ATTACK_STAT * 8))
-        .and_then(|at| crate::read(memory, at));
+        .and_then(|at| engine_native_memory::read(memory, at));
     inputs.defence = record
         .and_then(|at| at.checked_add(DEFENCE_STAT * 8))
-        .and_then(|at| crate::read(memory, at));
+        .and_then(|at| engine_native_memory::read(memory, at));
     inputs.speed = wing
         .checked_add(DEFAULT_SPEED)
-        .and_then(|at| crate::read(memory, at));
+        .and_then(|at| engine_native_memory::read(memory, at));
     let accumulator = wing
         .checked_add(cair_wing::MODIFIERS)
         .and_then(|at| header(memory, at));
@@ -180,8 +180,8 @@ pub(super) fn read(
 }
 
 fn header(memory: &impl Memory, accumulator: usize) -> Option<(usize, usize)> {
-    let data = usize::try_from(crate::read::<u64>(memory, accumulator)?).ok()?;
-    let count = crate::read::<i32>(
+    let data = usize::try_from(engine_native_memory::read::<u64>(memory, accumulator)?).ok()?;
+    let count = engine_native_memory::read::<i32>(
         memory,
         accumulator.checked_add(modifier_accumulator::COUNT)?,
     )?;
@@ -196,7 +196,7 @@ fn probe(memory: &impl Memory, data: usize, count: usize, key: u32) -> Option<i6
     while lower < upper {
         let mid = lower + (upper - lower) / 2;
         let candidate = data.checked_add(mid.checked_mul(16)?)?;
-        let found = crate::read::<u32>(memory, candidate)?;
+        let found = engine_native_memory::read::<u32>(memory, candidate)?;
         if found < key {
             lower = mid + 1;
         } else {
@@ -207,16 +207,16 @@ fn probe(memory: &impl Memory, data: usize, count: usize, key: u32) -> Option<i6
         return Some(0);
     }
     let candidate = data.checked_add(lower.checked_mul(16)?)?;
-    if crate::read::<u32>(memory, candidate)? != key {
+    if engine_native_memory::read::<u32>(memory, candidate)? != key {
         return Some(0);
     }
-    crate::read(memory, candidate.checked_add(8)?)
+    engine_native_memory::read(memory, candidate.checked_add(8)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     fn raw(memory: &impl Memory, accumulator: usize, key: u32) -> Option<i64> {
         let (data, count) = header(memory, accumulator)?;
@@ -330,19 +330,19 @@ mod tests {
         );
         put(
             REGION,
-            &(crate::cstrategic_region::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_parts::cstrategic_region::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
-        put(REGION + crate::cstrategic_region::ID, &7_u32.to_le_bytes());
+        put(REGION + engine_native_parts::cstrategic_region::ID, &7_u32.to_le_bytes());
         put(
-            REGION + crate::cstrategic_region::PROVINCES,
+            REGION + engine_native_parts::cstrategic_region::PROVINCES,
             &(LIST as u64).to_le_bytes(),
         );
         put(
-            REGION + crate::cstrategic_region::PROVINCES + 8,
+            REGION + engine_native_parts::cstrategic_region::PROVINCES + 8,
             &2_u32.to_le_bytes(),
         );
         put(
-            REGION + crate::cstrategic_region::PROVINCES_COUNT,
+            REGION + engine_native_parts::cstrategic_region::PROVINCES_COUNT,
             &2_u32.to_le_bytes(),
         );
         put(LIST, &(FIRST as u64).to_le_bytes());
@@ -350,13 +350,13 @@ mod tests {
         for (pointer, id) in [(FIRST, 1_u32), (SECOND, 2)] {
             put(
                 pointer,
-                &(crate::cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
+                &(engine_native::cprovince::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
-            put(pointer + crate::cprovince::ID, &id.to_le_bytes());
+            put(pointer + engine_native::cprovince::ID, &id.to_le_bytes());
         }
-        let first = CLOCKS + engine_native::sweather_per_province::CLOCK_STRIDE + NIGHT_APPLIED;
+        let first = CLOCKS + engine_native::cweather_manager::province_weather::CLOCK_STRIDE + NIGHT_APPLIED;
         let second =
-            CLOCKS + 2 * engine_native::sweather_per_province::CLOCK_STRIDE + NIGHT_APPLIED;
+            CLOCKS + 2 * engine_native::cweather_manager::province_weather::CLOCK_STRIDE + NIGHT_APPLIED;
         put(first, &(-100_000_i64).to_le_bytes());
         put(second, &50_001_i64.to_le_bytes());
         let memory = SliceMemory {

@@ -10,4 +10,4 @@ Active idea slots publish exact verified definition tokens. Their meaning as law
 
 When two ordered fields are gathered without an intervening branch, a late address overflow must leave the earlier scalar read and its failure precedence intact. Synthetic equivalence fixtures check this, including partial reads, ambiguous election dates, modded names, and incomplete field or roster observations.
 
-[Party fields](../../crates/engine-native/src/cpolitical_party.rs) · [Political status readers](../../crates/engine-native/src/cpolitical_status.rs) · [Read equivalence tests](../../crates/engine-native/src/cpolitical_status/pair_tests.rs)
+[Party fields](../../crates/engine-native-parts/src/cpolitical_party_layout.rs) · [Political status readers](../../crates/engine-native-politics/src/cpolitical_status.rs) · [Read equivalence tests](../../crates/engine-native-politics/src/cpolitical_status/pair_tests.rs)

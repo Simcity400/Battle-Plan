@@ -1,10 +1,6 @@
 
-use crate::{
-    Memory,
-    ccharacter::{Literal, NameWalk},
-    ccharacter_manager, cgame_state, read, read_slice,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, msvc_string::Literal, read, read_slice, walk::Outcome};
+use engine_native::{ccharacter::{NameWalk, manager as ccharacter_manager}, cgame_state};
 use engine_sites::Rva;
 
 pub const TABLE: usize = 0x60;
@@ -28,7 +24,7 @@ pub struct Row {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub const HEADER: usize = 0x19;
@@ -60,8 +56,8 @@ pub fn walk_carried(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(bytes),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(bytes),
         carry,
     )
     .unwrap_or_else(|reason| NameWalk {
@@ -82,8 +78,8 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(bytes),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(bytes),
     )
 }
 
@@ -91,8 +87,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, Row>,
-    bytes: crate::walk::Buffer<'_, u8>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
+    bytes: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> NameWalk {
     walk_inner(memory, base, game_state, output, bytes, &mut Fresh).unwrap_or_else(|reason| {
         NameWalk {
@@ -107,8 +103,8 @@ fn walk_inner(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut bytes: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut bytes: engine_native_memory::walk::Buffer<'_, u8>,
     carry: &mut impl TokenCarry,
 ) -> Result<NameWalk, &'static str> {
     let manager = game_state
@@ -240,7 +236,7 @@ fn walk_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const GS: usize = 0x1000;
     const MANAGER: usize = 0x2000;

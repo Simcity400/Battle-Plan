@@ -3,8 +3,12 @@ use super::*;
 use crate::advisor_pool_changes::{Counts, Pair, Watches};
 use engine_characters::advisor_tokens as tokens;
 use engine_native::{
-    cadvisor, ccharacter, ccharacter_manager, ccountry, cgame_state, memory::SliceMemory,
+    cadvisor,
+    ccharacter::{self, manager as ccharacter_manager},
+    ccountry,
+    cgame_state,
 };
+use engine_native_memory::memory::SliceMemory;
 use std::cell::RefCell;
 
 const BASE: usize = 0x0001_4000_0000;
@@ -57,15 +61,15 @@ fn world() -> Vec<u8> {
         p64(
             &mut bytes,
             pool,
-            (BASE + engine_native::ccountry_characters::VTABLE_RVA.0) as u64,
+            (BASE + engine_native::ccountry::rosters::VTABLE_RVA.0) as u64,
         );
         p64(
             &mut bytes,
-            pool + engine_native::ccountry_characters::OWNER,
+            pool + engine_native::ccountry::rosters::OWNER,
             country as u64,
         );
         let array = pool + 0x200;
-        let header = pool + engine_native::ccountry_characters::AVAILABLE_ADVISORS;
+        let header = pool + engine_native_politics::ccountry_characters::AVAILABLE_ADVISORS;
         p64(&mut bytes, header, array as u64);
         p32(&mut bytes, header + 8, 2);
         p32(&mut bytes, header + 12, 2);
@@ -249,7 +253,7 @@ fn a_hooked_pool_write_rereads_only_its_pool() {
     let notification = domains.pools.notify(Some(POOLS[1]), 3);
     p32(
         &mut bytes,
-        POOLS[1] + engine_native::ccountry_characters::AVAILABLE_ADVISORS + 12,
+        POOLS[1] + engine_native_politics::ccountry_characters::AVAILABLE_ADVISORS + 12,
         1,
     );
     drop(notification);

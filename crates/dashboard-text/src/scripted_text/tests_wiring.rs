@@ -1036,7 +1036,7 @@ fn balance_names_selection_change_binding_and_icon_direction() {
             country: 100,
             daily_raw: 150_000,
             daily_present: true,
-            daily_flags: engine_native::modifier_definition::CLAMP_MAXIMUM,
+            daily_flags: engine_native_parts::modifier_definition::CLAMP_MAXIMUM,
             weekly_raw: -350_000,
             weekly_present: true,
             ..Default::default()

@@ -1,5 +1,6 @@
 use super::*;
-use crate::{cgame_state, memory::SliceMemory};
+use crate::cgame_state;
+use engine_native_memory::memory::SliceMemory;
 
 const MODULE: usize = 0x140000000;
 const MEMORY: usize = 0x1000;
@@ -137,7 +138,7 @@ fn fixture() -> Vec<u8> {
         handle(cair_theatre::TYPE).to_le_bytes(),
     );
     array(&mut bytes, AIR_GROUP + cair_group::WINGS, 0x22a0, 1);
-    put(&mut bytes, 0x22a0, handle(cair_wing::TYPE).to_le_bytes());
+    put(&mut bytes, 0x22a0, handle(engine_native_parts::cair_wing_layout::TYPE).to_le_bytes());
     bytes
 }
 
@@ -172,7 +173,7 @@ fn reserved_header_failure_keeps_first_observation_without_a_gather_retry() {
         },
         attempts: std::cell::Cell::new(0),
     };
-    let root = ccountry::Country {
+    let root = engine_native_memory::country_identity::Country {
         pointer: COUNTRY_POINTER,
         canonical_slot: 0,
         id: 0,
@@ -411,7 +412,7 @@ fn persistent_handles_native_aliases_priorities_and_literal_bytes_are_lossless()
         captured.orders[0].orders_group,
         handle(corders_group::REFERENCE_TYPE)
     );
-    assert_eq!(captured.wings[0].wing, handle(cair_wing::TYPE));
+    assert_eq!(captured.wings[0].wing, handle(engine_native_parts::cair_wing_layout::TYPE));
     assert_eq!(captured.wings[0].group, handle(cair_group::TYPE));
     assert_eq!(
         &captured.names[..result.names_len],
@@ -1017,7 +1018,7 @@ fn many_theatres(countries: usize, members: usize) -> Vec<u8> {
             put(
                 &mut bytes,
                 country + 0xc00 + member * 8,
-                handle(cair_wing::TYPE).to_le_bytes(),
+                handle(engine_native_parts::cair_wing_layout::TYPE).to_le_bytes(),
             );
         }
     }

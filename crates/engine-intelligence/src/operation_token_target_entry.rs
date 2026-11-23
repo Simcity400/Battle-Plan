@@ -8,7 +8,7 @@ pub const TOKEN_CAPACITY: usize = 0x18;
 pub const TOKEN_COUNT: usize = 0x1c;
 pub const TOKEN_STRIDE: usize = 0x04;
 
-use crate::{Memory, cpdx_array::Array, read, read_slice};
+use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice};
 
 pub(crate) struct Entry {
     pub hash: u32,

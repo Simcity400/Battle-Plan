@@ -41,7 +41,7 @@ pub(crate) fn patches() -> Vec<Patch> {
             len,
         })
     };
-    for (name, rva) in engine_native::naval_mine_inputs::WRITERS
+    for (name, rva) in engine_native_naval::naval_mine_inputs::WRITERS
         .into_iter()
         .enumerate()
         .filter(|(index, _)| *index != 5)
@@ -127,7 +127,7 @@ pub(crate) fn patches() -> Vec<Patch> {
     for site in engine_native::cproduction_status::design_templates::MUTATIONS {
         add("design_template_changes", site.name, site.rva, FIVE);
     }
-    for site in engine_native::cair_wing::replacement::MUTATIONS {
+    for site in engine_native_air::cair_wing::replacement::MUTATIONS {
         add("wing_preferences", site.name, site.rva, FIVE);
     }
     for site in advisor_mutations::MUTATIONS {
@@ -279,7 +279,7 @@ pub(crate) fn patches() -> Vec<Patch> {
     for site in &naval_tree_mutations::MUTATIONS[country..] {
         add("naval_tree_changes", site.name, site.rva, FIVE);
     }
-    for site in engine_native::cwar_goal::mutations::SITES {
+    for site in engine_native::cwar_relation::goals::mutations::SITES {
         add("wargoal_changes", site.name, site.rva, FIVE);
     }
     for site in engine_occupation::cresistance::changes::SITES {
@@ -356,7 +356,7 @@ pub(crate) fn patches() -> Vec<Patch> {
     for (index, site) in experience_gain_sites::SITES.iter().enumerate() {
         add("experience_gains", &format!("tap {index}"), site.rva, TAP);
     }
-    for (index, site) in engine_native::command_inputs::SITES.iter().enumerate() {
+    for (index, site) in engine_native_air::command_inputs::SITES.iter().enumerate() {
         add(
             "player_commands",
             &format!("site {index}"),

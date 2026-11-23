@@ -1,5 +1,5 @@
 
-use crate::{Memory, cpdx_array::Array, read, read_slice};
+use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice};
 use engine_sites::Rva;
 
 pub const STRIDE: usize = 0x40;

@@ -1,9 +1,11 @@
 use super::*;
 use engine_land_inputs::cstats_observer as stats;
 use engine_native::{
-    cequipment_variant as variant, cequipment_variant_pool as pool, cgame_state,
-    cland_combatant as side, cpdx_array::Array,
+    cequipment_variant::{self as variant, pool as pool},
+    cgame_state,
+    cland_combatant as side,
 };
+use engine_native_memory::cpdx_array::Array;
 
 pub struct World {
     pub combat: Vec<u8>,
@@ -14,7 +16,7 @@ pub struct World {
 impl World {
     pub fn new(count: usize) -> Self {
         let variants = (0..count)
-            .map(|n| [variant::VTABLE_RVA.0 as u64, ((n as u64 + 1) << 32) | 70])
+            .map(|n| [engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64, ((n as u64 + 1) << 32) | 70])
             .collect::<Vec<_>>();
         let mut out = Self {
             combat: vec![0; cland_combat::DURATION + 4],
@@ -131,13 +133,13 @@ impl Memory for Registry {
             output.copy_from_slice(&(self.state.as_ptr() as u64).to_le_bytes());
             true
         } else {
-            unsafe { engine_native::memory::LiveMemory::new() }.copy(address, output)
+            unsafe { engine_native_memory::memory::LiveMemory::new() }.copy(address, output)
         }
     }
 }
 
 fn read(c: &mut Captured, worlds: &[World]) {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     // SAFETY: tests serialize combat-progress globals with `test_globals()`.
     unsafe { c.begin() };
     for (n, world) in worlds.iter().enumerate() {
@@ -474,7 +476,7 @@ fn combat_log_complete_observer_uses_the_loss_census_and_preserves_signed_counte
     );
     let counter = side::STATS_OBSERVER + engine_land_inputs::combat_log_events::OBSERVER_COUNTERS;
     world.sides[0][counter..counter + 4].copy_from_slice(&i32::MIN.to_le_bytes());
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let mut captured = Captured::with_capacities(&Capacities::default());
     // SAFETY: test holds `test_globals()` as the sole combat-progress caller.
     unsafe { captured.begin() };
@@ -631,7 +633,7 @@ fn native_array(bytes: &mut [u8], offset: usize, pointer: usize, count: u32) {
 fn observer_daily_numeric_carry_keeps_hourly_columns_and_reads_new_rows_fresh() {
     let _globals = super::test_globals();
     use engine_land_inputs::combat_log_events as event;
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let mut world = World::new(0);
     let origin = side::STATS_OBSERVER;
     World::q(
@@ -726,7 +728,7 @@ fn observer_daily_numeric_carry_keeps_hourly_columns_and_reads_new_rows_fresh() 
 fn observer_daily_children_follow_current_parent_and_refusal_forces_fresh_recovery() {
     let _globals = super::test_globals();
     use engine_land_inputs::combat_log_events as event;
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let mut world = World::new(0);
     let mut activity = [0; event::ACTIVITY_SIZE];
     World::q(&mut activity, 0, event::ACTIVITY_VTABLE_RVA.0 as u64);

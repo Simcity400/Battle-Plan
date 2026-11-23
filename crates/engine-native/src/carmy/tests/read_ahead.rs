@@ -1,5 +1,6 @@
 use super::*;
-use crate::{Memory, cgame_state};
+use engine_native_memory::Memory;
+use crate::cgame_state;
 use std::cell::{Cell, RefCell};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,7 +72,10 @@ impl Memory for Unhinted<'_, '_> {
 }
 
 fn status_world(count: usize) -> (PresentationMemory, Vec<carmy::DivisionSeed>) {
-    use crate::{acclimatization_data as data, acclimatization_entry as entry};
+    use engine_native_parts::{
+        acclimatization_data as data,
+        acclimatization_entry as entry,
+    };
     let mut source = presentation_fixture();
     let mut first = [carmy::DivisionSeed {
         pointer: A1,
@@ -111,7 +115,7 @@ fn status_holding(
     memory: &impl Memory,
     seeds: &[carmy::DivisionSeed],
     admitted: usize,
-    held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
+    held: &[Option<engine_native_parts::csub_unit_definition::DivisionMaxima>],
 ) -> (Outcome, Vec<carmy::StatusRow>) {
     let mut packet = status_packet(seeds.len());
     let allocated = packet.allocated_bytes();
@@ -139,7 +143,7 @@ fn status_packet(count: usize) -> carmy::StatusPacket {
             roots: 2,
             chunks: 2,
         },
-        modifiers: crate::modifier_accumulator::SnapshotCapacity {
+        modifiers: engine_native_parts::modifier_accumulator::SnapshotCapacity {
             nodes: count,
             entries: count,
         },
@@ -180,8 +184,8 @@ impl Memory for StatusReads<'_, '_> {
     }
     fn copy_records(
         &self,
-        sources: crate::memory::RecordSources<'_>,
-        layout: &crate::memory::RecordLayout<'_>,
+        sources: engine_native_memory::memory::RecordSources<'_>,
+        layout: &engine_native_memory::memory::RecordLayout<'_>,
         out: &mut [u8],
     ) -> usize {
         if layout.stride() == 25 {
@@ -224,9 +228,9 @@ fn distinct_status_world(
 ) -> (
     PresentationMemory,
     Vec<carmy::DivisionSeed>,
-    Vec<Option<crate::csub_unit_definition::DivisionMaxima>>,
+    Vec<Option<engine_native_parts::csub_unit_definition::DivisionMaxima>>,
 ) {
-    use crate::csub_unit_definition as stats;
+    use engine_native_parts::csub_unit_definition as stats;
     let (mut source, mut seeds) = status_world(count);
     let start = source.bytes.len();
     source.bytes.resize(start + count * 0x600, 0);
@@ -308,8 +312,8 @@ fn batched_status_persistent_faults_equal_serial() {
     let stats = seeds[20].stat_block.unwrap();
     for fault in [
         stats,
-        stats + crate::csub_unit_definition::MAXIMUM_STRENGTH,
-        stats + crate::csub_unit_definition::CAN_EXFILTRATE_FROM_COAST,
+        stats + engine_native_parts::csub_unit_definition::MAXIMUM_STRENGTH,
+        stats + engine_native_parts::csub_unit_definition::CAN_EXFILTRATE_FROM_COAST,
         0x20000 + 20 * 0x300 + 7,
         0x20000 + 20 * 0x300 + 32 * 16 + 7,
     ] {
@@ -327,19 +331,19 @@ fn batched_status_persistent_faults_equal_serial() {
 fn batched_status_one_shot_faults_refuse_no_more_and_count_fallbacks() {
     let (source, seeds, _) = distinct_status_world(65);
     for fault in [
-        seeds[20].stat_block.unwrap() + crate::csub_unit_definition::MAXIMUM_STRENGTH,
+        seeds[20].stat_block.unwrap() + engine_native_parts::csub_unit_definition::MAXIMUM_STRENGTH,
         0x20000 + 20 * 0x300 + 7,
     ] {
         let actual = HintedMemory::new(&source, Some(fault), true);
         let direct = HintedMemory::new(&source, Some(fault), true);
-        let before = crate::batch_fallback::count(crate::batch_fallback::Batch::DivisionMaxima)
-            + crate::batch_fallback::count(crate::batch_fallback::Batch::DivisionAcclimatization);
+        let before = engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::DivisionMaxima)
+            + engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::DivisionAcclimatization);
         let batched = status(&status_reads(&actual, 65, false), &seeds, 65);
         assert_eq!(batched.0, Outcome::Rows { len: 65 });
         assert_eq!(
-            crate::batch_fallback::count(crate::batch_fallback::Batch::DivisionMaxima)
-                + crate::batch_fallback::count(
-                    crate::batch_fallback::Batch::DivisionAcclimatization
+            engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::DivisionMaxima)
+                + engine_native_memory::batch_fallback::count(
+                    engine_native_memory::batch_fallback::Batch::DivisionAcclimatization
                 ),
             before + 1
         );
@@ -405,7 +409,7 @@ fn status_reuses_entry_scratch_and_prefetches_each_scatter() {
         let hinted = HintedMemory::new(&source, fault, false);
         let memory = status_reads(&hinted, seeds.len(), false);
         let before =
-            crate::batch_fallback::count(crate::batch_fallback::Batch::DivisionAcclimatization);
+            engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::DivisionAcclimatization);
         let outcome = packet.capture_holding(
             &memory,
             0,
@@ -427,7 +431,7 @@ fn status_reuses_entry_scratch_and_prefetches_each_scatter() {
             if fault.is_some() { 108 } else { 65 }
         );
         assert_eq!(
-            crate::batch_fallback::count(crate::batch_fallback::Batch::DivisionAcclimatization)
+            engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::DivisionAcclimatization)
                 - before,
             u64::from(fault.is_some())
         );
@@ -542,7 +546,7 @@ fn status_maxima_collisions_use_serial_slots_and_values() {
         seeds.len()
     );
     for (index, seed) in seeds.iter().enumerate() {
-        let expected = crate::csub_unit_definition::capture_division_maxima(
+        let expected = engine_native_parts::csub_unit_definition::capture_division_maxima(
             &source,
             0,
             seed.stat_block.unwrap(),
@@ -649,11 +653,11 @@ fn movement_world(count: usize) -> (PresentationMemory, Vec<carmy::DivisionSeed>
             p64(
                 &mut source.bytes,
                 stat,
-                crate::csub_unit_definition::VTABLE_RVA.0 as u64,
+                engine_native_parts::csub_unit_definition::VTABLE_RVA.0 as u64,
             );
             p64(
                 &mut source.bytes,
-                stat + crate::csub_unit_definition::MAXIMUM_SPEED,
+                stat + engine_native_parts::csub_unit_definition::MAXIMUM_SPEED,
                 400_000 + index as u64,
             );
             for (offset, id) in [(0x800, 2 + index * 2), (0x900, 3 + index * 2)] {
@@ -751,7 +755,7 @@ fn movement_hints_preserve_copy_order_source_prefixes_route_growth_and_partial_f
                     Some(0x20027),
                     Some(0x20800 + cprovince::ID + 2),
                     Some(PROVINCES + 2 * 8 + 7),
-                    Some(0x20100 + crate::csub_unit_definition::MAXIMUM_SPEED + 3),
+                    Some(0x20100 + engine_native_parts::csub_unit_definition::MAXIMUM_SPEED + 3),
                 ] {
                     let actual = HintedMemory::new(&source, fault, once);
                     let direct = HintedMemory::new(&source, fault, once);
@@ -775,7 +779,7 @@ fn movement_hints_preserve_copy_order_source_prefixes_route_growth_and_partial_f
     assert_eq!(actual.copies(), direct.copies());
     assert_eq!(actual.fault.get(), Some(0x21003));
     assert!(!actual.events.borrow().iter().any(|&event| {
-        event == Event::Hint(0x20100 + crate::csub_unit_definition::MAXIMUM_SPEED, 8)
+        event == Event::Hint(0x20100 + engine_native_parts::csub_unit_definition::MAXIMUM_SPEED, 8)
     }));
 }
 
@@ -846,8 +850,8 @@ impl Memory for MovementReads<'_, '_> {
     }
     fn copy_records(
         &self,
-        sources: crate::memory::RecordSources<'_>,
-        layout: &crate::memory::RecordLayout<'_>,
+        sources: engine_native_memory::memory::RecordSources<'_>,
+        layout: &engine_native_memory::memory::RecordLayout<'_>,
         out: &mut [u8],
     ) -> usize {
         let counter = match (layout.stride(), layout.field_count()) {
@@ -872,7 +876,7 @@ impl Memory for MovementReads<'_, '_> {
         if N == 2 {
             if addresses[0].checked_add(cprovince::ID) == Some(addresses[1]) && out[1].len() == 4 {
                 self.province.set(self.province.get() + 1);
-            } else if addresses[0].checked_add(crate::csub_unit_definition::MAXIMUM_SPEED)
+            } else if addresses[0].checked_add(engine_native_parts::csub_unit_definition::MAXIMUM_SPEED)
                 == Some(addresses[1])
                 && out[1].len() == 8
             {
@@ -904,7 +908,7 @@ fn batched_movement_persistent_faults_keep_serial_prefix_and_optional_speed() {
         seeds[20].movement_target.unwrap(),
         seeds[20].movement_source.unwrap() + cprovince::ID,
         BATCHED_PROVINCE_SLOTS + 42 * 8,
-        seeds[20].stat_block.unwrap() + crate::csub_unit_definition::MAXIMUM_SPEED,
+        seeds[20].stat_block.unwrap() + engine_native_parts::csub_unit_definition::MAXIMUM_SPEED,
     ] {
         let actual = HintedMemory::new(&source, Some(fault), false);
         let direct = HintedMemory::new(&source, Some(fault), false);
@@ -921,16 +925,16 @@ fn batched_movement_one_shot_refuses_no_more_and_counts_fallbacks() {
     for fault in [
         seeds[20].movement_source.unwrap() + cprovince::ID,
         BATCHED_PROVINCE_SLOTS + 42 * 8,
-        seeds[20].stat_block.unwrap() + crate::csub_unit_definition::MAXIMUM_SPEED,
+        seeds[20].stat_block.unwrap() + engine_native_parts::csub_unit_definition::MAXIMUM_SPEED,
     ] {
         let actual = HintedMemory::new(&source, Some(fault), true);
         let direct = HintedMemory::new(&source, Some(fault), true);
-        let before = crate::batch_fallback::count(crate::batch_fallback::Batch::DivisionProvinces)
-            + crate::batch_fallback::count(crate::batch_fallback::Batch::DivisionMovementSpeed);
+        let before = engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::DivisionProvinces)
+            + engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::DivisionMovementSpeed);
         let batch = movement(&movement_reads(&actual, 65, false), &seeds, 65, 130);
         assert_eq!(
-            crate::batch_fallback::count(crate::batch_fallback::Batch::DivisionProvinces)
-                + crate::batch_fallback::count(crate::batch_fallback::Batch::DivisionMovementSpeed),
+            engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::DivisionProvinces)
+                + engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::DivisionMovementSpeed),
             before + 1
         );
         let serial = movement(&movement_reads(&direct, 65, true), &seeds, 65, 130);
@@ -974,7 +978,7 @@ fn batched_status_capacity_alias_and_partial_fault_matrix_equal_serial() {
             Some(seeds[20].stat_block.unwrap()),
             Some(
                 seeds[20].stat_block.unwrap()
-                    + crate::csub_unit_definition::MAXIMUM_ORGANISATION
+                    + engine_native_parts::csub_unit_definition::MAXIMUM_ORGANISATION
                     + 7,
             ),
             Some(0x20000 + 20 * 0x300 + 7),
@@ -1015,7 +1019,7 @@ fn batched_movement_prefix_growth_duplicates_shared_null_and_stationary_equal_se
             for fault in [
                 None,
                 Some(seeds[20].movement_target.unwrap() + cprovince::ID),
-                Some(seeds[0].stat_block.unwrap() + crate::csub_unit_definition::MAXIMUM_SPEED),
+                Some(seeds[0].stat_block.unwrap() + engine_native_parts::csub_unit_definition::MAXIMUM_SPEED),
             ] {
                 let actual = HintedMemory::new(&source, fault, false);
                 let direct = HintedMemory::new(&source, fault, false);

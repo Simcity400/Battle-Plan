@@ -232,9 +232,13 @@ test('a list\'s request for a block wholly ahead of the head passes once per blo
   assert.match(many.note, /land-battles: 9 asked, \d+ allowed/);
 });
 
-test('a window of the log judges only the play inside it, as the nightly sweep\'s playback runs are judged', () => {
+test('a window of the log judges only the play inside it, and only losses overlapping it mark it partial', () => {
   const log = syntheticLog();
   const { rows } = dashboardRows(log, { refreshHz: 60, window: { from: 1001, to: 2400 } });
   assert.equal(rows.find(row => row.bar === 'webview frame interval').verdict, PASS, 'the late frame at 2.5 s is outside');
   assert.equal(rows.find(row => row.bar === 'requests for values at the head').verdict, PASS);
+  const outsideLost = { ...log, records: [...log.records, { t: 'lost', at: 5000, from: 4000, to: 4500, source: 'ui', count: 10 }] };
+  assert.equal(dashboardRows(outsideLost, { refreshHz: 60, window: { from: 1001, to: 2400 } }).rows.find(r => r.bar === 'webview frame interval').verdict, PASS);
+  const insideLost = { ...log, records: [...log.records, { t: 'lost', at: 2600, from: 2200, to: 2500, source: 'ui', count: 10 }] };
+  assert.ok(dashboardRows(insideLost, { refreshHz: 60, window: { from: 1001, to: 2400 } }).rows.every(r => r.verdict === PARTIAL));
 });

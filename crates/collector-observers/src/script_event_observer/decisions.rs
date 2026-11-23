@@ -14,11 +14,11 @@ const EXTEND_DECISION_REMOVAL: usize = 15;
 const REPLACE_EVENT_RETIREMENT: usize = 16;
 std::thread_local! {static REENABLE:Cell<usize>=const {Cell::new(0)};static REACTIVATION:Cell<(usize,i32)>=const {Cell::new((0,0))};}
 fn count(status: usize, container: u8) -> Result<u32, &'static str> {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let offset = *runtime::HEADERS
         .get(container as usize)
         .ok_or("decision pass container differs")?;
-    let count = field::<i32>(&memory, status, offset + engine_native::cpdx_array::COUNT)?;
+    let count = field::<i32>(&memory, status, offset + engine_native_memory::cpdx_array::COUNT)?;
     u32::try_from(count).map_err(|_| "decision pass count is negative")
 }
 fn begin(status: usize, container: u8) -> bool {
@@ -63,7 +63,7 @@ impl Drop for Anchor {
 unsafe fn pass(status: usize, arg: usize, index: usize, container: u8) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let admitted = if container != rows::REMOVAL {
         true
     } else {
@@ -120,7 +120,7 @@ fn observe_erase_range(
     last: usize,
     mut retire: impl FnMut(usize, bool, bool),
 ) -> Result<(), &'static str> {
-    let array = engine_native::cpdx_array::Array::read(memory, header, 8)
+    let array = engine_native_memory::cpdx_array::Array::read(memory, header, 8)
         .ok_or("decision timer erase header unreadable")?;
     let first = u32::try_from(first).map_err(|_| "decision timer erase first differs")?;
     let last = u32::try_from(last).map_err(|_| "decision timer erase last differs")?;
@@ -146,7 +146,7 @@ fn observe_erase_range(
 unsafe extern "system-unwind" fn erase_range(header: usize, first: usize, last: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     if let Err(reason) = observe_erase_range(&memory, header, first, last, feed::decisions::retire)
     {
         feed::refuse(reason);
@@ -197,7 +197,7 @@ fn candidate_owner(memory: &impl Memory, header: usize) -> Result<(usize, u8), &
     for (kind, offset) in runtime::CANDIDATE_HEADERS.into_iter().enumerate() {
         if let Some(status) = header.checked_sub(offset)
             && engine_sites::at(base, engine_decisions::cdecision_status::VTABLE_RVA).is_some_and(
-                |vtable| engine_native::read::<u64>(memory, status) == Some(vtable as u64),
+                |vtable| engine_native_memory::read::<u64>(memory, status) == Some(vtable as u64),
             )
         {
             return Ok((status, kind as u8));
@@ -206,12 +206,12 @@ fn candidate_owner(memory: &impl Memory, header: usize) -> Result<(usize, u8), &
     Err("decision candidate append owner differs")
 }
 fn appended_candidates(header: usize, before: Result<u32, &'static str>) {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let result = (|| {
         let before = before?;
         let (status, kind) = candidate_owner(&memory, header)?;
         let array =
-            engine_native::cpdx_array::Array::read(&memory, header, runtime::CANDIDATE_STRIDE)
+            engine_native_memory::cpdx_array::Array::read(&memory, header, runtime::CANDIDATE_STRIDE)
                 .ok_or("decision candidate result header unreadable")?;
         if before > array.count {
             return Err("decision candidate append shrank its destination");
@@ -232,8 +232,8 @@ fn appended_candidates(header: usize, before: Result<u32, &'static str>) {
     }
 }
 fn candidate_count(header: usize) -> Result<u32, &'static str> {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    engine_native::cpdx_array::Array::read(&memory, header, runtime::CANDIDATE_STRIDE)
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
+    engine_native_memory::cpdx_array::Array::read(&memory, header, runtime::CANDIDATE_STRIDE)
         .map(|a| a.count)
         .ok_or("decision candidate append header unreadable")
 }
@@ -261,7 +261,7 @@ unsafe extern "system-unwind" fn state_candidates(
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let selected =
         field::<u8>(&memory, definition, runtime::EXPLICIT_TARGETS).map(|flag| flag != 0);
     let before = if selected == Ok(true) {
@@ -288,7 +288,7 @@ unsafe extern "system-unwind" fn state_candidates(
 unsafe fn global_candidates(closure: usize, arg: usize, index: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let destination = field::<u64>(&memory, closure, 0)
         .and_then(|inner| field::<u64>(&memory, inner as usize, 0))
         .map(|p| p as usize);
@@ -348,7 +348,7 @@ fn clear_candidates(status: usize) {
 unsafe fn ignore_token(container: usize, token: usize, index: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let before = field::<u32>(&memory, container, 0x14);
     type Original = unsafe extern "system-unwind" fn(usize, usize) -> usize;
     let original: Original =
@@ -450,7 +450,7 @@ detour_entry!(ignore_all_command, DETOURS + 4);
 detour_entry!(removal_request, DETOURS + 5);
 detour_entry!(candidate_finalization, DETOURS + 6);
 pub(super) fn selected_result(instance: usize, targeted: bool) {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let at = if targeted {
         engine_decisions::ctargeted_decision::DAYS
     } else {
@@ -472,7 +472,7 @@ pub(super) fn selected_result(instance: usize, targeted: bool) {
     }
 }
 fn committed_ignore(instance: usize, was: bool) {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     match field::<u8>(
         &memory,
         instance,
@@ -491,7 +491,7 @@ fn committed_ignore(instance: usize, was: bool) {
     }
 }
 fn committed_removal(instance: usize, was: bool) {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let stored = field::<u8>(&memory, instance, runtime::REMOVE_REQUESTED);
     #[cfg(test)]
     if let Ok(now) = stored {
@@ -530,7 +530,7 @@ unsafe fn call(a: usize, b: usize, c: usize, index: usize) -> usize {
     }
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let selected = if index <= 6 {
         field::<u64>(&memory, b, 0).map(|p| p as usize)
     } else {
@@ -681,7 +681,7 @@ unsafe extern "system-unwind" fn tap(r: &Registers, index: usize) {
         11 => feed::decisions::retire(r.rbx, true, true),
         12 => feed::decisions::retire(r.r14, true, false),
         13 => {
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             match field::<u64>(&memory, r.r14, 0) {
                 Ok(pointer) => feed::decisions::cut(pointer as usize),
                 Err(reason) => feed::refuse(reason),
@@ -700,7 +700,7 @@ unsafe extern "system-unwind" fn tap(r: &Registers, index: usize) {
             super::staging::Witness::Selected { instance: r.rsi },
         ),
         17 => {
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             match field::<u8>(&memory, r.rcx, engine_decisions::ctargeted_decision::IGNORE) {
                 Ok(was) => super::staging::stage(
                     super::staging::Unit::TargetedIgnore,
@@ -713,7 +713,7 @@ unsafe extern "system-unwind" fn tap(r: &Registers, index: usize) {
             }
         }
         19 => {
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             match field::<u64>(&memory, r.r8, 0) {
                 Ok(pointer) if pointer != 0 => {
                     feed::decisions::retire(pointer as usize, true, false)
@@ -854,7 +854,8 @@ mod tests {
     use crate::event_feed_history::{OwnerBoundary, Snapshot, Store};
     use engine_decisions::{cdecision, cdecision_cooldown as cooldown, cdecision_status};
     use engine_events::event_feed_sites::provenance::World;
-    use engine_native::{ccountry, cgame_state, cpdx_array};
+    use engine_native::{ccountry, cgame_state};
+    use engine_native_memory::cpdx_array;
     use replay_data::event_feed_rows::{
         EventFeedCoverage, EventFeedScriptChange,
         decisions::{DecisionChange, DecisionState},
@@ -1013,7 +1014,7 @@ mod tests {
                     1,
                     GAME,
                     7,
-                    ccountry::Country {
+                    engine_native_memory::country_identity::Country {
                         pointer: COUNTRY,
                         canonical_slot: 1,
                         id: 1,
@@ -1181,7 +1182,7 @@ mod tests {
                     1,
                     GAME,
                     7,
-                    ccountry::Country {
+                    engine_native_memory::country_identity::Country {
                         pointer,
                         canonical_slot: id,
                         id,
@@ -1295,7 +1296,7 @@ mod tests {
                 1,
                 GAME,
                 7,
-                ccountry::Country {
+                engine_native_memory::country_identity::Country {
                     pointer: COUNTRY,
                     canonical_slot: 1,
                     id: 1,
@@ -1340,7 +1341,7 @@ mod tests {
                 1,
                 GAME,
                 7,
-                ccountry::Country {
+                engine_native_memory::country_identity::Country {
                     pointer: COUNTRY,
                     canonical_slot: 1,
                     id: 1,

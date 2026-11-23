@@ -2,7 +2,8 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine_native::{Memory, cstate};
+use engine_native_memory::Memory;
+use engine_native::cstate;
 use engine_occupation::cresistance::changes::{Receiver, SITES};
 use std::{
     ops::Range,
@@ -191,7 +192,7 @@ fn receiver(site: usize, first: usize) -> usize {
 fn core_holder(memory: &impl Memory, first: usize) -> Option<usize> {
     first
         .checked_add(engine_occupation::ccountry_occupation_data::PARENT_STATUS)
-        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .and_then(|at| engine_native_memory::read::<u64>(memory, at))
         .and_then(|value| usize::try_from(value).ok())
         .filter(|&value| first != 0 && value != 0)
 }
@@ -278,7 +279,7 @@ unsafe extern "system-unwind" fn rebuild_core_active_definitions(
     d: usize,
 ) -> usize {
     let _hook = crate::hook_timing::label();
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let mark = std::mem::ManuallyDrop::new(holder_changed(core_holder(&memory, a)));
     let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[23].load(Ordering::Acquire)) };
@@ -295,7 +296,7 @@ mod tests {
     fn occupation_marker_writers_select_state_and_guarded_holder_receivers() {
         let mut bytes = [0u8; 16];
         bytes[8..].copy_from_slice(&0x2000u64.to_le_bytes());
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };

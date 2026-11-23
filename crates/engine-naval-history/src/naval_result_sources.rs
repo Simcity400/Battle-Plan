@@ -1,9 +1,9 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, cair_wing, cgame_state, cnaval_combat, cnaval_combat_results, cpdx_array::Array,
-    creference_registry, read,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::{cgame_state, cnaval_combat};
+use crate::cnaval_combat_results;
+use engine_native_parts::creference_registry;
 
 pub struct Site {
     pub name: &'static str,
@@ -99,7 +99,7 @@ pub fn population(memory: &impl Memory, base: usize) -> Result<usize, &'static s
         .checked_add(creference_registry::entry_count(
             memory,
             base,
-            cair_wing::TYPE,
+            engine_native_parts::cair_wing_layout::TYPE,
         )?)
         .ok_or("naval source emitter population overflow")
 }
@@ -151,7 +151,7 @@ pub fn read_inputs(
     })
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,
@@ -162,7 +162,7 @@ fn field<T: crate::memory::Raw>(
     read(memory, at).ok_or("naval source operand unreadable")
 }
 
-fn global<T: crate::memory::Raw>(
+fn global<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     base: usize,
     key: Rva,
@@ -353,7 +353,7 @@ mod tests {
         bytes.put(combat_array + 8, &5000u32.to_le_bytes());
         bytes.put(combat_array + 12, &5000u32.to_le_bytes());
         bytes.put(
-            BASE + creference_registry::LOW_ROOTS_RVA.0 + cair_wing::TYPE as usize * 8,
+            BASE + creference_registry::LOW_ROOTS_RVA.0 + engine_native_parts::cair_wing_layout::TYPE as usize * 8,
             &(WING_TABLE as u64).to_le_bytes(),
         );
         bytes.put(
@@ -375,8 +375,8 @@ mod tests {
         bytes.put(
             WING_ENTRIES
                 + (WING_CAPACITY as usize + WING_OVERFLOW as usize)
-                    * crate::reference_bucket::STRIDE
-                + crate::reference_bucket::DISTANCE,
+                    * engine_native_parts::reference_bucket::STRIDE
+                + engine_native_parts::reference_bucket::DISTANCE,
             &[255],
         );
         bytes
@@ -387,7 +387,7 @@ mod tests {
         let mut bytes = population_fixture();
         assert_eq!(population(&bytes, BASE), Ok(10_000));
         bytes.put(
-            BASE + creference_registry::LOW_ROOTS_RVA.0 + cair_wing::TYPE as usize * 8,
+            BASE + creference_registry::LOW_ROOTS_RVA.0 + engine_native_parts::cair_wing_layout::TYPE as usize * 8,
             &0u64.to_le_bytes(),
         );
         assert_eq!(population(&bytes, BASE), Ok(5000));

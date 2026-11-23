@@ -1,6 +1,6 @@
 use super::*;
 use collector_division_parts::{army_stat_changes::Watches, attack_stats::ArmyStatStore};
-use engine_native::memory::LiveMemory;
+use engine_native_memory::memory::LiveMemory;
 use std::{hint::black_box, time::Instant};
 
 const RUNS: usize = 25;

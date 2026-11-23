@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::RefCell;
 
 const POINTER: usize = 0x1000;
@@ -27,7 +27,7 @@ fn fixture(text: &[u8]) -> Vec<u8> {
 fn acquire(bytes: &[u8], capacity: usize) -> (Result<Option<Span>, &'static str>, Vec<u8>, usize) {
     let mut owned = vec![0; capacity];
     let mut names = Names {
-        bytes: crate::walk::Buffer::Growing(&mut owned),
+        bytes: engine_native_memory::walk::Buffer::Growing(&mut owned),
         len: 0,
         required: 0,
     };

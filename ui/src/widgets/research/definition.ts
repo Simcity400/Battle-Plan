@@ -21,7 +21,7 @@ export const definition = {
   kind: 'research', version: 2, title: 'Research history', icon: 'flask',
   description: 'The order each research slot worked through, when each technology finished and when slots opened, as columns or a list.',
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: true,
-  minSize: { w: 3, h: 5 }, defaultSize: { w: 7, h: 12 }, options: OPTIONS, playsBackDated: true,
+  minSize: { w: 3, h: 5 }, defaultSize: { w: 7, h: 12 }, options: OPTIONS, viewSwitch: { option: 'view' }, playsBackDated: true,
   migrate: (from, widget) => from < 2 && widget.title === 'Research' ? { ...widget, title: 'Research history' } : widget,
   variants: choiceVariants(OPTIONS.find(field => field.key === 'view'), () => 'Research list', ['list']),
 } as const satisfies WidgetMeta;

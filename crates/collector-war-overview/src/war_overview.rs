@@ -1,8 +1,7 @@
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
 use collector_observers::{war_changes, war_changes::Changes as _, wargoal_changes};
-use engine_native::{
-    Memory, cwar_goal, cwar_relation, cwar_relation::overview as native, read, walk::Outcome,
-};
+use engine_native_memory::{Memory, read, walk::Outcome};
+use engine_native::cwar_relation::{goals as cwar_goal, self, overview as native};
 use replay_data::{rows, rows::TableId, rows::tables};
 use replay_frame::frame::{TableInput, TableView};
 

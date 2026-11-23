@@ -94,7 +94,7 @@ export default function SupplyBreakdown({ runtime, gate, track, active, options,
     alpha: state === 'inSupply' ? 0.85 : 1 })), [colors]);
   const keyHours = useMemo(() => runs.map(run => run.firstHour), [runs]);
   if (!track || !tag) return <>{header}<WidgetState kind="empty" message="Choose a country for the supply classification." /></>;
-  if (supply.refused) return <>{header}<WidgetState kind="unavailable" message={supply.refused} /></>;
+  if (supply.refused) return <>{header}<WidgetState kind="unavailable" technical={supply.refused} /></>;
   if (error && !supply.drawn) return <>{header}<WidgetState kind="error" failure={error} onRetry={retry} /></>;
   if (!identities) return <>{header}<WidgetState kind="loading" label="Loading supply classification…" /></>;
   return <>{header}<div className="supply-health-breakdown" ref={root}>

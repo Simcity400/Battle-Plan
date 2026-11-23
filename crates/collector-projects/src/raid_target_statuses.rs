@@ -4,7 +4,7 @@ use crate::{
     table_conversion::{table, unavailable},
 };
 use engine_allocation::{copy_vec, owned_vec};
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use engine_raid_inputs::raid_target_statuses as native;
 use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows::RaidScope, rows::RaidTargetStatusRow,
@@ -148,7 +148,7 @@ impl Captured {
     }
 }
 
-pub fn scope(row: &engine_native::craid_target::Row) -> RaidScope {
+pub fn scope(row: &engine_native_air::craid_target::Row) -> RaidScope {
     RaidScope {
         province: row.province,
         state: row.state,

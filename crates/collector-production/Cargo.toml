@@ -13,6 +13,8 @@ doctest = false
 test-support = ["collector-memory/test-support"]
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
 engine-sites.workspace = true
 engine-events.workspace = true
 engine-production.workspace = true
@@ -34,6 +36,7 @@ collector-projection.workspace = true
 collector-raw.workspace = true
 
 [dev-dependencies]
+engine-native-politics = { workspace = true, features = ["test-support"] }
 collector-observers = { workspace = true, features = ["test-support"] }
 collector-raw = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
@@ -54,6 +57,7 @@ collector-observers = { workspace = true, features = ["advisor_changes", "adviso
 collector-production = { workspace = true, features = ["test-support"] }
 collector-timing = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

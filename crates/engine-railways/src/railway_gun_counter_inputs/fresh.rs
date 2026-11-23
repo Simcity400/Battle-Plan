@@ -1,9 +1,9 @@
 
 use super::{FreshEta, FreshEtaObservations, Row, at, eta, pointer_at};
-use crate::{
-    Memory, carmy, corders_group, creference_registry::HeaderResolver, fixed_layout,
-    railway_gun_speed,
-};
+use engine_native_memory::Memory;
+use engine_native::{carmy, corders_group};
+use engine_native_parts::creference_registry::HeaderResolver;
+use crate::{fixed_layout, railway_gun_speed};
 use std::cell::OnceCell;
 
 fn orders_group(

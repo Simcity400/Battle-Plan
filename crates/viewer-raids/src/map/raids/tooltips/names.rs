@@ -1,5 +1,6 @@
 use super::{content::Content, rules::Text};
-use engine_native::{cname_group_member as member, raid_tooltip_operands::*};
+use engine_native::cname_group_member as member;
+use engine_native_air::raid_tooltip_operands::*;
 use content_reader_localisation::localisation::Argument as Arg;
 use content_reader_localisation::localisation::Localisation;
 use replay_data::{

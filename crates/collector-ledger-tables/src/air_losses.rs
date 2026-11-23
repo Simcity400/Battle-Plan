@@ -5,7 +5,7 @@ use crate::{
 };
 use collector_observers::air_losses as producer;
 use engine_allocation as allocation;
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use replay_data::{rows::AirLossEventRow, rows::TableId, rows::TableRows};
 use replay_frame::frame::{TableInput, TableView};
 use std::sync::atomic::{AtomicBool, Ordering};

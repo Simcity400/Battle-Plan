@@ -1,12 +1,14 @@
 
-use crate::{
-    Memory, cgame_state,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cstrategic_air, cstrategic_region,
     memory::{RecordField, RecordLayout, RecordSources},
     read,
     walk::{Buffer, Outcome},
 };
+use engine_native::cgame_state;
+use engine_native_air::cstrategic_air;
+use engine_native_parts::cstrategic_region;
 use engine_sites::Rva;
 use std::sync::Arc;
 
@@ -526,7 +528,7 @@ const SCALE_LAYOUT: RecordLayout<'static> =
 fn read_scales(memory: &impl Memory, addresses: &[usize]) -> [Option<i64>; BATCH] {
     let mut bytes = [0_u8; BATCH * 8];
     let mut complete = [false; BATCH];
-    crate::memory::gather_records(
+    engine_native_memory::memory::gather_records(
         memory,
         addresses,
         &SCALE_LAYOUT,
@@ -572,7 +574,7 @@ fn read_all(
             let address = scores
                 .element((first + index) as u32, STRIDE)
                 .ok_or("raid air score address overflow")?;
-            if !crate::read_slice(
+            if !engine_native_memory::read_slice(
                 memory,
                 address,
                 &mut bytes[index * ENTRY..(index + 1) * ENTRY],
@@ -630,7 +632,7 @@ fn carry(
         );
         let done = copied.min(batch.len());
         for (index, &address) in addresses[..batch.len()].iter().enumerate().skip(done) {
-            if !crate::read_slice(
+            if !engine_native_memory::read_slice(
                 memory,
                 address,
                 &mut bytes[index * ENTRY..(index + 1) * ENTRY],
@@ -691,7 +693,7 @@ fn carry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const MEMORY: usize = 0x1000_0000;
     const BASE: usize = MEMORY + 0x100 - COMBAT_DELAY_RVA.0;
@@ -727,9 +729,9 @@ mod tests {
             world.header(0x1000 + cgame_state::COUNTRIES, countries_at, slots);
             world.header(0x1000 + cgame_state::COUNTRY_LINKS, links_at, slots);
             world.put(0x1000 + cgame_state::STRATEGIC_AIR_MANAGER, MEMORY + 0x2000);
-            world.put(0x2000, BASE + crate::cstrategic_air_manager::VTABLE_RVA.0);
+            world.put(0x2000, BASE + engine_native_air::cstrategic_air_manager::VTABLE_RVA.0);
             world.header(
-                0x2000 + crate::cstrategic_air_manager::COUNTRY_AIR,
+                0x2000 + engine_native_air::cstrategic_air_manager::COUNTRY_AIR,
                 air_at,
                 slots,
             );
@@ -756,8 +758,8 @@ mod tests {
                 let air = world.air(slot);
                 world.put(countries_at + slot * 8, MEMORY + air - 0x20);
                 world.put32(links_at + slot * 4, slot as u32);
-                world.put(air - 0x20, BASE + crate::ccountry::VTABLE_RVA.0);
-                world.put(air - 0x20 + crate::ccountry::ID, slot);
+                world.put(air - 0x20, BASE + engine_native::ccountry::VTABLE_RVA.0);
+                world.put(air - 0x20 + engine_native::ccountry::ID, slot);
                 world.put(air_at + slot * 8, MEMORY + air);
                 world.put(air, BASE + cstrategic_air::VTABLE_RVA.0);
                 world.put(air + cstrategic_air::COUNTRY, slot);

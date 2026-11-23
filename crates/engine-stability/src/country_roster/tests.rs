@@ -1,5 +1,6 @@
 use super::*;
-use crate::{country_memory::Cache, memory::SliceMemory};
+use engine_native_intelligence::country_memory::Cache;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::RefCell;
 
 const STATE: usize = 0x1000;

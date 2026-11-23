@@ -1440,7 +1440,7 @@ pub fn compare_division_template_icons(
             setting!("is_locked", settings.locked != 0, expected.locked);
             setting!("obsolete", settings.obsolete != 0, expected.obsolete);
             let date = (settings.obsolete != 0
-                && settings.obsolete_change_date != engine_native::cgame_date::NULL_RAW_HOUR)
+                && settings.obsolete_change_date != engine_native_memory::cgame_date::NULL_RAW_HOUR)
                 .then_some(settings.obsolete_change_date);
             setting!("obsolete_change_date", date, expected.obsolete_change_date);
             setting!(

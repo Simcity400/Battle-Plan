@@ -24,11 +24,11 @@ pub fn land_speed_demand(
         Ok(location) => location,
         Err(reason) => return (Err(reason), 1),
     };
-    if location.1 & (crate::province_definition::LAND_FLAG | crate::province_definition::LAKE_FLAG)
+    if location.1 & (crate::cprovince::definition::LAND_FLAG | crate::cprovince::definition::LAKE_FLAG)
         == 0
     {
         match first {
-            Ok((_, flags)) if flags & crate::province_definition::LAND_FLAG != 0 => {
+            Ok((_, flags)) if flags & crate::cprovince::definition::LAND_FLAG != 0 => {
                 return (Ok(false), 0);
             }
             Err(reason) => return (Err(reason), 1),
@@ -44,8 +44,8 @@ pub fn land_speed_demand(
             failure.get_or_insert(reason);
         }
         if let (Ok((from_id, from_flags)), Ok((to_id, to_flags))) = (from, to)
-            && from_flags & crate::province_definition::LAND_FLAG != 0
-            && to_flags & crate::province_definition::LAND_FLAG != 0
+            && from_flags & crate::cprovince::definition::LAND_FLAG != 0
+            && to_flags & crate::cprovince::definition::LAND_FLAG != 0
             && (index == 0 || from_id != to_id)
         {
             return (Ok(true), refused);
@@ -63,7 +63,7 @@ pub(super) struct OrganisationMemo {
 
 impl OrganisationMemo {
     pub(super) fn new(units: usize) -> std::io::Result<Self> {
-        crate::allocation::advisory(|| {
+        engine_allocation::advisory(|| {
             Ok(Self {
                 identities: crate::carmy_leader::PassTable::try_with_capacity(units)?,
                 flags: crate::carmy_leader::PassTable::try_with_capacity(units)?,
@@ -111,7 +111,7 @@ impl OrganisationMemo {
                     return Err("movement province definition mismatch");
                 }
                 let definition_id =
-                    presentation_field::<u32>(memory, definition, crate::province_definition::ID)?;
+                    presentation_field::<u32>(memory, definition, crate::cprovince::definition::ID)?;
                 let id = presentation_field::<u32>(memory, province, cprovince::ID)?;
                 if definition_id != id {
                     return Err("movement province definition mismatch");
@@ -129,7 +129,7 @@ impl OrganisationMemo {
                 presentation_field(
                     memory,
                     definition,
-                    crate::province_definition::TERRAIN_FLAGS,
+                    crate::cprovince::definition::TERRAIN_FLAGS,
                 )
             },
             |value| value.is_ok(),
@@ -293,7 +293,7 @@ mod tests {
     }
     #[test]
     fn organisation_demand_visits_later_land_edges_and_keeps_readable_proofs() {
-        let land = |id| Ok((id, crate::province_definition::LAND_FLAG));
+        let land = |id| Ok((id, crate::cprovince::definition::LAND_FLAG));
         let sea = |id| Ok((id, 0));
         assert_eq!(
             land_speed_demand(land(1), [sea(2), land(3), land(4)]),
@@ -317,7 +317,7 @@ mod tests {
             (Ok(true), 0)
         );
         assert_eq!(land_speed_demand(land(1), [sea(2)]), (Ok(false), 0));
-        let lake = |id| Ok((id, crate::province_definition::LAKE_FLAG));
+        let lake = |id| Ok((id, crate::cprovince::definition::LAKE_FLAG));
         assert_eq!(
             land_speed_demand(lake(1), [land(2), land(3)]),
             (Ok(true), 0)

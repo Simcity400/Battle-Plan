@@ -1,7 +1,7 @@
 use collector_observers::wing_changes::{Changes, Counts};
 use engine_allocation as allocation;
 use engine_mutations::air_wing_equipment_mutations::POOL;
-use engine_native::walk::Outcome;
+use engine_native_memory::walk::Outcome;
 use replay_data::rows::WingEquipmentRow;
 use std::ops::Range;
 

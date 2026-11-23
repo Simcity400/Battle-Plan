@@ -117,7 +117,6 @@ viewer-buildings = { workspace = true, features = ["test-support"] }
 viewer-models = { workspace = true, features = ["test-support"] }
 viewer-unit-models = { workspace = true, features = ["test-support"] }
 viewer-playback = { workspace = true, features = ["test-support"] }
-engine-native.workspace = true
 playhead = { path = "../playhead", features = ["test-support"] }
 content-reader-abilities = { workspace = true, features = ["test-support"] }
 content-reader-division-names = { workspace = true, features = ["test-support"] }
@@ -159,12 +158,14 @@ dashboard-air = { workspace = true, features = ["export-types", "test-support"] 
 dashboard-land = { workspace = true, features = ["export-types", "test-support"] }
 dashboard-politics = { workspace = true, features = ["export-types", "test-support"] }
 dashboard-wars = { workspace = true, features = ["export-types", "test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "recording", "test-support"] }
 replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 replay-tools = { workspace = true, features = ["default", "journal"] }
 test-unify = { workspace = true }
+unify-bitflags-2 = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-once_cell = { workspace = true }

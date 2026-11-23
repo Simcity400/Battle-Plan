@@ -1,5 +1,7 @@
 
-use crate::{Memory, cgame_state, cpdx_array::Array, cstate, cstate_template, read, walk::Outcome};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
+use engine_native::{cgame_state, cstate};
+use engine_native_parts::cstate_template;
 use engine_sites::Rva;
 
 pub const STRIDE: usize = 0x10;
@@ -18,7 +20,7 @@ pub struct Row {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -31,7 +33,7 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -39,7 +41,7 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     let result = (|| {
         let states = game_state
@@ -140,7 +142,7 @@ pub fn walk_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     fn put<T: AsRef<[u8]>>(bytes: &mut [u8], at: usize, value: T) {
         bytes[at..at + value.as_ref().len()].copy_from_slice(value.as_ref());

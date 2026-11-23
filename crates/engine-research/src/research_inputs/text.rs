@@ -1,4 +1,5 @@
-use crate::{Memory, allocation, msvc_string, read_slice};
+use engine_native_memory::{Memory, msvc_string, read_slice};
+use crate::allocation;
 
 const INLINE: usize = 512;
 
@@ -55,7 +56,7 @@ impl Text {
     ) -> Result<Self, &'static str> {
         if descriptor.len > INLINE {
             let mut bytes = Vec::new();
-            descriptor.copy_buffer(memory, &mut crate::walk::Buffer::Growing(&mut bytes), 0)?;
+            descriptor.copy_buffer(memory, &mut engine_native_memory::walk::Buffer::Growing(&mut bytes), 0)?;
             return Ok(Self::Owned(bytes));
         }
         let mut value = Self::inline(descriptor.len);

@@ -4,7 +4,8 @@ use collector_primitives::{
     clock::qpc,
     table_capture::{CaptureRows, grow_capacity, grow_vec},
 };
-use engine_native::{Memory, corder_instance, corders_group, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::{corder_instance, corders_group};
 use replay_data::rows::TableId;
 use std::mem::size_of;
 

@@ -21,7 +21,12 @@ export function TimeSection({ widget, effective, reference, runtime, modes, onCh
   modes: readonly WidgetTime['mode'][]; onChange: (time: WidgetTime) => void;
 }) {
   const [refused, setRefused] = useState<string | null>(null);
-  const offered = ORDER.filter(mode => modes.includes(mode) && (mode === 'follow' || mode === 'campaign' || reference));
+  const offered = ORDER.filter(mode => modes.includes(mode));
+  const needsPin = !reference && offered.includes('pin');
+  const needsRange = !reference && offered.includes('range');
+  const campaignNote = needsPin && needsRange ? 'Load a campaign to pin a moment or choose a date range.'
+    : needsPin ? 'Load a campaign to pin a moment.'
+      : needsRange ? 'Load a campaign to choose a date range.' : null;
   const choose = (mode: WidgetTime['mode']) => {
     setRefused(null);
     if (mode === 'follow' || mode === 'campaign') onChange({ mode });
@@ -35,7 +40,16 @@ export function TimeSection({ widget, effective, reference, runtime, modes, onCh
   const pinned = time.mode === 'pin' && reference ? time.windows[reference.id] : undefined;
   return <>
     {offered.length > 1 && <Segmented label="Time" value={time.mode} onChange={choose}
-      options={offered.map(mode => ({ value: mode, ...MODES[mode] }))} />}
+      options={offered.map(mode => {
+        const unavailable = !reference && (mode === 'pin' || mode === 'range');
+        return {
+          value: mode,
+          ...MODES[mode],
+          disabled: unavailable,
+          reason: unavailable ? (mode === 'pin' ? 'Load a campaign to pin a moment.' : 'Load a campaign to choose a date range.') : undefined,
+        };
+      })} />}
+    {campaignNote && <p className="field-hint">{campaignNote}</p>}
     {refused && <p className="setting-row" role="alert">{refused}</p>}
     {time.mode === 'pin' && <div className="setting-row"><SettingLabel label={pinned && reference
       ? <>Holding {formatDateTime(reference.branch.firstHour + pinned.lastOffset)}</> : 'The pinned moment is not in this campaign'} />

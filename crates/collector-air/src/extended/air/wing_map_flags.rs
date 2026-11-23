@@ -2,7 +2,7 @@ use engine_allocation as allocation;
 use engine_mutations::{
     air_wing_equipment_mutations::ATTACHMENT_COVERAGE, air_wing_equipment_mutations::TRAINING_STOP,
 };
-use engine_native::Memory;
+use engine_native_memory::Memory;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Entry {
@@ -24,7 +24,7 @@ impl Store {
         &self,
         pointer: usize,
         wing: u64,
-    ) -> Option<engine_native::cair_wing::transport_operands::RaidReference> {
+    ) -> Option<engine_native_air::cair_wing::transport_operands::RaidReference> {
         self.raid.reference(pointer, wing)
     }
     pub fn begin(&mut self, wings: usize, invalidate: bool) {
@@ -101,7 +101,7 @@ impl Store {
         memory: &impl Memory,
         base: usize,
         pointer: usize,
-        row: &engine_native::cair_wing::Row,
+        row: &engine_native_air::cair_wing::Row,
         observed_raid_pointer: Option<usize>,
         observed_raid_token: Option<(u64, u64)>,
     ) -> u32 {
@@ -119,7 +119,7 @@ impl Store {
             coverage,
             collector_observers::wing_changes::map_sequence,
             collector_observers::wing_changes::map_quiet,
-            |at| engine_native::read::<u8>(memory, at),
+            |at| engine_native_memory::read::<u8>(memory, at),
         );
         if let Some(value) = self.raid.capture(
             memory,
@@ -133,7 +133,7 @@ impl Store {
         }
         flags
     }
-    fn stop_demand(&mut self, row: &engine_native::cair_wing::Row) -> bool {
+    fn stop_demand(&mut self, row: &engine_native_air::cair_wing::Row) -> bool {
         let key = (row.owner_slot, row.air_base, row.attached_group_pointer);
         let training = row.mission_mask & 0x800 != 0;
         if training
@@ -288,7 +288,7 @@ mod tests {
     }
     #[test]
     fn stop_demand_covers_later_possible_members_and_resets_at_each_census() {
-        use engine_native::cair_wing::Row;
+        use engine_native_air::cair_wing::Row;
         let mut store = Store::default();
         store.begin(5000, false);
         let idle = Row {

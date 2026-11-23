@@ -1,5 +1,5 @@
 use super::Tooltip;
-use engine_native::{craid_instance::outcome_key, craid_instance::phase_key};
+use engine_native_air::craid_instance::{outcome_key, phase_key};
 use content_reader_localisation::localisation::Argument as Arg;
 use content_reader_localisation::localisation::Localisation;
 use viewer_foundation::tooltip_text::localise;

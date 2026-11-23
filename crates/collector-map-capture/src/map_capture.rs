@@ -2,10 +2,17 @@ use collector_divisions::orders::Orders;
 use collector_primitives::clock::qpc;
 use collector_primitives::table_capture::{CaptureRows, grow_capacity, grow_vec};
 use collector_raw::raw::RawLog;
+use engine_native_memory::{Memory, walk::Outcome};
 use engine_native::{
-    Memory, cair_wing, cfleet, chuman, cland_combat, cnaval_combat, cnaval_combatant, cship,
-    ctask_force, walk::Outcome,
+    cfleet,
+    cland_combat,
+    cnaval_combat,
+    cnaval_combatant,
+    cship,
+    ctask_force,
 };
+use engine_native_politics::chuman;
+use engine_native_air::cair_wing;
 #[cfg(test)]
 use engine_native::{corder_instance, corders_group};
 use replay_data::rows::TableId;
@@ -103,7 +110,7 @@ impl MapCapacities {
         base: usize,
     ) -> Result<(), &'static str> {
         let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-            .and_then(|address| engine_native::read::<u64>(memory, address))
+            .and_then(|address| engine_native_memory::read::<u64>(memory, address))
             .and_then(|pointer| usize::try_from(pointer).ok())
             .filter(|pointer| *pointer != 0)
             .ok_or("map combat sizing state unreadable")?;
@@ -707,7 +714,7 @@ fn ppool_u64(log: &RawLog<2>, start: usize) -> u64 {
 
 fn pspan(
     log: &mut RawLog<2>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     addr: Option<usize>,
     len: usize,
     mask: u32,
@@ -717,16 +724,17 @@ fn pspan(
 
 fn copy_player(
     log: &mut RawLog<2>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     pointer: usize,
     vtable: usize,
     keys: &mut Vec<i32>,
 ) -> bool {
-    use engine_native::{chuman, msvc_string};
+    use engine_native_politics::chuman;
+    use engine_native_memory::msvc_string;
     let Some(key_address) = pointer.checked_add(chuman::PLAYER_KEY) else {
         return false;
     };
-    let Some(country_address) = pointer.checked_add(chuman::COUNTRY_TAG) else {
+    let Some(country_address) = pointer.checked_add(engine_native_parts::chuman_layout::COUNTRY_TAG) else {
         return false;
     };
     let Some(flags_address) = pointer.checked_add(chuman::FLAGS) else {
@@ -800,7 +808,7 @@ fn copy_player(
 
 fn copy_players_pass(
     log: &mut RawLog<2>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
 ) {
@@ -812,11 +820,13 @@ fn copy_players_pass(
 
 fn copy_player_roster(
     log: &mut RawLog<2>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
 ) {
-    use engine_native::{cgame_state, chuman, cpdx_array::Array};
+    use engine_native::cgame_state;
+    use engine_native_memory::cpdx_array::Array;
+    use engine_native_politics::chuman;
     log.has_bulk = true;
     let roster_start = match pspan(
         log,
@@ -830,18 +840,18 @@ fn copy_player_roster(
     };
     let mut raw = [0u8; 16];
     raw.copy_from_slice(&log.bytes[roster_start..roster_start + 16]);
-    let roster = match Array::from_header(raw, chuman::STRIDE) {
+    let roster = match Array::from_header(raw, engine_native_parts::chuman_layout::STRIDE) {
         Some(a) => a,
         None => return,
     };
-    let Some(vtable) = engine_sites::at(base, chuman::VTABLE_RVA) else {
+    let Some(vtable) = engine_sites::at(base, engine_native_parts::chuman_layout::VTABLE_RVA) else {
         return;
     };
     let Ok(mut keys) = engine_allocation::vec(roster.count as usize) else {
         return;
     };
     for index in 0..roster.count {
-        let Some(address) = roster.element(index, chuman::STRIDE) else {
+        let Some(address) = roster.element(index, engine_native_parts::chuman_layout::STRIDE) else {
             return;
         };
         if !copy_player(log, memory, address, vtable, &mut keys) {
@@ -852,7 +862,7 @@ fn copy_player_roster(
 
 fn copy_controller_pass(
     log: &mut RawLog<2>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
 ) {
@@ -861,7 +871,7 @@ fn copy_controller_pass(
         memory: &'a M,
         log: RefCell<&'a mut RawLog<2>>,
     }
-    impl<M: engine_native::Memory> engine_native::Memory for ControllerCopy<'_, M> {
+    impl<M: engine_native_memory::Memory> engine_native_memory::Memory for ControllerCopy<'_, M> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let mut log = self.log.borrow_mut();
             let Some(start) = log.take(self.memory, address, output.len(), P_CONTROLLERS) else {
@@ -885,7 +895,7 @@ fn copy_controller_pass(
 /// Only the admitted player acquisition may read against the active game's located image, into the
 /// pending job for that hour, before decode takes it.
 pub unsafe fn copy_players_refresh(
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     ctx: PlayersCopyContext,
     job: &mut PlayersJob,
 ) -> PlayersCopyReport {
@@ -958,7 +968,9 @@ mod players_split_tests {
         MapCapacities, MapCaptured, PlayersCopyContext, PlayersCopyReport, PlayersJob,
         copy_players_refresh,
     };
-    use engine_native::{ccountry, cgame_state, chuman, memory::SliceMemory, walk::Outcome};
+    use engine_native::{ccountry, cgame_state};
+    use engine_native_memory::{memory::SliceMemory, walk::Outcome};
+    use engine_native_politics::chuman;
 
     const BASE: usize = 0;
     const GS: usize = 0x10000;
@@ -1006,7 +1018,7 @@ mod players_split_tests {
         put(
             &mut bytes,
             ROSTER,
-            &(chuman::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_parts::chuman_layout::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -1015,7 +1027,7 @@ mod players_split_tests {
         );
         put(
             &mut bytes,
-            ROSTER + chuman::COUNTRY_TAG,
+            ROSTER + engine_native_parts::chuman_layout::COUNTRY_TAG,
             &1_u32.to_le_bytes(),
         );
         put(&mut bytes, ROSTER + chuman::FLAGS, &[3]);
@@ -1149,7 +1161,7 @@ mod players_split_tests {
 
     #[test]
     fn players_bulk_string_pair_serves_enclosed_sub_reads() {
-        use engine_native::Memory;
+        use engine_native_memory::Memory;
         let bytes = fixture();
         let memory = SliceMemory {
             base: GS,

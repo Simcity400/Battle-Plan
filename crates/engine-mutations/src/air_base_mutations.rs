@@ -12,8 +12,8 @@ pub enum Receiver {
 impl Receiver {
     pub const fn handle(self) -> Option<usize> {
         match self {
-            Self::Base => Some(crate::cair_base::HANDLE),
-            Self::Pool => Some(crate::cair_wing_pool::AIR_BASE_REFERENCE),
+            Self::Base => Some(engine_native_parts::cair_base_layout::HANDLE),
+            Self::Pool => Some(engine_native_parts::cair_wing_pool::AIR_BASE_REFERENCE),
             Self::Manager => None,
         }
     }

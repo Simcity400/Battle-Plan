@@ -3,7 +3,7 @@ use crate::{
     watch_registry::{Notification, WatchRegistry},
 };
 use engine_mutations::{party_leader_mutations::MUTATIONS, party_leader_mutations::VECTOR};
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},

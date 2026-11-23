@@ -1,13 +1,12 @@
-use engine_native::{
-    Memory, ccountry, cequipment_type as definition, cequipment_variant as variant,
-    cequipment_variant_pool as pool, equipment_entry, read,
-};
+use engine_native_memory::{Memory, read};
+use engine_native::{ccountry, cequipment_variant::{self as variant, pool as pool}};
+use engine_native_parts::{cequipment_type as definition, equipment_entry};
 
 const GROUP_STRIDE: usize = 24;
 const GROUP_FIRST: usize = 8;
 const GROUP_COUNT: usize = 12;
 
-fn field<T: engine_native::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     at: usize,
     offset: usize,
@@ -22,7 +21,7 @@ fn key<M: Memory>(
     countries: &ccountry::Reader<'_, M>,
     at: usize,
 ) -> Result<(u8, i32, u32, u32), &'static str> {
-    variant::identity(memory, base, at)?;
+    engine_native_parts::equipment_variant_identity::identity(memory, base, at)?;
     let model: u64 = field(memory, at, variant::DEFINITION)?;
     let canonical = |offset| -> Result<u32, &'static str> {
         let raw: u32 = field(memory, at, offset)?;
@@ -124,7 +123,7 @@ mod tests {
         world: &'a ccountry::synthetic::World,
         reads: std::cell::Cell<usize>,
     }
-    impl engine_native::Memory for Memory<'_> {
+    impl engine_native_memory::Memory for Memory<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.reads.set(self.reads.get() + 1);
             if address == engine_native::cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
@@ -155,7 +154,7 @@ mod tests {
             world.u64(model + definition::ARCHETYPE, archetype as u64);
             world.u32(model + definition::ARCHETYPE_ID, index as u32);
             let at = world.alloc(0x500);
-            world.u64(at, variant::VTABLE_RVA.0 as u64);
+            world.u64(at, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
             world.u64(
                 at + 8,
                 ((index as u64 + 1) << 32) | variant::REFERENCE_TYPE as u64,

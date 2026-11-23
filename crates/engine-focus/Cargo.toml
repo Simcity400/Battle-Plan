@@ -10,14 +10,16 @@ license.workspace = true
 doctest = false
 
 [features]
-alloc-fault-injection = ["engine-native/alloc-fault-injection"]
+alloc-fault-injection = ["engine-native-memory/alloc-fault-injection", "engine-native/alloc-fault-injection"]
 
 [dependencies]
+engine-native-memory.workspace = true
 engine-sites.workspace = true
 engine-native.workspace = true
 engine-research.workspace = true
 
 [dev-dependencies]
+engine-native-memory = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["test-support"] }
 engine-governance-tests = { workspace = true, features = ["test-support"] }
 
@@ -30,4 +32,5 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-politics = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

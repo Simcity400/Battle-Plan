@@ -1,5 +1,5 @@
 use super::*;
-use crate::{creference_registry as registry, reference_bucket as bucket};
+use engine_native_parts::{creference_registry as registry, reference_bucket as bucket};
 use std::collections::BTreeMap;
 
 const BASE: usize = 0x0001_4000_0000;
@@ -136,7 +136,7 @@ impl Fixture {
     }
     fn variant(&mut self, id: u32) -> usize {
         let variant = VARIANTS + id as usize * 0x100;
-        self.pointer(variant, BASE + cequipment_variant::VTABLE_RVA.0);
+        self.pointer(variant, BASE + engine_native_parts::equipment_variant_identity::VTABLE_RVA.0);
         self.u32(variant + 8, cequipment_variant::REFERENCE_TYPE);
         self.u32(variant + 12, id);
         variant
@@ -662,7 +662,7 @@ fn combat_log_scale() {
     let rows = arrays * 12 * variants as usize;
     let mut output = vec![Row::default(); rows];
     let mut memo = VariantMemo::default();
-    let memory = crate::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &f.bytes,
     };
@@ -989,7 +989,7 @@ fn the_variant_memo_changes_no_row_and_no_failure() {
 #[test]
 fn prepared_selection_failure_does_not_attempt_manager_reads() {
     let (fixture, _) = standard();
-    let memory = crate::read_census::ReadCensus::new(&fixture);
+    let memory = engine_native_memory::read_census::ReadCensus::new(&fixture);
     let mut selected = 0;
     let outcome = walk_prepared(
         &memory,
@@ -1017,7 +1017,7 @@ fn prepared_selection_failure_does_not_attempt_manager_reads() {
 #[test]
 fn prepared_selection_failure_at_visitor_does_not_attempt_group_reads() {
     let (fixture, _) = standard();
-    let memory = crate::read_census::ReadCensus::new(&fixture);
+    let memory = engine_native_memory::read_census::ReadCensus::new(&fixture);
     let mut selected = 0;
     let outcome = walk_prepared(
         &memory,

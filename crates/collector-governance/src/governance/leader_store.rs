@@ -1,7 +1,8 @@
 use crate::party_leader_changes::{Changes, Counts};
 use engine_allocation as allocation;
-use engine_native::{
-    cpolitical_party::LeaderRow, cpolitical_status::LeaderCarry, cpolitical_status::Parties,
+use engine_native_politics::{
+    cpolitical_party::LeaderRow,
+    cpolitical_status::{LeaderCarry, Parties},
 };
 use std::ops::Range;
 

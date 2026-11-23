@@ -1,9 +1,8 @@
 
+use engine_sites::Rva;
 use super::{CONTROLLED_STATES, CORE_STATES, Country, OWNED_STATES, PRIDE_OF_THE_FLEET, Reader};
-use crate::{
-    Memory, ccountry_characters, cpdx_array, cpdx_array::Array, cproduction_status, cstate,
-    cunit_leader, read, walk::Buffer,
-};
+use engine_native_memory::{Memory, cpdx_array::{self, Array}, read, walk::Buffer};
+use crate::{cproduction_status, cstate, cunit_leader};
 
 pub const NEIGHBORS: usize = 0x1088;
 
@@ -157,9 +156,9 @@ fn leader_arrays(
     base: usize,
     country: Country,
 ) -> Result<[Array; 2], &'static str> {
-    let vtable = engine_sites::at(base, ccountry_characters::VTABLE_RVA)
+    let vtable = engine_sites::at(base, VTABLE_RVA)
         .ok_or("country characters module address overflow")? as u64;
-    let Some(object) = ccountry_characters::characters_object(memory, &country, vtable)? else {
+    let Some(object) = characters_object(memory, &country, vtable)? else {
         return Ok([Array::default(); 2]);
     };
     Ok([
@@ -461,7 +460,7 @@ mod pride_demand_tests {
     use std::cell::RefCell;
 
     struct Tracked<'a> {
-        memory: crate::memory::SliceMemory<'a>,
+        memory: engine_native_memory::memory::SliceMemory<'a>,
         denied: Option<usize>,
         reads: RefCell<Vec<(usize, usize)>>,
     }
@@ -575,4 +574,32 @@ mod pride_demand_tests {
         );
         assert_eq!(handles, [Ok(0)]);
     }
+}
+
+pub const VTABLE_RVA: Rva = Rva(0x02a0_6b48);
+
+pub const OWNER: usize = 0x08;
+
+pub fn characters_object(
+    memory: &impl Memory,
+    country: &super::Country,
+    vtable: u64,
+) -> Result<Option<usize>, &'static str> {
+    let object = country
+        .pointer
+        .checked_add(super::CHARACTERS)
+        .and_then(|address| read::<u64>(memory, address))
+        .ok_or("country characters pointer unreadable")?;
+    let object = usize::try_from(object).map_err(|_| "country characters pointer overflow")?;
+    if object == 0 {
+        return Ok(None);
+    }
+    let head = read::<[u8; 16]>(memory, object).ok_or("country characters unreadable")?;
+    if u64::from_le_bytes(head[..8].try_into().unwrap()) != vtable {
+        return Err("country characters vtable mismatch");
+    }
+    if u64::from_le_bytes(head[OWNER..OWNER + 8].try_into().unwrap()) != country.pointer as u64 {
+        return Err("country characters owner is another country");
+    }
+    Ok(Some(object))
 }

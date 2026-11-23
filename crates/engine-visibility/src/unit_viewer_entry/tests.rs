@@ -1,5 +1,6 @@
 use super::*;
-use crate::{cgame_state, memory::SliceMemory};
+use engine_native::cgame_state;
+use engine_native_memory::memory::SliceMemory;
 
 const BASE: usize = 0x1000;
 const COUNTRY: usize = 0x3000;
@@ -316,7 +317,7 @@ fn railway_gun_viewer_entries_follow_country_and_unit_roster_order() {
     }];
     let mut shared = vec![Row::default(); 7];
     assert_eq!(
-        walk_with_divisions_buffer(&memory, 0, BASE, crate::walk::Buffer::Growing(&mut shared), Some(DivisionSources {
+        walk_with_divisions_buffer(&memory, 0, BASE, engine_native_memory::walk::Buffer::Growing(&mut shared), Some(DivisionSources {
                 entries: &sources,
                 outcome: Outcome::Rows { len: 1 }
             })),
@@ -510,7 +511,7 @@ fn shared_division_census_avoids_roster_reads_and_keeps_bounds_and_faults() {
         let mut expected = vec![Row::default(); capacity];
         let expected_outcome = walk(&direct, 0, BASE, &mut expected);
         let mut output = vec![Row::default(); capacity];
-        let result = walk_with_divisions_buffer(&memory, 0, BASE, crate::walk::Buffer::Growing(&mut output), Some(DivisionSources {
+        let result = walk_with_divisions_buffer(&memory, 0, BASE, engine_native_memory::walk::Buffer::Growing(&mut output), Some(DivisionSources {
                 entries: &entries,
                 outcome: Outcome::Rows { len: 1 },
             }));
@@ -534,7 +535,7 @@ fn shared_division_census_avoids_roster_reads_and_keeps_bounds_and_faults() {
         ),
     ] {
         assert_eq!(
-            walk_with_divisions_buffer(&memory, 0, BASE, crate::walk::Buffer::Growing(&mut vec![Row::default(); 4]), Some(DivisionSources {
+            walk_with_divisions_buffer(&memory, 0, BASE, engine_native_memory::walk::Buffer::Growing(&mut vec![Row::default(); 4]), Some(DivisionSources {
                     entries: &[entry],
                     outcome: Outcome::Rows { len: 1 }
                 })),
@@ -542,7 +543,7 @@ fn shared_division_census_avoids_roster_reads_and_keeps_bounds_and_faults() {
         );
     }
     assert_eq!(
-        walk_with_divisions_buffer(&memory, 0, BASE, crate::walk::Buffer::Count, Some(DivisionSources {
+        walk_with_divisions_buffer(&memory, 0, BASE, engine_native_memory::walk::Buffer::Count, Some(DivisionSources {
                 entries: &entries,
                 outcome: Outcome::Truncated {
                     len: 1,
@@ -599,7 +600,7 @@ fn shared_division_viewer_entries_are_hinted_before_their_reads() {
             hints,
         };
         let mut output = vec![Row::default(); 8];
-        let outcome = walk_with_divisions_buffer(&memory, 0, BASE, crate::walk::Buffer::Growing(&mut output), Some(DivisionSources {
+        let outcome = walk_with_divisions_buffer(&memory, 0, BASE, engine_native_memory::walk::Buffer::Growing(&mut output), Some(DivisionSources {
                 entries: &[DivisionSource {
                     pointer: DIVISION,
                     canonical: 1,
@@ -660,7 +661,7 @@ fn shared_division_batches_preserve_entry_fault_after_growth_and_partial_headers
         walk_with_divisions_buffer(&SliceMemory {
                 base: BASE,
                 bytes: &bytes
-            }, 0, BASE, crate::walk::Buffer::Growing(&mut output), Some(sources)),
+            }, 0, BASE, engine_native_memory::walk::Buffer::Growing(&mut output), Some(sources)),
         Outcome::Rows { len: 130 }
     );
     for (address, reason) in [
@@ -679,7 +680,7 @@ fn shared_division_batches_preserve_entry_fault_after_growth_and_partial_headers
             walk_with_divisions_buffer(&Fault {
                     bytes: &bytes,
                     address
-                }, 0, BASE, crate::walk::Buffer::Count, Some(sources)),
+                }, 0, BASE, engine_native_memory::walk::Buffer::Count, Some(sources)),
             Outcome::Unavailable { reason }
         );
     }
@@ -743,7 +744,7 @@ fn batched_and_serial(
     rows: usize,
 ) -> [(Outcome, Vec<Row>); 2] {
     let mut batched = vec![Row::default(); rows];
-    let new = walk_with_divisions_buffer(memory, 0, BASE, crate::walk::Buffer::Growing(&mut batched), Some(DivisionSources {
+    let new = walk_with_divisions_buffer(memory, 0, BASE, engine_native_memory::walk::Buffer::Growing(&mut batched), Some(DivisionSources {
             entries: sources,
             outcome: Outcome::Rows { len: sources.len() },
         }));
@@ -775,7 +776,7 @@ fn batched_and_serial(
 
 #[test]
 fn batched_first_blocks_match_the_serial_walk() {
-    use crate::memory::{CountedMemory, ReadCounts};
+    use engine_native_memory::memory::{CountedMemory, ReadCounts};
     const COUNT: usize = 200;
     let (bytes, sources) = scale_fixture(COUNT);
     let rows: usize = (0..COUNT).map(|i| i % 40).sum();
@@ -789,7 +790,7 @@ fn batched_first_blocks_match_the_serial_walk() {
     let counted = CountedMemory::new(memory);
     let prior = ReadCounts::take_current();
     let mut output = vec![Row::default(); rows];
-    walk_with_divisions_buffer(&counted, 0, BASE, crate::walk::Buffer::Growing(&mut output), Some(DivisionSources {
+    walk_with_divisions_buffer(&counted, 0, BASE, engine_native_memory::walk::Buffer::Growing(&mut output), Some(DivisionSources {
             entries: &sources,
             outcome: Outcome::Rows { len: COUNT },
         }));
@@ -812,7 +813,7 @@ fn scale_fault_sites(bytes: &[u8], sources: &[DivisionSource]) -> [std::ops::Ran
 
 #[test]
 fn a_persistent_viewer_fault_gives_the_serial_result() {
-    use crate::batch_fallback::{Batch, Faulty, count};
+    use engine_native_memory::batch_fallback::{Batch, Faulty, count};
     let (bytes, sources) = scale_fixture(200);
     let rows: usize = (0..200).map(|i| i % 40).sum();
     for (site, (range, counted)) in scale_fault_sites(&bytes, &sources)
@@ -841,7 +842,7 @@ fn a_persistent_viewer_fault_gives_the_serial_result() {
 
 #[test]
 fn a_one_shot_viewer_fault_refuses_no_more_than_the_serial_walk() {
-    use crate::batch_fallback::Faulty;
+    use engine_native_memory::batch_fallback::Faulty;
     let (bytes, sources) = scale_fixture(200);
     let rows: usize = (0..200).map(|i| i % 40).sum();
     let healthy = SliceMemory {

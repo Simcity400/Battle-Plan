@@ -1,9 +1,11 @@
 
+use engine_native_memory::{Memory, cpdx_array::Array};
 use crate::{
-    Memory, cloop_history, cpdx_array::Array, loop_history_record_fields as record,
+    cloop_history,
+    loop_history_record_fields as record,
     loop_history_window as window,
 };
-use engine_native::memory::{RecordField, RecordLayout, RecordSources};
+use engine_native_memory::memory::{RecordField, RecordLayout, RecordSources};
 
 pub const CHANNELS: usize = cloop_history::air_stats::FIELD_COUNT as usize;
 pub const LEVELS: usize = 3;

@@ -7,7 +7,7 @@ import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
 import { useHolderLooks } from '../../dashboard/holderLooks.ts';
 import { nameReadText, nameReadMetadata } from '../../dashboard/nameReads.ts';
 import WidgetState from '../../components/WidgetState';
-import { Segmented } from '../../components/Segmented';
+import { useWidgetViewSwitch } from '../../dashboard/widgetFrame';
 import { dayLabel } from '../../charts/draw';
 import DrillHost from '../../charts/drill/DrillHost';
 import { useDrill } from '../../charts/drill/useDrill';
@@ -149,6 +149,13 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
       paint: value => `${(Math.round((value as number) * 1000) / 10).toFixed(1)}%` },
   ], [names, label, dataHour]);
   const memberTip = useCallback((entry: MemberAmount) => content(entry.key)!, [content]);
+  const poolSwitch = useMemo(() => setOption && pool && offered.length > 1 ? {
+    label: 'Pool',
+    value: pool,
+    options: POOL_CHOICES.filter(choice => offered.includes(choice.value)),
+    onChange: (value: string) => setOption('pool', value),
+  } : null, [setOption, pool, offered]);
+  useWidgetViewSwitch(poolSwitch);
   const header = headerSlot && data && pool && createPortal(<span className="pill"><LiveText live={texts} at="total" /></span>, headerSlot);
   const following = widget.time.mode === 'follow';
   const body = (() => {
@@ -189,11 +196,7 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
       main = <ol className="resource-bars" aria-label={`Shared doctrines on ${dayLabel(dataHour)}`}>{(data.doctrineFolders ?? []).map(folder => row(String(folder.ordinal),
         <span className="resource-name"><span title={folder.name ?? 'Doctrine name unavailable'}>{folder.name ?? 'Doctrine name unavailable'}</span></span>, <span />, <span />))}</ol>;
     }
-    return <>{groupFailure}{header}
-      {setOption && offered.length > 1 && <div className="faction-pooled-caption">
-        <Segmented value={pool} options={POOL_CHOICES.filter(choice => offered.includes(choice.value))} label="Pool" onChange={value => setOption('pool', value)} />
-      </div>}
-      {main}</>;
+    return <>{groupFailure}{header}{main}</>;
   })();
   return <div ref={element => { anchor.current = element; head.root(element); }} className="faction-pooled">
     <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} title="Manpower over time"

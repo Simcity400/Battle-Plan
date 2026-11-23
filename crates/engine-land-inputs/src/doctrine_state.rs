@@ -1,4 +1,4 @@
-use crate::{Memory, cpdx_array::Array, memory::Raw, msvc_string, read};
+use engine_native_memory::{Memory, cpdx_array::Array, memory::Raw, msvc_string, read};
 use engine_sites::Rva;
 
 pub const STATUS_VTABLE: Rva = Rva(0x29e1d48);

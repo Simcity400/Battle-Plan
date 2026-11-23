@@ -25,13 +25,14 @@ pub const ASSIGNED_MANPOWER: usize = 0x90;
 pub const DEFAULT_LAW: usize = 0x118;
 pub const RESET_RVA: Rva = Rva(0x0107_beb0);
 
+use engine_native_memory::{Memory, read, walk::Outcome};
+use engine_native::{ccountry, creferenced_division_template};
 use crate::{
-    Memory, ccountry,
     ccountry_occupation_data::{self, LawRow, Scope},
-    coccupation_law, creferenced_division_template,
+    coccupation_law,
     cstate_garrison_data::{self, ManpowerRow},
-    manpower_value_entry, pdx_robin_hood_table, read,
-    walk::Outcome,
+    manpower_value_entry,
+    pdx_robin_hood_table,
 };
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +65,7 @@ pub struct TemplateSelection {
 pub fn visit_template_selections(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     countries: &ccountry::Reader<'_, impl Memory>,
     mut visit: impl FnMut(TemplateSelection) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
@@ -142,27 +143,27 @@ pub struct Buffers<'a> {
 }
 
 pub struct BuffersBuffer<'a> {
-    pub settings: crate::walk::Buffer<'a, Row>,
-    pub laws: crate::walk::Buffer<'a, LawRow>,
-    pub group_laws: crate::walk::Buffer<'a, ccountry_occupation_data::GroupLawRow>,
-    pub garrisons: crate::walk::Buffer<'a, cstate_garrison_data::Row>,
-    pub manpower: crate::walk::Buffer<'a, ManpowerRow>,
-    pub reserve_manpower: crate::walk::Buffer<'a, ReserveManpowerRow>,
-    pub names: crate::walk::Buffer<'a, u8>,
-    pub equipment: crate::walk::Buffer<'a, cstate_garrison_data::equipment::Row>,
+    pub settings: engine_native_memory::walk::Buffer<'a, Row>,
+    pub laws: engine_native_memory::walk::Buffer<'a, LawRow>,
+    pub group_laws: engine_native_memory::walk::Buffer<'a, ccountry_occupation_data::GroupLawRow>,
+    pub garrisons: engine_native_memory::walk::Buffer<'a, cstate_garrison_data::Row>,
+    pub manpower: engine_native_memory::walk::Buffer<'a, ManpowerRow>,
+    pub reserve_manpower: engine_native_memory::walk::Buffer<'a, ReserveManpowerRow>,
+    pub names: engine_native_memory::walk::Buffer<'a, u8>,
+    pub equipment: engine_native_memory::walk::Buffer<'a, cstate_garrison_data::equipment::Row>,
 }
 
 impl<'a> From<Buffers<'a>> for BuffersBuffer<'a> {
     fn from(value: Buffers<'a>) -> Self {
         Self {
-            settings: crate::walk::Buffer::Growing(value.settings),
-            laws: crate::walk::Buffer::Growing(value.laws),
-            group_laws: crate::walk::Buffer::Growing(value.group_laws),
-            garrisons: crate::walk::Buffer::Growing(value.garrisons),
-            manpower: crate::walk::Buffer::Growing(value.manpower),
-            reserve_manpower: crate::walk::Buffer::Growing(value.reserve_manpower),
-            names: crate::walk::Buffer::Growing(value.names),
-            equipment: crate::walk::Buffer::Growing(value.equipment),
+            settings: engine_native_memory::walk::Buffer::Growing(value.settings),
+            laws: engine_native_memory::walk::Buffer::Growing(value.laws),
+            group_laws: engine_native_memory::walk::Buffer::Growing(value.group_laws),
+            garrisons: engine_native_memory::walk::Buffer::Growing(value.garrisons),
+            manpower: engine_native_memory::walk::Buffer::Growing(value.manpower),
+            reserve_manpower: engine_native_memory::walk::Buffer::Growing(value.reserve_manpower),
+            names: engine_native_memory::walk::Buffer::Growing(value.names),
+            equipment: engine_native_memory::walk::Buffer::Growing(value.equipment),
         }
     }
 }
@@ -185,7 +186,7 @@ pub struct Walk {
 }
 
 struct Occupied<'a> {
-    rows: crate::walk::Buffer<'a, u32>,
+    rows: engine_native_memory::walk::Buffer<'a, u32>,
     len: usize,
     required: usize,
 }
@@ -199,7 +200,7 @@ impl Occupied<'_> {
     ) -> Result<ccountry::RosterSpan, &'static str> {
         let source = status
             .checked_add(OCCUPATION_DATA_ROWS)
-            .and_then(|at| crate::cpdx_array::Array::read(memory, at, 8))
+            .and_then(|at| engine_native_memory::cpdx_array::Array::read(memory, at, 8))
             .ok_or("occupied-country roster unreadable or invalid")?;
         let count = source.count as usize;
         self.required = self
@@ -214,7 +215,7 @@ impl Occupied<'_> {
             start: self.len,
             count,
         };
-        crate::cpdx_array::pointers(
+        engine_native_memory::cpdx_array::pointers(
             memory,
             source,
             "occupied-country roster pointer unreadable",
@@ -262,7 +263,7 @@ pub fn occupied_demand(
         let pointer = status(memory, base, country.pointer)?;
         let source = pointer
             .checked_add(OCCUPATION_DATA_ROWS)
-            .and_then(|at| crate::cpdx_array::Array::read(memory, at, 8))
+            .and_then(|at| engine_native_memory::cpdx_array::Array::read(memory, at, 8))
             .ok_or("occupied-country roster unreadable or invalid")?;
         required = required
             .checked_add(source.count as usize)
@@ -272,14 +273,14 @@ pub fn occupied_demand(
 }
 
 pub(crate) struct Rows<'a, T> {
-    pub data: crate::walk::Buffer<'a, T>,
+    pub data: engine_native_memory::walk::Buffer<'a, T>,
     pub len: usize,
     unread: u32,
     reason: Option<&'static str>,
 }
 
 impl<'a, T: Default> Rows<'a, T> {
-    fn new(data: crate::walk::Buffer<'a, T>) -> Self {
+    fn new(data: engine_native_memory::walk::Buffer<'a, T>) -> Self {
         Self {
             data,
             len: 0,
@@ -441,7 +442,7 @@ pub fn walk_with_occupied(
         game_state,
         buffers.into(),
         Some(Occupied {
-            rows: crate::walk::Buffer::Growing(occupied),
+            rows: engine_native_memory::walk::Buffer::Growing(occupied),
             len: 0,
             required: 0,
         }),
@@ -453,7 +454,7 @@ pub fn walk_with_occupied_buffer(
     base: usize,
     game_state: usize,
     buffers: BuffersBuffer<'_>,
-    occupied: crate::walk::Buffer<'_, u32>,
+    occupied: engine_native_memory::walk::Buffer<'_, u32>,
 ) -> Walk {
     walk_inner(
         memory,
@@ -667,7 +668,9 @@ fn walk_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{carmy_manpower_values, cgame_state, cstate, memory::SliceMemory};
+    use engine_native_parts::carmy_manpower_values;
+    use engine_native::{cgame_state, cstate};
+    use engine_native_memory::memory::SliceMemory;
 
     #[test]
     fn occupied_country_roster_keeps_native_order_and_preserves_settings_on_refusal() {

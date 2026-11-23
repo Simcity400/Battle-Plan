@@ -1,9 +1,22 @@
 
 use engine_sites::Rva;
+use engine_native_memory::{
+    Memory,
+    cpdx_array::Array,
+    memory::Raw,
+    read,
+    read_slice,
+    walk::Outcome,
+};
+use engine_native::{ccountry, cgame_state};
 use crate::{
-    Memory, ccountry, cgame_state, clocal_intel_network, cpdx_array::Array, cstrategic_operative,
-    cstrategic_operative_manager, csub_intel_network, intel_network_graph, intel_network_graph_row,
-    intel_network_graph_vertex, memory::Raw, read, read_slice, walk::Outcome,
+    clocal_intel_network,
+    cstrategic_operative,
+    cstrategic_operative_manager,
+    csub_intel_network,
+    intel_network_graph,
+    intel_network_graph_row,
+    intel_network_graph_vertex,
 };
 
 pub const VTABLE_RVA: Rva = Rva(0x2a1_dcd8);
@@ -122,7 +135,7 @@ pub fn walk_with_cached_summaries(
     refresh: bool,
 ) -> NetworkWalk {
     let mut summary = SummaryCapture {
-        output: crate::walk::Buffer::Growing(summary_rows),
+        output: engine_native_memory::walk::Buffer::Growing(summary_rows),
         len: 0,
         failure: None,
         held: if refresh { &[] } else { &cache.rows },
@@ -132,7 +145,7 @@ pub fn walk_with_cached_summaries(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(states),
+        engine_native_memory::walk::Buffer::Growing(states),
         Some(&mut summary),
     );
     let summaries = if let Some(reason) = summary.failure {
@@ -150,7 +163,7 @@ pub fn walk_with_cached_summaries(
             return NetworkWalk { states, summaries };
         }
         let captured = &summary_rows[..len];
-        if engine_native::allocation::resize_default(&mut cache.rows, len).is_err() {
+        if engine_allocation::resize_default(&mut cache.rows, len).is_err() {
             cache.rows.clear();
             return NetworkWalk {
                 states,
@@ -168,7 +181,7 @@ pub fn walk_with_cached_summaries(
 }
 
 struct SummaryCapture<'a> {
-    output: crate::walk::Buffer<'a, Summary>,
+    output: engine_native_memory::walk::Buffer<'a, Summary>,
     len: usize,
     failure: Option<&'static str>,
     held: &'a [Summary],
@@ -234,7 +247,7 @@ impl SummaryCapture<'_> {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -247,7 +260,7 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -255,7 +268,7 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, Row>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     walk_inner(memory, base, game_state, output, None)
 }
@@ -264,7 +277,7 @@ fn walk_inner(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
     mut summaries: Option<&mut SummaryCapture<'_>>,
 ) -> Outcome {
     let result = (|| {
@@ -281,7 +294,7 @@ fn walk_inner(
         )?;
         let mut len = 0_usize;
         let mut unread_rows = 0_u32;
-        let mut seen = crate::slot_set::SlotSet::new();
+        let mut seen = engine_native_memory::slot_set::SlotSet::new();
         for slot in 1..countries.count() {
             let Some(country) = countries.at(slot)? else {
                 continue;
@@ -611,7 +624,7 @@ fn vtable(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const GS: usize = 0x1000;
     const MANAGER: usize = 0x9000;
@@ -833,7 +846,7 @@ mod tests {
 
     #[test]
     fn one_owner_with_networks_in_every_other_country_is_checked_for_duplicates() {
-        use crate::ccountry::synthetic::World;
+        use engine_native::ccountry::synthetic::World;
         const COUNT: u32 = 4;
         let mut world = World::new(0, COUNT, 0x10);
         let manager = world.alloc(0x100);
@@ -904,7 +917,7 @@ mod tests {
 
     #[test]
     fn a_null_strategic_slot_runs_no_networks_but_an_unreadable_slot_fails() {
-        use crate::ccountry::synthetic::World;
+        use engine_native::ccountry::synthetic::World;
         const COUNT: u32 = 4;
         let mut world = World::new(0, COUNT, 0x10);
         let manager = world.alloc(0x100);

@@ -1,6 +1,8 @@
 use collector_primitives::clock::qpc;
 use collector_states::acquisition_gather::{Report as GatherReport, Request as GatherRequest};
-use engine_native::{Memory, cfaction, cfaction_system, country_memory::Cache, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::cfaction::{self, system as cfaction_system};
+use engine_native_intelligence::country_memory::Cache;
 
 #[derive(Default)]
 pub(crate) struct Names {
@@ -191,9 +193,9 @@ fn run_with(request: &mut Request, memory: &impl Memory) -> Report {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::{
-        ccountry, cdiplomacy_status, cgame_state, memory::SliceMemory, msvc_string,
-    };
+    use engine_native::{ccountry, cgame_state};
+    use engine_native_memory::{memory::SliceMemory, msvc_string};
+    use engine_native_politics::cdiplomacy_status;
     use std::cell::RefCell;
 
     const GS: usize = 0x1000;
@@ -247,16 +249,16 @@ mod tests {
             put64(
                 &mut bytes,
                 diplomacy,
-                cdiplomacy_status::VTABLE_RVA.0 as u64,
+                engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64,
             );
             put64(
                 &mut bytes,
-                diplomacy + cdiplomacy_status::COUNTRY,
+                diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
                 country as u64,
             );
             put64(
                 &mut bytes,
-                diplomacy + cdiplomacy_status::FACTION,
+                diplomacy + engine_native_parts::cdiplomacy_status_layout::FACTION,
                 FIRST as u64,
             );
         }

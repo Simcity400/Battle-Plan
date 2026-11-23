@@ -13,6 +13,7 @@ doctest = false
 test-support = ["collector-extended-support/test-support"]
 
 [dependencies]
+engine-native-memory.workspace = true
 engine-allocation.workspace = true
 engine-native.workspace = true
 engine-production.workspace = true
@@ -50,6 +51,7 @@ collector-production-daily = { workspace = true, features = ["test-support"] }
 collector-raw = { workspace = true, features = ["test-support"] }
 collector-timing = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }

@@ -17,7 +17,7 @@ fn launch_world() -> TestMemory {
     pointer(&mut memory.bytes, ZERO_NAVY + native::MANAGER, MANAGER);
     word(
         &mut memory.bytes,
-        ZERO_NAVY + cnaval_base::HOLDER_COUNTRY,
+        ZERO_NAVY + engine_native_parts::cnaval_base_layout::HOLDER_COUNTRY,
         999,
     );
     header(
@@ -27,9 +27,9 @@ fn launch_world() -> TestMemory {
         3,
     );
     for (object, id) in [(0x17080, (-1_i32) as u32), (0x17100, 0)] {
-        pointer(&mut memory.bytes, object, cnaval_base::VTABLE_RVA.0);
-        pointer(&mut memory.bytes, object + cnaval_base::HOLDER, ZERO_NAVY);
-        word(&mut memory.bytes, object + cnaval_base::PROVINCE_ID, id);
+        pointer(&mut memory.bytes, object, engine_native_parts::cnaval_base_layout::VTABLE_RVA.0);
+        pointer(&mut memory.bytes, object + engine_native_parts::cnaval_base_layout::HOLDER, ZERO_NAVY);
+        word(&mut memory.bytes, object + engine_native_parts::cnaval_base_layout::PROVINCE_ID, id);
     }
     for (ordinal, object) in [0x17080, 0x17100, 0x17080].into_iter().enumerate() {
         pointer(&mut memory.bytes, LAUNCH_POINTERS + ordinal * 8, object);

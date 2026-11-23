@@ -1,6 +1,6 @@
 use super::*;
 #[cfg(test)]
-use engine_native::{carmy, cequipment_variant as variant, cequipment_variant_pool as pool};
+use engine_native::{carmy, cequipment_variant::{self as variant, pool as pool}};
 #[cfg(test)]
 use std::{hint::black_box, time::Instant};
 #[cfg(all(test, feature = "tap-foreign-probe"))]
@@ -134,7 +134,7 @@ impl World {
             world.word(0x600 + d * 16, v as u64);
             world.word(
                 0x600 + designs * 16 + d * 0x30,
-                variant::VTABLE_RVA.0 as u64,
+                engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64,
             );
             world.word(
                 0x600 + designs * 16 + d * 0x30 + 8,
@@ -171,7 +171,7 @@ impl World {
         for d in 0..self.designs {
             self.word(
                 0x600 + self.designs * 16 + d * 0x30,
-                (base + variant::VTABLE_RVA.0) as u64,
+                (base + engine_native_parts::equipment_variant_identity::VTABLE_RVA.0) as u64,
             );
         }
     }
@@ -334,7 +334,7 @@ impl Memory for StateMemory {
             destination.copy_from_slice(&(self.state.as_ptr() as u64).to_le_bytes());
             true
         } else {
-            unsafe { engine_native::memory::LiveMemory::new() }.copy(address, destination)
+            unsafe { engine_native_memory::memory::LiveMemory::new() }.copy(address, destination)
         }
     }
 }
@@ -416,7 +416,7 @@ unsafe extern "system-unwind" fn cleanup_delete(
     let items = unsafe { *((bank + pool::ITEMS) as *const usize) };
     let design = unsafe { *(items as *const usize) };
     if return_equipment != 0 {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let design_count = unsafe { *((bank + pool::COUNT) as *const i32) } as usize;
         let mut reserve = ReserveWorld::new(design_count, 1);
         let base = BASE.load(Ordering::Relaxed);
@@ -427,7 +427,7 @@ unsafe extern "system-unwind" fn cleanup_delete(
             (base + pool::VTABLE_RVA.0) as u64;
         for index in 0..design_count {
             let source =
-                engine_native::read::<u64>(&memory, items + index * equipment_entry::STRIDE)
+                engine_native_memory::read::<u64>(&memory, items + index * equipment_entry::STRIDE)
                     .unwrap();
             reserve
                 .world
@@ -589,7 +589,7 @@ unsafe extern "system-unwind" fn land_scale_and_ceiling(
 unsafe extern "system-unwind" fn air_request(wing: usize, request: usize, source: usize) {
     assert!(STORE.try_lock().is_ok());
     *FORWARDED.lock().unwrap() = [wing, request, source, 0, 0, 0, 0, 0];
-    let bank = wing + engine_native::cair_wing::EQUIPMENT_POOL;
+    let bank = wing + engine_native_air::cair_wing::EQUIPMENT_POOL;
     let items = unsafe { *((bank + pool::ITEMS) as *const usize) };
     let design = unsafe { *(items as *const usize) };
     let amount = i64::from(request as u32 as i32) * equipment_entry::FIXED_POINT_SCALE;
@@ -598,7 +598,7 @@ unsafe extern "system-unwind" fn air_request(wing: usize, request: usize, source
 
 #[cfg(test)]
 fn assert_signed_row(amount_raw: i64, cause: native::Cause, variant: u64) {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let mut captured = crate::extended::equipment_destruction::Captured::with_capacities(&8);
     captured.capture(&memory, 0, 0);
     let [
@@ -721,7 +721,7 @@ fn negative_air_request_records_signed_gain_without_poison() {
     let mut world = World::new(1);
     world.amount(0, 1000000);
     let mut wing = vec![0u64; 0xa00 / 8];
-    let pool_offset = engine_native::cair_wing::EQUIPMENT_POOL;
+    let pool_offset = engine_native_air::cair_wing::EQUIPMENT_POOL;
     wing[pool_offset / 8] = pool::VTABLE_RVA.0 as u64;
     wing[(pool_offset + pool::ITEMS) / 8] = (world.army() + 0x600) as u64;
     wing[(pool_offset + pool::CAPACITY) / 8] = (1u64 << 32) | 1;
@@ -798,7 +798,7 @@ fn record_queue(
         native::QueuedContext::Ignore => panic!("ignored queues have no fixture provenance"),
     };
     if disposition == native::Disposition::HqTransferred && !store.credits.contains(handle) {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         if native::army_identity(&memory, BASE.load(Ordering::Relaxed), army) == Ok(handle)
             && let Ok(rows) = pool_rows(
                 &memory,
@@ -1492,7 +1492,7 @@ fn enabled_land_shim_passes_caller_pc_and_records_stable_causes() {
         );
         let mut captured = crate::extended::equipment_destruction::Captured::with_capacities(&1);
         captured.capture(
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &[],
             },
@@ -1652,7 +1652,7 @@ fn context(world: &World, cause: native::Cause) -> Deletion {
 }
 #[cfg(test)]
 fn context_rebased(world: &World, base: usize, cause: native::Cause) -> Deletion {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     Deletion {
         army: world.army(),
         handle: native::army_identity(&memory, base, world.army()).unwrap(),
@@ -3011,7 +3011,7 @@ fn refused_pool_copies_name_their_storage() {
     boundary(clock(2, 1));
     for count in [5000, 10003] {
         let world = World::new(count);
-        let live = unsafe { engine_native::memory::LiveMemory::new() };
+        let live = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let bank = world.army() + carmy::EQUIPMENT_POOL;
         collector_test_support::with_allocations_denied(|| {
             assert_eq!(pool_rows(&live, 0, bank), Err(EVENT_STORAGE_FAILED));
@@ -4578,7 +4578,7 @@ fn whole_merge_includes_only_canceled_held_pools_and_all_bulk_designs() {
             survivor_requests.upgrades[0].storage[(0x600 + 8) / 8],
             777777
         );
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let mut pools = 0;
         native::canceled_delivery_pools(&memory, base, survivor.army(), true, |_| {
             pools += 1;
@@ -4749,7 +4749,7 @@ fn pending_hq_source_settles_saved_deficit_during_whole_merge_without_scratch_re
             source.army() + carmy::EQUIPMENT_POOL,
         );
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let handle = native::army_identity(&memory, base, source.army()).unwrap();
     folded().record_queue(
         source.army(),
@@ -4844,7 +4844,7 @@ fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
         source.amount(1, 0);
         let reserve = ReserveWorld::for_source(&survivor, base, 1, 0);
         state.countries[1] = reserve._country.as_ptr() as u64;
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let handle = native::army_identity(&memory, base, survivor.army()).unwrap();
         unsafe {
             hq_returned(
@@ -5278,7 +5278,7 @@ fn live_credited_survivor_can_later_merge_as_a_queued_hq_source() {
     recipient.amount(1, 0);
     let reserve = ReserveWorld::for_source(&survivor, base, 1, 0);
     state.countries[1] = reserve._country.as_ptr() as u64;
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let handle = native::army_identity(&memory, base, survivor.army()).unwrap();
     unsafe {
         hq_returned(
@@ -5388,7 +5388,7 @@ fn conservation_wide_duplicates_cancel_before_serialized_width_check() {
 #[test]
 fn native_merge_selection_and_reserve_reads_stay_with_reached_designs() {
     let _serial = serial();
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let mut survivor = World::new(2);
     survivor.word(0x1f0, 17);
     let mut selected = World::new(2);
@@ -5509,7 +5509,7 @@ fn skipped_whole_merge_revokes_survivor_and_donor_proofs_before_unwind() {
             donor.army() + carmy::EQUIPMENT_POOL,
         );
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let survivor_handle = native::army_identity(&memory, base, survivor.army()).unwrap();
     let donor_handle = native::army_identity(&memory, base, donor.army()).unwrap();
     poison();
@@ -5576,7 +5576,7 @@ fn native_merge_unwind_keeps_original_once_and_poisoned_observation_quiet() {
             world.army() + carmy::EQUIPMENT_POOL,
         );
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let handle = native::army_identity(&memory, base, world.army()).unwrap();
     let argument = [world.army() as u64, 0, 0, 0];
     ORIGINAL[SiteId::Merge as usize]

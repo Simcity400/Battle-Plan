@@ -3,7 +3,7 @@ use crate::{
     hook::Hook,
 };
 use engine_mutations::{railway_mutations::MUTATIONS, railway_mutations::Receiver};
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -58,7 +58,7 @@ impl Watches {
     }
 
     fn building(&self, flags: u32, location: u32) -> Option<Dirty<'_>> {
-        if flags & engine_native::cbuilding_status::PROVINCE_FLAG == 0 {
+        if flags & engine_native::cprovince::buildings::PROVINCE_FLAG == 0 {
             return None;
         }
         self.buildings[0].fetch_add(1, Ordering::Relaxed);
@@ -147,7 +147,7 @@ fn target(receiver: Receiver, first: usize, second: usize) -> Target {
                 .map(|id| id as usize),
         ),
         Receiver::Info => {
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             Target::Province(
                 engine_mutations::railway_mutations::province(&memory, first).map(|id| id as usize),
             )
@@ -353,7 +353,7 @@ mod tests {
         );
         let mut info = vec![0_u8; 0x100];
         let mut definition = vec![0_u8; 0x100];
-        let id = engine_native::province_definition::ID;
+        let id = engine_native::cprovince::definition::ID;
         definition[id..id + 4].copy_from_slice(&517_u32.to_le_bytes());
         let at = engine_railways::cprovince_railway_info::PROVINCE_RECORD;
         info[at..at + 8].copy_from_slice(&(definition.as_ptr() as u64).to_le_bytes());
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn forwarded_building_writes_mark_province_statuses() {
-        use engine_native::{cbuilding_status::PROVINCE_FLAG, cbuilding_status::STATE_FLAG};
+        use engine_native::cprovince::buildings::{PROVINCE_FLAG, STATE_FLAG};
         let watches = Watches::enabled(1_024);
         let (Some(epoch), _) = take(&watches) else {
             unreachable!("observing")

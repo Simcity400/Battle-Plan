@@ -1,5 +1,6 @@
 
-use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, read, walk::Outcome};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
+use engine_native::{ccountry, cgame_state};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x0279_f740);
@@ -36,7 +37,7 @@ pub struct Walk {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -50,8 +51,8 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(groups),
-        crate::walk::Buffer::Growing(members),
+        engine_native_memory::walk::Buffer::Growing(groups),
+        engine_native_memory::walk::Buffer::Growing(members),
     )
 }
 
@@ -59,8 +60,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut groups: crate::walk::Buffer<'_, Row>,
-    mut members: crate::walk::Buffer<'_, MemberRow>,
+    mut groups: engine_native_memory::walk::Buffer<'_, Row>,
+    mut members: engine_native_memory::walk::Buffer<'_, MemberRow>,
 ) -> Walk {
     let result = (|| {
         let array = game_state

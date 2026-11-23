@@ -1,4 +1,5 @@
-use engine_native::{Memory, cgame_state, read};
+use engine_native_memory::{Memory, read};
+use engine_native::cgame_state;
 use engine_production::construction_ic_sites;
 
 pub(super) fn presize(memory: &impl Memory, base: usize) -> Result<(), &'static str> {

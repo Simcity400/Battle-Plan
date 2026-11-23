@@ -7,12 +7,8 @@ pub const CONVOYS: usize = 0x0c;
 pub const KILLER_COUNTRY: usize = 0x10;
 pub const OWNER_COUNTRY: usize = 0x14;
 
-use crate::{
-    Memory, cgame_state,
-    cpdx_array::Array,
-    read,
-    walk::{Buffer, Outcome},
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::{Buffer, Outcome}};
+use engine_native::cgame_state;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -113,7 +109,7 @@ fn walk_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x700];

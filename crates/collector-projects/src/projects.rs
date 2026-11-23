@@ -10,10 +10,15 @@ use crate::{
 use engine_allocation::{copy_vec, default_vec, map_slice, owned_vec};
 use engine_characters::scientist_roster;
 use engine_events::cnuke;
-use engine_native::raid_tooltip_operands;
-use engine_native::{
-    Memory, ccountry, ccountry_raid_status, cgame_state, cpdx_array::Array, craid_instance,
-    craid_system, msvc_string, raid_equipment, raid_speed_inputs, walk::Outcome,
+use engine_native_air::raid_tooltip_operands;
+use engine_native_memory::{Memory, cpdx_array::Array, msvc_string, walk::Outcome};
+use engine_native::{ccountry, cgame_state};
+use engine_native_air::{
+    ccountry_raid_status,
+    craid_instance,
+    craid_system,
+    raid_equipment,
+    raid_speed_inputs,
 };
 use engine_peace::peace_conference;
 use engine_projects::{
@@ -206,7 +211,7 @@ pub struct Captured {
     facilities: CaptureRows<raid_facilities::Row>,
     raid_intel: CaptureRows<engine_raid_inputs::raid_intel_inputs::Row>,
     agency_defense: Vec<Option<super::agency_defense::Tree>>,
-    tooltip_operands: CaptureRows<engine_native::raid_tooltip_operands::Row>,
+    tooltip_operands: CaptureRows<engine_native_air::raid_tooltip_operands::Row>,
     counteroperatives: Arena<engine_raid_inputs::raid_intel_inputs::Operative>,
     projects: CaptureRows<nproject_cproject::Row>,
     history: CaptureRows<nproject_sproject_history::Row>,
@@ -228,7 +233,7 @@ pub struct Captured {
     raid_equipment_amounts: Arena<i64>,
     raid_equipment_archetype_tokens: Arena<u32>,
     raid_equipment_archetype_amounts: Arena<i64>,
-    speed_memo: engine_native::modifier_definition::DefinitionMemo,
+    speed_memo: engine_native_parts::modifier_definition::DefinitionMemo,
     raid_reads: super::RaidReadCounts,
     raid_type_tokens: Arena<u32>,
     raid_show_for: Arena<u32>,
@@ -319,7 +324,7 @@ impl Captured {
             raid_equipment_amounts: Arena::new(capacity.raid_equipment_items),
             raid_equipment_archetype_tokens: Arena::new(capacity.raid_equipment_archetypes),
             raid_equipment_archetype_amounts: Arena::new(capacity.raid_equipment_archetypes),
-            speed_memo: engine_native::modifier_definition::DefinitionMemo::default(),
+            speed_memo: engine_native_parts::modifier_definition::DefinitionMemo::default(),
             raid_reads: super::RaidReadCounts::default(),
             raid_type_tokens: Arena::new(capacity.raid_type_tokens),
             raid_show_for: Arena::new(capacity.raid_show_for),
@@ -1237,8 +1242,8 @@ impl Captured {
                         memory,
                         base,
                         game_state,
-                        engine_native::walk::Buffer::Growing(&mut self.projects.rows),
-                        engine_native::walk::Buffer::Growing(&mut self.history.rows),
+                        engine_native_memory::walk::Buffer::Growing(&mut self.projects.rows),
+                        engine_native_memory::walk::Buffer::Growing(&mut self.history.rows),
                         &mut |id| selection.contains(id),
                     )
                 };
@@ -1307,7 +1312,7 @@ impl Captured {
         if self.project_links.len() < bytes {
             return Err("country link table allocation failed");
         }
-        if !engine_native::read_slice(memory, links.data, &mut self.project_links[..bytes]) {
+        if !engine_native_memory::read_slice(memory, links.data, &mut self.project_links[..bytes]) {
             return Err("country link table unreadable");
         }
         self.project_owners.clear();
@@ -1533,8 +1538,8 @@ rest!(
     raid_equipment_amounts: Arena<i64> = Arena::new(0),
     raid_equipment_archetype_tokens: Arena<u32> = Arena::new(0),
     raid_equipment_archetype_amounts: Arena<i64> = Arena::new(0),
-    speed_memo: engine_native::modifier_definition::DefinitionMemo =
-        engine_native::modifier_definition::DefinitionMemo::default(),
+    speed_memo: engine_native_parts::modifier_definition::DefinitionMemo =
+        engine_native_parts::modifier_definition::DefinitionMemo::default(),
     raid_reads: super::RaidReadCounts = super::RaidReadCounts::default(),
     raid_type_tokens: Arena<u32> = Arena::new(0),
     raid_show_for: Arena<u32> = Arena::new(0),
@@ -1607,8 +1612,8 @@ impl Rest {
                 memory,
                 base,
                 game_state,
-                engine_native::walk::Buffer::Growing(&mut self.raid_player.rows),
-                engine_native::walk::Buffer::GrowingFrom(&mut self.raid_type_tokens.first, start),
+                engine_native_memory::walk::Buffer::Growing(&mut self.raid_player.rows),
+                engine_native_memory::walk::Buffer::GrowingFrom(&mut self.raid_type_tokens.first, start),
                 &mut self.raid_type_memo,
             );
             if let Some(row) = self.raid_player.rows.first_mut() {

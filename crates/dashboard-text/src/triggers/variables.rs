@@ -1135,7 +1135,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             0xffff_ffff_a000_0000 => return object("a purchase contract"),
             0xffff_ffff_e000_0000 => {
                 return self
-                    .decoded_carrier(engine_native::craid_instance::REFERENCE_TYPE_VALUE, low);
+                    .decoded_carrier(engine_native_air::craid_instance::REFERENCE_TYPE_VALUE, low);
             }
             _ => {}
         }

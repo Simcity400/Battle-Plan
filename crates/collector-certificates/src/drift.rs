@@ -1,4 +1,4 @@
-use engine_native::{Memory, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
 use engine_research::{
     cresearch_slot, ctechnology, ctechnology_status, research_inputs, research_modifiers,
 };
@@ -151,8 +151,8 @@ impl Store {
         pointers[start..end].copy_from_slice(&held.pointers);
         let progress = drift(memory, &held.assigned_pointers, ctechnology::LIVE_PROGRESS);
         if matches!(progress, Drift::Partial(_)) {
-            engine_native::batch_fallback::record(
-                engine_native::batch_fallback::Batch::GovernanceTechnologyDrift,
+            engine_native_memory::batch_fallback::record(
+                engine_native_memory::batch_fallback::Batch::GovernanceTechnologyDrift,
             );
         }
         let progress = progress.values();
@@ -250,9 +250,9 @@ impl Store {
         base: usize,
         owner: u32,
         country: usize,
-        mut inputs: engine_native::walk::Buffer<'_, research_inputs::Row>,
-        mut bonuses: engine_native::walk::Buffer<'_, research_inputs::BonusRow>,
-        mut modifiers: engine_native::walk::Buffer<'_, research_modifiers::Row>,
+        mut inputs: engine_native_memory::walk::Buffer<'_, research_inputs::Row>,
+        mut bonuses: engine_native_memory::walk::Buffer<'_, research_inputs::BonusRow>,
+        mut modifiers: engine_native_memory::walk::Buffer<'_, research_modifiers::Row>,
     ) -> Carried<[usize; 3]> {
         let Some(held) = self
             .research
@@ -294,8 +294,8 @@ impl Store {
             drift(memory, &held.assigned_pointers, ctechnology::LIVE_PROGRESS)
         };
         if matches!(banked, Drift::Partial(_)) || matches!(progress, Drift::Partial(_)) {
-            engine_native::batch_fallback::record(
-                engine_native::batch_fallback::Batch::GovernanceResearchDrift,
+            engine_native_memory::batch_fallback::record(
+                engine_native_memory::batch_fallback::Batch::GovernanceResearchDrift,
             );
         }
         let banked = banked.values();
@@ -395,15 +395,15 @@ fn drift(memory: &impl Memory, pointers: &[usize], offset: usize) -> Drift {
     let Some((mut bytes, mut values)) = storage else {
         return Drift::Serial;
     };
-    let fields = [engine_native::memory::RecordField {
+    let fields = [engine_native_memory::memory::RecordField {
         source_offset: offset,
         destination_offset: 0,
         len: 8,
     }];
-    let layout = engine_native::memory::RecordLayout::new(&fields, 8).unwrap();
+    let layout = engine_native_memory::memory::RecordLayout::new(&fields, 8).unwrap();
     let done = memory
         .copy_records(
-            engine_native::memory::RecordSources::Pointers(pointers),
+            engine_native_memory::memory::RecordSources::Pointers(pointers),
             &layout,
             &mut bytes,
         )

@@ -1,5 +1,5 @@
 use super::*;
-use crate::ccountry::synthetic::World;
+use engine_native::ccountry::synthetic::World;
 
 const MAP_SLOTS: usize = 5;
 

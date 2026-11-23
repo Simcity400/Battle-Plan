@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 #[test]
 fn faction_resource_pool_uses_live_mod_resource_count_and_retains_zero_and_negative_amounts() {

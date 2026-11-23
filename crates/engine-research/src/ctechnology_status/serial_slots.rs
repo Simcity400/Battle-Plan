@@ -5,7 +5,7 @@ pub fn walk_slots_buffer(
     base: usize,
     country_pointer: usize,
     country: u32,
-    mut output: crate::walk::Buffer<'_, cresearch_slot::Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, cresearch_slot::Row>,
 ) -> Outcome {
     let result = (|| {
         let status = status(memory, base, country_pointer)?;

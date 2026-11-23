@@ -14,7 +14,7 @@ pub enum Receiver {
     Every,
 }
 
-pub const DATA: usize = crate::creferenced_division_template::COMPOSITION;
+pub const DATA: usize = engine_native::creferenced_division_template::COMPOSITION;
 pub const OCCUPATION_MEMBERSHIP: usize = 0x40;
 pub const OCCUPATION_PARENT: usize = 0x08;
 pub const EFFECT_SCOPE_COUNTRY: usize = 0x08;
@@ -450,7 +450,7 @@ mod tests {
     #[test]
     fn data_sites_name_the_contained_data() {
         assert_eq!(DATA, 0x18);
-        assert_eq!(crate::creferenced_division_template::NAME_KEY, DATA + 0x28);
+        assert_eq!(engine_native::creferenced_division_template::NAME_KEY, DATA + 0x28);
         let mut rvas = MUTATIONS.map(|(site, _)| site.rva);
         rvas.sort_unstable();
         assert!(rvas.windows(2).all(|pair| pair[0] != pair[1]));

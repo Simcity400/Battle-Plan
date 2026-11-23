@@ -240,9 +240,9 @@ fn walk(bytes: &[u8], store: &mut VariableStore, watches: &Watches) -> Hour {
             &memory,
             BASE,
             GAME,
-            engine_native::walk::Buffer::Growing(&mut scopes),
-            engine_native::walk::Buffer::Growing(&mut entries),
-            engine_native::walk::Buffer::Growing(&mut names),
+            engine_native_memory::walk::Buffer::Growing(&mut scopes),
+            engine_native_memory::walk::Buffer::Growing(&mut entries),
+            engine_native_memory::walk::Buffer::Growing(&mut names),
             &mut reuse,
         ),
     };

@@ -6,4 +6,4 @@ Copy the reverse lexer dictionary between two matching writer-free witnesses ins
 
 Publish the native ordinal and exact copied bytes, including an empty or reserved entry, with no resident native pointer. The static long-fixed token is emitted as fixed15 numeric text in the game's serialization. Check each string header's terminating byte separately. A stable capacity shortage may retain a complete prefix. A changing mutation witness invalidates the prefix and its growth demand. A declared string length is not allocation evidence. A fixed-scratch probe certifies only an immediately readable bounded growth step, discarding those bytes and stopping at the first refusal.
 
-[Native arrays](../../crates/engine-native/src/cpdx_array.rs) · [Lexer witness](../../crates/engine-native/src/cpdx_lexer.rs)
+[Native arrays](../../crates/engine-native-memory/src/cpdx_array.rs) · [Lexer witness](../../crates/engine-native-memory/src/cpdx_lexer.rs)

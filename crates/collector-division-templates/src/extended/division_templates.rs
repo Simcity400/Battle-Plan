@@ -5,7 +5,8 @@ use collector_primitives::{
 use collector_projection::projection::{Projection, Witness, held_input, project_table};
 use collector_projection::table_conversion::{table, unavailable};
 use engine_allocation::{copy_vec, owned_vec};
-use engine_native::{Memory, creferenced_division_template as native, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::creferenced_division_template as native;
 use replay_data::rows::{
     CountryTemplateStateRow, DivisionTemplateIconRow, DivisionTemplateRow,
     GarrisonTemplateSelection, Recorded, TableId, TemplateCell, TemplateDisplayName, TemplateGrid,
@@ -721,7 +722,7 @@ impl Captured {
                 if let Some(reason) = row.garrison_failure {
                     context_failures.add(reason);
                 }
-                engine_native::walk::Buffer::Growing(&mut *country_rows)
+                engine_native_memory::walk::Buffer::Growing(&mut *country_rows)
                     .ensure(country_len + 1)?;
                 country_rows[country_len] = row;
                 country_len += 1;

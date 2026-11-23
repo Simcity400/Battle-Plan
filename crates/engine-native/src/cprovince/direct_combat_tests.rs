@@ -1,5 +1,6 @@
 use super::*;
-use crate::{cland_combat, cnaval_combat, memory::SliceMemory};
+use crate::{cland_combat, cnaval_combat};
+use engine_native_memory::memory::SliceMemory;
 
 const STATE: usize = 0x1000;
 const SLOTS: usize = 0x1800;
@@ -106,7 +107,7 @@ fn every_combat_keeps_its_vector_place_and_class() {
     put(
         &mut border,
         LAND,
-        &(crate::cland_border_war_combat::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_parts::cland_border_war_combat::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     assert_eq!(walk(&border, 2, 4).3[1], COMBAT_BORDER_WAR);
     let mut unknown = bytes.clone();

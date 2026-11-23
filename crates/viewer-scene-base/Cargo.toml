@@ -60,13 +60,16 @@ content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
 content-reader-politics = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "recording", "test-support"] }
 replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-bitflags-2 = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }
+unify-num-traits = { workspace = true }
 unify-once_cell = { workspace = true }
 unify-tracing = { workspace = true }
 unify-uuid = { workspace = true }

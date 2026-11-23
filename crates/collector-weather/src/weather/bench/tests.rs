@@ -1,5 +1,5 @@
 use super::*;
-use engine_native::{cpdx_array::Array, memory::LiveMemory, memory::SliceMemory};
+use engine_native_memory::{cpdx_array::Array, memory::{LiveMemory, SliceMemory}};
 use replay_data::rows::RowCodec;
 use std::{cell::Cell, hint::black_box, time::Instant};
 

@@ -4,7 +4,7 @@ pub const VTABLE_RVA: Rva = Rva(0x02a2_36a0);
 pub const FLAGS: usize = 0x08;
 pub const COMBAT: usize = 0x18;
 pub const UNITS: usize = 0x20;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub const UNIT_COUNT: usize = 0x2c;
 pub const COUNTRIES: usize = 0x38;
 pub const SECONDARY_COUNTRIES: usize = 0x50;
@@ -29,13 +29,14 @@ impl CountryMembership {
 }
 
 pub fn capture_country_membership(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     state: usize,
     side: usize,
     raw: u32,
 ) -> Result<CountryMembership, &'static str> {
-    use crate::{ccountry, read};
+    use crate::ccountry;
+    use engine_native_memory::read;
     let countries = ccountry::Reader::new(memory, base, state)?;
     let canonical = if raw == 0 {
         None
@@ -79,7 +80,7 @@ pub fn capture_country_membership(
 
 #[cfg(test)]
 pub fn contains_country(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     state: usize,
     side: usize,
@@ -134,7 +135,7 @@ mod tests {
         };
         assert_eq!(check(&world, 5), Ok(CountryMembership::Exact { raw: 5 }));
         assert_eq!(check(&world, 1), Ok(CountryMembership::Exact { raw: 1 }));
-        let nodes = crate::read::<u64>(&world.memory(), side + COUNTRIES).unwrap() as usize;
+        let nodes = engine_native_memory::read::<u64>(&world.memory(), side + COUNTRIES).unwrap() as usize;
         world.u32(nodes + 4 * 0x20, 0);
         assert_eq!(check(&world, 5), Ok(CountryMembership::Absent));
         world.u64(nodes + 4 * 0x20 + 0x10, nodes as u64);

@@ -143,7 +143,7 @@ fn failed_live_hint_retains_full_original_burst_pressure() {
     let loss = drain(&mut output).unwrap();
     assert_eq!(loss.copied, 10_003);
     assert_burst(&output, 10_003);
-    let missing = engine_native::memory::SliceMemory {
+    let missing = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &[],
     };

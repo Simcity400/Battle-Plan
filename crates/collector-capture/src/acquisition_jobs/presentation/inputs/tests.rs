@@ -196,7 +196,7 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
     let (probe, probed) = mpsc::channel();
     let (park, parked) = mpsc::channel();
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     let mut captured = division_presentation::Captured::with_capacities(&Default::default());

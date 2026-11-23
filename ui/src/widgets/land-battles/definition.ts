@@ -15,5 +15,6 @@ export const definition = {
   minSize: { w: 4, h: 6 }, defaultSize: { w: 10, h: 14 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   availability: { product: 'land-battles-manifest', params: {} },
   options: OPTIONS,
+  viewSwitch: { option: 'view' },
   variants: battleVariants('Land battles', OPTIONS),
 } as const satisfies WidgetMeta;

@@ -1,7 +1,7 @@
 
 use engine_allocation as allocation;
 use engine_dlc::cdlc_manager::{self, Folders, MountDifference, mount_difference};
-use engine_native::{Memory, capture_text::Owned, walk::Outcome};
+use engine_native_memory::{Memory, capture_text::Owned, walk::Outcome};
 use replay_data::{identity::Identity, identity::Roster as IdentityRoster, identity::Verification};
 use serde::{
     Serialize, Serializer,
@@ -1138,7 +1138,7 @@ mod tests {
             self.u64(at + 24, text.len().max(31));
         }
         fn node(&mut self, at: usize, left: usize, parent: usize, right: usize, nil: bool) {
-            use engine_native::msvc_tree_node as tree;
+            use engine_native_memory::msvc_tree_node as tree;
             self.u64(at + tree::LEFT, left);
             self.u64(at + tree::PARENT, parent);
             self.u64(at + tree::RIGHT, right);
@@ -1201,13 +1201,13 @@ mod tests {
             live
         }
     }
-    impl engine_native::Memory for Live {
+    impl engine_native_memory::Memory for Live {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let root = match address {
                 a if a == cdlc_manager::SINGLETON_RVA.0 => Self::MANAGER,
                 a if a == cdlc_manager::SEARCH_PATH_RVA.0 => Self::ROOT,
                 _ => {
-                    return engine_native::memory::SliceMemory {
+                    return engine_native_memory::memory::SliceMemory {
                         base: 0,
                         bytes: &self.bytes,
                     }

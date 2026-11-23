@@ -1,5 +1,6 @@
 use super::*;
-use crate::{ccountry::synthetic::World, cgame_state, cproduction_status, memory::SliceMemory};
+use engine_native::{ccountry::synthetic::World, cgame_state, cproduction_status};
+use engine_native_memory::memory::SliceMemory;
 use std::cell::RefCell;
 
 const BASE: usize = 0x140_000000;
@@ -15,7 +16,7 @@ struct Fixture {
 
 impl Fixture {
     fn new(countries: u32, provinces: u32) -> Self {
-        let mut world = World::new(BASE, countries, crate::ccountry::PRODUCTION_STATUS + 8);
+        let mut world = World::new(BASE, countries, engine_native::ccountry::PRODUCTION_STATUS + 8);
         let building = world.alloc(8);
         world.u64(
             building,
@@ -48,7 +49,7 @@ impl Fixture {
         for slot in 1..=countries {
             let country = world.object(slot);
             let status = world.alloc(cproduction_status::COUNTRY + 8);
-            world.u64(country + crate::ccountry::PRODUCTION_STATUS, status as u64);
+            world.u64(country + engine_native::ccountry::PRODUCTION_STATUS, status as u64);
             world.u64(status, (BASE + cproduction_status::VTABLE_RVA.0) as u64);
             world.u64(status + cproduction_status::COUNTRY, country as u64);
             world.array(status + cproduction_status::CONSTRUCTION_LINES, queue, 4);

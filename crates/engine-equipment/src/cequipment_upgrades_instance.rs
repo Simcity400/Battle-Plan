@@ -1,12 +1,14 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, cequipment_upgrade, cequipment_variant,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    equipment_upgrade_entry,
     memory::{RecordField, RecordLayout, RecordSources},
     walk::Outcome,
 };
+use engine_native_parts::cequipment_upgrade;
+use engine_native::cequipment_variant;
+use engine_native_politics::equipment_upgrade_entry;
 
 pub const VTABLE_RVA: Rva = Rva(0x0283_f1b0);
 pub const ENTRIES: usize = 0x08;
@@ -153,10 +155,10 @@ pub fn walk(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{memory::SliceMemory, read_census::ReadCensus};
+    use engine_native_memory::{memory::SliceMemory, read_census::ReadCensus};
 
-    fn source(bytes: &[u8]) -> crate::cequipment_variant::RegistryRow {
-        crate::cequipment_variant::RegistryRow::read(&memory(bytes), 0, 0x1000).unwrap()
+    fn source(bytes: &[u8]) -> engine_native::cequipment_variant::RegistryRow {
+        engine_native::cequipment_variant::RegistryRow::read(&memory(bytes), 0, 0x1000).unwrap()
     }
 
     fn memory(bytes: &[u8]) -> SliceMemory<'_> {
@@ -168,7 +170,7 @@ mod tests {
 
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x300];
-        bytes[..8].copy_from_slice(&(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[8..16].copy_from_slice(&0x8000_0000_0000_0046_u64.to_le_bytes());
         bytes[0x68..0x70].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[0x70..0x78].copy_from_slice(&0x1180_u64.to_le_bytes());

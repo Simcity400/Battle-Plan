@@ -2,10 +2,10 @@ use super::*;
 use engine_events::{event_feed_sites::provenance::World, script_event_registry as native};
 use replay_data::event_feed_rows::EventFeedScriptChange as Change;
 
-pub(super) fn empty(memory: &impl Memory) -> engine_native::msvc_string::Descriptor {
+pub(super) fn empty(memory: &impl Memory) -> engine_native_memory::msvc_string::Descriptor {
     let mut header = [0; 32];
     header[24..].copy_from_slice(&15_u64.to_le_bytes());
-    engine_native::msvc_string::Descriptor::from_header(memory, 0, header)
+    engine_native_memory::msvc_string::Descriptor::from_header(memory, 0, header)
         .expect("empty inline token")
 }
 pub(crate) fn marker<M: Memory>(
@@ -62,7 +62,7 @@ pub(crate) fn pending<M: Memory>(
     let reference = row
         .scope
         .checked_add(engine_events::cevent_scope::COUNTRY_TAG)
-        .and_then(|at| engine_native::read::<u32>(memory, at))
+        .and_then(|at| engine_native_memory::read::<u32>(memory, at))
         .ok_or("pending event scope country unreadable")?;
     Ok(ScriptFact {
         source: EventFeedSource::ScriptState,

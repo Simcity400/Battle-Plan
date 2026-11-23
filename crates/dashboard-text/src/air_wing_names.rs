@@ -110,7 +110,7 @@ fn raid_names<F: Tables + ?Sized>(
         };
         if raid.air_wing != 0
             && requested.contains(&raid.air_wing)
-            && raid.phase != engine_native::craid_instance::PHASE_ENDED
+            && raid.phase != engine_native_air::craid_instance::PHASE_ENDED
         {
             ids.insert(u64::from(raid.id) << 32 | u64::from(raid.reference_type));
             selected.entry(raid.air_wing).or_default().push(raid);
@@ -164,11 +164,14 @@ fn raid_bytes(
     reference: u64,
     rows: &[Cow<'_, RaidTooltipOperandRow>],
 ) -> Result<Vec<u8>, String> {
-    use engine_native::{
-        raid_tooltip_operands::ARMY_RESOLVED, raid_tooltip_operands::NAME,
-        raid_tooltip_operands::REFERENCES, raid_tooltip_operands::UNREADABLE,
-        raid_tooltip_operands::WING_NAME, raid_tooltip_operands::WING_RESOLVED,
-        raid_tooltip_operands::wing_name_error,
+    use engine_native_air::raid_tooltip_operands::{
+        ARMY_RESOLVED,
+        NAME,
+        REFERENCES,
+        UNREADABLE,
+        WING_NAME,
+        WING_RESOLVED,
+        wing_name_error,
     };
     let id = u64::from(raid.id) << 32 | u64::from(raid.reference_type);
     let fail = |why: &str| format!("active-raid WING {reference:#x} name (raid {id:#x}): {why}");

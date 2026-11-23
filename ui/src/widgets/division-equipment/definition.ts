@@ -13,6 +13,6 @@ export const definition = {
   kind: 'division-equipment', version: 1, title: 'Division equipment', icon: 'helmet', category: 'Army',
   description: 'What a country’s divisions hold, need and are missing, with manpower and strength, from the army down to one division.',
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'history', data: true, history: true,
-  countries: { max: 1 }, minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 11 }, options: OPTIONS,
+  countries: { max: 1 }, minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 11 }, options: OPTIONS, viewSwitch: { option: 'view' },
   variants: choiceVariants(VIEW_OPTION, choice => `Division equipment ${choice.label.toLowerCase()}`),
 } as const satisfies WidgetMeta;

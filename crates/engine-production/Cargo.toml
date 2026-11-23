@@ -10,9 +10,12 @@ license.workspace = true
 doctest = false
 
 [features]
-alloc-fault-injection = ["engine-native/alloc-fault-injection"]
+alloc-fault-injection = ["engine-native-memory/alloc-fault-injection", "engine-native/alloc-fault-injection"]
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-allocation.workspace = true
+engine-native-memory.workspace = true
 game-model.workspace = true
 engine-sites.workspace = true
 engine-dlc.workspace = true
@@ -22,6 +25,8 @@ engine-scripts.workspace = true
 replay-spool.workspace = true
 
 [dev-dependencies]
+engine-native-parts = { workspace = true, features = ["test-support"] }
+engine-native-memory = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["test-support"] }
 engine-land-inputs.workspace = true
 
@@ -34,4 +39,5 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

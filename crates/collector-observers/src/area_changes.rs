@@ -1,4 +1,5 @@
-use engine_native::{cprovince::Capture, walk::Outcome};
+use engine_native::cprovince::Capture;
+use engine_native_memory::walk::Outcome;
 use std::sync::{
     Mutex,
     atomic::{AtomicU64, Ordering},
@@ -12,7 +13,7 @@ static LAST_REFUSAL: Mutex<Option<&'static str>> = Mutex::new(None);
 pub fn capture(
     capture: &mut Capture,
     outcome: Outcome,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     take: Option<[u64; 2]>,
 ) -> Outcome {
@@ -68,11 +69,11 @@ pub fn capture(
 
 fn run(
     capture: &mut Capture,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     len: usize,
     take: Option<[u64; 2]>,
-) -> Result<engine_native::controller_areas::Counts, &'static str> {
+) -> Result<engine_native::cprovince::controller_areas::Counts, &'static str> {
     let Capture {
         rows,
         areas,
@@ -102,7 +103,7 @@ fn fail(capture: &mut Capture, reason: &'static str) -> Outcome {
     Outcome::Unavailable { reason }
 }
 
-fn record(counts: engine_native::controller_areas::Counts) {
+fn record(counts: engine_native::cprovince::controller_areas::Counts) {
     let hour = if counts.full {
         0
     } else if counts.quiet {
@@ -129,10 +130,12 @@ fn refuse(reason: &'static str) {
 
 #[cfg(test)]
 mod tests {
-    use engine_native::{
-        controller_areas::Node, controller_areas::Pointers, controller_areas::Store,
-        cprovince::Capture, cprovince::Row, memory::SliceMemory, walk::Outcome,
+    use engine_native::cprovince::{
+        controller_areas::{Node, Pointers, Store},
+        Capture,
+        Row,
     };
+    use engine_native_memory::{memory::SliceMemory, walk::Outcome};
 
     fn walked(store: bool) -> Capture {
         let mut capture = Capture::try_with_capacity(2, 0, 0).unwrap();

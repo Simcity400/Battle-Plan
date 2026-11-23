@@ -24,10 +24,9 @@ pub const RESEARCH_COMPLETED_SENTINEL: [u8; 16] = [
 pub const REBUILD_OR_TRANSFER_A_RVA: Rva = Rva(0x00f5_ede0);
 pub const REBUILD_OR_TRANSFER_B_RVA: Rva = Rva(0x00f5_ca80);
 
-use crate::{
-    Memory, ccountry, cpdx_array::Array, cresearch_slot, ctechnology, ctechnology_template, read,
-    read_slice, walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice, walk::Outcome};
+use engine_native::ccountry;
+use crate::{cresearch_slot, ctechnology, ctechnology_template};
 
 fn status(memory: &impl Memory, base: usize, country: usize) -> Result<usize, &'static str> {
     let raw = copy_status(memory, country)?;
@@ -349,7 +348,7 @@ pub fn walk_technologies(
 }
 
 pub fn count_slots(memory: &impl Memory, base: usize, country_pointer: usize, country: u32) -> Outcome {
-    walk_slots_buffer(memory, base, country_pointer, country, crate::walk::Buffer::Count)
+    walk_slots_buffer(memory, base, country_pointer, country, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk_slots(
@@ -364,7 +363,7 @@ pub fn walk_slots(
         base,
         country_pointer,
         country,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -373,7 +372,7 @@ pub fn walk_slots_buffer(
     base: usize,
     country_pointer: usize,
     country: u32,
-    mut output: crate::walk::Buffer<'_, cresearch_slot::Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, cresearch_slot::Row>,
 ) -> Outcome {
     let result = (|| {
         let status = status(memory, base, country_pointer)?;

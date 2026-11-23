@@ -333,13 +333,13 @@ impl Section {
         }
         let mut batch = if count_only {
             Batch::storage(
-                engine_native::walk::Buffer::Count,
-                engine_native::walk::Buffer::Count,
+                engine_native_memory::walk::Buffer::Count,
+                engine_native_memory::walk::Buffer::Count,
             )
         } else {
             Batch::storage(
-                engine_native::walk::Buffer::Growing(&mut self.current.rows),
-                engine_native::walk::Buffer::Growing(&mut self.current.bytes),
+                engine_native_memory::walk::Buffer::Growing(&mut self.current.rows),
+                engine_native_memory::walk::Buffer::Growing(&mut self.current.bytes),
             )
         };
         self.characters = match &source {
@@ -777,10 +777,10 @@ impl Modifiers {
             return;
         }
         if (self.held.spans.len() < self.spans.len() || self.held.bytes.len() < self.bytes.len())
-            && (engine_native::walk::Buffer::Growing(&mut self.held.spans)
+            && (engine_native_memory::walk::Buffer::Growing(&mut self.held.spans)
                     .ensure(self.spans.len())
                     .is_err()
-                || engine_native::walk::Buffer::Growing(&mut self.held.bytes)
+                || engine_native_memory::walk::Buffer::Growing(&mut self.held.bytes)
                     .ensure(self.bytes.len())
                     .is_err())
         {
@@ -883,7 +883,7 @@ impl Modifiers {
                     None => {
                         let array = cadvisor::modifier_entries(memory, row.pointer)?;
                         let len = (array.count as usize)
-                            .checked_mul(engine_native::modifier_entry::STRIDE)
+                            .checked_mul(engine_native_parts::modifier_entry::STRIDE)
                             .ok_or("advisor modifier cache size overflow")?;
                         (Some(array), len)
                     }
@@ -893,9 +893,9 @@ impl Modifiers {
                     .checked_add(len)
                     .ok_or("advisor byte count overflow")?;
                 self.required_rows = index.checked_add(1).ok_or("advisor row count overflow")?;
-                engine_native::walk::Buffer::Growing(&mut self.spans)
+                engine_native_memory::walk::Buffer::Growing(&mut self.spans)
                     .ensure(self.required_rows)?;
-                engine_native::walk::Buffer::Growing(&mut self.bytes).ensure(
+                engine_native_memory::walk::Buffer::Growing(&mut self.bytes).ensure(
                     self.len
                         .checked_add(len)
                         .ok_or("advisor byte count overflow")?,
@@ -935,7 +935,7 @@ impl Modifiers {
             }
             for (index, (_, row)) in rows.enumerate() {
                 let mut span = self.spans.get(index).copied().unwrap_or_default();
-                let mut destination = engine_native::walk::Buffer::GrowingFrom(&mut self.bytes, self.len);
+                let mut destination = engine_native_memory::walk::Buffer::GrowingFrom(&mut self.bytes, self.len);
                 let read = if span.carried {
                     let held = self.held.spans[index];
                     let len = held.tooltip_len;
@@ -1050,10 +1050,10 @@ impl Cache {
                 let characters = demand[0]
                     .load(Relaxed)
                     .saturating_sub(storage.entries.len());
-                if engine_native::walk::Buffer::Growing(&mut storage.rows)
+                if engine_native_memory::walk::Buffer::Growing(&mut storage.rows)
                     .ensure(demand[1].load(Relaxed))
                     .is_err()
-                    || engine_native::walk::Buffer::Growing(&mut storage.bytes)
+                    || engine_native_memory::walk::Buffer::Growing(&mut storage.bytes)
                         .ensure(demand[2].load(Relaxed))
                         .is_err()
                     || reserve(&mut storage.entries, characters).is_err()
@@ -1474,11 +1474,11 @@ impl<M: Memory> Memory for Counted<'_, M> {
     }
     fn execute_read_plan(
         &self,
-        plan: &engine_native::read_plan::PreparedPlan,
+        plan: &engine_native_memory::read_plan::PreparedPlan,
         destination: &mut [u8],
-    ) -> Option<engine_native::read_plan::Outcome> {
+    ) -> Option<engine_native_memory::read_plan::Outcome> {
         #[cfg(feature = "advisor_profile")]
-        use engine_native::read_plan::Outcome as PlanOutcome;
+        use engine_native_memory::read_plan::Outcome as PlanOutcome;
         #[cfg(feature = "advisor_profile")]
         let stamp = profile::Stamp::start();
         let result = self.memory.execute_read_plan(plan, destination);
@@ -1527,8 +1527,8 @@ impl<M: Memory> Memory for Counted<'_, M> {
     }
     fn copy_records(
         &self,
-        sources: engine_native::memory::RecordSources<'_>,
-        layout: &engine_native::memory::RecordLayout<'_>,
+        sources: engine_native_memory::memory::RecordSources<'_>,
+        layout: &engine_native_memory::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         self.memory.copy_records(sources, layout, destination)

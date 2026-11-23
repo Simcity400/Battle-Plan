@@ -63,7 +63,7 @@ impl StatusPart {
                 .grow(units.len(), MembershipCapacity::default())
                 .map_err(|_| "status seed allocation failed")?;
             self.packet.clear();
-            let _ = crate::allocation::advisory(|| {
+            let _ = engine_allocation::advisory(|| {
                 self.packet.select_supply(
                     prepared
                         .supply_requested
@@ -159,10 +159,10 @@ impl StatusPacket {
                 .sum();
             if origins > self.supply_origins.len() {
                 let additional = origins - self.supply_origins.len();
-                crate::allocation::reserve(&mut self.supply_origins, additional)
+                engine_allocation::reserve(&mut self.supply_origins, additional)
                     .map_err(|_| "division supply origins allocation failed")?;
                 self.supply_origins
-                    .resize(origins, crate::cunit_supply_inputs::Origin::default());
+                    .resize(origins, engine_native_parts::cunit_supply_inputs::Origin::default());
             }
             Ok(self.outcome)
         })();
@@ -188,10 +188,10 @@ impl StatusPacket {
                 .sum();
             if origins > self.supply_origins.len() {
                 let additional = origins - self.supply_origins.len();
-                crate::allocation::reserve(&mut self.supply_origins, additional)
+                engine_allocation::reserve(&mut self.supply_origins, additional)
                     .map_err(|_| "division supply origins allocation failed")?;
                 self.supply_origins
-                    .resize(origins, crate::cunit_supply_inputs::Origin::default());
+                    .resize(origins, engine_native_parts::cunit_supply_inputs::Origin::default());
             }
             self.supply_len = end;
             self.supply_origins_len = 0;

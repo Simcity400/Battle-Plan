@@ -378,7 +378,9 @@ export function stretches(ticks) {
 }
 
 export function dashboardRows(log, { page = 'page', refreshHz = null, expect = {}, window = null } = {}) {
-  const records = window ? log.records.filter(record => !TIMED.has(record.t) || (record.at >= window.from && record.at <= window.to)) : log.records;
+  const overlapsWindow = (record, w) => (record.from ?? record.at) <= w.to && (record.to ?? record.at) >= w.from;
+  const records = window ? log.records.filter(record => record.t === 'lost' ? overlapsWindow(record, window)
+    : !TIMED.has(record.t) || (record.at >= window.from && record.at <= window.to)) : log.records;
   const whole = wholeLog(log, records, expect);
   const bars = ['webview frame interval', 'long animation frames', 'requests for values at the head',
     'list requests ahead of the head', 'chart tile requests'];

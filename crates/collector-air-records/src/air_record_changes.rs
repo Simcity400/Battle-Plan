@@ -1,6 +1,6 @@
 use crate::hook::Hook;
 use engine_air_history::{air_record_mutations::MUTATIONS, cair_region_combat_data as native};
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use replay_data::{
     rows::AirCombatDamage, rows::AirCombatRecord, rows::AirRegionCombatRow, rows::TableRows,
 };

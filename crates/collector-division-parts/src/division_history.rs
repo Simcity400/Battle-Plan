@@ -1,7 +1,9 @@
 use collector_observers::unit_history_changes as changes;
 use collector_projection::certified::{Snapshot, Store as Rows};
 use engine_allocation as allocation;
-use engine_native::{Memory, carmy::DivisionSeed, unit_history};
+use engine_native_memory::Memory;
+use engine_native::carmy::DivisionSeed;
+use engine_native_land::unit_history;
 use engine_naval_history::csunk_ship_info;
 use replay_data::rows::{DivisionHistoryRow, RowCodec, SharedDivisionHistoryRow, SunkShipEntry};
 use std::{collections::BTreeMap, sync::Arc};
@@ -635,7 +637,9 @@ fn project(
 mod tests {
     use super::*;
     use crate::army_stat_changes::{HISTORY_TEST, serial};
-    use engine_native::{carmy, cgame_date, unit_history as native};
+    use engine_native::carmy;
+    use engine_native_memory::cgame_date;
+    use engine_native_land::unit_history as native;
     use replay_data::rows::{TableRows, tables};
     use std::cell::Cell;
     struct World {

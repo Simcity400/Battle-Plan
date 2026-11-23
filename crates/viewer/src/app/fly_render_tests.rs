@@ -3,7 +3,8 @@ use super::*;
 use crate::map::scene_failure_tests::Fixture;
 use viewer_runtime::errors::invalid;
 use viewer_gpu::camera::Placement;
-use viewer_runtime::test_support::TEST_HANG_GUARD;
+use super::fly_aircraft::tests::{Wakes, settle};
+use dashboard_core::protocol::FlyAircraftState;
 
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
@@ -59,18 +60,11 @@ fn the_chosen_aircraft_is_drawn_while_the_frame_holds_the_document() -> std::io:
     assert_eq!(viewer.scene.as_ref().unwrap().player_drawn(), 0);
 
     viewer.fly_aircraft.choose(Some(name.clone()));
-    let deadline = std::time::Instant::now() + TEST_HANG_GUARD;
-    loop {
-        let status = viewer.fly_aircraft.poll(Some(&assets), || {});
-        if viewer.fly_aircraft.ready(&assets).is_some() {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "{name} never baked: {status:?}"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    assert_eq!(
+        settle(&mut viewer.fly_aircraft, &assets, &Wakes::new()).state,
+        FlyAircraftState::Ready,
+        "{name} never baked"
+    );
     target.sequence += 1;
     until(&mut viewer, &ctx, &frame, &target, |v| {
         v.scene

@@ -1,10 +1,12 @@
 
-use crate::{
-    Memory, ccountry,
+use engine_native_memory::{
+    Memory,
     cpdx_array::{Array, copy_u32s},
-    cradars_pool, cstate, read,
+    read,
     walk::{Buffer, Outcome},
 };
+use engine_native::{ccountry, cstate};
+use engine_native_parts::cradars_pool;
 use engine_sites::Rva;
 
 pub const PROVINCES: usize = 0;
@@ -235,7 +237,7 @@ fn walk_buffers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     pub(crate) const BASE: usize = 0x1000;
     const COUNTRY: usize = 0x3000;
@@ -253,32 +255,32 @@ mod tests {
         let mut bytes = vec![0; 0x9000];
         put(
             &mut bytes,
-            BASE + crate::cgame_state::COUNTRIES,
+            BASE + engine_native::cgame_state::COUNTRIES,
             &0x2000_u64.to_le_bytes(),
         );
         put(
             &mut bytes,
-            BASE + crate::cgame_state::COUNTRIES_CAPACITY,
+            BASE + engine_native::cgame_state::COUNTRIES_CAPACITY,
             &3_u32.to_le_bytes(),
         );
         put(
             &mut bytes,
-            BASE + crate::cgame_state::COUNTRIES_COUNT,
+            BASE + engine_native::cgame_state::COUNTRIES_COUNT,
             &3_u32.to_le_bytes(),
         );
         put(
             &mut bytes,
-            BASE + crate::cgame_state::COUNTRY_LINKS,
+            BASE + engine_native::cgame_state::COUNTRY_LINKS,
             &0x2100_u64.to_le_bytes(),
         );
         put(
             &mut bytes,
-            BASE + crate::cgame_state::COUNTRY_LINKS_CAPACITY,
+            BASE + engine_native::cgame_state::COUNTRY_LINKS_CAPACITY,
             &4_u32.to_le_bytes(),
         );
         put(
             &mut bytes,
-            BASE + crate::cgame_state::COUNTRY_LINKS_COUNT,
+            BASE + engine_native::cgame_state::COUNTRY_LINKS_COUNT,
             &4_u32.to_le_bytes(),
         );
         put(&mut bytes, 0x2008, &(COUNTRY as u64).to_le_bytes());

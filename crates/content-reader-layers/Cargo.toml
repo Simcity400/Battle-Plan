@@ -49,3 +49,6 @@ content-reader-layers = { workspace = true, features = ["layer-fixtures", "test-
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-bitflags-2 = { workspace = true }
+unify-bytemuck = { workspace = true }
+unify-num-traits = { workspace = true }

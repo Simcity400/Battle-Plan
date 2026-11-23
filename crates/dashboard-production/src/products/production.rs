@@ -44,7 +44,7 @@ pub enum LineKind {
 
 impl LineKind {
     pub fn of(kind: i64) -> Option<Self> {
-        use engine_native::cequipment_production_line as native;
+        use engine_native::cproduction_status::equipment_line as native;
         match u8::try_from(kind).ok()? {
             native::KIND_MILITARY => Some(Self::Military),
             native::KIND_NAVAL => Some(Self::Naval),

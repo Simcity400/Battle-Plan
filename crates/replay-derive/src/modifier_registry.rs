@@ -3,7 +3,7 @@ use crate::rows::{LexicalTokenRow, ModifierDefinitionRow, column, mask, tables};
 use replay_frame::frame::{Rowset, Tables};
 use std::{borrow::Cow, collections::BTreeMap};
 
-pub const CLAMP_MAXIMUM: u32 = engine_native::modifier_definition::CLAMP_MAXIMUM;
+pub const CLAMP_MAXIMUM: u32 = engine_native_parts::modifier_definition::CLAMP_MAXIMUM;
 
 pub const DEFINITION: u64 =
     mask::<ModifierDefinitionRow>(&["token", "flags", "feature_selector", "eligibility"]);

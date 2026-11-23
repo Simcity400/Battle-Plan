@@ -22,14 +22,14 @@ fn real_status_capture_builds_sorted_full_handle_border_index() {
             groups: 1,
             ..Default::default()
         },
-        modifiers: crate::modifier_accumulator::SnapshotCapacity {
+        modifiers: engine_native_parts::modifier_accumulator::SnapshotCapacity {
             nodes: 1,
             entries: 1,
         },
         ..carmy::StatusCapacities::new(2)
     };
     let mut packet = carmy::StatusPacket::with_capacities(capacities).unwrap();
-    let floored = crate::modifier_accumulator::SnapshotCapacity {
+    let floored = engine_native_parts::modifier_accumulator::SnapshotCapacity {
         nodes: 2,
         entries: 1,
     };

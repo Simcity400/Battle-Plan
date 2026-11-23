@@ -31,7 +31,7 @@ impl Native {
         s.u64(GAME + cgame_state::MARKET_MANAGER, MANAGER as u64);
         s.u64(
             VARIANT,
-            engine_native::cequipment_variant::VTABLE_RVA.0 as u64,
+            engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64,
         );
         s.u64(VARIANT + 8, VARIANT_ID);
         s.country(0, 0x1000, 0, 1);
@@ -62,10 +62,10 @@ impl Native {
     fn pool(&mut self, at: usize, entries: usize, amount: i64) {
         self.u64(
             at,
-            engine_native::cequipment_variant_pool::VTABLE_RVA.0 as u64,
+            engine_native::cequipment_variant::pool::VTABLE_RVA.0 as u64,
         );
         self.array(
-            at + engine_native::cequipment_variant_pool::ITEMS,
+            at + engine_native::cequipment_variant::pool::ITEMS,
             entries,
             1,
         );
@@ -78,7 +78,7 @@ impl Native {
         pointer: usize,
         slot: u32,
         surrender_target: u32,
-    ) -> ccountry::Country {
+    ) -> engine_native_memory::country_identity::Country {
         let status = pointer + 0x1800;
         let stock = pointer + 0x1900;
         let resources = pointer + 0x1a00;
@@ -107,7 +107,7 @@ impl Native {
             12345 + u64::from(surrender_target),
         );
         self.bytes[status + market::AUTOMATION] = 1;
-        ccountry::Country {
+        engine_native_memory::country_identity::Country {
             pointer,
             id,
             canonical_slot: slot,
@@ -157,8 +157,8 @@ impl Native {
         self.bytes[storage + engine_scripts::variable_hash_node::DISTANCE] = 1;
         let key = storage + engine_scripts::variable_hash_node::KEY;
         self.bytes[key..key + 4].copy_from_slice(b"paid");
-        self.u64(key + engine_native::msvc_string::LENGTH, 4);
-        self.u64(key + engine_native::msvc_string::CAPACITY, 15);
+        self.u64(key + engine_native_memory::msvc_string::LENGTH, 4);
+        self.u64(key + engine_native_memory::msvc_string::CAPACITY, 15);
         self.u64(
             storage + engine_scripts::variable_hash_node::VALUE,
             u64::from(seed) * 100_000,
@@ -176,7 +176,7 @@ impl Native {
                 self,
                 0,
                 GAME,
-                ccountry::Country {
+                engine_native_memory::country_identity::Country {
                     id: country,
                     canonical_slot: slot,
                     pointer,
@@ -906,7 +906,7 @@ fn failed_initial_country_seed_recovers_without_publishing_a_default_row() {
             &fault,
             0,
             GAME,
-            ccountry::Country {
+            engine_native_memory::country_identity::Country {
                 id,
                 canonical_slot,
                 pointer,

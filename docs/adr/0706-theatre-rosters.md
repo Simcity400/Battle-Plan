@@ -8,4 +8,4 @@ Reverse group membership follows an authenticated orders registry or authoritati
 
 Only a positive signed volunteer key admits the theatre's controller areas and stationed units. The theatre header still retains the signed key for every row. Area and unit outcomes are independent. Their counted vectors must be complete, and a hole, bad header, unauthenticated element or zero required identity refuses the dependent table. Province reads advance through every bounded batch, and only divisions and task forces are admitted as stationed units. The controller-area vector and the stationed-unit vector are separate native sources for visibility.
 
-[Land theatre reader](../../crates/engine-native/src/ctheatre.rs) · [Named groups](../../crates/engine-native/src/ctheater_group.rs) · [Theatre fixtures](../../crates/engine-native/src/ctheatre/tests.rs)
+[Land theatre reader](../../crates/engine-native/src/ctheatre.rs) · [Named groups](../../crates/engine-native-parts/src/ctheater_group.rs) · [Theatre fixtures](../../crates/engine-native/src/ctheatre/tests.rs)

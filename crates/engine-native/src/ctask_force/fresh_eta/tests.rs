@@ -152,7 +152,7 @@ fn source_capture<M: Memory>(
     task: usize,
     hour: i32,
     serial: bool,
-) -> (FreshEtaInputs, Result<ccountry::Country, &'static str>) {
+) -> (FreshEtaInputs, Result<engine_native_memory::country_identity::Country, &'static str>) {
     if serial {
         let (eta, owner, _) =
             reader.serial_capture_with_mission_risk_union(task, hour, Ok(false), Ok(()), false);
@@ -196,20 +196,20 @@ impl<M: Memory> Reader<'_, M> {
             field::<u64>(&province, location, crate::cprovince::STRATEGIC_REGION)? as usize;
         let region_fields = gather(self.memory, region, REGION_FIELDS);
         let region_memory = region_fields.memory(self.memory);
-        let id = crate::cstrategic_region::id(&region_memory, self.base, region)?
+        let id = engine_native_parts::cstrategic_region::id(&region_memory, self.base, region)?
             .ok_or("fresh task-force location region absent")?;
         if risk {
             self.context.region = Ok(Some(id));
         }
         let template =
-            field::<u64>(&region_memory, region, crate::cstrategic_region::TEMPLATE)? as usize;
+            field::<u64>(&region_memory, region, engine_native_parts::cstrategic_region::TEMPLATE)? as usize;
         let template_fields = gather(self.memory, template, TEMPLATE_FIELDS);
         let template_memory = template_fields.memory(self.memory);
         auth(
             &template_memory,
             self.base,
             template,
-            crate::cstrategic_region::TEMPLATE_VTABLE_RVA,
+            engine_native_parts::cstrategic_region::TEMPLATE_VTABLE_RVA,
         )?;
         let terrain = naval::terrain_from_template_kept(
             &template_memory,
@@ -233,7 +233,7 @@ impl<M: Memory> Reader<'_, M> {
                 &leader_memory,
                 self.base,
                 leader,
-                crate::cnavy_leader::VTABLE_RVA,
+                engine_native_parts::cnavy_leader::VTABLE_RVA,
             )?;
             if field::<u64>(&leader_memory, leader, 8)? != reference {
                 return Err("fresh task-force fleet leader reference mismatch");
@@ -282,7 +282,7 @@ impl<M: Memory> Reader<'_, M> {
                 };
                 if record != 0 {
                     let mut weather = self.terms(
-                        add(record, crate::sweather_per_region::MODIFIERS)?,
+                        add(record, crate::cweather_manager::region_weather::MODIFIERS)?,
                         eta,
                         risk,
                     )?;
@@ -322,7 +322,7 @@ impl<M: Memory> Reader<'_, M> {
             )
             .ok_or("fresh task-force headquarters invalid")?;
             let mut strongest: Terms = [Ok(0); TERM_COUNT];
-            let acquired = crate::cpdx_array::pointers(
+            let acquired = engine_native_memory::cpdx_array::pointers(
                 self.memory,
                 headquarters,
                 "fresh task-force headquarters unreadable",
@@ -413,7 +413,7 @@ impl<M: Memory> Reader<'_, M> {
             Ok(())
         };
         let memory = self.memory;
-        let walked = crate::cpdx_array::pointers(
+        let walked = engine_native_memory::cpdx_array::pointers(
             memory,
             ships,
             "fresh task-force ship pointer unreadable",
@@ -434,10 +434,10 @@ impl<M: Memory> Reader<'_, M> {
         }
         if mixed {
             self.context.terrain_speed =
-                speed.and_then(|value| crate::fixed5::fraction(value, i64::from(ships.count) * P));
+                speed.and_then(|value| engine_native_memory::fixed5::fraction(value, i64::from(ships.count) * P));
         }
         *total = (*total).map(|value| {
-            value.and_then(|value| crate::fixed5::fraction(value, i64::from(ships.count) * P))
+            value.and_then(|value| engine_native_memory::fixed5::fraction(value, i64::from(ships.count) * P))
         });
         Ok(())
     }
@@ -448,7 +448,7 @@ impl<M: Memory> Reader<'_, M> {
         eta: bool,
         risk: bool,
     ) -> (
-        Result<ccountry::Country, &'static str>,
+        Result<engine_native_memory::country_identity::Country, &'static str>,
         Result<[Value; VALUE_COUNT], &'static str>,
         Terms,
     ) {
@@ -459,7 +459,7 @@ impl<M: Memory> Reader<'_, M> {
         let country_values = if eta || risk {
             roster.and_then(|country| {
                 self.country_values(
-                    add(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?,
+                    add(country.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?,
                     country.pointer,
                     eta,
                     risk,
@@ -490,7 +490,7 @@ impl<M: Memory> Reader<'_, M> {
         contributor: bool,
     ) -> (
         FreshEtaInputs,
-        Result<ccountry::Country, &'static str>,
+        Result<engine_native_memory::country_identity::Country, &'static str>,
         MissionRiskInputs,
     ) {
         let stats = self.stats(task);
@@ -606,7 +606,7 @@ fn a_range_only_fault_keeps_speed_and_class_and_the_guard_decides_its_use() {
 
 #[test]
 fn a_stat_gather_that_stops_early_reads_the_rest_alone() {
-    use crate::batch_fallback::{Batch, count};
+    use engine_native_memory::batch_fallback::{Batch, count};
     let fallbacks = count(Batch::FreshEtaGathers);
     let mut memory = fixture();
     memory.fault = Some((STATS + 0x1a8, 8));
@@ -641,7 +641,7 @@ fn metadata_component_and_shared_root_failures_are_retained_without_retry() {
     ] {
         let mut memory = fixture();
         memory.accumulator(
-            COUNTRY + ccountry::MODIFIER_ACCUMULATOR,
+            COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
             0x1800,
             &[(KEYS[0], 123), (KEYS[1], 5), (KEYS[2], -100_000)],
         );
@@ -667,7 +667,7 @@ fn metadata_component_and_shared_root_failures_are_retained_without_retry() {
 fn a_capture_reads_a_shared_accumulator_census_once() {
     let mut memory = fixture();
     memory.accumulator(
-        COUNTRY + ccountry::MODIFIER_ACCUMULATOR,
+        COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
         0x1800,
         &[(KEYS[0], 123), (KEYS[1], 5), (KEYS[2], -100_000)],
     );
@@ -677,11 +677,11 @@ fn a_capture_reads_a_shared_accumulator_census_once() {
     assert_eq!(first.speed_modifier, second.speed_modifier);
     assert_eq!(first.modified_range, second.modified_range);
     assert_eq!(first.modified_range, Ok(100_000));
-    assert_eq!(memory.calls(COUNTRY + ccountry::MODIFIER_ACCUMULATOR), 1);
+    assert_eq!(memory.calls(COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR), 1);
 }
 
 fn country_census(log: &[HeldCensus]) -> HeldCensus {
-    let address = COUNTRY + ccountry::MODIFIER_ACCUMULATOR;
+    let address = COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
     *log.iter()
         .find(|census| census.receiver == COUNTRY && census.address == address)
         .expect("the certified country census is logged")
@@ -690,7 +690,7 @@ fn country_census(log: &[HeldCensus]) -> HeldCensus {
 #[test]
 fn a_held_country_census_is_served_without_reading() {
     let mut memory = fixture();
-    let address = COUNTRY + ccountry::MODIFIER_ACCUMULATOR;
+    let address = COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
     memory.accumulator(
         address,
         0x1800,
@@ -738,7 +738,7 @@ fn a_held_country_census_is_served_without_reading() {
 #[test]
 fn a_held_census_whose_certificate_moved_is_read_afresh() {
     let mut memory = fixture();
-    let address = COUNTRY + ccountry::MODIFIER_ACCUMULATOR;
+    let address = COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
     memory.accumulator(
         address,
         0x1800,
@@ -799,7 +799,7 @@ fn a_held_census_whose_certificate_moved_is_read_afresh() {
 #[test]
 fn an_uncertified_census_is_read_and_not_logged() {
     let mut memory = fixture();
-    let address = COUNTRY + ccountry::MODIFIER_ACCUMULATOR;
+    let address = COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
     memory.accumulator(address, 0x1800, &[(KEYS[0], 123)]);
     let mut held = Vec::new();
     let _ = verified_reader(&memory)
@@ -863,18 +863,18 @@ fn located_fixture() -> Fixture {
     memory.u64(location + crate::cprovince::STRATEGIC_REGION, region as u64);
     memory.u64(
         region,
-        (TERRAIN_IMAGE + crate::cstrategic_region::VTABLE_RVA.0) as u64,
+        (TERRAIN_IMAGE + engine_native_parts::cstrategic_region::VTABLE_RVA.0) as u64,
     );
-    memory.u32(region + crate::cstrategic_region::ID, 3);
-    memory.u64(region + crate::cstrategic_region::TEMPLATE, template as u64);
+    memory.u32(region + engine_native_parts::cstrategic_region::ID, 3);
+    memory.u64(region + engine_native_parts::cstrategic_region::TEMPLATE, template as u64);
     memory.u64(
         template,
-        (TERRAIN_IMAGE + crate::cstrategic_region::TEMPLATE_VTABLE_RVA.0) as u64,
+        (TERRAIN_IMAGE + engine_native_parts::cstrategic_region::TEMPLATE_VTABLE_RVA.0) as u64,
     );
     memory.u64(template + 0x130, terrain as u64);
     memory.u64(
         terrain,
-        (TERRAIN_IMAGE + crate::cterrain_type::VTABLE_RVA.0) as u64,
+        (TERRAIN_IMAGE + engine_native_parts::cterrain_type::VTABLE_RVA.0) as u64,
     );
     memory.put(terrain + 0x10, &[1]);
     memory.u64(terrain + 0x1b8, 0x8500);
@@ -931,7 +931,7 @@ fn actual_location_terrain_keeps_adjacent_class_runs_and_native_weighting() {
 fn eta_roster_ships_share_a_guarded_record_batch() {
     const FOURTH: usize = 0x20000;
     let capture = |memory: &Fixture| {
-        let census = crate::read_census::ReadCensus::new(memory);
+        let census = engine_native_memory::read_census::ReadCensus::new(memory);
         let row = Reader::new(&census, TERRAIN_IMAGE, STATE)
             .with_modifier_guard(Ok(()))
             .capture(TASK, 17)
@@ -984,7 +984,7 @@ fn eta_roster_record_pages_keep_serial_terms_and_exact_guarded_cost() {
     for count in [0_usize, 1, 3, 4, 63, 64, 65, 129] {
         let memory = roster_fixture(count);
         let capture = |serial| {
-            let census = crate::read_census::ReadCensus::new(&memory);
+            let census = engine_native_memory::read_census::ReadCensus::new(&memory);
             let mut reader = source_reader(&census, TERRAIN_IMAGE);
             let mut terms = [Ok(0); TERM_COUNT];
             let result = source_terrain_terms(&mut reader, &mut terms, serial);
@@ -1096,7 +1096,7 @@ fn eta_source_reuse_keeps_packets_for_every_country_navy() {
         let (memory, tasks) = counter_source_world(countries);
         let capture = |serial| {
             memory.reads.borrow_mut().clear();
-            let census = crate::read_census::ReadCensus::new(&memory);
+            let census = engine_native_memory::read_census::ReadCensus::new(&memory);
             let mut reader = source_reader(&census, TERRAIN_IMAGE);
             let rows: Vec<_> = tasks
                 .iter()
@@ -1173,7 +1173,7 @@ fn reached_underway_uses_signed_convoy_ratio_and_positive_expeditionary_alias() 
     memory.array(STATE + crate::cgame_state::COUNTRY_LINKS, 0x900, 3);
     memory.u32(0x908, 1);
     memory.accumulator(
-        COUNTRY + ccountry::MODIFIER_ACCUMULATOR,
+        COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
         0x1800,
         &[(KEYS[4], 50_000)],
     );
@@ -1184,7 +1184,7 @@ fn reached_underway_uses_signed_convoy_ratio_and_positive_expeditionary_alias() 
     memory.i64(0x033d_fbc0, 100_000);
     let row = verified_reader(&memory).capture(TASK, 9).0;
     assert_eq!(row.modified_range, Ok(250_000));
-    assert_eq!(memory.calls(COUNTRY + ccountry::MODIFIER_ACCUMULATOR), 1);
+    assert_eq!(memory.calls(COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR), 1);
     assert_eq!(memory.calls(TASK + cunit::EXPEDITIONARY_OWNER), 1);
 
     memory.u32(TASK + mission::REPLENISHMENT + 4, 0);
@@ -1196,7 +1196,7 @@ fn reached_underway_uses_signed_convoy_ratio_and_positive_expeditionary_alias() 
 fn eligibility_global_failure_is_not_healed_by_a_later_present_key() {
     let mut memory = fixture();
     memory.accumulator(
-        COUNTRY + ccountry::MODIFIER_ACCUMULATOR,
+        COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
         0x1800,
         &[(KEYS[0], 123), (KEYS[1], 5), (KEYS[2], -100_000)],
     );
@@ -1227,7 +1227,7 @@ fn eligibility_global_failure_is_not_healed_by_a_later_present_key() {
 }
 
 fn headquarters_fixture() -> Fixture {
-    use crate::creference_registry as registry;
+    use engine_native_parts::creference_registry as registry;
     let mut memory = fixture();
     let (table, entries) = (0x25000, 0x26000);
     let leader_ref = (7_u64 << 32) | u64::from(crate::cunit_leader::REFERENCE_TYPE);
@@ -1239,7 +1239,7 @@ fn headquarters_fixture() -> Fixture {
     memory.u32(table + registry::MASK, 7);
     memory.put(table + registry::OVERFLOW_DISTANCE, &[5]);
     memory.put(
-        entries + 13 * 24 + crate::reference_bucket::DISTANCE,
+        entries + 13 * 24 + engine_native_parts::reference_bucket::DISTANCE,
         &[255],
     );
     let slot = |reference: u64| {
@@ -1257,14 +1257,14 @@ fn headquarters_fixture() -> Fixture {
         (characters[1], 0xb000),
     ] {
         let bucket = entries + slot(reference) * 24;
-        memory.put(bucket + crate::reference_bucket::DISTANCE, &[1]);
+        memory.put(bucket + engine_native_parts::reference_bucket::DISTANCE, &[1]);
         memory.u64(bucket + 8, reference);
         memory.u64(bucket + 16, pointer);
     }
     memory.u64(TASK + ctask_force::FLEET, 0x7000);
     memory.u64(0x7000, cfleet::VTABLE_RVA.0 as u64);
     memory.u64(0x7000 + cfleet::LEADER, leader_ref);
-    memory.u64(0x8000, crate::cnavy_leader::VTABLE_RVA.0 as u64);
+    memory.u64(0x8000, engine_native_parts::cnavy_leader::VTABLE_RVA.0 as u64);
     memory.u64(0x8008, leader_ref);
     memory.accumulator(
         0x8000 + mission::LEADER_MODIFIERS,
@@ -1285,7 +1285,7 @@ fn headquarters_fixture() -> Fixture {
         memory.u64(character, crate::ccharacter::VTABLE_RVA.0 as u64);
         memory.u64(character + 8, character_ref);
         memory.u64(character + mission::CHARACTER_UNIT_LEADER, leader as u64);
-        memory.u64(leader, crate::cnavy_leader::VTABLE_RVA.0 as u64);
+        memory.u64(leader, engine_native_parts::cnavy_leader::VTABLE_RVA.0 as u64);
         memory.u32(leader + mission::UNIT_LEADER_KIND, 2);
         for (ordinal, offset) in mission::UNIT_LEADER_SOURCES.into_iter().enumerate() {
             let source = 0xe000 + index * 0x1000 + ordinal * 0x200;
@@ -1391,7 +1391,7 @@ fn motion_capture_reads_fresh_operands_only_for_admitted_current_hour_native_dem
             usize::from(demanded)
         );
         assert_eq!(memory.calls(TASK + cunit::LOGICAL_OWNER), 1);
-        assert_eq!(walk.outcome, crate::walk::Outcome::Rows { len: 1 });
+        assert_eq!(walk.outcome, engine_native_memory::walk::Outcome::Rows { len: 1 });
         assert_eq!(rows[0].logical_owner, 7);
         if demanded {
             assert_eq!(rows[0].fresh.unwrap().sample_hour, 17);
@@ -1423,7 +1423,7 @@ fn refused_or_unverified_layout_skips_modifier_graph_and_keeps_independent_prefi
         }
         collector.visit(TASK, 7);
         let walk = collector.finish(None);
-        assert_eq!(walk.outcome, crate::walk::Outcome::Rows { len: 1 });
+        assert_eq!(walk.outcome, engine_native_memory::walk::Outcome::Rows { len: 1 });
         assert_eq!(paths, [2]);
         let row = rows[0].fresh.unwrap();
         let reason = guard.map_or("fresh task-force modifier layout unverified", |guard| {
@@ -1439,7 +1439,7 @@ fn refused_or_unverified_layout_skips_modifier_graph_and_keeps_independent_prefi
             (Ok(0xfe), Ok(0xff))
         );
         assert_eq!(rows[0].fresh_owner.unwrap().unwrap().id, 1);
-        assert_eq!(memory.calls(COUNTRY + ccountry::MODIFIER_ACCUMULATOR), 0);
+        assert_eq!(memory.calls(COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR), 0);
         assert_eq!(memory.observed(STATS + 0x1a8, 16), 1);
         assert_eq!(memory.observed(STATS + mission::STAT_RANGE, 8), 0);
         assert_eq!(memory.calls(TASK + cunit::LOCATION), 0);
@@ -1451,12 +1451,12 @@ fn refused_or_unverified_layout_skips_modifier_graph_and_keeps_independent_prefi
 const RISK_LOCATION: usize = 0x30000;
 const RISK_TERRAIN: usize = 0x33000;
 const RISK_CLASS_TREE: usize = 0x34138;
-const RISK_WEATHER_RECORD: usize = 0x39000 + 3 * crate::sweather_per_region::STRIDE;
+const RISK_WEATHER_RECORD: usize = 0x39000 + 3 * crate::cweather_manager::region_weather::STRIDE;
 const RISK_COMBINED: i64 = -116_351;
 const RISK_METADATA_ROOT: usize = TERRAIN_IMAGE + metadata::TABLE_RVA.0;
 
 fn mission_risk_fixture() -> Fixture {
-    use crate::creference_registry as registry;
+    use engine_native_parts::creference_registry as registry;
     let mut memory = headquarters_fixture();
     memory.bytes.resize(0x40000, 0);
     memory.u64(COUNTRY, (TERRAIN_IMAGE + ccountry::VTABLE_RVA.0) as u64);
@@ -1470,7 +1470,7 @@ fn mission_risk_fixture() -> Fixture {
     memory.u64(0x7000, (TERRAIN_IMAGE + cfleet::VTABLE_RVA.0) as u64);
     memory.u64(
         0x8000,
-        (TERRAIN_IMAGE + crate::cnavy_leader::VTABLE_RVA.0) as u64,
+        (TERRAIN_IMAGE + engine_native_parts::cnavy_leader::VTABLE_RVA.0) as u64,
     );
     for index in 0..2 {
         let character = 0xa000 + index * 0x1000;
@@ -1481,11 +1481,11 @@ fn mission_risk_fixture() -> Fixture {
         );
         memory.u64(
             leader,
-            (TERRAIN_IMAGE + crate::cnavy_leader::VTABLE_RVA.0) as u64,
+            (TERRAIN_IMAGE + engine_native_parts::cnavy_leader::VTABLE_RVA.0) as u64,
         );
     }
     memory.accumulator(
-        COUNTRY + ccountry::MODIFIER_ACCUMULATOR,
+        COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
         0x1800,
         &[
             (KEYS[0], 1_000),
@@ -1506,18 +1506,18 @@ fn mission_risk_fixture() -> Fixture {
     );
     memory.u64(
         region,
-        (TERRAIN_IMAGE + crate::cstrategic_region::VTABLE_RVA.0) as u64,
+        (TERRAIN_IMAGE + engine_native_parts::cstrategic_region::VTABLE_RVA.0) as u64,
     );
-    memory.u32(region + crate::cstrategic_region::ID, 3);
-    memory.u64(region + crate::cstrategic_region::TEMPLATE, template as u64);
+    memory.u32(region + engine_native_parts::cstrategic_region::ID, 3);
+    memory.u64(region + engine_native_parts::cstrategic_region::TEMPLATE, template as u64);
     memory.u64(
         template,
-        (TERRAIN_IMAGE + crate::cstrategic_region::TEMPLATE_VTABLE_RVA.0) as u64,
+        (TERRAIN_IMAGE + engine_native_parts::cstrategic_region::TEMPLATE_VTABLE_RVA.0) as u64,
     );
     memory.u64(template + 0x130, RISK_TERRAIN as u64);
     memory.u64(
         RISK_TERRAIN,
-        (TERRAIN_IMAGE + crate::cterrain_type::VTABLE_RVA.0) as u64,
+        (TERRAIN_IMAGE + engine_native_parts::cterrain_type::VTABLE_RVA.0) as u64,
     );
     memory.put(RISK_TERRAIN + 0x10, &[1]);
     memory.u64(RISK_TERRAIN + 0x1b8, 0x34000);
@@ -1562,11 +1562,11 @@ fn mission_risk_fixture() -> Fixture {
     memory.array(manager + cweather_manager::REGIONS, 0x39000, 4);
     memory.u64(
         RISK_WEATHER_RECORD,
-        (TERRAIN_IMAGE + crate::sweather_per_region::VTABLE_RVA.0) as u64,
+        (TERRAIN_IMAGE + crate::cweather_manager::region_weather::VTABLE_RVA.0) as u64,
     );
-    memory.u32(RISK_WEATHER_RECORD + crate::sweather_per_region::ID, 3);
+    memory.u32(RISK_WEATHER_RECORD + crate::cweather_manager::region_weather::ID, 3);
     memory.accumulator(
-        RISK_WEATHER_RECORD + crate::sweather_per_region::MODIFIERS,
+        RISK_WEATHER_RECORD + crate::cweather_manager::region_weather::MODIFIERS,
         0x3a000,
         &[(KEYS[0], 80), (keys::NAVAL_DETECTION, -80), (KEYS[1], 80)],
     );
@@ -1624,7 +1624,7 @@ struct RiskShipSink {
 
 type SourcePacket = (
     FreshEtaInputs,
-    Result<ccountry::Country, &'static str>,
+    Result<engine_native_memory::country_identity::Country, &'static str>,
     MissionRiskInputs,
 );
 
@@ -1678,7 +1678,7 @@ fn eta_source_batches_match_serial_risk_loans_at_every_persistent_fault() {
 
 #[test]
 fn eta_roster_batch_falls_back_once_and_one_shot_faults_keep_healthy_risk_loans() {
-    use crate::batch_fallback::{Batch, count};
+    use engine_native_memory::batch_fallback::{Batch, count};
     let healthy = source_packet(&source_risk_fixture(), false);
     for ship in [0x35000, 0x37000] {
         for (offset, len) in ROSTER_SHIP {
@@ -1739,7 +1739,7 @@ fn eta_source_reuse_keeps_native_refusals_and_the_original_failure_order() {
 fn eta_successful_source_memos_keep_risk_leaves_fresh_and_end_with_the_capture() {
     let capture = |serial| {
         let memory = source_risk_fixture();
-        let census = crate::read_census::ReadCensus::new(&memory);
+        let census = engine_native_memory::read_census::ReadCensus::new(&memory);
         let mut reader = source_reader(&census, TERRAIN_IMAGE);
         let rows: Vec<_> = (0..3)
             .map(|hour| source_capture_with_risk(&mut reader, hour, Ok(true), Ok(()), true, serial))
@@ -1922,25 +1922,25 @@ fn targeted_spotting_uses_original_roster_and_native_zero_or_unlinked_slot() {
         memory.u64(COUNTRY + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
         memory.u64(
             diplomacy,
-            (TERRAIN_IMAGE + crate::cdiplomacy_status::VTABLE_RVA.0) as u64,
+            (TERRAIN_IMAGE + engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0) as u64,
         );
         memory.u64(
-            diplomacy + crate::cdiplomacy_status::COUNTRY,
+            diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
             COUNTRY as u64,
         );
-        memory.array(diplomacy + crate::cdiplomacy_status::RELATIONS, 0x45000, 2);
+        memory.array(diplomacy + engine_native_parts::cdiplomacy_status_layout::RELATIONS, 0x45000, 2);
         memory.u64(0x45000, status as u64);
         memory.u64(
             status,
-            (TERRAIN_IMAGE + crate::crelation_status::VTABLE_RVA.0) as u64,
+            (TERRAIN_IMAGE + crate::crelation::status::VTABLE_RVA.0) as u64,
         );
         memory.u64(
-            status + crate::crelation_status::DIPLOMACY_STATUS,
+            status + crate::crelation::status::DIPLOMACY_STATUS,
             diplomacy as u64,
         );
-        memory.u32(status + crate::crelation_status::TARGET_COUNTRY, 0);
+        memory.u32(status + crate::crelation::status::TARGET_COUNTRY, 0);
         memory.accumulator(
-            status + crate::crelation_status::MODIFIER + 0x10,
+            status + crate::crelation::status::MODIFIER + 0x10,
             0x46000,
             &[(TARGETED_SPOTTING_KEY, -17_001)],
         );
@@ -1952,7 +1952,7 @@ fn targeted_spotting_uses_original_roster_and_native_zero_or_unlinked_slot() {
             1
         );
         assert_eq!(
-            memory.calls(status + crate::crelation_status::MODIFIER + 0x10),
+            memory.calls(status + crate::crelation::status::MODIFIER + 0x10),
             1
         );
         if controller == 0 {
@@ -1972,13 +1972,13 @@ fn motion_mission_risk_fixture(route_count: u32) -> Fixture {
 fn assert_mission_risk_graph_read_once(memory: &Fixture) {
     for address in [
         TASK + cunit::ROSTER_OWNER,
-        COUNTRY + ccountry::MODIFIER_ACCUMULATOR,
+        COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
         TASK + cunit::LOCATION,
         TASK + ctask_force::SHIPS,
         RISK_CLASS_TREE,
         RISK_TERRAIN + 0xb8,
         STATE + crate::cgame_state::WEATHER_MANAGER,
-        RISK_WEATHER_RECORD + crate::sweather_per_region::MODIFIERS,
+        RISK_WEATHER_RECORD + crate::cweather_manager::region_weather::MODIFIERS,
         TASK + mission::LOCAL_MODIFIERS,
         0x8000 + mission::LEADER_MODIFIERS,
         TASK + ctask_force::ATTACHED_HEADQUARTERS,
@@ -2067,7 +2067,7 @@ fn mission_risk_metadata_failures_remain_cached_without_poisoning_independent_et
     for fault in [risk_flags, metadata::TABLE_RVA.0] {
         let mut memory = fixture();
         memory.accumulator(
-            COUNTRY + ccountry::MODIFIER_ACCUMULATOR,
+            COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
             0x1800,
             &[(KEYS[0], 5), (keys::NAVAL_DETECTION, 123), (KEYS[1], 9)],
         );
@@ -2258,7 +2258,7 @@ fn motion_mission_risk_idle_admission_shares_eta_graph_without_an_ordinary_route
         .visit_with_mission_risk(TASK, 7, Ok(true), Ok(()))
         .unwrap();
     let walk = collector.finish(None);
-    assert_eq!(walk.outcome, crate::walk::Outcome::Rows { len: 1 });
+    assert_eq!(walk.outcome, engine_native_memory::walk::Outcome::Rows { len: 1 });
     assert_eq!((walk.paths_len, walk.required_paths), (0, 0));
     assert_eq!(rows[0].ordinary_len, 0);
     assert_eq!(rows[0].fresh.unwrap().sample_hour, 29);
@@ -2288,10 +2288,10 @@ fn motion_mission_risk_missing_hour_refuses_packet_without_reading_fresh_graph()
         Err("fresh task-force risk sample hour unavailable")
     );
     let walk = collector.finish(None);
-    assert_eq!(walk.outcome, crate::walk::Outcome::Rows { len: 1 });
+    assert_eq!(walk.outcome, engine_native_memory::walk::Outcome::Rows { len: 1 });
     assert!(rows[0].fresh.is_none());
     assert_eq!(memory.calls(TASK + cunit::ROSTER_OWNER), 0);
-    assert_eq!(memory.calls(COUNTRY + ccountry::MODIFIER_ACCUMULATOR), 0);
+    assert_eq!(memory.calls(COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR), 0);
     assert_eq!(memory.calls(RISK_METADATA_ROOT), 0);
     assert_mission_risk_skips_eta_fields(&memory);
 }
@@ -2316,7 +2316,7 @@ fn motion_mission_risk_failed_original_admission_keeps_exact_refusal_and_eta_pac
         .visit_with_mission_risk(TASK, 7, Err("mission backlink unreadable"), Ok(()))
         .unwrap();
     let walk = collector.finish(None);
-    assert_eq!(walk.outcome, crate::walk::Outcome::Rows { len: 1 });
+    assert_eq!(walk.outcome, engine_native_memory::walk::Outcome::Rows { len: 1 });
     assert_eq!(risk.combined_detection, Err("mission backlink unreadable"));
     assert_eq!(rows[0].fresh.unwrap().speed_modifier, Ok(1_420));
     assert_eq!(
@@ -2349,7 +2349,7 @@ fn motion_mission_risk_route_failure_keeps_one_risk_only_graph_and_motion_refusa
     assert_eq!(risk.combined_detection, Ok(Some(RISK_COMBINED)));
     assert_eq!(
         walk.outcome,
-        crate::walk::Outcome::Unavailable {
+        engine_native_memory::walk::Outcome::Unavailable {
             reason: "unit route invalid or longer than the province roster"
         }
     );
@@ -2384,7 +2384,7 @@ fn motion_mission_risk_prior_motion_failure_does_not_retry_prefix_or_lose_risk()
     assert_eq!(risk.combined_detection, Ok(Some(RISK_COMBINED)));
     assert_eq!(
         walk.outcome,
-        crate::walk::Outcome::Unavailable {
+        engine_native_memory::walk::Outcome::Unavailable {
             reason: "unit route invalid or longer than the province roster"
         }
     );
@@ -2410,7 +2410,7 @@ fn mission_risk_present_native_zero_is_reached_and_demands_metadata() {
     ] {
         let mut memory = fixture();
         memory.accumulator(
-            COUNTRY + ccountry::MODIFIER_ACCUMULATOR,
+            COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
             0x1800,
             &[(keys::NAVAL_DETECTION, 0)],
         );
@@ -2441,7 +2441,7 @@ fn mission_risk_full_modifier_union_and_stat_leaves_share_original_observations(
         (KEYS[3], -50_000),
     ];
     values.sort_unstable_by_key(|&(key, _)| key);
-    memory.accumulator(COUNTRY + ccountry::MODIFIER_ACCUMULATOR, 0x1800, &values);
+    memory.accumulator(COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, 0x1800, &values);
     memory.i64(STATS + 0x138, -138);
     memory.i64(STATS + 0x148, i64::MIN);
     memory.i64(STATS + 0x150, i64::MAX);
@@ -2479,7 +2479,7 @@ fn mission_risk_full_modifier_union_and_stat_leaves_share_original_observations(
 fn mission_risk_new_key_failure_preserves_detection_eta_and_other_risk_keys() {
     let mut memory = fixture();
     memory.accumulator(
-        COUNTRY + ccountry::MODIFIER_ACCUMULATOR,
+        COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
         0x1800,
         &[
             (0x19, 19),
@@ -2570,7 +2570,7 @@ fn original_counter_contributor_union_keeps_one_motion_and_modifier_graph() {
     assert_eq!(risk.speed_base, Ok(None));
     assert_eq!(
         collector.finish(None).outcome,
-        crate::walk::Outcome::Rows { len: 1 }
+        engine_native_memory::walk::Outcome::Rows { len: 1 }
     );
     assert_eq!(count, Some(Ok(0)));
     assert!(owner.unwrap().is_ok());
@@ -2603,7 +2603,7 @@ fn borrowed_mission_risk_outside_census_uses_no_motion_capacity_or_identity_prob
     let walk = collector.finish(None);
     assert_eq!(risk.sample_hour, 35);
     assert_eq!(risk.combined_detection, Ok(Some(RISK_COMBINED)));
-    assert_eq!(walk.outcome, crate::walk::Outcome::Rows { len: 0 });
+    assert_eq!(walk.outcome, engine_native_memory::walk::Outcome::Rows { len: 0 });
     assert_eq!((walk.paths_len, walk.required_paths), (0, 0));
     for address in [
         TASK,
@@ -2662,7 +2662,7 @@ fn borrowed_mission_risk_original_loan_error_precedes_clock_demand_and_guard() {
         );
         assert_eq!(memory.reads.borrow().len(), before);
         let walk = collector.finish(None);
-        assert_eq!(walk.outcome, crate::walk::Outcome::Rows { len: 0 });
+        assert_eq!(walk.outcome, engine_native_memory::walk::Outcome::Rows { len: 0 });
         assert_eq!((walk.paths_len, walk.required_paths), (0, 0));
     }
 }
@@ -2688,7 +2688,7 @@ fn borrowed_mission_risk_authenticated_loan_without_hour_reads_no_graph() {
     );
     assert_eq!(memory.reads.borrow().len(), before);
     let walk = collector.finish(None);
-    assert_eq!(walk.outcome, crate::walk::Outcome::Rows { len: 0 });
+    assert_eq!(walk.outcome, engine_native_memory::walk::Outcome::Rows { len: 0 });
     assert_eq!((walk.paths_len, walk.required_paths), (0, 0));
 }
 
@@ -2728,7 +2728,7 @@ fn borrowed_mission_risk_unreached_demand_refusal_and_guard_leave_graph_and_cens
         assert_eq!(risk.combined_detection, expected);
         assert_eq!(memory.reads.borrow().len(), before);
         let walk = collector.finish(None);
-        assert_eq!(walk.outcome, crate::walk::Outcome::Rows { len: 0 });
+        assert_eq!(walk.outcome, engine_native_memory::walk::Outcome::Rows { len: 0 });
         assert_eq!((walk.paths_len, walk.required_paths), (0, 0));
     }
 }
@@ -2755,7 +2755,7 @@ fn borrowed_mission_risk_preserves_existing_invalid_motion_roster_refusal() {
     assert_eq!(risk.combined_detection, Ok(Some(RISK_COMBINED)));
     assert_eq!(
         walk.outcome,
-        crate::walk::Outcome::Unavailable {
+        engine_native_memory::walk::Outcome::Unavailable {
             reason: "task-force motion province roster invalid",
         }
     );
@@ -2800,14 +2800,14 @@ fn borrowed_mission_risk_distinct_receiver_retains_normal_visit_metadata_failure
         assert_eq!((normal.sample_hour, outside.sample_hour), (35, 35));
         assert_eq!(memory.calls(fault), 1);
         assert_eq!(memory.calls(RISK_METADATA_ROOT), 1);
-        assert_eq!(memory.calls(COUNTRY + ccountry::MODIFIER_ACCUMULATOR), 2);
+        assert_eq!(memory.calls(COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR), 2);
         assert_eq!(memory.calls(TASK + cunit::LOCATION), 1);
         assert_eq!(memory.calls(OUTSIDE_TASK + cunit::LOCATION), 1);
         assert_eq!(memory.calls(OUTSIDE_TASK + cunit::LOGICAL_OWNER), 0);
         assert_eq!(memory.calls(OUTSIDE_TASK + cunit::ORDINARY_ROUTE_DATA), 0);
         assert_eq!(memory.calls(OUTSIDE_TASK + cunit::CLASS), 0);
         assert_eq!(memory.calls(OUTSIDE_TASK + cunit::HANDLE), 0);
-        assert_eq!(walk.outcome, crate::walk::Outcome::Rows { len: 1 });
+        assert_eq!(walk.outcome, engine_native_memory::walk::Outcome::Rows { len: 1 });
         assert_eq!((walk.paths_len, walk.required_paths), (0, 0));
         assert!(rows[0].fresh.is_some());
     }
@@ -2857,11 +2857,11 @@ fn original_counter_risk_preserves_signed_count_and_owner_from_one_motion_attemp
         assert_eq!(memory.calls(TASK + cunit::COMBAT_REFERENCE_COUNT), 0);
         assert_eq!(memory.calls(TASK + cunit::LOGICAL_OWNER), 1);
         if count == 0 {
-            assert_eq!(walk.outcome, crate::walk::Outcome::Rows { len: 1 });
+            assert_eq!(walk.outcome, engine_native_memory::walk::Outcome::Rows { len: 1 });
         } else {
             assert_eq!(
                 walk.outcome,
-                crate::walk::Outcome::Unavailable {
+                engine_native_memory::walk::Outcome::Unavailable {
                     reason: "unit combat vector invalid"
                 }
             );
@@ -2902,7 +2902,7 @@ fn original_counter_risk_failed_combat_header_is_not_retried_as_a_readable_count
     assert_eq!(risk.combined_detection, Err("unit combat vector invalid"));
     assert_eq!(
         collector.finish(None).outcome,
-        crate::walk::Outcome::Unavailable {
+        engine_native_memory::walk::Outcome::Unavailable {
             reason: "unit combat vector invalid"
         }
     );
@@ -2955,7 +2955,7 @@ fn original_counter_risk_early_route_failure_reads_unattempted_count_once_after_
         assert_eq!(owner, Some(Ok(7)));
         assert_eq!(
             collector.finish(None).outcome,
-            crate::walk::Outcome::Unavailable {
+            engine_native_memory::walk::Outcome::Unavailable {
                 reason: "unit route invalid or longer than the province roster",
             }
         );
@@ -3002,7 +3002,7 @@ fn original_counter_risk_failed_owner_is_retained_without_poisoning_independent_
     assert_eq!(risk.combined_detection, Ok(Some(RISK_COMBINED)));
     assert_eq!(
         collector.finish(None).outcome,
-        crate::walk::Outcome::Unavailable {
+        engine_native_memory::walk::Outcome::Unavailable {
             reason: "task-force logical owner unreadable"
         }
     );
@@ -3040,11 +3040,11 @@ fn original_counter_risk_failed_shared_graph_never_falls_back_to_a_second_graph(
     );
     assert_eq!(
         collector.finish(None).outcome,
-        crate::walk::Outcome::Rows { len: 1 }
+        engine_native_memory::walk::Outcome::Rows { len: 1 }
     );
     assert_eq!(memory.calls(TASK + cunit::LOCATION), 1);
     assert_eq!(memory.calls(RISK_LOCATION), 1);
-    assert_eq!(memory.calls(COUNTRY + ccountry::MODIFIER_ACCUMULATOR), 1);
+    assert_eq!(memory.calls(COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR), 1);
     assert_eq!(memory.calls(TASK + cunit::STAT_BLOCK), 1);
     assert_eq!(memory.calls(STATE + crate::cgame_state::WEATHER_MANAGER), 0);
 }

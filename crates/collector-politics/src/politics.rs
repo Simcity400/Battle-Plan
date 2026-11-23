@@ -4,7 +4,7 @@ use crate::{
 };
 use engine_allocation as allocation;
 use engine_events::politics_sites::BalanceSnapshot;
-use engine_native::walk::Outcome;
+use engine_native_memory::walk::Outcome;
 use replay_data::{BranchId, rows::*};
 use replay_frame::{frame::TableInput, frame::TableView};
 use std::{
@@ -854,7 +854,7 @@ mod tests {
             e.epoch = 1;
             e.sequence = n as u64 + 1;
         }
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &native_bytes,
         };

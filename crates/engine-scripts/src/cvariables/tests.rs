@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 const BASE: usize = 0x1400_0000;
 const CONTAINER: usize = BASE + 0x100;
@@ -207,8 +207,8 @@ fn rows_grow_and_the_count_probe_reports_required_key_bytes() {
         &SliceMemory { base: BASE, bytes: &bytes },
         BASE,
         CONTAINER,
-        crate::walk::Buffer::Count,
-        crate::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
     );
     assert_eq!(
         result.outcome,
@@ -527,7 +527,7 @@ fn scoped_seed_failure_preserves_entries_and_distinguishes_unknown_from_zero() {
 #[test]
 #[ignore = "bench"]
 fn bench_script_variable_scopes() {
-    use crate::ccountry::synthetic::World;
+    use engine_native::ccountry::synthetic::World;
     const MODULE: usize = 0x4000_0000;
     const STATES: u32 = 1_000;
     fn store(world: &mut World, container: usize, count: u32, seed: u32) {

@@ -1,7 +1,7 @@
 use collector_observers::doctrine_changes::{self as changes, Domain};
 use engine_allocation as a;
 use engine_land_inputs::{country_tactic_unlocks, doctrine_state as n};
-use engine_native::{Memory, cpdx_array::Array};
+use engine_native_memory::{Memory, cpdx_array::Array};
 use replay_data::rows::*;
 use replay_frame::frame::TableInput;
 use std::{
@@ -1155,7 +1155,7 @@ pub unsafe fn observe(context: usize, domain: Domain, pointer: usize) {
     let mutex = unsafe { &*(context as *const Mutex<Store>) };
     if let Ok(mut store) = mutex.lock() {
         let base = store.base;
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let result = if domain == Domain::Status && store.ready && !store.failed {
             match store.owners.get(&pointer).copied() {
                 Some(slot) => store.refresh_grants(&memory, base, slot, false),
@@ -1569,7 +1569,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         struct Memory(Vec<u8>);
-        impl engine_native::Memory for Memory {
+        impl engine_native_memory::Memory for Memory {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 let Some(bytes) = self.0.get(address..address + output.len()) else {
                     return false;
@@ -1588,7 +1588,7 @@ mod tests {
             }
         }
         struct NoReads;
-        impl engine_native::Memory for NoReads {
+        impl engine_native_memory::Memory for NoReads {
             fn copy(&self, _: usize, _: &mut [u8]) -> bool {
                 panic!("hourly native read")
             }
@@ -1671,7 +1671,7 @@ mod tests {
             (125_000, -1, 50_000, 75_000)
         );
         struct FoldersOnly<'a>(&'a Memory);
-        impl engine_native::Memory for FoldersOnly<'_> {
+        impl engine_native_memory::Memory for FoldersOnly<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 let end = address + output.len();
                 for unrelated in [8 + n::COSTS..8 + n::EQUIPMENT + 24, 0x500..0x778] {
@@ -1680,7 +1680,7 @@ mod tests {
                         "folder reset read an unrelated inventory"
                     );
                 }
-                engine_native::Memory::copy(self.0, address, output)
+                engine_native_memory::Memory::copy(self.0, address, output)
             }
         }
         let store_mutex = Mutex::new(store);
@@ -1806,13 +1806,13 @@ mod tests {
         assert_eq!(grants[1].expiry_events_at_anchor, 2);
 
         struct RetiredChildren<'a>(&'a Memory);
-        impl engine_native::Memory for RetiredChildren<'_> {
+        impl engine_native_memory::Memory for RetiredChildren<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 assert!(
                     address + output.len() <= 0x200 || address >= 0x400,
                     "retired doctrine child was read"
                 );
-                engine_native::Memory::copy(self.0, address, output)
+                engine_native_memory::Memory::copy(self.0, address, output)
             }
         }
         unsafe { observe_gain(context, 0x300, 99) };

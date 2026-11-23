@@ -1,6 +1,7 @@
-use engine_native::{
-    Memory, memory::RecordLayout, memory::RecordSources, read_plan::Control, read_plan::Hint,
-    read_plan::Outcome, read_plan::PreparedPlan, read_plan::Read,
+use engine_native_memory::{
+    Memory,
+    memory::{RecordLayout, RecordSources},
+    read_plan::{Control, Hint, Outcome, PreparedPlan, Read},
 };
 use std::{
     cell::{Cell, Ref, RefCell},
@@ -234,7 +235,7 @@ impl<M: Memory> Memory for Observed<'_, M> {
         if trace.eligible
             && len != 0
             && address != 0
-            && engine_native::memory::is_canonical_range(address, len)
+            && engine_native_memory::memory::is_canonical_range(address, len)
         {
             if engine_allocation::advisory(|| engine_allocation::reserve(&mut trace.hints, 1))
                 .is_err()
@@ -450,7 +451,7 @@ mod tests {
 
     #[test]
     fn destination_preserves_resize_capacity_schedule() {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &[0x11; 16],
         };
@@ -504,14 +505,14 @@ mod tests {
         }
         fn walk(plan: &SnapshotPlan, source: &Source) -> [u8; 3] {
             let view = plan.view(source);
-            let a = engine_native::read::<u8>(&view, 1).unwrap();
+            let a = engine_native_memory::read::<u8>(&view, 1).unwrap();
             let b = {
                 let _payload = plan.untracked_reads();
                 let mut b = [0];
                 assert_eq!(view.copy_scattered([8], &mut [&mut b]), 1);
                 b[0]
             };
-            let c = engine_native::read::<u8>(&view, 7).unwrap();
+            let c = engine_native_memory::read::<u8>(&view, 7).unwrap();
             [a, b, c]
         }
         let mut source = Source {
@@ -552,9 +553,9 @@ mod tests {
         }
     }
     fn walk(memory: &impl Memory) -> Option<[u8; 3]> {
-        let a = engine_native::read::<u8>(memory, 1)?;
-        let b = engine_native::read::<u8>(memory, usize::from(a))?;
-        let c = engine_native::read::<u8>(memory, 7)?;
+        let a = engine_native_memory::read::<u8>(memory, 1)?;
+        let b = engine_native_memory::read::<u8>(memory, usize::from(a))?;
+        let c = engine_native_memory::read::<u8>(memory, 7)?;
         Some([a, b, c])
     }
     #[test]
@@ -607,8 +608,8 @@ mod tests {
         let mut plan = SnapshotPlan::default();
         assert!(!plan.begin(&source, true));
         let view = plan.view(&source);
-        assert_eq!(engine_native::read::<u8>(&view, 1), Some(3));
-        assert_eq!(engine_native::read::<u8>(&view, 1), Some(3));
+        assert_eq!(engine_native_memory::read::<u8>(&view, 1), Some(3));
+        assert_eq!(engine_native_memory::read::<u8>(&view, 1), Some(3));
         plan.finish(true);
         plan.prepare();
         source.calls.borrow_mut().clear();
@@ -620,8 +621,8 @@ mod tests {
             fail: None,
         };
         assert!(!plan.begin(&changed, true));
-        assert_eq!(engine_native::read::<u8>(&plan.view(&changed), 2), None);
-        assert_eq!(engine_native::read::<u8>(&plan.view(&changed), 7), None);
+        assert_eq!(engine_native_memory::read::<u8>(&plan.view(&changed), 2), None);
+        assert_eq!(engine_native_memory::read::<u8>(&plan.view(&changed), 7), None);
         assert!(!plan.finish(true));
         assert_eq!(*changed.calls.borrow(), [1]);
     }

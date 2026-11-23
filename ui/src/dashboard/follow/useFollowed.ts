@@ -1,12 +1,12 @@
 import { decode } from '@msgpack/msgpack';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { DashboardClient, DashboardSource } from '../client';
 import type { PlaybackController } from '../playback';
 import { baseClient } from '../prepare.ts';
 import { pageClock } from '../widgetClock.ts';
 import { playbackRate } from '../pulled.ts';
 import { canonical } from './canonical.ts';
-import { pipelineFor, type FollowQuery, type MountOptions, type Pipeline, type PipelineHost } from './pipeline.ts';
+import { pipelineFor, pipelineGeneration, subscribeClockPipeline, type FollowQuery, type MountOptions, type Pipeline, type PipelineHost } from './pipeline.ts';
 import type { Channel } from './facts';
 import type { FollowedPanel } from './message';
 import type { WidgetView } from './page';
@@ -26,6 +26,7 @@ export function lanesHost(client: DashboardClient): PipelineHost {
     channel: () => new MessageChannel(),
     frameRate: playbackRate,
     rate: weakCpu,
+    close: () => { for (const lane of lanes) lane.terminate(); },
   };
 }
 
@@ -35,6 +36,13 @@ export function usePipeline(clock: PlaybackController | null, client: DashboardC
     const base = baseClient(client);
     return pipelineFor(pageClock(clock), base, () => lanesHost(base));
   }, [clock, client]);
+}
+
+export function usePipelineGeneration(clock: PlaybackController | null): number {
+  const page = clock ? pageClock(clock) : null;
+  const read = useCallback(() => page ? pipelineGeneration(page) : 0, [page]);
+  const subscribe = useCallback((changed: () => void) => page ? subscribeClockPipeline(page, changed) : () => {}, [page]);
+  return useSyncExternalStore(subscribe, read, read);
 }
 
 export function useFollowedWidget(pipeline: Pipeline | null, key: string | null, options: MountOptions): number | null {

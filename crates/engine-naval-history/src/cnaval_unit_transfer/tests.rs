@@ -1,5 +1,6 @@
 use super::*;
-use crate::{cstrategic_navy, memory::SliceMemory};
+use engine_native_naval::cstrategic_navy;
+use engine_native_memory::memory::SliceMemory;
 use std::collections::BTreeMap;
 
 struct Fixture {
@@ -60,14 +61,14 @@ fn fixture() -> Fixture {
         m.word(country, ccountry::VTABLE_RVA.0 as u64);
         m.dword(country + ccountry::ID, id as u32);
         m.word(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
-        m.word(diplomacy, cdiplomacy_status::VTABLE_RVA.0 as u64);
-        m.word(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
+        m.word(diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64);
+        m.word(diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY, country as u64);
         m.word(country + ccountry::INTEL_TABLE, intel as u64);
         m.word(intel, ccountry_intel::VTABLE_RVA.0 as u64);
         m.dword(intel + ccountry_intel::OWNER, id as u32);
         m.array(intel + ccountry_intel::DATA, (intel + 0x100) as u64, 3);
     }
-    m.array(0xa000 + cdiplomacy_status::ENEMY_COUNTRIES, 0xc000, 1);
+    m.array(0xa000 + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES, 0xc000, 1);
     m.dword(0xc000, 2);
     m.dword(0x5000 + ccountry::FOG_NETWORK_TABLE_COUNT, 1);
     m.word(
@@ -79,7 +80,7 @@ fn fixture() -> Fixture {
         10_000,
     );
     m.modifier(
-        0x3000 + ccountry::MODIFIER_ACCUMULATOR,
+        0x3000 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
         0xc100,
         REDUCTION_TOKEN,
         20_000,
@@ -216,7 +217,7 @@ fn transport_owner_navy_is_required_only_after_native_feature_gates() {
         for fault in 0..3 {
             let mut m = fixture();
             if empty_enemies {
-                m.array(0xa000 + cdiplomacy_status::ENEMY_COUNTRIES, 0, 0);
+                m.array(0xa000 + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES, 0, 0);
             }
             assert_eq!(
                 movement_speed(&m, 0, 0x1000, 1, 0xd000),
@@ -383,7 +384,7 @@ fn batched_transport_speeds_equal_each_single_query() {
         |m| m.global(modifier_definition::TRADE_FEATURE_FLAGS_RVA, 0),
         |m| m.word(0x15000 + TRANSPORT_MODIFIER, 0),
         |m| m.word(0x16000, 0),
-        |m| m.array(0xa000 + cdiplomacy_status::ENEMY_COUNTRIES, 0, 0),
+        |m| m.array(0xa000 + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES, 0, 0),
         |m| m.word(0x12008, 0),
         |m| m.dword(0x13000 + cstrategic_navy::OWNER, 1),
         |m| m.dword(0x5000 + ccountry::FOG_NETWORK_TABLE_COUNT, 0),

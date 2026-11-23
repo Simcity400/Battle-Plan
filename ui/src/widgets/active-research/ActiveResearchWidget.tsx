@@ -1,8 +1,7 @@
 import { useId, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent, MouseEvent } from 'react';
+import type { KeyboardEvent, MouseEvent, ReactNode } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import { Icon } from '../../components/Icons';
-import ListSkeleton from '../../components/Skeleton';
 import WidgetState from '../../components/WidgetState';
 import ProgressMeter from '../../charts/meter/ProgressMeter';
 import { useOpenTooltip } from '../../charts/openTooltip.ts';
@@ -18,7 +17,7 @@ import { historyTokens, useResearchReply, useResearchSlots } from '../research/u
 import { useTechnologyArtwork } from '../research/useTechnologyArtwork';
 import { activeSlots, isOpenedResearch, openedResearch } from './activeResearchData';
 import type { ActiveSlot, OpenedResearch } from './activeResearchData';
-import ResearchWindow from './ResearchWindow';
+import ResearchWindow, { type ResearchWindowStatus } from './ResearchWindow';
 import './activeResearch.css';
 
 const NO_WARNINGS: string[] = [];
@@ -42,66 +41,88 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   const tips = useOpenTooltip(owner, now.live.subscribe);
   const untip = tips.hide;
   const [opened, setOpened] = useState<{ on: string; research: OpenedResearch; x: number; y: number } | null>(null);
-  if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
-  if (now.read === 'off') return <WidgetState kind="outside" />;
-  const failure = history.error ?? now.error;
-  if (failure && (!data || !reply)) return <WidgetState kind="error" failure={failure} onRetry={history.error ? history.retry : now.retry} />;
-  if (!data || !reply) return <ListSkeleton label="Loading research..." />;
   const describe = (research: OpenedResearch) => ({ icon: artwork.get(research.token)?.icon ?? undefined,
     name: contentTitle(research.firstObservedHour === null ? research.definition?.name : researchArt(artwork, research.token, research.databaseIndex)?.name,
       research.token, 'Technology name unavailable') });
-  const open = (item: Extract<ActiveSlot, { kind: 'researching' }>, x: number, y: number) => { untip(); setOpened({ on: openedOn(track, tag), research: openedResearch(item), x, y }); };
   const researching = rows.filter((item): item is Extract<ActiveSlot, { kind: 'researching' }> => item.kind === 'researching');
-  const row = (item: ActiveSlot) => {
-    const key = `slot:${item.slot.index}`;
-    if (item.kind === 'unavailable') return <div key={key} className="active-row is-quiet" role="status" title={item.reason}>
-      <span className="active-row-art is-icon"><Icon name="clock" /></span><span className="active-row-name is-muted">Not recorded</span></div>;
-    const numbers = slotNumbers(item.read, reply.hour);
-    if (item.kind === 'idle') return <div key={key} className="active-row is-quiet" role="status" data-research-slot={item.slot.index}>
-      <span className="active-row-art is-icon"><Icon name="pause" /></span><span className="active-row-name is-idle">Idle</span>
-      <span className="active-row-saved" data-paint="saved">{numbers.saved}</span></div>;
-    const { token, slot } = item;
-    const name = contentTitle(researchReadName(artwork, item.read), token, 'Technology name unavailable'), icon = artwork.get(token)?.icon ?? undefined;
-    const click = (event: MouseEvent<HTMLElement>) => open(item, event.clientX, event.clientY);
-    const content = (): TooltipContent | null => {
-      const at = latest.current ?? reply, hour = at.hour, current = at.slots.find(read => read.index === slot.index);
-      const shown = latest.inspect(slot.index);
-      if ((shown ? shown.token : current?.state.token) !== token || !current) return null;
-      const full = data.history.slots.find(held => held.index === slot.index) ?? slot;
-      const progress = shown ? shown.fraction === null ? null : { fraction: shown.fraction, hour: shown.hour }
-        : researchLatestProgress({ ...full, states: [current.state], progress: current.progress ? [current.progress] : [] }, current.state, hour);
-      const left = shown ? shown.left : slotNumbers(current, hour).left;
-      return { title: name, icon, rows: [
-        { label: 'Progress', value: progress ? `${Math.round(progress.fraction * 100)}% on ${researchDate(progress.hour)}` : 'Not recorded' },
-        { label: 'Days left', value: left === null ? 'Not recorded' : `${left}` },
-      ], note: left === null ? undefined : 'Days left is the game’s estimate at this hour’s research speed.' };
-    };
-    return <div key={key} className="active-row" data-research-slot={slot.index} tabIndex={0} aria-label={`${name}, researching`}
-      onPointerMove={event => tips.show(content, key, event.clientX, event.clientY)} onPointerLeave={untip}
-      onFocus={event => { const box = event.currentTarget.getBoundingClientRect(); tips.show(content, key, box.right, box.top); }} onBlur={untip}
-      onKeyDown={(event: KeyboardEvent<HTMLElement>) => {
-        if (event.key !== 'Enter') return;
-        event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); open(item, box.left + 40, box.bottom);
-      }}>
-      <span className="active-row-art is-open" onClick={click}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>
-      <span className="active-row-name is-open" onClick={click}>{name}</span>
-      <ProgressMeter value={numbers.fraction} state="live" label={`${name} progress`} />
-      <span className="active-row-percent" data-paint="percent">{numbers.percent}</span>
-      <span className="active-row-days" data-paint="days">{numbers.days}</span>
-    </div>;
-  };
-  const shown = opened?.on === openedOn(track, tag) ? opened : null;
-  const popup = shown && <ResearchWindow key={JSON.stringify(shown.research)} runtime={runtime} widget={widget} track={track} tag={tag} data={data} reply={reply}
+  const shown = track && tag && opened?.on === openedOn(track, tag) ? opened : null;
+  const failure = history.error ?? now.error;
+  const retryFailure = history.error ? history.retry : now.retry;
+  const popupStatus: ResearchWindowStatus = now.read === 'off'
+    ? { kind: 'outside' }
+    : failure && !reply
+      ? { kind: 'error', failure, onRetry: retryFailure }
+      : !reply
+        ? { kind: 'loading' }
+        : { kind: 'ready', reply };
+  const popup = shown && track && tag && data ? <ResearchWindow key={JSON.stringify(shown.research)} runtime={runtime} widget={widget} track={track} tag={tag} data={data} status={popupStatus}
     opened={shown.research} item={researching.find(item => isOpenedResearch(item, shown.research)) ?? null}
-    shown={describe(shown.research)} feed={now.feed} installed={now.inspected} subscribe={now.live.subscribe} active={active} anchor={shown} onClose={() => setOpened(null)} />;
-  const idle = rows.filter(item => item.kind === 'idle').length;
-  return <section className="active-research" aria-label="Active research" ref={now.root}>
-    {failure && <WidgetState kind="error" failure={failure} onRetry={history.error ? history.retry : now.retry} />}
-    <div className="active-rows">
-      {rows.length > 0 && <p className="active-section">Researching<span>{researching.length}</span>{idle > 0 && <span className="is-idle">{idle} idle</span>}</p>}
-      {rows.map(row)}
-    </div>
-    {!rows.length && <p>{reply.missing ?? <>No research slots recorded at <span data-paint="date">{researchDate(reply.hour)}</span>.</>}</p>}
-    {popup}
-  </section>;
+    shown={describe(shown.research)} feed={now.feed} installed={now.inspected} subscribe={now.live.subscribe} active={active} anchor={shown} onClose={() => setOpened(null)} /> : null;
+  let body: ReactNode;
+  if (!track || !tag) {
+    body = <WidgetState kind="nothing-chosen" prompt="Load a campaign and choose a country to see its research." />;
+  } else if (now.read === 'off') {
+    body = <WidgetState kind="outside" />;
+  } else if (failure && (!data || !reply)) {
+    body = <WidgetState kind="error" failure={failure} onRetry={history.error ? history.retry : now.retry} />;
+  } else if (!data || !reply) {
+    body = <WidgetState kind="loading" label="Loading research…" />;
+  } else {
+    const open = (item: Extract<ActiveSlot, { kind: 'researching' }>, x: number, y: number) => { untip(); setOpened({ on: openedOn(track, tag), research: openedResearch(item), x, y }); };
+    const row = (item: ActiveSlot) => {
+      const key = `slot:${item.slot.index}`;
+      if (item.kind === 'unavailable') return <div key={key} className="active-row is-quiet" role="status" title={item.reason}>
+        <span className="active-row-art is-icon"><Icon name="clock" /></span><span className="active-row-name is-muted">Not recorded</span></div>;
+      const numbers = slotNumbers(item.read, reply.hour);
+      if (item.kind === 'idle') return <div key={key} className="active-row is-quiet" role="status" data-research-slot={item.slot.index}>
+        <span className="active-row-art is-icon"><Icon name="pause" /></span><span className="active-row-name is-idle">Idle</span>
+        <span className="active-row-saved" data-paint="saved">{numbers.saved}</span></div>;
+      const { token, slot } = item;
+      const name = contentTitle(researchReadName(artwork, item.read), token, 'Technology name unavailable'), icon = artwork.get(token)?.icon ?? undefined;
+      const click = (event: MouseEvent<HTMLElement>) => open(item, event.clientX, event.clientY);
+      const content = (): TooltipContent | null => {
+        const at = latest.current ?? reply, hour = at.hour, current = at.slots.find(read => read.index === slot.index);
+        const shown = latest.inspect(slot.index);
+        if ((shown ? shown.token : current?.state.token) !== token || !current) return null;
+        const full = data.history.slots.find(held => held.index === slot.index) ?? slot;
+        const progress = shown ? shown.fraction === null ? null : { fraction: shown.fraction, hour: shown.hour }
+          : researchLatestProgress({ ...full, states: [current.state], progress: current.progress ? [current.progress] : [] }, current.state, hour);
+        const left = shown ? shown.left : slotNumbers(current, hour).left;
+        return { title: name, icon, rows: [
+          { label: 'Progress', value: progress ? `${Math.round(progress.fraction * 100)}% on ${researchDate(progress.hour)}` : 'Not recorded' },
+          { label: 'Days left', value: left === null ? 'Not recorded' : `${left}` },
+        ], note: left === null ? undefined : 'Days left is the game’s estimate at this hour’s research speed.' };
+      };
+      return <div key={key} className="active-row" data-research-slot={slot.index} tabIndex={0} aria-label={`${name}, researching`}
+        onPointerMove={event => tips.show(content, key, event.clientX, event.clientY)} onPointerLeave={untip}
+        onFocus={event => { const box = event.currentTarget.getBoundingClientRect(); tips.show(content, key, box.right, box.top); }} onBlur={untip}
+        onKeyDown={(event: KeyboardEvent<HTMLElement>) => {
+          if (event.key !== 'Enter') return;
+          event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); open(item, box.left + 40, box.bottom);
+        }}>
+        <span className="active-row-art is-open" onClick={click}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>
+        <span className="active-row-name is-open" onClick={click}>{name}</span>
+        <ProgressMeter value={numbers.fraction} state="live" label={`${name} progress`} />
+        <span className="active-row-percent" data-paint="percent">{numbers.percent}</span>
+        <span className="active-row-days" data-paint="days">{numbers.days}</span>
+      </div>;
+    };
+    const idle = rows.filter(item => item.kind === 'idle').length;
+    const unreadableTable = !!reply.missing && rows.every(item => item.kind === 'unavailable');
+    body = !failure && unreadableTable
+      ? <WidgetState kind="not-recorded" reason={reply.missing!} />
+      : !failure && !rows.length
+        ? <WidgetState kind="empty" message={`No research slots recorded at ${researchDate(reply.hour)}.`} />
+        : <section className="active-research" aria-label="Active research" ref={now.root}>
+            {failure && <WidgetState kind="error" failure={failure} onRetry={history.error ? history.retry : now.retry} />}
+            {!unreadableTable && rows.length > 0 && <div className="active-rows">
+              <p className="active-section">Researching<span>{researching.length}</span>{idle > 0 && <span className="is-idle">{idle} idle</span>}</p>
+              {rows.map(row)}
+            </div>}
+            {(unreadableTable || !rows.length) && (reply.missing
+              ? <WidgetState kind="not-recorded" scale="section" reason={reply.missing} />
+              : <WidgetState kind="empty" scale="section" message={`No research slots recorded at ${researchDate(reply.hour)}.`} />)}
+          </section>;
+  }
+  return <>{body}{popup}</>;
 }

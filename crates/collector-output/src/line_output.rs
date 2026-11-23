@@ -6,7 +6,7 @@ use crate::{
     output_hooks,
     output_log::{DrainCounters, Log, Reserved, Spill},
 };
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use replay_data::rows::OutputPurpose;
 use engine_production::{
     line_output_sites::CREDIT, line_output_sites::DELIVERY,
@@ -383,7 +383,7 @@ fn credit_entry(line: usize, speed: i64, count: i32, caller: usize, pending: Pen
             }
         }
     };
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     let country = engine_production::line_output_sites::producing_country(&memory, base, line).ok()?;
     let spending = producer
@@ -496,9 +496,9 @@ fn entry(slot: &Slot) -> Entry {
 }
 
 pub(crate) fn drain(output: &mut Vec<Entry>) -> Result<Drained, &'static str> {
-    drain_buffer(engine_native::walk::Buffer::Growing(output))
+    drain_buffer(engine_native_memory::walk::Buffer::Growing(output))
 }
-fn drain_buffer(output: engine_native::walk::Buffer<'_, Entry>) -> Result<Drained, &'static str> {
+fn drain_buffer(output: engine_native_memory::walk::Buffer<'_, Entry>) -> Result<Drained, &'static str> {
     let log = log();
     let unavailable = || {
         if native_retention_required() {
@@ -748,8 +748,8 @@ mod tests {
             country[engine_native::ccountry::ID / 8] = 5001;
             country[engine_native::ccountry::PRODUCTION_STATUS / 8] = status.as_ptr() as u64;
             status[engine_native::cproduction_status::COUNTRY / 8] = country.as_ptr() as u64;
-            line[0] = engine_native::cmilitary_production_line::VTABLE_RVA.0 as u64;
-            line[engine_native::cproduction_line::PRODUCTION_STATUS / 8] = status.as_ptr() as u64;
+            line[0] = engine_native_parts::cmilitary_production_line::VTABLE_RVA.0 as u64;
+            line[engine_native_parts::cproduction_line::PRODUCTION_STATUS / 8] = status.as_ptr() as u64;
             line[LINE_HANDLE / 8] = handle;
             line[LINE_VARIANT / 8] = owned_variant.as_ptr() as u64;
             line[LINE_ORGANISATION / 8] = mio;

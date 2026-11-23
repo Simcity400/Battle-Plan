@@ -3,7 +3,7 @@ use collector_hooks::hook::Hook;
 use engine_mutations::{
     template_mutations::DATA, template_mutations::MUTATIONS, template_mutations::Receiver,
 };
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     mem::ManuallyDrop,
     ops::Range,
@@ -98,7 +98,7 @@ impl Watches {
                 .checked_add(
                     engine_native::creferenced_division_template::UNIT_TYPE_OVERRIDE - DATA,
                 )
-                .and_then(|at| engine_native::read::<u32>(memory, at))
+                .and_then(|at| engine_native_memory::read::<u32>(memory, at))
                 == Some(value as u32);
         if unchanged {
             self.unchanged_unit_type_writes
@@ -414,7 +414,7 @@ fn selected_receiver(
         Receiver::Every => None,
         Receiver::OccupationGroup => first
             .checked_add(engine_mutations::template_mutations::OCCUPATION_PARENT)
-            .and_then(|at| engine_native::read::<u64>(memory, at))
+            .and_then(|at| engine_native_memory::read::<u64>(memory, at))
             .and_then(|at| usize::try_from(at).ok())
             .filter(|&at| at != 0),
         Receiver::ScopeCountry | Receiver::CommandCountry => (if kind == Receiver::CommandCountry {
@@ -422,7 +422,7 @@ fn selected_receiver(
         } else {
             second.checked_add(engine_mutations::template_mutations::EFFECT_SCOPE_COUNTRY)
         })
-        .and_then(|at| engine_native::read::<u32>(memory, at))
+        .and_then(|at| engine_native_memory::read::<u32>(memory, at))
         .and_then(|raw| engine_mutations::country_input_mutations::of_link(memory, base, raw))
         .map(|country| country as usize),
         _ => Some(receiver(kind, first)).filter(|&at| at != 0),
@@ -436,7 +436,7 @@ pub fn native_notification(
     second: usize,
 ) -> (Notification<'_>, Option<Notification<'static>>) {
     // SAFETY: all reads are guarded on the native calling thread.
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     notification(
         watches,
         &memory,
@@ -525,7 +525,7 @@ unsafe extern "system-unwind" fn set_template_unit_type(
         collector_timing::hook_timing::Family::TemplateChanges,
     );
     let running = ManuallyDrop::new(WATCHES.registry.running());
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let notification = ManuallyDrop::new(WATCHES.unit_type_notification(&memory, first, second));
     let original: NativeFunction =
         unsafe { std::mem::transmute(ORIGINAL[UNIT_TYPE_SITE].load(Ordering::Acquire)) };
@@ -550,11 +550,11 @@ unsafe extern "system-unwind" fn rebuild_template_ai_role(
         collector_timing::hook_timing::Family::TemplateChanges,
     );
     let running = ManuallyDrop::new(WATCHES.registry.running());
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let fields = first.checked_add(AI_ROLE - DATA);
     let read = || {
         fields
-            .and_then(|at| engine_native::read::<[u8; AI_ROLE_FALLBACK + 4 - AI_ROLE]>(&memory, at))
+            .and_then(|at| engine_native_memory::read::<[u8; AI_ROLE_FALLBACK + 4 - AI_ROLE]>(&memory, at))
     };
     let before = read();
     let original: NativeFunction =
@@ -636,20 +636,20 @@ unsafe extern "system-unwind" fn requisition_hq_from_army(
     let timing = collector_timing::hook_timing::enter(
         collector_timing::hook_timing::Family::TemplateChanges,
     );
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let state = || {
-        engine_native::read::<u64>(
+        engine_native_memory::read::<u64>(
             &memory,
-            first.wrapping_add(engine_native::template_hq_context::HOLDER),
+            first.wrapping_add(engine_native_land::template_hq_context::HOLDER),
         )
         .and_then(|holder| usize::try_from(holder).ok())
         .and_then(|holder| {
             if holder == 0 {
                 Some((0, 0))
             } else {
-                engine_native::read::<u8>(
+                engine_native_memory::read::<u8>(
                     &memory,
-                    holder.wrapping_add(engine_native::template_hq_context::REQUISITIONED),
+                    holder.wrapping_add(engine_native_land::template_hq_context::REQUISITIONED),
                 )
                 .map(|flag| (holder, flag))
             }
@@ -676,7 +676,7 @@ unsafe extern "system-unwind" fn rebuild_hq_requirements(
     let timing = collector_timing::hook_timing::enter(
         collector_timing::hook_timing::Family::TemplateChanges,
     );
-    let template = second.wrapping_sub(engine_native::template_hq_context::TEMPLATE_REQUIREMENTS);
+    let template = second.wrapping_sub(engine_native_land::template_hq_context::TEMPLATE_REQUIREMENTS);
     let running = ManuallyDrop::new(WATCHES.registry.running());
     let before = HqSource {
         source: second,
@@ -742,8 +742,8 @@ unsafe extern "system-unwind" fn distribute_hq_equipment(
     let original: NativeFunction =
         unsafe { std::mem::transmute(ORIGINAL[49].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(first, second, third, fourth) });
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    if equipment_delivered(fourth as i64, engine_native::read::<i64>(&memory, second)) {
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
+    if equipment_delivered(fourth as i64, engine_native_memory::read::<i64>(&memory, second)) {
         drop(WATCHES.notify(first, 49));
     }
     drop(ManuallyDrop::into_inner(running));
@@ -1223,7 +1223,8 @@ mod tests {
     #[test]
     fn scripted_template_additions_revoke_only_their_scope_countrys_templates() {
         use engine_mutations::template_mutations::EFFECT_SCOPE_COUNTRY;
-        use engine_native::{ccountry, cgame_state, memory::SliceMemory};
+        use engine_native::{ccountry, cgame_state};
+        use engine_native_memory::memory::SliceMemory;
         const START: usize = 0x1000_0000;
         let base = START - cgame_state::SINGLETON_RVA.0;
         let state = START + 0x100;

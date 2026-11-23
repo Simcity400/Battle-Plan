@@ -1,9 +1,9 @@
 use super::air::{array, pointer, slot};
 use super::*;
-use crate::{
-    cair_base, cair_wing, cair_wing_pool, ccountry, cfleet, corders_group, cstrategic_air,
-    cstrategic_air_manager, msvc_string, walk::Outcome,
-};
+use engine_native_air::{cair_base, cair_wing, cstrategic_air, cstrategic_air_manager};
+use engine_native_parts::cair_wing_pool;
+use engine_native::{ccountry, cfleet, corders_group};
+use engine_native_memory::{msvc_string, walk::Outcome};
 
 fn add(rows: &mut [usize; 12], index: usize, count: usize) -> Result<(), &'static str> {
     rows[index] = rows[index]
@@ -32,7 +32,7 @@ fn demand_inner(
 ) -> Result<[usize; 12], &'static str> {
     let countries = ccountry::Reader::new(memory, base, state)?;
     let mut rows = [0; 12];
-    let manager = field::<u64>(memory, state, crate::cgame_state::STRATEGIC_AIR_MANAGER)? as usize;
+    let manager = field::<u64>(memory, state, engine_native::cgame_state::STRATEGIC_AIR_MANAGER)? as usize;
     let owners = array(memory, manager, cstrategic_air_manager::COUNTRY_AIR, 8)?;
     let mut regions = Vec::new();
     for index in 1..countries.count() {
@@ -68,11 +68,11 @@ fn demand_inner(
                 let containers = array(memory, site, cair_base::COUNTRY_CONTAINERS, 8)?;
                 let entry = pointer(memory, containers, slot(memory, &countries, country.id)?)?;
                 if entry == 0
-                    || field::<i32>(memory, entry, crate::ccountry_air_container::POOLS_COUNT)? <= 0
+                    || field::<i32>(memory, entry, engine_native_air::ccountry_air_container::POOLS_COUNT)? <= 0
                 {
                     continue;
                 }
-                let pools = array(memory, entry, crate::ccountry_air_container::POOLS, 8)?;
+                let pools = array(memory, entry, engine_native_air::ccountry_air_container::POOLS, 8)?;
                 for index in 0..pools.count {
                     let pool = pointer(memory, pools, index)?;
                     let wings = array(memory, pool, cair_wing_pool::WINGS, 8)?;
@@ -83,7 +83,7 @@ fn demand_inner(
                         let region = field::<u64>(
                             memory,
                             wing,
-                            cair_wing::MISSION + crate::air_mission::REGION,
+                            cair_wing::MISSION + engine_native_air::air_mission::REGION,
                         )? as usize;
                         if region != 0 {
                             crate::allocation::reserve(&mut regions, 1)
@@ -107,7 +107,7 @@ fn demand_inner(
     regions.dedup();
     rows[7] = regions.len();
     for region in regions {
-        let count = field::<i32>(memory, region, crate::cstrategic_region::PROVINCES_COUNT)?;
+        let count = field::<i32>(memory, region, engine_native_parts::cstrategic_region::PROVINCES_COUNT)?;
         if count > 0 {
             add(
                 &mut rows,
@@ -142,7 +142,7 @@ fn demand_inner(
             add(
                 &mut rows,
                 11,
-                array(memory, root.pointer(), crate::carmy_group::MEMBER_DATA, 8)?.count as usize,
+                array(memory, root.pointer(), engine_native_parts::carmy_group::MEMBER_DATA, 8)?.count as usize,
             )?;
         }
     }

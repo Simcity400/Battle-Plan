@@ -1,6 +1,7 @@
 
-use crate::memory::{RecordField, RecordLayout, RecordSources};
-use crate::{Memory, allocation, read};
+use engine_native_memory::memory::{RecordField, RecordLayout, RecordSources};
+use engine_native_memory::{Memory, read};
+use engine_allocation as allocation;
 use engine_sites::Rva;
 
 pub const DIRECTIONAL_LEDGERS: [usize; 2] = [0x70, 0xe0];
@@ -257,10 +258,10 @@ pub fn walk_delivery_histories(
     mut visit: impl FnMut(usize, u32, DeliveryHistory) -> Result<(), &'static str>,
 ) -> Result<DeliverySeedWork, &'static str> {
     let matrix = diplomacy
-        .checked_add(crate::cdiplomacy_status::RELATIONS)
-        .and_then(|p| crate::cpdx_array::Array::read(memory, p, 8))
+        .checked_add(engine_native_parts::cdiplomacy_status_layout::RELATIONS)
+        .and_then(|p| engine_native_memory::cpdx_array::Array::read(memory, p, 8))
         .ok_or("war lend-lease relation matrix unreadable")?;
-    let expected_vtable = engine_sites::at(base, crate::crelation_status::VTABLE_RVA)
+    let expected_vtable = engine_sites::at(base, crate::crelation::status::VTABLE_RVA)
         .ok_or("war lend-lease vtable withheld")? as u64;
     let fields = [
         RecordField {
@@ -269,12 +270,12 @@ pub fn walk_delivery_histories(
             len: 8,
         },
         RecordField {
-            source_offset: crate::crelation_status::TARGET_COUNTRY,
+            source_offset: crate::crelation::status::TARGET_COUNTRY,
             destination_offset: 8,
             len: 4,
         },
         RecordField {
-            source_offset: crate::crelation_status::DIPLOMACY_STATUS,
+            source_offset: crate::crelation::status::DIPLOMACY_STATUS,
             destination_offset: 12,
             len: 8,
         },
@@ -350,7 +351,7 @@ pub fn walk_delivery_histories(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     #[test]
     fn participation_delivery_seed_walks_native_entries_once_and_zero_histories_allocate_nothing() {
@@ -361,19 +362,19 @@ mod tests {
         let mut word =
             |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
         word(
-            DIPLOMACY + crate::cdiplomacy_status::RELATIONS,
+            DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
             MATRIX as u64,
         );
         word(
-            DIPLOMACY + crate::cdiplomacy_status::RELATIONS + 8,
+            DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::RELATIONS + 8,
             7 | (7u64 << 32),
         );
         for (slot, status, target) in [(2, 0x1000, 22), (3, 0x2000, 33), (5, 0x3000, 55)] {
             word(MATRIX + slot * 8, status as u64);
-            word(status, crate::crelation_status::VTABLE_RVA.0 as u64);
-            word(status + crate::crelation_status::TARGET_COUNTRY, target);
+            word(status, crate::crelation::status::VTABLE_RVA.0 as u64);
+            word(status + crate::crelation::status::TARGET_COUNTRY, target);
             word(
-                status + crate::crelation_status::DIPLOMACY_STATUS,
+                status + crate::crelation::status::DIPLOMACY_STATUS,
                 DIPLOMACY as u64,
             );
             if slot != 3 {

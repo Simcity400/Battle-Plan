@@ -8,4 +8,4 @@ Terrain index zero denotes the null terrain. The land and lake bits serve separa
 
 The native definition ID is unsigned and its neighbour count and target province ID are signed. `TERRAIN_FLAGS` is a byte independent of the terrain object. `PIXEL_SPANS` holds run-length spans. The ID-taking constructor clears the centroid fields. The terrain database index is one-based except for the null object.
 
-[Province definitions](../../crates/engine-native/src/province_definition.rs) · [Adjacency records](../../crates/engine-native/src/province_neighbour.rs)
+[Province definitions](../../crates/engine-native/src/cprovince/definition.rs) · [Adjacency records](../../crates/engine-native-parts/src/province_neighbour.rs)

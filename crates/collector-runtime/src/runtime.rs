@@ -17,7 +17,9 @@ use collector_spool::spooling::HistoryReply;
 use collector_spool::spooling::Processor;
 use collector_workers::spool_phases::Phase;
 use engine_executable::build::hash_executable;
-use engine_native::{cgame_state, country_memory::SeedStatus, memory::LiveMemory, read};
+use engine_native::cgame_state;
+use engine_native_memory::{memory::LiveMemory, read};
+use engine_native_intelligence::country_memory::SeedStatus;
 use replay_data::identity::IdentityCodec;
 use replay_data::{codec::Decoder, identity::SessionStart};
 
@@ -574,7 +576,7 @@ fn run(
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     let memory = unsafe { LiveMemory::new() };
     let copy =
-        |address: usize, bytes: &mut [u8]| engine_native::Memory::copy(&memory, address, bytes);
+        |address: usize, bytes: &mut [u8]| engine_native_memory::Memory::copy(&memory, address, bytes);
     let image =
         engine_sites::Image::live(base, &copy).map_err(|_| "game executable headers unreadable")?;
     let located = engine_sites::install(engine_sites::Located::locate(
@@ -3764,7 +3766,7 @@ impl RegistryWatch {
 
     fn poll_reserved_visibility(
         &mut self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<Option<usize>, &'static str> {
         if self
@@ -3787,9 +3789,9 @@ impl RegistryWatch {
 
     fn poll_game_score(
         &mut self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
-    ) -> Option<io::Result<engine_native::game_score_inputs::ArenaSizing>> {
+    ) -> Option<io::Result<engine_native_air::game_score_inputs::ArenaSizing>> {
         if self
             .last_game_score
             .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
@@ -3806,7 +3808,7 @@ impl RegistryWatch {
 
     fn poll_combat_hints(
         &mut self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Option<CombatHints> {
         if self
@@ -3821,7 +3823,7 @@ impl RegistryWatch {
 
     fn poll_logistics(
         &mut self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
         now: impl Fn() -> Instant,
     ) -> io::Result<Option<usize>> {
@@ -3835,7 +3837,7 @@ impl RegistryWatch {
         collector_logistics::logistics_balance::prepare(memory, base).map(Some)
     }
 
-    fn poll_lines(&mut self, memory: &impl engine_native::Memory, base: usize) -> Option<usize> {
+    fn poll_lines(&mut self, memory: &impl engine_native_memory::Memory, base: usize) -> Option<usize> {
         if self
             .last_lines
             .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
@@ -3846,7 +3848,7 @@ impl RegistryWatch {
         collector_capture::country_scale::observe_production_output(memory, base)
     }
 
-    fn poll(&mut self, memory: &impl engine_native::Memory, base: usize) -> Option<(usize, usize)> {
+    fn poll(&mut self, memory: &impl engine_native_memory::Memory, base: usize) -> Option<(usize, usize)> {
         if self
             .last
             .is_some_and(|last| last.elapsed() < Self::INTERVAL)
@@ -3865,7 +3867,7 @@ impl RegistryWatch {
 
     fn poll_intel(
         &mut self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<Option<usize>, &'static str> {
         if self
@@ -3887,7 +3889,7 @@ impl RegistryWatch {
 
     fn poll_ace_names(
         &mut self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<Option<collector_air::sizing::AceNamesDemand>, &'static str> {
         if self
@@ -3908,7 +3910,7 @@ impl RegistryWatch {
 
     fn poll_air_wing_names(
         &mut self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<Option<usize>, &'static str> {
         if self
@@ -3929,7 +3931,7 @@ impl RegistryWatch {
 
     fn poll_railway_gun_names(
         &mut self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<Option<engine_railways::railway_gun_counter_inputs::NameDemand>, &'static str> {
         if self
@@ -3965,7 +3967,7 @@ impl RegistryWatch {
 
     fn poll_map(
         &mut self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<Option<collector_capture::country_scale::MapDemand>, &'static str> {
         if self
@@ -3980,7 +3982,7 @@ impl RegistryWatch {
 
     fn poll_presentation_census(
         &mut self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<Option<engine_native::carmy::PresentationDemand>, &'static str> {
         if self
@@ -4005,7 +4007,7 @@ impl RegistryWatch {
 
     fn poll_raids(
         &mut self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<Option<collector_capture::country_scale::RaidArenas>, &'static str> {
         if self
@@ -4037,7 +4039,7 @@ impl RegistryWatch {
 
     fn poll_characters(
         &mut self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<Option<collector_capture::country_scale::CharacterDemand>, &'static str> {
         if self
@@ -4070,7 +4072,7 @@ impl RegistryWatch {
 
     fn poll_saved_targets(
         &mut self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<Option<engine_scripts::saved_event_targets::Demand>, &'static str> {
         if self
@@ -4094,7 +4096,7 @@ impl RegistryWatch {
 
     fn poll_politics(
         &mut self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<Option<collector_capture::country_scale::PoliticsDemand>, &'static str> {
         if self
@@ -4113,13 +4115,13 @@ impl RegistryWatch {
     }
 }
 
-fn strategic_regions(memory: &impl engine_native::Memory, base: usize) -> usize {
+fn strategic_regions(memory: &impl engine_native_memory::Memory, base: usize) -> usize {
     engine_native::cgame_state::read_strategic_region_count(memory, base)
         .map_or(0, |count| count as usize)
 }
 
 struct CombatHints {
-    land: Option<engine_native::cland_combat::DetailDemand>,
+    land: Option<engine_native_land::land_combat_details::DetailDemand>,
     naval: Option<engine_naval_history::naval_combat_demand::Demand>,
     failures: [Option<&'static str>; 2],
 }
@@ -4169,7 +4171,7 @@ struct SpoolState {
 }
 
 impl CombatHints {
-    fn observe(memory: &impl engine_native::Memory, base: usize) -> Self {
+    fn observe(memory: &impl engine_native_memory::Memory, base: usize) -> Self {
         let land = collector_capture::country_scale::observe_land_details(memory, base);
         let naval = collector_capture::country_scale::observe_naval_details(memory, base);
         Self {
@@ -7433,11 +7435,11 @@ mod tests {
             // SAFETY: This is the runtime's frame pool for the current session.
             shared.frames()[returning].captured_mut()
         };
-        frame.wars_result = engine_native::walk::Outcome::Truncated {
+        frame.wars_result = engine_native_memory::walk::Outcome::Truncated {
             len: 0,
             unread_rows: wars as u32,
         };
-        frame.factions_result = engine_native::walk::Outcome::Truncated {
+        frame.factions_result = engine_native_memory::walk::Outcome::Truncated {
             len: 0,
             unread_rows: factions as u32,
         };
@@ -8200,7 +8202,7 @@ mod tests {
     #[derive(Default)]
     struct Registry(std::cell::Cell<u32>, std::cell::Cell<u32>);
 
-    impl engine_native::Memory for Registry {
+    impl engine_native_memory::Memory for Registry {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             const STATE: usize = 0x1000;
             let mut bytes = [0_u8; 0x400];
@@ -8234,7 +8236,7 @@ mod tests {
     #[test]
     fn logistics_owner_poll_does_no_native_reads_between_bounded_observations() {
         struct Reads(std::cell::Cell<usize>);
-        impl engine_native::Memory for Reads {
+        impl engine_native_memory::Memory for Reads {
             fn copy(&self, _: usize, _: &mut [u8]) -> bool {
                 self.0.set(self.0.get() + 1);
                 false
@@ -8301,9 +8303,8 @@ mod tests {
 
     #[test]
     fn land_detail_watch_presizes_growth_without_country_registry_changes() {
-        use engine_native::{
-            cland_combat as combat, cland_combatant as side, cprovince, cterrain_type,
-        };
+        use engine_native::{cland_combat as combat, cland_combatant as side, cprovince};
+        use engine_native_parts::cterrain_type;
 
         struct Combats(Vec<u8>);
         impl Combats {
@@ -8319,13 +8320,13 @@ mod tests {
                 self.put(at + 12, &count.to_le_bytes());
             }
         }
-        impl engine_native::Memory for Combats {
+        impl engine_native_memory::Memory for Combats {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 if address == cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                     output.copy_from_slice(&0x1000u64.to_le_bytes());
                     return true;
                 }
-                engine_native::memory::SliceMemory {
+                engine_native_memory::memory::SliceMemory {
                     base: 0x1000,
                     bytes: &self.0,
                 }
@@ -8462,7 +8463,7 @@ mod tests {
         let capacities = collector_capture::extended::Capacities::default();
         let mut applied = AppliedHints::default();
         let hints = CombatHints {
-            land: Some(engine_native::cland_combat::DetailDemand {
+            land: Some(engine_native_land::land_combat_details::DetailDemand {
                 rows: usize::MAX,
                 ..Default::default()
             }),
@@ -8494,7 +8495,7 @@ mod tests {
         assert!(capacities == collector_capture::extended::Capacities::default());
         let before = shared.pool_owned();
         let valid = CombatHints {
-            land: Some(engine_native::cland_combat::DetailDemand {
+            land: Some(engine_native_land::land_combat_details::DetailDemand {
                 rows: 600,
                 ..Default::default()
             }),
@@ -8540,7 +8541,7 @@ mod tests {
         let capacities = collector_capture::extended::Capacities::default();
         let mut applied = AppliedHints::default();
         let hints = CombatHints {
-            land: Some(engine_native::cland_combat::DetailDemand {
+            land: Some(engine_native_land::land_combat_details::DetailDemand {
                 rows: 600,
                 ..Default::default()
             }),
@@ -8633,7 +8634,7 @@ mod tests {
             )
         };
         let mut hints = CombatHints {
-            land: Some(engine_native::cland_combat::DetailDemand {
+            land: Some(engine_native_land::land_combat_details::DetailDemand {
                 rows: 600,
                 ..Default::default()
             }),
@@ -8718,7 +8719,8 @@ mod tests {
 
     #[test]
     fn raid_path_memo_growth_presizes_before_refresh() {
-        use engine_native::{Memory, craid_system};
+        use engine_native_memory::Memory;
+        use engine_native_air::craid_system;
         use engine_raid_inputs::raid_path_memo;
         use std::cell::Cell;
         struct Memo {
@@ -8828,7 +8830,8 @@ mod tests {
 
     #[test]
     fn racing_political_hint_counts_in_completed_status_without_a_session_warning() {
-        use engine_native::{Memory, ccountry};
+        use engine_native_memory::Memory;
+        use engine_native::ccountry;
         use std::cell::Cell;
 
         struct RacingHint {

@@ -62,7 +62,7 @@ struct Shared<'a, M: Memory> {
     memory: &'a M,
     base: usize,
     state: usize,
-    owner: ccountry::Country,
+    owner: engine_native_memory::country_identity::Country,
     countries: &'a ccountry::Reader<'a, M>,
     speed: Option<Result<i64, &'static str>>,
     penalty: Option<Result<Option<Penalty>, &'static str>>,
@@ -72,7 +72,7 @@ struct Shared<'a, M: Memory> {
     minimum: Option<Result<i64, &'static str>>,
     upper: Option<Result<i64, &'static str>>,
     scale: Option<Result<i64, &'static str>>,
-    raw: Option<Result<modifier_accumulator::Value, &'static str>>,
+    raw: Option<Result<engine_native_memory::modifier_cache::Value, &'static str>>,
     category: Option<Result<i64, &'static str>>,
     operands: Option<Result<modifier_definition::Operands, &'static str>>,
     cache: &'a mut SpeedCache,
@@ -146,7 +146,7 @@ impl SpeedCache {
                 let mut bytes = Vec::new();
                 let copied = bytes.try_reserve(len * 8).is_ok() && {
                     bytes.resize(len * 8, 0_u8);
-                    crate::read_slice(memory, regions.data, &mut bytes)
+                    engine_native_memory::read_slice(memory, regions.data, &mut bytes)
                 };
                 let copy = copied.then_some(bytes);
                 self.navies
@@ -238,7 +238,7 @@ impl<M: Memory> Shared<'_, M> {
         let enemies = self.enemies.get_or_insert_with(|| {
             let owner_intel = intel(memory, base, owner)?;
             let relations = diplomacy(memory, base, owner)?;
-            let root = at(relations, cdiplomacy_status::ENEMY_COUNTRIES)?;
+            let root = at(relations, engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES)?;
             let array = Array::read(memory, root, 4).ok_or("transport enemy roster invalid")?;
             let mut enemies = Vec::new();
             enemies
@@ -341,7 +341,7 @@ impl<M: Memory> Shared<'_, M> {
                 Ok(modifier_accumulator::lookup_effective_at(
                     memory,
                     base,
-                    at(owner.pointer, ccountry::MODIFIER_ACCUMULATOR)?,
+                    at(owner.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?,
                     REDUCTION_TOKEN,
                 )?
                 .effective)

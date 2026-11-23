@@ -8,9 +8,8 @@ use collector_primitives::{
 };
 use collector_projection::table_conversion::table;
 use engine_allocation::{advisory, copy_vec, owned_vec, reserve};
-use engine_native::{
-    Memory, carmy, cprovince, cprovince::KnownUnit, cprovince::UnitOrderRow, walk::Outcome,
-};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::{carmy, cprovince::{self, KnownUnit, UnitOrderRow}};
 use replay_data::{rows::ProvinceUnitOrderRow, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 pub const N: usize = 1;
@@ -1015,7 +1014,7 @@ pub mod owned_tests {
             }
         }
         let census = UnitInputs::fixture(seeds.clone(), Outcome::Rows { len: seeds.len() });
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let domain = Box::leak(Box::new(province_unit_changes::Domain::enabled(
             PROVINCES + 1,
         )));

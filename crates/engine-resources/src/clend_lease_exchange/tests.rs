@@ -8,7 +8,7 @@ const VARIANTS: usize = 0x60000;
 
 fn variant(f: &mut Fixture, id: u32) -> usize {
     let at = VARIANTS + id as usize * 0x20;
-    f.u64(at, cequipment_variant::VTABLE_RVA.0 as u64);
+    f.u64(at, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
     f.u32(at + 8, cequipment_variant::REFERENCE_TYPE);
     f.u32(at + 12, id);
     at

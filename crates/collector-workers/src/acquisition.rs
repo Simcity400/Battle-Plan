@@ -3252,8 +3252,9 @@ mod tests {
     #[test]
     fn panic_returns_partial_request_cancels_queued_jobs_and_does_not_retry() {
         use collector_memory::read_accounting::fixtures::ReadTrace;
-        use engine_native::{
-            Memory, memory::CountedMemory, memory::ReadCounts, memory::SliceMemory,
+        use engine_native_memory::{
+            Memory,
+            memory::{CountedMemory, ReadCounts, SliceMemory},
         };
         use replay_data::rows::TableId;
 

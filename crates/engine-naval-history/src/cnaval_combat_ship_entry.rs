@@ -1,11 +1,11 @@
 
 use engine_sites::Rva;
-use crate::capture_text::Value;
-use crate::{Memory, read};
+use engine_native_memory::capture_text::Value;
+use engine_native_memory::{Memory, read};
 
 pub struct HitBuffers<'a> {
-    pub air_hits: &'a mut Vec<crate::naval_combat_air_hit::Row>,
-    pub naval_hits: &'a mut Vec<crate::naval_combat_hit::Row>,
+    pub air_hits: &'a mut Vec<engine_native_naval::naval_combat_air_hit::Row>,
+    pub naval_hits: &'a mut Vec<engine_native_naval::naval_combat_hit::Row>,
     pub lengths: [usize; 2],
     pub required: [usize; 2],
 }
@@ -20,10 +20,10 @@ pub struct DetailsRow {
     pub strength_ratio: i64,
     pub pride: u8,
     pub is_convoy: u8,
-    pub name: crate::capture_text::Owned,
-    pub type_name: crate::capture_text::Owned,
-    pub sprite: crate::capture_text::Owned,
-    pub sunk_by: crate::capture_text::Owned,
+    pub name: engine_native_memory::capture_text::Owned,
+    pub type_name: engine_native_memory::capture_text::Owned,
+    pub sprite: engine_native_memory::capture_text::Owned,
+    pub sunk_by: engine_native_memory::capture_text::Owned,
     pub variant: u64,
     pub convoy_client: u64,
     pub convoy_index: i32,
@@ -46,12 +46,12 @@ pub fn capture_details(
     expected_handle: u64,
     buffers: &mut HitBuffers<'_>,
 ) -> Result<DetailsRow, &'static str> {
-    use crate::cnaval_combatant::field;
+    use engine_native::cnaval_combatant::field;
     if values(memory, base, pointer)?.0 != expected_handle {
         return Err("naval result copied ship handle mismatch");
     }
     let text = |offset| {
-        crate::capture_text::Owned::read(
+        engine_native_memory::capture_text::Owned::read(
             memory,
             pointer
                 .checked_add(offset)
@@ -97,10 +97,8 @@ pub(crate) fn capture_hits(
     offsets: [usize; 3],
     buffers: &mut HitBuffers<'_>,
 ) -> Result<HitSpans, &'static str> {
-    use crate::{
-        cfex_member::{EntryOutput, append_entries},
-        cpdx_array::Array,
-    };
+    use engine_native::cfex_member::{EntryOutput, append_entries};
+    use engine_native_memory::cpdx_array::Array;
     let mut counts = [0usize; 2];
     let mut arrays = [Array::default(); 3];
     for (index, (header, offset)) in arrays.iter_mut().zip(offsets).enumerate() {
@@ -122,8 +120,8 @@ pub(crate) fn capture_hits(
         8,
         EntryOutput::Owned(buffers.naval_hits),
         &mut buffers.lengths[1],
-        |memory, p| crate::naval_combat_hit::read(memory, base, p),
-        Some(&crate::naval_combat_hit::RECORD),
+        |memory, p| engine_native_naval::naval_combat_hit::read(memory, base, p),
+        Some(&engine_native_naval::naval_combat_hit::RECORD),
     )?;
     let mut air = [[0; 2]; 2];
     for (index, array) in arrays[1..].iter().copied().enumerate() {
@@ -133,8 +131,8 @@ pub(crate) fn capture_hits(
             8,
             EntryOutput::Owned(buffers.air_hits),
             &mut buffers.lengths[0],
-            |memory, p| crate::naval_combat_air_hit::read(memory, base, p),
-            Some(&crate::naval_combat_air_hit::RECORD),
+            |memory, p| engine_native_naval::naval_combat_air_hit::read(memory, base, p),
+            Some(&engine_native_naval::naval_combat_air_hit::RECORD),
         )?;
     }
     Ok((naval, air))
@@ -171,7 +169,7 @@ pub(crate) fn values(
 #[cfg(test)]
 mod detail_tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     use std::cell::{Cell, RefCell};
     const BASE: usize = 0x1_4000_0000;
     const ENTRY: usize = 0x100;
@@ -242,16 +240,16 @@ mod detail_tests {
             (0x808, 0x900),
             (0x820, 0x980),
             (0x828, 0x980),
-            (0x900, (BASE + crate::naval_combat_hit::VTABLE_RVA.0) as u64),
+            (0x900, (BASE + engine_native_naval::naval_combat_hit::VTABLE_RVA.0) as u64),
             (0x928, 15),
             (0x938, i64::MIN as u64),
             (0x940, i64::MAX as u64),
             (
                 0x980,
-                (BASE + crate::naval_combat_air_hit::VTABLE_RVA.0) as u64,
+                (BASE + engine_native_naval::naval_combat_air_hit::VTABLE_RVA.0) as u64,
             ),
             (0x988, 0xb00),
-            (0xb00, (BASE + crate::cequipment_variant::VTABLE_RVA.0) as u64),
+            (0xb00, (BASE + engine_native_parts::equipment_variant_identity::VTABLE_RVA.0) as u64),
             (0xb08, ID),
         ] {
             bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
@@ -366,16 +364,16 @@ mod detail_tests {
             for fault in (0..trace.len()).map(Some).chain([None]) {
                 let reference = Counted::new(&bytes, fault);
                 let mut reference_buffers = HitBuffers {
-                    air_hits: &mut vec![crate::naval_combat_air_hit::Row::default(); 8],
-                    naval_hits: &mut vec![crate::naval_combat_hit::Row::default(); 8],
+                    air_hits: &mut vec![engine_native_naval::naval_combat_air_hit::Row::default(); 8],
+                    naval_hits: &mut vec![engine_native_naval::naval_combat_hit::Row::default(); 8],
                     lengths: [0; 2],
                     required: [0; 2],
                 };
                 let expected = capture_details(&reference, BASE, ENTRY, ID, &mut reference_buffers);
                 let observed = Counted::new(&bytes, fault);
                 let mut actual = HitBuffers {
-                    air_hits: &mut vec![crate::naval_combat_air_hit::Row::default(); capacity],
-                    naval_hits: &mut vec![crate::naval_combat_hit::Row::default(); capacity],
+                    air_hits: &mut vec![engine_native_naval::naval_combat_air_hit::Row::default(); capacity],
+                    naval_hits: &mut vec![engine_native_naval::naval_combat_hit::Row::default(); capacity],
                     lengths: [0; 2],
                     required: [0; 2],
                 };
@@ -424,7 +422,7 @@ mod detail_tests {
 
     #[test]
     fn copied_air_preserves_variant_operands_and_first_fault_prefixes() {
-        use crate::{cequipment_variant, cnaval_combat_air_entry as air};
+                use crate::cnaval_combat_air_entry as air;
         const VARIANT: usize = 0x500;
         let mut bytes = vec![0; 0x1000];
         for (at, value) in [
@@ -432,7 +430,7 @@ mod detail_tests {
             (ENTRY + 8, VARIANT as u64),
             (ENTRY + 0x30, 3),
             (ENTRY + 0x38, 15),
-            (VARIANT, (BASE + cequipment_variant::VTABLE_RVA.0) as u64),
+            (VARIANT, (BASE + engine_native_parts::equipment_variant_identity::VTABLE_RVA.0) as u64),
             (VARIANT + 8, ID),
             (VARIANT + 0x2a0, i64::MIN as u64),
             (VARIANT + 0x2a8, i64::MAX as u64),
@@ -522,7 +520,7 @@ mod detail_tests {
                 assert_eq!(text.as_bytes(), vec![0xff; length]);
             }
             assert!(row.allocated_bytes() >= 4 * length);
-            assert!(crate::msvc_string::read_text::<256>(&memory, ENTRY + 0x40).is_none());
+            assert!(engine_native_memory::msvc_string::read_text::<256>(&memory, ENTRY + 0x40).is_none());
         }
     }
 }

@@ -1,4 +1,4 @@
-use engine_native::cair_base::DenseRefusal;
+use engine_native_air::cair_base::DenseRefusal;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static BASES: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];

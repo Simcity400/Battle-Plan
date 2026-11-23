@@ -1,9 +1,8 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, cpdx_array::Array, cprovince_railway_info as info, province_definition, read,
-    read_slice, walk::Buffer,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice, walk::Buffer};
+use crate::cprovince_railway_info as info;
+use engine_native::cprovince::definition as province_definition;
 
 type Input<T> = Result<T, &'static str>;
 
@@ -24,7 +23,7 @@ fn level_header(memory: &impl Memory, node: usize, definition: usize) -> Input<A
 
 pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Input<usize> {
     use super::{PROVINCE_INFO_TABLE, VTABLE_RVA};
-    use crate::{cgame_state, cprovince};
+    use engine_native::{cgame_state, cprovince};
     let word = |object: usize, offset: usize| {
         object
             .checked_add(offset)

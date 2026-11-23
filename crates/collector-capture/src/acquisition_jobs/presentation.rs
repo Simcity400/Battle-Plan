@@ -85,7 +85,7 @@ impl PresentationDispatch {
     pub(super) fn dispatch(
         &mut self,
         captured: &mut division_presentation::Captured,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         context: division_presentation::CaptureContext,
         inputs: &Option<
             engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>,

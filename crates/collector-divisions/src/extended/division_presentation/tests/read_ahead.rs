@@ -17,7 +17,7 @@ impl Memory for Source<'_> {
             out.fill(0xff);
             return false;
         }
-        engine_native::memory::SliceMemory {
+        engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: self.bytes,
         }
@@ -38,8 +38,8 @@ impl Memory for Reads<'_> {
     }
     fn copy_records(
         &self,
-        sources: engine_native::memory::RecordSources<'_>,
-        layout: &engine_native::memory::RecordLayout<'_>,
+        sources: engine_native_memory::memory::RecordSources<'_>,
+        layout: &engine_native_memory::memory::RecordLayout<'_>,
         out: &mut [u8],
     ) -> usize {
         if layout.stride() == cname_group_member::INPUT_SPAN {
@@ -133,13 +133,13 @@ fn batched_naming_persistent_faults_keep_serial_options_and_arenas() {
     ] {
         let batch = reads(&bytes, false, Some(pointer + offset), false);
         let serial = reads(&bytes, true, Some(pointer + offset), false);
-        let before = engine_native::batch_fallback::count(
-            engine_native::batch_fallback::Batch::DivisionNaming,
+        let before = engine_native_memory::batch_fallback::count(
+            engine_native_memory::batch_fallback::Batch::DivisionNaming,
         );
         let actual = capture(&batch, &seeds);
         assert_eq!(
-            engine_native::batch_fallback::count(
-                engine_native::batch_fallback::Batch::DivisionNaming
+            engine_native_memory::batch_fallback::count(
+                engine_native_memory::batch_fallback::Batch::DivisionNaming
             ) - before,
             1,
         );
@@ -153,10 +153,10 @@ fn batched_naming_one_shot_refuses_no_more_and_counts_fallback() {
     let batch = reads(&bytes, false, Some(at), true);
     let serial = reads(&bytes, true, Some(at), true);
     let before =
-        engine_native::batch_fallback::count(engine_native::batch_fallback::Batch::DivisionNaming);
+        engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::DivisionNaming);
     let actual = capture(&batch, &seeds);
     assert_eq!(
-        engine_native::batch_fallback::count(engine_native::batch_fallback::Batch::DivisionNaming)
+        engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::DivisionNaming)
             - before,
         1,
     );

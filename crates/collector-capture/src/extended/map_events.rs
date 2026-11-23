@@ -1,6 +1,6 @@
 use collector_map_events as map_events;
 use collector_projection::table_conversion::unavailable;
-use engine_native::walk::Outcome;
+use engine_native_memory::walk::Outcome;
 use replay_data::{rows::TableId, rows::TableRows};
 use replay_frame::{frame::TableInput, frame::TableView};
 
