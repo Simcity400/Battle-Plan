@@ -8,4 +8,4 @@ An undecided roster never stands. It retains the held items under named part and
 
 A written base can adopt the current hour's country table when every relevant flag input agrees. The comparison runs once per previously held table and adoption lets subsequent updates compare table identity. Kept viewport layout uses a resource stamp covering asset, template, localisation and country identities, viewport and GUI scale, and decoded art revision.
 
-[Base update and frame requests](../../crates/viewer-counters/src/map/counters/naval_windows.rs) · [Settling and failure fixtures](../../crates/viewer-counters/src/map/counters/naval_windows/tests.rs)
+[Base update and frame requests](../../crates/viewer-counters-naval/src/naval_windows.rs) · [Settling and failure fixtures](../../crates/viewer-counters-naval/src/naval_windows/tests.rs)
