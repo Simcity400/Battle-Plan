@@ -36,6 +36,7 @@ pub trait Hosted: Send + Sync {
         Err("This playhead shows no panels".into())
     }
     fn unpanel(&self, _id: u32) {}
+    fn serve(&self, session: u64) { self.follow().serve(session); }
 }
 
 pub trait Playheads: Send + Sync {
@@ -63,6 +64,11 @@ impl Followed {
     }
 }
 
+enum Made {
+    Panel(Box<dyn Panel>),
+    Query(Query),
+}
+
 pub type PanelOf<'a> = dyn FnOnce(&Value) -> Option<Result<Box<dyn Panel>, String>> + 'a;
 
 pub struct Registry {
@@ -73,6 +79,7 @@ pub struct Registry {
 #[derive(Default)]
 struct Registered {
     session: Option<String>,
+    epoch: u64,
     held: HashMap<u32, Followed>,
 }
 
@@ -117,7 +124,6 @@ impl Registry {
         head: Box<HeadOf<'_>>) -> io::Result<Value> {
         match product {
             "follow" => {
-                if !lock(&self.followed).current(params) { return Ok(unavailable(RETIRED)); }
                 let id = id(params)?;
                 let branch = branch(params)?;
                 let clock = clock(params)?;
@@ -130,15 +136,11 @@ impl Registry {
                     Err(reason) => return Ok(unavailable(reason)),
                 };
                 let asked = params.get("query").unwrap_or(&Value::Null);
-                let is_panel = asked.get("panel").is_some();
-                if is_panel {
-                    let shown = match panel(asked) {
+                let made = if asked.get("panel").is_some() {
+                    match panel(asked) {
                         None => return Ok(unavailable(format!("No panel {}", asked.get("panel").map(Value::to_string).unwrap_or_default()))),
                         Some(Err(reason)) => return Ok(unavailable(reason)),
-                        Some(Ok(shown)) => shown,
-                    };
-                    if let Err(reason) = host.panel(id, shown, lanes) {
-                        return Ok(unavailable(reason));
+                        Some(Ok(shown)) => Made::Panel(shown),
                     }
                 } else {
                     let query: Query = match head(asked) {
@@ -152,22 +154,20 @@ impl Registry {
                     if let Some(reason) = (!matches!(query, Query::Head(_))).then(|| host.lacks(query.table())).flatten() {
                         return Ok(unavailable(reason));
                     }
-                    if let Err(error) = host.follow().follow(id, query) {
-                        return Ok(unavailable(error.to_string()));
-                    }
-                }
-                {
-                    let mut followed = lock(&self.followed);
-                    let made = Followed { path: path.to_path_buf(), branch, clock, host: Arc::clone(&host), panel: is_panel };
-                    if !followed.current(params) {
-                        drop(followed);
-                        made.release(id)?;
-                        return Ok(unavailable(RETIRED));
-                    }
-                    let old = followed.held.insert(id, made);
-                    if let Some(old) = old && (!Arc::ptr_eq(&old.host, &host) || old.panel != is_panel) {
-                        old.release(id)?;
-                    }
+                    Made::Query(query)
+                };
+                let mut followed = lock(&self.followed);
+                if !followed.current(params) { return Ok(unavailable(RETIRED)); }
+                host.serve(followed.epoch);
+                let is_panel = matches!(made, Made::Panel(_));
+                let registered = match made {
+                    Made::Panel(shown) => host.panel(id, shown, lanes),
+                    Made::Query(query) => host.follow().follow(id, query).map_err(|error| error.to_string()),
+                };
+                if let Err(reason) = registered { return Ok(unavailable(reason)); }
+                let old = followed.held.insert(id, Followed { path: path.to_path_buf(), branch, clock, host: Arc::clone(&host), panel: is_panel });
+                if let Some(old) = old && (!Arc::ptr_eq(&old.host, &host) || old.panel != is_panel) {
+                    old.release(id)?;
                 }
                 Ok(json!({"available":true, "route":host.follow().route()}))
             }
@@ -194,9 +194,10 @@ impl Registry {
                     speed: number("speed")?,
                     sought: params.get("sought").and_then(Value::as_bool).unwrap_or(false),
                 };
-                let host = lock(&self.followed).held.values().find(|held| held.path == path && held.branch == branch && held.clock == clock).map(|held| Arc::clone(&held.host));
-                let Some(host) = host else { return Ok(json!({"available":false})); };
-                host.anchor(anchor);
+                let followed = lock(&self.followed);
+                if !followed.current(params) { return Ok(unavailable(RETIRED)); }
+                let Some(held) = followed.held.values().find(|held| held.path == path && held.branch == branch && held.clock == clock) else { return Ok(json!({"available":false})); };
+                held.host.anchor(anchor);
                 Ok(json!({"available":true}))
             }
             "follow-close" => {
@@ -212,15 +213,15 @@ impl Registry {
     }
 
     pub fn restart(&self, session: &str) -> u64 {
-        let gone: Vec<(u32, Followed)> = {
-            let mut followed = lock(&self.followed);
-            followed.session = Some(session.to_owned());
-            followed.held.drain().collect()
-        };
-        for (id, held) in gone {
+        let mut followed = lock(&self.followed);
+        followed.session = Some(session.to_owned());
+        followed.epoch = self.playheads.as_ref().map_or(0, |playheads| playheads.restart());
+        let epoch = followed.epoch;
+        for (id, held) in followed.held.drain() {
             let _ = held.release(id);
+            held.host.serve(epoch);
         }
-        self.playheads.as_ref().map_or(0, |playheads| playheads.restart())
+        epoch
     }
 
     pub fn close(&self, path: &Path) {

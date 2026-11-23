@@ -18,6 +18,7 @@ export function inputPictures(frames, visibility, records, pinWidget) {
   const lanes = new Set(events.filter(r => r.t === 'workerFrame' && r.at >= frames[0] && r.at <= frames.at(-1)).map(r => r.lane ?? 0));
   const hasWorkerFrames = lanes.size > 0, applied = new Set();
   const settledBeforeSeek = new Set(), judged = new Set();
+  let heldAtPause = new Map();
   let i = 0, v = 0, anchor, shown = [], initial = null, workerApplied = !hasWorkerFrames,
     checked = 0, future = 0, pending = 0, wrongSeek = 0, stale = 0, lost = 0;
   for (const at of frames) {
@@ -27,6 +28,7 @@ export function inputPictures(frames, visibility, records, pinWidget) {
       if (r.t === 'tick') {
         const pause = !r.playing && (!anchor || anchor.playing || anchor.seek !== r.seek || Math.floor(anchor.hour) !== Math.floor(r.hour));
         const newSeek = anchor && Number.isFinite(anchor.seek) && Number.isFinite(r.seek) && anchor.seek !== r.seek;
+        if (pause) heldAtPause = new Map([...pictures].map(([id, picture]) => [id, picture.entry]));
         if (hasWorkerFrames && pause) {
           if (newSeek) for (const [id, state] of states) if (state.settled) settledBeforeSeek.add(id);
           workerApplied = false; applied.clear(); states.clear();
@@ -59,7 +61,7 @@ export function inputPictures(frames, visibility, records, pinWidget) {
       const fixed = pin != null || !anchor.playing;
       const key = [anchor.seek, pin, fixed ? target : 'playing'].join('/');
       const previous = states.get(id);
-      const state = previous?.key === key ? previous : { key, pin, fixed, settled: false, invalid: false, reportedInvalid: false, held: r?.entry };
+      const state = previous?.key === key ? previous : { key, pin, fixed, settled: false, invalid: false, reportedInvalid: false, held: anchor.playing ? undefined : heldAtPause.get(id) };
       states.set(id, state);
       const ink = Number.isFinite(r?.hour);
       if (ink) {

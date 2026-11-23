@@ -141,6 +141,7 @@ struct State {
     credit: usize,
     session: u64,
     heads: std::collections::HashMap<u32, (u32, i32)>,
+    admitted: std::collections::HashMap<u32, u32>,
     next: u32,
     stopped: bool,
     failed: Option<String>,
@@ -163,7 +164,7 @@ fn lock(held: &Mutex<State>) -> MutexGuard<'_, State> {
 
 impl State {
     fn new(budget: std::sync::Arc<playhead::ByteBudget>) -> Self {
-        Self { charge: budget.charge(), queue: VecDeque::new(), bytes: 0, sent: 0, released: 0, credit: budget.limit() / 2, session: 0, heads: std::collections::HashMap::new(), next: 0, stopped: false, failed: None, counters: PushCounters::default() }
+        Self { charge: budget.charge(), queue: VecDeque::new(), bytes: 0, sent: 0, released: 0, credit: budget.limit() / 2, session: 0, heads: std::collections::HashMap::new(), admitted: std::collections::HashMap::new(), next: 0, stopped: false, failed: None, counters: PushCounters::default() }
     }
 
     fn passed(&self, stream: Stream) -> bool {
@@ -293,8 +294,13 @@ impl Push {
     }
 
     pub fn offer_kind(&self, kind: u8, bytes: Vec<u8>) {
+        let session = self.session();
+        self.offer_from(session, kind, bytes);
+    }
+
+    pub fn offer_from(&self, session: u64, kind: u8, bytes: Vec<u8>) {
         let mut state = lock(&self.state);
-        if state.stopped || state.failed.is_some() {
+        if state.stopped || state.failed.is_some() || session != state.session {
             return;
         }
         let sequence = state.next;
@@ -302,9 +308,11 @@ impl Push {
         state.counters.offered += 1;
         let stream = Stream::of(kind, &bytes);
         if let Some((route, stamp)) = stream.version() {
-            if state.queue.iter().any(|q| q.stream.version().is_some_and(|(r, held)| r == route && held.wrapping_sub(stamp) as i32 > 0)) {
+            let latest = *state.admitted.entry(route).or_insert(stamp);
+            if latest.wrapping_sub(stamp) as i32 > 0 {
                 return;
             }
+            state.admitted.insert(route, stamp);
             let mut removed = 0;
             state.queue.retain(|q| {
                 let keep = q.stream.version().is_none_or(|(r, old)| r != route || stamp.wrapping_sub(old) as i32 <= 0);
@@ -351,6 +359,7 @@ impl Push {
         state.bytes = 0;
         state.failed = None;
         state.heads.clear();
+        state.admitted.clear();
         let session = state.session;
         state.settle();
         drop(state);

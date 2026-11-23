@@ -1648,3 +1648,42 @@ fn review_7_e_native_work_is_bound_to_its_session_and_seek() {
     push.offer(small);
     assert!(push.failed().is_none() && push.try_take().is_some(), "a new page after an overflow plays again, with its drain still taking messages");
 }
+
+#[test]
+fn review_8_one_session_token_binds_every_page_command_and_every_packet() {
+    use crate::push::{FOLLOW, Push};
+    let held = paper();
+    let registry = crate::registry::Registry::new(Some(Arc::new(Papers(BTreeMap::from([("a".to_owned(), Arc::clone(&held))])))));
+    let path = std::path::Path::new("a");
+    registry.restart("page 1");
+    let mut asked = follow_request(1, "country-measure", "politicalPower");
+    asked["session"] = "page 1".into();
+    assert_eq!(registry.answer(path, "follow", &asked, |_| Ok(nobody()), Box::new(|_| None)).unwrap()["available"], true);
+    registry.restart("page 2");
+    let clock = |session: &str| registry.answer(path, "follow-clock", &serde_json::json!({ "branchId": "1", "clock": 0, "frameRate": 60.0, "seek": 1, "hour": 5.0, "speed": 1.0, "session": session }),
+        |_| Ok(nobody()), Box::new(|_| None)).unwrap();
+    asked["session"] = "page 2".into();
+    asked["id"] = 2.into();
+    registry.answer(path, "follow", &asked, |_| Ok(nobody()), Box::new(|_| None)).unwrap();
+    assert_eq!(clock("page 1")["reason"], "This page was replaced by a newer one; its follows ended with it", "a retired page's clock never anchors the new page's host");
+    assert!(held.anchors.lock().unwrap().is_empty());
+    assert_eq!(clock("page 2")["available"], true);
+
+    let push = Push::default();
+    let old = push.session();
+    push.restart();
+    push.offer_from(old, FOLLOW, at_seek(0, 0, 5, 1));
+    assert!(push.try_take().is_none(), "work a retired session started is never sent to the new page");
+    push.offer(at_seek(0, 2, 10, 2));
+    assert!(push.try_take().is_some());
+    push.offer(at_seek(0, 1, 11, 3));
+    assert!(push.try_take().is_none(), "an older seek stays retired after the newer seek's packet has drained");
+
+    let pages = record(quiet);
+    let mut harness = harness(&pages);
+    harness.follow.serve(4);
+    harness.follow.follow(6, keys(&[100], &[1])).unwrap();
+    harness.seek(0);
+    let played = harness.play(48);
+    assert!(!played.is_empty() && played.iter().all(|played| played.stats.session == 4), "each step names the session its subscriptions were registered in");
+}

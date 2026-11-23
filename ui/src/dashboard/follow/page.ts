@@ -99,8 +99,9 @@ interface RouteState { reset: number; command: number; failed: { seek: number; r
 
 export interface RebindChange { pin?: number | null; offset?: number; subscription?: boolean; bounds?: readonly [number, number] | null }
 
+const STRUCTURAL = /^(model|shape|refused):|^(rows|failed)$/;
 const structureOf = (content: Readonly<Record<string, string>>) => Object.entries(content)
-  .filter(([key]) => key !== 'hour' && !key.startsWith('live:') && !key.startsWith('texts:') && !/^\d+$/.test(key)).map(([key, id]) => `${key}=${id}`).join('|');
+  .filter(([key]) => STRUCTURAL.test(key)).map(([key, id]) => `${key}=${id}`).join('|');
 
 const sameContent = (a: Readonly<Record<string, string>>, b: Readonly<Record<string, string>>) => {
   const keys = Object.keys(a).filter(key => key !== 'hour');
@@ -300,7 +301,7 @@ export class Page<B extends Bitmap = Bitmap> {
       if (part === SAME ? widget.content[k] !== entry.content[k] : !part || part.width === 0) return 'kept content';
     }
     for (const [key, value] of Object.entries(entry.fields)) if (value === SAME && (!shown || widget.content[key] !== entry.content[key])) return 'kept content';
-    if (!this.playing && shown && at > entry.c && entry.binding === shown.binding && !sameContent(entry.content, widget.content)) return 'uncovered';
+    if (!this.playing && shown && at > entry.c && !sameContent(entry.content, widget.content)) return 'uncovered';
     return null;
   }
 

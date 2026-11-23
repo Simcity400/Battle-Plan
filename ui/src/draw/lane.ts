@@ -173,7 +173,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const was = this.widgets.get(widget);
     this.widgets.set(widget, { id: widget, order: was?.order ?? this.nextOrder++, subs: [...subs], view, model,
       binding: was?.binding ?? { generation: 1, surfaces: [], offset: 0, pin: null },
-      installed: null, inflight: null, sent: {}, motion: false, inspect: was?.inspect ?? null, start: null, state: was?.state ?? new Map(), cost: was?.cost ?? 0.1,
+      installed: was?.installed ?? null, inflight: null, sent: {}, motion: false, inspect: was?.inspect ?? null, start: null, state: was?.state ?? new Map(), cost: was?.cost ?? 0.1,
       served: was?.served ?? 0, halted: null, parked: null });
     this.wake();
   }
@@ -380,7 +380,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const count = data.getUint32(12, true);
     if (order === -1) { this.freed += recordsCharge(bytes); return; }
-    if (order === 1) { this.early.push({ native: message.route, seek: message.seek, bytes }); return; }
+    if (order === 1 || order === null && (message.reset || this.early.some(item => item.native === message.route))) { this.early.push({ native: message.route, seek: message.seek, bytes }); return; }
     if (message.reset) {
       this.resets.set(message.route, (this.resets.get(message.route) ?? 0) + 1);
       this.drop(message.route);
@@ -596,6 +596,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         mode = painted.mode ?? 'picture'; reason = painted.reason;
         const refusals = selected.pictures.map(refusalOf);
         if (mode === 'picture' && refusals.length && refusals.every(refusal => refusal !== null)) { mode = 'refused'; reason = refusals[0]!; }
+        else if (mode === 'picture' && refusals.some(refusal => refusal !== null))
+          painted = { ...painted, fields: { ...painted.fields, ...Object.fromEntries(refusals.flatMap((refusal, at) => refusal === null ? [] : [[`refused:${widget.subs[at]}`, { content: refusal, value: refusal }]])) } };
       } catch (error) {
         painted = { surfaces: [], fields: {}, motion: false };
         mode = 'failed'; reason = 'drawing failed: ' + (error instanceof Error ? error.message : String(error));

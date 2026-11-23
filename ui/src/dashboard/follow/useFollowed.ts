@@ -111,6 +111,11 @@ export function readingOf(view: WidgetView | null | undefined): Reading {
   return { state: 'covered', hour: view.painted ?? view.h!, dim: view.dim };
 }
 
+export function componentReading(view: WidgetView | null | undefined, sub: number | undefined): Reading {
+  const refused = sub === undefined || view?.mode !== 'picture' ? undefined : view.fields?.[`refused:${sub}`];
+  return typeof refused === 'string' ? { state: 'refused', reason: refused } : readingOf(view);
+}
+
 export function joinReadings(readings: readonly (Reading | null)[]): Reading {
   const held = readings.filter((reading): reading is Reading => reading !== null);
   return held.find(reading => reading.state === 'refused') ?? held.find(reading => reading.state === 'outside') ?? held.find(reading => reading.state === 'pending')
@@ -134,6 +139,25 @@ export function useInstalled(pipeline: Pipeline | null, widget: number | null): 
     return held.current.view;
   };
   return useSyncExternalStore(subscribe, read, read);
+}
+
+export function datedStore(pipeline: Pipeline | null, widget: number | null) {
+  return {
+    subscribe: (changed: () => void) => {
+      if (widget === null || !pipeline) return () => {};
+      const installs = pipeline.onInstall(widget, changed), dates = pipeline.onDate(widget, changed);
+      return () => { installs(); dates(); };
+    },
+    read: (): number | null => {
+      const view = widget === null || !pipeline ? null : pipeline.view(widget);
+      return view?.mode === 'picture' ? view.painted ?? view.h ?? null : null;
+    },
+  };
+}
+
+export function useInstalledDate(pipeline: Pipeline | null, widget: number | null): number | null {
+  const store = useMemo(() => datedStore(pipeline, widget), [pipeline, widget]);
+  return useSyncExternalStore(store.subscribe, store.read, store.read);
 }
 
 const panels = new WeakMap<object, FollowedPanel>();

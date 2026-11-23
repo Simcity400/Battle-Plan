@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { inProcess, NATIVE } from './inProcess.fixture.ts';
-import { joinReadings, readingOf } from './useFollowed.ts';
+import { datedStore, joinReadings, readingOf } from './useFollowed.ts';
 import { message } from './messages.fixture.ts';
 import type { PageSurface } from './page.ts';
 import type { LaneView } from '../../draw/lane';
@@ -214,10 +214,71 @@ test('review 7 F: a pinned placement that shows an asked answer stays sampled wi
   try {
     await capturePictures(true);
     const id = pipeline.acquire('pinned|0', { offset: 0, pin: 40 });
-    pipeline.answer(id, { hour: 40, rows: () => [{ row: 'a', key: 'a', value: '7' }] });
+    pipeline.answer(id, -1000, { hour: 40, rows: () => [{ row: 'a', key: 'a', value: '7' }] });
     clock.seek(50);
-    const records = await capturePictures(false) as { t: string; placement?: number; hour?: number | null; fixedHour?: number; mode?: string; rows?: unknown[] }[];
+    const records = await capturePictures(false) as { t: string; placement?: number; owner?: number; surface?: string; hour?: number | null; fixedHour?: number; mode?: string; rows?: unknown[] }[];
     const sampled = records.filter(record => record.t === 'picture' && record.placement === id);
     assert.ok(sampled.length > 0 && sampled.every(record => record.hour === 40 && record.fixedHour === 40 && record.mode === 'picture' && record.rows?.length === 1), JSON.stringify(sampled.slice(-2)));
+
+    await capturePictures(true);
+    const table = pipeline.acquire('table|0', { offset: 0, pin: 40, view: 'table' });
+    pipeline.audit(table, -1, () => [{ row: 'GER', key: 'GER', value: '1' }]);
+    pipeline.answer(table, -1001, { hour: 40, rows: () => [{ row: 'x', key: 'x', value: '1' }] });
+    pipeline.answer(table, -1002, { hour: 40, rows: () => [{ row: 'y', key: 'y', value: '2' }] });
+    pipeline.answer(table, -1001, null);
+    const owned = (await capturePictures(false) as typeof records).filter(record => record.t === 'picture' && record.placement === table);
+    const last = owned.slice(-2);
+    assert.deepEqual(last.map(record => [record.owner, record.surface]).sort(), [[-1, 'table'], [-1002, 'table']],
+      'review 8 5: a changed pinned answer is sampled at once, each component under its own owner and the active renderer, and only the departing one is removed');
+  } finally { close(); }
+});
+
+test('review 8 1: every page command carries its session, and a clock command queued before the last follower left never reaches the route it rejoins', async () => {
+  let open: (() => void) | null = null;
+  const held = new Promise<void>(resolve => { open = resolve; });
+  let gated = true;
+  const { pipeline, clock, source, asked, settle, close } = inProcess({ session: 'page-2', gate: product => product === 'follow-clock' && gated ? held : undefined });
+  try {
+    const query = { product: 'series-state' };
+    const first = pipeline.acquire('widget|0', { offset: 0, pin: null });
+    const sub = pipeline.subscribe(first, {}, source, '1', 0, query, 'followed')!;
+    clock.seek(10);
+    await settle(() => pipeline.status(sub).status === 'followed' && asked.some(ask => ask.product === 'follow-clock'));
+    clock.step(1);
+    pipeline.drop('widget|0');
+    const again = pipeline.acquire('widget|0', { offset: 0, pin: null });
+    const back = pipeline.subscribe(again, {}, source, '1', 0, query, 'followed')!;
+    await settle(() => pipeline.status(back).status === 'followed');
+    gated = false;
+    open!();
+    await settle(() => false, 20);
+    const clocks = asked.filter(ask => ask.product === 'follow-clock');
+    assert.equal(clocks.length, 2, 'the first command and the rejoined route\'s own; the one queued for the left route is dropped');
+    assert.ok(asked.every(ask => ask.params.session === 'page-2'), 'follow, unfollow and follow-clock all name the page session');
+  } finally { close(); }
+});
+
+test('review 8 3: a numeric update keeps the structure React reads, while date readers see each painted hour', async () => {
+  const { pipeline, clock, send, source, settle, close } = inProcess();
+  try {
+    const id = pipeline.acquire('widget|0', { offset: 0, pin: null });
+    const sub = pipeline.subscribe(id, {}, source, '1', 0, { product: 'series-state' }, 'followed')!;
+    clock.seek(10);
+    await settle(() => pipeline.status(sub).status === 'followed');
+    const seek = clock.getSnapshot().seekSequence;
+    send(message(10, [{ id: sub, answer: { keys: [1n], columns: 1, values: [7n] } }], false, NATIVE, seek));
+    assert.ok(await settle(() => pipeline.view(id)?.mode === 'picture'));
+    const structure = pipeline.view(id)!.structure, dated = datedStore(pipeline, id);
+    let told = 0;
+    const stop = dated.subscribe(() => told++);
+    assert.equal(dated.read(), 10);
+    for (let at = 0; at < 6; at++) clock.step(1);
+    send(message(16, [{ id: sub, answer: { keys: [1n], columns: 1, values: [8n] } }], false, NATIVE, seek));
+    assert.ok(await settle(() => dated.read() === 16), String(dated.read()));
+    assert.ok(told > 0, 'a date reader hears the later paint hour');
+    assert.equal(pipeline.view(id)!.structure, structure, 'the value change keeps the structure React commits on');
+    send(message(16, [{ id: sub, answer: { keys: [1n, 2n], columns: 1, values: [8n, 9n] } }], false, NATIVE, seek));
+    assert.ok(await settle(() => pipeline.view(id)!.structure !== structure), 'a new row is a new structure');
+    stop();
   } finally { close(); }
 });

@@ -121,12 +121,14 @@ export class Pipeline {
     else { owners?.delete(owner); if (owners && !owners.size) this.audits.delete(id); }
   }
 
-  private readonly answered = new Map<number, { hour: number; entry: number; rows: () => readonly AuditRow[] | undefined }>();
+  private readonly answered = new Map<number, Map<number, { hour: number; entry: number; rows: () => readonly AuditRow[] | undefined }>>();
   private answers = 0;
 
-  answer(id: number, shown: { hour: number; rows: () => readonly AuditRow[] | undefined } | null) {
-    if (shown) this.answered.set(id, { ...shown, entry: -++this.answers });
-    else this.answered.delete(id);
+  answer(id: number, owner: number, shown: { hour: number; rows: () => readonly AuditRow[] | undefined } | null) {
+    let owners = this.answered.get(id);
+    if (shown) { if (!owners) this.answered.set(id, owners = new Map()); owners.set(owner, { ...shown, entry: -++this.answers }); }
+    else { owners?.delete(owner); if (owners && !owners.size) this.answered.delete(id); }
+    if (auditing()) this.sample(this.clock.getSnapshot().seekSequence);
   }
 
   private sample(seek: number) {
@@ -135,21 +137,21 @@ export class Pipeline {
       const view = this.page.view(held.id), widget = this.widgets.get(held.id), shown = this.page.widgets.get(held.id);
       if (!widget || !shown) continue;
       const offset = shown.offset, clock = (hour: number) => hour - offset;
-      const answer = this.answered.get(held.id);
-      if (answer) {
+      const name = key.includes('|') ? key.slice(0, key.lastIndexOf('|')) : key, surface = widget.view === 'table' || widget.view === 'race' ? widget.view : 'page';
+      const answers = [...this.answered.get(held.id) ?? []];
+      for (const [owner, answer] of answers) {
         const hour = clock(answer.hour), rows = answer.rows();
-        recordPicture({ t: 'picture', at, shownAt: at, seek, widget: key.includes('|') ? key.slice(0, key.lastIndexOf('|')) : key,
-          surface: 'page', placement: held.id, owner: 0, renderer: 'page', head: clock(view.target), hour, offset, fixedHour: hour,
+        recordPicture({ t: 'picture', at, shownAt: at, seek, widget: name, surface, placement: held.id, owner, renderer: 'page', head: clock(view.target), hour, offset, fixedHour: hour,
           since: hour, through: hour, eligibleHour: hour, entry: answer.entry, parts: [], drawMs: 0, ...rows ? { rows } : {},
           mode: 'picture', dim: false, reset: 0, binding: shown.binding, inspect: shown.inspect, tooltip: false });
-        continue;
       }
       const hour = view.mode === 'picture' && view.through !== undefined ? clock(view.through) : null;
       const owners = [...this.audits.get(held.id) ?? []];
+      if (!owners.length && answers.length) continue;
       for (const [owner, audit] of owners.length ? owners : [[0, undefined] as const]) {
       const rows = view.mode === 'picture' && view.fields ? audit?.(view.fields) : undefined;
-      recordPicture({ t: 'picture', at, shownAt: at, seek, widget: key.includes('|') ? key.slice(0, key.lastIndexOf('|')) : key,
-        surface: widget.view === 'table' || widget.view === 'race' ? widget.view : 'page', placement: held.id, owner, renderer: 'page',
+      recordPicture({ t: 'picture', at, shownAt: at, seek, widget: name,
+        surface, placement: held.id, owner, renderer: 'page',
         head: clock(view.target), hour, offset, ...shown.pin !== null ? { fixedHour: clock(shown.pin) } : {},
         ...view.h !== undefined ? { since: clock(view.h) } : {}, ...shown.installed ? { through: clock(shown.installed.c) } : {},
         eligibleHour: shown.installed && view.mode === 'picture' ? clock(Math.min(view.target, shown.installed.c)) : null,
@@ -315,7 +317,7 @@ export class Pipeline {
     sub.released = true;
     this.host.lanes[sub.lane]!.postMessage({ type: 'unfollow', sub: id });
     if (sub.channel !== 'pinned' && sub.status === 'followed') void this.ask('unfollow', { id }, sub.route).catch(() => {});
-    if (!this.holds(sub.route)) sub.route.told = null;
+    if (!this.holds(sub.route)) { sub.route.told = null; sub.route.page = this.nextRoute++; }
   }
 
   private remount(widget: WidgetState) {
@@ -398,7 +400,7 @@ export class Pipeline {
   }
 
   private ask(product: string, params: Record<string, unknown>, route: RouteState) {
-    const sessioned = product === 'follow' || product === 'unfollow' ? { ...params, ...this.session ? { session: this.session } : {} } : params;
+    const sessioned = this.session ? { ...params, session: this.session } : params;
     return this.client.product({ sourceId: route.source.id, revision: route.source.revision, product, params: sessioned }, new AbortController().signal).then(reply => reply.data);
   }
 
@@ -448,7 +450,7 @@ export class Pipeline {
           const data = await this.ask('follow-clock', { branchId: route.branch, clock: route.offset, hour: s.position + route.offset, playing: s.playing, speed: s.hoursPerSecond,
             frameRate: this.host.frameRate(), seek: s.seekSequence, sought, composedAt, sentAt: performance.timeOrigin + performance.now() }, route) as { available?: boolean; reason?: string } | null;
           if (data?.available !== true) reason = data?.reason ?? 'The followed stream is no longer available';
-        } catch (error) { route.told = null; reason = error instanceof Error ? error.message : String(error); }
+        } catch (error) { if (route.page === page) route.told = null; reason = error instanceof Error ? error.message : String(error); }
         if (reason !== null && this.holds(route) && route.page === page && this.page.fail(page, command, reason)) this.flush();
       });
     }

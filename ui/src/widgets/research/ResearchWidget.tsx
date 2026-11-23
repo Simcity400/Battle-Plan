@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useId, useMemo, useRef, useState } from 'react';
 import type { NarrowTable } from '../../charts/table/options';
 import type { CSSProperties, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -17,7 +17,7 @@ import { usNumber } from '../../charts/numberFormat';
 import Table from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf } from '../../charts/table/options';
-import { hideTooltip, showTooltip } from '../../charts/tooltip';
+import { useOpenTooltip } from '../../charts/openTooltip.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { HeaderActionsSlot } from '../../charts/ZoomReset';
@@ -188,7 +188,7 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
       return view === 'columns' ? keys(observed) : researchRows(observed, researchAt(data.history, requested),
         coverageAt(data.history.coverage, requested)).filter(includeRow).map(row => row.key);
     },
-  } : undefined);
+  } : undefined, now.placement);
   const imageTokens = useMemo(() => data ? [...new Set(historyTokens(data.history).map(use => typeof use === 'string' ? use : use[0]))] : NO_TOKENS, [data]);
   const recorded = useMemo(() => researchRecordedTemplates(data?.history), [data]);
   const images = useTechnologyArtwork(runtime.client, track, imageTokens, active && !!data, recorded);
@@ -201,9 +201,9 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
     artworkFailure: token => images.failures?.get(token),
     folder: (token, databaseIndex) => researchFolderAt(looks, token, databaseIndex),
   }), [artwork, looks, images.failures]);
-  const tip = useCallback<Tip>((content, key, x, y) => showTooltip(owner, content(), x, y, key), [owner]);
-  const untip = useCallback(() => hideTooltip(owner), [owner]);
-  useEffect(() => untip, [untip]);
+  const tips = useOpenTooltip(owner, now.live.subscribe);
+  const tip = useCallback<Tip>((content, key, x, y) => tips.show(content, key, x, y), [tips]);
+  const untip = tips.hide;
   const breakdown = usePopover('start');
   const [shown, setShown] = useState<Breakdown | null>(null);
   const open = useCallback((target: Breakdown, anchor: () => AnchorRect | null) => {

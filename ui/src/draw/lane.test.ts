@@ -7,6 +7,9 @@ import { Page, type Bitmap, type FrameRequest, type PageMessage } from '../dashb
 import { message } from '../dashboard/follow/messages.fixture.ts';
 import { parseAnswer, cellValue } from '../dashboard/follow/message.ts';
 import { splitForLanes } from '../dashboard/follow/split.ts';
+import { componentReading } from '../dashboard/follow/useFollowed.ts';
+import { installedEntry } from '../dashboard/follow/store.ts';
+import type { Pipeline } from '../dashboard/follow/pipeline';
 
 interface Fake extends Bitmap { content: string; closed: boolean }
 const NATIVE = 9, ROUTE = 1;
@@ -448,6 +451,12 @@ test('review 7 C: a whole-answer refusal installs as a named refusal; one refuse
   await step(10, { playing: false });
   assert.deepEqual([page.view(1).mode, page.view(1).reason], ['refused', 'The ranking was not recorded']);
   assert.equal(page.view(2).mode, 'picture', 'the joined widget shows its other column with the refused one inside');
+  const fake = (widget: number) => ({ view: () => page.view(widget), status: () => ({ status: 'followed' as const }), onInstall: () => () => {} }) as unknown as Pipeline;
+  assert.deepEqual([componentReading(page.view(2), 5), componentReading(page.view(2), 7).state], [{ state: 'refused', reason: 'The ranking was not recorded' }, 'covered'],
+    'review 8 2: the refused component has its own outcome inside the joined picture');
+  const refused = installedEntry(fake(2), 2, 5), whole = installedEntry(fake(1), 1, 5);
+  assert.deepEqual([refused.status, refused.reason, whole.status, whole.reason, installedEntry(fake(2), 2, 7).status],
+    ['unavailable', 'The ranking was not recorded', 'unavailable', 'The ranking was not recorded', 'followed'], 'review 8 2: both refusals reach the shared entry its consumers read');
 });
 
 test('review 7 E: a followed message that fails to decode releases its charge at once, even at an idle paused lane', () => {
@@ -458,4 +467,35 @@ test('review 7 E: a followed message that fails to decode releases its charge at
   bad[24 + 16] = 9;
   assert.throws(() => lane.receive('follow', bad));
   assert.ok(released.reduce((sum, bytes) => sum + bytes, 0) > 0, 'the refused record was handed back without waiting for another frame');
+});
+
+test('review 8 1: a reset that arrives before its route is bound waits for its seek, so an older one never drops the held records', async () => {
+  const { page, lane, mount, step } = rig();
+  mount(1, [{ id: 5, channel: 'followed' }]);
+  await step(10, { playing: false, seek: true });
+  lane.receive('follow', message(10, [{ id: 5, answer: rows([1n], [10n]) }], false, NATIVE, 1));
+  lane.receive('follow', message(10, [{ id: 5, answer: rows([1n], [1n]) }], true, NATIVE, 0));
+  lane.bindRoute(5, ROUTE, NATIVE, 1);
+  await step(10);
+  assert.deepEqual([page.view(1).mode, valueOf(page.view(1), 5)], ['picture', 10n]);
+});
+
+test('review 8 2: a removed component keeps its facts charged while the page still shows them, and they come back once the new picture installs', async () => {
+  const { page, lane, released, mount, step } = rig();
+  mount(1, [{ id: 5, channel: 'followed' }, { id: 6, channel: 'followed' }]);
+  lane.bindRoute(5, ROUTE, NATIVE);
+  lane.bindRoute(6, ROUTE, NATIVE);
+  lane.receive('follow', message(10, [{ id: 5, answer: rows([1n], [10n]) }, { id: 6, answer: rows([1n], [20n]) }], false, NATIVE));
+  await step(10, { playing: false });
+  await step(10);
+  assert.equal(page.view(1).mode, 'picture');
+  const before = released.reduce((sum, bytes) => sum + bytes, 0);
+  lane.mount(1, [5], 'fields');
+  lane.unfollow(6);
+  assert.equal(released.reduce((sum, bytes) => sum + bytes, 0), before, 'nothing shown is refunded');
+  page.rebind(1, { subscription: true });
+  lane.bind(1, { generation: page.widgets.get(1)!.binding, surfaces: [], offset: 0, pin: null });
+  await step(10);
+  await step(10);
+  assert.ok(released.reduce((sum, bytes) => sum + bytes, 0) > before, 'the removed facts come back once the joined picture replaces them');
 });

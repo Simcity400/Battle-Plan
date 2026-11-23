@@ -480,3 +480,15 @@ test('review 7 B: a numeric-only install keeps the structure React reads; a stru
   p.offer({ lane: 0, serial: 3, entries: [install(3, { 'model:3': 'structure:B', 'live:3': 'l2', hour: '3' })] }); p.frame();
   assert.notEqual(p.view(1).structure, first);
 });
+
+test('review 8 2: while paused, a joined picture of a new binding that does not cover the target never replaces the shown one', () => {
+  const { p, offer, view } = page();
+  offer(entry({ id: 1, h: 96, c: 150, content: 'X' })); p.publish(150);
+  p.publish(150, { playing: false });
+  p.rebind(1, { subscription: true });
+  const binding = p.widgets.get(1)!.binding;
+  offer(entry({ id: 2, binding, h: 96, c: 140, content: 'Y' })); p.frame();
+  assert.deepEqual([view().id, view().dim], [1, true], 'the joined answer confirmed only through 140 is not coverage at 150');
+  offer(entry({ id: 3, binding, h: 96, c: 150, content: 'Y' })); p.frame();
+  assert.equal(view().id, 3);
+});

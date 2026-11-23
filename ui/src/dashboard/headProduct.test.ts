@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { headRead, headSubject, momentHour, retain } from './headProduct.ts';
+import { headRead, headSubject, momentHour, retain, headKey } from './headProduct.ts';
 import type { BoundTrack, WidgetSpec } from './model';
 import { observeOnScreen, screenHolder } from './follow/onScreen.ts';
 
@@ -73,4 +73,9 @@ test('moving a dated pin backward clears the previous reply until the explicit t
   assert.equal(retain(later, client, 'projects', 'later header', 50, { exact: 12 }), null);
   assert.equal(retain(later, client, 'projects', undefined, null, { exact: 12 }), null);
   assert.equal(retain(later, client, 'projects', 'earlier header', 12, { exact: 12 })?.data, 'earlier header');
+});
+
+test('review 8 4: a detail timed by its own hour owns its timing, and the card keeps one placement through its own pin', () => {
+  assert.notEqual(headKey('card', 0, 40), headKey('card', 0, null), 'a hovered detail never writes its pin into the followed parent');
+  assert.equal(headKey('card', 0, null), headKey('card', 0, null));
 });

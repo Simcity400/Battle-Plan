@@ -529,9 +529,9 @@ test('review 7 F: a paused placement may keep its shown entry dimmed until the c
   const tick = { t: 'tick', at: 0, hour: 120, playing: false, seek: 3 };
   const held = { t: 'picture', at: 0, hour: 110, since: 100, through: 110, seek: 3, placement: 1, dim: true, entry: 7 };
   const landed = { ...held, at: 2, hour: 120, through: 120, dim: false, entry: 8 };
-  assert.deepEqual([inputPictures([0, 1, 2, 3], shown, [tick, held, landed]).pass, inputPictures([0, 1, 2, 3], shown, [tick, held, landed]).stale], [true, 0], 'the held picture then its replacement');
+  assert.deepEqual([inputPictures([0, 1, 2, 3], shown, [held, tick, landed]).pass, inputPictures([0, 1, 2, 3], shown, [held, tick, landed]).stale], [true, 0], 'the held picture then its replacement');
   const other = { ...held, at: 1, entry: 9 };
-  assert.equal(inputPictures([0, 1, 2, 3], shown, [tick, held, other, landed]).stale > 0, true, 'a different uncovered picture is caught');
+  assert.equal(inputPictures([0, 1, 2, 3], shown, [held, tick, other, landed]).stale > 0, true, 'a different uncovered picture is caught');
 });
 
 test('review 7 F: every lane is held to both rate bounds', () => {
@@ -548,4 +548,14 @@ test('review 7 F: every lane is held to both rate bounds', () => {
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }], audit: [{ widget: 'w', surface: 'surface', placement: 1, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic window has no input controls' })), to: 1000, presented: [] } };
   assert.equal(datedPlaybackVerdict([window], records).pass, false, 'a lane at 120/s on a 60 FPS display fails though the other is at 60');
+});
+
+test('review 8 5: the held entry is the one shown when the pause began, not the first one judged after it', () => {
+  const shown = [{ at: 0, shown: [[1, null, 'active']] }];
+  const before = { t: 'picture', at: 0, hour: 110, since: 100, through: 110, seek: 3, placement: 1, dim: false, entry: 7 };
+  const tick = { t: 'tick', at: 0, hour: 120, playing: false, seek: 3 };
+  const other = { ...before, at: 0.5, dim: true, entry: 9 };
+  const landed = { ...before, at: 2, hour: 120, through: 120, entry: 8 };
+  assert.equal(inputPictures([1, 2, 3], shown, [before, tick, other, landed]).stale > 0, true, 'a different uncovered picture landing before the first judged frame is stale');
+  assert.equal(inputPictures([1, 2, 3], shown, [before, tick, { ...before, at: 0.5, dim: true }, landed]).stale, 0, 'the paused entry itself, dimmed, is held');
 });

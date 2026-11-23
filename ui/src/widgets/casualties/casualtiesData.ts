@@ -96,3 +96,12 @@ export function casualtyTooltip(row: CountryCasualties, name: string, unknownLab
     signedCorrection(row) ? 'Ratio unavailable for corrections.' : '',
     row.unknown == null ? 'Losses from unknown attackers are unavailable.' : ''].filter(Boolean).join(' ') || undefined };
 }
+
+export interface HeldCasualties<L> { readonly lives: readonly (L | undefined)[]; readonly members: readonly string[] }
+
+export function heldCasualties<L>(held: HeldCasualties<L> | null, lives: readonly (L | undefined)[], members: readonly string[], following: boolean, refused: string | null) {
+  if (!following || refused !== null) return { held: null, lives, members, awaiting: false };
+  if (lives.every(live => live !== undefined)) return { held: { lives, members }, lives, members, awaiting: false };
+  if (held) return { held, lives: held.lives, members: held.members, awaiting: false };
+  return { held: null, lives, members, awaiting: members.length > 0 };
+}

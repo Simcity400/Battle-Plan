@@ -3,7 +3,7 @@ import type { DashboardClient, DashboardSource } from '../client';
 import type { PlaybackController } from '../playback';
 import { parseAnswer, type FollowedAnswer, type FollowedPanel } from './message.ts';
 import type { Pipeline } from './pipeline';
-import { installedAnswer, installedModel, installedPanel } from './useFollowed.ts';
+import { componentReading, installedAnswer, installedModel, installedPanel } from './useFollowed.ts';
 import type { LiveMap } from '../../draw/views/fields';
 
 export type FollowQuery = Readonly<Record<string, unknown>>;
@@ -47,10 +47,14 @@ export function installedEntry(pipeline: Pipeline, widget: number, sub: number):
     get status() {
       const told = pipeline.status(sub);
       if (told.status === 'refused') return 'unavailable';
-      const shown = view();
-      return shown?.mode === 'failed' ? 'failed' : told.status === 'followed' ? 'followed' : 'pending';
+      const reading = componentReading(view(), sub);
+      if (reading.state === 'refused') return view()?.mode === 'failed' ? 'failed' : 'unavailable';
+      return told.status === 'followed' ? 'followed' : 'pending';
     },
-    get reason() { return pipeline.status(sub).reason ?? (view()?.mode === 'failed' ? view()?.reason : undefined); },
+    get reason() {
+      const reading = componentReading(view(), sub);
+      return pipeline.status(sub).reason ?? (reading.state === 'refused' ? reading.reason : undefined);
+    },
     get answer() { return answerOf(installedAnswer(installed(), sub)); },
     get panel() { return installedPanel(installedModel(installed(), sub)); },
     get values() { return (installed()?.fields?.[`live:${sub}`] as LiveMap | null | undefined) ?? undefined; },

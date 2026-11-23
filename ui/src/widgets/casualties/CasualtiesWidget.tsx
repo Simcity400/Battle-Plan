@@ -36,9 +36,9 @@ import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { CasualtyLabelsReply, SeriesStateReply } from '../../generated/dashboard';
-import { answerHeld, casualtyBarStretch, casualtyBarValue, casualtyRaceEntries, casualtyRatio, casualtyRows, casualtyTooltip, FAMILY, formatCasualties,
+import { answerHeld, heldCasualties, casualtyBarStretch, casualtyBarValue, casualtyRaceEntries, casualtyRatio, casualtyRows, casualtyTooltip, FAMILY, formatCasualties,
   MEASURES, RANK, rankCasualties, rankedTags, stateHeld, SUBTOTAL_NOTE } from './casualtiesData.ts';
-import type { CasualtyMeasure, CountryCasualties, HeldMeasures } from './casualtiesData';
+import type { CasualtyMeasure, CountryCasualties, HeldCasualties, HeldMeasures } from './casualtiesData';
 import { OPTIONS } from './definition';
 import './casualties.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
@@ -135,7 +135,13 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const rankFollowed = top == null || followsHead(ranked);
   const reading = joinReadings([ranked.reading, ...measured.map(item => item.reading)]);
   const refused = reading.state === 'refused' ? reading.reason : null;
-  const lives = measured.map(item => rankFollowed && item.status === 'followed' && item.entry?.answer !== undefined ? item.live : undefined);
+  const answeredLives = measured.map(item => rankFollowed && item.status === 'followed' && item.entry?.answer !== undefined ? item.live : undefined);
+  const complete = useRef<HeldCasualties<Live<FollowEntry>> | null>(null);
+  const shownHead = heldCasualties(complete.current, answeredLives, members, following, refused);
+  complete.current = shownHead.held;
+  const lives = shownHead.lives;
+  const shownMembers = shownHead.members as string[];
+  const shownKey = shownMembers.join(',');
   const [dealt, taken, unknown, partial] = lives.map(live => ({ live }));
   const followed = [dealt, taken, unknown, partial];
   const followedHead = lives.every(live => live !== undefined);
@@ -158,7 +164,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     useFollowedProduct<SeriesStateReply>(runtime.client, stateRequests[3], ['reads'], active, undefined, track?.source),
   ];
 
-  const drawn = followedHead ? members : askedTags;
+  const drawn = followedHead ? shownMembers : askedTags;
   const identityHour = useIdentityHour(runtime.client, track, drawn, runtime.clock, active && followedHead,
     hour => track ? trackHourOf(widget, track, runtime.tracks, hour) : null);
   const lookRead = looksRead(active && followedHead, identityHour, moment);
@@ -179,16 +185,16 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   }));
   const headHour = useCallback(() => Math.floor(runtime.clock.getSnapshot().position) + (track?.axisOffset ?? 0), [runtime.clock, track?.axisOffset]);
   const heldOf = (answers: readonly (FollowedAnswer | undefined)[]) =>
-    Object.fromEntries(MEASURES.map((measure, at) => [measure, answerHeld(answers[at], members)])) as unknown as HeldMeasures;
+    Object.fromEntries(MEASURES.map((measure, at) => [measure, answerHeld(answers[at], shownMembers)])) as unknown as HeldMeasures;
   const liveItems = useMemo(() => followedHead && !race ? liveRows(followed.map(item => item.live), answers => {
-    return toItems.current(casualtyRows(members, heldOf(answers), headHour(), includeUnknown));
+    return toItems.current(casualtyRows(shownMembers, heldOf(answers), headHour(), includeUnknown));
   }) : undefined,
-  [followedHead, race, dealt.live, taken.live, unknown.live, partial.live, membersKey, includeUnknown, looks, colour, headHour]);
+  [followedHead, race, dealt.live, taken.live, unknown.live, partial.live, shownKey, includeUnknown, looks, colour, headHour]);
   const rowsAt = useRef((_hour: number): CountryCasualties[] => []);
   rowsAt.current = hour => {
     const lives = followed.map(item => item.live);
     if (lives.some(live => !live)) return [];
-    const rows = casualtyRows(members, heldOf(lives.map(live => live!.read().answer)), hour, includeUnknown);
+    const rows = casualtyRows(shownMembers, heldOf(lives.map(live => live!.read().answer)), hour, includeUnknown);
     return rankCasualties(rows.filter(row => member(row.tag, row.hour)), limit, positive);
   };
   const liveRanked = useMemo<LiveRaceEntries | undefined>(() => {
@@ -200,7 +206,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
       const stops = [source.bind(wake), ...lives.map(live => live!.subscribe(wake))];
       return () => stops.forEach(stop => stop());
     } };
-  }, [followedHead, race, dealt.live, taken.live, unknown.live, partial.live, membersKey, includeUnknown, runtime.clock, track?.axisOffset]);
+  }, [followedHead, race, dealt.live, taken.live, unknown.live, partial.live, shownKey, includeUnknown, runtime.clock, track?.axisOffset]);
   const askedHeld = useMemo(() => Object.fromEntries(MEASURES.map((measure, at) => [measure, stateHeld(states[at].data)])) as unknown as HeldMeasures,
     [states[0].data, states[1].data, states[2].data, states[3].data]);
   const askedRows = useMemo(() => followedHead ? [] : rankCasualties(casualtyRows(askedTags, askedHeld, moment, includeUnknown).filter(row => member(row.tag, row.hour)), limit, positive),
@@ -215,7 +221,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
 
   const error = followedHead ? null : rank.error ?? states.find(state => state.error)?.error ?? null;
   const retry = () => { rank.retry(); states.forEach(state => state.retry()); };
-  const loading = following ? reading.state === 'pending' : (top != null && !rank.data) || states.some((state, at) => askedTags.length > 0 && stateRequests[at] && !state.data);
+  const loading = following ? reading.state === 'pending' || shownHead.awaiting : (top != null && !rank.data) || states.some((state, at) => askedTags.length > 0 && stateRequests[at] && !state.data);
   const content = (() => {
     if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see casualties." />;
     if (refused) return <WidgetState kind="unavailable" message={refused} />;

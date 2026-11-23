@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useId, useMemo, useRef } from 'react';
+import { useId, useMemo, useRef } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import { Icon } from '../../components/Icons';
 import ListSkeleton from '../../components/Skeleton';
 import WidgetState from '../../components/WidgetState';
 import ProgressMeter from '../../charts/meter/ProgressMeter';
-import { hideTooltip, showTooltip } from '../../charts/tooltip';
+import { useOpenTooltip } from '../../charts/openTooltip.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { contentTitle } from '../../dashboard/contentTitles';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -36,8 +36,8 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   const diagnostics = useMemo(() => [...new Set([...(data?.warnings ?? NO_WARNINGS), ...(reply?.warnings ?? NO_WARNINGS), ...images.warnings])], [data, reply, images.warnings]);
   useDiagnostics(onDiagnostics, diagnostics);
   const artwork = useMemo(() => researchArtwork(data, images.artwork), [data, images.artwork]);
-  const untip = useCallback(() => hideTooltip(owner), [owner]);
-  useEffect(() => untip, [untip]);
+  const tips = useOpenTooltip(owner, now.live.subscribe);
+  const untip = tips.hide;
   if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
   if (now.read === 'off') return <div className="dash-empty" role="status">This time is outside the recording.</div>;
   const failure = history.error ?? now.error;
@@ -68,8 +68,8 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
       ], note: left === null ? undefined : 'Days left is the game’s estimate at this hour’s research speed.' };
     };
     return <div key={key} className="active-row" data-research-slot={slot.index} tabIndex={0} aria-label={`${name}, researching`}
-      onPointerMove={event => showTooltip(owner, content(), event.clientX, event.clientY, key)} onPointerLeave={untip}
-      onFocus={event => { const box = event.currentTarget.getBoundingClientRect(); showTooltip(owner, content(), box.right, box.top, key); }} onBlur={untip}>
+      onPointerMove={event => tips.show(content, key, event.clientX, event.clientY)} onPointerLeave={untip}
+      onFocus={event => { const box = event.currentTarget.getBoundingClientRect(); tips.show(content, key, box.right, box.top); }} onBlur={untip}>
       <span className="active-row-art">{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>
       <span className="active-row-name">{name}</span>
       <ProgressMeter value={numbers.fraction} state="live" label={`${name} progress`} />

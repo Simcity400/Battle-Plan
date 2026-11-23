@@ -8,7 +8,7 @@ import type { Failure } from './queryError';
 import { panelReply } from './follow/panel.ts';
 import { canonical } from './follow/canonical.ts';
 import { useWidgetKey } from './follow/useFollow.ts';
-import { installedLive, installedModel, installedPanel, useFollowedSub, useFollowedWidget, useInstalled, usePipeline, useSurfaceLabel } from './follow/useFollowed.ts';
+import { datedStore, installedLive, installedModel, installedPanel, useFollowedSub, useFollowedWidget, useInstalled, useInstalledDate, usePipeline, useSurfaceLabel } from './follow/useFollowed.ts';
 import type { ModelField } from '../draw/views/fields';
 import { perfLog } from '../shell/perf.ts';
 import { exactLive, panelAuditRows, panelTexts } from './follow/panelAudit.ts';
@@ -32,6 +32,10 @@ export function headRead(widget: Pick<WidgetSpec, 'time' | 'kind' | 'trackIds'>,
   };
 }
 
+export const headKey = (widgetKey: string, offset: number, hoverHour: number | null) => `${widgetKey}|${offset}${hoverHour === null ? '' : '|detail'}`;
+
+let pinnedOwners = -1000;
+
 export interface HeadProductOptions<T> {
   paint?: (reply: T) => boolean | void;
   active: boolean;
@@ -46,6 +50,7 @@ export interface HeadProduct<T> extends ProductState<T> {
   outside: boolean;
   workerFollow?: number;
   followedWidget?: number;
+  placement?: number;
   pipeline?: Pipeline | null;
   root: (element: Element | null) => void;
   read: 'followed' | 'asked' | 'off';
@@ -95,13 +100,15 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const bounds = useMemo(() => track ? [track.branch.firstHour, track.branch.lastHour] as const : null,
     [track?.branch.firstHour, track?.branch.lastHour]);
   const widgetKey = useWidgetKey();
-  const pipe = useFollowedWidget(pipeline, (following || pinned) && track ? `${widgetKey}|${track.axisOffset}` : null,
+  const [owner] = useState(() => pinnedOwners--);
+  const pipe = useFollowedWidget(pipeline, (following || pinned) && track ? headKey(widgetKey, track.axisOffset, hoverHour) : null,
     { offset: track?.axisOffset ?? 0, pin: pinned ? hour : null, bounds, key: `${widget.kind}|${product}|${paramsKey}` });
   const query = useMemo(() => following ? { ...params, panel: product, branchId: track!.branch.id } : null,
     [following, product, paramsKey, track?.branch.id]);
   const follow = useMemo(() => track ? { source: track.source, branch: track.branch.id, offset: track.axisOffset } : null, [track?.source, track?.branch.id, track?.axisOffset]);
   const sub = useFollowedSub(pipeline, pipe, follow, query, 'panel', product);
   const view = useInstalled(pipeline, pipe);
+  const dated = useInstalledDate(pipeline, following ? pipe : null);
   const model = installedModel(view, sub);
   const panel = installedPanel(model);
   const pushed = following && view?.mode === 'picture' && panel !== undefined;
@@ -121,7 +128,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const error: Failure | undefined = outside ? undefined : following ? followFailure ?? fromPanel.error : asked.error;
   const askedLive = useMemo(() => repliedCells(following ? undefined : data), [following, data]);
   const shownLive = following && live ? live : askedLive;
-  const at = outside ? null : following ? (pushed ? view!.painted ?? view!.h ?? null : null) : shown?.hour ?? null;
+  const at = outside ? null : following ? (pushed ? dated ?? view!.painted ?? view!.h ?? null : null) : shown?.hour ?? null;
   const latest = useRef(paint);
   latest.current = paint;
   useLayoutEffect(() => { if (data !== undefined) latest.current?.(data); }, [data]);
@@ -133,18 +140,18 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   useSurfaceLabel(node, (following || pinned) && auditable, pipe);
   useLayoutEffect(() => {
     if (!pipeline || pipe === null || !pinned) return;
-    pipeline.answer(pipe, data === undefined || at === null ? null : { hour: at, rows: () => auditable ? panelAuditRows(product, data, exactLive(data)) : undefined });
-    return () => pipeline.answer(pipe, null);
-  }, [pipeline, pipe, pinned, data, at, product, auditable]);
+    pipeline.answer(pipe, owner, data === undefined || at === null ? null : { hour: at, rows: () => auditable ? panelAuditRows(product, data, exactLive(data)) : undefined });
+    return () => pipeline.answer(pipe, owner, null);
+  }, [pipeline, pipe, owner, pinned, data, at, product, auditable]);
   useLayoutEffect(() => {
     if (!perfLog || pipe === null || !pinned || !auditable) return;
-    perfLog.reader(pipe, 0, async hour => {
+    perfLog.reader(pipe, owner, async hour => {
       const read = exactNow.current;
       if (!read) return null;
       const raw = await read(hour);
       return { values: new Map(panelAuditRows(product, raw, exactLive(raw)).map(row => [row.key, row.value])) };
     });
-  }, [pipe, pinned, product, auditable]);
+  }, [pipe, owner, pinned, product, auditable]);
   useLayoutEffect(() => {
     if (!perfLog || !pipeline || pipe === null || sub === undefined || !auditable) return;
     let texted = false;
@@ -173,8 +180,9 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
     exactRead,
     workerFollow: pushed ? sub : undefined,
     followedWidget: following ? pipe ?? undefined : undefined,
+    placement: pipe ?? undefined,
     pipeline,
-    at, atNow: () => at, shownAt: shownThrough,
+    at, atNow: () => following ? datedStore(pipeline, pipe).read() : at, shownAt: shownThrough,
     current: () => data,
     inspected: () => {
       if (!pushed || !pipeline || pipe === null || sub === undefined) return undefined;
