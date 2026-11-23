@@ -1,4 +1,4 @@
-use content_reader_core::map::MapData;
+use content_reader_map::map::MapData;
 use std::collections::BTreeMap;
 
 pub fn fixture_map(width: u32, height: u32, province_ids: &[u32]) -> MapData {

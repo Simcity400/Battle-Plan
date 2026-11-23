@@ -252,7 +252,7 @@ fn a_sprite_batch_draws_only_what_its_images_do_not_hold() {
     hold(sprites[1]);
     sprite_frames_png(layers, &requests, decode, 96).unwrap();
     assert!(
-        content_reader_core::content::strict(|| sprite_frames_png(layers, &requests, decode, 96))
+        content_reader_layers::content::strict(|| sprite_frames_png(layers, &requests, decode, 96))
             .is_err()
     );
 }
@@ -977,9 +977,9 @@ fn artwork_shader_source_warnings_survive_lazy_reads() {
     );
     let layers = &catalogue.content.layers;
     let reads = layers.report_uncovered_reads();
-    let ((program, warnings), _) = content_reader_core::content::diagnostics::capture(|| {
+    let ((program, warnings), _) = content_reader_layers::content::diagnostics::capture(|| {
         let program =
-            content_reader_core::pdxshader::program::read_reported(layers, b"outside/test.lua")
+            content_reader_gui::pdxshader::program::read_reported(layers, b"outside/test.lua")
                 .unwrap();
         (program, catalogue.reader_warning_lines())
     });

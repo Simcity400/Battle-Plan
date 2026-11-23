@@ -339,10 +339,10 @@ fn map_scripts_state_targets_filter_in_initiator_scope_and_deduplicate() {
             eval.evaluate(&items("state = 64"), Scopes::of(Scope::State(64))),
             Eval::True
         );
-        let fields = content_reader_core::parser::parse(
+        let fields = content_reader_parser::parser::parse(
             b"targets = { 65 64 65 } target_root_trigger = { tag = GER } target_trigger = { tag = GER FROM = { state = 64 } } targets_dynamic = yes state_target = yes",
         ).unwrap();
-        let targets = content_reader_core::country_scorers::script_targets(&fields.items);
+        let targets = content_reader_politics::country_scorers::script_targets(&fields.items);
         assert_eq!(
             targets.targets,
             [b"65".to_vec(), b"64".to_vec(), b"65".to_vec()]
@@ -392,8 +392,8 @@ fn map_scripts_target_selection_shares_temps_across_root_arrays_and_filters() {
         let eval = Evaluator::new(world, None);
         let caller = Scopes::of(Scope::Country(1));
         let selection = |body: &str| {
-            let parsed = content_reader_core::parser::parse(body.as_bytes()).unwrap();
-            content_reader_core::country_scorers::script_targets(&parsed.items)
+            let parsed = content_reader_parser::parser::parse(body.as_bytes()).unwrap();
+            content_reader_politics::country_scorers::script_targets(&parsed.items)
         };
         let states = selection(
             "target_root_trigger = { set_temp_variable = { t = 1 } } target_array = owned_states target_trigger = { check_variable = { t = 1 } FROM = { state = 64 } }",
@@ -482,8 +482,8 @@ fn map_scripts_state_targets_skip_accepted_duplicates_but_retry_rejections() {
             let body = format!(
                 "target_root_trigger = {{ set_temp_variable = {{ t = 0 }} }} {candidates} target_trigger = {{ add_to_temp_variable = {{ t = 1 }} check_variable = {{ {comparison} }} }}"
             );
-            let parsed = content_reader_core::parser::parse(body.as_bytes()).unwrap();
-            content_reader_core::country_scorers::script_targets(&parsed.items)
+            let parsed = content_reader_parser::parser::parse(body.as_bytes()).unwrap();
+            content_reader_politics::country_scorers::script_targets(&parsed.items)
         };
         for (candidates, comparison, visits) in [
             ("targets = { 64 64 65 }", "t < 3", 2),
@@ -645,13 +645,13 @@ fn map_scripts_idea_trait_reads_only_the_appointed_role_and_active_ideas() {
         "common/country_leader/traits.txt",
         "leader_traits = { first = {} first = {} second = {} }",
     )]);
-    let traits = content_reader_core::leader_traits::read(&cat.content.layers)
+    let traits = content_reader_military::leader_traits::read(&cat.content.layers)
         .unwrap()
         .0;
-    let units = content_reader_core::unit_leader::Traits::default();
-    let ideas = content_reader_core::ideas::IdeaContent::from_parsed(
+    let units = content_reader_key_names::unit_leader::Traits::default();
+    let ideas = content_reader_politics::ideas::IdeaContent::from_parsed(
         Vec::new(),
-        vec![content_reader_core::ideas::Idea {
+        vec![content_reader_politics::ideas::Idea {
             token: "spirit".into(),
             traits: vec!["second".into()],
             ..Default::default()

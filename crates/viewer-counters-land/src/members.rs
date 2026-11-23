@@ -7,7 +7,7 @@ use viewer_foundation::perspective::{SharingUnknown, Sight};
 use viewer_foundation::unit_rules::{SHIP_IN_PORT, STANDSTILL};
 use viewer_unit_reads::{counter_action, counter_inputs, counter_move, counter_status};
 use viewer_unit_reads::counter_inputs::OrderFacts;
-use content_reader_core::movement::MovementMap;
+use content_reader_map::movement::MovementMap;
 
 pub type LandStacks = viewer_counter_kit::shards::Shards<(u32, u32), Arc<[(Member, counter_action::Action)]>>;
 

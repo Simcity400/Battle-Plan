@@ -1,5 +1,5 @@
 use crate::{block, field, invalid, null_permitted_handle, scalar};
-use content_reader_core::parser::Item;
+use content_reader_parser::parser::Item;
 use std::io;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {
@@ -188,7 +188,7 @@ pub(crate) fn parse(items: &[Item]) -> io::Result<Snapshot> {
 mod tests {
     use super::*;
     fn manpower(source: &str) -> io::Result<Vec<crate::construction::Manpower>> {
-        let document = content_reader_core::parser::parse(source.as_bytes())?;
+        let document = content_reader_parser::parser::parse(source.as_bytes())?;
         Ok(crate::parse_faction(&document.items)?.companions.manpower)
     }
     #[test]
@@ -266,7 +266,7 @@ mod tests {
                 assert!(manpower(&format!("id={{id=17 type=88}} {before} {after}")).is_err());
             }
         }
-        let document = content_reader_core::parser::parse(
+        let document = content_reader_parser::parser::parse(
             b"research=yes research=no manpower_pool={} manpower_pool={}",
         )
         .unwrap();
@@ -277,7 +277,7 @@ mod tests {
     }
     #[test]
     fn advisor_slots_preserve_empty_owners_modifier_sources_signed_values_and_dates() {
-        let doc=content_reader_core::parser::parse(br#"upgrades={slots={{owner=AAA advisor=synthetic spymaster_change_date=1936.1.2.3 modifier={name="Advisor" synthetic_modifier=-0.25} spymaster={name="Master" synthetic_modifier=0.5}} {modifier={name="Empty"} spymaster={name="Empty"}}}}"#).unwrap();
+        let doc=content_reader_parser::parser::parse(br#"upgrades={slots={{owner=AAA advisor=synthetic spymaster_change_date=1936.1.2.3 modifier={name="Advisor" synthetic_modifier=-0.25} spymaster={name="Master" synthetic_modifier=0.5}} {modifier={name="Empty"} spymaster={name="Empty"}}}}"#).unwrap();
         let value = parse(&doc.items).unwrap();
         assert_eq!(value.advisor_slots.len(), 2);
         let first = &value.advisor_slots[0];
@@ -289,7 +289,7 @@ mod tests {
     }
     #[test]
     fn faction_companion_save_preserves_rule_order_null_programmes_and_repeated_manpower_sources() {
-        let doc=content_reader_core::parser::parse(br#"research=yes manpower=no rule_status={rules={mod_z mod_a mod_z}} faction_programs={faction_programs={{type=8 id=4294967295}{type=0 id=0}}} manpower_pool={value={tag=MOD value=7}value={tag=MOD value=3}}"#).unwrap();
+        let doc=content_reader_parser::parser::parse(br#"research=yes manpower=no rule_status={rules={mod_z mod_a mod_z}} faction_programs={faction_programs={{type=8 id=4294967295}{type=0 id=0}}} manpower_pool={value={tag=MOD value=7}value={tag=MOD value=3}}"#).unwrap();
         let value = parse(&doc.items).unwrap();
         assert_eq!(value.research, Some(true));
         assert_eq!(value.manpower_unlocked, Some(false));

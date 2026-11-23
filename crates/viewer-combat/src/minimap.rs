@@ -20,7 +20,7 @@ const WORLD_SPRITE: &[u8] = b"GFX_minimap_world";
 pub const PINGS_REFUSED: &str = "the recording holds no pings, so the pinged handle and the ping      circle never show";
 
 pub const TOOLTIP_ANCHOR: super::TooltipAnchor =
-    super::TooltipAnchor::Authored(content_reader_core::gui::native::TooltipAnchor {
+    super::TooltipAnchor::Authored(content_reader_gui::gui::native::TooltipAnchor {
         set: true,
         x: 0,
         y: -90,
@@ -64,7 +64,7 @@ pub struct Defines {
 }
 
 impl Defines {
-    pub fn load(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &content_reader_defines::defines::Defines) -> io::Result<Self> {
         let duration = defines.number("NInterface", "MINIMAP_TOGGLE_DURATION")? as f32;
         let shift = defines.number("NInterface", "MINIMAP_TOGGLE_SHIFT")?;
         if !(duration.is_finite() && duration > 0.0) {

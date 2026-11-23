@@ -346,23 +346,23 @@ pub(super) type ConvoyBound = (Result<[i64; 2], String>, Vec<String>);
 const CONVOY_WEAPON_STATS: [&str; 4] = ["lg_attack", "hg_attack", "torpedo_attack", "sub_attack"];
 
 #[cfg(test)]
-fn convoy_weapon_bound(layers: &content_reader_core::ResolvedLayers) -> io::Result<ConvoyBound> {
+fn convoy_weapon_bound(layers: &content_reader_layers::ResolvedLayers) -> io::Result<ConvoyBound> {
     Ok(convoy_weapon_bound_from_database(
-        &content_reader_core::equipment::Database::load(layers)?,
+        &content_reader_key_names::equipment::Database::load(layers)?,
     ))
 }
 
 pub(super) fn convoy_weapon_bound_from_database(
-    database: &content_reader_core::equipment::Database,
+    database: &content_reader_key_names::equipment::Database,
 ) -> ConvoyBound {
-    use content_reader_core::equipment::{StatGroup, StatValue};
+    use content_reader_key_names::equipment::{StatGroup, StatValue};
     let misreads = database.misreads.clone();
     if let Some(lost) = &database.lost {
         return (Err(lost.clone()), misreads);
     }
     let stats: Vec<usize> = CONVOY_WEAPON_STATS
         .iter()
-        .filter_map(|name| content_reader_core::equipment::stat_index(name.as_bytes()))
+        .filter_map(|name| content_reader_script::equipment_stats::stat_index(name.as_bytes()))
         .collect();
     let group_touches_weapons = |group: &StatGroup| {
         group
@@ -1490,11 +1490,12 @@ fn coupled_non_mul_bound(
 
 fn convoy_weapon_bound_for_frame(
     static_bound: Result<[i64; 2], &str>,
-    database: Option<&content_reader_core::equipment::Database>,
+    database: Option<&content_reader_key_names::equipment::Database>,
     frame: &DecodedFrame,
 ) -> io::Result<Result<[i64; 2], String>> {
-    use content_reader_core::equipment::{STAT_COUNT, StatComponents, stat_index};
-    use content_reader_core::parser::c_string;
+    use content_reader_script::equipment_stats::{STAT_COUNT, stat_index};
+    use content_reader_key_names::equipment::StatComponents;
+    use content_reader_parser::parser::c_string;
 
     let mut range = match static_bound {
         Ok(bound) => bound,
@@ -2451,7 +2452,7 @@ fn weather_icon_text(text: &str) -> Result<Option<(&str, u32)>, String> {
     let mut parts = text.split(':');
     let sprite = parts.next().unwrap_or_default();
     let frame = parts.next().map_or(1, |text| {
-        content_reader_core::fixed5::decimal_i32(text.as_bytes())
+        content_reader_parser::fixed5::decimal_i32(text.as_bytes())
     });
     let frame = u32::try_from(frame)
         .ok()

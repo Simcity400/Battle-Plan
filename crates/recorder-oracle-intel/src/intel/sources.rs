@@ -387,7 +387,7 @@ mod tests {
     use super::*;
     #[test]
     fn intel_sources_saved_accumulator_is_pending_and_values_are_accumulated() {
-        let document = content_reader_core::parser::parse(
+        let document = content_reader_parser::parser::parse(
             br#"intel={discriminant=7 dynamic_intel_pools={
                 {}
                 {accumulator={{-7 {}} {-7 {army=-0.00001}}}

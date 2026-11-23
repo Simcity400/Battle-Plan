@@ -9,7 +9,7 @@ use replay_frame::frame::TableView;
 
 fn scientist_pack() -> characters_saved::Pack {
     characters_saved::parse(
-        &content_reader_core::parser::parse(
+        &content_reader_parser::parser::parse(
             br#"character_manager={ historical={
                 character={ id={ id=265 type=73 } token="a" country="GER"
                     scientist={ traits={ "t1" "t2" }
@@ -374,7 +374,7 @@ fn raid_fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
     };
     let source = br"countries={GER={nukes={{amount=90071992547.40993 nukes_ready=-1}{amount=0 nukes_ready=0}} program_status={project_pool={project={}} breakthrough={}}}}
         raids={targets={target={valid=yes target={state=291} detected={ 1 0 }}} countries={{tag=GER priority=-1 raid_instance={{id={id=4294967295 type=84} phase=PREPARED prep_time=-2 distance=22.1 target={state=291}}} target_cooldowns={{target={state=291} type=oilfield_raid cooldown=3}}}}} peace_conference={}";
-    let pack = saved::parse(&content_reader_core::parser::parse(source).unwrap().items).unwrap();
+    let pack = saved::parse(&content_reader_parser::parser::parse(source).unwrap().items).unwrap();
     *frame.tables[TableId::Nukes.index()] = TableView::Complete(TableRows::Nukes(vec![
         NukeRow {
             country: 102,
@@ -1414,11 +1414,11 @@ fn raid_path_verdict_uses_only_its_dispatchers_search() {
 #[test]
 fn raid_memo_oracle_checks_each_dispatcher_instead_of_either_path() {
     use replay_data::rows::{RaidPathDispatcher, RaidPathDistanceRow};
-    let graph = content_reader_core::province_graph::ProvinceGraph {
+    let graph = content_reader_map::province_graph::ProvinceGraph {
         edges: BTreeMap::from([(1, vec![(2, Some(50_000))]), (2, vec![(3, Some(50_000))])]),
         ..Default::default()
     };
-    let mut geometry = content_reader_core::province_geometry::ProvinceGeometry::default();
+    let mut geometry = content_reader_map::province_geometry::ProvinceGeometry::default();
     geometry.width = 10;
     geometry.height = 1;
     geometry.centroids = BTreeMap::from([(1, [0, 0]), (2, [1, 0]), (3, [2, 0])]);
@@ -1707,7 +1707,7 @@ fn populated_dictionary_checks_project_names_and_breakthrough_points() {
         }}}
         breakthrough={specialization=-2147483648}
     }}}";
-    let mut parsed = saved::parse(&content_reader_core::parser::parse(source).unwrap().items).unwrap();
+    let mut parsed = saved::parse(&content_reader_parser::parser::parse(source).unwrap().items).unwrap();
     pack.countries.get_mut(b"GER".as_slice()).unwrap().status =
         parsed.countries.remove(b"GER".as_slice()).unwrap().status;
     let definition = 0x1234;
@@ -1898,7 +1898,7 @@ fn hourly_facilities_compare_order_duplicates_and_unresolved_project_tokens() {
             building=building unread_prototype_rewards=0 project=definition}
         project_pool={project={}} breakthrough={}
     }}}";
-    let mut parsed = saved::parse(&content_reader_core::parser::parse(source).unwrap().items).unwrap();
+    let mut parsed = saved::parse(&content_reader_parser::parser::parse(source).unwrap().items).unwrap();
     pack.countries.get_mut(b"GER".as_slice()).unwrap().status =
         parsed.countries.remove(b"GER".as_slice()).unwrap().status;
     let original: Vec<_> = (0..2)

@@ -39,17 +39,17 @@ fn selected_tables() -> Vec<TableId> {
 }
 
 fn reward_key(sub: &[u8], reward: &[u8]) -> Vec<u8> {
-    let mut key = content_reader_core::parser::c_string(sub).to_vec();
+    let mut key = content_reader_parser::parser::c_string(sub).to_vec();
     key.push(b'_');
-    key.extend_from_slice(content_reader_core::parser::c_string(reward));
+    key.extend_from_slice(content_reader_parser::parser::c_string(reward));
     key
 }
 
 fn reward_benefits(
-    reward: &content_reader_core::doctrines::RewardSource,
+    reward: &content_reader_military::doctrines::RewardSource,
     key: &[u8],
     localisation: &content_reader_localisation::localisation::Localisation,
-) -> content_reader_core::doctrines::Benefits {
+) -> content_reader_military::doctrines::Benefits {
     let mut benefits = reward.benefits.clone();
     let mut description = key.to_vec();
     description.extend_from_slice(b"_desc");
@@ -59,8 +59,8 @@ fn reward_benefits(
             .and_then(|key| localisation.get(key))
             .is_some()
     {
-        benefits.prose = Some(content_reader_core::gui::native::BoundLocalization::from_value(
-            &content_reader_core::parser::Value::Scalar(description),
+        benefits.prose = Some(content_reader_script::localization_binding::BoundLocalization::from_value(
+            &content_reader_parser::parser::Value::Scalar(description),
         ));
     }
     benefits
@@ -144,15 +144,15 @@ pub struct DoctrineReply {
 #[derive(Default)]
 struct State {
     database: Option<(
-        Arc<content_reader_core::content::ResolvedContent>,
-        Arc<content_reader_core::doctrines::Database>,
+        Arc<content_reader_layers::content::ResolvedContent>,
+        Arc<content_reader_military::doctrines::Database>,
     )>,
 }
-pub(crate) fn database(source: &Source, resolved: &Arc<content_reader_core::content::ResolvedContent>) -> io::Result<Arc<content_reader_core::doctrines::Database>> {
+pub(crate) fn database(source: &Source, resolved: &Arc<content_reader_layers::content::ResolvedContent>) -> io::Result<Arc<content_reader_military::doctrines::Database>> {
     let shared = source.state::<State>();
     let mut state = shared.lock().map_err(|_| invalid("Doctrine content cache poisoned"))?;
     if state.database.as_ref().is_none_or(|(old, _)| !Arc::ptr_eq(old, resolved)) {
-        state.database = Some((Arc::clone(resolved), Arc::new(content_reader_core::doctrines::read(&resolved.layers)?)));
+        state.database = Some((Arc::clone(resolved), Arc::new(content_reader_military::doctrines::read(&resolved.layers)?)));
     }
     Ok(Arc::clone(&state.database.as_ref().expect("doctrine content").1))
 }
@@ -211,7 +211,7 @@ impl Product for Doctrines {
             }
         };
         let default_reward = Some(
-            content_reader_core::defines::read(&resolved.layers)?
+            content_reader_defines::defines::read(&resolved.layers)?
                 .fixed5("NDoctrines", "DEFAULT_REWARD_MASTERY")?,
         );
         check_cancel(cancelled)?;
@@ -273,7 +273,7 @@ fn fixed(raw: i64) -> String {
     text
 }
 fn text(bytes: &[u8]) -> io::Result<String> {
-    String::from_utf8(content_reader_core::parser::c_string(bytes).to_vec())
+    String::from_utf8(content_reader_parser::parser::c_string(bytes).to_vec())
         .map_err(|_| dashboard_core::refused("1 doctrine text value has unsupported UTF-8 bytes"))
 }
 
@@ -296,7 +296,7 @@ fn doctrine_country<'a>(
 fn project(
     frame: &DecodedFrame,
     params: &DoctrineParams,
-    database: &content_reader_core::doctrines::Database,
+    database: &content_reader_military::doctrines::Database,
     localisation: &content_reader_localisation::localisation::Localisation,
     default_reward: Option<i64>,
 ) -> io::Result<DoctrineReply> {
@@ -369,7 +369,7 @@ fn project(
     {
         let grand_source = folder
             .grand_doctrine
-            .map(|id| token(id).map(content_reader_core::tokens::Token::c_str))
+            .map(|id| token(id).map(content_reader_parser::tokens::Token::c_str))
             .transpose()?
             .and_then(|key| database.tactic_sources.grand.get(&key));
         let mut tracks = Vec::new();
@@ -386,7 +386,7 @@ fn project(
                 .unwrap_or_else(|| format!("Track {}", track.ordinal + 1));
             let requirements = track
                 .sub_doctrine
-                .map(|id| token(id).map(content_reader_core::tokens::Token::c_str))
+                .map(|id| token(id).map(content_reader_parser::tokens::Token::c_str))
                 .transpose()?
                 .and_then(|key| database.tactic_sources.sub.get(&key))
                 .and_then(|source| {
@@ -542,7 +542,7 @@ fn project(
 fn enrich(
     reply: &mut DoctrineReply,
     frame: &DecodedFrame,
-    database: &content_reader_core::doctrines::Database,
+    database: &content_reader_military::doctrines::Database,
     catalogue: &catalogue::Catalogue,
     politics: Option<&dashboard_base::products::politics_content::PoliticsContent>,
     default_reward: Option<i64>,
@@ -572,11 +572,11 @@ fn enrich(
             } else {
                 &database.tactic_sources.sub
             })
-            .get(&content_reader_core::tokens::Token::c_str(bytes))
+            .get(&content_reader_parser::tokens::Token::c_str(bytes))
         })
     };
     let mut warnings = Vec::new();
-    let mut describe = |benefits: &content_reader_core::doctrines::Benefits| {
+    let mut describe = |benefits: &content_reader_military::doctrines::Benefits| {
         let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(slot))]);
         let result = effect_description::doctrine_benefits(benefits, &context, &mut scopes);
         warnings.extend(result.refusals.into_iter().map(|(why, count)| {
@@ -590,7 +590,7 @@ fn enrich(
             }
         }
     };
-    let cost = |source: &content_reader_core::doctrines::DefinitionSources| -> io::Result<String> {
+    let cost = |source: &content_reader_military::doctrines::DefinitionSources| -> io::Result<String> {
         Ok(format!(
             "{} {}",
             fixed(source.xp_cost),
@@ -627,7 +627,7 @@ fn enrich(
                                     database
                                         .tactic_sources
                                         .sub
-                                        .get(&content_reader_core::tokens::Token::c_str(token))
+                                        .get(&content_reader_parser::tokens::Token::c_str(token))
                                 })
                                 .map(|sub| i64::from(track.rewards) >= sub.rewards.len() as i64)
                         }),
@@ -642,7 +642,7 @@ fn enrich(
                 .and_then(|grand| grand.tracks.get(track.ordinal as usize))
                 .and_then(|token| database.tactic_sources.tracks.get(token))
             {
-                let label = describe(&content_reader_core::doctrines::Benefits {
+                let label = describe(&content_reader_military::doctrines::Benefits {
                     prose: Some(bound.clone()),
                     ..Default::default()
                 });
@@ -803,7 +803,7 @@ mod tests {
         ]);
         let catalogue = dashboard_base::catalogue::tests::with_effect_describer(catalogue, dashboard_effects::effect_describer);
         let catalogue = Arc::new(catalogue);
-        let database = content_reader_core::doctrines::read(&catalogue.content.layers).unwrap();
+        let database = content_reader_military::doctrines::read(&catalogue.content.layers).unwrap();
         let politics =
             dashboard_base::products::politics_content::PoliticsContent::load(Arc::clone(&catalogue)).unwrap();
         catalogue

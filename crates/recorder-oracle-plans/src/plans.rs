@@ -392,7 +392,7 @@ fn group_plans(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Re
         let [saved_primary, saved_fallback] =
             save.plans.group_orders.get(&row.group).unwrap_or(&empty);
         let label = format!("OrdersGroupPlans {}", row.group);
-        let name = (!row.name.is_empty()).then(|| content_reader_core::parser::c_string(&row.name));
+        let name = (!row.name.is_empty()).then(|| content_reader_parser::parser::c_string(&row.name));
         if name.is_some_and(|prefix| prefix.len() < row.name.len()) {
             report.limitation(
                 "native text serialization ends at the first NUL; captured trailing group-name bytes are not save-comparable",

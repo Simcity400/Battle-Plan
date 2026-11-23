@@ -1091,8 +1091,8 @@ pub(super) fn compare_raid_target_statuses(
 }
 
 pub type RaidGraph = (
-    content_reader_core::province_graph::ProvinceGraph,
-    content_reader_core::province_geometry::ProvinceGeometry,
+    content_reader_map::province_graph::ProvinceGraph,
+    content_reader_map::province_geometry::ProvinceGeometry,
 );
 
 pub fn compare_raid_paths(
@@ -1100,7 +1100,7 @@ pub fn compare_raid_paths(
     (graph, geometry): &RaidGraph,
     report: &mut Report,
 ) -> io::Result<()> {
-    use content_reader_core::{province_graph::RaidPath, province_graph::raid_distance};
+    use content_reader_map::province_graph::{RaidPath, raid_distance};
     use replay_data::rows::RaidPathDispatcher;
     let rows = complete::<tables::RaidPathDistances>(frame)?;
     let mut compared = 0;

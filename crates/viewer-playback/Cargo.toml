@@ -13,7 +13,7 @@ doctest = false
 test-support = [
     "dep:replay-capture-spool",
     "dep:recorder-derive",
-    "content-reader-core/test-support",
+    "content-reader-image/test-support", "content-reader-layers/test-support", "content-reader-script/test-support",
     "content-reader-country-names/test-support",
     "content-reader-gfx/test-support",
     "content-reader-image/test-support",
@@ -66,12 +66,19 @@ test-support = [
 ]
 
 [dependencies]
+content-reader-defines.workspace = true
+content-reader-gui.workspace = true
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-map.workspace = true
+content-reader-parser.workspace = true
+content-reader-politics.workspace = true
+content-reader-script.workspace = true
 replay-derive.workspace = true
 viewer-counter-kit.workspace = true
 viewer-counters-land.workspace = true
 viewer-counters-naval.workspace = true
 recorder-derive = { workspace = true, optional = true }
-content-reader-core = { workspace = true }
 content-reader-country-names = { workspace = true }
 content-reader-gfx = { workspace = true }
 content-reader-image = { workspace = true }
@@ -148,8 +155,12 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
 content-reader-naval-combat-defines = { workspace = true, features = ["test-support"] }
 content-reader-naval-path = { workspace = true, features = ["test-support"] }
+content-reader-politics = { workspace = true, features = ["test-support"] }
 content-reader-weather = { workspace = true, features = ["test-support"] }
 dashboard-base = { workspace = true, features = ["export-types", "test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }

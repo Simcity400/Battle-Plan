@@ -1,6 +1,6 @@
 use super::{Compiled, Compiler};
-use content_reader_core::content::diagnostics::{Diagnostics as ContentDiagnostics, Once};
-use content_reader_core::pdxshader::program::{Program, Technique};
+use content_reader_layers::content::diagnostics::{Diagnostics as ContentDiagnostics, Once};
+use content_reader_gui::pdxshader::program::{Program, Technique};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -157,8 +157,8 @@ impl Cache {
         hash.update(ABI);
         hash.update(source.identity);
         for stage in [
-            content_reader_core::pdxshader::program::Stage::Vertex,
-            content_reader_core::pdxshader::program::Stage::Pixel,
+            content_reader_gui::pdxshader::program::Stage::Vertex,
+            content_reader_gui::pdxshader::program::Stage::Pixel,
         ] {
             let text = source.hlsl(technique, stage, defines)?;
             hash.update((text.len() as u64).to_le_bytes());
@@ -286,7 +286,7 @@ pub(crate) mod tests {
     }
     pub(crate) fn source(include: &str) -> Program {
         crate::tests::initialize_runtime_tables();
-        content_reader_core::pdxshader::program::read_with(b"vanilla.shader", &|path| Some(match path {
+        content_reader_gui::pdxshader::program::read_with(b"vanilla.shader", &|path| Some(match path {
             b"vanilla.shader" => b"Includes = { common.fxh }\nVertexShader = { MainCode V [[ float4 main() : SV_POSITION { return C; } ]] }\nPixelShader = { MainCode P [[ float4 main() : SV_TARGET { return C; } ]] }\nEffect Up { VertexShader = V PixelShader = P }\nEffect Unused { VertexShader = Missing PixelShader = Missing }\n".to_vec(),
             b"gfx/FX/common.fxh" => format!("Code [[ {include} ]]\n").into_bytes(),
             _ => Vec::new(),
@@ -303,7 +303,7 @@ pub(crate) mod tests {
             source("static const float4 C = 0;"),
         ];
         let read = |cache: &Cache, index: usize| {
-            content_reader_core::content::diagnostics::observe(|| {
+            content_reader_layers::content::diagnostics::observe(|| {
                 cache
                     .get(&sources[index], &sources[index].techniques[0], &[])
                     .unwrap();
@@ -530,7 +530,7 @@ pub(crate) mod tests {
         let compiler = Arc::new(Count(AtomicUsize::new(0)));
         let cache = Arc::new(Cache::new(None, compiler.clone()));
         let source =
-            content_reader_core::pdxshader::program::read_with::<Vec<u8>>(b"missing.lua", &|_| None).unwrap();
+            content_reader_gui::pdxshader::program::read_with::<Vec<u8>>(b"missing.lua", &|_| None).unwrap();
         assert_eq!(source.dependencies, [b"missing.shader"]);
         assert!(source.warnings[0].contains("empty technique record"));
         let effect = super::super::library::Effect::new(Arc::new(source), vec![], cache.clone());

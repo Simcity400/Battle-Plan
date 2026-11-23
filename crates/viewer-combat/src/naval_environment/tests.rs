@@ -582,7 +582,7 @@ fn doctrine_weight_and_hq_maximum_are_not_flat_sums() {
 
 #[test]
 fn equipment_fields_are_read_as_their_readers_read_them() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use std::fs;
     let root = std::env::temp_dir().join(format!(
         "hoi4_viewer_convoy_{}_{:?}",
@@ -599,7 +599,7 @@ fn equipment_fields_are_read_as_their_readers_read_them() {
             odd = { lg_attack = 5 } } }",
     )
     .unwrap();
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
     let (bound, misreads) = convoy_weapon_bound(&layers).unwrap();
     assert_eq!(bound, Ok([0, 25_000]));
     assert!(misreads.is_empty(), "{misreads:?}");
@@ -617,7 +617,7 @@ fn bound_of(text: &str) -> ConvoyBound {
     let path = root.join("common/units/equipment/convoys.txt");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, text).unwrap();
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
     let bound = convoy_weapon_bound(&layers).unwrap();
     fs::remove_dir_all(&root).unwrap();
     bound
@@ -625,7 +625,7 @@ fn bound_of(text: &str) -> ConvoyBound {
 
 #[test]
 fn equipment_fields_follow_their_value_readers() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let (bound, misreads) = bound_of(
         "upgrades = { a = { } b = { } }
          equipments = { convoy_1 = { TYPE = convoy lg_attack = 0.25
@@ -657,7 +657,7 @@ fn equipment_fields_follow_their_value_readers() {
 
 #[test]
 fn a_long_archetype_chain_links_in_load_order() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut text = String::from("equipments = { base = { is_archetype = yes lg_attack = 7 }");
     for link in 1..=40 {
         text.push_str(&format!(
@@ -695,7 +695,7 @@ fn a_long_archetype_chain_links_in_load_order() {
 
 #[test]
 fn a_link_cycle_is_refused_by_name() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let (bound, _) = bound_of(
         "equipments = { a = { type = convoy lg_attack = 0.25 } b = { parent = a }
           A = { parent = b } }",
@@ -720,7 +720,7 @@ fn a_link_cycle_is_refused_by_name() {
 
 #[test]
 fn convoy_weapon_bound_accounts_for_reliability_scaling_and_module_multipliers() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let (bound, misreads) = bound_of(
         "equipment_modules = { gun = { add_stats = { lg_attack = 2 } multiply_stats = { lg_attack = 0.25 } } }
          equipments = {
@@ -1120,8 +1120,8 @@ fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades
     use std::fs;
     use viewer_foundation::test_support::{test_frame, test_put as put};
 
-    content_reader_core::test_game::enter();
-    let lg_attack = content_reader_core::equipment::stat_index(b"lg_attack").unwrap() as u32;
+    content_reader_script::test_game::enter();
+    let lg_attack = content_reader_script::equipment_stats::stat_index(b"lg_attack").unwrap() as u32;
     let root = std::env::temp_dir().join(format!(
         "hoi4_viewer_convoy_variants_{}_{:?}",
         std::process::id(),
@@ -1143,8 +1143,8 @@ fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades
          }",
     )
     .unwrap();
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let database = content_reader_core::equipment::Database::load(&layers).unwrap();
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let database = content_reader_key_names::equipment::Database::load(&layers).unwrap();
     fs::remove_dir_all(&root).unwrap();
     let (static_bound, misreads) = convoy_weapon_bound_from_database(&database);
     assert!(misreads.is_empty(), "{misreads:?}");
@@ -1255,7 +1255,7 @@ fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades
     let unresolved_frame = base_frame(
         Recorded::Value(VariantDesignState {
             named_bonuses: vec![9],
-            unresolved_stats: (0..content_reader_core::equipment::STAT_COUNT as u32)
+            unresolved_stats: (0..content_reader_script::equipment_stats::STAT_COUNT as u32)
                 .filter(|index| {
                     ![0x2e, 0x2f, 0x30, 0x31, 0x3e, 0x41, 0x43, 0x44, 0x45, 0x4d].contains(index)
                 })
@@ -1396,7 +1396,7 @@ fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades
             design: Recorded::Value(VariantDesignState {
                 named_bonuses: vec![9],
                 bonus_sources: vec![bonus_id],
-                unresolved_stats: (0..content_reader_core::equipment::STAT_COUNT as u32)
+                unresolved_stats: (0..content_reader_script::equipment_stats::STAT_COUNT as u32)
                     .filter(|index| {
                         ![0x2e, 0x2f, 0x30, 0x31, 0x3e, 0x41, 0x43, 0x44, 0x45, 0x4d]
                             .contains(index)

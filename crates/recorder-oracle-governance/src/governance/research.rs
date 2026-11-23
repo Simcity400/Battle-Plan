@@ -52,10 +52,10 @@ pub(super) fn compare_research(
             return Err(error);
         };
         let writer = literal(report, "TechnologyDefinitions.handle", writer);
-        let identity = content_reader_core::tokens::Token::c_str(&row.id);
+        let identity = content_reader_parser::tokens::Token::c_str(&row.id);
         if writer != token
             || (identity.is_rejected() && row.technology_handle != 0)
-            || (!identity.is_rejected() && identity != content_reader_core::tokens::Token::c_str(writer))
+            || (!identity.is_rejected() && identity != content_reader_parser::tokens::Token::c_str(writer))
         {
             report.difference(&subject, &row.id, writer);
             return Err(invalid(format!(

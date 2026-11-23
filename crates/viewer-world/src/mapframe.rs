@@ -1,4 +1,6 @@
-use content_reader_core::{ResolvedLayers, ambient};
+use content_reader_mesh::mesh::MeshProducts as _;
+use content_reader_layers::ResolvedLayers;
+use content_reader_map::ambient;
 use content_reader_image::IndexedImage;
 use content_reader_image::native::Decode;
 use std::io;
@@ -63,8 +65,8 @@ impl FrameAssets {
                 .iter()
                 .map(|e| format!("Map frame descriptor unavailable: {e}")),
         );
-        let default = content_reader_core::terrain::read_default_map(layers)?;
-        let heights = content_reader_core::terrain::read_indexed_image(
+        let default = content_reader_key_names::terrain::read_default_map(layers)?;
+        let heights = content_reader_map::terrain_images::read_indexed_image(
             layers, &format!("map/{}", default.heightmap),
         )?;
         let bounds = buckets([heights.width, heights.height]);
@@ -331,8 +333,8 @@ impl Presentation {
 
 #[test]
 fn placement_preserves_authored_height_scale_and_only_y_rotation() {
-    content_reader_core::test_game::enter();
-    let types = ambient::parse(b"type={type=mod_frame scale=2 always_visible=yes use_animation=no object={position={3 -4 5} rotation={90 90 90}}}", &content_reader_core::key_names::KeyNames::default()).unwrap();
+    content_reader_script::test_game::enter();
+    let types = ambient::parse(b"type={type=mod_frame scale=2 always_visible=yes use_animation=no object={position={3 -4 5} rotation={90 90 90}}}", &content_reader_script::key_names::KeyNames::default()).unwrap();
     let value = instance(&types[0], &types[0].objects[0]);
     assert_eq!(value.position, [3., -4., 5.]);
     assert_eq!(value.scale, 2.);
@@ -453,8 +455,8 @@ fn ambient_admission_expiry_and_recreation_preserve_native_order() {
 
 #[test]
 fn event_only_ambient_uses_shared_player_scale_and_entry_clock() {
-    content_reader_core::test_game::enter();
-    let descriptors = content_reader_core::mesh::parse_descriptors(br#"entity={name=emitter scale=0.3 state={name=idle event={time=0 particle=mist keep_particle=yes}}}"#, "gfx/synthetic.asset").unwrap();
+    content_reader_script::test_game::enter();
+    let descriptors = content_reader_mesh::mesh::parse_descriptors(br#"entity={name=emitter scale=0.3 state={name=idle event={time=0 particle=mist keep_particle=yes}}}"#, "gfx/synthetic.asset").unwrap();
     let library = ModelLibrary::load(
         &ResolvedLayers::default(),
         Decode::default(),
@@ -497,8 +499,8 @@ fn event_only_ambient_uses_shared_player_scale_and_entry_clock() {
 
 #[test]
 fn a_still_ambient_object_plays_its_default_state_from_when_it_appears() {
-    content_reader_core::test_game::enter();
-    let descriptors = content_reader_core::mesh::parse_descriptors(
+    content_reader_script::test_game::enter();
+    let descriptors = content_reader_mesh::mesh::parse_descriptors(
         br#"entity={name=wind default_state=idle state={name=idle state_time=1 event={trigger_once=yes sound={soundeffect=amb_wind}}}}
             entity={name=late default_state=idle state={name=idle looping=no event={time=5 sound={soundeffect=amb_late}}}}
             entity={name=twin default_state=idle state={name=idle chance=1 event={sound={soundeffect=amb_a}}} state={name=idle chance=0 event={sound={soundeffect=amb_b}}}}

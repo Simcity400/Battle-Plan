@@ -15,7 +15,7 @@ use dashboard_base::{Source, catalogue::{self as loaded, Catalogue}};
 use dashboard_base::products::at_hour::Read;
 use dashboard_query::Query;
 use dashboard_text::variant_names::{self, Tags, Texts, raw_variant, variant_names};
-use content_reader_core::equipment::Database;
+use content_reader_key_names::equipment::Database;
 use replay_data::rows::{TableId, VariantModuleRow, VariantUpgradeRow, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};

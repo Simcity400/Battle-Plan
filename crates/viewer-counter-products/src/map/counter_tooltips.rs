@@ -1670,11 +1670,11 @@ mod tests {
                 ..Default::default()
             }]),
         );
-        let defines = content_reader_core::defines::Defines::new().unwrap();
+        let defines = content_reader_defines::defines::Defines::new().unwrap();
         defines.load("synthetic.lua", b"NDefines={NIntel={COUNTRY_LEVEL_INTEL_MAXIMUMS={1,1,1,1},ARMY_MIN_INTEL_TO_SHOW_BASIC_TEMPLATE_INFO=0.3,ARMY_MIN_INTEL_RATIO_NEEDED_FOR_DISPLAYING_FAKE_ENEMY_INTEL_IN_LEDGER=0.7,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MIN=0.4,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX=0.8,ARMY_TEMPLATE_UNIT_COUNT_INTEL_RANGE_AT_LOWEST_INTEL=0.5}} ").unwrap();
         let units = units::Content::load(
             &defines,
-            Ok(&content_reader_core::unit_leader::SubUnits::default()),
+            Ok(&content_reader_script::sub_units::SubUnits::default()),
         );
         let loc = loc();
         let names = content_reader_division_names::division_names::Database::default();
@@ -1973,11 +1973,11 @@ mod tests {
         vision: &Vision,
     ) -> Tooltip {
         let loc = loc();
-        let defines = content_reader_core::defines::Defines::new().unwrap();
+        let defines = content_reader_defines::defines::Defines::new().unwrap();
         defines
             .load("synthetic.lua", b"NDefines={NIntel={COUNTRY_LEVEL_INTEL_MAXIMUMS={1,1,1,1},ARMY_TEMPLATE_UNIT_COUNT_INTEL_MIN=0.25,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX=0.75,ARMY_TEMPLATE_UNIT_COUNT_INTEL_RANGE_AT_LOWEST_INTEL=1.5}}")
             .unwrap();
-        let mut subunits = content_reader_core::unit_leader::SubUnits::default();
+        let mut subunits = content_reader_script::sub_units::SubUnits::default();
         subunits.read(b"sub_units={Foot={type=infantry}}", "synthetic.txt");
         let units = units::Content::load(&defines, Ok(&subunits));
         let names = content_reader_division_names::division_names::Database::default();
@@ -2009,7 +2009,7 @@ mod tests {
 
     #[test]
     fn status_cached_name_is_authoritative_even_when_combat_has_a_name() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = frame(true);
         put(
             &mut frame,
@@ -2137,7 +2137,7 @@ mod tests {
 
     #[test]
     fn supply_line_uses_grace_and_known_stack_average_and_refuses_historical_gaps() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let vision = Vision::sharing(1, []);
         let mut frame = frame(true);
         let mut status = frame.complete::<tables::DivisionStatus>().unwrap().to_vec();
@@ -2203,7 +2203,7 @@ mod tests {
 
     #[test]
     fn single_tooltip_orders_native_lines_without_a_date_or_unrecorded_name() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let vision = Vision::sharing(1, []);
         let named = tooltip(&frame(true), &[1], false, false, &vision);
         assert_eq!(
@@ -2249,7 +2249,7 @@ mod tests {
 
     #[test]
     fn full_two_template_stack_sorts_headers_and_coarse_counter_bypasses_detail() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let frame = frame(false);
         let vision = Vision::sharing(1, []);
         let detailed = tooltip(&frame, &[1, 2], false, false, &vision);
@@ -2268,11 +2268,11 @@ mod tests {
         assert_eq!(coarse.body, "");
         assert!(coarse.refused.is_empty());
         let loc = loc();
-        let defines = content_reader_core::defines::Defines::new().unwrap();
+        let defines = content_reader_defines::defines::Defines::new().unwrap();
         defines
             .load("synthetic.lua", b"NDefines={NIntel={COUNTRY_LEVEL_INTEL_MAXIMUMS={1,1,1,1},ARMY_TEMPLATE_UNIT_COUNT_INTEL_MIN=0.25,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX=0.75,ARMY_TEMPLATE_UNIT_COUNT_INTEL_RANGE_AT_LOWEST_INTEL=1.5}}")
             .unwrap();
-        let mut subunits = content_reader_core::unit_leader::SubUnits::default();
+        let mut subunits = content_reader_script::sub_units::SubUnits::default();
         subunits.read(b"sub_units={Foot={type=infantry}}", "synthetic.txt");
         let units = units::Content::load(&defines, Ok(&subunits));
         let names = content_reader_division_names::division_names::Database::default();
@@ -2285,7 +2285,7 @@ mod tests {
 
     #[test]
     fn invalid_orders_child_does_not_change_normal_or_coarse_hovers() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = frame(true);
         let vision = Vision::sharing(1, []);
         let expected = [
@@ -2672,7 +2672,7 @@ mod tests {
 
     #[test]
     fn missing_unit_intel_preserves_movement_with_one_eligibility_gap() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let frame = frame(true);
         let vision = Vision::sharing(2, []).with_truncated_unit_intel([]);
         let detailed = tooltip(&frame, &[1], false, false, &vision);
@@ -2749,7 +2749,7 @@ mod tests {
 
     #[test]
     fn only_hidden_foreign_stacks_suppress_the_arrival_line() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let frame = frame(true);
         for ours in [1, 2] {
             let vision = Vision::sharing(ours, [1]);
@@ -3006,9 +3006,7 @@ mod tests {
     #[test]
     fn division_arrival_words_the_estimate_of_the_stored_route() {
         use crate::map::division_eta::test_support::neutral_land_movement;
-        use content_reader_core::{
-            movement::MovementMap, movement::Neighbour, movement::ProvinceTerrain,
-        };
+        use content_reader_map::movement::{MovementMap, Neighbour, ProvinceTerrain};
         use viewer_foundation::movement_timing::{
             Etas, LandSpeedContent, MovementContent, arrival as movement_timing_arrival,
             test_support::neutral_status,
@@ -3320,12 +3318,12 @@ mod tests {
 
     #[test]
     fn ordinary_authored_fallback_follows_the_class_zero_and_thirteen_handler_result() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         use replay_data::{rows::ArmyIconInputRow, rows::RailwayGunCounterInputRow};
         use std::cell::Cell;
         use viewer_native_gui::counter_hovers::land::CounterControl as Control;
 
-        let parsed = content_reader_core::gui::native::read(
+        let parsed = content_reader_gui::gui::native::read(
             br#"guiTypes = {
             iconType = { name = child pdx_tooltip = RAW_TITLE pdx_tooltip_delayed = RAW_BODY }
         }"#,

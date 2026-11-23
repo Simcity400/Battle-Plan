@@ -3,9 +3,9 @@ use viewer_counter_kit::{BaseUnknowns, STRATEGIC_LOCATION_SPRITE_PREFIX};
 use viewer_native_gui::native_windows::STRATEGIC_LOCATION_WINDOW;
 use viewer_counter_kit::FACILITY_SPRITE_PREFIX;
 
-use content_reader_core::positions;
-use content_reader_core::defines::Defines;
-use content_reader_core::map::{MapData, ProvinceKind};
+use content_reader_map::positions;
+use content_reader_defines::defines::Defines;
+use content_reader_map::map::{MapData, ProvinceKind};
 use crate::{air_grid, air_volunteers, base_windows, naval_repairs};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
@@ -23,7 +23,7 @@ use viewer_native_gui::native_windows::{
 };
 use viewer_runtime::label_reads::VICTORY_POINT;
 use viewer_unit_reads::counter_order;
-use content_reader_core::{buildings::BuildingType, buildings::Buildings, buildings::SpawnPoint};
+use content_reader_key_names::buildings::{BuildingType, Buildings, SpawnPoint};
 use replay_data::{rows::BuildingRow, rows::ProvinceRow};
 use viewer_gpu::province_map::ProvinceMap;
 use dashboard_text::table_access::TokenNames;

@@ -141,7 +141,7 @@ fn main() -> io::Result<()> {
     let source = Source::open(SourceKey { source_id: "native-bench".into(), revision: dashboard_core::protocol::replay_revision(&path)? }, path.clone(), &false.into())?;
     engine_executable::executable_tables::enter(source.tables());
     let load = LoadContext { content: Some(ContentOptions {
-        options: content_reader_core::ResolveOptions { game_dir: game.into(), user_dir: user.into(), cache_dir: cache.into() },
+        options: content_reader_layers::ResolveOptions { game_dir: game.into(), user_dir: user.into(), cache_dir: cache.into() },
         allow_unverified: false, presentation: Default::default(),
     }) };
     let metadata = source.metadata().map_err(io::Error::other)?;

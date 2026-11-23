@@ -147,7 +147,7 @@ impl Value {
 }
 
 fn percent(raw: i64) -> String {
-    let text = content_reader_core::fixed5::fixed5_percent(raw.clamp(0, 100_000), 0, true);
+    let text = content_reader_parser::fixed5::fixed5_percent(raw.clamp(0, 100_000), 0, true);
     if raw < 75_000 {
         format!("\u{11}R{text}\u{11}!")
     } else if raw < 100_000 {

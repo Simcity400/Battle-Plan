@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use content_reader_core::content::{ResolveOptions, facts, proof};
+use content_reader_layers::content::{ResolveOptions, facts, proof};
 use replay::campaign::{Replay, writer};
 
 const SHARING_VIOLATION: i32 = 32;
@@ -109,7 +109,7 @@ fn add_facts(replay: &Replay, path: &Path, folders: &Folders) -> io::Result<Stri
         layers: &layers,
         withheld,
     };
-    let (pack, stats) = facts::write(&source, identity, tables, &folders.cache, &|| false)?;
+    let (pack, stats) = facts::write(&source, identity, tables, &folders.cache, &|| false, content_reader_key_names::equipment_facts::gather)?;
     let level = replay_settings::recorder_settings::RecorderSettings::load()
         .map(|settings| settings.compression)
         .unwrap_or_default()
@@ -149,7 +149,7 @@ fn add_facts(replay: &Replay, path: &Path, folders: &Folders) -> io::Result<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::{GatherOptions, gather};
+    use content_reader_layers::{GatherOptions, gather};
     use replay_capture_spool::spool::Record;
     use replay_data::{identity::CaptureMode, identity::SampleBoundary, identity::SessionStart, rows::CampaignRow, rows::TableId, rows::TableRows};
     use replay_frame::{branches::BranchReason, branches::BranchStart, branches::Parentage, frame::Frame, frame::Metrics, frame::TableUpdate};
@@ -158,7 +158,7 @@ mod tests {
     const CAMPAIGN: &[u8] = b"upgrade-test";
 
     fn unequipped(pack: &[u8]) -> Vec<u8> {
-        let why = facts::Pack::open(Arc::new(pack.to_vec()), 0, pack.len() as u64).unwrap().sub_unit_needs().unwrap_err();
+        let why = content_reader_key_names::equipment_facts::sub_unit_needs(&facts::Pack::open(Arc::new(pack.to_vec()), 0, pack.len() as u64).unwrap()).unwrap_err();
         let compressed = u32::from_le_bytes(pack[6..10].try_into().unwrap()) as usize;
         let raw = u32::from_le_bytes(pack[10..14].try_into().unwrap()) as usize;
         let mut manifest = zstd::bulk::decompress(&pack[14..14 + compressed], raw).unwrap();
@@ -193,7 +193,7 @@ mod tests {
         let content = gather(&GatherOptions { game_dir: root.join("game"), user_dir: root.join("user"), cache_dir: folders.cache.clone(), dlc_order: None }).unwrap();
         let identity = content.identity("build".into(), [1; 32], 20, "test".into(), [2; 32]).unwrap();
         let source = facts::Source { layers: &content.layers, withheld: BTreeMap::new() };
-        let (pack, _) = facts::write(&source, &identity, Err("no tables".to_owned()), &folders.cache, &|| false).unwrap();
+        let (pack, _) = facts::write(&source, &identity, Err("no tables".to_owned()), &folders.cache, &|| false, content_reader_key_names::equipment_facts::gather).unwrap();
         let older = unequipped(&pack);
         let session = SessionStart {
             id: 1,

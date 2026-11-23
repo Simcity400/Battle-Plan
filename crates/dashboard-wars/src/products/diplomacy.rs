@@ -394,7 +394,7 @@ pub(crate) fn kind_titles(counts: BTreeMap<String, u32>, tokens: &HashMap<&str, 
         .into_iter()
         .map(|(kind, count)| {
             let token = tokens.get(kind.as_str()).copied().unwrap_or(0);
-            let named = content_reader_core::diplomacy::relation_title_key(token, &kind)
+            let named = content_reader_politics::diplomacy::relation_title_key(token, &kind)
                 .map_err(|reason| reason.replace("(count: 1)", &format!("(count: {count})")))
                 .and_then(|key| match &catalogue {
                     Ok(Some(catalogue)) => catalogue.localised(key, catalogue::View::Plain).ok_or_else(|| format!("Relation {kind}: title {key} is unavailable (count: {count})")),

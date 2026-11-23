@@ -7,15 +7,15 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+content-reader-layers.workspace = true
 job-priority.workspace = true
 map-display-data.workspace = true
-content-reader-core.workspace = true
 content-reader-sound.workspace = true
 cpal = "0.18.2"
 
 [dev-dependencies]
+content-reader-layers = { workspace = true, features = ["layer-fixtures"] }
 engine-heap.workspace = true
-content-reader-core = { workspace = true, features = ["layer-fixtures"] }
 
 [lints]
 workspace = true
@@ -24,6 +24,7 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-key-names = { workspace = true, features = ["test-support"] }
 content-reader-sound = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }

@@ -1,9 +1,10 @@
+use content_reader_script::localization_binding::FormattedLocalization;
 
-use crate::{faction_templates::read, gui::native::FormattedLocalization, test_support::Stack};
+use crate::{faction_templates::read, test_support::Stack};
 
 #[test]
 fn faction_templates_resolve_mod_files_merge_names_and_localisation() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let stack = Stack::new("faction_templates");
     let (base, addon) = (stack.base(), stack.addon());
     stack.write(

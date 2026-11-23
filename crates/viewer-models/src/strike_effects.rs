@@ -328,7 +328,7 @@ mod tests {
     use super::test_support::presentation;
     use super::*;
     use crate::{entity_animation::{Clip, Node, Player, Rig}, PaletteJoint};
-    use content_reader_core::{mesh, mesh::EntityState, mesh::Transform};
+    use content_reader_mesh::mesh::{self, EntityState, Transform};
     use replay_data::{rows::NuclearStrikeRow, rows::TableId, rows::TableRows};
     use replay_frame::{frame::Metrics, frame::TableView};
 
@@ -513,14 +513,14 @@ mod tests {
 
     #[test]
     fn content_declares_the_effect_entities_and_a_missing_one_is_named() {
-        content_reader_core::test_game::enter();
-        let descriptors = content_reader_core::mesh::parse_descriptors(
+        content_reader_script::test_game::enter();
+        let descriptors = content_reader_mesh::mesh::parse_descriptors(
             br#"entity={name=nuke_entity state={name=attack event={time=0.5 particle=mist keep_particle=yes sound={soundeffect=blast}}}}"#,
             "gfx/synthetic.asset",
         )
         .unwrap();
         let library = ModelLibrary::load(
-            &content_reader_core::ResolvedLayers::default(),
+            &content_reader_layers::ResolvedLayers::default(),
             content_reader_image::native::Decode::default(),
             &descriptors,
             &[NUCLEAR_ENTITY.into()],

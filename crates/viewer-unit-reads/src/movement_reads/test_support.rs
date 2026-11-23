@@ -1,7 +1,8 @@
 use super::*;
 use viewer_foundation::trigger_content::TriggerContent;
 use dashboard_text::triggers::LeaderRoles;
-use content_reader_core::{buildings::BuildingType, province_geometry::ProvinceGeometry};
+use content_reader_key_names::buildings::BuildingType;
+use content_reader_map::province_geometry::ProvinceGeometry;
 use replay_data::{
     rows::CountryLinkRow, rows::CountryRow, rows::ProvinceRow, rows::StateRow, rows::TableId,
     rows::TableRows,
@@ -35,13 +36,13 @@ impl MovementFixture {
 }
 pub fn assets() -> MovementFixture {
     if !engine_executable::executable_tables::is_initialized() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
     }
     let mut assets = unnamed_assets();
     let facts = &mut assets.trigger_content;
     let ideologies = facts.ideologies.get_or_insert_with(Default::default);
     let mut triggers = (*facts.triggers).clone();
-    triggers.counts = Some(content_reader_core::trigger_keys::CountTriggerNames::new(
+    triggers.counts = Some(content_reader_key_names::key_name_products::count_trigger_names(
         &facts.buildings,
         ideologies,
         &Default::default(),
@@ -65,7 +66,7 @@ pub fn unnamed_assets() -> MovementFixture {
             triggers: Default::default(),
             character_traits: None,
             tag_aliases: Default::default(),
-            buildings: content_reader_core::buildings::Buildings {
+            buildings: content_reader_key_names::buildings::Buildings {
                 types: BTreeMap::from([(
                     "dam".into(),
                     BuildingType {
@@ -219,7 +220,7 @@ pub fn positive_frame() -> DecodedFrame {
     frame
 }
 pub fn path_assets() -> MovementFixture {
-    let mut graph = content_reader_core::province_graph::ProvinceGraph::default();
+    let mut graph = content_reader_map::province_graph::ProvinceGraph::default();
     for id in 1..=4_u32 {
         let next: Vec<_> = [id.wrapping_sub(1), id + 1]
             .into_iter()

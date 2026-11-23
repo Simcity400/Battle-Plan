@@ -122,7 +122,7 @@ pub fn naval_bases(
                         raw_tags
                             .get(raw)
                             .copied()
-                            .map(content_reader_core::parser::c_string)
+                            .map(content_reader_parser::parser::c_string)
                     })
                     .collect::<Option<Vec<_>>>(),
                 _ => None,

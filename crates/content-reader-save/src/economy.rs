@@ -6,7 +6,7 @@ use super::{
     Decimal, block, boolean, bytes, decimal, field, integer, invalid, required_block,
     required_bytes, scalar, typed_handle,
 };
-use content_reader_core::{parser::Item, parser::Value};
+use content_reader_parser::parser::{Item, Value};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {

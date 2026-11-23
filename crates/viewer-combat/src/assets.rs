@@ -1,10 +1,8 @@
-use content_reader_core::unit_leader::SubUnits;
-use content_reader_core::{
-    ResolvedLayers, defines::Defines, gui, gui::native::resources,
-    gui::native::resources::Registry, gui::native::sprites::Plain,
-    gui::native::sprites::SpriteFacts, gui::native::sprites::SpriteKind,
-    gui::native::sprites::Sprites,
-};
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
+use content_reader_script::sub_units::SubUnits;
+use content_reader_layers::ResolvedLayers;
+use content_reader_defines::defines::Defines;
+use content_reader_gui::gui::{self, native::{resources::{self, Registry}, sprites::{Plain, SpriteFacts, SpriteKind, Sprites}}};
 use content_reader_image::dds;
 use std::{
     borrow::Cow,
@@ -35,7 +33,7 @@ pub struct Assets {
     pub(super) naval_region_ship_intel: Result<[i64; 4], String>,
     pub(super) naval_region_convoy_intel: Result<[i64; 3], String>,
     pub(super) air_cipher: Result<dashboard_text::cryptology::Defines, String>,
-    pub(super) air_cipher_modifiers: Result<content_reader_core::modifiers::Modifiers, String>,
+    pub(super) air_cipher_modifiers: Result<content_reader_script::modifiers::Modifiers, String>,
     pub(crate) native_windows: NativeWindows,
     pub gui: GuiResources,
     window_sprites: BTreeSet<Vec<u8>>,
@@ -50,17 +48,17 @@ pub struct Assets {
     pub(super) naval_result_pride_color: Result<[f32; 4], String>,
     pub(super) naval_escape_screening: super::naval_escape::Screening,
     pub(super) naval_air_groups: super::naval_air_groups::Content,
-    pub(super) naval_weather_modifiers: Vec<Result<content_reader_core::modifiers::Modifiers, String>>,
-    pub(super) naval_screening_modifiers: [Result<content_reader_core::modifiers::Modifiers, String>; 2],
+    pub(super) naval_weather_modifiers: Vec<Result<content_reader_script::modifiers::Modifiers, String>>,
+    pub(super) naval_screening_modifiers: [Result<content_reader_script::modifiers::Modifiers, String>; 2],
     pub(super) naval_custom_sea_modifiers:
-        BTreeMap<String, Result<content_reader_core::modifiers::Modifiers, String>>,
+        BTreeMap<String, Result<content_reader_script::modifiers::Modifiers, String>>,
     pub(super) naval_terrain: Result<super::naval_terrain::Content, String>,
-    pub(super) land_terrain: Result<Arc<content_reader_core::terrain::TerrainDefinitions>, String>,
+    pub(super) land_terrain: Result<Arc<content_reader_key_names::terrain::TerrainDefinitions>, String>,
     pub temperature: Result<content_reader_weather::weather::TemperatureRanges, String>,
     pub(crate) province_weather: Result<content_reader_weather::weather::ProvinceModifierRules, String>,
     pub(crate) required_rules: Result<RequiredRules, String>,
-    pub(crate) owner_info_modifiers: Result<[content_reader_core::modifiers::Modifiers; 3], String>,
-    pub(crate) province_icon_modifiers: BTreeMap<String, Result<content_reader_core::modifiers::Modifiers, String>>,
+    pub(crate) owner_info_modifiers: Result<[content_reader_script::modifiers::Modifiers; 3], String>,
+    pub(crate) province_icon_modifiers: BTreeMap<String, Result<content_reader_script::modifiers::Modifiers, String>>,
     pub(crate) non_core_manpower: Result<i64, String>,
     pub(crate) max_shared_slots: Result<i32, String>,
     pub(super) border_events: content_reader_events::events::LazyEvents,
@@ -74,12 +72,12 @@ pub struct Assets {
 }
 #[derive(Debug)]
 pub(crate) struct RequiredRules {
-    pub rules: Vec<content_reader_core::adjacency_rules::AdjacencyRule>,
+    pub rules: Vec<content_reader_map::adjacency_rules::AdjacencyRule>,
     pub by_province: BTreeMap<u32, usize>,
 }
 
 impl RequiredRules {
-    fn new(rules: Vec<content_reader_core::adjacency_rules::AdjacencyRule>) -> Self {
+    fn new(rules: Vec<content_reader_map::adjacency_rules::AdjacencyRule>) -> Self {
         let mut by_province = BTreeMap::new();
         for (index, rule) in rules.iter().enumerate() {
             for &province in &rule.required_provinces {
@@ -91,7 +89,7 @@ impl RequiredRules {
         Self { rules, by_province }
     }
 
-    pub fn of(&self, province: u32) -> Option<&content_reader_core::adjacency_rules::AdjacencyRule> {
+    pub fn of(&self, province: u32) -> Option<&content_reader_map::adjacency_rules::AdjacencyRule> {
         self.by_province.get(&province).map(|&index| &self.rules[index])
     }
 }
@@ -118,10 +116,10 @@ impl Assets {
 
     pub fn movement_terrain(
         &self,
-    ) -> Result<Arc<content_reader_core::terrain::TerrainDefinitions>, String> {
+    ) -> Result<Arc<content_reader_key_names::terrain::TerrainDefinitions>, String> {
         self.land_terrain.clone()
     }
-    pub fn sub_units(&self) -> Result<&content_reader_core::unit_leader::SubUnits, &str> {
+    pub fn sub_units(&self) -> Result<&content_reader_script::sub_units::SubUnits, &str> {
         self.commander_tooltips.sub_units()
     }
     pub fn shared_sub_units(&self) -> Result<Arc<SubUnits>, String> {
@@ -372,12 +370,12 @@ impl Assets {
 
     pub fn set_count_trigger_names(
         &mut self,
-        buildings: &content_reader_core::buildings::Buildings,
-        ideologies: &content_reader_core::ideologies::Ideologies,
-        resources: &content_reader_core::resources::Resources,
-    ) -> content_reader_core::trigger_keys::TriggerNames {
+        buildings: &content_reader_key_names::buildings::Buildings,
+        ideologies: &content_reader_key_names::ideologies::Ideologies,
+        resources: &content_reader_key_names::resources::Resources,
+    ) -> content_reader_script::trigger_keys::TriggerNames {
         self.tactics
-            .set_count_names(content_reader_core::trigger_keys::CountTriggerNames::new(
+            .set_count_names(content_reader_key_names::key_name_products::count_trigger_names(
                 buildings, ideologies, resources,
             ));
         self.tactics.trigger_names()
@@ -561,15 +559,15 @@ fn content_named_sprites(layers: &ResolvedLayers, warnings: &mut Vec<String>) ->
     let mut unread = |what: &str, why: io::Error| {
         warnings.push(format!("Combat UI: the {what} do not load: {why} (1 missing_resource)."));
     };
-    match content_reader_core::buildings::read(layers) {
+    match content_reader_key_names::buildings::read(layers) {
         Ok(buildings) => names.extend(buildings.types.into_values().map(|building| building.special_icon)),
         Err(why) => unread("building special icons", why),
     }
-    match content_reader_core::occupation_laws::read(layers) {
+    match content_reader_politics::occupation_laws::read(layers) {
         Ok(laws) => names.extend(laws.definitions.into_values().map(|law| law.sprite)),
         Err(why) => unread("occupation law icons", why),
     }
-    match content_reader_core::dynamic_modifiers::read(layers) {
+    match content_reader_politics::dynamic_modifiers::read(layers) {
         Ok(modifiers) => names.extend(
             modifiers
                 .definitions
@@ -601,7 +599,7 @@ fn texture_sprite(name: String, texture: String) -> SpriteFacts {
     }
 }
 
-fn portrait_paths(items: &[content_reader_core::parser::Item], paths: &mut BTreeSet<String>) {
+fn portrait_paths(items: &[content_reader_parser::parser::Item], paths: &mut BTreeSet<String>) {
     for item in items {
         if let Some(text) = item.value.scalar_str() {
             let p = path(text);
@@ -616,7 +614,7 @@ fn portrait_paths(items: &[content_reader_core::parser::Item], paths: &mut BTree
 }
 #[derive(Debug)]
 pub struct CombatContent {
-    traits: content_reader_core::unit_leader::Traits,
+    traits: content_reader_key_names::unit_leader::Traits,
     tactics: super::tactics::Content,
     division_names: content_reader_division_names::division_names::Database,
     commander_tooltips: super::commander_tooltips::Content,
@@ -679,12 +677,12 @@ impl CombatContent {
 
     pub fn set_count_trigger_names(
         &mut self,
-        buildings: &content_reader_core::buildings::Buildings,
-        ideologies: &content_reader_core::ideologies::Ideologies,
-        resources: &content_reader_core::resources::Resources,
+        buildings: &content_reader_key_names::buildings::Buildings,
+        ideologies: &content_reader_key_names::ideologies::Ideologies,
+        resources: &content_reader_key_names::resources::Resources,
     ) {
         self.tactics
-            .set_count_names(content_reader_core::trigger_keys::CountTriggerNames::new(
+            .set_count_names(content_reader_key_names::key_name_products::count_trigger_names(
                 buildings, ideologies, resources,
             ));
     }
@@ -749,7 +747,7 @@ impl Assets {
             .filter(|p| p.starts_with(b"common/characters/") && p.ends_with(b".txt"))
         {
             portrait_paths(
-                &content_reader_core::characters::read_file(&layers.read_path(file)?, &names)
+                &content_reader_key_names::characters::read_file(&layers.read_path(file)?, &names)
                     .0
                     .items,
                 &mut direct_portraits,
@@ -804,7 +802,7 @@ impl Assets {
                 warnings.push(format!("Combat UI: {refusal} (1 gui_reader)."));
             }
         }
-        for sprite in content_reader_core::gui::native::sprites::registry(&registry.files).values() {
+        for sprite in content_reader_gui::gui::native::sprites::registry(&registry.files).values() {
             let name = &sprite.name;
             let portrait = sprite
                 .kind
@@ -938,7 +936,7 @@ impl Assets {
                 lazy_sprites.len()
             ));
         }
-        let equipment = content_reader_core::equipment::Database::load(layers)?;
+        let equipment = content_reader_key_names::equipment::Database::load(layers)?;
         let (convoy_weapon_bound, misreads) =
             super::naval_environment::convoy_weapon_bound_from_database(&equipment);
         warnings.extend(misreads.into_iter().map(|misread| {
@@ -973,7 +971,7 @@ impl Assets {
         let naval_air_groups =
             super::naval_air_groups::Content::load(layers, &mut warnings, equipment);
         let weather_modifiers = &super::naval_environment::WEATHER_MODIFIERS;
-        let naval_weather_modifiers = match content_reader_core::static_modifiers::read_blocks(
+        let naval_weather_modifiers = match content_reader_politics::static_modifiers::read_blocks(
             layers,
             weather_modifiers,
         ) {
@@ -1008,7 +1006,7 @@ impl Assets {
             Err(error) => {
                 warnings.push(format!(
                     "Naval weather static modifiers ({}): {error}; all {} full accumulators unavailable.",
-                    content_reader_core::static_modifiers::DIRECTORY,
+                    content_reader_politics::static_modifiers::DIRECTORY,
                     weather_modifiers.len()
                 ));
                 weather_modifiers
@@ -1019,7 +1017,7 @@ impl Assets {
         };
         let screening_names = ["screening_bonus", "capital_screening_bonus"];
         let naval_screening_modifiers =
-            match content_reader_core::static_modifiers::read_blocks(layers, &screening_names) {
+            match content_reader_politics::static_modifiers::read_blocks(layers, &screening_names) {
                 Ok(blocks) => {
                     warnings.extend(
                         blocks
@@ -1044,7 +1042,7 @@ impl Assets {
                     Err(format!(
                         "{} in {}: {error}",
                         screening_names[index],
-                        content_reader_core::static_modifiers::DIRECTORY
+                        content_reader_politics::static_modifiers::DIRECTORY
                     ))
                 }),
             };
@@ -1058,7 +1056,7 @@ impl Assets {
             BTreeMap::new()
         } else {
             let names: Vec<&str> = custom_names.iter().map(String::as_str).collect();
-            match content_reader_core::static_modifiers::read_blocks(layers, &names) {
+            match content_reader_politics::static_modifiers::read_blocks(layers, &names) {
                 Ok(blocks) => {
                     warnings.extend(
                         blocks
@@ -1084,7 +1082,7 @@ impl Assets {
                     .collect(),
             }
         };
-        let land_terrain = content_reader_core::terrain::read_definitions(layers)
+        let land_terrain = content_reader_key_names::terrain::read_definitions(layers)
             .map(Arc::new)
             .map_err(|error| error.to_string());
         let naval_terrain = land_terrain.clone().and_then(|terrain| {
@@ -1095,7 +1093,7 @@ impl Assets {
             native_windows: native_windows.clone(),
             layers: Arc::clone(shared),
             air_icons: Default::default(),
-            air_cipher_modifiers: content_reader_core::static_modifiers::read_blocks(
+            air_cipher_modifiers: content_reader_politics::static_modifiers::read_blocks(
                 layers,
                 &["passive_decryption_modifier"],
             )
@@ -1169,10 +1167,10 @@ impl Assets {
                 .map_err(|error| error.to_string()),
             province_weather: content_reader_weather::weather::province_modifier_rules(layers)
                 .map_err(|error| error.to_string()),
-            required_rules: content_reader_core::adjacency_rules::read(layers)
+            required_rules: content_reader_map::adjacency_rules::read(layers)
                 .map(RequiredRules::new)
                 .map_err(|error| error.to_string()),
-            owner_info_modifiers: content_reader_core::static_modifiers::read_blocks(
+            owner_info_modifiers: content_reader_politics::static_modifiers::read_blocks(
                 layers,
                 &super::state_view::OWNER_INFO_MODIFIERS,
             )
@@ -1188,7 +1186,7 @@ impl Assets {
             province_icon_modifiers: {
                 let names = super::state_view::icon_modifier_names(native_windows);
                 let keys: Vec<&str> = names.iter().map(String::as_str).collect();
-                match content_reader_core::static_modifiers::read_blocks(layers, &keys) {
+                match content_reader_politics::static_modifiers::read_blocks(layers, &keys) {
                     Ok(blocks) => names
                         .iter()
                         .cloned()

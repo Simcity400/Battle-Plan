@@ -29,7 +29,7 @@ pub fn ability_description(
         .into_iter()
         .zip(&definition.modifiers)
     {
-        if modifiers != &content_reader_core::modifiers::Modifiers::default() {
+        if modifiers != &content_reader_script::modifiers::Modifiers::default() {
             match renderer.modifier_description_with(
                 modifiers,
                 "",

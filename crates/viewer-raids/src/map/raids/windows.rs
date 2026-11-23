@@ -360,7 +360,7 @@ mod tests {
 
     #[test]
     fn native_raid_draw_and_hover_follow_the_map_anchor() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = draw_resources();
         let windows = gui::windows(DRAW_GUI);
         let context = Context {
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn raid_tooltip_regression_overlap_tracks_paint_order_after_camera_move() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = draw_resources();
         let windows = gui::windows(DRAW_GUI);
         let context = Context {
@@ -506,7 +506,7 @@ mod tests {
 
     #[test]
     fn raid_tooltip_regression_overlapping_buildings_keep_the_hovered_targets_native_state() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         use super::super::test_support::{frame, put, registered_command_power};
         use content_reader_localisation::localisation::Localisation;
         use replay_data::rows::Recorded;
@@ -534,7 +534,7 @@ mod tests {
             .need_detection = false;
         assets.trigger_content.buildings.types.insert(
             "facility".into(),
-            content_reader_core::buildings::BuildingType {
+            content_reader_key_names::buildings::BuildingType {
                 name: "facility".into(),
                 ..Default::default()
             },
@@ -701,7 +701,7 @@ mod tests {
 
     #[test]
     fn missing_native_raid_controls_are_named_and_counted_for_each_owner() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = draw_resources();
         let windows = gui::windows(
             br#"guiTypes = { containerWindowType = {
@@ -757,7 +757,7 @@ mod tests {
 
     #[test]
     fn groups_standing_at_one_province_keep_their_own_windows() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = draw_resources();
         let windows = gui::windows(DRAW_GUI);
         let context = Context {
@@ -802,7 +802,7 @@ mod tests {
 
     #[test]
     fn a_reused_raid_window_keeps_an_undeclared_glyph_and_withholds_an_undecided_one() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = draw_resources();
         let windows = gui::windows(DRAW_GUI);
         let context = Context {
@@ -865,7 +865,7 @@ mod tests {
 
     #[test]
     fn native_raid_bindings_find_nested_inherited_controls() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = draw_resources();
         let windows = gui::windows(br#"guiTypes = { containerWindowType = {
           name = raid_map_icon size = { width = 100 height = 80 }

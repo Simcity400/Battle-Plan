@@ -157,7 +157,7 @@ fn scripted_map_state_hovers_use_controller_continent_occupied_country_and_cache
     bmp[28..30].copy_from_slice(&24_u16.to_le_bytes());
     bmp[54..57].copy_from_slice(&[0, 0, 1]);
     std::fs::write(folder.0.join("map/provinces.bmp"), bmp).unwrap();
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
     let cat = crate::catalogue::tests::layers_catalogue(layers);
     let content = cat.scripted_content().unwrap();
     let mut f = complete_frame();
@@ -1090,9 +1090,9 @@ fn predicate_world_keeps_country_facts_when_map_content_or_provinces_are_missing
     let text = ScriptedText::new(&frame, &cat.localisation, content, 1);
     assert!(text.world().is_err());
     let world = text.trigger_world().unwrap();
-    let parsed = content_reader_core::triggers::read(
+    let parsed = content_reader_script::triggers::read(
         b"has_government=mod_group has_country_flag=occupation_flag has_completed_focus=occupation_focus has_country_leader_ideology=FIRST_SUBTYPE",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     );
     assert_eq!(
         world.evaluate(

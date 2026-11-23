@@ -1,7 +1,7 @@
 use super::*;
 
-pub(super) fn triangle() -> content_reader_core::mesh::SubMesh {
-    content_reader_core::mesh::SubMesh {
+pub(super) fn triangle() -> content_reader_mesh::mesh::SubMesh {
+    content_reader_mesh::mesh::SubMesh {
         positions: vec![[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]],
         normals: vec![[10., 11., 12.]; 3],
         tangents: vec![[20., 21., 22., 23.]; 3],
@@ -18,7 +18,7 @@ pub fn fallen_back_pass() -> (
     Geometry,
 ) {
     use shader_pipeline::{Compiled, Shader, library::Effect};
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let input = |location, semantic: &str, components| VertexInput {
         kind: ScalarKind::Float,
         location,
@@ -41,7 +41,7 @@ pub fn fallen_back_pass() -> (
     );
     let program = |name: &'static [u8], text: &'static [u8]| {
         Arc::new(
-            content_reader_core::pdxshader::program::read_with(name, &|path| {
+            content_reader_gui::pdxshader::program::read_with(name, &|path| {
                 Some(if path == name {
                     text.to_vec()
                 } else {

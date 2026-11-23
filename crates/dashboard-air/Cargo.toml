@@ -14,10 +14,16 @@ export-types = ["dashboard-base/export-types", "dashboard-world/export-types"]
 test-support = ["dashboard-base/test-support"]
 
 [dependencies]
+content-reader-defines.workspace = true
+content-reader-gui.workspace = true
+content-reader-key-names.workspace = true
+content-reader-map.workspace = true
+content-reader-mesh.workspace = true
+content-reader-parser.workspace = true
+content-reader-script.workspace = true
 replay.workspace = true
 replay-lanes.workspace = true
 replay-recording.workspace = true
-content-reader-core = { workspace = true }
 content-reader-equipment-graphics = { workspace = true }
 content-reader-localisation = { workspace = true }
 content-reader-regions = { workspace = true }
@@ -41,10 +47,10 @@ serde_json = { workspace = true }
 ts-rs = "11.1"
 
 [dev-dependencies]
+content-reader-script = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["test-support"] }
 recorder-derive-air.workspace = true
 recorder-derive-framework = { workspace = true, features = ["test-support"] }
-content-reader-core = { workspace = true, features = ["test-support"] }
 content-reader-equipment-graphics = { workspace = true, features = ["test-support"] }
 content-reader-localisation = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
@@ -65,6 +71,10 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
+content-reader-politics = { workspace = true, features = ["test-support"] }
 dashboard-air = { workspace = true, features = ["export-types", "test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 playhead = { path = "../playhead", features = ["test-support"] }

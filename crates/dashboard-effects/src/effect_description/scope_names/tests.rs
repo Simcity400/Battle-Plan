@@ -248,7 +248,7 @@ fn carried_saved_targets_do_not_invent_country_or_state_members() {
     f.with_renderer(&mut graph, Content::default(), |renderer| {
         for name in ["raid", "unit", "project"] {
             let operand =
-                content_reader_core::parser::parse(format!("target=event_target:{name}").as_bytes())
+                content_reader_parser::parser::parse(format!("target=event_target:{name}").as_bytes())
                     .unwrap();
             let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
             assert_eq!(renderer.country_target(&operand.items[0], scopes), Ok(None));

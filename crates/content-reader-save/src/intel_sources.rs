@@ -1,5 +1,5 @@
 use crate::{Decimal, block, boolean, bytes, field, integer, invalid, scalar};
-use content_reader_core::parser::{Item, Value};
+use content_reader_parser::parser::{Item, Value};
 use std::io;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -208,7 +208,7 @@ mod tests {
     use super::*;
     #[test]
     fn intel_sources_preserve_native_pool_order_duplicate_keys_signed_lanes_and_empty_extents() {
-        let parsed=content_reader_core::parser::parse(br#"intel={
+        let parsed=content_reader_parser::parser::parse(br#"intel={
             intel_from_allies={ {} {army=-1.00001} {} }
             intel_from_static_pools={ { {-7 {}} {-7 {civilian=2}} } {} }
             static_intel_pools={ {id=-3 intel={ {id=-17 remove=yes intel={ -9={} -9={navy=-3} }} }} {} }

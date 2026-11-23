@@ -1,4 +1,4 @@
-use content_reader_core::{mesh::Animation, mesh::JointPose, mesh::NativeJoint};
+use content_reader_mesh::mesh::{Animation, JointPose, NativeJoint};
 use std::io;
 use std::sync::Arc;
 
@@ -44,7 +44,7 @@ pub struct Source {
     pub mesh_scale: f32,
     pub entity_scale: f32,
     pub frozen: Option<Arc<Animation>>,
-    pub game_data: Option<Result<content_reader_core::mesh::EntityGameData, String>>,
+    pub game_data: Option<Result<content_reader_mesh::mesh::EntityGameData, String>>,
 }
 
 pub struct Locals {
@@ -429,7 +429,7 @@ mod tests {
         let mut animation = Animation::default();
         animation.fps = 1.;
         animation.samples = 1;
-        animation.joints.push(content_reader_core::mesh::AnimationJoint {
+        animation.joints.push(content_reader_mesh::mesh::AnimationJoint {
             name: "source ordinal, not a skeleton lookup".into(),
             rotation: [0., 0., 0., 2.],
             translation: [3., 5., 7.],

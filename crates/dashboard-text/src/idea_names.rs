@@ -1,6 +1,6 @@
 
 use crate::catalogue::{self, View};
-use content_reader_core::{ideas::Idea, ideas::IdeaContent};
+use content_reader_politics::ideas::{Idea, IdeaContent};
 use content_reader_localisation::localisation::Argument;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,7 +28,7 @@ const ADVISOR_NAME_PATTERN: &str = "POLITICS_ADVISOR_NAME_PATTERN";
 
 pub fn idea_name(
     ideas: &IdeaContent,
-    names: &content_reader_core::names::NameLists,
+    names: &content_reader_politics::names::NameLists,
     localisation: &content_reader_localisation::localisation::Localisation,
     token: &str,
     country: IdeaCountry<'_>,
@@ -85,7 +85,7 @@ pub fn idea_name(
 }
 
 fn generated_idea_name(
-    names: &content_reader_core::names::NameLists,
+    names: &content_reader_politics::names::NameLists,
     localisation: &content_reader_localisation::localisation::Localisation,
     idea: &Idea,
     country: IdeaCountry<'_>,
@@ -108,7 +108,7 @@ fn generated_idea_name(
         return Ok(String::new());
     };
     let text = |part: &str, bytes| {
-        content_reader_core::parser::text(bytes)
+        content_reader_parser::parser::text(bytes)
             .map_err(|refused| format!("the drawn {part} of a generated advisor name is {refused}"))
     };
     let (first, surname) = (text("name", first)?, text("surname", surname)?);

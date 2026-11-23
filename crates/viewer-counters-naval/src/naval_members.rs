@@ -1,5 +1,5 @@
 
-use content_reader_core::map::MapData;
+use content_reader_map::map::MapData;
 use crate::naval;
 use crate::naval::{NavalContext, NavalLinks};
 use std::collections::{BTreeMap, BTreeSet};

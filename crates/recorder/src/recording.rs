@@ -8,9 +8,7 @@ use crate::{
     windows::{self, Event, Process, ProcessMemory},
 };
 use engine_executable::build::hash_executable;
-use content_reader_core::{
-    content::GatherOptions, content::GatheredContent, content::gather_cancellable,
-};
+use content_reader_layers::content::{GatherOptions, GatheredContent, gather_cancellable};
 use content_reader_localisation::localisation::Localisation;
 use history_requests::HistoryRequest;
 use recorder_platform::games::{Discovery, GameProcess, OtherGames, choose_game};
@@ -4938,7 +4936,7 @@ fn root_of(session: &Path) -> Result<&Path, String> {
         .ok_or_else(|| failure_text(session, "not in a capture root"))
 }
 
-fn installed_content() -> Result<content_reader_core::ResolveOptions, String> {
+fn installed_content() -> Result<content_reader_layers::ResolveOptions, String> {
     let settings = RecorderSettings::load()
         .map_err(|error| format!("the recorder settings could not be read: {error}"))?;
     let user_dir = match settings.user_folder {
@@ -4947,7 +4945,7 @@ fn installed_content() -> Result<content_reader_core::ResolveOptions, String> {
     };
     let game_dir = crate::directories::default_game_directory()
         .map_err(|_| "Steam lists no the game installation".to_owned())?;
-    Ok(content_reader_core::ResolveOptions {
+    Ok(content_reader_layers::ResolveOptions {
         game_dir,
         user_dir,
         cache_dir: replay_settings::recorder_settings::directory(),
@@ -4956,7 +4954,7 @@ fn installed_content() -> Result<content_reader_core::ResolveOptions, String> {
 
 type InstallationKey = Result<(PathBuf, PathBuf), String>;
 type SettingsStamp = Option<(SystemTime, u64)>;
-type InstalledContent = Result<content_reader_core::ResolveOptions, String>;
+type InstalledContent = Result<content_reader_layers::ResolveOptions, String>;
 
 const NAMING_RETRY: Duration = Duration::from_secs(30);
 const NAMING_RETRY_MAX: Duration = Duration::from_secs(600);
@@ -4984,7 +4982,7 @@ fn cached_installed_content() -> InstalledContent {
 struct NamingStack {
     identity: replay_data::identity::Identity,
     installation: InstallationKey,
-    resolved: Option<content_reader_core::ResolvedContent>,
+    resolved: Option<content_reader_layers::ResolvedContent>,
     localisation: Option<Result<Localisation, String>>,
     retry: Option<(Instant, Duration)>,
     #[cfg(test)]
@@ -5009,8 +5007,8 @@ impl NamingStack {
                     self.resolutions += 1;
                 }
                 let options = content.as_ref().map_err(String::clone)?;
-                let resolved = content_reader_core::resolve(&self.identity, options)
-                    .and_then(content_reader_core::ResolvedContent::exact)
+                let resolved = content_reader_layers::resolve(&self.identity, options)
+                    .and_then(content_reader_layers::ResolvedContent::exact)
                     .map_err(|error| error.to_string())?;
                 self.resolved = Some(resolved);
             }

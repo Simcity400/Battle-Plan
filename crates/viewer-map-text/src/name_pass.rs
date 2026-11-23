@@ -11,7 +11,8 @@ use viewer_runtime::name_draw::{Placements, WorldName, next_generation};
 
 use viewer_map_modes::map_mode::GroupLabels;
 use eframe::wgpu;
-use content_reader_core::{ResolvedLayers, adjacencies, map::MapData, map::ProvinceKind};
+use content_reader_layers::ResolvedLayers;
+use content_reader_map::{adjacencies, map::{MapData, ProvinceKind}};
 use content_reader_country_names::country_names::CountryNames;
 use content_reader_image::IndexedImage;
 use content_reader_localisation::{localisation, localisation::Localisation};

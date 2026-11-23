@@ -231,7 +231,7 @@ pub(crate) fn dump_window(
             let failure: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
             let reported = Arc::clone(&failure);
             driver::run(&drawn, inputs, lost, move |ctx, state| {
-                let _generation = content_reader_core::content::Generation::enter();
+                let _generation = content_reader_layers::content::Generation::enter();
                 Ok(app::Viewer::new(ctx, Some(state), config, options, config_error, reported, None))
             })?;
             match failure.lock().unwrap_or_else(|error| error.into_inner()).take() {
@@ -301,7 +301,7 @@ fn embedded_map(
     }
     let parent = embedded::Parent::new(window.clone(), commands, events, service);
     driver::run(&window, inputs, lost, move |ctx, state| {
-        let _generation = content_reader_core::content::Generation::enter();
+        let _generation = content_reader_layers::content::Generation::enter();
         let embedding = parent.attach(ctx).map_err(|error| format!("Couldn’t show the map in its window: {error}"))?;
         let failure = Arc::new(Mutex::new(None));
         Ok(app::Viewer::new(ctx, Some(state), config, options, None, failure, Some(embedding)))

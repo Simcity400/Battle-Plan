@@ -6,7 +6,9 @@ use crate::{
     CounterInputs, CounterMap, CounterSettings, GunCounter, LAND_WINDOW, LandCounter, Layouts,
     TextChild, counter_portraits, layouts::land_counter,
 };
-use content_reader_core::{ResolvedLayers, flags::FlagSet, gui::native, map::MapData};
+use content_reader_layers::ResolvedLayers;
+use content_reader_gui::{flags::FlagSet, gui::native};
+use content_reader_map::map::MapData;
 use content_reader_gfx::gfx::SpriteSet;
 use replay_data::{
     Hour,
@@ -329,7 +331,7 @@ pub fn counter_map_fixture() -> CounterMap {
         terrain: Default::default(),
         wing_types: Ok(Arc::new(Default::default())),
         port_mission_defines: viewer_unit_reads::port_mission_defines::Defines::read(
-            &content_reader_core::defines::Defines::new().unwrap(),
+            &content_reader_defines::defines::Defines::new().unwrap(),
         ),
         anchors: Arc::new(Default::default()),
         default_anchors: Arc::new(Default::default()),

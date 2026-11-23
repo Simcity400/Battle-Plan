@@ -72,7 +72,7 @@ fn fixture(hour: i32) -> DecodedFrame {
 
 #[test]
 fn memo_primary_index_and_kept_placements_keep_fixed_multi_hour_aircraft_and_failure_order() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let map = MapData {
         width: 4,
         height: 2,

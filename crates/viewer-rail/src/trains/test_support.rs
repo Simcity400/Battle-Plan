@@ -30,7 +30,7 @@ pub fn assets() -> TrainAssets {
             }],
             ..Default::default()
         },
-        equipment: content_reader_core::equipment::Database::default(),
+        equipment: content_reader_key_names::equipment::Database::default(),
         defines: DEFINES,
         routes: RouteCache::default(),
     }

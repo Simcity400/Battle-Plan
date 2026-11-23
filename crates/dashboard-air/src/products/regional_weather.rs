@@ -4,7 +4,7 @@ use dashboard_world::products::place_names;
 use dashboard_base::{Source, catalogue::{self, Catalogue, KeyedResults, Refusals, View}, products::at_hour::{At, AtHour, Read}};
 use dashboard_query::{Query, read};
 use engine_executable::modifier_keys;
-use content_reader_core::province_graph::ProvinceGraph;
+use content_reader_map::province_graph::ProvinceGraph;
 use content_reader_localisation::localisation::Argument;
 use replay_columnar::{manifest::Status, summary};
 use replay_data::{

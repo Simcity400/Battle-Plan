@@ -7,7 +7,9 @@ pub mod states;
 mod tests;
 
 use dashboard_base::{Source, catalogue::{self, CachedResult, Catalogue}, products::LoadContext};
-use content_reader_core::{defines::Defines, equipment::Database, occupation_laws::Laws};
+use content_reader_defines::defines::Defines;
+use content_reader_key_names::equipment::Database;
+use content_reader_politics::occupation_laws::Laws;
 use replay_data::rows::{CountryLinkRow, StateResistanceRow, TableId};
 use std::{collections::{BTreeMap, HashMap}, sync::{Arc, Mutex, OnceLock}};
 
@@ -69,13 +71,13 @@ impl Content {
             warnings.extend(cat.verification.iter().cloned());
             warnings.extend(cat.warnings.iter().cloned());
             let layers = &cat.content.layers;
-            laws = layers.derived::<CachedResult<Laws>>().get_or_init(|| content_reader_core::occupation_laws::read(layers)).map_err(|why| why.to_string());
+            laws = layers.derived::<CachedResult<Laws>>().get_or_init(|| content_reader_politics::occupation_laws::read(layers)).map_err(|why| why.to_string());
             match &laws {
                 Ok(laws) if !laws.warnings.is_empty() => warnings.push(format!("{} occupation-law files could not be read: {}", laws.warnings.len(), laws.warnings.join("; "))),
                 Ok(_) => {}
                 Err(why) => warnings.push(format!("Occupation law content unavailable: {why}")),
             }
-            let defines: Result<Arc<Defines>, String> = layers.derived::<CachedResult<Defines>>().get_or_init(|| content_reader_core::defines::read(layers)).map_err(|why| why.to_string());
+            let defines: Result<Arc<Defines>, String> = layers.derived::<CachedResult<Defines>>().get_or_init(|| content_reader_defines::defines::read(layers)).map_err(|why| why.to_string());
             match defines {
                 Ok(defines) => red = defines.fixed5("NInterface", "GARRISON_STRENGTH_TO_SHOW_RED").map_err(|why| warnings.push(format!("Garrison red threshold unavailable: {why}"))).ok(),
                 Err(why) => warnings.push(format!("Garrison defines unavailable: {why}")),
@@ -99,7 +101,7 @@ impl Content {
 }
 
 pub fn check_laws(cat: &Catalogue) -> Result<Vec<String>, String> {
-    let laws = content_reader_core::occupation_laws::read(&cat.content.layers).map_err(|why| why.to_string())?;
+    let laws = content_reader_politics::occupation_laws::read(&cat.content.layers).map_err(|why| why.to_string())?;
     if laws.warnings.is_empty() {
         for token in laws.definitions.keys() {
             if let Some(why) = law::info(Ok(cat), Ok(&laws), token).missing {

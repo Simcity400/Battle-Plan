@@ -36,9 +36,9 @@ fn template_fallback_uses_recorded_language_and_template_country() {
         ]));
     let text = ScriptedText::new(&frame, &catalogue.localisation, content, 1);
     let evaluator = Evaluator::new(text.world().unwrap(), None);
-    let triggers = content_reader_core::triggers::read(
+    let triggers = content_reader_script::triggers::read(
         b"has_template = \"Intervention Force\"",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     )
     .items;
     assert_eq!(
@@ -94,9 +94,9 @@ fn entry_conditions_use_deep_links_and_description_variable_session() {
     let evaluator = Evaluator::new(text.world().unwrap(), None);
     let caller = crate::triggers::Scopes::of(Scope::Country(1));
     evaluator.begin_description();
-    let set = content_reader_core::triggers::read(
+    let set = content_reader_script::triggers::read(
         b"set_temp_variable = { x = 7 }",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     )
     .items;
     assert_eq!(evaluator.evaluate(&set, caller), Eval::True);
@@ -130,9 +130,9 @@ fn text_target_priority_matches_trigger_context_and_saved_only_predicate() {
     let evaluator = Evaluator::new(text.world().unwrap(), None)
         .with_event_scopes(std::rc::Rc::new(std::cell::RefCell::new(graph)));
     let caller = evaluator.event_scopes(0).unwrap();
-    let predicates = content_reader_core::triggers::read(
+    let predicates = content_reader_script::triggers::read(
         b"has_event_target = target",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     )
     .items;
     assert_eq!(evaluator.evaluate(&predicates, caller), Eval::False);

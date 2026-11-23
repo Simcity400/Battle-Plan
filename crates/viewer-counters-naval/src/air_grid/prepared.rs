@@ -1,3 +1,4 @@
+use content_reader_key_names::unit_leader::AirWings as _;
 use replay_data::rows::tables;
 use viewer_counter_kit::CounterInputs;
 use super::{AirWingRow, Item, Wing, items};

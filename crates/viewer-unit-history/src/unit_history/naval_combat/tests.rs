@@ -1,6 +1,6 @@
 
 use super::*;
-use content_reader_core::{mesh::Animation, mesh::EntityState, mesh::Mesh, mesh::NavalHitMissEffect};
+use content_reader_mesh::mesh::{Animation, EntityState, Mesh, NavalHitMissEffect};
 use viewer_models::entity_animation::{Clip, Node};
 use crate::unit_history::{self, Kind};
 use viewer_unit_reads::model_admission::Gates;
@@ -1111,7 +1111,7 @@ fn check_retained_province_frames(stride: u32, last_id: u32) {
     use unit_history::{Target, test_support::GATES, test_support::target as unit_target};
     use viewer_gpu::{camera::{MapDefines, MapSize, Placement}, province_admission::Admission};
     use viewer_runtime::unit_handle::Unit;
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let ids: Vec<_> = (0..192u32)
         .map(|index| index * stride + 7)
         .chain([last_id - 2, last_id])

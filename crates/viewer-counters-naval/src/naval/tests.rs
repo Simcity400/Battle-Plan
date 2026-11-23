@@ -640,7 +640,7 @@ fn cached_naval_operands_equal_fresh_joins_and_share_the_model_column() {
 
 #[test]
 fn a_port_roster_drawn_over_another_hours_task_forces_joins_them_by_handle() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let guis = native::Guis::new(vec![(
         MAPICONS_GUI.into(),
         native::read(
@@ -710,7 +710,7 @@ fn a_port_roster_drawn_over_another_hours_task_forces_joins_them_by_handle() {
 
 #[test]
 fn retained_port_plans_preserve_ordered_calls_across_thresholds_and_roster_occurrences() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let guis = native::Guis::new(vec![(
         MAPICONS_GUI.into(),
         native::read(
@@ -858,7 +858,7 @@ fn retained_port_plans_preserve_ordered_calls_across_thresholds_and_roster_occur
 
 #[test]
 fn port_grouping_keeps_distinct_foreign_owners_apart_when_relations_are_unavailable() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let guis = native::Guis::new(vec![(
         MAPICONS_GUI.into(),
         native::read(

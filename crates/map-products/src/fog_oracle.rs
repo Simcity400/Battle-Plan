@@ -335,7 +335,7 @@ fn invasion_sight(
 }
 
 pub fn intel(
-    map: &content_reader_core::map::MapData,
+    map: &content_reader_map::map::MapData,
     visibility: Option<&BTreeMap<u32, u8>>,
 ) -> map_display_data::Intel {
     let mut texels = Vec::new();
@@ -347,7 +347,7 @@ pub fn intel(
                     let row = map.height - 1 - (z * 6 + dz);
                     let province = map.province_ids[(row * map.width + x * 6 + dx) as usize];
                     let land = map.definitions.get(&province).is_some_and(|definition| {
-                        definition.kind == content_reader_core::map::ProvinceKind::Land
+                        definition.kind == content_reader_map::map::ProvinceKind::Land
                     });
                     sum += u32::from(if land {
                         visibility

@@ -256,7 +256,7 @@ pub(super) fn parse_with_countries(
 mod tests {
     use super::*;
     fn parse(input: &[u8]) -> io::Result<Pack> {
-        let document = content_reader_core::parser::parse_save(input)?;
+        let document = content_reader_parser::parser::parse_save(input)?;
         parse_with_countries(&document.items, CountriesView::from_root(&document.items)?)
     }
     #[test]

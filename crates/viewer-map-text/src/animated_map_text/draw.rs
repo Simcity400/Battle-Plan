@@ -7,7 +7,7 @@ use std::{
 };
 
 use eframe::wgpu;
-use content_reader_core::{pdxshader::DepthStencilState, pdxshader::program::Stage};
+use content_reader_gui::pdxshader::{DepthStencilState, program::Stage};
 use shader_pipeline::{
     gpu,
     library::{Effect, Selection},

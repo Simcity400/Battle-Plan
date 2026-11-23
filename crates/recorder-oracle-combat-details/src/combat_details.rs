@@ -247,7 +247,7 @@ fn equal<T: PartialEq + std::fmt::Debug>(
 }
 
 fn text_projection<'a>(r: &mut Report, label: &str, value: &'a [u8]) -> &'a [u8] {
-    let prefix = content_reader_core::parser::c_string(value);
+    let prefix = content_reader_parser::parser::c_string(value);
     if prefix.len() < value.len() {
         r.limitation(
             "text serialization stops at the first NUL; captured suffix bytes are not comparable",

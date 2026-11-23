@@ -14,10 +14,17 @@ export-types = ["dashboard-base/export-types", "dashboard-intelligence/export-ty
 test-support = ["dashboard-base/test-support"]
 
 [dependencies]
+content-reader-defines.workspace = true
+content-reader-gui.workspace = true
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-map.workspace = true
+content-reader-military.workspace = true
+content-reader-parser.workspace = true
+content-reader-script.workspace = true
 replay.workspace = true
 replay-lanes.workspace = true
 replay-recording.workspace = true
-content-reader-core = { workspace = true }
 content-reader-division-names = { workspace = true }
 content-reader-localisation = { workspace = true }
 dashboard-base = { workspace = true }
@@ -41,10 +48,11 @@ serde_json = { workspace = true }
 ts-rs = "11.1"
 
 [dev-dependencies]
+content-reader-layers = { workspace = true, features = ["test-support"] }
+content-reader-script = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["test-support"] }
 recorder-derive-framework = { workspace = true, features = ["test-support"] }
 recorder-derive-land.workspace = true
-content-reader-core = { workspace = true, features = ["test-support"] }
 content-reader-division-names = { workspace = true, features = ["test-support"] }
 content-reader-localisation = { workspace = true, features = ["test-support"] }
 dashboard-base = { workspace = true, features = ["test-support"] }
@@ -63,6 +71,10 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
+content-reader-politics = { workspace = true, features = ["test-support"] }
 dashboard-land = { workspace = true, features = ["export-types", "test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 playhead = { path = "../playhead", features = ["test-support"] }

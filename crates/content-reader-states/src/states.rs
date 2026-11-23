@@ -1,6 +1,8 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
 use std::{collections::BTreeMap, io, sync::Arc};
 
+use content_reader_script::native::{self, Shape};
 use crate::{
     ResolvedLayers,
     crt::{self, Scanned},
@@ -11,7 +13,6 @@ use crate::{
     map::ProvinceDefinition,
     parser::{
         Item, Value,
-        native::{self, Shape},
     },
     scope::ScopeKind,
     script_files,
@@ -636,7 +637,7 @@ fn read_templates(layers: &ResolvedLayers, max_building_levels: i32, counted: u3
     let resources = resources(layers)?;
     let names = layers.key_names()?;
     let paths = script_files::paths(layers, DIRECTORY, Some(".txt"))?;
-    let parsed = content_reader_core::parallel::map(&paths, |listed| {
+    let parsed = content_reader_layers::parallel::map(&paths, |listed| {
         let context = Context {
             resource: &|name| resources.find(name),
             max_building_levels,

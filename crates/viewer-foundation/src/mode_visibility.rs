@@ -126,7 +126,7 @@ impl PriorityIcon {
 pub struct Priorities([[i8; PriorityIcon::ALL.len()]; PriorityTable::ALL.len()]);
 
 impl Priorities {
-    pub fn load(defines: &content_reader_core::defines::Defines) -> std::io::Result<Self> {
+    pub fn load(defines: &content_reader_defines::defines::Defines) -> std::io::Result<Self> {
         let mut tables = [[0; PriorityIcon::ALL.len()]; PriorityTable::ALL.len()];
         for (row, table) in tables.iter_mut().zip(PriorityTable::ALL) {
             for (value, icon) in row.iter_mut().zip(PriorityIcon::ALL) {
@@ -220,6 +220,6 @@ impl Default for Visibility {
     }
 }
 
-pub fn priority(defines: &content_reader_core::defines::Defines, name: &str) -> std::io::Result<i8> {
+pub fn priority(defines: &content_reader_defines::defines::Defines, name: &str) -> std::io::Result<i8> {
     Ok(defines.int32("NMapIcons", name)? as i8)
 }

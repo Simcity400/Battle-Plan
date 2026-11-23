@@ -7,9 +7,8 @@ use std::{
     io,
 };
 
-use content_reader_core::{
-    ResolvedLayers, gui::native::fonts, gui::native::fonts::GlyphSet, gui::native::resources,
-};
+use content_reader_layers::ResolvedLayers;
+use content_reader_gui::gui::native::{fonts::{self, GlyphSet}, resources};
 use content_reader_image::dds;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -753,7 +752,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::gui::native::fonts::Glyph;
+    use content_reader_gui::gui::native::fonts::Glyph;
     use std::collections::BTreeMap;
 
     fn font() -> Font {
@@ -844,7 +843,7 @@ mod tests {
             std::fs::write(&file, bytes).unwrap();
         }
         let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-        let registry = content_reader_core::gui::native::resources::Registry::load(&layers).unwrap();
+        let registry = content_reader_gui::gui::native::resources::Registry::load(&layers).unwrap();
         let interface = super::super::sprites::Interface {
             sprites: content_reader_gfx::gfx::SpriteSet::new(&registry.files),
             registry,
@@ -866,7 +865,7 @@ mod tests {
 
     #[test]
     fn map_name_font_uses_native_fallback_and_refuses_missing_glyphs_locally() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let dds = dxt5_8x7();
         let (root, layers, interface) = stack(
             "map_fallback",
@@ -924,7 +923,7 @@ mod tests {
 
     #[test]
     fn only_a_font_outside_the_covered_root_is_named_unverified() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let dds = dxt5_8x7();
         for (name, directory, unverified) in [
             ("covered_font", "gfx/fonts", false),
@@ -971,7 +970,7 @@ mod tests {
 
     #[test]
     fn visual_mods_that_hide_every_bitmapfont_refuse_their_fonts() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_text_hidden_fonts_{}",
             std::process::id()
@@ -998,24 +997,24 @@ path=\"{art}\"
             .as_bytes(),
         );
         std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
-        let options = content_reader_core::ResolveOptions {
+        let options = content_reader_layers::ResolveOptions {
             game_dir: root.join("steamapps/common/Game"),
             user_dir: root.join("user"),
             cache_dir: root.join("cache"),
         };
         let base = root.join("base");
         let mut layers = ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
-        let selected = [content_reader_core::content::visual::Choice {
+        let selected = [content_reader_layers::content::visual::Choice {
             id: "mod/art.mod".into(),
             name: "Art".into(),
         }];
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        content_reader_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel)
+        content_reader_layers::content::visual::apply(&mut layers, &options, &selected, &[], &cancel)
             .unwrap();
         let presentation = layers.presentation().clone();
         assert!(presentation.shows_visual_mods());
         let registry =
-            content_reader_core::gui::native::resources::Registry::load(&presentation).unwrap();
+            content_reader_gui::gui::native::resources::Registry::load(&presentation).unwrap();
         assert!(registry.fonts.get_or_fallback(b"").is_none());
         let interface = super::super::sprites::Interface {
             sprites: content_reader_gfx::gfx::SpriteSet::new(&registry.files),
@@ -1045,7 +1044,7 @@ path=\"{art}\"
 
     #[test]
     fn a_refused_map_font_also_names_battle_plan_label_refusal() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let (root, layers, interface) = stack(
             "map_arrow_refused",
             &[(
@@ -1082,7 +1081,7 @@ path=\"{art}\"
 
     #[test]
     fn a_missing_family_file_is_skipped_and_named() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let dds = dxt5_8x7();
         let (root, layers, interface) = stack(
             "missing",
@@ -1110,7 +1109,7 @@ path=\"{art}\"
 
     #[test]
     fn a_page_divides_its_glyphs_by_the_extent_the_game_decodes() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let dds = dxt5_8x7();
         let (root, layers, interface) = stack(
             "dxt",
@@ -1138,7 +1137,7 @@ path=\"{art}\"
 
     #[test]
     fn a_refused_font_does_not_load() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let (root, layers, interface) = stack(
             "refused",
             &[(

@@ -1,8 +1,5 @@
 
-use content_reader_core::{
-    LayerRole,
-    content::{GatheredContent, facts},
-};
+use content_reader_layers::{LayerRole, content::{GatheredContent, facts}};
 use replay_data::identity::Identity;
 use std::{
     collections::BTreeMap,
@@ -134,7 +131,7 @@ fn changed_layers(
 }
 
 fn pack(
-    layers: &content_reader_core::ResolvedLayers,
+    layers: &content_reader_layers::ResolvedLayers,
     withheld: BTreeMap<usize, String>,
     identity: &Identity,
     cache: &Path,
@@ -145,7 +142,7 @@ fn pack(
     let executable = engine_executable::executable_tables::recorded_facts();
     let (pack, stats) = facts::write(&source, identity, executable, cache, &|| {
         cancelled.load(Ordering::Acquire)
-    })
+    }, content_reader_key_names::equipment_facts::gather)
     .map_err(|error| error.to_string())?;
     let bytes =
         replay::campaign::encode_session_facts(identity, &pack).map_err(|e| e.to_string())?;
@@ -166,7 +163,7 @@ fn pack(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::{GatherOptions, gather};
+    use content_reader_layers::{GatherOptions, gather};
     use std::{fs, sync::Arc};
 
     #[test]

@@ -1,5 +1,5 @@
 use super::{Layout, native_gui, place};
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use std::sync::Arc;
 use viewer_native_gui::{
     native_gui::{Part, PartKind, lifecycle::{Call, Instance, Tick}},
@@ -55,7 +55,7 @@ fn reference_place(
 
 fn native_asset() -> Arc<library::Effect> {
     let program =
-        content_reader_core::pdxshader::program::read_with(b"gfx/FX/naval_draw_fixture.lua", &|_| {
+        content_reader_gui::pdxshader::program::read_with(b"gfx/FX/naval_draw_fixture.lua", &|_| {
             Some(b"PixelShader={MainCode P [[ ]]}".to_vec())
         })
         .unwrap();
@@ -137,7 +137,7 @@ fn assert_batch_bits(a: &Batch, b: &Batch) {
 
 #[test]
 fn borrowed_naval_parts_keep_1200_frames_of_draw_bytes_and_carried_state() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = native::read_at(GUI, VIEWPORT);
     let navy = gui.template("unit_counter_navy").unwrap();
     let wing = gui.template("wing").unwrap();

@@ -1,6 +1,6 @@
 use super::*;
-use content_reader_core::scripted_map_modes;
-use content_reader_core::{map::CountryColors, map::ProvinceDefinition};
+use content_reader_map::scripted_map_modes;
+use content_reader_map::map::{CountryColors, ProvinceDefinition};
 use replay_data::{
     rows::CapitulationRow, rows::CountryAppearanceRow, rows::CountryCounterInputRow,
     rows::CountryLinkRow, rows::CountryRow, rows::FactionMemberRow, rows::FactionRow,
@@ -86,7 +86,7 @@ pub(super) fn content(scripted: MapModes) -> Content {
         scripts: Default::default(),
         id: viewer_scene_base::next_projection_id(),
         defines: defines(),
-        ideologies: Arc::new(content_reader_core::ideologies::Ideologies::default()),
+        ideologies: Arc::new(content_reader_key_names::ideologies::Ideologies::default()),
         category_colors: BTreeMap::from([
             (b"town".to_vec(), Ok(Some([0.0, 200.0 / 255.0, 0.0, 1.0]))),
             (b"rural".to_vec(), Ok(None)),
@@ -924,7 +924,7 @@ fn colour_scripts_paint_each_target_their_callback_colours() {
     .unwrap();
     let content = content(modes);
     let frame = frame();
-    let names = content_reader_core::trigger_keys::TriggerNames {
+    let names = content_reader_script::trigger_keys::TriggerNames {
         scripted: Default::default(),
         counts: Some(Default::default()),
     };
@@ -1058,7 +1058,7 @@ fn scripted_politics_refuses_uncertified_sharing_rosters_by_name_and_target_coun
             .collect(),
     );
     set::<tables::SimulationFeatures>(&mut f, vec![SimulationFeatureRow::default()]);
-    let names = content_reader_core::trigger_keys::TriggerNames::default();
+    let names = content_reader_script::trigger_keys::TriggerNames::default();
     let dlcs = BTreeSet::new();
     let aliases = Arc::default();
     let render = |f: &DecodedFrame| {
@@ -1191,7 +1191,7 @@ fn scripted_callbacks_count_one_roster_input_across_iterator_and_array_reads() {
             row.owned_states = None.into();
         }
     }
-    let names = content_reader_core::trigger_keys::TriggerNames::default();
+    let names = content_reader_script::trigger_keys::TriggerNames::default();
     let dlcs = BTreeSet::new();
     let aliases = Arc::default();
     let world = World::read(
@@ -1208,7 +1208,7 @@ fn scripted_callbacks_count_one_roster_input_across_iterator_and_array_reads() {
     };
     let layer = scripted_map_modes::Layer {
         kind: LayerType::Country,
-        color: content_reader_core::parser::parse(
+        color: content_reader_parser::parser::parse(
             br#"
             if = { limit = { FROM = { tag = SOV } }
                 set_temp_variable = { red = owned_states^num }
@@ -1260,7 +1260,7 @@ fn scripted_callbacks_count_the_global_lexical_failure_once_across_country_scope
         reason: "synthetic dictionary acquisition failed".into(),
     }
     .into();
-    let names = content_reader_core::trigger_keys::TriggerNames::default();
+    let names = content_reader_script::trigger_keys::TriggerNames::default();
     let dlcs = BTreeSet::new();
     let aliases = Arc::default();
     let world = World::read(
@@ -1277,7 +1277,7 @@ fn scripted_callbacks_count_the_global_lexical_failure_once_across_country_scope
     };
     let layer = scripted_map_modes::Layer {
         kind: LayerType::Country,
-        color: content_reader_core::parser::parse(
+        color: content_reader_parser::parser::parse(
             br#"
             OR = { is_in_tech_sharing_group = mod_group always = yes }
             FROM = { OR = { is_in_tech_sharing_group = mod_group always = yes } }
@@ -1337,7 +1337,7 @@ fn scripted_callbacks_refuse_uncertain_inputs_once_per_target() {
             ..Default::default()
         }));
     }
-    let names = content_reader_core::trigger_keys::TriggerNames::default();
+    let names = content_reader_script::trigger_keys::TriggerNames::default();
     let dlcs = BTreeSet::new();
     let aliases = Arc::default();
     let world = World::read(
@@ -1355,7 +1355,7 @@ fn scripted_callbacks_refuse_uncertain_inputs_once_per_target() {
     let render = |body: &str, previous: Option<&colour_script::LayerState>| {
         let layer = scripted_map_modes::Layer {
             kind: LayerType::Country,
-            color: content_reader_core::parser::parse(body.as_bytes())
+            color: content_reader_parser::parser::parse(body.as_bytes())
                 .unwrap()
                 .items,
             ..Default::default()
@@ -1521,7 +1521,7 @@ fn scripted_target_filters_refuse_uncertainty_before_colour_capture_on_cold_and_
             row.single_controller = Some(1).into();
         }
     }
-    let names = content_reader_core::trigger_keys::TriggerNames::default();
+    let names = content_reader_script::trigger_keys::TriggerNames::default();
     let dlcs = BTreeSet::new();
     let aliases = Arc::default();
     for scenario in ["missing templates", "missing stability", "true", "false"] {
@@ -1549,7 +1549,7 @@ fn scripted_target_filters_refuse_uncertainty_before_colour_capture_on_cold_and_
         ] {
             let baseline = scripted_map_modes::Layer {
                 kind,
-                color: content_reader_core::parser::parse(
+                color: content_reader_parser::parser::parse(
                     b"set_temp_variable = { green = 1 } set_temp_variable = { alpha = 1 }",
                 )
                 .unwrap()
@@ -1586,7 +1586,7 @@ fn scripted_target_filters_refuse_uncertainty_before_colour_capture_on_cold_and_
                 };
                 let layer = scripted_map_modes::Layer {
                     targets: Some(
-                        content_reader_core::parser::parse(
+                        content_reader_parser::parser::parse(
                             format!("{candidate} {filter} = {{ {condition} }}").as_bytes(),
                         )
                         .unwrap()
@@ -1657,7 +1657,7 @@ fn scripted_empty_targets_keep_country_state_and_controller_layers_unrestricted(
             row.single_controller = Some(1).into();
         }
     }
-    let names = content_reader_core::trigger_keys::TriggerNames::default();
+    let names = content_reader_script::trigger_keys::TriggerNames::default();
     let dlcs = BTreeSet::new();
     let aliases = Arc::default();
     let world = World::read(
@@ -1679,7 +1679,7 @@ fn scripted_empty_targets_keep_country_state_and_controller_layers_unrestricted(
     ] {
         let mut layer = scripted_map_modes::Layer {
             kind,
-            color: content_reader_core::parser::parse(b"set_temp_variable = { alpha = 1 }")
+            color: content_reader_parser::parser::parse(b"set_temp_variable = { alpha = 1 }")
                 .unwrap()
                 .items,
             ..Default::default()
@@ -1713,7 +1713,7 @@ fn scripted_split_states_use_the_cached_single_branch_and_positive_province_grou
     let content = content(modes);
     let map = map();
     let (names, dlcs, aliases) = (
-        content_reader_core::trigger_keys::TriggerNames::default(),
+        content_reader_script::trigger_keys::TriggerNames::default(),
         BTreeSet::new(),
         Arc::default(),
     );
@@ -1891,7 +1891,7 @@ fn scripted_forced_refresh_refuses_inherited_temps_without_guessing_zero() {
     }"#, &mut modes).unwrap();
     let content = content(modes);
     let (mut frame, map) = (frame(), map());
-    let names = content_reader_core::trigger_keys::TriggerNames {
+    let names = content_reader_script::trigger_keys::TriggerNames {
         scripted: Default::default(),
         counts: Some(Default::default()),
     };
@@ -2025,7 +2025,7 @@ fn scripted_scheduled_refresh_preserves_unknown_event_context() {
     .unwrap();
     let content = content(modes);
     let (frame, map) = (frame(), map());
-    let names = content_reader_core::trigger_keys::TriggerNames {
+    let names = content_reader_script::trigger_keys::TriggerNames {
         scripted: Default::default(),
         counts: Some(Default::default()),
     };
@@ -2177,7 +2177,7 @@ fn colour_borders_keep_their_colour_until_their_provinces_change() {
     let layer = modes.get("held").unwrap().top.clone();
     let content = content(modes);
     let (frame, map) = (frame(), map());
-    let names = content_reader_core::trigger_keys::TriggerNames {
+    let names = content_reader_script::trigger_keys::TriggerNames {
         scripted: Default::default(),
         counts: Some(Default::default()),
     };
@@ -2520,7 +2520,7 @@ fn scripted_invasion_failures_withhold_colours_on_cold_and_warm_caches() {
             };
             rows.retain(|row| row.id != 1);
         }
-        let names = content_reader_core::trigger_keys::TriggerNames::default();
+        let names = content_reader_script::trigger_keys::TriggerNames::default();
         let dlcs = BTreeSet::new();
         let aliases = Arc::default();
         let mut facts =
@@ -2538,7 +2538,7 @@ fn scripted_invasion_failures_withhold_colours_on_cold_and_warm_caches() {
         let render = |body: &str, previous: Option<&colour_script::LayerState>| {
             let layer = scripted_map_modes::Layer {
                 kind: LayerType::Country,
-                color: content_reader_core::parser::parse(body.as_bytes())
+                color: content_reader_parser::parser::parse(body.as_bytes())
                     .unwrap()
                     .items,
                 ..Default::default()

@@ -1,8 +1,5 @@
 use eframe::wgpu;
-use content_reader_core::pdxshader::{
-    Address,
-    program::{Filter, Program, Sampler, Technique},
-};
+use content_reader_gui::pdxshader::{Address, program::{Filter, Program, Sampler, Technique}};
 use shader_pipeline::{
     Buffer, Compiled, ScalarKind, Shader, TextureKind, VertexInput, library::Effect,
 };

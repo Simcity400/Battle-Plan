@@ -1,7 +1,7 @@
 use crate::triggers::Failure;
 
-use content_reader_core::{scope::Keyword, scope::Names, scope::Scope, scope::ScopeKind};
-use content_reader_core::{tag_aliases::TagAlias, tag_aliases::TagAliases};
+use content_reader_script::scope::{Keyword, Names, Scope, ScopeKind};
+use content_reader_key_names::tag_aliases::{TagAlias, TagAliases};
 use replay_data::{
     rows::CountryAppearanceRow, rows::CountryCounterInputRow, rows::CountryLinkRow,
     rows::CountryRow, rows::FactionMemberRow, rows::GlobalSavedEventTargetRow, rows::PoliticsRow,
@@ -1077,7 +1077,7 @@ impl<'a> RecordedScopes<'a> {
         quoted: bool,
         context: &Context,
     ) -> Result<Target, Unresolved> {
-        self.resolve(&content_reader_core::scope::parse(text, quoted, self), context)
+        self.resolve(&content_reader_script::scope::parse(text, quoted, self), context)
     }
 
     pub fn resolve(&self, scope: &Scope, context: &Context) -> Result<Target, Unresolved> {
@@ -1733,7 +1733,7 @@ pub mod tests {
 
     #[test]
     fn a_target_is_its_scope_kind_for_the_trigger_check() {
-        use content_reader_core::scope::TriggerScopes;
+        use content_reader_script::scope::TriggerScopes;
         let country = Target::Country(0);
         assert!(TriggerScopes(0x4).accepts(|kind| kind == country.kind()));
         assert!(!TriggerScopes(0x2).accepts(|kind| kind == country.kind()));
@@ -1862,9 +1862,9 @@ pub mod tests {
     fn a_tag_alias_scope_is_refused_by_name() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let aliases = content_reader_core::tag_aliases::parse(
+        let aliases = content_reader_key_names::tag_aliases::parse(
             &[("a.txt", b"SPA = { }")],
-            &content_reader_core::key_names::KeyNames::default(),
+            &content_reader_script::key_names::KeyNames::default(),
         );
         let frame = positive_frame();
         let scopes = RecordedScopes::read(&frame, Arc::new(aliases));

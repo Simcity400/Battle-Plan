@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use content_reader_core::parser;
+use content_reader_parser::parser;
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())

@@ -1,3 +1,4 @@
+use content_reader_politics::faction_templates::FactionTemplateProducts as _;
 
 use crate::scripted_text::EffectDescriberFactory;
 use crate::{artwork::png_url, invalid};
@@ -5,10 +6,9 @@ use dashboard_core::{
     findings::{Finding, Kind},
     presentation::Presentation,
 };
-use content_reader_core::content::diagnostics::{self, Diagnostics, Once};
-use content_reader_core::{
-    ResolvedLayers, content::ResolvedContent, gui::native::resources, gui::native::sprites::Plain,
-};
+use content_reader_layers::content::diagnostics::{self, Diagnostics, Once};
+use content_reader_layers::{ResolvedLayers, content::ResolvedContent};
+use content_reader_gui::gui::native::{resources, sprites::Plain};
 use content_reader_gfx::gfx::SpriteSet;
 use content_reader_image::{Rgba8Image, native::Decode};
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
@@ -180,7 +180,7 @@ pub fn created_gui_sprite<'a>(
     if let Some(sprite) = sprites.find(name).map_err(invalid)? {
         return Ok(sprite);
     }
-    let fallback = std::str::from_utf8(content_reader_core::gui::native::resources::FALLBACK_SPRITE)
+    let fallback = std::str::from_utf8(content_reader_gui::gui::native::resources::FALLBACK_SPRITE)
         .expect("the executable's fallback sprite literal is ASCII");
     sprites
         .lookup(fallback)
@@ -479,7 +479,7 @@ impl OwnRefusals {
     }
 
     pub fn fallback_line(&self) -> Option<String> {
-        content_reader_core::content::overlay_refusal_line(&self.fallbacks)
+        content_reader_layers::content::overlay_refusal_line(&self.fallbacks)
     }
 
     pub fn fallbacks(&self) -> &BTreeSet<String> {
@@ -547,9 +547,9 @@ fn scope<T>(own: &mut OwnRefusals, reports: bool, isolated: bool, run: impl FnOn
         });
         let _exit = Exit(own);
         let (value, fallbacks) = if isolated {
-            content_reader_core::content::observe_overlay_refusals_isolated(run)
+            content_reader_layers::content::observe_overlay_refusals_isolated(run)
         } else {
-            content_reader_core::content::observe_overlay_refusals(run)
+            content_reader_layers::content::observe_overlay_refusals(run)
         };
         SCOPES.with(|scopes| {
             if let Some(active) = scopes.borrow_mut().last_mut() {
@@ -598,7 +598,7 @@ pub fn credit(noted: &OwnRefusals) {
             active.own.merge(noted);
         }
     });
-    content_reader_core::content::credit_overlay_refusals(&noted.fallbacks);
+    content_reader_layers::content::credit_overlay_refusals(&noted.fallbacks);
 }
 
 pub fn used(reader: Reader) {
@@ -722,14 +722,14 @@ pub struct Catalogue {
     pub presentation: Presentation,
     pub localisation: Arc<Localisation>,
     pub sprites: SpriteSet,
-    guis: content_reader_core::content::ByMode<
+    guis: content_reader_layers::content::ByMode<
         Once<(
-            Result<content_reader_core::gui::native::Guis, String>,
+            Result<content_reader_gui::gui::native::Guis, String>,
             BTreeSet<String>,
         )>,
     >,
     presentation_localisation:
-        content_reader_core::content::ByMode<Once<(Result<Arc<Localisation>, String>, BTreeSet<String>)>>,
+        content_reader_layers::content::ByMode<Once<(Result<Arc<Localisation>, String>, BTreeSet<String>)>>,
     pub gui_decode: Result<content_reader_image::native::Decode, String>,
     pub verification: Vec<String>,
     pub warnings: Vec<String>,
@@ -754,20 +754,20 @@ impl Catalogue {
         let _ = self.recorded.set(recorded);
     }
 
-    pub fn guis(&self) -> io::Result<&content_reader_core::gui::native::Guis> {
+    pub fn guis(&self) -> io::Result<&content_reader_gui::gui::native::Guis> {
         let (guis, fallbacks) = self.guis.current().get_or_init(|| {
             #[cfg(any(test, feature = "test-support"))]
             self.content_loads
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let (guis, fallbacks) = content_reader_core::content::observe_overlay_refusals(|| {
+            let (guis, fallbacks) = content_reader_layers::content::observe_overlay_refusals(|| {
                 self.content.layers.artwork(
                     "interface windows",
-                    content_reader_core::gui::native::read_layers,
+                    content_reader_gui::gui::native::read_layers,
                 )
             });
             (guis.map_err(|error| error.to_string()), fallbacks)
         });
-        content_reader_core::content::credit_overlay_refusals(fallbacks);
+        content_reader_layers::content::credit_overlay_refusals(fallbacks);
         guis.as_ref().map_err(invalid)
     }
 
@@ -778,7 +778,7 @@ impl Catalogue {
         }
         let (localisation, fallbacks) = self.presentation_localisation.current().get_or_init(|| {
             let (localisation, fallbacks) =
-                content_reader_core::content::observe_overlay_refusals(|| {
+                content_reader_layers::content::observe_overlay_refusals(|| {
                     layers.artwork("localisation", |stack| {
                         content_reader_localisation::localisation::read(
                             stack,
@@ -793,7 +793,7 @@ impl Catalogue {
                 fallbacks,
             )
         });
-        content_reader_core::content::credit_overlay_refusals(fallbacks);
+        content_reader_layers::content::credit_overlay_refusals(fallbacks);
         localisation.clone().map_err(invalid)
     }
 
@@ -1045,7 +1045,7 @@ impl Catalogue {
             .map_err(Clone::clone)
     }
 
-    pub fn defines(&self) -> Result<&content_reader_core::defines::Defines, String> {
+    pub fn defines(&self) -> Result<&content_reader_defines::defines::Defines, String> {
         Ok(self.scripted_content()?.environment()?.defines())
     }
 
@@ -1352,7 +1352,7 @@ pub fn sprite_frame_png(
 }
 
 fn strip_frame(sprite: &content_reader_gfx::gfx::SpriteType, frame: u32) -> bool {
-    use content_reader_core::gui::native::sprites::SpriteKind;
+    use content_reader_gui::gui::native::sprites::SpriteKind;
     match &sprite.facts.kind {
         SpriteKind::Plain(plain) | SpriteKind::FrameAnimated { plain, .. } => {
             frame < plain.frames.max(0) as u32
@@ -1401,7 +1401,7 @@ pub fn sprite_image_key(
         sprite.name,
         sprite.facts,
         decode,
-        content_reader_core::content::artwork_mode()
+        content_reader_layers::content::artwork_mode()
     )
 }
 
@@ -1415,7 +1415,7 @@ pub fn sprite_frames_png(
     decode: Decode,
     max_edge: u32,
 ) -> io::Result<()> {
-    use content_reader_core::gui::native::sprites::SpriteKind;
+    use content_reader_gui::gui::native::sprites::SpriteKind;
     let layers = layers.presentation();
     let cache = layers.derived::<SpriteImages>();
     let mut keys = BTreeSet::new();
@@ -1493,16 +1493,16 @@ impl SpriteImages {
                 .or_default(),
         );
         let (result, fallbacks) = slot.get_or_init(|| {
-            let (result, fallbacks) = content_reader_core::content::observe_overlay_refusals(render);
+            let (result, fallbacks) = content_reader_layers::content::observe_overlay_refusals(render);
             (result.map_err(|error| error.to_string()), fallbacks)
         });
-        content_reader_core::content::credit_overlay_refusals(fallbacks);
+        content_reader_layers::content::credit_overlay_refusals(fallbacks);
         result.clone().map_err(invalid)
     }
 
     fn unkept(render: impl FnOnce() -> io::Result<String>) -> io::Result<String> {
-        let (result, fallbacks) = content_reader_core::content::observe_overlay_refusals(render);
-        content_reader_core::content::credit_overlay_refusals(&fallbacks);
+        let (result, fallbacks) = content_reader_layers::content::observe_overlay_refusals(render);
+        content_reader_layers::content::credit_overlay_refusals(&fallbacks);
         result.map_err(|error| invalid(error.to_string()))
     }
 }
@@ -1514,7 +1514,7 @@ fn render_sprite_frame_png(
     frame: u32,
     max_edge: u32,
 ) -> io::Result<String> {
-    use content_reader_core::gui::native::sprites::SpriteKind;
+    use content_reader_gui::gui::native::sprites::SpriteKind;
     let (plain, animated) = match &sprite.facts.kind {
         SpriteKind::Plain(plain) => (plain, None),
         SpriteKind::FrameAnimated { plain, animation } => (plain, Some(animation)),
@@ -1922,7 +1922,7 @@ pub mod tests {
     fn gui_sprite_binding_uses_native_inheritance_and_kind_local_names() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use content_reader_core::gui::native;
+        use content_reader_gui::gui::native;
         let gui = native::read(
             br#"guiTypes = { containerWindowType = {
             name = topbar
@@ -1936,7 +1936,7 @@ pub mod tests {
         let guis = native::Guis::new(vec![("interface/topbar.gui".into(), gui)]);
         let mut warnings = Vec::new();
         assert_eq!(
-            content_reader_core::gui::native::window_button_sprite(
+            content_reader_gui::gui::native::window_button_sprite(
                 &guis,
                 "TOPBAR",
                 "PLAYER_FLAG",
@@ -1952,7 +1952,7 @@ pub mod tests {
     fn a_missing_gui_sprite_uses_the_native_fallback_but_a_refused_one_does_not() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let facts = content_reader_core::gui::native::sprites::read_sprites(
+        let facts = content_reader_gui::gui::native::sprites::read_sprites(
             br#"spriteTypes = {
             spriteType = { name = GFX_default_fallback_texture texturefile = fallback.dds }
             spriteType = { name = refused noOfFrames = -1 }
@@ -1982,7 +1982,7 @@ pub mod tests {
     fn text_icon_sprite_selects_native_prefix_then_bare_and_keeps_named_refusal() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let facts = content_reader_core::gui::native::sprites::read_sprites(
+        let facts = content_reader_gui::gui::native::sprites::read_sprites(
             br#"spriteTypes = {
                 spriteType = { name = GFX_mod_alias texturefile = prefixed.dds }
                 spriteType = { name = mod_alias texturefile = bare.dds }
@@ -2072,7 +2072,7 @@ pub mod tests {
         content_reader_localisation::localisation::read(&layers, "english").unwrap()
     }
 
-    pub fn loaded_templates(text: &str) -> Arc<content_reader_core::faction_templates::Catalog> {
+    pub fn loaded_templates(text: &str) -> Arc<content_reader_politics::faction_templates::Catalog> {
         let (catalogue, _folder) =
             folder_catalogue(&[("common/factions/templates/test.txt", text)]);
         catalogue.content.layers.faction_templates().unwrap()
@@ -2460,7 +2460,7 @@ pub mod tests {
         let (catalogue, _folder) =
             folder_catalogue(&[("outside_policy/synthetic.txt", "independent fixture")]);
         let reads = catalogue.content.layers.report_uncovered_reads();
-        let ((entries, lines, warnings), _) = content_reader_core::content::diagnostics::capture(|| {
+        let ((entries, lines, warnings), _) = content_reader_layers::content::diagnostics::capture(|| {
             catalogue
                 .content
                 .layers

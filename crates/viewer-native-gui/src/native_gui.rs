@@ -4,12 +4,7 @@ use std::collections::BTreeMap;
 use std::collections::{BTreeSet, HashMap};
 use std::{borrow::Cow, cell::RefCell};
 
-use content_reader_core::{
-    gui::native, gui::native::Animation, gui::native::Coordinate, gui::native::Element,
-    gui::native::Fields, gui::native::GridFormat, gui::native::Kind, gui::native::ListFormat,
-    gui::native::Orientation, gui::native::TextFormat, gui::native::VerticalAlignment,
-    gui::native::fonts::TextColors,
-};
+use content_reader_gui::gui::native::{self, Animation, Coordinate, Element, Fields, GridFormat, Kind, ListFormat, Orientation, TextFormat, VerticalAlignment, fonts::TextColors};
 use content_reader_localisation::localisation::Localisation;
 
 pub mod animation;
@@ -37,7 +32,7 @@ pub fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-pub const FALLBACK_SPRITE: &[u8] = content_reader_core::gui::native::resources::FALLBACK_SPRITE;
+pub const FALLBACK_SPRITE: &[u8] = content_reader_gui::gui::native::resources::FALLBACK_SPRITE;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Refusal {
@@ -165,7 +160,7 @@ pub struct SpriteInfo {
     pub refusals: Vec<(RefusalKind, String)>,
 }
 
-use content_reader_core::crt::truncate_f32;
+use content_reader_parser::crt::truncate_f32;
 
 impl SpriteInfo {
     fn divisors(&self) -> [i32; 2] {
@@ -769,7 +764,7 @@ impl Slide {
 }
 
 pub(crate) fn truncate_half_away(value: f32) -> i32 {
-    content_reader_core::crt::truncate_f32(if value >= 0.0 { value + 0.5 } else { value - 0.5 })
+    content_reader_parser::crt::truncate_f32(if value >= 0.0 { value + 0.5 } else { value - 0.5 })
 }
 
 impl Layout {
@@ -1202,7 +1197,7 @@ pub(super) fn own_sprite(element: &Element) -> Option<(&[u8], bool)> {
         }
         Fields::Button(button) => Some((&button.sprite, true)),
         Fields::ListBox(list) => {
-            let name = content_reader_core::parser::c_string(&list.background);
+            let name = content_reader_parser::parser::c_string(&list.background);
             (!name.is_empty()).then_some((name, true))
         }
         Fields::EditBox(edit) if edit.flags() & 0x2 == 0 => Some((b"", false)),

@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, io};
 
-use content_reader_core::{tokens::Token, unit_leader::SubUnits};
+use content_reader_parser::tokens::Token;
+use content_reader_script::sub_units::SubUnits;
 use content_reader_save as save;
 use replay_data::{rows::AirWingRow, rows::Recorded, rows::tables};
 use replay_frame::frame::DecodedFrame;
@@ -129,7 +130,7 @@ fn pool(
         return Ok(Some(false));
     };
     let mask = sub_units.category(name.as_bytes()).map_err(invalid)?;
-    let transport = content_reader_core::equipment::category_mask("air_transport")
+    let transport = content_reader_script::equipment_stats::category_mask("air_transport")
         .expect("the transport category exists");
     Ok(Some(mask & transport != 0))
 }

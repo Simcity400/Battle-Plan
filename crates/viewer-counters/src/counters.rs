@@ -1,3 +1,4 @@
+use content_reader_mesh::mesh::MeshProducts as _;
 use viewer_counters_naval::naval_members::HourJoins;
 use viewer_native_gui::{native_gui::Assets, native_windows::NativeWindows};
 pub mod carry;
@@ -12,15 +13,15 @@ mod tests;
 use crate::counters::faction_pings::HourPins;
 use crate::counters::faction_pings::PreparedPins;
 use crate::counters::preparation::Preparation;
-use content_reader_core::ResolvedLayers;
-use content_reader_core::buildings::Slot;
-use content_reader_core::defines::Defines;
-use content_reader_core::flags;
-use content_reader_core::flags::FlagSet;
-use content_reader_core::gui::native;
-use content_reader_core::map::MapData;
-use content_reader_core::map::ProvinceKind;
-use content_reader_core::positions;
+use content_reader_layers::ResolvedLayers;
+use content_reader_key_names::buildings::Slot;
+use content_reader_defines::defines::Defines;
+use content_reader_gui::flags;
+use content_reader_gui::flags::FlagSet;
+use content_reader_gui::gui::native;
+use content_reader_map::map::MapData;
+use content_reader_map::map::ProvinceKind;
+use content_reader_map::positions;
 use content_reader_gfx::gfx::SpriteSet;
 use content_reader_image::dds;
 use content_reader_regions::regions;
@@ -422,7 +423,7 @@ impl CounterContent {
         layers: &ResolvedLayers,
         artwork: &ResolvedLayers,
         map: &MapData,
-        defines: &content_reader_core::defines::Defines,
+        defines: &content_reader_defines::defines::Defines,
         regions: &BTreeMap<u32, regions::StrategicRegion>,
     ) -> io::Result<Self> {
         Self::load_with_products(None, layers, artwork, map, defines, regions)
@@ -433,7 +434,7 @@ impl CounterContent {
         layers: &ResolvedLayers,
         artwork: &ResolvedLayers,
         map: &MapData,
-        defines: &content_reader_core::defines::Defines,
+        defines: &content_reader_defines::defines::Defines,
         regions: &BTreeMap<u32, regions::StrategicRegion>,
     ) -> io::Result<Self> {
         let stacks = match products {
@@ -443,7 +444,7 @@ impl CounterContent {
         let anchors = stacks.positions;
         let stack_scales = stacks.scales;
         let mut ports = BTreeMap::new();
-        let definitions = content_reader_core::buildings::read(layers)?;
+        let definitions = content_reader_key_names::buildings::read(layers)?;
         let port_slots = port_slot_names(&definitions);
         let provinces = ProvinceMap {
             width: map.width,
@@ -453,8 +454,8 @@ impl CounterContent {
         let building_slots = positions::read_buildings(layers)?;
         let (states, _) = content_reader_states::states::read(layers, defines, &map.definitions)?;
         let roster = artwork.descriptor_roster()?;
-        let admit = |spawn: &content_reader_core::buildings::SpawnPoint,
-                     slot: &content_reader_core::positions::BuildingPosition,
+        let admit = |spawn: &content_reader_key_names::buildings::SpawnPoint,
+                     slot: &content_reader_map::positions::BuildingPosition,
                      province: Option<u32>| {
             viewer_foundation::building_facts::admit_slot(
                 spawn,
@@ -510,8 +511,8 @@ impl CounterContent {
             }
             region_provinces.insert(id, members);
         }
-        let (terrain, default_map) = content_reader_core::terrain::read(layers)?;
-        let wing_types = content_reader_core::unit_leader::sub_units(layers)
+        let (terrain, default_map) = content_reader_key_names::terrain::read(layers)?;
+        let wing_types = content_reader_key_names::unit_leader::sub_units(layers)
             .map(Arc::new)
             .map_err(|error| error.to_string());
         let attrition = viewer_unit_reads::counter_attrition::Content::read(
@@ -618,7 +619,7 @@ impl CounterContent {
                 subunit_tokens: dashboard_text::subunit_files::subunit_keys(layers)
                     .map(|keys| TokenKeys::new(&keys))
                     .map_err(|error| error.to_string()),
-                ideologies: content_reader_core::ideologies::Ideologies::default(),
+                ideologies: content_reader_key_names::ideologies::Ideologies::default(),
             },
         })
     }
@@ -650,7 +651,7 @@ impl CounterContent {
 }
 
 fn combat_terrains(bytes: &[u8]) -> io::Result<BTreeMap<u32, String>> {
-    content_reader_core::map::province_terrains(bytes)?
+    content_reader_map::map::province_terrains(bytes)?
         .into_iter()
         .map(|(id, terrain)| {
             String::from_utf8(terrain)
@@ -660,7 +661,7 @@ fn combat_terrains(bytes: &[u8]) -> io::Result<BTreeMap<u32, String>> {
         .collect()
 }
 
-fn port_slot_names(definitions: &content_reader_core::buildings::Buildings) -> BTreeSet<&str> {
+fn port_slot_names(definitions: &content_reader_key_names::buildings::Buildings) -> BTreeSet<&str> {
     definitions
         .types
         .values()
@@ -924,7 +925,7 @@ pub fn hour_tables(
     vision: Arc<Vision>,
     content: &CounterContent,
     assets: &CounterArt,
-    equipment: Result<&content_reader_core::equipment::Database, &str>,
+    equipment: Result<&content_reader_key_names::equipment::Database, &str>,
     localisation: &content_reader_localisation::localisation::Localisation,
     etas: &Etas,
     movement_content: Option<&MovementContent>,
@@ -935,8 +936,8 @@ pub fn hour_tables(
     reads: viewer_unit_reads::movement_reads::ReadOperands<'_>,
     mission_topology: Result<
         (
-            &content_reader_core::province_graph::ProvinceGraph,
-            &content_reader_core::province_geometry::ProvinceGeometry,
+            &content_reader_map::province_graph::ProvinceGraph,
+            &content_reader_map::province_geometry::ProvinceGeometry,
         ),
         String,
     >,
@@ -1146,8 +1147,8 @@ pub fn naval_dominance_sources(
     reads: viewer_unit_reads::movement_reads::ReadOperands<'_>,
     mission_topology: Result<
         (
-            &content_reader_core::province_graph::ProvinceGraph,
-            &content_reader_core::province_geometry::ProvinceGeometry,
+            &content_reader_map::province_graph::ProvinceGraph,
+            &content_reader_map::province_geometry::ProvinceGeometry,
         ),
         String,
     >,
@@ -1193,7 +1194,7 @@ pub fn hour_tables_profiled(
     vision: Arc<Vision>,
     content: &CounterContent,
     assets: &CounterArt,
-    equipment: Result<&content_reader_core::equipment::Database, &str>,
+    equipment: Result<&content_reader_key_names::equipment::Database, &str>,
     localisation: &content_reader_localisation::localisation::Localisation,
     etas: &Etas,
     movement_content: Option<&MovementContent>,
@@ -1204,8 +1205,8 @@ pub fn hour_tables_profiled(
     reads: viewer_unit_reads::movement_reads::ReadOperands<'_>,
     mission_topology: Result<
         (
-            &content_reader_core::province_graph::ProvinceGraph,
-            &content_reader_core::province_geometry::ProvinceGeometry,
+            &content_reader_map::province_graph::ProvinceGraph,
+            &content_reader_map::province_geometry::ProvinceGeometry,
         ),
         String,
     >,
@@ -2486,7 +2487,7 @@ impl HourTables {
         &self,
         ground: SeaGround<'_>,
         kinds: UnitKinds,
-        equipment: Result<&content_reader_core::equipment::Database, &str>,
+        equipment: Result<&content_reader_key_names::equipment::Database, &str>,
     ) -> io::Result<TodayNaval> {
         let frame = &self.frame;
         let ideology = |slot: u32| self.ideologies.get(&slot).cloned().unwrap_or(Ok(None));

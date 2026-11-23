@@ -1,4 +1,4 @@
-use content_reader_core::ResolvedLayers;
+use content_reader_layers::ResolvedLayers;
 use content_reader_localisation::localisation::Localisation;
 use std::collections::HashMap;
 
@@ -279,7 +279,7 @@ mod tests {
             "\u{feff}l_english:\n NIGHT:0 \"Night\"\n",
         )
         .unwrap();
-        let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+        let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
         let labels = RecordedLabels::prepare("english".into(), "french", &layers);
         std::fs::remove_dir_all(&root).unwrap();
         let french = loc("french", &[("NIGHT", "Nuit")]);

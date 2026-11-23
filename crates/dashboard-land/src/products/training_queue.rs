@@ -190,7 +190,7 @@ fn priorities(cat: &Result<Arc<Catalogue>, String>, frame: &DecodedFrame, root: 
         .iter()
         .map(|button| {
             let mut warnings = Vec::new();
-            let key = content_reader_core::gui::native::window_button_tooltip(guis, CONVEYOR_VIEW, button, &mut warnings);
+            let key = content_reader_gui::gui::native::window_button_tooltip(guis, CONVEYOR_VIEW, button, &mut warnings);
             notes.extend(warnings);
             key.map_err(|why| format!("Deployment priority name unavailable: {why}")).and_then(|key| text(&key))
         })
@@ -212,7 +212,7 @@ fn location(frame: &DecodedFrame, cat: &Result<Arc<Catalogue>, String>, province
     text.plain_state_name(row.state).and_then(|name| catalogue::plain_text(&name))
 }
 
-fn design(frame: &DecodedFrame, names: &Content, units: Option<&content_reader_core::equipment::Database>, variant: u64, refusals: &mut Refusals) -> (Option<String>, Option<String>, Option<String>) {
+fn design(frame: &DecodedFrame, names: &Content, units: Option<&content_reader_key_names::equipment::Database>, variant: u64, refusals: &mut Refusals) -> (Option<String>, Option<String>, Option<String>) {
     let cat = &names.cat;
     let Ok(rows) = frame.complete::<tables::VariantDefinitions>() else {
         refusals.note("Design definitions were not read at this hour");
@@ -225,7 +225,7 @@ fn design(frame: &DecodedFrame, names: &Content, units: Option<&content_reader_c
     let name = refusals.keep(names.design_name(frame, row)).0;
     let token = frame.complete::<tables::LexicalTokens>().ok().and_then(|tokens| {
         let at = tokens.binary_search_by_key(&row.equipment_token, |token| token.token).ok()?;
-        std::str::from_utf8(content_reader_core::parser::c_string(&tokens[at].literal)).ok().map(str::to_owned)
+        std::str::from_utf8(content_reader_parser::parser::c_string(&tokens[at].literal)).ok().map(str::to_owned)
     });
     let archetype = token.as_deref().zip(units).and_then(|(token, units)| {
         let ordinal = units.named(token)?.archetype?;

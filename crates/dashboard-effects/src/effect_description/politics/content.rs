@@ -1,6 +1,6 @@
 use super::*;
 use crate::scripted_text::{EventObject, EventScope, random};
-use content_reader_core::ResolvedLayers;
+use content_reader_layers::ResolvedLayers;
 use replay_data::rows::{PoliticalPartyRow, TechSharingGroupRow, TechSharingMemberRow};
 
 const PARTY_TOKEN: u64 = mask::<PoliticalPartyRow>(&["token"]);
@@ -13,11 +13,11 @@ mod tests;
 pub(in crate::effect_description) struct PoliticsContent {
     pub(in crate::effect_description) notes: Vec<String>,
     focuses: Result<content_reader_focus::focus::Focuses, String>,
-    tactics: Result<content_reader_core::combat_tactics::Database, String>,
-    upgrades: Result<content_reader_core::intelligence::AgencyUpgrades, String>,
-    tokens: Result<content_reader_core::intelligence::OperationTokens, String>,
-    sharing: Result<content_reader_core::technology_sharing::TechnologySharing, String>,
-    pub(super) triggers: Result<content_reader_core::scripted_triggers::ScriptedTriggers, String>,
+    tactics: Result<content_reader_military::combat_tactics::Database, String>,
+    upgrades: Result<content_reader_military::intelligence::AgencyUpgrades, String>,
+    tokens: Result<content_reader_military::intelligence::OperationTokens, String>,
+    sharing: Result<content_reader_military::technology_sharing::TechnologySharing, String>,
+    pub(super) triggers: Result<content_reader_script::scripted_trigger_grammar::ScriptedTriggers, String>,
     pub(super) continents: Result<Vec<String>, String>,
 }
 
@@ -30,27 +30,27 @@ impl PoliticsContent {
                 db
             })
             .map_err(|why| why.to_string());
-        let tactics = content_reader_core::combat_tactics::read(layers)
+        let tactics = content_reader_military::combat_tactics::read(layers)
             .inspect(|db| {
                 notes.extend(db.logged.iter().cloned());
             })
             .map_err(|why| why.to_string());
-        let upgrades = content_reader_core::intelligence::read_agency_upgrades(layers)
+        let upgrades = content_reader_military::intelligence::read_agency_upgrades(layers)
             .inspect(|db| {
                 notes.extend(db.warnings.iter().cloned());
             })
             .map_err(|why| why.to_string());
-        let tokens = content_reader_core::intelligence::read_operation_tokens(layers)
+        let tokens = content_reader_military::intelligence::read_operation_tokens(layers)
             .inspect(|db| {
                 notes.extend(db.warnings.iter().cloned());
             })
             .map_err(|why| why.to_string());
-        let sharing = content_reader_core::technology_sharing::read(layers)
+        let sharing = content_reader_military::technology_sharing::read(layers)
             .inspect(|db| {
                 notes.extend(db.warnings.iter().cloned());
             })
             .map_err(|why| why.to_string());
-        let triggers = content_reader_core::scripted_triggers::read_descriptions(layers)
+        let triggers = content_reader_key_names::scripted_triggers::read_descriptions(layers)
             .inspect(|db| {
                 notes.extend(db.logged.iter().cloned());
             })
@@ -63,7 +63,7 @@ impl PoliticsContent {
             tokens,
             sharing,
             triggers,
-            continents: content_reader_core::terrain::read_default_map(layers)
+            continents: content_reader_key_names::terrain::read_default_map(layers)
                 .and_then(|map| layers.read(&map.file("continent")?))
                 .and_then(|bytes| {
                     content_reader_equipment_graphics::equipment_graphics::context::continent_names(
@@ -78,7 +78,7 @@ impl PoliticsContent {
 impl Renderer<'_, '_, '_> {
     pub(in crate::effect_description) fn politics_ideologies(
         &self,
-    ) -> Result<&content_reader_core::ideologies::Ideologies, String> {
+    ) -> Result<&content_reader_key_names::ideologies::Ideologies, String> {
         self.context.text.content().environment()?.ideologies()
     }
 
@@ -126,7 +126,7 @@ impl Renderer<'_, '_, '_> {
             let name = self.localised(group.token.as_bytes(), &[], scopes, false)?;
             text.push_str(&name);
             text.push_str(": ");
-            text.push_str(&content_reader_core::fixed5::fixed5_percent(value, 2, false));
+            text.push_str(&content_reader_parser::fixed5::fixed5_percent(value, 2, false));
             text.push('\n');
         }
         Ok(text)
@@ -191,7 +191,7 @@ impl Renderer<'_, '_, '_> {
             _ => focus(),
         }
         .unwrap_or_default();
-        let id = std::str::from_utf8(content_reader_core::parser::c_string(id))
+        let id = std::str::from_utf8(content_reader_parser::parser::c_string(id))
             .map_err(|_| "national-focus ID is not UTF-8")?;
         let content = self.politics_content()?;
         let definition = content
@@ -294,7 +294,7 @@ impl Renderer<'_, '_, '_> {
         };
         let world = self.context.world()?;
         let Some(token) = world
-            .token_of(content_reader_core::parser::c_string(id))
+            .token_of(content_reader_parser::parser::c_string(id))
             .map_err(|why| why.to_string())?
         else {
             return empty::describe();
@@ -318,7 +318,7 @@ impl Renderer<'_, '_, '_> {
         {
             return empty::describe();
         }
-        let id = std::str::from_utf8(content_reader_core::parser::c_string(id))
+        let id = std::str::from_utf8(content_reader_parser::parser::c_string(id))
             .map_err(|_| "technology-sharing ID is not UTF-8")?;
         let group = self
             .politics_content()?
@@ -333,7 +333,7 @@ impl Renderer<'_, '_, '_> {
         let country = self.country_name(country, false)?;
         let bonus = field(fields, "bonus")
             .and_then(|item| item.value.scalar())
-            .and_then(content_reader_core::fixed5::script_fixed5)
+            .and_then(content_reader_parser::fixed5::script_fixed5)
             .unwrap_or(0);
         self.line(
             b"EFFECT_MODIFY_COUNTRY_TECH_SHARING_BONUS",
@@ -397,7 +397,7 @@ impl Renderer<'_, '_, '_> {
         let token = field(fields, "token")
             .and_then(|item| item.value.scalar())
             .unwrap_or_default();
-        let token = std::str::from_utf8(content_reader_core::parser::c_string(token))
+        let token = std::str::from_utf8(content_reader_parser::parser::c_string(token))
             .map_err(|_| "operation-token ID is not UTF-8")?;
         let content = self.politics_content()?;
         let token = content

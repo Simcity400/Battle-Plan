@@ -387,7 +387,7 @@ fn filtered_raw_joins_refuse_each_source_once_and_resolved_colours_stay_exact() 
                 ..Default::default()
             }],
         );
-        let roles = LeaderRoles::new(vec![content_reader_core::characters::LeaderTemplate {
+        let roles = LeaderRoles::new(vec![content_reader_key_names::characters::LeaderTemplate {
             path: "common/characters/synthetic.txt".into(),
             tag: "synthetic_actor".into(),
             line: None,
@@ -484,7 +484,7 @@ fn filtered_resolution_certainty_is_part_of_a_querys_reuse_digest() {
 fn missing_positive_character_tokens_refuse_on_cold_and_warm_indexes() {
     use replay_data::rows::*;
     engine_executable::executable_tables::initialize_for_tests().unwrap();
-    let roles = LeaderRoles::new(vec![content_reader_core::characters::LeaderTemplate {
+    let roles = LeaderRoles::new(vec![content_reader_key_names::characters::LeaderTemplate {
         path: "common/characters/synthetic.txt".into(),
         tag: "synthetic_actor".into(),
         line: None,
@@ -664,7 +664,7 @@ fn state_builtin_country_miss_has_only_its_country_links_identity() {
 
 #[test]
 fn country_token_absence_requires_complete_countries_on_cold_and_warm_reads() {
-    use content_reader_core::scope::Names;
+    use content_reader_script::scope::Names;
     engine_executable::executable_tables::initialize_for_tests().unwrap();
     for status in ["complete", "truncated", "unavailable"] {
         let mut f = with_variables(
@@ -722,7 +722,7 @@ fn country_token_absence_requires_complete_countries_on_cold_and_warm_reads() {
 
 #[test]
 fn character_token_membership_absence_requires_both_complete_tables() {
-    use content_reader_core::scope::Names;
+    use content_reader_script::scope::Names;
     engine_executable::executable_tables::initialize_for_tests().unwrap();
     for unavailable in [TableId::Characters, TableId::LexicalTokens] {
         let mut f = positive_variables_frame();

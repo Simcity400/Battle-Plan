@@ -242,7 +242,7 @@ fn assert_stores(a: &Stores, b: &Stores) {
 
 #[test]
 fn initial_flag_warm_matches_cold_acquisition_across_changing_hours() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let cold = Stores::new();
     let warm = Stores::new();
     super::super::tests::with_counter_inputs_fixture(
@@ -345,7 +345,7 @@ fn initial_flag_warm_matches_cold_acquisition_across_changing_hours() {
 
 #[test]
 fn refused_initial_flag_inputs_leave_every_store_cold() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let stores = Stores::new();
     super::super::tests::with_counter_inputs_fixture(
         viewer_counter_kit::fixtures::action_gui(false),
@@ -394,7 +394,7 @@ fn refused_initial_flag_inputs_leave_every_store_cold() {
 
 #[test]
 fn truncated_initial_appearance_keeps_present_country_candidates() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut source = frame(0);
     let available = rows::<tables::CountryAppearance>(&source).unwrap();
     *source.tables[TableId::CountryAppearance.index()] = TableView::Truncated {
@@ -414,7 +414,7 @@ fn truncated_initial_appearance_keeps_present_country_candidates() {
 
 #[test]
 fn overlay_hour_tables_reuse_settled_country_index_and_preserve_partial_appearance() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     super::super::tests::with_counter_inputs_and_content(
         viewer_counter_kit::fixtures::action_gui(false),
         |_| {},

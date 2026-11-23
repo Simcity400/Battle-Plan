@@ -22,4 +22,4 @@ Cost thresholds and resource pools retain ordered keys and replace an earlier va
 
 Industrial conversion picks an exact module first, then the last entry whose category matches, including the native unset identity. Structural validation counts inactive explicit assignments for aggregate rules, treats them as absent for individual slots, and can use that slot's default along the stored inheritance walk. An `empty` assignment supplies no module. Native count checks apply only to collected map keys and preserve the stored operator mapping.
 
-[Equipment database](../../crates/content-reader-core/src/equipment.rs) · [Design arithmetic](../../crates/content-reader-core/src/equipment/design.rs) · [Groups](../../crates/content-reader-core/src/equipment/groups.rs) · [Validation](../../crates/content-reader-core/src/equipment/validity.rs)
+[Equipment database](../../crates/content-reader-key-names/src/equipment.rs) · [Design arithmetic](../../crates/content-reader-key-names/src/equipment/design.rs) · [Groups](../../crates/content-reader-key-names/src/equipment/groups.rs) · [Validation](../../crates/content-reader-key-names/src/equipment/validity.rs)

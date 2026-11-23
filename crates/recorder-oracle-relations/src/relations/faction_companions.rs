@@ -104,7 +104,7 @@ pub fn rules(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
             .map(|row| {
                 tokens
                     .get(&row.token)
-                    .map(|literal| content_reader_core::parser::c_string(literal).to_vec())
+                    .map(|literal| content_reader_parser::parser::c_string(literal).to_vec())
                     .ok_or_else(|| invalid("faction rule token is absent from LexicalTokens"))
             })
             .collect::<io::Result<Vec<_>>>()?;
@@ -323,7 +323,7 @@ pub fn minimum_upgrades(frame: &DecodedFrame, save: &Save, report: &mut Report) 
             .map(|row| {
                 tokens
                     .get(&row.token)
-                    .map(|literal| content_reader_core::parser::c_string(literal).to_vec())
+                    .map(|literal| content_reader_parser::parser::c_string(literal).to_vec())
                     .ok_or_else(|| invalid("faction minimum upgrade token spelling unavailable"))
             })
             .collect::<io::Result<Vec<_>>>()?;
@@ -356,7 +356,7 @@ pub fn doctrine(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::R
             .map(|row| {
                 tokens
                     .get(&row.token)
-                    .map(|literal| content_reader_core::parser::c_string(literal).to_vec())
+                    .map(|literal| content_reader_parser::parser::c_string(literal).to_vec())
                     .ok_or_else(|| invalid("faction doctrine folder token spelling unavailable"))
             })
             .collect::<io::Result<Vec<_>>>()?;

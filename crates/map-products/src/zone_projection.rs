@@ -2,7 +2,7 @@ use crate::{
     dependency_index::{Clock, DependencyIndex},
     witness::Operand,
 };
-use content_reader_core::map::MapData;
+use content_reader_map::map::MapData;
 use map_display_data::{province_field::Storage, retained::Retained};
 use replay_data::rows::TableId;
 use replay_frame::frame::DecodedFrame;
@@ -94,10 +94,10 @@ mod tests {
                 .map(|id| {
                     (
                         id,
-                        content_reader_core::map::ProvinceDefinition {
+                        content_reader_map::map::ProvinceDefinition {
                             id,
                             rgb: [0; 3],
-                            kind: content_reader_core::map::ProvinceKind::Land,
+                            kind: content_reader_map::map::ProvinceKind::Land,
                             continent: 0,
                         },
                     )

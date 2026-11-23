@@ -514,7 +514,7 @@ mod tests {
     use super::*;
 
     fn enter_display_settings() {
-        content_reader_core::test_game::with(|game| {
+        content_reader_script::test_game::with(|game| {
             game.words(["graphics", "gui_scale", "fullscreen", "borderless", "vsync"])
         });
     }

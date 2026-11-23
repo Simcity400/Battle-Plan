@@ -1,6 +1,6 @@
 
 use viewer_runtime::errors::invalid;
-use content_reader_core::map::MapData;
+use content_reader_map::map::MapData;
 use std::io;
 
 #[derive(Clone, Copy, Debug)]

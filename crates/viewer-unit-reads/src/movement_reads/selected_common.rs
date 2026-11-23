@@ -1073,7 +1073,7 @@ impl CommonMoveText for CommonText<'_> {
     fn rule(
         &self,
         key: &str,
-        rule: &content_reader_core::adjacency_rules::AdjacencyRule,
+        rule: &content_reader_map::adjacency_rules::AdjacencyRule,
     ) -> Fact<String> {
         let name = self.plain(&rule.name)?;
         localise(
@@ -1086,7 +1086,7 @@ impl CommonMoveText for CommonText<'_> {
         )
     }
     fn warning(&self, key: &str, raw: i64) -> Fact<String> {
-        let value = content_reader_core::fixed5::fixed5_to_string(raw, 0);
+        let value = content_reader_parser::fixed5::fixed5_to_string(raw, 0);
         localise(
             self.loc,
             key,

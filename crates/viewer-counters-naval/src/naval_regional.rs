@@ -1,5 +1,5 @@
 use crate::base_windows;
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use crate::{naval_markers, naval_mine_badges, naval_missions, naval_windows};
 use crate::naval::{NavalContext, NavalSources, NavalUnit};
 use replay_data::rows::tables;
@@ -621,7 +621,7 @@ pub fn prepare<'a>(
                             .join("; ")
                     })?;
                     let height = extent.map_or(0, |size| size[1]);
-                    let y = content_reader_core::crt::truncate_f32(
+                    let y = content_reader_parser::crt::truncate_f32(
                         (1.0 - (packet
                             .raiding_spotting
                             .ok_or("regional convoy spotting is unavailable")?

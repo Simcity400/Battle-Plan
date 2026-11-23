@@ -696,7 +696,7 @@ pub struct Viewer {
     awaiting_folders: bool,
     document: Option<Document>,
     loading: Option<mpsc::Receiver<Result<LoadedReplay, String>>>,
-    startup_content: Option<content_reader_core::content::Loading>,
+    startup_content: Option<content_reader_layers::content::Loading>,
     error: Option<String>,
     scene: Option<Scene>,
     scene_target: Presented,
@@ -755,7 +755,7 @@ pub struct Viewer {
     visual_stale_campaign: Option<String>,
     map_preferences_seen: Option<(
         String,
-        Option<Vec<content_reader_core::content::visual::Choice>>,
+        Option<Vec<content_reader_layers::content::visual::Choice>>,
         u32,
         u8,
     )>,
@@ -1289,7 +1289,7 @@ impl Viewer {
             options,
             document: None,
             loading: None,
-            startup_content: content_reader_core::content::Generation::loading(),
+            startup_content: content_reader_layers::content::Generation::loading(),
             error,
             scene: None,
             scene_target: Presented::default(),
@@ -2795,8 +2795,8 @@ impl Viewer {
             viewer_runtime::worker_priority::background_priority();
             let _stage = viewer_runtime::load_record::stage("load");
             let _generation = startup_content.as_ref().map_or_else(
-                content_reader_core::content::Generation::enter,
-                content_reader_core::content::Loading::enter_generation,
+                content_reader_layers::content::Generation::enter,
+                content_reader_layers::content::Loading::enter_generation,
             );
             drop(startup_content);
             let initial = InitialHour {
@@ -7789,7 +7789,7 @@ pub(crate) mod tests {
 
     #[test]
     fn task_force_children_outside_the_plate_keep_its_priority_and_block_unknown_hit_forms() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         use viewer_native_gui::{
             counter_hovers::{task_force::{Control, Hover}, unit_hits::{Blocker, Hit, Kind}},
             sprites::layer,
@@ -7863,7 +7863,7 @@ pub(crate) mod tests {
             top_map_hit(point, &report, &[], &[], None, None),
             Some(MapHit::Blocked)
         );
-        let gui = content_reader_core::gui::native::read(
+        let gui = content_reader_gui::gui::native::read(
             br#"guiTypes = { iconType = {
             name = unbound pdx_tooltip = TITLE
         } }"#,

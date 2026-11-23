@@ -2,10 +2,8 @@ use std::{cell::RefCell, rc::Rc};
 
 use crate::triggers::{Failure, refusal::refused};
 
-use content_reader_core::{
-    mio_traits::{Catalog, TraitName},
-    parser::{Item, Operator, read_bool, read_bool_field},
-};
+use content_reader_military::mio_traits::{Catalog, TraitName};
+use content_reader_parser::parser::{Item, Operator, read_bool, read_bool_field};
 
 use super::{
     Eval, Scopes,
@@ -23,7 +21,7 @@ fn token_text<'i>(item: &'i Item, name: &str) -> Result<&'i [u8], Failure> {
     }
     item.value
         .scalar()
-        .map(content_reader_core::parser::c_string)
+        .map(content_reader_parser::parser::c_string)
         .ok_or_else(|| format!("{name} needs a scalar operand").into())
 }
 
@@ -122,7 +120,7 @@ impl Evaluator<'_, '_> {
         let world = self.world();
         Ok(Some(match name {
             "has_mio_size" => {
-                if item.kind == content_reader_core::parser::Kind::Open {
+                if item.kind == content_reader_parser::parser::Kind::Open {
                     return Err(refused(
                         "has_mio_size takes a block's opening brace as its operand, and how the reader recovers is not reproduced",
                     ));
@@ -183,7 +181,7 @@ impl Evaluator<'_, '_> {
             }
             "is_mio_trait_available" => self.trait_available(item, reference)?,
             "has_mio_equipment_type" => {
-                let wanted = content_reader_core::parser::c_string(
+                let wanted = content_reader_parser::parser::c_string(
                     item.value
                         .scalar()
                         .ok_or("has_mio_equipment_type needs a scalar operand")?,
@@ -199,7 +197,7 @@ impl Evaluator<'_, '_> {
                 )
             }
             "has_mio_research_category" => {
-                let wanted = content_reader_core::parser::c_string(
+                let wanted = content_reader_parser::parser::c_string(
                     item.value
                         .scalar()
                         .ok_or("has_mio_research_category needs a scalar operand")?,
@@ -463,7 +461,7 @@ fn expect(value: Eval, expected: bool) -> Eval {
 fn organisation_tree<'c>(
     catalog: &'c Catalog,
     template: &str,
-) -> Result<content_reader_core::mio_traits::Tree<'c>, Failure> {
+) -> Result<content_reader_military::mio_traits::Tree<'c>, Failure> {
     catalog.tree(template)?.ok_or_else(|| {
         format!("industrial organisation {template} is not defined in the recorded content stack")
             .into()

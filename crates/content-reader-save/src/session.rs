@@ -2,7 +2,7 @@
 use std::io;
 
 use super::{Decimal, GameDate, block, bytes, field, integer, invalid, required_bytes, scalar};
-use content_reader_core::parser::Item;
+use content_reader_parser::parser::Item;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
@@ -84,7 +84,7 @@ mod tests {
     use super::*;
 
     fn pack(text: &[u8]) -> io::Result<Pack> {
-        parse(&content_reader_core::parser::parse(text)?.items)
+        parse(&content_reader_parser::parser::parse(text)?.items)
     }
 
     #[test]

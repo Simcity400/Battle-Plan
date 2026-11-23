@@ -4,7 +4,7 @@ use engine_native::{
     raid_tooltip_operands::ADDITIONAL_ORDER, raid_tooltip_operands::ESSENTIAL_ORDER,
     raid_tooltip_operands::definition_key,
 };
-use content_reader_core::parser::Item;
+use content_reader_parser::parser::Item;
 use std::collections::BTreeMap;
 use viewer_foundation::tooltip_text::country_localised;
 
@@ -620,7 +620,7 @@ mod tests {
     }
 
     fn parse(text: &str) -> Vec<Item> {
-        content_reader_core::parser::parse(text.as_bytes())
+        content_reader_parser::parser::parse(text.as_bytes())
             .unwrap()
             .items
     }
@@ -727,7 +727,7 @@ mod tests {
 
     #[test]
     fn failed_condition_chain_keeps_order_first_cooldown_and_source_country_title() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let assets = assets();
         let mut frame = frame();
         let mut kind = assets.catalog.types[0].clone();
@@ -818,7 +818,7 @@ mod tests {
 
     #[test]
     fn passing_conditions_emit_nothing_and_category_denial_has_no_text() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut assets = assets();
         let frame = frame();
         let mut kind = assets.catalog.types[0].clone();
@@ -852,7 +852,7 @@ mod tests {
 
     #[test]
     fn scoped_launch_conditions_use_shared_traversal_without_changing_admission() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut assets = assets();
         assets
             .tooltip
@@ -970,8 +970,8 @@ mod tests {
     }
 
     fn enter_trigger_test_game() {
-        content_reader_core::test_game::with(|game| {
-            use content_reader_core::trigger_keys::Reader;
+        content_reader_script::test_game::with(|game| {
+            use content_reader_script::trigger_keys::Reader;
             game.trigger("synthetic_unported_trigger", 0, Reader::Assign, 0)
                 .trigger("set_temp_variable", 0, Reader::Body, 0)
                 .trigger("add_to_temp_variable", 0, Reader::Body, 0)
@@ -1223,7 +1223,7 @@ mod tests {
 
     #[test]
     fn absent_prev_and_from_links_refuse_instead_of_entering_self() {
-        content_reader_core::test_game::enter_viewer();
+        content_reader_script::test_game::enter_viewer();
         let assets = assets();
         let frame = frame();
         let loc: Localisation = [

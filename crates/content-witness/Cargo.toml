@@ -7,8 +7,8 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+content-reader-layers.workspace = true
 engine-allocation.workspace = true
-content-reader-core.workspace = true
 product-codec.workspace = true
 sha2.workspace = true
 
@@ -19,7 +19,7 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
-content-reader-core = { workspace = true, features = ["layer-fixtures", "test-support"] }
+content-reader-layers = { workspace = true, features = ["layer-fixtures", "test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["capture", "test-support"] }

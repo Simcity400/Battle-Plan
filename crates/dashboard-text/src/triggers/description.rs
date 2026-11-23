@@ -1,5 +1,6 @@
 
-use content_reader_core::{parser::Item, parser::Operator, scope::Keyword, scope::Scope as Parsed};
+use content_reader_parser::parser::{Item, Operator};
+use content_reader_script::scope::{Keyword, Scope as Parsed};
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use std::collections::BTreeMap;
 
@@ -521,7 +522,7 @@ impl<'a> Formatter<'_, '_, 'a> {
             Unit::One(item, child) => match child {
                 Child::Keyless => Err("keyless trigger description is not reproduced".into()),
                 Child::Scripted(template) => {
-                    let frame = content_reader_core::trigger_keys::frame(template);
+                    let frame = content_reader_script::trigger_keys::frame(template);
                     if let Some(why) = self.evaluator.enter_frame(frame) {
                         return Err(why);
                     }
@@ -846,7 +847,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                 key_text(item)
             ));
         };
-        let operand = content_reader_core::parser::c_string(item.value.scalar().unwrap_or_default());
+        let operand = content_reader_parser::parser::c_string(item.value.scalar().unwrap_or_default());
         let key = match name.as_str() {
             "always" => Some(
                 if trigger_boolean(item).map_err(|why| why.to_string())? != inverted {
@@ -932,7 +933,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
             }
             "phase" => {
-                let id = content_reader_core::fixed5::decimal_i32(operand);
+                let id = content_reader_parser::fixed5::decimal_i32(operand);
                 let key = if id < 0 {
                     b"PHASE_DEFAULT".as_slice()
                 } else {
@@ -1071,7 +1072,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
                 .map_err(|why| format!("trigger is_deployed: {why}")),
             "is_fighting_in_strategic_region" => {
-                let region = content_reader_core::crt::scan_i32(operand)
+                let region = content_reader_parser::crt::scan_i32(operand)
                     .stored()
                     .ok_or("trigger is_fighting_in_strategic_region: the operand does not assign a region ID; the retained value is not reproduced")?
                     .to_string();

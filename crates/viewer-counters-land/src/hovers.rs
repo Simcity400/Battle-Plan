@@ -1,5 +1,5 @@
 
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use crate::land;
 use viewer_counter_kit::{ABILITY_WINDOW, CounterInputs, GUN_WINDOW, LAND_WINDOW, bar_placement};
 use viewer_native_gui::sprites;
@@ -7,7 +7,7 @@ use viewer_native_gui::counter_hovers::land::CounterControl;
 use viewer_native_gui::sprites::{Batch, SpriteSheet};
 use viewer_unit_reads::counter_status;
 #[cfg(test)]
-use content_reader_core::ResolvedLayers;
+use content_reader_layers::ResolvedLayers;
 use viewer_native_gui::counter_hovers::gui_authored::Authored;
 #[cfg(test)]
 use viewer_runtime::geometry::contains;
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn vertical_counter_hover_uses_the_native_grid_and_scale_order() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = std::env::temp_dir().join(format!(
             "hoi4_vertical_counter_hover_{}",
             std::process::id()
@@ -543,7 +543,7 @@ mod tests {
 
     #[test]
     fn bar_hover_uses_authored_placement_at_180_degrees() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let gui = br#"guiTypes = {
             containerWindowType = {
                 name = "naval_combat_mapicon"
@@ -637,7 +637,7 @@ mod tests {
 
     #[test]
     fn bar_hover_shares_bar_step_origin_for_vertical_bars_at_half_fill() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let gui = br#"guiTypes = {
             containerWindowType = {
                 name = "naval_combat_mapicon"

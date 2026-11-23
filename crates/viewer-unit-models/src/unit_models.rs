@@ -1,3 +1,4 @@
+use content_reader_mesh::mesh::MeshProducts as _;
 use viewer_unit_history::unit_history::MESH_FORWARD_OFFSET;
 
 use std::cell::{OnceCell, RefCell};
@@ -20,7 +21,11 @@ use viewer_foundation::movement_timing::Etas;
 use viewer_runtime::profiling::BuilderSpans;
 use dashboard_text::table_access::TokenNames;
 
-use content_reader_core::{ResolvedLayers, defines::Defines, map::MapData, mesh, terrain::DefaultMap};
+use content_reader_layers::ResolvedLayers;
+use content_reader_defines::defines::Defines;
+use content_reader_map::map::MapData;
+use content_reader_mesh::mesh;
+use content_reader_key_names::terrain::DefaultMap;
 use content_reader_image::native::Decode;
 use content_reader_localisation::localisation::Localisation;
 use replay_data::{
@@ -521,7 +526,7 @@ impl UnitModelAssets {
         mut try_load: impl FnMut(
             LoadStack,
             &Defines,
-            &mut Vec<content_reader_core::Diagnostic>,
+            &mut Vec<content_reader_parser::Diagnostic>,
         ) -> io::Result<Self>,
     ) -> Self {
         let mut notes = Vec::new();
@@ -593,12 +598,12 @@ impl UnitModelAssets {
         defines: &Defines,
         map: &MapData,
         default_map: &DefaultMap,
-        warnings: &mut Vec<content_reader_core::Diagnostic>,
+        warnings: &mut Vec<content_reader_parser::Diagnostic>,
     ) -> io::Result<Self> {
         let roster = layers.descriptor_roster()?;
         if !roster.unreadable.is_empty() {
             warnings.push((
-                content_reader_core::DiagnosticKind::ParseFailure,
+                content_reader_parser::DiagnosticKind::ParseFailure,
                 format!(
                     "Unit model descriptors that do not parse even when closed are skipped: {}",
                     roster.unreadable.join(", ")
@@ -607,7 +612,7 @@ impl UnitModelAssets {
         }
         if !roster.logged.is_empty() {
             warnings.push((
-                content_reader_core::DiagnosticKind::Logged,
+                content_reader_parser::DiagnosticKind::Logged,
                 format!(
                     "Unit model entity registration diagnostics: {}",
                     roster.logged.join("; ")
@@ -617,7 +622,7 @@ impl UnitModelAssets {
         let sub_units = model_selection::Content::load(layers)?;
         if !sub_units.dropped.is_empty() {
             warnings.push((
-                content_reader_core::DiagnosticKind::Warning,
+                content_reader_parser::DiagnosticKind::Warning,
                 format!(
                     "Sub-unit equipment needs the engine drops: {}",
                     sub_units.dropped.join("; ")
@@ -629,7 +634,7 @@ impl UnitModelAssets {
         warnings.extend(
             name_warnings
                 .into_iter()
-                .map(|message| (content_reader_core::DiagnosticKind::Warning, message)),
+                .map(|message| (content_reader_parser::DiagnosticKind::Warning, message)),
         );
         let graphics = content_reader_equipment_graphics::equipment_graphics::Content::load(layers, &names)?;
         let geography = context::Content::load(layers, default_map, &map.definitions, defines)?;
@@ -662,7 +667,7 @@ impl UnitModelAssets {
                 .cloned()
                 .collect(),
             ships,
-            dynamic_tags: content_reader_core::country_tags::read_definitions(layers)
+            dynamic_tags: content_reader_key_names::country_tags::read_definitions(layers)
                 .map(|tags| {
                     tags.into_iter()
                         .filter(|(_, tag)| tag.dynamic)
@@ -855,7 +860,7 @@ impl UnitModelAssets {
             return Err("SimulationFeatures must have one complete row".into());
         };
         fn text(bytes: &[u8]) -> Result<&str, String> {
-            content_reader_core::parser::text(bytes).map_err(|error| error.to_string())
+            content_reader_parser::parser::text(bytes).map_err(|error| error.to_string())
         }
         let key = || {
             let tokens = TokenNames::new(frame).map_err(|error| error.to_string())?;
@@ -3258,7 +3263,7 @@ pub mod aircraft_ladder_tests {
 
     pub fn limits(values: &equipment_graphics::LimitValues) -> equipment_graphics::Limits<'_> {
         fn evaluate(
-            _: &[content_reader_core::parser::Item],
+            _: &[content_reader_parser::parser::Item],
             _: dashboard_text::triggers::Scopes,
         ) -> dashboard_text::triggers::Eval {
             panic!("a declared saved or cosmetic model never evaluates graphical pool limits")

@@ -109,7 +109,7 @@ pub(super) fn frame(
         .bind_constants(2, Stage::Pixel, Some(inputs.grid));
     state
         .stream
-        .bind_depth_stencil(content_reader_core::pdxshader::DepthStencilState {
+        .bind_depth_stencil(content_reader_gui::pdxshader::DepthStencilState {
             depth_write_mask: 0,
             ..Default::default()
         });
@@ -214,7 +214,7 @@ pub(super) fn frame(
         state.stream.bind_blend(None, wgpu::ColorWrites::ALL);
         state
             .stream
-            .bind_rasterizer(content_reader_core::pdxshader::RasterizerState {
+            .bind_rasterizer(content_reader_gui::pdxshader::RasterizerState {
                 cull_mode: if selected.is_some() { 0 } else { 2 },
                 ..Default::default()
             });

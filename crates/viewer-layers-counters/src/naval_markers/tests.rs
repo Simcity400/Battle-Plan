@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use super::{NavalMarkers, Shore, TABLES};
 use viewer_layer_core::{layers::{Layer, View}, engagements::{Engagements, Index}, test_support::{recorded::frames_until, sound_recording::{put, quick, record_runs, units}}, playhead_host::{MapSide, open}};
-use content_reader_core::map::ProvinceKind;
+use content_reader_map::map::ProvinceKind;
 use replay_columnar::{manifest::Status, state::Cell, store::Store};
 use replay_data::rows::{Field, NativeValue, NavalCombatSideDetails, NavalProvinceCombatRow, Opaque, TableId};
 use viewer_counters_naval::naval_markers::NavalMarkerValues;

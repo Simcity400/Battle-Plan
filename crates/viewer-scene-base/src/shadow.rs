@@ -231,7 +231,7 @@ pub fn texel_reads(
 ) -> Option<String> {
     let why = shader_pipeline::texel::by_texel(
         &compiled.pixel.wgsl,
-        shader_pipeline::binding(slot, content_reader_core::pdxshader::program::Stage::Pixel),
+        shader_pipeline::binding(slot, content_reader_gui::pdxshader::program::Stage::Pixel),
         "shadow buffer",
     )?;
     Some(format!(

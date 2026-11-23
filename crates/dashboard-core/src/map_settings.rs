@@ -262,12 +262,12 @@ pub struct Reply {
     #[ts(
         type = "{ id: string, name: string, recordedId: string, source: string, problem: string | null }[]"
     )]
-    pub mods: Vec<content_reader_core::content::visual::InstalledMod>,
+    pub mods: Vec<content_reader_layers::content::visual::InstalledMod>,
     #[doc = " The mods the recording was made with, which every scope shows beneath visual mods."]
     pub recorded_mods: Vec<RecordedMod>,
     #[doc = " The resolved selection's mods in the engine's mount order, lowest precedence first."]
     #[ts(type = "{ id: string, name: string }[]")]
-    pub applied_mods: Vec<content_reader_core::content::visual::Choice>,
+    pub applied_mods: Vec<content_reader_layers::content::visual::Choice>,
     #[doc = " Selected mods that are not shown, and why."]
     pub applied_notes: Vec<String>,
     #[doc = " The map renderer's anti-aliasing sample counts; `None` until a renderer has said, when"]
@@ -284,10 +284,10 @@ pub struct Reply {
 }
 
 pub fn catalogue(
-    options: &content_reader_core::ResolveOptions,
+    options: &content_reader_layers::ResolveOptions,
     cancel: &AtomicBool,
-) -> io::Result<Vec<content_reader_core::content::visual::InstalledMod>> {
-    content_reader_core::content::visual::installed(options, cancel)
+) -> io::Result<Vec<content_reader_layers::content::visual::InstalledMod>> {
+    content_reader_layers::content::visual::installed(options, cancel)
 }
 
 pub fn game_audio(keys: &content_reader_settings::settings::SettingsKeys) -> MapAudio {
@@ -405,8 +405,8 @@ mod tests {
         assert_eq!(sample_counts(), Some(vec![1, 2, 4, 8]));
     }
 
-    fn choice(id: &str) -> content_reader_core::content::visual::Choice {
-        content_reader_core::content::visual::Choice {
+    fn choice(id: &str) -> content_reader_layers::content::visual::Choice {
+        content_reader_layers::content::visual::Choice {
             id: id.into(),
             name: id.into(),
         }
@@ -761,7 +761,7 @@ mod tests {
     fn renderers_see_one_selection_for_equivalent_choices() {
         let mut store = Store::default();
         let chosen =
-            |mods: Option<Vec<content_reader_core::content::visual::Choice>>| CampaignMapSettings {
+            |mods: Option<Vec<content_reader_layers::content::visual::Choice>>| CampaignMapSettings {
                 visual_mods: mods,
                 ..Default::default()
             };

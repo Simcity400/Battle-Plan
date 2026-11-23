@@ -2,7 +2,7 @@ use dashboard_text::subunit_requirements as shared;
 pub use dashboard_text::subunit_requirements::{
     Definition, EquipmentModel, Group, SourceIndex, Sources, SubUnit, Template, text,
 };
-use content_reader_core::ResolvedLayers;
+use content_reader_layers::ResolvedLayers;
 use replay_data::rows::{DivisionEquipmentRow, VariantDefinitionRow};
 use std::{cmp::Reverse, io, ops::Deref};
 use dashboard_text::table_access::TokenNames;

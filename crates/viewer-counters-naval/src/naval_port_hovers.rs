@@ -1,5 +1,5 @@
 
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use viewer_native_gui::counter_hovers::gui_authored::Authored;
@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn port_binder_excludes_unbound_supply_marker_counts_and_wrong_authored_kind() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let gui = native::read(
             br#"guiTypes = { containerWindowType = {
             name = w
@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn spotting_binder_uses_nested_lookups_and_descendants_inherit_generic_handler() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let gui = native::read(
             br#"guiTypes = { containerWindowType = {
             name = w
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn port_child_can_hover_when_its_clipped_plate_is_empty() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         use native_gui::lifecycle::Instance;
         use viewer_native_gui::test_support::{Fixture, VIEWPORT};
         let gui = native::read(br#"guiTypes = { containerWindowType = {

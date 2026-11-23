@@ -1,6 +1,7 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
 use crate::{ResolvedLayers, defines, parser, sound::Notes, sound::registered};
-use content_reader_core::parser::native::{self, Shape};
+use content_reader_script::native::{self, Shape};
 use std::{collections::BTreeMap, io, path::Path};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -143,7 +144,7 @@ impl Music {
         &mut self,
         bytes: &[u8],
         path: &str,
-        names: &content_reader_core::key_names::KeyNames,
+        names: &content_reader_script::key_names::KeyNames,
     ) {
         #[derive(Clone, Copy)]
         enum Node {
@@ -272,11 +273,11 @@ fn parse_enabled(bytes: &[u8]) -> io::Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::test_support::Stack;
+    use content_reader_layers::test_support::Stack;
 
     #[test]
     fn songs_join_tracks_stations_and_chance_bodies_across_files() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let stack = Stack::new("music_catalog");
         let (base, addon) = (stack.base(), stack.addon());
         stack.write(
@@ -358,7 +359,7 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
 
     #[test]
     fn unmodelled_track_fields_are_refused_by_name() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let stack = Stack::new("music_catalog_fields");
         let base = stack.base();
         stack.write(
@@ -386,7 +387,7 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
 
     #[test]
     fn track_fields_in_any_case_load_without_a_refusal() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let stack = Stack::new("music_catalog_case");
         let base = stack.base();
         stack.write(
@@ -419,7 +420,7 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
 
     #[test]
     fn escaped_quotes_stay_part_of_track_song_and_station_names() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let stack = Stack::new("music_catalog_quotes");
         let base = stack.base();
         stack.write(
@@ -463,7 +464,7 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
 
     #[test]
     fn a_track_name_is_added_and_found_by_its_first_63_bytes() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let stack = Stack::new("music_catalog_long_names");
         let base = stack.base();
         let cut = "t".repeat(63);
@@ -500,7 +501,7 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
 
     #[test]
     fn a_resolved_song_decodes_the_same_in_packets_and_as_one_track() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let stack = Stack::new("music_decode");
         let base = stack.base();
         stack.write(

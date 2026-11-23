@@ -450,7 +450,7 @@ mod tests {
         )
         .unwrap();
         let content = dashboard_base::products::ContentOptions {
-            options: content_reader_core::ResolveOptions {
+            options: content_reader_layers::ResolveOptions {
                 game_dir: root.to_owned(),
                 user_dir: root.join("user"),
                 cache_dir: root.join("cache"),

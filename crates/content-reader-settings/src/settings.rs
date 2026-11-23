@@ -21,7 +21,7 @@ fn bounded_read(path: &Path) -> io::Result<Vec<u8>> {
 fn bounded_parse<T: Send + Sync + 'static>(path: &Path, parser: &'static str, read: impl FnOnce(&[u8]) -> io::Result<T>) -> io::Result<std::sync::Arc<T>> {
     let tables = engine_executable::executable_tables::current()
         .map_or_else(Vec::new, |tables| tables.identity().sha256.to_vec());
-    content_reader_core::content::Generation::parse_snapshot(path, parser, 1, &tables, bounded_read, |bytes| {
+    content_reader_layers::content::Generation::parse_snapshot(path, parser, 1, &tables, bounded_read, |bytes| {
         if bytes.len() > 256 * 1024 { return Err(io::Error::other("Settings file exceeds its size limit")); }
         read(bytes)
     })
@@ -320,10 +320,10 @@ pub fn read_keys(user: &Path) -> io::Result<SettingsKeys> {
 #[derive(Default)]
 struct Languages(std::sync::Mutex<std::collections::BTreeMap<
     (std::path::PathBuf, Option<[u8; 32]>),
-    (Option<String>, content_reader_core::content::diagnostics::Diagnostics),
+    (Option<String>, content_reader_layers::content::diagnostics::Diagnostics),
 >>);
 
-pub fn language_in(layers: &content_reader_core::ResolvedLayers, user: &Path) -> io::Result<Option<String>> {
+pub fn language_in(layers: &content_reader_layers::ResolvedLayers, user: &Path) -> io::Result<Option<String>> {
     layers.admit_generation()?;
     let path = user.join("settings.txt");
     let tables = engine_executable::executable_tables::current().map(|tables| tables.identity().sha256);
@@ -334,7 +334,7 @@ pub fn language_in(layers: &content_reader_core::ResolvedLayers, user: &Path) ->
         diagnostics.credit();
         return Ok(language.clone());
     }
-    let (value, diagnostics) = content_reader_core::content::diagnostics::capture(|| {
+    let (value, diagnostics) = content_reader_layers::content::diagnostics::capture(|| {
         layers.with_file_witness(&path, || read_keys(user).map(|keys| keys.language()))
     });
     diagnostics.credit();
@@ -937,7 +937,7 @@ mod tests {
         use engine_executable::executable_tables::{self, Tables};
         static TABLES: std::sync::OnceLock<Tables> = std::sync::OnceLock::new();
         let tables = TABLES.get_or_init(|| {
-            content_reader_core::test_game::executable()
+            content_reader_script::test_game::executable()
                 .words([
                     "adapter",
                     "borderless",
@@ -965,7 +965,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn cached_language_tracks_edits_absence_and_transient_read_failures() {
-        use content_reader_core::test_support::rewrite_preserving_modified_time;
+        use content_reader_layers::test_support::rewrite_preserving_modified_time;
         use std::os::windows::fs::OpenOptionsExt;
         enter_settings_tables();
         let root = std::env::temp_dir().join(format!("language-input-{}-{:?}", std::process::id(), std::thread::current().id()));
@@ -974,8 +974,8 @@ mod tests {
         let english = b"language=\"l_english\"";
         let spanish = b"language=\"l_spanish\"";
         fs::write(&file, english).unwrap();
-        let scope = content_reader_core::content::Generation::enter();
-        let layers = content_reader_core::ResolvedLayers::default();
+        let scope = content_reader_layers::content::Generation::enter();
+        let layers = content_reader_layers::ResolvedLayers::default();
         let exclusive = fs::OpenOptions::new().read(true).write(true).share_mode(0).open(&file).unwrap();
         assert!(language_in(&layers, &root).is_err());
         drop(exclusive);
@@ -987,24 +987,24 @@ mod tests {
         assert!(language_in(&layers, &root).is_err());
         drop(layers);
         drop(scope);
-        let scope = content_reader_core::content::Generation::enter();
-        let layers = content_reader_core::ResolvedLayers::default();
+        let scope = content_reader_layers::content::Generation::enter();
+        let layers = content_reader_layers::ResolvedLayers::default();
         let changed = SettingsKeys::read(spanish).language();
         assert_ne!(original, changed);
         assert_eq!(language_in(&layers, &root).unwrap(), changed);
         drop(layers);
         drop(scope);
         fs::remove_file(&file).unwrap();
-        let scope = content_reader_core::content::Generation::enter();
-        let layers = content_reader_core::ResolvedLayers::default();
+        let scope = content_reader_layers::content::Generation::enter();
+        let layers = content_reader_layers::ResolvedLayers::default();
         assert_eq!(language_in(&layers, &root).unwrap(), None);
         fs::write(&file, vec![b' '; 256 * 1024 + 1]).unwrap();
         assert!(layers.validate_generation().is_err());
         assert!(language_in(&layers, &root).is_err());
         drop(layers);
         drop(scope);
-        let scope = content_reader_core::content::Generation::enter();
-        let layers = content_reader_core::ResolvedLayers::default();
+        let scope = content_reader_layers::content::Generation::enter();
+        let layers = content_reader_layers::ResolvedLayers::default();
         assert!(language_in(&layers, &root).unwrap_err().to_string().contains("size limit"));
         drop(layers);
         drop(scope);

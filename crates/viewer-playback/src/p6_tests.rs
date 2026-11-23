@@ -201,7 +201,7 @@ fn snow_cells_follow_their_provinces_and_go_unknown_where_a_truncated_or_unrecor
         1 => 20,
         _ => 10,
     }).collect();
-    let map = content_reader_core::map::MapData { width: 12, height: 12, province_ids: ids, definitions: Default::default(), country_colors: Default::default() };
+    let map = content_reader_map::map::MapData { width: 12, height: 12, province_ids: ids, definitions: Default::default(), country_colors: Default::default() };
     let cells = map_snow::SnowCells::new(&map, &[false; 144]).unwrap();
     let winter = map_snow::winter::Winter { defines: map_snow::winter::SnowDefines { per_province: [0.0, 1.0], total: [0.0, 1.0] }, records: vec![vec![map_snow::winter::SnowRecord { province: 20, weight: 1.0 }]] };
     let table = TableId::WeatherProvinces;
@@ -275,7 +275,7 @@ fn snow_cells_follow_their_provinces_and_go_unknown_where_a_truncated_or_unrecor
 #[test]
 fn the_intel_texture_steps_with_the_vision_it_reads_and_equals_itself_composed() {
     use viewer_layers_infrastructure::intel::{self, Intel};
-    use content_reader_core::map::{MapData, ProvinceDefinition, ProvinceKind};
+    use content_reader_map::map::{MapData, ProvinceDefinition, ProvinceKind};
     let ids: Vec<u32> = (0..42 * 6u32).map(|at| at % 42 / 6 + 1).collect();
     let definitions = (1..=7u32).map(|id| (id, ProvinceDefinition { id, rgb: [0; 3], kind: if id == 7 { ProvinceKind::Sea } else { ProvinceKind::Land }, continent: 0 })).collect();
     let map = MapData { width: 42, height: 6, province_ids: ids, definitions, country_colors: Default::default() };
@@ -640,7 +640,7 @@ fn snow_folded_ahead_shows_the_hour_applied_in_its_frame() {
         1 => 20,
         _ => 10,
     }).collect();
-    let map = content_reader_core::map::MapData { width: 12, height: 12, province_ids: ids, definitions: Default::default(), country_colors: Default::default() };
+    let map = content_reader_map::map::MapData { width: 12, height: 12, province_ids: ids, definitions: Default::default(), country_colors: Default::default() };
     let cells = map_snow::SnowCells::new(&map, &[false; 144]).unwrap();
     let winter = map_snow::winter::Winter { defines: map_snow::winter::SnowDefines { per_province: [0.0, 1.0], total: [0.0, 1.0] }, records: vec![vec![map_snow::winter::SnowRecord { province: 20, weight: 1.0 }]] };
     let table = TableId::WeatherProvinces;
@@ -751,7 +751,7 @@ fn snow_after_a_slower_pace_starts_over_and_equals_the_composed_grid_at_each_hou
         1 => 20,
         _ => 10,
     }).collect();
-    let map = content_reader_core::map::MapData { width: 12, height: 12, province_ids: ids, definitions: Default::default(), country_colors: Default::default() };
+    let map = content_reader_map::map::MapData { width: 12, height: 12, province_ids: ids, definitions: Default::default(), country_colors: Default::default() };
     let cells = map_snow::SnowCells::new(&map, &[false; 144]).unwrap();
     let winter = map_snow::winter::Winter { defines: map_snow::winter::SnowDefines { per_province: [0.0, 1.0], total: [0.0, 1.0] }, records: vec![vec![map_snow::winter::SnowRecord { province: 20, weight: 1.0 }]] };
     let table = TableId::WeatherProvinces;

@@ -2,8 +2,8 @@ use viewer_counter_kit::gui_windows::NAVAL_RESULT_SPRITES;
 use crate::base_windows;
 use viewer_native_gui::native_windows::NAVAL_COMBAT_WINDOW;
 
-use content_reader_core::gui::native;
-use content_reader_core::map::ProvinceKind;
+use content_reader_gui::gui::native;
+use content_reader_map::map::ProvinceKind;
 use crate::naval_windows;
 use crate::naval::{NavalContext, NavalSources, NavalUnit};
 use replay_data::rows::tables;

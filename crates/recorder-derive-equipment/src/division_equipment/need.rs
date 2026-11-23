@@ -2,7 +2,7 @@
 use super::inputs::{self, LocalSubunit, TemplateFacts};
 use recorder_derive_framework::forces::Owners;
 use recorder_derive_framework::framework::Hour;
-use content_reader_core::unit_leader::needs::SubUnitNeeds;
+use content_reader_key_names::unit_leader::needs::SubUnitNeeds;
 use std::collections::{HashMap, HashSet};
 
 type Override = Result<Vec<(u32, i64)>, String>;

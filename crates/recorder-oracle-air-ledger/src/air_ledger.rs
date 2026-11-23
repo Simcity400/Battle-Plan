@@ -290,7 +290,7 @@ impl DailyCheck {
 
 pub fn compare_bombing_damage(
     frame: &DecodedFrame,
-    buildings: ContentRead<'_, content_reader_core::buildings::Buildings>,
+    buildings: ContentRead<'_, content_reader_key_names::buildings::Buildings>,
     report: &mut Report,
 ) -> io::Result<()> {
     let rows = complete::<tables::BuildingBombingDamage>(frame)?;
@@ -477,11 +477,11 @@ mod tests {
         regions
     }
 
-    fn building_content() -> content_reader_core::buildings::Buildings {
-        let mut buildings = content_reader_core::buildings::Buildings::default();
+    fn building_content() -> content_reader_key_names::buildings::Buildings {
+        let mut buildings = content_reader_key_names::buildings::Buildings::default();
         buildings.types.insert(
             "mod_air_ledger_building".into(),
-            content_reader_core::buildings::BuildingType {
+            content_reader_key_names::buildings::BuildingType {
                 name: "mod_air_ledger_building".into(),
                 ..Default::default()
             },
@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn malformed_daily_save_fails_only_air_group() {
         let text = br#"strategic_air={"mod country"={history={4001={history_queue={0={max_elements=30 offset=30 is_full=no} 2={max_elements=5 offset=1 is_full=no}}}}}}"#;
-        let doc = content_reader_core::parser::parse(text).unwrap();
+        let doc = content_reader_parser::parser::parse(text).unwrap();
         let save = content_reader_save::air::parse(&doc.items).unwrap();
         assert_eq!(save.daily_errors.len(), 1);
         assert_eq!(save.statistics.len(), 1);

@@ -1180,7 +1180,7 @@ fn compare_purchases(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::parser;
+    use content_reader_parser::parser;
     use replay_data::{
         rows::CountryExperienceRow, rows::CountryFuelConsumerRow, rows::CountryFuelRow,
         rows::CountryResourceRow, rows::HubMotorizationRow, rows::LexicalTokenRow,
