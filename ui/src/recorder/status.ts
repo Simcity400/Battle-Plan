@@ -1,7 +1,6 @@
 import { formatDate, gameDate, monthNames } from '../dashboard/calendar.ts';
 import { formatMegabytes } from '../charts/numberFormat.ts';
 import type { Compression } from './compression';
-import { enterWrite } from '../shell/pendingWrites.ts';
 
 export type Phase = 'waiting' | 'notRecording' | 'recording' | 'saving' | 'saved' | 'discarded' | 'unsaved';
 export interface Problem { text: string; detail: string; failed: boolean }
@@ -268,26 +267,25 @@ export function stopPromptVisible(asking: boolean, snapshot: Snapshot): boolean 
   return asking && snapshot.phase === 'recording' && !snapshot.stopping;
 }
 
-export function settingsQueue<T>(read: () => Promise<T>, show: (value: T) => void) {
-  let asked = 0, shown = 0;
-  const run = (work: () => Promise<T | null>): Promise<void> => {
-    const order = ++asked;
-    return work().then(value => {
-      if (value != null && order > shown) { shown = order; show(value); }
-    });
+export function settingsQueue<T extends { warning?: string | null }>(read: () => Promise<T>, show: (value: T) => void, warn: (warning: string) => void = () => {}) {
+  let saving = 0, overlapped = false;
+  const refresh = () => read().then(show);
+  const save = async (work: () => Promise<T | null>): Promise<void> => {
+    overlapped ||= saving > 0;
+    saving++;
+    let reply: T | null = null;
+    try {
+      reply = await work();
+      if (reply?.warning) warn(reply.warning);
+    } finally {
+      saving--;
+      const drained = saving === 0, refreshing = drained && (overlapped || reply === null);
+      if (drained) overlapped = false;
+      if (refreshing) void refresh().catch(() => {});
+      else if (drained && reply) show(reply);
+    }
   };
-  const refresh = () => run(read);
-  return {
-    refresh,
-    save: (work: () => Promise<T | null>) => {
-      const write = enterWrite();
-      return run(work).then(() => write.saved(), (error: unknown) => {
-        write.discard();
-        void refresh().catch(() => {});
-        throw error;
-      });
-    },
-  };
+  return { refresh, save };
 }
 
 export function followStatus<T>(listen: (show: (value: T) => void) => Promise<() => void>, read: () => Promise<T>, show: (value: T) => void, failed: (cause: unknown) => void,

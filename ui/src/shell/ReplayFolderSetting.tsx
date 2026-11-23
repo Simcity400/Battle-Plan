@@ -5,6 +5,7 @@ import { FolderField } from './GameFolderSettings';
 import { actionFailure } from '../dashboard/queryError';
 import { errorMessage } from './api';
 import { Icon } from '../components/Icons';
+import { registerDraft } from './pendingWrites';
 
 type Failed = { message: string; fallback: string; retry: () => void };
 
@@ -14,6 +15,9 @@ export default function ReplayFolderSetting({ library, client }: { library: Repl
   const [warning, setWarning] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
   useEffect(() => setFolder(library.folder ?? ''), [library.folder]);
+  const typed = useRef({ folder, saved: library.folder ?? '' });
+  typed.current = { folder, saved: library.folder ?? '' };
+  useEffect(() => registerDraft(() => { const { folder, saved } = typed.current; return folder.trim() !== '' && folder.trim() !== saved; }, 'setting'), []);
   const saving = useRef(false);
   const save = async (next: string) => {
     const path = next.trim();

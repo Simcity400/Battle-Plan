@@ -340,7 +340,7 @@ impl NativeHost {
             NativeEvent::ToggleDiagnostics => {
                 drop(inner);
                 if let Err(error) = crate::video::change_map_diagnostics(app, None) {
-                    let _ = app.emit("map-diagnostics-error", error);
+                    crate::video::diagnostics_failed(app, None, &error);
                 }
                 return;
             }

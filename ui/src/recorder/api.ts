@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { invokeWrite } from '../shell/writes';
 import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import type { CaptureMode, NextLoad, PanelOpening, RecorderSettings, Recordings, RecordingsView, Snapshot } from './status';
@@ -23,9 +24,9 @@ export const startRecording = () => invoke<void>('start_recording');
 export const stopRecording = (discard: boolean, sessionKey: number) => invoke<void>('stop_recording', { discard, sessionKey });
 export const cancelStopPrompt = (prompt: number) => invoke<void>('cancel_stop_prompt', { prompt });
 export const recorderSettings = () => invoke<RecorderSettings>('recorder_settings');
-export const updateSettings = (patch: SettingsPatch) => invoke<RecorderSettings>('update_recorder_settings', { patch });
+export const updateSettings = (patch: SettingsPatch) => invokeWrite<RecorderSettings>('update_recorder_settings', { patch });
 export const setCampaignChoice = (campaign: string, choice: { record?: boolean; next?: NextLoad }) =>
-  invoke<RecorderSettings>('set_campaign_choice', { campaign, record: choice.record ?? null, next: choice.next ?? null });
+  invokeWrite<RecorderSettings>('set_campaign_choice', { campaign, record: choice.record ?? null, next: choice.next ?? null });
 export const chooseSaveFolder = () => invoke<RecorderSettings | null>('choose_save_folder');
 export const setUserFolder = (choose: boolean) => invoke<RecorderSettings | null>('set_user_folder', { choose });
 export const openRecordingsFolder = () => invoke<void>('open_recordings_folder');

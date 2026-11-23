@@ -87,6 +87,37 @@ struct State {
     instance: u64,
     live: Option<(u64, isize)>,
     recordings_panel: Option<String>,
+    requests: usize,
+    closing: bool,
+}
+
+pub struct Request(AppHandle);
+
+pub fn request(app: &AppHandle) -> Request {
+    state(app).requests += 1;
+    Request(app.clone())
+}
+
+impl Drop for Request {
+    fn drop(&mut self) {
+        let close = {
+            let mut state = state(&self.0);
+            state.requests -= 1;
+            state.requests == 0 && std::mem::take(&mut state.closing)
+        };
+        if close && let Some(window) = self.0.get_webview_window(LABEL) {
+            let _ = window.destroy();
+        }
+    }
+}
+
+fn dismiss_window(app: &AppHandle, window: &tauri::WebviewWindow) {
+    let busy = {
+        let mut state = state(app);
+        state.closing |= state.requests > 0;
+        state.closing
+    };
+    let _ = if busy { window.hide() } else { window.destroy() };
 }
 
 impl State {
@@ -224,7 +255,7 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
             if let Some(window) = window {
                 let instance = instance_of(app, &window);
                 state(app).dismiss(instance);
-                let _ = window.destroy();
+                dismiss_window(app, &window);
             }
         }
         Click::Open => open(app, Some(anchor), false),
@@ -241,6 +272,7 @@ pub fn open(app: &AppHandle, anchor: Option<Rect>, prompted: bool) {
             return;
         }
         (Reopen::Show, Some(window)) => {
+            state(app).closing = false;
             if let Some(instance) = instance_of(app, &window)
                 && let Err(error) = show(app, &window, instance)
             {
@@ -350,7 +382,7 @@ fn build(app: &AppHandle, instance: u64) -> tauri::Result<()> {
         WindowEvent::Focused(false) => {
             let close = state(&handle).focus_lost(instance);
             if close && let Some(window) = handle.get_webview_window(LABEL) {
-                let _ = window.destroy();
+                dismiss_window(&handle, &window);
             }
         }
         WindowEvent::Destroyed => {

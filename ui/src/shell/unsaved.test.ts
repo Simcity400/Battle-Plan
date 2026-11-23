@@ -24,5 +24,5 @@ test('a settings change still on its way to BattlePlan keeps a close from going 
     title: 'Close BattlePlan without saving?', detail: 'A settings change is still being saved.', discard: 'Discard and close',
   });
   assert.equal(unsavedDetail(['Overview'], null, 'saving'), 'Layout changes on Overview aren’t saved. A settings change is still being saved.');
-  assert.equal(unsavedDetail([], null, 'failed'), 'A settings change couldn’t be saved.', 'a change that failed to save is still unsaved work');
+  assert.equal(unsavedDetail([], null, 'failed'), 'A settings change isn’t saved.', 'a change that failed to save, or a folder typed but not applied, is still unsaved work');
 });

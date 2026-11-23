@@ -4,7 +4,6 @@ import { engineHour } from '../dashboard/calendar.ts';
 import { askedPrompt, askQuestion, captureModeFixed, discardConsequence, discardDetail, escapeStep, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, pendingFailure, promptDiscards, promptTitle, stopConfirmed, recordingName, recordsAutomatically, savedText, sessionLength,
   settingsQueue, spanText, spoolText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion, whatToRecord } from './status.ts';
 import type { RecorderSettings, Snapshot, UnsavedRecording } from './status.ts';
-import { unsavedNow } from '../shell/pendingWrites.ts';
 
 const CAMPAIGN = '00000000-0000-4000-8000-000000000000';
 const PATH = `C:\\Users\\Example\\BattlePlan\\${CAMPAIGN}.battleplan`;
@@ -190,27 +189,30 @@ test('the capture mode is fixed while a session is attached, even at the game me
     assert.equal(captureModeFixed(recording({ phase, captureMode: null })), false, phase);
 });
 
-test('a settings save is sent at once, entered as pending until its reply, and only the newest reply is shown', async () => {
-  let stored = 'initial';
-  const shown: string[] = [];
-  const queue = settingsQueue(async () => stored, value => { shown.push(value); });
+test('a settings save is sent at once, overlapping saves end in one read of what is stored, and each warning is shown', async () => {
+  type Stored = { value: string; warning?: string | null };
+  let stored: Stored = { value: 'initial' };
+  const shown: string[] = [], warned: string[] = [];
+  const queue = settingsQueue<Stored>(async () => stored, value => { shown.push(value.value); }, warning => { warned.push(warning); });
   let finishFirst!: () => void;
   const firstStored = new Promise<void>(resolve => { finishFirst = resolve; });
   let secondSent = false;
-  const first = queue.save(() => firstStored.then(() => 'game score off'));
-  const second = queue.save(async () => { secondSent = true; stored = 'game score and politics off'; return stored; });
+  const first = queue.save(() => firstStored.then(() => { stored = { value: 'game score and politics off' }; return { value: 'game score off', warning: 'the disk didn’t answer' }; }));
+  const second = queue.save(async () => { secondSent = true; stored = { value: 'politics off' }; return stored; });
   assert.equal(secondSent, true, 'nothing waits in the page behind an earlier save, so a tray Quit can’t overtake it');
-  assert.equal(unsavedNow(), true, 'a save in flight is pending work');
   await second;
+  assert.deepEqual(shown, [], 'a reply while another save is out shows nothing yet');
   finishFirst();
   await first;
-  assert.deepEqual(shown, ['game score and politics off'], 'the older reply, arriving last, is not shown over the newer one');
-  assert.equal(unsavedNow(), false, 'replies leave the pending writes');
-  stored = 'stored before the flush failed';
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(shown, ['game score and politics off'], 'once both are answered the panel reads what is stored, whichever committed first');
+  assert.deepEqual(warned, ['the disk didn’t answer'], 'and the first save’s warning is shown though its snapshot isn’t');
+  await queue.save(async () => ({ value: 'alone' }));
+  assert.deepEqual(shown.at(-1), 'alone', 'a save on its own shows its reply');
+  stored = { value: 'stored before the flush failed' };
   await assert.rejects(queue.save(async () => { throw new Error('flush failed'); }), /flush failed/);
-  await queue.refresh();
-  assert.deepEqual(shown.slice(-1), ['stored before the flush failed'], 'a failed save is followed by a read of what is stored');
-  assert.equal(unsavedNow(), false, 'the panel keeps no draft of a failed save, so nothing is left pending');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(shown.at(-1), 'stored before the flush failed', 'a failed save is followed by a read of what is stored');
 });
 
 interface Numbered { revision: number; phase: string }

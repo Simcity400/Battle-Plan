@@ -68,7 +68,7 @@ export function viewsKey(clockId: string, views: { composedAt: number }[]): stri
   return JSON.stringify([clockId, views.map(({ composedAt: _composedAt, ...view }) => view)]);
 }
 
-export function mapCommands(report: (operation: string, error: string | null) => void) {
+export function mapCommands(report: (operation: string, error: string | null) => void, warn: (warning: string) => void = () => {}) {
   let sent = 0;
   const latest = new Map<string, number>();
   const failed = new Set<string>();
@@ -85,11 +85,8 @@ export function mapCommands(report: (operation: string, error: string | null) =>
     const current = () => latest.get(operation) === sequence && latest.delete(operation);
     void (async () => command())().then(warning => {
       if (!current()) return;
-      if (warning) {
-        failed.add(operation);
-        retries.set(operation, () => forget(operation));
-        report(operation, warning);
-      } else if (failed.delete(operation)) report(operation, null);
+      if (failed.delete(operation)) report(operation, null);
+      if (warning) warn(warning);
     }, (error: unknown) => {
       if (!current()) return;
       failed.add(operation);

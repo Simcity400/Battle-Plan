@@ -487,6 +487,11 @@ fn toggle_diagnostics<T>(path: &Path, state: &VideoState, enabled: Option<bool>,
     Ok(announce(enabled, warning, muted))
 }
 
+pub fn diagnostics_failed(app: &AppHandle, enabled: Option<bool>, error: &str) {
+    let wanted = enabled.unwrap_or_else(|| !diagnostics_switch(&app.state::<VideoState>()).value);
+    let _ = app.emit("map-diagnostics-error", serde_json::json!({ "error": error, "wanted": wanted }));
+}
+
 pub fn change_map_diagnostics(app: &AppHandle, enabled: Option<bool>) -> Result<MapSwitch, String> {
     let state = app.state::<VideoState>();
     let (changed, muted) = toggle_diagnostics(&path()?, &state, enabled, |enabled, warning, muted| {
@@ -562,10 +567,7 @@ pub fn map_diagnostics(state: State<'_, VideoState>) -> MapSwitch {
 #[tauri::command]
 pub async fn set_map_diagnostics(app: AppHandle, enabled: Option<bool>) -> Result<MapSwitch, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        change_map_diagnostics(&app, enabled).inspect_err(|error| {
-            let wanted = enabled.unwrap_or_else(|| !diagnostics_switch(&app.state::<VideoState>()).value);
-            let _ = app.emit("map-diagnostics-error", serde_json::json!({ "error": error, "wanted": wanted }));
-        })
+        change_map_diagnostics(&app, enabled).inspect_err(|error| diagnostics_failed(&app, enabled, error))
     })
     .await
     .map_err(|error| error.to_string())?

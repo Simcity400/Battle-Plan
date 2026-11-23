@@ -177,7 +177,8 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const clock = useMemo(() => new PlaybackController(), []);
   const mapErrors = useRef(onMapError);
   mapErrors.current = onMapError;
-  const commands = useMemo(() => mapCommands((operation, error) => mapErrors.current?.(operation, error)), []);
+  const commands = useMemo(() => mapCommands((operation, error) => mapErrors.current?.(operation, error),
+    warning => setWarning(`The map change was made, but Windows didn’t confirm it was saved: ${warning}`)), []);
   const maps = useMemo(() => new MapViewsStore(client, clock), [client, clock]);
   useEffect(() => {
     maps.onToggle = (view, toggle) => view.id === CAMPAIGN_MAP_VIEW

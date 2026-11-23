@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Select } from '../components/Select';
 import { invoke } from '@tauri-apps/api/core';
+import { invokeWrite } from './writes';
 import { desktopAvailable, errorMessage } from './api';
 import { Icon } from '../components/Icons';
 import { FailureLine } from '../components/FailureLine';
@@ -40,20 +41,21 @@ export function useVideoSettings(enabled: boolean, userFolder?: string) {
     queue.running = true;
     queue.slot.enter();
     setPending(true);
-    let failed = false;
+    let failed: VideoOptions | null = null;
     while (queue.next) {
       const settings = queue.next; queue.next = null;
       try {
-        const value = await invoke<VideoReply>('set_video_settings', { settings });
-        failed = false;
+        const value = await invokeWrite<VideoReply>('set_video_settings', { settings });
+        failed = null;
         if (queue.live) { setReply(value); setError(null); setWarning(value.warning); if (!queue.next) setDraft(value.settings); }
       } catch (cause) {
-        failed = true;
+        failed = settings;
         if (queue.live) setError({ detail: errorMessage(cause), write: settings });
       }
     }
     queue.running = false;
-    if (!failed) queue.slot.saved(); else if (queue.live) queue.slot.failed(); else queue.slot.discard();
+    const again = failed;
+    if (!again) queue.slot.saved(); else if (queue.live) queue.slot.failed(() => { queue.next ??= again; void write(); }); else queue.slot.discard();
     if (queue.live) setPending(false);
   };
   const apply = (next: VideoOptions) => {

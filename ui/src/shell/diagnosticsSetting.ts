@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { invokeWrite } from './writes';
 import { listen } from '@tauri-apps/api/event';
 import { desktopAvailable, errorMessage } from './api';
 import { isDiagnosticsShortcut } from './diagnosticsShortcut';
 import { newestSwitch, type MapSwitch } from './mapSwitch';
 
 export function setMapDiagnostics(enabled?: boolean): Promise<MapSwitch> {
-  return invoke<MapSwitch>('set_map_diagnostics', { enabled: enabled ?? null });
+  return invokeWrite<MapSwitch>('set_map_diagnostics', { enabled: enabled ?? null });
 }
 
 export function useMapDiagnostics() {

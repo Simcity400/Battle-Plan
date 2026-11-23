@@ -178,20 +178,21 @@ export default function MapAppearance({ source, client, global = false, viewId, 
     queue.running = true;
     queue.slot.enter();
     setSaving(true);
-    let failed = false;
+    let failed: CampaignMapSettings | null = null;
     while (queue.next) {
       const settings = queue.next; queue.next = null;
       try {
         const value = await client.mapSettings(source?.id ?? '', source?.revision ?? '', settings, new AbortController().signal, target);
-        failed = false;
+        failed = null;
         if (queue.live) { setReply(value); setError(null); if (!queue.next) setDraft(value.settings); }
       } catch (cause) {
-        failed = true;
+        failed = settings;
         if (queue.live) setError({ text: 'Couldn’t save that change.', detail: errorMessage(cause), write: true, retry: () => { queue.next ??= settings; void write(); } });
       }
     }
     queue.running = false;
-    if (!failed) queue.slot.saved(); else if (queue.live) queue.slot.failed(); else queue.slot.discard();
+    const again = failed;
+    if (!again) queue.slot.saved(); else if (queue.live) queue.slot.failed(() => { queue.next ??= again; void write(); }); else queue.slot.discard();
     if (queue.live) setSaving(false);
   };
   const change = (next: CampaignMapSettings) => {

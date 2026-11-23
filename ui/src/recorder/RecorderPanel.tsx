@@ -477,10 +477,8 @@ export default function RecorderPanel() {
   const [panel] = useState(newId);
   const visit = useRef({ number: 0, open: false });
   const [openFailure, setOpenFailure] = useState<PanelFailure | null>(null);
-  const [queue] = useState(() => settingsQueue<RecorderSettings>(api.recorderSettings, value => {
-    setSettings(value);
-    if (value.warning) setFailure({ text: 'Saved, but Windows didn’t confirm the change reached the disk.', detail: value.warning });
-  }));
+  const [queue] = useState(() => settingsQueue<RecorderSettings>(api.recorderSettings, setSettings,
+    warning => setFailure({ text: 'Saved, but Windows didn’t confirm the change reached the disk.', detail: warning })));
   const { state: updateState, error: updateReadFailure, retry: retryUpdateRead } = useUpdateState();
   const updates = useUpdateActions();
   const [updateAsk, setUpdateAsk] = useState<{ kind: 'confirm' | 'downloaded'; version: string; from: View } | null>(null);

@@ -222,7 +222,9 @@ pub async fn update_recorder_settings(
             CaptureMode::from_name(name).ok_or_else(|| format!("Unknown capture mode {name:?}"))
         })
         .transpose()?;
-    let view = blocking(move || {
+    let (request, receipt) = admitted(&app)?;
+    let view = blocking(move || receipt.carry(|| {
+        let _request = request;
         change_settings(patch.start_with_windows, move |settings| {
             let set = |field: &mut bool, value: Option<bool>| {
                 if let Some(value) = value {
@@ -243,7 +245,7 @@ pub async fn update_recorder_settings(
                 settings.capture_mode = mode;
             }
         })
-    })
+    }))
     .await?;
     app.state::<Arc<Recorder>>().settings_changed();
     Ok(view)
@@ -259,7 +261,9 @@ pub async fn set_campaign_choice(
     if !replay_data::identity::is_campaign_uuid(campaign.as_bytes()) {
         return Err("Unknown campaign".into());
     }
-    let view = blocking(move || {
+    let (request, receipt) = admitted(&app)?;
+    let view = blocking(move || receipt.carry(|| {
+        let _request = request;
         update(move |settings| {
             let choice = settings.campaigns.entry(campaign).or_default();
             if let Some(record) = record {
@@ -269,10 +273,16 @@ pub async fn set_campaign_choice(
                 choice.next = next;
             }
         })
-    })
+    }))
     .await?;
     app.state::<Arc<Recorder>>().settings_changed();
     Ok(view)
+}
+
+fn admitted(app: &AppHandle) -> Result<(panel::Request, replay::exit::Receipt<'static>), String> {
+    let request = panel::request(app);
+    let receipt = app.state::<Arc<Recorder>>().admit(What::Change)?;
+    Ok((request, receipt))
 }
 
 fn pick_folder(

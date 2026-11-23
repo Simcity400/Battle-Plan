@@ -89,7 +89,7 @@ export function saveCampaignFlag(campaignKey: string, tag: string | null, report
     latestFlag.set(campaignKey, saving);
     const latest = () => latestFlag.get(campaignKey) === saving;
     void saving.then(warning => { if (!latest()) return; slot.saved(); report?.(null, warning || null); },
-      () => { if (!latest()) return; slot.failed(); report?.('Couldn’t save the campaign flag. It applies until the app closes.'); });
+      () => { if (!latest()) return; slot.failed(() => saveCampaignFlag(campaignKey, tag, report, storage)); report?.('Couldn’t save the campaign flag. It applies until the app closes.'); });
     return null;
   }
   return saveCampaignSettings(setCampaignFlag(currentCampaignSettings(storage), campaignKey, tag), storage);

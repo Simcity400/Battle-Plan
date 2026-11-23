@@ -47,7 +47,7 @@ import { commitZone } from './commitCount';
 import { RestartGuardContext, UpdateButton } from '../update/UpdateControl';
 import type { RestartGuard } from '../update/UpdateControl';
 import { leavePrompt, leavingTitle, RESTARTING, unsavedDetail } from './unsaved';
-import { registerDraft, settled, unsavedNow as pendingUnsaved, watchWrites, writesState } from './pendingWrites';
+import { registerDraft, retryFailed, unsavedNow as pendingUnsaved, watchWrites, writesState } from './pendingWrites';
 import { closeGuard, type CloseGuard, type CloseGuardFailure, type LeavingFor } from './closeGuard.ts';
 import { keepLatest } from './latest.ts';
 import type { LeavePrompt, Leaving } from './unsaved';
@@ -399,15 +399,21 @@ export default function App() {
 
   const themeChanged = themeUnsaved(themeEditing);
   const unsavedWork = layoutsUnsaved || themeChanged || writes !== null;
+  const leavingNow = useRef(leaving);
+  leavingNow.current = leaving;
   useEffect(() => {
     if (!unsavedWork) {
-      if (!restartConfirmed.current && !unsavedNow()) setLeaving(null);
+      const asked = leavingNow.current;
+      if (restartConfirmed.current || unsavedNow()) return;
+      setLeaving(null);
+      if (asked?.kind === 'update' && asked.restart) void asked.restart().then(restarted => { if (!restarted) guard.current?.recheck(); });
+      else if (asked) guard.current?.leave();
       return;
     }
     if (desktopAvailable) return;
-    const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
-    window.addEventListener('beforeunload', guard);
-    return () => window.removeEventListener('beforeunload', guard);
+    const unloading = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
+    window.addEventListener('beforeunload', unloading);
+    return () => window.removeEventListener('beforeunload', unloading);
   }, [unsavedWork, unsavedNow]);
   const unsavedNames = unsavedDetail(unsavedPages.map(id => pages.find(entry => entry.id === id)?.label ?? id), themeChanged ? themeEditing!.draft.name.trim() : null, writes);
   const prompt = leaving ? leavePrompt(leaving.kind, unsavedNames) : null;
@@ -426,10 +432,8 @@ export default function App() {
     if (!unsavedNow()) { void restart().then(restarted => { if (!restarted) guard.current?.recheck(); }); return; }
     setLeaving({ kind: 'update', opener, restart });
   }, [unsavedNow]);
-  const resuming = useRef<object | null>(null);
   const stayHere = () => {
     if (closing) return;
-    resuming.current = null;
     restartConfirmed.current = false;
     const back = leaving?.opener;
     setLeaving(null);
@@ -460,15 +464,7 @@ export default function App() {
       openSettings('appearance');
       return;
     }
-    const asked = leaving;
-    resuming.current = asked;
-    void settled().then(saved => {
-      if (!saved || !asked || resuming.current !== asked) return;
-      resuming.current = null;
-      setLeaving(null);
-      if (asked.kind === 'update' && asked.restart) void asked.restart().then(restarted => { if (!restarted) guard.current?.recheck(); });
-      else guard.current?.leave();
-    });
+    retryFailed();
   };
   const everReady = useRef(false);
 

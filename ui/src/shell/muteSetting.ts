@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { invokeWrite } from './writes';
 import { listen } from '@tauri-apps/api/event';
 import { desktopAvailable, errorMessage } from './api';
 import { newestSwitch, type MapSwitch } from './mapSwitch';
@@ -19,7 +20,7 @@ export function useMapMuted() {
   }, [take, reads]);
   const set = (value: boolean) => {
     setError(null);
-    void invoke<MapSwitch>('set_map_muted', { muted: value }).then(take, cause => setError(errorMessage(cause)));
+    void invokeWrite<MapSwitch>('set_map_muted', { muted: value }).then(take, cause => setError(errorMessage(cause)));
   };
   const retry = () => setReads(count => count + 1);
   return { muted, error, warning, set, retry };

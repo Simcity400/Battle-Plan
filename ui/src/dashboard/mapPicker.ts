@@ -3,8 +3,6 @@ import { MAP_OPTION_DEFAULTS } from '../generated/dashboard.ts';
 import type { DashboardClient, DashboardMapView, MapObserveEvent, MapOptionsEvent, MapSettingsTarget, MapToggle, MapToggleEvent, DashboardSource } from './client';
 import type { DashboardTemplate } from './model';
 import { resolveWidgetCampaign } from './campaigns.ts';
-import { writeSlot } from '../shell/pendingWrites.ts';
-import type { WriteSlot } from '../shell/pendingWrites.ts';
 
 export const CAMPAIGN_MAP_VIEW = 'campaign-map';
 
@@ -62,7 +60,6 @@ export class PickerOptions {
 }
 
 const settingWrites = new Map<string, Promise<string | null>>();
-const settingSlots = new Map<string, WriteSlot>();
 
 export function toggleMapSetting(client: DashboardClient, view: Pick<DashboardMapView, 'id' | 'sourceId' | 'revision'>,
   toggle: MapToggle, target: MapSettingsTarget = { scope: 'widget', id: view.id }): Promise<string | null> {
@@ -72,12 +69,8 @@ export function toggleMapSetting(client: DashboardClient, view: Pick<DashboardMa
     return (await client.flipMapSetting(view.sourceId, view.revision, toggle.setting, signal, target)).saveWarning ?? null;
   };
   const key = JSON.stringify([view.sourceId, view.revision, target]);
-  const slot = settingSlots.get(key) ?? writeSlot();
-  settingSlots.set(key, slot);
-  slot.enter();
   const next = (settingWrites.get(key) ?? Promise.resolve(null)).catch(() => null).then(write);
   settingWrites.set(key, next);
-  void next.then(() => { if (settingWrites.get(key) === next) slot.saved(); }, () => { if (settingWrites.get(key) === next) slot.failed(); })
-    .finally(() => { if (settingWrites.get(key) === next) settingWrites.delete(key); });
+  void next.finally(() => { if (settingWrites.get(key) === next) settingWrites.delete(key); }).catch(() => undefined);
   return next;
 }

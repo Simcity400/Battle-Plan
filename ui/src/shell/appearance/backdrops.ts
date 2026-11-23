@@ -1,4 +1,5 @@
 import { newId } from '../ids.ts';
+import { tracked } from '../writes';
 
 export interface BackdropImage { id: string; name: string; image: string; thumbnail: string; width: number; height: number; added: number }
 
@@ -19,7 +20,11 @@ function open(): Promise<IDBDatabase> {
   return database;
 }
 
-async function run<T>(mode: IDBTransactionMode, action: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+function run<T>(mode: IDBTransactionMode, action: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+  return mode === 'readwrite' ? tracked(() => transact(mode, action)) : transact(mode, action);
+}
+
+async function transact<T>(mode: IDBTransactionMode, action: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
   const db = await open();
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(STORE, mode);

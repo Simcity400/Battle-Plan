@@ -2466,7 +2466,6 @@ pub(crate) fn capture(
         stop_load = system_times();
     }
     ahead.promote();
-    let mut queued: BTreeMap<String, bool> = control.end_requests().into_iter().collect();
     capture_ended.store(true, Ordering::Release);
     ahead.stop.store(true, Ordering::Release);
     for worker in closing {
@@ -2475,7 +2474,7 @@ pub(crate) fn capture(
     let packing = ahead.packing.clone();
     let join_began = Instant::now();
     let (mut ahead, localisation, unanswered) = finish_ahead(ahead, settling.as_deref());
-    queued.extend(unanswered);
+    let mut decisions: BTreeMap<String, bool> = unanswered.into_iter().collect();
     let join_seconds = join_began.elapsed().as_secs_f64();
     if !process.handle.signaled()? {
         detach.set()?;
@@ -2574,6 +2573,18 @@ pub(crate) fn capture(
             .drain(..)
             .map(|error| format!("a load could not be admitted, so it is not published: {error}")),
     );
+    decisions.extend(control.end_requests());
+    let recorded_here = replay_io::written_campaigns(&directory)?;
+    decisions.retain(|campaign, &mut discard| {
+        let here = recorded_here.contains(campaign);
+        if !here {
+            settle_decision(output, target, campaign, discard, naming, settling.as_deref(), &mut outcome.issues);
+        }
+        here
+    });
+    if let Some(settling) = &settling {
+        report_set_aside(settling, stage);
+    }
     for warning in &outcome.warnings {
         eprintln!("Collector warning: {warning}");
     }
@@ -2689,7 +2700,7 @@ pub(crate) fn capture(
     }
     let auto = auto_save.is_none_or(|auto_save| auto_save());
     let destination = |campaign: &str| {
-        if let Some(decided) = queued_destination(&queued, campaign) {
+        if let Some(decided) = decided_destination(&decisions, campaign) {
             decided
         } else if saved_at_end(
             campaign,
@@ -2834,6 +2845,11 @@ pub(crate) fn capture(
         None => Default::default(),
     };
     finalized.extend(continued);
+    for (campaign, _) in decisions.iter().filter(|(_, discard)| **discard) {
+        if let Err(error) = discard_recording(output, target, campaign) {
+            outcome.issues.push(format!("campaign {campaign} wasn’t discarded: {error}"));
+        }
+    }
     let waiting: Vec<(String, Value)> = spooled
         .iter()
         .filter(|campaign| {
@@ -2844,16 +2860,6 @@ pub(crate) fn capture(
     for campaign in &saved_campaigns {
         if let Err(error) = unlist_waiting_sessions(output, target, campaign, Some(&directory)) {
             eprintln!("Campaign {campaign} is saved, and still listed as waiting: {error}");
-        }
-    }
-    for (campaign, &discard) in queued.iter().filter(|(campaign, _)| !spooled.iter().any(|spooled| spooled == *campaign)) {
-        let done = if discard {
-            discard_recording(output, target, campaign)
-        } else {
-            save_recording(output, target, campaign, naming).map(drop)
-        };
-        if let Err(error) = done {
-            outcome.issues.push(format!("campaign {campaign} wasn’t {}: {error}", if discard { "discarded" } else { "saved" }));
         }
     }
     if !waiting.is_empty() {
@@ -3050,8 +3056,25 @@ fn finish_ahead(
     (live, localisation, unanswered)
 }
 
-fn queued_destination(queued: &BTreeMap<String, bool>, campaign: &str) -> Option<replay_io::Destination> {
-    queued.get(campaign).map(|&discard| if discard { replay_io::Destination::Neither } else { replay_io::Destination::Recording })
+fn decided_destination(decisions: &BTreeMap<String, bool>, campaign: &str) -> Option<replay_io::Destination> {
+    decisions.get(campaign).map(|&discard| if discard { replay_io::Destination::Unsaved } else { replay_io::Destination::Recording })
+}
+
+fn settle_decision(root: &Path, target: &Path, campaign: &str, discard: bool, naming: replay_io::Naming<'_>, settling: Option<&Settling>, issues: &mut Vec<String>) {
+    let settled = if discard {
+        discard_recording(root, target, campaign).map(|()| SetAside::Discarded(campaign.to_owned()))
+    } else {
+        save_recording(root, target, campaign, naming).map(|saved| SetAside::Saved(campaign.to_owned(), saved))
+    };
+    let done = settled.unwrap_or_else(|error| SetAside::Failed(campaign.to_owned(), error));
+    match settling {
+        Some(settling) => locked(&settling.done).push(done),
+        None => {
+            if let SetAside::Failed(campaign, error) = done {
+                issues.push(format!("campaign {campaign}: {error}"));
+            }
+        }
+    }
 }
 
 fn report_set_aside(settling: &Settling, stage: &dyn Fn(Stage<'_>)) {
@@ -6113,10 +6136,12 @@ mod tests {
         assert!(locked(&settling.requests).is_empty());
         assert_eq!(unanswered, [("forwarded".to_owned(), false)], "a request the ending session never took is handed to its final destinations");
         assert!(take_done(&settling).is_empty(), "and it is never answered as a failure");
-        let queued = BTreeMap::from([("kept".to_owned(), false), ("dropped".to_owned(), true)]);
-        assert_eq!(queued_destination(&queued, "kept"), Some(replay_io::Destination::Recording), "an accepted Save publishes, whatever Auto save says");
-        assert_eq!(queued_destination(&queued, "dropped"), Some(replay_io::Destination::Neither), "an accepted Discard is never published, even with Auto save on");
-        assert_eq!(queued_destination(&queued, "other"), None);
+        let mut decisions: BTreeMap<String, bool> = unanswered.into_iter().collect();
+        decisions.extend([("forwarded".to_owned(), true), ("dropped".to_owned(), true)]);
+        assert_eq!(decided_destination(&decisions, "forwarded"), Some(replay_io::Destination::Unsaved), "a decision taken after one already forwarded wins: this later Discard keeps the campaign out of the recordings, to be rolled back");
+        assert_eq!(decided_destination(&BTreeMap::from([("kept".to_owned(), false)]), "kept"), Some(replay_io::Destination::Recording), "an accepted Save publishes, whatever Auto save says");
+        assert_eq!(decided_destination(&decisions, "dropped"), Some(replay_io::Destination::Unsaved), "an accepted Discard is never published, even with Auto save on");
+        assert_eq!(decided_destination(&decisions, "other"), None);
     }
 
     #[test]
