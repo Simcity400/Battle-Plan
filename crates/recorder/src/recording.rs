@@ -187,7 +187,7 @@ fn settle(
         .parent()
         .and_then(Path::parent)
         .ok_or_else(|| failure_text(session, "not in a capture root"))?;
-    let mut requests = std::mem::take(&mut *locked(&settling.requests));
+    let mut requests = latest_choices(std::mem::take(&mut *locked(&settling.requests)));
     let requests = &mut requests;
     let mut changed = false;
     let campaigns = live.unsaved_campaigns();
@@ -2486,12 +2486,7 @@ pub(crate) fn capture(
                     end.describe(&directory)
                 );
                 decisions.extend(control.end_requests());
-                if let Some(settling) = &settling {
-                    locked(&settling.done).extend(decisions.iter().map(|(campaign, &discard)| {
-                        SetAside::Failed(campaign.clone(), format!("the session couldn’t finish, so it wasn’t {}; choose again once it is taken up", if discard { "discarded" } else { "saved" }))
-                    }));
-                    report_set_aside(settling, stage);
-                }
+                let timed_out = with_lost_decisions(timed_out, &decisions);
                 let ending = control.seal();
                 let read = read_at_stop.as_ref().and_then(Option::as_deref);
                 let discarded = match discard_target(ending.as_ref(), read) {
@@ -3054,6 +3049,21 @@ fn saved_at_end(
 ) -> bool {
     let in_progress = current == Some(campaign);
     !(discard && in_progress) && (auto_save || (stop && !discard && in_progress))
+}
+
+fn with_lost_decisions(timed_out: String, decisions: &BTreeMap<String, bool>) -> String {
+    if decisions.is_empty() {
+        return timed_out;
+    }
+    let lost: Vec<String> = decisions.iter().map(|(campaign, &discard)| format!("{} of campaign {campaign}", if discard { "Discard" } else { "Save" })).collect();
+    format!("{timed_out}; not carried out, so choose again once the session is taken up: {}", lost.join(", "))
+}
+
+fn latest_choices(requests: Vec<(String, bool)>) -> Vec<(String, bool)> {
+    let mut seen = BTreeSet::new();
+    let mut latest: Vec<_> = requests.into_iter().rev().filter(|(campaign, _)| seen.insert(campaign.clone())).collect();
+    latest.reverse();
+    latest
 }
 
 fn requeue(settling: &Settling, campaign: String, discard: bool) {
@@ -6160,8 +6170,19 @@ mod tests {
         requeue(&settling, "retried".to_owned(), true);
         assert_eq!(*locked(&settling.requests), [("retried".to_owned(), true), ("newer".to_owned(), false)], "a retry goes ahead of what was accepted after it, and never over a newer choice for its campaign");
         locked(&settling.requests).clear();
+        assert_eq!(
+            latest_choices(vec![("a".to_owned(), true), ("b".to_owned(), false), ("a".to_owned(), false)]),
+            [("b".to_owned(), false), ("a".to_owned(), false)],
+            "a Discard and a later Save in one batch act as the Save alone, so a failed release can't keep the Discard"
+        );
         let mut decisions: BTreeMap<String, bool> = unanswered.into_iter().collect();
         decisions.extend([("forwarded".to_owned(), true), ("dropped".to_owned(), true)]);
+        assert_eq!(
+            with_lost_decisions("detach timed out".to_owned(), &decisions),
+            "detach timed out; not carried out, so choose again once the session is taken up: Discard of campaign dropped, Discard of campaign forwarded",
+            "a timeout names every decision it lost, not only the first"
+        );
+        assert_eq!(with_lost_decisions("detach timed out".to_owned(), &BTreeMap::new()), "detach timed out");
         assert_eq!(decided_destination(&decisions, "forwarded"), Some(replay_io::Destination::Unsaved), "a decision taken after one already forwarded wins: this later Discard keeps the campaign out of the recordings, to be rolled back");
         assert_eq!(decided_destination(&BTreeMap::from([("kept".to_owned(), false)]), "kept"), Some(replay_io::Destination::Recording), "an accepted Save publishes, whatever Auto save says");
         assert_eq!(decided_destination(&decisions, "dropped"), Some(replay_io::Destination::Unsaved), "an accepted Discard is never published, even with Auto save on");

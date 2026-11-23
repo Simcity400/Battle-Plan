@@ -3296,7 +3296,10 @@ impl Viewer {
                 Err(message)
             }
         };
-        self.capture_note = Some(answer.clone().map_or_else(|why| why, |saved| saved.message));
+        self.capture_note = Some(answer.clone().map_or_else(|why| why, |saved| match saved.warning {
+            Some(warning) => format!("{}, but {warning}", saved.message),
+            None => saved.message,
+        }));
         if capture.frames <= 1 {
             Self::answer_export(&mut capture, answer);
         }
@@ -8911,6 +8914,11 @@ pub(crate) mod tests {
             crate::host::tests::taken_saved(&answers),
             [Ok(crate::host::Saved { message: "Saved unconfirmed.png: branch 1, hour 41".to_owned(), warning: Some("Windows didn’t confirm it reached the disk".to_owned()) })],
             "a picture Windows replaced is reported saved, with why it may not last as a field of its own"
+        );
+        assert_eq!(
+            viewer.capture_note.as_deref(),
+            Some("Saved unconfirmed.png: branch 1, hour 41, but Windows didn’t confirm it reached the disk"),
+            "and Map Diagnostics says so too"
         );
 
         let (capture, answers) = export("full.png");

@@ -494,6 +494,11 @@ export default function App() {
     setSettingsTarget(target);
     if (tab !== 'settings') void changeTab('settings');
   };
+  useEffect(() => {
+    if (!editingToLeave.current || layoutsUnsaved || themeChanged) return;
+    const section = draftSection() as SettingsSection | null;
+    if (section) openSettings(section);
+  }, [layoutsUnsaved, themeChanged]);
   const sectionLabel = settingsSections.find(item => item.id === settingsSection)?.label;
 
   return (

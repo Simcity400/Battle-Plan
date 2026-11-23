@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { draftSection, registerDraft, retryFailed, settled, unsavedNow, writeSlot, writesState } from './pendingWrites.ts';
+import { draftSection, registerDraft, retryFailed, settingDraft, settled, unsavedNow, watchWrites, writeSlot, writesState } from './pendingWrites.ts';
 import { tracked } from './writes.ts';
 
 test('a write is pending from the moment it is asked until it is answered, and a failed one until it saves or is discarded', async () => {
@@ -59,4 +59,17 @@ test('drafts count as unsaved only while their reader says so', () => {
   editing = true;
   unregister();
   assert.equal(unsavedNow(), false);
+});
+
+test('a settings draft is kept by the registry, not its field, and tells the shell when it turns dirty or clean', () => {
+  const typed = settingDraft<string>('folders');
+  let heard = 0;
+  const stop = watchWrites(() => { heard++; });
+  typed.set('D:/Recordings');
+  assert.deepEqual([typed.value(), writesState(), draftSection(), heard], ['D:/Recordings', 'failed', 'folders', 1], 'a field opened again finds the draft the user left');
+  typed.set('D:/Recordings/2026');
+  assert.equal(heard, 1, 'editing a draft that stays dirty tells nobody');
+  typed.set(null);
+  assert.deepEqual([writesState(), heard], [null, 2], 'typing the saved path back clears it and wakes a close waiting on it');
+  stop();
 });

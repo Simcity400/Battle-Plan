@@ -53,6 +53,24 @@ export function registerDraft(unsaved: () => boolean, section?: string): () => v
   return () => { drafts.delete(unsaved); };
 }
 
+export interface SettingDraft<T> {
+  value(): T | null;
+  set(value: T | null): void;
+}
+
+export function settingDraft<T>(section: string): SettingDraft<T> {
+  let held: T | null = null;
+  registerDraft(() => held !== null, section);
+  return {
+    value: () => held,
+    set: value => {
+      const changes = (held === null) !== (value === null);
+      held = value;
+      if (changes) changed();
+    },
+  };
+}
+
 export function draftSection(): string | null {
   for (const [unsaved, draft] of drafts) if (draft.kind === 'setting' && unsaved()) return draft.section;
   return null;

@@ -272,7 +272,8 @@ export function settingsQueue<T extends { warning?: string | null }>(read: () =>
   let saving = 0, overlapped = false, started = 0;
   const refresh = () => {
     const asked = started;
-    return read().then(value => { if (asked === started && saving === 0) show(value); });
+    const current = () => asked === started && saving === 0;
+    return read().then(value => { if (current()) show(value); }, (cause: unknown) => { if (current()) throw cause; });
   };
   const save = async (work: () => Promise<T | null>): Promise<void> => {
     overlapped ||= saving > 0;

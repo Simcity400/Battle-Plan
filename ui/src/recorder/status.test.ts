@@ -227,6 +227,15 @@ test('a settings save is sent at once, overlapping saves end in one read of what
   await assert.rejects(failing.save(async () => { throw new Error('refused'); }));
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(unread.length, 1, 'and a read that fails after the saves says so');
+
+  let failRead!: () => void;
+  const failingLater = new Promise<never>((_, reject) => { failRead = () => reject(new Error('locked')); });
+  const superseded = settingsQueue<Stored>(() => failingLater, () => {}, () => {}, cause => { unread.push(cause); });
+  await assert.rejects(superseded.save(async () => { throw new Error('refused'); }));
+  await superseded.save(async () => ({ value: 'newer', warning: 'the disk didn’t answer' }));
+  failRead();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(unread.length, 1, 'a read a later save superseded reports no failure over that save');
 });
 
 interface Numbered { revision: number; phase: string }
