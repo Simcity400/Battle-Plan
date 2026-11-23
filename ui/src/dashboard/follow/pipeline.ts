@@ -8,6 +8,7 @@ import type { Channel } from './facts';
 import type { Binding } from '../../draw/lane';
 import type { FromLane, ToLane } from '../../draw/laneMessages';
 import { auditing, noteFrame, recordPicture } from '../pulled.ts';
+import { perfLog } from '../../shell/perf.ts';
 import type { AuditRow } from '../../draw/notifications';
 import { productRequest } from '../request.ts';
 import type { GatedParams } from '../regionTime';
@@ -70,6 +71,7 @@ export class Pipeline {
   constructor(clock: PlaybackController, client: DashboardClient, host: PipelineHost) {
     this.clock = clock; this.client = client; this.host = host; this.rate = host.rate();
     const count = host.lanes.length;
+    perfLog?.lanes(count);
     this.loads = Array.from({ length: count }, () => 0);
     this.nextSub = Array.from({ length: count }, () => 1);
     this.page = new Page<ImageBitmap>({ lanes: count, seek: clock.getSnapshot().seekSequence, post: (lane, message) => this.post(lane, message) });

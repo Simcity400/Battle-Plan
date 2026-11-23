@@ -27,7 +27,9 @@ export type WidgetWork = 'render' | 'hour' | 'held' | 'unheld' | 'read' | 'ahead
 interface Tally { count: number; bytes: number; from: number; to: number }
 
 const FLUSH_MS = 500;
+const FLUSH_BYTES = 2 << 20;
 const PENDING_BYTES = 16 << 20;
+const MEASURE_UNGATED = typeof __BATTLEPLAN_MEASURE_UNGATED__ !== 'undefined' && __BATTLEPLAN_MEASURE_UNGATED__;
 const encoder = new TextEncoder();
 const round = (value: number) => Math.round(value * 1000) / 1000;
 const epoch = (now: number) => round(performance.timeOrigin + now);
@@ -111,6 +113,7 @@ type AuditedPicture = Omit<PictureSample, 'hour' | 'rows'> & { hour: number; row
 type PictureAuditResult = { widget: string; surface: string; placement: number; owner?: number; at: number; hour: number; error: string | null };
 
 const READERS_HELD = 1024;
+const EXACT_READS_HELD = 64;
 
 export class PerfRecorder {
   private readers = new Map<string, ExactPicture>();
@@ -118,7 +121,8 @@ export class PerfRecorder {
   private commitSequence = 0;
   private commitAudit?: { at: number; serial: number; widgets: string[]; causes: object; changes: RowChange[]; input?: string }[];
   private rowChanges: RowChange[] = [];
-  private pictureAudit?: { readers?: Map<string, ExactPicture>; pictures: AuditedPicture[]; done: boolean };
+  private auditGen = 0;
+  private pictureAudit?: { gen: number; readers?: Map<string, ExactPicture>; pictures: AuditedPicture[]; done: boolean };
 
   structure(widget: string, source: string, previous: StructureRead, current: StructureRead, placement?: number) {
     if (this.commitAudit && JSON.stringify(previous.rows()) !== JSON.stringify(current.rows()))
@@ -135,11 +139,15 @@ export class PerfRecorder {
   private exactReads = new Map<string, Promise<unknown>>();
   exactOnce<T>(key: string, read: () => Promise<T>): Promise<T> {
     let held = this.exactReads.get(key) as Promise<T> | undefined;
-    if (!held) {
-      held = read();
+    if (held) {
+      this.exactReads.delete(key);
       this.exactReads.set(key, held);
-      held.catch(() => this.exactReads.delete(key));
+      return held;
     }
+    held = read();
+    this.exactReads.set(key, held);
+    if (this.exactReads.size > EXACT_READS_HELD) this.exactReads.delete(this.exactReads.keys().next().value!);
+    held.catch(() => this.exactReads.delete(key));
     return held;
   }
   ink(id: number, visible: boolean) {
@@ -147,24 +155,33 @@ export class PerfRecorder {
   }
 
   async beginAudit() {
+    const gen = ++this.auditGen;
+    this.pictureAudit = undefined;
+    this.exactReads.clear();
     this.rowChanges = [];
     this.commitAudit = [];
     this.auditReaders = new Map(this.readers);
-    await (await import('../dashboard/pulled.ts')).capturePictures(true);
+    const { capturePictures } = await import('../dashboard/pulled.ts');
+    if (this.auditGen !== gen) return;
+    await capturePictures(true);
   }
 
   async auditPicturesBatch(limit: number): Promise<{ done: boolean; results: PictureAuditResult[] }> {
+    const gen = this.auditGen;
     if (!this.pictureAudit) {
       const { capturePicturesBatch } = await import('../dashboard/pulled.ts');
+      if (this.auditGen !== gen) return { done: true, results: [] };
       const readers = this.auditReaders;
       this.auditReaders = undefined;
       const commits = this.commitAudit ?? [];
       this.commitAudit = undefined;
       const checks = new WeakMap<StructureRead, Promise<boolean>>();
       const verify = async (read: StructureRead) => {
+        if (this.auditGen !== gen) return false;
         let checked = checks.get(read);
         if (!checked) {
           checked = (async () => {
+            if (this.auditGen !== gen) return false;
             try { return JSON.stringify(read.rows()) === JSON.stringify(await read.exact()); }
             catch { return false; }
           })();
@@ -173,31 +190,55 @@ export class PerfRecorder {
         return checked;
       };
       for (const { changes, ...commit } of commits) {
-        const verified = await auditInBatches(changes, AUDIT_CONCURRENCY, async c => ({ widget: c.widget, source: c.source, ...c.placement !== undefined ? { placement: c.placement } : {}, hour: c.current.hour, previousHour: c.previous.hour,
-          before: c.previous.rows(), after: c.current.rows(), verified: await verify(c.previous) && await verify(c.current) }));
-        this.push({ t: 'commit', ...commit, changes: verified });
+        if (this.auditGen !== gen) return { done: true, results: [] };
+        const verified = await auditInBatches(changes, AUDIT_CONCURRENCY, async c => {
+          if (this.auditGen !== gen) return null;
+          const prevOk = await verify(c.previous);
+          if (this.auditGen !== gen) return null;
+          const currOk = prevOk && await verify(c.current);
+          return { widget: c.widget, source: c.source, ...c.placement !== undefined ? { placement: c.placement } : {}, hour: c.current.hour, previousHour: c.previous.hour,
+            before: c.previous.rows(), after: c.current.rows(), verified: currOk };
+        });
+        if (this.auditGen !== gen) return { done: true, results: [] };
+        this.push({ t: 'commit', ...commit, changes: verified.filter(entry => entry !== null) });
+        if (this.buffered.bytes >= FLUSH_BYTES) await this.flush();
+        if (this.auditGen !== gen) return { done: true, results: [] };
       }
-      const first = await capturePicturesBatch(2048);
+      if (this.auditGen !== gen) return { done: true, results: [] };
+      const first = await capturePicturesBatch(256);
+      if (this.auditGen !== gen) return { done: true, results: [] };
       const pictures: AuditedPicture[] = [];
       for (const record of first.records) {
-        this.push({ ...record });
+        const logged: PerfRecord = { ...record };
+        delete logged.rows;
+        this.push(logged);
         if (record.t === 'picture' && record.rows && record.hour !== null) pictures.push(record as AuditedPicture);
       }
-      this.pictureAudit = { readers, pictures, done: first.done };
+      if (this.buffered.bytes >= FLUSH_BYTES) await this.flush();
+      if (this.auditGen !== gen) return { done: true, results: [] };
+      this.pictureAudit = { gen, readers, pictures, done: first.done };
     }
     const work = this.pictureAudit;
+    if (!work || work.gen !== gen || this.auditGen !== gen) return { done: true, results: [] };
     const count = Math.max(1, Math.floor(limit));
-    if (!work.done && work.pictures.length < count) {
+    while (!work.done && work.pictures.length < count) {
       const { capturePicturesBatch } = await import('../dashboard/pulled.ts');
-      const next = await capturePicturesBatch(2048);
+      if (this.auditGen !== gen || this.pictureAudit !== work) return { done: true, results: [] };
+      const next = await capturePicturesBatch(256);
+      if (this.auditGen !== gen || this.pictureAudit !== work) return { done: true, results: [] };
       for (const record of next.records) {
-        this.push({ ...record });
+        const logged: PerfRecord = { ...record };
+        delete logged.rows;
+        this.push(logged);
         if (record.t === 'picture' && record.rows && record.hour !== null) work.pictures.push(record as AuditedPicture);
       }
+      if (this.buffered.bytes >= FLUSH_BYTES) await this.flush();
+      if (this.auditGen !== gen || this.pictureAudit !== work) return { done: true, results: [] };
       work.done = next.done;
     }
     const batch = work.pictures.splice(0, count);
     const results = await auditInBatches(batch, AUDIT_CONCURRENCY, async record => {
+      if (this.auditGen !== gen || this.pictureAudit !== work) return null;
       const { widget, surface, placement, owner, rows } = record;
       const hour = record.hour + record.offset;
       let error: string | null;
@@ -205,9 +246,10 @@ export class PerfRecorder {
       catch (cause) { error = String(cause); }
       return { widget, surface, placement, owner, at: record.at, hour, error };
     });
+    if (this.auditGen !== gen || this.pictureAudit !== work) return { done: true, results: [] };
     const done = work.done && work.pictures.length === 0;
     if (done) { this.pictureAudit = undefined; this.exactReads.clear(); }
-    return { done, results };
+    return { done, results: results.filter(entry => entry !== null) };
   }
   async auditPictures(): Promise<PictureAuditResult[]> {
     const results: PictureAuditResult[] = [];
@@ -236,11 +278,13 @@ export class PerfRecorder {
   private playing = false;
   private position: number | null = null;
   private views = '';
+  private laneCountValue: number | null = null;
 
   constructor() {
     const types = PerformanceObserver.supportedEntryTypes;
     const longtask = types.includes('longtask'), loaf = types.includes('long-animation-frame');
-    this.push({ t: 'page', at: epoch(performance.now()), dpr: devicePixelRatio, width: innerWidth, height: innerHeight, longtask, loaf }, true);
+    this.push({ t: 'page', at: epoch(performance.now()), dpr: devicePixelRatio, width: innerWidth, height: innerHeight, longtask, loaf,
+      hardwareConcurrency: navigator.hardwareConcurrency, ...(MEASURE_UNGATED && { ungated: true }) }, true);
     if (longtask) this.observe('longtask', list => {
       for (const entry of list.getEntries()) this.push({ t: 'longtask', at: epoch(entry.startTime), dur: round(entry.duration) });
     });
@@ -335,9 +379,12 @@ export class PerfRecorder {
     }
     this.lines.push(line);
     tally(this.buffered, 1, line.length + 1, record.at, record.at);
+    if (!kept && this.buffered.bytes >= FLUSH_BYTES && !this.queued) void this.flush();
   }
 
   get hour(): number | null { return this.position === null ? null : Math.floor(this.position); }
+  get laneCount(): number | null { return this.laneCountValue; }
+  lanes(count: number): void { this.laneCountValue = count; }
 
   clock(position: number, playing: boolean, hoursPerSecond: number, sequence: number, seekSequence: number, composedAt?: number): void {
     this.playing = playing;
@@ -504,5 +551,7 @@ export async function startPerf(): Promise<void> {
   });
   Object.assign(window, { __perf: { start: () => recorder.start(), stop: () => recorder.stop(), flush: () => recorder.flush(),
     beginAudit: () => recorder.beginAudit(), auditPictures: () => recorder.auditPictures(), auditPicturesBatch: (limit: number) => recorder.auditPicturesBatch(limit),
-    pressureMerges: () => invoke('playback_pressure_merges'), hour: () => recorder.hour } });
+    pressureMerges: () => invoke('playback_pressure_merges'), hour: () => recorder.hour, lanes: () => recorder.laneCount, ungated: MEASURE_UNGATED,
+    preloadStatus: async () => (await import('../widgets/rendererLoaders.ts')).preloadStatus(),
+    waitPreloadComplete: async () => (await import('../widgets/rendererLoaders.ts')).whenPreloadComplete() } });
 }

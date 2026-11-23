@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { takesShot } from './session.mjs';
-import { shownHours, catalogueHour, droppedFrames, failedReplies, firstContent, framesLate, frameTimes, freshness, freshnessByKind, item, losses, mapDrew, mapFrames, mapSeek, pageShown, presentedAt, quantiles, UNPRESENTED } from './verdicts.mjs';
+import { shownHours, catalogueHour, classifyPerfFile, classifyWidgetSnapshot, costSessionConfinement, droppedFrames, failedReplies, firstContent, framesLate, frameTimes, freshness, freshnessByKind, item, losses, mapDrew, mapFrames, mapSeek, pageShown, presentedAt, profileLines, quantiles, REFUSAL_TEXT, sessionConfinement, UNPRESENTED, windowLosses } from './verdicts.mjs';
 import { asked, machineLine, noVisibleChange, phaseSeconds, settingDrawn, stepOver, stillInFlight } from './verdicts.mjs';
 
 test('a setting that changed nothing is known once its widget reports drawing it, never while it loads or before it took it', () => {
@@ -277,4 +277,102 @@ test('a seek holds its captured pin through the next input, even after a correct
   const latePin = [{ at: 105, hour: 40, fixedHour: 40 }, { at: 110, hour: 99 }, { at: 112, hour: 40, fixedHour: 40 }];
   assert.equal(sought(seek, new Map([['p', latePin]]), [], 120).pass, false);
   assert.equal(sought(seek, new Map([['p', [{ at: 105, hour: 99 }, { at: 110, hour: 98 }]]]), [], 120).pass, false);
+});
+
+test('a visible placeholder fails freshnessByKind with reason not migrated while staying distinct from a real failure', () => {
+  const widget = { id: 'p', kind: 'legacy', title: 'Legacy', visible: true, notMigrated: true };
+  const window = { page: 'Overview', speed: 1440, from: 10, to: 50, widgets: [widget] };
+  const dated = [{ from: 10, widget: 'p', status: 'not migrated', pass: false }];
+  const [entry] = freshnessByKind([], [window], [], [], dated);
+  assert.equal(entry.pass, false);
+  assert.equal(entry.notMigrated, 1);
+  assert.equal(entry.status, 'not migrated');
+  assert.deepEqual(entry.reasons, ['not migrated']);
+});
+
+test('windowLosses counts only perf log losses overlapping a window, and losses names affected windows', () => {
+  const records = [
+    { t: 'lost', source: 'ui', count: 5, from: 100, to: 200 },
+    { t: 'lost', source: 'ui', count: 7, from: 500, to: 600 },
+  ];
+  assert.equal(windowLosses(records, 150, 300).count, 5);
+  assert.equal(windowLosses(records, 250, 450).count, 0);
+  const summary = losses(records, [{ label: 'Overview 1440 h/s', from: 150, to: 300 }]);
+  assert.deepEqual(summary[0].windows, ['Overview 1440 h/s']);
+});
+
+test('classifyWidgetSnapshot requires positive refusal text and flags loading or blank states as errors (both direct and serialized)', () => {
+  const serialized = new Function(`return (${classifyWidgetSnapshot.toString()});`)();
+  for (const fn of [snap => classifyWidgetSnapshot(snap), snap => serialized(snap, REFUSAL_TEXT)]) {
+    const errWithoutRetry = fn({ errorDetail: 'Changed rows arrived without the table they change.' });
+    assert.deepEqual(errWithoutRetry, { outcome: 'error', detail: 'Changed rows arrived without the table they change.', notMigrated: false });
+    const refused = fn({ errorDetail: 'No table 44 in the schema' });
+    assert.deepEqual(refused, { outcome: 'refusal', detail: 'No table 44 in the schema', notMigrated: false });
+    assert.deepEqual(fn({ probeState: 'loading' }), { outcome: 'error', detail: 'still loading', notMigrated: false });
+    assert.deepEqual(fn({ probeState: 'loading', probeDrawing: true }), { outcome: 'content', detail: null, notMigrated: false });
+    assert.deepEqual(fn({ probeState: 'blank' }), { outcome: 'error', detail: 'blank widget body', notMigrated: false });
+    assert.deepEqual(fn({ placeholderText: "Scoreboard isn't playing back yet" }),
+      { outcome: 'placeholder', detail: "Scoreboard isn't playing back yet", notMigrated: true });
+  }
+});
+
+test('classifyPerfFile classifies viewer map logs once with their owning session and never as page logs', () => {
+  assert.deepEqual(classifyPerfFile('perf-playback.jsonl'), { kind: 'page', session: 'playback' });
+  assert.deepEqual(classifyPerfFile('perf-playback.jsonl.map.1.jsonl'), { kind: 'viewer', session: 'playback' });
+  assert.deepEqual(classifyPerfFile('perf-widget-costs.jsonl.map.42.jsonl'), { kind: 'viewer', session: 'widget-costs' });
+  assert.equal(classifyPerfFile('other.jsonl'), null);
+});
+
+test('costSessionConfinement exports missing observations as null without borrowing from another session', () => {
+  const run = {
+    confinement: { jobProcesses: 4, confinedProcesses: 4, allConfined: true },
+    sessions: [
+      { name: 'playback', confinement: { jobProcesses: 4, confinedProcesses: 4, allConfined: true } },
+      { name: 'widget costs' },
+    ],
+  };
+  const sweep = {
+    meta: {
+      sessions: [
+        { session: 'playback', confinement: { hardwareConcurrency: 4, lanes: 2 } },
+        { session: 'widget-costs' },
+      ],
+    },
+  };
+  assert.deepEqual(costSessionConfinement(run, sweep, 'widget-costs'), { job: null, page: null });
+  assert.deepEqual(costSessionConfinement(run, sweep, 'playback'), {
+    job: { jobProcesses: 4, confinedProcesses: 4, allConfined: true },
+    page: { hardwareConcurrency: 4, lanes: 2 },
+  });
+});
+
+test('sessionConfinement checks each session Job affinity, hardwareConcurrency, and lane count without cross-pairing', () => {
+  const run = {
+    profile: 'weak',
+    cpuThrottle: 4,
+    cores: { count: 4, mask: '0x55', cpus: [0, 2, 4, 6] },
+    sessions: [
+      { name: 'pages', phases: ['pages'], confinement: { jobProcesses: 4, confinedProcesses: 4, allConfined: true } },
+      { name: 'playback', phases: ['playback'], confinement: { jobProcesses: 4, confinedProcesses: 3, allConfined: false } },
+    ],
+  };
+  const sweep = {
+    meta: {
+      cpuThrottle: 4,
+      sessions: [
+        { session: 'pages', phases: ['pages'], confinement: { hardwareConcurrency: 4, lanes: null } },
+        { session: 'playback', phases: ['playback'], confinement: { hardwareConcurrency: 16, lanes: 4 } },
+      ],
+    },
+  };
+  const pagesConf = sessionConfinement(run, run.sessions[0], sweep.meta.sessions[0]);
+  assert.equal(pagesConf.pass, true);
+  const playbackConf = sessionConfinement(run, run.sessions[1], sweep.meta.sessions[1]);
+  assert.equal(playbackConf.pass, false);
+  assert.ok(playbackConf.reasons.some(r => r.includes('3/4')));
+  assert.ok(playbackConf.reasons.some(r => r.includes('hardwareConcurrency = 16')));
+  assert.ok(playbackConf.reasons.some(r => r.includes('4 drawing lanes, expected 2')));
+  const header = profileLines(run, sweep);
+  assert.ok(header[0].includes('pages: Job 4/4, hardwareConcurrency=4'));
+  assert.ok(header[0].includes('playback: Job 3/4 (NOT ALL CONFINED), hardwareConcurrency=16, 4 lanes'));
 });
