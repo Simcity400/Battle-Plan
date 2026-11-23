@@ -290,21 +290,24 @@ fn candidate_relation(
 
 impl Sample<'_> {
     fn primary_viewer(&self) -> Option<CandidateViewer> {
-        let slot = self.viewer?;
-        Some(match self.viewer_raw {
-            Some(raw) => CandidateViewer::RawLocal(raw),
-            None => CandidateViewer::Slot(slot),
-        })
+        if let Some(raw) = self.viewer_raw {
+            return Some(CandidateViewer::RawLocal(raw));
+        }
+        self.viewer.map(CandidateViewer::Slot)
     }
 
     fn secondary_viewer(
         &self,
         before_links: Option<&BTreeMap<u32, u32>>,
     ) -> Option<CandidateViewer> {
-        let alt_slot = self.alternate_viewer?;
-        if let Some(slot) = self.viewer {
-            let relation = match (self.viewer_raw, self.alternate_viewer_raw) {
-                (Some(a), Some(b)) => match before_links {
+        let secondary = match (self.alternate_viewer_raw, self.alternate_viewer) {
+            (Some(raw), _) => CandidateViewer::RawLocal(raw),
+            (None, Some(slot)) => CandidateViewer::Slot(slot),
+            (None, None) => return None,
+        };
+        if let Some(primary) = self.primary_viewer() {
+            let relation = match (primary, secondary) {
+                (CandidateViewer::RawLocal(a), CandidateViewer::RawLocal(b)) => match before_links {
                     Some(before) => match (
                         raw_relation_in(before, a, b),
                         raw_relation_in(self.links, a, b),
@@ -317,17 +320,18 @@ impl Sample<'_> {
                     },
                     None => raw_relation_in(self.links, a, b),
                 },
-                _ if slot == alt_slot => ViewerRelation::Same,
-                _ => ViewerRelation::Different,
+                _ => candidate_relation(
+                    before_links.unwrap_or(self.links),
+                    primary,
+                    self.links,
+                    secondary,
+                ),
             };
             if relation == ViewerRelation::Same {
                 return None;
             }
         }
-        Some(match self.alternate_viewer_raw {
-            Some(raw) => CandidateViewer::RawLocal(raw),
-            None => CandidateViewer::Slot(alt_slot),
-        })
+        Some(secondary)
     }
 }
 
@@ -995,18 +999,20 @@ impl History {
             held.insert(*key, value);
         }
         let manager_viewers = match continuity {
-            Continuity::Load | Continuity::Gap => primary_viewer.map(|v| vec![v]),
+            Continuity::Load => primary_viewer.map(|v| vec![v]),
+            Continuity::Gap => (!sample.recording)
+                .then_some(primary_viewer)
+                .flatten()
+                .map(|v| vec![v]),
             Continuity::Next => {
                 if sample.recording && matches!(sample.refreshes, RefreshWitness::Complete { .. }) {
-                    if !local_viewers.is_empty() {
-                        let mut known = Vec::new();
+                    next.and_then(|p| p.manager_viewers.as_ref()).map(|prev| {
+                        let mut known = prev.clone();
                         for &raw in local_viewers {
                             push_unique(&mut known, CandidateViewer::RawLocal(raw));
                         }
-                        Some(known)
-                    } else {
-                        next.and_then(|p| p.manager_viewers.clone())
-                    }
+                        known
+                    })
                 } else if every.is_some_and(|e| e.other_proven) {
                     primary_viewer.map(|v| {
                         let mut known = vec![v];
@@ -1022,8 +1028,9 @@ impl History {
                     ) {
                         (Some(prev), Some(pv)) => {
                             let mut known = prev.clone();
-                            if secondary_viewer.is_none() {
-                                push_unique(&mut known, pv);
+                            push_unique(&mut known, pv);
+                            if let Some(alt) = secondary_viewer {
+                                push_unique(&mut known, alt);
                             }
                             Some(known)
                         }

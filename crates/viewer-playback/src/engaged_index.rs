@@ -269,8 +269,8 @@ impl Viewer {
     fn recording<F: Tables + ?Sized>(
         frame: &F,
         inputs: &Arc<Inputs>,
-    ) -> (Self, Option<(u32, u32)>, bool) {
-        let identified = viewer_foundation::fold_tables::whole::<tables::LocalPlayer, F>(frame)
+    ) -> (Self, Option<(Option<u32>, u32)>, bool) {
+        let local = viewer_foundation::fold_tables::whole::<tables::LocalPlayer, F>(frame)
             .and_then(|rows| match rows {
                 [player] => {
                     let observing = (player.country as i32) <= 0;
@@ -282,18 +282,18 @@ impl Viewer {
                         0
                     };
                     let slot = if raw == 0 {
-                        0
+                        Some(0)
                     } else {
-                        inputs.links.get(&raw).copied()?
+                        inputs.links.get(&raw).copied()
                     };
                     Some(((slot, raw), observing))
                 }
                 _ => None,
             });
-        match identified {
+        match local {
             Some(((slot, raw), observing)) => (
                 Self {
-                    slot: Some(slot),
+                    slot,
                     raw: Some(raw),
                     alternate_slot: None,
                     alternate_raw: None,
@@ -440,7 +440,7 @@ struct Fold {
     last: Option<(Hour, bool)>,
     recording: Track,
     recording_last: Option<(Hour, bool)>,
-    client_view: Option<(u32, u32, Arc<Inputs>)>,
+    client_view: Option<(Option<u32>, u32, Arc<Inputs>)>,
     icons: Vec<IconFold>,
     icon_changed: Vec<Vec<(u64, Option<Kept>)>>,
     recording_icons: Vec<IconFold>,
@@ -692,34 +692,36 @@ impl Pass {
             .as_ref()
             .filter(|_| recording_continuity == Continuity::Next);
         let player = player.map(|(mut viewer, view, observing)| {
-            if let Some(view) = view
+            if let Some((view_slot, view_raw)) = view
                 && recording_continuity == Continuity::Next
                 && observing
             {
-                if let Some((slot, raw, prev_inputs)) = previous_view {
-                    let prev_slot_now = if *raw == 0 {
+                if let Some((prev_slot, prev_raw, prev_inputs)) = previous_view {
+                    let prev_slot_now = if *prev_raw == 0 {
                         Some(0)
                     } else {
-                        viewer.inputs.links.get(raw).copied()
+                        viewer.inputs.links.get(prev_raw).copied()
                     };
-                    viewer.slot = Some(prev_slot_now.unwrap_or(*slot));
-                    viewer.raw = Some(*raw);
-                    let same_view = same_raw_in(&prev_inputs.links, *raw, view.1)
-                        && same_raw_in(&viewer.inputs.links, *raw, view.1);
+                    viewer.slot = prev_slot_now.or(*prev_slot);
+                    viewer.raw = Some(*prev_raw);
+                    let same_view = same_raw_in(&prev_inputs.links, *prev_raw, view_raw)
+                        && same_raw_in(&viewer.inputs.links, *prev_raw, view_raw);
                     if !same_view {
-                        viewer.alternate_slot = Some(view.0);
-                        viewer.alternate_raw = Some(view.1);
+                        viewer.alternate_slot = view_slot;
+                        viewer.alternate_raw = Some(view_raw);
                     }
                 } else {
                     viewer.slot = None;
                     viewer.raw = None;
-                    viewer.alternate_slot = Some(view.0);
-                    viewer.alternate_raw = Some(view.1);
+                    viewer.alternate_slot = view_slot;
+                    viewer.alternate_raw = Some(view_raw);
                 }
             }
             (viewer, view)
         });
-        let identified = player.as_ref().is_some_and(|(_, view)| view.is_some());
+        let identified = player
+            .as_ref()
+            .is_some_and(|(_, view)| view.is_some_and(|(slot, _)| slot.is_some()));
         match &sides {
             None => summary.unreadable_hours += 1,
             Some((_, sides)) => {
@@ -749,7 +751,7 @@ impl Pass {
                     bytes.as_ref(),
                     recording_continuity,
                 );
-                if view.is_some()
+                if identified
                     && self
                         .check
                         .compare(
@@ -819,7 +821,7 @@ impl Pass {
             let player_slot = player
                 .as_ref()
                 .and_then(|(_, view)| *view)
-                .and_then(|(view, raw)| (raw != 0).then_some(view));
+                .and_then(|(slot, raw)| (raw != 0).then_some(slot).flatten());
             if covered
                 .players
                 .last()

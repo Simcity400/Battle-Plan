@@ -517,6 +517,7 @@ fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
     );
 
     let mut legacy = Pass::new(Arc::default(), Country::Tag("C1".into()));
+    let mut legacy_hour12 = None;
     for (hour, (country, observer_country, bytes)) in (10..).zip([
         (0, 3, [1, 0]),
         (0, 4, [1, 0]),
@@ -532,9 +533,17 @@ fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
             reason: "pre-146".into(),
         };
         legacy.fold_hour(3, hour, Some(&frame), Some(10), false);
+        if hour == 12 {
+            legacy_hour12 = Some(frame);
+        }
     }
     let legacy_index = index(&legacy);
-    assert_eq!(naval_flag(&legacy_index, &mut frame, 12, 4), Engaged::No);
+    let mut legacy_hour12 = legacy_hour12.unwrap();
+    let legacy_served = flags(&legacy_index, &mut legacy_hour12, 12, 4);
+    assert_eq!(
+        (legacy_served.land[&100], legacy_served.naval[&0]),
+        (Engaged::Ambiguous(engaged::Ambiguity::Scope), Engaged::No)
+    );
 }
 
 #[test]
@@ -1121,6 +1130,59 @@ fn unidentified_hourly_viewer_keeps_independently_witnessed_side_refresh() {
         let served12 = flags(&idx, &mut frame12, 12, 1);
         assert_eq!(served12.land[&100], Engaged::Yes);
     }
+}
+
+#[test]
+fn unlinked_raw_tag_at_load_matches_secondary_owner_and_carries_when_linked() {
+    use replay_data::rows::{CountryLinkRow, LandCombatSideRow, LocalPlayerRow, TableRows};
+    use replay_frame::frame::TableView;
+    let mut pass = Pass::new(Arc::default(), Country::Tag("C4".into()));
+    let frame_with = |linked: bool| {
+        let mut frame = naval_frame(6, &[1], &[], 0, [0, 0]);
+        *frame.tables[TableId::LocalPlayer.index()] = TableView::Complete(TableRows::LocalPlayer(
+            vec![LocalPlayerRow {
+                country: 0,
+                observer_country: 999,
+            }],
+        ));
+        *frame.tables[TableId::LandCombatSides.index()] =
+            TableView::Complete(TableRows::LandCombatSides(vec![LandCombatSideRow {
+                combat: 100,
+                attacker_primary: Vec::new(),
+                attacker_secondary: vec![999],
+                defender_primary: Vec::new(),
+                defender_secondary: Vec::new(),
+                ..Default::default()
+            }]));
+        if linked {
+            let mut links: Vec<_> = (1..=6)
+                .map(|slot| CountryLinkRow {
+                    id: slot,
+                    canonical_slot: slot,
+                })
+                .collect();
+            links.push(CountryLinkRow {
+                id: 999,
+                canonical_slot: 4,
+            });
+            *frame.tables[TableId::CountryLinks.index()] =
+                TableView::Complete(TableRows::CountryLinks(links));
+        }
+        frame
+    };
+    let frame10 = frame_with(false);
+    let mut frame11 = frame_with(true);
+    pass.fold_hour(3, 10, Some(&frame10), Some(10), false);
+    pass.fold_hour(3, 11, Some(&frame11), Some(10), false);
+
+    let idx = index(&pass);
+    {
+        let branches = idx.shared.branches.lock().unwrap();
+        assert!(!branches[&3].recording_player(10, 4));
+        assert!(branches[&3].recording_player(11, 4));
+    }
+    let served11 = flags(&idx, &mut frame11, 11, 4);
+    assert_eq!(served11.land[&100], Engaged::Yes);
 }
 
 #[test]
