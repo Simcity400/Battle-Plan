@@ -1,4 +1,4 @@
-import { cellState, cellValue, rowName, rowReason, textAt } from './message.ts';
+import { rowName, rowReason, textAt } from './message.ts';
 import type { FollowedAnswer, FollowedRows, PatchNode, RowChunk, RowPatches } from './message';
 
 const NO_TEXT = 0xffff_ffff;
@@ -124,8 +124,56 @@ export function patchAnswer(base: FollowedAnswer, changed: FollowedRows, stats?:
   return { ...base, patches: { root: nextRoot, shift } };
 }
 
+function visitChunks(node: PatchNode, shift: number, baseChunk: number, visit: (chunkIndex: number, chunk: RowChunk) => void) {
+  for (let i = 0; i < BRANCH; i++) {
+    const child = node[i];
+    if (!child) continue;
+    const at = baseChunk + (i << shift);
+    if (shift === 0) visit(at, child as RowChunk);
+    else visitChunks(child as PatchNode, shift - 3, at, visit);
+  }
+}
+
 export function serializeAnswer(answer: FollowedRows): Uint8Array {
   const { rows, columns } = answer, cells = rows * columns;
+  const statesAt = 16 + rows * 16 + cells * 8, reasonsAt = aligned(statesAt + cells);
+  let reasonChanged = answer.kind !== 'rows';
+  if (!reasonChanged && answer.patches) {
+    visitChunks(answer.patches.root, answer.patches.shift, 0, (chunkIndex, chunk) => {
+      if (reasonChanged) return;
+      const start = chunkIndex * CHUNK_ROWS;
+      for (let i = 0; i < chunk.reasons.length; i++) {
+        if (chunk.reasons[i] !== null || answer.views.u32[answer.reasons + start + i] !== NO_TEXT) {
+          reasonChanged = true;
+          return;
+        }
+      }
+    });
+  }
+  const writeCells = (out: Uint8Array) => {
+    out.set(answer.views.u8.subarray(answer.keys * 8, answer.keys * 8 + rows * 16), 16);
+    const valuesOut = new BigInt64Array(out.buffer, 16 + rows * 16, cells);
+    valuesOut.set(answer.views.i64.subarray(answer.values, answer.values + cells));
+    out.set(answer.views.u8.subarray(answer.states, answer.states + cells), statesAt);
+    if (answer.patches) {
+      visitChunks(answer.patches.root, answer.patches.shift, 0, (chunkIndex, chunk) => {
+        const cellOffset = chunkIndex * CHUNK_ROWS * columns;
+        valuesOut.set(chunk.values, cellOffset);
+        out.set(chunk.states, statesAt + cellOffset);
+      });
+    }
+  };
+  if (!reasonChanged) {
+    const count = answer.ends.length - 1;
+    const tailStart = answer.reasons * 4;
+    const tailEnd = aligned(answer.text + answer.ends[count]!);
+    const out = new Uint8Array(reasonsAt + (tailEnd - tailStart)), data = new DataView(out.buffer);
+    data.setUint8(0, 1); data.setUint8(1, answer.canonical ? 1 : 0);
+    data.setUint32(4, rows, true); data.setUint32(8, columns, true); data.setUint32(12, count, true);
+    writeCells(out);
+    out.set(answer.views.u8.subarray(tailStart, tailEnd), reasonsAt);
+    return out;
+  }
   const added: Uint8Array[] = [], index = new Map<string, number>();
   const add = (text: string) => {
     let at = index.get(text);
@@ -139,22 +187,12 @@ export function serializeAnswer(answer: FollowedRows): Uint8Array {
     names[row] = name === null ? NO_TEXT : add(name);
   }
   const count = added.length, textBytes = added.reduce((sum, text) => sum + text.length, 0);
-  const statesAt = 16 + rows * 16 + cells * 8, reasonsAt = aligned(statesAt + cells), namesAt = aligned(reasonsAt + rows * 4), endsAt = aligned(namesAt + rows * 4);
+  const namesAt = aligned(reasonsAt + rows * 4), endsAt = aligned(namesAt + rows * 4);
   const textsAt = aligned(endsAt + (count + 1) * 4), size = aligned(textsAt + textBytes);
   const out = new Uint8Array(size), data = new DataView(out.buffer);
   data.setUint8(0, 1); data.setUint8(1, answer.canonical ? 1 : 0);
   data.setUint32(4, rows, true); data.setUint32(8, columns, true); data.setUint32(12, count, true);
-  out.set(answer.views.u8.subarray(answer.keys * 8, answer.keys * 8 + rows * 16), 16);
-  const valuesOut = new BigInt64Array(out.buffer, 16 + rows * 16, cells);
-  if (!answer.patches) {
-    valuesOut.set(answer.views.i64.subarray(answer.values, answer.values + cells));
-    out.set(answer.views.u8.subarray(answer.states, answer.states + cells), statesAt);
-  } else {
-    for (let at = 0; at < cells; at++) {
-      valuesOut[at] = cellValue(answer, at);
-      out[statesAt + at] = cellState(answer, at);
-    }
-  }
+  writeCells(out);
   new Uint32Array(out.buffer, reasonsAt, rows).set(reasons);
   new Uint32Array(out.buffer, namesAt, rows).set(names);
   const ends = new Uint32Array(out.buffer, endsAt, count + 1);

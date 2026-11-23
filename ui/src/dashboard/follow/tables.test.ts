@@ -99,3 +99,21 @@ test('N8: single-row patch index allocation stays logarithmic on a 10,000-row ta
   assert.equal(cellValue(next, 5431), 5432n * 3n);
   assert.equal(cellValue(root, 5432), 5433n * 3n);
 });
+
+test('serializeAnswer preserves byte-exact names and values via bulk tail copy and still compacts when reasons change', () => {
+  const keys = Array.from({ length: 1500 }, (_, i) => BigInt(i + 1));
+  const names = keys.map(k => `C${k}`);
+  const base = rows({ keys, columns: 2, values: keys.flatMap(k => [k, k * 2n]), names });
+  const delta = rows({ keys: [keys[0]!, keys[777]!, keys[1499]!], columns: 2, values: [11n, 22n, 33n, 44n, 55n, 66n], changed: true });
+  const fastWire = serializeAnswer(patchAnswer(base, delta));
+  const fastParsed = parseAnswer(fastWire) as FollowedRows;
+  assert.equal(fastWire.byteLength, base.views.u8.byteLength);
+  assert.deepEqual([cellValue(fastParsed, 0), cellValue(fastParsed, 1), cellValue(fastParsed, 777 * 2), cellValue(fastParsed, 1499 * 2 + 1)], [11n, 22n, 33n, 66n]);
+  assert.deepEqual([rowName(fastParsed, 0), rowName(fastParsed, 777), rowName(fastParsed, 1499)], ['C1', 'C778', 'C1500']);
+  const withReason = parseAnswer(serializeAnswer(patchAnswer(fastParsed, rows({ keys: [keys[777]!], columns: 2, values: [0n, 0n], states: [CELL.unrecorded, CELL.unrecorded], reasons: ['gone'], changed: true })))) as FollowedRows;
+  assert.equal(rowReason(withReason, 777), 'gone');
+  const clearedWire = serializeAnswer(patchAnswer(withReason, rows({ keys: [keys[777]!], columns: 2, values: [9n, 10n], changed: true })));
+  const cleared = parseAnswer(clearedWire) as FollowedRows;
+  assert.equal(rowReason(cleared, 777), null);
+  assert.equal(cleared.ends.length - 1, 1500, 'cleared reason text is compacted out of the text table');
+});
