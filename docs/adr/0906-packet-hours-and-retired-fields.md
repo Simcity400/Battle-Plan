@@ -8,4 +8,4 @@ The reserved transport-preview singleton discarded its inline packet at format 1
 
 The table registry points to typed operations compiled by the table owners. The replay table crates each compile one partition to avoid instantiating every table's operations in the same crate. The dispatch is once per table and operation, with the row loop inside the typed function.
 
-[Packet codec](../../crates/replay-rows/src/extended_rows/packet_hour.rs) · [Retired row fields](../../crates/replay-rows/src/rows/retired.rs) · [Reserved split rows](../../crates/replay-rows/src/extended_rows/reserved_split.rs) · [Compatibility](../../crates/replay-rows/src/rows/compatibility.rs) · [Table operations](../../crates/replay-rows/src/rows/ops.rs)
+[Packet codec](../../crates/replay-rows/src/extended_rows/packet_hour.rs) · [Retired row fields](../../crates/replay-rows/src/rows/retired.rs) · [Reserved split rows](../../crates/replay-rows-naval/src/reserved_split.rs) · [Compatibility](../../crates/replay-rows/src/rows/compatibility.rs) · [Table operations](../../crates/replay-rows/src/rows/ops.rs)

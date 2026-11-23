@@ -10,4 +10,4 @@ Equipment loss causes and division deletion dispositions are separate stable val
 
 Consumers begin counting at the first complete equipment interval. The initial partial interval intentionally contributes no count, while a later unobserved interval withholds totals. Historical recordings distinguish that startup case using the exact stored reason until the format and consumers support a typed witness. [Issue #76](https://github.com/Simcity400/BattlePlan/issues/76)
 
-[Air and building ledgers](../../crates/replay-rows/src/extended_rows/air_ledger.rs) · [Division deletion and loss causes](../../crates/replay-rows/src/extended_rows/equipment_destruction.rs)
+[Air and building ledgers](../../crates/replay-rows-air/src/air_ledger.rs) · [Division deletion and loss causes](../../crates/replay-rows-economy/src/equipment_destruction.rs)

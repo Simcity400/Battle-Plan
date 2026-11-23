@@ -6,4 +6,4 @@ Intelligence rows preserve native operand precision and optionality. Trade influ
 
 Market values are shared between held rows, sparse updates and encoder baselines. Cloning a row need not clone its large collections. A write copies only a value that still has another owner. A shared empty allocation supplies new codec keys, avoiding a per-key allocation for a value the decoder will immediately replace. Variable values borrow storage while encoding and allocate on decode.
 
-[Extended rows](../../crates/replay-rows/src/extended_rows.rs) · [Intelligence operands](../../crates/replay-rows/src/extended_rows/characters_intelligence.rs) · [Shared market values](../../crates/replay-rows/src/extended_rows/market.rs)
+[Extended rows](../../crates/replay-rows/src/extended_rows.rs) · [Intelligence operands](../../crates/replay-rows-intelligence/src/characters_intelligence.rs) · [Shared market values](../../crates/replay-rows-economy/src/market.rs)

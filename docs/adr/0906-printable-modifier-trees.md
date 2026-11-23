@@ -8,4 +8,4 @@ Keep reserve chance breakdowns only for the sources the hourly reserve set reach
 
 Power balance stores source occurrences in order, including repeats and empty sources. Its description derives from those static named modifiers and recorded content. Its older cached trees and diagnostic samples are witnesses only, and both must exist together. Naval diagnostic oracle rows similarly record the reached occurrence afresh and are empty in production. Their identity allows comparison with the shared captured tree. Production modifiers keep one printable tree per reached root and retain refusal separately for each root.
 
-[Modifier rows](../../crates/replay-rows/src/modifier_breakdown_rows.rs) · [Naval tree joins](../../crates/replay-rows/src/naval_trees.rs) · [Production modifier rows](../../crates/replay-rows/src/production_modifier_rows.rs)
+[Modifier rows](../../crates/replay-rows/src/modifier_breakdown_rows.rs) · [Naval tree joins](../../crates/replay-rows-land/src/naval_trees.rs) · [Production modifier rows](../../crates/replay-rows-economy/src/production_modifier_rows.rs)

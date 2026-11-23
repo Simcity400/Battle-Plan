@@ -8,4 +8,4 @@ Only units that can incur the noncore-supply term demand the owner's access witn
 
 Railway departure selection keeps the native signed level entries in definition-neighbor order and observes the selected source building separately from sorted `RailEdges`. The reached damaged branch alone demands partial health and keeps its signed sentinel values. A present packet can report an observed null building; a missing packet may instead have an unreached gate or a failed read.
 
-[Route operands](../../crates/replay-rows/src/extended_rows/fresh_eta.rs)
+[Route operands](../../crates/replay-rows-world/src/fresh_eta.rs)

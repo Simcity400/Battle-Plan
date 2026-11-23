@@ -14,4 +14,4 @@ Encode occurrences as a count followed by sequence gaps, masks and changed optio
 
 Cumulative counts survive drains and world replacement. Overflow makes them unavailable. Transport and family-specific coverage are separate. A family refusal blocks carry for that family but leaves known occurrences and other proven registries usable. An incomplete interval offers its recorded events without proving absence of others.
 
-[Occurrence schema](../../crates/replay-rows/src/event_feed_rows.rs) · [Column codec](../../crates/replay-rows/src/event_feed_rows/columns.rs) · [Table codec](../../crates/replay-rows/src/rows/event_feed.rs)
+[Occurrence schema](../../crates/replay-rows-events/src/event_feed_rows.rs) · [Column codec](../../crates/replay-rows-events/src/event_feed_rows/columns.rs) · [Table codec](../../crates/replay-rows-events/src/event_feed.rs)

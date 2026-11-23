@@ -14,4 +14,4 @@ Air-history rows use sparse ring markers to certify omitted zeroes and preserve 
 
 Ace portraits preserve a capture failure separately from a null definition and keep the native name indices. A failed global selection can fall back to culture sprites. Base registrations keep counted container capacity and full wing handles in native pool order, including repeats. Indexed presence certifies access and positive capacity admits pools. Fresh carrier facts and state-container fuel are independent of the old per-pool aircraft preview. State bases can update fuel without invalidating pool metadata.
 
-[Air rows](../../crates/replay-rows/src/extended_rows/air.rs) · [Carrier registration](../../crates/replay-rows/src/extended_rows/carrier_air.rs)
+[Air rows](../../crates/replay-rows-air/src/air.rs) · [Carrier registration](../../crates/replay-rows-air/src/carrier_air.rs)
