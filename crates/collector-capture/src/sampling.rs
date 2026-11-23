@@ -1195,20 +1195,6 @@ impl Shared {
         Ok(shared)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    /// # Safety
-    /// Exclude other observer boundaries, capture and detach while constructing the fixture.
-    pub unsafe fn without_fixture_frames(
-        base: usize,
-        trampoline: usize,
-        frequency: u64,
-        sizing: &crate::country_scale::Sizing,
-        fixed_layout_bytes: usize,
-    ) -> std::io::Result<Self> {
-        // SAFETY: The isolated fixture owns the observer allocations.
-        unsafe { Self::allocate(base, trampoline, frequency, sizing, fixed_layout_bytes) }
-    }
-
     unsafe fn allocate(
         base: usize,
         trampoline: usize,

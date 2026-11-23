@@ -246,7 +246,7 @@ fn decode_refused(ordinal: usize) {
     let shared =
         // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
         // boundary or detach.
-        unsafe { collector_capture::sampling::Shared::with_fixture_sizing(0, 0, 1, &minimal_sizing(), 0) }.unwrap();
+        unsafe { collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing()) }.unwrap();
     let index =
     // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
     unsafe { shared.take_frame(&mut 0) }.unwrap();
@@ -487,13 +487,13 @@ fn attach_refused() {
     drop(
         // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
         // boundary or detach.
-        unsafe { collector_capture::sampling::Shared::with_fixture_sizing(0, 0, 1, &sizing, 0) }.unwrap(),
+        unsafe { collector_capture::sampling::Shared::with_sizing(0, 0, 1, &sizing) }.unwrap(),
     );
     let stores = {
         let guard = NullGuard::new(usize::MAX);
         drop(
             // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
-            unsafe { collector_capture::sampling::Shared::without_fixture_frames(0, 0, 1, &sizing, 0) }
+            unsafe { collector_capture::sampling::Shared::without_frames(0, 0, 1, &sizing) }
                 .unwrap(),
         );
         let stores = ATTEMPTS.load(Ordering::Relaxed);
@@ -507,7 +507,7 @@ fn attach_refused() {
         let attached =
         // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
         // boundary or detach.
-        unsafe { collector_capture::sampling::Shared::with_fixture_sizing(0, 0, 1, &sizing, 0) };
+        unsafe { collector_capture::sampling::Shared::with_sizing(0, 0, 1, &sizing) };
         let attempts = ATTEMPTS.load(Ordering::Relaxed);
         let denials = DENIALS.load(Ordering::Relaxed);
         drop(guard);
@@ -1422,7 +1422,7 @@ fn exercise_pipeline(
     let shared =
     // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
     // boundary or detach.
-    unsafe { collector_capture::sampling::Shared::with_fixture_sizing(0, 0, 1, &minimal_sizing(), 0) }?;
+    unsafe { collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing()) }?;
     let mut processor =
     // SAFETY: The isolated test owns the spool's failure state.
     unsafe { collector_spool::spooling::spool_allocation_fixture(&root, phase == Phase::Spool) }?;
@@ -1502,7 +1502,7 @@ fn exercise_pipeline(
         bootstrap_refused =
             // SAFETY: This is unpublished attach or isolated fixture state, with no competing
             // observer boundary or detach.
-            unsafe { collector_capture::sampling::Shared::with_fixture_sizing(0, 0, 1, &minimal_sizing(), 0) }.is_err();
+            unsafe { collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing()) }.is_err();
         assert!(before.is_null());
         assert_eq!(
             before,
