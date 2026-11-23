@@ -11,8 +11,8 @@ doctest = false
 
 [features]
 journal = ["replay-frame/capture"]
-recording = ["journal", "dep:recorder-derive-framework"]
-test-support = ["recording", "replay-frame/test-support"]
+recording = ["journal"]
+test-support = ["recording", "dep:recorder-derive-framework", "dep:zstd", "replay-frame/test-support"]
 keep-journal = []
 memory-labels = ["engine-allocation/memory-labels"]
 multiplied = ["recording", "replay-columnar/sparse-inserts"]
@@ -26,7 +26,7 @@ replay-data.workspace = true
 replay-frame.workspace = true
 replay-recording.workspace = true
 replay-settings.workspace = true
-zstd = "0.13"
+zstd = { version = "0.13", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation"] }
@@ -37,6 +37,7 @@ recorder-derive-framework.workspace = true
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-recording = { workspace = true, features = ["test-support"] }
+zstd = "0.13"
 
 [lints]
 workspace = true

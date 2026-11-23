@@ -10,10 +10,10 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["dep:recorder-derive", "content-reader-core/test-support", "replay/test-support"]
+test-support = ["dep:replay-capture-spool", "dep:recorder-derive", "content-reader-core/test-support", "replay/test-support"]
 
 [dependencies]
-replay-capture-spool.workspace = true
+replay-capture-spool = { workspace = true, optional = true }
 replay.workspace = true
 recorder-derive = { workspace = true, optional = true }
 engine-allocation.workspace = true
@@ -30,6 +30,7 @@ ts-rs = "11.1"
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+replay-capture-spool.workspace = true
 replay = { workspace = true, features = ["test-support"] }
 recorder-derive.workspace = true
 engine-heap.workspace = true

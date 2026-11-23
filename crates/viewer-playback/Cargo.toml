@@ -10,11 +10,11 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["dep:recorder-derive", "playhead/test-support", "replay/test-support", "replay-data/test-support", "replay-frame/test-support", "viewer-world/test-support", "viewer-counters/test-support", "viewer-combat/test-support", "viewer-raids/test-support", "viewer-counter-products/test-support", "shader-pipeline/test-support", "viewer-foundation/test-support"]
+test-support = ["dep:replay-capture-spool", "dep:recorder-derive", "playhead/test-support", "replay/test-support", "replay-data/test-support", "replay-frame/test-support", "viewer-world/test-support", "viewer-counters/test-support", "viewer-combat/test-support", "viewer-raids/test-support", "viewer-counter-products/test-support", "shader-pipeline/test-support", "viewer-foundation/test-support"]
 
 [dependencies]
 replay.workspace = true
-replay-capture-spool.workspace = true
+replay-capture-spool = { workspace = true, optional = true }
 replay-recording.workspace = true
 replay-derive.workspace = true
 viewer-engagements.workspace = true
@@ -78,6 +78,7 @@ dashboard-core.workspace = true
 dashboard-text.workspace = true
 
 [dev-dependencies]
+replay-capture-spool.workspace = true
 replay = { workspace = true, features = ["test-support"] }
 replay-journal = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }

@@ -22,6 +22,10 @@ fn coarse_chart_names_level_zero_buckets() {
             _ => None,
         })
         .unwrap();
+    let extent = recording.table_entry(0, 0, TableId::Countries.index()).unwrap().summary.unwrap();
+    let bytes = recording.stored_bytes(&extent).unwrap();
+    let piece = Piece::read(&bytes).unwrap();
+    assert_eq!(piece.rank(piece.column_of(source).unwrap()), 0);
     let (from, to, bin_hours) = (100, 100 + 20 * UNIT_ORDINALS as i32 - 1, summary::bucket_hours(1) * 4);
     let coarse = chart_at(&recording, 0, TableId::Countries, source, None, from, to, 1, bin_hours).unwrap();
     let walked = chart_at(&recording, 0, TableId::Countries, source, None, from, to, WALKED, bin_hours).unwrap();
@@ -149,11 +153,16 @@ fn a_row_inserted_inside_a_block_runs_from_the_cells_it_was_inserted_with() {
     }
 }
 
-fn ranked_recording() -> Recording {
+fn ranked_recording(column: usize, rank: u8) -> Recording {
     use replay_journal::synthetic::{Input, Sample};
     use replay_data::rows::CountryRow;
     const RUNS: [(u64, i32, u32); 2] = [(1, 103, 20), (2, 60_001, 3)];
-    let (bytes, _) = fixtures::written(recorder_derive::writers(), b"ranked synthetic", &RUNS, &[TableId::Countries], |synthetic, run, ordinal| {
+    let mut registry = replay_recording::summaries::registry().unwrap();
+    let (_, shape) = registry.iter_mut().find(|(table, _)| *table == TableId::Countries.index()).unwrap();
+    let Shape::Values(columns) = shape else { panic!("Countries has no value summaries") };
+    let power = columns.iter_mut().find(|held| matches!(held.source, summary::Source::Cell(cell) if cell == column)).unwrap();
+    power.rank = rank;
+    let (bytes, _) = fixtures::written_with_summaries(recorder_derive::writers(), b"ranked synthetic", &RUNS, &[TableId::Countries], registry, |synthetic, run, ordinal| {
         let input = if run == 0 && (3000..3200).contains(&ordinal) {
             synthetic.table::<CountryRow>(TableId::Countries, Input::Unavailable { reason: "refused", read: false, sample: Sample::FromReadBit })
         } else {
@@ -174,13 +183,14 @@ fn ranked_recording() -> Recording {
 
 #[test]
 fn a_ranked_view_from_the_ranks_is_the_view_folding_every_key() {
-    let recording = ranked_recording();
-    let rank = usize::from(replay_recording::summaries::TEST_RANK);
+    let rank = 4;
     let column = (0..TableId::Countries.field_count()).find(|&field| TableId::Countries.field_name(field) == Some("political_power_raw")).unwrap();
-    let ranked = replay_recording::summaries::registry().unwrap().into_iter().any(|(table, shape)| {
-        table == TableId::Countries.index() && matches!(shape, Shape::Values(columns) if columns.iter().any(|held| matches!(held.source, summary::Source::Cell(cell) if cell == column) && usize::from(held.rank) == rank))
-    });
-    assert!(ranked, "the tests rank Countries' political power");
+    let recording = ranked_recording(column, rank);
+    let extent = recording.table_entry(0, 0, TableId::Countries.index()).unwrap().summary.unwrap();
+    let bytes = recording.stored_bytes(&extent).unwrap();
+    let piece = Piece::read(&bytes).unwrap();
+    assert_eq!(piece.rank(piece.column_of(column as u32).unwrap()), rank);
+    let rank = usize::from(rank);
     let held = recording.run(0).unwrap();
     let refused = top(&recording, 0, TableId::Countries, column as u32, held.first_hour, held.first_hour + 59, 20, 1, By::Last).unwrap_err();
     assert_eq!(refused.to_string(), "A top-N view's bins are six hours or wider");

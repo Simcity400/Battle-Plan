@@ -15,7 +15,6 @@ export-types = ["dashboard-base/export-types", "dashboard-air/export-types", "da
 [dependencies]
 replay-tools.workspace = true
 replay.workspace = true
-replay-recording.workspace = true
 base64 = "0.22.1"
 blake3 = { workspace = true }
 content-reader-core = { workspace = true }

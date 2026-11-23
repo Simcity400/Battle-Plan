@@ -1,11 +1,19 @@
-pub const FEATURES: &[&str] = &[
-    #[cfg(feature = "keep-journal")]
-    "keep-journal",
-    #[cfg(feature = "memory-labels")]
-    "memory-labels",
-    #[cfg(feature = "multiplied")]
-    "multiplied",
-];
+pub const FEATURES: &[&str] = if engine_allocation::labels::ENABLED {
+    &[
+        #[cfg(feature = "keep-journal")]
+        "keep-journal",
+        "memory-labels",
+        #[cfg(feature = "multiplied")]
+        "multiplied",
+    ]
+} else {
+    &[
+        #[cfg(feature = "keep-journal")]
+        "keep-journal",
+        #[cfg(feature = "multiplied")]
+        "multiplied",
+    ]
+};
 
 pub mod columnar_file;
 #[cfg(any(test, feature = "journal"))]

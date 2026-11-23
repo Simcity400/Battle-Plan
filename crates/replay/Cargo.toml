@@ -11,7 +11,7 @@ doctest = false
 
 [features]
 default = ["recording"]
-recording = ["dep:recorder-derive-framework", "dep:replay-journal", "replay-journal/recording"]
+recording = ["dep:recorder-derive-framework", "dep:replay-journal", "replay-capture-spool/journal", "replay-journal/recording"]
 test-support = ["recording", "replay-journal/test-support", "replay-frame/test-support"]
 
 [dependencies]

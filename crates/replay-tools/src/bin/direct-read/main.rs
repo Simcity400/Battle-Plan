@@ -14,9 +14,7 @@ use replay_data::rows::TableId;
 use serde_json::{Value, json};
 use std::io;
 
-#[cfg(feature = "memory-labels")]
-#[global_allocator]
-static ALLOCATOR: engine_allocation::labels::Counting<std::alloc::System> = engine_allocation::labels::Counting(std::alloc::System);
+engine_allocation::counting_system_allocator!();
 
 pub fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())

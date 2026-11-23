@@ -310,6 +310,20 @@ pub fn written(
     written_captured(writers, campaign, None, runs, streams, write)
 }
 
+pub fn written_with_summaries(
+    writers: Writers,
+    campaign: &[u8],
+    runs: &[(u64, i32, u32)],
+    streams: &[TableId],
+    registry: Vec<(usize, replay_columnar::summary::Shape)>,
+    write: impl FnMut(&mut synthetic::Synthetic, u32, u32),
+) -> (Vec<u8>, Vec<Seen>) {
+    let file = FileWriter::create(std::io::Cursor::new(Vec::new()), identity(campaign, 0), TABLE_COUNT, Settings { level: LEVEL }, None).unwrap();
+    let summaries = crate::summaries::Summaries::with_registry(LEVEL, registry);
+    let file = HourWriter::with_summaries(file, LEVEL, writers, summaries).unwrap();
+    written_into(file, None, None, runs, streams, write)
+}
+
 pub fn recorded(writers: Writers, campaign: &[u8], ordinals: u32, mut frame: impl FnMut(u32) -> replay_frame::frame::FrameInput) -> Vec<u8> {
     use crate::native_frame::FrameWriter;
     let mut writer = FrameWriter::new().unwrap();

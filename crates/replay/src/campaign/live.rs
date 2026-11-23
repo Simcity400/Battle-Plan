@@ -1175,7 +1175,7 @@ impl LiveWriter {
         };
         {
             let _label = label("summaries");
-            self.summaries.written(&span);
+            self.summaries.written(&span)?;
         }
         self.frames.lock().unwrap_or_else(PoisonError::into_inner).extend(head.strings.into_iter().map(|chunk| (chunk.first, chunk.frame)));
         {

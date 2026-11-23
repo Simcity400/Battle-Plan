@@ -36,8 +36,11 @@ pub struct Summaries {
 
 impl Summaries {
     pub fn new(level: i32) -> io::Result<Self> {
+        Ok(Self::with_registry(level, replay_recording::summaries::registry()?))
+    }
+
+    pub(crate) fn with_registry(level: i32, registry: Vec<(usize, Shape)>) -> Self {
         use engine_allocation::labels;
-        let registry = replay_recording::summaries::registry()?;
         let owners = registry
             .iter()
             .map(|&(table, _)| match labels::ENABLED {
@@ -47,7 +50,7 @@ impl Summaries {
             .collect();
         let ladders = registry.iter().map(|_| Ladder::default()).collect();
         let peaks = vec![0; registry.len()];
-        Ok(Self { last_peaks: peaks.clone(), peaks, registry, owners, builders: Vec::new(), ladders, level, ns: 0 })
+        Self { last_peaks: peaks.clone(), peaks, registry, owners, builders: Vec::new(), ladders, level, ns: 0 }
     }
 
     fn label(&self, at: usize) -> engine_allocation::labels::Scope {
@@ -154,7 +157,10 @@ impl Summaries {
         Ok((pieces, above))
     }
 
-    pub fn written(&mut self, span: &[(u32, u8, envelope::Extent)]) {
+    pub fn written(&mut self, span: &[(u32, u8, envelope::Extent)]) -> io::Result<()> {
+        if span.iter().any(|&(_, level, _)| level == 0) {
+            return Err(invalid("A span summary needs a level above zero"));
+        }
         for (at, ladder) in self.ladders.iter_mut().enumerate() {
             let table = self.registry[at].0 as u32;
             let Some(&(_, level, extent)) = span.iter().filter(|(held, _, _)| *held == table).max_by_key(|(_, level, _)| *level) else { continue };
@@ -164,6 +170,7 @@ impl Summaries {
             }
             ladder.upper[level - 1].push(PieceAt { offset: extent.offset, stored: extent.stored, digest: extent.digest });
         }
+        Ok(())
     }
 
     pub fn tail<W: io::Write + Seek + io::Read>(&mut self, first_hour: i32, hours: u32, file: &mut FileWriter<W>) -> io::Result<Vec<(u32, Vec<u8>)>> {

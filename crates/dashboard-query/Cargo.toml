@@ -15,7 +15,6 @@ test = false
 
 [dependencies]
 replay.workspace = true
-replay-capture-spool.workspace = true
 replay-lanes.workspace = true
 replay-recording.workspace = true
 replay-tools.workspace = true
@@ -27,6 +26,7 @@ serde_json.workspace = true
 ts-rs = "11.1"
 
 [dev-dependencies]
+replay-capture-spool.workspace = true
 replay = { workspace = true, features = ["test-support"] }
 replay-journal = { workspace = true, features = ["test-support"] }
 replay-settings.workspace = true

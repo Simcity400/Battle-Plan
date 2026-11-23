@@ -18,7 +18,6 @@ tap-foreign-probe = ["collector-hooks/tap-foreign-probe"]
 test-support = ["collector-hooks/test-support", "collector-lifetime/test-support", "collector-memory/test-support", "collector-primitives/test-support", "collector-timing/test-support", "dep:collector-test-support"]
 
 [dependencies]
-replay-capture-spool.workspace = true
 replay-recording.workspace = true
 collector-hooks.workspace = true
 collector-lifetime.workspace = true
@@ -37,6 +36,7 @@ serde_json.workspace = true
 collector-test-support = { workspace = true, optional = true }
 
 [dev-dependencies]
+replay-capture-spool.workspace = true
 collector-test-support.workspace = true
 collector-hooks = { workspace = true, features = ["test-support"] }
 collector-lifetime = { workspace = true, features = ["test-support"] }

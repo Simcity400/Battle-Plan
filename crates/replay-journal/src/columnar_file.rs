@@ -38,6 +38,7 @@ pub use hours::HourWriter;
 #[cfg(any(test, feature = "test-support"))]
 mod hours {
     use super::{BlockEnd, FileWriter};
+    use crate::summaries::Summaries;
     use recorder_derive_framework::framework::Writers;
     use replay_columnar::{
         envelope::UNIT_ORDINALS,
@@ -77,7 +78,7 @@ mod hours {
         appended: Appended,
         running: bool,
         block: Option<OpenBlock>,
-        summaries: crate::summaries::Summaries,
+        summaries: Summaries,
         run: (i32, u32),
     }
 
@@ -87,7 +88,7 @@ mod hours {
         }
 
         pub fn with_unit(file: FileWriter<W>, level: i32, settings: unit::Settings, writers: Writers) -> io::Result<Self> {
-            Self::with_schema(file, level, settings, replay_recording::schema::schema()?, writers)
+            Self::with_schema(file, settings, replay_recording::schema::schema()?, writers, Summaries::new(level)?)
         }
 
         #[cfg(any(test, feature = "test-support"))]
@@ -99,10 +100,14 @@ mod hours {
                 kinds.truncate(held);
             }
             let writers = writers(columns, &current);
-            Self::with_schema(file, level, settings, kinds, writers)
+            Self::with_schema(file, settings, kinds, writers, Summaries::new(level)?)
         }
 
-        fn with_schema(mut file: FileWriter<W>, level: i32, settings: unit::Settings, kinds: Vec<Vec<replay_columnar::state::Kind>>, writers: Writers) -> io::Result<Self> {
+        pub(crate) fn with_summaries(file: FileWriter<W>, level: i32, writers: Writers, summaries: Summaries) -> io::Result<Self> {
+            Self::with_schema(file, unit::Settings::at(level), replay_recording::schema::schema()?, writers, summaries)
+        }
+
+        fn with_schema(mut file: FileWriter<W>, settings: unit::Settings, kinds: Vec<Vec<replay_columnar::state::Kind>>, writers: Writers, summaries: Summaries) -> io::Result<Self> {
             let tables = kinds.len();
             file.record_derived_versions(tables, &writers.table_versions())?;
             let columns = kinds.iter().map(Vec::len).collect();
@@ -112,7 +117,7 @@ mod hours {
             let appended = Appended::default();
             store.read_strings_from(Box::new(appended.clone()));
             let adapter = Journal::leaving(&writers.tables(), replay_recording::schema::names());
-            Ok(Self { file, store, adapter, writers, columns, appended, running: false, block: None, summaries: crate::summaries::Summaries::new(level)?, run: (0, 0) })
+            Ok(Self { file, store, adapter, writers, columns, appended, running: false, block: None, summaries, run: (0, 0) })
         }
 
         pub fn file(&mut self) -> &mut FileWriter<W> {
@@ -208,7 +213,7 @@ mod hours {
             let (first_hour, hours) = self.run;
             let (summaries, span) = self.summaries.finish(first_hour + hours as i32 - 1, (hours - block.hours) / UNIT_ORDINALS, first_hour, &mut self.file)?;
             let (_, span) = self.file.end_block(BlockEnd { clock: &clock, strings: (&strings, block.first), summaries, span })?;
-            self.summaries.written(&span);
+            self.summaries.written(&span)?;
             self.store.end_block();
             Ok(())
         }
