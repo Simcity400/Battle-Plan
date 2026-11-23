@@ -561,6 +561,41 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+std::thread_local! {
+    static HELD_CLOCK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+struct ClockGuard<'a> {
+    prev: usize,
+    guard: MutexGuard<'a, Clock>,
+}
+
+impl std::ops::Deref for ClockGuard<'_> {
+    type Target = Clock;
+
+    fn deref(&self) -> &Clock {
+        &self.guard
+    }
+}
+
+impl std::ops::DerefMut for ClockGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Clock {
+        &mut self.guard
+    }
+}
+
+impl Drop for ClockGuard<'_> {
+    fn drop(&mut self) {
+        HELD_CLOCK.set(self.prev);
+    }
+}
+
+fn lock_clock(clock: &Mutex<Clock>) -> ClockGuard<'_> {
+    let guard = lock(clock);
+    let prev = HELD_CLOCK.replace(std::ptr::from_ref(clock) as usize);
+    ClockGuard { prev, guard }
+}
+
 fn try_lock<T>(mutex: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
     match mutex.try_lock() {
         Ok(held) => Some(held),
@@ -632,7 +667,7 @@ impl Shared {
 
     fn seek(&self, hour: Hour) {
         {
-            let mut clock = lock(&self.clock);
+            let mut clock = lock_clock(&self.clock);
             self.seek_locked(&mut clock, hour);
         }
         self.notify_control();
@@ -894,7 +929,7 @@ impl Consumer {
         if taken > 0 {
             let released = if let Some(reset) = out[from..].iter().find(|step| step.reset) {
                 let now = Instant::now();
-                let mut clock = lock(&self.shared.clock);
+                let mut clock = lock_clock(&self.shared.clock);
                 let was_held = clock.held().is_some();
                 clock.shown(reset.epoch, now);
                 was_held && clock.held().is_none()
@@ -1242,12 +1277,12 @@ impl Playhead {
     }
 
     pub fn head(&self, now: Instant) -> Hour {
-        lock(&self.shared.clock).frame(now)
+        lock_clock(&self.shared.clock).frame(now)
     }
 
     pub fn head_from(&self, at: Hour, by: Duration) -> Option<Hour> {
         let last = self.shared.timeline.last();
-        let clock = lock(&self.shared.clock);
+        let clock = lock_clock(&self.shared.clock);
         if !clock.playing() || clock.held().is_some() || at >= last {
             return None;
         }
@@ -1255,7 +1290,7 @@ impl Playhead {
     }
 
     pub fn anchor(&self, position: f64, playing: bool, speed: f64, at: Instant, sought: bool) {
-        let mut clock = lock(&self.shared.clock);
+        let mut clock = lock_clock(&self.shared.clock);
         if sought {
             self.shared.seek_locked(&mut clock, position.floor() as Hour);
         }
@@ -1287,13 +1322,13 @@ impl Playhead {
     }
 
     pub fn playing(&self) -> bool {
-        let clock = lock(&self.shared.clock);
+        let clock = lock_clock(&self.shared.clock);
         clock.playing() && clock.held().is_none()
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn clock_is_unlocked(&self) -> bool {
-        self.shared.clock.try_lock().is_ok()
+    pub fn clock_held_on_current_thread(&self) -> bool {
+        HELD_CLOCK.get() == std::ptr::from_ref(&self.shared.clock) as usize
     }
 
     pub fn activity(&self) -> u64 {
@@ -1318,7 +1353,7 @@ impl Playhead {
 
     pub fn play(&self, speed: f64) {
         if speed > 0.0 {
-            lock(&self.shared.clock).play(speed, Instant::now());
+            lock_clock(&self.shared.clock).play(speed, Instant::now());
             self.pace(speed);
         }
     }
@@ -1348,14 +1383,14 @@ impl Playhead {
     }
 
     pub fn pause(&self) {
-        lock(&self.shared.clock).pause(Instant::now());
+        lock_clock(&self.shared.clock).pause(Instant::now());
         self.shared.nudge(|_| {});
         self.shared.notify_control();
     }
 
     pub fn seed_paused_query(&self) {
         let sought = {
-            let mut clock = lock(&self.shared.clock);
+            let mut clock = lock_clock(&self.shared.clock);
             if !clock.playing() && clock.held().is_none() {
                 let hour = clock.head(Instant::now());
                 if self.newest().is_some_and(|newest| newest > hour) {
@@ -1374,7 +1409,7 @@ impl Playhead {
     }
 
     pub fn holding(&self) -> Option<u64> {
-        lock(&self.shared.clock).held()
+        lock_clock(&self.shared.clock).held()
     }
 
     pub fn epoch(&self) -> u64 {
@@ -1406,7 +1441,7 @@ impl Playhead {
 
     pub fn place(&self, hour: Hour) {
         let hour = self.shared.timeline.clamp(hour);
-        let mut clock = lock(&self.shared.clock);
+        let mut clock = lock_clock(&self.shared.clock);
         if clock.held().is_some() {
             drop(clock);
             return self.shared.seek(hour);
@@ -1903,7 +1938,7 @@ impl Stepper {
                         }
                         moved = true;
                     } else if self.hook_requested
-                        && (self.quantum() == 1 || self.newest == Some(self.shared.timeline.last()) || !lock(&self.shared.clock).playing())
+                        && (self.quantum() == 1 || self.newest == Some(self.shared.timeline.last()) || !lock_clock(&self.shared.clock).playing())
                     {
                         self.hook_declared();
                         moved = true;
@@ -2906,7 +2941,7 @@ impl Stepper {
         }
         let last = self.shared.timeline.pieces[self.piece].last;
         let held = {
-            let clock = lock(&self.shared.clock);
+            let clock = lock_clock(&self.shared.clock);
             !clock.playing() || clock.held().is_some()
         };
         if held && lock(&self.shared.ring).frames().is_some_and(|(_, hour)| hour.min(last) < newest.min(last)) {
@@ -3164,7 +3199,7 @@ impl Stepper {
     fn adopt_parked(&mut self) -> bool {
         let parked = lock(&self.shared.ring).parked_seats();
         let held = {
-            let clock = lock(&self.shared.clock);
+            let clock = lock_clock(&self.shared.clock);
             !clock.playing() || clock.held().is_some()
         };
         let mut moved = false;

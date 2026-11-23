@@ -3007,11 +3007,16 @@ fn taking_a_playing_seeks_reset_notifies_control_watchers_with_clock_unlocked() 
         let clock_locked = Arc::clone(&clock_locked);
         Arc::new(move || {
             control_wakes.fetch_add(1, Ordering::AcqRel);
-            if !playhead.clock_is_unlocked() {
+            if playhead.clock_held_on_current_thread() {
                 clock_locked.store(true, Ordering::Release);
             }
         })
     });
+    {
+        let _guard = super::lock_clock(&playhead.shared.clock);
+        assert!(playhead.clock_held_on_current_thread(), "same-thread clock guard must be detected");
+    }
+    assert!(!playhead.clock_held_on_current_thread(), "clock guard dropped");
     let before_seq = playhead.control_seq();
     let mut steps = Vec::new();
     let taken = consumer.take(10, &mut steps);

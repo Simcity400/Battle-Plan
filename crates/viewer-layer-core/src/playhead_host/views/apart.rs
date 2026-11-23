@@ -342,7 +342,7 @@ mod tests {
             let watcher_calls = Arc::clone(&watcher_calls);
             Arc::new(move || {
                 watcher_calls.fetch_add(1, Ordering::Relaxed);
-                if !entry.playhead().clock_is_unlocked() {
+                if entry.playhead().clock_held_on_current_thread() {
                     clock_locked.store(true, Ordering::Release);
                 }
             })
