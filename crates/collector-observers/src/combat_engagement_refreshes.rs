@@ -361,7 +361,8 @@ fn identify_hourly_viewer_change(before: u32, after: u32) -> Option<Entry> {
         },
         side: 0,
         viewer: 0,
-        triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+        triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED
+            | CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE,
     })
 }
 
@@ -1075,7 +1076,8 @@ mod tests {
                 target: 12,
                 side: 0,
                 viewer: 0,
-                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED
+                    | CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE,
             })
         );
         assert_eq!(
@@ -1085,7 +1087,8 @@ mod tests {
                 target: 0,
                 side: 0,
                 viewer: 0,
-                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED
+                    | CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE,
             })
         );
 
@@ -1239,6 +1242,11 @@ mod tests {
         assert_eq!(count, 2);
         assert_eq!(out[0].kind, CombatEngagementRefreshRow::LAND_SIDE);
         assert_eq!(out[1].kind, CombatEngagementRefreshRow::LOCAL_ALL_SIDES);
+        assert_eq!(
+            out[1].triggers,
+            CombatEngagementRefreshRow::TRIGGER_RECORDED
+                | CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE
+        );
     }
 
     #[test]

@@ -72,6 +72,7 @@ enum Witness {
         naval: BTreeMap<(u64, u8), engaged::SideWitness>,
         controller_targets: Vec<u32>,
         local_viewers: Vec<u32>,
+        cache_written_viewers: Vec<u32>,
     },
 }
 
@@ -109,6 +110,7 @@ fn witness<F: Tables + ?Sized>(frame: &F) -> io::Result<Witness> {
     let mut naval = BTreeMap::<(u64, u8), engaged::SideWitness>::new();
     let mut controller_targets = Vec::new();
     let mut local_viewers = Vec::new();
+    let mut cache_written_viewers = Vec::new();
     for row in rows {
         let recorded = (row.triggers & CombatEngagementRefreshRow::TRIGGER_RECORDED) != 0;
         let units = (row.triggers & CombatEngagementRefreshRow::TRIGGER_UNITS) != 0;
@@ -166,11 +168,18 @@ fn witness<F: Tables + ?Sized>(frame: &F) -> io::Result<Witness> {
                 if row.side != 0
                     || row.viewer != 0
                     || row.target > i32::MAX as u64
-                    || row.triggers != CombatEngagementRefreshRow::TRIGGER_RECORDED
+                    || (row.triggers != CombatEngagementRefreshRow::TRIGGER_RECORDED
+                        && row.triggers
+                            != (CombatEngagementRefreshRow::TRIGGER_RECORDED
+                                | CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE))
                 {
                     return Ok(Witness::Unavailable);
                 }
-                local_viewers.push(row.target as u32);
+                let viewer = row.target as u32;
+                push_unique(&mut local_viewers, viewer);
+                if (row.triggers & CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE) != 0 {
+                    push_unique(&mut cache_written_viewers, viewer);
+                }
             }
             _ => return Ok(Witness::Unavailable),
         }
@@ -180,6 +189,7 @@ fn witness<F: Tables + ?Sized>(frame: &F) -> io::Result<Witness> {
         naval,
         controller_targets,
         local_viewers,
+        cache_written_viewers,
     })
 }
 
@@ -269,11 +279,10 @@ impl Viewer {
     fn recording<F: Tables + ?Sized>(
         frame: &F,
         inputs: &Arc<Inputs>,
-    ) -> (Self, Option<(Option<u32>, u32)>, bool) {
+    ) -> (Self, Option<(Option<u32>, u32)>) {
         let local = viewer_foundation::fold_tables::whole::<tables::LocalPlayer, F>(frame)
             .and_then(|rows| match rows {
                 [player] => {
-                    let observing = (player.country as i32) <= 0;
                     let raw = if (player.country as i32) > 0 {
                         player.country
                     } else if (player.observer_country as i32) > 0 {
@@ -286,12 +295,12 @@ impl Viewer {
                     } else {
                         inputs.links.get(&raw).copied()
                     };
-                    Some(((slot, raw), observing))
+                    Some((slot, raw))
                 }
                 _ => None,
             });
         match local {
-            Some(((slot, raw), observing)) => (
+            Some((slot, raw)) => (
                 Self {
                     slot,
                     raw: Some(raw),
@@ -300,7 +309,6 @@ impl Viewer {
                     inputs: Arc::clone(inputs),
                 },
                 Some((slot, raw)),
-                observing,
             ),
             None => (
                 Self {
@@ -311,7 +319,6 @@ impl Viewer {
                     inputs: Arc::clone(inputs),
                 },
                 None,
-                false,
             ),
         }
     }
@@ -324,6 +331,7 @@ impl Viewer {
                 naval,
                 controller_targets,
                 local_viewers,
+                cache_written_viewers,
             } => engaged::RefreshWitness::Complete {
                 sides: if kind == NAVAL {
                     naval.clone()
@@ -337,6 +345,11 @@ impl Viewer {
                 },
                 local_viewers: if recording {
                     local_viewers.clone()
+                } else {
+                    Vec::new()
+                },
+                cache_written_viewers: if recording {
+                    cache_written_viewers.clone()
                 } else {
                     Vec::new()
                 },
@@ -691,10 +704,9 @@ impl Pass {
             .client_view
             .as_ref()
             .filter(|_| recording_continuity == Continuity::Next);
-        let player = player.map(|(mut viewer, view, observing)| {
+        let player = player.map(|(mut viewer, view)| {
             if let Some((view_slot, view_raw)) = view
                 && recording_continuity == Continuity::Next
-                && observing
             {
                 if let Some((prev_slot, prev_raw, prev_inputs)) = previous_view {
                     let prev_slot_now = if *prev_raw == 0 {

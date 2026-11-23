@@ -2439,7 +2439,13 @@ impl Fixture for CombatEngagementRefreshRow {
         let target = (key >> 33) as u64;
         let side = ((key >> 32) & 1) as u8;
         let viewer = key as u32;
-        let triggers = if kind >= Self::CONTROLLER_TARGET {
+        let triggers = if kind == Self::LOCAL_ALL_SIDES {
+            if tick.is_multiple_of(2) {
+                Self::TRIGGER_RECORDED
+            } else {
+                Self::TRIGGER_RECORDED | Self::TRIGGER_CACHE_WRITE
+            }
+        } else if kind == Self::CONTROLLER_TARGET {
             Self::TRIGGER_RECORDED
         } else {
             ((tick % 3) + 1) as u8

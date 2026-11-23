@@ -1083,6 +1083,7 @@ impl CombatEngagementRefreshRow {
     pub const LOCAL_ALL_SIDES: u8 = 3;
     pub const TRIGGER_RECORDED: u8 = 1;
     pub const TRIGGER_UNITS: u8 = 2;
+    pub const TRIGGER_CACHE_WRITE: u8 = 4;
 }
 
 typed_codec!(
@@ -1142,7 +1143,12 @@ typed_codec!(
                 if row.target > i32::MAX as u64 {
                     return Err(invalid("invalid combat engagement refresh local viewer"));
                 }
-                if mask & 1 != 0 && row.triggers != CombatEngagementRefreshRow::TRIGGER_RECORDED {
+                if mask & 1 != 0
+                    && row.triggers != CombatEngagementRefreshRow::TRIGGER_RECORDED
+                    && row.triggers
+                        != (CombatEngagementRefreshRow::TRIGGER_RECORDED
+                            | CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE)
+                {
                     return Err(invalid("invalid combat engagement refresh triggers for kind"));
                 }
             }
@@ -1346,8 +1352,59 @@ mod combat_engagement_refresh_tests {
                 viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
             },
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                target: 0,
+                side: 0,
+                viewer: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE,
+            },
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                target: 0,
+                side: 0,
+                viewer: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED
+                    | CombatEngagementRefreshRow::TRIGGER_UNITS
+                    | CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE,
+            },
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::LAND_SIDE,
+                target: 7,
+                side: 0,
+                viewer: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED
+                    | CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE,
+            },
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
+                target: 7,
+                side: 0,
+                viewer: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED
+                    | CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE,
+            },
         ] {
             assert!(bad.check_selected_fields(1).is_err(), "{bad:?}");
+        }
+        for good in [
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                target: 0,
+                side: 0,
+                viewer: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                target: 7,
+                side: 0,
+                viewer: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED
+                    | CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE,
+            },
+        ] {
+            assert!(good.check_selected_fields(1).is_ok(), "{good:?}");
         }
     }
 }

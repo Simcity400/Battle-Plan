@@ -137,7 +137,10 @@ fn project(entries: &[Entry]) -> Result<Vec<CombatEngagementRefreshRow>, &'stati
                 entry.side == 0
                     && entry.viewer == 0
                     && entry.target <= i32::MAX as u64
-                    && entry.triggers == CombatEngagementRefreshRow::TRIGGER_RECORDED
+                    && (entry.triggers == CombatEngagementRefreshRow::TRIGGER_RECORDED
+                        || entry.triggers
+                            == (CombatEngagementRefreshRow::TRIGGER_RECORDED
+                                | CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE))
             }
             _ => false,
         };
@@ -225,6 +228,21 @@ mod tests {
                 viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             },
+            Entry {
+                kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                target: 5,
+                side: 0,
+                viewer: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            Entry {
+                kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                target: 5,
+                side: 0,
+                viewer: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED
+                    | CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE,
+            },
         ];
         let rows = project(&entries).unwrap();
         assert_eq!(
@@ -265,6 +283,14 @@ mod tests {
                     side: 0,
                     viewer: 0,
                     triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+                },
+                CombatEngagementRefreshRow {
+                    kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                    target: 5,
+                    side: 0,
+                    viewer: 0,
+                    triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED
+                        | CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE,
                 },
             ]
         );
@@ -359,6 +385,29 @@ mod tests {
                 side: 0,
                 viewer: 0,
                 triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
+            },
+            Entry {
+                kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                target: 0,
+                side: 0,
+                viewer: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE,
+            },
+            Entry {
+                kind: CombatEngagementRefreshRow::LAND_SIDE,
+                target: 62,
+                side: 0,
+                viewer: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED
+                    | CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE,
+            },
+            Entry {
+                kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
+                target: 7,
+                side: 0,
+                viewer: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED
+                    | CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE,
             },
         ] {
             assert!(project(&[bad]).is_err(), "{bad:?}");
