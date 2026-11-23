@@ -24,7 +24,7 @@ import { classifyFailure, ShownError } from './queryError.ts';
 import { useProduct } from './products.ts';
 import { productRequest } from './request.ts';
 import ActiveResearchWidget from '../widgets/active-research/ActiveResearchWidget.tsx';
-import ScoreboardWidget from '../widgets/scoreboard/ScoreboardWidget.tsx';
+import { scoreboardDeclaration } from '../widgets/scoreboard/scoreboardProjection.ts';
 import FactionTotalsView from '../charts/race/FactionTotalsView.tsx';
 
 declare global { interface Window { captionLayout: unknown } }
@@ -341,7 +341,7 @@ registerWidgets([{
   minSize: { w: 2, h: 2 },
   defaultSize: { w: 6, h: 6 },
   playsBackDated: true,
-  render: ScoreboardWidget,
+  declaration: scoreboardDeclaration,
 }, {
   kind: 'faction-restart-test',
   version: 1,
@@ -1016,7 +1016,7 @@ window.captionLayout = {
       const sbArticle = host.querySelector('[data-widget="sb1"]')!;
       const ftArticle = host.querySelector('[data-widget="ft1"]')!;
       const scoreboardLoading = !!sbArticle.querySelector('[data-state="loading"]');
-      const scoreboardHasTable = !!sbArticle.querySelector('.table-frame, canvas');
+      const scoreboardHasTable = !!sbArticle.querySelector('.table-frame, .tf-body[data-table-visible] canvas');
       const factionLoading = !!ftArticle.querySelector('[data-state="loading"]');
       const factionText = ftArticle.textContent ?? '';
       return { tokenBefore, tokenAfter, articleSame, scoreboardLoading, scoreboardHasTable, factionLoading, factionHasEmptyCopy: /No faction totals known/i.test(factionText) };

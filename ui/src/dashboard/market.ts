@@ -18,14 +18,19 @@ const levels = (value: unknown) => list(value, row => typeof row.variant === 'st
 const grants = (value: unknown) => list(value, row => raw(row.cicRaw) && text(row.archetype) && text(row.trigger) && Array.isArray(row.targets) && row.targets.every(tag => typeof tag === 'string'));
 const named = (value: Record<string, unknown>) => Array.isArray(value.variants) && value.variants.every(object) && Array.isArray(value.icons) && value.icons.every(object)
   && Array.isArray(value.warnings) && value.warnings.every(warning => typeof warning === 'string');
-const optionalMissing = (value: unknown) => value === undefined || value === null || typeof value === 'string';
-const leaseAmount = (value: unknown) => object(value) && (value.valueRaw === null ? typeof value.missing === 'string' : raw(value.valueRaw) && (value.missing === undefined || value.missing === null));
-const leaseHour = (value: unknown) => object(value) && (value.value === null ? typeof value.missing === 'string' : integer(value.value) && (value.missing === undefined || value.missing === null));
-const leaseItems = (value: unknown) => object(value) && (value.items === null ? typeof value.missing === 'string' : items(value.items) && (value.missing === undefined || value.missing === null));
-export const isLease = (row: Record<string, unknown>) => typeof row.key === 'string' && typeof row.id === 'string' && text(row.giver) && text(row.receiver) && optionalMissing(row.receiverMissing)
-  && leaseAmount(row.revision) && leaseHour(row.activeSince) && leaseHour(row.lastDelivery)
-  && ['monthly', 'percentage', 'once', 'delivered', 'sunk'].every(key => leaseItems(row[key]))
-  && ['fuelDailyRaw', 'fuelPercentageRaw', 'lastFuelDeliveredRaw'].every(key => leaseAmount(row[key]));
+const missingReason = (value: unknown) => typeof value === 'string' && value.length > 0;
+const absent = (value: unknown) => value === undefined || value === null;
+const fieldWithReason = (row: Record<string, unknown>, field: string, valid: (value: unknown) => boolean) => {
+  const value = row[field], reason = row[`${field}Missing`];
+  return value === null ? missingReason(reason) : valid(value) && absent(reason);
+};
+export const isLease = (row: Record<string, unknown>) => typeof row.key === 'string' && typeof row.id === 'string' && text(row.giver)
+  && fieldWithReason(row, 'receiver', v => typeof v === 'string')
+  && fieldWithReason(row, 'revision', raw)
+  && fieldWithReason(row, 'activeSince', integer)
+  && fieldWithReason(row, 'lastDelivery', integer)
+  && ['monthly', 'percentage', 'once', 'delivered', 'sunk'].every(key => fieldWithReason(row, key, items))
+  && ['fuelDailyRaw', 'fuelPercentageRaw', 'lastFuelDeliveredRaw'].every(key => fieldWithReason(row, key, raw));
 
 export function validateMarketReply(value: unknown): MarketLendLeaseReply {
   const nullable = (v: unknown, valid: (row: Record<string, unknown>) => boolean) => v === null || list(v, valid);
@@ -39,7 +44,9 @@ export function validateMarketReply(value: unknown): MarketLendLeaseReply {
 
 export function validateLeaseHistory(value: unknown): LendLeaseHistoryReply {
   if (!object(value) || typeof value.branchId !== 'string' || !named(value)
-    || !list(value.agreements, row => object(row.terms) && isLease(row.terms) && leaseAmount(row.fuelSentRaw) && leaseAmount(row.fuelSunkRaw) && integer(row.firstHour) && integer(row.lastHour) && integer(row.endedBy)))
+    || !list(value.agreements, row => object(row.terms) && isLease(row.terms)
+      && fieldWithReason(row, 'fuelSentRaw', raw) && fieldWithReason(row, 'fuelSunkRaw', raw)
+      && integer(row.firstHour) && integer(row.lastHour) && integer(row.endedBy)))
     throw new Error('Invalid lend-lease history reply');
   return value as unknown as LendLeaseHistoryReply;
 }

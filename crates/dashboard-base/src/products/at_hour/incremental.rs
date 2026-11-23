@@ -410,15 +410,21 @@ impl Input<'_> {
     pub(super) fn frame_into<P: AtHour>(&mut self, reads: &[Read], raw: &mut RawTables, branch: u64) -> io::Result<DecodedFrame> {
         let mut frame = empty(branch, self.hour);
         let mut tables = Projections::new();
+        let mut raw_rows = 0u64;
         for read in reads {
             let fields = P::columns(read.table);
             if P::raw_table(read.table) {
+                let before = *self.count;
                 self.read_raw(&mut tables, read, raw, P::decode_raw_row, || (fields.clone(), fields.clone()), false, &mut Edits::default())?;
+                raw_rows += *self.count - before;
             } else {
                 self.read(&mut tables, read, &mut frame.tables[read.table.index()], || (fields.clone(), fields.clone()), false, &mut Edits::default())?;
             }
         }
         count_frame(&frame, reads);
+        if raw_rows > 0 {
+            count_rows(|| raw_rows);
+        }
         Ok(frame)
     }
 

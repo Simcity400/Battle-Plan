@@ -31,6 +31,16 @@ impl HeadRows<'_> {
     pub fn flag(&mut self, value: bool) {
         self.number(Some(i64::from(value)));
     }
+
+    pub fn text(&mut self, value: Option<&str>) {
+        match value {
+            Some(value) => {
+                let at = self.0.text(value);
+                self.0.cell(i64::from(at), State::Value);
+            }
+            None => self.0.cell(0, State::Missing),
+        }
+    }
 }
 
 #[derive(Clone)]

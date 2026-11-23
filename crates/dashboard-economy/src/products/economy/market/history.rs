@@ -1,8 +1,8 @@
-use super::{LeaseAmount, LeaseHour, LeaseItems, LeaseTerms, pool, pool_variants};
+use super::{LeaseTerms, MarketItem, pool, pool_variants};
 use dashboard_base::{Source, products::{BranchParams, LoadContext, Product, check_reply_budget}, queries::country_ids::Names};
 use dashboard_world::products::equipment_names::{EquipmentIcon, VariantName, self as names, Named};
 use replay_lanes::lanes::{self, Keys};
-use replay_columnar::store::TableView;
+use replay_columnar::{manifest::Status, store::TableView};
 use replay_data::{
     codec::Decoder,
     rows::{MarketPool, SharedMarketPool, TableId},
@@ -69,57 +69,90 @@ impl EndedRow {
     }
 
     pub(crate) fn terms_at(&self, when: &str, mut tag: impl FnMut(u32) -> Option<String>, named: &Named) -> LeaseTerms {
-        let amount_u64 = |value: Option<u64>, label: &str| match value {
-            Some(value) => LeaseAmount::known(value),
-            None => LeaseAmount::missing(format!("{label} not recorded {when}")),
+        let amount_u64 = |value: Option<u64>, label: &str| -> (Option<String>, Option<String>) {
+            match value {
+                Some(value) => (Some(value.to_string()), None),
+                None => (None, Some(format!("{label} not recorded {when}"))),
+            }
         };
-        let amount_i64 = |value: Option<i64>, label: &str| match value {
-            Some(value) => LeaseAmount::known(value),
-            None => LeaseAmount::missing(format!("{label} not recorded {when}")),
+        let amount_i64 = |value: Option<i64>, label: &str| -> (Option<String>, Option<String>) {
+            match value {
+                Some(value) => (Some(value.to_string()), None),
+                None => (None, Some(format!("{label} not recorded {when}"))),
+            }
         };
-        let hour = |value: Option<i32>, label: &str| match value {
-            Some(value) => LeaseHour::known(value),
-            None => LeaseHour::missing(format!("{label} not recorded {when}")),
+        let hour = |value: Option<i32>, label: &str| -> (Option<i32>, Option<String>) {
+            match value {
+                Some(value) => (Some(value), None),
+                None => (None, Some(format!("{label} not recorded {when}"))),
+            }
         };
-        let items = |held: &Result<SharedMarketPool, PoolMissing>| match held {
-            Ok(held) => LeaseItems::known(pool(named, held)),
-            Err(why) => LeaseItems::missing(why.reason(when)),
+        let items = |held: &Result<SharedMarketPool, PoolMissing>| -> (Option<Vec<MarketItem>>, Option<String>) {
+            match held {
+                Ok(held) => (Some(pool(named, held)), None),
+                Err(why) => (None, Some(why.reason(when))),
+            }
         };
         let (receiver, receiver_missing) = match self.receiver {
-            Some(raw) => (tag(raw), None),
+            Some(raw) => match tag(raw) {
+                Some(name) => (Some(name), None),
+                None => (None, Some(format!("Receiver country {raw} had no tag {when}"))),
+            },
             None => (None, Some(format!("Receiver not recorded {when}"))),
         };
+        let (revision, revision_missing) = amount_u64(self.revision, "Revision");
+        let (active_since, active_since_missing) = hour(self.active_since, "Start date");
+        let (last_delivery, last_delivery_missing) = hour(self.last_delivery, "Last delivery date");
+        let (monthly, monthly_missing) = items(&self.monthly);
+        let (percentage, percentage_missing) = items(&self.percentage);
+        let (once, once_missing) = items(&self.once);
+        let (delivered, delivered_missing) = items(&self.delivered);
+        let (sunk, sunk_missing) = items(&self.sunk);
+        let (fuel_daily_raw, fuel_daily_raw_missing) = amount_i64(self.fuel_daily_raw, "Daily fuel");
+        let (fuel_percentage_raw, fuel_percentage_raw_missing) = amount_i64(self.fuel_percentage_raw, "Fuel production share");
+        let (last_fuel_delivered_raw, last_fuel_delivered_raw_missing) = amount_i64(self.last_fuel_delivered_raw, "Last fuel delivery");
         LeaseTerms {
             key: self.key().to_string(),
             id: format!("{:016x}", self.id),
             giver: tag(self.country),
             receiver,
             receiver_missing,
-            revision: amount_u64(self.revision, "Revision"),
-            active_since: hour(self.active_since, "Start date"),
-            last_delivery: hour(self.last_delivery, "Last delivery date"),
-            monthly: items(&self.monthly),
-            percentage: items(&self.percentage),
-            once: items(&self.once),
-            delivered: items(&self.delivered),
-            sunk: items(&self.sunk),
-            fuel_daily_raw: amount_i64(self.fuel_daily_raw, "Daily fuel"),
-            fuel_percentage_raw: amount_i64(self.fuel_percentage_raw, "Fuel production share"),
-            last_fuel_delivered_raw: amount_i64(self.last_fuel_delivered_raw, "Last fuel delivery"),
+            revision,
+            revision_missing,
+            active_since,
+            active_since_missing,
+            last_delivery,
+            last_delivery_missing,
+            monthly,
+            monthly_missing,
+            percentage,
+            percentage_missing,
+            once,
+            once_missing,
+            delivered,
+            delivered_missing,
+            sunk,
+            sunk_missing,
+            fuel_daily_raw,
+            fuel_daily_raw_missing,
+            fuel_percentage_raw,
+            fuel_percentage_raw_missing,
+            last_fuel_delivered_raw,
+            last_fuel_delivered_raw_missing,
         }
     }
 
-    pub(crate) fn fuel_sent(&self) -> LeaseAmount {
+    pub(crate) fn fuel_sent(&self) -> (Option<String>, Option<String>) {
         match self.fuel_sent_raw {
-            Some(value) => LeaseAmount::known(value),
-            None => LeaseAmount::missing("Fuel sent not recorded at the agreement's last read"),
+            Some(value) => (Some(value.to_string()), None),
+            None => (None, Some("Fuel sent not recorded at the agreement's last read".into())),
         }
     }
 
-    pub(crate) fn fuel_sunk(&self) -> LeaseAmount {
+    pub(crate) fn fuel_sunk(&self) -> (Option<String>, Option<String>) {
         match self.fuel_sunk_raw {
-            Some(value) => LeaseAmount::known(value),
-            None => LeaseAmount::missing("Fuel lost not recorded at the agreement's last read"),
+            Some(value) => (Some(value.to_string()), None),
+            None => (None, Some("Fuel lost not recorded at the agreement's last read".into())),
         }
     }
 }
@@ -221,19 +254,28 @@ pub struct EndedSpan {
     pub ended_by: i32,
 }
 
-pub fn ended_spans(history: &[(u128, Vec<lanes::Step>)], last_hour: i32, reads: &[(i32, i32)], truncated: &[(i32, i32)]) -> Vec<EndedSpan> {
-    let first_read_in = |from: i32, to: i32| -> Option<i32> {
+pub fn ended_spans(history: &[(u128, Vec<lanes::Step>)], last_hour: i32, statuses: &[lanes::StatusRun]) -> Vec<EndedSpan> {
+    let first_matching = |from: i32, to: i32, matches: fn(Status) -> bool| -> Option<i32> {
         if from > to {
             return None;
         }
-        let idx = reads.partition_point(|&(_, b)| b < from);
-        let &(a, b) = reads.get(idx)?;
-        (a <= to && b >= from).then(|| a.max(from))
+        let idx = statuses.partition_point(|run| run.last < from);
+        for run in &statuses[idx..] {
+            if run.first > to {
+                break;
+            }
+            if matches(run.status) {
+                return Some(run.first.max(from));
+            }
+        }
+        None
     };
-    let in_runs = |runs: &[(i32, i32)], hour: i32| -> bool {
-        let idx = runs.partition_point(|&(_, b)| b < hour);
-        runs.get(idx).is_some_and(|&(a, b)| a <= hour && hour <= b)
+    let status_at = |hour: i32| -> Option<Status> {
+        let idx = statuses.partition_point(|run| run.last < hour);
+        statuses.get(idx).filter(|run| run.first <= hour && hour <= run.last).map(|run| run.status)
     };
+    let is_complete = |status: Status| matches!(status, Status::Complete);
+    let is_truncated = |status: Status| matches!(status, Status::Truncated { .. });
     let mut out = Vec::new();
     for (key, steps) in history {
         let mut open: Option<i32> = None;
@@ -243,13 +285,15 @@ pub fn ended_spans(history: &[(u128, Vec<lanes::Step>)], last_hour: i32, reads: 
                 (None, Some(first)) => {
                     let next_present = steps[at + 1..].iter().find(|later| later.cells.is_some());
                     let absent_to = next_present.map_or(last_hour, |later| later.hour - 1);
-                    let ended_by = if next_present.is_none() && in_runs(truncated, step.hour) {
+                    let ended_by = if next_present.is_none() && status_at(step.hour).is_some_and(is_truncated) {
                         Some(step.hour)
                     } else {
-                        first_read_in(step.hour, absent_to)
+                        first_matching(step.hour, absent_to, is_complete)
                     };
                     if let Some(ended_by) = ended_by {
                         out.push(EndedSpan { key: *key, first, last: step.hour - 1, ended_by });
+                        open = None;
+                    } else if next_present.is_some() && first_matching(step.hour, absent_to, is_truncated).is_some() {
                         open = None;
                     }
                 }
@@ -271,13 +315,13 @@ pub fn run_ended(source: &Source, run: u32) -> io::Result<Arc<Vec<Ended>>> {
     let columns = Columns::read()?;
     let table = TableId::LendLeaseAgreements;
     let history = dashboard_query::cost::storage(|| lanes::history(recording, run, table, &[columns.numbers[1]], Keys::All, first, last))?;
-    let reads = dashboard_query::cost::storage(|| lanes::reads(recording, run, table, first, last))?;
-    let truncated: Vec<(i32, i32)> = dashboard_query::cost::storage(|| lanes::statuses(recording, run, table, first, last))?
-        .into_iter()
-        .filter(|run| matches!(run.status, replay_columnar::manifest::Status::Truncated { .. }))
-        .map(|run| (run.first, run.last))
-        .collect();
-    let spans = ended_spans(&history.keys, last, &reads, &truncated);
+    if history.keys.is_empty() {
+        let made = Arc::new(Vec::new());
+        state.lock().unwrap_or_else(PoisonError::into_inner).runs.insert(run, Arc::clone(&made));
+        return Ok(made);
+    }
+    let statuses = dashboard_query::cost::storage(|| lanes::statuses(recording, run, table, first, last))?;
+    let spans = ended_spans(&history.keys, last, &statuses);
     let lives: HashMap<(i32, u128), (i32, i32)> = spans.iter().map(|span| ((span.last, span.key), (span.first, span.ended_by))).collect();
     let asks: Vec<(i32, u128)> = lives.keys().copied().collect();
     let mut ended = Vec::with_capacity(asks.len());
@@ -301,8 +345,14 @@ pub fn run_ended(source: &Source, run: u32) -> io::Result<Arc<Vec<Ended>>> {
 #[serde(rename_all = "camelCase")]
 pub struct EndedLease {
     pub terms: LeaseTerms,
-    pub fuel_sent_raw: LeaseAmount,
-    pub fuel_sunk_raw: LeaseAmount,
+    pub fuel_sent_raw: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub fuel_sent_raw_missing: Option<String>,
+    pub fuel_sunk_raw: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub fuel_sunk_raw_missing: Option<String>,
     #[doc = " The first hour it stood in its run, within the branch."]
     pub first_hour: i32,
     #[doc = " Its last witnessed hour."]
@@ -367,10 +417,14 @@ impl Product for LendLeaseHistory {
             names::name_at(recording, stretch.run, stretch.last, &variants, &[], &context, &mut named)?;
             for ended in mine {
                 partial += usize::from(!ended.whole);
+                let (fuel_sent_raw, fuel_sent_raw_missing) = ended.row.fuel_sent();
+                let (fuel_sunk_raw, fuel_sunk_raw_missing) = ended.row.fuel_sunk();
                 agreements.push(EndedLease {
                     terms: ended.row.terms(|raw| tags.tag_at(&links, raw, ended.last).map(str::to_owned), &named),
-                    fuel_sent_raw: ended.row.fuel_sent(),
-                    fuel_sunk_raw: ended.row.fuel_sunk(),
+                    fuel_sent_raw,
+                    fuel_sent_raw_missing,
+                    fuel_sunk_raw,
+                    fuel_sunk_raw_missing,
                     first_hour: ended.first.max(stretch.first),
                     last_hour: ended.last,
                     ended_by: ended.ended_by,
@@ -461,28 +515,77 @@ mod tests {
         assert!(!called_with_zero, "an unrecorded receiver never looks up country 0");
         assert_eq!(terms.giver.as_deref(), Some("GER"));
         assert_eq!(terms.receiver, None);
-        assert!(terms.receiver_missing.is_some());
-        assert_eq!(terms.revision.value_raw, None);
-        assert!(terms.revision.missing.is_some());
-        assert_eq!(terms.active_since.value, None);
-        assert!(terms.active_since.missing.is_some());
-        assert_eq!(terms.last_delivery.value, None);
-        assert!(terms.last_delivery.missing.is_some());
-        assert_eq!(terms.monthly.items, None);
-        assert_eq!(terms.monthly.missing.as_deref(), Some("Could not be decoded at the agreement's last read"));
-        assert_eq!(terms.percentage.items, None);
-        assert_eq!(terms.percentage.missing.as_deref(), Some("Could not be decoded at the agreement's last read"));
-        assert_eq!(terms.delivered.items, None);
-        assert_eq!(terms.delivered.missing.as_deref(), Some("Not recorded at the agreement's last read"));
-        assert_eq!(terms.fuel_daily_raw.value_raw, None);
-        assert!(terms.fuel_daily_raw.missing.is_some());
-        assert_eq!(terms.fuel_percentage_raw.value_raw, None);
-        assert!(terms.fuel_percentage_raw.missing.is_some());
-        assert_eq!(terms.last_fuel_delivered_raw.value_raw, None);
-        assert!(terms.last_fuel_delivered_raw.missing.is_some());
-        assert_eq!(row.fuel_sent().value_raw, None);
-        assert!(row.fuel_sent().missing.is_some());
-        assert_eq!(row.fuel_sunk().value_raw, None);
-        assert!(row.fuel_sunk().missing.is_some());
+        assert_eq!(terms.receiver_missing.as_deref(), Some("Receiver not recorded at the agreement's last read"));
+        assert_eq!(terms.revision, None);
+        assert!(terms.revision_missing.is_some());
+        assert_eq!(terms.active_since, None);
+        assert!(terms.active_since_missing.is_some());
+        assert_eq!(terms.last_delivery, None);
+        assert!(terms.last_delivery_missing.is_some());
+        assert_eq!(terms.monthly, None);
+        assert_eq!(terms.monthly_missing.as_deref(), Some("Could not be decoded at the agreement's last read"));
+        assert_eq!(terms.percentage, None);
+        assert_eq!(terms.percentage_missing.as_deref(), Some("Could not be decoded at the agreement's last read"));
+        assert_eq!(terms.delivered, None);
+        assert_eq!(terms.delivered_missing.as_deref(), Some("Not recorded at the agreement's last read"));
+        assert_eq!(terms.fuel_daily_raw, None);
+        assert!(terms.fuel_daily_raw_missing.is_some());
+        assert_eq!(terms.fuel_percentage_raw, None);
+        assert!(terms.fuel_percentage_raw_missing.is_some());
+        assert_eq!(terms.last_fuel_delivered_raw, None);
+        assert!(terms.last_fuel_delivered_raw_missing.is_some());
+        assert_eq!(row.fuel_sent().0, None);
+        assert!(row.fuel_sent().1.is_some());
+        assert_eq!(row.fuel_sunk().0, None);
+        assert!(row.fuel_sunk().1.is_some());
+
+        let untagged = EndedRow { receiver: Some(77), ..row };
+        let untagged_terms = untagged.terms(|raw| (raw == 9001).then(|| "GER".to_owned()), &Named::default());
+        assert_eq!(untagged_terms.receiver, None);
+        assert_eq!(untagged_terms.receiver_missing.as_deref(), Some("Receiver country 77 had no tag at the agreement's last read"));
+
+        let compact = EndedRow {
+            country: 1,
+            id: 1,
+            receiver: Some(2),
+            revision: Some(0),
+            active_since: Some(100),
+            last_delivery: Some(0),
+            monthly: Ok(MarketPool::default().into()),
+            percentage: Ok(MarketPool::default().into()),
+            once: Ok(MarketPool::default().into()),
+            delivered: Ok(MarketPool::default().into()),
+            sunk: Ok(MarketPool::default().into()),
+            fuel_daily_raw: Some(0),
+            fuel_percentage_raw: Some(0),
+            fuel_sent_raw: Some(0),
+            fuel_sunk_raw: Some(0),
+            last_fuel_delivered_raw: Some(0),
+        };
+        let (fuel_sent_raw, fuel_sent_raw_missing) = compact.fuel_sent();
+        let (fuel_sunk_raw, fuel_sunk_raw_missing) = compact.fuel_sunk();
+        let sample = EndedLease {
+            terms: compact.terms(|raw| Some(if raw == 1 { "GER" } else { "FRA" }.to_owned()), &Named::default()),
+            fuel_sent_raw,
+            fuel_sent_raw_missing,
+            fuel_sunk_raw,
+            fuel_sunk_raw_missing,
+            first_hour: 100,
+            last_hour: 110,
+            ended_by: 111,
+        };
+        let expected_main_plus_ended_by = format!(
+            "{{\"terms\":{{\"key\":\"{}\",\"id\":\"0000000000000001\",\"giver\":\"GER\",\"receiver\":\"FRA\",\"revision\":\"0\",\"activeSince\":100,\"lastDelivery\":0,\"monthly\":[],\"percentage\":[],\"once\":[],\"delivered\":[],\"sunk\":[],\"fuelDailyRaw\":\"0\",\"fuelPercentageRaw\":\"0\",\"lastFuelDeliveredRaw\":\"0\"}},\"fuelSentRaw\":\"0\",\"fuelSunkRaw\":\"0\",\"firstHour\":100,\"lastHour\":110,\"endedBy\":111}}",
+            u128::from(1u32) << 64 | 1u128
+        );
+        assert_eq!(serde_json::to_string(&sample).unwrap(), expected_main_plus_ended_by, "fully recorded row is byte-identical to main plus endedBy");
+        let reply = LendLeaseHistoryReply {
+            branch_id: "1".into(),
+            agreements: vec![sample; 50_000],
+            variants: Vec::new(),
+            icons: Vec::new(),
+            warnings: Vec::new(),
+        };
+        check_reply_budget(&reply).expect("50,000 fully recorded ended rows fit within the transport budget");
     }
 }

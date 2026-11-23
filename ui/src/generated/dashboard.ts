@@ -506,14 +506,14 @@ export type CampaignClockReply = { available: boolean, recordedSeconds: number |
 export type ApmParams = { branchId: string, group: ApmGroup, registry: boolean, firstHour: number | null, lastHour: number | null, tags: Array<string> | null, membership: Array<ApmMembership> | null, players: Array<string>, buckets: number, };
 export type ApmReply = { available: boolean, players: Array<ApmPlayer>, series: Array<ApmSeries>, warnings: Array<string>, };
 export type ApmGroup = "country" | "player";
-export type ApmPlayer = { id: string, name: string, tags: Array<string>, };
+export type ApmPlayer = { id: string, name: string | null, nameMissing: string | null, tags: Array<string>, };
 export type ApmValue = { apm: number | null, confirmedApm: number | null, orders: string | null, pausedOrders: string | null, unpausedMinutes: number | null, complete: boolean,
 /**
  * Part of the period no capture observed; orders and minutes both leave it out.
  */
 gaps: boolean, };
 export type ApmBucket = { firstHour: number, lastHour: number, value: ApmValue, };
-export type ApmSeries = { id: string, name: string, tag: string | null, hour: number, summary: ApmValue, points: Array<ApmBucket>, };
+export type ApmSeries = { id: string, name: string | null, nameMissing: string | null, tag: string | null, hour: number, summary: ApmValue, points: Array<ApmBucket>, };
 export type ApmMembership = { tag: string, firstHour: number, lastHour: number, };
 export type CountryParams = { branchId: string, country: CountryRef, };
 export type FocusReply = { history: FocusHistory,
@@ -587,7 +587,7 @@ export type DoctrineTrack = { ordinal: number, name: string, subDoctrine: string
 export type DoctrineFolder = { ordinal: number, name: string, grandDoctrine: string | null, benefits: string, authoredCost: string, milestones: Array<DoctrineReward>, completed: Array<string>, tracks: Array<DoctrineTrack>, };
 export type DoctrineInventory = { kind: string, ordinal: number, fields: Array<DoctrineFact>, };
 export type DoctrineReply = { branchId: string, hour: number, tag: string, folders: Array<DoctrineFolder>, inventory: Array<DoctrineInventory>, warnings: Array<string>, };
-export type AircraftCatalogueParams = { scope: AircraftScope,
+export type AircraftCatalogueParams = {
 /**
  * Matched without case against names, titles and what references them;
  * empty matches every name.
@@ -600,26 +600,35 @@ first: number,
 /**
  * How many matching entries to answer from `first`.
  */
-count: number, };
+count: number,
+/**
+ * Only the base game's entries, with its DLC's, or only one mod's; absent
+ * matches every origin.
+ */
+origin: AircraftOriginFilter | null, };
 export type AircraftCatalogueReply = {
 /**
- * How many of the scope's entries match the query.
+ * How many aircraft match the query and origin.
  */
 matching: number,
 /**
- * How many names are an aircraft's, and how many the complete listing has.
+ * How many aircraft match the query, whatever their origin.
  */
-aircraft: number, all: number, first: number,
+found: number, first: number,
 /**
  * Matching entries from `first`: flyable ones first, then refused ones,
- * each by name bytes.
+ * each without case by the first title, else the readable name.
  */
 entries: Array<AircraftEntry>,
 /**
- * The scope's refused entries, whatever the query, by kind of reason.
+ * The matching entries that cannot be flown, by kind of reason.
  */
-refusals: Array<AircraftRefusalCount>, warnings: Array<string>, };
-export type AircraftScope = "aircraft" | "all";
+refusals: Array<AircraftRefusalCount>,
+/**
+ * Every origin with an aircraft, the base game first and then mods in load
+ * order, each with how many of its aircraft match the query.
+ */
+origins: Array<AircraftOriginCount>, warnings: Array<string>, };
 export type AircraftKind = "entity" | "mesh" | "unregistered";
 export type AircraftReference = { "kind": "pool", bucket: string, equipment: string, file: string, } | { "kind": "ladder", key: string, prefix: string | null, } | { "kind": "design", equipment: string, } | { "kind": "cloneOf", of: string, } | { "kind": "clonedBy", by: string, };
 export type AircraftRefusalKind = "unregistered" | "declaration" | "noGeometry";
@@ -635,14 +644,22 @@ name: string, kind: AircraftKind,
  */
 titles: Array<string>,
 /**
- * Why it is an aircraft's; empty for a name only the complete listing has.
+ * Why it is an aircraft's.
  */
 references: Array<AircraftReference>,
 /**
  * Why it cannot be flown.
  */
-refusal: AircraftRefusal | null, };
+refusal: AircraftRefusal | null,
+/**
+ * Who supplies the files it is declared in and drawn from: a mod when any
+ * of them is a mod's; null when no descriptor registers it.
+ */
+origin: AircraftOrigin | null, };
 export type AircraftRefusalCount = { kind: AircraftRefusalKind, label: string, count: number, };
+export type AircraftOriginFilter = "game" | { "mod": string };
+export type AircraftOrigin = { "kind": "game", dlc: string | null, } | { "kind": "mod", id: string, name: string, };
+export type AircraftOriginCount = { origin: AircraftOrigin, count: number, };
 export type SpriteArtworkParams = { sprites: Array<SpriteFrame>, };
 export type SpriteArtworkReply = { items: Array<SpriteImage>, warnings: Array<string>, };
 export type SpriteFrame = {
@@ -2585,8 +2602,8 @@ export type ConstructionLogParams = { branchId: string,
  */
 window: number, };
 export type ConstructionStateName = { id: number, name: string | null, };
-export type ProjectKind = "building" | "railway";
-export type ProjectSource = "census" | "outputAlone";
+export type ProjectKind = "building" | "railway" | "unknown";
+export type ProjectSource = "census" | "outputAlone" | "unknown";
 export type SpendingGap = "notRecorded" | "linkedOutput" | "inexactOutput" | "observationRestart" | "finalOutputMissing" | "ownerUnknown";
 export type EndKind = "finished" | "removed" | "unknown";
 export type UnknownEnd = "notRecorded" | "sharedTarget" | "nothingLeft" | "completionNotRecorded";
@@ -2656,6 +2673,14 @@ earlierUnknown: boolean, runs: Array<ProjectRun>,
  * New levels built and levels repaired (`repair`).
  */
 built: Array<LevelsBuilt>,
+/**
+ * Hour spans where a non-output-alone step had an unrecorded built counter.
+ */
+builtUnread?: Array<[number, number]>,
+/**
+ * Hour spans where a non-output-alone step had an unrecorded repaired counter.
+ */
+repairedUnread?: Array<[number, number]>,
 /**
  * Levels that cannot be told built or dropped.
  */
@@ -3103,7 +3128,7 @@ rows: Array<EventFeedRow>,
  * read, refusals of their rows.
  */
 unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
-export type EndedLease = { terms: LeaseTerms, fuelSentRaw: LeaseAmount, fuelSunkRaw: LeaseAmount,
+export type EndedLease = { terms: LeaseTerms, fuelSentRaw: string | null, fuelSentRawMissing?: string, fuelSunkRaw: string | null, fuelSunkRawMissing?: string,
 /**
  * The first hour it stood in its run, within the branch.
  */
@@ -5575,18 +5600,15 @@ prices: Array<MarketItem>, levels: Array<MarketLevel>, subsidies: Array<MarketGr
  * Whether a purchase contract stands for it: its progress is in the live cells.
  */
 purchase: boolean, };
-export type LeaseAmount = { valueRaw: string | null, missing?: string, };
-export type LeaseHour = { value: number | null, missing?: string, };
-export type LeaseItems = { items: Array<MarketItem> | null, missing?: string, };
 export type LeaseTerms = { key: string,
 /**
  * The handle, hexadecimal.
  */
-id: string, giver: string | null, receiver: string | null, receiverMissing?: string, revision: LeaseAmount, activeSince: LeaseHour, lastDelivery: LeaseHour, monthly: LeaseItems,
+id: string, giver: string | null, receiver: string | null, receiverMissing?: string, revision: string | null, revisionMissing?: string, activeSince: number | null, activeSinceMissing?: string, lastDelivery: number | null, lastDeliveryMissing?: string, monthly: Array<MarketItem> | null, monthlyMissing?: string,
 /**
  * Production shares, /1000 percent.
  */
-percentage: LeaseItems, once: LeaseItems, delivered: LeaseItems, sunk: LeaseItems, fuelDailyRaw: LeaseAmount, fuelPercentageRaw: LeaseAmount, lastFuelDeliveredRaw: LeaseAmount, };
+percentage: Array<MarketItem> | null, percentageMissing?: string, once: Array<MarketItem> | null, onceMissing?: string, delivered: Array<MarketItem> | null, deliveredMissing?: string, sunk: Array<MarketItem> | null, sunkMissing?: string, fuelDailyRaw: string | null, fuelDailyRawMissing?: string, fuelPercentageRaw: string | null, fuelPercentageRawMissing?: string, lastFuelDeliveredRaw: string | null, lastFuelDeliveredRawMissing?: string, };
 export type MarketLendLeaseParamsAtHour = MarketLendLeaseParams & { hour: number };
 export type CountryFuelParams = { branchId: string, country: CountryRef, };
 export type CountryFuelReply = { tag: string,
@@ -6376,7 +6398,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "air-superiority-choices": { "branchId": "leaf" },
   "air-superiority-ranking": { "branchId": "leaf", "firstHour": "leaf", "lastHour": "leaf", "mode": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "tile": "leaf", "top": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
   "air-superiority-timeline": { "branchId": "leaf", "firstHour": "leaf", "lastHour": "leaf", "mode": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "tile": "leaf", "top": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
-  "aircraft-catalogue": { "count": "leaf", "first": "leaf", "query": "leaf", "scope": "leaf" },
+  "aircraft-catalogue": { "count": "leaf", "first": "leaf", "origin": "node", "origin.mod": "leaf", "query": "leaf" },
   "army-losses": { "branchId": "leaf", "country": "any", "hour": "leaf", "view": "node", "view.kind": "leaf", "view.ledgers": "node", "view.ledgers[]": "leaf", "view.month": "leaf" },
   "army-size": { "branchId": "leaf", "byType": "leaf", "countFor": "leaf", "countries": "node", "countries[]": "any", "measure": "leaf", "top": "leaf", "window": "leaf" },
   "campaign-clock": { "branchId": "leaf", "firstHour": "leaf", "lastHour": "leaf" },

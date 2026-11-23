@@ -112,66 +112,6 @@ pub struct MarketTerms {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct LeaseAmount {
-    pub value_raw: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub missing: Option<String>,
-}
-
-impl LeaseAmount {
-    pub(crate) fn known(value: impl ToString) -> Self {
-        Self { value_raw: Some(value.to_string()), missing: None }
-    }
-
-    pub(crate) fn missing(reason: impl Into<String>) -> Self {
-        Self { value_raw: None, missing: Some(reason.into()) }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct LeaseHour {
-    pub value: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub missing: Option<String>,
-}
-
-impl LeaseHour {
-    pub(crate) fn known(value: i32) -> Self {
-        Self { value: Some(value), missing: None }
-    }
-
-    pub(crate) fn missing(reason: impl Into<String>) -> Self {
-        Self { value: None, missing: Some(reason.into()) }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct LeaseItems {
-    pub items: Option<Vec<MarketItem>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub missing: Option<String>,
-}
-
-impl LeaseItems {
-    pub(crate) fn known(items: Vec<MarketItem>) -> Self {
-        Self { items: Some(items), missing: None }
-    }
-
-    pub(crate) fn missing(reason: impl Into<String>) -> Self {
-        Self { items: None, missing: Some(reason.into()) }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
 pub struct LeaseTerms {
     pub key: String,
     #[doc = " The handle, hexadecimal."]
@@ -181,18 +121,51 @@ pub struct LeaseTerms {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub receiver_missing: Option<String>,
-    pub revision: LeaseAmount,
-    pub active_since: LeaseHour,
-    pub last_delivery: LeaseHour,
-    pub monthly: LeaseItems,
+    pub revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub revision_missing: Option<String>,
+    pub active_since: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub active_since_missing: Option<String>,
+    pub last_delivery: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub last_delivery_missing: Option<String>,
+    pub monthly: Option<Vec<MarketItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub monthly_missing: Option<String>,
     #[doc = " Production shares, /1000 percent."]
-    pub percentage: LeaseItems,
-    pub once: LeaseItems,
-    pub delivered: LeaseItems,
-    pub sunk: LeaseItems,
-    pub fuel_daily_raw: LeaseAmount,
-    pub fuel_percentage_raw: LeaseAmount,
-    pub last_fuel_delivered_raw: LeaseAmount,
+    pub percentage: Option<Vec<MarketItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub percentage_missing: Option<String>,
+    pub once: Option<Vec<MarketItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub once_missing: Option<String>,
+    pub delivered: Option<Vec<MarketItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub delivered_missing: Option<String>,
+    pub sunk: Option<Vec<MarketItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub sunk_missing: Option<String>,
+    pub fuel_daily_raw: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub fuel_daily_raw_missing: Option<String>,
+    pub fuel_percentage_raw: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub fuel_percentage_raw_missing: Option<String>,
+    pub last_fuel_delivered_raw: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub last_fuel_delivered_raw_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -285,20 +258,35 @@ fn section<'f, R>(shown: bool, rows: io::Result<&'f [R]>, label: &str, warnings:
     rows.map_err(|error| warnings.push(format!("{label} are not recorded at this hour: {error}"))).ok()
 }
 
-fn chosen(holders: &Holders, tags: &[Country], hour: i32, warnings: &mut Vec<String>) -> Option<BTreeSet<u32>> {
+struct Chosen {
+    slots: BTreeSet<u32>,
+    possible: bool,
+}
+
+fn chosen(holders: &Holders, tags: &[Country], hour: i32, warnings: &mut Vec<String>) -> Option<Chosen> {
     if tags.is_empty() {
         return None;
     }
     let mut slots = BTreeSet::new();
+    let mut unresolved = false;
     for tag in tags {
         match holders.at(tag, hour).map(|run| run.holder) {
             Some(Holder::Found { slot, .. }) => {
                 slots.insert(slot);
             }
-            _ => warnings.push(format!("{} is not held by any country at this hour", holders.name(tag, hour))),
+            Some(Holder::Unresolved) => {
+                unresolved = true;
+                warnings.push(format!("{} is not held by any country at this hour", holders.name(tag, hour)));
+            }
+            None => warnings.push(format!("{} is not held by any country at this hour", holders.name(tag, hour))),
         }
     }
-    Some(slots)
+    Some(Chosen { possible: !slots.is_empty() || unresolved, slots })
+}
+
+fn lease_selected(links: &[CountryLinkRow], wanted: Option<&Chosen>, row: &history::EndedRow) -> bool {
+    let selected = |raw: u32| wanted.is_none_or(|chosen| link_slot(links, raw).is_some_and(|slot| chosen.slots.contains(&slot)));
+    selected(row.country) || row.receiver.is_some_and(&selected) || wanted.is_some_and(|chosen| chosen.possible && row.receiver.is_none())
 }
 
 pub struct MarketLendLease;
@@ -333,9 +321,6 @@ impl AtHour for MarketLendLease {
             MarketGrant::decl(),
             MarketOffer::decl(),
             MarketTerms::decl(),
-            LeaseAmount::decl(),
-            LeaseHour::decl(),
-            LeaseItems::decl(),
             LeaseTerms::decl(),
         ]
     }
@@ -454,12 +439,10 @@ impl AtHour for MarketLendLease {
                     && let Ok(links) = held.complete::<tables::CountryLinks>()
                     && let Ok(rows) = raw.complete::<(history::EndedRow, bool)>(TableId::LendLeaseAgreements, at.hour)
                 {
-                    let parties = Parties::new(links, at.holders, at.hour);
                     let mut ignored = Vec::new();
                     let wanted = chosen(at.holders, &params.countries, at.hour, &mut ignored);
-                    let selected = |raw: u32| wanted.as_ref().is_none_or(|slots| parties.slot(raw).is_some_and(|slot| slots.contains(&slot)));
                     for (row, _) in rows {
-                        if selected(row.country) || row.receiver.is_some_and(&selected) || (wanted.is_some() && row.receiver.is_none()) {
+                        if lease_selected(links, wanted.as_ref(), row) {
                             variants.extend(row.variants());
                         }
                     }
@@ -515,7 +498,7 @@ pub(crate) fn market_at(frame: &DecodedFrame, raw: &RawTables, params: &MarketLe
     };
     let parties = Parties::new(links, holders, hour);
     let wanted = chosen(holders, &params.countries, hour, &mut reply.warnings);
-    let selected = |raw: u32| wanted.as_ref().is_none_or(|slots| parties.slot(raw).is_some_and(|slot| slots.contains(&slot)));
+    let selected = |raw: u32| wanted.as_ref().is_none_or(|chosen| parties.slot(raw).is_some_and(|slot| chosen.slots.contains(&slot)));
     let offers = section(show_offers, frame.complete::<tables::CountryMarket>(), "Market offers", &mut reply.warnings);
     let terms = section(show_contracts, frame.complete::<tables::MarketContractTerms>(), "Market requests and contracts", &mut reply.warnings);
     let leases = if show_agreements {
@@ -529,7 +512,7 @@ pub(crate) fn market_at(frame: &DecodedFrame, raw: &RawTables, params: &MarketLe
     let terms: Option<Vec<_>> = terms.map(|rows| rows.iter().filter(|row| selected(row.country) || selected(row.buyer)).collect());
     let leases: Option<Vec<&(history::EndedRow, bool)>> = leases.map(|rows| {
         rows.into_iter()
-            .filter(|(row, _)| selected(row.country) || row.receiver.is_some_and(&selected) || (wanted.is_some() && row.receiver.is_none()))
+            .filter(|(row, _)| lease_selected(links, wanted.as_ref(), row))
             .collect()
     });
 
@@ -615,7 +598,7 @@ pub(crate) fn market_at(frame: &DecodedFrame, raw: &RawTables, params: &MarketLe
             let key = row.key();
             live.value(&terms.key, "fuelSent", Cell { table: TableId::LendLeaseAgreements, column: sent, key }, 1.0);
             live.value(&terms.key, "fuelLost", Cell { table: TableId::LendLeaseAgreements, column: lost, key }, 1.0);
-            if wanted.is_some() && (terms.giver.is_none() || terms.receiver.is_none()) {
+            if wanted.as_ref().is_some_and(|chosen| chosen.possible) && (terms.giver.is_none() || terms.receiver.is_none()) {
                 reply.unattributed += 1;
             }
             out.push(terms);

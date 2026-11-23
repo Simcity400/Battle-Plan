@@ -411,32 +411,86 @@ mod market {
 
     #[test]
     fn an_agreement_ends_only_when_a_census_read_proves_it_absent() {
+        use replay_columnar::manifest::Status;
+        use replay_lanes::lanes::StatusRun;
         let shown = |hour| Step { hour, cells: Some(vec![Cell::Number(0)].into_boxed_slice()) };
         let hidden = |hour| Step { hour, cells: None };
-        let history = vec![
-            (1u128, vec![shown(100), hidden(110), shown(115), hidden(120)]),
-            (2, vec![shown(100)]),
-            (3, vec![shown(100), hidden(130)]),
-            (4, vec![shown(100), hidden(105), shown(118)]),
+        let run = |first, last, status| StatusRun { first, last, status };
+        let cases: &[(&str, Vec<(u128, Vec<Step>)>, i32, Vec<StatusRun>, Vec<EndedSpan>)] = &[
+            (
+                "(a) complete census omits key",
+                vec![(1, vec![shown(100), hidden(120)]), (2, vec![shown(100)])],
+                130,
+                vec![run(100, 130, Status::Complete)],
+                vec![EndedSpan { key: 1, first: 100, last: 119, ended_by: 120 }],
+            ),
+            (
+                "(a) later complete census inside unread gap proves absence at endedBy",
+                vec![(4, vec![shown(100), hidden(105), shown(118)])],
+                135,
+                vec![run(100, 104, Status::Complete), run(105, 114, Status::Unavailable { reason: 0 }), run(115, 135, Status::Complete)],
+                vec![EndedSpan { key: 4, first: 100, last: 104, ended_by: 115 }],
+            ),
+            (
+                "(b) final truncated census omits key and never returns",
+                vec![(6, vec![shown(100), hidden(124)])],
+                130,
+                vec![run(100, 123, Status::Complete), run(124, 124, Status::Truncated { missing: 1 }), run(125, 130, Status::Complete)],
+                vec![EndedSpan { key: 6, first: 100, last: 123, ended_by: 124 }],
+            ),
+            (
+                "(c) unavailable, not-recorded, or refused read inside gap proves no end (F1)",
+                vec![
+                    (1, vec![shown(100), hidden(105), shown(115)]),
+                    (2, vec![shown(100), hidden(105), shown(115), hidden(120)]),
+                ],
+                130,
+                vec![
+                    run(100, 104, Status::Complete),
+                    run(105, 109, Status::NotRecorded),
+                    run(110, 114, Status::Unavailable { reason: 0 }),
+                    run(115, 130, Status::Complete),
+                ],
+                vec![EndedSpan { key: 2, first: 100, last: 119, ended_by: 120 }],
+            ),
+            (
+                "(c/d) sampled truncated hour inside unread gap proves no end when key returns (F1)",
+                vec![(8, vec![shown(100), hidden(105), shown(115)])],
+                130,
+                vec![
+                    run(100, 104, Status::Complete),
+                    run(105, 109, Status::Unavailable { reason: 0 }),
+                    run(110, 110, Status::Truncated { missing: 1 }),
+                    run(111, 114, Status::Unavailable { reason: 0 }),
+                    run(115, 130, Status::Complete),
+                ],
+                Vec::new(),
+            ),
+            (
+                "(d) mid-life truncation suppresses earlier end and resets firstHour on return (F3)",
+                vec![(5, vec![shown(100), hidden(110), shown(115), hidden(124)])],
+                130,
+                vec![
+                    run(100, 109, Status::Complete),
+                    run(110, 110, Status::Truncated { missing: 1 }),
+                    run(111, 114, Status::Unavailable { reason: 0 }),
+                    run(115, 123, Status::Complete),
+                    run(124, 124, Status::Truncated { missing: 1 }),
+                    run(125, 130, Status::Complete),
+                ],
+                vec![EndedSpan { key: 5, first: 115, last: 123, ended_by: 124 }],
+            ),
+            (
+                "(e) unread tail never produces an end",
+                vec![(3, vec![shown(100), hidden(130)])],
+                135,
+                vec![run(100, 129, Status::Complete), run(130, 135, Status::Unavailable { reason: 0 })],
+                Vec::new(),
+            ),
         ];
-        let reads = [(100, 104), (115, 117), (120, 129)];
-        assert_eq!(
-            ended_spans(&history, 135, &reads, &[]),
-            vec![
-                EndedSpan { key: 1, first: 100, last: 119, ended_by: 120 },
-                EndedSpan { key: 4, first: 100, last: 104, ended_by: 115 },
-            ],
-            "unread gaps without a census read keep the agreement open; an unread tail never fabricates an end; a later census read proves absence at ended_by"
-        );
-        let truncated_history = vec![
-            (5u128, vec![shown(100), hidden(110), shown(115)]),
-            (6, vec![shown(100), hidden(124)]),
-        ];
-        assert_eq!(
-            ended_spans(&truncated_history, 130, &[(100, 109), (115, 123), (125, 130)], &[(110, 110), (124, 124)]),
-            vec![EndedSpan { key: 6, first: 100, last: 123, ended_by: 124 }],
-            "a final truncated census ends at the truncated hour while a mid-life truncated hour where the agreement returns does not"
-        );
+        for (label, history, last, statuses, expected) in cases {
+            assert_eq!(ended_spans(history, *last, statuses), *expected, "{label}");
+        }
     }
 
     #[test]
@@ -506,14 +560,15 @@ mod market {
         let ended = &reply.agreements[0];
         assert_eq!(ended.last_hour, ENDS - 1);
         assert_eq!(ended.ended_by, ENDS);
-        assert_eq!(ended.terms.active_since.value, Some(FIRST));
-        assert_eq!(ended.terms.active_since.missing, None);
-        assert_eq!(ended.terms.last_delivery.value, Some(0));
-        assert_eq!(ended.terms.last_delivery.missing, None);
-        assert_eq!(ended.fuel_sent_raw.value_raw.as_deref(), Some(&((i64::from(ENDS - 1) * 32_768).to_string())[..]));
-        assert_eq!(ended.fuel_sunk_raw.value_raw.as_deref(), Some("0"));
-        assert_eq!(ended.fuel_sunk_raw.missing, None);
-        assert!(ended.terms.monthly.items.as_ref().is_some_and(|items| items.len() == 1));
+        assert_eq!(ended.terms.active_since, Some(FIRST));
+        assert_eq!(ended.terms.active_since_missing, None);
+        assert_eq!(ended.terms.last_delivery, Some(0));
+        assert_eq!(ended.terms.last_delivery_missing, None);
+        assert_eq!(ended.fuel_sent_raw.as_deref(), Some(&((i64::from(ENDS - 1) * 32_768).to_string())[..]));
+        assert_eq!(ended.fuel_sent_raw_missing, None);
+        assert_eq!(ended.fuel_sunk_raw.as_deref(), Some("0"));
+        assert_eq!(ended.fuel_sunk_raw_missing, None);
+        assert!(ended.terms.monthly.as_ref().is_some_and(|items| items.len() == 1));
     }
 
     #[test]
@@ -730,20 +785,94 @@ mod market {
         let source = Source::from_replay(dashboard_base::SourceKey { source_id: "partial-lease".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
 
         let params = json!({ "branchId": "1", "countries": ["GER"], "only": "agreements" });
-        let reply = asked::<MarketLendLease>(&source, params.clone(), 110).unwrap();
+        let (reply, cold_rows) = dashboard_base::products::at_hour::counted(|| asked::<MarketLendLease>(&source, params.clone(), 110).unwrap());
+        let asked_111 = asked::<MarketLendLease>(&source, params.clone(), 111).unwrap();
+        let asked_112 = asked::<MarketLendLease>(&source, params.clone(), 112).unwrap();
+        assert!(cold_rows >= 2, "cold read credits decoded raw LendLeaseAgreements rows to counted: {cold_rows}");
+
+        let initial_lanes = {
+            let probe = panel(&source, &params);
+            let probe_exact = probe.exact().expect("registered market panel runs incrementally");
+            (probe_exact.advance)(110, true, &AtomicBool::new(false), None).lanes
+        };
         let mut registered = panel(&source, &params);
         let exact = registered.exact().expect("registered market panel runs incrementally");
-        let read_110 = (exact.advance)(110, true, &AtomicBool::new(false), None);
+        let pages: Arc<dyn playhead::pages::Pages> = Arc::new(
+            playhead::pages::WorldPages::over(
+                replay_recording::columnar_frames::Recording::open(source.replay_ref().bytes().to_vec()).unwrap(),
+                playhead::pages::Span::Whole,
+            )
+            .unwrap(),
+        );
+        let (send, played) = std::sync::mpsc::channel();
+        let advance = exact.advance.clone();
+        let hook: playhead::Hook = Box::new(move |step, lanes| {
+            let token = AtomicBool::new(false);
+            let read = advance(step.last(), true, &token, Some(dashboard_follow::panel::ProductStep { step, lanes, held: None, wake: None }));
+            let _ = send.send((step.last(), read));
+        });
+        let settings = playhead::Settings { step_threads: 1, fetch_threads: 1, ahead: 1, ring: 3, speed: 1.0, rate: 1.0, ..playhead::Settings::default() };
+        let playhead = playhead::Playhead::new(Arc::clone(&pages), playhead::Timeline::whole(&*pages).unwrap(), settings, Some(hook)).unwrap();
+        let mut declared: std::collections::BTreeMap<usize, playhead::Declared> = initial_lanes.into_iter().map(|lane| (lane.table, lane)).collect();
+        let reader = playhead.declare(declared.values().cloned().collect(), None).unwrap();
+        let mut consumer = playhead.consumer(reader);
+        let mut drive = |target: i32, seek: bool| -> dashboard_follow::panel::ProductRead {
+            if seek {
+                playhead.seek(target);
+            }
+            loop {
+                let mut got = None;
+                playhead
+                    .drive_until(&mut consumer, target, || match played.try_recv() {
+                        Ok(item) => {
+                            got = Some(item);
+                            std::ops::ControlFlow::Break(Ok(()))
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => std::ops::ControlFlow::Continue(()),
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => std::ops::ControlFlow::Break(Err("step hook disconnected".into())),
+                    })
+                    .unwrap();
+                let (at, read) = got.unwrap();
+                let before = declared.clone();
+                for lane in &read.lanes {
+                    let held = declared.entry(lane.table).or_insert_with(|| lane.clone());
+                    held.columns.extend(&lane.columns);
+                    held.columns.sort_unstable();
+                    held.columns.dedup();
+                }
+                if declared != before {
+                    playhead.redeclare(reader, declared.values().cloned().collect()).unwrap();
+                }
+                if at == target {
+                    return read;
+                }
+            }
+        };
+        let read_110 = drive(110, true);
+        assert!(!read_110.pending, "pre-declared lanes satisfy hour 110 directly from the step");
         assert!(read_110.lanes.iter().any(|l| l.table == TableId::LendLeaseAgreements.index()), "registered panel declares LendLeaseAgreements lane");
+        let registered_live = read_110.live.as_ref().expect("registered panel emits live fuel cell subscription");
+        let fuel_group = registered_live
+            .groups
+            .iter()
+            .find(|group| group.table == TableId::LendLeaseAgreements)
+            .expect("live subscription tracks LendLeaseAgreements fuel cells");
+        let sent_col = dashboard_declare::field(TableId::LendLeaseAgreements, "fuel_sent_raw").unwrap();
+        let lost_col = dashboard_declare::field(TableId::LendLeaseAgreements, "fuel_sunk_raw").unwrap();
+        assert!(fuel_group.columns.contains(&sent_col) && fuel_group.columns.contains(&lost_col));
+        assert_eq!(fuel_group.keys.len(), 2, "both intact and partial agreements register fuel subscriptions");
         let at_110 = (*read_110.value).clone().unwrap();
-        assert_eq!(at_110, reply, "registered incremental panel matches exact request including live cells");
-        let read_111 = (exact.advance)(111, true, &AtomicBool::new(false), None);
+        assert_eq!(at_110, reply, "seeded playhead step matches cold answer at 110");
+
+        let read_111 = drive(111, false);
+        assert_eq!(read_111.rows, 1, "incremental step 110->111 decodes only the single dirty agreement row");
         let at_111 = (*read_111.value).clone().unwrap();
+        assert_eq!(at_111, asked_111, "incremental step 110->111 matches cold answer including live fuel");
         assert_eq!(without_live(at_111.clone()), without_live(reply.clone()), "live fuel update keeps unchanged terms");
-        let read_112 = (exact.advance)(112, true, &AtomicBool::new(false), None);
+
+        let read_112 = drive(112, false);
         let at_112 = (*read_112.value).clone().unwrap();
-        let asked_112 = asked::<MarketLendLease>(&source, params.clone(), 112).unwrap();
-        assert_eq!(at_112, asked_112, "truncated hour with unread retained column matches on both paths");
+        assert_eq!(at_112, asked_112, "incremental step into truncation matches cold answer");
         assert!(asked_112["agreements"].is_null());
         assert!(
             asked_112["warnings"]
@@ -753,6 +882,11 @@ mod market {
                 .any(|w| w.as_str().unwrap().ends_with("hour 112 LendLeaseAgreements is unavailable: LendLeaseAgreements.receiver is not recorded and its row cannot say so")),
             "truncated hour with unread required column keeps main's exact diagnostic: {asked_112}"
         );
+
+        let rewound_110 = drive(110, true);
+        assert_eq!((*rewound_110.value).clone().unwrap(), reply, "backward seek from truncation back to 110 matches cold answer");
+        drop(consumer);
+        playhead.finish();
         assert_eq!(followed(&source, &mut *registered, 110), Ok(reply.clone()), "followed panel matches exact reply on partial agreements");
 
         let agreements = reply["agreements"].as_array().unwrap();
@@ -760,13 +894,14 @@ mod market {
         let intact = agreements.iter().find(|row| row["id"] == "0000000000000009").unwrap();
         let partial = agreements.iter().find(|row| row["id"] == "000000000000000a").unwrap();
         assert_eq!(intact["receiver"], "FRA");
-        assert_eq!(intact["monthly"]["items"][0]["variant"], "5");
+        assert_eq!(intact["monthly"][0]["variant"], "5");
         assert!(partial["receiver"].is_null());
         assert_eq!(partial["receiverMissing"], "Receiver not recorded at this hour");
-        assert!(partial["fuelDailyRaw"]["valueRaw"].is_null());
-        assert!(partial["fuelDailyRaw"]["missing"].as_str().unwrap().contains("not recorded"));
-        assert_eq!(partial["activeSince"]["value"], 102);
-        assert_eq!(partial["monthly"]["items"][0]["variant"], "6", "readable pool survives unrecorded sibling fields");
+        assert!(partial["fuelDailyRaw"].is_null());
+        assert!(partial["fuelDailyRawMissing"].as_str().unwrap().contains("not recorded"));
+        assert_eq!(partial["activeSince"], 102);
+        assert!(partial.get("activeSinceMissing").is_none());
+        assert_eq!(partial["monthly"][0]["variant"], "6", "readable pool survives unrecorded sibling fields");
         assert!(reply["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("unreadable or unrecorded fields")));
 
         let live = cells(&at_110);
@@ -787,5 +922,10 @@ mod market {
         assert_eq!(fra_partial["receiverMissing"], "Receiver not recorded at this hour");
         assert_eq!(fra_reply["unattributed"], 1);
         assert!(fra_reply["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("no tag at this hour")));
+
+        let unheld_reply = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": ["ZZZ"], "only": "agreements" }), 110).unwrap();
+        assert_eq!(unheld_reply["agreements"].as_array().unwrap().len(), 0, "a tag known to have no holder does not get unread-receiver agreements");
+        assert_eq!(unheld_reply["unattributed"], 0);
+        assert!(!unheld_reply["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("no tag at this hour")));
     }
 }
