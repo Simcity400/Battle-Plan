@@ -52,6 +52,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -66,9 +67,10 @@ STABLE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 VERSION_LINE = re.compile(r'(?ms)^(\[workspace\.package\]\s*?\n(?:(?!\[).*\n)*?version = ")([^"]+)(")')
 MERGE = re.compile(r"^Merge pull request #(\d+) from ")
 SQUASHED = re.compile(r"\(#(\d+)\)$")
-SUMMARY_MODEL = "qwen/qwen3.8-27b"
+SUMMARY_MODEL = "openai/gpt-oss-120b"
 SUMMARY_URL = "https://api.groq.com/openai/v1/chat/completions"
 SUMMARY_TIMEOUT = 180
+SUMMARY_TOKENS = 8192
 HIGHLIGHTS = 7
 PULL_BODY_SHOWN = 300
 HISTORY = 10
@@ -310,7 +312,8 @@ def summarize(pulls):
                          for pull in pulls)
     request = urllib.request.Request(SUMMARY_URL, method="POST", headers={
         "Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "battleplan-release"}, data=json.dumps({
-            "model": SUMMARY_MODEL, "reasoning_effort": "high", "reasoning_format": "hidden",
+            "model": SUMMARY_MODEL, "reasoning_effort": "high", "include_reasoning": False,
+            "max_completion_tokens": SUMMARY_TOKENS,
             "response_format": {"type": "json_object"},
             "messages": [{"role": "system", "content": SUMMARY_INSTRUCTIONS},
                          {"role": "user", "content": f"Choose highlights as JSON from these pull requests:\n{source}"}],
@@ -318,6 +321,10 @@ def summarize(pulls):
     try:
         with urllib.request.urlopen(request, timeout=SUMMARY_TIMEOUT) as answer:
             return read_highlights(json.load(answer), [pull["number"] for pull in pulls])
+    except urllib.error.HTTPError as error:
+        said = error.read(2000).decode("utf-8", errors="replace").strip()
+        say(f"No summary was written, so the notes list pull requests without one: {error}: {said or 'no reason given'}.")
+        return None
     except (OSError, ValueError, RecursionError, http.client.HTTPException, Refused) as error:
         say(f"No summary was written, so the notes list pull requests without one: {error}.")
         return None
