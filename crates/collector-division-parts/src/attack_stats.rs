@@ -87,12 +87,25 @@ struct Held {
     maxima: Option<DivisionMaxima>,
 }
 
+static NEXT_NAME_STAMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_name_stamp() -> u64 {
+    NEXT_NAME_STAMP
+        .fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |next| next.checked_add(1),
+        )
+        .unwrap_or(0)
+}
+
 #[derive(Clone, Copy)]
 pub struct HeldName {
     division: u64,
     pub member: usize,
     pub span: [u8; engine_native::cname_group_member::INPUT_SPAN],
     text: (usize, usize),
+    pub stamp: u64,
 }
 
 #[derive(Default)]
@@ -370,6 +383,7 @@ impl ArmyStatStore {
         member: usize,
         span: &[u8; engine_native::cname_group_member::INPUT_SPAN],
         text: &[u8],
+        stamp: u64,
     ) {
         let start = self.next_name_bytes.len();
         self.next_name_bytes.extend_from_slice(text);
@@ -378,6 +392,7 @@ impl ArmyStatStore {
             member,
             span: *span,
             text: (start, text.len()),
+            stamp: if stamp != 0 { stamp } else { next_name_stamp() },
         });
     }
 
@@ -1414,9 +1429,22 @@ impl Captured {
         self.view(division).same_movement(previous)
     }
     pub fn has_witness(&self, division: u64) -> bool {
-        self.witness
-            .binary_search_by_key(&division, |(division, _)| *division)
-            .is_ok()
+        !self.witness.is_empty()
+            && self
+                .witness
+                .binary_search_by_key(&division, |(division, _)| *division)
+                .is_ok()
+    }
+
+    pub fn has_unique_divisions(&self, rows: &[engine_native::carmy::StatusRow]) -> bool {
+        self.order.len() == rows.len()
+            && self.rows.len() == rows.len()
+            && self
+                .rows
+                .iter()
+                .zip(rows)
+                .all(|(a, r)| a.division == r.division)
+            && self.order.windows(2).all(|pair| pair[0].0 < pair[1].0)
     }
 
     pub fn witness(&self, division: u64, factor: Option<i64>) -> Option<DivisionAttackInputs> {

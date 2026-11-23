@@ -771,6 +771,7 @@ struct Ledgers<C> {
     next: Ledger<C>,
     seen: Vec<bool>,
     edits: Vec<(u128, Option<usize>)>,
+    index: std::collections::HashMap<u128, usize, foldhash::fast::FixedState>,
 }
 
 impl<C> Default for Ledgers<C> {
@@ -780,6 +781,7 @@ impl<C> Default for Ledgers<C> {
             next: Ledger::default(),
             seen: Vec::new(),
             edits: Vec::new(),
+            index: std::collections::HashMap::with_hasher(foldhash::fast::FixedState::default()),
         }
     }
 }
@@ -837,6 +839,7 @@ impl Projection<'_> {
             next,
             seen,
             edits,
+            index,
         } = &mut *ledgers;
         next.clear();
         let bytes_need = held.bytes.len();
@@ -913,6 +916,7 @@ impl Projection<'_> {
                         next,
                         seen,
                         edits,
+                        index,
                         first_unaligned,
                         source,
                         &convert,
@@ -965,11 +969,13 @@ impl Projection<'_> {
     }
 }
 
+#[allow(clippy::too_many_arguments, reason = "internal ledger diffing helper")]
 fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
     held: &Ledger<C>,
     next: &Ledger<C>,
     seen: &mut Vec<bool>,
     edits: &mut Vec<(u128, Option<usize>)>,
+    index: &mut std::collections::HashMap<u128, usize, foldhash::fast::FixedState>,
     first_unaligned: usize,
     source: &[T],
     convert: impl Fn(&T) -> S::Row,
@@ -985,8 +991,7 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
     seen[..first_unaligned].fill(true);
     let held_sorted = held.keys.windows(2).all(|pair| pair[0] < pair[1]);
     let mut shift: isize = 0;
-    let mut index: Option<std::collections::HashMap<u128, usize, foldhash::fast::FixedState>> =
-        None;
+    let mut index_ready = false;
     let mut added: std::collections::HashSet<u128, foldhash::fast::FixedState> =
         std::collections::HashSet::default();
     let mut matched = first_unaligned;
@@ -1016,16 +1021,16 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
             }
             found
         } else {
-            if index.is_none() {
-                let mut held_at = std::collections::HashMap::with_hasher(
-                    foldhash::fast::FixedState::default(),
-                );
-                engine_allocation::reserve_map(&mut held_at, held.keys.len())
-                    .map_err(|_| ALLOCATION)?;
-                held_at.extend(held.keys.iter().enumerate().map(|(at, &key)| (key, at)));
-                index = Some(held_at);
+            if !index_ready {
+                index.clear();
+                let need = held.keys.len().saturating_sub(index.capacity());
+                if need > 0 {
+                    engine_allocation::reserve_map(index, need).map_err(|_| ALLOCATION)?;
+                }
+                index.extend(held.keys.iter().enumerate().map(|(at, &key)| (key, at)));
+                index_ready = true;
             }
-            let found = index.as_ref().and_then(|index| index.get(&key).copied());
+            let found = index.get(&key).copied();
             if let Some(cand) = found {
                 shift = cand as isize - at as isize;
             }

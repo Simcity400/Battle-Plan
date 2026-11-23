@@ -66,6 +66,7 @@ struct Keep {
     member: usize,
     span: [u8; INPUT_SPAN],
     text: Span,
+    stamp: u64,
 }
 
 pub(crate) struct NamingPart {
@@ -297,6 +298,11 @@ impl NamingPart {
                 Err(reason) => row.cached_failure = Some(reason),
             }
             row.held = held.is_some();
+            let stamp = held.map_or(0, |held| held.stamp);
+            row.held_stamp = match (held, row.inputs, row.cached_name) {
+                (Some(held), Some(_), Some(_)) => held.stamp,
+                _ => 0,
+            };
             if let (true, true, Ok((pointer, Ok(span))), Some(text)) =
                 (store.is_some(), registered, member, row.cached_name)
             {
@@ -306,6 +312,7 @@ impl NamingPart {
                     member: pointer,
                     span,
                     text,
+                    stamp,
                 });
             }
             self.len += 1;
@@ -492,12 +499,12 @@ impl Captured {
         if let Some(store) = store {
             for keep in first.keeps.iter().take_while(|keep| keep.index < len) {
                 let text = &self.cached_names.first[keep.text.0..keep.text.0 + keep.text.1];
-                store.keep_name(keep.division, keep.member, &keep.span, text);
+                store.keep_name(keep.division, keep.member, &keep.span, text, keep.stamp);
             }
             for part in rest.iter() {
                 for keep in part.keeps.iter().take_while(|keep| keep.index < len) {
                     let text = &part.cached.first[keep.text.0..keep.text.0 + keep.text.1];
-                    store.keep_name(keep.division, keep.member, &keep.span, text);
+                    store.keep_name(keep.division, keep.member, &keep.span, text, keep.stamp);
                 }
             }
         }

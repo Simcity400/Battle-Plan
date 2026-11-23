@@ -1192,6 +1192,7 @@ fn held_fleet_terms_follow_the_leader_binding_and_tree_certificates() {
             terms: None,
             terms_identity: 0,
             quiet: None,
+            variant_quiet: None,
             guard_fallback: false,
             revalidated: false,
         };
@@ -3346,7 +3347,7 @@ mod carry_cost_bench {
             assert!(store.next_hot.is_empty());
             assert!(store.next_tasks.is_empty());
             assert!(store.next_variants.is_empty());
-            assert!(store.next_variant_index.is_empty());
+            assert!(store.next_variant_head.is_empty());
             assert_eq!(store.quiet, None);
             assert_eq!(store.generation, 0);
             assert_eq!(store.rows, None);

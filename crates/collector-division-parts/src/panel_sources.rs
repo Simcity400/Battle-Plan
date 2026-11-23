@@ -160,10 +160,13 @@ pub struct Selection {
 
 pub struct Preparation {
     memo: carmy_leader::LeaderMemo,
+    memo_used: bool,
     countries: Map<u32, Result<ccountry::Country, &'static str>>,
     commanders: Map<usize, u64>,
     provinces: Map<usize, Option<(u32, usize)>>,
     route_provinces: Map<u32, usize>,
+    last_country: Option<(u32, Result<ccountry::Country, &'static str>)>,
+    last_province: Option<(usize, bool, Option<(u32, usize)>)>,
     roster: Option<engine_native::cpdx_array::Array>,
     reads: NativeReads,
     local_province_refusal: bool,
@@ -172,10 +175,13 @@ impl Default for Preparation {
     fn default() -> Self {
         Self {
             memo: carmy_leader::LeaderMemo::vacant(),
+            memo_used: false,
             countries: Map::default(),
             commanders: Map::default(),
             provinces: Map::default(),
             route_provinces: Map::default(),
+            last_country: None,
+            last_province: None,
             roster: None,
             reads: NativeReads::default(),
             local_province_refusal: false,
@@ -209,20 +215,26 @@ impl Preparation {
     }
     pub fn begin_part(&mut self, divisions: usize, read_dirty: bool) -> bool {
         self.local_province_refusal = false;
-        self.countries.clear();
-        self.commanders.clear();
-        self.provinces.clear();
-        self.route_provinces.clear();
+        self.last_country = None;
+        self.last_province = None;
+        if !self.countries.is_empty() {
+            self.countries.clear();
+        }
+        if !self.commanders.is_empty() {
+            self.commanders.clear();
+        }
+        if !self.provinces.is_empty() {
+            self.provinces.clear();
+        }
+        if !self.route_provinces.is_empty() {
+            self.route_provinces.clear();
+        }
         self.roster = None;
-        engine_allocation::advisory(|| {
-            if self.memo.capacity() < divisions {
-                self.memo = carmy_leader::LeaderMemo::try_with_capacity(divisions)?;
-            }
+        if std::mem::take(&mut self.memo_used) {
             self.memo.clear();
-            engine_allocation::reserve_map(&mut self.countries, divisions)?;
-            engine_allocation::reserve_map(&mut self.commanders, divisions)?;
-            engine_allocation::reserve_map(&mut self.provinces, divisions)?;
-            engine_allocation::reserve_map(&mut self.route_provinces, divisions)?;
+        }
+        engine_allocation::advisory(|| {
+            engine_allocation::reserve_map(&mut self.countries, divisions.min(8))?;
             self.reads.begin_part(divisions, read_dirty)
         })
         .is_ok()
@@ -245,15 +257,37 @@ impl Preparation {
         let held = store.admitted().unwrap_or(store);
         let country = source_owner(seed).ok().and_then(|owner| {
             countries.map(|countries| {
-                let country = *self
-                    .countries
-                    .entry(owner)
-                    .or_insert_with(|| countries.resolve(owner));
+                let country = if let Some((last_owner, last_country)) = self.last_country
+                    && last_owner == owner
+                {
+                    last_country
+                } else if let Some(&country) = self.countries.get(&owner) {
+                    self.last_country = Some((owner, country));
+                    country
+                } else {
+                    let country = countries.resolve(owner);
+                    if engine_allocation::advisory(|| {
+                        engine_allocation::reserve_map(&mut self.countries, 1)
+                    })
+                    .is_ok()
+                    {
+                        self.countries.insert(owner, country);
+                    }
+                    self.last_country = Some((owner, country));
+                    country
+                };
                 (owner, country)
             })
         });
         let led = country.is_some_and(|(_, country)| country.is_ok());
         let movement = (led && seed.selected.is_none()).then(|| {
+            if self.memo.capacity() == 0
+                && let Ok(memo) =
+                    engine_allocation::advisory(|| carmy_leader::LeaderMemo::try_with_capacity(64))
+            {
+                self.memo = memo;
+            }
+            self.memo_used = true;
             carmy_leader::MovementPreparation::capture(memory, base, seed, &mut self.memo)
         });
         let commander = match seed.selected {
@@ -270,17 +304,23 @@ impl Preparation {
             None => movement
                 .and_then(|movement| movement.leader())
                 .map(|receiver| {
-                    let handle = match self.commanders.entry(receiver) {
-                        std::collections::hash_map::Entry::Occupied(held) => Ok(*held.get()),
-                        std::collections::hash_map::Entry::Vacant(slot) => {
-                            let handle =
-                                read::<u64>(memory, receiver + engine_native::cunit_leader::TYPE)
-                                    .ok_or("division source commander identity unreadable");
-                            if let Ok(handle) = handle {
-                                slot.insert(handle);
-                            }
-                            handle
+                    let handle = if !self.commanders.is_empty()
+                        && let Some(&handle) = self.commanders.get(&receiver)
+                    {
+                        Ok(handle)
+                    } else {
+                        let handle =
+                            read::<u64>(memory, receiver + engine_native::cunit_leader::TYPE)
+                                .ok_or("division source commander identity unreadable");
+                        if let Ok(handle) = handle
+                            && engine_allocation::advisory(|| {
+                                engine_allocation::reserve_map(&mut self.commanders, 1)
+                            })
+                            .is_ok()
+                        {
+                            self.commanders.insert(receiver, handle);
                         }
+                        handle
                     };
                     (receiver, handle)
                 }),
@@ -291,11 +331,19 @@ impl Preparation {
             state,
             seed,
             |id, read| {
-                if let Some(&province) = self.route_provinces.get(&id) {
+                if !self.route_provinces.is_empty()
+                    && let Some(&province) = self.route_provinces.get(&id)
+                {
                     return Ok(province);
                 }
                 let province = read()?;
-                self.route_provinces.insert(id, province);
+                if engine_allocation::advisory(|| {
+                    engine_allocation::reserve_map(&mut self.route_provinces, 1)
+                })
+                .is_ok()
+                {
+                    self.route_provinces.insert(id, province);
+                }
                 Ok(province)
             },
         );
@@ -310,20 +358,39 @@ impl Preparation {
                 self.reads.incomplete();
             }
         }
-        let context = province
-            .ok()
-            .filter(|province| !held.provinces.contains_key(province))
-            .map(|province| {
-                if let Some(context) = self.provinces.get(&province) {
-                    return Ok(*context);
+        let (context, resolved_context) = match province {
+            Ok(province) => {
+                if let Some((last_p, in_held, last_ctx)) = self.last_province
+                    && last_p == province
+                {
+                    ((!in_held).then_some(Ok(last_ctx)), last_ctx)
+                } else if let Some(&ctx) = held.provinces.get(&province) {
+                    self.last_province = Some((province, true, ctx));
+                    (None, ctx)
+                } else if !self.provinces.is_empty()
+                    && let Some(&ctx) = self.provinces.get(&province)
+                {
+                    self.last_province = Some((province, false, ctx));
+                    (Some(Ok(ctx)), ctx)
+                } else {
+                    let result = engine_native::division_panel_operands::province_state(
+                        memory, base, province,
+                    );
+                    if let Ok(ctx) = result {
+                        if engine_allocation::advisory(|| {
+                            engine_allocation::reserve_map(&mut self.provinces, 1)
+                        })
+                        .is_ok()
+                        {
+                            self.provinces.insert(province, ctx);
+                        }
+                        self.last_province = Some((province, false, ctx));
+                    }
+                    (Some(result), result.ok().flatten())
                 }
-                let context =
-                    engine_native::division_panel_operands::province_state(memory, base, province);
-                if let Ok(context) = context {
-                    self.provinces.insert(province, context);
-                }
-                context
-            });
+            }
+            Err(_) => (None, None),
+        };
         let mut selection = Selection {
             country,
             movement,
@@ -358,8 +425,16 @@ impl Preparation {
         {
             self.reads.incomplete();
         }
-        self.reads
-            .capture(memory, base, state, store, seed, selection, block);
+        self.reads.capture(
+            memory,
+            base,
+            state,
+            store,
+            seed,
+            selection,
+            block,
+            resolved_context,
+        );
         selection.membership = self.reads.membership_observation;
         selection
     }

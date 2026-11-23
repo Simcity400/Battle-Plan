@@ -29,22 +29,27 @@ impl Taken {
         self.touched.clear();
     }
 
+    #[inline]
     pub fn epoch(&self) -> Option<u64> {
         self.epoch
     }
 
+    #[inline]
     pub fn touched_receivers(&self) -> &[usize] {
         &self.touched
     }
 
+    #[inline]
     pub fn touched_len(&self) -> usize {
         self.touched.len()
     }
 
+    #[inline]
     pub fn touched(&self, receiver: usize) -> bool {
-        self.touched.binary_search(&receiver).is_ok()
+        !self.touched.is_empty() && self.touched.binary_search(&receiver).is_ok()
     }
 
+    #[inline]
     pub fn quiet(&self, receiver: usize, epoch: u64) -> bool {
         self.epoch == Some(epoch) && !self.touched(receiver)
     }

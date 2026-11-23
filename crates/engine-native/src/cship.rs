@@ -792,6 +792,26 @@ pub struct OrganisationMemo {
 const RECENT: usize = 8;
 
 impl OrganisationMemo {
+    pub fn reset_hour(&mut self) {
+        self.last = None;
+        self.owner = None;
+        self.country = None;
+        self.pride = Recent::default();
+        self.support = None;
+        self.influences = Recent::default();
+        self.terrain = Recent::default();
+        self.location = None;
+        self.ocean = None;
+        self.terrain_class = Recent::default();
+        self.fleet = None;
+        self.leader_class = Recent::default();
+        self.doctrine_keys = crate::naval_ship_modifier_inputs::DoctrineKeys::default();
+        self.weather = None;
+        self.definitions.clear();
+        self.own = None;
+        self.modifier_guards = [None; 1 << ORGANISATION_KEYS.len()];
+    }
+
     pub fn organisation_operands(&self, ship: usize) -> Option<OrganisationOperands> {
         self.own
             .filter(|&(pointer, _)| pointer == ship)

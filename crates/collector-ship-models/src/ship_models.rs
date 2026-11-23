@@ -228,6 +228,7 @@ struct Variant {
     certificate: Option<(u64, u64)>,
     unchanged: Option<bool>,
     next: Option<usize>,
+    next_same_ptr: usize,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -271,8 +272,9 @@ struct ShipStore {
     next_hot: Vec<Hot>,
     next_tasks: Vec<HeldTask>,
     next_variants: Vec<Variant>,
-    next_variant_index: Vec<(usize, usize)>,
+    next_variant_head: std::collections::HashMap<usize, usize>,
     quiet: Option<(u64, u64)>,
+    variant_quiet: Option<(u64, u64)>,
     naval_power: Option<(u64, u64, u64)>,
     generation: u64,
     rows: Option<u64>,
@@ -300,45 +302,71 @@ impl ShipStore {
     }
 
     fn remember_variant(&mut self, fields: cship::HeldVariant) -> Option<usize> {
+        self.remember_variant_with_cert(fields, None)
+    }
+
+    fn remember_variant_with_cert(
+        &mut self,
+        fields: cship::HeldVariant,
+        certificate: Option<(u64, u64)>,
+    ) -> Option<usize> {
         let pointer = fields.pointer();
         if pointer == 0 {
             return Some(usize::MAX);
         }
-        let at = self
-            .next_variant_index
-            .partition_point(|&(held, _)| held < pointer);
-        for &(held, index) in &self.next_variant_index[at..] {
-            if held != pointer {
-                break;
+        let prev_head = self
+            .next_variant_head
+            .get(&pointer)
+            .copied()
+            .unwrap_or(usize::MAX);
+        let mut cursor = prev_head;
+        while cursor != usize::MAX {
+            if fields.same(&self.next_variants[cursor].fields) {
+                if self.next_variants[cursor].certificate.is_none() {
+                    self.next_variants[cursor].certificate = certificate;
+                }
+                return Some(cursor);
             }
-            if fields.same(&self.next_variants[index].fields) {
-                return Some(index);
-            }
+            cursor = self.next_variants[cursor].next_same_ptr;
         }
         if reserve(&mut self.next_variants, 1).is_err()
-            || reserve(&mut self.next_variant_index, 1).is_err()
+            || engine_allocation::reserve_map(&mut self.next_variant_head, 1).is_err()
         {
             return None;
         }
         let index = self.next_variants.len();
         self.next_variants.push(Variant {
             fields,
-            certificate: None,
+            certificate,
             unchanged: None,
             next: None,
+            next_same_ptr: prev_head,
         });
-        self.next_variant_index.insert(at, (pointer, index));
+        self.next_variant_head.insert(pointer, index);
         Some(index)
     }
 
-    fn certified(&mut self, changes: &dyn Changes, old: usize, counts: &mut Counts) -> bool {
+    fn certified(
+        &mut self,
+        changes: &dyn Changes,
+        variant_quiet: &mut Option<(u64, u64)>,
+        old: usize,
+        counts: &mut Counts,
+    ) -> bool {
         let variant = &self.variants[old];
         if variant.unchanged == Some(true) {
             return true;
         }
-        let certified = variant.unchanged.is_none()
-            && variant.certificate.is_some()
-            && changes.variant_sequence(variant.fields.pointer()) == variant.certificate;
+        let certified = if variant.unchanged.is_none() && variant.certificate.is_some() {
+            if variant_quiet.is_some_and(|quiet| changes.variant_quiet() == Some(quiet)) {
+                true
+            } else {
+                *variant_quiet = None;
+                changes.variant_sequence(variant.fields.pointer()) == variant.certificate
+            }
+        } else {
+            false
+        };
         if certified {
             self.variants[old].unchanged = Some(true);
             counts.variants_carried += 1;
@@ -349,16 +377,26 @@ impl ShipStore {
     fn variants_certified(
         &mut self,
         changes: &dyn Changes,
+        variant_quiet: &mut Option<(u64, u64)>,
         hot: &Hot,
         counts: &mut Counts,
     ) -> bool {
         hot.variants
             .iter()
-            .all(|&old| old == usize::MAX || self.certified(changes, old, counts))
+            .all(|&old| old == usize::MAX || self.certified(changes, variant_quiet, old, counts))
     }
 
-    fn certify_variants(&mut self, changes: &dyn Changes, quiet: Option<(u64, u64)>) {
+    fn certify_variants(
+        &mut self,
+        changes: &dyn Changes,
+        quiet: Option<(u64, u64)>,
+        quiet_held: bool,
+    ) {
+        let reuse = quiet_held && quiet.is_some() && changes.variant_quiet() == quiet;
         for variant in &mut self.next_variants {
+            if reuse && variant.certificate.is_some() {
+                continue;
+            }
             variant.certificate = variant
                 .fields
                 .complete()
@@ -369,6 +407,9 @@ impl ShipStore {
             for variant in &mut self.next_variants {
                 variant.certificate = None;
             }
+            self.variant_quiet = None;
+        } else {
+            self.variant_quiet = quiet;
         }
     }
 
@@ -378,6 +419,7 @@ impl ShipStore {
         fields: &mut cship::ShipFields,
         hot: &mut Hot,
         changes: &dyn Changes,
+        variant_quiet: &mut Option<(u64, u64)>,
         counts: &mut Counts,
     ) -> bool {
         for index in &mut hot.variants {
@@ -388,7 +430,7 @@ impl ShipStore {
             let known = self.variants[old].unchanged;
             let unchanged = match known {
                 Some(unchanged) => unchanged,
-                None if self.certified(changes, old, counts) => true,
+                None if self.certified(changes, variant_quiet, old, counts) => true,
                 None => {
                     #[cfg(any(test, feature = "test-support"))]
                     carry_cost(|cost| cost.variant_compares += 1);
@@ -405,7 +447,11 @@ impl ShipStore {
             let next = match self.variants[old].next {
                 Some(next) => next,
                 None => {
-                    let Some(next) = self.remember_variant(self.variants[old].fields) else {
+                    let carried_cert = variant_quiet.and(self.variants[old].certificate);
+                    let Some(next) = self.remember_variant_with_cert(
+                        self.variants[old].fields,
+                        carried_cert,
+                    ) else {
                         return false;
                     };
                     self.variants[old].next = Some(next);
@@ -466,11 +512,22 @@ impl ShipStore {
         generation
     }
 
-    fn task(&self, pointer: usize) -> Option<&HeldTask> {
+    fn task_index(&self, pointer: usize) -> Option<usize> {
         self.tasks
             .binary_search_by_key(&pointer, |held| held.pointer)
             .ok()
-            .map(|at| &self.tasks[at])
+    }
+
+    fn task(&self, pointer: usize) -> Option<&HeldTask> {
+        self.task_index(pointer).map(|at| &self.tasks[at])
+    }
+
+    fn keep_task_direct(&mut self, held: HeldTask) -> bool {
+        if reserve(&mut self.next_tasks, 1).is_err() {
+            return false;
+        }
+        self.next_tasks.push(held);
+        true
     }
 
     fn keep_task(&mut self, mut held: HeldTask, modifiers: Option<&[[u8; 16]]>) -> bool {
@@ -537,7 +594,7 @@ impl ShipStore {
         self.next_hot.clear();
         self.next_tasks.clear();
         self.next_variants.clear();
-        self.next_variant_index.clear();
+        self.next_variant_head.clear();
         if same_order {
             return true;
         }
@@ -566,8 +623,9 @@ impl ShipStore {
         self.next_hot.clear();
         self.next_tasks.clear();
         self.next_variants.clear();
-        self.next_variant_index.clear();
+        self.next_variant_head.clear();
         self.quiet = None;
+        self.variant_quiet = None;
         self.naval_power = None;
         self.generation = 0;
         self.rows = None;
@@ -590,7 +648,7 @@ impl ShipStore {
                 })
                 .sum::<usize>()
             + (self.hot.capacity() + self.next_hot.capacity()) * std::mem::size_of::<Hot>()
-            + (self.index.capacity() + self.next_variant_index.capacity())
+            + (self.index.capacity() + self.next_variant_head.capacity())
                 * std::mem::size_of::<(usize, usize)>()
             + (self.variants.capacity() + self.next_variants.capacity())
                 * std::mem::size_of::<Variant>()
@@ -650,7 +708,7 @@ struct TaskState {
     fields: cship::TaskForceFields,
     sequence: Option<(u64, u64)>,
     fleet_sequence: Option<(u64, u64)>,
-    held: Option<HeldTask>,
+    held: Option<usize>,
     night_factor: Option<u64>,
     all_carried: bool,
 }
@@ -1057,7 +1115,7 @@ impl Captured {
         self.failure = None;
         self.modifiers.get_mut().clear();
         self.optional_refusals = [0; OPTIONAL_REFUSAL_REASONS.len()];
-        self.doctrine = cship::OrganisationMemo::default();
+        self.doctrine.reset_hour();
         self.model.reset();
     }
     fn begin_task(
@@ -1067,16 +1125,16 @@ impl Captured {
         carrying: &mut Carrying<'_>,
     ) {
         self.finish_task(memory, carrying);
-        let held =
-            self.store.task(task.pointer).cloned().filter(|held| {
-                held.handle == task.handle && held.roster_owner == task.roster_owner
-            });
+        let held_index = self.store.task_index(task.pointer).filter(|&at| {
+            let held = &self.store.tasks[at];
+            held.handle == task.handle && held.roster_owner == task.roster_owner
+        });
+        let held = held_index.map(|at| &self.store.tasks[at]);
         let sequence = carrying.changes.sequence(task.pointer);
         let fleet_sequence = (task.fleet != 0)
             .then(|| carrying.changes.sequence(task.fleet))
             .flatten();
         let night_factor = held
-            .as_ref()
             .and_then(|held| held.weather)
             .and_then(|(weather, _, _)| engine_native::read::<u64>(memory, weather.night_factor()));
         carrying.task_modifiers = None;
@@ -1086,7 +1144,7 @@ impl Captured {
         let mut weather_ok = task.location == 0;
         let mut location_ok = task.location == 0;
         let mut fleet_ok = false;
-        if let Some(held) = held.as_ref() {
+        if let Some(held) = held {
             if let Some(entries) = held.modifiers.as_ref()
                 && held.mine_exposure == task.mine_exposure
             {
@@ -1145,14 +1203,12 @@ impl Captured {
             && location_ok
             && fleet_ok
             && (task.location != 0
-                || held
-                    .as_ref()
-                    .is_some_and(|held| held.weather.is_none() && held.location.is_none()));
+                || held.is_some_and(|held| held.weather.is_none() && held.location.is_none()));
         carrying.task = Some(TaskState {
             fields: task,
             sequence,
             fleet_sequence,
-            held,
+            held: held_index,
             night_factor,
             all_carried,
         });
@@ -1166,6 +1222,27 @@ impl Captured {
         let Some(country) = self.doctrine.country() else {
             return;
         };
+        if state.all_carried
+            && let Some(held_index) = state.held
+        {
+            let modifiers = self.modifiers.borrow();
+            if modifiers.observed(task.modifiers).is_none()
+                && modifiers.existing_at(task.modifiers, 1).is_none()
+                && self.store.tasks[held_index].country == country
+            {
+                drop(modifiers);
+                let mut held = self.store.tasks[held_index].clone();
+                held.terms = carrying
+                    .terms
+                    .filter(|(pointer, _)| *pointer == task.pointer)
+                    .map(|(_, terms)| (terms, carrying.terms_identity));
+                if !self.store.keep_task_direct(held) {
+                    carrying.counts.uncertified += 1;
+                }
+                carrying.task_modifiers = None;
+                return;
+            }
+        }
         let doctrine = self.doctrine.doctrine(task.pointer);
         let modifiers = self.modifiers.borrow();
         let observed = modifiers.observed(task.modifiers).or_else(|| {
@@ -1178,6 +1255,7 @@ impl Captured {
                 .filter(|(address, _)| *address == task.modifiers)
                 .map(|(_, entries)| entries.as_slice())
         });
+        let held_prev = state.held.map(|at| &self.store.tasks[at]);
         let certificate = doctrine_certificate(carrying.changes, state.sequence, country);
         let country_terms = self
             .doctrine
@@ -1192,9 +1270,7 @@ impl Captured {
                 let factor = state
                     .night_factor
                     .filter(|_| {
-                        state
-                            .held
-                            .as_ref()
+                        held_prev
                             .and_then(|held| held.weather)
                             .is_some_and(|(held, _, _)| {
                                 held.night_factor() == weather.night_factor()
@@ -1227,7 +1303,7 @@ impl Captured {
             country_terms,
             doctrine: certificate.zip(doctrine),
             mine_exposure: task.mine_exposure,
-            modifiers: state.held.as_ref().and_then(|held| held.modifiers.clone()),
+            modifiers: held_prev.and_then(|held| held.modifiers.clone()),
             weather,
             location,
             fleet,
@@ -1271,7 +1347,7 @@ impl Captured {
             && task.influences_count == Some(0)
             && engine_sites::at(base, engine_native::ctask_force::VTABLE_RVA)
                 .is_some_and(|vtable| task.vtable == vtable as u64)
-            && let Some(held) = state.held.as_ref()
+            && let Some(held) = state.held.map(|at| &self.store.tasks[at])
             && let Some((terms, identity)) = held.terms
             && fields.game_state() == Some(terms.0.owner().0)
             && terms.0.owner().1 == task.roster_owner
@@ -1342,6 +1418,7 @@ impl Captured {
             fields,
             hot,
             carrying.changes,
+            &mut carrying.variant_quiet,
             &mut carrying.counts,
         ) {
             return false;
@@ -1625,8 +1702,12 @@ impl Captured {
             .as_ref()
             .is_some_and(|held| held.fields.variants_complete())
             && original_hot.is_some_and(|hot| {
-                self.store
-                    .variants_certified(carrying.changes, &hot, &mut carrying.counts)
+                self.store.variants_certified(
+                    carrying.changes,
+                    &mut carrying.variant_quiet,
+                    &hot,
+                    &mut carrying.counts,
+                )
             });
         let variants_and_terms = !carrying.guard_fallback
             && carry.as_ref().is_some_and(|held| {
@@ -2169,7 +2250,7 @@ impl Captured {
     pub fn settle_owned(&mut self) {
         if self.pending_owned {
             self.release_sources();
-            self.doctrine = cship::OrganisationMemo::default();
+            self.doctrine.reset_hour();
             if crate::allocation::failed() {
                 self.forget_stores();
             }
@@ -2221,6 +2302,7 @@ impl Captured {
             terms: None,
             terms_identity: 0,
             quiet: quiet.filter(|quiet| Some(*quiet) == self.store.quiet),
+            variant_quiet: variant_quiet.filter(|quiet| Some(*quiet) == self.store.variant_quiet),
             guard_fallback: false,
             revalidated: false,
         });
@@ -2228,7 +2310,7 @@ impl Captured {
         self.store.next_hot.clear();
         self.store.next_tasks.clear();
         self.store.next_variants.clear();
-        self.store.next_variant_index.clear();
+        self.store.next_variant_head.clear();
         for variant in &mut self.store.variants {
             variant.unchanged = None;
             variant.next = None;
@@ -2295,7 +2377,8 @@ impl Captured {
         if complete {
             self.air_capacity.finish();
             carriers = self.air_capacity.len();
-            self.store.certify_variants(changes, variant_quiet);
+            self.store
+                .certify_variants(changes, variant_quiet, carrying.variant_quiet.is_some());
             if self.store.hold() {
                 self.store.quiet = quiet;
             }
@@ -2415,28 +2498,34 @@ impl Captured {
     }
 
     fn project(&self, projection: Option<&mut Projection<'_>>) -> TableInput {
-        let joined;
-        let rows = if self.split > 1 && self.terminal_failure.is_none() {
+        if self.split > 1 && self.terminal_failure.is_none() {
             let parts = &self.extra[..self.split - 1];
-            let mut rows = Vec::new();
-            if reserve(&mut rows, self.len).is_err() {
+            let mut refs: Vec<&cship::ModelRow> = Vec::new();
+            if reserve(&mut refs, self.len).is_err() {
                 return crate::table_conversion::unavailable("collector allocation failed").into();
             }
-            rows.extend_from_slice(&self.rows.rows[..self.part_len.min(self.rows.rows.len())]);
+            refs.extend(self.rows.rows[..self.part_len.min(self.rows.rows.len())].iter());
             for part in parts {
-                rows.extend_from_slice(&part.rows.rows[..part.part_len.min(part.rows.rows.len())]);
+                refs.extend(part.rows.rows[..part.part_len.min(part.rows.rows.len())].iter());
             }
-            joined = rows;
-            &joined[..]
+            Self::project_slice(projection, self.outcomes()[0], &refs)
         } else {
-            &self.rows.rows[..]
-        };
+            Self::project_slice(projection, self.outcomes()[0], &self.rows.rows[..])
+        }
+    }
+
+    fn project_slice<R: std::borrow::Borrow<cship::ModelRow>>(
+        projection: Option<&mut Projection<'_>>,
+        outcome: Outcome,
+        rows: &[R],
+    ) -> TableInput {
         project_table::<tables::ShipModels, _>(
             projection,
-            self.outcomes()[0],
+            outcome,
             rows,
-            |row| u128::from(row.ship),
+            |row| u128::from(row.borrow().ship),
             |row, previous| {
+                let row = row.borrow();
                 row.ship == previous.ship
                     && row.variant == previous.variant
                     && row.hull_sprite.as_bytes() == previous.hull_sprite
@@ -2464,30 +2553,33 @@ impl Captured {
                             && row.positive_equipment_flags == counter.positive_equipment_flags
                     })
             },
-            |r| ShipModelRow {
-                ship: r.ship,
-                variant: r.variant,
-                hull_sprite: owned_vec(copy_vec(r.hull_sprite.as_bytes())),
-                fallback_sprite: owned_vec(copy_vec(r.fallback_sprite.as_bytes())),
-                model_number: r.model_number,
-                formation_flags: r.formation_flags,
-                has_criticals: r.has_criticals.into(),
-                air_capacity_kind: r.air_capacity_kind.into(),
-                subunit_index: replay_data::rows::Recorded::Value(r.subunit_index),
-                strike: replay_data::rows::Recorded::Value(replay_data::rows::Retired),
-                naval_power: replay_data::rows::Recorded::Value(r.naval_power),
-                hull_variant: replay_data::rows::Recorded::Value(
-                    r.hull_variant.map(hull_variant_inputs),
-                ),
-                counter: Some(replay_data::rows::ShipCounterInputs {
-                    roster_ordinal: r.roster_ordinal,
-                    definition_valid: r.definition_valid,
-                    carrier_air_base: r.carrier_air_base,
-                    maximum_strength: r.maximum_strength,
-                    anti_air_base: r.anti_air_base,
-                    maximum_organisation: r.maximum_organisation,
-                    positive_equipment_flags: r.positive_equipment_flags,
-                }),
+            |r| {
+                let r = r.borrow();
+                ShipModelRow {
+                    ship: r.ship,
+                    variant: r.variant,
+                    hull_sprite: owned_vec(copy_vec(r.hull_sprite.as_bytes())),
+                    fallback_sprite: owned_vec(copy_vec(r.fallback_sprite.as_bytes())),
+                    model_number: r.model_number,
+                    formation_flags: r.formation_flags,
+                    has_criticals: r.has_criticals.into(),
+                    air_capacity_kind: r.air_capacity_kind.into(),
+                    subunit_index: replay_data::rows::Recorded::Value(r.subunit_index),
+                    strike: replay_data::rows::Recorded::Value(replay_data::rows::Retired),
+                    naval_power: replay_data::rows::Recorded::Value(r.naval_power),
+                    hull_variant: replay_data::rows::Recorded::Value(
+                        r.hull_variant.map(hull_variant_inputs),
+                    ),
+                    counter: Some(replay_data::rows::ShipCounterInputs {
+                        roster_ordinal: r.roster_ordinal,
+                        definition_valid: r.definition_valid,
+                        carrier_air_base: r.carrier_air_base,
+                        maximum_strength: r.maximum_strength,
+                        anti_air_base: r.anti_air_base,
+                        maximum_organisation: r.maximum_organisation,
+                        positive_equipment_flags: r.positive_equipment_flags,
+                    }),
+                }
             },
         )
     }
@@ -2526,6 +2618,7 @@ struct Carrying<'a> {
     terms: Option<(usize, Terms)>,
     terms_identity: u64,
     quiet: Option<(u64, u64)>,
+    variant_quiet: Option<(u64, u64)>,
     guard_fallback: bool,
     revalidated: bool,
 }

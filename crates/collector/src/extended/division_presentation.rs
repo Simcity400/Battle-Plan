@@ -159,20 +159,66 @@ macro_rules! project_status_fields {
     }};
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct StatusInputs {
-    row: carmy::StatusRow,
-    exact_supply: Option<[i64; 2]>,
-    supply_grace: Option<i32>,
-    supply: Option<super::supply_inputs::DisplayedInputs>,
-    dig_in: Option<i64>,
-    commander: Option<[Option<i64>; 6]>,
-    experience: Option<i64>,
-    pending_template: Option<u64>,
-    officer: Option<i64>,
-    career: Option<i32>,
-    panel_source: Option<[u64; 3]>,
-    combat_movement: Option<Option<i64>>,
+    entrenchment: i64,
+    supply_ratio: i64,
+    strength_factor: i64,
+    supply_grace_remaining: i64,
+    experience: i64,
+    dig_in: i64,
+    flags: u32,
+    division: u64,
+    supply_sample_id: u64,
+    naming_held_stamp: u64,
+    movement_organisation: [i64; 2],
+    entrenchment_cap: i64,
+    supply_grace_maximum: i64,
+    attrition_value: i64,
+    attrition_threshold: i64,
+    weather_factor: i64,
+    border_combat_stats: [i64; 3],
+    exact_supply: [i64; 2],
+    commander: [i64; 6],
+    naming_template: u64,
+    pending_template: u64,
+    officer: i64,
+    panel_source: [u64; 3],
+    combat_movement: i64,
+    model_number: i32,
+    invalid_orders_reason: i32,
+    camouflage_category: u32,
+    out_of_supply_days: i32,
+    country_ordinal: u32,
+    naming_order: i32,
+    naming_kind: i32,
+    career: i32,
+    exercising: u8,
+    has_order: u8,
+    invalid_orders: u8,
+    move_flags: u8,
+    movement_organisation_state: u8,
+    camouflage_state: u8,
+    combat_movement_state: u8,
+    commander_mask: u8,
+    naming_ordered: u8,
+    naming_programmatic: u8,
+}
+
+impl StatusInputs {
+    const F_INVALID_ORDERS_REASON: u32 = 1 << 0;
+    const F_WEATHER_FACTOR: u32 = 1 << 1;
+    const F_OUT_OF_SUPPLY_DAYS: u32 = 1 << 2;
+    const F_BORDER_COMBAT_STATS: u32 = 1 << 3;
+    const F_NAMING: u32 = 1 << 4;
+    const F_COUNTRY_ORDINAL: u32 = 1 << 5;
+    const F_EXACT_SUPPLY: u32 = 1 << 6;
+    const F_DIG_IN: u32 = 1 << 7;
+    const F_EXPERIENCE: u32 = 1 << 8;
+    const F_PENDING_TEMPLATE: u32 = 1 << 9;
+    const F_OFFICER: u32 = 1 << 10;
+    const F_CAREER: u32 = 1 << 11;
+    const F_PANEL_SOURCE: u32 = 1 << 12;
 }
 
 fn unique(keys: &mut Vec<u64>, divisions: impl ExactSizeIterator<Item = u64>) -> bool {
@@ -208,6 +254,7 @@ struct NamingRead {
     cached_name: Option<cname_group_member::Span>,
     cached_failure: Option<&'static str>,
     held: bool,
+    held_stamp: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2336,59 +2383,226 @@ impl Captured {
             |at, r, record| {
                 let attack = self.attack.view_at(at, r.division);
                 let index = self.status_index_at(at, r.division);
-                let supply = self.supply_sample_at(r, index);
-                record.bytes(r.naming.and_then(|n| name_span(n.custom)));
-                record.bytes(r.naming.and_then(|n| name_span(n.group)));
-                record.bytes(cached_name(r, index));
-                match supply.2 {
-                    Some(origins) => {
-                        record.word(origins.len() as i64);
-                        for origin in origins {
-                            record.word(i64::from(origin.province));
-                            record.word(super::supply_inputs::displayed(origin.requested));
-                            record.word(super::supply_inputs::displayed(origin.received));
-                        }
-                    }
-                    None => record.word(-1),
+                let naming_held_stamp = self
+                    .naming
+                    .first
+                    .get(..self.naming.len)
+                    .and_then(|rows| rows.get(index))
+                    .filter(|row| row.division == r.division)
+                    .map_or(0, |row| row.held_stamp);
+                if naming_held_stamp == 0 {
+                    record.bytes(r.naming.and_then(|n| name_span(n.custom)));
+                    record.bytes(cached_name(r, index));
                 }
+                record.bytes(r.naming.and_then(|n| name_span(n.group)));
+                let supply_sample = self.daily_status.sample(index).filter(|s| s.id() != 0);
+                let supply_sample_id = match supply_sample {
+                    Some(sample) => sample.id(),
+                    None => {
+                        let supply = self.supply_sample_at(r, index);
+                        super::supply_inputs::record_displayed(supply.0, record);
+                        match supply.2 {
+                            Some(origins) => {
+                                record.word(origins.len() as i64);
+                                for origin in origins {
+                                    record.word(i64::from(origin.province));
+                                    record.word(super::supply_inputs::displayed(origin.requested));
+                                    record.word(super::supply_inputs::displayed(origin.received));
+                                }
+                            }
+                            None => record.word(-1),
+                        }
+                        0
+                    }
+                };
                 attack.record(record);
                 if self.attack.has_witness(r.division) {
                     return None;
                 }
-                let mut row = *r;
-                row.naming = r.naming.map(|naming| cname_group_member::Inputs {
-                    custom: (0, naming.custom.1),
-                    group: (0, naming.group.1),
-                    ..naming
-                });
-                row.supply_origins_start = 0;
-                row.maximum_hit_points = 0;
-                row.maximum_organisation = 0;
-                row.supply_ratio = DivisionStatusRow::SUPPLY_RATIO_STEP.round(r.supply_ratio);
-                row.supply_grace_remaining = DivisionStatusRow::displayed_grace(
+                let exact_supply = DivisionStatusRow::exact_supply(
+                    r.out_of_supply_days,
+                    r.supply_ratio,
                     r.supply_grace_remaining,
-                    self.supply_grace,
                 );
-                row.attrition = 0;
-                row.supply = None;
-                row.supply_failure = None;
+                let dig_in = self.dig_in.factor(r.division, index);
+                let experience = attack.experience();
+                let pending_template = attack.pending_template();
+                let officer = attack.officer();
+                let career = attack.career();
+                let panel_source = attack.panel_source();
+                let mut flags = 0_u32;
+                let invalid_orders_reason = match r.invalid_orders_reason {
+                    Some(v) => {
+                        flags |= StatusInputs::F_INVALID_ORDERS_REASON;
+                        v
+                    }
+                    None => 0,
+                };
+                let weather_factor = match r.weather_factor {
+                    Some(v) => {
+                        flags |= StatusInputs::F_WEATHER_FACTOR;
+                        v
+                    }
+                    None => 0,
+                };
+                let out_of_supply_days = match r.out_of_supply_days {
+                    Some(v) => {
+                        flags |= StatusInputs::F_OUT_OF_SUPPLY_DAYS;
+                        v
+                    }
+                    None => 0,
+                };
+                let border_combat_stats = match r.border_combat_stats {
+                    Some(v) => {
+                        flags |= StatusInputs::F_BORDER_COMBAT_STATS;
+                        v
+                    }
+                    None => [0; 3],
+                };
+                let (naming_template, naming_order, naming_kind, naming_ordered, naming_programmatic) =
+                    match r.naming {
+                        Some(n) => {
+                            flags |= StatusInputs::F_NAMING;
+                            (n.template, n.order, n.kind, n.ordered, n.programmatic)
+                        }
+                        None => (0, 0, 0, 0, 0),
+                    };
+                let country_ordinal = match r.country_ordinal {
+                    Some(v) => {
+                        flags |= StatusInputs::F_COUNTRY_ORDINAL;
+                        v
+                    }
+                    None => 0,
+                };
+                let exact_supply_val = match exact_supply {
+                    Some(v) => {
+                        flags |= StatusInputs::F_EXACT_SUPPLY;
+                        v
+                    }
+                    None => [0; 2],
+                };
+                let dig_in_val = match dig_in {
+                    Some(v) => {
+                        flags |= StatusInputs::F_DIG_IN;
+                        v
+                    }
+                    None => 0,
+                };
+                let experience_val = match experience {
+                    Some(v) => {
+                        flags |= StatusInputs::F_EXPERIENCE;
+                        v
+                    }
+                    None => 0,
+                };
+                let pending_template_val = match pending_template {
+                    Some(v) => {
+                        flags |= StatusInputs::F_PENDING_TEMPLATE;
+                        v
+                    }
+                    None => 0,
+                };
+                let officer_val = match officer {
+                    Some(v) => {
+                        flags |= StatusInputs::F_OFFICER;
+                        v
+                    }
+                    None => 0,
+                };
+                let career_val = match career {
+                    Some(v) => {
+                        flags |= StatusInputs::F_CAREER;
+                        v
+                    }
+                    None => 0,
+                };
+                let panel_source_val = match panel_source {
+                    Some(v) => {
+                        flags |= StatusInputs::F_PANEL_SOURCE;
+                        v
+                    }
+                    None => [0; 3],
+                };
+                let (movement_organisation_state, movement_organisation) =
+                    match r.movement_organisation {
+                        None => (0, [0; 2]),
+                        Some(None) => (1, [0; 2]),
+                        Some(Some(pair)) => (2, pair),
+                    };
+                let (camouflage_state, camouflage_category) = match r.camouflage {
+                    None => (0, 0),
+                    Some(c) => match c.category {
+                        None => (1, 0),
+                        Some(v) => (2, v),
+                    },
+                };
+                let (combat_movement_state, combat_movement) =
+                    match self.speed_terms.combat_movement_at(at, r.division) {
+                        None => (0, 0),
+                        Some(None) => (1, 0),
+                        Some(Some(v)) => (2, v),
+                    };
+                let (commander_mask, commander) = match self.commander_modifiers(r.division, index)
+                {
+                    None => (0, [0; 6]),
+                    Some(entries) => {
+                        let mut mask = 1_u8 << 7;
+                        let mut vals = [0_i64; 6];
+                        for (i, entry) in entries.into_iter().enumerate() {
+                            if let Some(v) = entry {
+                                mask |= 1_u8 << i;
+                                vals[i] = v;
+                            }
+                        }
+                        (mask, vals)
+                    }
+                };
                 Some(StatusInputs {
-                    row,
-                    exact_supply: DivisionStatusRow::exact_supply(
-                        r.out_of_supply_days,
-                        r.supply_ratio,
+                    entrenchment: r.entrenchment,
+                    supply_ratio: DivisionStatusRow::SUPPLY_RATIO_STEP.round(r.supply_ratio),
+                    strength_factor: r.strength_factor,
+                    supply_grace_remaining: DivisionStatusRow::displayed_grace(
                         r.supply_grace_remaining,
+                        self.supply_grace,
                     ),
-                    supply_grace: self.supply_grace,
-                    supply: super::supply_inputs::displayed_inputs(supply.0),
-                    dig_in: self.dig_in.factor(r.division, index),
-                    commander: self.commander_modifiers(r.division, index),
-                    experience: attack.experience(),
-                    pending_template: attack.pending_template(),
-                    officer: attack.officer(),
-                    career: attack.career(),
-                    panel_source: attack.panel_source(),
-                    combat_movement: self.speed_terms.combat_movement_at(at, r.division),
+                    experience: experience_val,
+                    dig_in: dig_in_val,
+                    flags,
+                    division: r.division,
+                    supply_sample_id,
+                    naming_held_stamp,
+                    movement_organisation,
+                    entrenchment_cap: r.entrenchment_cap,
+                    supply_grace_maximum: r.supply_grace_maximum,
+                    attrition_value: r.attrition_value,
+                    attrition_threshold: r.attrition_threshold,
+                    weather_factor,
+                    border_combat_stats,
+                    exact_supply: exact_supply_val,
+                    commander,
+                    naming_template,
+                    pending_template: pending_template_val,
+                    officer: officer_val,
+                    panel_source: panel_source_val,
+                    combat_movement,
+                    model_number: r.model_number,
+                    invalid_orders_reason,
+                    camouflage_category,
+                    out_of_supply_days,
+                    country_ordinal,
+                    naming_order,
+                    career: career_val,
+                    exercising: r.exercising,
+                    has_order: r.has_order,
+                    invalid_orders: r.invalid_orders,
+                    move_flags: r.move_flags,
+                    movement_organisation_state,
+                    camouflage_state,
+                    combat_movement_state,
+                    commander_mask,
+                    naming_kind,
+                    naming_ordered,
+                    naming_programmatic,
                 })
             },
             |r| {
@@ -2470,6 +2684,7 @@ impl Captured {
             && self.status.rows.get(..status_outcome.len()).is_some_and(|rows| {
                 rows.windows(2)
                     .all(|pair| pair[0].division < pair[1].division)
+                    || self.attack.has_unique_divisions(rows)
                     || {
                         let mut keys = Vec::new();
                         unique(&mut keys, rows.iter().map(|row| row.division))

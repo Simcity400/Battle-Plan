@@ -135,16 +135,18 @@ impl PreparationPart {
             self.maxima
                 .push(pointer.map(|_| Err("division maxima unstaged")));
         }
-        self.maxima_reads
-            .resize(self.maxima_pointers.len(), Err("division maxima unstaged"));
-        engine_native::csub_unit_definition::stage_division_maxima(
-            memory,
-            base,
-            &self.maxima_pointers,
-            &mut self.maxima_reads,
-        );
-        for (slot, read) in self.maxima.iter_mut().flatten().zip(&self.maxima_reads) {
-            *slot = *read;
+        if !self.maxima_pointers.is_empty() {
+            self.maxima_reads
+                .resize(self.maxima_pointers.len(), Err("division maxima unstaged"));
+            engine_native::csub_unit_definition::stage_division_maxima(
+                memory,
+                base,
+                &self.maxima_pointers,
+                &mut self.maxima_reads,
+            );
+            for (slot, read) in self.maxima.iter_mut().flatten().zip(&self.maxima_reads) {
+                *slot = *read;
+            }
         }
     }
     pub fn capture(
