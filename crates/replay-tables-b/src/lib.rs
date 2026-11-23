@@ -1,4 +1,7 @@
-use replay_rows::rows::*;
+use replay_rows_air::*;
+use replay_rows_land::*;
+use replay_rows_presentation::*;
+use replay_rows_weather::*;
 
 replay_rows::row_ops! {
     NavalResults => NavalResultRow,

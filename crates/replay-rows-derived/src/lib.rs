@@ -887,7 +887,7 @@ pub struct FeedEventRow {
     pub numeric_target: Option<i32>,
     pub lifecycle: Option<i32>,
     pub days: Option<i32>,
-    pub scopes: Recorded<Vec<replay_rows::event_feed_rows::EventFeedScope>>,
+    pub scopes: Recorded<Vec<replay_rows_events::event_feed_rows::EventFeedScope>>,
     pub opener: Option<u64>,
     pub opener_hour: Option<i32>,
     pub dated: Option<i32>,

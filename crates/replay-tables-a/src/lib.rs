@@ -1,4 +1,9 @@
-use replay_rows::rows::*;
+use replay_rows_air::*;
+use replay_rows_economy::*;
+use replay_rows_land::*;
+use replay_rows_naval::*;
+use replay_rows_weather::*;
+use replay_rows_world::*;
 
 replay_rows::row_ops! {
     Clock => ClockRow,

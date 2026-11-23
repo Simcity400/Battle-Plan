@@ -2,7 +2,11 @@
 pub mod cadence;
 #[doc(hidden)]
 pub mod checkpoint;
-pub use replay_rows::{codec, day_night, display, event_feed_rows, fixed_point, naval_trees, temperature};
+pub use replay_rows::{codec, display, fixed_point};
+pub use replay_rows_events::event_feed_rows;
+pub use replay_rows_land::naval_trees;
+pub use replay_rows_weather::temperature;
+pub use replay_rows_world::day_night;
 pub mod country_flags;
 pub mod format;
 pub mod identity;

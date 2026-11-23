@@ -128,12 +128,16 @@ dependencies = [
  "base64 0.22.1",
  "bitflags 1.3.2",
  "hashbrown 0.17.1",
+ "lock_api",
  "log",
  "minisign-verify",
+ "parking_lot",
  "reqwest",
+ "rustc-hash 2.1.3",
  "semver",
  "serde",
  "serde_json",
+ "smallvec",
  "tauri",
  "test-unify",
  "uuid",
@@ -2668,6 +2672,7 @@ dependencies = [
  "replay-settings",
  "serde",
  "serde_json",
+ "smallvec",
  "syn 2.0.119",
  "synthetic-game",
  "test-unify",
@@ -2855,6 +2860,7 @@ dependencies = [
  "replay-settings",
  "serde",
  "serde_json",
+ "smallvec",
  "synthetic-game",
  "test-unify",
  "windows-sys 0.52.0",
@@ -3163,6 +3169,7 @@ dependencies = [
  "engine-allocation",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3177,6 +3184,7 @@ dependencies = [
  "content-reader-script",
  "engine-allocation",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3206,6 +3214,7 @@ dependencies = [
  "mlua",
  "replay-identity",
  "sha2",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3220,6 +3229,7 @@ dependencies = [
  "content-reader-script",
  "engine-allocation",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3242,6 +3252,7 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "replay-spool",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3256,6 +3267,7 @@ dependencies = [
  "content-reader-script",
  "engine-allocation",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3272,6 +3284,7 @@ dependencies = [
  "engine-allocation",
  "job-priority",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3285,6 +3298,7 @@ dependencies = [
  "content-reader-script",
  "engine-allocation",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3304,6 +3318,7 @@ dependencies = [
  "replay-identity",
  "serde",
  "sha2",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3333,6 +3348,7 @@ dependencies = [
  "replay-identity",
  "replay-spool",
  "serde",
+ "smallvec",
  "synthetic-game",
  "test-unify",
  "zstd",
@@ -3390,6 +3406,7 @@ dependencies = [
  "engine-executable",
  "engine-heap",
  "replay-identity",
+ "smallvec",
  "synthetic-game",
  "test-unify",
 ]
@@ -3407,6 +3424,7 @@ dependencies = [
  "engine-heap",
  "replay-identity",
  "sha2",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3422,6 +3440,7 @@ dependencies = [
  "engine-allocation",
  "engine-heap",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3435,6 +3454,7 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3448,6 +3468,7 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3476,6 +3497,7 @@ dependencies = [
  "engine-executable",
  "engine-heap",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3491,6 +3513,7 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3511,6 +3534,7 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3543,6 +3567,7 @@ dependencies = [
  "engine-allocation",
  "replay-data",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3571,6 +3596,7 @@ dependencies = [
  "content-reader-scripted-localisation",
  "engine-allocation",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3589,6 +3615,7 @@ dependencies = [
  "replay-identity",
  "serde",
  "serde_json",
+ "smallvec",
  "test-unify",
  "windows-sys 0.61.2",
 ]
@@ -3606,6 +3633,7 @@ dependencies = [
  "engine-allocation",
  "log",
  "replay-identity",
+ "smallvec",
  "symphonia",
  "test-unify",
 ]
@@ -3621,6 +3649,7 @@ dependencies = [
  "content-reader-state-categories",
  "engine-allocation",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3637,6 +3666,7 @@ dependencies = [
  "content-reader-states",
  "engine-allocation",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3651,6 +3681,7 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3665,6 +3696,7 @@ dependencies = [
  "content-reader-wargoals",
  "engine-allocation",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3684,6 +3716,7 @@ dependencies = [
  "engine-allocation",
  "replay-data",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -4123,6 +4156,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4183,6 +4217,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4259,6 +4294,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "syn 2.0.119",
  "test-unify",
  "ts-rs",
@@ -4302,6 +4338,7 @@ dependencies = [
  "replay-spool",
  "serde",
  "serde_json",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4360,6 +4397,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4412,6 +4450,7 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "uuid",
  "wgpu",
@@ -4450,6 +4489,7 @@ dependencies = [
  "replay-tools",
  "rmp-serde",
  "serde_json",
+ "smallvec",
  "test-unify",
  "winapi-util",
 ]
@@ -4499,6 +4539,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4559,6 +4600,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4612,6 +4654,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4653,6 +4696,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4715,6 +4759,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4773,6 +4818,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4811,6 +4857,7 @@ dependencies = [
  "replay-tools",
  "serde",
  "serde_json",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "winapi-util",
@@ -4860,6 +4907,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4930,6 +4978,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "uuid",
  "wgpu",
@@ -4989,6 +5038,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -5049,6 +5099,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -7609,6 +7660,7 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8665,6 +8717,7 @@ dependencies = [
  "replay-journal",
  "replay-recording",
  "serde_json",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9020,6 +9073,7 @@ dependencies = [
  "replay-settings",
  "serde",
  "serde_json",
+ "smallvec",
  "synthetic-game",
  "test-unify",
  "uuid",
@@ -9070,6 +9124,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "smallvec",
  "tauri",
  "tauri-build",
  "test-unify",
@@ -9103,6 +9158,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9125,6 +9181,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9147,6 +9204,7 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9168,6 +9226,7 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9188,6 +9247,7 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9206,6 +9266,7 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9226,6 +9287,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9246,6 +9308,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9268,6 +9331,7 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "replay-looks",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9296,6 +9360,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9322,6 +9387,7 @@ dependencies = [
  "replay-identity",
  "replay-recording",
  "serde_json",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9342,6 +9408,7 @@ dependencies = [
  "replay-data",
  "replay-identity",
  "serde_json",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9423,6 +9490,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9449,6 +9517,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9476,6 +9545,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9499,6 +9569,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9526,6 +9597,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9549,6 +9621,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9574,6 +9647,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9602,6 +9676,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9625,6 +9700,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9648,6 +9724,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9672,6 +9749,7 @@ dependencies = [
  "replay-data",
  "replay-derive",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9698,6 +9776,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9722,6 +9801,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9744,6 +9824,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9766,6 +9847,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9790,6 +9872,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9815,6 +9898,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9838,6 +9922,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9860,6 +9945,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9889,6 +9975,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9916,6 +10003,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9941,6 +10029,7 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "serde_json",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9964,6 +10053,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9992,6 +10082,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10015,6 +10106,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10038,6 +10130,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10061,6 +10154,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10084,6 +10178,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10107,6 +10202,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10134,6 +10230,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10160,6 +10257,7 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "replay-recording",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10183,6 +10281,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10210,6 +10309,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10234,6 +10334,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10263,6 +10364,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10287,6 +10389,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10310,6 +10413,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10333,6 +10437,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10357,6 +10462,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10380,6 +10486,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10402,6 +10509,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10424,6 +10532,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10446,6 +10555,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10469,6 +10579,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10495,6 +10606,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10516,6 +10628,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10538,6 +10651,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10560,6 +10674,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10587,6 +10702,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10635,6 +10751,7 @@ dependencies = [
  "replay-recording",
  "replay-settings",
  "serde_json",
+ "smallvec",
  "test-unify",
  "weather-period",
  "windows-sys 0.61.2",
@@ -10681,6 +10798,7 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "replay-recording",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10706,6 +10824,7 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "replay-settings",
+ "smallvec",
  "test-unify",
  "zstd",
 ]
@@ -10847,6 +10966,7 @@ dependencies = [
  "replay-recording",
  "replay-settings",
  "serde_json",
+ "smallvec",
  "test-unify",
  "windows-sys 0.61.2",
 ]
@@ -10899,11 +11019,19 @@ dependencies = [
  "replay-data",
  "replay-identity",
  "replay-rows",
+ "replay-rows-air",
  "replay-rows-derived",
  "replay-rows-economy",
+ "replay-rows-events",
  "replay-rows-intelligence",
+ "replay-rows-land",
+ "replay-rows-naval",
  "replay-rows-politics",
+ "replay-rows-presentation",
  "replay-rows-projects",
+ "replay-rows-wars",
+ "replay-rows-weather",
+ "replay-rows-world",
  "replay-spool",
  "replay-tables-a",
  "replay-tables-b",
@@ -11014,6 +11142,7 @@ dependencies = [
  "replay-journal",
  "replay-recording",
  "replay-settings",
+ "smallvec",
  "test-unify",
  "windows-sys 0.61.2",
 ]
@@ -11069,6 +11198,7 @@ dependencies = [
  "replay-journal",
  "replay-recording",
  "replay-settings",
+ "smallvec",
  "test-unify",
  "windows-sys 0.61.2",
  "zstd",
@@ -11096,6 +11226,7 @@ dependencies = [
  "replay-identity",
  "replay-journal",
  "replay-recording",
+ "smallvec",
  "test-unify",
 ]
 
@@ -11139,6 +11270,7 @@ dependencies = [
  "replay-recording",
  "replay-spool",
  "serde",
+ "smallvec",
  "test-unify",
  "zstd",
 ]
@@ -11147,18 +11279,24 @@ dependencies = [
 name = "replay-rows"
 version = "0.1.0"
 dependencies = [
- "crc32fast",
+ "engine-allocation",
+ "game-model",
+ "replay-rows",
+ "replay-spool",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-rows-air"
+version = "0.1.0"
+dependencies = [
  "engine-allocation",
  "engine-reference-values",
  "game-model",
- "replay-identity",
  "replay-rows",
+ "replay-rows-air",
  "replay-spool",
- "serde",
- "serde_json",
  "test-unify",
- "weather-period",
- "zstd",
 ]
 
 [[package]]
@@ -11167,9 +11305,9 @@ version = "0.1.0"
 dependencies = [
  "engine-allocation",
  "engine-reference-values",
- "replay-identity",
  "replay-rows",
  "replay-rows-derived",
+ "replay-rows-events",
  "replay-spool",
  "test-unify",
 ]
@@ -11181,10 +11319,22 @@ dependencies = [
  "engine-allocation",
  "engine-reference-values",
  "game-model",
- "replay-identity",
  "replay-rows",
  "replay-rows-economy",
  "replay-spool",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-rows-events"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "replay-rows",
+ "replay-rows-events",
+ "replay-spool",
+ "serde",
+ "serde_json",
  "test-unify",
 ]
 
@@ -11193,10 +11343,37 @@ name = "replay-rows-intelligence"
 version = "0.1.0"
 dependencies = [
  "engine-allocation",
- "replay-identity",
  "replay-rows",
  "replay-rows-intelligence",
  "replay-spool",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-rows-land"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "engine-reference-values",
+ "game-model",
+ "replay-rows",
+ "replay-rows-land",
+ "replay-rows-weather",
+ "replay-rows-world",
+ "replay-spool",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-rows-naval"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "engine-reference-values",
+ "replay-rows",
+ "replay-rows-naval",
+ "replay-spool",
+ "serde",
  "test-unify",
 ]
 
@@ -11205,9 +11382,27 @@ name = "replay-rows-politics"
 version = "0.1.0"
 dependencies = [
  "engine-allocation",
- "replay-identity",
  "replay-rows",
+ "replay-rows-land",
  "replay-rows-politics",
+ "replay-rows-presentation",
+ "replay-rows-weather",
+ "replay-rows-world",
+ "replay-spool",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-rows-presentation"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "engine-reference-values",
+ "replay-rows",
+ "replay-rows-land",
+ "replay-rows-presentation",
+ "replay-rows-weather",
+ "replay-rows-world",
  "replay-spool",
  "test-unify",
 ]
@@ -11217,9 +11412,45 @@ name = "replay-rows-projects"
 version = "0.1.0"
 dependencies = [
  "engine-allocation",
- "replay-identity",
  "replay-rows",
  "replay-rows-projects",
+ "replay-spool",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-rows-wars"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "game-model",
+ "replay-rows",
+ "replay-rows-wars",
+ "replay-spool",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-rows-weather"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "game-model",
+ "replay-rows",
+ "replay-rows-weather",
+ "replay-rows-world",
+ "replay-spool",
+ "test-unify",
+ "weather-period",
+]
+
+[[package]]
+name = "replay-rows-world"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "replay-rows",
+ "replay-rows-world",
  "replay-spool",
  "test-unify",
 ]
@@ -11256,8 +11487,13 @@ name = "replay-tables-a"
 version = "0.1.0"
 dependencies = [
  "engine-allocation",
- "replay-identity",
  "replay-rows",
+ "replay-rows-air",
+ "replay-rows-economy",
+ "replay-rows-land",
+ "replay-rows-naval",
+ "replay-rows-weather",
+ "replay-rows-world",
  "replay-tables-a",
  "test-unify",
 ]
@@ -11267,8 +11503,12 @@ name = "replay-tables-b"
 version = "0.1.0"
 dependencies = [
  "engine-allocation",
- "replay-identity",
  "replay-rows",
+ "replay-rows-air",
+ "replay-rows-land",
+ "replay-rows-presentation",
+ "replay-rows-weather",
+ "replay-rows-world",
  "replay-tables-b",
  "test-unify",
 ]
@@ -11278,8 +11518,17 @@ name = "replay-tables-c"
 version = "0.1.0"
 dependencies = [
  "engine-allocation",
- "replay-identity",
  "replay-rows",
+ "replay-rows-air",
+ "replay-rows-economy",
+ "replay-rows-events",
+ "replay-rows-land",
+ "replay-rows-naval",
+ "replay-rows-politics",
+ "replay-rows-presentation",
+ "replay-rows-wars",
+ "replay-rows-weather",
+ "replay-rows-world",
  "replay-tables-c",
  "test-unify",
 ]
@@ -11289,8 +11538,16 @@ name = "replay-tables-d"
 version = "0.1.0"
 dependencies = [
  "engine-allocation",
- "replay-identity",
  "replay-rows",
+ "replay-rows-air",
+ "replay-rows-economy",
+ "replay-rows-events",
+ "replay-rows-land",
+ "replay-rows-naval",
+ "replay-rows-presentation",
+ "replay-rows-wars",
+ "replay-rows-weather",
+ "replay-rows-world",
  "replay-tables-d",
  "test-unify",
 ]
@@ -11300,9 +11557,9 @@ name = "replay-tables-e"
 version = "0.1.0"
 dependencies = [
  "engine-allocation",
- "replay-identity",
  "replay-rows",
  "replay-rows-derived",
+ "replay-rows-events",
  "replay-tables-e",
  "test-unify",
 ]
@@ -11312,7 +11569,6 @@ name = "replay-tables-economy"
 version = "0.1.0"
 dependencies = [
  "engine-allocation",
- "replay-identity",
  "replay-rows",
  "replay-rows-economy",
  "replay-tables-economy",
@@ -11347,6 +11603,7 @@ dependencies = [
  "replay-recording",
  "serde",
  "serde_json",
+ "smallvec",
  "test-unify",
  "windows-sys 0.61.2",
 ]
@@ -11846,6 +12103,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "thiserror 2.0.20",
  "uuid",
@@ -12643,14 +12901,13 @@ dependencies = [
  "jsonptr",
  "libc",
  "litemap",
- "lock_api",
  "memchr",
  "miniz_oxide 0.8.9",
  "miniz_oxide 0.9.1",
  "num-conv",
  "num-traits",
  "option-ext",
- "parking_lot",
+ "parking_lot_core",
  "percent-encoding",
  "phf",
  "plist",
@@ -12664,6 +12921,7 @@ dependencies = [
  "regex-syntax",
  "rustc-hash 2.1.3",
  "same-file",
+ "scopeguard",
  "serde",
  "serde-untagged",
  "serde_core",
@@ -13452,6 +13710,7 @@ dependencies = [
  "map-display-data",
  "replay-data",
  "replay-identity",
+ "smallvec",
  "test-unify",
  "windows 0.62.2",
 ]

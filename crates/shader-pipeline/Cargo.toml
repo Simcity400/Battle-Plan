@@ -52,6 +52,7 @@ test-unify = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-log = { workspace = true }
 unify-once_cell = { workspace = true }
+unify-smallvec = { workspace = true }
 unify-thiserror = { workspace = true }
 unify-windows = { workspace = true }
 unify-windows-core = { workspace = true }

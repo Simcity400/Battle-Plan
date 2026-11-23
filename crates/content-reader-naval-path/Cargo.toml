@@ -29,3 +29,4 @@ engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-smallvec = { workspace = true }

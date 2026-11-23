@@ -1,4 +1,13 @@
-use replay_rows::rows::*;
+use replay_rows_world::*;
+use replay_rows_air::*;
+use replay_rows_economy::*;
+use replay_rows_events::*;
+use replay_rows_land::*;
+use replay_rows_naval::*;
+use replay_rows_politics::*;
+use replay_rows_presentation::*;
+use replay_rows_wars::*;
+use replay_rows_weather::*;
 
 replay_rows::row_ops! {
     DivisionRetreatBans => DivisionRetreatBanRow,

@@ -40,7 +40,7 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 engine-executable = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
+engine-native = { workspace = true, features = ["batch-fallback-test-counts", "layout-fixtures", "test-support"] }
 replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }

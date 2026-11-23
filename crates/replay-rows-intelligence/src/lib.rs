@@ -2,7 +2,11 @@ use engine_allocation as allocation;
 use replay_rows::codec::{Decoder, invalid_static as invalid, put_varint};
 use replay_rows::rows::*;
 use replay_rows::typed_codec;
+use replay_rows::value_struct;
 use std::io;
+
+mod characters_intelligence;
+pub use characters_intelligence::*;
 
 pub use schema::*;
 mod schema;

@@ -56,7 +56,7 @@ content-reader-gui = { workspace = true, features = ["test-support"] }
 content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
 content-reader-politics = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
+engine-native = { workspace = true, features = ["batch-fallback-test-counts", "layout-fixtures", "test-support"] }
 playhead = { path = "../playhead", features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "recording", "test-support"] }
@@ -69,6 +69,7 @@ test-unify = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-log = { workspace = true }
 unify-once_cell = { workspace = true }
+unify-smallvec = { workspace = true }
 unify-uuid = { workspace = true }
 unify-wgpu = { workspace = true }
 unify-winapi-util = { workspace = true }

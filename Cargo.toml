@@ -28,8 +28,12 @@ unify-bitflags = { package = "bitflags", version = "1.3.2", default-features = f
 unify-dpi = { package = "dpi", version = "0.1.2", default-features = false, features = ["default", "serde", "std"] }
 unify-hashbrown = { package = "hashbrown", version = "0.17.1", default-features = false, features = ["default-hasher", "inline-more"] }
 unify-indexmap = { package = "indexmap", version = "2.14.2", default-features = false, features = ["default", "std"] }
+unify-lock_api = { package = "lock_api", version = "0.4.14", default-features = false, features = ["arc_lock", "atomic_usize", "default"] }
 unify-log = { package = "log", version = "0.4.34", default-features = false, features = ["alloc", "std"] }
 unify-once_cell = { package = "once_cell", version = "1.21.4", default-features = false, features = ["alloc", "default", "race", "std"] }
+unify-parking_lot = { package = "parking_lot", version = "0.12.5", default-features = false, features = ["arc_lock", "default"] }
+unify-rustc-hash = { package = "rustc-hash", version = "2.1.3", default-features = false, features = ["default", "std"] }
+unify-smallvec = { package = "smallvec", version = "1.16.0", default-features = false, features = ["const_generics", "const_new", "union"] }
 unify-tauri = { package = "tauri", version = "2.11.5", default-features = false, features = ["common-controls-v6", "compression", "dbus", "default", "dynamic-acl", "tauri-runtime-wry", "tray-icon", "webkit2gtk", "webview2-com", "wry", "x11"] }
 unify-thiserror = { package = "thiserror", version = "2.0.20", default-features = false, features = ["default", "std"] }
 unify-tracing = { package = "tracing", version = "0.1.44", default-features = false, features = ["std"] }
@@ -337,6 +341,14 @@ recorder-derive-world = { path = "crates/recorder-derive-world" }
 app-update = { path = "crates/app-update" }
 replay-data = { path = "crates/replay-data" }
 replay-rows = { path = "crates/replay-rows" }
+replay-rows-world = { path = "crates/replay-rows-world" }
+replay-rows-events = { path = "crates/replay-rows-events" }
+replay-rows-air = { path = "crates/replay-rows-air" }
+replay-rows-naval = { path = "crates/replay-rows-naval" }
+replay-rows-weather = { path = "crates/replay-rows-weather" }
+replay-rows-land = { path = "crates/replay-rows-land" }
+replay-rows-presentation = { path = "crates/replay-rows-presentation" }
+replay-rows-wars = { path = "crates/replay-rows-wars" }
 replay-rows-economy = { path = "crates/replay-rows-economy" }
 replay-tables-economy = { path = "crates/replay-tables-economy" }
 replay-rows-projects = { path = "crates/replay-rows-projects" }

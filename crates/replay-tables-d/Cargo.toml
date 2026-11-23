@@ -11,9 +11,27 @@ test = false
 doctest = false
 
 [features]
-test-support = ["replay-rows/test-support"]
+test-support = [
+    "replay-rows/test-support",
+    "replay-rows-air/test-support",
+    "replay-rows-economy/test-support",
+    "replay-rows-events/test-support",
+    "replay-rows-land/test-support",
+    "replay-rows-naval/test-support",
+    "replay-rows-presentation/test-support",
+    "replay-rows-wars/test-support",
+    "replay-rows-world/test-support",
+]
 
 [dependencies]
+replay-rows-air.workspace = true
+replay-rows-economy.workspace = true
+replay-rows-events.workspace = true
+replay-rows-land.workspace = true
+replay-rows-naval.workspace = true
+replay-rows-presentation.workspace = true
+replay-rows-wars.workspace = true
+replay-rows-world.workspace = true
 replay-rows.workspace = true
 
 [lints]
@@ -24,6 +42,6 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
-replay-identity = { workspace = true, features = ["test-support"] }
+replay-rows-weather = { workspace = true, features = ["test-support"] }
 replay-tables-d = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

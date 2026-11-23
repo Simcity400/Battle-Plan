@@ -36,3 +36,4 @@ content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-smallvec = { workspace = true }

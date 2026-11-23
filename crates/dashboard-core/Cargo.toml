@@ -55,12 +55,13 @@ content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
 content-reader-settings = { workspace = true, features = ["test-support"] }
 dashboard-core = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
+engine-native = { workspace = true, features = ["batch-fallback-test-counts", "layout-fixtures", "test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "recording", "test-support"] }
 replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-smallvec = { workspace = true }
 unify-winapi-util = { workspace = true }
 uuid = { version = "1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }
