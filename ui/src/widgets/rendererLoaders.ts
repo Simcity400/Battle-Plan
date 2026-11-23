@@ -142,6 +142,56 @@ export function preloadWidgetRenderers(kinds: Iterable<string>): void {
   for (const kind of kinds) if (!ready.has(kind)) void loadWidgetRenderer(kind).catch(() => {});
 }
 
+const activeClocks = new Set<object>();
+const resumeWaiters = new Set<() => void>();
+
+export const isPlaybackActive = (): boolean => activeClocks.size > 0;
+
+export function setPlaybackActive(clock: object, playing: boolean): void {
+  const was = activeClocks.size > 0;
+  if (playing) activeClocks.add(clock);
+  else activeClocks.delete(clock);
+  if (was && activeClocks.size === 0) {
+    for (const resume of [...resumeWaiters]) resume();
+  }
+}
+
+interface IdleDeadlineLike { didTimeout: boolean; timeRemaining(): number }
+
+export interface IdlePreloadOptions {
+  chunks?: Readonly<Record<string, string>>;
+  schedule?: (run: (deadline: IdleDeadlineLike) => void) => number;
+  cancel?: (id: number) => void;
+  preload?: (url: string) => void;
+  load?: (kind: string) => Promise<unknown>;
+  kinds?: readonly string[];
+}
+
+const MIN_IDLE_MS = 6;
+
+function builtChunks(): Readonly<Record<string, string>> | undefined {
+  if (typeof document === 'undefined') return undefined;
+  const content = document.querySelector('meta[name="bp-widget-chunks"]')?.getAttribute('content');
+  if (!content) return undefined;
+  try {
+    const parsed = JSON.parse(content) as Record<string, string>;
+    return parsed && typeof parsed === 'object' ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const preloadedUrls = new Set<string>();
+
+function preloadModuleUrl(url: string): void {
+  if (preloadedUrls.has(url) || typeof document === 'undefined') return;
+  preloadedUrls.add(url);
+  const link = document.createElement('link');
+  link.rel = 'modulepreload';
+  link.href = url;
+  document.head.appendChild(link);
+}
+
 let idlePreload = false;
 let preloadQueue: string[] | null = null;
 let preloadWaiters: Set<() => void> | null = null;
@@ -161,27 +211,66 @@ export function whenPreloadComplete(): Promise<void> {
   return new Promise(resolve => { preloadWaiters!.add(resolve); });
 }
 
-export function preloadAllWidgetRenderers(): void {
-  if (idlePreload || typeof window === 'undefined') return;
-  idlePreload = true;
-  const kinds = Object.keys(rendererLoaders).filter(kind => !ready.has(kind));
+export function preloadAllWidgetRenderers(options?: IdlePreloadOptions): () => void {
+  const custom = options !== undefined;
+  if (!custom && (idlePreload || typeof window === 'undefined')) return () => {};
+  if (!custom) idlePreload = true;
+  const kinds = [...(options?.kinds ?? Object.keys(rendererLoaders))].filter(kind => !ready.has(kind));
   const finish = () => {
+    if (custom) return;
     preloadQueue = null;
     if (preloadWaiters) {
       for (const resolve of preloadWaiters) resolve();
       preloadWaiters = null;
     }
   };
-  if (kinds.length === 0) { finish(); return; }
-  preloadQueue = kinds;
-  const idle = (next: () => void) => typeof requestIdleCallback === 'function' ? requestIdleCallback(next, { timeout: 2000 }) : setTimeout(next, 50);
-  const step = () => {
-    const kind = kinds.shift();
-    if (kind === undefined) { finish(); return; }
-    void loadWidgetRenderer(kind).catch(() => {}).finally(() => {
-      if (kinds.length === 0) finish();
-      else idle(step);
+  if (kinds.length === 0) { finish(); return () => {}; }
+  if (!custom) preloadQueue = kinds;
+  const chunks = options?.chunks ?? builtChunks();
+  const preload = options?.preload ?? preloadModuleUrl;
+  const load = options?.load ?? loadWidgetRenderer;
+  const schedule = options?.schedule ?? (run => typeof requestIdleCallback === 'function'
+    ? requestIdleCallback(run)
+    : window.setTimeout(() => run({ didTimeout: false, timeRemaining: () => MIN_IDLE_MS }), 120));
+  const cancel = options?.cancel ?? (id => {
+    if (typeof cancelIdleCallback === 'function') cancelIdleCallback(id);
+    else clearTimeout(id);
+  });
+  let handle: number | null = null;
+  let stopped = false;
+  let inFlight = false;
+  const next = () => {
+    if (stopped || inFlight || handle !== null) return;
+    if (!kinds.length) { finish(); return; }
+    if (isPlaybackActive()) return;
+    handle = schedule(deadline => {
+      handle = null;
+      if (stopped || isPlaybackActive()) return;
+      if (deadline.didTimeout || deadline.timeRemaining() < MIN_IDLE_MS) { next(); return; }
+      while (kinds.length && ready.has(kinds[0]!)) kinds.shift();
+      const kind = kinds.shift();
+      if (kind === undefined) { finish(); return; }
+      const url = chunks?.[kind];
+      if (url) {
+        preload(url);
+        if (kinds.length === 0) finish();
+        else next();
+        return;
+      }
+      inFlight = true;
+      void load(kind).catch(() => {}).finally(() => {
+        inFlight = false;
+        if (kinds.length === 0) finish();
+        else next();
+      });
     });
   };
-  idle(step);
+  const onResume = () => { next(); };
+  resumeWaiters.add(onResume);
+  next();
+  return () => {
+    stopped = true;
+    resumeWaiters.delete(onResume);
+    if (handle !== null) { cancel(handle); handle = null; }
+  };
 }

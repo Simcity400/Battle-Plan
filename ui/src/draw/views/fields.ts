@@ -1,5 +1,6 @@
 ﻿import { liveKey } from '../../charts/live.ts';
 import { CellGroup, sectionGroups, sectionOf, sectionValues, valuedGroup, type GroupValues } from '../../dashboard/follow/liveCells.ts';
+import { serializeAnswer } from '../../dashboard/follow/tables.ts';
 import type { FollowedPanel } from '../../dashboard/follow/message';
 import type { Picture } from '../../dashboard/follow/facts';
 import type { LaneView, Painted, Scene, Value } from '../lane.ts';
@@ -56,7 +57,8 @@ export function fieldsOf(scene: Scene, hour: number, structureOf: (product: stri
   scene.subs.forEach((sub, at) => {
     const picture = scene.pictures[at]!, head = picture.parts[0]!;
     if (head.value.kind === 'answer') {
-      fields[`answer:${sub.id}`] = { value: head.value.body, content: `answer:${head.version}` };
+      const body = head.value.body ?? (head.value.answer.kind === 'notRecorded' ? new Uint8Array() : (head.value.body = serializeAnswer(head.value.answer)));
+      fields[`answer:${sub.id}`] = { value: body, content: `answer:${head.version}` };
       return;
     }
     if (head.value.kind !== 'panel') return;

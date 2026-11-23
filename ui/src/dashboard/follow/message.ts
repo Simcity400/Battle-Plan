@@ -15,6 +15,16 @@ export interface MessageViews {
   u64: BigUint64Array;
 }
 
+export interface RowChunk {
+  values: BigInt64Array;
+  states: Uint8Array;
+  reasons: (string | null)[];
+}
+
+export interface RowPatches {
+  root: ((RowChunk | undefined)[] | undefined)[];
+}
+
 export interface FollowedRows {
   kind: 'rows' | 'log' | 'changed';
   canonical: boolean;
@@ -30,6 +40,7 @@ export interface FollowedRows {
   ends: Uint32Array;
   text: number;
   decoded: (string | undefined)[];
+  patches?: RowPatches;
 }
 
 export type FollowedAnswer = { kind: 'notRecorded'; reason: string } | FollowedRows;
@@ -146,16 +157,42 @@ export function parseFollowed(bytes: ArrayBuffer | Uint8Array): FollowedMessage 
   return message;
 }
 
-export const cellState = (answer: FollowedRows, at: number): number => answer.views.u8[answer.states + at]!;
+const chunkAt = (answer: FollowedRows, row: number): RowChunk | undefined =>
+  answer.patches?.root[row >>> 6]?.[(row >>> 3) & 7];
 
-export const cellValue = (answer: FollowedRows, at: number): bigint => answer.views.i64[answer.values + at]!;
+export const cellState = (answer: FollowedRows, at: number): number => {
+  if (answer.patches) {
+    const row = Math.floor(at / answer.columns), chunk = chunkAt(answer, row);
+    if (chunk) return chunk.states[(row & 7) * answer.columns + (at - row * answer.columns)]!;
+  }
+  return answer.views.u8[answer.states + at]!;
+};
+
+export const cellValue = (answer: FollowedRows, at: number): bigint => {
+  if (answer.patches) {
+    const row = Math.floor(at / answer.columns), chunk = chunkAt(answer, row);
+    if (chunk) return chunk.values[(row & 7) * answer.columns + (at - row * answer.columns)]!;
+  }
+  return answer.views.i64[answer.values + at]!;
+};
 
 export function cellNumber(answer: FollowedRows, at: number): number | null {
+  if (answer.patches) {
+    const row = Math.floor(at / answer.columns), chunk = chunkAt(answer, row);
+    if (chunk) {
+      const value = chunk.values[(row & 7) * answer.columns + (at - row * answer.columns)]!;
+      return value >= -9_007_199_254_740_991n && value <= 9_007_199_254_740_991n ? Number(value) : null;
+    }
+  }
   const word = (answer.values + at) * 2, high = answer.views.i32[word + 1]!;
   return high >= -0x200000 && high < 0x200000 ? high * 0x1_0000_0000 + (answer.views.i32[word]! >>> 0) : null;
 }
 
 export function rowReason(answer: FollowedRows, row: number): string | null {
+  if (answer.patches) {
+    const chunk = chunkAt(answer, row);
+    if (chunk) return chunk.reasons[row & 7]!;
+  }
   const at = answer.views.u32[answer.reasons + row]!;
   return at === NO_REASON ? null : textAt(answer, at);
 }

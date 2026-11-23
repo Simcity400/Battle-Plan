@@ -1,11 +1,11 @@
 import { Facts, changeWindow, followsChannel, joinComponents, samePicture, type Channel, type FollowAnswer, type PanelRecord, type Picture, type Window } from '../dashboard/follow/facts.ts';
 import { SAME, type Ack, type Bitmap, type Entry, type FrameRequest, type Refusal } from '../dashboard/follow/page.ts';
 import { parseAnswer, parseDatedPanelRecord, parseFollowed, type FollowedAnswer } from '../dashboard/follow/message.ts';
-import { mergeChanged } from '../dashboard/follow/tables.ts';
+import { patchAnswer } from '../dashboard/follow/tables.ts';
 import { sectionOf } from '../dashboard/follow/liveCells.ts';
 
 export interface PanelValue { kind: 'panel'; bytes: Uint8Array | null; data: unknown; refused: string | null }
-export interface AnswerValue { kind: 'answer'; body: Uint8Array; answer: FollowedAnswer }
+export interface AnswerValue { kind: 'answer'; body?: Uint8Array; answer: FollowedAnswer }
 export interface SeedValue { kind: 'seed'; values: readonly (number | string)[] }
 export type Value = PanelValue | AnswerValue | SeedValue;
 
@@ -41,7 +41,14 @@ export interface LaneView {
   paint(input: PaintInput, state: Map<string, unknown>, content: () => string): Painted;
 }
 
-export interface Presented<B extends Bitmap> { lane: number; serial: number; resets: [number, number][]; entries: Entry<B>[] }
+export interface Presented<B extends Bitmap> {
+  lane: number;
+  serial: number;
+  resets: [number, number][];
+  closed?: number[];
+  confirmed?: [number, 'followed' | 'panel', number][];
+  entries: Entry<B>[];
+}
 
 export interface LaneHost<B extends Bitmap> {
   lane: number;
@@ -53,7 +60,7 @@ export interface LaneHost<B extends Bitmap> {
   fail(reason: string): void;
   later(run: () => void): void;
   hit?(widget: number, key: string | null): void;
-  served?(frame: { seek: number; target: number; exact: boolean; changed: number; ms: number }): void;
+  served?(frame: { seek: number; target: number; exact: boolean; changed: number; ms: number; costs?: [widget: number, cost: number][] }): void;
   budget?: number;
   clock?: () => number;
   stretch?: (ms: number) => void;
@@ -61,12 +68,14 @@ export interface LaneHost<B extends Bitmap> {
 
 interface Sent {
   id: number; request: number; pictures: Picture<Value>[]; h: number; c: number; lo: number; hi: number; binding: number;
-  contents: Record<string, string>; inspect: string | null; hit?: Painted['hit'];
+  contents: Record<string, string>; fieldKeys: string[]; surfaceCount: number; mode: Entry['mode']; reason?: string;
+  open?: 'followed' | 'panel'; inspect: string | null; hit?: Painted['hit'];
 }
 
 interface Widget {
   id: number; order: number; subs: number[]; view: string; model: unknown; binding: Binding;
   installed: Sent | null; inflight: Sent | null; sent: Record<string, string>; motion: boolean; inspect: string | null;
+  validWindow: Window | null;
   start: { version: string; hour: number } | null; state: Map<string, unknown>; cost: number; served: number; halted: number | null; parked: Sent | null;
 }
 
@@ -97,9 +106,9 @@ const CELL = 0x8000_0000;
 const LOST = 'Answers that arrived before this reading was registered overflowed the early buffer and were lost';
 
 type Selected = { pictures: Picture<Value>[]; window: Window; h: number; c: number };
+type Selection = Selected | 'lost' | { failed: string } | null;
 
 const now = () => performance.now();
-
 
 function cellsOf(data: unknown): { id: number; seedHour?: number; values?: Value }[] {
   const section = sectionOf(data);
@@ -110,9 +119,21 @@ function cellsOf(data: unknown): { id: number; seedHour?: number; values?: Value
 
 export class Lane<B extends { readonly width: number; close(): void }> {
   readonly facts = new Facts<Value>();
-  readonly stats = { frames: 0, entries: 0, motion: 0, crops: 0, refused: {} as Record<string, number> };
+  readonly stats = { frames: 0, entries: 0, motion: 0, crops: 0, refused: {} as Record<string, number>, visited: 0, pruned: 0 };
   private readonly subs = new Map<number, Sub>();
   private readonly widgets = new Map<number, Widget>();
+  private readonly subWidgets = new Map<number, Set<number>>();
+  private readonly routeWidgets = new Map<number, Set<number>>();
+  private readonly dirtyWidgets = new Set<number>();
+  private readonly motionWidgets = new Set<number>();
+  private readonly inflightWidgets = new Set<number>();
+  private readonly windowedWidgets = new Set<number>();
+  private readonly parkedWidgets = new Set<number>();
+  private readonly inspectedWidgets = new Set<number>();
+  private readonly nonOpenFollowed = new Set<number>();
+  private readonly prunableSubs = new Set<number>();
+  private readonly limitedSubs = new Set<number>();
+  private readonly subFailed = new Map<number, string>();
   private readonly routes = new Map<number, number>();
   private readonly natives = new Map<number, number>();
   private readonly offsets = new Map<number, number>();
@@ -121,6 +142,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private readonly stamped = new Map<number, number>();
   private readonly applied = new Map<number, number>();
   private readonly told = new Map<number, number>();
+  private readonly routeConfirmedFollowed = new Map<number, number>();
+  private readonly toldConfirmedFollowed = new Map<number, number>();
+  private readonly pendingClosed = new Set<number>();
   private held: Held[] = [];
   private early: { native: number; seek: number; bytes: Uint8Array; stamp?: number }[] = [];
   private heldBytes = 0;
@@ -145,6 +169,98 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private time() { return this.host.clock?.() ?? now(); }
   private content = () => `${this.host.lane}:${this.nextContent++}`;
 
+  private indexWidget(widget: Widget) {
+    for (const sub of widget.subs) {
+      let set = this.subWidgets.get(sub);
+      if (!set) this.subWidgets.set(sub, set = new Set());
+      set.add(widget.id);
+    }
+    const route = this.routeOf(widget);
+    if (route !== null) {
+      let set = this.routeWidgets.get(route);
+      if (!set) this.routeWidgets.set(route, set = new Set());
+      set.add(widget.id);
+    }
+    this.syncOpenTracking(widget);
+  }
+
+  private unindexWidget(widget: Widget) {
+    for (const sub of widget.subs) {
+      const set = this.subWidgets.get(sub);
+      if (set) { set.delete(widget.id); if (!set.size) this.subWidgets.delete(sub); }
+    }
+    for (const set of this.routeWidgets.values()) set.delete(widget.id);
+    this.dirtyWidgets.delete(widget.id);
+    this.motionWidgets.delete(widget.id);
+    this.inflightWidgets.delete(widget.id);
+    this.windowedWidgets.delete(widget.id);
+    this.parkedWidgets.delete(widget.id);
+    this.inspectedWidgets.delete(widget.id);
+    this.nonOpenFollowed.delete(widget.id);
+    this.pendingClosed.delete(widget.id);
+  }
+
+  private syncWindowTracking(widget: Widget) {
+    const active = widget.inflight ?? widget.installed;
+    const w = widget.validWindow;
+    const finiteActive = !!active && (Number.isFinite(active.lo) || Number.isFinite(active.hi));
+    const finiteValid = !!w && (Number.isFinite(w[0]) || Number.isFinite(w[1]));
+    if (finiteActive || finiteValid) this.windowedWidgets.add(widget.id);
+    else this.windowedWidgets.delete(widget.id);
+    if (widget.inflight) this.inflightWidgets.add(widget.id);
+    else this.inflightWidgets.delete(widget.id);
+    if (widget.parked) this.parkedWidgets.add(widget.id);
+    else this.parkedWidgets.delete(widget.id);
+    this.syncOpenTracking(widget);
+  }
+
+  private syncOpenTracking(widget: Widget) {
+    const active = widget.inflight ?? widget.installed;
+    const usesFollowed = widget.subs.some(id => {
+      const sub = this.subs.get(id);
+      return sub?.channel === 'followed' || (sub?.channel === 'panel' && (this.facts.usesOf(id)?.size ?? 0) > 0);
+    });
+    if (usesFollowed && active?.open !== 'followed') this.nonOpenFollowed.add(widget.id);
+    else this.nonOpenFollowed.delete(widget.id);
+  }
+
+  private markSub(id: number, closeOpen = false) {
+    if (id < CELL) {
+      this.prunableSubs.add(id);
+      const set = this.subWidgets.get(id);
+      if (set) for (const wid of set) {
+        this.dirtyWidgets.add(wid);
+        if (closeOpen) {
+          this.pendingClosed.add(wid);
+          const widget = this.widgets.get(wid);
+          if (widget) {
+            if (widget.installed) widget.installed.open = undefined;
+            if (widget.inflight) widget.inflight.open = undefined;
+            this.syncOpenTracking(widget);
+          }
+        }
+      }
+    } else {
+      const users = this.facts.usersOf(id);
+      if (users) for (const ownerSub of users) this.markSub(ownerSub, closeOpen);
+    }
+  }
+
+  private markRoute(route: number, channel?: 'followed' | 'panel') {
+    const set = this.routeWidgets.get(route);
+    if (!set) return;
+    for (const wid of set) {
+      const widget = this.widgets.get(wid);
+      if (!widget) continue;
+      if (channel === 'panel' && !widget.subs.some(id => this.subs.get(id)?.channel === 'panel')) continue;
+      if (channel === 'followed' && !widget.subs.some(id => {
+        const sub = this.subs.get(id);
+        return sub?.channel === 'followed' || (sub?.channel === 'panel' && (this.facts.usesOf(id)?.size ?? 0) > 0);
+      })) continue;
+      this.dirtyWidgets.add(wid);
+    }
+  }
+
   follow(sub: number, channel: Channel, product?: string) {
     this.subs.set(sub, { id: sub, channel, product, route: null });
     if (channel === 'pinned') this.facts.follow(sub, -1, 'pinned');
@@ -159,6 +275,17 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.offsets.set(route, offset);
     this.facts.follow(sub, route, held.channel);
     this.facts.stamp(route, seek);
+    const set = this.subWidgets.get(sub);
+    if (set) {
+      let rset = this.routeWidgets.get(route);
+      if (!rset) this.routeWidgets.set(route, rset = new Set());
+      for (const wid of set) {
+        rset.add(wid);
+        this.dirtyWidgets.add(wid);
+        const widget = this.widgets.get(wid);
+        if (widget) this.syncOpenTracking(widget);
+      }
+    }
     this.settleResets();
     this.replay();
     this.replayEarly();
@@ -168,21 +295,37 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   unfollow(sub: number) {
     this.subs.delete(sub);
     this.lost.delete(sub);
+    this.limitedSubs.delete(sub);
+    this.subFailed.delete(sub);
+    this.prunableSubs.delete(sub);
     this.forget(sub);
-    for (const cell of this.facts.unfollow(sub)) { this.gone.add(cell); this.forget(cell); }
+    for (const cell of this.facts.unfollow(sub)) {
+      this.gone.add(cell);
+      this.subFailed.delete(cell);
+      this.limitedSubs.delete(cell);
+      this.forget(cell);
+    }
     this.after();
   }
 
   mount(widget: number, subs: readonly number[], view: string, model?: unknown) {
     const was = this.widgets.get(widget);
-    this.widgets.set(widget, { id: widget, order: was?.order ?? this.nextOrder++, subs: [...subs], view, model,
+    if (was) this.unindexWidget(was);
+    const made: Widget = { id: widget, order: was?.order ?? this.nextOrder++, subs: [...subs], view, model,
       binding: was?.binding ?? { generation: 1, surfaces: [], offset: 0, pin: null },
-      installed: was?.installed ?? null, inflight: null, sent: {}, motion: false, inspect: was?.inspect ?? null, start: null, state: was?.state ?? new Map(), cost: was?.cost ?? 0.1,
-      served: was?.served ?? 0, halted: null, parked: null });
+      installed: was?.installed ?? null, inflight: null, sent: {}, motion: false, inspect: was?.inspect ?? null, validWindow: null, start: null, state: was?.state ?? new Map(), cost: was?.cost ?? 0.1,
+      served: was?.served ?? 0, halted: null, parked: null };
+    this.widgets.set(widget, made);
+    this.indexWidget(made);
+    if (made.inspect !== null) this.inspectedWidgets.add(widget);
+    this.dirtyWidgets.add(widget);
+    this.syncWindowTracking(made);
     this.wake();
   }
 
   unmount(widget: number) {
+    const held = this.widgets.get(widget);
+    if (held) this.unindexWidget(held);
     this.widgets.delete(widget);
     for (const [id, owner] of this.presented) if (owner.widget === widget) this.presented.delete(id);
   }
@@ -195,6 +338,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     held.sent = {};
     held.inflight = null;
     if (held.halted !== null && held.halted !== binding.generation) held.halted = null;
+    this.dirtyWidgets.add(widget);
+    this.syncWindowTracking(held);
     this.wake();
   }
 
@@ -202,6 +347,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const held = this.widgets.get(widget);
     if (!held) return;
     held.motion = true;
+    this.motionWidgets.add(widget);
+    this.dirtyWidgets.add(widget);
     this.wake();
   }
 
@@ -213,16 +360,36 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   exact(sub: number, hour: number, data: unknown, refused: string | null) {
+    this.subFailed.delete(sub);
     this.facts.exact(sub, hour, { kind: 'panel', bytes: null, data, refused }, refused);
+    this.markSub(sub);
     this.wake();
   }
 
   stream(route: number, seek: number, target: number) {
     this.failed.delete(route);
+    this.routeConfirmedFollowed.delete(route);
+    this.toldConfirmedFollowed.delete(route);
+    for (const [subId, sub] of this.subs) if (sub.route === route) {
+      this.subFailed.delete(subId);
+      this.limitedSubs.delete(subId);
+      for (const cell of this.facts.usesOf(subId) ?? []) {
+        this.subFailed.delete(cell);
+        this.limitedSubs.delete(cell);
+      }
+      this.prunableSubs.add(subId);
+    }
     const native = this.natives.get(route);
     if (native !== undefined) for (const [id, from] of this.lost) if (from === native) this.lost.delete(id);
     this.facts.seek(route, seek, target + (this.offsets.get(route) ?? 0));
-    for (const widget of this.widgets.values()) if (this.routeOf(widget) === route) widget.inflight = null;
+    for (const wid of this.routeWidgets.get(route) ?? []) {
+      const widget = this.widgets.get(wid);
+      if (!widget) continue;
+      widget.inflight = null;
+      if (widget.installed) widget.installed.open = undefined;
+      this.dirtyWidgets.add(wid);
+      this.syncWindowTracking(widget);
+    }
     this.settleResets();
     this.replay();
     this.replayEarly();
@@ -231,7 +398,13 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   fail(route: number) {
     this.failed.add(route);
-    for (const widget of this.widgets.values()) if (this.routeOf(widget) === route) widget.inflight = null;
+    for (const wid of this.routeWidgets.get(route) ?? []) {
+      const widget = this.widgets.get(wid);
+      if (!widget) continue;
+      widget.inflight = null;
+      this.dirtyWidgets.add(wid);
+      this.syncWindowTracking(widget);
+    }
   }
 
   receive(kind: 'follow' | 'panels', bytes: Uint8Array, resets?: number) {
@@ -251,9 +424,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private releasedFacts() {
+    if (!this.facts.hasRemoved()) return this.facts.release(() => false);
     const shown = new Set<unknown>();
-    const sents = [...[...this.widgets.values()].flatMap(widget => [widget.installed, widget.inflight]), ...[...this.presented.values()].map(owner => owner.sent)];
-    for (const sent of sents) for (const picture of sent?.pictures ?? []) for (const part of picture.parts) shown.add(part);
+    for (const widget of this.widgets.values()) {
+      for (const sent of [widget.installed, widget.inflight]) for (const picture of sent?.pictures ?? []) for (const part of picture.parts) shown.add(part);
+    }
+    for (const owner of this.presented.values()) for (const picture of owner.sent.pictures) for (const part of picture.parts) shown.add(part);
     return this.facts.release(fact => shown.has(fact));
   }
 
@@ -272,7 +448,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       this.freed += item.size;
       this.forget(item.id);
       this.lost.set(item.id, item.native);
-      if (item.id >= CELL) this.host.fail(LOST);
+      this.markSub(item.id, true);
+      if (item.id >= CELL) this.subFailed.set(item.id, LOST);
       return;
     }
     this.heldBytes += item.size + HELD_COST;
@@ -369,11 +546,16 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         const limited = new Map<number, number>(), answers: FollowAnswer<Value>[] = [], latest = new Map<number, AnswerValue>();
         for (const record of item.records) {
           const view = new DataView(record.buffer, record.byteOffset, record.byteLength);
-          if (!view.getUint32(8, true)) { limited.set(item.id, view.getInt32(4, true)); this.freed += charged(record); }
+          if (!view.getUint32(8, true)) { limited.set(item.id, view.getInt32(4, true)); this.freed += charged(record); this.limitedSubs.add(item.id); }
           else { const answer = this.answer(item.id, record, charged(record), false, latest); if (answer) answers.push(answer); }
         }
         this.facts.followed(route, item.seek, { hour: item.hour, answers, limited }, only);
-      } else this.facts.panels(route, item.seek, item.records.flatMap(record => this.panel(record) ?? []), item.completed, only);
+        this.markSub(item.id, true);
+      } else {
+        const parsed = item.records.flatMap(record => this.panel(record) ?? []);
+        this.facts.panels(route, item.seek, parsed, item.completed, only);
+        this.markSub(item.id);
+      }
     }
     this.replay();
   }
@@ -386,15 +568,17 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       if (parsed.kind === 'changed') {
         const base = latest.get(id) ?? (reset ? undefined : this.facts.latest(id));
         if (!base || base.kind !== 'answer') throw new Error('Changed rows arrived without the table they change.');
-        const merged = mergeChanged(base.answer, parsed, view.getUint32(12, true));
-        value = { kind: 'answer', body: merged, answer: parseAnswer(merged) };
+        const patched = patchAnswer(base.answer, parsed);
+        value = { kind: 'answer', answer: patched };
       } else {
+        this.subFailed.delete(id);
         const body = record.slice(16);
         value = { kind: 'answer', body, answer: parseAnswer(body) };
       }
     } catch (error) {
       this.freed += bytes;
-      this.host.fail(error instanceof Error ? error.message : String(error));
+      this.subFailed.set(id, error instanceof Error ? error.message : String(error));
+      this.markSub(id, true);
       return null;
     }
     latest.set(id, value);
@@ -439,22 +623,61 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (route === undefined) return;
     const behind = stamped !== undefined && (this.applied.get(message.route) ?? stamped) < stamped, reset = message.reset || behind;
     if (stamped !== undefined) this.applied.set(message.route, stamped);
+    if (reset) {
+      this.routeConfirmedFollowed.delete(route);
+      this.toldConfirmedFollowed.delete(route);
+      for (const [subId, sub] of this.subs) if (sub.route === route && sub.channel === 'followed') {
+        this.subFailed.delete(subId);
+        this.limitedSubs.delete(subId);
+      }
+      for (const [subId, sub] of this.subs) if (sub.route === route && sub.channel === 'panel') {
+        for (const cell of this.facts.usesOf(subId) ?? []) {
+          this.subFailed.delete(cell);
+          this.limitedSubs.delete(cell);
+        }
+      }
+      this.markRoute(route, 'followed');
+    }
     const latest = new Map<number, AnswerValue>();
     const answers = mine.flatMap(([id, start, length]) => { const record = bytes.subarray(start, start + 16 + length); return this.answer(id, record, charged(record), reset, latest) ?? []; });
     this.facts.followed(route, message.seek, { hour: message.hour, reset, answers, limited });
+    for (const answer of answers) this.markSub(answer.id, true);
+    for (const id of limited.keys()) { this.limitedSubs.add(id); this.markSub(id, true); }
+    for (const id of [...this.limitedSubs]) {
+      const sub = this.subs.get(id);
+      if (sub && sub.route === route && !limited.has(id)) {
+        this.limitedSubs.delete(id);
+        this.markSub(id, true);
+      }
+    }
+    const prevConfirmed = this.routeConfirmedFollowed.get(route) ?? -Infinity;
+    if (message.hour > prevConfirmed) this.routeConfirmedFollowed.set(route, message.hour);
+    for (const wid of this.nonOpenFollowed) {
+      const widget = this.widgets.get(wid);
+      if (widget && this.routeOf(widget) === route) this.dirtyWidgets.add(wid);
+    }
   }
 
   private panel(record: Uint8Array): PanelRecord<Value> | null {
     const size = 2 * record.length;
     let panel: ReturnType<typeof parseDatedPanelRecord>;
     try { panel = parseDatedPanelRecord(record); }
-    catch (error) { this.freed += size; this.host.fail(error instanceof Error ? error.message : String(error)); return null; }
+    catch (error) {
+      this.freed += size;
+      const reason = error instanceof Error ? error.message : String(error);
+      const id = record.byteLength >= 4 ? new DataView(record.buffer, record.byteOffset, 4).getUint32(0, true) : -1;
+      if (this.subs.has(id)) { this.subFailed.set(id, reason); this.markSub(id); }
+      else this.host.fail(reason);
+      return null;
+    }
+    this.subFailed.delete(panel.id);
     if (panel.waiting) { this.freed += size; return { kind: 'waiting', id: panel.id, hour: panel.hour }; }
     if (!panel.panel) { this.freed += size; return { kind: 'stands', id: panel.id, hour: panel.hour, stepped: panel.stepped }; }
     if (panel.panel.refused !== null) return { kind: 'refused', id: panel.id, hour: panel.hour, reason: panel.panel.refused, stepped: panel.stepped, bytes: size,
       value: { kind: 'panel', bytes: null, data: undefined, refused: panel.panel.refused } };
     let cells: ReturnType<typeof cellsOf> = [];
     try { cells = cellsOf(panel.panel.data); } catch { cells = []; }
+    for (const cell of cells) this.gone.delete(cell.id);
     return { kind: 'data', id: panel.id, hour: panel.hour, stepped: panel.stepped, bytes: size, cells,
       value: { kind: 'panel', bytes: panel.panel.bytes ? panel.panel.bytes.slice() : null, data: panel.panel.data, refused: null } };
   }
@@ -481,6 +704,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.holdMessage('panels', native, seek, completed ?? data.getInt32(12, true), unbound, completed);
     if (route === undefined) return;
     this.facts.panels(route, seek, mine, completed);
+    for (const record of mine) this.markSub(record.id);
+    if (completed !== undefined) this.markRoute(route, 'panel');
   }
 
   frame(request: FrameRequest) {
@@ -510,7 +735,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     finally {
       this.working = false;
       if (this.request) this.schedule();
-      else if (!this.pacing && [...this.widgets.values()].some(widget => widget.motion)) {
+      else if (!this.pacing && this.motionWidgets.size > 0) {
         this.pacing = true;
         this.host.later(() => { this.pacing = false; this.wake(); });
       }
@@ -525,6 +750,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       if (!widget || !owner || owner.sent.binding !== widget.binding.generation) continue;
       if (!widget.installed || widget.installed.id < owner.sent.id) widget.installed = owner.sent;
       if (widget.inflight?.id === ack.id) widget.inflight = null;
+      for (const sub of widget.subs) this.prunableSubs.add(sub);
+      this.syncWindowTracking(widget);
     }
     for (const refusal of refused) {
       const owner = this.presented.get(refusal.id);
@@ -537,12 +764,15 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       if (refusal.reason === 'kept content') widget.installed = null;
       widget.parked = refusal.reason === 'uncovered' && owner ? owner.sent : null;
       widget.sent = { ...widget.installed?.contents ?? {} };
+      this.dirtyWidgets.add(widget.id);
+      for (const sub of widget.subs) this.prunableSubs.add(sub);
+      this.syncWindowTracking(widget);
     }
   }
 
   private targetOf(widget: Widget, hour: number) { return widget.binding.pin ?? hour + widget.binding.offset; }
 
-  private select(widget: Widget, target: number): Selected | 'lost' | null {
+  private select(widget: Widget, target: number): Selection {
     const pictures: Picture<Value>[] = [];
     let joined: { h: number; c: number; window: Window } | null;
     if (!widget.subs.length) {
@@ -552,7 +782,17 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     } else {
       const components: { picture: Picture<Value>; window: Window }[] = [];
       for (const id of widget.subs) {
+        const failed = this.subFailed.get(id);
+        if (failed !== undefined) return { failed };
         if (this.lost.has(id)) return 'lost';
+        const uses = this.facts.usesOf(id);
+        if (uses) {
+          for (const cell of uses) {
+            const cellFailed = this.subFailed.get(cell);
+            if (cellFailed !== undefined) return { failed: cellFailed };
+            if (this.lost.has(cell)) return 'lost';
+          }
+        }
         const sub = this.subs.get(id);
         if (!sub || sub.route !== null && this.failed.has(sub.route)) return null;
         const picture = this.facts.select(id, target);
@@ -576,9 +816,32 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     return { pictures, window, h: joined.h, c: joined.c };
   }
 
-  private matches(sent: Sent | null, selected: Selected, target: number, binding: number, inspect: string | null) {
-    return !!sent && sent.binding === binding && sent.c === selected.c && sent.inspect === inspect && sent.pictures.length === selected.pictures.length
-      && sent.pictures.every((picture, at) => samePicture(picture, selected.pictures[at])) && sent.lo === selected.window[0] && sent.lo <= target && target <= sent.hi;
+  private isOpenFollowed(widget: Widget, selected: Selected): boolean {
+    if (!widget.subs.length || selected.window[1] !== Infinity) return false;
+    const route = this.routeOf(widget);
+    if (route === null) return false;
+    const confirmed = this.routeConfirmedFollowed.get(route);
+    if (confirmed === undefined || selected.c < confirmed) return false;
+    for (let i = 0; i < widget.subs.length; i++) {
+      const id = widget.subs[i]!, sub = this.subs.get(id), picture = selected.pictures[i]!;
+      if (!sub || sub.channel !== 'followed' || sub.route !== route || this.limitedSubs.has(id)) return false;
+      if (picture.carried || picture.parts.length !== 1) return false;
+    }
+    return true;
+  }
+
+  private matches(sent: Sent | null, selected: Selected, target: number, binding: number, inspect: string | null, route: number | null) {
+    if (!sent || sent.binding !== binding || sent.inspect !== inspect || sent.pictures.length !== selected.pictures.length) return false;
+    const confirmed = sent.open === 'followed' && route !== null ? Math.max(sent.c, this.routeConfirmedFollowed.get(route) ?? -Infinity) : sent.c;
+    return confirmed === selected.c && sent.pictures.every((picture, at) => samePicture(picture, selected.pictures[at]))
+      && sent.lo === selected.window[0] && sent.lo <= target && target <= sent.hi;
+  }
+
+  private canRedate(sent: Sent | null, selected: Selected, binding: number, inspect: string | null) {
+    return !!sent && sent.mode !== 'failed' && sent.binding === binding && sent.inspect === inspect
+      && sent.pictures.length === selected.pictures.length
+      && sent.pictures.every((picture, at) => samePicture(picture, selected.pictures[at]))
+      && sent.lo === selected.window[0];
   }
 
   private async serve(request: FrameRequest) {
@@ -587,24 +850,85 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.stats.frames++;
     this.acknowledge(request.installed, request.refused);
     const inspect = new Map(request.inspect);
-    const due: { widget: Widget; selected: Selected | 'lost'; motion: boolean; target: number }[] = [];
-    for (const widget of this.widgets.values()) {
-      if (widget.halted === widget.binding.generation) continue;
-      if (!request.exact) widget.parked = null;
+    const candidates = new Set<number>();
+    for (const wid of this.dirtyWidgets) candidates.add(wid);
+    this.dirtyWidgets.clear();
+    for (const wid of this.motionWidgets) candidates.add(wid);
+    for (const wid of this.inflightWidgets) {
+      const widget = this.widgets.get(wid);
+      if (widget?.inflight && this.requests - widget.inflight.request > STALE) candidates.add(wid);
+    }
+    if (!request.exact && this.parkedWidgets.size) {
+      for (const wid of this.parkedWidgets) {
+        const widget = this.widgets.get(wid);
+        if (widget) { widget.parked = null; candidates.add(wid); }
+      }
+      this.parkedWidgets.clear();
+    }
+    for (const wid of this.inspectedWidgets) {
+      const widget = this.widgets.get(wid);
+      if (widget && (inspect.get(wid) ?? null) !== widget.inspect) candidates.add(wid);
+    }
+    for (const [wid, key] of inspect) {
+      const widget = this.widgets.get(wid);
+      if (widget && widget.inspect !== key) candidates.add(wid);
+    }
+    for (const wid of this.windowedWidgets) {
+      const widget = this.widgets.get(wid);
+      if (!widget) continue;
+      const target = this.targetOf(widget, request.target);
+      const w = widget.validWindow;
+      const active = widget.inflight ?? widget.installed;
+      if ((!active && !w) || (w && (target < w[0] || target > w[1])) || (active && (target < active.lo || target > active.hi))) {
+        candidates.add(wid);
+      }
+    }
+    const due: { widget: Widget; selected: Exclude<Selection, null>; motion: boolean; target: number }[] = [];
+    for (const wid of candidates) {
+      const widget = this.widgets.get(wid);
+      if (!widget || widget.halted === widget.binding.generation) continue;
+      this.stats.visited++;
+      if (!request.exact && widget.parked) { widget.parked = null; this.parkedWidgets.delete(wid); }
       const key = inspect.get(widget.id) ?? null, target = this.targetOf(widget, request.target);
+      const route = this.routeOf(widget);
       const selected = this.select(widget, target);
-      if (!selected) continue;
-      if (selected === 'lost') {
-        if (widget.inflight || widget.installed?.contents.failed === LOST) continue;
+      if (!selected) {
+        let next = Infinity;
+        if (!widget.subs.length) {
+          if (widget.binding.dated && widget.binding.dated.h > target) next = widget.binding.dated.h;
+        } else {
+          for (const id of widget.subs) {
+            const h = this.facts.nextStart(id, target);
+            if (h < next) next = h;
+          }
+        }
+        widget.validWindow = Number.isFinite(next) ? [-Infinity, next - 1] : null;
+        this.syncWindowTracking(widget);
+        widget.inspect = key;
+        if (key === null) this.inspectedWidgets.delete(wid); else this.inspectedWidgets.add(wid);
+        continue;
+      }
+      if (selected === 'lost' || 'failed' in selected) {
+        widget.validWindow = null;
+        this.syncWindowTracking(widget);
+        const reason = selected === 'lost' ? LOST : selected.failed;
+        if (widget.inflight || widget.installed?.contents.failed === reason) continue;
         due.push({ widget, selected, motion: false, target });
         continue;
       }
-      const shown = this.matches(widget.installed, selected, target, widget.binding.generation, key);
-      if (this.matches(widget.parked, selected, target, widget.binding.generation, key)) continue;
-      const pending = widget.inflight && this.requests - widget.inflight.request <= STALE && this.matches(widget.inflight, selected, target, widget.binding.generation, key);
-      if (pending || shown && !widget.motion) continue;
+      widget.validWindow = selected.window;
+      this.syncWindowTracking(widget);
+      const shown = this.matches(widget.installed, selected, target, widget.binding.generation, key, route);
+      if (this.matches(widget.parked, selected, target, widget.binding.generation, key, route)) continue;
+      const pending = widget.inflight && this.requests - widget.inflight.request <= STALE && this.matches(widget.inflight, selected, target, widget.binding.generation, key, route);
+      if (pending || shown && !widget.motion) {
+        widget.inspect = key;
+        if (key === null) this.inspectedWidgets.delete(wid); else this.inspectedWidgets.add(wid);
+        continue;
+      }
       due.push({ widget, selected, motion: shown, target });
       widget.inspect = key;
+      if (key === null) this.inspectedWidgets.delete(wid); else this.inspectedWidgets.add(wid);
     }
     due.sort((a, b) => Number(a.motion) - Number(b.motion) || a.widget.served - b.widget.served || a.widget.order - b.widget.order);
     const budget = this.host.budget ?? 10;
@@ -612,15 +936,34 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const made: { widget: Widget; selected: Selected }[] = [];
     const shared = new Map<string, number>();
     let tried = 0;
-    for (const { widget, selected, motion, target } of due) {
-      if (tried++ && this.time() - began + widget.cost > budget) break;
+    for (let i = 0; i < due.length; i++) {
+      const { widget, selected, motion, target } = due[i]!;
+      const elapsed = this.time() - began;
+      if (tried > 0 && elapsed + widget.cost > budget) {
+        this.dirtyWidgets.add(widget.id);
+        if (elapsed >= budget) {
+          for (let j = i + 1; j < due.length; j++) this.dirtyWidgets.add(due[j]!.widget.id);
+          break;
+        }
+        continue;
+      }
+      tried++;
       const start = this.time();
       widget.served = this.requests;
-      if (selected === 'lost') {
-        const lost = { pictures: [], window: [-Infinity, Infinity] as Window, h: target, c: target };
-        entries.push(this.entry(widget, lost, { surfaces: [], fields: {}, motion: false }, 'failed', LOST, [], request.seek));
-        made.push({ widget, selected: lost });
+      if (selected === 'lost' || 'failed' in selected) {
+        const reason = selected === 'lost' ? LOST : selected.failed;
+        const failed = { pictures: [], window: [-Infinity, Infinity] as Window, h: target, c: target };
+        entries.push(this.entry(widget, failed, { surfaces: [], fields: {}, motion: false }, 'failed', reason, [], request.seek));
+        made.push({ widget, selected: failed });
         surfaces.push([]);
+        continue;
+      }
+      const open = this.isOpenFollowed(widget, selected) ? 'followed' : undefined;
+      if (!motion && !widget.motion && widget.installed && this.canRedate(widget.installed, selected, widget.binding.generation, widget.inspect)) {
+        const redated = this.redateEntry(widget, widget.installed, selected, request.seek, open);
+        entries.push(redated);
+        made.push({ widget, selected });
+        surfaces.push([...redated.surfaces]);
         continue;
       }
       const view = this.host.views(widget.view);
@@ -637,11 +980,14 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         painted = { surfaces: [], fields: {}, motion: false };
         mode = 'failed'; reason = 'drawing failed: ' + (error instanceof Error ? error.message : String(error));
       }
+      const paintMs = this.time() - start;
       widget.motion = painted.motion;
-      widget.cost = widget.cost * 0.8 + (this.time() - start) * 0.2;
+      if (widget.motion) this.motionWidgets.add(widget.id); else this.motionWidgets.delete(widget.id);
+      widget.cost = widget.cost * 0.8 + paintMs * 0.2;
+      widget.served = this.requests + Math.min(4, Math.floor(paintMs / budget));
       if (motion) this.stats.motion++;
       const parts: (B | typeof SAME | null)[] = [];
-      const entry = this.entry(widget, selected, painted, mode, reason, parts, request.seek, this.time() - start);
+      const entry = this.entry(widget, selected, painted, mode, reason, parts, request.seek, paintMs, open);
       painted.surfaces.forEach((surface, k) => {
         if (!surface || parts[k] === SAME) return;
         let source = shared.get(surface.content);
@@ -669,22 +1015,54 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     slots.forEach(([e, k], at) => { surfaces[e]![k] = crops[at]!; });
     const resets: [number, number][] = [];
     let moved = false;
-    for (const route of new Set([...this.subs.values()].flatMap(sub => sub.route === null ? [] : [sub.route]))) {
-      const count = this.resets.get(this.natives.get(route)!) ?? 0;
+    for (const [route, native] of this.natives) {
+      const count = this.resets.get(native) ?? 0;
       if (this.told.get(route) !== count) { moved = true; this.told.set(route, count); }
       resets.push([route, count]);
     }
-    if (entries.length || moved) this.host.present({ lane: this.host.lane, serial: request.serial, resets, entries }, crops);
+    const confirmed: [number, 'followed' | 'panel', number][] = [];
+    for (const [route, hour] of this.routeConfirmedFollowed) {
+      if (this.toldConfirmedFollowed.get(route) !== hour) {
+        this.toldConfirmedFollowed.set(route, hour);
+        confirmed.push([route, 'followed', hour]);
+        moved = true;
+      }
+    }
+    const closed = this.pendingClosed.size ? [...this.pendingClosed] : undefined;
+    if (closed) { this.pendingClosed.clear(); moved = true; }
+    if (entries.length || moved) {
+      this.host.present({ lane: this.host.lane, serial: request.serial, resets, ...closed ? { closed } : {}, ...confirmed.length ? { confirmed } : {}, entries }, crops);
+    }
     this.stats.entries += entries.length;
     this.prune(request.now);
     const bytes = this.freed + this.releasedFacts();
     this.freed = 0;
     if (bytes) this.host.release(bytes);
     this.host.stretch?.(this.time() - began);
-    this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: entries.length, ms: this.time() - began });
+    const costs: [number, number][] | undefined = made.length ? made.map(({ widget }) => [widget.id, widget.cost]) : undefined;
+    this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: entries.length, ms: this.time() - began, ...costs ? { costs } : {} });
   }
 
-  private entry(widget: Widget, selected: Selected, painted: Painted, mode: Entry['mode'], reason: string | undefined, parts: (B | typeof SAME | null)[], seek: number, ms = 0): Entry<B> {
+  private redateEntry(widget: Widget, base: Sent, selected: Selected, seek: number, open?: 'followed' | 'panel'): Entry<B> {
+    const id = this.host.lane + 1 + this.host.lanes * this.nextEntry++;
+    const contents: Record<string, string> = { ...base.contents, hour: String(selected.window[0]) };
+    const parts: (B | typeof SAME | null)[] = Array.from({ length: base.surfaceCount }, (_, k) => base.contents[k] !== undefined ? SAME : null);
+    const fields: Record<string, unknown> = {};
+    for (const key of base.fieldKeys) fields[key] = SAME;
+    const route = this.routeOf(widget);
+    const gen = route === null ? { seek, reset: 0 } : { seek: this.facts.generation(route).seek, reset: this.applied.get(this.natives.get(route)!) ?? this.resets.get(this.natives.get(route)!) ?? 0 };
+    const sent: Sent = { id, request: this.requests, pictures: selected.pictures, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
+      binding: widget.binding.generation, contents, fieldKeys: base.fieldKeys, surfaceCount: base.surfaceCount, mode: base.mode, reason: base.reason, open, inspect: widget.inspect, hit: base.hit };
+    widget.sent = { ...contents };
+    widget.inflight = sent;
+    this.presented.set(id, { widget: widget.id, sent });
+    this.syncWindowTracking(widget);
+    return Object.freeze({ widget: widget.id, binding: widget.binding.generation, id, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
+      gen: Object.freeze(gen), follows: selected.pictures.some(picture => followsChannel(picture)), mode: base.mode, ...base.reason !== undefined ? { reason: base.reason } : {},
+      ...open ? { open } : {}, surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms: 0 });
+  }
+
+  private entry(widget: Widget, selected: Selected, painted: Painted, mode: Entry['mode'], reason: string | undefined, parts: (B | typeof SAME | null)[], seek: number, ms = 0, open?: 'followed' | 'panel'): Entry<B> {
     const id = this.host.lane + 1 + this.host.lanes * this.nextEntry++, contents: Record<string, string> = { hour: String(selected.window[0]) };
     if (mode === 'failed' && reason !== undefined) contents.failed = reason;
     const fields: Record<string, unknown> = {};
@@ -693,6 +1071,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       contents[k] = surface.content;
       parts[k] = widget.sent[k] === surface.content ? SAME : null;
     });
+    const fieldKeys = Object.keys(painted.fields);
     for (const [key, field] of Object.entries(painted.fields)) {
       contents[key] = field.content;
       fields[key] = widget.sent[key] === field.content ? SAME : field.value;
@@ -700,27 +1079,40 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const route = this.routeOf(widget);
     const gen = route === null ? { seek, reset: 0 } : { seek: this.facts.generation(route).seek, reset: this.applied.get(this.natives.get(route)!) ?? this.resets.get(this.natives.get(route)!) ?? 0 };
     const sent: Sent = { id, request: this.requests, pictures: selected.pictures, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
-      binding: widget.binding.generation, contents, inspect: widget.inspect, hit: painted.hit };
+      binding: widget.binding.generation, contents, fieldKeys, surfaceCount: painted.surfaces.length, mode, reason, open, inspect: widget.inspect, hit: painted.hit };
     widget.sent = { ...contents };
     widget.inflight = sent;
     this.presented.set(id, { widget: widget.id, sent });
+    this.syncWindowTracking(widget);
     return Object.freeze({ widget: widget.id, binding: widget.binding.generation, id, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
       gen: Object.freeze(gen), follows: selected.pictures.some(picture => followsChannel(picture)), mode, ...reason !== undefined ? { reason } : {},
-      surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms });
+      ...open ? { open } : {}, surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms });
   }
 
   private prune(hour: number) {
-    const keep = new Map<number, Picture<Value>[]>(), actual = new Map<number, number>();
-    for (const widget of this.widgets.values()) {
-      const target = this.targetOf(widget, hour);
-      widget.subs.forEach((sub, at) => {
-        actual.set(sub, Math.min(actual.get(sub) ?? Infinity, target));
-        let list = keep.get(sub);
-        if (!list) keep.set(sub, list = []);
-        for (const sent of [widget.installed, widget.inflight]) if (sent?.pictures[at]) list.push(sent.pictures[at]!);
-      });
+    if (!this.prunableSubs.size) return;
+    for (const subId of [...this.prunableSubs]) {
+      const sub = this.subs.get(subId);
+      if (!sub) { this.prunableSubs.delete(subId); continue; }
+      let actual = Infinity;
+      const keep: Picture<Value>[] = [];
+      const widgets = this.subWidgets.get(subId);
+      if (widgets) {
+        for (const wid of widgets) {
+          const widget = this.widgets.get(wid);
+          if (!widget) continue;
+          const target = this.targetOf(widget, hour);
+          if (target < actual) actual = target;
+          const at = widget.subs.indexOf(subId);
+          if (at < 0) continue;
+          if (widget.installed?.pictures[at]) keep.push(widget.installed.pictures[at]!);
+          if (widget.inflight?.pictures[at]) keep.push(widget.inflight.pictures[at]!);
+        }
+      }
+      if (!Number.isFinite(actual)) actual = hour + (sub.route === null ? 0 : this.offsets.get(sub.route) ?? 0);
+      this.facts.prune(subId, actual, keep);
+      this.stats.pruned++;
+      if (!this.facts.prunable(subId)) this.prunableSubs.delete(subId);
     }
-    for (const sub of this.subs.values())
-      this.facts.prune(sub.id, actual.get(sub.id) ?? hour + (sub.route === null ? 0 : this.offsets.get(sub.route) ?? 0), keep.get(sub.id) ?? []);
   }
 }

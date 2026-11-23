@@ -510,3 +510,35 @@ test('review 10: the structure React reads is made once per install, not on ever
   assert.equal(typeof made, 'string');
   assert.equal(p.view(1).structure, made);
 });
+
+test('a later-window speculative entry does not displace an earlier upcoming entry waiting for the clock', () => {
+  const { p, offer, view } = page();
+  p.publish(100, { playing: true, step: 24 });
+  offer(entry({ id: 1, h: 120, c: 143, lo: 120, hi: 143, content: 'day5' }));
+  p.publish(110, { playing: true, step: 24 });
+  offer(entry({ id: 2, h: 144, c: 167, lo: 144, hi: 167, content: 'day6' }));
+  p.publish(115, { playing: true, step: 24 });
+  p.publish(124, { playing: true, step: 24 });
+  assert.deepEqual([view().id, view().h], [1, 120], 'the earlier speculative window installs when the clock reaches it');
+  p.publish(148, { playing: true, step: 24 });
+  assert.deepEqual([view().id, view().h], [2, 144], 'the later speculative window follows once the clock reaches it');
+});
+
+test('quiet frames visit zero unchanged widgets across 114 mounted widgets, and K changed visits O(K)', () => {
+  const p = new Page<Fake>({ lanes: 2 });
+  for (let id = 1; id <= 114; id++) p.mount(id, { route: 9, lane: id % 2, surfaces: [] });
+  p.publish(0, { playing: true, step: 24, speed: 1440 });
+  for (let id = 1; id <= 114; id++) {
+    p.offer({ lane: id % 2, serial: id, entries: [entry({ id, widget: id, n: 0, h: 0, c: 10_000, lo: 0, hi: 10_000 })] });
+  }
+  p.publish(24, { playing: true, step: 24, speed: 1440 });
+  const beforeQuiet = p.stats.visited;
+  for (let step = 2; step <= 20; step++) p.publish(step * 24, { playing: true, step: 24, speed: 1440 });
+  assert.equal(p.stats.visited - beforeQuiet, 0, 'quiet playing frames visit zero widgets');
+  const beforeK = p.stats.visited;
+  for (let id = 1; id <= 3; id++) {
+    p.offer({ lane: id % 2, serial: 1000 + id, entries: [entry({ id: 1000 + id, widget: id, n: 0, h: 500, c: 10_000, lo: 500, hi: 10_000 })] });
+  }
+  p.publish(504, { playing: true, step: 24, speed: 1440 });
+  assert.ok(p.stats.visited - beforeK <= 6, `visited ${p.stats.visited - beforeK} widgets for 3 changed out of 114`);
+});

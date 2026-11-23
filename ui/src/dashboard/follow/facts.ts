@@ -70,7 +70,30 @@ export class Facts<V> {
 
   owns(id: number) { return this.subs.has(id) || this.groups.has(id); }
 
+  usesOf(id: number): ReadonlySet<number> | undefined { return this.subs.get(id)?.uses; }
+
+  usersOf(id: number): ReadonlySet<number> | undefined { return this.groups.get(id)?.users; }
+
   latest(id: number): V | undefined { return (this.subs.get(id) ?? this.groups.get(id))?.facts.at(-1)?.value; }
+
+  nextStart(id: number, target: number): number {
+    const sub = this.subs.get(id);
+    if (!sub) return Infinity;
+    for (const fact of sub.facts) if (fact.h > target) return fact.h;
+    if (sub.carried && sub.carried.h > target) return sub.carried.h;
+    return Infinity;
+  }
+
+  prunable(id: number): boolean {
+    const sub = this.subs.get(id);
+    if (!sub) return false;
+    if (sub.facts.length > 1 || sub.carried !== null) return true;
+    for (const groupId of sub.uses) {
+      const group = this.groups.get(groupId);
+      if (group && group.facts.length > 1) return true;
+    }
+    return false;
+  }
 
   follow(id: number, route: number, channel: Channel) {
     if (channel !== 'pinned') this.route(route);
@@ -87,6 +110,8 @@ export class Facts<V> {
   }
 
   drain(): number[] { const out = this.released; this.released = []; return out; }
+
+  hasRemoved() { return this.removed.length > 0; }
 
   releasedBytes(): number { return this.release(() => false); }
 
@@ -140,7 +165,6 @@ export class Facts<V> {
       group.facts = []; group.open = false;
     }
     at.seek = seek;
-    for (const sub of this.subs.values()) if (sub.route === route) this.retain(sub);
     const due = at.early.filter(([stamp]) => stamp <= seek);
     at.early = at.early.filter(([stamp]) => stamp > seek);
     for (const [, again] of due) again();
@@ -314,7 +338,7 @@ export class Facts<V> {
 
   prune(id: number, actual: number, keep: readonly (Picture<V> | null | undefined)[]) {
     const sub = this.subs.get(id);
-    if (!sub) return;
+    if (!sub || (!sub.facts.length && !sub.carried)) return;
     const current = this.select(id, actual), held = new Set<Fact<V>>();
     const from = current && !current.carried ? sub.facts.indexOf(current.parts[0]!) : -1;
     const fallback = from > 0 ? this.before(sub, from, actual) : null;

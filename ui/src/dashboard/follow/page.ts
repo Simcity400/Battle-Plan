@@ -27,6 +27,7 @@ export interface Entry<B extends Bitmap = Bitmap> {
   follows: boolean;
   mode: Mode;
   reason?: string;
+  open?: 'followed' | 'panel';
   surfaces: readonly (B | Same | null)[];
   content: Readonly<Record<string, string>>;
   fields: Readonly<Record<string, unknown>>;
@@ -37,6 +38,8 @@ export interface Presentation<B extends Bitmap = Bitmap> {
   lane: number;
   serial: number;
   resets?: readonly (readonly [route: number, reset: number])[];
+  closed?: readonly number[];
+  confirmed?: readonly (readonly [route: number, channel: 'followed' | 'panel', hour: number])[];
   entries: readonly Entry<B>[];
 }
 
@@ -62,6 +65,8 @@ export type PageMessage = FrameRequest
 
 export interface Installed {
   id: number; h: number; c: number; lo: number; hi: number; gen: Generation; binding: number; follows: boolean;
+  open?: 'followed' | 'panel';
+  freeze?: () => void;
   mode: Mode; reason?: string; fields: Readonly<Record<string, unknown>>; ms: number; kept: readonly string[]; structure?: string;
 }
 
@@ -93,7 +98,8 @@ export interface Mount<B extends Bitmap = Bitmap> {
 interface Widget<B extends Bitmap> {
   id: number; route: number; lane: number; offset: number; pin: number | null; bounds: readonly [number, number] | null;
   surfaces: readonly PageSurface<B>[]; binding: number; installed: Installed | null; content: Record<string, string>;
-  status: Shown; reason?: string; inspect: string | null; early: Entry<B> | null; changed?: () => void; dated?: () => void;
+  status: Shown; reason?: string; inspect: string | null; early: Entry<B> | null; earlyMore: Entry<B>[];
+  changed?: () => void; dated?: () => void;
   failed: boolean; face: string; drawn: number;
 }
 
@@ -102,6 +108,8 @@ interface RouteState { reset: number; command: number; failed: { seek: number; r
 export interface RebindChange { pin?: number | null; offset?: number; subscription?: boolean; bounds?: readonly [number, number] | null }
 
 const STRUCTURAL = /^(model|refused):|^(rows|failed)$/;
+const MAX_EARLY = 4;
+const MAX_AHEAD = 4;
 const structureOf = (content: Readonly<Record<string, string>>, fields: Readonly<Record<string, unknown>>) => [
   ...Object.entries(content).filter(([key]) => STRUCTURAL.test(key)).map(([key, id]) => `${key}=${id}`),
   ...Object.entries(fields).flatMap(([key, value]) => key.startsWith('answer:') && value instanceof Uint8Array ? [`${key}~${answerShape(value)}`] : []),
@@ -125,7 +133,7 @@ export class Page<B extends Bitmap = Bitmap> {
   publishes = 0;
   readonly lanes: number;
   readonly ahead: number[];
-  readonly stats = { installs: 0, rejected: {} as Record<string, number>, failed: 0 };
+  readonly stats = { installs: 0, rejected: {} as Record<string, number>, failed: 0, visited: 0 };
   readonly widgets = new Map<number, Widget<B>>();
   private serial = 0;
   private readonly post: (lane: number | 'all', message: PageMessage) => void;
@@ -134,6 +142,15 @@ export class Page<B extends Bitmap = Bitmap> {
   private readonly acks: Ack[][];
   private readonly refusals: Refusal[][];
   private readonly routes = new Map<number, RouteState>();
+  private readonly laneConfirmed: Map<number, { followed: { hour: number }; panel: { hour: number } }>[];
+  private readonly byRoute = new Map<number, Set<Widget<B>>>();
+  private readonly earlyWidgets = new Set<Widget<B>>();
+  private readonly inspectedByLane: Set<Widget<B>>[];
+  private readonly bounded = new Set<Widget<B>>();
+  private readonly boundedOutside = new Set<Widget<B>>();
+  private safeLo = -Infinity;
+  private safeHi = Infinity;
+  private safeDirty = false;
   private readonly kept = new Map<string, { value: unknown; holders: number }>();
   private readonly holding = new WeakMap<Entry<B>, string[]>();
   private queue: Presentation<B>[] = [];
@@ -146,6 +163,15 @@ export class Page<B extends Bitmap = Bitmap> {
     this.targets = Array.from({ length: lanes }, () => -Infinity);
     this.acks = Array.from({ length: lanes }, () => []);
     this.refusals = Array.from({ length: lanes }, () => []);
+    this.laneConfirmed = Array.from({ length: lanes }, () => new Map());
+    this.inspectedByLane = Array.from({ length: lanes }, () => new Set<Widget<B>>());
+  }
+
+  private confirmedBox(lane: number, route: number, channel: 'followed' | 'panel'): { hour: number } {
+    const map = this.laneConfirmed[lane]!;
+    let held = map.get(route);
+    if (!held) map.set(route, held = { followed: { hour: -Infinity }, panel: { hour: -Infinity } });
+    return held[channel];
   }
 
   private route(id: number): RouteState {
@@ -154,19 +180,88 @@ export class Page<B extends Bitmap = Bitmap> {
     return route;
   }
 
+  private routeSet(id: number): Set<Widget<B>> {
+    let set = this.byRoute.get(id);
+    if (!set) this.byRoute.set(id, set = new Set());
+    return set;
+  }
+
+  private trackBounds(widget: Widget<B>) {
+    this.bounded.delete(widget);
+    this.boundedOutside.delete(widget);
+    if (widget.bounds && widget.pin === null) {
+      this.bounded.add(widget);
+      const at = this.target(widget);
+      if (at < widget.bounds[0] || at > widget.bounds[1]) this.boundedOutside.add(widget);
+    }
+    this.safeDirty = true;
+  }
+
+  private refreshSafeBounds() {
+    let lo = -Infinity, hi = Infinity;
+    for (const widget of this.bounded) {
+      if (this.boundedOutside.has(widget) || !widget.bounds) continue;
+      lo = Math.max(lo, widget.bounds[0] - widget.offset);
+      hi = Math.min(hi, widget.bounds[1] - widget.offset);
+    }
+    this.safeLo = lo;
+    this.safeHi = hi;
+    this.safeDirty = false;
+  }
+
+  private retireEarly(widget: Widget<B>, reason: string) {
+    if (!widget.early && !widget.earlyMore.length) return;
+    if (widget.early) { this.refuse(widget, widget.early, reason); widget.early = null; }
+    for (const entry of widget.earlyMore) this.refuse(widget, entry, reason);
+    widget.earlyMore = [];
+    this.earlyWidgets.delete(widget);
+  }
+
+  private parkEarly(widget: Widget<B>, entry: Entry<B>) {
+    const list: Entry<B>[] = [];
+    if (widget.early) list.push(widget.early);
+    if (widget.earlyMore.length) list.push(...widget.earlyMore);
+    const kept: Entry<B>[] = [];
+    for (const held of list) {
+      if (held === entry) continue;
+      const overlaps = held.lo <= entry.hi && entry.lo <= held.hi;
+      if (overlaps) {
+        if (held.id > entry.id) { this.refuse(widget, entry, 'displaced'); return; }
+        this.refuse(widget, held, 'displaced');
+      } else {
+        kept.push(held);
+      }
+    }
+    kept.push(entry);
+    kept.sort((a, b) => a.lo - b.lo || a.id - b.id);
+    while (kept.length > MAX_EARLY) this.refuse(widget, kept.pop()!, 'displaced');
+    widget.early = kept[0] ?? null;
+    widget.earlyMore = kept.slice(1);
+    if (widget.early) this.earlyWidgets.add(widget);
+    else this.earlyWidgets.delete(widget);
+  }
+
   generation(route: number): Generation { return { seek: this.seek, reset: this.route(route).reset }; }
 
   mount(id: number, mount: Mount<B>) {
     this.route(mount.route);
-    this.widgets.set(id, { id, route: mount.route, lane: mount.lane, offset: mount.offset ?? 0, pin: mount.pin ?? null, bounds: mount.bounds ?? null,
-      surfaces: mount.surfaces, binding: 1, installed: null, content: {}, status: 'reading', inspect: null, early: null, changed: mount.changed, dated: mount.dated,
-      failed: false, face: '', drawn: 0 });
+    const widget: Widget<B> = { id, route: mount.route, lane: mount.lane, offset: mount.offset ?? 0, pin: mount.pin ?? null, bounds: mount.bounds ?? null,
+      surfaces: mount.surfaces, binding: 1, installed: null, content: {}, status: 'reading', inspect: null, early: null, earlyMore: [],
+      changed: mount.changed, dated: mount.dated, failed: false, face: '', drawn: 0 };
+    this.widgets.set(id, widget);
+    this.routeSet(mount.route).add(widget);
+    this.trackBounds(widget);
   }
 
   unmount(id: number) {
     const widget = this.widgets.get(id);
     if (!widget) return;
-    if (widget.early) this.refuse(widget, widget.early, 'unmounted');
+    this.retireEarly(widget, 'unmounted');
+    this.inspectedByLane[widget.lane]?.delete(widget);
+    this.byRoute.get(widget.route)?.delete(widget);
+    this.bounded.delete(widget);
+    this.boundedOutside.delete(widget);
+    this.safeDirty = true;
     this.drop(widget.installed);
     this.widgets.delete(id);
   }
@@ -179,16 +274,59 @@ export class Page<B extends Bitmap = Bitmap> {
 
   publish(T: number, { playing = this.playing, seek = false, step = this.step, speed = this.speed }: { playing?: boolean; seek?: boolean | number; step?: number; speed?: number } = {}) {
     const sought = seek === true || (typeof seek === 'number' && seek !== this.seek);
-    const wake = sought || playing !== this.playing || speed !== this.speed;
+    const playingChanged = playing !== this.playing;
+    const wake = sought || playingChanged || speed !== this.speed;
     const moved = T !== this.T;
     this.T = T; this.playing = playing; this.step = step; this.speed = speed; this.publishes++;
     if (sought) {
       this.seek = typeof seek === 'number' ? seek : this.seek + 1;
-      for (const widget of this.widgets.values()) this.revalidate(widget);
+      for (const map of this.laneConfirmed) map.clear();
+      for (const widget of this.widgets.values()) {
+        this.stats.visited++;
+        widget.installed?.freeze?.();
+        this.revalidate(widget);
+      }
       for (const route of this.routes.keys()) this.post('all', { type: 'stream', route, seek: this.seek, target: T });
     }
     this.commit();
-    if (moved || wake) for (const widget of this.widgets.values()) if (this.face(widget) !== widget.face) this.touched.add(widget);
+    if (sought || playingChanged) {
+      for (const widget of this.widgets.values()) {
+        this.stats.visited++;
+        if (this.face(widget) !== widget.face) this.touched.add(widget);
+      }
+      if (this.bounded.size) {
+        this.boundedOutside.clear();
+        for (const widget of this.bounded) {
+          const at = this.target(widget);
+          if (widget.bounds && (at < widget.bounds[0] || at > widget.bounds[1])) this.boundedOutside.add(widget);
+        }
+        this.safeDirty = true;
+      }
+    } else if (moved) {
+      if (!this.playing) {
+        for (const widget of this.widgets.values()) {
+          this.stats.visited++;
+          if (this.face(widget) !== widget.face) this.touched.add(widget);
+        }
+      } else if (this.bounded.size) {
+        if (this.safeDirty) this.refreshSafeBounds();
+        if (this.boundedOutside.size > 0 || T < this.safeLo || T > this.safeHi) {
+          let changedOutside = false;
+          for (const widget of this.bounded) {
+            this.stats.visited++;
+            const at = this.target(widget);
+            const out = !!widget.bounds && (at < widget.bounds[0] || at > widget.bounds[1]);
+            const wasOut = this.boundedOutside.has(widget);
+            if (out !== wasOut) {
+              if (out) this.boundedOutside.add(widget); else this.boundedOutside.delete(widget);
+              changedOutside = true;
+            }
+            if (this.face(widget) !== widget.face) this.touched.add(widget);
+          }
+          if (changedOutside) this.safeDirty = true;
+        }
+      }
+    }
     this.tell();
     this.request(wake || !playing, wake);
   }
@@ -200,14 +338,23 @@ export class Page<B extends Bitmap = Bitmap> {
   }
 
   private request(exact: boolean, retire: boolean) {
-    if (exact && retire) for (const widget of this.widgets.values()) if (widget.early) { this.refuse(widget, widget.early, 'retired'); widget.early = null; }
+    if (exact && retire && this.earlyWidgets.size) {
+      for (const widget of [...this.earlyWidgets]) {
+        this.stats.visited++;
+        this.retireEarly(widget, 'retired');
+      }
+    }
     for (let lane = 0; lane < this.lanes; lane++) {
-      const target = exact ? this.T : Math.max(this.targets[lane]!, this.T + this.step * Math.max(1, Math.round(this.ahead[lane]!)));
+      const lead = Math.min(MAX_AHEAD, Math.max(1, Math.round(this.ahead[lane]!)));
+      const target = exact ? this.T : Math.max(this.targets[lane]!, this.T + this.step * lead);
       this.targets[lane] = exact ? -Infinity : target;
       const serial = ++this.serial;
       this.sent.set(serial, this.publishes);
       const inspect: [number, string][] = [];
-      for (const widget of this.widgets.values()) if (widget.lane === lane && widget.inspect !== null) inspect.push([widget.id, widget.inspect]);
+      for (const widget of this.inspectedByLane[lane]!) {
+        this.stats.visited++;
+        if (widget.inspect !== null) inspect.push([widget.id, widget.inspect]);
+      }
       this.post(lane, { type: 'frame', serial, now: this.T, target, exact, seek: this.seek, speed: this.playing ? this.speed : 0, installed: this.acks[lane]!.splice(0), refused: this.refusals[lane]!.splice(0), inspect });
     }
     if (this.sent.size > 256) for (const key of [...this.sent.keys()].slice(0, 128)) this.sent.delete(key);
@@ -234,7 +381,10 @@ export class Page<B extends Bitmap = Bitmap> {
 
   offer(presentation: Presentation<B>) {
     const at = this.sent.get(presentation.serial);
-    if (at !== undefined) this.ahead[presentation.lane] = this.ahead[presentation.lane]! * 0.8 + (this.publishes + 1 - at) * 0.2;
+    if (at !== undefined) {
+      const sample = Math.min(MAX_AHEAD, Math.max(1, this.publishes + 1 - at));
+      this.ahead[presentation.lane] = Math.min(MAX_AHEAD, Math.max(1, this.ahead[presentation.lane]! * 0.8 + sample * 0.2));
+    }
     this.queue.push({ ...presentation, entries: presentation.entries.map(entry => this.own(presentation.lane, entry)) });
   }
 
@@ -274,16 +424,45 @@ export class Page<B extends Bitmap = Bitmap> {
       const route = this.route(id);
       if (reset <= route.reset) continue;
       route.reset = reset;
-      for (const widget of this.widgets.values())
-        if (widget.route === id && widget.installed?.follows && widget.installed.gen.reset < reset) this.clear(widget, 'reading');
+      for (const map of this.laneConfirmed) {
+        const held = map.get(id);
+        if (held) held.followed = { hour: -Infinity };
+      }
+      for (const widget of this.byRoute.get(id) ?? []) {
+        this.stats.visited++;
+        if (widget.installed?.follows && widget.installed.gen.reset < reset) this.clear(widget, 'reading');
+      }
     }
-    const early = [...this.widgets.values()].flatMap(widget => {
-      const held = widget.early;
-      widget.early = null;
-      return held ? [held] : [];
-    });
-    for (const presentation of queue) for (const entry of presentation.entries) this.install(entry, presentation.lane);
-    for (const entry of early) this.install(entry, -1);
+    const early: Entry<B>[] = [];
+    if (this.earlyWidgets.size) {
+      for (const widget of this.earlyWidgets) {
+        this.stats.visited++;
+        if (widget.early) { early.push(widget.early); widget.early = null; }
+        if (widget.earlyMore.length) { early.push(...widget.earlyMore); widget.earlyMore = []; }
+      }
+      this.earlyWidgets.clear();
+    }
+    for (const presentation of queue) {
+      for (const widgetId of presentation.closed ?? []) this.widgets.get(widgetId)?.installed?.freeze?.();
+      for (const entry of presentation.entries) {
+        this.stats.visited++;
+        this.install(entry, presentation.lane);
+      }
+      for (const [routeId, channel, hour] of presentation.confirmed ?? []) {
+        const box = this.confirmedBox(presentation.lane, routeId, channel);
+        if (hour > box.hour) {
+          box.hour = hour;
+          if (!this.playing) {
+            for (const widget of this.byRoute.get(routeId) ?? []) {
+              if (widget.lane === presentation.lane && widget.installed?.open === channel && this.face(widget) !== widget.face) {
+                this.touched.add(widget);
+              }
+            }
+          }
+        }
+      }
+    }
+    for (const entry of early) this.install(entry, -1, true);
   }
 
   private reject(widget: Widget<B>, entry: Entry<B>): string | null {
@@ -318,7 +497,7 @@ export class Page<B extends Bitmap = Bitmap> {
     this.disown(entry);
   }
 
-  private install(entry: Entry<B>, lane: number) {
+  private install(entry: Entry<B>, lane: number, fromEarly = false) {
     const widget = this.widgets.get(entry.widget);
     if (!widget) {
       closeParts(entry);
@@ -328,10 +507,7 @@ export class Page<B extends Bitmap = Bitmap> {
     }
     const why = this.reject(widget, entry);
     if (why === 'early') {
-      const held = widget.early;
-      if (held && held !== entry && held.id > entry.id) { this.refuse(widget, entry, 'displaced'); return; }
-      if (held && held !== entry) this.refuse(widget, held, 'displaced');
-      widget.early = entry;
+      this.parkEarly(widget, entry);
       return;
     }
     if (why) { this.refuse(widget, entry, why); return; }
@@ -367,8 +543,17 @@ export class Page<B extends Bitmap = Bitmap> {
       || Object.keys(widget.installed.fields).length !== Object.keys(entry.fields).length;
     widget.content = entry.mode === 'picture' ? { ...entry.content } : {};
     this.drop(widget.installed);
-    widget.installed = { id: entry.id, h: entry.h, c: entry.c, lo: entry.lo, hi: entry.hi, gen: entry.gen, binding: entry.binding, follows: entry.follows,
+    const open = fromEarly ? undefined : entry.open;
+    const box = open ? this.confirmedBox(widget.lane, widget.route, open) : null;
+    let baseC = entry.c, live = box !== null;
+    const installed: Installed = { id: entry.id, h: entry.h, c: entry.c, lo: entry.lo, hi: entry.hi, gen: entry.gen, binding: entry.binding, follows: entry.follows,
+      ...open ? { open } : {},
       mode: entry.mode, reason: entry.reason, fields, ms: entry.ms ?? 0, kept, structure: structureOf(widget.content, fields) };
+    if (box) {
+      Object.defineProperty(installed, 'c', { enumerable: true, configurable: true, get: () => live ? Math.max(baseC, box.hour) : baseC });
+      installed.freeze = () => { if (live) { baseC = Math.max(baseC, box.hour); live = false; installed.open = undefined; } };
+    }
+    widget.installed = installed;
     widget.status = entry.mode; widget.reason = entry.reason;
     this.acks[widget.lane]!.push({ widget: widget.id, binding: widget.binding, id: entry.id });
     this.stats.installs++;
@@ -412,7 +597,8 @@ export class Page<B extends Bitmap = Bitmap> {
     if (change.pin !== undefined) widget.pin = change.pin;
     if (change.offset !== undefined) widget.offset = change.offset;
     if (change.bounds !== undefined) widget.bounds = change.bounds;
-    if (widget.early) { this.refuse(widget, widget.early, 'binding'); widget.early = null; }
+    if (change.pin !== undefined || change.offset !== undefined || change.bounds !== undefined) this.trackBounds(widget);
+    this.retireEarly(widget, 'binding');
     if (change.subscription) { widget.failed = false; if (this.failedRoute(widget)) this.reading(widget); }
     else if (change.pin !== undefined || change.offset !== undefined) this.revalidate(widget);
     this.touched.add(widget);
@@ -425,7 +611,7 @@ export class Page<B extends Bitmap = Bitmap> {
     if (!widget) return;
     const first = widget.surfaces.length === 0;
     widget.surfaces = surfaces; widget.binding++;
-    if (widget.early) { this.refuse(widget, widget.early, 'binding'); widget.early = null; }
+    this.retireEarly(widget, 'binding');
     if (first) this.touched.add(widget);
     else { widget.failed = false; this.reading(widget); }
     this.tell();
@@ -436,6 +622,8 @@ export class Page<B extends Bitmap = Bitmap> {
     const widget = this.widgets.get(id);
     if (!widget || widget.inspect === key) return;
     widget.inspect = key;
+    if (key === null) this.inspectedByLane[widget.lane]?.delete(widget);
+    else this.inspectedByLane[widget.lane]?.add(widget);
     this.touched.add(widget);
     this.tell();
     this.request(true, false);
@@ -445,7 +633,7 @@ export class Page<B extends Bitmap = Bitmap> {
     const widget = this.widgets.get(id);
     if (!widget) return;
     if (status === 'failed') widget.failed = true;
-    if (widget.early) { this.refuse(widget, widget.early, status === 'failed' ? 'failed' : 'binding'); widget.early = null; }
+    this.retireEarly(widget, status === 'failed' ? 'failed' : 'binding');
     this.clear(widget, status, reason);
     this.tell();
   }
@@ -455,7 +643,11 @@ export class Page<B extends Bitmap = Bitmap> {
   mountRoute(id: number, route: number) {
     const widget = this.widgets.get(id);
     if (!widget) return;
-    widget.route = route;
+    if (widget.route !== route) {
+      this.byRoute.get(widget.route)?.delete(widget);
+      widget.route = route;
+      this.routeSet(route).add(widget);
+    }
     const failed = this.route(route).failed;
     if (widget.pin === null && failed && failed.seek === this.seek && widget.status !== 'failed') this.reading(widget);
   }
@@ -471,8 +663,8 @@ export class Page<B extends Bitmap = Bitmap> {
     const at = this.route(route);
     if (command !== at.command) return false;
     at.failed = { seek: this.seek, reason };
-    for (const widget of this.widgets.values()) if (widget.route === route && widget.pin === null) {
-      if (widget.early) { this.refuse(widget, widget.early, 'failed stream'); widget.early = null; }
+    for (const widget of this.byRoute.get(route) ?? []) if (widget.pin === null) {
+      this.retireEarly(widget, 'failed stream');
       this.clear(widget, 'failed', reason);
     }
     this.post('all', { type: 'fail', route, seek: this.seek, command, reason });

@@ -561,3 +561,23 @@ test('oracle: selection matches a brute-force enumeration over an independent re
   }
   assert.ok(checks > 100000 && Object.values(seen).every(n => n > 5000), JSON.stringify(seen));
 });
+
+test('a seek keeps panel cell groups owned until the post-seek panel lands, even across an intervening prune', () => {
+  const f = facts([1, 'panel']);
+  f.panels(R, 0, [data(1, 10, { stepped: true, cells: [{ id: A }] })], 10);
+  f.followed(R, 0, msg(10, [{ id: A, hour: 10, value: 'v0' }]));
+  assert.equal(f.owns(A), true);
+  f.seek(R, 1, 50);
+  assert.deepEqual([f.owns(A), f.drain()], [true, []], 'cell group stays owned while waiting for seek 1 panel');
+  f.prune(1, 50, []);
+  assert.deepEqual([f.owns(A), f.drain()], [true, []], 'pruning before seek 1 panel lands does not release cell group');
+  f.followed(R, 1, msg(50, [{ id: A, hour: 50, value: 'v1' }], { reset: true }));
+  assert.equal(f.latest(A), 'v1', 'reset whole table lands directly before seek 1 panel arrives');
+  f.panels(R, 1, [data(1, 50, { stepped: true, cells: [{ id: A }] })], 50);
+  assert.equal(f.select(1, 50)?.parts[1]?.value, 'v1');
+  f.panels(R, 1, [data(1, 60, { stepped: true, cells: [] })], 60);
+  f.prune(1, 60, [f.select(1, 60)]);
+  f.panels(R, 1, [data(1, 70, { stepped: true, cells: [] })], 70);
+  f.prune(1, 70, [f.select(1, 70)]);
+  assert.deepEqual(f.drain(), [A], 'once the new panel no longer uses the cell group, prune releases it');
+});

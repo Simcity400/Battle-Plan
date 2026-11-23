@@ -29,6 +29,7 @@ use std::{
 };
 
 const FRAME: Duration = Duration::from_micros(16_667);
+const PANEL_POLL: Duration = Duration::from_millis(8);
 
 pub fn held_tables(pages: &dyn Pages, tables: usize) -> Vec<bool> {
     (0..tables)
@@ -553,13 +554,14 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
                     let mut next = Instant::now();
                     while !stopping.load(Ordering::Acquire) {
                         let Some(panels) = held.upgrade() else { return };
-                        {
+                        let active = {
                             let mut panels = panels.lock().unwrap_or_else(PoisonError::into_inner);
                             panels.stamp.2 = get(&owner).epoch() as u32;
                             evaluate(&mut panels);
-                        }
+                            !panels.shown.is_empty()
+                        };
                         drop(panels);
-                        next += FRAME;
+                        next += if active { PANEL_POLL } else { FRAME };
                         let now = Instant::now();
                         if next > now {
                             std::thread::sleep(next - now);

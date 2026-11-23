@@ -10,7 +10,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-const TICK: Duration = Duration::from_millis(125);
+const TICK: Duration = Duration::from_millis(16);
+
+const LEAD: Duration = Duration::from_millis(48);
 
 const THREAD: &str = "rows apart";
 
@@ -22,6 +24,7 @@ pub struct Apart {
     mirrors: Arc<mirror::Mirrors>,
     branch: BranchId,
     applied: Option<(Hour, u64)>,
+    posted: Option<(Hour, u64)>,
 }
 
 impl Apart {
@@ -29,7 +32,7 @@ impl Apart {
         let store = Store::new(entry);
         let reader = entry.playhead().declare(to_declared(&for_the_makers(entry)), Some(mirror::rebuild(Arc::clone(&entry.pages))))?;
         let consumer = entry.playhead().consumer(reader);
-        Ok(Self { entry: Arc::clone(entry), store, reader, consumer, mirrors: Arc::default(), branch, applied: None })
+        Ok(Self { entry: Arc::clone(entry), store, reader, consumer, mirrors: Arc::default(), branch, applied: None, posted: None })
     }
 
     pub fn store(&self) -> &Store {
@@ -103,10 +106,18 @@ impl Apart {
     fn step(&mut self, hour: Hour) {
         self.consumer.advance(hour);
         self.take_to(hour, false);
-        if let Some((applied, epoch)) = self.applied {
+        if let Some((applied, epoch)) = self.applied
+            && self.posted != Some((applied, epoch))
+        {
             self.store.post(&self.mirrors, applied, self.branch, epoch, false);
+            self.posted = Some((applied, epoch));
         }
     }
+}
+
+fn target_hour(playhead: &playhead::Playhead, now: Instant) -> Hour {
+    let head = playhead.head(now);
+    playhead.head_from(head, LEAD).unwrap_or(head)
 }
 
 impl Drop for Apart {
@@ -130,9 +141,8 @@ impl Following {
         let thread = std::thread::Builder::new().name(THREAD.into()).spawn({
             let stop = Arc::clone(&stop);
             move || {
-                viewer_runtime::worker_priority::background_priority();
                 loop {
-                    apart.step(entry.playhead().head(Instant::now()));
+                    apart.step(target_hour(entry.playhead(), Instant::now()));
                     let mut stopping = stop.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     if *stopping {
                         return;
@@ -159,5 +169,17 @@ impl Drop for Following {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LEAD, TICK};
+    use std::time::Duration;
+
+    #[test]
+    fn apart_cadence_and_lead_keep_panel_rows_within_frame_budget() {
+        assert!(TICK <= Duration::from_millis(16));
+        assert!(LEAD >= Duration::from_millis(32) && LEAD <= Duration::from_millis(100));
     }
 }

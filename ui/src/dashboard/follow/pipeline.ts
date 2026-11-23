@@ -35,7 +35,7 @@ interface SubState {
 interface RouteState { page: number; native: number | null; key: string; source: DashboardSource; branch: string; offset: number; serial: Promise<unknown>; told: string | null }
 
 interface WidgetState {
-  id: number; lane: number; subs: Map<object, number>; view: string; model?: unknown; mounted: boolean; route: RouteState | null;
+  id: number; lane: number; kind?: string; cost: number; subs: Map<object, number>; view: string; model?: unknown; mounted: boolean; route: RouteState | null;
   installListeners: Set<() => void>; dateListeners: Set<() => void>; binding: Binding; surfaces: readonly PageSurface<ImageBitmap>[];
   held: Map<string, unknown>;
 }
@@ -43,9 +43,11 @@ interface WidgetState {
 export interface MountOptions { offset: number; pin: number | null; bounds?: readonly [number, number] | null; view?: string; model?: unknown; key?: string; widget?: string }
 
 const NO_CHANNEL = 'This connection has no channel for pushed answers';
+const DEFAULT_COST = 0.5;
 
 export class Pipeline {
   readonly page: Page<ImageBitmap>;
+  readonly stats = { dateVisits: 0 };
   private readonly host: PipelineHost;
   private readonly clock: PlaybackController;
   private readonly client: DashboardClient;
@@ -53,7 +55,10 @@ export class Pipeline {
   private readonly byId = new Map<number, SubState>();
   private readonly routes = new Map<string, RouteState>();
   private readonly widgets = new Map<number, WidgetState>();
+  private readonly dateWatchers = new Set<WidgetState>();
   private readonly loads: number[];
+  private readonly costLoads: number[];
+  private readonly kindCost = new Map<string, number>();
   private readonly placed = new Map<string, number>();
   private readonly nextSub: number[];
   private nextWidget = 1;
@@ -73,6 +78,7 @@ export class Pipeline {
     const count = host.lanes.length;
     perfLog?.lanes(count);
     this.loads = Array.from({ length: count }, () => 0);
+    this.costLoads = Array.from({ length: count }, () => 0);
     this.nextSub = Array.from({ length: count }, () => 1);
     this.page = new Page<ImageBitmap>({ lanes: count, seek: clock.getSnapshot().seekSequence, post: (lane, message) => this.post(lane, message) });
     host.lanes.forEach((lane, index) => { lane.onmessage = ({ data }) => this.receive(index, data); });
@@ -109,7 +115,10 @@ export class Pipeline {
   private published(previous: PlaybackSnapshot, next: PlaybackSnapshot) {
     const rate = this.host.rate();
     if (rate !== this.rate) { this.rate = rate; for (const lane of this.host.lanes) lane.postMessage({ type: 'options', rate }); }
-    const step = next.playing && previous.playing && next.seekSequence === previous.seekSequence ? Math.max(0, next.hour - previous.hour) : this.page.step;
+    const fps = Math.max(1, this.host.frameRate());
+    const nominal = Math.max(1, Math.ceil(next.hoursPerSecond / fps * 1.5));
+    const rawStep = next.playing && previous.playing && next.seekSequence === previous.seekSequence ? Math.max(0, next.hour - previous.hour) : this.page.step;
+    const step = next.playing ? Math.min(rawStep, nominal) : rawStep;
     this.page.publish(next.hour, { playing: next.playing, seek: next.seekSequence, step, speed: next.hoursPerSecond });
     this.dated = true;
     this.flush();
@@ -173,7 +182,17 @@ export class Pipeline {
     this.changed = new Set(); this.redated = new Set();
     this.dated = false;
     if (changed.size) flushSync(() => { for (const widget of changed) for (const listener of [...widget.installListeners]) listener(); });
-    for (const widget of dated ? this.widgets.values() : redated) for (const listener of [...widget.dateListeners]) listener();
+    if (dated) {
+      for (const widget of this.dateWatchers) {
+        this.stats.dateVisits++;
+        for (const listener of [...widget.dateListeners]) listener();
+      }
+    } else if (redated.size) {
+      for (const widget of redated) if (widget.dateListeners.size) {
+        this.stats.dateVisits++;
+        for (const listener of [...widget.dateListeners]) listener();
+      }
+    }
   }
 
   private receive(lane: number, message: FromLane) {
@@ -191,6 +210,19 @@ export class Pipeline {
       return;
     }
     if (message.type === 'served') {
+      if (message.costs) {
+        for (const [id, cost] of message.costs) {
+          const widget = this.widgets.get(id);
+          if (!widget || !Number.isFinite(cost)) continue;
+          const clamped = Math.max(0.05, cost);
+          this.costLoads[widget.lane] = Math.max(0, this.costLoads[widget.lane]! + clamped - widget.cost);
+          widget.cost = clamped;
+          if (widget.kind !== undefined) {
+            const prev = this.kindCost.get(widget.kind);
+            this.kindCost.set(widget.kind, prev === undefined ? clamped : prev * 0.7 + clamped * 0.3);
+          }
+        }
+      }
       if (auditing()) recordPicture({ t: 'workerFrame', at: performance.timeOrigin + performance.now(), lane, lanes: this.lanes, seek: message.seek, head: message.target,
         playing: !message.exact && this.page.playing, changed: message.changed, workMs: message.ms });
       return;
@@ -205,20 +237,27 @@ export class Pipeline {
     engine.next('commit', () => { this.framing = false; this.page.frame(); this.flush(); if (auditing()) this.sample(this.page.seek); });
   }
 
-  private place(key: string | undefined) {
-    const average = this.loads.reduce((sum, load) => sum + load, 0) / this.loads.length;
+  private place(key: string | undefined, kind: string | undefined): { lane: number; cost: number } {
+    const cost = (kind !== undefined ? this.kindCost.get(kind) : undefined) ?? DEFAULT_COST;
+    const average = this.costLoads.reduce((sum, load) => sum + load, 0) / this.costLoads.length;
     const held = key === undefined ? undefined : this.placed.get(key);
-    if (held !== undefined && this.loads[held]! <= average + 1) return held;
+    if (held !== undefined && this.costLoads[held]! + cost <= average + Math.max(cost, 1)) return { lane: held, cost };
     let lane = 0;
-    for (let at = 1; at < this.loads.length; at++) if (this.loads[at]! < this.loads[lane]!) lane = at;
+    for (let at = 1; at < this.costLoads.length; at++) {
+      if (this.costLoads[at]! < this.costLoads[lane]! - 1e-6
+        || (Math.abs(this.costLoads[at]! - this.costLoads[lane]!) <= 1e-6 && this.loads[at]! < this.loads[lane]!)) lane = at;
+    }
     if (key !== undefined) this.placed.set(key, lane);
-    return lane;
+    return { lane, cost };
   }
 
   mount(options: MountOptions) {
-    const lane = this.place(options.key), id = this.nextWidget++;
+    const kind = (options.key?.includes('|') ? options.key.slice(0, options.key.indexOf('|')) : options.key) ?? options.widget;
+    const { lane, cost } = this.place(options.key, kind);
+    const id = this.nextWidget++;
     this.loads[lane]!++;
-    const widget: WidgetState = { id, lane, subs: new Map(), view: options.view ?? 'fields', model: options.model, mounted: false, route: null,
+    this.costLoads[lane]! += cost;
+    const widget: WidgetState = { id, lane, kind, cost, subs: new Map(), view: options.view ?? 'fields', model: options.model, mounted: false, route: null,
       installListeners: new Set(), dateListeners: new Set(), binding: { generation: 1, surfaces: [], offset: options.offset, pin: options.pin }, surfaces: [], held: new Map() };
     this.widgets.set(id, widget);
     this.page.mount(id, { route: 0, lane, offset: options.offset, pin: options.pin, bounds: options.bounds, surfaces: [], changed: () => this.changed.add(widget),
@@ -248,9 +287,11 @@ export class Pipeline {
     if (!widget) return;
     this.audits.delete(id);
     this.hits.delete(id);
+    this.dateWatchers.delete(widget);
     for (const sub of widget.subs.values()) this.release(sub, id);
     this.widgets.delete(id);
     this.loads[widget.lane]!--;
+    this.costLoads[widget.lane] = Math.max(0, this.costLoads[widget.lane]! - widget.cost);
     this.page.unmount(id);
     this.host.lanes[widget.lane]!.postMessage({ type: 'unmount', widget: id });
   }
@@ -272,8 +313,15 @@ export class Pipeline {
 
   onDate(id: number, listener: () => void) {
     const widget = this.widgets.get(id);
-    widget?.dateListeners.add(listener);
-    return () => { widget?.dateListeners.delete(listener); };
+    if (widget) {
+      widget.dateListeners.add(listener);
+      this.dateWatchers.add(widget);
+    }
+    return () => {
+      if (!widget) return;
+      widget.dateListeners.delete(listener);
+      if (!widget.dateListeners.size) this.dateWatchers.delete(widget);
+    };
   }
 
   private routeOf(source: DashboardSource, branch: string, offset: number): RouteState {

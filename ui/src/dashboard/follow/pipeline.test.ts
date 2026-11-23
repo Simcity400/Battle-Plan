@@ -346,3 +346,60 @@ test('review 10: a reading\'s hour is the installed date when it is read, and th
   assert.equal(reading.state === 'covered' && reading.hour, 16, 'a same-structure install from 10 to 16 reads 16');
   assert.deepEqual(datedReading({ state: 'pending' }, { read: () => 16 }), { state: 'pending' });
 });
+
+test('a single long main-thread frame does not spike speculative step far ahead of nominal frame step', () => {
+  const { pipeline, clock, close } = inProcess();
+  try {
+    clock.setSpeed(1440);
+    clock.setPlaying(true);
+    const snap = clock.getSnapshot();
+    (pipeline as unknown as { published(a: typeof snap, b: typeof snap): void }).published(
+      { ...snap, hour: 100, position: 100, playing: true },
+      { ...snap, hour: 272, position: 272, playing: true },
+    );
+    assert.ok(pipeline.page.step <= 36, `step spiked to ${pipeline.page.step} on a 172h frame stall at 1440 h/s / 60 fps`);
+  } finally { clock.stop(); close(); }
+});
+
+test('flush visits only widgets with date listeners rather than all mounted widgets', () => {
+  const { pipeline, clock, close } = inProcess();
+  try {
+    const ids = Array.from({ length: 114 }, (_, i) => pipeline.mount({ offset: 0, pin: null, key: `w${i}` }));
+    const beforeNone = pipeline.stats.dateVisits;
+    for (let h = 1; h <= 10; h++) clock.seek(h);
+    assert.equal(pipeline.stats.dateVisits - beforeNone, 0, 'zero widgets visited when no date listeners exist');
+    let heard = 0;
+    const stop1 = pipeline.onDate(ids[0]!, () => heard++);
+    const stop2 = pipeline.onDate(ids[1]!, () => heard++);
+    const beforeTwo = pipeline.stats.dateVisits;
+    clock.seek(20);
+    assert.equal(pipeline.stats.dateVisits - beforeTwo, 2, 'only the 2 widgets with date listeners are visited');
+    assert.equal(heard, 2);
+    stop1(); stop2();
+    const beforeAfter = pipeline.stats.dateVisits;
+    clock.seek(21);
+    assert.equal(pipeline.stats.dateVisits - beforeAfter, 0, 'unsubscribing removes widgets from date watch set');
+  } finally { close(); }
+});
+
+test('lane placement balances measured widget cost rather than widget count and re-places on remount', () => {
+  const { pipeline, close } = inProcess({ lanes: 2 });
+  try {
+    const heavy = pipeline.mount({ offset: 0, pin: null, key: 'heavy|0', widget: 'heavy' });
+    const heavyLane = pipeline.lane(heavy);
+    const otherLane = 1 - heavyLane;
+    (pipeline as unknown as { receive(lane: number, m: unknown): void }).receive(heavyLane, {
+      type: 'served', seek: 0, target: 0, exact: false, changed: 1, ms: 9, costs: [[heavy, 9]],
+    });
+    const cheap1 = pipeline.mount({ offset: 0, pin: null, key: 'cheap-1|0', widget: 'cheap' });
+    const cheap2 = pipeline.mount({ offset: 0, pin: null, key: 'cheap-2|0', widget: 'cheap' });
+    const cheap3 = pipeline.mount({ offset: 0, pin: null, key: 'cheap-3|0', widget: 'cheap' });
+    assert.deepEqual([pipeline.lane(cheap1), pipeline.lane(cheap2), pipeline.lane(cheap3)], [otherLane, otherLane, otherLane],
+      'cheap widgets go to the lower-cost lane even when it already holds more widgets by count');
+    const secondHeavy = pipeline.mount({ offset: 0, pin: null, key: 'heavy|1', widget: 'heavy' });
+    assert.equal(pipeline.lane(secondHeavy), otherLane, 'a second copy of a learned heavy kind is placed on the lighter lane');
+    pipeline.unmount(heavy);
+    const remountedHeavy = pipeline.mount({ offset: 0, pin: null, key: 'heavy|0', widget: 'heavy' });
+    assert.equal(pipeline.lane(remountedHeavy), heavyLane, 'remounting after load drops re-places onto the now-lighter lane');
+  } finally { close(); }
+});

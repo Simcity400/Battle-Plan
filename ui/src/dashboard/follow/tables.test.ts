@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CELL, cellState, cellValue, parseAnswer, rowKeys, rowName, rowReason } from './message.ts';
 import type { FollowedRows } from './message';
-import { mergeChanged } from './tables.ts';
+import { mergeChanged, patchAnswer, serializeAnswer } from './tables.ts';
 import { answerBody } from './messages.fixture.ts';
 
 const rows = (spec: Parameters<typeof answerBody>[0]) => parseAnswer(answerBody(spec)) as FollowedRows;
@@ -57,4 +57,30 @@ test('review 5 finding 5: a sparse row whose reason leaves and returns never gro
     base = parseAnswer(merged) as FollowedRows;
     assert.equal(rowReason(base, 1), gone ? missing : null);
   }
+});
+
+test('patching one changed row in a 1,500-row table copies cells proportional to rows changed without mutating the base', () => {
+  const keys = Array.from({ length: 1500 }, (_, i) => BigInt(i + 1));
+  const values = keys.map(k => k * 10n);
+  const names = keys.map(k => `C${k}`);
+  const root = rows({ keys, columns: 1, values, names });
+  let current: FollowedRows = root;
+  const stats = { cellsCopied: 0 };
+  for (let step = 0; step < 50; step++) {
+    const idx = (step * 37) % 1500;
+    const before = stats.cellsCopied;
+    current = patchAnswer(current, rows({ keys: [keys[idx]!], columns: 1, values: [BigInt(100_000 + step)], changed: true }), stats);
+    const copied = stats.cellsCopied - before;
+    assert.ok(copied > 0 && copied <= 16, `copied ${copied} cells for 1 changed row of 1,500`);
+  }
+  assert.equal(cellValue(root, 0), 10n, 'base table is never mutated');
+  assert.equal(cellValue(current, 0), 100_000n);
+  assert.equal(cellValue(current, 37), 100_001n);
+  assert.equal(cellValue(current, 1), 20n);
+  assert.equal(rowName(current, 1499), 'C1500');
+  const wire = serializeAnswer(current);
+  const reparsed = parseAnswer(wire) as FollowedRows;
+  assert.equal(cellValue(reparsed, 0), 100_000n);
+  assert.equal(cellValue(reparsed, 1), 20n);
+  assert.equal(rowName(reparsed, 1499), 'C1500');
 });

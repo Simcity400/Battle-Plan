@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { encode } from '@msgpack/msgpack';
 import { Lane } from '../../draw/lane.ts';
 import { fieldsView } from '../../draw/views/fields.ts';
 import { Page, type Bitmap, type PageMessage } from './page.ts';
@@ -202,4 +203,142 @@ test('differential: every committed frame of every widget agrees with an indepen
     assert.deepEqual((byProperty.get(property) ?? []).slice(0, 3).map(fault => fault.detail), [], `${property}: ${byProperty.get(property)?.length ?? 0} faults`);
   assert.ok(installed > frames * 2, `pictures were installed: ${installed} widget frames of ${frames * 4}`);
   assert.ok(failed > 0, 'a lane failed in some runs, and its widgets were checked for it');
+});
+
+function panelPacket(records: { id: number; hour: number; kind: 'data' | 'completed'; data?: unknown; stepped?: boolean }[], seek: number): Uint8Array {
+  const parts = records.map(record => {
+    const body = record.kind === 'data' ? encode(record.data) : new Uint8Array();
+    const out = new Uint8Array((16 + body.length + 7) & ~7), view = new DataView(out.buffer);
+    view.setUint32(0, record.kind === 'completed' ? 0 : record.id, true);
+    view.setInt32(4, record.hour, true);
+    view.setUint8(8, record.kind === 'data' ? 1 : 4);
+    view.setUint8(9, record.stepped ? 1 : 0);
+    view.setUint32(12, body.length, true);
+    out.set(body, 16);
+    return out;
+  });
+  const out = new Uint8Array(24 + parts.reduce((sum, part) => sum + part.length, 0)), view = new DataView(out.buffer);
+  view.setUint32(0, 0x324c4e50, true);
+  view.setUint16(4, 6, true);
+  view.setUint32(8, records.length, true);
+  view.setUint32(16, NATIVE, true);
+  view.setUint32(20, seek, true);
+  let at = 24;
+  for (const part of parts) { out.set(part, at); at += part.length; }
+  return out;
+}
+
+test('differential: panels with reused live cells survive seeks, pauses, speed changes, late joins and unmounts without lane faults', async () => {
+  for (let seed = 1; seed <= 20; seed++) {
+    const rnd = rng(0x91a7 + seed * 3571);
+    const lanes: Lane<Fake>[] = [], laneFailures: string[] = [];
+    const page = new Page<Fake>({ lanes: LANES, post: (lane, m: PageMessage) => {
+      for (const [index, target] of lanes.entries()) {
+        if (lane !== 'all' && lane !== index) continue;
+        if (m.type === 'frame') target.frame(m); else if (m.type === 'stream') target.stream(m.route, m.seek, m.target); else target.fail(m.route);
+      }
+    } });
+    for (let index = 0; index < LANES; index++) lanes.push(new Lane<Fake>({
+      lane: index, lanes: LANES, views: () => fieldsView(() => undefined),
+      crop: async sources => sources.map((): Fake => ({ closed: false, width: 1, close() { this.closed = true; } })),
+      present: presentation => page.offer(presentation), release: () => {}, later: () => {},
+      fail: reason => laneFailures.push(`seed ${seed} lane ${index}: ${reason}`),
+    }));
+    const CELL_BASE = 0x8000_0000;
+    const active = new Map<number, { sub: number; cell: number; lane: number; lastVal: bigint | null }>();
+    let nextWidget = 1;
+    const joinWidget = (seek: number) => {
+      const id = nextWidget++, lane = id % LANES, sub = id * LANES + lane, cell = (CELL_BASE | (id * LANES + lane)) >>> 0;
+      lanes[lane]!.follow(sub, 'panel', 'demo');
+      lanes[lane]!.bindRoute(sub, ROUTE, NATIVE, seek);
+      lanes[lane]!.mount(id, [sub], 'fields');
+      lanes[lane]!.bind(id, { generation: 1, surfaces: [], offset: 0, pin: null });
+      page.mount(id, { route: ROUTE, lane, surfaces: [] });
+      active.set(id, { sub, cell, lane, lastVal: null });
+    };
+    const leaveWidget = (id: number) => {
+      const w = active.get(id);
+      if (!w) return;
+      lanes[w.lane]!.unmount(id);
+      lanes[w.lane]!.unfollow(w.sub);
+      page.unmount(id);
+      active.delete(id);
+    };
+    const panelData = (cell: number, hour: number) => ({
+      shape: `S`, hour,
+      live: { groups: [{ table: 1, columns: [0], keys: ['1'], follow: cell }], rows: ['r0'], kinds: [{ id: 'k', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] },
+    });
+    joinWidget(0);
+    joinWidget(0);
+    let seek = 0, clock = 0, playing = false, speed = 24, step = 0;
+    const sendReset = (hour: number) => {
+      const answers = [...active.values()].map(w => {
+        const v = BigInt(hour * 10 + w.sub);
+        w.lastVal = v;
+        return { id: w.cell, hour, body: answerBody({ keys: [1n], columns: 1, values: [v] }) };
+      });
+      const fSplit = splitForLanes(message(hour, seek, true, answers), LANES);
+      assert.ok(fSplit.kind === 'follow');
+      fSplit.lanes.forEach((b, l) => { if (b) lanes[l]!.receive('follow', b); });
+      const pRecords = [
+        ...[...active.values()].map(w => ({ id: w.sub, hour, kind: 'data' as const, stepped: true, data: panelData(w.cell, hour) })),
+        { id: 0, hour, kind: 'completed' as const },
+      ];
+      const pSplit = splitForLanes(panelPacket(pRecords, seek), LANES);
+      assert.ok(pSplit.kind === 'panels');
+      pSplit.lanes.forEach((b, l) => { if (b) lanes[l]!.receive('panels', b); });
+    };
+    page.publish(0, { playing: false, seek: 0, step: 0, speed });
+    sendReset(0);
+    await flush(); page.frame(); await flush();
+    for (let tick = 0; tick < 80; tick++) {
+      const action = rnd(12);
+      if (action === 0) {
+        seek++; clock = rnd(500); playing = false;
+        page.publish(clock, { playing, seek, step: 0, speed });
+        await flush();
+        sendReset(clock);
+      } else if (action === 1) {
+        playing = !playing;
+      } else if (action === 2) {
+        speed = [24, 168, 720, 1440][rnd(4)]!;
+      } else if (action === 3 && active.size < 4) {
+        joinWidget(seek);
+        const w = [...active.values()].at(-1)!;
+        const v = BigInt(clock * 10 + w.sub);
+        w.lastVal = v;
+        const pSplit = splitForLanes(panelPacket([{ id: w.sub, hour: clock, kind: 'data', stepped: true, data: panelData(w.cell, clock) }, { id: 0, hour: clock, kind: 'completed' }], seek), LANES);
+        if (pSplit.kind === 'panels') pSplit.lanes.forEach((b, l) => { if (b) lanes[l]!.receive('panels', b); });
+        const fSplit = splitForLanes(message(clock, seek, false, [{ id: w.cell, hour: clock, body: answerBody({ keys: [1n], columns: 1, values: [v] }) }]), LANES);
+        if (fSplit.kind === 'follow') fSplit.lanes.forEach((b, l) => { if (b) lanes[l]!.receive('follow', b); });
+      } else if (action === 4 && active.size > 1) {
+        leaveWidget([...active.keys()][0]!);
+      }
+      if (playing) {
+        step = Math.max(1, Math.round(speed / 60));
+        clock += step;
+        const answers = [...active.values()].filter(w => w.lastVal !== null).map(w => {
+          const v = BigInt(clock * 10 + w.sub);
+          w.lastVal = v;
+          return { id: w.cell, hour: clock, body: answerBody({ keys: [1n], columns: 1, values: [v], changed: true }) };
+        });
+        const fSplit = splitForLanes(message(clock, seek, false, answers), LANES);
+        if (fSplit.kind === 'follow') fSplit.lanes.forEach((b, l) => { if (b) lanes[l]!.receive('follow', b); });
+        const pSplit = splitForLanes(panelPacket([{ id: 0, hour: clock, kind: 'completed' }], seek), LANES);
+        if (pSplit.kind === 'panels') pSplit.lanes.forEach((b, l) => { if (b) lanes[l]!.receive('panels', b); });
+      }
+      page.publish(clock, { playing, seek, step, speed });
+      await flush();
+      if (!playing) { page.frame(); await flush(); }
+      for (const [id, w] of active) {
+        const view = page.view(id);
+        assert.notEqual(view.mode, 'failed', `seed ${seed} tick ${tick} widget ${id}: ${view.reason}`);
+        if (view.mode === 'picture' && view.h !== undefined) {
+          const live = view.fields?.[`live:${w.sub}`] as Map<string, number | bigint | string> | undefined;
+          assert.equal(live?.get('r0\u0000k'), view.h * 10 + w.sub, `seed ${seed} tick ${tick} widget ${id} live value at ${view.h}`);
+        }
+      }
+    }
+    assert.deepEqual(laneFailures, []);
+  }
 });
