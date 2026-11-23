@@ -12,7 +12,7 @@ import { rankedLandBattleRows, landBattleChanges, landBattleRow, landBattleRows,
 import type { LandBattleRow, LandBattlesRanking, LandBattlesWindow } from './landBattlesData';
 
 const LABELS: BattleLabels = { place: 'Battle', date: 'Date', start: 'Started', end: 'Ended', winner: 'Winner',
-  ongoing: 'Ongoing', unknownPlace: 'Unnamed province', unknownStart: 'Start not recorded' };
+  ongoing: 'Ongoing', unknownPlace: 'Unnamed province', unrecordedPlace: 'Province not recorded', unknownStart: 'Start not recorded' };
 const SIDES: BattleSideSummary = { label: 'Sides', countLabel: 'Divisions (incl. reserves)', separator: 'v',
   unknown: 'Not in this recording', formatCount: landDivisionText };
 const MEASURES: readonly BattleMeasure<LandBattleRow>[] = [
@@ -22,7 +22,7 @@ const MEASURES: readonly BattleMeasure<LandBattleRow>[] = [
     value: row => row.peakUnknown ? { label: 'Peak size', value: null, unknown: 'Roster not recorded' }
       : { label: 'Peak size', value: row.peak.value, atLeast: row.start?.bound === 'by' || row.end !== null && 'unknown' in row.end },
     format: value => battleValueText(value), tooltipFormat: (value, row) => value.value === null ? value.unknown : `${battleValueText(value)} at ${formatDateTime(row.peak.hour)}` },
-  { label: 'Length', title: 'Length', value: row => row.length, format: value => `${battleValueText(value)} h` },
+  { label: 'Length', title: 'Length', value: row => row.length, format: value => value.value === null ? value.unknown : `${battleValueText(value)} h` },
 ];
 
 const rankedBy = (measure: string) => `Ranked by ${measure === 'Peak size' ? 'most divisions at once' : measure === 'Length' ? 'length' : 'casualties, both sides'}.`;

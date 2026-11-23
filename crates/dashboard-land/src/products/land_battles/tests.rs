@@ -11,7 +11,7 @@ fn a_ranking_orders_by_its_measure_and_falls_back_to_peak_size_only_where_no_cas
     assert_eq!(rank(&mut entries, "Casualties"), "Casualties");
     assert_eq!(entries.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), ["1:1:10", "1:2:10", "1:3:10"], "ties break by id; an unknown is last");
     assert_eq!(rank(&mut entries, "Length"), "Length");
-    assert_eq!(entries[0].id, "1:3:10");
+    assert_eq!(entries.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), ["1:3:10", "1:2:10", "1:1:10"]);
     let mut unrecorded = vec![entry("1:2:10", None, 30, Some(4)), entry("1:3:10", None, 90, Some(9))];
     assert_eq!(rank(&mut unrecorded, "Casualties"), "Peak size");
     assert_eq!(unrecorded[0].id, "1:3:10");
@@ -52,7 +52,15 @@ fn a_battle_id_names_its_branch_combat_and_start_and_a_roster_counts_each_unit_o
 
 #[test]
 fn a_window_cuts_runs_to_itself_and_carries_the_loss_read_standing_at_its_first_hour() {
-    let run = |first: i32, last: i32, duration: i32| LandBattleRun { first_hour: first, last_hour: last, counts: [2, 1], roster_unknown: false, countries: [vec!["GER".into()], vec!["POL".into()]], countries_unknown: [false, false], duration };
+    let run = |first: i32, last: i32, duration: i32| LandBattleRun {
+        first_hour: first,
+        last_hour: last,
+        counts: [2, 1],
+        roster_unknown: false,
+        countries: [vec!["GER".into()], vec!["POL".into()]],
+        countries_unknown: [false, false],
+        duration,
+    };
     let spans = |runs: Vec<LandBattleRun>| runs.iter().map(|run| (run.first_hour, run.last_hour, run.duration)).collect::<Vec<_>>();
     let runs = [run(90, 99, 5), run(100, 130, 20)];
     assert_eq!(spans(window_runs(&runs, 100, 120, false)), [(100, 120, 20)]);
@@ -87,7 +95,7 @@ fn every_written_end_row_is_an_end_of_its_own() {
 fn a_result_without_runs_is_listed_from_the_hour_it_was_written() {
     let history = |runs: Vec<LandBattleRun>, settled: Option<i32>| LandBattleHistory {
         id: "1:7:10:11".into(),
-        province_id: 3,
+        province_id: Some(3),
         start: BattleMoment { hour: 10, bound: BattleBound::Exact },
         end: None,
         end_unknown_hour: None,
@@ -96,14 +104,77 @@ fn a_result_without_runs_is_listed_from_the_hour_it_was_written() {
         prior_side_peaks: [None, None],
         runs,
         losses: Vec::new(),
-        result: Some(LandBattleResultRead { hour: 10, duration: 2, winner: BattleWinner::Side { side: 0 }, countries: [Vec::new(), Vec::new()], countries_unknown: [true, true] }),
+        result: Some(LandBattleResultRead { hour: Some(10), duration: 2, winner: BattleWinner::Side { side: 0 }, countries: [Vec::new(), Vec::new()], countries_unknown: [true, true] }),
         settled_hour: settled,
     };
-    let shown = |history: Option<LandBattleHistory>| history.map(|history| history.runs.iter().map(|run| (run.first_hour, run.last_hour, run.roster_unknown)).collect::<Vec<_>>());
-    assert_eq!(shown(listed(history(Vec::new(), Some(11)), 5)), Some(vec![(11, 11, true)]), "a window holding both hours lists it at the hour written");
-    assert_eq!(shown(listed(history(Vec::new(), Some(11)), 11)), Some(vec![(11, 11, true)]), "the window beginning at the hour written lists it");
+    let shown = |history: Option<LandBattleHistory>| history.map(|history| history.runs.iter().map(|run| (run.first_hour, run.last_hour, run.roster_unknown, run.duration)).collect::<Vec<_>>());
+    assert_eq!(shown(listed(history(Vec::new(), Some(11)), 5)), Some(vec![(11, 11, true, 0)]), "a window holding both hours lists it at the hour written");
+    assert_eq!(shown(listed(history(Vec::new(), Some(11)), 11)), Some(vec![(11, 11, true, 0)]), "the window beginning at the hour written lists it");
     assert_eq!(shown(listed(history(Vec::new(), Some(11)), 12)), None, "a later window does not");
     assert_eq!(shown(listed(history(Vec::new(), None), 5)), None, "nothing settled is nothing listed");
-    let run = LandBattleRun { first_hour: 8, last_hour: 9, counts: [1, 1], roster_unknown: false, countries: [Vec::new(), Vec::new()], countries_unknown: [true, true], duration: 3 };
-    assert_eq!(shown(listed(history(vec![run], Some(11)), 5)), Some(vec![(8, 9, false)]), "a battle with runs keeps them");
+    let run = LandBattleRun {
+        first_hour: 8,
+        last_hour: 9,
+        counts: [1, 1],
+        roster_unknown: false,
+        countries: [Vec::new(), Vec::new()],
+        countries_unknown: [true, true],
+        duration: 3,
+    };
+    assert_eq!(shown(listed(history(vec![run], Some(11)), 5)), Some(vec![(8, 9, false, 3)]), "a battle with runs keeps them");
+}
+
+#[test]
+fn unread_end_kind_hour_and_side_lists_stay_unknown_and_survive_country_filters() {
+    let data = Combats { from: 10, census: HashMap::new(), sides: HashMap::new(), losses: HashMap::new(), since: HashMap::new() };
+    let names = Names::new(&Holders::default());
+    let links = dashboard_base::queries::country_ids::RunLinks { slots: HashMap::new() };
+    let unread_kind = Battle {
+        combat: 8,
+        start: 10,
+        end: Some(Ended { kind: None, end_hour: Some(20), written: 25, result: Some(1), winners: Some(1), result_unknown: 0, ..Ended::default() }),
+        ..Battle::default()
+    };
+    let shaped = shape(&unread_kind, &data, &names, &links, 1, 10, 30, 30).history;
+    assert_eq!(shaped.end, Some(BattleEnd::Unknown { unknown: "Ending kind not recorded".into() }));
+    assert_eq!(shaped.end_unknown_hour, Some(25));
+    let result = shaped.result.as_ref().unwrap();
+    assert_eq!(result.countries_unknown, [true, true], "unread side lists keep both sides unknown even when the bitmask is zero");
+
+    let unread_hour = Battle {
+        combat: 9,
+        start: 10,
+        end: Some(Ended { kind: Some(LandBattleEndRow::FINALIZED), end_hour: None, written: 25, result: Some(2), winners: Some(2), result_sides: [Some(vec![1]), None], result_unknown: 0, ..Ended::default() }),
+        ..Battle::default()
+    };
+    let shaped = shape(&unread_hour, &data, &names, &links, 1, 10, 30, 30).history;
+    assert_eq!(shaped.end, Some(BattleEnd::Unknown { unknown: "Ending hour not recorded".into() }));
+    assert_eq!(shaped.end_unknown_hour, Some(25));
+    let result = shaped.result.as_ref().unwrap();
+    assert_eq!(result.hour, None, "an unread result hour never copies the settlement hour");
+    assert_eq!(ranked_hour(&shaped, 12), 25, "ranking length and country lookup keep main's settlement-hour fallback when result hour is unread");
+    assert_eq!(result.countries_unknown[1], true, "an unread defender side list stays unknown");
+    let filter = BattleCountryFilter { countries: Some(vec!["GER".into()]), ..BattleCountryFilter::default() };
+    assert!(filter.matches(&Holders::default(), [(&result.countries[0], result.countries_unknown[0]), (&result.countries[1], result.countries_unknown[1])], 25));
+
+    let mut known_run_unknown_result = shaped;
+    known_run_unknown_result.runs = vec![LandBattleRun {
+        first_hour: 10,
+        last_hour: 15,
+        counts: [1, 1],
+        roster_unknown: false,
+        countries: [vec!["GER".into()], vec!["POL".into()]],
+        countries_unknown: [false, false],
+        duration: 5,
+    }];
+    known_run_unknown_result.result = Some(LandBattleResultRead {
+        hour: Some(16),
+        duration: 6,
+        winner: BattleWinner::Side { side: 0 },
+        countries: [vec!["GER".into()], Vec::new()],
+        countries_unknown: [false, true],
+    });
+    assert_eq!(battle_side(&known_run_unknown_result, 1), (&[][..], true), "unread result side stays unknown and never inherits earlier run certainty");
+    let fra_filter = BattleCountryFilter { countries: Some(vec!["FRA".into()]), ..BattleCountryFilter::default() };
+    assert!(fra_filter.matches(&Holders::default(), [battle_side(&known_run_unknown_result, 0), battle_side(&known_run_unknown_result, 1)], 16));
 }

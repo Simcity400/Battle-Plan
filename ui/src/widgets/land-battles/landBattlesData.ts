@@ -16,7 +16,7 @@ export type LandBattlesWindow = Omit<LandBattlesReply, 'rows' | 'reasons' | 'war
 export type LandBattlesRanking = Omit<LandBattlesRankingReply, 'rows'> & { rows: LandBattle[] };
 
 export interface LandBattleRow extends BattleRow {
-  provinceId: number;
+  provinceId: number | null;
   windowIndex: number;
   readHour: number;
   peak: LandPeak;
@@ -99,12 +99,11 @@ function battles(v: unknown, labels: unknown): LandBattle[] | null {
   }
   return rows;
 }
-const histories = (v: unknown) => Array.isArray(v) && v.every(r => object(r) && typeof r.id === 'string' && uint(r.provinceId) && moment(r.start)
+const histories = (v: unknown) => Array.isArray(v) && v.every(r => object(r) && typeof r.id === 'string' && (r.provinceId === null || uint(r.provinceId)) && moment(r.start)
   && (r.end === null || moment(r.end) || object(r.end) && typeof r.end.unknown === 'string')
   && (r.endUnknownHour === null || hour(r.endUnknownHour)) && (r.settledHour === undefined || hour(r.settledHour)) && int(r.counterBase)
   && (r.priorPeak === null || peak(r.priorPeak)) && Array.isArray(r.runs) && r.runs.length > 0
-  && (r.result === null || object(r.result) && hour(r.result.hour)
-    && int(r.result.duration) && r.result.duration >= -2147483648 && r.result.duration <= 2147483647
+  && (r.result === null || object(r.result) && (r.result.hour === null || hour(r.result.hour)) && int(r.result.duration) && r.result.duration >= -2147483648 && r.result.duration <= 2147483647
     && object(r.result.winner) && (r.result.winner.side === 0 || r.result.winner.side === 1 || typeof r.result.winner.unknown === 'string')
     && Array.isArray(r.result.countries) && r.result.countries.length === 2 && r.result.countries.every(tags => Array.isArray(tags) && tags.every(tag => typeof tag === 'string'))
     && Array.isArray(r.result.countriesUnknown) && r.result.countriesUnknown.length === 2 && r.result.countriesUnknown.every(value => typeof value === 'boolean'))
@@ -140,8 +139,6 @@ export function validateLandBattlesRanking(v: unknown): LandBattlesRanking {
     warnings: v.warnings as BattleWarning[], contentWarnings: v.contentWarnings };
 }
 
-const resultSide = (result: NonNullable<LandBattle['result']>, run: LandBattle['runs'][number], index: number) =>
-  !result.countriesUnknown[index] || run.countriesUnknown[index];
 type Windows = ReadonlyMap<number, LandBattlesWindow>;
 type CountryMatch = (tag: string, hour: number) => boolean;
 const rowPlaybacks = new WeakMap<Windows, WeakMap<CountryMatch, Map<string, PlaybackIntervals<ReadonlyArray<LandBattleRow>>>>>();
@@ -163,7 +160,7 @@ export function landBattleChanges(windows: Windows): BattleChanges {
         previous = run;
       }
       if (previous) hours.push(previous.lastHour + 1);
-      if (history.result) hours.push(history.result.hour);
+      if (history.result?.hour != null) hours.push(history.result.hour);
       if (history.end && 'hour' in history.end) hours.push(history.end.hour);
       if (history.endUnknownHour != null) hours.push(history.endUnknownHour);
       if (history.settledHour !== undefined) hours.push(history.settledHour);
@@ -205,14 +202,22 @@ export function landBattleRow(windows: Windows, id: string, at: number, matches:
 export function landWindowPlaces(windows: Windows): { provinceId: number; hour: number }[] {
   const places = new Map<string, { provinceId: number; hour: number }>();
   for (const window of windows.values()) for (const history of window.rows) {
-    places.set(placeKey(history.provinceId, history.start.hour), { provinceId: history.provinceId, hour: history.start.hour });
+    if (history.provinceId !== null) places.set(placeKey(history.provinceId, history.start.hour), { provinceId: history.provinceId, hour: history.start.hour });
   }
   return [...places.values()].sort((a, b) => a.hour - b.hour || a.provinceId - b.provinceId);
 }
 
-export function landManpowerLost(row: LandBattleRow): [number, number] | null {
+export function landManpowerSides(row: LandBattleRow): [number | null, number | null] {
   const values = row.sides.map(side => side.losses.find(value => value.label === MANPOWER) ?? null);
-  return values.every(value => value !== null && value.value !== null) ? values.map(value => value!.value as number) as [number, number] : null;
+  return [
+    values[0] !== null && values[0].value !== null ? values[0].value : null,
+    values[1] !== null && values[1].value !== null ? values[1].value : null,
+  ];
+}
+
+export function landManpowerLost(row: LandBattleRow): [number, number] | null {
+  const [attacker, defender] = landManpowerSides(row);
+  return attacker !== null && defender !== null ? [attacker, defender] : null;
 }
 
 export function landBattleRows(windows: Windows, at: number, matches: CountryMatch, all: boolean, from: number | null = null): ReadonlyArray<LandBattleRow> {
@@ -231,7 +236,7 @@ export function landBattleRows(windows: Windows, at: number, matches: CountryMat
         yield window.interval.firstHour;
         for (const history of window.rows) {
           yield* spanChanges(history.runs);
-          if (history.result) yield history.result.hour;
+          if (history.result?.hour != null) yield history.result.hour;
           if (history.end && 'hour' in history.end) yield history.end.hour;
           if (history.endUnknownHour != null) yield history.endUnknownHour;
           if (history.settledHour !== undefined) yield history.settledHour;
@@ -269,10 +274,14 @@ function landRowAt(h: LandBattle, index: number, at: number, matches: CountryMat
   const run = runs.at(-1);
   if (!run) return null;
   const read = Math.min(at, run.lastHour);
-  const known = (hour: number) => (h.settledHour ?? hour) <= at;
+  const known = (hour: number | null) => {
+    const atHour = h.settledHour ?? hour;
+    return atHour !== null && atHour <= at;
+  };
   const result = h.result && known(h.result.hour) ? h.result : null;
-  const participants = [0, 1].map(index => result && resultSide(result, run, index)
-    ? { tags: result.countries[index], hour: result.hour, unknown: result.countriesUnknown[index] }
+  const resultHour = result ? (result.hour ?? h.settledHour ?? read) : read;
+  const participants = [0, 1].map(index => result
+    ? { tags: result.countries[index], hour: resultHour, unknown: result.countriesUnknown[index] }
     : { tags: run.countries[index], hour: read, unknown: run.countriesUnknown[index] });
   const countries = participants.map(side => side.tags.map(tag => ({ tag, hour: side.hour })));
   const countriesUnknown = participants.map(side => side.unknown);
@@ -302,7 +311,7 @@ function landRowAt(h: LandBattle, index: number, at: number, matches: CountryMat
   const row: LandBattleRow = { id: h.id, provinceId: h.provinceId, windowIndex: index, readHour: read, start: h.start, end, place: { name: null, hour: h.start.hour }, peak, peakUnknown,
     sidePeaks: sides,
     lossRead: loss ? { hour: loss.hour, terminal: loss.terminal, equipmentRaw: loss.equipmentRaw } : null,
-    length: { label: 'Length', value: Math.max((result?.hour ?? read) - h.start.hour, duration - h.counterBase, 0), atLeast: h.start.bound === 'by' },
+    length: { label: 'Length', value: Math.max(resultHour - h.start.hour, duration - h.counterBase, 0), atLeast: h.start.bound === 'by' },
     casualties: { label: 'Casualties', value: null, unknown: 'Not in this recording' },
     sides: ['Attackers', 'Defenders'].map((label, index) => ({ label, countries: countries[index],
       ...(countriesUnknown[index] ? { countriesUnknown: 'Countries not recorded' } : {}),

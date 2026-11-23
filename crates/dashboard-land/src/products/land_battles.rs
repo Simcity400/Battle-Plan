@@ -99,7 +99,7 @@ pub struct LandBattleLossRead {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct LandBattleResultRead {
-    pub hour: i32,
+    pub hour: Option<i32>,
     pub duration: i32,
     pub winner: BattleWinner,
     pub countries: [Vec<String>; 2],
@@ -112,7 +112,7 @@ pub struct LandBattleResultRead {
 #[serde(rename_all = "camelCase")]
 pub struct LandBattleHistory {
     pub id: String,
-    pub province_id: u32,
+    pub province_id: Option<u32>,
     pub start: BattleMoment,
     pub end: Option<BattleEnd>,
     pub end_unknown_hour: Option<i32>,
@@ -255,7 +255,7 @@ pub struct LandBattleCourseRead {
 #[serde(rename_all = "camelCase")]
 pub struct LandBattleCourse {
     pub id: String,
-    pub province_id: u32,
+    pub province_id: Option<u32>,
     pub start: BattleMoment,
     pub end: Option<BattleEnd>,
     pub end_unknown_hour: Option<i32>,
@@ -388,22 +388,22 @@ struct Battle {
 
 #[derive(Clone, Debug, Default)]
 struct Ended {
-    kind: u8,
-    end_hour: i32,
+    kind: Option<u8>,
+    end_hour: Option<i32>,
     written: i32,
-    province: u32,
+    province: Option<u32>,
     last_read: Option<i32>,
     last_duration: Option<i32>,
     peaks: [Option<LandBattlePeak>; 3],
     manpower: [Option<i32>; 2],
-    sides: [Vec<u32>; 2],
+    sides: [Option<Vec<u32>>; 2],
     countries_unknown: u8,
     result: Option<u64>,
     winners: Option<u8>,
     result_duration: Option<i32>,
     terminal: [Option<i32>; 2],
     terminal_equipment: [Option<Vec<LandEquipmentLoss>>; 2],
-    result_sides: [Vec<u32>; 2],
+    result_sides: [Option<Vec<u32>>; 2],
     result_unknown: u8,
 }
 
@@ -444,10 +444,10 @@ fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: 
         let n = |column: usize| number(&ended, cells, column);
         let (combat, start, result_only) = key;
         let end = Ended {
-            kind: n(0).unwrap_or(0) as u8,
-            end_hour: n(1).unwrap_or(i64::from(settled)) as i32,
+            kind: n(0).and_then(|value| u8::try_from(value).ok()),
+            end_hour: n(1).and_then(|value| i32::try_from(value).ok()),
             written: settled,
-            province: n(4).unwrap_or(0) as u32,
+            province: n(4).map(|value| value as u32),
             last_read: n(5).map(|hour| hour as i32),
             last_duration: n(6).map(|value| value as i32),
             peaks: [(7, 8), (9, 10), (11, 12)].map(|(value, hour)| peak(n(value), n(hour))),
@@ -468,7 +468,9 @@ fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: 
             counter_base: n(3).unwrap_or(0) as i32,
             ..Battle::default()
         });
-        battle.province = Some(end.province);
+        if let Some(province) = end.province {
+            battle.province = Some(province);
+        }
         battle.end = Some(end);
     }
     let asks: Vec<(i32, u128)> = written_ends(&ended).map(|(_, key, hour, _)| (hour, key)).collect();
@@ -477,7 +479,7 @@ fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: 
         dashboard_query::cost::storage(|| {
             lanes::at_each(recording, run, TableId::LandBattleEnds, Some(&lists), &asks, &mut |hour, key, row| {
                 let Some((view, slot)) = row else { return Ok(()) };
-                let read = |column: usize| view.list(column, slot).and_then(u32s).unwrap_or_default();
+                let read = |column: usize| view.list(column, slot).and_then(u32s);
                 if let Some(end) = end_written(out, key, hour) {
                     end.sides = [read(15), read(16)];
                     end.result_sides = [read(24), read(25)];
@@ -529,7 +531,7 @@ struct CensusRead {
 struct Combats {
     from: i32,
     census: HashMap<u64, Vec<(i32, Option<CensusRead>)>>,
-    sides: HashMap<u64, Vec<(i32, Option<[Vec<u32>; 2]>)>>,
+    sides: HashMap<u64, Vec<(i32, Option<[Option<Vec<u32>>; 2]>)>>,
     losses: HashMap<u64, Vec<(i32, Option<Losses>)>>,
     since: HashMap<u64, i32>,
 }
@@ -569,21 +571,16 @@ fn combats(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, c
     }
     let sides = dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::LandCombatSides, &sorted(&columns.sides), Keys::These(&keys), from, to))?;
     let asks: Vec<(i32, u128)> = sides.keys.iter().flat_map(|(key, steps)| steps.iter().filter(|step| step.cells.is_some()).map(move |step| (step.hour, *key))).collect();
-    let mut references: HashMap<(i32, u64), [Vec<u32>; 2]> = HashMap::new();
+    let mut references: HashMap<(i32, u64), [Option<Vec<u32>>; 2]> = HashMap::new();
     dashboard_query::cost::storage(|| {
         lanes::at_each(recording, run, TableId::LandCombatSides, Some(&sorted(&columns.sides)), &asks, &mut |hour, key, row| {
             if let Some((view, slot)) = row {
-                let mut held = [Vec::new(), Vec::new()];
-                let mut whole = true;
-                for (at, &column) in columns.sides.iter().enumerate() {
-                    match view.list(column, slot).and_then(u32s) {
-                        Some(list) => held[at / 2].extend(list),
-                        None => whole = false,
-                    }
-                }
-                if whole {
-                    references.insert((hour, key as u64), held);
-                }
+                let side = |first: usize, second: usize| -> Option<Vec<u32>> {
+                    let mut list = view.list(first, slot).and_then(u32s)?;
+                    list.extend(view.list(second, slot).and_then(u32s)?);
+                    Some(list)
+                };
+                references.insert((hour, key as u64), [side(columns.sides[0], columns.sides[1]), side(columns.sides[2], columns.sides[3])]);
             }
             Ok(())
         })
@@ -753,17 +750,20 @@ fn shape(battle: &Battle, data: &Combats, names: &Names, links: &dashboard_base:
     });
     let empty: Vec<(i32, Option<CensusRead>)> = Vec::new();
     let census = data.census.get(&combat).unwrap_or(&empty);
-    let no_sides: Vec<(i32, Option<[Vec<u32>; 2]>)> = Vec::new();
+    let no_sides: Vec<(i32, Option<[Option<Vec<u32>>; 2]>)> = Vec::new();
     let sides = data.sides.get(&combat).unwrap_or(&no_sides);
     let countries_at = |hour: i32| -> ([Vec<String>; 2], [bool; 2]) {
         match at(sides, hour).and_then(Option::as_ref) {
             Some(raw) => {
-                let resolve = |side: &[u32]| {
-                    let slots: Vec<u32> = side.iter().filter_map(|&reference| links.slot_at(reference, hour)).collect();
-                    let (tags, unknown) = tags_of(names, &slots, hour);
-                    (tags, unknown || slots.len() < side.len())
+                let resolve = |side: Option<&[u32]>| match side {
+                    Some(side) => {
+                        let slots: Vec<u32> = side.iter().filter_map(|&reference| links.slot_at(reference, hour)).collect();
+                        let (tags, unknown) = tags_of(names, &slots, hour);
+                        (tags, unknown || slots.len() < side.len())
+                    }
+                    None => (Vec::new(), true),
                 };
-                let (a, b) = (resolve(&raw[0]), resolve(&raw[1]));
+                let (a, b) = (resolve(raw[0].as_deref()), resolve(raw[1].as_deref()));
                 ([a.0, b.0], [a.1, b.1])
             }
             None => ([Vec::new(), Vec::new()], [true, true]),
@@ -818,7 +818,7 @@ fn shape(battle: &Battle, data: &Combats, names: &Names, links: &dashboard_base:
     {
         course.push((end.written.max(course.last().map_or(i32::MIN, |read| read.0)), true, Some(Losses { manpower: end.terminal, equipment: end.terminal_equipment.clone() })));
     }
-    let ends_within = end.is_some_and(|end| end.kind != LandBattleEndRow::RESULT_ONLY && (from..=to).contains(&end.written));
+    let ends_within = end.is_some_and(|end| end.kind != Some(LandBattleEndRow::RESULT_ONLY) && (from..=to).contains(&end.written));
     let runs = window_runs(&runs, from, to, ends_within);
     let hours: Vec<i32> = course.iter().map(|(hour, ..)| *hour).collect();
     let losses = course[carried(&hours, runs.first().map_or(from, |run| run.first_hour), to)]
@@ -832,18 +832,35 @@ fn shape(battle: &Battle, data: &Combats, names: &Names, links: &dashboard_base:
             },
         })
         .collect();
-    let (end_moment, end_unknown_hour) = match end.filter(|end| end.kind != LandBattleEndRow::RESULT_ONLY) {
-        Some(end) if end.kind == LandBattleEndRow::UNKNOWN => (Some(BattleEnd::Unknown { unknown: "Ending not recorded".into() }), Some(end.end_hour)),
-        Some(end) => (Some(BattleEnd::Moment(BattleMoment { hour: end.end_hour, bound: BattleBound::Exact })), None),
+    let (end_moment, end_unknown_hour) = match end.filter(|end| end.kind != Some(LandBattleEndRow::RESULT_ONLY)) {
+        Some(end) => match (end.kind, end.end_hour) {
+            (None, _) => (Some(BattleEnd::Unknown { unknown: "Ending kind not recorded".into() }), Some(end.written)),
+            (Some(LandBattleEndRow::UNKNOWN), hour) => (Some(BattleEnd::Unknown { unknown: "Ending not recorded".into() }), Some(hour.unwrap_or(end.written))),
+            (Some(_), Some(hour)) => (Some(BattleEnd::Moment(BattleMoment { hour, bound: BattleBound::Exact })), None),
+            (Some(_), None) => (Some(BattleEnd::Unknown { unknown: "Ending hour not recorded".into() }), Some(end.written)),
+        },
         None => (None, None),
     };
     let result = result.map(|end| {
-        let resolve = |slots: &[u32], unknown: bool| {
-            let (tags, missing) = tags_of(names, slots, end.end_hour);
-            (tags, unknown || missing)
+        let lookup_hour = end.end_hour.unwrap_or(end.written);
+        let resolve = |slots: Option<&[u32]>, unknown: bool| match slots {
+            Some(slots) => {
+                let (tags, missing) = tags_of(names, slots, lookup_hour);
+                (tags, unknown || missing)
+            }
+            None => (Vec::new(), true),
         };
-        let (a, b) = (resolve(&end.result_sides[0], end.result_unknown & LandBattleEndRow::ATTACKERS_UNKNOWN != 0), resolve(&end.result_sides[1], end.result_unknown & LandBattleEndRow::DEFENDERS_UNKNOWN != 0));
-        LandBattleResultRead { hour: end.end_hour, duration: end.result_duration.unwrap_or(0), winner: winner(end.winners), countries: [a.0, b.0], countries_unknown: [a.1, b.1] }
+        let (a, b) = (
+            resolve(end.result_sides[0].as_deref(), end.result_unknown & LandBattleEndRow::ATTACKERS_UNKNOWN != 0),
+            resolve(end.result_sides[1].as_deref(), end.result_unknown & LandBattleEndRow::DEFENDERS_UNKNOWN != 0),
+        );
+        LandBattleResultRead {
+            hour: end.end_hour,
+            duration: end.result_duration.unwrap_or(0),
+            winner: winner(end.winners),
+            countries: [a.0, b.0],
+            countries_unknown: [a.1, b.1],
+        }
     });
     let peaks = if battle.live.is_some() { battle.peaks } else { end.map_or([None; 3], |end| end.peaks) }.map(|peak| peak.filter(|peak| peak.hour <= peaks_through));
     let history = LandBattleHistory {
@@ -851,7 +868,7 @@ fn shape(battle: &Battle, data: &Combats, names: &Names, links: &dashboard_base:
             Some(written) => format!("{branch}:{combat}:{}:{written}", battle.start),
             None => format!("{branch}:{combat}:{}", battle.start),
         },
-        province_id: province.or(end.map(|end| end.province)).unwrap_or(0),
+        province_id: province.or_else(|| end.and_then(|end| end.province)),
         start: BattleMoment { hour: battle.start, bound: if battle.exact { BattleBound::Exact } else { BattleBound::By } },
         end: end_moment,
         end_unknown_hour,
@@ -1002,6 +1019,17 @@ pub struct Ranked {
     pub id: String,
 }
 
+fn ranked_hour(shaped: &LandBattleHistory, read: i32) -> i32 {
+    shaped.result.as_ref().and_then(|result| result.hour.or(shaped.settled_hour)).unwrap_or(read)
+}
+
+fn battle_side<'a>(shaped: &'a LandBattleHistory, at: usize) -> (&'a [String], bool) {
+    match &shaped.result {
+        Some(result) => (&result.countries[at][..], result.countries_unknown[at]),
+        None => shaped.runs.last().map_or((&[][..], true), |run| (&run.countries[at][..], run.countries_unknown[at])),
+    }
+}
+
 pub fn rank(entries: &mut [Ranked], measure: &str) -> &'static str {
     let effective = match measure {
         "Casualties" if entries.iter().any(|entry| entry.casualties.is_some()) => "Casualties",
@@ -1140,24 +1168,30 @@ impl Product for LandBattlesRanking {
                 if battle.live.is_none()
                     && let Some(end) = &battle.end
                 {
-                    let (attackers, a_unknown) = tags_of(&names, &end.sides[0], read);
-                    let (defenders, d_unknown) = tags_of(&names, &end.sides[1], read);
+                    let resolve = |slots: Option<&[u32]>, unknown: bool| match slots {
+                        Some(slots) => {
+                            let (tags, missing) = tags_of(&names, slots, read);
+                            (tags, unknown || missing)
+                        }
+                        None => (Vec::new(), true),
+                    };
+                    let (attackers, a_unknown) = resolve(end.sides[0].as_deref(), end.countries_unknown & 1 != 0);
+                    let (defenders, d_unknown) = resolve(end.sides[1].as_deref(), end.countries_unknown & 2 != 0);
                     shaped.runs = vec![LandBattleRun {
                         first_hour: read,
                         last_hour: read,
                         counts: [0, 0],
                         roster_unknown: true,
                         countries: [attackers, defenders],
-                        countries_unknown: [a_unknown || end.countries_unknown & 1 != 0, d_unknown || end.countries_unknown & 2 != 0],
+                        countries_unknown: [a_unknown, d_unknown],
                         duration: end.last_duration.unwrap_or(0),
                     }];
                     if end.manpower.iter().any(Option::is_some) && !shaped.losses.iter().any(|loss| loss.terminal) {
                         shaped.losses.insert(0, LandBattleLossRead { hour: read, terminal: false, sides: LandLossTotals::Read([0, 1].map(|side| LandLossTotal::Unknown { manpower: manpower(end.manpower[side], NOT_RECORDED), unknown: "Equipment losses are not in the battle's end".into() })) });
                     }
                 }
-                let side = |at: usize| shaped.result.as_ref().filter(|result| !result.countries_unknown[at]).map_or_else(|| shaped.runs.last().map_or((&[][..], true), |run| (&run.countries[at][..], run.countries_unknown[at])), |result| (&result.countries[at][..], false));
-                let hour = shaped.result.as_ref().map_or(read, |result| result.hour);
-                if !params.countries.matches(&query.holders, [side(0), side(1)], hour) {
+                let hour = ranked_hour(&shaped, read);
+                if !params.countries.matches(&query.holders, [battle_side(&shaped, 0), battle_side(&shaped, 1)], hour) {
                     continue;
                 }
                 let casualties = shaped.losses.last().and_then(|loss| match &loss.sides {
