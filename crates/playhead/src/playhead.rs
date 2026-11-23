@@ -2261,11 +2261,21 @@ impl Stepper {
         }
     }
 
+    fn current(&self) -> bool {
+        self.shared.epoch.load(Ordering::Acquire) == self.epoch
+    }
+
+    fn publish_newest(&self, control: &mut Control, newest: Hour) {
+        if self.current() {
+            control.newest = Some(newest);
+        }
+    }
+
     fn publish_caught_up(&self, control: &mut Control, caught_up: Option<Hour>) {
         let current = control.selection == self.selection_seen
             && control.seek.is_none()
             && control.lands.is_empty()
-            && self.shared.epoch.load(Ordering::Acquire) == self.epoch;
+            && self.current();
         control.caught_up_at = if current { caught_up } else { None };
     }
 
@@ -2720,7 +2730,7 @@ impl Stepper {
         lock(&self.shared.report).2 = self.counters;
         let caught_up = self.caught_up_at();
         self.shared.nudge(|control| {
-            control.newest = Some(hour);
+            self.publish_newest(control, hour);
             self.publish_caught_up(control, caught_up);
         });
         Ok(true)
@@ -3216,7 +3226,7 @@ impl Stepper {
                 lock(&self.shared.report).2 = self.counters;
                 let caught_up = self.caught_up_at();
                 self.shared.nudge(|control| {
-                    control.newest = Some(last);
+                    self.publish_newest(control, last);
                     control.published_steps += 1;
                     self.publish_caught_up(control, caught_up);
                 });
