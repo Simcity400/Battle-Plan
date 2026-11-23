@@ -53,19 +53,17 @@ pub(super) fn capture_mode(pages: &WorldPages) -> io::Result<CaptureMode> {
 }
 
 impl Projection {
-    pub(super) fn new(pages: &WorldPages, run: usize, table: TableId, columns: Option<Vec<usize>>, cold: Option<Vec<usize>>, raw: bool) -> io::Result<Self> {
+    pub(super) fn new(pages: &WorldPages, run: usize, table: TableId, columns: Option<Vec<usize>>, cold: Option<Vec<usize>>) -> io::Result<Self> {
         if let Some(reason) = pages.withheld(table.index()) {
             return Err(io::Error::new(io::ErrorKind::InvalidData, reason.to_owned()));
         }
         let fields = field_mask(table, columns.as_deref());
         let omitted = field_mask(table, cold.as_deref()) & !fields;
         let mut validity = 0;
-        if !raw {
-            for column in 0..64 {
-                let bit = 1u64 << column;
-                if omitted & bit != 0 && table.rows_from_wire_fields(&[0], bit, &mut |_, _| Ok(replay_data::rows::Field::NotRecorded)).is_err() {
-                    validity |= bit;
-                }
+        for column in 0..64 {
+            let bit = 1u64 << column;
+            if omitted & bit != 0 && table.rows_from_wire_fields(&[0], bit, &mut |_, _| Ok(replay_data::rows::Field::NotRecorded)).is_err() {
+                validity |= bit;
             }
         }
         let recording = pages.recording();
@@ -207,163 +205,6 @@ impl Projection {
         });
         settle(read.table, made, sampled, sample, view, edits)
     }
-
-    #[expect(clippy::too_many_arguments, reason = "one raw table's read, lane and edits")]
-    fn read_raw(
-        &mut self,
-        input: &mut Input<'_>,
-        read: &Read,
-        sample: bool,
-        raw: &mut RawTables,
-        decode: fn(TableId, &StoreView<'_>, u32, u128) -> Option<RawRow>,
-        edits: &mut Edits,
-    ) -> io::Result<()> {
-        if self.selection.as_ref() != Some(&read.keys) {
-            self.at = None;
-        }
-        let Input { pool, hour, count, step, placed, mode, .. } = input;
-        let (run, table) = (self.run, read.table.index());
-        match step.and_then(|step| self.lane(read.table, *hour, step)) {
-            Some((step, lane, change)) => self.raw_from_lane(read, sample, raw, decode, edits, count, lane, Some((step, change)), *mode)?,
-            None => {
-                let warm = if step.is_some_and(|step| step.lanes_table(table)) {
-                    let columns = self.columns.clone();
-                    let wake = step.and_then(|step| step.wake.cloned());
-                    pool.warm(run, table, &columns, *hour, wake, |lane| self.raw_from_lane(read, sample, raw, decode, edits, count, lane, None, *mode))
-                } else { Warm::Cold };
-                match warm {
-                    Warm::Read(result) => result?,
-                    Warm::Warming => return Err(io::Error::new(io::ErrorKind::WouldBlock, format!("{:?} is being placed beside the step", read.table))),
-                    Warm::Cold => {
-                        let placed = placed.get_or_insert_with(|| pool.take(run, *hour));
-                        let lane = placed.lane(table, &self.columns, *hour)?;
-                        self.raw_from_lane(read, sample, raw, decode, edits, count, lane, None, *mode)?;
-                    }
-                }
-            }
-        }
-        self.selection = Some(read.keys.clone());
-        self.at = Some(*hour);
-        Ok(())
-    }
-
-    #[expect(clippy::too_many_arguments, reason = "one raw table's cells at an hour and edits")]
-    fn raw_from_lane(
-        &mut self,
-        read: &Read,
-        sample: bool,
-        raw: &mut RawTables,
-        decode: fn(TableId, &StoreView<'_>, u32, u128) -> Option<RawRow>,
-        edits: &mut Edits,
-        count: &mut u64,
-        lane: &Lane,
-        step: Option<(&Step, &Changes)>,
-        mode: CaptureMode,
-    ) -> io::Result<()> {
-        let table = read.table;
-        let (status, sampled) = lane.status();
-        let non_complete = match status {
-            Status::Complete => None,
-            Status::Truncated { missing } => {
-                let cells = lane.view();
-                let mut keyed = Vec::new();
-                let mut keep = |slot| {
-                    if let Some(key) = cells.key(slot).filter(|&k| read.keys.contains(k)) { keyed.push((key, slot)); }
-                };
-                if let Some(rows) = lane.read_rows() { rows.iter().copied().for_each(keep); }
-                else if let Keys::These(keys) = &read.keys { keyed.extend(keys.iter().filter_map(|&key| Some((key, cells.slot(key)?)))); }
-                else { cells.rows().for_each(&mut keep); }
-                keyed.sort_unstable();
-                *count += keyed.len() as u64;
-                match cells_rows_of(table, &cells, &keyed, self.format, self.fields | self.validity) {
-                    Ok(_) => Some(RawTable::Truncated { missing }),
-                    Err(e) if Unsayable::of(&e).is_some() => Some(RawTable::Unavailable { reason: e.to_string() }),
-                    Err(e) => return Err(e),
-                }
-            }
-            Status::NotRecorded => Some(RawTable::NotRecorded { mode }),
-            Status::Unavailable { .. } => Some(RawTable::Unavailable {
-                reason: lane.reason().and_then(|reason| std::str::from_utf8(reason).ok()).unwrap_or("A table's reason is not text").to_owned(),
-            }),
-        };
-        if let Some(made) = non_complete {
-            let same = match (raw.get_mut(table), &made) {
-                (Some(RawTable::Truncated { missing: a }), RawTable::Truncated { missing: b }) => a == b,
-                (Some(RawTable::NotRecorded { mode: a }), RawTable::NotRecorded { mode: b }) => a == b,
-                (Some(RawTable::Unavailable { reason: a }), RawTable::Unavailable { reason: b }) => a == b,
-                _ => false,
-            };
-            if !same {
-                raw.insert(table, made, None);
-                edits.replaced.insert(table);
-            }
-            return Ok(());
-        }
-        let cells = lane.view();
-        let continues = |step: &Step, change: &Changes| self.at.is_some_and(|at| at.checked_add(1) == Some(step.first())) && !change.reset();
-        if let (Some(RawTable::Complete(rows)), Some((step, change))) = (raw.get_mut(table), step)
-            && continues(step, change)
-        {
-            let mut dirty: BTreeMap<u128, u64> = BTreeMap::new();
-            for &key in change.deleted().keys().into_iter().flatten().chain(change.inserted().keys().into_iter().flatten()) {
-                if read.keys.contains(key) { dirty.insert(key, u64::MAX); }
-            }
-            let renumber = change.renumber();
-            let now = |slot: u32| match renumber {
-                Some(old) => old.binary_search(&slot).ok().map(|at| at as u32),
-                None => Some(slot),
-            };
-            for column in change.columns() {
-                let mask = 1u64 << column.column();
-                if self.fields & mask == 0 { continue; }
-                for slot in column.slots().iter().filter_map(|&slot| now(slot)) {
-                    if let Some(key) = lane.cells().key(slot).filter(|&k| read.keys.contains(k)) {
-                        *dirty.entry(key).or_default() |= mask;
-                    }
-                }
-            }
-            if dirty.is_empty() {
-                if raw.sampled_at(table) != sampled {
-                    raw.set_sampled_at(table, sampled);
-                    if sample { edits.replaced.insert(table); }
-                }
-                return Ok(());
-            }
-            for &key in dirty.keys() {
-                if let Some(slot) = cells.slot(key) {
-                    *count += 1;
-                    if let Some(row) = decode(table, &cells, slot, key) {
-                        rows.insert(key, row);
-                    } else {
-                        rows.remove(&key);
-                    }
-                } else {
-                    rows.remove(&key);
-                }
-            }
-            raw.set_sampled_at(table, sampled);
-            edits.tables.insert(table, dirty);
-            return Ok(());
-        }
-        let mut keyed = Vec::new();
-        let mut keep = |slot| {
-            if let Some(key) = cells.key(slot).filter(|&k| read.keys.contains(k)) { keyed.push((key, slot)); }
-        };
-        if let Some(rows) = lane.read_rows() { rows.iter().copied().for_each(keep); }
-        else if let Keys::These(keys) = &read.keys { keyed.extend(keys.iter().filter_map(|&key| Some((key, cells.slot(key)?)))); }
-        else { cells.rows().for_each(&mut keep); }
-        keyed.sort_unstable();
-        *count += keyed.len() as u64;
-        let mut rows = BTreeMap::new();
-        for (key, slot) in keyed {
-            if let Some(row) = decode(table, &cells, slot, key) {
-                rows.insert(key, row);
-            }
-        }
-        raw.insert(table, RawTable::Complete(rows), sampled);
-        edits.replaced.insert(table);
-        Ok(())
-    }
 }
 
 fn settle(table: TableId, made: io::Result<TableView>, sampled: Option<i32>, sample: bool, view: &mut SharedView, edits: &mut Edits) -> io::Result<()> {
@@ -407,31 +248,21 @@ pub(super) struct Input<'a> {
 }
 
 impl Input<'_> {
-    pub(super) fn frame_into<P: AtHour>(&mut self, reads: &[Read], raw: &mut RawTables, branch: u64) -> io::Result<DecodedFrame> {
+    pub(super) fn frame(&mut self, reads: &[Read], columns: fn(TableId) -> Option<Vec<usize>>, branch: u64) -> io::Result<DecodedFrame> {
         let mut frame = empty(branch, self.hour);
         let mut tables = Projections::new();
-        let mut raw_rows = 0u64;
         for read in reads {
-            let fields = P::columns(read.table);
-            if P::raw_table(read.table) {
-                let before = *self.count;
-                self.read_raw(&mut tables, read, raw, P::decode_raw_row, || (fields.clone(), fields.clone()), false, &mut Edits::default())?;
-                raw_rows += *self.count - before;
-            } else {
-                self.read(&mut tables, read, &mut frame.tables[read.table.index()], || (fields.clone(), fields.clone()), false, &mut Edits::default())?;
-            }
+            let fields = columns(read.table);
+            self.read(&mut tables, read, &mut frame.tables[read.table.index()], || (fields.clone(), fields.clone()), false, &mut Edits::default())?;
         }
         count_frame(&frame, reads);
-        if raw_rows > 0 {
-            count_rows(|| raw_rows);
-        }
         Ok(frame)
     }
 
     fn read(&mut self, tables: &mut Projections, read: &Read, view: &mut SharedView, columns: impl Fn() -> (Option<Vec<usize>>, Option<Vec<usize>>), sample: bool, edits: &mut Edits) -> io::Result<()> {
         let table = read.table;
         let (selected, cold) = columns();
-        let made = |selected, cold| match Projection::new(&self.pool.pages, self.run, table, selected, cold, false) {
+        let made = |selected, cold| match Projection::new(&self.pool.pages, self.run, table, selected, cold) {
             Ok(projection) => Ok(Ok(projection)),
             Err(e) if e.kind() == io::ErrorKind::InvalidData => Ok(Err(e.to_string())),
             Err(e) => Err(e),
@@ -459,185 +290,50 @@ impl Input<'_> {
         edits.replaced.insert(table);
         Ok(())
     }
-
-    #[expect(clippy::too_many_arguments, reason = "one raw table read with its projection and edits")]
-    fn read_raw(
-        &mut self,
-        tables: &mut Projections,
-        read: &Read,
-        raw: &mut RawTables,
-        decode: fn(TableId, &StoreView<'_>, u32, u128) -> Option<RawRow>,
-        columns: impl Fn() -> (Option<Vec<usize>>, Option<Vec<usize>>),
-        sample: bool,
-        edits: &mut Edits,
-    ) -> io::Result<()> {
-        let table = read.table;
-        let (selected, cold) = columns();
-        let made = |selected, cold| match Projection::new(&self.pool.pages, self.run, table, selected, cold, true) {
-            Ok(projection) => Ok(Ok(projection)),
-            Err(e) if e.kind() == io::ErrorKind::InvalidData => Ok(Err(e.to_string())),
-            Err(e) => Err(e),
-        };
-        let slot = match tables.entry(table) {
-            Entry::Occupied(mut entry) if entry.get().as_ref().is_ok_and(|held| held.fields != field_mask(table, selected.as_deref())) => {
-                *entry.get_mut() = made(selected, cold)?;
-                entry.into_mut()
-            }
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => entry.insert(made(selected, cold)?),
-        };
-        let reason = match slot {
-            Ok(projection) => match projection.read_raw(self, read, sample, raw, decode, edits) {
-                Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-                    tables.remove(&table);
-                    e.to_string()
-                }
-                result => return result,
-            },
-            Err(reason) => {
-                if matches!(raw.get_mut(table), Some(RawTable::Unavailable { reason: held }) if held == reason) {
-                    return Ok(());
-                }
-                reason.clone()
-            }
-        };
-        raw.insert(table, RawTable::Unavailable { reason }, None);
-        edits.replaced.insert(table);
-        Ok(())
-    }
-
-    pub(super) fn live_values(&mut self, live: &Live, frame: &DecodedFrame, covered: impl Fn(&Group) -> bool) -> io::Result<Value> {
-        let mut from_frame: Option<Vec<Vec<dashboard_follow::live::CellValue>>> = None;
-        let mut states = Vec::with_capacity(live.groups.len());
-        for (at, group) in live.groups.iter().enumerate() {
-            let values = if covered(group) {
-                let held = from_frame.get_or_insert_with(|| live.values(frame));
-                std::mem::take(&mut held[at])
-            } else {
-                self.raw_group_values(group)?
-            };
-            states.push(GroupState::Values(values));
-        }
-        Ok(live.json(&states))
-    }
-
-    fn raw_group_values(&mut self, group: &Group) -> io::Result<Vec<dashboard_follow::live::CellValue>> {
-        use dashboard_follow::live::CellValue;
-        let width = group.columns.len();
-        let table = group.table.index();
-        if let Some(reason) = self.pool.pages.withheld(table) {
-            return Ok(vec![CellValue::Missing(unavailable_table(table, reason)); group.keys.len() * width]);
-        }
-        let columns = recorded_columns(&self.pool.pages, group.table, &group.columns);
-        if let Some(lane) = self.step.and_then(|step| {
-            let lane = step.lanes.get(table)?;
-            let change = step.step.table(table)?;
-            (lane.run() == self.run
-                && change.head() == Some(self.hour)
-                && change.log().is_none()
-                && lane.keyed()
-                && columns.iter().all(|column| lane.requested().contains(column)))
-                .then_some(lane)
-        }) {
-            return read_group_cells(group, lane);
-        }
-        let warm = if self.step.is_some_and(|step| step.lanes_table(table)) {
-            let wake = self.step.and_then(|step| step.wake.cloned());
-            self.pool.warm(self.run, table, &columns, self.hour, wake, |lane| read_group_cells(group, lane))
-        } else {
-            Warm::Cold
-        };
-        let result = match warm {
-            Warm::Read(result) => result,
-            Warm::Warming => return Err(io::Error::new(io::ErrorKind::WouldBlock, format!("{:?} is being placed beside the step", group.table))),
-            Warm::Cold => {
-                let placed = self.placed.get_or_insert_with(|| self.pool.take(self.run, self.hour));
-                placed.lane(table, &columns, self.hour).and_then(|lane| read_group_cells(group, lane))
-            }
-        };
-        match result {
-            Ok(values) => Ok(values),
-            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-                Ok(vec![CellValue::Missing(unavailable_table(table, &error.to_string())); group.keys.len() * width])
-            }
-            Err(error) => Err(error),
-        }
-    }
-}
-
-fn unavailable_table(table: usize, reason: &str) -> String {
-    dashboard_follow::unrecorded(table, Status::Unavailable { reason: 0 }, Some(reason)).unwrap_or_else(|| reason.to_owned())
-}
-
-fn recorded_columns(pages: &WorldPages, table: TableId, columns: &[usize]) -> Vec<usize> {
-    let recorded = pages.recording().columns().get(table.index()).copied().unwrap_or(0);
-    let mut out: Vec<usize> = columns.iter().copied().filter(|&column| column < recorded).collect();
-    out.sort_unstable();
-    out.dedup();
-    out
-}
-
-fn read_group_cells(group: &Group, lane: &Lane) -> io::Result<Vec<dashboard_follow::live::CellValue>> {
-    use dashboard_follow::live::{CellValue, NO_ROW, NO_VALUE, NOT_RECORDED};
-    use replay_columnar::store::Value as StoreValue;
-    let width = group.columns.len();
-    let table = group.table.index();
-    if let Some(reason) = lane.withheld() {
-        return Ok(vec![CellValue::Missing(unavailable_table(table, reason)); group.keys.len() * width]);
-    }
-    let status = lane.status().0;
-    let text = lane.reason().and_then(|bytes| std::str::from_utf8(bytes).ok());
-    if let Some(reason) = dashboard_follow::unrecorded(table, status, text) {
-        return Ok(vec![CellValue::Missing(reason); group.keys.len() * width]);
-    }
-    let cells = lane.view();
-    let mut out = Vec::with_capacity(group.keys.len() * width);
-    for &key in &group.keys {
-        let Some(slot) = cells.slot(key) else {
-            out.extend(std::iter::repeat_n(CellValue::Missing(NO_ROW.to_owned()), width));
-            continue;
-        };
-        for &column in &group.columns {
-            out.push(match cells.value(column, slot) {
-                StoreValue::Number(bits) => CellValue::Number(bits as i64),
-                StoreValue::Missing => CellValue::Missing(NO_VALUE.to_owned()),
-                StoreValue::Unrecorded => CellValue::Missing(NOT_RECORDED.to_owned()),
-                StoreValue::Text(_) | StoreValue::List(_) => {
-                    let field = group.table.field_name(column).unwrap_or("?");
-                    CellValue::Missing(format!("{:?}'s {field} is not a number, which a live cell does not read", group.table))
-                }
-            });
-        }
-    }
-    Ok(out)
 }
 
 #[derive(Default)]
 struct Supplemental {
+    reads: Vec<Read>,
     columns: HashMap<TableId, Vec<usize>>,
+    tables: Projections,
+    views: HashMap<TableId, SharedView>,
 }
 
 impl Supplemental {
-    fn set(&mut self, pages: &WorldPages, live: &Live, covered: impl Fn(&Group) -> bool) {
+    fn set(&mut self, live: &Live, covered: impl Fn(&Group) -> bool) {
+        self.reads = supplemental(live, covered);
         self.columns.clear();
-        let uncovered: BTreeSet<TableId> = live.groups.iter().filter(|group| !covered(group)).map(|group| group.table).collect();
-        for group in live.groups.iter().filter(|group| uncovered.contains(&group.table)) {
+        for group in live.groups.iter().filter(|group| self.reads.iter().any(|read| read.table == group.table)) {
             let columns = self.columns.entry(group.table).or_default();
-            columns.extend(recorded_columns(pages, group.table, &group.columns));
+            columns.extend(&group.columns);
             columns.sort_unstable();
             columns.dedup();
         }
+        self.views.retain(|table, _| self.columns.contains_key(table));
+        self.tables.retain(|table, _| self.columns.contains_key(table));
     }
 
-    fn values(&mut self, live: &Live, frame: &mut DecodedFrame, input: &mut Input<'_>) -> io::Result<Value> {
-        let columns = &self.columns;
-        input.live_values(live, frame, |group| !columns.contains_key(&group.table))
+    fn advance<P: AtHour>(&mut self, input: &mut Input<'_>) -> io::Result<bool> {
+        let mut edits = Edits::default();
+        for read in &self.reads {
+            let view = self.views.entry(read.table).or_insert_with(not_selected);
+            let columns = self.columns.get(&read.table).cloned();
+            input.read(&mut self.tables, read, view, || (columns.clone(), P::columns(read.table)), false, &mut edits)?;
+        }
+        Ok(!edits.tables.is_empty() || !edits.replaced.is_empty())
+    }
+
+    fn values(&mut self, live: &Live, frame: &mut DecodedFrame) -> Value {
+        for (table, view) in &mut self.views { std::mem::swap(view, &mut frame.tables[table.index()]); }
+        let values = live.values(frame);
+        for (table, view) in &mut self.views { std::mem::swap(view, &mut frame.tables[table.index()]); }
+        live.json(&values.into_iter().map(GroupState::Values).collect::<Vec<_>>())
     }
 }
 
 struct Stream {
     tables: Projections,
-    raw: RawTables,
     extra: Supplemental,
     plans: Vec<(Vec<Read>, i32)>,
     frame: Box<DecodedFrame>,
@@ -669,10 +365,11 @@ impl std::ops::DerefMut for Held<'_> {
     }
 }
 
-fn current_values(state: &mut Stream, input: &mut Input<'_>) -> io::Result<Arc<PanelData>> {
+fn current_values<P: AtHour>(state: &mut Stream, input: &mut Input<'_>) -> io::Result<Arc<PanelData>> {
     if state.values_at != Some(input.hour) && state.data.is_ok() {
         if !state.live.is_empty() {
-            let live = state.extra.values(&state.live, &mut state.frame, input)?;
+            state.extra.advance::<P>(input)?;
+            let live = state.extra.values(&state.live, &mut state.frame);
             if let Ok(Value::Object(data)) = Arc::make_mut(&mut state.data) { data.insert("live".into(), live); }
         }
         state.values_at = Some(input.hour);
@@ -713,12 +410,12 @@ where P::Context: Sync, P::Params: Sync {
             let read_run = pool.pages.run_of(run).ok_or_else(|| dashboard_core::refused(format!("{} hour is in a run the recording cannot read", P::TITLE)))?;
             let mut input = Input { pool: &pool, run: read_run, hour, mode: capture_mode(&pool.pages)?, count: &mut count, step: step.filter(|s| s.step.last() == hour), placed: None };
             if let Some(state) = held.as_mut().filter(|s| s.frame.hour == hour && s.run == run && !s.rebuild) {
-                return if values { current_values(state, &mut input) } else { Ok(state.data.clone()) };
+                return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
             }
             let owner = holder::<P>(&holders, &params, hour)?;
             let seed = held.as_ref().is_none_or(|s| s.run != run || hour < s.frame.hour);
             if seed {
-                *held = Some(Stream { tables: HashMap::new(), raw: RawTables::default(), extra: Supplemental::default(), values_at: None, plans: Vec::new(), frame: Box::new(empty(timeline.id, hour)), run, identity_through: hour, live: Arc::default(), data: Arc::new(Err(String::new())), reply: None, sampled: None, rebuild: true });
+                *held = Some(Stream { tables: HashMap::new(), extra: Supplemental::default(), values_at: None, plans: Vec::new(), frame: Box::new(empty(timeline.id, hour)), run, identity_through: hour, live: Arc::default(), data: Arc::new(Err(String::new())), reply: None, sampled: None, rebuild: true });
             }
             let state = held.as_mut().expect("seeded");
             let previous_hour = state.frame.hour;
@@ -737,24 +434,20 @@ where P::Context: Sync, P::Params: Sync {
                 for stage in 0.. {
                     crate::metadata::check_cancel(cancelled)?;
                     if stage >= state.plans.len() {
-                        let planned = sampling(&state.frame, &mut state.sampled, || P::retained_reads_raw(&params, owner, stage, &state.frame, &state.raw, &at));
+                        let planned = sampling(&state.frame, &mut state.sampled, || P::retained_reads(&params, owner, stage, &state.frame, &at));
                         state.plans.push(planned);
                     } else if state.rebuild || identity_changed || clocked || hour > state.plans[stage].1 || P::plan_changes(stage, &edits, &state.frame, &at) {
-                        state.plans[stage] = sampling(&state.frame, &mut state.sampled, || P::retained_reads_raw(&params, owner, stage, &state.frame, &state.raw, &at));
+                        state.plans[stage] = sampling(&state.frame, &mut state.sampled, || P::retained_reads(&params, owner, stage, &state.frame, &at));
                     }
                     let (asks, _) = &state.plans[stage];
                     if asks.is_empty() { state.plans.truncate(stage + 1); break; }
                     for read in asks {
                         let table = read.table;
                         selected.insert(table);
+                        let view = &mut state.frame.tables[table.index()];
+                        if !seed && P::compares_previous(table) { edits.previous.entry(table).or_insert_with(|| view.clone()); }
                         let sample = state.sampled.as_ref().is_none_or(|sampled| sampled.contains(&table));
-                        if P::raw_table(table) {
-                            input.read_raw(&mut state.tables, read, &mut state.raw, P::decode_raw_row, || (P::projection(&params, table, &state.plans, &context), P::columns(table)), sample, &mut edits)?;
-                        } else {
-                            let view = &mut state.frame.tables[table.index()];
-                            if !seed && P::compares_previous(table) { edits.previous.entry(table).or_insert_with(|| view.clone()); }
-                            input.read(&mut state.tables, read, view, || (P::projection(&params, table, &state.plans, &context), P::columns(table)), sample, &mut edits)?;
-                        }
+                        input.read(&mut state.tables, read, view, || (P::projection(&params, table, &state.plans, &context), P::columns(table)), sample, &mut edits)?;
                     }
                 }
                 let projected = |table: TableId| field_mask(table, P::projection(&params, table, &state.plans, &context).as_deref());
@@ -775,43 +468,36 @@ where P::Context: Sync, P::Params: Sync {
                     false
                 }
             });
-            state.raw.retain(|table| selected.contains(table));
             let cells = Cells::default();
             let at = At { owner, holders: &holders, context: &*context, cancelled, hour, live: &cells };
-            let all_complete = selected.iter().all(|table| {
-                if P::raw_table(*table) {
-                    matches!(state.raw.get_mut(*table), Some(RawTable::Complete(_)))
-                } else {
-                    matches!(state.frame.tables[table.index()].held(), TableView::Complete(_))
-                }
-            });
-            if !state.rebuild && !identity_changed && all_complete {
+            if !state.rebuild && !identity_changed && selected.iter().all(|table| matches!(state.frame.tables[table.index()].held(), TableView::Complete(_))) {
                 let changed = !edits.tables.is_empty() || !edits.replaced.is_empty();
                 if !changed && !P::clock_dependent(&state.plans, &context) {
-                    return if values { current_values(state, &mut input) } else { Ok(state.data.clone()) };
+                    return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
                 }
                 if state.data.is_ok() {
                     let kept = state.data.clone();
                     if P::advance(&state.frame, &params, &at, &edits, &state.live, &mut Held(&mut state.data))? {
                         state.reply = None;
-                        return if values { current_values(state, &mut input) } else { Ok(state.data.clone()) };
+                        return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
                     }
                     state.data = kept;
                 }
             }
             let mut own = OwnRefusals::default();
-            let mut reply = sampling(&state.frame, &mut state.sampled, || own_refusals(&mut own, || P::reply_raw(&state.frame, &state.raw, &params, &at)))?;
+            let mut reply = sampling(&state.frame, &mut state.sampled, || own_refusals(&mut own, || P::reply(&state.frame, &params, &at)))?;
             finish(reply.warnings_mut(), &own, &warnings);
             let live = cells.finish();
             let projected = |table: TableId| P::projection(&params, table, &state.plans, &context);
-            state.extra.set(&pool.pages, &live, |g| !P::raw_table(g.table) && state.plans.iter().flat_map(|(reads, _)| reads).rev().find(|r| r.table == g.table)
+            state.extra.set(&live, |g| state.plans.iter().flat_map(|(reads, _)| reads).rev().find(|r| r.table == g.table)
                 .is_some_and(|r| covers(r, g) && projected(g.table).is_none_or(|fields| g.columns.iter().all(|column| fields.contains(column)))));
             if !seed && !state.rebuild && state.data.is_ok() && *state.live == live
                 && state.reply.as_ref().and_then(|last| last.downcast_ref::<P::Reply>()).is_some_and(|last| *last == reply) {
-                return if values { current_values(state, &mut input) } else { Ok(state.data.clone()) };
+                return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
             }
             state.live = Arc::new(live);
-            let live = if state.live.is_empty() { None } else { Some(state.extra.values(&state.live, &mut state.frame, &mut input)?) };
+            state.extra.advance::<P>(&mut input)?;
+            let live = (!state.live.is_empty()).then(|| state.extra.values(&state.live, &mut state.frame));
             let data = serde_json::to_value(WithLive { reply: &reply, live })?;
             state.reply = Some(Box::new(reply));
             state.rebuild = false;
@@ -831,27 +517,9 @@ where P::Context: Sync, P::Params: Sync {
         };
         let fresh = !pending && held.as_ref().is_some_and(|s| s.values_at == Some(hour));
         let live = held.as_ref().map(|s| s.live.clone()).filter(|live| !live.is_empty());
-        let lanes = held.as_ref().map_or_else(Vec::new, |s| {
-            let mut declared: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-            for (table, projection) in &s.tables {
-                if let Ok(projection) = projection {
-                    declared.entry(table.index()).or_default().extend(&projection.columns);
-                }
-            }
-            for (table, columns) in &s.extra.columns {
-                if pool.pages.withheld(table.index()).is_none() {
-                    declared.entry(table.index()).or_default().extend(columns);
-                }
-            }
-            declared
-                .into_iter()
-                .map(|(table, mut columns)| {
-                    columns.sort_unstable();
-                    columns.dedup();
-                    Declared { table, columns, keyed: true, passing: false, hourly: false }
-                })
-                .collect()
-        });
+        let lanes = held.as_ref().map_or_else(Vec::new, |s| s.tables.iter().chain(&s.extra.tables)
+            .filter_map(|(table, projection)| Some(Declared { table: table.index(), columns: projection.as_ref().ok()?.columns.clone(), keyed: true, passing: false, hourly: false }))
+            .collect());
         dashboard_follow::panel::ProductRead { value: result, rows: count, fresh, pending, live, lanes }
     })
 }

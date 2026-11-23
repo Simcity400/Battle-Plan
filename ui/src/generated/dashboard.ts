@@ -421,7 +421,11 @@ part?: string, hour: number, run: SeriesRun | null, drop: SeriesDrop | null,
 /**
  * Why there is no value: never zero, never a guess.
  */
-missing: string | null, };
+missing: string | null,
+/**
+ * True when the inputs were recorded and the measure is not applicable (e.g. a share with a zero denominator).
+ */
+notApplicable?: boolean, };
 export type SeriesStateReply = { branchId: string, measure: string, decimals: number, states: Array<SeriesState>, };
 export type SeriesKeyReply = { hour: number | null, };
 export type SeriesEvent = { country: CountryRef, hour: number, ordinal: string, row: SeriesDrop, };
@@ -3128,19 +3132,24 @@ rows: Array<EventFeedRow>,
  * read, refusals of their rows.
  */
 unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
-export type EndedLease = { terms: LeaseTerms, fuelSentRaw: string | null, fuelSentRawMissing?: string, fuelSunkRaw: string | null, fuelSunkRawMissing?: string,
+export type EndedLeaseTerms = { key: string,
+/**
+ * The handle, hexadecimal.
+ */
+id: string, giver: string | null, giverMissing?: string, receiver: string | null, receiverMissing?: string, revision: string | null, revisionMissing?: string, activeSince: number | null, activeSinceMissing?: string, lastDelivery: number | null, lastDeliveryMissing?: string, monthly: Array<MarketItem> | null, monthlyMissing?: string,
+/**
+ * Production shares, /1000 percent.
+ */
+percentage: Array<MarketItem> | null, percentageMissing?: string, once: Array<MarketItem> | null, onceMissing?: string, delivered: Array<MarketItem> | null, deliveredMissing?: string, sunk: Array<MarketItem> | null, sunkMissing?: string, fuelDailyRaw: string | null, fuelDailyRawMissing?: string, fuelPercentageRaw: string | null, fuelPercentageRawMissing?: string, lastFuelDeliveredRaw: string | null, lastFuelDeliveredRawMissing?: string, };
+export type EndedLease = { terms: EndedLeaseTerms, fuelSentRaw: string | null, fuelSentRawMissing?: string, fuelSunkRaw: string | null, fuelSunkRawMissing?: string,
 /**
  * The first hour it stood in its run, within the branch.
  */
 firstHour: number,
 /**
- * Its last witnessed hour.
+ * Its last read.
  */
-lastHour: number,
-/**
- * The first census hour that established the agreement absent.
- */
-endedBy: number, };
+lastHour: number, };
 export type LendLeaseHistoryReply = { branchId: string,
 /**
  * By the hour each ended, then key.
@@ -5604,11 +5613,11 @@ export type LeaseTerms = { key: string,
 /**
  * The handle, hexadecimal.
  */
-id: string, giver: string | null, receiver: string | null, receiverMissing?: string, revision: string | null, revisionMissing?: string, activeSince: number | null, activeSinceMissing?: string, lastDelivery: number | null, lastDeliveryMissing?: string, monthly: Array<MarketItem> | null, monthlyMissing?: string,
+id: string, giver: string | null, receiver: string | null, revision: string, activeSince: number, lastDelivery: number, monthly: Array<MarketItem>,
 /**
  * Production shares, /1000 percent.
  */
-percentage: Array<MarketItem> | null, percentageMissing?: string, once: Array<MarketItem> | null, onceMissing?: string, delivered: Array<MarketItem> | null, deliveredMissing?: string, sunk: Array<MarketItem> | null, sunkMissing?: string, fuelDailyRaw: string | null, fuelDailyRawMissing?: string, fuelPercentageRaw: string | null, fuelPercentageRawMissing?: string, lastFuelDeliveredRaw: string | null, lastFuelDeliveredRawMissing?: string, };
+percentage: Array<MarketItem>, once: Array<MarketItem>, delivered: Array<MarketItem>, sunk: Array<MarketItem>, fuelDailyRaw: string, fuelPercentageRaw: string, lastFuelDeliveredRaw: string, };
 export type MarketLendLeaseParamsAtHour = MarketLendLeaseParams & { hour: number };
 export type CountryFuelParams = { branchId: string, country: CountryRef, };
 export type CountryFuelReply = { tag: string,

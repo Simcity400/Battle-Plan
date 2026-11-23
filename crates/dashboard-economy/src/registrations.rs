@@ -27,4 +27,3 @@ use serde_json::Value;
 type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, String>;
 
 pub const EXACT_LENDLEASEBALANCE: ExactPanel = exact_panel::<crate::products::economy::lend_lease_balance::LendLeaseBalance>;
-pub const EXACT_MARKETLENDLEASE: ExactPanel = exact_panel::<crate::products::economy::market::MarketLendLease>;

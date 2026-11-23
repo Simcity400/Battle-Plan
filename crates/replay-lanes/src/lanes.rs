@@ -100,13 +100,13 @@ pub(crate) fn asked_rows(reader: &TableReader, keys: Keys<'_>) -> io::Result<Vec
     Ok(rows)
 }
 
-pub fn at_each(
+pub fn at_each_with_status(
     recording: &Recording,
     run: u32,
     table: TableId,
     columns: Option<&[usize]>,
     asks: &[(i32, u128)],
-    each: &mut dyn FnMut(i32, u128, Option<(TableView<'_>, u32)>) -> io::Result<()>,
+    each: &mut dyn FnMut(i32, u128, Status, Option<(TableView<'_>, u32)>) -> io::Result<()>,
 ) -> io::Result<()> {
     let mut asks = asks.to_vec();
     asks.sort_unstable();
@@ -123,13 +123,24 @@ pub fn at_each(
     for hour_asks in asks.chunk_by(|a, b| a.0 == b.0) {
         let hour = hour_asks[0].0;
         reader.go_to(recording, ordinal_of(recording, run, hour)?)?;
-        let (view, read, available) = (reader.view(), reader.read_rows(), reader.available());
+        let (status, view, read, available) = (reader.status(), reader.view(), reader.read_rows(), reader.available());
         for &(_, key) in hour_asks {
             let row = view.slot(key).filter(|&slot| available && read.is_none_or(|read| read.binary_search(&slot).is_ok()));
-            each(hour, key, row.map(|slot| (view, slot)))?;
+            each(hour, key, status, row.map(|slot| (view, slot)))?;
         }
     }
     Ok(())
+}
+
+pub fn at_each(
+    recording: &Recording,
+    run: u32,
+    table: TableId,
+    columns: Option<&[usize]>,
+    asks: &[(i32, u128)],
+    each: &mut dyn FnMut(i32, u128, Option<(TableView<'_>, u32)>) -> io::Result<()>,
+) -> io::Result<()> {
+    at_each_with_status(recording, run, table, columns, asks, &mut |hour, key, _, row| each(hour, key, row))
 }
 
 pub type Runs = Vec<(i32, i32, Option<i64>)>;

@@ -79,13 +79,33 @@ impl Cells for TableView<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Computed {
+    Value(i64),
+    NotApplicable(&'static str),
+    Unrecorded,
+}
+
+impl Computed {
+    pub fn of(value: Option<i64>) -> Self {
+        value.map_or(Self::Unrecorded, Self::Value)
+    }
+
+    pub fn value(self) -> Option<i64> {
+        match self {
+            Self::Value(value) => Some(value),
+            Self::NotApplicable(_) | Self::Unrecorded => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum Source {
     Cell(usize),
     Computed {
         id: u32,
         inputs: u64,
-        value: fn(&dyn Cells, u32) -> Option<i64>,
+        value: fn(&dyn Cells, u32) -> Computed,
     },
 }
 
@@ -97,11 +117,15 @@ impl Source {
         }
     }
 
-    pub fn value(&self, table: &dyn Cells, slot: u32) -> Option<i64> {
+    pub fn read(&self, table: &dyn Cells, slot: u32) -> Computed {
         match self {
-            Self::Cell(column) => table.number(*column, slot),
+            Self::Cell(column) => Computed::of(table.number(*column, slot)),
             Self::Computed { value, .. } => value(table, slot),
         }
+    }
+
+    pub fn value(&self, table: &dyn Cells, slot: u32) -> Option<i64> {
+        self.read(table, slot).value()
     }
 
     fn reads(&self, mask: u64) -> bool {

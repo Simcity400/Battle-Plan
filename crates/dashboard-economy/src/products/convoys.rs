@@ -59,8 +59,8 @@ impl RunConvoys {
     }
 }
 
-fn lease_receiver(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    (cells.number(CLIENT_CATEGORY, slot)? == LEND_LEASE).then(|| cells.number(CLIENT_OTHER, slot)).flatten()
+fn lease_receiver(cells: &dyn Cells, slot: u32) -> replay_columnar::summary::Computed {
+    replay_columnar::summary::Computed::of((cells.number(CLIENT_CATEGORY, slot) == Some(LEND_LEASE)).then(|| cells.number(CLIENT_OTHER, slot)).flatten())
 }
 
 pub(crate) fn owned(runs: impl IntoIterator<Item = (u128, read::Runs)>) -> Owned {

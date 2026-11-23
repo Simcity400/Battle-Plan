@@ -1,6 +1,6 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { createPortal } from 'react-dom';
-import { useCallback, useMemo,  useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { MissingName, ValueState } from '../../components/ValueState';
 import DrillHost from '../../charts/drill/DrillHost';
@@ -42,7 +42,7 @@ import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 import { productRequest } from '../../dashboard/request.ts';
 
 const NO_ROWS: readonly AgreementRow[] = [];
-const NO_AGREEMENTS: ReturnType<typeof agreementRows> = { rows: [], unattributedActive: 0, unattributedEnded: 0, unattributed: 0, membership: null };
+const NO_AGREEMENTS: ReturnType<typeof agreementRows> = { rows: [], unattributed: 0, membership: null };
 const NO_WARNINGS: readonly string[] = [];
 const rowKey = (row: AgreementRow) => row.key;
 const rowOf = (key: string) => key.slice(0, key.lastIndexOf('\u0000'));
@@ -70,10 +70,10 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? hour),
     [widget.countries, fallback, groups.data, track?.branch.lastHour, hour]);
   const unrecorded = useCallback((at: number) => membershipUnrecordedAt(widget.countries, groups.data, at), [widget.countries, groups.data]);
-  const choiceAt = useChoiceHour(runtime.clock, active, () => head.atNow() ?? hour, () => head.shownAt(), countryMatchChangeHours(match.matches), head.live.subscribe);
+  const choiceAt = useChoiceHour(runtime.clock, active, () => head.atNow() ?? hour, () => head.shownAt(), countryMatchChangeHours(match.matches));
   const listed = useMemo(() => data && match.ready && !match.reason
-    ? agreementRows({ ...data, hour: choiceAt }, history.data, direction, match.matches, showEnded, unrecorded, head.live.read())
-    : NO_AGREEMENTS, [data, history.data, match, direction, showEnded, unrecorded, choiceAt, head.live]);
+    ? agreementRows({ ...data, hour: choiceAt }, history.data, direction, match.matches, showEnded, unrecorded)
+    : NO_AGREEMENTS, [data, history.data, match, direction, showEnded, unrecorded, choiceAt]);
   const rows = listed.rows;
   const shown = useShownHour();
   const shownAt = useRef(head.shownAt);
@@ -111,9 +111,11 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
     return [
       { key: 'partner', header, label: header, width: 'minmax(var(--lend-lease-country-min, var(--table-name-min)), 1.4fr)', renderMissing: true,
         value: row => { const tag = several ? row.giver : row.partner; return tag === null ? null : name(tag, row.at); },
-        text: row => several ? `${title(row.giver, row.at)} → ${row.receiver === null && row.terms.receiverMissing ? row.terms.receiverMissing : title(row.receiver, row.at)}`
+        text: row => several
+          ? `${row.giver === null && row.giverMissing ? row.giverMissing : title(row.giver, row.at)} → ${row.receiver === null && row.receiverMissing ? row.receiverMissing : title(row.receiver, row.at)}`
           : row.partner === null && row.partnerMissing ? row.partnerMissing : title(row.partner, row.at),
-        render: row => several ? <span className="lend-lease-pair">{country(row.giver, row.at)}<span className="lend-lease-to">→ {country(row.receiver, row.at, row.terms.receiverMissing)}</span></span>
+        render: row => several
+          ? <span className="lend-lease-pair">{country(row.giver, row.at, row.giverMissing)}<span className="lend-lease-to">→ {country(row.receiver, row.at, row.receiverMissing)}</span></span>
           : country(row.partner, row.at, row.partnerMissing) },
       { key: 'equipment', header: 'Equipment', label: 'Equipment', width: 'minmax(calc(var(--table-name-min) + 3em), 1.4fr)', renderMissing: true,
         value: row => row.items[0]?.name ?? null, text: row => row.items.map(item => item.name ?? item.missing ?? 'Equipment name unavailable').join(', '),
@@ -185,17 +187,10 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
     </div>
     <div className="lend-lease-agreements-table">{body}</div>
   </div>;
-  const activePill = listed.unattributedActive
-    ? listed.unattributedEnded
-      ? `${active_.toLocaleString()}+ active · ${listed.unattributedActive.toLocaleString()} active, ${listed.unattributedEnded.toLocaleString()} ended unattributed`
-      : `${active_.toLocaleString()}+ active · ${listed.unattributedActive.toLocaleString()} unattributed`
-    : listed.unattributedEnded
-      ? `${active_.toLocaleString()} active · ${listed.unattributedEnded.toLocaleString()} ended unattributed`
-      : `${active_.toLocaleString()} active`;
   return <div ref={anchor} className="lend-lease-agreements-host">{parent ? null : groupFailure}
-    {headerSlot && data && data.agreements !== null && createPortal(<span className="pill">{activePill}</span>, headerSlot)}
+    {headerSlot && data && data.agreements !== null && createPortal(<span className="pill">{active_.toLocaleString()}{listed.unattributed ? '+' : ''} active</span>, headerSlot)}
     <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
-      title={picked ? `${title(picked.giver, picked.at)} → ${title(picked.receiver, picked.at)}` : AGREEMENT.label} day={drillDay == null ? '' : dayLabel(drillDay)} canFollow onClose={() => dispatch({ type: 'close' })}
+      title={picked ? `${picked.giver === null && picked.giverMissing ? picked.giverMissing : title(picked.giver, picked.at)} → ${picked.receiver === null && picked.receiverMissing ? picked.receiverMissing : title(picked.receiver, picked.at)}` : AGREEMENT.label} day={drillDay == null ? '' : dayLabel(drillDay)} canFollow onClose={() => dispatch({ type: 'close' })}
       main={main}>
       {picked && (drillTags ? <MarketDrill runtime={runtime} widget={widget} time={drillTime} active={active} onAnswered={setDrillShown}
         tags={drillTags} selected={`agreement:${picked.terms.id}`} />
@@ -231,5 +226,7 @@ export function agreementTooltip(row: AgreementRow, countryLabel: (tag: string |
   else if (row.lastMissing) lines.push({ label: 'Last delivery', value: row.lastMissing, tone: 'muted' });
   if (row.ended) lines.push({ label: `Last recorded ${dayLabel(row.at)}`, tone: 'muted' });
   const giver = countryLabel(row.giver, row.at), receiver = countryLabel(row.receiver, row.at);
-  return fitTooltip([{ title: `${giver.name} → ${row.receiver === null && row.terms.receiverMissing ? row.terms.receiverMissing : receiver.name}`, ...countryNameDetails(giver, receiver), rows: lines }], viewport);
+  const giverTitle = row.giver === null && row.giverMissing ? row.giverMissing : giver.name;
+  const receiverTitle = row.receiver === null && row.receiverMissing ? row.receiverMissing : receiver.name;
+  return fitTooltip([{ title: `${giverTitle} → ${receiverTitle}`, ...countryNameDetails(giver, receiver), rows: lines }], viewport);
 }

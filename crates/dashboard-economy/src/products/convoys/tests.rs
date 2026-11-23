@@ -35,9 +35,9 @@ impl Cells for Row {
 #[test]
 fn only_a_lend_lease_client_names_its_receiver_and_an_unrecorded_category_names_none() {
     let row = |category: Option<i64>, other: i64| Row(category.map(|category| (CLIENT_CATEGORY, category)).into_iter().chain([(CLIENT_OTHER, other)]).collect());
-    assert_eq!(lease_receiver(&row(Some(LEND_LEASE), 7), 0), Some(7));
-    assert_eq!(lease_receiver(&row(Some(1), 7), 0), None);
-    assert_eq!(lease_receiver(&row(None, 7), 0), None);
+    assert_eq!(lease_receiver(&row(Some(LEND_LEASE), 7), 0).value(), Some(7));
+    assert_eq!(lease_receiver(&row(Some(1), 7), 0).value(), None);
+    assert_eq!(lease_receiver(&row(None, 7), 0).value(), None);
 }
 
 #[test]

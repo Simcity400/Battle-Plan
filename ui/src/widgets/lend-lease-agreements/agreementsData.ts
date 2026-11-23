@@ -2,9 +2,10 @@ import { liveKey } from '../../charts/live.ts';
 import type { Live, LiveValues } from '../../charts/live';
 import { equipmentOf, FIXED5, FUEL_QUANTITY, fixedText, SHARE } from '../../dashboard/market.ts';
 import type { MarketAt } from '../../dashboard/market';
-import type { EndedLease, LeaseTerms, LendLeaseHistoryReply, MarketItem } from '../../generated/dashboard';
+import type { EndedLease, EndedLeaseTerms, LeaseTerms, LendLeaseHistoryReply, MarketItem } from '../../generated/dashboard';
 
 export type Direction = 'sent' | 'received';
+export type AgreementTerms = LeaseTerms | EndedLeaseTerms;
 
 export interface AgreementItem {
   variant: string | null;
@@ -21,14 +22,16 @@ export interface AgreementItem {
 
 export interface AgreementRow {
   key: string;
-  terms: LeaseTerms;
+  terms: AgreementTerms;
   at: number;
   ended: boolean;
   from: string | null;
   partner: string | null;
   partnerMissing: string | null;
   giver: string | null;
+  giverMissing: string | null;
   receiver: string | null;
+  receiverMissing: string | null;
   fuel: boolean;
   items: AgreementItem[];
   since: number | null;
@@ -54,12 +57,16 @@ const joinMissing = (reasons: readonly (string | null | undefined)[]): string | 
 
 type Named = ReturnType<typeof equipmentOf>;
 
-function rowsOf(terms: LeaseTerms, rowKeyPrefix: string, at: number, ended: boolean, own: string | null, direction: Direction, equipment: Named,
+function rowsOf(terms: AgreementTerms, at: number, ended: boolean, own: string | null, direction: Direction, equipment: Named,
   fuel: { sent: bigint | null; sentMissing: string | null; lost: bigint | null; lostMissing: string | null }): AgreementRow[] {
-  const since = startHourOf(terms.activeSince, terms.activeSinceMissing), last = deliveryHourOf(terms.lastDelivery, terms.lastDeliveryMissing);
+  const missingOf = (field: keyof EndedLeaseTerms) => (field in terms ? (terms as EndedLeaseTerms)[field] as string | undefined : undefined);
+  const since = startHourOf(terms.activeSince, missingOf('activeSinceMissing'));
+  const last = deliveryHourOf(terms.lastDelivery, missingOf('lastDeliveryMissing'));
+  const giverMissing = missingOf('giverMissing') ?? null;
+  const receiverMissing = missingOf('receiverMissing') ?? null;
   const partner = direction === 'sent' ? terms.receiver : terms.giver;
-  const partnerMissing = direction === 'sent' ? (terms.receiverMissing ?? null) : null;
-  const base = { terms, at, ended, from: own, partner, partnerMissing, giver: terms.giver, receiver: terms.receiver,
+  const partnerMissing = direction === 'sent' ? receiverMissing : giverMissing;
+  const base = { terms, at, ended, from: own, partner, partnerMissing, giver: terms.giver, giverMissing, receiver: terms.receiver, receiverMissing,
     since: since.value, sinceMissing: since.missing, last: last.value, lastMissing: last.missing };
   const schedule = new Map<string, string[]>();
   const add = (items: readonly MarketItem[] | null, text: (raw: bigint) => string) => {
@@ -71,80 +78,69 @@ function rowsOf(terms: LeaseTerms, rowKeyPrefix: string, at: number, ended: bool
   const poolMissing = (label: string, items: readonly MarketItem[] | null, missing: string | undefined, fallback: string) =>
     items === null ? (missing ? `${label}: ${missing}` : fallback) : null;
   const scheduleMissing = joinMissing([
-    poolMissing('Monthly', terms.monthly, terms.monthlyMissing, 'Monthly schedule not recorded'),
-    poolMissing('Production share', terms.percentage, terms.percentageMissing, 'Production share not recorded'),
-    poolMissing('Once', terms.once, terms.onceMissing, 'One-time schedule not recorded'),
+    poolMissing('Monthly', terms.monthly, missingOf('monthlyMissing'), 'Monthly schedule not recorded'),
+    poolMissing('Production share', terms.percentage, missingOf('percentageMissing'), 'Production share not recorded'),
+    poolMissing('Once', terms.once, missingOf('onceMissing'), 'One-time schedule not recorded'),
   ]);
   const delivered = byVariant(terms.delivered), lost = byVariant(terms.sunk);
-  const deliveredMissing = terms.delivered === null ? terms.deliveredMissing ?? 'Delivered equipment not recorded' : null;
-  const lostMissing = terms.sunk === null ? terms.sunkMissing ?? 'Lost equipment not recorded' : null;
+  const deliveredMissing = terms.delivered === null ? missingOf('deliveredMissing') ?? 'Delivered equipment not recorded' : null;
+  const lostMissing = terms.sunk === null ? missingOf('sunkMissing') ?? 'Lost equipment not recorded' : null;
   const variants = [...new Set([...schedule.keys(), ...delivered.keys(), ...lost.keys()])];
   const out: AgreementRow[] = [];
-  if (variants.length) out.push({ ...base, key: rowKeyPrefix, fuel: false, items: variants.map(variant => {
+  if (variants.length) out.push({ ...base, key: terms.key, fuel: false, items: variants.map(variant => {
     const drawn = equipment(variant);
     return { variant, name: drawn.name, icon: drawn.icon, missing: drawn.missing, schedule: (schedule.get(variant) ?? []).join(' · '),
       scheduleMissing, delivered: delivered.get(variant) ?? null, deliveredMissing: delivered.has(variant) ? null : deliveredMissing,
       lost: lost.get(variant) ?? null, lostMissing: lost.has(variant) ? null : lostMissing };
   }) });
-  else if (scheduleMissing || deliveredMissing || lostMissing) out.push({ ...base, key: rowKeyPrefix, fuel: false, items: [{
+  else if (scheduleMissing || deliveredMissing || lostMissing) out.push({ ...base, key: terms.key, fuel: false, items: [{
     variant: null, name: null, icon: null, missing: joinMissing([scheduleMissing, deliveredMissing, lostMissing]),
     schedule: '', scheduleMissing, delivered: null, deliveredMissing, lost: null, lostMissing }] });
-  const daily = amountBigInt(terms.fuelDailyRaw, terms.fuelDailyRawMissing);
-  const percentage = amountBigInt(terms.fuelPercentageRaw, terms.fuelPercentageRawMissing);
-  const lastFuel = amountBigInt(terms.lastFuelDeliveredRaw, terms.lastFuelDeliveredRawMissing);
+  const daily = amountBigInt(terms.fuelDailyRaw, missingOf('fuelDailyRawMissing'));
+  const percentage = amountBigInt(terms.fuelPercentageRaw, missingOf('fuelPercentageRawMissing'));
+  const lastFuel = amountBigInt(terms.lastFuelDeliveredRaw, missingOf('lastFuelDeliveredRawMissing'));
   const fuelScheduleMissing = joinMissing([
     daily.missing ? `Daily: ${daily.missing}` : null,
     percentage.missing ? `Production share: ${percentage.missing}` : null,
   ]);
   if ((daily.value !== null && daily.value !== 0n) || (percentage.value !== null && percentage.value !== 0n)
-    || (lastFuel.value !== null && lastFuel.value !== 0n) || lastFuel.missing !== null
+    || (ended && ((lastFuel.value !== null && lastFuel.value !== 0n) || lastFuel.missing !== null))
     || (fuel.sent !== null && fuel.sent !== 0n) || (fuel.lost !== null && fuel.lost !== 0n)
     || fuelScheduleMissing !== null || fuel.sentMissing !== null || fuel.lostMissing !== null) {
-    out.push({ ...base, key: `${rowKeyPrefix}:fuel`, fuel: true, items: [{ variant: null, name: 'Fuel', icon: null, missing: null,
+    out.push({ ...base, key: `${terms.key}:fuel`, fuel: true, items: [{ variant: null, name: 'Fuel', icon: null, missing: null,
       schedule: [daily.value ? `Daily ${fuelText(daily.value)}` : '', percentage.value ? `Production share ${share(percentage.value)}` : ''].filter(Boolean).join(' · '),
       scheduleMissing: fuelScheduleMissing, delivered: fuel.sent, deliveredMissing: fuel.sentMissing, lost: fuel.lost, lostMissing: fuel.lostMissing }] });
-  }
-  if (!out.length) {
-    out.push({ ...base, key: rowKeyPrefix, fuel: false, items: [{ variant: null, name: 'None', icon: null, missing: null,
-      schedule: '', scheduleMissing: null, delivered: null, deliveredMissing: null, lost: null, lostMissing: null }] });
   }
   return out;
 }
 
 export function agreementRows(reply: MarketAt, history: LendLeaseHistoryReply | undefined, direction: Direction,
-  matches: (tag: string, hour: number) => boolean, showEnded: boolean, unrecorded: (hour: number) => string | null = () => null,
-  liveFuel?: LiveValues<number | bigint>):
-  { rows: AgreementRow[]; unattributedActive: number; unattributedEnded: number; unattributed: number; membership: string | null } {
+  matches: (tag: string, hour: number) => boolean, showEnded: boolean, unrecorded: (hour: number) => string | null = () => null):
+  { rows: AgreementRow[]; unattributed: number; membership: string | null } {
   const rows: AgreementRow[] = [];
-  let unattributedActive = 0, unattributedEnded = 0, membership: string | null = null;
-  const take = (terms: LeaseTerms, rowKeyPrefix: string, at: number, ended: boolean, equipment: Named,
+  let unattributed = 0, membership: string | null = null;
+  const take = (terms: AgreementTerms, at: number, ended: boolean, equipment: Named,
     fuel: { sent: bigint | null; sentMissing: string | null; lost: bigint | null; lostMissing: string | null }) => {
     const own = direction === 'sent' ? terms.giver : terms.receiver;
-    if (own === null) { if (ended) unattributedEnded++; else unattributedActive++; return; }
-    if (matches(own, at)) rows.push(...rowsOf(terms, rowKeyPrefix, at, ended, own, direction, equipment, fuel));
+    if (own === null) { if (!ended) unattributed++; return; }
+    if (matches(own, at)) rows.push(...rowsOf(terms, at, ended, own, direction, equipment, fuel));
     else membership ??= unrecorded(at);
   };
   const live = equipmentOf(reply);
-  const toBigInt = (value: number | bigint | undefined): bigint | null =>
-    value === undefined ? null : typeof value === 'bigint' ? value : BigInt(Math.trunc(value));
+  const standing = new Set<string>();
   for (const terms of reply.agreements ?? []) {
-    const sentKey = liveKey(terms.key, 'fuelSent'), lostKey = liveKey(terms.key, 'fuelLost');
-    const sent = toBigInt(liveFuel?.raw?.(sentKey) ?? liveFuel?.get(sentKey));
-    const lost = toBigInt(liveFuel?.raw?.(lostKey) ?? liveFuel?.get(lostKey));
-    const sentMissing = liveFuel && sent === null ? liveFuel.missing(sentKey) : null;
-    const lostMissing = liveFuel && lost === null ? liveFuel.missing(lostKey) : null;
-    take(terms, terms.key, reply.hour, false, live, { sent, sentMissing, lost, lostMissing });
+    standing.add(terms.key);
+    take(terms, reply.hour, false, live, { sent: null, sentMissing: null, lost: null, lostMissing: null });
   }
   if (showEnded && history) {
     const named = equipmentOf(history);
     for (const lease of history.agreements) {
-      if (lease.endedBy > reply.hour) continue;
+      if (lease.lastHour >= reply.hour || standing.has(lease.terms.key)) continue;
       const sent = amountBigInt(lease.fuelSentRaw, lease.fuelSentRawMissing), lost = amountBigInt(lease.fuelSunkRaw, lease.fuelSunkRawMissing);
-      take(lease.terms, `${lease.terms.key}:${lease.firstHour}:${lease.lastHour}`, lease.lastHour, true, named,
-        { sent: sent.value, sentMissing: sent.missing, lost: lost.value, lostMissing: lost.missing });
+      take(lease.terms, lease.lastHour, true, named, { sent: sent.value, sentMissing: sent.missing, lost: lost.value, lostMissing: lost.missing });
     }
   }
-  return { rows, unattributedActive, unattributedEnded, unattributed: unattributedActive + unattributedEnded, membership };
+  return { rows, unattributed, membership };
 }
 
 export const amountOf = (row: Pick<AgreementRow, 'fuel'>, raw: bigint | null) => raw === null ? '—' : row.fuel ? fuelText(raw) : units(raw);

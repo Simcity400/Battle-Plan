@@ -6,18 +6,19 @@ BattlePlan distinguishes three outcomes for every dashboard reading:
 
 1. A known value, including a real zero.
 2. Not recorded, with a reason the user can read.
-3. Not applicable, where all inputs were recorded and the derived quantity has no meaningful value.
+3. Not applicable, where all inputs were recorded and the derived quantity has no meaningful value (for example, a share or ratio with a zero denominator).
 
 `market-ledger` previously defaulted unrecorded `kind`, `ordinal`, `agreement`, and `variant` cells to sentinel values (`255`, `0`, `0000000000000000`, `"0"`) and collapsed unrecorded party cells to `LogCell::Missing`. In `ui/src/charts/table`, a hidden column's tooltip entry was formatted as a dash for an absent value without consulting the live values' missing reason.
 
 In `construction-log`, unrecorded project classification fields (`kind`, `output_alone`, `repair_levels`) previously fell back to `Building`, `Census`, or `false`, and unrecorded `built`/`repaired` counters defaulted to `0`.
 In `land-battles`, an absent end kind, end hour, `province`, or side roster previously defaulted to `0`, the settlement hour, or empty lists, and manpower loss rendering required both sides to be known together.
+Declared computed measures in `dashboard-declare` (`supply-health` shares `noSupplyShare`, `strainedShare`, `inSupplyShare`; `autonomy` `progress`; and `fuel-consumers` `receivedShare`) previously returned `Option<i64>` (`None`) for both a zero denominator and an unrecorded input, making "nothing to divide" and "not recorded" indistinguishable across exact states, follow, and scoreboards.
 
-In `lend-lease-history` and `market-lendlease`, ended agreements previously reconstructed fields with `unwrap_or_default()`, turning unrecorded numeric and fuel columns into `0`, passing `0` as an unrecorded `receiver` into tag lookup, returning empty pools alongside only an aggregate `whole` boolean, and fabricating an end on an unread tail. On standing agreements, one row with an unrecorded column caused typed deserialization to mark the entire `LendLeaseAgreements` table unavailable, dropping intact sibling agreements.
+In `lend-lease-history`, ended agreements previously reconstructed fields with `unwrap_or_default()`, turning unrecorded numeric and fuel columns into `0`, passing `0` as an unrecorded `receiver` into tag lookup, and returning empty pools alongside only an aggregate `whole` boolean.
 
 ## Decision
 
-Keep the recording format unchanged and express missing states directly in the existing contracts:
+Keep the recording format unchanged and express missing and not-applicable states directly in the existing contracts:
 
 - **Market ledger (`market-ledger`)**:
   - Use the existing `LogCell::NotRecorded` variant for unrecorded `kind`, `contract`, `seller`, `buyer`, and `variant` cells, and emit a specific refusal-missing message when `kind == 34` has an unrecorded `ordinal`.
@@ -34,18 +35,24 @@ Keep the recording format unchanged and express missing states directly in the e
   - Unread end `kind` produces `"Ending kind not recorded"` and unread `end_hour` produces `"Ending hour not recorded"` (including when `kind == UNKNOWN`, while `kind == UNKNOWN` with a recorded hour keeps `"Ending not recorded"` and `kind == RESULT_ONLY` intentionally emits `end: None` because it carries only a standalone result). A recorded winner still displays in the list, tooltip, and drill once settled, with `"Ending hour not recorded"` confined to the end-date field; the drill caps plotted curves at the settlement bound (`settledHour`) while keeping the end hour unknown. Ranking and displayed length keep `main`'s settlement-hour fallback (`result.hour ?? settledHour ?? read`); duration/length semantics are tracked in issue #285 (item 9).
   - Unread or corrupt side lists on `LandBattleEnds` (with a result ID) or `LandCombatSides` mark that side unknown in both ranking and display so country filters never exclude the battle, and winning-side labels stay visible at narrow widths (`.lb-winner-side`) without inheriting earlier run rosters. Merged result-only rows without a single result ID remain discarded as on `main` and are tracked in issue #285 (item 13).
   - Per-side manpower losses on shaped battles render and paint independently during playback with a hatched comparison bar when either side is missing.
-- **Lend-lease agreements (`market-lendlease`, `lend-lease-history`)**:
-  - Keep every known field on `LeaseTerms` and `EndedLease` as the bare wire value `main` sends, representing missing values as `null` paired with an optional sibling `<field>Missing: string` reason emitted only when missing (matching `receiverMissing` and adding zero bytes to fully recorded rows). Require `<field>Missing` whenever any nullable field (including `receiver`) is `null`, distinguishing unrecorded receivers from recorded country IDs whose tag could not be resolved.
-  - Standing agreements decode per-field incrementally from the playhead lane via `at_hour` raw tables (`EXACT_MARKETLENDLEASE` registered in both `dated_panel_of` and `panel::<P>`), filter via `link_slot` before collecting variant names, retain unread-receiver rows only when the country selection has a possible holder, and credit decoded raw rows to `at_hour::counted`.
-  - Live fuel cells read per-cell without typed whole-table deserialization, preserving `main`'s table/hour diagnostics on every non-complete status (including `Unsayable` validation on retained rows of truncated snapshots).
-  - Pool decoders reject trailing bytes (`Decoder::finish`) and distinguish unrecorded pools from corrupt pools.
-  - `EndedLease` carries `endedBy: i32` (the first complete census proving absence after `lastHour`, decided from `lanes::statuses`). Refused, unavailable, or truncated hours inside a gap never fabricate an end; a mid-life truncated gap resets the witnessed `firstHour` of any later agreement while suppressing an end for the earlier interval; final truncated-census end semantics remain identical to `main` and move to issue #286.
+- **Computed measures (`replay-columnar`, `dashboard-declare`, `dashboard-query`, `dashboard-follow`)**:
+  - `summary::Source::Computed` returns `Computed::{Value(i64), NotApplicable(&'static str), Unrecorded}` via `Source::read`, while `Source::value` keeps returning `Option<i64>` so on-disk summary pieces are unaffected. Every computed measure reads all required operands before declaring `NotApplicable`, so an unrecorded numerator or operand never masks as `NotApplicable`.
+  - On the columnar follow wire (`dashboard-follow/src/evaluate.rs`), `Computed::NotApplicable(reason)` maps to `State::Missing` with `table.explain(reason)`, while `Computed::Unrecorded` maps to `State::Unrecorded`.
+  - On exact per-hour state reads (`Line::states` via `replay_lanes::lanes::at_each_with_status`, reading the settled `TableReader::status()` for each asked hour), add an optional `notApplicable?: boolean` flag on `SeriesState` (`true` for `NotApplicable` on complete hours, `false` for unrecorded on complete hours, absent on truncated/non-complete hours so truncated hours stay identical to `main`).
+  - Scoreboards (`series/board.rs`) read `Source::read` on complete hours and surface the `NotApplicable` reason directly.
+  - Summaries, tiles, and group lines remain identical to `main` (tracked in issue #285 item 14 for the time chart family); occupation means/detail and ranking/older-summary computed-column edges remain in issue #285; truncated-hour semantics remain in issue #286.
+- **Lend-lease ended agreements (`lend-lease-history`)**:
+  - Decode each ended agreement's fields individually (`EndedRow` / `EndedLeaseTerms` / `EndedLease`) without `unwrap_or_default()`, rejecting trailing bytes in pool decoders (`Decoder::finish`) and distinguishing unrecorded pools from corrupt pools.
+  - Known values serialize as bare values identical byte-for-byte to `main`; missing values serialize as `null` paired with an optional sibling `<field>Missing: string` reason emitted only when missing (including `giverMissing` and `receiverMissing` naming any recorded country ID whose tag could not be resolved).
+  - `validateLeaseHistory` accepts both current replies and older hosts' replies unchanged (where `giver`/`receiver` may be `null` without a sibling reason).
+  - Ended-agreement lifetime evidence (`endedBy`, paging), standing partial agreements, and holder-filter distinctions remain identical to `main` and are tracked in issue #285 (items 15–20) to be rebuilt on issue #286's unified status function.
 
 ## Consequences
 
-- No recording-format, collector, or recorder changes are required; older recordings remain compatible while exposing honest missing states.
+- No recording-format, collector, or recorder changes are required; older recordings remain compatible while exposing honest missing and not-applicable states.
 - Market ledger rows display a missing party or amount as text carrying its own state and reason, instead of fabricated zeroes or bare dashes. A hidden column's tooltip entry shows and speaks the reason itself.
 - For construction log rows, a rise from 1 to 2 at the first read of a new window now displays 2 instead of `main`'s 1 because `joinProject` no longer discards incoming `carried: true` counts.
 - `ConstructionLogWidget` paints live level counts through `LiveText` (and factories through `LiveFactories`) alongside separate source-uncertainty text when `source === 'unknown'`, and `projectTooltip` formats count rows through `builtLabel`.
 - `LandBattlesWidget`, `LandBattleList`, `LandBattleDrill`, and `BattleLog` render missing provinces, endings, rosters, and per-side losses without fabricating zeroes, hiding recorded winners, extending drill curves past settlement, or querying province `0`.
-- `LendLeaseAgreementsWidget` and `TradeMarketView` validate the bare-value + sibling-reason contract, preserve recorded start hour `0`, key ended rows by witnessed lifetime (`key:firstHour:lastHour`) gated on `endedBy`, and read exact `bigint` values via `.raw()`. Missing Delivered and Lost cells in `LendLeaseAgreementsWidget` supply `missingText` and paint directly through `Table`'s `cell.text.put`; non-live missing fields and `TradeMarketView` render through `components/ValueState`.
+- `AutonomyWidget` passes the not-applicable reason to `formatProgress` only when `line.notApplicable.has(hour)` is true (keeping `"Not recorded"` on truncated hours and older hosts), and `FuelBranchesWidget` formats tooltip rows as `'No share'` vs `'Not recorded'` with `detail: missing` from `keyedSeriesData`.
+- `LendLeaseAgreementsWidget` and `agreementsData.ts` render missing ended-agreement fields through `ValueState` (and `Table`'s `missingText` for missing Delivered and Lost cells), preserve recorded `activeSince = 0` and `lastDelivery`, keep `main`'s row keys, visibility gate, and country filtering, and accept older hosts' history replies unchanged.

@@ -17,7 +17,6 @@ use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
-    any::Any,
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
     marker::PhantomData,
@@ -29,70 +28,6 @@ use ts_rs::TS;
 mod incremental;
 mod placed;
 pub use incremental::{Edits, Held};
-
-pub type RawRow = Box<dyn Any + Send + Sync>;
-
-pub enum RawTable {
-    Complete(BTreeMap<u128, RawRow>),
-    Truncated { missing: u32 },
-    Unavailable { reason: String },
-    NotRecorded { mode: replay_data::scope::CaptureMode },
-}
-
-#[derive(Default)]
-pub struct RawTables {
-    tables: HashMap<TableId, RawTable>,
-    sampled: HashMap<TableId, Option<i32>>,
-}
-
-impl RawTables {
-    pub fn complete<R: 'static>(&self, table: TableId, hour: i32) -> io::Result<Vec<&R>> {
-        match self.tables.get(&table) {
-            Some(RawTable::Complete(rows)) => Ok(rows
-                .values()
-                .map(|row| row.downcast_ref::<R>().expect("raw table row type matches"))
-                .collect()),
-            Some(RawTable::Truncated { missing }) => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("hour {hour} {table:?} is truncated ({missing} missing rows)"),
-            )),
-            Some(RawTable::Unavailable { reason }) => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("hour {hour} {table:?} is unavailable: {reason}"),
-            )),
-            Some(RawTable::NotRecorded { mode }) => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("hour {hour} {table:?} is not recorded in a {mode} recording"),
-            )),
-            None => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("hour {hour} {table:?} is not recorded"),
-            )),
-        }
-    }
-
-    pub(super) fn get_mut(&mut self, table: TableId) -> Option<&mut RawTable> {
-        self.tables.get_mut(&table)
-    }
-
-    pub(super) fn insert(&mut self, table: TableId, value: RawTable, sampled: Option<i32>) {
-        self.tables.insert(table, value);
-        self.sampled.insert(table, sampled);
-    }
-
-    pub(super) fn sampled_at(&self, table: TableId) -> Option<i32> {
-        self.sampled.get(&table).copied().flatten()
-    }
-
-    pub(super) fn set_sampled_at(&mut self, table: TableId, sampled: Option<i32>) {
-        self.sampled.insert(table, sampled);
-    }
-
-    pub(super) fn retain(&mut self, mut keep: impl FnMut(&TableId) -> bool) {
-        self.tables.retain(|table, _| keep(table));
-        self.sampled.retain(|table, _| self.tables.contains_key(table));
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Keys {
@@ -158,9 +93,9 @@ pub trait AtHour: 'static {
     const CONTENT_DEPENDENT: bool;
     const INTERACTIVE: bool = true;
     const FIELDS: super::Fields;
-    type Params: DeserializeOwned + Send + Sync + 'static;
+    type Params: DeserializeOwned + Send + 'static;
     type Reply: Serialize + ReplyWarnings + PartialEq + Send + 'static;
-    type Context: Send + Sync + 'static;
+    type Context: Send + 'static;
 
     fn validate(_params: &Self::Params) -> Result<(), &'static str> {
         Ok(())
@@ -191,34 +126,8 @@ pub trait AtHour: 'static {
         Self::reads(params, owner, step, held)
     }
 
-    fn reads_raw(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, _raw: &RawTables, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
-        Self::reads_in(params, owner, step, held, at)
-    }
-
     fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
         (Self::reads_in(params, owner, stage, held, at), i32::MAX)
-    }
-
-    fn retained_reads_raw(params: &Self::Params, owner: Option<Owner>, stage: usize, held: &DecodedFrame, raw: &RawTables, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
-        if Self::has_raw_tables() {
-            (Self::reads_raw(params, owner, stage, held, raw, at), i32::MAX)
-        } else {
-            Self::retained_reads(params, owner, stage, held, at)
-        }
-    }
-
-    fn has_raw_tables() -> bool {
-        false
-    }
-
-    fn raw_table(table: TableId) -> bool {
-        let _ = table;
-        false
-    }
-
-    fn decode_raw_row(table: TableId, view: &replay_columnar::store::TableView<'_>, slot: u32, key: u128) -> Option<RawRow> {
-        let _ = (table, view, slot, key);
-        None
     }
 
     fn columns(table: TableId) -> Option<Vec<usize>> {
@@ -251,10 +160,6 @@ pub trait AtHour: 'static {
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply>;
-
-    fn reply_raw(frame: &DecodedFrame, _raw: &RawTables, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        Self::reply(frame, params, at)
-    }
 }
 
 fn holder<P: AtHour>(holders: &Holders, params: &P::Params, hour: i32) -> io::Result<Option<Owner>> {
@@ -355,52 +260,67 @@ fn answered<P: AtHour, C: std::borrow::Borrow<P::Context>>(query: &Query<'_>, po
     let mut count = 0;
     let mut input = incremental::Input { pool, run: read_run, hour, mode: incremental::capture_mode(&pool.pages)?, count: &mut count, step: None, placed: None };
     let mut answer = AnswerFrame::new(query.timeline.id, hour);
+    let mut read_frame = |reads: &[Read]| dashboard_query::cost::storage(|| input.frame(reads, P::columns, query.timeline.id));
     for step in 0.. {
         crate::metadata::check_cancel(cancelled)?;
-        let reads = P::reads_raw(params, owner, step, &answer.frame, &answer.raw, &ReadsAt { holders: &query.holders, context, run, hour, since: None });
+        let reads = P::reads_in(params, owner, step, &answer.frame, &ReadsAt { holders: &query.holders, context, run, hour, since: None });
         if reads.is_empty() {
             break;
         }
-        answer.read::<P>(reads, &mut input, query.timeline.id)?;
+        answer.read(reads, &mut read_frame)?;
     }
     let cells = Cells::default();
-    let reply = P::reply_raw(&answer.frame, &answer.raw, params, &At { owner, holders: &query.holders, hour, context, cancelled, live: &cells })?;
-    let live = answer.live::<P>(&cells.finish(), &mut input)?;
+    let reply = P::reply(&answer.frame, params, &At { owner, holders: &query.holders, hour, context, cancelled, live: &cells })?;
+    let live = answer.live(&cells.finish(), &mut read_frame)?;
     Ok((reply, live))
 }
 
 struct AnswerFrame {
     frame: DecodedFrame,
-    raw: RawTables,
     held: HashMap<TableId, Read>,
 }
 
 impl AnswerFrame {
     #[inline(never)]
     fn new(branch: u64, hour: i32) -> Self {
-        Self { frame: empty(branch, hour), raw: RawTables::default(), held: HashMap::new() }
+        Self { frame: empty(branch, hour), held: HashMap::new() }
     }
 
     #[inline(never)]
-    fn read<P: AtHour>(&mut self, reads: Vec<Read>, input: &mut incremental::Input<'_>, branch: u64) -> io::Result<()> {
-        let read = dashboard_query::cost::storage(|| input.frame_into::<P>(&reads, &mut self.raw, branch))?;
+    fn read(&mut self, reads: Vec<Read>, read_frame: &mut impl FnMut(&[Read]) -> io::Result<DecodedFrame>) -> io::Result<()> {
+        let read = read_frame(&reads)?;
         for asked in reads {
-            if !P::raw_table(asked.table) {
-                self.frame.tables[asked.table.index()] = read.tables[asked.table.index()].clone();
-            }
+            self.frame.tables[asked.table.index()] = read.tables[asked.table.index()].clone();
             self.held.insert(asked.table, asked);
         }
         Ok(())
     }
 
     #[inline(never)]
-    fn live<P: AtHour>(&mut self, live: &Live, input: &mut incremental::Input<'_>) -> io::Result<Option<Value>> {
+    fn live(&mut self, live: &Live, read_frame: &mut impl FnMut(&[Read]) -> io::Result<DecodedFrame>) -> io::Result<Option<Value>> {
         if live.is_empty() {
             return Ok(None);
         }
-        let covered = |group: &Group| !P::raw_table(group.table) && self.held.get(&group.table).is_some_and(|read| covers(read, group));
-        Ok(Some(input.live_values(live, &self.frame, covered)?))
+        let reads = supplemental(live, |group| self.held.get(&group.table).is_some_and(|read| covers(read, group)));
+        if !reads.is_empty() {
+            self.read(reads, read_frame)?;
+        }
+        let states: Vec<GroupState> = live.values(&self.frame).into_iter().map(GroupState::Values).collect();
+        Ok(Some(live.json(&states)))
     }
+}
+
+fn supplemental(live: &Live, covered: impl Fn(&Group) -> bool) -> Vec<Read> {
+    let mut unread: BTreeMap<TableId, BTreeSet<u128>> = BTreeMap::new();
+    for group in live.groups.iter().filter(|group| !covered(group)) {
+        unread.entry(group.table).or_default();
+    }
+    for group in &live.groups {
+        if let Some(keys) = unread.get_mut(&group.table) {
+            keys.extend(&group.keys);
+        }
+    }
+    unread.into_iter().map(|(table, keys)| Read::these(table, keys)).collect()
 }
 
 #[derive(Serialize, PartialEq)]
@@ -549,9 +469,6 @@ impl<P: AtHour> Panel for Followed<P> {
 }
 
 fn panel<P: AtHour>(source: &Source, load: &LoadContext, asked: &Value) -> Result<Box<dyn Panel>, String> {
-    if P::has_raw_tables() {
-        return exact_panel::<P>(source, load, asked);
-    }
     let mut asked = asked.clone();
     if let Some(fields) = asked.as_object_mut() {
         fields.remove("panel");
