@@ -1,4 +1,5 @@
 import type { PlotFrame } from './frame.ts';
+import type { Canvas2D } from './textWidth.ts';
 import type { ChartTokens } from './tokens.ts';
 import { dayLabel, drawGapFill, drawLine, spanLabel, tracePath } from './draw.ts';
 import { ordinates } from './linePick.ts';
@@ -171,7 +172,74 @@ export function summaryExtent(summary: ChartSummary, x: readonly [number, number
 export const summaryFits = (frame: Pick<PlotFrame, 'x' | 'plotWidth'>, summary: { from: number; to: number; width: number; tiles?: unknown }, until: number | null) => summary.width === Math.ceil(frame.plotWidth)
   && (summary.tiles !== undefined || summary.to <= Math.min(frame.x[1], until ?? frame.x[1])) && summary.to >= frame.x[0] && summary.from <= frame.x[1];
 
-interface SummaryShape {
+export interface BucketCorner {
+  hour: number;
+  value: number;
+  order: number;
+}
+
+export interface BucketStreamReader {
+  readonly count: number;
+  present(index: number): boolean;
+  firstHour(index: number): number;
+  lastHour(index: number): number;
+  firstValue(index: number): number;
+  lastValue(index: number): number;
+  lastValueHour(index: number): number;
+  minHour(index: number): number;
+  minValue(index: number): number;
+  maxHour(index: number): number;
+  maxValue(index: number): number;
+  firstBreak(index: number): boolean;
+  hasBreak(index: number): boolean;
+}
+
+export function emitBucketCorners(
+  firstHour: number,
+  minHour: number,
+  maxHour: number,
+  lastValueHour: number,
+  firstValue: number,
+  minValue: number,
+  maxValue: number,
+  lastValue: number,
+  out?: BucketCorner[],
+): BucketCorner[] {
+  const corners = out && out.length === 4
+    ? out
+    : [
+        { hour: 0, value: 0, order: 0 },
+        { hour: 0, value: 0, order: 1 },
+        { hour: 0, value: 0, order: 2 },
+        { hour: 0, value: 0, order: 3 },
+      ];
+  corners[0].hour = firstHour; corners[0].value = firstValue; corners[0].order = 0;
+  corners[1].hour = minHour; corners[1].value = minValue; corners[1].order = 1;
+  corners[2].hour = maxHour; corners[2].value = maxValue; corners[2].order = 2;
+  corners[3].hour = lastValueHour; corners[3].value = lastValue; corners[3].order = 3;
+  corners.sort((a, b) => a.hour - b.hour || a.order - b.order);
+  return corners;
+}
+
+export function bucketsStream(buckets: readonly (ChartBucket | null)[]): BucketStreamReader {
+  return {
+    count: buckets.length,
+    present: i => buckets[i] !== null,
+    firstHour: i => buckets[i]!.firstHour,
+    lastHour: i => buckets[i]!.lastHour,
+    firstValue: i => buckets[i]!.firstValue,
+    lastValue: i => buckets[i]!.lastValue,
+    lastValueHour: i => buckets[i]!.lastValueHour,
+    minHour: i => buckets[i]!.minHour,
+    minValue: i => buckets[i]!.minValue,
+    maxHour: i => buckets[i]!.maxHour,
+    maxValue: i => buckets[i]!.maxValue,
+    firstBreak: i => buckets[i]!.firstBreak,
+    hasBreak: i => buckets[i]!.hasBreak,
+  };
+}
+
+export interface SummaryShape {
   points: Float64Array;
   starts: Uint32Array;
   dots: Float64Array;
@@ -181,54 +249,61 @@ interface SummaryShape {
 }
 const shapes = new WeakMap<ChartSummary, [SummaryShape | undefined, SummaryShape | undefined]>();
 
-function summaryShape(summary: ChartSummary, held: boolean): SummaryShape {
-  const kept = shapes.get(summary) ?? [undefined, undefined];
-  const known = kept[held ? 1 : 0];
-  if (known) return known;
+export function buildSummaryShape(stream: BucketStreamReader, held: boolean, to = Infinity): SummaryShape {
   const points: number[] = [], starts: number[] = [], dots: number[] = [];
   const step = held ? 1 : 0;
-  const to = summary.tiles ? Infinity : summary.to;
   const vertex = (hour: number, value: number) => {
     const at = points.length, open = at - 2 * starts[starts.length - 1];
     if (open >= 2 && points[at - 2] === hour && points[at - 1] === value) return;
     if (open >= 4 && points[at - 1] === value && points[at - 3] === value && points[at - 2] <= hour) { points[at - 2] = hour; return; }
     points.push(hour, value);
   };
-  let previous: ChartBucket | null = null;
+  const corners = emitBucketCorners(0, 0, 0, 0, 0, 0, 0, 0);
+  let hasPrev = false;
+  let prevLastHour = 0;
+  let prevLastValue = 0;
   let end: [number, number] | null = null;
-  for (const bucket of summary.buckets) {
-    if (!bucket) { previous = null; continue; }
-    const corners = [
-      { hour: bucket.firstHour, value: bucket.firstValue, order: 0 },
-      { hour: bucket.minHour, value: bucket.minValue, order: 1 },
-      { hour: bucket.maxHour, value: bucket.maxValue, order: 2 },
-      { hour: bucket.lastValueHour, value: bucket.lastValue, order: 3 },
-    ].sort((a, b) => a.hour - b.hour || a.order - b.order);
-    if (bucket.hasBreak || corners.some(corner => !Number.isFinite(corner.value))) {
+  for (let i = 0; i < stream.count; i++) {
+    if (!stream.present(i)) { hasPrev = false; continue; }
+    const fh = stream.firstHour(i);
+    const lh = stream.lastHour(i);
+    const fv = stream.firstValue(i);
+    const lv = stream.lastValue(i);
+    emitBucketCorners(fh, stream.minHour(i), stream.maxHour(i), stream.lastValueHour(i), fv, stream.minValue(i), stream.maxValue(i), lv, corners);
+    if (stream.hasBreak(i) || corners.some(corner => !Number.isFinite(corner.value))) {
       for (const corner of corners) if (Number.isFinite(corner.value)) dots.push(corner.hour, corner.value);
-      previous = null;
+      hasPrev = false;
     } else {
-      if (previous && !bucket.firstBreak && previous.lastHour + 1 === bucket.firstHour) {
+      if (hasPrev && !stream.firstBreak(i) && prevLastHour + 1 === fh) {
         const at = points.length - 2;
-        if (points[at] !== previous.lastHour + step || points[at + 1] !== previous.lastValue) {
-          starts.push(points.length / 2); points.push(previous.lastHour + step, previous.lastValue);
+        if (points[at] !== prevLastHour + step || points[at + 1] !== prevLastValue) {
+          starts.push(points.length / 2); points.push(prevLastHour + step, prevLastValue);
         }
-        vertex(bucket.firstHour, previous.lastValue); vertex(bucket.firstHour, bucket.firstValue);
-      } else { starts.push(points.length / 2); points.push(bucket.firstHour, bucket.firstValue); }
-      let value = bucket.firstValue;
+        vertex(fh, prevLastValue); vertex(fh, fv);
+      } else { starts.push(points.length / 2); points.push(fh, fv); }
+      let value = fv;
       for (const corner of corners) {
         if (held) vertex(corner.hour, value);
         vertex(corner.hour, corner.value); value = corner.value;
       }
-      vertex(Math.min(to, bucket.lastHour + step), bucket.lastValue);
-      previous = bucket;
+      vertex(Math.min(to, lh + step), lv);
+      hasPrev = true;
+      prevLastHour = lh;
+      prevLastValue = lv;
     }
-    end = [Math.min(to, bucket.lastHour + step), bucket.lastValue];
+    end = [Math.min(to, lh + step), lv];
   }
   starts.push(points.length / 2);
   let low = Infinity, high = -Infinity;
   for (const values of [points, dots]) for (let at = 1; at < values.length; at += 2) { low = Math.min(low, values[at]); high = Math.max(high, values[at]); }
-  const shape = { points: Float64Array.from(points), starts: Uint32Array.from(starts), dots: Float64Array.from(dots), end, low, high };
+  return { points: Float64Array.from(points), starts: Uint32Array.from(starts), dots: Float64Array.from(dots), end, low, high };
+}
+
+function summaryShape(summary: ChartSummary, held: boolean): SummaryShape {
+  const kept = shapes.get(summary) ?? [undefined, undefined];
+  const known = kept[held ? 1 : 0];
+  if (known) return known;
+  const shape = buildSummaryShape(bucketsStream(summary.buckets), held, summary.tiles ? Infinity : summary.to);
   kept[held ? 1 : 0] = shape;
   shapes.set(summary, kept);
   return shape;
@@ -237,38 +312,48 @@ function summaryShape(summary: ChartSummary, held: boolean): SummaryShape {
 const placeable = (frame: PlotFrame, shape: SummaryShape) => shape.low > shape.high
   || Number.isFinite(frame.toY(shape.low)) && Number.isFinite(frame.toY(shape.high));
 
-function columnGeometry(frame: PlotFrame, summary: ChartSummary, held: boolean, before = Infinity): { paths: PathCommand[][]; dots: Point[]; end: Point | null } {
+function columnGeometryFromStream(frame: PlotFrame, stream: BucketStreamReader, held: boolean, to: number, before = Infinity): { paths: PathCommand[][]; dots: Point[]; end: Point | null } {
   const paths: PathCommand[][] = [], dots: Point[] = [], step = held ? 1 : 0;
-  let previous: ChartBucket | null = null, end: Point | null = null;
-  for (const bucket of summary.buckets) {
-    if (!bucket) { previous = null; continue; }
-    if (bucket.lastHour >= before) break;
-    const corners = [
-      { hour: bucket.firstHour, value: bucket.firstValue, order: 0 },
-      { hour: bucket.minHour, value: bucket.minValue, order: 1 },
-      { hour: bucket.maxHour, value: bucket.maxValue, order: 2 },
-      { hour: bucket.lastValueHour, value: bucket.lastValue, order: 3 },
-    ].sort((a, b) => a.hour - b.hour || a.order - b.order);
-    if (bucket.hasBreak || corners.some(corner => !Number.isFinite(frame.toY(corner.value)))) {
+  const corners = emitBucketCorners(0, 0, 0, 0, 0, 0, 0, 0);
+  let hasPrev = false;
+  let prevLastHour = 0;
+  let prevLastValue = 0;
+  let end: Point | null = null;
+  for (let i = 0; i < stream.count; i++) {
+    if (!stream.present(i)) { hasPrev = false; continue; }
+    const lh = stream.lastHour(i);
+    if (lh >= before) break;
+    const fh = stream.firstHour(i);
+    const fv = stream.firstValue(i);
+    const lv = stream.lastValue(i);
+    emitBucketCorners(fh, stream.minHour(i), stream.maxHour(i), stream.lastValueHour(i), fv, stream.minValue(i), stream.maxValue(i), lv, corners);
+    if (stream.hasBreak(i) || corners.some(corner => !Number.isFinite(frame.toY(corner.value)))) {
       for (const corner of corners) if (Number.isFinite(frame.toY(corner.value))) dots.push({ x: frame.toX(corner.hour), y: frame.toY(corner.value) });
-      previous = null;
+      hasPrev = false;
     } else {
       const path: PathCommand[] = [];
       const push = (move: boolean, hour: number, value: number) => path.push([move ? 'M' : 'L', frame.toX(hour), frame.toY(value)]);
-      if (previous && !bucket.firstBreak && previous.lastHour + 1 === bucket.firstHour) {
-        push(true, previous.lastHour + step, previous.lastValue); push(false, bucket.firstHour, previous.lastValue); push(false, bucket.firstHour, bucket.firstValue);
-      } else push(true, bucket.firstHour, bucket.firstValue);
-      let value = bucket.firstValue;
+      if (hasPrev && !stream.firstBreak(i) && prevLastHour + 1 === fh) {
+        push(true, prevLastHour + step, prevLastValue); push(false, fh, prevLastValue); push(false, fh, fv);
+      } else push(true, fh, fv);
+      let value = fv;
       for (const corner of corners) {
         if (held) push(false, corner.hour, value);
         push(false, corner.hour, corner.value); value = corner.value;
       }
-      push(false, Math.min(summary.to, bucket.lastHour + step), bucket.lastValue);
-      paths.push(path); previous = bucket;
+      push(false, Math.min(to, lh + step), lv);
+      paths.push(path);
+      hasPrev = true;
+      prevLastHour = lh;
+      prevLastValue = lv;
     }
-    end = { x: frame.toX(Math.min(summary.to, bucket.lastHour + step)), y: frame.toY(bucket.lastValue) };
+    end = { x: frame.toX(Math.min(to, lh + step)), y: frame.toY(lv) };
   }
   return { paths, dots, end: end && Number.isFinite(end.y) ? end : null };
+}
+
+function columnGeometry(frame: PlotFrame, summary: ChartSummary, held: boolean, before = Infinity): { paths: PathCommand[][]; dots: Point[]; end: Point | null } {
+  return columnGeometryFromStream(frame, bucketsStream(summary.buckets), held, summary.to, before);
 }
 
 function shapeEnd(frame: PlotFrame, shape: SummaryShape): Point | null {
@@ -300,7 +385,7 @@ export function summaryGeometry(frame: PlotFrame, summary: ChartSummary, held = 
   return { paths, dots, end: shapeEnd(frame, shape) };
 }
 
-export function drawApproximateSpans(ctx: CanvasRenderingContext2D, frame: PlotFrame,
+export function drawApproximateSpans(ctx: Canvas2D, frame: PlotFrame,
   approximate: ChartSummary['approximate'], until: number | null, draw: (approximate: boolean) => void): void {
   if (approximate?.length) {
     const regions: { first: number; last: number; approximate: boolean }[] = [];
@@ -327,9 +412,17 @@ export function drawApproximateSpans(ctx: CanvasRenderingContext2D, frame: PlotF
   } else draw(false);
 }
 
-type SummaryLineOptions = { area?: boolean; dash?: readonly number[]; endDot?: boolean };
+export type SummaryLineOptions = { area?: boolean; dash?: readonly number[]; endDot?: boolean };
 
-export function drawLineSummary(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens,
+export function drawBucketStream(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens,
+  stream: BucketStreamReader, color: string, held = false, to = Infinity,
+  options: SummaryLineOptions = {}, hours?: readonly [number, number]): Point | null {
+  const shape = buildSummaryShape(stream, held, to);
+  if (placeable(frame, shape)) return strokeShape(ctx, frame, tokens, shape, color, options, hours);
+  return strokeColumns(ctx, frame, tokens, columnGeometryFromStream(frame, stream, held, to, hours ? hours[1] : Infinity), color, options);
+}
+
+export function drawLineSummary(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens,
   summary: ChartSummary, color: string, held = false, until: number | null = null,
   options: SummaryLineOptions = {}): Point | null {
   if (!summaryFits(frame, summary, until)) return null;
@@ -347,14 +440,14 @@ export function drawLineSummary(ctx: CanvasRenderingContext2D, frame: PlotFrame,
   return end;
 }
 
-function lineStyle(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, color: string, options: SummaryLineOptions): number {
+function lineStyle(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, color: string, options: SummaryLineOptions): number {
   ctx.save(); ctx.strokeStyle = color; ctx.fillStyle = color;
   ctx.lineWidth = tokens.lineWidth.series; ctx.lineJoin = 'round';
   if (options.dash) ctx.setLineDash(options.dash);
   return frame.toY(frame.log ? frame.y[0] : Math.max(frame.y[0], Math.min(0, frame.y[1])));
 }
 
-function lineEnd(ctx: CanvasRenderingContext2D, tokens: ChartTokens, end: Point | null, options: SummaryLineOptions): Point | null {
+function lineEnd(ctx: Canvas2D, tokens: ChartTokens, end: Point | null, options: SummaryLineOptions): Point | null {
   if (end && options.endDot !== false) {
     ctx.beginPath(); ctx.arc(end.x, end.y, tokens.lineWidth.series * 2, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = tokens.surface; ctx.stroke();
@@ -362,7 +455,7 @@ function lineEnd(ctx: CanvasRenderingContext2D, tokens: ChartTokens, end: Point 
   ctx.restore(); return end;
 }
 
-function strokeColumns(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens,
+function strokeColumns(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens,
   geometry: ReturnType<typeof columnGeometry>, color: string, options: SummaryLineOptions): Point | null {
   const baseline = lineStyle(ctx, frame, tokens, color, options);
   for (const path of geometry.paths) {
@@ -377,7 +470,7 @@ function strokeColumns(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: 
   return lineEnd(ctx, tokens, geometry.end, options);
 }
 
-function strokeShape(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, shape: SummaryShape,
+function strokeShape(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, shape: SummaryShape,
   color: string, options: SummaryLineOptions, hours?: readonly [number, number]): Point | null {
   const { points, starts, dots } = shape;
   const baseline = lineStyle(ctx, frame, tokens, color, options);
@@ -407,7 +500,7 @@ function strokeShape(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: Ch
   return lineEnd(ctx, tokens, hours ? null : shapeEnd(frame, shape), options);
 }
 
-function drawTiledHead(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, summary: ChartSummary,
+function drawTiledHead(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, summary: ChartSummary,
   tiles: TiledSummary, color: string, held: boolean, until: number, options: SummaryLineOptions): Point | null {
   const cut = Math.floor(until / tiles.binHours) * tiles.binHours;
   const shape = summaryShape(summary, held);
@@ -480,7 +573,7 @@ export function pickSummaryLines(lines: readonly { key: string; summary: ChartSu
   return [...distances].filter(([, distance]) => distance <= nearest + 2).map(([key]) => key);
 }
 
-export function drawGapSummary(ctx: CanvasRenderingContext2D, frame: PlotFrame, _tokens: ChartTokens,
+export function drawGapSummary(ctx: Canvas2D, frame: PlotFrame, _tokens: ChartTokens,
   first: ChartSummary, second: ChartSummary, aboveColor: string, belowColor: string,
   until: number | null = null, options: { alpha?: number } = {}): void {
   if (!summaryFits(frame, first, until) || !summaryFits(frame, second, until)) return;

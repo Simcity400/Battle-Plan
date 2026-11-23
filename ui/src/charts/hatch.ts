@@ -1,3 +1,4 @@
+import type { Canvas2D } from './textWidth.ts';
 import type { ChartTokens } from './tokens';
 
 export function hatchTile(spacing: number) {
@@ -12,7 +13,7 @@ export function hatchStyle(tokens: ChartTokens) {
   return { backgroundImage: `url("data:image/svg+xml,${encodeURIComponent(svg)}")`, backgroundSize: `${tile.size}px ${tile.size}px` };
 }
 
-export function fillHatched(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number,
+export function fillHatched(ctx: Canvas2D, x: number, y: number, width: number, height: number,
   color: string, spacing = 4, lineWidth = 1.5): void {
   if (width <= 0 || height <= 0) return;
   ctx.save(); ctx.beginPath(); ctx.rect(x, y, width, height); ctx.clip();
@@ -27,7 +28,7 @@ export function fillHatched(ctx: CanvasRenderingContext2D, x: number, y: number,
   ctx.stroke(); ctx.restore();
 }
 
-export function drawUnknownHatch(ctx: CanvasRenderingContext2D, tokens: ChartTokens,
+export function drawUnknownHatch(ctx: Canvas2D, tokens: ChartTokens,
   rect: { left: number; top: number; width: number; height: number }): void {
   fillHatched(ctx, rect.left, rect.top, rect.width, rect.height, tokens.muted, tokens.hatchSpacing, tokens.lineWidth.grid);
 }

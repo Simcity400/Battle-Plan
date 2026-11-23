@@ -4,19 +4,19 @@ import { ZoomReset } from './ZoomReset';
 import { setStyle } from './domText.ts';
 import WidgetState from '../components/WidgetState';
 import { inFrame } from '../dashboard/frameUpdates';
-import { BADGE_STRIP, badgesAt, drawBadges, visibleBadges } from './badges';
+import { badgesAt, visibleBadges } from './badges';
 import type { EventBadge } from './badges';
-import { clusterHour, drawMarkSummary, eventCount, markClusterAt, markSummaryMatches, shownClusters } from './markSummary';
+import { clusterHour, eventCount, markClusterAt, markSummaryMatches, shownClusters } from './markSummary';
 import type { MarkCluster, MarkSummary } from './markSummary';
-import { clipToPlot, dayLabel, drawAxes, drawCrosshair, drawPlayhead, drawSelection, VALUE_LABEL_GAP, valueLabelWidth } from './draw';
+import { dayLabel, drawCrosshair, drawSelection } from './draw';
 import { approach, easeTau } from './easing';
 import { useMotionNow } from './liveMotion.ts';
 import { keyTarget } from './rowNavigation';
-import { axisFraction, hitZone, keyedHour, plotFrame, pointerHour, STRIP_GAP, wheelSteps } from './frame';
+import { axisFraction, hitZone, keyedHour, pointerHour, wheelSteps } from './frame';
 import { actionHour, hoverAt, keyedStop, keyStopMemo, NO_HOVER, pointerMenu, pointerTarget, reduceHover } from './hover';
 import type { HoverEvent, HoverState, KeyStop } from './hover';
 import { intervalIndexOf } from './intervalIndex';
-import { clipGaps, drawGaps, lostAt, lostTooltip } from './gaps';
+import { lostAt, lostTooltip } from './gaps';
 import type { LostSpan } from './gaps';
 import type { ChartStrip } from './strip';
 import type { Padding, PlotFrame } from './frame';
@@ -25,22 +25,26 @@ import type { ChartPick } from './pick';
 import { scheduler } from './scheduler';
 import type { FrameInfo, FrameTask } from './scheduler';
 import { drawingSurface, sizeCanvas, toLocal, watchCanvasSize } from './surface';
-import { CHART_LAYOUT, readTokens, subscribeTokens } from './tokens';
+import { readTokens, subscribeTokens } from './tokens';
 import type { ChartTokens } from './tokens';
 import { hideTooltip, showTooltip, tooltipStore, tooltipText } from './tooltip';
 import type { TooltipContent } from './tooltip';
-import { formatAxisValue } from './valueAxis';
-import { EMPTY_VIEW, playbackDomain, reduceView, resolveX, resolveY } from './view';
+import { EMPTY_VIEW, reduceView, shownUntil } from './view';
 import type { AxisSettings, PlaybackMode, Range, ViewAction, ViewState } from './view';
-import { shownUntil } from './view';
 import type { Live } from './live';
+import { canvasMeasureText } from './textWidth';
+import {
+  TIME_CHART_MIN_SPAN,
+  drawTimeChartScene,
+  fitTimeChartFrame,
+  resolveTimeChartPadding,
+  resolveTimeChartTargetX,
+  resolveTimeChartTargetY,
+  type ChartLayer as PureChartLayer,
+} from './renderTimeChart';
 import './charts.css';
 
-export interface ChartLayer {
-  draw(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, state: { playhead: number | null }): void;
-  extent?(x: Range): Range | null;
-  gaps?: readonly LostSpan[];
-}
+export type ChartLayer = PureChartLayer<CanvasRenderingContext2D>;
 
 export type { ChartStrip } from './strip';
 
@@ -95,9 +99,7 @@ export interface ChartData { revision(): readonly unknown[]; subscribe(listener:
 const marksOf = (p: TimeChartProps): readonly MarkSummary[] => [...(p.markSummary ? [p.markSummary] : []),
   ...(typeof p.markSummaries === 'function' ? p.markSummaries() : p.markSummaries ?? [])];
 
-const DEFAULT_PADDING: Padding = { left: 44, right: CHART_LAYOUT.right, top: 12, bottom: 24 };
-const LABEL_MARGIN = 4;
-const MIN_SPAN = 14 * 24;
+const MIN_SPAN = TIME_CHART_MIN_SPAN;
 const SUMMARY_INTERVAL_MS = 150;
 const HOVER_REST_MS = 80;
 const BOX_THRESHOLD = 8;
@@ -195,13 +197,15 @@ export default function TimeChart(props: TimeChartProps) {
       const strip = p.strip ? Math.max(0, Math.round(p.strip.height(layoutHeight))) : 0;
       const marks = marksOf(p);
       const hasBadgeSummary = marks.some(summary => summary.placement !== 'ticks');
-      const padding = { ...DEFAULT_PADDING, ...(p.badges || hasBadgeSummary ? { top: BADGE_STRIP } : {}), ...p.padding };
-      if (p.rows) {
-        padding.left = Math.min(layoutWidth * 0.45, p.rows.labelWidth);
-        padding.top = p.padding?.top ?? tokens.fontSize.small * 2 + 4;
-        padding.bottom = p.padding?.bottom ?? 8;
-      }
-      if (strip) padding.bottom += strip + STRIP_GAP;
+      const padding = resolveTimeChartPadding({
+        layoutWidth,
+        tokens,
+        stripHeight: strip,
+        hasBadges: !!p.badges,
+        hasBadgeSummary,
+        padding: p.padding,
+        rowLabelWidth: p.rows?.labelWidth,
+      });
       const extentKey = `${p.extent[0]}:${p.extent[1]}:${p.branchStart}`;
       if (extentKey !== zoomedFor) {
         if (zoomedFor && (view.x || view.y)) { view = EMPTY_VIEW; setZoomed(false); }
@@ -209,9 +213,16 @@ export default function TimeChart(props: TimeChartProps) {
         zoomedFor = extentKey;
       }
       const motion = motionNow(p.hoursPerSecond);
-      const playback = p.playhead == null ? p.extent
-        : playbackDomain(p.playback, p.extent, p.playhead, p.windowHours ?? 365 * 24, MIN_SPAN, motion === undefined);
-      const targetX = resolveX(view, p.axes, p.branchStart, playback);
+      const targetX = resolveTimeChartTargetX({
+        extent: p.extent,
+        playhead: p.playhead,
+        playback: p.playback,
+        windowHours: p.windowHours,
+        paused: motion === undefined,
+        view,
+        axes: p.axes,
+        branchStart: p.branchStart,
+      });
       const tau = drag && drag.mode !== 'box' ? 0 : easeTau(tokens.motion, motion, tokens.reducedMotion);
       const glide = (current: number, target: number) => target + approach(current - target, 0, info.dt, tau);
       const x: [number, number] = eased ? [glide(eased.x[0], targetX[0]), glide(eased.x[1], targetX[1])] : [targetX[0], targetX[1]];
@@ -220,28 +231,29 @@ export default function TimeChart(props: TimeChartProps) {
       if ((Math.abs(x[0] - targetX[0]) + Math.abs(x[1] - targetX[1])) * plotWidth < 0.5 * Math.max(1e-9, Math.abs(targetX[1] - targetX[0]))) {
         x[0] = targetX[0]; x[1] = targetX[1];
       }
-      let data: [number, number] | null = null;
-      for (const layer of p.layers) {
-        const extent = layer.extent?.(x);
-        if (extent) data = data ? [Math.min(data[0], extent[0]), Math.max(data[1], extent[1])] : [extent[0], extent[1]];
-      }
-      const fitted = p.fitValues?.(data) ?? null;
-      const targetY = resolveY(view, fitted ? { ...p.axes, yMin: p.axes.yMin ?? fitted[0], yMax: p.axes.yMax ?? fitted[1] } : p.axes, data);
+      const targetY = resolveTimeChartTargetY(p.layers, x, view, p.axes, p.fitValues);
       const y: [number, number] = eased ? [glide(eased.y[0], targetY.range[0]), glide(eased.y[1], targetY.range[1])] : [targetY.range[0], targetY.range[1]];
       const ySpan = Math.abs(targetY.range[1] - targetY.range[0]) || Math.max(1, Math.abs(targetY.range[1]));
       if ((Math.abs(y[0] - targetY.range[0]) + Math.abs(y[1] - targetY.range[1])) * plotHeight < 0.5 * ySpan) {
         y[0] = targetY.range[0]; y[1] = targetY.range[1];
       }
       eased = { x, y };
-      frame = plotFrame(layoutWidth, layoutHeight, padding, x, y, targetY.log, strip, !!p.rows);
-      frame.valueTicks = p.valueTicks;
-      if (!p.rows && p.padding?.left == null) {
-        const needed = Math.ceil(valueLabelWidth(context, frame, tokens, (p.formatValue ?? formatAxisValue))) + VALUE_LABEL_GAP + LABEL_MARGIN;
-        if (needed > padding.left) {
-          frame = plotFrame(layoutWidth, layoutHeight, { ...padding, left: needed }, x, y, targetY.log, strip, !!p.rows);
-          frame.valueTicks = p.valueTicks;
-        }
-      }
+      const measure = canvasMeasureText(context);
+      frame = fitTimeChartFrame({
+        layoutWidth,
+        layoutHeight,
+        padding,
+        x,
+        y,
+        log: targetY.log,
+        stripHeight: strip,
+        hasRows: !!p.rows,
+        hasExplicitLeftPadding: p.padding?.left != null,
+        valueTicks: p.valueTicks,
+        tokens,
+        formatValue: p.formatValue,
+        measure,
+      });
 
       const until = shownUntil(p.playhead, p.playback, p.afterPlayhead === true);
       const summaries = marks.filter(summary => markSummaryMatches(summary, frame!, until));
@@ -250,28 +262,30 @@ export default function TimeChart(props: TimeChartProps) {
         ...(p.data?.revision() ?? []), ...summaries];
       pickFrame.current = { ...picks.drawn({ frame, until }, p.onPick), props: p };
       if (!painted || painted.length !== baseKey.length || !painted.every((value, index) => Object.is(value, baseKey[index]))) {
-        context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
-        context.clearRect(0, 0, layoutWidth, layoutHeight);
-        drawAxes(context, frame, tokens, (p.formatValue ?? formatAxisValue), p.rows?.labels);
-        const gaps = p.gaps ?? [];
-        for (const layer of p.layers) {
-          context.save();
-          clipToPlot(context, frame);
-          clipGaps(context, frame, layer.gaps ?? gaps);
-          layer.draw(context, frame, tokens, { playhead: until });
-          context.restore();
-        }
-        drawGaps(context, frame, tokens, gaps);
-        if (p.strip && frame.strip) {
-          context.save();
-          clipGaps(context, frame, gaps);
-          p.strip.draw(context, frame, tokens, { playhead: until });
-          context.restore();
-        }
-        if (p.playhead != null && p.playback === 'cursor') drawPlayhead(context, frame, tokens, p.playhead);
-        for (const summary of summaries) drawMarkSummary(context, frame, tokens, summary, until);
-        if (p.badges) drawBadges(context, frame, tokens, p.badges, until);
-        p.overlay?.(context, frame, tokens);
+        drawTimeChartScene(
+          context,
+          frame,
+          tokens,
+          {
+            layoutWidth,
+            layoutHeight,
+            scaleX: size.scaleX,
+            scaleY: size.scaleY,
+            layers: p.layers,
+            gaps: p.gaps,
+            strip: p.strip,
+            playhead: p.playhead,
+            playback: p.playback,
+            afterPlayhead: p.afterPlayhead,
+            until,
+            markSummaries: summaries,
+            badges: p.badges,
+            rowLabels: p.rows?.labels,
+            formatValue: p.formatValue,
+            overlay: p.overlay,
+          },
+          measure,
+        );
         painted = baseKey;
       }
       if (overlayContext && overlaid) {

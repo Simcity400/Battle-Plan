@@ -1,5 +1,6 @@
 import type { PlotFrame } from './frame';
 import { drawUnknownHatch } from './hatch.ts';
+import type { Canvas2D } from './textWidth.ts';
 import type { ChartTokens } from './tokens';
 import type { Range } from './view';
 
@@ -30,7 +31,7 @@ function columns(axis: HourAxis, gaps: readonly LostSpan[]): Array<[number, numb
 
 const FAR = 1e7;
 
-export function clipColumns(ctx: CanvasRenderingContext2D, axis: HourAxis, gaps: readonly LostSpan[]): void {
+export function clipColumns(ctx: Canvas2D, axis: HourAxis, gaps: readonly LostSpan[]): void {
   const cut = columns(axis, gaps);
   if (!cut.length) return;
   ctx.beginPath();
@@ -43,15 +44,15 @@ export function clipColumns(ctx: CanvasRenderingContext2D, axis: HourAxis, gaps:
   ctx.clip();
 }
 
-export function hatchColumns(ctx: CanvasRenderingContext2D, tokens: ChartTokens, axis: HourAxis, gaps: readonly LostSpan[], top: number, height: number): void {
+export function hatchColumns(ctx: Canvas2D, tokens: ChartTokens, axis: HourAxis, gaps: readonly LostSpan[], top: number, height: number): void {
   for (const [from, to] of columns(axis, gaps)) drawUnknownHatch(ctx, tokens, { left: from, top, width: to - from, height });
 }
 
-export function clipGaps(ctx: CanvasRenderingContext2D, frame: PlotFrame, gaps: readonly LostSpan[]): void {
+export function clipGaps(ctx: Canvas2D, frame: PlotFrame, gaps: readonly LostSpan[]): void {
   clipColumns(ctx, frameAxis(frame), gaps);
 }
 
-export function drawGaps(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, gaps: readonly LostSpan[]): void {
+export function drawGaps(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, gaps: readonly LostSpan[]): void {
   hatchColumns(ctx, tokens, frameAxis(frame), gaps, frame.plotTop, frame.plotHeight);
 }
 
