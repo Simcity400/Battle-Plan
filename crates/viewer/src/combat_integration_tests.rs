@@ -158,7 +158,7 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         1,
         "{warnings:?}"
     );
-    let map_assets = viewer_counters::map::counters::gui_assets(
+    let map_assets = viewer_counters::counters::gui_assets(
         &windows,
         &interface.registry,
         &localisation,
@@ -333,16 +333,17 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
 
 #[test]
 fn the_combat_window_sorts_above_every_map_icon() {
-    use viewer_counters::map::counters;
+    use viewer_counter_kit::CounterDefines;
+    use viewer_foundation::mode_visibility::{PriorityIcon, PriorityTable};
     use viewer_native_gui::sprites::layer;
     let top_icon = layer(i8::MAX, u32::MAX, CHILD_SLOTS - 1);
     assert!(window_layer(0) > top_icon);
     assert!(window_layer(1) > window_layer(0));
     assert!(window_layer(usize::MAX) >= window_layer(70_000));
     let icon = layer(
-        counters::CounterDefines::VANILLA.priorities.get(
-            counters::PriorityTable::Default,
-            counters::PriorityIcon::LandCombat,
+        CounterDefines::VANILLA.priorities.get(
+            PriorityTable::Default,
+            PriorityIcon::LandCombat,
         ),
         9,
         3,

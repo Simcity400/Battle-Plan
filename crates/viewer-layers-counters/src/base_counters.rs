@@ -16,7 +16,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use viewer_counters::map::counters::{AirBaseCount, BaseFacts, BaseValues, RadarCircle, RadarOutcome, RegistrationFacts, WingCensus, base_count, controlled_of, merge_count, radar_notes_of, site_kind, wing_base_of, wing_country};
+use viewer_counters_naval::bases::{AirBaseCount, BaseFacts, BaseValues, RadarCircle, RadarOutcome, RegistrationFacts, WingCensus, base_count, controlled_of, merge_count, radar_notes_of, site_kind, wing_base_of, wing_country};
 use viewer_foundation::perspective::{Choice, Vision};
 
 fn whole(mirror: Option<&Mirror>) -> Option<&Mirror> {
