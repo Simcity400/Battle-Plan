@@ -432,9 +432,15 @@ export function deriveTableTooltip(
   };
 }
 
+const pathPartsCache = new Map<string, readonly string[]>();
+
 function readPath(obj: unknown, path: string): unknown {
+  let parts = pathPartsCache.get(path);
+  if (!parts) {
+    parts = path.split('.');
+    pathPartsCache.set(path, parts);
+  }
   let cur: unknown = obj;
-  const parts = path.split('.');
   for (let i = 0; i < parts.length; i++) {
     if (cur == null || typeof cur !== 'object') return undefined;
     cur = (cur as Record<string, unknown>)[parts[i]!];

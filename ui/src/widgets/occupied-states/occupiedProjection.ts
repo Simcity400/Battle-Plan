@@ -78,13 +78,23 @@ export const OCCUPIED_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(col => (
   widest: col.key === 'resistance' || col.key === 'compliance' ? ['100%'] : col.key === 'garrison' ? ['999.99'] : undefined,
 }));
 
+const lawsCache = new WeakMap<OccupiedStatesReply, ReadonlyMap<string, OccupiedStatesReply['laws'][number]>>();
+function lawsOf(reply: OccupiedStatesReply) {
+  let map = lawsCache.get(reply);
+  if (!map) {
+    map = new Map(reply.laws.map(law => [law.token, law]));
+    lawsCache.set(reply, map);
+  }
+  return map;
+}
+
 export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions> = registerTableProjection(
   declareTableProjection<OccupiedStatesReply, OccupiedRow, OccupiedProjectionOptions>({
     kind: 'occupied-states',
     validate: validateOccupiedStates,
     nextChange: (_sources, hour, options) => filterNext(options.filter, hour),
     columns: (reply, options): readonly DeclarativeColumnSpec<OccupiedRow, OccupiedProjectionOptions>[] => {
-      const laws = new Map(reply.laws.map(law => [law.token, law]));
+      const laws = lawsOf(reply);
       const redBelow = reply.garrisonRedRaw === null ? undefined : Number(reply.garrisonRedRaw);
       return [
         { ...OCCUPIED_COLUMNS[0]!, path: 'value.name', whenNull: { kind: 'notRecorded', reasonField: 'value.nameMissing', reason: 'Not recorded' } },
