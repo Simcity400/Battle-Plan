@@ -1254,7 +1254,7 @@ mod tests {
                 frame
             })
             .collect();
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
         Source::from_replay(dashboard_base::SourceKey { source_id: name.into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
     }
 
@@ -1294,7 +1294,7 @@ mod tests {
                 frame
             })
             .collect();
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
         let source = Source::from_replay(dashboard_base::SourceKey { source_id: "produced".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
         let query = dashboard_base::queries::query(&source, 1).unwrap();
         let asked = params(&[], Some(10), Some(FIRST), ProducedCount::Units, ProducedMeasure::Day, &[], (FIRST / dashboard_world::products::windows::HOURS) as u32);

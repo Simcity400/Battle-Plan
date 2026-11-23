@@ -11,9 +11,10 @@ doctest = false
 
 [features]
 export-types = []
-test-support = ["replay/test-support", "replay-frame/test-support", "dashboard-core/test-support", "dashboard-text/test-support", "content-reader-abilities/test-support", "content-reader-core/test-support", "content-reader-country-names/test-support", "content-reader-equipment-graphics/test-support", "content-reader-focus/test-support", "content-reader-gfx/test-support", "content-reader-image/test-support", "content-reader-localisation/test-support", "content-reader-province-area/test-support", "content-reader-regions/test-support", "content-reader-settings/test-support", "content-reader-states/test-support"]
+test-support = ["dep:recorder-derive", "replay/test-support", "replay-frame/test-support", "dashboard-core/test-support", "dashboard-text/test-support", "dashboard-effects/test-support", "content-reader-abilities/test-support", "content-reader-core/test-support", "content-reader-country-names/test-support", "content-reader-equipment-graphics/test-support", "content-reader-focus/test-support", "content-reader-gfx/test-support", "content-reader-image/test-support", "content-reader-localisation/test-support", "content-reader-province-area/test-support", "content-reader-regions/test-support", "content-reader-settings/test-support", "content-reader-states/test-support"]
 
 [dependencies]
+recorder-derive = { workspace = true, optional = true }
 replay-columnar.workspace = true
 dashboard-follow = { path = "../dashboard-follow" }
 playhead = { path = "../playhead" }
@@ -47,6 +48,7 @@ replay-frame.workspace = true
 job-priority.workspace = true
 blake3.workspace = true
 dashboard-core.workspace = true
+dashboard-effects.workspace = true
 dashboard-text.workspace = true
 replay-spool.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
@@ -59,6 +61,7 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_
 zstd = "0.13"
 
 [dev-dependencies]
+recorder-derive.workspace = true
 engine-heap.workspace = true
 content-reader-abilities = { workspace = true, features = ["test-support"] }
 content-reader-core = { workspace = true, features = ["test-support"] }
@@ -76,6 +79,7 @@ replay = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }
 dashboard-core = { workspace = true, features = ["test-support"] }
+dashboard-effects = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }
 png.workspace = true
 
@@ -98,12 +102,9 @@ replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 shader-pipeline = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-bitflags-2 = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-log = { workspace = true }
-unify-num-traits = { workspace = true }
 unify-once_cell = { workspace = true }
-unify-smallvec = { workspace = true }
 unify-wgpu = { workspace = true }
 unify-winapi-util = { workspace = true }
 unify-windows = { workspace = true }

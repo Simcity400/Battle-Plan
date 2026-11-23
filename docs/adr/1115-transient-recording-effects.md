@@ -4,4 +4,4 @@ A nuclear strike can be appended and removed before the next publication. The st
 
 For budgeted layer folds, insertions and deletions are marked by row key and affect every column group. Cell writes are marked by slot and touched groups. The settle resolves those slots against the current mirror: a reused slot now identifies the replacement row. The insertion and deletion marks cover the old and new identities independently. This preserves step order without making the apply thread read mirrors for work it may carry.
 
-[Strikes](../../crates/viewer-playback/src/layers/strikes.rs) · [Touched rows](../../crates/viewer-playback/src/layers/touched.rs)
+[Strikes](../../crates/viewer-layers-infrastructure/src/strikes.rs) · [Touched rows](../../crates/viewer-layer-core/src/touched.rs)

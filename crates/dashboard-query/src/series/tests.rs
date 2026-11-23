@@ -660,7 +660,7 @@ fn a_rank_names_the_greatest_countries_at_the_hour_with_their_states() {
 
 #[test]
 fn v1_published_supply_health_is_withheld_by_dashboard_query() {
-    use recorder_derive::framework::{
+    use recorder_derive_framework::framework::{
         Definitions,
         definitions::{Define, Form},
     };
@@ -729,7 +729,7 @@ fn v1_published_supply_health_is_withheld_by_dashboard_query() {
         capture_mode: CaptureMode::Full.byte(),
     };
     let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, Settings { level: 1 }, None).unwrap();
-    let mut writer = HourWriter::new(file, 1).unwrap();
+    let mut writer = HourWriter::new(file, 1, recorder_derive::writers()).unwrap();
     writer.define(
         Definitions::read_none()
             .with_define(Define { section: "NMilitary", name: "SUPPLY_GRACE", form: Form::Int32 }, Ok(72))
@@ -871,7 +871,7 @@ fn v1_published_supply_health_is_withheld_by_dashboard_query() {
 
 #[test]
 fn resumed_v1_to_v2_supply_health_admits_v2_and_withholds_v1_and_spanning_bin() {
-    use recorder_derive::framework::{
+    use recorder_derive_framework::framework::{
         Definitions,
         definitions::{Define, Form},
     };
@@ -978,7 +978,7 @@ fn resumed_v1_to_v2_supply_health_admits_v2_and_withholds_v1_and_spanning_bin() 
     };
 
     let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, Settings { level: 1 }, None).unwrap();
-    let mut writer = HourWriter::new(file, 1).unwrap();
+    let mut writer = HourWriter::new(file, 1, recorder_derive::writers()).unwrap();
     writer.define(definitions());
     write_hours(&mut writer, first_v1, last_v1);
     let mut file = writer.finish().unwrap();
@@ -1001,7 +1001,7 @@ fn resumed_v1_to_v2_supply_health_admits_v2_and_withholds_v1_and_spanning_bin() 
     let at = container::Revision { number: root.revision, length, root: extent.digest };
     let resumed = Resumed { root, at, last: Some((1, last_v1)), open: None };
     let file = FileWriter::resume(Cursor::new(v1_bytes), resumed, TABLE_COUNT, Settings { level: 1 }, None).unwrap();
-    let mut writer = HourWriter::new(file, 1).unwrap();
+    let mut writer = HourWriter::new(file, 1, recorder_derive::writers()).unwrap();
     writer.define(definitions());
     write_hours(&mut writer, first_v2, last_v2);
     let file = writer.finish().unwrap();
@@ -1067,7 +1067,7 @@ fn resumed_v1_to_v2_supply_health_admits_v2_and_withholds_v1_and_spanning_bin() 
     assert_ne!(hourly_flags[hour_slot(first_v2)] & PRESENT, 0, "first v2 hour must be admitted in hourly tile");
 
     let file = FileWriter::create(Cursor::new(Vec::new()), replay.recording().root().identity.clone(), TABLE_COUNT, Settings { level: 1 }, None).unwrap();
-    let mut writer = HourWriter::new(file, 1).unwrap();
+    let mut writer = HourWriter::new(file, 1, recorder_derive::writers()).unwrap();
     writer.define(definitions());
     write_hours(&mut writer, first_v1, last_v2);
     let mut file = writer.finish().unwrap();
@@ -1196,7 +1196,7 @@ fn resumed_v1_to_v2_supply_health_admits_v2_and_withholds_v1_and_spanning_bin() 
 
 #[test]
 fn wholly_v2_top_query_does_not_rank_earlier_peak_before_from() {
-    use recorder_derive::framework::{
+    use recorder_derive_framework::framework::{
         Definitions,
         definitions::{Define, Form},
     };
@@ -1265,7 +1265,7 @@ fn wholly_v2_top_query_does_not_rank_earlier_peak_before_from() {
         capture_mode: CaptureMode::Full.byte(),
     };
     let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, Settings { level: 1 }, None).unwrap();
-    let mut writer = HourWriter::new(file, 1).unwrap();
+    let mut writer = HourWriter::new(file, 1, recorder_derive::writers()).unwrap();
     writer.define(
         Definitions::read_none()
             .with_define(Define { section: "NMilitary", name: "SUPPLY_GRACE", form: Form::Int32 }, Ok(72))
@@ -1358,7 +1358,7 @@ fn wholly_v2_top_query_does_not_rank_earlier_peak_before_from() {
 
 #[test]
 fn walked_edge_top_preserves_cross_piece_by_last_order() {
-    use recorder_derive::framework::{
+    use recorder_derive_framework::framework::{
         Definitions,
         definitions::{Define, Form},
     };
@@ -1427,7 +1427,7 @@ fn walked_edge_top_preserves_cross_piece_by_last_order() {
         capture_mode: CaptureMode::Full.byte(),
     };
     let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, Settings { level: 1 }, None).unwrap();
-    let mut writer = HourWriter::new(file, 1).unwrap();
+    let mut writer = HourWriter::new(file, 1, recorder_derive::writers()).unwrap();
     writer.define(
         Definitions::read_none()
             .with_define(Define { section: "NMilitary", name: "SUPPLY_GRACE", form: Form::Int32 }, Ok(72))
@@ -1518,7 +1518,7 @@ fn walked_edge_top_preserves_cross_piece_by_last_order() {
 
 #[test]
 fn negative_hours_mixed_chart_does_not_double_count_six_hour_bin() {
-    use recorder_derive::framework::{
+    use recorder_derive_framework::framework::{
         Definitions,
         definitions::{Define, Form},
     };
@@ -1587,7 +1587,7 @@ fn negative_hours_mixed_chart_does_not_double_count_six_hour_bin() {
         capture_mode: CaptureMode::Full.byte(),
     };
     let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, Settings { level: 1 }, None).unwrap();
-    let mut writer = HourWriter::new(file, 1).unwrap();
+    let mut writer = HourWriter::new(file, 1, recorder_derive::writers()).unwrap();
     writer.define(
         Definitions::read_none()
             .with_define(Define { section: "NMilitary", name: "SUPPLY_GRACE", form: Form::Int32 }, Ok(72))
@@ -1656,7 +1656,7 @@ fn negative_hours_mixed_chart_does_not_double_count_six_hour_bin() {
 
 #[test]
 fn damaged_derived_version_marker_withholds_table_without_failing_open() {
-    use recorder_derive::framework::{
+    use recorder_derive_framework::framework::{
         Definitions,
         definitions::{Define, Form},
     };
@@ -1722,7 +1722,7 @@ fn damaged_derived_version_marker_withholds_table_without_failing_open() {
         capture_mode: CaptureMode::Full.byte(),
     };
     let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, Settings { level: 1 }, None).unwrap();
-    let mut writer = HourWriter::new(file, 1).unwrap();
+    let mut writer = HourWriter::new(file, 1, recorder_derive::writers()).unwrap();
     writer.define(
         Definitions::read_none()
             .with_define(Define { section: "NMilitary", name: "SUPPLY_GRACE", form: Form::Int32 }, Ok(72))

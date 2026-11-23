@@ -97,7 +97,7 @@ pub fn write_with_facts(
         &|| false,
     )
     .unwrap();
-    let replay = replay::campaign::Replay::from_records(CAMPAIGN.into(), &[input]).unwrap();
+    let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[input]).unwrap();
     std::fs::write(path, replay.bytes()).unwrap();
     replay::campaign::writer::revise(
         path,

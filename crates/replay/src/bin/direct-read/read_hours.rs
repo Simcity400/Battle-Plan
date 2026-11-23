@@ -107,7 +107,7 @@ mod tests {
     use replay_frame::frame::{FrameInput, Metrics, TableInput, TableView};
 
     fn recording(fuel_ns: [u64; 3]) -> Recording {
-        let file = fixtures::recorded(b"read-hours", 3, |ordinal| {
+        let file = fixtures::recorded(recorder_derive::writers(), b"read-hours", 3, |ordinal| {
             let mut tables: [TableInput; TABLE_COUNT] = std::array::from_fn(|_| TableInput::Sampled(TableView::Unavailable { reason: "table was not acquired".into() }));
             tables[TableId::Countries.index()] = TableInput::Sampled(TableView::Complete(TableRows::Countries(vec![CountryRow { id: 7, ..Default::default() }])));
             tables[TableId::CountryFuel.index()] = if ordinal == 1 {

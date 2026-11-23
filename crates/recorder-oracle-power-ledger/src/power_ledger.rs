@@ -452,7 +452,7 @@ mod tests {
             let frame = DecodedFrame { branch: 1, hour, metrics: Metrics::default(), tables: tables.map(Into::into) };
             records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
         }
-        let (replay, _) = Replay::from_records_derived(b"campaign".to_vec(), &[records]).unwrap();
+        let (replay, _) = Replay::from_records_derived(recorder_derive::writers(), b"campaign".to_vec(), &[records]).unwrap();
         let at = |hour: i32| match replay.seek(1, hour).unwrap() {
             SeekResult::Frame(frame) => frame,
             other => panic!("expected frame at hour {hour}, got {other:?}"),

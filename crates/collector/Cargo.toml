@@ -130,12 +130,10 @@ collector-spool = { workspace = true, features = ["advisor_changes", "advisor_po
 collector-states = { workspace = true, features = ["default", "test-support"] }
 collector-visibility = { workspace = true, features = ["country_input_changes", "default", "test-support", "visibility_changes"] }
 collector-workers = { workspace = true, features = ["default", "test-support"] }
-content-reader-country-names = { workspace = true, features = ["test-support"] }
-content-reader-localisation = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
-recorder-derive = { workspace = true, features = ["test-support"] }
+recorder-derive-framework = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }

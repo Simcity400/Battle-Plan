@@ -1,4 +1,5 @@
 
+use dashboard_effects::ScriptedEffects;
 use dashboard_base::products::Country;
 use super::{CHARACTER_REFERENCE, Naming, PROGRAM_REFERENCE, ProjectContent, ProjectPerson, country_key, needs_scope, scoped_at};
 use dashboard_base::{Source, catalogue::View, products::{LoadContext, at_hour::{At, AtHour, Keys, Owner, Read}}};
@@ -875,7 +876,7 @@ fn projects(
 }
 
 fn effect_tables() -> Vec<TableId> {
-    let mut tables: Vec<TableId> = dashboard_text::effect_description::recorded_tables()
+    let mut tables: Vec<TableId> = dashboard_effects::effect_description::recorded_tables()
         .chain([TableId::RaidFacilities, TableId::Provinces, TableId::Projects, TableId::ProjectPrograms, TableId::LexicalTokens, TableId::CountryLinks])
         .collect();
     tables.sort_unstable();
@@ -896,7 +897,7 @@ fn effects(
         let scripted = catalogue.scripted_content()?;
         let text = dashboard_text::scripted_text::ScriptedText::new(frame, &catalogue.localisation, scripted, slot);
         let cache = scripted.effects()?;
-        let context = dashboard_text::effect_description::Context::new(&text, &catalogue.localisation, slot, "special-project output", cache.view(None));
+        let context = dashboard_effects::effect_description::Context::new(&text, &catalogue.localisation, slot, "special-project output", cache.view(None));
         let facility = (|| {
             if project.program_reference == 0 {
                 return Ok(None);
@@ -911,7 +912,7 @@ fn effects(
             let state = provinces.iter().find(|row| row.id == facility.province).ok_or("Provinces lacks the facility province")?.state;
             Ok(Some((facility.province, state)))
         })();
-        Ok(dashboard_text::effect_description::project_output_description(output, &context, project.owner, project.local_id, scientist.clone(), facility))
+        Ok(dashboard_effects::effect_description::project_output_description(output, &context, project.owner, project.local_id, scientist.clone(), facility))
     };
     match render() {
         Ok(mut description) => {

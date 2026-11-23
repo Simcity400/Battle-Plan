@@ -268,7 +268,7 @@ fn with_effects(loc: &Localisation, run: impl FnOnce(&EffectContext<'_, '_>)) {
     )
     .unwrap();
     let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
-    let content = dashboard_text::scripted_text::ScriptedContent::read(
+    let content = dashboard_base::catalogue::read_scripted_content(
         Arc::new(content_reader_core::content::ResolvedContent {
             layers,
             stats: Default::default(),

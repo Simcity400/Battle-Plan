@@ -190,7 +190,7 @@ pub fn missing(table: replay_data::rows::TableId, view: &TableView) -> String {
 pub fn unread(table: replay_data::rows::TableId, view: &TableView) -> Option<String> {
     (!matches!(view, TableView::Complete(_))).then(|| missing(table, view))
 }
-pub(crate) fn valid_saved_target(r: &replay_data::rows::GlobalSavedEventTargetRow) -> bool {
+pub fn valid_saved_target(r: &replay_data::rows::GlobalSavedEventTargetRow) -> bool {
     !r.name.is_empty()
         && (r.state != 0
             || r.country > 0
@@ -621,7 +621,7 @@ impl<'a> RecordedScopes<'a> {
             .map(|row| row.map_err(walked::<tables::GlobalSavedEventTargets>))
     }
 
-    pub(crate) fn saved_target(
+    pub fn saved_target(
         &self,
         name: &[u8],
     ) -> Result<Option<Cow<'a, GlobalSavedEventTargetRow>>, Failure> {
@@ -680,7 +680,7 @@ impl<'a> RecordedScopes<'a> {
             .map_or(Selected::Missing, |r| select(&r, reader)))
     }
 
-    pub(crate) fn saved_country(&self, raw: i32, name: &[u8]) -> Result<Option<u32>, Failure> {
+    pub fn saved_country(&self, raw: i32, name: &[u8]) -> Result<Option<u32>, Failure> {
         crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::SavedCountry(raw, name.to_vec())),
             || self.saved_country_unrecorded(raw, name),
@@ -745,7 +745,7 @@ impl<'a> RecordedScopes<'a> {
         Ok(slot)
     }
 
-    pub(crate) fn raw_slot(&self, raw: u32) -> Result<u32, Failure> {
+    pub fn raw_slot(&self, raw: u32) -> Result<u32, Failure> {
         crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::RawSlot(raw)),
             || self.raw_slot_unrecorded(raw),
@@ -788,7 +788,7 @@ impl<'a> RecordedScopes<'a> {
         Ok(((own as i32) > 0).then_some(slot))
     }
 
-    pub(crate) fn original_bucket(&self, selected: i32) -> Result<&[u32], Failure> {
+    pub fn original_bucket(&self, selected: i32) -> Result<&[u32], Failure> {
         crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::OriginalBucket(selected)),
             || self.original_bucket_unrecorded(selected),

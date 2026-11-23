@@ -26,26 +26,25 @@ use viewer_runtime::errors::invalid;
 mod embedded;
 use viewer_playback::engaged_index;
 pub mod host;
-use viewer_playback::lane_rows;
-use viewer_playback::layers;
 mod map;
-use viewer_playback::map_assets;
 use viewer_playback::map_views;
 pub mod page_clock;
 use viewer_playback::perf_log;
+#[cfg(test)]
 use viewer_playback::playback;
 mod playback_cost;
 mod playhead_host {
-    pub use viewer_playback::playhead_host::*;
+    pub use viewer_layer_core::playhead_host::*;
+    pub use viewer_playback::map_open::{MapSide, Opening, open_document};
     pub mod views {
-        pub use viewer_playback::playhead_host::views::*;
+        pub use viewer_layer_core::playhead_host::views::*;
         pub mod combat;
         pub mod proof;
         pub mod roster;
         pub mod window;
         #[cfg(test)]
         pub mod tests {
-            pub use viewer_playback::playhead_host::views::tests::*;
+            pub use viewer_layer_core::playhead_host::views::tests::*;
             mod combat;
             mod hover;
         }
@@ -1155,7 +1154,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let dump_head = Some(dump_head::open(&document)?);
         if let Some(head) = &dump_head {
             let (branch, hour) = (document.playback.branch(), document.playback.hour());
-            drop(document.playback.present(branch, hour, playback::Current::Frame(head.frame())));
+            drop(document.playback.present(branch, hour, viewer_playback::map_source::Current::Frame(head.frame())));
             for line in head.lines() {
                 eprintln!("{line}");
             }
@@ -1343,7 +1342,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let drawn = loop {
                 let before = document.icons.lazy.version();
                 let frame = match document.playback.current() {
-                    crate::playback::Current::Frame(frame) => Ok(Arc::clone(frame)),
+                    viewer_playback::map_source::Current::Frame(frame) => Ok(Arc::clone(frame)),
                     _ => Err(document.frame().err().map_or_else(String::new, |error| error.to_string())),
                 };
                 let prepared = window.prepare(
@@ -1630,7 +1629,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         {
             eprintln!("Warning: {warning}");
         }
-        if let (Some(province), crate::playback::Current::Frame(frame)) =
+        if let (Some(province), viewer_playback::map_source::Current::Frame(frame)) =
             (options.province_hover, document.playback.current())
         {
             let counters = &document.content.counters;

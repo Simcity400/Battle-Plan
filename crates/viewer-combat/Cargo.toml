@@ -20,7 +20,6 @@ viewer-native-gui.workspace = true
 viewer-runtime.workspace = true
 viewer-unit-reads.workspace = true
 game-model.workspace = true
-job-priority.workspace = true
 dashboard-base.workspace = true
 replay.workspace = true
 viewer-counter-products = { path = "../viewer-counter-products" }
@@ -40,6 +39,7 @@ content-reader-weather.workspace = true
 replay-data.workspace = true
 replay-derive.workspace = true
 replay-frame.workspace = true
+dashboard-effects.workspace = true
 dashboard-text.workspace = true
 [dev-dependencies]
 dashboard-text = { workspace = true, features = ["test-support"] }
@@ -49,6 +49,7 @@ viewer-gpu = { workspace = true, features = ["test-support"] }
 viewer-native-gui = { workspace = true, features = ["test-support"] }
 viewer-runtime = { workspace = true, features = ["test-support"] }
 viewer-unit-reads = { workspace = true, features = ["test-support"] }
+recorder-derive.workspace = true
 engine-heap.workspace = true
 content-reader-core = { workspace = true, features = ["test-support"] }
 content-reader-country-names = { workspace = true, features = ["test-support"] }
@@ -68,6 +69,7 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-sound = { workspace = true, features = ["test-support"] }
 dashboard-base = { workspace = true, features = ["export-types", "test-support"] }
 map-content = { workspace = true, features = ["test-support"] }
 playhead = { path = "../playhead", features = ["test-support"] }
@@ -75,7 +77,6 @@ recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-bitflags-2 = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-once_cell = { workspace = true }

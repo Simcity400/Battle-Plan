@@ -6,4 +6,4 @@ A departed queue line receives a provisional ending. Final output settles an obs
 
 Spend rows group exact factory output by queue owner's country identity, work type, building type and state. Railway rows use both endpoint states and reuse the building-type key field for the last state. State and building identifiers are kept whole, including modded keys wider than 24 bits. A restarted observation keeps earlier output and starts a new baseline. A changed attribution leaves accrued work in its earlier row and counts later work in the new row. Inexact observations count as unknown pending a complete observation. A line that ends unwitnessed leaves its unknown count in the row. Spend rows remain after their lines finish. Resume stores each active line's baseline, output and attribution.
 
-[Project writer](../../crates/recorder-derive/src/construction_projects.rs) · [Spend writer](../../crates/recorder-derive/src/construction_spend.rs)
+[Project writer](../../crates/recorder-derive-economy/src/construction_projects.rs) · [Spend writer](../../crates/recorder-derive-economy/src/construction_spend.rs)

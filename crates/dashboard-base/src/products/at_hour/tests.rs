@@ -125,7 +125,7 @@ fn frame(hour: i32) -> DecodedFrame {
 
 fn recording() -> (Source, Arc<dyn Pages>) {
     let frames = (FIRST..=LAST).map(frame).collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let source = Source::from_replay(crate::SourceKey { source_id: "at-hour".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     (source, pages)
@@ -315,7 +315,7 @@ fn dated_read_in_a_gap_refuses_the_hour_between_two_recorded_stretches() {
     let segments = [(1, FIRST..=FIRST + 5), (2, FIRST + 10..=LAST)].map(|(branch, hours)| {
         records(branch, hours.map(|hour| DecodedFrame { branch, ..frame(hour) }).collect())
     });
-    let replay = Replay::from_records(CAMPAIGN.into(), &segments).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &segments).unwrap().into_timelines(&Default::default()).unwrap();
     let token = AtomicBool::new(false);
     let source = Source::from_replay(crate::SourceKey { source_id: "gapped".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &token).unwrap();
     let panel = exact_panel::<Power>(&source, &load(), &json!({"panel": "test-power", "branchId":"1","country":"GER"})).unwrap();
@@ -800,7 +800,7 @@ fn a_table_read_in_part_is_the_rows_its_hour_read_on_every_path() {
             frame
         })
         .collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let source = Source::from_replay(crate::SourceKey { source_id: "at-hour-partly".into(), revision: "1".into() }, "partly.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let recorded = |hour: i32| {

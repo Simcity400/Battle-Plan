@@ -1,10 +1,9 @@
 
 use super::Compared;
-use crate::{
-    document::Document,
-    layers::{Layer, labels::Labels, names::Names, rails::Rails, trains::Trains},
-    playhead_host::mirror::Mirrors,
-};
+use crate::{document::Document, playhead_host::mirror::Mirrors};
+use viewer_layer_core::layers::Layer;
+use viewer_layers_political::{labels::Labels, names::Names};
+use viewer_layers_infrastructure::{rails::Rails, trains::Trains};
 use serde_json::{Value, json};
 use std::{io, sync::Arc};
 
@@ -14,7 +13,7 @@ fn note(compared: &mut Compared, what: String) {
 }
 
 pub(super) fn rails_make(document: &Document) -> Box<dyn Layer> {
-    let geography: Arc<dyn crate::layers::rails::Geography> = Arc::clone(&document.content) as _;
+    let geography: Arc<dyn viewer_layers_infrastructure::rails::Geography> = Arc::clone(&document.content) as _;
     Box::new(Rails::new(geography))
 }
 
@@ -84,7 +83,7 @@ pub(super) fn rails_today(layer: &dyn Layer, document: &Document) -> io::Result<
     Ok(compared)
 }
 
-pub(super) fn rails_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+pub(super) fn rails_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = rails(layer);
     let mut fresh = layer.fresh();
     fresh.compose(mirrors)?;
@@ -93,7 +92,7 @@ pub(super) fn rails_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crat
 }
 
 pub(super) fn names_make(document: &Document) -> Box<dyn Layer> {
-    let atlas: Arc<dyn crate::layers::names::Atlas> = Arc::clone(&document.content) as _;
+    let atlas: Arc<dyn viewer_layers_political::names::Atlas> = Arc::clone(&document.content) as _;
     Box::new(Names::new(atlas))
 }
 
@@ -150,7 +149,7 @@ pub(super) fn names_today(layer: &dyn Layer, document: &Document) -> io::Result<
     Ok(compared)
 }
 
-pub(super) fn names_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+pub(super) fn names_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = names(layer);
     let mut fresh = layer.fresh();
     fresh.compose(mirrors)?;
@@ -225,7 +224,7 @@ pub(super) fn labels_today(layer: &dyn Layer, document: &Document) -> io::Result
     Ok(compared)
 }
 
-pub(super) fn labels_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+pub(super) fn labels_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = labels(layer);
     let mut fresh = layer.fresh();
     fresh.compose(mirrors)?;
@@ -234,7 +233,7 @@ pub(super) fn labels_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &cra
 }
 
 pub(super) fn trains_make(document: &Document) -> Box<dyn Layer> {
-    let yard: Arc<dyn crate::layers::trains::Yard> = Arc::clone(&document.content) as _;
+    let yard: Arc<dyn viewer_layers_infrastructure::trains::Yard> = Arc::clone(&document.content) as _;
     Box::new(Trains::new(yard, viewing(document)))
 }
 
@@ -312,14 +311,14 @@ pub(super) fn trains_today(layer: &dyn Layer, document: &Document) -> io::Result
     Ok(compared)
 }
 
-pub(super) fn trains_fresh(layer: &dyn Layer, mirrors: &Mirrors, upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+pub(super) fn trains_fresh(layer: &dyn Layer, mirrors: &Mirrors, upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = trains(layer);
     let mut fresh = layer.fresh();
     fresh.compose_with(mirrors, upstream)?;
     let (differing, first) = layer.differ(&fresh);
     let mut notes = Value::Null;
     if differing > 0 {
-        let ours: std::collections::BTreeMap<u128, crate::layers::trains::ShownNode> = layer.shown_nodes().iter().map(|node| (node.key, *node)).collect();
+        let ours: std::collections::BTreeMap<u128, viewer_layers_infrastructure::trains::ShownNode> = layer.shown_nodes().iter().map(|node| (node.key, *node)).collect();
         let theirs: std::collections::BTreeMap<u128, i64> = fresh.shown_nodes().iter().map(|node| (node.key, node.weight)).collect();
         let keys: std::collections::BTreeSet<u128> = ours.keys().chain(theirs.keys()).copied().collect();
         let nodes: Vec<Value> = keys

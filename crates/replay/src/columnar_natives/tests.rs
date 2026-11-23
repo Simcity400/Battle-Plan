@@ -32,7 +32,7 @@ fn same(frame: &DecodedFrame, written: &fixtures::Seen) -> bool {
 
 #[test]
 fn frames_read_from_the_recording_are_the_writer_s_at_every_hour() {
-    let (bytes, expected) = fixtures::churned(&RUNS);
+    let (bytes, expected) = fixtures::churned(recorder_derive::writers(), &RUNS);
     let natives = alone(bytes.clone());
     let hours = hours(&RUNS);
     assert_eq!(hours.len(), expected.len());
@@ -129,7 +129,7 @@ fn frames_read_from_the_recording_are_the_writer_s_at_every_hour() {
 
 #[test]
 fn a_cursor_moved_forward_by_days_builds_what_a_seek_builds() {
-    let (bytes, expected) = fixtures::churned(&RUNS);
+    let (bytes, expected) = fixtures::churned(recorder_derive::writers(), &RUNS);
     let natives = alone(bytes);
     let hours = hours(&RUNS);
     let mut cursor = Cursor::new(Arc::clone(&natives), &TABLES).unwrap();
@@ -144,7 +144,7 @@ fn a_cursor_moved_forward_by_days_builds_what_a_seek_builds() {
 }
 
 fn mode_recording(capture_mode: u8) -> Vec<u8> {
-    let mut file = fixtures::writer(fixtures::identity(b"cursor mode", capture_mode), |_| {});
+    let mut file = fixtures::writer(recorder_derive::writers(), fixtures::identity(b"cursor mode", capture_mode), |_| {});
     file.start_run(1, envelope::epoch::START, 100).unwrap();
     let mut synthetic = Synthetic::new(1, 100).unwrap();
     for ordinal in 0..2 {
@@ -159,7 +159,7 @@ fn mode_recording(capture_mode: u8) -> Vec<u8> {
 fn a_cursor_reads_format_and_capture_mode_from_the_recording_metadata() {
     let format = CAPTURE_ADDITIONS_FORMAT - 1;
     let added = [TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs];
-    let (bytes, _) = fixtures::written_at(format, b"cursor format 141", &[(1, 100, 1)], &[TableId::States, TableId::Divisions], |synthetic, _, ordinal| {
+    let (bytes, _) = fixtures::written_at(recorder_derive::writers_within, format, b"cursor format 141", &[(1, 100, 1)], &[TableId::States, TableId::Divisions], |synthetic, _, ordinal| {
         let states = [StateRowAt141 { id: 4, owner: 7 + ordinal, controller: 9, custom_name: b"Bohemia".to_vec(), continent: Some(2).into(), ..Default::default() }];
         let divisions = [DivisionRowAt141 { id: (3_u64 << 32) | 1, roster_owner: 7, province: 11 + ordinal, hit_points: 500_000, organisation: 250_000, ..Default::default() }];
         synthetic.table(TableId::States, Input::Snapshot { rows: &states, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();

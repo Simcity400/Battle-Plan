@@ -90,7 +90,7 @@ fn frame(hour: i32) -> DecodedFrame {
 
 fn recording() -> Source {
     let frames = (FIRST..=LAST).map(frame).collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     Source::from_replay(dashboard_base::SourceKey { source_id: "power-ledger".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
 }
 
@@ -178,7 +178,7 @@ fn out_of_order_closed_days_keep_their_native_date_in_spending_replies() {
         frame
     };
     let frames = (FIRST..=197).map(make_frame).collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "power-ledger-ooo".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let reply = asked(&source, FIRST, 197);
     let listed: Vec<_> = reply.days.iter().map(|day| (day.read, day.days, day.payments, day.charge_raw.clone(), day.day)).collect();
@@ -206,7 +206,7 @@ fn out_of_order_closed_days_keep_their_native_date_in_spending_replies() {
         frame
     };
     let frames = (FIRST..=195).map(middle_frame).collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "power-ledger-mid".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let reply = asked(&source, FIRST, 195);
     let listed: Vec<_> = reply.days.iter().map(|day| (day.read, day.days, day.payments, day.charge_raw.clone(), day.day)).collect();
@@ -282,7 +282,7 @@ fn format_142_recording_without_day_log_falls_back_to_last_day_end_to_end() {
         unmatched: Recorded::NotRecorded,
         ..Default::default()
     };
-    let bytes = replay::campaign::fixtures::encode_framed_at(CAPTURE_ADDITIONS_FORMAT, CAMPAIGN.into(), &[records(1, frames)], |synthetic, decoded| {
+    let bytes = replay::campaign::fixtures::encode_framed_at(recorder_derive::writers_within, CAPTURE_ADDITIONS_FORMAT, CAMPAIGN.into(), &[records(1, frames)], |synthetic, decoded| {
         let countries = decoded.complete::<tables::Countries>()?;
         synthetic.table(TableId::Countries, Input::Snapshot { rows: countries, partial: None, read: true, sample: Sample::FromReadBit })?;
         let links = decoded.complete::<tables::CountryLinks>()?;
@@ -393,7 +393,7 @@ fn two_native_days_in_one_read_hour_keep_separate_dates_and_amounts() {
         frame
     };
     let frames = (FIRST..=168).map(make_frame).collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "power-ledger-same-read".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let reply = asked(&source, FIRST, 168);
     assert!(reply.payments.is_empty(), "relation (Diplomacy) and blockade daily costs must not emit one-off payments");
@@ -436,7 +436,7 @@ fn unavailable_roll_hour_is_withheld_and_named_while_later_available_roll_displa
         frame
     };
     let frames = (FIRST..=168).map(make_frame).collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "power-ledger-unavailable-roll".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let reply = asked(&source, FIRST, 168);
     let listed: Vec<_> = reply.days.iter().map(|day| (day.read, day.day, day.days, day.payments, day.charge_raw.clone())).collect();
@@ -497,7 +497,7 @@ fn overlapping_coverage_gap_preserves_specific_day_log_refusal_on_affected_hour(
         frame
     };
     let frames = (FIRST..=168).map(make_frame).collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "power-ledger-overlap-gap".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let timeline = Timeline {
         id: 1,
@@ -583,7 +583,7 @@ fn same_run_stretch_boundary_reads_first_hour_log_event_and_gap() {
                 frame
             })
             .collect();
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
         let source = Source::from_replay(
             dashboard_base::SourceKey { source_id: format!("power-ledger-stretch-{unavailable_at_boundary}"), revision: "1".into() },
             "synthetic.battleplan".into(),
@@ -649,7 +649,7 @@ fn daily_credit_carries_its_native_date_separately_from_debits() {
         frame
     };
     let frames = (FIRST..=144).map(make_frame).collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "power-ledger-credit".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let reply = asked(&source, FIRST, 144);
     let listed: Vec<_> = reply.days.iter().map(|day| (day.read, day.day, day.days, day.payments, day.charge_raw.clone(), day.credits)).collect();

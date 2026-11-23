@@ -256,7 +256,7 @@ impl PartialEq<String> for Failure {
     }
 }
 
-pub(crate) fn capture<T>(run: impl FnOnce() -> T) -> (T, BTreeSet<Failure>) {
+pub fn capture<T>(run: impl FnOnce() -> T) -> (T, BTreeSet<Failure>) {
     CAPTURES.with(|captures| captures.borrow_mut().push(BTreeSet::new()));
     struct Pop;
     impl Drop for Pop {
