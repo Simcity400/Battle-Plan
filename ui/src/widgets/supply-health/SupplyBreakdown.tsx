@@ -31,6 +31,7 @@ import { STATES, STATE_LABELS, supplyParts, supplyTooltip, totalDivisions } from
 import { useSupplySeries } from './supplySeries';
 import { useSupplyHead } from './supplyHead';
 import type { supplyCountrySelection } from './SupplyCountryChip';
+import { countryKey } from '../../dashboard/countryKey.ts';
 
 export default function SupplyBreakdown({ runtime, gate, track, active, options, countrySlot, headerSelection, identities, extent, playhead, liveHead, dayText,
   tag, hour, originHour, following, pinned, onPick, onFollow, onWarnings }: {
@@ -50,24 +51,30 @@ export default function SupplyBreakdown({ runtime, gate, track, active, options,
   const [tipHour, setTipHour] = useState<number | null>(null);
   const identitySpans = useMemo(() => identities && tag ? countryDrillSpans(identities, tag, originHour) : new Map<string, readonly Span[]>(),
     [identities, tag, originHour]);
-  const spans = identitySpans.get(tag ?? '') ?? [];
-  const tags = useMemo(() => tag ? [tag] : [], [tag]);
-  const within = useMemo(() => tag ? new Map([[tag, spans]]) : undefined, [tag, spans]);
-  const headAt = gate.recorded(hour), tipAt = gate.recorded(tipHour);
-  const reads = useMemo(() => tag ? [...(liveHead || headAt === null ? [] : [{ tag, hour: headAt }]), ...(tipAt === null ? [] : [{ tag, hour: tipAt }])] : [],
-    [tag, headAt, tipAt, liveHead]);
+  const slotKey = useMemo(() => {
+    const identity = identities && tag ? runAt(identities.find(history => history.tag === tag)?.identities ?? [], originHour) : null;
+    return identity ? countryKey(identity.slot) : null;
+  }, [identities, tag, originHour]);
+  const spans = useMemo(() => slotKey ? [...identitySpans.values()].flat().sort((a, b) => a.firstHour - b.firstHour) : identitySpans.get(tag ?? '') ?? [],
+    [slotKey, identitySpans, tag]);
+  const key = slotKey ?? tag;
+  const tags = useMemo(() => key ? [key] : [], [key]);
+  const within = useMemo(() => key ? new Map([[key, spans]]) : undefined, [key, spans]);
+  const headAt = gate.recorded(hour, spans), tipAt = gate.recorded(tipHour, spans);
+  const reads = useMemo(() => key ? [...(liveHead || headAt === null ? [] : [{ tag: key, hour: headAt }]), ...(tipAt === null ? [] : [{ tag: key, hour: tipAt }])] : [],
+    [key, headAt, tipAt, liveHead]);
   const supply = useSupplySeries(runtime.client, runtime.clock, gate, track?.source, track?.branch, tags, within, track?.branch.lastHour ?? 0, active && !!identities, reads,
     liveHead !== undefined, root);
   const { error, retry } = supply;
   useEffect(() => { onWarnings(error ? [`Supply could not be loaded: ${error.message}`] : []); return () => onWarnings([]); }, [error, onWarnings]);
   const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const colors = useMemo(() => [tokens.error, tokens.warning, tokens.positive], [tokens.error, tokens.warning, tokens.positive]);
-  const head = useSupplyHead(store, gate, liveHead !== undefined && active, track?.branch.id, tag, root, colors);
+  const head = useSupplyHead(store, gate, liveHead !== undefined && active, track?.branch.id, key, root, colors);
   const actor = countryDrillTagAt(identitySpans, hour);
-  const runs = useMemo(() => tag ? clipToSpans(clipToSpans(supply.sharesOf(tag), spans), [{ firstHour: extent[0], lastHour: extent[1] }]) : [],
-    [supply.shares, tag, spans, extent[0], extent[1]]);
-  const live = useMemo(() => tag && liveHead ? supply.liveShares(tag, held => clipToSpans(clipToSpans(held, spans), [{ firstHour: extent[0], lastHour: extent[1] }])) : undefined,
-    [supply.liveShares, tag, liveHead, spans, extent[0], extent[1]]);
+  const runs = useMemo(() => key ? clipToSpans(clipToSpans(supply.sharesOf(key), spans), [{ firstHour: extent[0], lastHour: extent[1] }]) : [],
+    [supply.shares, key, spans, extent[0], extent[1]]);
+  const live = useMemo(() => key && liveHead ? supply.liveShares(key, held => clipToSpans(clipToSpans(held, spans), [{ firstHour: extent[0], lastHour: extent[1] }])) : undefined,
+    [supply.liveShares, key, liveHead, spans, extent[0], extent[1]]);
   const extentKey = JSON.stringify(extent);
   const pickOwner = useMemo(() => ({ client: runtime.client, scope: JSON.stringify([track?.source.id, track?.branch.id, tag, originHour]),
     extent: extentKey, model: runs }), [runtime.client, track?.source.id, track?.branch.id, tag, originHour, extentKey, runs]);
@@ -80,7 +87,7 @@ export default function SupplyBreakdown({ runtime, gate, track, active, options,
   const header = countrySlot && createPortal(<DatedCountryChip failure={error} label={headerActor ? labels.labelAt(hour)(headerActor) : null} hour={hour}
     reason={error ? failureText(error, 'Couldn’t load the country.') : !headerActor ? 'Selected country unavailable.' : null} />, countrySlot);
   useEffect(() => { if (!active) setTipHour(null); }, [active]);
-  const at = actor ? supply.at(actor, hour) : { missing: 'No country held this tag at this time.' };
+  const at = actor && key ? supply.at(key, hour) : { missing: 'No country held this tag at this time.' };
   const counts = at && 'counts' in at ? at.counts : null;
   const total = counts ? totalDivisions(counts) : null;
   const bands = useMemo(() => STATES.map((state, index) => ({ id: state, label: STATE_LABELS[state], color: colors[index],
@@ -114,7 +121,7 @@ export default function SupplyBreakdown({ runtime, gate, track, active, options,
         const actor = countryDrillTagAt(identitySpans, at);
         const label = actor ? labels.labelAt(at)(actor) : { name: 'Unknown country', flag: undefined };
         return fitTooltip([supplyTooltip(formatDateTime(at), label.name, actor ? label : undefined,
-          actor ? supply.at(actor, at) : { missing: 'No country held this tag at this time.' }, colors)], viewport);
+          actor && key ? supply.at(key, at) : { missing: 'No country held this tag at this time.' }, colors)], viewport);
       }} />
     {menu.menu}
   </div></>;

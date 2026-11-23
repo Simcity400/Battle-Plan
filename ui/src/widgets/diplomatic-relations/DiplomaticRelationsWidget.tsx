@@ -42,7 +42,7 @@ import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { OPTIONS, PAIR } from './definition';
 import { useTopCountries } from './topCountries.ts';
-import { opinionDomain, opinionIndex, opinionText, orderCountries, pairHolders, pairKeys, pairOf, pairToken, readHourOf, relationsStructure,
+import { opinionDomain, opinionIndex, opinionText, orderCountries, pairHolders, heldPairKeys, pairKeys, pairOf, pairToken, readHourOf, relationsStructure,
   validateRelations } from './relationsData';
 import type { ChosenPair, OpinionDomain } from './relationsData';
 import './diplomaticRelations.css';
@@ -61,9 +61,11 @@ function PairHistory({ runtime, gate, track, pair: chosen, hour, active, followi
   const liveHead = useMemo(() => following ? { read: () => clock.getSnapshot().position + axisOffset, subscribe: (changed: () => void) => clock.subscribeFrame(changed) }
     : undefined, [following, clock, axisOffset]);
   const root = useRef<HTMLDivElement>(null);
-  const keys = useMemo(() => pairKeys(chosen), [chosen]);
+  const identities = gate.groups.data?.countryIdentities;
+  const held = useMemo(() => identities ? heldPairKeys(identities, chosen) : null, [identities, chosen]);
+  const keys = useMemo(() => held?.keys ?? pairKeys(chosen), [held, chosen]);
   const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const series = useKeyedSeries(runtime.client, runtime.clock, gate, { source: track.source, branch: track.branch, family: OPINIONS, keys, partBits: 32, lastHour: track.branch.lastHour },
+  const series = useKeyedSeries(runtime.client, runtime.clock, gate, { source: track.source, branch: track.branch, family: OPINIONS, keys, partBits: 32, lastHour: track.branch.lastHour, ...(held ? { within: held.within } : {}) },
     hour, gate.recorded(hoverHour), false, active, root);
   const looks = useHolderLooks(runtime.client, track, useMemo(() => pairHolders(chosen), [chosen]), active, useChartTokens());
   const label = (index: number) => looks.name(index ? 'second' : 'first');

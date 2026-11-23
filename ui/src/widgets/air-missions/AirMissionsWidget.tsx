@@ -19,7 +19,6 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { contentKey, contentSet } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { headRead, useHeadProduct } from '../../dashboard/headProduct';
-import { useGate } from '../../dashboard/regionGate';
 import type { ReadCoverage } from '../../dashboard/widgetTime';
 
 import { reporting } from '../../dashboard/follow/liveCells.ts';
@@ -41,6 +40,8 @@ const wingKey = (row: AirMissionWing) => row.id;
 const NO_ROWS: readonly MissionRow[] = [];
 const count = (value: NonNullable<SortValue>) => typeof value === 'string' ? value : value.toLocaleString('en-US');
 const wingsStructure = (reply: AirMissionWingsReply) => JSON.stringify([reply.wings, reply.missing, reply.warnings]);
+
+const HOLDERS = { holders: true };
 
 export default function AirMissionsWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
@@ -78,7 +79,7 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const tooltip = useCallback((row: MissionRow) => missionTooltip(row, missions, values.read(), readDate), [missions, values, readDate]);
   const menu = useCallback(() => track && readHour !== null ? [jumpItem(runtime, track.id, readHour)] : [], [runtime, track, readHour]);
-  const drillControl = useDrill(runtime, useRegion(widget));
+  const drillControl = useDrill(runtime, useRegion(widget), null, undefined, undefined, HOLDERS);
   const drill = drillControl.state;
   const dispatch = drillControl.dispatch;
   const [region, setRegion] = useState<MissionRow | null>(null);
@@ -87,11 +88,11 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
     const hour = headRead({ widget, action: SPEC }, track, runtime.tracks).hourAt(axisAt(runtime.clock.getHour()));
     if (hour === null) return;
     setRegion(row);
-    drillControl.show('wings', hour);
+    drillControl.show('wings', hour, tag ? { tag, origin: Math.floor(hour) } : null);
   }, [widget, track, runtime, drillControl]);
   const open = drill.breakdown !== null && region !== null;
-  const drillTime = drillControl.region.action;
-  const wings = useHeadProduct(runtime, useGate(runtime, widget, drillTime), 'air-mission-wings', region && drill.breakdown !== null && tag ? { country: countryFromKey(tag), region: Number(region.region) } : null,
+  const wingTag = drillControl.gate.country?.tag ?? null;
+  const wings = useHeadProduct(runtime, drillControl.gate, 'air-mission-wings', region && drill.breakdown !== null && wingTag ? { country: countryFromKey(wingTag), region: Number(region.region) } : null,
     { active: active && open, validate: validateAirWings, structure: wingsStructure });
   const wingsShown = useRef(wings.shownAt);
   wingsShown.current = wings.shownAt;
