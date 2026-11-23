@@ -150,6 +150,8 @@ export function releaseHeading(version: string, releases: readonly ReleaseNotes[
 
 export function peekTitle(state: UpdateState): string {
   if (state.status === 'downloading') return `Downloading ${offer(state)}${percent(state)}`;
+  const failure = updateFailure(state);
+  if (failure) return `${failure.text.replace(/\.$/, '')} · Try again`;
   if (state.downloadedVersion) return state.installBlocked ? `${Offer(state)} downloaded` : `${Offer(state)} ready to install`;
   return state.downgrade ? 'Older version available' : 'Update ready to download';
 }

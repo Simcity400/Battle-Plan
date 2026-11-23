@@ -288,7 +288,8 @@ test('a downloaded update says so in words above the footer, and the footer glyp
     const render = (props: Partial<PanelViewProps>) => renderToStaticMarkup(createElement(PanelView as never, {
       snapshot: { ...recording, phase: 'waiting', campaign: null, recording: null }, settings, view: 'main', asking: false, error: null, now: STARTED,
       actions, ...props } as never));
-    const { blockedReason } = await vite.ssrLoadModule('/ui/src/update/logic.ts') as typeof import('../update/logic');
+    const { blockedReason, peekTitle } = await vite.ssrLoadModule('/ui/src/update/logic.ts') as typeof import('../update/logic');
+    const { UpdateNotes } = await vite.ssrLoadModule('/ui/src/update/UpdateControl.tsx') as typeof import('../update/UpdateControl');
     const { actionFailure } = await vite.ssrLoadModule('/ui/src/dashboard/queryError.ts') as typeof import('../dashboard/queryError');
     assert.deepEqual(actionFailure('Couldn’t show the recording in its folder.', 'Couldn’t show Germany 1936 in its folder: C:\\Rec\\Germany 1936.battleplan: denied'),
       { text: 'Couldn’t show Germany 1936 in its folder.', detail: 'Couldn’t show Germany 1936 in its folder: C:\\Rec\\Germany 1936.battleplan: denied' });
@@ -335,6 +336,10 @@ test('a downloaded update says so in words above the footer, and the footer glyp
     const direct = { version: '0.9.6', since: '0.9.5', date: null, changes: 1, highlights: [], more: 0, pulls: [] };
     assert.match(text(render({ view: 'settings', update: update({ status: 'available', availableVersion: '0.9.6', releases: [direct] }) })), /1 change made without a pull request\./,
       'a change no summary read is never called internal');
+    assert.equal(peekTitle({ ...state, status: 'error', errorContext: 'download', availableVersion: '0.9.6' }), 'Couldn’t download update 0.9.6 · Try again',
+      'hovering a failed update names the failure, never a ready update');
+    assert.match(renderToStaticMarkup(createElement(UpdateNotes, { state: { ...state, status: 'available', availableVersion: '0.9.6', unlisted: true },
+      onOpenRelease() {} })), /Release on GitHub/, 'an update without notes still links to its release');
     const installFailed = render({ update: update({ status: 'error', errorContext: 'install', availableVersion: '0.9.5', downloadedVersion: '0.9.5', message: 'The installer couldn’t be started: denied.' }) });
     assert.match(text(installFailed), /Couldn’t install update 0\.9\.5\. Restart to update/, 'a failed install says so where the restart is offered');
     assert.doesNotMatch(text(installFailed), /denied/);

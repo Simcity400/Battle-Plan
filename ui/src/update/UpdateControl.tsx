@@ -90,6 +90,8 @@ export function UpdateNotes({ state, onOpenRelease }: { state: UpdateState; onOp
       </section>;
     })}
     {state.unlisted && <p className="update-release-footer">{state.releases.length ? 'Earlier releases aren’t listed here.' : 'This update’s changes aren’t listed here.'}</p>}
+    {offered && !state.releases.some(notes => notes.version === offered) && onOpenRelease && state.enabled
+      && <button type="button" className="update-release-link" onClick={() => onOpenRelease(offered)}>Release on GitHub<Icon name="external" /></button>}
   </div>;
 }
 
@@ -153,6 +155,7 @@ export function UpdateButton({ state }: { state: UpdateState | null }) {
           <div className="update-peek-head">
             <strong className="update-peek-title">{peekTitle(state)}</strong>
             <span className="update-peek-version">{releaseHeading(offered, state.releases)}</span>
+            {state.installBlocked && state.downloadedVersion && <span className="update-peek-note">{blockedReason(state)}</span>}
           </div>
           <UpdateNotes state={state} onOpenRelease={version => void actions.openRelease(version)} />
         </>;
