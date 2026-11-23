@@ -39,3 +39,21 @@ test('review 6 D: a picture missing part of its exact read fails, as one goal of
   const exact = new Map([['["goal",1]', '["goal",1]'], ['["goal",2]', '["goal",2]']]);
   assert.match(pictureError('page', [{ row: '["goal",1]', key: '["goal",1]', value: '["goal",1]' }], { values: exact }) ?? '', /not shown/);
 });
+
+test('capturePicturesBatch freezes its snapshot on the first batch so post-window frames cannot extend the drain', async () => {
+  const { auditing, capturePictures, capturePicturesBatch, recordPicture } = await import('../dashboard/pulled.ts');
+  await capturePictures(true);
+  assert.equal(auditing(), true);
+  const sample = (at: number) => ({ t: 'picture', at, widget: 'w', surface: 'table', placement: 1, owner: 0, renderer: 'page', head: at, hour: at, offset: 0, since: at, through: at, eligibleHour: at, entry: at, parts: [], face: '', drawMs: 0, mode: 'picture', dim: false, reset: 0, binding: 0, inspect: null, tooltip: false }) as never;
+  recordPicture(sample(1));
+  recordPicture(sample(2));
+  recordPicture(sample(3));
+  const first = await capturePicturesBatch(2);
+  assert.equal(auditing(), false);
+  assert.equal(first.done, false);
+  assert.deepEqual(first.records.map(r => r.at), [1, 2]);
+  recordPicture(sample(4));
+  const second = await capturePicturesBatch(2);
+  assert.equal(second.done, true);
+  assert.deepEqual(second.records.map(r => r.at), [3]);
+});

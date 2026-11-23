@@ -1,4 +1,4 @@
-import { MAX_PLAYBACK_AGE_HOURS, playbackPace } from './verdicts.mjs';
+import { MAX_PLAYBACK_AGE_HOURS, freshness, playbackPace, quantiles, windowLosses } from './verdicts.mjs';
 
 const shownFrom = r => Math.max(r.at, r.shownAt ?? r.at);
 const p95 = values => values.length ? values.toSorted((a, b) => a - b)[Math.ceil(values.length * .95) - 1] : null;
@@ -105,6 +105,8 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     const end = presented.findIndex(at => at >= presented[0] + w.seconds * 1000);
     const frames = end < 0 ? presented : presented.slice(0, end + 1);
     if (end < 0 || !w.seconds || !w.complete) reasons.push('incomplete presented playing window');
+    const lost = windowLosses(sorted, w.from, w.to);
+    if (lost.count > 0) reasons.push(`perf log lost ${lost.count} records during ${w.page ?? 'playback'}`);
     const timed = r => r.at >= frames[0] && r.at <= frames.at(-1);
     const seconds = (frames.at(-1) - frames[0]) / 1000;
     const page = sorted.filter(r => r.t === 'frame' && r.playing && timed(r));
@@ -178,6 +180,12 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
       const presentedInputs = Array.isArray(w.inputs.presented) ? w.inputs.presented : [];
       let pinWidget;
       for (const [i, action] of actions.entries()) {
+        const failed = typeof action.failed === 'string' && action.failed.trim() ? action.failed.trim() : null;
+        if (failed) {
+          checks.push({ kind: action.kind, pass: false, reason: failed });
+          reasons.push(`Dashboard ${action.kind} failed: ${failed}`);
+          continue;
+        }
         const notApplicable = typeof action.notApplicable === 'string' && action.notApplicable.trim() ? action.notApplicable.trim() : null;
         if (notApplicable) { checks.push({ kind: action.kind, notApplicable, pass: true }); continue; }
         const times = presentedInputs.filter(at => at >= action.at && at < (actions[i + 1]?.at ?? w.inputs.to));
@@ -189,7 +197,8 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
         const checked = ofKind.some(c => !c.notApplicable && c.pass &&
           (kind !== 'pin' || actions.some(action => action.kind === kind && action.pinWidget)));
         const notApplicable = ofKind.length > 0 && ofKind.every(c => c.notApplicable);
-        if (!checked && !notApplicable) reasons.push('Missing input coverage for ' + kind);
+        const explicitFailure = ofKind.some(c => c.reason && !c.pass);
+        if (!checked && !notApplicable && !explicitFailure) reasons.push('Missing input coverage for ' + kind);
       }
       if (checks.some(c => c.future > 0)) reasons.push('Future picture during dashboard input sequence');
       const rewindUnsettled = Array.isArray(w.inputs.rewindUnsettled) ? w.inputs.rewindUnsettled : [];
@@ -218,7 +227,19 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     const placementStart = placements.length;
     for (const widget of w.widgets ?? []) {
       if (!widget.visible) continue;
-      if (widget.notMigrated) { placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, status: 'not migrated', pass: null }); continue; }
+      if (widget.notMigrated) { placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, status: 'not migrated', reason: 'not migrated', pass: false }); continue; }
+      if (widget.outcome === 'refusal') {
+        const detail = widget.detail ?? 'refused';
+        placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, status: 'refused', reason: detail, pass: false });
+        reasons.push(`${widget.kind} refused: ${detail}`);
+        continue;
+      }
+      if (widget.outcome === 'error') {
+        const detail = widget.detail ?? 'error';
+        placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, status: 'error', reason: detail, pass: false });
+        reasons.push(`${widget.kind} error: ${detail}`);
+        continue;
+      }
       const reports = (picturesByWidget.get(widget.id) ?? []).toSorted((a, b) => shownFrom(a) - shownFrom(b));
       const declared = [...new Set((widget.surfaces ?? []).filter(surface => surface != null))];
       const visible = new Set(declared), required = new Set(visible);
@@ -302,16 +323,158 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
       if (!placements.slice(placementStart).some(placement => placement.widget === expected.id)) reasons.push('Missing judged placement for expected widget');
     }
   }
+  const notMigratedPlacements = placements.filter(p => p.status === 'not migrated');
+  const notMigratedKinds = [...new Set(notMigratedPlacements.map(p => p.kind))];
+  if (notMigratedPlacements.length) {
+    reasons.unshift(`${notMigratedPlacements.length} placement${notMigratedPlacements.length === 1 ? '' : 's'} not migrated (${notMigratedKinds.length} kind${notMigratedKinds.length === 1 ? '' : 's'}: ${notMigratedKinds.join(', ')})`);
+  }
   const kinds = [...new Set(placements.map(p => p.kind))];
   const widgets = kinds.map(kind => {
     const kept = placements.filter(p => p.kind === kind), migrated = kept.filter(p => p.status !== 'not migrated');
-    const pass = migrated.length === 0 ? null : migrated.every(p => p.pass);
-    if (pass === false) reasons.push('A widget missed its dated presentation or exact-read target');
-    return { kind, p95: migrated.length && migrated.every(p => p.p95 !== null) ? Math.max(...migrated.map(p => p.p95)) : null,
-      eligibleP95: migrated.length && migrated.every(p => p.eligibleP95 !== null) ? Math.max(...migrated.map(p => p.eligibleP95)) : null,
-      structureCrossings: migrated.reduce((sum, p) => sum + p.structureCrossings, 0), future: migrated.reduce((sum, p) => sum + p.future, 0),
-      exact: migrated.length > 0 && migrated.every(p => p.exact),
-      ...(kept.some(p => p.status === 'not migrated') && { notMigrated: kept.filter(p => p.status === 'not migrated').length }), pass };
+    const notMigratedCount = kept.length - migrated.length;
+    const realFailed = migrated.some(p => !p.pass && p.status !== 'refused' && p.status !== 'error');
+    const pass = notMigratedCount === 0 && migrated.length > 0 && migrated.every(p => p.pass);
+    if (realFailed) reasons.push('A widget missed its dated presentation or exact-read target');
+    return { kind, p95: migrated.length && migrated.every(p => p.p95 !== null && p.p95 !== undefined) ? Math.max(...migrated.map(p => p.p95)) : null,
+      eligibleP95: migrated.length && migrated.every(p => p.eligibleP95 !== null && p.eligibleP95 !== undefined) ? Math.max(...migrated.map(p => p.eligibleP95)) : null,
+      structureCrossings: migrated.reduce((sum, p) => sum + (p.structureCrossings ?? 0), 0), future: migrated.reduce((sum, p) => sum + (p.future ?? 0), 0),
+      exact: migrated.length > 0 && migrated.every(p => p.exact === true),
+      ...(notMigratedCount > 0 && { notMigrated: notMigratedCount }), pass };
   });
-  return { pass: reasons.length === 0, reasons, metrics, widgets, placements };
+  return { pass: reasons.length === 0, reasons, notMigrated: notMigratedPlacements.length, notMigratedKinds, metrics, widgets, placements };
+}
+
+export const COST_FORMULA = 'max(0, mainDelta.p95) + worker.p95';
+
+export function rankWidgetCosts(entries) {
+  const tie = entry => Math.max(0, entry.mainDelta?.p50 ?? 0) + (entry.worker?.mean ?? 0);
+  return [...entries].sort((a, b) => (b.costScoreMs ?? -1) - (a.costScoreMs ?? -1)
+    || tie(b) - tie(a)
+    || (b.requestsPerSec ?? 0) - (a.requestsPerSec ?? 0)
+    || (b.commitsPerSec ?? 0) - (a.commitsPerSec ?? 0)
+    || a.kind.localeCompare(b.kind));
+}
+
+export function summarizeWidgetCosts(windows, records, { baseline = null, profile = null, confinement = null, ungated = false } = {}) {
+  const sorted = (records ?? []).toSorted((a, b) => a.at - b.at);
+  const diff = (a, b) => Number.isFinite(a) && Number.isFinite(b) ? a - b : null;
+  const frameStatsOf = w => {
+    if (!w || w.from == null || w.to == null) return { main: { n: 0, p50: null, p95: null, max: null }, interval: { n: 0, p50: null, p95: null, max: null }, frames: [], lost: 0 };
+    const frames = sorted.filter(r => r.t === 'frame' && r.playing && r.at >= w.from && r.at <= w.to);
+    return { main: quantiles(frames.map(r => r.main)), interval: quantiles(frames.map(r => r.dt)), frames, lost: windowLosses(sorted, w.from, w.to).count };
+  };
+  const emptyStats = frameStatsOf(baseline);
+  const emptyWorker = baseline && baseline.from != null && baseline.to != null
+    ? sorted.filter(r => r.t === 'workerFrame' && r.playing && r.at >= baseline.from && r.at <= baseline.to) : [];
+  const baselineSummary = {
+    seconds: baseline && baseline.from != null && baseline.to != null ? (baseline.to - baseline.from) / 1000 : baseline?.seconds ?? null,
+    main: emptyStats.main,
+    interval: emptyStats.interval,
+    workerMeanMs: mean(emptyWorker.map(r => r.workMs)),
+    lostRecords: emptyStats.lost,
+    complete: Boolean(baseline?.complete ?? true) && emptyStats.lost === 0,
+  };
+  const widgets = windows.map(w => {
+    const seconds = w.from != null && w.to != null && w.to > w.from ? (w.to - w.from) / 1000 : (w.seconds ?? 0);
+    const { main, interval, frames, lost } = frameStatsOf(w);
+    const mainDelta = {
+      p50: diff(main.p50, emptyStats.main.p50),
+      p95: diff(main.p95, emptyStats.main.p95),
+      max: diff(main.max, emptyStats.main.max),
+    };
+    const workerFrames = w.from != null && w.to != null
+      ? sorted.filter(r => r.t === 'workerFrame' && r.playing && r.at >= w.from && r.at <= w.to) : [];
+    const changed = workerFrames.filter(r => r.changed > 0);
+    const workerQ = quantiles(changed.map(r => r.workMs));
+    const workerMean = mean(changed.map(r => r.workMs));
+    const workerTotalMs = changed.reduce((sum, r) => sum + (Number.isFinite(r.workMs) ? r.workMs : 0), 0);
+    const pictures = w.from != null && w.to != null && w.widget
+      ? sorted.filter(r => r.t === 'picture' && r.widget === w.widget && r.at >= (w.seekStart ?? w.from) && r.at <= w.to) : [];
+    const playingPictures = pictures.filter(r => r.at >= w.from && r.at <= w.to && r.renderer === 'page');
+    const drawMsValues = playingPictures.filter(r => !r.detached && Number.isFinite(r.drawMs)).map(r => r.drawMs);
+    const worker = {
+      frames: workerFrames.length,
+      changedFrames: changed.length,
+      p50: workerQ.p50,
+      p95: workerQ.p95,
+      max: workerQ.max,
+      mean: workerMean,
+      totalMsPerSec: seconds > 0 ? workerTotalMs / seconds : null,
+      drawMsP95: p95(drawMsValues),
+    };
+    const commits = frames.reduce((sum, r) => sum + (Number.isFinite(r.commits) ? r.commits : 0), 0);
+    const commitsPerSec = seconds > 0 ? commits / seconds : null;
+    const queries = w.from != null && w.to != null
+      ? sorted.filter(r => r.t === 'q' && r.at >= w.from && r.at <= w.to) : [];
+    const liveQueries = queries.filter(r => !r.cache && r.cmd !== undefined);
+    const cacheHits = queries.filter(r => r.cache);
+    const requestCountsByProduct = {};
+    for (const q of liveQueries) {
+      const name = q.product ?? q.cmd ?? 'unknown';
+      requestCountsByProduct[name] = (requestCountsByProduct[name] ?? 0) + 1;
+    }
+    const requestsByProduct = Object.fromEntries(Object.entries(requestCountsByProduct)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([product, count]) => [product, seconds > 0 ? count / seconds : count]));
+    const requestsPerSec = seconds > 0 ? liveQueries.length / seconds : null;
+    const cacheHitsPerSec = seconds > 0 ? cacheHits.length / seconds : null;
+    let lagP95Hours = null, futureFrames = 0;
+    if (playingPictures.length) {
+      const lags = [];
+      for (const r of playingPictures) {
+        const target = Math.floor(r.fixedHour ?? r.head);
+        if (Number.isFinite(r.hour) && Number.isFinite(target)) {
+          if (r.hour > target) futureFrames++;
+          lags.push(target - r.hour);
+        }
+      }
+      lagP95Hours = p95(lags);
+    } else if (w.from != null && w.to != null && w.widget) {
+      const fresh = freshness(sorted, w.from, w.to, w.seekStart ?? w.from).widgets.find(entry => entry.widget === w.widget);
+      if (fresh) {
+        lagP95Hours = fresh.p95 >= Number.MAX_VALUE ? null : fresh.p95;
+        futureFrames = fresh.ahead ?? 0;
+      }
+    }
+    const audited = Array.isArray(w.audit) ? w.audit : [];
+    const inWindowAudit = w.from != null && w.to != null ? audited.filter(s => Number.isFinite(s.at) && s.at >= w.from && s.at <= w.to) : audited;
+    const observedPairs = new Set(playingPictures.filter(r => !r.detached).map(r => `${r.surface}\u0000${r.placement}`));
+    const auditedPairs = new Set(inWindowAudit.filter(rendered).map(s => `${s.surface}\u0000${s.placement}`));
+    const firstAuditError = audited.find(s => s.error !== null)?.error ?? null;
+    const widgetErrors = w.from != null && w.to != null && w.widget
+      ? sorted.filter(r => r.t === 'widget_error' && r.widget === w.widget && r.at >= (w.seekStart ?? w.from) && r.at <= w.to) : [];
+    let outcome = w.outcome ?? 'content';
+    let detail = w.detail ?? null;
+    if (widgetErrors.length && outcome !== 'error') {
+      outcome = 'error';
+      detail = widgetErrors[0].message ?? 'widget error';
+    }
+    let exact = outcome === 'content' ? 'not-audited' : 'n/a', exactError = null;
+    if (outcome === 'content' && (audited.length > 0 || observedPairs.size > 0)) {
+      if (firstAuditError) { exact = 'fail'; exactError = firstAuditError; }
+      else if (inWindowAudit.length > 0 && [...observedPairs].every(pair => auditedPairs.has(pair))) { exact = 'pass'; }
+      else { exact = 'fail'; exactError = 'missing exact-read audit for an observed surface'; }
+    } else if (firstAuditError) {
+      exact = 'fail'; exactError = firstAuditError;
+    }
+    const costScoreMs = Math.max(0, mainDelta.p95 ?? 0) + (worker.p95 ?? 0);
+    return {
+      kind: w.kind, title: w.title ?? w.kind, outcome, detail,
+      seconds, main, mainDelta, interval, worker,
+      commits, commitsPerSec,
+      requests: liveQueries.length, requestsPerSec, requestsByProduct, requestCountsByProduct, cacheHitsPerSec,
+      lagP95Hours, futureFrames,
+      exact, exactError, auditSamples: inWindowAudit.length,
+      lostRecords: lost, complete: Boolean(w.complete ?? true) && lost === 0,
+      costScoreMs,
+    };
+  });
+  return {
+    formula: COST_FORMULA,
+    profile,
+    confinement,
+    ungated,
+    baseline: baselineSummary,
+    widgets: rankWidgetCosts(widgets),
+  };
 }

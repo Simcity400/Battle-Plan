@@ -1,8 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { datedPlaybackVerdict } from './datedPlayback.mjs';
-import { inputPictures } from './datedPlayback.mjs';
+import { datedPlaybackVerdict, inputPictures, rankWidgetCosts, summarizeWidgetCosts } from './datedPlayback.mjs';
 
 test('sweep input coverage marks gestures at the boundary and excludes hidden ink', () => {
   const source = readFileSync(new URL('./sweep.mjs', import.meta.url), 'utf8');
@@ -20,7 +19,7 @@ test('sweep input coverage marks gestures at the boundary and excludes hidden in
   assert.match(source, /querySelectorAll\('\[data-surface\]'\)/, 'mounted hidden surfaces, drawn or installed into the page, stay declared');
   assert.doesNotMatch(source, /canvas\[data-surface\]:not\(\[hidden\]\)/, 'surface inventory does not discard hidden declarations');
   const rewindMoved = source.indexOf('Playback rewind did not move back');
-  const rewindSettled = source.indexOf('const rewind = await settleInputs()');
+  const rewindSettled = source.indexOf('rewind = await settleInputs()');
   const scrubStarts = source.indexOf("await app.mouse('mousePressed'");
   assert.ok(rewindSettled > rewindMoved && rewindSettled < scrubStarts,
     'rewind waits for visible dated widgets before the next input');
@@ -386,21 +385,32 @@ test('an unmatched or ambiguous commit source fails instead of being assigned by
   assert.ok(ambiguous.reasons.some(reason => reason.includes('Ambiguous commit source') && reason.includes('FOO BAR')));
 });
 
-test('a visible placeholder is reported as not migrated and leaves the page unmeasured', () => {
+test('a visible placeholder fails its row as not migrated and lists how many and which kinds are not migrated', () => {
   const presented = Array.from({ length: 61 }, (_, i) => i * 1000 / 60);
   const records = [
     { t: 'tick', at: 0, hour: 0, speed: 1440, playing: true },
     { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
-    ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 0, workMs: 0.1 })),
+    ...presented.map(at => ({ t: 'picture', at, widget: 'ok', surface: 'surface', placement: 1, hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page' })),
+    ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1 })),
     ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
   ];
-  const window = { complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+  const baseInputs = { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic' })), to: 1000, presented: [] };
+  const onlyPlaceholder = { complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0, inputs: baseInputs,
     widgets: [{ id: 'legacy', kind: 'legacy-kind', title: 'Legacy', visible: true, surfaces: [], notMigrated: true }] };
-  const result = datedPlaybackVerdict([window], records);
-  assert.equal(result.pass, false);
-  assert.ok(result.reasons.includes('nothing measured'));
-  assert.deepEqual(result.placements.map(p => [p.kind, p.status, p.pass]), [['legacy-kind', 'not migrated', null]]);
-  assert.deepEqual(result.widgets.map(w => [w.kind, w.notMigrated, w.pass]), [['legacy-kind', 1, null]]);
+  const alone = datedPlaybackVerdict([onlyPlaceholder], records);
+  assert.equal(alone.pass, false);
+  assert.ok(alone.reasons.includes('nothing measured'));
+  assert.ok(alone.reasons.some(reason => reason.includes('1 placement not migrated') && reason.includes('legacy-kind')));
+  assert.deepEqual(alone.placements.map(p => [p.kind, p.status, p.pass]), [['legacy-kind', 'not migrated', false]]);
+  assert.deepEqual(alone.widgets.map(w => [w.kind, w.notMigrated, w.pass]), [['legacy-kind', 1, false]]);
+  const mixed = { complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0, inputs: baseInputs,
+    widgets: [{ id: 'ok', kind: 'ok-kind', title: 'Ok', visible: true, surfaces: ['surface'] },
+      { id: 'legacy', kind: 'legacy-kind', title: 'Legacy', visible: true, surfaces: [], notMigrated: true }],
+    audit: [{ widget: 'ok', surface: 'surface', placement: 1, at: 500, error: null }] };
+  const verdict = datedPlaybackVerdict([mixed], records);
+  assert.equal(verdict.pass, false, 'a page with a passing migrated widget and a visible placeholder must fail');
+  assert.ok(verdict.reasons.some(reason => reason.includes('1 placement not migrated') && reason.includes('legacy-kind')));
+  assert.deepEqual(verdict.placements.map(p => [p.kind, p.status ?? 'ok', p.pass]), [['ok-kind', 'ok', true], ['legacy-kind', 'not migrated', false]]);
 });
 
 test('a future picture counts once the worker grace window has passed, and for widgets mounted after the input', () => {
@@ -590,4 +600,80 @@ test('review 9: a table placement passes exact content only on its own renderer\
   const paused = { ...window(-1), to: 2000 };
   paused.audit = paused.audit.map(sample => ({ ...sample, at: 1500 }));
   assert.equal(datedPlaybackVerdict([paused], records).pass, false, 'review 11: a comparison after the last judged frame, still inside the window, does not count');
+});
+
+test('a window with overlapping lost perf records, a refused widget, or a failed input check fails by name', () => {
+  const presented = Array.from({ length: 61 }, (_, i) => i * 1000 / 60);
+  const baseRecords = [
+    { t: 'tick', at: 0, hour: 0, speed: 1440, playing: true },
+    { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
+    ...presented.map(at => ({ t: 'picture', at, widget: 'w', surface: 'surface', placement: 1, hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page' })),
+    ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+  ];
+  const baseWindow = { page: 'Heaviest', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+    widgets: [{ id: 'w', kind: 'ok-kind', title: 'Ok', visible: true, surfaces: ['surface'] }],
+    audit: [{ widget: 'w', surface: 'surface', placement: 1, at: 500, error: null }],
+    inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic' })), to: 1000, presented: [] } };
+  assert.equal(datedPlaybackVerdict([baseWindow], baseRecords).pass, true);
+  const dropped = datedPlaybackVerdict([baseWindow], [...baseRecords, { t: 'lost', at: 900, from: 400, to: 600, source: 'ui', count: 12 }]);
+  assert.equal(dropped.pass, false);
+  assert.ok(dropped.reasons.some(r => r.includes('12') && r.includes('lost')));
+  const outsideLoss = datedPlaybackVerdict([baseWindow], [...baseRecords, { t: 'lost', at: 5000, from: 4000, to: 4500, source: 'ui', count: 12 }]);
+  assert.equal(outsideLoss.pass, true);
+  const refused = datedPlaybackVerdict([{ ...baseWindow, widgets: [...baseWindow.widgets, { id: 'r', kind: 'refused-kind', title: 'Refused', visible: true, surfaces: [], outcome: 'refusal', detail: 'No table 44 in the schema' }] }], baseRecords);
+  assert.equal(refused.pass, false);
+  assert.ok(refused.reasons.some(r => r.includes('refused-kind') && r.includes('No table 44 in the schema')));
+  const errored = datedPlaybackVerdict([{ ...baseWindow, widgets: [...baseWindow.widgets, { id: 'e', kind: 'broken-kind', title: 'Broken', visible: true, surfaces: [], outcome: 'error', detail: 'Minified React error #185' }] }], baseRecords);
+  assert.equal(errored.pass, false);
+  assert.ok(errored.reasons.some(r => r.includes('broken-kind') && r.includes('Minified React error #185')));
+  const failedScroll = datedPlaybackVerdict([{ ...baseWindow, inputs: { ...baseWindow.inputs,
+    actions: baseWindow.inputs.actions.map(a => a.kind === 'scroll' ? { kind: 'scroll', at: 500, failed: 'None of 2 scrollable widget areas moved under the wheel' } : a) } }], baseRecords);
+  assert.equal(failedScroll.pass, false);
+  assert.ok(failedScroll.reasons.some(r => r.includes('scroll') && r.includes('None of 2 scrollable widget areas moved under the wheel')));
+});
+
+test('per-widget cost ranking combines net main-thread p95 and drawing-lane serve p95 and records all metrics', () => {
+  const empty = { kind: '__empty__', from: 0, to: 2000, seconds: 2, complete: true };
+  const windows = [
+    { kind: 'worker-heavy', title: 'Worker heavy', widget: 'page-cost-worker-heavy-worker-heavy', from: 3000, to: 5000, seconds: 2, outcome: 'content', detail: null, complete: true,
+      surfaces: ['table'], audit: [{ widget: 'page-cost-worker-heavy-worker-heavy', surface: 'table', placement: 1, owner: -1, at: 4000, error: null }] },
+    { kind: 'main-heavy', title: 'Main heavy', widget: 'page-cost-main-heavy-main-heavy', from: 6000, to: 8000, seconds: 2, outcome: 'content', detail: null, complete: true, surfaces: [] },
+    { kind: 'refused-widget', title: 'Refused', widget: 'page-cost-refused-widget-refused-widget', from: 9000, to: 11000, seconds: 2, outcome: 'refusal', detail: 'No table 44 in the schema', complete: true, surfaces: [] },
+  ];
+  const records = [
+    { t: 'tick', at: 0, hour: 0, speed: 1440, playing: true },
+    { t: 'frame', at: 500, playing: true, main: 2, dt: 16, commits: 0 },
+    { t: 'frame', at: 1500, playing: true, main: 2, dt: 16, commits: 0 },
+    { t: 'tick', at: 3000, hour: 100, speed: 1440, playing: true },
+    { t: 'frame', at: 3500, playing: true, main: 4, dt: 16, commits: 0 },
+    { t: 'frame', at: 4500, playing: true, main: 5, dt: 16, commits: 0 },
+    { t: 'workerFrame', at: 3500, lane: 0, lanes: 2, playing: true, changed: 1, workMs: 12 },
+    { t: 'workerFrame', at: 4500, lane: 0, lanes: 2, playing: true, changed: 1, workMs: 14 },
+    { t: 'picture', at: 3500, widget: 'page-cost-worker-heavy-worker-heavy', surface: 'table', placement: 1, renderer: 'page', hour: 810, head: 820, eligibleHour: 820, drawMs: 3.2 },
+    { t: 'picture', at: 4500, widget: 'page-cost-worker-heavy-worker-heavy', surface: 'table', placement: 1, renderer: 'page', hour: 2250, head: 2260, eligibleHour: 2260, drawMs: 3.4 },
+    { t: 'tick', at: 6000, hour: 100, speed: 1440, playing: true },
+    { t: 'frame', at: 6500, playing: true, main: 12, dt: 20, commits: 10 },
+    { t: 'frame', at: 7500, playing: true, main: 14, dt: 20, commits: 10 },
+    { t: 'shown', at: 6500, widget: 'page-cost-main-heavy-main-heavy', hour: 700 },
+    { t: 'q', at: 6500, cmd: 'dashboard_product', product: 'series-state', outcome: 'ok', ms: 2 },
+    { t: 'q', at: 7000, cmd: 'dashboard_product', product: 'series-state', outcome: 'ok', ms: 2 },
+    { t: 'q', at: 7100, cmd: 'dashboard_product', product: 'army-size', outcome: 'ok', ms: 2 },
+    { t: 'q', at: 7200, product: 'series-state', cache: 'hit' },
+    { t: 'tick', at: 9000, hour: 100, speed: 1440, playing: true },
+    { t: 'frame', at: 9500, playing: true, main: 2.1, dt: 16, commits: 0 },
+  ];
+  const report = summarizeWidgetCosts(windows, records, { baseline: empty });
+  assert.deepEqual(report.widgets.map(w => w.kind), ['worker-heavy', 'main-heavy', 'refused-widget']);
+  assert.equal(report.widgets[0].costScoreMs, 17, 'worker-heavy: (5 - 2) main delta p95 + 14 worker p95 = 17');
+  assert.equal(report.widgets[0].exact, 'pass');
+  assert.equal(report.widgets[1].costScoreMs, 12, 'main-heavy: (14 - 2) main delta p95 + 0 worker = 12');
+  assert.equal(report.widgets[1].commitsPerSec, 10);
+  assert.equal(report.widgets[1].requestsPerSec, 1.5);
+  assert.deepEqual(report.widgets[1].requestsByProduct, { 'series-state': 1, 'army-size': 0.5 });
+  assert.equal(report.widgets[1].exact, 'not-audited');
+  assert.equal(report.widgets[2].outcome, 'refusal');
+  assert.equal(report.widgets[2].detail, 'No table 44 in the schema');
+  assert.deepEqual(rankWidgetCosts([report.widgets[2], report.widgets[1], report.widgets[0]]).map(w => w.kind),
+    ['worker-heavy', 'main-heavy', 'refused-widget']);
 });

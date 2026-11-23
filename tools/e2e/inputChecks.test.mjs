@@ -4,24 +4,24 @@ import test from 'node:test';
 
 const source = readFileSync(new URL('./sweep.mjs', import.meta.url), 'utf8');
 
-test('scrub waits for the released timeline target and fails when it is not reached', () => {
+test('scrub waits for the released timeline target and records a failure without stopping the phase', () => {
   const release = source.indexOf("await app.mouse('mouseReleased', x(.31), line.y);");
   assert.ok(release >= 0, 'the scripted scrub release is present');
   const wait = source.indexOf('scrub target', release);
   assert.ok(wait > release, 'the release is followed by a named target wait');
-  assert.match(source.slice(release, wait + 300), /if \(!await s\.until\([\s\S]+?\)\)\s*throw new Error\([\s\S]*?scrub/i,
-    'a failed scrub target wait stops the input sequence');
+  assert.match(source.slice(release, wait + 300), /recordFailure\('scrub'/,
+    'a failed scrub target wait records a failure instead of throwing out of the phase');
 });
 
-test('scroll tries each scrollable area and fails when none moves under the wheel', () => {
+test('scroll tries each scrollable area and records a failure without stopping the phase when none moves', () => {
   const wheel = source.indexOf("type: 'mouseWheel'");
   const need = source.lastIndexOf('const point = await s.locate(target);', wheel);
   const before = source.indexOf('const [before, wheel, at] = await app.evaluate', need);
   assert.ok(need >= 0 && before > need, 'the baseline is captured after revealing the target');
   assert.ok(wheel >= 0, 'the scripted wheel is present');
-  const wait = source.indexOf('scrolled = await s.until(', wheel), fail = source.indexOf('if (!scrolled) throw new Error(', wait);
+  const wait = source.indexOf('scrolled = await s.until(', wheel), fail = source.indexOf("if (!scrolled) await failInput('scroll'", wait);
   assert.ok(wait > wheel, 'the wheel is followed by a wait on the target');
-  assert.ok(fail > wait && /moved under the wheel/.test(source.slice(fail, fail + 200)), 'a scroll no candidate makes stops the input sequence');
+  assert.ok(fail > wait && /moved under the wheel/.test(source.slice(fail, fail + 200)), 'a scroll no candidate makes records a failure instead of stopping the phase');
 });
 
 test('pause verifies that the playback clock stopped after the click', () => {

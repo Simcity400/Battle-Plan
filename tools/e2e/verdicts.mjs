@@ -42,6 +42,36 @@ export function machineLine(run) {
   return `Machine (${count(machine.logicalCpus)} logical CPUs): ${sample('before the first app', machine.start)}; ${sample('before the last app closed', machine.end)}.`;
 }
 
+export function profileLines(run, sweep, records = null) {
+  const throttle = run?.cpuThrottle ?? sweep?.meta?.cpuThrottle ?? 1;
+  const cores = run?.cores ?? null;
+  const profile = run?.profile ?? null;
+  const pageConf = (sweep?.meta?.sessions ?? []).map(meta => meta.confinement).find(Boolean) ?? sweep?.meta?.confinement ?? null;
+  const jobConf = run?.confinement ?? (run?.sessions ?? []).map(session => session.confinement).find(Boolean) ?? null;
+  const lines = [];
+  if (profile || cores || throttle > 1 || pageConf) {
+    const parts = [];
+    if (profile) parts.push(`profile ${profile}`);
+    parts.push(`CPU throttle ×${throttle}`);
+    if (cores) parts.push(`core affinity ${cores.count} cores (${cores.mask}: CPUs ${cores.cpus.join(', ')})`);
+    else parts.push('core affinity unconstrained');
+    const measured = [];
+    if (jobConf) measured.push(`Job object confined ${jobConf.confinedProcesses}/${jobConf.jobProcesses} processes${jobConf.allConfined ? '' : ' (NOT ALL CONFINED)'}`);
+    if (pageConf?.hardwareConcurrency != null) measured.push(`page saw navigator.hardwareConcurrency = ${pageConf.hardwareConcurrency}`);
+    if (pageConf?.lanes != null) measured.push(`${pageConf.lanes} drawing lane${pageConf.lanes === 1 ? '' : 's'} created`);
+    lines.push(`Execution profile: ${parts.join(', ')}.${measured.length ? ` Measured confinement: ${measured.join('; ')}.` : ''}`);
+    if (profile || cores || throttle > 1) {
+      lines.push('Profile caveat: this profile limits OS core affinity, slows JS main-thread execution via Chromium CPU throttling, and stretches drawing-lane worker work via stretch() in ui/src/draw/weakCpu.ts. It does not imitate a slower graphics card (GPU raster, compositing, or native viewer shaders), slower memory bandwidth or caches, or slower native Rust and IPC decoding.');
+    }
+  }
+  const ungated = Boolean(run?.ungated || pageConf?.ungated || (sweep?.meta?.sessions ?? []).some(meta => meta.confinement?.ungated)
+    || (records ?? []).some(record => record.t === 'page' && record.ungated));
+  if (ungated) {
+    lines.unshift('> **MEASUREMENT BUILD (UNGATED):** Built with `BATTLEPLAN_MEASURE_UNGATED=1`; the `playsBackDated` placeholder gate was bypassed at build time so unmigrated widgets ran while playing. Never ship this bundle.');
+  }
+  return lines;
+}
+
 export const asked = (run, phase) => !Array.isArray(run?.requested) || run.requested.includes(phase);
 
 const canonical = value => Array.isArray(value) ? value.map(canonical)
@@ -240,11 +270,13 @@ export function freshnessByKind(records, playbackResults, hourChecks = [], start
       const picture = pictures.get(widget.id);
       if (picture) {
         if (picture.status === 'not migrated') { entry.notMigrated = (entry.notMigrated ?? 0) + 1; continue; }
+        if (picture.status === 'refused' || picture.status === 'error') { entry.stale.push(`${result.page}: ${picture.status}: ${picture.reason ?? picture.status}`); continue; }
         if (picture.p95 !== null) entry.worst = Math.max(entry.worst ?? -Infinity, picture.p95);
         if (picture.eligibleP95 !== null) entry.eligible = Math.max(entry.eligible ?? -Infinity, picture.eligibleP95);
         if (!picture.pass) entry.stale.push(`${result.page}: failed the worker presentation gate (${picture.future} future frames, exact reads ${picture.exact ? 'passed' : 'failed'})`);
         continue;
       }
+      if (widget.notMigrated) { entry.notMigrated = (entry.notMigrated ?? 0) + 1; continue; }
       reported ??= new Map(freshness(records, result.from, result.to, sessionStart(starts, result.from)).widgets.map(w => [w.widget, w]));
       const seen = reported.get(widget.id);
       if (!seen) { entry.unreported.add(`${result.page}: ${widget.title}`); continue; }
@@ -256,9 +288,13 @@ export function freshnessByKind(records, playbackResults, hourChecks = [], start
     const reasons = [];
     if (entry.unreported.size) reasons.push(`does not report the hour it shows (${[...entry.unreported].join(', ')})`);
     reasons.push(...entry.wrong, ...entry.stale);
-    const migrated = entry.placements.size - (entry.notMigrated ?? 0);
+    const notMigrated = entry.notMigrated ?? 0;
+    const realFailure = reasons.length > 0;
+    if (notMigrated > 0) reasons.push('not migrated');
+    const pass = reasons.length === 0;
+    const status = pass ? 'pass' : (!realFailure && notMigrated > 0 ? 'not migrated' : 'fail');
     return { kind: entry.kind, placements: entry.placements.size, worst: entry.worst, eligible: entry.eligible,
-      notMigrated: entry.notMigrated ?? 0, pass: migrated === 0 ? null : reasons.length === 0, reasons };
+      notMigrated, status, pass, reasons };
   });
 }
 
@@ -325,9 +361,26 @@ export function freshness(records, from, to, since = -Infinity) {
   return { frames: frames.length, widgets };
 }
 
-export function losses(records) {
+export function windowLosses(records, from, to) {
+  const overlapping = (records ?? []).filter(record => record.t === 'lost'
+    && (record.from ?? record.at) <= to && (record.to ?? record.at) >= from);
+  return {
+    count: overlapping.reduce((sum, record) => sum + (record.count ?? 0), 0),
+    sources: [...new Set(overlapping.map(record => record.source ?? 'unknown'))],
+    records: overlapping,
+  };
+}
+
+export function losses(records, windows = null) {
   return [...groupBy(records.filter(record => record.t === 'lost'), record => record.source ?? 'unknown')]
-    .map(([source, list]) => ({ source, count: list.reduce((sum, record) => sum + (record.count ?? 0), 0), from: Math.min(...list.map(record => record.from ?? record.at)), to: Math.max(...list.map(record => record.to ?? record.at)) }));
+    .map(([source, list]) => {
+      const from = Math.min(...list.map(record => record.from ?? record.at));
+      const to = Math.max(...list.map(record => record.to ?? record.at));
+      const base = { source, count: list.reduce((sum, record) => sum + (record.count ?? 0), 0), from, to };
+      if (!Array.isArray(windows)) return base;
+      const hit = [...new Set(windows.filter(w => w.from != null && w.to != null && list.some(r => (r.from ?? r.at) <= w.to && (r.to ?? r.at) >= w.from)).map(w => w.label))];
+      return { ...base, windows: hit.length ? hit : ['outside timed windows'] };
+    });
 }
 
 export function failedReplies(records, finished = new Map()) {

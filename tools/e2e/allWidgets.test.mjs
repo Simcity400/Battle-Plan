@@ -1,6 +1,6 @@
 ﻿import assert from 'node:assert/strict';
 import test from 'node:test';
-import { allWidgetPages, FIXTURE, LEGIBLE, LEGIBLE_ROWS, REBUILT, REBUILT_ALONE, REBUILT_KINDS, SCREEN, VIEWS, legible, pack, screenMetrics, tallViewportHeight, tightest } from './allWidgets.mjs';
+import { allWidgetPages, costPages, FIXTURE, HEAVIEST, heaviestKinds, LEGIBLE, LEGIBLE_ROWS, REBUILT, REBUILT_ALONE, REBUILT_KINDS, SCREEN, VIEWS, legible, pack, screenMetrics, tallViewportHeight, tightest } from './allWidgets.mjs';
 
 const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 const resting = (item, all) => item.y === 0 || all.some(other => other !== item && other.y + other.h === item.y && other.x < item.x + item.w && item.x < other.x + other.w);
@@ -67,7 +67,7 @@ test('the fixture pages hold every widget the app offers once, at its minimum or
   const read = { getItem: key => saved.get(key) ?? null, setItem: () => { throw new Error('read only'); } };
   const listed = pages.loadPages(read);
   assert.deepEqual(listed.map(entry => entry.id), [...pages.PAGES.map(entry => entry.id), built[FIXTURE].id, built[LEGIBLE].id, built[REBUILT].id, built[REBUILT_ALONE].id], 'the built-in pages stay');
-  for (const [view, { page }] of Object.entries(VIEWS)) assert.ok(built[page], `${view} plays a page the fixture builds`);
+  for (const [view, { page }] of Object.entries(VIEWS)) if (view !== HEAVIEST) assert.ok(built[page], `${view} plays a page the fixture builds`);
   for (const [label, sizeOf] of [[FIXTURE, meta => meta.minSize], [LEGIBLE, meta => meta.defaultSize]]) {
     const page = built[label];
     assert.equal(listed.find(entry => entry.id === page.id).label, label);
@@ -110,4 +110,34 @@ test('the fixture pages hold every widget the app offers once, at its minimum or
   assert.ok(page.inView > 0);
   for (const widget of page.widgets.slice(0, page.inView)) assert.ok(at(widget.id).y + at(widget.id).h <= LEGIBLE_ROWS, `${widget.kind} whole in view`);
   for (const widget of page.widgets.slice(page.inView)) assert.ok(at(widget.id).y + at(widget.id).h > LEGIBLE_ROWS, `${widget.kind} beyond view`);
+});
+
+test('costPages builds an empty page and one default-size page per requested kind, and heaviest builds the top N', async () => {
+  const [{ widgetMetas }, storage, pages] = await Promise.all([import('../../ui/src/widgets/definitions.ts'),
+    import('../../ui/src/dashboard/storage.ts'), import('../../ui/src/dashboard/pages.ts')]);
+  const built = await costPages(['scoreboard', 'research']);
+  const saved = new Map(built.entries);
+  const read = { getItem: key => saved.get(key) ?? null, setItem: () => { throw new Error('read only'); } };
+  const listed = pages.loadPages(read);
+  assert.deepEqual(listed.map(p => p.label), ['CostEmpty', 'Cost:scoreboard', 'Cost:research']);
+  const emptyLayout = storage.loadLayouts(read, built.empty.id);
+  assert.equal(emptyLayout.warning, null);
+  assert.equal(emptyLayout.library.layouts[0].template.widgets.length, 0);
+  const scoreLayout = storage.loadLayouts(read, built.kinds[0].id);
+  assert.equal(scoreLayout.warning, null);
+  assert.equal(scoreLayout.library.layouts[0].template.widgets[0].kind, 'scoreboard');
+  const meta = widgetMetas.find(m => m.kind === 'scoreboard');
+  const box = scoreLayout.library.layouts[0].template.layouts.lg[0];
+  assert.deepEqual([box.w, box.h], [meta.defaultSize.w, meta.defaultSize.h]);
+  await assert.rejects(() => costPages(['no-such-widget']), /no-such-widget/);
+
+  const costs = { widgets: [
+    { kind: 'research', costScoreMs: 5, outcome: 'content' },
+    { kind: 'scoreboard', costScoreMs: 12, outcome: 'content' },
+    { kind: 'occupied-states', costScoreMs: 9, outcome: 'content' },
+  ] };
+  assert.deepEqual(heaviestKinds(costs, 2), ['scoreboard', 'occupied-states']);
+  const withHeaviest = await allWidgetPages({ costs, heaviestCount: 2 });
+  assert.ok(withHeaviest.pages[HEAVIEST]);
+  assert.deepEqual(withHeaviest.pages[HEAVIEST].widgets.map(w => w.kind).sort(), ['occupied-states', 'scoreboard']);
 });

@@ -12,7 +12,7 @@ import { NativeInput, hover, interactions, mapModes, mapPictures, zoomedMapPictu
 import { pageShown } from './verdicts.mjs';
 import { TRACE_MARKS, describeNodes, startTrace, summariseTrace, summaryNodes } from './trace.mjs';
 import { ReplyRecorder } from './replies.mjs';
-import { allWidgetPages, SCREEN, SHELL_HEADER_HEIGHT, VIEWS, screenMetrics, tallViewportHeight } from './allWidgets.mjs';
+import { allWidgetPages, costPages, HEAVIEST, HEAVIEST_COUNT, SCREEN, SHELL_HEADER_HEIGHT, VIEWS, screenMetrics, tallViewportHeight } from './allWidgets.mjs';
 
 const flag = (name, fallback = null) => { const at = process.argv.indexOf(name); return at < 0 ? fallback : process.argv[at + 1]; };
 const port = Number(flag('--port'));
@@ -36,7 +36,18 @@ const pin = flag('--pin', 'all');
 if (!PINS.includes(pin)) throw new Error(`--pin takes ${PINS.join(' or ')}, not ${pin}`);
 const only = flag('--cases')?.split(',') ?? null;
 const onlyPages = flag('--pages')?.split(',') ?? null;
-const fixture = onlyPages?.some(name => Object.hasOwn(VIEWS, name)) ? await allWidgetPages() : null;
+const onlyKinds = flag('--kinds')?.split(',').filter(Boolean) ?? null;
+const costsFile = flag('--costs');
+const heaviestCount = flag('--heaviest') === null ? HEAVIEST_COUNT : Number(flag('--heaviest'));
+if (!(heaviestCount >= 1 && Number.isInteger(heaviestCount))) throw new Error(`--heaviest takes a positive integer, not ${flag('--heaviest')}`);
+const coresCount = flag('--cores-count') === null ? null : Number(flag('--cores-count'));
+if (coresCount !== null && !(coresCount >= 1 && Number.isInteger(coresCount))) throw new Error(`--cores-count takes a positive integer, not ${flag('--cores-count')}`);
+const runningCosts = phases.includes('widget-costs');
+const costFixture = runningCosts ? await costPages(onlyKinds) : null;
+const loadedCosts = costsFile ? JSON.parse(await readFile(costsFile, 'utf8')) : null;
+if (onlyPages?.includes(HEAVIEST) && !loadedCosts) throw new Error('--pages Heaviest requires --costs <widget-costs.json>');
+const fixture = !costFixture && onlyPages?.some(name => Object.hasOwn(VIEWS, name))
+  ? await allWidgetPages({ costs: loadedCosts, heaviestCount }) : null;
 const pageOf = name => fixture && Object.hasOwn(VIEWS, name) ? VIEWS[name].page : name;
 const pagesAt = flag('--pages-at') === null ? null : Number(flag('--pages-at'));
 const recordReplies = flag('--record-replies');
@@ -49,8 +60,9 @@ const QUICK_PLAYBACK = { pages: ['Politics', 'Overview', 'Army'], speeds: [1440]
 const GLANCE_AT = 0.5;
 const PRESETS = [0.25, 1, 4, 24, 168, 720, 1440];
 const PLAY_SECONDS = Number((process.env.BATTLEPLAN_PLAY_SECONDS ?? process.env.HOI4_PLAY_SECONDS) ?? 8);
+const COST_SECONDS = Number(process.env.BATTLEPLAN_COST_SECONDS ?? 4);
 const rate = Number(flag('--cpu-throttle', '1'));
-if (!(rate >= 1 && Number.isFinite(rate) && PLAY_SECONDS > 0 && Number.isFinite(PLAY_SECONDS))) throw new Error('Invalid playback duration or throttle');
+if (!(rate >= 1 && Number.isFinite(rate) && PLAY_SECONDS > 0 && Number.isFinite(PLAY_SECONDS) && COST_SECONDS > 0 && Number.isFinite(COST_SECONDS))) throw new Error('Invalid playback duration or throttle');
 const TRACE_SPEED = 1440;
 const TRACE_SECONDS = 4;
 const CATALOGUE_PAGE = 'Intelligence';
@@ -60,12 +72,19 @@ const discardLayout = async () => {
 };
 
 const app = await connect(port);
-if (fixture) {
-  await app.evaluate(`(${JSON.stringify(fixture.entries)}.forEach(([key, value]) => localStorage.setItem(key, value)), true)`);
+const applyConfinement = async () => {
+  if (coresCount !== null) await app.send('Emulation.setHardwareConcurrencyOverride', { hardwareConcurrency: coresCount });
+};
+await applyConfinement();
+const activeFixture = costFixture ?? fixture;
+if (activeFixture) {
+  await app.evaluate(`(${JSON.stringify(activeFixture.entries)}.forEach(([key, value]) => localStorage.setItem(key, value)), true)`);
   const loaded = new Promise(resolve => { const stop = app.on('Page.loadEventFired', () => { stop(); resolve(); }); });
   await app.send('Page.reload');
   await loaded;
-  for (const entry of Object.values(fixture.pages)) log('fixture', `${entry.label}: ${entry.widgets.length} widgets, ${entry.rows} rows`);
+  await applyConfinement();
+  if (fixture) for (const entry of Object.values(fixture.pages)) log('fixture', `${entry.label}: ${entry.widgets.length} widgets, ${entry.rows} rows`);
+  if (costFixture) log('fixture', `widget-costs: ${costFixture.kinds.length} widget kinds plus empty baseline`);
 }
 const replies = recordReplies ? await ReplyRecorder.start(app, recordReplies,
   { pid: appPid, revision: flag('--app-revision'), root: path.resolve(import.meta.dirname, '../..') }) : null;
@@ -84,10 +103,18 @@ const visual = new Visual(app, out, session);
 await visual.init();
 const started = new Date();
 const speeds = quick ? QUICK_PLAYBACK.speeds : SPEEDS;
-const meta = { session, tier, requestedPages: onlyPages, cpuThrottle: rate, started: started.toISOString(), port, phases, epoch: s.epoch, pages: [], viewport: null, cataloguePage: CATALOGUE_PAGE, speeds, seeks: SEEKS, pictureSeek: PICTURE_SEEK };
+const readConfinement = () => app.evaluate(`({
+  hardwareConcurrency: navigator.hardwareConcurrency,
+  lanes: window.__perf?.lanes?.() ?? null,
+  expectedLanes: Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 2)),
+  ungated: window.__perf?.ungated === true,
+})`);
+const meta = { session, tier, requestedPages: onlyPages, cpuThrottle: rate, coresCount, confinement: null, started: started.toISOString(), port, phases, epoch: s.epoch, pages: [], viewport: null, cataloguePage: CATALOGUE_PAGE, speeds, seeks: SEEKS, pictureSeek: PICTURE_SEEK };
 const save = async () => {
   await replies?.take();
   if (phases.includes('seeks')) meta.seekInputs = await app.evaluate('__e2e.seekInputs ?? []');
+  const pageConf = await readConfinement().catch(() => null);
+  if (pageConf) meta.confinement = { coresCount, cpuThrottle: rate, ...pageConf, lanes: pageConf.lanes ?? meta.confinement?.lanes ?? null };
   const results = s.results.map(({ probe, ...result }) => ({ ...result, session }));
   await writeFile(path.join(out, `sweep-${session}.json`), JSON.stringify({ meta, results, console: app.messages.map(message => ({ ...message, session })) }, null, 1));
   await visual.finish({ pictureSeek: PICTURE_SEEK, viewport: meta.viewport });
@@ -110,6 +137,10 @@ const seekTo = async fraction => {
   const line = await s.timeline();
   await app.click(Session.timelineX(line, fraction), line.y);
   await app.evaluate(`(__e2e.mark(null), ${settleCall(15000, 300)})`, 60_000);
+};
+const pausePlayback = async () => {
+  const at = await s.locate('button.header-play[aria-label="Pause"]');
+  if (at) await app.click(at.x, at.y);
 };
 const speedTaken = speed => `document.querySelector('.header-speed')?.dataset.tooltip === ${JSON.stringify(`${speed} game ${speed === 1 ? 'hour' : 'hours'} per second`)}`;
 const setSpeed = async speed => {
@@ -134,10 +165,13 @@ for (let waited = 0; !await app.evaluate(`document.querySelectorAll(${JSON.strin
 }
 const rows = await app.evaluate(`[...document.querySelectorAll(${JSON.stringify(loadRow)})].map(b => b.getAttribute('aria-label'))`);
 if (rows.length !== 1) throw new Error(`the fresh profile's library lists ${rows.length} recordings, not the fixture alone: ${rows.join(', ')}`);
+await s.frames(2);
 await s.step('startup', 'open campaign', rows[0], () => s.click(loadRow),
   { done: `document.querySelector('input.header-timeline:not([disabled])') && document.querySelectorAll('.sidebar-page-list button.sidebar-subrow').length > 0`, timeout: 120_000, quiet: 500 });
-if (!await s.holds(`document.querySelector('input.header-timeline:not([disabled])')`))
-  throw new Error(`the campaign never opened: ${(await app.evaluate('document.body.innerText').catch(() => '')).slice(0, 400)}`);
+if (!await s.holds(`document.querySelector('input.header-timeline:not([disabled])')`)) {
+  await save().catch(() => {});
+  throw new Error(`the campaign never opened (console: ${JSON.stringify(app.messages.slice(-10))}): ${(await app.evaluate('document.body.innerText').catch(() => '')).slice(0, 400)}`);
+}
 meta.pages = await s.pages();
 meta.viewport = await app.evaluate(`({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio })`);
 meta.startPage = await s.currentPage();
@@ -341,7 +375,7 @@ const traceWindow = async page => {
     await replies?.mark('play', { page, speed: TRACE_SPEED, trace: true });
     await s.click('button.header-play[aria-label="Play"]');
     await sleep(TRACE_SECONDS * 1000);
-    await s.click('button.header-play[aria-label="Pause"]');
+    await pausePlayback();
     await replies?.mark('pause', { page, speed: TRACE_SPEED, trace: true });
     const to = s.epoch + await app.evaluate(`(performance.mark(${JSON.stringify(TRACE_MARKS.to)}), performance.now())`);
     const events = await stop();
@@ -363,7 +397,34 @@ const traceWindow = async page => {
   }
 };
 
+const CLASSIFY_WIDGET = `(a => {
+  const placeholder = a.querySelector('.dash-empty[role="status"]');
+  if (placeholder && /isn't playing back yet$/i.test(placeholder.textContent.trim())) {
+    return { outcome: 'placeholder', detail: placeholder.textContent.trim(), notMigrated: true };
+  }
+  const unavailable = a.querySelector('[data-state="unavailable"]');
+  if (unavailable) {
+    const tip = unavailable.getAttribute('data-tooltip')?.trim();
+    const text = unavailable.textContent.trim();
+    return { outcome: 'refusal', detail: tip || text || 'unavailable', notMigrated: false };
+  }
+  const error = a.querySelector('[data-state="error"], [role="alert"]');
+  if (error) {
+    const detail = error.getAttribute('data-detail')?.trim() || error.textContent.trim();
+    const hasRetry = !!error.querySelector('button');
+    const isRefusal = !hasRetry || /No table \\d+ in the schema|layout or meaning changed at format|this recording is format|not in this recording|not recorded/i.test(detail);
+    return { outcome: isRefusal ? 'refusal' : 'error', detail: detail || 'error', notMigrated: false };
+  }
+  if (placeholder) {
+    return { outcome: 'refusal', detail: placeholder.textContent.trim(), notMigrated: false };
+  }
+  const empty = a.querySelector('[data-state="empty"]');
+  if (empty) return { outcome: 'content', detail: empty.textContent.trim(), notMigrated: false };
+  return { outcome: 'content', detail: null, notMigrated: false };
+})`;
+
 const DASHBOARD_INVENTORY = `(() => {
+  const classify = ${CLASSIFY_WIDGET};
   const grid = document.querySelector('.dash-grid-scroll'), viewport = grid.getBoundingClientRect();
   const visible = node => {
     if (!node) return false;
@@ -379,15 +440,14 @@ const DASHBOARD_INVENTORY = `(() => {
   };
   return [...grid.querySelectorAll('article.dash-widget')].map(a => {
     const kind = [...a.classList].find(c => c.startsWith('kind-'))?.slice(5);
-    const placeholder = a.querySelector('.dash-empty[role="status"]');
-    const notMigrated = !!placeholder && /isn't playing back yet$/i.test(placeholder.textContent.trim());
+    const { outcome, detail, notMigrated } = classify(a);
     const byPlacement = new Map();
     for (const c of a.querySelectorAll('[data-surface]')) {
       const id = c.dataset.placement ?? c.dataset.surface, held = byPlacement.get(id);
       if (!held || held === 'page') byPlacement.set(id, c.dataset.surface);
     }
     const surfaces = [...new Set([...byPlacement.values()].filter(Boolean))];
-    return { id: a.dataset.widget, title: a.getAttribute('aria-label'), kind, visible: visible(a), surfaces, notMigrated };
+    return { id: a.dataset.widget, title: a.getAttribute('aria-label'), kind, visible: visible(a), surfaces, notMigrated, outcome, detail };
   });
 })()`;
 
@@ -418,6 +478,7 @@ async function playbackInputs() {
     __e2e.inputMark = (kind, notApplicable = null, at = null) => actions.push({ kind,
       ...(notApplicable ? { notApplicable } : {}),
       at: at ?? performance.timeOrigin + performance.now() });
+    __e2e.inputFail = (kind, reason, at = null) => actions.push({ kind, failed: reason, at: at ?? performance.timeOrigin + performance.now() });
     __e2e.setPinWidget = widget => {
       const action = actions.at(-1);
       if (action?.kind === 'pin') action.pinWidget = widget;
@@ -426,6 +487,13 @@ async function playbackInputs() {
       return { actions, visibility, to: performance.timeOrigin + performance.now() }; };
   })()`);
   const mark = (kind, notApplicable = null, at = null) => app.evaluate(`__e2e.inputMark(${JSON.stringify(kind)}, ${JSON.stringify(notApplicable)}, ${JSON.stringify(at)})`);
+  const failures = [];
+  const failInput = async (kind, reason) => {
+    failures.push(`${kind}: ${reason}`);
+    log('input-fail', kind, reason);
+    await app.evaluate(`__e2e.inputFail(${JSON.stringify(kind)}, ${JSON.stringify(reason)})`).catch(() => {});
+  };
+  const recordFailure = (kind, reason) => failInput(kind, reason);
   const unsettled = `(() => {
     const grid = document.querySelector('.dash-grid-scroll'), viewport = grid.getBoundingClientRect();
     const visible = node => {
@@ -481,112 +549,143 @@ async function playbackInputs() {
       return { settledMs: Date.now() - started, unsettled: [{ widget: 'dashboard', reason: `settlement wait failed: ${cause?.message ?? cause}` }] };
     }
   };
-  await mark('rewind');
+  let rewind = { settledMs: 0, unsettled: [] }, scrub = { settledMs: 0, unsettled: [] };
   const line = await s.timeline();
-  await app.click(Session.timelineX(line, .22), line.y);
-  if (!await s.until(`Number(document.querySelector('input.header-timeline').value) < ${line.value}`)) throw new Error('Playback rewind did not move back');
-  const rewind = await settleInputs();
-  await s.frames(4);
-  const x = fraction => Session.timelineX(line, fraction);
-  await app.mouse('mousePressed', x(.22), line.y, { buttons: 1 });
-  await mark('scrub');
-  for (const fraction of [.3,.36,.27,.31]) {
-    await app.mouse('mouseMoved', x(fraction), line.y, { buttons: 1 }); await s.frames(1);
+  try {
+    await mark('rewind');
+    await app.click(Session.timelineX(line, .22), line.y);
+    if (!await s.until(`Number(document.querySelector('input.header-timeline').value) < ${line.value}`))
+      await recordFailure('rewind', 'Playback rewind did not move back');
+    rewind = await settleInputs();
+    await s.frames(4);
+  } catch (error) { await recordFailure('rewind', error.message); }
+  try {
+    const x = fraction => Session.timelineX(line, fraction);
+    await app.mouse('mousePressed', x(.22), line.y, { buttons: 1 });
+    await mark('scrub');
+    for (const fraction of [.3,.36,.27,.31]) {
+      await app.mouse('mouseMoved', x(fraction), line.y, { buttons: 1 }); await s.frames(1);
+    }
+    const scrubTarget = Math.round(line.min + .31 * (line.max - line.min));
+    await app.mouse('mouseReleased', x(.31), line.y);
+    if (!await s.until(`Number(document.querySelector('input.header-timeline').value) === ${scrubTarget}`, 10_000))
+      await recordFailure('scrub', `Playback scrub target ${scrubTarget} was not reached`);
+    await s.frames(4);
+    scrub = await settleInputs();
+  } catch (error) {
+    await app.mouse('mouseReleased', Session.timelineX(line, .31), line.y).catch(() => {});
+    await recordFailure('scrub', error.message);
   }
-  const scrubTarget = Math.round(line.min + .31 * (line.max - line.min));
-  await app.mouse('mouseReleased', x(.31), line.y);
-  if (!await s.until(`Number(document.querySelector('input.header-timeline').value) === ${scrubTarget}`, 10_000))
-    throw new Error(`Playback scrub target ${scrubTarget} was not reached`);
-  await s.frames(4);
-  const scrub = await settleInputs();
   const article = 'article.dash-widget';
   const config = article + ' [data-widget-settings]', time = '.widget-settings-menu:popover-open [aria-label="Time"] button';
   let pinApplied = false, pinWidget = null;
-  const { owners, maps } = await app.evaluate(`(() => {
-    for (const node of document.querySelectorAll('[data-e2e-settings]')) node.removeAttribute('data-e2e-settings');
-    const view = document.querySelector('.dash-grid-scroll')?.getBoundingClientRect();
-    const inside = box => box.width && box.height && view && box.top >= view.top && box.bottom <= view.bottom && box.left >= view.left && box.right <= view.right;
-    const owners = [];
-    const seen = box => box.width && box.height && view && box.bottom > view.top && box.top < view.bottom && box.right > view.left && box.left < view.right;
-    const maps = [...document.querySelectorAll('article.dash-widget.kind-map')].filter(map => seen(map.getBoundingClientRect())).length;
-    for (const node of document.querySelectorAll(${JSON.stringify(config)})) {
-      const owner = node.closest('article.dash-widget');
-      if (!owner || owner.classList.contains('kind-map') || !inside(node.getBoundingClientRect())) continue;
-      node.setAttribute('data-e2e-settings', String(owners.length));
-      owners.push(owner.dataset.widget ?? null);
+  try {
+    const { owners, maps } = await app.evaluate(`(() => {
+      for (const node of document.querySelectorAll('[data-e2e-settings]')) node.removeAttribute('data-e2e-settings');
+      const view = document.querySelector('.dash-grid-scroll')?.getBoundingClientRect();
+      const inside = box => box.width && box.height && view && box.top >= view.top && box.bottom <= view.bottom && box.left >= view.left && box.right <= view.right;
+      const owners = [];
+      const seen = box => box.width && box.height && view && box.bottom > view.top && box.top < view.bottom && box.right > view.left && box.left < view.right;
+      const maps = [...document.querySelectorAll('article.dash-widget.kind-map')].filter(map => seen(map.getBoundingClientRect())).length;
+      for (const node of document.querySelectorAll(${JSON.stringify(config)})) {
+        const owner = node.closest('article.dash-widget');
+        if (!owner || owner.classList.contains('kind-map') || !inside(node.getBoundingClientRect())) continue;
+        node.setAttribute('data-e2e-settings', String(owners.length));
+        owners.push(owner.dataset.widget ?? null);
+      }
+      return { owners, maps };
+    })()`);
+    let unread = 0;
+    for (let index = 0; index < owners.length && !pinApplied; index++) {
+      const at = await s.locate(`[data-e2e-settings="${index}"]`);
+      if (!at) continue;
+      await app.click(at.x, at.y);
+      if (!await s.until("document.querySelector('.widget-settings-menu:popover-open')")) { unread++; await s.escape(); continue; }
+      const pinned = await s.until(`[...document.querySelectorAll('${time}')].some(button => button.textContent.trim() === 'Pinned')`);
+      if (pinned) {
+        const owner = `${article}[data-widget=${JSON.stringify(owners[index])}]`;
+        const held = await app.evaluate(`document.querySelector(${JSON.stringify(owner)})?.dataset.fixedHour ?? null`);
+        await mark('pin');
+        await s.click(time, { text: 'Pinned' });
+        if (!await s.until(`(hour => hour !== undefined && hour !== ${JSON.stringify(held)})(document.querySelector(${JSON.stringify(owner)})?.dataset.fixedHour)`)) {
+          await recordFailure('pin', `Pinning widget ${owners[index]} did not fix its hour`);
+        } else {
+          await s.frames(4);
+          pinWidget = owners[index];
+          await app.evaluate(`__e2e.setPinWidget(${JSON.stringify(pinWidget)})`);
+          pinApplied = true;
+        }
+      }
+      await s.escape();
     }
-    return { owners, maps };
-  })()`);
-  let unread = 0;
-  for (let index = 0; index < owners.length && !pinApplied; index++) {
-    const at = await s.locate(`[data-e2e-settings="${index}"]`);
-    if (!at) continue;
-    await app.click(at.x, at.y);
-    if (!await s.until("document.querySelector('.widget-settings-menu:popover-open')")) { unread++; await s.escape(); continue; }
-    const pinned = await s.until(`[...document.querySelectorAll('${time}')].some(button => button.textContent.trim() === 'Pinned')`);
-    if (pinned) {
-      const owner = `${article}[data-widget=${JSON.stringify(owners[index])}]`;
-      const held = await app.evaluate(`document.querySelector(${JSON.stringify(owner)})?.dataset.fixedHour ?? null`);
-      await mark('pin');
-      await s.click(time, { text: 'Pinned' });
-      if (!await s.until(`(hour => hour !== undefined && hour !== ${JSON.stringify(held)})(document.querySelector(${JSON.stringify(owner)})?.dataset.fixedHour)`))
-        throw new Error(`Pinning widget ${owners[index]} did not fix its hour`);
-      await s.frames(4);
-      pinWidget = owners[index];
-      await app.evaluate(`__e2e.setPinWidget(${JSON.stringify(pinWidget)})`);
-      pinApplied = true;
-    }
-    await s.escape();
+    if (!pinApplied && (unread || maps)) await recordFailure('pin', `Pin was not exercised: ${unread} settings menus did not open and ${maps} map widgets keep their time setting elsewhere`);
+    else if (!pinApplied) await mark('pin', 'no widget offers a pinnable time setting');
+  } catch (error) {
+    await s.escape().catch(() => {});
+    await recordFailure('pin', error.message);
   }
-  if (!pinApplied && (unread || maps)) throw new Error(`Pin was not exercised: ${unread} settings menus did not open and ${maps} map widgets keep their time setting elsewhere`);
-  if (!pinApplied) await mark('pin', 'no widget offers a pinnable time setting');
-  await s.click('button.header-play[aria-label="Play"]');
-  await mark('speed'); await setSpeed(168); await s.frames(5);
-  const candidates = await s.app.evaluate(`(() => {
-    for (const node of document.querySelectorAll('[data-e2e-scroll]')) node.removeAttribute('data-e2e-scroll');
-    const scrolls = node => node.scrollHeight - node.clientHeight > 2 && /(auto|scroll)/.test(getComputedStyle(node).overflowY);
-    let count = 0;
-    for (const node of document.querySelectorAll('.dash-widget *')) {
-      if (!scrolls(node)) continue;
-      const box = node.getBoundingClientRect(), x = box.left + box.width / 2, y = box.top + box.height / 2;
-      if (y < 0 || y > innerHeight || x < 0 || x > innerWidth) continue;
-      let hit = document.elementFromPoint(x, y);
-      while (hit && hit !== node && !scrolls(hit)) hit = hit.parentElement;
-      if (hit !== node) continue;
-      node.setAttribute('data-e2e-scroll', String(count++));
-    }
-    return count;
-  })()`);
-  if (candidates) {
-    let scrolled = false;
-    for (let candidate = 0; candidate < candidates && !scrolled; candidate++) {
-      const target = `[data-e2e-scroll="${candidate}"]`;
-      const point = await s.locate(target);
-      if (!point) continue;
-      const [before, wheel, at] = await app.evaluate(`(() => { const node = document.querySelector(${JSON.stringify(target)});
-        const down = node ? node.scrollHeight - node.clientHeight - node.scrollTop > 2 : true;
-        return [node?.scrollTop ?? 0, down ? 250 : -250, performance.timeOrigin + performance.now()]; })()`);
-      await app.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY: wheel });
-      scrolled = await s.until(`((document.querySelector(${JSON.stringify(target)})?.scrollTop ?? ${before}) - ${before}) * ${Math.sign(wheel)} > 0`, 2_000);
-      if (scrolled) await mark('scroll', null, at);
-    }
-    if (!scrolled) throw new Error(`None of ${candidates} scrollable widget areas moved under the wheel`);
-  } else await mark('scroll', 'nothing to scroll');
+  try {
+    await s.click('button.header-play[aria-label="Play"]');
+    await mark('speed'); await setSpeed(168); await s.frames(5);
+  } catch (error) {
+    await s.escape().catch(() => {});
+    await recordFailure('speed', error.message);
+  }
+  try {
+    const candidates = await s.app.evaluate(`(() => {
+      for (const node of document.querySelectorAll('[data-e2e-scroll]')) node.removeAttribute('data-e2e-scroll');
+      const scrolls = node => node.scrollHeight - node.clientHeight > 2 && /(auto|scroll)/.test(getComputedStyle(node).overflowY);
+      let count = 0;
+      for (const node of document.querySelectorAll('.dash-widget *')) {
+        if (!scrolls(node)) continue;
+        const box = node.getBoundingClientRect(), x = box.left + box.width / 2, y = box.top + box.height / 2;
+        if (y < 0 || y > innerHeight || x < 0 || x > innerWidth) continue;
+        let hit = document.elementFromPoint(x, y);
+        while (hit && hit !== node && !scrolls(hit)) hit = hit.parentElement;
+        if (hit !== node) continue;
+        node.setAttribute('data-e2e-scroll', String(count++));
+      }
+      return count;
+    })()`);
+    if (candidates) {
+      let scrolled = false;
+      for (let candidate = 0; candidate < candidates && !scrolled; candidate++) {
+        const target = `[data-e2e-scroll="${candidate}"]`;
+        const point = await s.locate(target);
+        if (!point) continue;
+        const [before, wheel, at] = await app.evaluate(`(() => { const node = document.querySelector(${JSON.stringify(target)});
+          const down = node ? node.scrollHeight - node.clientHeight - node.scrollTop > 2 : true;
+          return [node?.scrollTop ?? 0, down ? 250 : -250, performance.timeOrigin + performance.now()]; })()`);
+        await app.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY: wheel });
+        scrolled = await s.until(`((document.querySelector(${JSON.stringify(target)})?.scrollTop ?? ${before}) - ${before}) * ${Math.sign(wheel)} > 0`, 2_000);
+        if (scrolled) await mark('scroll', null, at);
+      }
+      if (!scrolled) await failInput('scroll', `None of ${candidates} scrollable widget areas moved under the wheel`);
+    } else await mark('scroll', 'nothing to scroll');
+  } catch (error) { await failInput('scroll', error.message); }
   await s.frames(5);
-  await mark('pause'); await s.click('button.header-play[aria-label="Pause"]');
-  if (!await s.until("document.querySelector('button.header-play[aria-label=\"Play\"]')", 10_000))
-    throw new Error('Playback pause did not stop the clock');
+  try {
+    await mark('pause');
+    if (await s.holds(`document.querySelector('button.header-play[aria-label="Pause"]')`)) await s.click('button.header-play[aria-label="Pause"]');
+    if (!await s.until("document.querySelector('button.header-play[aria-label=\"Play\"]')", 10_000))
+      await recordFailure('pause', 'Playback pause did not stop the clock');
+  } catch (error) { await recordFailure('pause', error.message); }
   await s.frames(5);
   const inputs = await app.evaluate('__e2e.endInputs()');
   if (pinApplied) {
-    const pinnedConfig = pinWidget ? `${article}[data-widget=${JSON.stringify(pinWidget)}] [data-widget-settings]` : config;
-    if (await s.holds(`document.querySelector(${JSON.stringify(time)})`)) await s.escape();
-    if (!await s.until(`!document.querySelector(${JSON.stringify(time)})`)) throw new Error('Pinned widget settings menu did not close before restore');
-    await s.click(pinnedConfig);
-    if (!await s.until(`document.querySelector(${JSON.stringify(time)})`)) throw new Error('Pinned widget settings menu did not reopen for restore');
-    await s.click(time, { text: 'Live' }); await s.escape();
+    try {
+      const pinnedConfig = pinWidget ? `${article}[data-widget=${JSON.stringify(pinWidget)}] [data-widget-settings]` : config;
+      if (await s.holds(`document.querySelector(${JSON.stringify(time)})`)) await s.escape();
+      if (!await s.until(`!document.querySelector(${JSON.stringify(time)})`)) throw new Error('Pinned widget settings menu did not close before restore');
+      await s.click(pinnedConfig);
+      if (!await s.until(`document.querySelector(${JSON.stringify(time)})`)) throw new Error('Pinned widget settings menu did not reopen for restore');
+      await s.click(time, { text: 'Live' }); await s.escape();
+    } catch (error) {
+      await s.escape().catch(() => {});
+      failures.push(`pin-restore: ${error.message}`);
+    }
   }
-  return { ...inputs, rewindSettledMs: rewind.settledMs, rewindUnsettled: rewind.unsettled,
+  return { ...inputs, failures, rewindSettledMs: rewind.settledMs, rewindUnsettled: rewind.unsettled,
     scrubSettledMs: scrub.settledMs, unsettled: scrub.unsettled };
 }
 
@@ -626,7 +725,7 @@ await phase('playback', async () => {
     const fixed = fixture && Object.hasOwn(VIEWS, requestedPage) ? VIEWS[requestedPage] : null;
     if (fixed?.view === 'screen') {
       const need = await app.evaluate(`(() => { const grid = document.querySelector('.dash-grid-scroll'); return { height: grid.scrollHeight, viewport: grid.clientHeight }; })()`);
-      await app.send('Emulation.setDeviceMetricsOverride', { ...screenMetrics(Math.max(need.height, SCREEN.height)), mobile: false });
+      await app.send('Emulation.setDeviceMetricsOverride', { ...screenMetrics(Math.max(need.height + SHELL_HEADER_HEIGHT, SCREEN.height)), mobile: false });
       await app.evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
     } else if (fixed?.view === 'tall') {
       let height = meta.viewport.height, fitted = false;
@@ -662,77 +761,163 @@ await phase('playback', async () => {
       if (max) offsets.push(max);
       return offsets;
     })()`);
+    const pageSpeeds = requestedPage === HEAVIEST ? [1440] : speeds;
     for (const scroll of stops) {
       await app.evaluate(`new Promise(done => { document.querySelector('.dash-grid-scroll').scrollTop = ${scroll};
         requestAnimationFrame(() => requestAnimationFrame(() => done(true))); })`);
-      for (const speed of speeds) {
-        await setSpeed(speed);
-        const seekStart = s.epoch + await app.evaluate('performance.now()');
-        await seekTo(0.3);
-        await throttle(rate);
-        const dated = speed === 1440;
-        const pressureBefore = dated && await app.evaluate('window.__perf.pressureMerges()');
-        if (dated) await app.evaluate('window.__perf.beginAudit()');
-        const trace = dated && await startTrace(app, ['disabled-by-default-display.framedisplayed', 'blink.user_timing']);
-        const clockMark = trace && await app.evaluate("performance.timeOrigin + performance.mark('dated-playback-clock').startTime");
-        await app.evaluate('window.__perf.start()');
-        await s.watch();
-        const from = s.epoch + await app.evaluate('performance.now()');
-        if (dated) { await playbackVisibility(); await s.frames(2); }
-        await settledForReplies();
-        await replies?.mark('play', { page, speed });
-        await s.click('button.header-play[aria-label="Play"]');
-        await s.frames(2);
-        const widgets = await app.evaluate(DASHBOARD_INVENTORY);
-        const expectedWidgets = fixture?.pages[page]?.widgets
-          ?.filter(expected => !widgets.some(widget => widget.id === expected.id) || widgets.some(widget => widget.id === expected.id && widget.visible))
-          .map(({ id }) => ({ id }));
-        if (dated) {
-          const line = await s.timeline();
-          const endHour = line.value + Math.ceil((PLAY_SECONDS + 0.4) * speed);
-          if (endHour > line.max || !await s.until(`${Session.CLOCK_HOUR} >= ${endHour}`, 2 * PLAY_SECONDS * 1000 + 5000))
-            throw new Error('Playback did not cover the requested game hours');
-        } else await sleep(PLAY_SECONDS * 1000);
-        await s.click('button.header-play[aria-label="Pause"]');
-        await replies?.mark('pause', { page, speed });
-        const to = s.epoch + await app.evaluate('performance.now()');
-        const playbackReasons = await s.unwatch();
-        const visibility = dated ? await app.evaluate('__e2e.endPlaybackVisibility()') : undefined;
-        let presented, audit, pressureMerges, inputs, idleCost;
-        if (trace) {
-          inputs = await playbackInputs();
-          const events = await trace();
-          const origin = clockMark - events.find(e => e.name === 'dated-playback-clock').ts / 1000;
-          presented = [...new Set(events.filter(e => e.name === 'Display::FrameDisplayed').map(e => origin + e.ts / 1000))].sort((a, b) => a - b);
-          const firstInput = inputs.actions[0]?.at ?? from;
-          inputs.presented = presented.filter(at => at >= firstInput && at <= inputs.to);
-          await writeFile(path.join(out, `dated-playback-compositor-${page.replace(/[^\w.-]+/g, '_')}-${scroll}.json.gz`), await promisify(gzip)(JSON.stringify(events)));
-          pressureMerges = await app.evaluate('window.__perf.pressureMerges()') - pressureBefore;
-          await setSpeed(1);
+      for (const speed of pageSpeeds) {
+        let trace = null, perfStopped = false;
+        try {
+          await setSpeed(speed);
+          const seekStart = s.epoch + await app.evaluate('performance.now()');
+          await seekTo(0.3);
+          await throttle(rate);
+          const dated = speed === 1440;
+          const pressureBefore = dated && await app.evaluate('window.__perf.pressureMerges()');
+          if (dated) await app.evaluate('window.__perf.beginAudit()');
+          trace = dated && await startTrace(app, ['disabled-by-default-display.framedisplayed', 'blink.user_timing']);
+          const clockMark = trace && await app.evaluate("performance.timeOrigin + performance.mark('dated-playback-clock').startTime");
+          await app.evaluate('window.__perf.start()');
+          await s.watch();
+          const from = s.epoch + await app.evaluate('performance.now()');
+          if (dated) { await playbackVisibility(); await s.frames(2); }
+          await settledForReplies();
+          await replies?.mark('play', { page, speed });
           await s.click('button.header-play[aria-label="Play"]');
-          const start = await app.evaluate('performance.timeOrigin + performance.now()');
-          await s.frames(120);
-          idleCost = { from: start, to: await app.evaluate('performance.timeOrigin + performance.now()') };
-          await s.click('button.header-play[aria-label="Pause"]');
-          audit = [];
-          let auditDone = false;
-          while (!auditDone) {
-            const batch = await app.evaluate('window.__perf.auditPicturesBatch(64)', 120_000);
-            if (!batch || !Array.isArray(batch.results)) throw new Error('picture audit returned no batch');
-            audit.push(...batch.results); auditDone = batch.done;
+          await s.frames(2);
+          const widgets = await app.evaluate(DASHBOARD_INVENTORY);
+          const expectedWidgets = fixture?.pages[page]?.widgets
+            ?.filter(expected => requestedPage === HEAVIEST || !widgets.some(widget => widget.id === expected.id) || widgets.some(widget => widget.id === expected.id && widget.visible))
+            .map(({ id }) => ({ id }));
+          const windowReasons = [];
+          if (requestedPage === HEAVIEST) {
+            const hidden = (fixture?.pages[page]?.widgets ?? []).filter(expected => !widgets.some(widget => widget.id === expected.id && widget.visible));
+            if (hidden.length) windowReasons.push(`${hidden.length} heaviest widgets not visible without scrolling: ${hidden.map(w => w.kind).join(', ')}`);
           }
+          if (dated) {
+            const line = await s.timeline();
+            const endHour = line.value + Math.ceil((PLAY_SECONDS + 0.4) * speed);
+            if (endHour > line.max || !await s.until(`${Session.CLOCK_HOUR} >= ${endHour}`, 2 * PLAY_SECONDS * 1000 + 5000))
+              windowReasons.push('Playback did not cover the requested game hours');
+          } else await sleep(PLAY_SECONDS * 1000);
+          await pausePlayback();
+          await replies?.mark('pause', { page, speed });
+          const to = s.epoch + await app.evaluate('performance.now()');
+          const playbackReasons = await s.unwatch();
+          const visibility = dated ? await app.evaluate('__e2e.endPlaybackVisibility()') : undefined;
+          let presented, audit, pressureMerges, inputs, idleCost;
+          if (trace) {
+            inputs = await playbackInputs();
+            const events = await trace();
+            trace = null;
+            const markEvent = events.find(e => e.name === 'dated-playback-clock');
+            const origin = markEvent ? clockMark - markEvent.ts / 1000 : 0;
+            presented = markEvent ? [...new Set(events.filter(e => e.name === 'Display::FrameDisplayed').map(e => origin + e.ts / 1000))].sort((a, b) => a - b) : [];
+            const firstInput = inputs.actions[0]?.at ?? from;
+            inputs.presented = presented.filter(at => at >= firstInput && at <= inputs.to);
+            await writeFile(path.join(out, `dated-playback-compositor-${page.replace(/[^\w.-]+/g, '_')}-${scroll}.json.gz`), await promisify(gzip)(JSON.stringify(events)));
+            pressureMerges = await app.evaluate('window.__perf.pressureMerges()') - pressureBefore;
+            await setSpeed(1);
+            await s.click('button.header-play[aria-label="Play"]');
+            const start = await app.evaluate('performance.timeOrigin + performance.now()');
+            await s.frames(120);
+            idleCost = { from: start, to: await app.evaluate('performance.timeOrigin + performance.now()') };
+            await pausePlayback();
+            await throttle(1);
+            audit = [];
+            let auditDone = false;
+            while (!auditDone) {
+              const batch = await app.evaluate('window.__perf.auditPicturesBatch(64)', 120_000);
+              if (!batch || !Array.isArray(batch.results)) { windowReasons.push('picture audit returned no batch'); break; }
+              audit.push(...batch.results); auditDone = batch.done;
+            }
+          }
+          const summary = await app.evaluate('window.__perf.stop()', 120_000);
+          perfStopped = true;
+          const observedVisibility = visibility ?? inputs?.visibility;
+          await throttle(1);
+          const allReasons = [...windowReasons, ...(dated ? (inputs?.failures ?? []) : playbackReasons)];
+          await s.record({ area: 'playback', item: `${page}/${speed}`, label: null, pass: true, reasons: allReasons, from, to, seekStart, speed, page, scroll, visibility: observedVisibility, seconds: PLAY_SECONDS, widgets, expectedWidgets, lastHour: (await s.timeline()).max,
+            presented, pressureMerges, audit, inputs, idleCost, frames: summary.ui_frames, complete: summary.complete, losses: summary.losses, maps: summary.playback?.maps ?? null, screenshot: false });
+        } catch (error) {
+          if (trace) await trace().catch(() => {});
+          if (await app.evaluate(`!!document.querySelector('button.header-play[aria-label="Pause"]')`).catch(() => false))
+            await s.click('button.header-play[aria-label="Pause"]').catch(() => {});
+          await s.unwatch().catch(() => {});
+          await throttle(1).catch(() => {});
+          if (!perfStopped) await app.evaluate('window.__perf.stop()', 120_000).catch(() => {});
+          await s.record({ area: 'playback', item: `${page}/${speed}`, label: null, pass: false, reasons: [`playback window failed: ${error.message}`], page, speed, scroll, seconds: PLAY_SECONDS, complete: false, screenshot: false });
         }
-        const summary = await app.evaluate('window.__perf.stop()', 120_000);
-        const observedVisibility = visibility ?? inputs?.visibility;
-        await throttle(1);
-        await s.record({ area: 'playback', item: `${page}/${speed}`, label: null, pass: true, reasons: dated ? [] : playbackReasons, from, to, seekStart, speed, page, scroll, visibility: observedVisibility, seconds: PLAY_SECONDS, widgets, expectedWidgets, lastHour: (await s.timeline()).max,
-          presented, pressureMerges, audit, inputs, idleCost, frames: summary.ui_frames, complete: summary.complete, losses: summary.losses, maps: summary.playback?.maps ?? null, screenshot: false });
       }
     }
     await traceWindow(page);
     await save();
   }
   await setSpeed(1);
+});
+
+await phase('widget-costs', async () => {
+  if (!await s.holds('window.__perf')) throw new Error('the app was not started with BATTLEPLAN_PERF_LOG: widget-costs cannot be measured');
+  if (!costFixture) throw new Error('widget-costs fixture was not prepared');
+  const measureOne = async ({ kind, title, label, widget, isEmpty }) => {
+    let from = null, to = null, seekStart = null, audit = [], outcome = isEmpty ? 'empty' : 'content', detail = null, surfaces = [];
+    const reasons = [];
+    try {
+      await s.openPage(label);
+      if (!await s.holds(pageShown(label))) await s.openPage(label, { force: true });
+      if (!await s.holds(pageShown(label))) throw new Error(`could not switch to ${label}`);
+      if (!await s.holds(speedTaken(1440))) await setSpeed(1440);
+      seekStart = s.epoch + await app.evaluate('performance.now()');
+      await seekTo(0.3);
+      await throttle(rate);
+      await app.evaluate('window.__perf.beginAudit()');
+      await app.evaluate('window.__perf.start()');
+      await s.click('button.header-play[aria-label="Play"]');
+      await s.frames(2);
+      from = s.epoch + await app.evaluate('performance.now()');
+      await sleep(COST_SECONDS * 1000);
+      if (!isEmpty) {
+        const snap = await app.evaluate(`(() => {
+          const classify = ${CLASSIFY_WIDGET};
+          const a = document.querySelector('article.dash-widget');
+          if (!a) return { outcome: 'error', detail: 'widget element not mounted', surfaces: [] };
+          const { outcome, detail } = classify(a);
+          const surfaces = [...new Set([...a.querySelectorAll('[data-surface]')].map(c => c.dataset.surface).filter(Boolean))];
+          return { outcome, detail, surfaces };
+        })()`);
+        outcome = snap.outcome; detail = snap.detail; surfaces = snap.surfaces;
+      }
+      to = s.epoch + await app.evaluate('performance.now()');
+      await pausePlayback();
+      await s.until("document.querySelector('button.header-play[aria-label=\"Play\"]')", 10_000);
+      await throttle(1);
+      let auditDone = false;
+      while (!auditDone) {
+        const batch = await app.evaluate('window.__perf.auditPicturesBatch(64)', 120_000);
+        if (!batch || !Array.isArray(batch.results)) break;
+        audit.push(...batch.results); auditDone = batch.done;
+      }
+      await app.evaluate('window.__perf.flush()', 60_000);
+    } catch (error) {
+      outcome = 'error'; detail = error.message; reasons.push(error.message);
+      if (await app.evaluate(`!!document.querySelector('button.header-play[aria-label="Pause"]')`).catch(() => false))
+        await s.click('button.header-play[aria-label="Pause"]').catch(() => {});
+      await throttle(1).catch(() => {});
+      await app.evaluate('window.__perf.flush()', 60_000).catch(() => {});
+    }
+    await s.record({ area: 'widget-costs', item: kind, label, kind, title, widget, isEmpty, from, to, seekStart, seconds: COST_SECONDS,
+      outcome, detail, surfaces, audit, complete: reasons.length === 0, pass: reasons.length === 0, reasons, screenshot: false });
+  };
+  await measureOne({ kind: '__empty__', title: 'Empty page', label: costFixture.empty.label, widget: null, isEmpty: true });
+  for (let index = 0; index < costFixture.kinds.length; index++) {
+    const entry = costFixture.kinds[index];
+    log('widget-cost', `${index + 1}/${costFixture.kinds.length}`, entry.kind);
+    await measureOne({ kind: entry.kind, title: entry.title, label: entry.label, widget: entry.widget, isEmpty: false });
+    if ((index + 1) % 15 === 0) await save();
+  }
+  await app.evaluate('window.__perf.stop()', 120_000);
+  await setSpeed(1);
+  await save();
 });
 
 await phase('catalogue', async () => {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { takesShot } from './session.mjs';
-import { shownHours, catalogueHour, droppedFrames, failedReplies, firstContent, framesLate, frameTimes, freshness, freshnessByKind, item, losses, mapDrew, mapFrames, mapSeek, pageShown, presentedAt, quantiles, UNPRESENTED } from './verdicts.mjs';
+import { shownHours, catalogueHour, droppedFrames, failedReplies, firstContent, framesLate, frameTimes, freshness, freshnessByKind, item, losses, mapDrew, mapFrames, mapSeek, pageShown, presentedAt, quantiles, UNPRESENTED, windowLosses } from './verdicts.mjs';
 import { asked, machineLine, noVisibleChange, phaseSeconds, settingDrawn, stepOver, stillInFlight } from './verdicts.mjs';
 
 test('a setting that changed nothing is known once its widget reports drawing it, never while it loads or before it took it', () => {
@@ -277,4 +277,26 @@ test('a seek holds its captured pin through the next input, even after a correct
   const latePin = [{ at: 105, hour: 40, fixedHour: 40 }, { at: 110, hour: 99 }, { at: 112, hour: 40, fixedHour: 40 }];
   assert.equal(sought(seek, new Map([['p', latePin]]), [], 120).pass, false);
   assert.equal(sought(seek, new Map([['p', [{ at: 105, hour: 99 }, { at: 110, hour: 98 }]]]), [], 120).pass, false);
+});
+
+test('a visible placeholder fails freshnessByKind with reason not migrated while staying distinct from a real failure', () => {
+  const widget = { id: 'p', kind: 'legacy', title: 'Legacy', visible: true, notMigrated: true };
+  const window = { page: 'Overview', speed: 1440, from: 10, to: 50, widgets: [widget] };
+  const dated = [{ from: 10, widget: 'p', status: 'not migrated', pass: false }];
+  const [entry] = freshnessByKind([], [window], [], [], dated);
+  assert.equal(entry.pass, false);
+  assert.equal(entry.notMigrated, 1);
+  assert.equal(entry.status, 'not migrated');
+  assert.deepEqual(entry.reasons, ['not migrated']);
+});
+
+test('windowLosses counts only perf log losses overlapping a window, and losses names affected windows', () => {
+  const records = [
+    { t: 'lost', source: 'ui', count: 5, from: 100, to: 200 },
+    { t: 'lost', source: 'ui', count: 7, from: 500, to: 600 },
+  ];
+  assert.equal(windowLosses(records, 150, 300).count, 5);
+  assert.equal(windowLosses(records, 250, 450).count, 0);
+  const summary = losses(records, [{ label: 'Overview 1440 h/s', from: 150, to: 300 }]);
+  assert.deepEqual(summary[0].windows, ['Overview 1440 h/s']);
 });
