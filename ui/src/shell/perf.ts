@@ -112,11 +112,13 @@ interface RowChange { widget: string; source: string; previous: StructureRead; c
 type AuditedPicture = Omit<PictureSample, 'hour' | 'rows'> & { hour: number; rows?: PictureSample['rows'] };
 type PictureAuditResult = { widget: string; surface: string; placement: number; owner?: number; at: number; hour: number; error: string | null };
 
+const readerKey = (generation: number | undefined, id: number, owner: number) => (generation ?? 0) + '/' + id + '/' + owner;
+
 function shouldAuditPicture(record: DrawSample, activeReaders?: Map<string, ExactPicture>): boolean {
   if (record.t !== 'picture' || record.hour === null) return false;
   if (record.rows) return true;
   if (record.mode !== 'picture' || record.detached) return false;
-  return record.auditMissing === true || activeReaders?.has(record.placement + '/' + record.owner) === true;
+  return record.auditMissing === true || activeReaders?.has(readerKey(record.generation, record.placement, record.owner)) === true;
 }
 
 const READERS_HELD = 1024;
@@ -136,13 +138,18 @@ export class PerfRecorder {
       this.rowChanges.push({ widget, source, previous, current, ...placement !== undefined ? { placement } : {} });
   }
 
-  reader(id: number, owner: number, exact: ExactPicture | null) {
-    const key = id + '/' + owner;
+  reader(id: number, owner: number, exact: ExactPicture | null, generation = 0): () => void {
+    const key = readerKey(generation, id, owner);
     this.readers.delete(key);
-    if (!exact) return;
+    if (!exact) return () => {};
     this.readers.set(key, exact);
     if (this.readers.size > READERS_HELD) this.readers.delete(this.readers.keys().next().value!);
     this.auditReaders?.set(key, exact);
+    return () => { if (this.readers.get(key) === exact) this.readers.delete(key); };
+  }
+  dropGeneration(generation: number) {
+    const prefix = generation + '/';
+    for (const key of [...this.readers.keys()]) if (key.startsWith(prefix)) this.readers.delete(key);
   }
   private exactReads = new Map<string, Promise<unknown>>();
   exactOnce<T>(key: string, read: () => Promise<T>): Promise<T> {
@@ -252,7 +259,7 @@ export class PerfRecorder {
       let error: string | null;
       try {
         error = rows
-          ? pictureError(surface, rows, await work.readers?.get(placement + '/' + owner)?.(hour, record.auditId))
+          ? pictureError(surface, rows, await work.readers?.get(readerKey(record.generation, placement, owner))?.(hour, record.auditId))
           : 'Painted picture emitted without audit rows';
       }
       catch (cause) { error = String(cause); }

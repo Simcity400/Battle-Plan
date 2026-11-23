@@ -1,3 +1,4 @@
+import type { ValueStateProps } from '../components/ValueState';
 import { formatNativeFixed5 } from '../charts/valueAxis.ts';
 import { canonicalAuditValue } from './audit.ts';
 import { assertValue, type Scalar, type Value } from './value.ts';
@@ -155,6 +156,27 @@ export function formatValueState(value: Value, format?: ValueFormat): FormattedV
       const spoken = `${lead}, partial: ${value.reason}`;
       return { kind: 'partial', text, reason: value.reason, ...(value.atLeast ? { atLeast: true } : {}), spoken, audit: spoken };
     }
+  }
+}
+
+export function valueStateProps(value: Value, format?: ValueFormat, narrow = false): ValueStateProps {
+  const formatted = formatValueState(value, format);
+  switch (formatted.kind) {
+    case 'known':
+    case 'zero':
+      return { kind: formatted.kind, text: formatted.text, ...(narrow ? { narrow: true } : {}) };
+    case 'notRecorded':
+      return { kind: 'missing', reason: formatted.reason, ...(narrow ? { narrow: true } : {}) };
+    case 'notApplicable':
+      return { kind: 'notApplicable', reason: formatted.reason, ...(narrow ? { narrow: true } : {}) };
+    case 'partial':
+      return {
+        kind: 'partial',
+        text: formatted.text,
+        reason: formatted.reason,
+        ...(formatted.atLeast ? { atLeast: true } : {}),
+        ...(narrow ? { narrow: true } : {}),
+      };
   }
 }
 

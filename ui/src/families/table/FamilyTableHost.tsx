@@ -6,11 +6,13 @@ import { fitTooltip, hideTooltip, showTooltip, tooltipText, type TooltipContent 
 import { useViewportHeight } from '../../charts/useChartTokens';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { canonical } from '../../dashboard/follow/canonical.ts';
+import { restartPipeline } from '../../dashboard/follow/pipeline.ts';
 import { useElement, useFollowedWidget, usePipeline, useSurfaceLabel } from '../../dashboard/follow/useFollowed.ts';
 import { useWidgetKey } from '../../dashboard/follow/useFollow.ts';
 import type { WidgetSpec } from '../../dashboard/model';
 import { PreparingPage } from '../../dashboard/preparing.ts';
 import { asFailure } from '../../dashboard/queryError.ts';
+import { useWidgetFrame, useWidgetSkeleton, WidgetCaption } from '../../dashboard/widgetFrame.tsx';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { bitmapSurface, holdElement } from '../../draw/bitmapSurface.ts';
 import { ROW_HEIGHT, updateTableSettings, type TableSettings } from './settings.ts';
@@ -145,6 +147,8 @@ export default function FamilyTableHost<TOptions>({
   className,
 }: FamilyTableHostProps<TOptions>) {
   const prepared = useContext(PreparingPage);
+  const frame = useWidgetFrame();
+  useWidgetSkeleton('table');
   const viewportHeight = useViewportHeight();
   const contextMenu = useContextMenu(`${label} actions`);
   const contextMenuRef = useRef(contextMenu);
@@ -230,16 +234,25 @@ export default function FamilyTableHost<TOptions>({
 
   const theme = useMemo(() => readFamilyTheme(countryColours, countryLooks), [countryColours, countryLooks]);
   const tooltipOwner = `family-table:${widget.id}`;
+  const announceSeqRef = useRef(0);
+  const lastAnnounceKeyRef = useRef<string | null>(null);
   useEffect(() => () => {
     hideTooltip(tooltipOwner);
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
     if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current);
+    if (frame && lastAnnounceKeyRef.current) frame.clearAnnouncement(lastAnnounceKeyRef.current);
     auditStoreRef.current?.clear();
-  }, [tooltipOwner]);
+  }, [tooltipOwner, frame]);
 
   const announce = useCallback((message: string) => {
+    if (frame) {
+      const key = `table:${++announceSeqRef.current}`;
+      lastAnnounceKeyRef.current = key;
+      frame.announce(key, message);
+      return;
+    }
     if (liveRegionRef.current) liveRegionRef.current.textContent = message;
-  }, []);
+  }, [frame]);
 
   const changeSettings = useCallback((update: (next: TableSettings) => void) => {
     if (!onSettings) return;
@@ -962,7 +975,7 @@ export default function FamilyTableHost<TOptions>({
   useLayoutEffect(() => {
     if (!perfLog || !pipeline || pipe === null || !auditable) return;
     pipeline.audit(pipe, TABLE_AUDIT, fields => auditRowsOf(fields.audit));
-    perfLog.reader(pipe, TABLE_AUDIT, async (hour, auditId) => {
+    const stopReader = perfLog.reader(pipe, TABLE_AUDIT, async (hour, auditId) => {
       const snap = auditStoreRef.current!.require(auditId);
       const exact = await snap.exactSources(hour);
       if (!exact) return null;
@@ -987,10 +1000,10 @@ export default function FamilyTableHost<TOptions>({
         window: snap.window,
       });
       return { values: new Map(rows.map(row => [row.key, row.value ?? ''])), ordered: true };
-    });
+    }, pipeline.generation);
     return () => {
+      stopReader();
       pipeline.audit(pipe, TABLE_AUDIT, null);
-      perfLog?.reader(pipe, TABLE_AUDIT, null);
     };
   }, [pipeline, pipe, auditable]);
 
@@ -1194,6 +1207,10 @@ export default function FamilyTableHost<TOptions>({
     };
   }), [layout.columns, specMap]);
 
+  const retryFollow = useCallback(() => {
+    if (pipeline) restartPipeline(pipeline);
+  }, [pipeline]);
+
   if (blockedState) return <>{blockedState}</>;
 
   const summaryPillNode = headerSlot && meta.mode === 'picture' && !meta.empty && meta.summaryPill
@@ -1202,8 +1219,12 @@ export default function FamilyTableHost<TOptions>({
 
   const bodyStateNode = (() => {
     if (meta.mode === 'outside') return <WidgetState kind="outside" />;
-    if (meta.mode === 'refused') return <WidgetState kind="unavailable" message={meta.reason ?? `${subject} isn’t in this recording.`} />;
-    if (meta.mode === 'failed') return <WidgetState kind="error" what={subject} failure={asFailure(new Error(meta.reason ?? `Couldn’t load ${subject}.`))} />;
+    if (meta.mode === 'refused') return <WidgetState kind="unavailable" technical={meta.reason ?? undefined} />;
+    if (meta.mode === 'failed') {
+      const failure = (pipeline && pipe !== null ? pipeline.widgetError(pipe) : undefined)
+        ?? asFailure(new Error(meta.reason ?? `Couldn’t load ${subject}.`));
+      return <WidgetState kind="error" what={subject} failure={failure} onRetry={pipeline ? retryFollow : undefined} />;
+    }
     if (meta.mode === 'reading') return <WidgetState kind="loading" label={loadingLabel ?? `Loading ${subject}…`} />;
     if (meta.empty) return <WidgetState kind={meta.emptyKind} message={meta.empty} detail={meta.emptyDetail ?? undefined} />;
     return null;
@@ -1213,7 +1234,7 @@ export default function FamilyTableHost<TOptions>({
 
   return <div ref={frameRef} className={`tf-frame${className ? ` ${className}` : ''}`} data-density={settings.density} data-overflow={settings.overflow}>
     {summaryPillNode}
-    {meta.notes.length > 0 && !bodyStateNode && <div className="tf-notes">{meta.notes.map((note, idx) => <span key={idx}>{note}</span>)}</div>}
+    {meta.notes.length > 0 && !bodyStateNode && <WidgetCaption>{meta.notes.join(' ')}</WidgetCaption>}
     <div className="tf-head-clip" style={bodyStateNode ? { display: 'none' } : undefined}>
       <FamilyTableHeader
         columns={headerColumns}
@@ -1276,7 +1297,7 @@ export default function FamilyTableHost<TOptions>({
       </thead>
       <tbody ref={mirrorBodyRef} />
     </table>
-    <div ref={liveRegionRef} className="tf-live-region" role="status" aria-live="polite" aria-atomic="true" />
+    {!frame && <div ref={liveRegionRef} className="tf-live-region" role="status" aria-live="polite" aria-atomic="true" />}
     {contextMenu.menu}
   </div>;
 }

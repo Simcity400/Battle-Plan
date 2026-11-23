@@ -66,7 +66,7 @@
     if ([...article.querySelectorAll('canvas')].some(c => c.drawPending && shownOnScreen(c))) return { state: 'loading', drawing: true };
     if ([...article.querySelectorAll('[role=status]')].some(e => /^Loading\b/.test((e.textContent || '').trim()) && shownOnScreen(e))) return { state: 'loading' };
     const content = article.querySelector('.dash-widget-content');
-    const notice = content?.querySelector('[data-state=empty], [data-state=unavailable]');
+    const notice = content?.querySelector('[data-state=empty], [data-state=unavailable], [data-state=outside], [data-state=not-recorded], [data-state=nothing-chosen], [data-state=no-members]');
     if (notice && (content.textContent || '').trim() === (notice.textContent || '').trim())
       return { state: notice.getAttribute('data-state'), text: (notice.textContent || '').trim().slice(0, 200) };
     if (!(content?.textContent || '').trim() && !content?.querySelector('canvas, svg, img')) return { state: 'blank' };

@@ -164,6 +164,53 @@ test('beginAudit invalidates in-flight audit continuations via generation token 
   await capturePicturesBatch(100);
 });
 
+test('perf audit keys include pipeline generation and unregistering live readers keeps readers captured for the current audit', async () => {
+  const { PerfRecorder } = await import('./perf.ts');
+  const { capturePictures, capturePicturesBatch, recordPicture } = await import('../dashboard/pulled.ts');
+  const recorder = Object.create(PerfRecorder.prototype) as InstanceType<typeof PerfRecorder>;
+  Object.assign(recorder, {
+    readers: new Map(),
+    rowChanges: [],
+    exactReads: new Map(),
+    auditGen: 0,
+    lines: [],
+    buffered: { count: 0, bytes: 0, from: Infinity, to: -Infinity },
+    lost: { count: 0, bytes: 0, from: Infinity, to: -Infinity },
+    sending: 0,
+    stopped: false,
+    push: () => {},
+    flush: async () => {},
+  });
+
+  const stopGen1 = recorder.reader(1, 0, async () => ({ values: new Map([['A:v', 'gen1-val']]) }), 1);
+  await recorder.beginAudit();
+  const sample = (widget: string, generation: number, value: string) => ({
+    t: 'picture', at: generation, widget, surface: 'table', placement: 1, owner: 0, generation,
+    renderer: 'page', head: 10, hour: 10, offset: 0, since: 10, through: 10, eligibleHour: 10, entry: generation,
+    parts: [], face: '', drawMs: 0, mode: 'picture', dim: false, reset: 0, binding: 0, inspect: null, tooltip: false,
+    rows: [{ row: 'A', key: 'A:v', value }],
+  }) as never;
+  recordPicture(sample('w-gen1', 1, 'gen1-val'));
+
+  stopGen1();
+  recorder.dropGeneration(1);
+  recorder.reader(1, 0, async () => ({ values: new Map([['A:v', 'gen2-val']]) }), 2);
+  recordPicture(sample('w-gen2', 2, 'gen2-val'));
+
+  const batch = await recorder.auditPicturesBatch(10);
+  assert.equal(batch.done, true);
+  assert.deepEqual(batch.results.map(r => [r.widget, r.error]), [['w-gen1', null], ['w-gen2', null]],
+    'each generation picture is audited against its own generation reader without colliding on reused placement/owner ids');
+
+  await recorder.beginAudit();
+  recordPicture(sample('w-gen1-stale', 1, 'gen1-val'));
+  const afterDrop = await recorder.auditPicturesBatch(10);
+  assert.equal(afterDrop.results[0]?.error, 'Displayed rows or exact read missing',
+    'disposed generation readers are removed from live registrations before later audits');
+  await capturePictures(false);
+  await capturePicturesBatch(100);
+});
+
 test('stock vite config stays permanently gated while vite.ungated.config.ts enables ungated mode', async () => {
   const stockMod = await import('../../vite.config.ts');
   const ungatedMod = await import('../../vite.ungated.config.ts');

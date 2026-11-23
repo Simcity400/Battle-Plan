@@ -12,10 +12,10 @@ export default function GateState({ gate, loading, choose, absent, detail }: {
     case 'open':
     case 'unbound': return null;
     case 'outside': return <WidgetState kind="outside" read={coverageOf(stage.outside)} />;
-    case 'choose': return <WidgetState kind="empty" message={choose ?? 'Choose a country in the widget settings.'} />;
+    case 'choose': return <WidgetState kind="nothing-chosen" prompt={choose} />;
     case 'holders': return <ReachedCountryChoice tag={gate.country?.chosen ?? null} holders={stage.holders} onPick={stage.pick} />;
     case 'absent': return <WidgetState kind="unavailable" message={stage.reason ?? absent ?? 'This country does not exist at this date.'} detail={stage.reason ? undefined : detail} />;
-    case 'no-members': return <WidgetState kind="unavailable" message={stage.reason} />;
+    case 'no-members': return <WidgetState kind="no-members" message={stage.reason} />;
     case 'failed': return <WidgetState kind="error" failure={stage.failure} onRetry={stage.retry} />;
     case 'loading': return <WidgetState kind="loading" label={loading} />;
   }

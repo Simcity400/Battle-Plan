@@ -1,10 +1,8 @@
 import { useGate } from '../../dashboard/regionGate';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, HTMLAttributes, KeyboardEvent, MouseEvent, ReactNode } from 'react';
-import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
-import { Segmented } from '../../components/Segmented';
 import ArtFallback from '../../components/ArtFallback';
 import CountryComparisons from '../../dashboard/CountryComparisons';
 import type { ComparisonProps } from '../../dashboard/CountryComparisons';
@@ -18,7 +16,6 @@ import { runAt } from '../../charts/series';
 import Timeline from '../../charts/timeline/Timeline';
 import { fitTooltip, hideTooltip, showTooltip, tooltipText } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
-import { HeaderActionsSlot } from '../../charts/ZoomReset';
 import { useIdentityHour } from '../../dashboard/atHead';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { defaultCountryKey } from '../../dashboard/countrySelection';
@@ -34,7 +31,7 @@ import { useRecordedRows, useShownEachFrame } from '../../dashboard/widgetPerf';
 import { perfLog } from '../../shell/perf';
 import { useHeadHour } from '../army-size/headHour';
 import { motionOf } from '../../charts/easing.ts';
-import { OPTIONS, VIEWS } from './definition';
+import { OPTIONS } from './definition';
 import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, endedCount, historyPicture, historyProject, historyUnrecorded, historyTooltip, iterationMark, iterationTooltip,
   observedAt, completions, progressStyle, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, readLabel, scientistName, shownCard, statusRead,
   unobservedReason, validateSpecialProjectsReply } from './specialProjectsData';
@@ -246,7 +243,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   let body;
   if (!track) body = <WidgetState kind="empty" message="Load a campaign and choose a country to see its special projects." />;
   else if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  else if (at < track.branch.firstHour || at > track.branch.lastHour) body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  else if (at < track.branch.firstHour || at > track.branch.lastHour) body = <WidgetState kind="outside" />;
   else if (error || (groups.error && !groups.data)) body = <WidgetState kind="error" failure={error ?? groups.error!} onRetry={error ? retry : groups.retry} />;
   else if (!groups.data) body = <WidgetState kind="loading" label="Loading countries…" />;
   else if (resolved.reason) body = <WidgetState kind="unavailable" message={resolved.reason} />;
@@ -255,8 +252,8 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   else if (noneAt?.reason) body = <NoMembersState reason={noneAt.reason} />;
   else if (!resolved.ready || !tags.length) body = <WidgetState kind="empty" message="No selected countries were recorded." />;
   else if (view === 'live' && !requestedNow.length) body = <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
-  else if (view === 'history' && history.outside) body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  else if (view === 'history' && history.refused !== undefined) body = <WidgetState kind="unavailable" message={history.refused} />;
+  else if (view === 'history' && history.outside) body = <WidgetState kind="outside" />;
+  else if (view === 'history' && history.refused !== undefined) body = <WidgetState kind="unavailable" technical={history.refused} />;
   else if (!notes) body = <WidgetState kind="loading" label="Loading special projects…" />;
   else if (notes.every(reply => reply.unavailable)) body = <WidgetState kind="unavailable" message={notes.find(reply => reply.unavailable)?.unavailable ?? PROJECTS_UNRECORDED} />;
   else if (view === 'live') {
@@ -300,7 +297,6 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
 
 export default function SpecialProjectsWidget(props: WidgetProps) {
   const view = props.widget.options?.view === 'history' ? 'history' : 'live';
-  const actions = useContext(HeaderActionsSlot);
   const track = props.runtime.tracks.find(item => item.id === props.widget.trackIds[0]);
   const groups = useCountryGroups(props.runtime, track, props.active);
   const fallback = defaultCountryKey(track);
@@ -318,11 +314,8 @@ export default function SpecialProjectsWidget(props: WidgetProps) {
   const unknown = selected.unobserved.some(span => span.firstHour <= at && at <= span.lastHour);
   const tagsKey = JSON.stringify(tags);
   const comparisonWidget = useMemo(() => ({ ...props.widget, countries: { kind: 'tags' as const, tags: JSON.parse(tagsKey) as string[] } }), [props.widget, tagsKey]);
-  const slot = actions ?? props.headerSlot;
-  const header = slot && createPortal(<Segmented value={view} options={VIEWS}
-    onChange={value => props.setOption?.('view', value)} label="Special projects view" />, slot);
   const compare = view === 'live' && selected.ready && !unknown && tags.length > 1 && !(groups.error && !groups.data);
-  return <>{header}{compare
+  return compare
     ? <CountryComparisons {...props} widget={comparisonWidget} headerSlot={null} component={ProjectPanel} />
-    : <ProjectPanel key={view} {...props} />}</>;
+    : <ProjectPanel key={view} {...props} />;
 }

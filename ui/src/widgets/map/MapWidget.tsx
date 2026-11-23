@@ -1,7 +1,6 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { Icon } from '../../components/Icons';
-import { formatDateTime } from '../../dashboard/calendar';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useMapsHidden, useMapState } from '../../dashboard/geometry';
 import type { MapTarget } from '../../dashboard/geometry';
@@ -35,38 +34,25 @@ export default function MapWidget({ widget, runtime, mapOptions }: WidgetProps) 
   useLayoutEffect(() => body.current ? runtime.maps.register(widget.id, body.current, target) : undefined, [runtime.maps, widget.id, target]);
   const state = useMapState(runtime.maps, widget.id);
   const hidden = useMapsHidden(runtime.maps);
-  const shownDate = useRef<HTMLSpanElement>(null);
-  const showsDate = runtime.client.nativeMaps !== false && state?.hour != null;
-  useLayoutEffect(() => {
-    if (!showsDate) return;
-    let painted: number | null = null;
-    return runtime.maps.paint(widget.id, latest => {
-      if (latest.hour == null || latest.hour === painted || !shownDate.current) return;
-      painted = latest.hour;
-      shownDate.current.textContent = formatDateTime(latest.hour);
-    });
-  }, [runtime.maps, widget.id, showsDate]);
   const desired = target(runtime.clock.getSnapshot());
   const matched = mapPresentationMatches(state, desired);
   const nativeUnavailable = !runtime.client.available || runtime.client.nativeMaps === false;
   const framed = !nativeUnavailable && mapFrameOnScreen(state);
+  const lagging = (state?.behind ?? 0) > 0;
+  const held = framed && !hidden && !state?.error && (!matched || lagging) ? (desired?.playing || lagging ? 'behind' : 'stale') : undefined;
   const preparing = !hidden && !framed && (state?.loading || (desired && !matched && !nativeUnavailable));
-  return <div className="dash-map-widget" data-map-current={matched}>
+  return <div className="dash-map-widget" data-map-current={matched} data-held={held}>
     <div className="dash-map-surface" ref={body}>
       <div className="dash-map-placeholder" role={state?.error ? undefined : 'status'}>{state?.error
-        ? <WidgetState kind="error" failure={new Error(state.error)} onRetry={() => runtime.maps.retry(widget.id)} />
-        : <><span className="empty-icon">{preparing ? <span className="spinner" /> : <Icon name="map" />}</span>
-        <strong>{nativeUnavailable ? 'Map available in the desktop app.' : runtime.nativeHidden ? 'Map hidden for layout controls'
-          : hidden ? 'Map hidden while a menu is open'
-          : !track ? 'Load a campaign' : !desired ? 'No map at this time' : matched || framed ? 'Campaign map' : 'Preparing this map…'}</strong>
-        <p>{nativeUnavailable ? 'Open a recording in the desktop app to explore its campaign map.'
-          : !desired && track ? 'Choose another time.' : null}</p></>}
+        ? <WidgetState kind="error" what="the campaign map" failure={new Error(state.error)} onRetry={() => runtime.maps.retry(widget.id)} />
+        : !desired && track && !nativeUnavailable && !runtime.nativeHidden && !hidden
+          ? <WidgetState kind="outside" />
+          : <><span className="empty-icon">{preparing ? <span className="spinner" /> : <Icon name="map" />}</span>
+          <strong>{nativeUnavailable ? 'Map available in the desktop app.' : runtime.nativeHidden ? 'Map hidden for layout controls.'
+            : hidden ? 'Map hidden while a menu is open.'
+            : !track ? 'Load a campaign to see the map.' : matched || framed ? 'Campaign map' : 'Preparing this map…'}</strong>
+          {nativeUnavailable && <p>Open a recording in the desktop app to explore its campaign map.</p>}</>}
       </div>
     </div>
-    {showsDate && <div className="dash-map-status">
-      <span><Icon name="clock" /><span ref={shownDate} /></span>{matched && state.behindReason
-        ? <span className="pill warning" title={state.behindReason}>Behind</span>
-        : matched ? <span className="pill positive">{widget.time.mode === 'follow' ? 'Live' : widget.time.mode === 'pin' ? 'Pinned' : 'Campaign end'}</span> : <span className="pill warning">Updating…</span>}
-    </div>}
   </div>;
 }

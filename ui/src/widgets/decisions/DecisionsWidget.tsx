@@ -106,7 +106,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   };
   const held = cards.pages.length > 0 && cards.pages.every(page => page.rows);
   const total = held && statuses.has('active') ? cards.pages.reduce((sum, page) => sum + activeCount(page.rows ?? []), 0) : null;
-  const header = headerSlot && total !== null && createPortal(<span className="pill">{total.toLocaleString()} active{cards.feed.missing.length ? ' (recorded hours)' : ''}</span>, headerSlot);
+  const header = headerSlot && total !== null && createPortal(<span className="pill" data-tooltip={cards.feed.missing.length ? 'Count from recorded hours' : undefined}>{total.toLocaleString()} active</span>, headerSlot);
   return <div className={`log-widget decisions-log${oneCountry ? ' is-one-country' : ''}${artwork ? '' : ' is-no-art'}`}>{groupFailure}
     {header}
     {log.chips && <div className="log-chips"><ChipSet label="Decision status" chips={STATUS_CHOICES} selected={[...statuses]} max={STATUS_CHOICES.length}

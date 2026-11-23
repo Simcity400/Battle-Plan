@@ -24,6 +24,7 @@ import { useGate } from '../../dashboard/regionGate';
 import { axisAt, SPEC } from '../../dashboard/regionTime';
 import { forwardRequest, productRequest } from '../../dashboard/request.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime';
 import { perfLog } from '../../shell/perf.ts';
 import type { FamilySources, FamilySourceSubscription } from '../contract.ts';
@@ -102,6 +103,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
   extraWarnings,
 }: DeclaredTableWidgetProps<TProjectionOptions, TAux>) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  useWidgetSkeleton('table');
   const following = widget.time.mode === 'follow';
   const options = useMemo(
     () => resolveOptions(declaration.optionFields ?? [], widget.options),
@@ -609,7 +611,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     } else if (coverage.outside) {
       return <WidgetState kind="outside" read={coverage} />;
     }
-    if (followPlan.refused) return <WidgetState kind="unavailable" message={followPlan.refused} />;
+    if (followPlan.refused) return <WidgetState kind="unavailable" technical={followPlan.refused} />;
     if (auxEnabled && auxResult.error) return <WidgetState kind="error" failure={auxResult.error} onRetry={auxResult.retry} />;
     if (needsGroups && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
     if (isFilter) {
@@ -652,9 +654,9 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
   })();
 
   const bannerFailure = (isSingle && singleCountry?.chosen && singleCountry.error && singleCountry.historyHeld)
-    ? <WidgetState kind="error" failure={singleCountry.error} onRetry={singleCountry.retry} />
+    ? <WidgetState kind="error" scale="section" failure={singleCountry.error} onRetry={singleCountry.retry} />
     : ((isFilter || needsGroups) && groups.error && groups.data)
-      ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
+      ? <WidgetState kind="error" scale="section" failure={groups.error} onRetry={groups.retry} />
       : null;
 
   const host = <FamilyTableHost

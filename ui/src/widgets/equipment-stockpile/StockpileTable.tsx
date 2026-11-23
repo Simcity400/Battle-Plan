@@ -1,7 +1,6 @@
 import { useMemo, useRef } from 'react';
 import type { NarrowTable } from '../../charts/table/options';
 import ArtFallback from '../../components/ArtFallback';
-import { Segmented } from '../../components/Segmented';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import { liveKey, mapLive, valuesOf } from '../../charts/live.ts';
@@ -26,11 +25,6 @@ import type { EquipmentStockpileReply } from './types';
 const ROW_HEIGHT = 40;
 const NOT_RECORDED = 'Not recorded';
 
-const COUNTS: readonly { value: StockCount; label: string; tooltip: string }[] = [
-  { value: 'units', label: 'Units', tooltip: 'Output in units a day' },
-  { value: 'ic', label: 'IC', tooltip: 'Output as the IC its lines put in a day; stock and surplus have no IC value' },
-];
-
 export function paintedCells(rows: readonly StockRow[]): Map<string, SortValue> {
   const cells = new Map<string, SortValue>();
   for (const row of rows) {
@@ -43,10 +37,10 @@ export function paintedCells(rows: readonly StockRow[]): Map<string, SortValue> 
   return cells;
 }
 
-export default function StockpileTable({ data, hour, at, live, shownAt, included, count, setCount, narrow, active, runtime, track, widget, viewport, onDiagnostics, onPick }: {
+export default function StockpileTable({ data, hour, at, live, shownAt, included, count, narrow, active, runtime, track, widget, viewport, onDiagnostics, onPick }: {
   data: EquipmentStockpileReply; hour: number; at: (values: LiveValues<number>) => EquipmentStockpileReply | undefined;
   live: Live<LiveValues<number>>; shownAt: () => number | null;
-  included: readonly string[]; count: StockCount; setCount?: (count: StockCount) => void; narrow: NarrowTable;
+  included: readonly string[]; count: StockCount; narrow: NarrowTable;
   active: boolean; runtime: WidgetProps['runtime']; track: BoundTrack; widget: WidgetSpec; viewport: number; onDiagnostics: WidgetProps['onDiagnostics'];
   onPick: (group: StockGroup, hour: number, mode: StockpileMode) => void;
 }) {
@@ -101,7 +95,6 @@ export default function StockpileTable({ data, hour, at, live, shownAt, included
   return <div className="stockpile-table">
     <div className="stockpile-caption-line">
       <span>On {date} · {player ? 'surplus or shortage from the game’s Logistics screen' : mode === 'ai' ? AI_NOTE : 'in stock'}</span>
-      {setCount && <Segmented value={count} options={COUNTS} label="Count" onChange={setCount} />}
     </div>
     {rows.length === 0 ? <p className="stockpile-empty">Nothing of the included types was recorded on {date}.</p>
       : <div className="stockpile-table-rows" style={{ height: Math.min(rows.length * ROW_HEIGHT + 28, Math.max(160, viewport)) }}>

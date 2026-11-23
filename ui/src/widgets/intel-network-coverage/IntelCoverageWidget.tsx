@@ -1,6 +1,5 @@
 import { useCallback, useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
-import { Segmented } from '../../components/Segmented';
 import HeatMatrix from '../../charts/heat/HeatMatrix';
 import type { MatrixAxisItem } from '../../charts/heat/HeatMatrix';
 import { signedColor } from '../../charts/heat/matrix';
@@ -23,7 +22,7 @@ import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { mix } from '../../shell/appearance/color';
-import { MEASURES, OPTIONS, PAIR } from './definition';
+import { OPTIONS, PAIR } from './definition';
 import { cellState, countriesAt, coverageStructure, matrixCells, measureField, pairOptions, pairsAt, pairTooltip, validateIntelCoverage } from './intelCoverageData';
 import type { Basis, ChosenPair, Measure } from './intelCoverageData';
 import PairHistory from './PairHistory';
@@ -35,7 +34,7 @@ const PARAMS = {} as const;
 const NO_TAGS: readonly string[] = [];
 
 export default function IntelCoverageWidget(props: WidgetProps) {
-  const { widget, runtime, active, onDiagnostics, setOption } = props;
+  const { widget, runtime, active, onDiagnostics } = props;
   const options = resolveOptions(OPTIONS, widget.options);
   const tokens = useChartTokens();
   const anchor = useRef<HTMLDivElement>(null);
@@ -121,9 +120,6 @@ export default function IntelCoverageWidget(props: WidgetProps) {
         dispatch({ type: 'open', breakdown: PAIR.id, hour, follow: drillControl.followsAt(hour) });
       }} menu={() => readHour.current === null ? [] : [jumpItem(runtime, track.id, readHour.current)]} />;
   return <div ref={root} className="intel-coverage">
-    <div className="intel-coverage-caption">
-      {setOption && <Segmented value={measure} options={MEASURES} label="Measure" onChange={value => setOption('measure', value)} />}
-    </div>
     <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
       title={pair ? `${pairLabels(pair.owner).name} → ${pairLabels(pair.target).name}` : PAIR.label}
       day={drillAt === null ? '' : dayLabel(drillAt)} canFollow

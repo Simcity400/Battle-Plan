@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { inProcess, NATIVE } from './inProcess.fixture.ts';
+import { inProcess, managedInProcess, NATIVE } from './inProcess.fixture.ts';
 import { datedReading, datedStore, heldFor, joinReadings, onInstalled, readingOf } from './useFollowed.ts';
 import { message } from './messages.fixture.ts';
 import { cellValue, parseAnswer } from './message.ts';
 import type { PageSurface } from './page.ts';
 import type { LaneView } from '../../draw/lane';
+import { installedEntry } from './store.ts';
+import { classifyFailure, ShownError } from '../queryError.ts';
+import { followFailure } from './useFollow.ts';
 
 const surface = (): PageSurface<ImageBitmap> & { cleared: number } => ({ cleared: 0, install() {}, clear() { this.cleared++; } });
 
@@ -345,4 +348,299 @@ test('review 10: a reading\'s hour is the installed date when it is read, and th
   hour = 16;
   assert.equal(reading.state === 'covered' && reading.hour, 16, 'a same-structure install from 10 to 16 reads 16');
   assert.deepEqual(datedReading({ state: 'pending' }, { read: () => 16 }), { state: 'pending' });
+});
+
+test('retry on any follow failure restarts the whole pipeline cleanly without leaking readers, lanes, ports or listeners', async () => {
+  let openAttempts = 0;
+  let followAttempts = 0;
+  let clockAttempts = 0;
+  let releaseLateFollow: (() => void) | null = null;
+  const env = managedInProcess({
+    open: async () => {
+      openAttempts++;
+      if (openAttempts === 1) throw new Error('IPC pipe disconnected');
+      return `session-${openAttempts}`;
+    },
+    gate: (product, params) => {
+      if (product === 'follow' && (params.query as { params?: { late?: boolean } })?.params?.late) {
+        return new Promise<void>(resolve => { releaseLateFollow = resolve; });
+      }
+      return undefined;
+    },
+    follow: (_id, query) => {
+      const mode = (query.params as { mode?: string } | undefined)?.mode;
+      if (mode === 'refused') return { available: false, reason: 'Table absent in format 141' };
+      followAttempts++;
+      if (mode === 'fail-once' && followAttempts === 2) throw new Error('Host follow timed out');
+      return { available: true, route: mode === 'route2' ? NATIVE + 1 : NATIVE };
+    },
+    followClock: () => {
+      clockAttempts++;
+      if (clockAttempts === 2) throw new ShownError('Host stream clock stalled.', 'clock rpc 504');
+      return { available: true };
+    },
+  });
+  try {
+    const initialListeners = env.counts().clockListeners;
+    env.clock.seek(10);
+
+    const p1 = env.pipeline;
+    const w1 = p1.acquire('w1|0', { offset: 0, pin: null });
+    const s1 = p1.subscribe(w1, {}, env.source, '1', 0, { product: 'series-state' }, 'followed')!;
+    const e1 = installedEntry(p1, w1, s1);
+    await env.waitView(p1, w1, v => v?.mode === 'failed');
+    assert.equal(p1.status(s1).status, 'failed');
+    assert.equal(p1.status(s1).reason, 'IPC pipe disconnected');
+    assert.equal(env.counts().activeReaders, 0);
+
+    const restarted1 = env.nextEvent('restart');
+    e1.retry!();
+    await restarted1;
+    const p2 = env.pipeline;
+    assert.notEqual(p2, p1, 'retry after open failure replaces the pipeline');
+    const clock2 = env.nextEvent('follow-clock');
+    const w2 = p2.acquire('w1|0', { offset: 0, pin: null });
+    const s2 = p2.subscribe(w2, {}, env.source, '1', 0, { product: 'series-state' }, 'followed')!;
+    await clock2;
+    assert.equal(p2.status(s2).status, 'followed');
+    assert.equal(env.send(message(10, [{ id: s2, answer: { keys: [1n], columns: 1, values: [9n] } }], true, NATIVE, env.clock.getSnapshot().seekSequence)), 1);
+    await env.waitView(p2, w2, v => v?.mode === 'picture');
+
+    const failW = p2.acquire('fail-sub|0', { offset: 0, pin: null });
+    const failS = p2.subscribe(failW, {}, env.source, '1', 0, { product: 'series-state', params: { mode: 'fail-once' } }, 'followed')!;
+    const refW = p2.acquire('ref-sub|0', { offset: 0, pin: null });
+    const refS = p2.subscribe(refW, {}, env.source, '1', 0, { product: 'series-state', params: { mode: 'refused' } }, 'followed')!;
+    const lateW = p2.acquire('late-sub|0', { offset: 0, pin: null });
+    p2.subscribe(lateW, {}, env.source, '1', 0, { product: 'series-state', params: { late: true } }, 'followed');
+    await Promise.all([
+      env.waitView(p2, failW, v => v?.mode === 'failed'),
+      env.waitView(p2, refW, v => v?.mode === 'refused'),
+    ]);
+    assert.equal(p2.status(failS).reason, 'Host follow timed out');
+    assert.equal(p2.status(refS).status, 'refused');
+    assert.equal(p2.status(refS).reason, 'Table absent in format 141');
+
+    const restarted2 = env.nextEvent('restart');
+    installedEntry(p2, failW, failS).retry!();
+    await restarted2;
+    (releaseLateFollow as (() => void) | null)?.();
+    const p3 = env.pipeline;
+    assert.notEqual(p3, p2, 'retry after follow failure restarts the pipeline');
+    const w3 = p3.acquire('clock-fail|0', { offset: 0, pin: null });
+    const s3 = p3.subscribe(w3, {}, env.source, '1', 0, { product: 'series-state' }, 'followed')!;
+    const e3 = installedEntry(p3, w3, s3);
+    await env.waitView(p3, w3, v => v?.mode === 'failed');
+    const clockErr = followFailure({ status: e3.status, reason: e3.reason, error: e3.error, structure: '', entry: e3, hidden: false, reading: null });
+    assert.ok(clockErr);
+    assert.deepEqual(classifyFailure(clockErr.error), { kind: 'retryable', reason: 'Host stream clock stalled.', detail: 'clock rpc 504' });
+
+    const restarted3 = env.nextEvent('restart');
+    clockErr.retry();
+    await restarted3;
+    const p4 = env.pipeline;
+    const clock4 = env.nextEvent('follow-clock');
+    const w4a = p4.acquire('route-a|0', { offset: 0, pin: null });
+    const s4a = p4.subscribe(w4a, {}, env.source, '1', 0, { product: 'series-state' }, 'followed')!;
+    await clock4;
+    const clock4b = env.nextEvent('follow-clock');
+    const w4b = p4.acquire('route-b|24', { offset: 24, pin: null });
+    p4.subscribe(w4b, {}, env.source, '1', 24, { product: 'series-state', params: { mode: 'route2' } }, 'followed');
+    await clock4b;
+    env.fail('The pushed answers stopped');
+    await Promise.all([
+      env.waitView(p4, w4a, v => v?.mode === 'failed'),
+      env.waitView(p4, w4b, v => v?.mode === 'failed'),
+    ]);
+
+    const restarted4 = env.nextEvent('restart');
+    installedEntry(p4, w4a, s4a).retry!();
+    await restarted4;
+    const p5 = env.pipeline;
+    const clock5a = env.nextEvent('follow-clock');
+    const w5a = p5.acquire('route-a|0', { offset: 0, pin: null });
+    const s5a = p5.subscribe(w5a, {}, env.source, '1', 0, { product: 'series-state' }, 'followed')!;
+    await clock5a;
+    const clock5b = env.nextEvent('follow-clock');
+    const w5b = p5.acquire('route-b|24', { offset: 24, pin: null });
+    const s5b = p5.subscribe(w5b, {}, env.source, '1', 24, { product: 'series-state', params: { mode: 'route2' } }, 'followed')!;
+    await clock5b;
+    const pinW = p5.acquire('pinned|0', { offset: 0, pin: 10 });
+    const pinS = p5.subscribe(pinW, {}, env.source, '1', 0, { product: 'exact-panel' }, 'pinned', 'panel')!;
+    p5.exact(pinS, 10, { ok: true }, null);
+    assert.equal(env.send(message(10, [{ id: s5a, answer: { keys: [1n], columns: 1, values: [21n] } }], true, NATIVE, env.clock.getSnapshot().seekSequence)), 1,
+      'fresh reader counts resets from zero on each open');
+    assert.equal(env.send(message(34, [{ id: s5b, answer: { keys: [1n], columns: 1, values: [22n] } }], true, NATIVE + 1, env.clock.getSnapshot().seekSequence)), 1);
+    await Promise.all([
+      env.waitView(p5, w5a, v => v?.mode === 'picture'),
+      env.waitView(p5, w5b, v => v?.mode === 'picture'),
+      env.waitView(p5, pinW, v => v?.mode === 'picture'),
+    ]);
+
+    assert.deepEqual(env.counts(), {
+      openCalls: 5,
+      activeReaders: 1,
+      activeLanes: 1,
+      activeOwnedPorts: 1,
+      clockListeners: initialListeners,
+    }, 'after four restarts only one reader, one lane set, one port set and the original clock listener count remain');
+  } finally { env.close(); }
+});
+
+test('derived failure on a shared widget points at the sibling subscription carrying ShownError', async () => {
+  const shared = managedInProcess({
+    follow: (_id, query) => {
+      if ((query.params as { measure?: string } | undefined)?.measure === 'capacity') {
+        throw new ShownError('Capacity stream unavailable right now.', 'cap rpc 503');
+      }
+      return { available: true };
+    },
+  });
+  try {
+    const widget = shared.pipeline.acquire('fuel|0', { offset: 0, pin: null });
+    const fuelSub = shared.pipeline.subscribe(widget, {}, shared.source, '1', 0, { product: 'series-state', params: { measure: 'fuel' } }, 'followed')!;
+    const capSub = shared.pipeline.subscribe(widget, {}, shared.source, '1', 0, { product: 'series-state', params: { measure: 'capacity' } }, 'followed')!;
+    shared.clock.seek(10);
+    await shared.waitView(shared.pipeline, widget, v => v?.mode === 'failed');
+    const fuelEntry = installedEntry(shared.pipeline, widget, fuelSub);
+    const capEntry = installedEntry(shared.pipeline, widget, capSub);
+    assert.equal(fuelEntry.status, 'failed');
+    assert.deepEqual(classifyFailure(fuelEntry.error), { kind: 'retryable', reason: 'Capacity stream unavailable right now.', detail: 'cap rpc 503' },
+      'derived failure on fuel entry points at capacity cause');
+    const picked = followFailure(
+      { status: fuelEntry.status, reason: fuelEntry.reason, error: fuelEntry.error, structure: '', entry: fuelEntry, hidden: false, reading: null },
+      { status: capEntry.status, reason: capEntry.reason, error: capEntry.error, structure: '', entry: capEntry, hidden: false, reading: null },
+    );
+    assert.ok(picked);
+    assert.deepEqual(classifyFailure(picked.error), { kind: 'retryable', reason: 'Capacity stream unavailable right now.', detail: 'cap rpc 503' },
+      'followFailure picks the subscription carrying the ShownError cause');
+  } finally { shared.close(); }
+});
+
+test('close aborts in-flight follow requests, terminates a pending reader immediately, and disposes page bitmaps and widgets', async () => {
+  let readerClosed = false;
+  let resolveOpen!: () => void;
+  const openPending = new Promise<void>(resolve => { resolveOpen = resolve; });
+  const signals = new Map<string, AbortSignal[]>();
+  const clock = new (await import('../playback.ts')).PlaybackController();
+  clock.setBounds({ firstHour: 0, lastHour: 100 });
+  clock.seek(10);
+  const { Pipeline } = await import('./pipeline.ts');
+  const client = {
+    available: true,
+    openFollow: () => ({
+      ready: openPending.then(() => 'page1:1'),
+      close: () => { readerClosed = true; },
+    }),
+    product: (req: { product: string }, signal: AbortSignal) => {
+      const list = signals.get(req.product) ?? [];
+      list.push(signal);
+      signals.set(req.product, list);
+      return new Promise(() => {});
+    },
+  } as never;
+  const source = { id: 's', revision: 'r', path: 'p', metadata: {} } as never;
+  const pendingPipe = new Pipeline(clock, client, {
+    lanes: [{ onmessage: null, postMessage() {} }],
+    open: ports => (client as { openFollow(p: readonly MessagePort[]): unknown }).openFollow(ports) as never,
+    channel: () => new MessageChannel(),
+    frameRate: () => 60,
+    rate: () => 1,
+  });
+  const wPending = pendingPipe.acquire('p|0', { offset: 0, pin: null });
+  pendingPipe.subscribe(wPending, {}, source, '1', 0, { product: 'series-state' }, 'followed');
+  assert.equal(readerClosed, false);
+  pendingPipe.close();
+  assert.equal(readerClosed, true, 'closing while open is pending terminates the reader handle immediately');
+  resolveOpen();
+
+  const closedBitmaps: number[] = [];
+  const makeBitmap = (tag: number) => ({ width: 1, height: 1, close() { closedBitmaps.push(tag); } }) as unknown as ImageBitmap;
+  const env = managedInProcess();
+  try {
+    const p = env.pipeline;
+    const w = p.acquire('disp|0', { offset: 0, pin: null });
+    p.page.offer({ lane: 0, serial: 1, entries: [{ widget: w, id: 1, binding: 1, gen: { seek: p.page.seek, reset: 0 }, follows: true, h: 10, c: 10, lo: 10, hi: 10, mode: 'picture', surfaces: [makeBitmap(1)], content: {}, fields: {}, ms: 0 }] });
+    p.page.offer({ lane: 0, serial: 2, entries: [{ widget: w, id: 2, binding: 1, gen: { seek: p.page.seek, reset: 0 }, follows: true, h: 20, c: 20, lo: 20, hi: 20, mode: 'picture', surfaces: [makeBitmap(2)], content: {}, fields: {}, ms: 0 }] });
+    p.close();
+    assert.deepEqual(closedBitmaps.sort((a, b) => a - b), [1, 2], 'close disposes Page and closes queued and early bitmaps');
+    assert.equal(p.page.widgets.size, 0, 'close clears Page widgets');
+  } finally { env.close(); }
+
+  let releaseFollow!: () => void;
+  const followGate = new Promise<void>(resolve => { releaseFollow = resolve; });
+  let notifyFollow!: () => void;
+  const followStarted = new Promise<void>(resolve => { notifyFollow = resolve; });
+  let notifyUnfollow!: () => void;
+  const unfollowStarted = new Promise<void>(resolve => { notifyUnfollow = resolve; });
+  const followSignals: AbortSignal[] = [];
+  const unfollowSignals: AbortSignal[] = [];
+  const abortClient = {
+    available: true,
+    openFollow: async (ports: readonly MessagePort[]) => {
+      for (const p of ports) p.close();
+      return 'page1:2';
+    },
+    product: async (req: { product: string }, signal: AbortSignal) => {
+      if (req.product === 'follow') { followSignals.push(signal); notifyFollow(); await followGate; return { data: { available: true, route: NATIVE } }; }
+      if (req.product === 'unfollow') { unfollowSignals.push(signal); notifyUnfollow(); return { data: { available: true } }; }
+      return { data: { available: true } };
+    },
+  } as never;
+  const abortPipe = new Pipeline(clock, abortClient, {
+    lanes: [{ onmessage: null, postMessage() {} }],
+    open: ports => (abortClient as { openFollow(p: readonly MessagePort[]): Promise<string> }).openFollow(ports),
+    channel: () => new MessageChannel(),
+    frameRate: () => 60,
+    rate: () => 1,
+  });
+  const wAbort = abortPipe.acquire('a|0', { offset: 0, pin: null });
+  abortPipe.subscribe(wAbort, {}, source, '1', 0, { product: 'series-state' }, 'followed');
+  await followStarted;
+  assert.equal(followSignals.length, 1);
+  assert.equal(followSignals[0]!.aborted, false);
+  abortPipe.close();
+  assert.equal(followSignals[0]!.aborted, true, 'close aborts in-flight follow requests');
+  releaseFollow();
+  await unfollowStarted;
+  assert.equal(unfollowSignals.length, 1);
+  assert.equal(unfollowSignals[0]!.aborted, false, 'session unfollow cleanup stays independent of pipeline abort');
+});
+
+test('a superseded follow-clock rejection never overwrites a route failure cause accepted for a later command', async () => {
+  let rejectOldClock!: (err: unknown) => void;
+  let clockCall = 0;
+  let notifyFirstClock!: () => void;
+  const firstClockStarted = new Promise<void>(resolve => { notifyFirstClock = resolve; });
+  const env = managedInProcess({
+    gate: product => {
+      if (product === 'follow-clock') {
+        clockCall++;
+        if (clockCall === 1) {
+          notifyFirstClock();
+          return new Promise<void>((_resolve, reject) => { rejectOldClock = reject; });
+        }
+      }
+      return undefined;
+    },
+    followClock: () => ({ available: true }),
+  });
+  try {
+    env.clock.seek(10);
+    const p = env.pipeline;
+    const w = p.acquire('r6|0', { offset: 0, pin: null });
+    const s = p.subscribe(w, {}, env.source, '1', 0, { product: 'series-state' }, 'followed')!;
+    await firstClockStarted;
+    const secondClock = env.nextEvent('follow-clock');
+    env.clock.seek(20);
+    rejectOldClock(new ShownError('Superseded clock error.', 'old clock 504'));
+    await secondClock;
+    assert.equal(p.status(s).error, undefined, 'superseded clock rejection must not write route.error for a later command');
+    env.fail('Current stream failed');
+    await env.waitView(p, w, v => v?.mode === 'failed');
+    const entry = installedEntry(p, w, s);
+    assert.equal(entry.status, 'failed');
+    assert.equal(entry.error?.message, 'Current stream failed', 'superseded clock rejection did not overwrite the current failure');
+  } finally {
+    env.close();
+  }
 });
