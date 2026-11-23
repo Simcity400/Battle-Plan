@@ -221,7 +221,7 @@ fn endpoint_accepted_stream_matches_plain_frames_across_aliases_and_keyframes() 
         decoded.push(plain.advance(&raw).unwrap().clone());
         records.push(replay::spool::Record::Frame(raw));
     }
-    let (replay, derived) = Replay::from_records_derived(crate::test_fixtures::CAMPAIGN.into(), &[records]).unwrap();
+    let (replay, derived) = Replay::from_records_derived(recorder_derive::writers(), crate::test_fixtures::CAMPAIGN.into(), &[records]).unwrap();
     assert_eq!(derived.len(), decoded.len());
     let expected: Vec<_> = decoded.into_iter().zip(&derived).map(|(frame, held)| canonical(&read_back(frame, held))).collect();
     let mut writer = EndpointWriter::for_tables(&TableId::ALL);

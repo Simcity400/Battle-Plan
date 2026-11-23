@@ -3,6 +3,22 @@ use std::marker::PhantomData;
 
 pub const ENABLED: bool = cfg!(feature = "memory-labels");
 
+#[cfg(feature = "memory-labels")]
+#[macro_export]
+macro_rules! counting_system_allocator {
+    () => {
+        #[global_allocator]
+        static ALLOCATOR: $crate::labels::Counting<::std::alloc::System> =
+            $crate::labels::Counting(::std::alloc::System);
+    };
+}
+
+#[cfg(not(feature = "memory-labels"))]
+#[macro_export]
+macro_rules! counting_system_allocator {
+    () => {};
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Kind {

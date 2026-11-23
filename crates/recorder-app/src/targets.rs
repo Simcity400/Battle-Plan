@@ -148,6 +148,7 @@ pub(crate) mod tests {
 
     pub(crate) fn recording_file(path: &Path, campaign: &str) {
         let replay = replay::campaign::Replay::from_records(
+            recorder_derive::writers(),
             campaign.as_bytes().to_vec(),
             &[vec![replay::spool::Record::SessionStart(
                 replay_data::identity::SessionStart {
@@ -203,7 +204,7 @@ pub(crate) mod tests {
             identity: replay_identity::test_fixtures::identity(),
         };
         let replay =
-            Replay::from_records(CAMPAIGN.into(), &[vec![Record::SessionStart(session)]]).unwrap();
+            Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[vec![Record::SessionStart(session)]]).unwrap();
         fs::create_dir_all(folder).unwrap();
         fs::write(folder.join("Recording.battleplan"), replay.bytes()).unwrap();
     }

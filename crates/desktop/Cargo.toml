@@ -37,6 +37,7 @@ custom-protocol = ["tauri/custom-protocol"]
 served-ui = ["custom-protocol"]
 
 [dev-dependencies]
+recorder-derive.workspace = true
 content-reader-core = { workspace = true, features = ["test-support"] }
 
 [lints]
@@ -60,7 +61,7 @@ replay = { workspace = true, features = ["default", "journal", "recording", "tes
 replay-identity = { workspace = true, features = ["test-support"] }
 tauri = { version = "2.11.5", default-features = false, features = ["common-controls-v6", "compression", "dbus", "default", "dynamic-acl", "tauri-runtime-wry", "tray-icon", "webkit2gtk", "webview2-com", "wry", "x11"] }
 test-unify = { workspace = true }
-unify-bitflags-1 = { workspace = true }
+unify-bitflags = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
 viewer-buildings = { workspace = true, features = ["test-support"] }
 viewer-map-icons = { workspace = true, features = ["test-support"] }

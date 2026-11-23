@@ -115,5 +115,5 @@ pub fn recording_sequence(partial: bool, sequence: bool) -> io::Result<Replay> {
             failed_hour: None,
         }));
     }
-    Replay::from_records(campaign.to_vec(), &[records])
+    Replay::from_records(recorder_derive::writers(), campaign.to_vec(), &[records])
 }

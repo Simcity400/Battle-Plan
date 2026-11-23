@@ -8,4 +8,4 @@ Each part requires its own complete input set after country identity is known. U
 
 The writer retains per-entity contributions and canonical sums, plus indexes to find terms affected by a changed input. A fresh hour, resume, change to identity, or change in input completeness rebuilds from the held tables. No derived state is persisted for this writer. The test harness applies table reads before derivations and restores the sample hours and definitions on resume. An unstamped update applies cells without advancing the sample hour.
 
-[Writer](../../crates/recorder-derive/src/deployed.rs) · [Test replays and harness](../../crates/recorder-derive/src/deployed/tests.rs)
+[Writer](../../crates/recorder-derive-land/src/deployed.rs) · [Test replays](../../crates/recorder-derive-land/src/deployed/tests.rs) ? [Shared harness](../../crates/recorder-derive-framework/src/testing/deployed.rs)

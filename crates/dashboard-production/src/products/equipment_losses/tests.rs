@@ -245,7 +245,7 @@ fn historical_and_current_recordings_distinguish_startup_partial_and_withheld_ho
         unavailable_reason: Recorded::Value("reworded branch interval".to_owned()),
         ..Default::default()
     }];
-    let (current_bytes, _) = fixtures::written_at(current_format, b"current-coverage", &[(1, 100, 1)], &[TableId::EquipmentLossCoverage], |synthetic, _, ordinal| {
+    let (current_bytes, _) = fixtures::written_at(recorder_derive::writers_within, current_format, b"current-coverage", &[(1, 100, 1)], &[TableId::EquipmentLossCoverage], |synthetic, _, ordinal| {
         synthetic.table(TableId::Countries, Input::Snapshot { rows: &countries, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
         synthetic.table(TableId::CountryLinks, Input::Snapshot { rows: &links, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
         let input = match ordinal {
@@ -429,6 +429,7 @@ fn recording_break_keeps_each_runs_counting_boundary_and_partial_startup_separat
         ..Default::default()
     }];
     let (bytes, _) = fixtures::written_at(
+        recorder_derive::writers_within,
         EQUIPMENT_DESTRUCTION_STARTUP_FORMAT,
         b"break-coverage",
         &[(1, 100, 1), (1, 200, 1)],
@@ -675,7 +676,7 @@ fn contiguous_load_with_supplemental_gap_exports_exact_run_boundaries_and_gates_
         parent: Parentage::Probable { branch: 1, hour: 119 },
         reason: BranchReason::LoadSignal,
     });
-    let replay = Replay::from_records(CAMPAIGN.into(), &[parent, child]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[parent, child]).unwrap().into_timelines(&Default::default()).unwrap();
     let timelines = replay.timelines().expect("timelines");
     assert_eq!(timelines.list.len(), 1);
     let branch_id = timelines.list[0].id;
@@ -768,7 +769,7 @@ fn destruction_chart_bins_clip_before_first_withheld_hour() {
             frame
         })
         .collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(
         dashboard_base::SourceKey { source_id: "losses-withheld-bin".into(), revision: "1".into() },
         "synthetic.battleplan".into(),
@@ -869,7 +870,7 @@ fn exact_read_at_child_hour_with_supplemental_gap_never_synthesizes_zero_for_par
         parent: Parentage::Probable { branch: 1, hour: 119 },
         reason: BranchReason::LoadSignal,
     });
-    let replay = Replay::from_records(CAMPAIGN.into(), &[parent, child]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[parent, child]).unwrap().into_timelines(&Default::default()).unwrap();
     let branch_id = replay.timelines().expect("timelines").list[0].id;
     let source = Source::from_replay(
         dashboard_base::SourceKey { source_id: "losses-supp-zero".into(), revision: "1".into() },
@@ -983,7 +984,7 @@ fn exact_read_at_unavailable_totals_hour_records_explicit_absence() {
             frame
         })
         .collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(
         dashboard_base::SourceKey { source_id: "losses-unavail-exact".into(), revision: "1".into() },
         "synthetic.battleplan".into(),
@@ -1092,7 +1093,7 @@ fn exact_zero_inside_coarse_bin_preserves_bin_end_for_later_first_loss() {
             frame
         })
         .collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(
         dashboard_base::SourceKey { source_id: "losses-coarse-zero".into(), revision: "1".into() },
         "synthetic.battleplan".into(),

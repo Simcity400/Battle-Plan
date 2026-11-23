@@ -186,7 +186,7 @@ mod tests {
     }
 
     fn replay() -> Replay {
-        Replay::from_records(CAMPAIGN.to_vec(), &[records(frame)]).unwrap()
+        Replay::from_records(recorder_derive::writers(), CAMPAIGN.to_vec(), &[records(frame)]).unwrap()
     }
 
     fn records(frame: impl Fn(Hour) -> Frame) -> Vec<Record> {
@@ -223,7 +223,7 @@ mod tests {
         let format = CAPTURE_ADDITIONS_FORMAT - 1;
         let added: Vec<TableId> = TableId::ALL.into_iter().filter(|table| !table.last_change().present(format) && table.last_change().retired.is_none()).collect();
         assert_eq!(added, [TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs, TableId::PowerSpendDays]);
-        let bytes = crate::campaign::fixtures::encode_records_at(format, CAMPAIGN.to_vec(), &[records(|hour| frame_at(format, hour))]).unwrap();
+        let bytes = crate::campaign::fixtures::encode_records_at(recorder_derive::writers_within, format, CAMPAIGN.to_vec(), &[records(|hour| frame_at(format, hour))]).unwrap();
         let replay = Replay::open(bytes).unwrap();
         assert_eq!((replay.sessions.len(), replay.branches.len()), (1, 1));
         assert_eq!(replay.recording.tables(), TableId::ALL.len() - added.len());
@@ -266,7 +266,7 @@ mod tests {
         };
         use replay_data::rows::compatibility::{CAPTURE_ADDITIONS_FORMAT, EVENT_LOSS_FORMAT};
         let format = CAPTURE_ADDITIONS_FORMAT - 1;
-        let bytes = crate::campaign::fixtures::encode_records_at(format, CAMPAIGN.to_vec(), &[records(|hour| frame_at(format, hour))]).unwrap();
+        let bytes = crate::campaign::fixtures::encode_records_at(recorder_derive::writers_within, format, CAMPAIGN.to_vec(), &[records(|hour| frame_at(format, hour))]).unwrap();
         let path = std::env::temp_dir().join(format!("hoi4-revise-earlier-format-{}", std::process::id()));
         std::fs::write(&path, &bytes).unwrap();
         let opened = Recording::open_path_as(&path, Open::Newest).unwrap();
@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn a_recording_of_a_newer_format_is_refused_by_name_however_it_is_opened() {
         let newer = crate::format::FormatVersion::CURRENT.version() + 1;
-        let bytes = crate::campaign::fixtures::encode_records_naming(newer, CAMPAIGN.to_vec(), &[records(frame)]).unwrap();
+        let bytes = crate::campaign::fixtures::encode_records_naming(recorder_derive::writers(), newer, CAMPAIGN.to_vec(), &[records(frame)]).unwrap();
         for error in [crate::columnar_frames::Recording::open(bytes.clone()).map(drop).unwrap_err(), Replay::open(bytes).map(drop).unwrap_err()] {
             assert!(error.to_string().contains(&format!("recording format {newer} is newer")), "{error}");
         }

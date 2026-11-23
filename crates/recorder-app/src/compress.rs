@@ -422,7 +422,7 @@ mod tests {
         let _ = fs::remove_dir_all(&folder);
         fs::create_dir_all(&folder).unwrap();
         let path = folder.join("Germany 1936.battleplan");
-        let bytes = replay::columnar_frames::fixtures::restored(7, &[(1, 100, 1)]);
+        let bytes = replay::columnar_frames::fixtures::restored(recorder_derive::writers(), 7, &[(1, 100, 1)]);
         fs::write(&path, &bytes).unwrap();
         let jobs = Jobs::default();
         jobs.request(&path).unwrap();
