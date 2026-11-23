@@ -1,7 +1,7 @@
 use engine_native_memory::{Memory, cpdx_array::Array, read};
 use engine_native::{
     carmy::{self, DivisionSeed},
-    cequipment_variant::{self, pool as cequipment_variant_pool},
+    cequipment_variant::pool as cequipment_variant_pool,
     cgame_state,
     cprovince,
     cstate,
@@ -161,6 +161,7 @@ pub fn province_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine_native::cequipment_variant;
     use engine_native_memory::memory::SliceMemory;
     #[test]
     fn zero_quantity_does_not_touch_a_variant_and_negative_quantity_is_held() {

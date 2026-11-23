@@ -1,7 +1,7 @@
 
 use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
 use engine_native_parts::{allocation_equipment_row, cequipment_type};
-use engine_native::cequipment_variant::{self, pool as cequipment_variant_pool};
+use engine_native::cequipment_variant::pool as cequipment_variant_pool;
 use crate::{craid_instance, raid_speed_inputs::{self, Raid}};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

@@ -3,7 +3,7 @@ use engine_allocation as allocation;
 use engine_native_parts::{cconvoys, equipment_entry};
 use engine_native::{
     ccountry,
-    cequipment_variant::{self, pool as cequipment_variant_pool},
+    cequipment_variant::pool as cequipment_variant_pool,
 };
 
 const TRADE_COUNTRY: usize = 0x18;
@@ -173,6 +173,7 @@ fn word<T: engine_native_memory::memory::Raw>(memory: &impl Memory, pointer: usi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine_native::cequipment_variant;
     use std::cell::RefCell;
 
     struct Observed {

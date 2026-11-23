@@ -98,7 +98,10 @@ pub(crate) fn read_hits(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the test supplies separate buffers and counters for wing types and plane wings"
+)]
 #[cfg(test)]
 pub(crate) fn read(
     memory: &impl Memory,
@@ -126,7 +129,10 @@ pub(crate) fn read(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each output arena has independent written and required entry counts"
+)]
 pub(crate) fn read_buffer(
     memory: &impl Memory,
     base: usize,

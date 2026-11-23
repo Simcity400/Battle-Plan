@@ -221,7 +221,10 @@ const COMBAT_SHIP_FIELDS: [(usize, usize); 18] = [
 pub static MEMBER_PHASES: [std::sync::atomic::AtomicU64; 4] =
     [const { std::sync::atomic::AtomicU64::new(0) }; 4];
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the timed wrapper forwards the member's group, combat and side with shared output buffers"
+)]
 pub(crate) fn details(
     memory: &impl Memory,
     base: usize,
@@ -244,7 +247,10 @@ pub(crate) fn details(
     row
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the member address, owning group, combat and side are separate inputs to the read"
+)]
 fn details_timed(
     memory: &impl Memory,
     base: usize,

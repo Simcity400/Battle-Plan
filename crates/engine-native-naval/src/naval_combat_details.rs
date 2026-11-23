@@ -37,7 +37,10 @@ pub struct DetailsRow {
     pub custom_sea_error: Option<&'static str>,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the traversal uses caller-owned output and scratch buffers and a timing callback"
+)]
 pub fn walk_details_timed(
     memory: &impl Memory,
     base: usize,
@@ -405,7 +408,10 @@ fn commander_input(
     Ok([index, 1])
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the side and its roots select traversal independently of the group and plane buffers"
+)]
 fn read_planes(
     memory: &impl Memory,
     base: usize,
@@ -501,7 +507,10 @@ enum PlaneOwner<'a> {
     Side(&'a GroupSet),
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the plane array address, owner, source and group index describe separate inputs"
+)]
 fn append_planes(
     memory: &impl Memory,
     base: usize,
