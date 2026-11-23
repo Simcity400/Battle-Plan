@@ -193,10 +193,9 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
   }, [isFilter, widget.countries, filterMatch, groups.data, track, selectedFallback, allTags, firstHour, lastHour]);
 
   const resolvedMulti = useMemo(() => {
-    if (!isMulti) return null;
-    if (widget.countries.kind === 'all' && policy.allowSingleSlot) return null;
+    if (!isMulti || widget.countries.kind === 'all') return null;
     return resolveCountries(widget.countries, selectedFallback, groups.data, lastHour, Number.MAX_SAFE_INTEGER);
-  }, [isMulti, policy, widget.countries, selectedFallback, groups.data, lastHour]);
+  }, [isMulti, widget.countries, selectedFallback, groups.data, lastHour]);
 
   const singleSlotId = isMulti && policy.allowSingleSlot && widget.countries.kind === 'selected' && selectedFallback.length === 1
     ? countryFromKey(selectedFallback[0]!)
