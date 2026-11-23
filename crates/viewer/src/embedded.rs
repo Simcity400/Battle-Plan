@@ -415,12 +415,12 @@ fn clock_only(old: &DashboardMapState, new: &DashboardMapState) -> bool {
     clockless(old) == clockless(new)
 }
 
-pub fn install_follow(send: impl Fn(u8, Vec<u8>) + Send + 'static) -> io::Result<bool> {
+pub fn install_follow(send: impl Fn(u8, Vec<u8>, u64) + Send + 'static) -> io::Result<bool> {
     let push = Arc::new(dashboard_follow::push::Push::default());
     let drained = Arc::clone(&push);
     thread::Builder::new().name("follow push".into()).spawn(move || {
-        while let Some((kind, bytes, _, _)) = drained.take_kind() {
-            send(kind, bytes);
+        while let Some((kind, bytes, session)) = drained.take_sent() {
+            send(kind, bytes, session);
         }
     })?;
     Ok(dashboard_follow::registry::install(Arc::new(FollowPlayheads { push, hosts: Mutex::default(), building: Mutex::default() })))
@@ -456,6 +456,14 @@ impl FollowPlayheads {
 }
 
 impl dashboard_follow::registry::Playheads for FollowPlayheads {
+    fn credit(&self, session: u64, released: u64) {
+        self.push.credit(session, released);
+    }
+
+    fn restart(&self) -> u64 {
+        self.push.restart()
+    }
+
     fn open(&self, path: &Path, branch: u64, clock: i32) -> Result<Arc<dyn dashboard_follow::registry::Hosted>, String> {
         let push = &self.push;
         if let Some(failed) = push.failed() {
@@ -477,8 +485,8 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
         entry.set_capture(capture);
         let follow = dashboard_follow::Follow::new(clock);
         let out = Arc::clone(push);
-        let hook = follow.hook(Box::new(move |_, message| {
-            if let Some(message) = message { out.offer(message.bytes); }
+        let hook = follow.hook(Box::new(move |stats, message| {
+            if let Some(message) = message { out.offer_from(stats.session, dashboard_follow::push::FOLLOW, message.bytes); }
         }));
         let held = dashboard_follow::host::held_tables(&**entry.pages(), entry.kinds().len());
         let host = dashboard_follow::host::PlayheadHost::new(Arc::clone(&entry), crate::playhead_host::Entry::playhead, crate::playhead_host::Entry::follow_anchor, follow, held).map_err(|error| error.to_string())?;

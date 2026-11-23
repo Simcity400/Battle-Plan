@@ -18,8 +18,10 @@ pub const CELLS: u32 = 1 << 31;
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
-pub fn cells_id() -> u32 {
-    CELLS | (NEXT.fetch_add(1, Ordering::Relaxed) & !CELLS)
+pub fn cells_id(lane: u32, lanes: u32) -> u32 {
+    let lanes = lanes.max(1);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed) % (!CELLS / lanes);
+    CELLS | (n * lanes + lane % lanes)
 }
 
 pub const NO_ROW: &str = "No live row has this key";

@@ -55,7 +55,7 @@ export function useStabilityParts(client: DashboardClient, clock: PlaybackContro
     && parts.every(part => (states ?? []).some(state => state.tag === tag && state.part === part && state.hour === Math.floor(at))), [parts, states, tag]);
   const followed = series.followed;
   const live = useMemo(() => followed && tag ? (render: (values: MeasureParts) => ReturnType<LiveDrillParts['read']>): LiveDrillParts =>
-    liveFollowed(followed.store, followed.entry, entry => {
+    liveFollowed(followed.entry, entry => {
       const states = parts.flatMap(part => {
         const row = followed.row({ tag, part });
         const value = row < 0 ? null : rowAmount(entry.answer, row, 0);

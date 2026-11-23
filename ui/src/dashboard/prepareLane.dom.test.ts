@@ -30,7 +30,7 @@ test('at 15 hours a frame for 600 frames, the page plays the same with the prepa
     const followed = await act<{ acquired: string[]; seen: Record<string, { status: string; hidden: boolean }> }>('followed()');
     assert.deepEqual(followed.acquired, ['shown'], 'a prepared copy follows nothing; a shown widget follows its head');
     assert.deepEqual(followed.seen.prepared, { status: 'off', hidden: false }, 'a prepared copy reads its head as an unfollowed widget does, through the lane');
-    assert.deepEqual(followed.seen['off screen'], { status: 'off', hidden: true }, 'a shown widget off screen still reads nothing');
+    assert.deepEqual(followed.seen['off screen'], { status: 'pending', hidden: true }, 'a shown widget off screen still reads nothing');
   }));
 });
 

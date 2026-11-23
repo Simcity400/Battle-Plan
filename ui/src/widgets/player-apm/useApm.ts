@@ -9,7 +9,7 @@ import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { resolveCountries } from '../../dashboard/groups';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useProduct, useFollowedProduct } from '../../dashboard/products';
-import { useFallbackHour } from '../../dashboard/follow/useFollow.ts';
+import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import type { ApmParams, ApmReply } from '../../generated/dashboard';
 import { GRAPH_OPTIONS, TABLE_APM_OPTIONS } from './definition';
 import { playerNames, validateApm } from './apmData';
@@ -32,7 +32,7 @@ export function useApmChoices(widget: WidgetSpec, runtime: WidgetRuntime): Optio
 
 export function useApm({ widget, runtime, active }: WidgetProps, graph: boolean, view?: { identity: string; from: number; to: number; width: number } | null,
   followed = false) {
-  const playbackHour = useFallbackHour(runtime.clock, active && widget.time.mode === 'follow' && !followed);
+  const playbackHour = usePlaybackHour(runtime.clock, false);
   const track = runtime.tracks.find(track => track.id === widget.trackIds[0]);
   const identity = JSON.stringify([track?.source.id, track?.branch.id, widget.time]);
   const options = resolveOptions(graph ? GRAPH_OPTIONS : TABLE_APM_OPTIONS, widget.options);
@@ -73,7 +73,7 @@ export function useApm({ widget, runtime, active }: WidgetProps, graph: boolean,
     const [firstHour, lastHour] = JSON.parse(product.moment) as [number, number, number];
     return { firstHour, lastHour };
   }, [product.moment]);
-  const head = track && (!resolved || (!resolved.reason && !resolved.unobserved.length)) ? {
+  const head = track && (!resolved || (!resolved.reason && !membershipGap)) ? {
     branchId: track.branch.id, group: options.group === 'player' ? 'player' as const : 'country' as const, tags: asked?.tags ?? null,
     membership: asked?.membership ? [...asked.membership.values()].flat() : null, players: contentSet(options.players).map(contentKey),
   } : null;

@@ -34,6 +34,8 @@ export function filterStretch(filter: OccupiedFilter, hour: number): number {
   return low;
 }
 
+export const filterNext = (filter: OccupiedFilter, hour: number): number => filter.bounds[filterStretch(filter, hour)] ?? Infinity;
+
 export function occupiedTable(reply: OccupiedStatesReply, context: OccupiedTableContext, hour: number): OccupiedTable {
   const { filter } = context, passing = filter.passing;
   const unrecorded = filter.unrecorded.find(([first, last]) => first <= hour && hour <= last)?.[2] ?? null;

@@ -101,6 +101,7 @@ fn standing_cost() {
     use std::{collections::BTreeSet, hint::black_box};
 
     let push = Push::default();
+    let (session, mut released) = (push.session(), 0u64);
     let mut samples = Vec::new();
     const STEPS: i32 = 100_000;
     for round in 0..9 {
@@ -111,7 +112,10 @@ fn standing_cost() {
             for hour in 0..STEPS {
                 assert!(take_due(black_box(&mut due), hour).is_none());
                 push.offer_kind(PANEL, dated::ProductBatch::new((0, 1, 0)).finish(Some(hour)));
-                black_box(push.take_kind());
+                if let Some((_, bytes, ..)) = black_box(push.take_kind()) {
+                    released += dashboard_follow::charge(&bytes) as u64;
+                    push.credit(session, released);
+                }
             }
             samples.push(json!({"subscriptions": subscriptions, "round": round,
                 "nsPerStep": start.elapsed().as_nanos() as f64 / f64::from(STEPS)}));

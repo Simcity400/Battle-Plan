@@ -27,6 +27,7 @@ import { WidgetBody } from './widgets';
 import { HeldFailures, HeldFailuresContext } from './heldFailures';
 import HeldFailureNotices from './HeldFailureNotices';
 import { MeasuredWidget } from './widgetPerf';
+import { FollowedCard, FollowedWidgetKey } from './follow/store.ts';
 import { WidgetFrames } from './widgetClock';
 import { perfLog } from '../shell/perf';
 import { DASHBOARD_SCROLL, NEAR_SCREEN } from './follow/useFollow.ts';
@@ -103,6 +104,8 @@ const Body = memo(WidgetBody);
 
 function WidgetFrame({ prepared = false, widget, template, runtime, editing, onApply, onRemove }: Omit<Props, 'onLayouts'> & { widget: WidgetSpec }) {
   const element = useRef<HTMLElement>(null);
+  const [card, setCard] = useState<HTMLElement | null>(null);
+  const attach = useCallback((node: HTMLElement | null) => { element.current = node; setCard(node); }, []);
   const [active, setActive] = useState<boolean | null>(typeof IntersectionObserver === 'undefined' ? true : null);
   const [headerSlot, setHeaderSlot] = useState<HTMLSpanElement | null>(null);
   const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(null);
@@ -191,7 +194,7 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     return () => cancelAnimationFrame(frame);
   }, [settings, prepared]);
   const drawnHere = !prepared || definition?.preview !== false;
-  return <article ref={element} className={`${prepared ? 'dash-widget-prepared' : 'dash-widget'} kind-${widget.kind}`}
+  return <article ref={attach} className={`${prepared ? 'dash-widget-prepared' : 'dash-widget'} kind-${widget.kind}`}
     {...(prepared ? {} : { 'data-widget': widget.id, 'data-settings': settings, 'data-fixed-hour': fixedAt === undefined ? undefined : fixedAt - campaignTrack!.axisOffset, 'aria-label': widget.title })}>
     <header className="dash-widget-header">
       {editing && <span className="dash-drag-grip" data-tooltip="Drag to move" aria-hidden="true"><Icon name="grip" /></span>}
@@ -222,9 +225,9 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     <HeldFailureNotices failures={failures} />
     <div className="dash-widget-content"><div className="dash-widget-scaled" style={{ zoom: (widget.contentScale ?? 100) / 100 }}>
       {!drawnHere ? null : active === null ? <WidgetState kind="loading" label={`Loading ${widget.title}…`} /> : <HeaderActionsSlot.Provider value={actionsSlot}>
-        <HeldFailuresContext.Provider value={failures}><MeasuredWidget.Provider value={prepared ? null : widget.id}>
+        <HeldFailuresContext.Provider value={failures}><MeasuredWidget.Provider value={prepared ? null : widget.id}><FollowedWidgetKey.Provider value={widget.id}><FollowedCard.Provider value={card}>
           <Body widget={widget} runtime={bodyRuntime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} setOption={saveOption} setOptions={saveOptions} />
-        </MeasuredWidget.Provider></HeldFailuresContext.Provider>
+        </FollowedCard.Provider></FollowedWidgetKey.Provider></MeasuredWidget.Provider></HeldFailuresContext.Provider>
       </HeaderActionsSlot.Provider>}
     </div></div>
   </article>;

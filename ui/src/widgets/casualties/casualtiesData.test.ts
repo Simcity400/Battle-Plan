@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SeriesStateReply } from '../../generated/dashboard';
-import { casualtyRaceEntries, casualtyRatio, casualtyRows, formatCasualties, rankCasualties, stateHeld } from './casualtiesData.ts';
+import { casualtyRaceEntries, casualtyRatio, casualtyRows, formatCasualties, rankCasualties, stateHeld, heldCasualties, retainedLive } from './casualtiesData.ts';
 import type { HeldMeasures } from './casualtiesData';
 
 const state = (measure: string, values: Record<string, string | null>): SeriesStateReply => ({ branchId: '1', measure, decimals: 0,
@@ -48,4 +48,30 @@ test('a top N ranks no country known to total zero; every country keeps it, and 
   const rows = casualtyRows(['AAA', 'BBB', 'CCC', 'DDD'], measures, 10, false);
   assert.deepEqual(rankCasualties(rows, 10, true).map(row => row.tag), ['BBB', 'CCC'], 'no 0/0 rows pad the top in tag order');
   assert.deepEqual(rankCasualties(rows, 10).map(row => row.tag), ['BBB', 'AAA', 'DDD', 'CCC']);
+});
+
+test('review 8 2: a ranking awaiting its measures is loading, an answered empty one is empty, and a changed membership keeps the last complete result', () => {
+  const first = heldCasualties<string>(null, [undefined, undefined], ['GER', 'SOV'], true, null);
+  assert.deepEqual([first.awaiting, first.held], [true, null], 'a nonempty ranking whose measures are pending is loading, not "No casualties yet"');
+  assert.equal(heldCasualties<string>(null, [undefined, undefined], [], true, null).awaiting, false, 'an answered empty ranking is empty');
+  const complete = heldCasualties<string>(null, ['a', 'b'], ['GER', 'SOV'], true, null);
+  const moved = heldCasualties<string>(complete.held, [undefined, undefined], ['GER', 'ITA'], true, null);
+  assert.deepEqual([moved.lives, moved.members, moved.awaiting], [['a', 'b'], ['GER', 'SOV'], false], 'a new member keeps the last complete result until its measures land');
+  assert.equal(heldCasualties<string>(complete.held, [undefined, undefined], ['GER'], true, 'Not recorded').held, null, 'a refusal drops the held result');
+});
+
+test('review 9: a retained reader keeps the last complete values when its installation no longer holds them', () => {
+  let answer: string | undefined = 'complete';
+  const live = { read: () => ({ answer, version: answer ? 1 : 2 }), subscribe: () => () => {} };
+  const held = retainedLive(live);
+  assert.equal(held.read().answer, 'complete');
+  answer = undefined;
+  assert.deepEqual(held.read(), { answer: 'complete', version: 1 }, 'a rank-only install does not lose the previous measures');
+  assert.equal(retainedLive(live), held, 'one retained reader per reader, so members and values stay paired');
+});
+
+test('review 10: on the render that changes membership, answers still from the previous subscriptions are not saved as complete', () => {
+  const before = heldCasualties<string>(null, ['a', 'b'], ['GER', 'SOV'], true, null);
+  const mixed = heldCasualties<string>(before.held, ['a', 'b'], ['GER', 'ITA'], true, null, false);
+  assert.deepEqual([mixed.members, mixed.lives, mixed.held], [['GER', 'SOV'], ['a', 'b'], before.held], 'the previous membership and values stay together');
 });

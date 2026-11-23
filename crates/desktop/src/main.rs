@@ -305,10 +305,19 @@ fn main() {
             if request.headers().get(header::ORIGIN).and_then(|origin| origin.to_str().ok()) != Some(&page_origin) {
                 return pull::refuse(responder, StatusCode::FORBIDDEN, "Only the dashboard may pull followed answers");
             }
-            if request.uri().path() != "/follow" {
-                return pull::refuse(responder, StatusCode::NOT_FOUND, "No such stream");
+            match request.uri().path() {
+                "/follow" => context.app_handle().state::<follow_push::FollowPush>().ask(&request, responder),
+                "/credit" => match (pull::param(&request, "session"), pull::param(&request, "released").and_then(|released| released.parse::<u64>().ok())) {
+                    (Some(session), Some(released)) => {
+                        if let Some(epoch) = context.app_handle().state::<follow_push::FollowPush>().outbox(|relay| relay.epoch_of(session)) {
+                            dashboard_follow::registry::registry().credit(epoch, released);
+                        }
+                        pull::refuse(responder, StatusCode::NO_CONTENT, "");
+                    }
+                    _ => pull::refuse(responder, StatusCode::BAD_REQUEST, "Credit names its session and the bytes it has released"),
+                },
+                _ => pull::refuse(responder, StatusCode::NOT_FOUND, "No such stream"),
             }
-            context.app_handle().state::<follow_push::FollowPush>().ask(&request, responder);
         })
         .register_asynchronous_uri_scheme_protocol("artwork", move |_, request, responder| {
             serve_artwork(request, responder, artwork_origin.clone())
@@ -331,9 +340,9 @@ fn main() {
             recorder::start_recorder();
             native::start_gamepad(app.handle().clone());
             let push = app.handle().clone();
-            viewer::host::install_follow(move |kind, payload| {
+            viewer::host::install_follow(move |kind, payload, session| {
                 if kind == dashboard_follow::push::FOLLOW || kind == dashboard_follow::push::PANEL {
-                    push.state::<follow_push::FollowPush>().offer(|queue| queue.offer_kind(kind, payload));
+                    push.state::<follow_push::FollowPush>().offer(|queue| queue.offer(payload, session));
                 }
             })?;
             if let Some(window) = app.get_webview_window("main") {

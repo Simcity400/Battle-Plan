@@ -21,7 +21,9 @@ export const browserTests = [
   'ui/src/components/PlaybackSpeed.dom.test.ts',
   'ui/src/components/Select.dom.test.ts',
   'ui/src/dashboard/atHead.dom.test.ts',
-  'ui/src/dashboard/follow/follow.dom.test.ts',
+  'ui/src/dashboard/drawnPanel.dom.test.ts',
+  'ui/src/dashboard/follow/install.dom.test.ts',
+  'ui/src/draw/tables/table.dom.test.ts',
   'ui/src/dashboard/playbackBars.dom.test.ts',
   'ui/src/test-support/recordedPages.dom.test.ts',
   'ui/src/engine/armyRecorded.dom.test.ts',
@@ -30,6 +32,7 @@ export const browserTests = [
   'ui/src/shell/appearance/WidgetIconMenu.dom.test.ts',
   'ui/src/widgets/raid-log/raidPlayback.dom.test.ts',
   'ui/src/widgets/special-projects/specialProjects.dom.test.ts',
+  'ui/src/widgets/war-goals/warGoals.dom.test.ts',
   tabFullTest,
 ];
 const pureBrowserSupportTests = new Set(['tools/canvas-page.test.ts']);

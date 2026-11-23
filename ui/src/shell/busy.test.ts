@@ -2,11 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { busy, busyCount, busyKinds, busyPreparing, busyWait, inBackground } from './busy.ts';
 import { FrameScheduler } from '../charts/scheduler.ts';
-import { FollowStore } from '../dashboard/follow/store.ts';
-import { fakeTransport, manualFrames, message } from '../dashboard/follow/messages.fixture.ts';
 import { inFrame, inFrameNow } from '../dashboard/frameUpdates.ts';
 
-const one = (key: bigint, value: bigint) => ({ keys: [key], columns: 1, values: [value] });
 
 test('each thing in flight counts once until it ends, by its kind', () => {
   const before = busyCount();
@@ -68,24 +65,6 @@ test('a chart draw is in flight from its wake until it has drawn, never while hi
   assert.equal(busyKinds().draws, 1);
   remove();
   assert.equal(busyKinds().draws, 0, 'a removed chart waits on nothing');
-});
-
-test('a followed answer is in flight until painted, and a seek clears it', () => {
-  const transport = fakeTransport();
-  const frames = manualFrames();
-  const store = new FollowStore(transport, frames.schedule);
-  const handle = store.acquire({ product: 'series-state', params: { branchId: '7', tags: ['GER'] } });
-  store.painter(handle.entry, () => {});
-  transport.deliver(message(24, [{ id: 1, answer: one(100n, 5n) }]));
-  assert.equal(busyKinds().follow, 1, 'an answer landed and is not yet painted');
-  frames.run();
-  assert.equal(busyKinds().follow, 0);
-
-  store.seek('7');
-  assert.equal(handle.entry.answer, undefined);
-  handle.release();
-  assert.equal(busyKinds().follow, 0, 'its last query let go, no message will come');
-  store.close();
 });
 
 test('data updates are in flight from when they are queued until their frame renders them', () => {

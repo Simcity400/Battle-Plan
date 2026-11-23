@@ -1,16 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PlaybackController, MAX_PLAYBACK_SPEED, MIN_PLAYBACK_SPEED, PLAYBACK_SPEEDS, speedLabel, speedParts, validPlaybackSpeed } from './playback.ts';
-import { WidgetFrames } from './widgetClock.ts';
-import { followStore } from './follow/connection.ts';
+import { WidgetFrames, pageClock } from './widgetClock.ts';
+import { pipelineFor, type PipelineHost } from './follow/pipeline.ts';
 import type { DashboardClient, DashboardSource } from './client';
 
 test('visible widgets on one page share native subscriptions through their individual frame signals', () => {
-  const clock = new PlaybackController(), client = {} as DashboardClient;
+  const clock = new PlaybackController();
+  const client = { available: true, product: () => new Promise(() => {}) } as unknown as DashboardClient;
   const source = { id: 'recording', revision: '1' } as DashboardSource;
+  const host = (): PipelineHost => ({ lanes: [{ onmessage: null, postMessage() {} }], open: () => new Promise(() => {}), channel: () => new MessageChannel(),
+    frameRate: () => 60, rate: () => 1 });
   const a = new WidgetFrames(clock, 'research'), b = new WidgetFrames(clock, 'active-research');
-  assert.equal(followStore(client, source, a.clock), followStore(client, source, b.clock));
-  assert.notEqual(followStore(client, source, a.clock, 24), followStore(client, source, b.clock));
+  const pipeline = pipelineFor(pageClock(a.clock), client, host);
+  try {
+    assert.equal(pipelineFor(pageClock(b.clock), client, host), pipeline, 'both frame signals reach the page clock\'s one pipeline');
+    const query = { product: 'series-state' };
+    const one = pipeline.acquire('research|0', { offset: 0, pin: null }), two = pipeline.acquire('active-research|0', { offset: 0, pin: null });
+    const shared = pipeline.subscribe(one, {}, source, '1', 0, query, 'followed');
+    assert.equal(pipeline.subscribe(two, {}, source, '1', 0, query, 'followed'), shared);
+    assert.notEqual(pipeline.subscribe(two, {}, source, '1', 24, query, 'followed'), shared, 'another clock offset is another subscription');
+  } finally { pipeline.close(); }
 });
 
 test('custom playback rates accept fractions without seeking or starting playback', () => {
@@ -212,4 +222,17 @@ test('the 1440 h/s preset banks fractional positions and stops exactly at the br
   assert.equal(clock.getSnapshot().position, 1000);
   assert.equal(clock.getSnapshot().fraction, 0);
   assert.equal(clock.getSnapshot().playing, false);
+});
+
+test('every publish tells its publish listeners first, so a seek is handled before any frame or anchor listener of the new position', () => {
+  const clock = new PlaybackController();
+  clock.setBounds({ firstHour: 0, lastHour: 200 });
+  clock.seek(100);
+  const heard: string[] = [];
+  clock.onPublish((previous, next) => heard.push(`publish ${previous.hour}->${next.hour}`));
+  clock.onAnchor(() => heard.push('anchor'));
+  clock.subscribeFrame(() => heard.push(`frame ${clock.getHour()}`));
+  clock.subscribe(() => heard.push('subscribe'));
+  clock.seek(20);
+  assert.deepEqual(heard, ['publish 100->20', 'anchor', 'frame 20', 'subscribe']);
 });
