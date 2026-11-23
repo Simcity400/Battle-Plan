@@ -1,12 +1,9 @@
-import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CountryFlagUrl, countryFlagUnavailable } from '../../components/CountryFlag';
-import { Segmented } from '../../components/Segmented';
 import LogList from '../../charts/log/LogList';
 import type { LogRow } from '../../charts/log/logData';
 import DrillHost from '../../charts/drill/DrillHost';
 import { useDrill } from '../../charts/drill/useDrill';
-import { HeaderActionsSlot } from '../../charts/ZoomReset';
 import { tooltipText } from '../../charts/tooltip';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens } from '../../charts/useChartTokens';
@@ -24,7 +21,7 @@ import { battleOutcome, battleTooltip, heldTerrain, lengthText, missingTerrain, 
 import type { HeldTerrain, SideLook } from './landBattleCourse';
 import { landManpowerLost } from './landBattlesData.ts';
 import type { LandBattleRow } from './landBattlesData';
-import { definition, VIEWS } from './definition';
+import { definition } from './definition';
 import LandBattleDrill from './LandBattleDrill';
 import './landBattles.css';
 import { useRegion } from '../../dashboard/widgetTime.ts';
@@ -305,7 +302,6 @@ export default function LandBattleList(props: Props) {
   const itemDrill = useDrill(context.runtime, listRegion);
   const tokens = useChartTokens();
   const colours = useMemo(() => [tokens.categories[0], tokens.categories[1]], [tokens]);
-  const actions = useContext(HeaderActionsSlot);
   const options = resolveOptions(definition.options, context.widget.options);
   const measure = context.rankedMeasure;
   const owner = JSON.stringify([context.track.source.id, context.track.source.revision, context.track.branch.id]);
@@ -411,7 +407,6 @@ export default function LandBattleList(props: Props) {
   };
   const columns = view === 'log' ? 'minmax(96px, 1.5fr) minmax(56px, 190px) minmax(128px, 168px) minmax(56px, 190px) minmax(68px, 1fr)'
     : 'minmax(96px, 1.5fr) minmax(56px, 190px) minmax(128px, 168px) minmax(56px, 190px) max-content minmax(68px, 1fr)';
-  const header = actions && createPortal(<Segmented value={view} options={VIEWS} onChange={value => context.setOption?.('view', value)} label="Land battles view" />, actions);
   const list = <div className="lb-view" ref={anchor}>
     <LogList anchorRows rows={logRows} label={label} density={log.density} months={view === 'log' && log.months}
       animate={view === 'log' && live && log.animate} playhead={view === 'log' ? props.reveal?.hour() : undefined} reveal={view === 'log' ? props.reveal : undefined} states={view === 'log'}
@@ -428,8 +423,8 @@ export default function LandBattleList(props: Props) {
       }} />
   </div>;
   const drill = options.drill === 'popout' ? 'popout' : 'inline';
-  return <>{header}<DrillHost drill={itemDrill} runtime={context.runtime} subject={current !== null} mode={drill} title={current ? placeName(current, context.placePending(current)) : ''}
+  return <DrillHost drill={itemDrill} runtime={context.runtime} subject={current !== null} mode={drill} title={current ? placeName(current, context.placePending(current)) : ''}
     day={dayLabel(context.shownHour)} canFollow={false} onClose={() => setOpenId(null)} anchor={anchor} main={list}>
     {current && <LandBattleDrill row={current} context={context} colours={colours} looks={looks(current)} terrain={terrainOf(current.provinceId)} heldAt={heldAt} />}
-  </DrillHost></>;
+  </DrillHost>;
 }

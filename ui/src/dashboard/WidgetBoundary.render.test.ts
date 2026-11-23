@@ -17,7 +17,10 @@ test('a widget that throws shows its own error with Retry instead of unmounting 
     const visible = renderToStaticMarkup(boundary.render() as never);
     assert.match(visible, /Couldn’t load this widget\./);
     assert.match(visible, /Retry/);
+    assert.match(visible, />Details</);
     assert.match(visible, /data-detail="Maximum update depth exceeded\."/);
+    assert.match(visible, /role="alert"/);
+    assert.doesNotMatch(visible.replace(/<[^>]*>/g, ' '), /Maximum update depth exceeded\./);
     assert.equal(WidgetBoundary.getDerivedStateFromError('thrown text').error.message, 'thrown text');
   } finally { await vite.close(); }
 });

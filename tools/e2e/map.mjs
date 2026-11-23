@@ -438,11 +438,11 @@ async function exportPicture(s, input, visual, work, caseId, { timeoutMs = 20_00
   await mkdir(folder, { recursive: true });
   const file = path.join(folder, `${caseId.replace(/[^\w.-]+/g, '_')}.png`);
   if (existsSync(file)) await unlink(file);
-  await s.click('article.dash-widget.kind-map button[aria-label="Map settings"]');
-  if (s.until) await s.until(`document.querySelector('.map-controls-menu:popover-open')`, 3000);
+  await s.click('article.dash-widget.kind-map :is([data-widget-settings], button[aria-label="Map settings"])');
+  if (s.until) await s.until(`document.querySelector(':is(.widget-settings-menu, .map-controls-menu):popover-open')`, 3000);
   else if (stepDelayMs > 0) await sleep(stepDelayMs);
   const exportSince = Date.now();
-  await s.click('.map-controls-menu:popover-open .map-menu-action', { text: 'Export map', partial: true });
+  await s.click(':is(.widget-settings-menu, .map-controls-menu):popover-open .map-menu-action', { text: 'Export map', partial: true });
   await input.ask({ op: 'save_dialog', path: file, seconds: 20 });
   const done = await s.app.waitForIpc('export_map', exportSince, Math.max(timeoutMs, 20_000));
   if (!done) { visual.fail(caseId, 'map', 'export_map did not finish within 20 s'); await s.escape(); return; }

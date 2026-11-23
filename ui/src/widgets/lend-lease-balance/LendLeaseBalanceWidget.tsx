@@ -2,7 +2,6 @@ import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { countryTagAt, useSlotTags } from '../../dashboard/countrySlots.ts';
 import { useCallback, useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
-import { Segmented } from '../../components/Segmented';
 import { ButterflyChart } from '../../charts/butterfly';
 import type { ButterflyItem } from '../../charts/butterfly';
 import DrillHost from '../../charts/drill/DrillHost';
@@ -28,7 +27,7 @@ import { useHeadProduct } from '../../dashboard/headProduct';
 import { useGate } from '../../dashboard/regionGate';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { MEASURES, OPTIONS, PARTNERS } from './definition';
+import { OPTIONS, PARTNERS } from './definition';
 import { LEND_LEASE_BALANCE, LEND_LEASE_PARTNERS, amountLabel, amountText, balanceRows, balanceSelection, barValue, emptyBalance, firstRecorded, partnersAt,
   rankedRows, totalsOverTime, validateLendLeaseBalance, validateLendLeasePartners, valueAt } from './lendLeaseBalanceData';
 import type { BalanceMeasure, BalanceRow } from './lendLeaseBalanceData';
@@ -58,7 +57,7 @@ function useItems(runtime: WidgetProps['runtime'], track: WidgetProps['runtime']
 const tooltipOf = (item: BalanceItem, hour: number | null): TooltipContent => ({ ...countryNameDetails(item.countryFlag), title: item.label,
   subtitle: hour === null ? undefined : dayLabel(hour), rows: [{ label: 'Sent', value: amountText(item.row.sent) }, { label: 'Received', value: amountText(item.row.received) }] });
 
-export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
+export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
@@ -104,7 +103,6 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
   else main = <div className="lend-lease-balance">
     <div className="lend-lease-caption">
       <span>{head.hour === null ? 'At the playhead' : dayLabel(head.hour)}</span>
-      <Segmented value={measure} options={MEASURES} label="Measure" onChange={value => setOption?.('measure', value)} />
     </div>
     {!items.length ? (() => {
       const empty = emptyBalance(all, chosen);

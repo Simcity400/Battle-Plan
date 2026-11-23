@@ -19,6 +19,6 @@ export const definition = {
   description: 'Each country’s intel network in every other: states covered, strength and strongest state.',
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true, all: true },
-  minSize: { w: 4, h: 5 }, defaultSize: { w: 6, h: 9 }, options: OPTIONS,
+  minSize: { w: 4, h: 5 }, defaultSize: { w: 6, h: 9 }, options: OPTIONS, viewSwitch: { option: 'measure' },
   variants: breakdownVariants('Intel network coverage', OPTIONS),
 } as const satisfies WidgetMeta;

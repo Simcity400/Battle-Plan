@@ -129,7 +129,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
   useLayoutEffect(() => {
     if (!perfLog || !pipeline || pipe === null || !auditable) return;
     pipeline.audit(pipe, RACE_AUDIT, fields => fields.audit as readonly { row: string; key: string; value?: string }[] | undefined);
-    perfLog.reader(pipe, RACE_AUDIT, async hour => {
+    const stopReader = perfLog.reader(pipe, RACE_AUDIT, async hour => {
       const read = latest.current.exactRead, model = latest.current.model;
       if (!read) return null;
       const reply = validateNuclearArsenal(await read(hour)), values = new Map<string, string>();
@@ -140,8 +140,8 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       }
       if (!values.size) values.set('empty:notice', arsenalNotice(reply, hour));
       return { values, ranked: true };
-    });
-    return () => pipeline.audit(pipe, RACE_AUDIT, null);
+    }, pipeline.generation);
+    return () => { stopReader(); pipeline.audit(pipe, RACE_AUDIT, null); };
   }, [pipeline, pipe, auditable]);
   return <div ref={root} className="race-chart"><div ref={container} className="race-scroll themed-scrollbar">
     <div ref={extent} className="race-extent" style={{ height: `calc(${raceHeight(props.items.length)}px - 100%)` }} /></div>

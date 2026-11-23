@@ -8,7 +8,6 @@ import type { BoundTrack } from '../../dashboard/model';
 import { followStore } from '../../dashboard/follow/store.ts';
 import { panelReply } from '../../dashboard/follow/panel.ts';
 import { useProducts } from '../../dashboard/products.ts';
-import { asFailure } from '../../dashboard/queryError.ts';
 import type { Failure } from '../../dashboard/queryError';
 import { useFollowedAll } from '../scoreboard/followedAll.ts';
 import type { SpecialProjectsReply } from '../../generated/dashboard';
@@ -48,7 +47,7 @@ export function useProjectHistory(runtime: WidgetRuntime, gate: Pick<Gate, 'foll
   const queries = useMemo(() => followed ? params.map(param => gate.follow({ ...param, panel: HISTORY_PANEL })) : [], [followed, params, gate.follow]);
   const all = useFollowedAll(store, queries, root);
   const read = useCallback((): HistoryReading => {
-    let error = all.failure !== undefined ? asFailure(new Error(all.failure)) : undefined;
+    let error = all.error;
     let refused = all.reason;
     const replies = all.entries.map(entry => {
       if (!entry?.panel) return undefined;
@@ -78,11 +77,10 @@ export function useProjectHistory(runtime: WidgetRuntime, gate: Pick<Gate, 'foll
   askedLatest.current = { replies: asked.data ?? [], hour: asked.data ? at : null, through: asked.data ? at : null };
   const askedRead = useCallback(() => askedLatest.current, []);
   const quiet = useCallback(() => () => {}, []);
-  const noRetry = useCallback(() => {}, []);
   if (followed) {
     const reading = shown.reading;
     return { replies: ready(reading) ? reading.replies : undefined, hour: reading.hour, ...reading.error ? { error: reading.error } : {},
-      ...reading.refused !== undefined ? { refused: reading.refused } : {}, ...reading.outside ? { outside: true } : {}, retry: noRetry, latest: read, subscribe: all.subscribe };
+      ...reading.refused !== undefined ? { refused: reading.refused } : {}, ...reading.outside ? { outside: true } : {}, retry: all.retry, latest: read, subscribe: all.subscribe };
   }
   return { replies: asked.data, hour: asked.data ? at : null, ...asked.error ? { error: asked.error } : {}, retry: asked.retry, latest: askedRead, subscribe: quiet };
 }

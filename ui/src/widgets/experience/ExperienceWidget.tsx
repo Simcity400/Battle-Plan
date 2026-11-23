@@ -30,7 +30,7 @@ import { trackHourOf } from '../../dashboard/settledHour';
 import { useTiles } from '../../dashboard/tiles/useTiles';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { followStore } from '../../dashboard/follow/store.ts';
-import { followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followFailure, followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { definition, OPTIONS } from './definition';
 import { BRANCHES, BRANCH_LABELS, MEASURE_LABELS, SCALE, experienceBranches, experienceCard, experienceFamily, experienceLines, experienceMeasure, followExperienceHeads,
@@ -82,6 +82,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   };
   const entryOf = (branch: ExperienceBranch) => followsHead(followed[branch]) ? followed[branch].entry : null;
   const refused = followRefusal(followed.army, followed.navy, followed.air);
+  const followErr = followFailure(followed.army, followed.navy, followed.air);
   const heads = { army: entryOf('army'), navy: entryOf('navy'), air: entryOf('air') };
   useEffect(() => followExperienceHeads(heads, resolved.tags, (branch, tag) => tiles[branch].head(tag)),
     [heads.army, heads.navy, heads.air, resolved.tags, tiles.army.head, tiles.navy.head, tiles.air.head]);
@@ -127,7 +128,8 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   const head = card.data ? card.data : null;
   const error = BRANCHES.map(branch => tiles[branch].error).find(Boolean);
   if (!track) return <WidgetState kind="empty" icon="sparkle" message="Load a campaign to see experience." />;
-  if (refused) return <WidgetState kind="unavailable" message={refused} />;
+  if (refused) return <WidgetState kind="unavailable" technical={refused} />;
+  if (followErr) return <WidgetState kind="error" failure={followErr.error} onRetry={followErr.retry} />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (grouped && groups.error && !groups.data) return <WidgetState kind="error" what="country groups" failure={groups.error} onRetry={groups.retry} />;
   if (resolved.reason) return <WidgetState kind="empty" icon="sparkle" message={resolved.reason} />;

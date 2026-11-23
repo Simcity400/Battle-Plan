@@ -42,8 +42,7 @@ import './espionageLog.css';
 import { productRequest } from '../../dashboard/request.ts';
 
 function SectionNote({ text, detail, failure, retry, loading }: { text?: string; detail?: string | null; failure?: Failure; retry?: () => void; loading?: boolean }) {
-  if (failure) return <span className="espionage-note is-error" data-tooltip={failure.message}>{failureText(failure, text ?? 'Couldn’t load operations.')}
-    {retry && <button type="button" className="button small" onClick={retry}>Retry</button>}</span>;
+  if (failure) return <WidgetState kind="error" scale="section" what="operations" failure={failure} onRetry={retry} />;
   return <span className="espionage-note" data-state={loading ? 'loading' : undefined} data-tooltip={detail ?? undefined}>{text}</span>;
 }
 

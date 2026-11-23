@@ -70,7 +70,7 @@ export default function FactionGoalsWidget({ widget, runtime, active, headerSlot
   }, [dataHour, viewport, live]);
   const groupBy = useCallback((row: GoalRow) => ({ key: row.category ?? '', order: order.get(row.category ?? '') ?? 0,
     label: row.categoryName ?? (row.category ? 'Term name unavailable' : 'No term') }), [order]);
-  const header = headerSlot && data && !data.goalReason && createPortal(<span className="pill" title={faction ? factionNameAt(faction, dataHour, displayNames[faction.id]) : undefined}>
+  const header = headerSlot && data && !data.goalReason && createPortal(<span className="pill" data-tooltip={faction ? factionNameAt(faction, dataHour, displayNames[faction.id]) : undefined}>
     {completedCount(all)} completed</span>, headerSlot);
   const body = (() => {
     if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see faction goals." />;

@@ -413,7 +413,7 @@ export class Page<B extends Bitmap = Bitmap> {
     if (change.offset !== undefined) widget.offset = change.offset;
     if (change.bounds !== undefined) widget.bounds = change.bounds;
     if (widget.early) { this.refuse(widget, widget.early, 'binding'); widget.early = null; }
-    if (change.subscription) { widget.failed = false; if (this.failedRoute(widget)) this.reading(widget); }
+    if (change.subscription) { widget.failed = false; if (this.failedRoute(widget) || widget.status === 'failed' || widget.status === 'refused') this.reading(widget); }
     else if (change.pin !== undefined || change.offset !== undefined) this.revalidate(widget);
     this.touched.add(widget);
     this.tell();
@@ -441,11 +441,11 @@ export class Page<B extends Bitmap = Bitmap> {
     this.request(true, false);
   }
 
-  name(id: number, status: 'failed' | 'reading', reason?: string) {
+  name(id: number, status: 'failed' | 'refused' | 'reading', reason?: string) {
     const widget = this.widgets.get(id);
     if (!widget) return;
-    if (status === 'failed') widget.failed = true;
-    if (widget.early) { this.refuse(widget, widget.early, status === 'failed' ? 'failed' : 'binding'); widget.early = null; }
+    if (status === 'failed' || status === 'refused') widget.failed = true;
+    if (widget.early) { this.refuse(widget, widget.early, status === 'reading' ? 'binding' : status); widget.early = null; }
     this.clear(widget, status, reason);
     this.tell();
   }
@@ -478,6 +478,22 @@ export class Page<B extends Bitmap = Bitmap> {
     this.post('all', { type: 'fail', route, seek: this.seek, command, reason });
     this.tell();
     return true;
+  }
+
+  dispose() {
+    for (const presentation of this.queue) for (const entry of presentation.entries) { closeParts(entry); this.disown(entry); }
+    this.queue = [];
+    for (const widget of this.widgets.values()) {
+      if (widget.early) { closeParts(widget.early); this.disown(widget.early); widget.early = null; }
+      this.drop(widget.installed);
+      widget.installed = null;
+      widget.surfaces = [];
+      widget.changed = undefined;
+      widget.dated = undefined;
+    }
+    this.widgets.clear(); this.routes.clear(); this.kept.clear(); this.sent.clear(); this.touched.clear(); this.redated.clear();
+    for (const list of this.acks) list.length = 0;
+    for (const list of this.refusals) list.length = 0;
   }
 
   pending(lane: number) { return { installed: this.acks[lane]!.length, refused: this.refusals[lane]!.length }; }

@@ -245,14 +245,14 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
   useLayoutEffect(() => {
     if (!perfLog || !pipeline || pipe === null || !auditable) return;
     pipeline.audit(pipe, TABLE_AUDIT, fields => fields.audit as readonly AuditRow[] | undefined);
-    perfLog.reader(pipe, TABLE_AUDIT, async hour => {
+    const stopReader = perfLog.reader(pipe, TABLE_AUDIT, async hour => {
       const exact = await latest.current.exactRows?.(hour);
       if (!exact) return null;
       const sorted = sortRowsAtHour(exact.rows, latest.current.model(pipe, 0, 1, 1).settings, exact.values, hour);
       const rows = auditRows(sorted, shownColumns.current, exact.values, hour, exact.empty);
       return { values: new Map(rows.map(row => [row.key, row.value])), ordered: true };
-    });
-    return () => pipeline.audit(pipe, TABLE_AUDIT, null);
+    }, pipeline.generation);
+    return () => { stopReader(); pipeline.audit(pipe, TABLE_AUDIT, null); };
   }, [pipeline, pipe, auditable]);
   useEffect(() => followed ? undefined : live.subscribe(bind), [live, followed, bind]);
   useLayoutEffect(() => {

@@ -176,7 +176,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
         onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} setOption={setOption} pickOwner={pickOwner} onPick={open} />
       : <StockpileTable data={data} hour={viewHour} widget={widget} live={stock.live} shownAt={stock.shownAt}
         at={(values: LiveValues<number>) => catalogue && stock.data ? clipped(stockpileView(catalogue, atReply(stock.data, values, viewHour, track.branch.id), viewHour), within) : undefined}
-        included={included} count={count} setCount={setOption ? value => setOption('count', value) : undefined} narrow={narrowTableOf(options)}
+        included={included} count={count} narrow={narrowTableOf(options)}
         active={active && (shownDrill.breakdown === null || options.drill === 'popout')} viewport={viewport}
         runtime={runtime} track={track} onDiagnostics={onDiagnostics} onPick={open} />}
   </div> : null;

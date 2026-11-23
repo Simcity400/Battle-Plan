@@ -129,12 +129,17 @@ export class PerfRecorder {
       this.rowChanges.push({ widget, source, previous, current, ...placement !== undefined ? { placement } : {} });
   }
 
-  reader(id: number, owner: number, exact: ExactPicture) {
-    const key = id + '/' + owner;
+  reader(id: number, owner: number, exact: ExactPicture, generation = 0): () => void {
+    const key = generation + '/' + id + '/' + owner;
     this.readers.delete(key);
     this.readers.set(key, exact);
     if (this.readers.size > READERS_HELD) this.readers.delete(this.readers.keys().next().value!);
     this.auditReaders?.set(key, exact);
+    return () => { if (this.readers.get(key) === exact) this.readers.delete(key); };
+  }
+  dropGeneration(generation: number) {
+    const prefix = generation + '/';
+    for (const key of [...this.readers.keys()]) if (key.startsWith(prefix)) this.readers.delete(key);
   }
   private exactReads = new Map<string, Promise<unknown>>();
   exactOnce<T>(key: string, read: () => Promise<T>): Promise<T> {
@@ -242,7 +247,7 @@ export class PerfRecorder {
       const { widget, surface, placement, owner, rows } = record;
       const hour = record.hour + record.offset;
       let error: string | null;
-      try { error = pictureError(surface, rows, await work.readers?.get(placement + '/' + owner)?.(hour)); }
+      try { error = pictureError(surface, rows, await work.readers?.get((record.generation ?? 0) + '/' + placement + '/' + owner)?.(hour)); }
       catch (cause) { error = String(cause); }
       return { widget, surface, placement, owner, at: record.at, hour, error };
     });

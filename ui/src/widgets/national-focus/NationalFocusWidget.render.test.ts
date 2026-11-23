@@ -67,5 +67,12 @@ for (const completedCount of [0, 3]) test(`Whole campaign includes its unfinishe
     assert.equal(host.__focusListPredicate, predicate, 'unchanged content renders keep the eligibility index reusable');
     data.history.segments[0].order.paused = true;
     assert.match(renderToStaticMarkup(createElement(Widget, props)), /Paused/);
+
+    if (completedCount === 0) {
+      data.history.segments[0].order = { completed: [], current: null, continuous: null, paused: false };
+      const emptyWhole = renderToStaticMarkup(createElement(Widget, props));
+      assert.match(emptyWhole, /data-state="empty"/, 'Whole campaign with no focuses renders a body WidgetState');
+      assert.doesNotMatch(emptyWhole, /focus-empty|focus-header-count/, 'empty Whole campaign hides the plain paragraph and 0 completed pill');
+    }
   } finally { delete host.__focusListReply; delete host.__focusListInteractive; delete host.__focusListPredicate; await vite.close(); }
 });

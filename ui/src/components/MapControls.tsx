@@ -40,7 +40,6 @@ export default function MapControls({ source, client, metadata, branchId, onBran
   const [error, setError] = useState<(PlainFailure & { retry?: () => void }) | null>(null);
   const [saved, setSaved] = useState<SavedExport | null>(null);
   const branch = metadata?.branches.find(item => item.id === branchId);
-  const labels = historyLabels(metadata?.branches ?? []);
 
   const failed = (sentence: string, cause: unknown, retry?: () => void) => setError({ ...actionFailure(sentence, errorMessage(cause)), retry });
   const run = async (sentence: string, action: () => Promise<void>) => {
@@ -67,14 +66,8 @@ export default function MapControls({ source, client, metadata, branchId, onBran
       aria-label="Map settings" data-tooltip="Map settings" aria-haspopup="dialog" aria-expanded={open}><Icon name="settings" /></button>
     <Popover menu={menu} id={id} className="map-controls-menu" aria-label="Map settings">
       <PopoverHeading title="Map settings" menu={menu} onDelete={onRemove} onReset={onReset} />
-      {metadata && branch && <div className="map-menu-section map-recording-options">
-        {metadata.branches.length > 1 && <div className="map-option-row"><span>History</span><Select label="Campaign history" value={branch.id} onChange={onBranch}
-          options={metadata.branches.map(item => ({ value: item.id, label: labels.get(item.id) ?? item.id }))} /></div>}
-        <small className="map-branch-range">{formatDateTime(branch.firstHour)}<br />to {formatDateTime(branch.lastHour)}</small>
-        {branch.fork && <small className="map-branch-range">Play from {formatDateTime(branch.fork.hour)} on was left behind when the game was loaded from an earlier save.</small>}
-        {branch.joins.filter(join => join.evidence === 'unconfirmed' || join.evidence === 'unrecorded' || join.evidence === 'chosen').map(join =>
-          <JoinNote key={join.segmentId} join={join} busy={busy} onChoose={onChooseHistory && (parent => void run('Couldn’t change the campaign history.', () => onChooseHistory(join.segmentId, parent)))} />)}
-      </div>}
+      <MapHistorySection metadata={metadata} branch={branch} onBranch={onBranch} busy={busy}
+        onChooseHistory={onChooseHistory && ((segmentId, parent) => void run('Couldn’t change the campaign history.', () => onChooseHistory(segmentId, parent)))} />
       <div className="map-menu-section">
         <button type="button" className="map-menu-action" disabled={!desktopAvailable || !metadata || busy} data-tooltip={desktopAvailable ? 'Save the rendered map as a PNG image' : 'Available in the desktop app'} onClick={() => void exportImage(viewId)}><Icon name="save" />Export map image</button>
         {saved && <p className="map-menu-note" role="status" data-detail={saved.warning ?? undefined}>{saved.warning ? `${saved.message}, but Windows didn’t confirm it reached the disk.` : saved.message}</p>}
@@ -101,6 +94,25 @@ export default function MapControls({ source, client, metadata, branchId, onBran
       {open && children}
     </Popover>
   </>;
+}
+
+export function MapHistorySection({ metadata, branch, onBranch, onChooseHistory, busy = false }: {
+  metadata: ReplayMetadata | null;
+  branch: ReplayMetadata['branches'][number] | null | undefined;
+  onBranch: (id: string) => void;
+  onChooseHistory?: (segmentId: string, parentId: string | null) => void;
+  busy?: boolean;
+}) {
+  if (!metadata || !branch) return null;
+  const labels = historyLabels(metadata.branches);
+  return <div className="map-menu-section map-recording-options">
+    {metadata.branches.length > 1 && <div className="map-option-row"><span>History</span><Select label="Campaign history" value={branch.id} onChange={onBranch}
+      options={metadata.branches.map(item => ({ value: item.id, label: labels.get(item.id) ?? item.id }))} /></div>}
+    <small className="map-branch-range">{formatDateTime(branch.firstHour)}<br />to {formatDateTime(branch.lastHour)}</small>
+    {branch.fork && <small className="map-branch-range">Play from {formatDateTime(branch.fork.hour)} on was left behind when the game was loaded from an earlier save.</small>}
+    {branch.joins.filter(join => join.evidence === 'unconfirmed' || join.evidence === 'unrecorded' || join.evidence === 'chosen').map(join =>
+      <JoinNote key={join.segmentId} join={join} busy={busy} onChoose={onChooseHistory && (parent => onChooseHistory(join.segmentId, parent))} />)}
+  </div>;
 }
 
 function JoinNote({ join, busy, onChoose }: { join: BranchJoin; busy: boolean; onChoose?: (parentId: string | null) => void }) {

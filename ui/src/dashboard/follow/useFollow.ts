@@ -8,6 +8,7 @@ import { observeOnScreen, type OnScreen } from './onScreen.ts';
 import { branchBounds, useElement, useFollowedSub, useFollowedWidget, useInstalled, useOnScreen, usePipeline, componentReading, datedReading, datedStore, onInstalled } from './useFollowed.ts';
 import type { Reading } from './useFollowed';
 import { holdElement } from '../../draw/bitmapSurface.ts';
+import { asFailure, type Failure } from '../queryError.ts';
 
 export { observeOnScreen, screenHolder, NEAR_SCREEN, DASHBOARD_SCROLL } from './onScreen.ts';
 export type { OnScreen } from './onScreen.ts';
@@ -19,6 +20,7 @@ export const panelStructure = (_answer: FollowedAnswer | undefined, entry: Follo
 export interface Followed {
   status: 'off' | FollowEntry['status'];
   reason?: string;
+  error?: Failure;
   structure: string;
   entry: FollowEntry | null;
   hidden: boolean;
@@ -28,8 +30,18 @@ export interface Followed {
 export const followsHead = (followed: Followed) => followed.status === 'followed';
 
 export function followRefusal(...followed: readonly Followed[]): string | null {
-  for (const each of followed) if (each.status === 'unavailable' || each.status === 'failed') return each.reason ?? 'The followed reading stopped without a reason';
+  for (const each of followed) if (each.status === 'unavailable') return each.reason ?? 'The followed reading stopped without a reason';
   return null;
+}
+
+export function followFailure(...followed: readonly Followed[]): { error: Failure; retry: () => void } | null {
+  const failed = followed.filter(each => each.status === 'failed');
+  if (!failed.length) return null;
+  const cause = failed.find(each => each.error !== undefined) ?? failed[0]!;
+  return {
+    error: cause.error ?? asFailure(new Error(cause.reason ?? 'The followed reading stopped without a reason')),
+    retry: () => { cause.entry?.retry?.(); },
+  };
 }
 
 export function usePlaybackHour(clock: PlaybackController, on = true): number {
@@ -70,7 +82,7 @@ export function useFollow(store: FollowStore | null, asked: FollowQuery | null, 
   useLayoutEffect(() => entry && pipeline && pipe !== null ? onInstalled(pipeline, pipe, () => painting.current?.(entry)) : undefined, [entry, pipeline, pipe]);
   const status: Followed['status'] = !query ? 'off' : entry ? entry.status : 'pending';
   return {
-    status, ...entry?.reason !== undefined ? { reason: entry.reason } : {},
+    status, ...entry?.reason !== undefined ? { reason: entry.reason } : {}, ...entry?.error !== undefined ? { error: entry.error } : {},
     structure: entry ? structureOf(entry.answer, entry) : '',
     entry, hidden: !!query && !visible,
     reading: query ? datedReading(componentReading(pipeline && pipe !== null ? pipeline.view(pipe) : view, sub), datedStore(pipeline, pipe)) : null,

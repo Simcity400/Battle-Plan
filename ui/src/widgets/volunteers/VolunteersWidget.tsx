@@ -1,7 +1,6 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
-import { Segmented } from '../../components/Segmented';
 import DrillHost from '../../charts/drill/DrillHost';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC } from '../../dashboard/regionTime.ts';
@@ -37,7 +36,7 @@ import { useHeadHour } from '../army-size/headHour.ts';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { KINDS, OPTIONS } from './definition';
+import { OPTIONS } from './definition';
 import { campaignScale, emptyMessage, flowParts, linkFilter, linkHolders, linksAt, partnersOf, requestTags, withoutRequest } from './volunteersData';
 import type { LinkAt, VolunteerKind } from './volunteersData';
 import './volunteers.css';
@@ -52,7 +51,7 @@ const unit = (kind: VolunteerKind, count: number) => kind === 'land' ? `${usNumb
   : `${usNumber.format(count)} ${count === 1 ? 'division' : 'divisions'} lent`;
 type Partner = LinkAt & { partner: string; partnerKey: string; direction: 'sent' | 'received' };
 
-export default function VolunteersWidget({ widget, runtime, active, setOption, onDiagnostics }: WidgetProps) {
+export default function VolunteersWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const linksKey = useRef<(hour: number) => string>(() => '');
   const playbackHour = useHeadHour(runtime.clock, active && widget.time.mode === 'follow', hour => linksKey.current(hour));
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
@@ -183,7 +182,6 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
       if (since != null) menu.open(x, y, [{ ...jumpItem(runtime, track.id, since), label: `Jump to the start ${dayLabel(since)}` }]); }}
     description={`${current.links.length} links at ${dayLabel(at)}.`} active={active && (!picked || options.drill === 'popout')} />;
   return <div ref={anchor} className="volunteers">{groupFailure}
-    {setOption && <div className="volunteers-caption"><Segmented value={kind} options={KINDS} label="Kind" onChange={value => setOption('kind', value)} /></div>}
     <DrillHost drill={drillControl} runtime={runtime} subject={picked != null} mode={options.drill === 'popout' ? 'popout' : 'inline'} title={pickedName} day={drillAt === null ? '' : dayLabel(drillAt)} canFollow={false} anchor={anchor} onClose={() => { dispatch({ type: 'close' }); setDrillRows([]); }} main={main}>
       {picked && (partners.length ? <Table rowRevision={row => [row, columns]} label={`${pickedName} ${kind === 'land' ? 'volunteers' : 'expeditionary forces'}`} rows={partners} columns={columns}
         rowKey={row => `${row.direction}:${row.key}`} sort={{ column: 'divisions', direction: 'descending' }} cellBars={false} rankMarkers={false}

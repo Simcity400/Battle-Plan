@@ -1,4 +1,4 @@
-import { asFailure, type Failure } from '../queryError.ts';
+import { asFailure, RefusedError, type Failure } from '../queryError.ts';
 import type { FollowedPanel } from './message.ts';
 
 type Read = { reply: unknown } | { error: Failure };
@@ -6,7 +6,7 @@ const replies = new WeakMap<FollowedPanel, Map<(data: unknown) => unknown, Read>
 
 export function panelReply<T>(panel: FollowedPanel | undefined, validate: (data: unknown) => T): { data?: T; error?: Failure } {
   if (!panel) return {};
-  if (panel.refused !== null) return { error: asFailure(new Error(panel.refused)) };
+  if (panel.refused !== null) return { error: new RefusedError(panel.refused) };
   if (panel.data === undefined) return {};
   let reads = replies.get(panel);
   if (!reads) replies.set(panel, reads = new Map());

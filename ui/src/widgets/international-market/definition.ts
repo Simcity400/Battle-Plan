@@ -27,6 +27,6 @@ export const definition = {
   description: 'Market contracts, open requests and listed equipment, with convoys and payment.',
   timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: false,
   minSize: { w: 6, h: 6 }, defaultSize: { w: 12, h: 10 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true },
-  defaultCountries: { kind: 'all' }, options: OPTIONS,
+  defaultCountries: { kind: 'all' }, options: OPTIONS, viewSwitch: { option: 'view' },
   variants: choiceVariants(OPTIONS.find(field => field.key === 'view'), choice => `Market ${choice.label.toLowerCase()}`),
 } as const satisfies WidgetMeta;
