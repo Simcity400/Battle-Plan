@@ -36,6 +36,7 @@
       { "ext": ["battleplan"], "name": "BattlePlan recording", "description": "BattlePlan recording", "role": "Viewer" }
     ],
     "windows": {
+      "allowDowngrades": true,
       "nsis": {
         "installMode": "currentUser",
         "installerIcon": "icons/icon.ico",
