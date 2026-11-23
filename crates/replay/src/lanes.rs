@@ -1175,6 +1175,7 @@ pub fn presences(recording: &Recording, run: u32, table: TableId) -> io::Result<
     let extents = pieces(recording, run, table.index(), 0..blocks, 8)?;
     let mut spans: HashMap<u128, Vec<(i64, i64)>, foldhash::fast::RandomState> = HashMap::default();
     let mut covered = Vec::new();
+    let mut gapped: Vec<(u128, i64, i64)> = Vec::new();
     for extent in &extents {
         let bytes = recording.stored_bytes(extent)?;
         let piece = Piece::read(&bytes)?;
@@ -1187,7 +1188,39 @@ pub fn presences(recording: &Recording, run: u32, table: TableId) -> io::Result<
                 }
                 let start = (piece.directory.first_bucket + bucket as i64) * size;
                 let (first, last) = (start + i64::from(life.first), start + i64::from(life.end) - 1);
-                spans.entry(key).or_default().push((first, last));
+                if i64::from(life.hours) < last - first + 1 {
+                    gapped.push((key, first, last));
+                } else {
+                    spans.entry(key).or_default().push((first, last));
+                }
+            }
+        }
+    }
+    if !gapped.is_empty() {
+        let run_first = i64::from(held.first_hour);
+        let mut keys: Vec<u128> = gapped.iter().map(|(key, ..)| *key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        let mut ranges: Vec<(u32, u32)> = gapped.iter().map(|&(_, first, last)| ((first - run_first) as u32, (last - run_first) as u32)).collect();
+        ranges.sort_unstable();
+        let mut merged: Vec<(u32, u32)> = Vec::with_capacity(ranges.len());
+        for (first, last) in ranges {
+            match merged.last_mut() {
+                Some(range) if first <= range.1.saturating_add(1) => range.1 = range.1.max(last),
+                _ => merged.push((first, last)),
+            }
+        }
+        let mut walk = Walk::new(None, Some(keys.as_slice()), run_first, i64::from(held.ordinals), 1);
+        walk_ranges(recording, run, table, &[], &merged, &mut walk)?;
+        for (key, row) in walk.rows {
+            let asked: Vec<(i64, i64)> = gapped.iter().filter(|(gap, ..)| *gap == key).map(|&(_, first, last)| (first, last)).collect();
+            for (first, last) in row.lived {
+                for &(from, to) in &asked {
+                    let (first, last) = (first.max(from), last.min(to));
+                    if first <= last {
+                        spans.entry(key).or_default().push((first, last));
+                    }
+                }
             }
         }
     }
@@ -1201,9 +1234,7 @@ pub fn presences(recording: &Recording, run: u32, table: TableId) -> io::Result<
             let mut walk = Walk::new(None, None, i64::from(held.first_hour), i64::from(held.ordinals), 1);
             walk_ranges(recording, run, table, &[], &ranges, &mut walk)?;
             for (key, row) in walk.rows {
-                if let Some((first, last)) = row.lived {
-                    spans.entry(key).or_default().push((first, last));
-                }
+                spans.entry(key).or_default().extend(row.lived);
             }
         }
     }
@@ -1280,7 +1311,7 @@ impl WalkBin {
 #[derive(Default)]
 struct Row {
     bins: Vec<(usize, WalkBin)>,
-    lived: Option<(i64, i64)>,
+    lived: Vec<(i64, i64)>,
 }
 
 impl Row {
@@ -1365,9 +1396,16 @@ impl<'a> Walk<'a> {
         for (bin, start, end) in parts {
             row.bin(bin).life += (end - start) as u32;
         }
-        let lived = row.lived.get_or_insert((from, to - 1));
-        lived.0 = lived.0.min(from);
-        lived.1 = lived.1.max(to - 1);
+        match row.lived.last_mut() {
+            Some(lived) if from <= lived.1 + 1 && to - 1 >= lived.0 => {
+                lived.0 = lived.0.min(from);
+                lived.1 = lived.1.max(to - 1);
+            }
+            _ => {
+                row.lived.push((from, to - 1));
+                row.lived.sort_unstable();
+            }
+        }
     }
 
     fn add_value(&mut self, key: u128, value: i64, from: i64, to: i64) {
