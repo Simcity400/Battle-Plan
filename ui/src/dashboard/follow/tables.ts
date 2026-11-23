@@ -1,9 +1,30 @@
-import { parseAnswer, textAt } from './message.ts';
-import type { FollowedAnswer, FollowedRows } from './message';
+import { rowName, rowReason, textAt } from './message.ts';
+import type { FollowedAnswer, FollowedRows, PatchNode, RowChunk, RowPatches } from './message';
 
 const NO_TEXT = 0xffff_ffff;
+const CHUNK_ROWS = 8;
+const BRANCH = 8;
 const encoder = new TextEncoder();
 const aligned = (at: number) => (at + 7) & ~7;
+
+export interface PatchStats { cellsCopied: number; indexSlotsAllocated?: number }
+
+function treeShift(rows: number): number {
+  const chunks = Math.ceil(rows / CHUNK_ROWS);
+  let shift = 0, cap = BRANCH;
+  while (cap < chunks) { cap *= BRANCH; shift += 3; }
+  return shift;
+}
+
+function getChunk(patches: RowPatches | undefined, chunkIndex: number): RowChunk | undefined {
+  if (!patches) return undefined;
+  let node: PatchNode | undefined = patches.root;
+  for (let shift = patches.shift; shift > 0; shift -= 3) {
+    node = node[(chunkIndex >>> shift) & 7] as PatchNode | undefined;
+    if (!node) return undefined;
+  }
+  return node[chunkIndex & 7] as RowChunk | undefined;
+}
 
 const keyAt = (rows: FollowedRows, row: number, word: number) => rows.views.u32[rows.keys * 2 + (word < 2 ? row * 2 + word : (rows.rows + row) * 2 + word - 2)]!;
 
@@ -15,72 +36,171 @@ function compareKeys(a: FollowedRows, i: number, b: FollowedRows, j: number) {
   return 0;
 }
 
-interface Texts { base: Uint8Array; ends: Uint32Array; added: Uint8Array[]; index: Map<string, number>; count: number }
-
-function textsOf(base: FollowedRows, compact: boolean): { texts: Texts; reasons: Uint32Array; names: Uint32Array } {
+function findRow(base: FollowedRows, from: number, changed: FollowedRows, row: number): number {
   const rows = base.rows;
-  const reasons = new Uint32Array(rows), names = new Uint32Array(rows);
-  if (!compact) {
-    reasons.set(base.views.u32.subarray(base.reasons, base.reasons + rows));
-    names.set(base.views.u32.subarray(base.names, base.names + rows));
-    const count = base.ends.length - 1;
-    return { texts: { base: base.views.u8.subarray(base.text, base.text + base.ends[count]!), ends: base.ends, added: [], index: new Map(), count }, reasons, names };
+  if (from >= rows) throw new Error('A changed row names a key the table does not hold.');
+  const first = compareKeys(base, from, changed, row);
+  if (first === 0) return from;
+  if (first > 0) throw new Error('A changed row names a key the table does not hold.');
+  let lo = from, step = 1, hi = from + 1;
+  while (hi < rows && compareKeys(base, hi, changed, row) < 0) {
+    lo = hi;
+    step <<= 1;
+    hi = Math.min(rows, lo + step);
   }
-  const texts: Texts = { base: new Uint8Array(), ends: new Uint32Array([0]), added: [], index: new Map(), count: 0 };
-  for (let row = 0; row < rows; row++) {
-    const reason = base.views.u32[base.reasons + row]!, name = base.views.u32[base.names + row]!;
-    reasons[row] = reason === NO_TEXT ? NO_TEXT : add(texts, textAt(base, reason)!);
-    names[row] = name === NO_TEXT ? NO_TEXT : add(texts, textAt(base, name)!);
+  hi = Math.min(hi, rows - 1);
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const cmp = compareKeys(base, mid, changed, row);
+    if (cmp === 0) return mid;
+    if (cmp < 0) lo = mid + 1;
+    else hi = mid - 1;
   }
-  return { texts, reasons, names };
+  throw new Error('A changed row names a key the table does not hold.');
 }
 
-function add(texts: Texts, text: string): number {
-  let at = texts.index.get(text);
-  if (at === undefined) { at = texts.count + texts.added.push(encoder.encode(text)) - 1; texts.index.set(text, at); }
-  return at;
+function makeChunk(base: FollowedRows, chunkIndex: number, stats?: PatchStats): RowChunk {
+  const start = chunkIndex * CHUNK_ROWS;
+  const len = Math.min(CHUNK_ROWS, base.rows - start);
+  const columns = base.columns;
+  const existing = getChunk(base.patches, chunkIndex);
+  if (stats) stats.cellsCopied += len * columns;
+  if (existing) {
+    return { values: existing.values.slice(), states: existing.states.slice(), reasons: existing.reasons.slice() };
+  }
+  const cells = len * columns;
+  const values = new BigInt64Array(base.views.i64.buffer, base.views.i64.byteOffset + (base.values + start * columns) * 8, cells).slice();
+  const states = base.views.u8.slice(base.states + start * columns, base.states + start * columns + cells);
+  const reasons = new Array<string | null>(len);
+  for (let i = 0; i < len; i++) {
+    const at = base.views.u32[base.reasons + start + i]!;
+    reasons[i] = at === NO_TEXT ? null : textAt(base, at);
+  }
+  return { values, states, reasons };
 }
 
-export function mergeChanged(base: FollowedAnswer, changed: FollowedRows, held = Infinity): Uint8Array {
+export function patchAnswer(base: FollowedAnswer, changed: FollowedRows, stats?: PatchStats): FollowedRows {
   if (base.kind !== 'rows') throw new Error('Changed rows arrived for an answer that is not a whole table.');
   if (changed.columns !== base.columns) throw new Error(`Changed rows of ${changed.columns} columns for an answer of ${base.columns}`);
   if (!changed.canonical || !base.canonical) throw new Error('Changed rows arrived out of key order: they are merged only by walking keys.');
-  const merged = merge(base, changed, base.ends.length - 1 > base.rows * 2 + 16);
-  return merged.length > held ? merge(parseAnswer(merged) as FollowedRows, { ...changed, rows: 0 }, true) : merged;
-}
-
-function merge(base: FollowedRows, changed: FollowedRows, compact: boolean): Uint8Array {
-  const { rows, columns } = base, cells = rows * columns;
-  const { texts, reasons, names } = textsOf(base, compact);
-  const values = new BigInt64Array(base.views.i64.buffer, base.views.i64.byteOffset + base.values * 8, cells).slice();
-  const states = base.views.u8.slice(base.states, base.states + cells);
+  if (!changed.rows) return base;
+  const { rows, columns } = base;
+  const shift = base.patches ? base.patches.shift : treeShift(rows);
+  const nextRoot: PatchNode = base.patches ? base.patches.root.slice() : new Array(BRANCH);
+  if (stats) stats.indexSlotsAllocated = (stats.indexSlotsAllocated ?? 0) + BRANCH;
+  const cloned = new Set<PatchNode>([nextRoot]);
+  const clonedChunks = new Map<number, RowChunk>();
   let at = 0;
   for (let row = 0; row < changed.rows; row++) {
-    while (at < rows && compareKeys(base, at, changed, row) < 0) at++;
-    if (at === rows || compareKeys(base, at, changed, row) !== 0) throw new Error('A changed row names a key the table does not hold.');
+    at = findRow(base, at, changed, row);
+    const chunkIndex = at >>> 3, offset = at & 7;
+    let chunk = clonedChunks.get(chunkIndex);
+    if (!chunk) {
+      let node = nextRoot;
+      for (let s = shift; s > 0; s -= 3) {
+        const idx = (chunkIndex >>> s) & 7;
+        let child = node[idx] as PatchNode | undefined;
+        if (!child || !cloned.has(child)) {
+          child = child ? child.slice() : new Array(BRANCH);
+          if (stats) stats.indexSlotsAllocated = (stats.indexSlotsAllocated ?? 0) + BRANCH;
+          cloned.add(child);
+          node[idx] = child;
+        }
+        node = child;
+      }
+      chunk = makeChunk(base, chunkIndex, stats);
+      node[chunkIndex & 7] = chunk;
+      clonedChunks.set(chunkIndex, chunk);
+    }
+    const dst = offset * columns, src = row * columns;
     for (let column = 0; column < columns; column++) {
-      values[at * columns + column] = changed.views.i64[changed.values + row * columns + column]!;
-      states[at * columns + column] = changed.views.u8[changed.states + row * columns + column]!;
+      chunk.values[dst + column] = changed.views.i64[changed.values + src + column]!;
+      chunk.states[dst + column] = changed.views.u8[changed.states + src + column]!;
     }
     const reason = changed.views.u32[changed.reasons + row]!;
-    reasons[at] = reason === NO_TEXT ? NO_TEXT : add(texts, textAt(changed, reason)!);
+    chunk.reasons[offset] = reason === NO_TEXT ? null : textAt(changed, reason)!;
+    at++;
   }
-  const count = texts.count + texts.added.length;
-  const added = texts.added.reduce((sum, text) => sum + text.length, 0), baseBytes = texts.base.length;
-  const statesAt = 16 + rows * 16 + cells * 8, reasonsAt = aligned(statesAt + cells), namesAt = aligned(reasonsAt + rows * 4), endsAt = aligned(namesAt + rows * 4);
-  const textsAt = aligned(endsAt + (count + 1) * 4), size = aligned(textsAt + baseBytes + added);
+  return { ...base, patches: { root: nextRoot, shift } };
+}
+
+function visitChunks(node: PatchNode, shift: number, baseChunk: number, visit: (chunkIndex: number, chunk: RowChunk) => void) {
+  for (let i = 0; i < BRANCH; i++) {
+    const child = node[i];
+    if (!child) continue;
+    const at = baseChunk + (i << shift);
+    if (shift === 0) visit(at, child as RowChunk);
+    else visitChunks(child as PatchNode, shift - 3, at, visit);
+  }
+}
+
+export function serializeAnswer(answer: FollowedRows): Uint8Array {
+  const { rows, columns } = answer, cells = rows * columns;
+  const statesAt = 16 + rows * 16 + cells * 8, reasonsAt = aligned(statesAt + cells);
+  let reasonChanged = answer.kind !== 'rows';
+  if (!reasonChanged && answer.patches) {
+    visitChunks(answer.patches.root, answer.patches.shift, 0, (chunkIndex, chunk) => {
+      if (reasonChanged) return;
+      const start = chunkIndex * CHUNK_ROWS;
+      for (let i = 0; i < chunk.reasons.length; i++) {
+        if (chunk.reasons[i] !== null || answer.views.u32[answer.reasons + start + i] !== NO_TEXT) {
+          reasonChanged = true;
+          return;
+        }
+      }
+    });
+  }
+  const writeCells = (out: Uint8Array) => {
+    out.set(answer.views.u8.subarray(answer.keys * 8, answer.keys * 8 + rows * 16), 16);
+    const valuesOut = new BigInt64Array(out.buffer, 16 + rows * 16, cells);
+    valuesOut.set(answer.views.i64.subarray(answer.values, answer.values + cells));
+    out.set(answer.views.u8.subarray(answer.states, answer.states + cells), statesAt);
+    if (answer.patches) {
+      visitChunks(answer.patches.root, answer.patches.shift, 0, (chunkIndex, chunk) => {
+        const cellOffset = chunkIndex * CHUNK_ROWS * columns;
+        valuesOut.set(chunk.values, cellOffset);
+        out.set(chunk.states, statesAt + cellOffset);
+      });
+    }
+  };
+  if (!reasonChanged) {
+    const count = answer.ends.length - 1;
+    const tailStart = answer.reasons * 4;
+    const tailEnd = aligned(answer.text + answer.ends[count]!);
+    const out = new Uint8Array(reasonsAt + (tailEnd - tailStart)), data = new DataView(out.buffer);
+    data.setUint8(0, 1); data.setUint8(1, answer.canonical ? 1 : 0);
+    data.setUint32(4, rows, true); data.setUint32(8, columns, true); data.setUint32(12, count, true);
+    writeCells(out);
+    out.set(answer.views.u8.subarray(tailStart, tailEnd), reasonsAt);
+    return out;
+  }
+  const added: Uint8Array[] = [], index = new Map<string, number>();
+  const add = (text: string) => {
+    let at = index.get(text);
+    if (at === undefined) { at = added.push(encoder.encode(text)) - 1; index.set(text, at); }
+    return at;
+  };
+  const reasons = new Uint32Array(rows), names = new Uint32Array(rows);
+  for (let row = 0; row < rows; row++) {
+    const reason = rowReason(answer, row), name = rowName(answer, row);
+    reasons[row] = reason === null ? NO_TEXT : add(reason);
+    names[row] = name === null ? NO_TEXT : add(name);
+  }
+  const count = added.length, textBytes = added.reduce((sum, text) => sum + text.length, 0);
+  const namesAt = aligned(reasonsAt + rows * 4), endsAt = aligned(namesAt + rows * 4);
+  const textsAt = aligned(endsAt + (count + 1) * 4), size = aligned(textsAt + textBytes);
   const out = new Uint8Array(size), data = new DataView(out.buffer);
-  data.setUint8(0, 1); data.setUint8(1, 1);
+  data.setUint8(0, 1); data.setUint8(1, answer.canonical ? 1 : 0);
   data.setUint32(4, rows, true); data.setUint32(8, columns, true); data.setUint32(12, count, true);
-  out.set(base.views.u8.subarray(base.keys * 8, base.keys * 8 + rows * 16), 16);
-  new BigInt64Array(out.buffer, 16 + rows * 16, cells).set(values);
-  out.set(states, statesAt);
+  writeCells(out);
   new Uint32Array(out.buffer, reasonsAt, rows).set(reasons);
   new Uint32Array(out.buffer, namesAt, rows).set(names);
   const ends = new Uint32Array(out.buffer, endsAt, count + 1);
-  ends.set(texts.ends.subarray(0, texts.count + 1));
-  out.set(texts.base, textsAt);
-  let end = baseBytes, put = textsAt + baseBytes;
-  texts.added.forEach((text, index) => { out.set(text, put); put += text.length; end += text.length; ends[texts.count + index + 1] = end; });
+  let end = 0, put = textsAt;
+  added.forEach((text, at) => { out.set(text, put); put += text.length; end += text.length; ends[at + 1] = end; });
   return out;
+}
+
+export function mergeChanged(base: FollowedAnswer, changed: FollowedRows, _held = Infinity): Uint8Array {
+  return serializeAnswer(patchAnswer(base, changed));
 }

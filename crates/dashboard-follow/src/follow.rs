@@ -102,6 +102,16 @@ struct Shared {
     route: u32,
     control: Mutex<Control>,
     report: Mutex<(Counters, Held)>,
+    wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
+
+impl Shared {
+    fn notify_wake(&self) {
+        let wake = lock(&self.wake).clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
 }
 
 fn lock<T>(held: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -127,8 +137,18 @@ impl Follow {
                 route: next_route(),
                 control: Mutex::new(Control { products: BTreeMap::new(), ops: Vec::new(), followed: BTreeMap::new(), declare: None, logs: None, classes: BTreeMap::new(), session: 0 }),
                 report: Mutex::default(),
+                wake: Mutex::default(),
             }),
         }
+    }
+
+    pub(crate) fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        *lock(&self.shared.wake) = Some(wake);
+    }
+
+    pub(crate) fn has_work(&self) -> bool {
+        let control = lock(&self.shared.control);
+        !control.followed.is_empty() || !control.products.is_empty() || !control.ops.is_empty()
     }
 
     pub fn route(&self) -> u32 {
@@ -145,8 +165,11 @@ impl Follow {
     }
 
     pub(crate) fn anchor(&self, seek: u32, apply: impl FnOnce() -> u64) {
-        let mut page = lock(&self.shared.page_seek);
-        *page = (apply(), seek);
+        {
+            let mut page = lock(&self.shared.page_seek);
+            *page = (apply(), seek);
+        }
+        self.shared.notify_wake();
     }
 
     pub(crate) fn product_hook(&self, hook: ProductHook) {
@@ -154,16 +177,19 @@ impl Follow {
     }
 
     pub(crate) fn rehooker(&self) -> crate::panel::Wake {
-        let shared = Arc::downgrade(&self.shared);
-        Arc::new(move || {
-            if let Some(shared) = shared.upgrade() { let _ = redeclare(&mut lock(&shared.control), false); }
-        })
+        rehooker_for(&self.shared)
     }
 
     pub(crate) fn product_lanes(&self, id: u32, lanes: Vec<Declared>) -> io::Result<()> {
-        let mut control = lock(&self.shared.control);
-        if lanes.is_empty() { control.products.remove(&id); } else { control.products.insert(id, lanes); }
-        redeclare(&mut control, false)
+        let result = {
+            let mut control = lock(&self.shared.control);
+            if lanes.is_empty() { control.products.remove(&id); } else { control.products.insert(id, lanes); }
+            redeclare(&mut control, false)
+        };
+        if result.is_ok() {
+            self.shared.notify_wake();
+        }
+        result
     }
 
     pub fn bind(&self, declare: impl Fn(Vec<Declared>, bool) -> io::Result<()> + Send + Sync + 'static, logs: LogReads) -> io::Result<()> {
@@ -177,21 +203,36 @@ impl Follow {
 
     pub fn follow(&self, id: u32, query: Query) -> io::Result<()> {
         query.check()?;
-        let mut control = lock(&self.shared.control);
-        control.followed.insert(id, Reads { table: query.table(), columns: query.declared(), appended: query.appended(), listed: query.listed() });
-        control.ops.push(Op::Follow(id, Box::new(query)));
-        redeclare(&mut control, true)
+        let result = {
+            let mut control = lock(&self.shared.control);
+            control.followed.insert(id, Reads { table: query.table(), columns: query.declared(), appended: query.appended(), listed: query.listed() });
+            control.ops.push(Op::Follow(id, Box::new(query)));
+            redeclare(&mut control, true)
+        };
+        if result.is_ok() {
+            self.shared.notify_wake();
+        }
+        result
     }
 
     pub fn serve(&self, session: u64) {
         lock(&self.shared.control).session = session;
+        self.shared.notify_wake();
     }
 
     pub fn unfollow(&self, id: u32) -> io::Result<()> {
-        let mut control = lock(&self.shared.control);
-        if control.followed.remove(&id).is_some() {
-            control.ops.push(Op::Unfollow(id));
-            redeclare(&mut control, false)?;
+        let changed = {
+            let mut control = lock(&self.shared.control);
+            if control.followed.remove(&id).is_some() {
+                control.ops.push(Op::Unfollow(id));
+                redeclare(&mut control, false)?;
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            self.shared.notify_wake();
         }
         Ok(())
     }
@@ -453,7 +494,17 @@ struct Engine {
     counters: Counters,
 }
 
-fn relist(shared: &Shared, followed: &mut Followed, lane: &Lane) {
+fn rehooker_for(shared: &Arc<Shared>) -> crate::panel::Wake {
+    let shared = Arc::downgrade(shared);
+    Arc::new(move || {
+        if let Some(shared) = shared.upgrade() {
+            let _ = redeclare(&mut lock(&shared.control), false);
+            shared.notify_wake();
+        }
+    })
+}
+
+fn relist(shared: &Arc<Shared>, followed: &mut Followed, lane: &Lane) {
     followed.standing.clear();
     followed.asked = None;
     followed.unread = None;
@@ -465,7 +516,10 @@ fn relist(shared: &Shared, followed: &mut Followed, lane: &Lane) {
     followed.standing.extend(ordinals.iter().map(|&ordinal| (ordinal, None)));
     let logs = lock(&shared.control).logs.clone();
     match logs {
-        Some(logs) => followed.asked = Some(logs.rows(Wanted { run: lane.run(), table: followed.table, ordinals, columns: followed.declared.clone() })),
+        Some(logs) => followed.asked = Some(logs.rows_notifying(
+            Wanted { run: lane.run(), table: followed.table, ordinals, columns: followed.declared.clone() },
+            rehooker_for(shared),
+        )),
         None => followed.unread = Some("Follow is bound to no playhead, which reads a log's listed rows".to_owned()),
     }
 }

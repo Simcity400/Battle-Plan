@@ -10,6 +10,7 @@ import type { Failure } from '../queryError';
 export type { FollowQuery } from '../regionTime';
 
 export const FollowedWidgetKey = createContext<string | null>(null);
+export const FollowedWidgetKind = createContext<string | null>(null);
 export const FollowedCard = createContext<Element | null>(null);
 
 export interface FollowStore { readonly client: DashboardClient; readonly source: DashboardSource; readonly clock: PlaybackController; readonly offset: number }

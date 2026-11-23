@@ -350,6 +350,231 @@ test('review 10: a reading\'s hour is the installed date when it is read, and th
   assert.deepEqual(datedReading({ state: 'pending' }, { read: () => 16 }), { state: 'pending' });
 });
 
+test('a single long main-thread frame does not spike speculative step far ahead of nominal frame step', () => {
+  const { pipeline, clock, close } = inProcess();
+  try {
+    clock.setSpeed(1440);
+    clock.setPlaying(true);
+    const snap = clock.getSnapshot();
+    (pipeline as unknown as { published(a: typeof snap, b: typeof snap): void }).published(
+      { ...snap, hour: 100, position: 100, playing: true },
+      { ...snap, hour: 272, position: 272, playing: true },
+    );
+    assert.ok(pipeline.page.step <= 36, `step spiked to ${pipeline.page.step} on a 172h frame stall at 1440 h/s / 60 fps`);
+  } finally { clock.stop(); close(); }
+});
+
+test('flush visits only widgets with date listeners rather than all mounted widgets', () => {
+  const { pipeline, clock, close } = inProcess();
+  try {
+    const ids = Array.from({ length: 114 }, (_, i) => pipeline.mount({ offset: 0, pin: null, key: `w${i}` }));
+    const beforeNone = pipeline.stats.dateVisits;
+    for (let h = 1; h <= 10; h++) clock.seek(h);
+    assert.equal(pipeline.stats.dateVisits - beforeNone, 0, 'zero widgets visited when no date listeners exist');
+    let heard = 0;
+    const stop1 = pipeline.onDate(ids[0]!, () => heard++);
+    const stop2 = pipeline.onDate(ids[1]!, () => heard++);
+    const beforeTwo = pipeline.stats.dateVisits;
+    clock.seek(20);
+    assert.equal(pipeline.stats.dateVisits - beforeTwo, 2, 'only the 2 widgets with date listeners are visited');
+    assert.equal(heard, 2);
+    stop1(); stop2();
+    const beforeAfter = pipeline.stats.dateVisits;
+    clock.seek(21);
+    assert.equal(pipeline.stats.dateVisits - beforeAfter, 0, 'unsubscribing removes widgets from date watch set');
+  } finally { close(); }
+});
+
+test('lane placement balances measured widget cost rather than widget count and re-places on remount', () => {
+  const { pipeline, close } = inProcess({ lanes: 2 });
+  try {
+    const heavy = pipeline.mount({ offset: 0, pin: null, key: 'inst-1|0', widget: 'inst-1', kind: 'heavy' });
+    const heavyLane = pipeline.lane(heavy);
+    const otherLane = 1 - heavyLane;
+    (pipeline as unknown as { receive(lane: number, m: unknown): void }).receive(heavyLane, {
+      type: 'served', seek: 0, target: 0, exact: false, changed: 1, ms: 9, costs: [[heavy, 9]],
+    });
+    const cheap1 = pipeline.mount({ offset: 0, pin: null, key: 'inst-c1|0', widget: 'inst-c1', kind: 'cheap' });
+    const cheap2 = pipeline.mount({ offset: 0, pin: null, key: 'inst-c2|0', widget: 'inst-c2', kind: 'cheap' });
+    const cheap3 = pipeline.mount({ offset: 0, pin: null, key: 'inst-c3|0', widget: 'inst-c3', kind: 'cheap' });
+    assert.deepEqual([pipeline.lane(cheap1), pipeline.lane(cheap2), pipeline.lane(cheap3)], [otherLane, otherLane, otherLane],
+      'cheap widgets go to the lower-cost lane even when it already holds more widgets by count');
+    const secondHeavy = pipeline.mount({ offset: 0, pin: null, key: 'inst-2|0', widget: 'inst-2', kind: 'heavy' });
+    assert.equal(pipeline.lane(secondHeavy), otherLane, 'a second instance with a distinct instance ID shares learned kind cost');
+    const afterSecondHeavy = pipeline.mount({ offset: 0, pin: null, key: 'inst-c4|0', widget: 'inst-c4', kind: 'cheap' });
+    assert.equal(pipeline.lane(afterSecondHeavy), heavyLane, 'secondHeavy charged learned heavy cost onto otherLane so the next widget returns to heavyLane');
+    pipeline.unmount(heavy);
+    const remountedHeavy = pipeline.mount({ offset: 0, pin: null, key: 'inst-1|0', widget: 'inst-1', kind: 'heavy' });
+    assert.equal(pipeline.lane(remountedHeavy), heavyLane, 'remounting after load drops re-places onto the now-lighter lane');
+  } finally { close(); }
+});
+
+test('sticky lane decode fault fails via typed Failure across seeks, surface remounts and same-sub rebinds, clears on subscription change or restartPipeline', async () => {
+  const env = managedInProcess();
+  try {
+    const initialListeners = env.counts().clockListeners;
+    env.clock.seek(10);
+    const p1 = env.pipeline;
+    const w1 = p1.acquire('w1|0', { offset: 0, pin: null });
+    const w2 = p1.acquire('w2|0', { offset: 0, pin: null });
+    const tok1 = {}, tok1b = {}, tok2 = {};
+    const c1 = env.nextEvent('follow-clock');
+    const s1 = p1.subscribe(w1, tok1, env.source, '1', 0, { product: 'series-state', params: { k: 1 } }, 'followed')!;
+    await c1;
+    const f1b = env.nextEvent('follow');
+    const s1b = p1.subscribe(w1, tok1b, env.source, '1', 0, { product: 'series-state', params: { k: 2 } }, 'followed')!;
+    await f1b;
+    const f2 = env.nextEvent('follow');
+    const s2 = p1.subscribe(w2, tok2, env.source, '1', 0, { product: 'series-state', params: { k: 3 } }, 'followed')!;
+    await f2;
+    const seek0 = env.clock.getSnapshot().seekSequence;
+    env.send(message(10, [
+      { id: s1, answer: { keys: [1n], columns: 1, values: [10n] } },
+      { id: s2, answer: { keys: [1n], columns: 1, values: [20n] } },
+    ], true, NATIVE, seek0));
+    await env.waitView(p1, w2, v => v?.mode === 'picture');
+    assert.equal(p1.view(w1)?.mode, 'reading', 'w1 still waiting on s1b');
+
+    env.send(message(15, [
+      { id: s1, answer: { keys: [99n], columns: 1, values: [999n], changed: true } },
+      { id: s2, answer: { keys: [1n], columns: 1, values: [25n], changed: true } },
+    ], false, NATIVE, seek0));
+    await env.waitView(p1, w1, v => v?.mode === 'failed');
+    assert.equal(p1.status(s1).status, 'failed');
+    const e1 = installedEntry(p1, w1, s1);
+    const e1b = installedEntry(p1, w1, s1b);
+    assert.equal(e1.status, 'failed');
+    assert.equal(e1b.status, 'failed');
+    assert.equal(classifyFailure(e1.error)?.kind, 'retryable');
+    assert.match(e1.error?.message ?? '', /does not hold/);
+    assert.equal(p1.view(w2)?.mode, 'picture', 'sibling w2 stays healthy');
+
+    p1.bind(w1, [surface()], { surfaces: [{ width: 1, height: 1, dpr: 1 }] });
+    p1.bind(w1, [surface()], { surfaces: [{ width: 2, height: 1, dpr: 1 }] });
+    assert.equal(p1.view(w1)?.mode, 'failed', 'surface remount does not clear a sticky lane fault');
+
+    const extraTok = {};
+    const fExtra = env.nextEvent('follow');
+    p1.subscribe(w1, extraTok, env.source, '1', 0, { product: 'series-state', params: { k: 4 } }, 'followed');
+    await fExtra;
+    p1.unsubscribe(w1, extraTok);
+    assert.equal(p1.view(w1)?.mode, 'failed', 'rebind on subscription change does not un-stick while the same failed subscription remains');
+
+    const cSeek1 = env.nextEvent('follow-clock');
+    env.clock.seek(20);
+    await cSeek1;
+    const seek1 = env.clock.getSnapshot().seekSequence;
+    env.send(message(20, [
+      { id: s1, answer: { keys: [1n], columns: 1, values: [100n] } },
+      { id: s1b, answer: { keys: [1n], columns: 1, values: [101n] } },
+      { id: s2, answer: { keys: [1n], columns: 1, values: [200n] } },
+    ], true, NATIVE, seek1));
+    await env.waitView(p1, w2, v => v?.mode === 'picture' && v?.h === 20);
+    assert.equal(p1.view(w1)?.mode, 'failed', 'sticky lane fault persists across seeks');
+
+    const wSwap = p1.acquire('swap|0', { offset: 0, pin: null });
+    const swapTok = {};
+    p1.subscribe(wSwap, swapTok, env.source, '1', 0, { product: 'series-state', params: { k: 1 } }, 'followed');
+    assert.equal(p1.view(wSwap)?.mode, 'failed', 'joining an already-failed subscription shows failed immediately');
+    const fHealthy = env.nextEvent('follow');
+    const sHealthy = p1.subscribe(wSwap, swapTok, env.source, '1', 0, { product: 'series-state', params: { k: 5 } }, 'followed')!;
+    await fHealthy;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(p1.view(wSwap)?.mode, 'reading', 'replacing the failed subscription with a different subscription clears failed');
+    env.send(message(20, [{ id: sHealthy, answer: { keys: [1n], columns: 1, values: [55n] } }], false, NATIVE, seek1));
+    await env.waitView(p1, wSwap, v => v?.mode === 'picture');
+
+    const picked = followFailure({ status: e1.status, reason: e1.reason, error: e1.error, structure: '', entry: e1, hidden: false, reading: null });
+    assert.ok(picked);
+    const restarted = env.nextEvent('restart');
+    picked.retry();
+    await restarted;
+
+    const p2 = env.pipeline;
+    assert.notEqual(p2, p1, 'Retry restarts into a fresh pipeline');
+    assert.equal(p1.view(w1), null, 'old pipeline widgets are disposed');
+
+    const clock2 = env.nextEvent('follow-clock');
+    const w1Next = p2.acquire('w1|0', { offset: 0, pin: null });
+    const s1Next = p2.subscribe(w1Next, {}, env.source, '1', 0, { product: 'series-state', params: { k: 1 } }, 'followed')!;
+    await clock2;
+    assert.equal(p2.status(s1Next).status, 'followed');
+    env.send(message(20, [{ id: s1Next, answer: { keys: [1n], columns: 1, values: [77n] } }], true, NATIVE, env.clock.getSnapshot().seekSequence));
+    await env.waitView(p2, w1Next, v => v?.mode === 'picture' && v?.h === 20);
+    assert.equal(p1.view(w1), null, 'nothing from the old lane can act after restart');
+    assert.deepEqual(env.counts(), {
+      openCalls: 2,
+      activeReaders: 1,
+      activeLanes: 1,
+      activeOwnedPorts: 1,
+      clockListeners: initialListeners,
+    }, 'restart leaves exactly one active reader, lane set, port set and clock listener set');
+  } finally { env.close(); }
+});
+
+test('widget drawing fault reports via typed widget-failed, sticks across surface remounts, isolates siblings, and recovers on restartPipeline', async () => {
+  let shouldThrow = true;
+  const flaky: LaneView = {
+    paint: input => {
+      if (shouldThrow) throw new Error('boom');
+      return { surfaces: input.binding.surfaces.map(() => ({ source: { width: 1, height: 1 }, content: `ok:${input.hour}` })), fields: {}, motion: false };
+    },
+  };
+  const env = managedInProcess({ views: kind => kind === 'flaky' ? flaky : undefined });
+  try {
+    const p1 = env.pipeline;
+    const w1 = p1.acquire('flaky|0', { offset: 0, pin: null, view: 'flaky' });
+    const w2 = p1.acquire('ok|0', { offset: 0, pin: null });
+    const c1 = env.nextEvent('follow-clock');
+    const s1 = p1.subscribe(w1, {}, env.source, '1', 0, { product: 'series-state', params: { k: 1 } }, 'followed')!;
+    const f2 = env.nextEvent('follow');
+    const s2 = p1.subscribe(w2, {}, env.source, '1', 0, { product: 'series-state', params: { k: 2 } }, 'followed')!;
+    p1.bind(w1, [surface()], { surfaces: [{ width: 1, height: 1, dpr: 1 }] });
+    await Promise.all([c1, f2]);
+    env.clock.seek(10);
+    const seek = env.clock.getSnapshot().seekSequence;
+    env.send(message(10, [
+      { id: s1, answer: { keys: [1n], columns: 1, values: [1n] } },
+      { id: s2, answer: { keys: [1n], columns: 1, values: [2n] } },
+    ], true, NATIVE, seek));
+    await Promise.all([
+      env.waitView(p1, w1, v => v?.mode === 'failed'),
+      env.waitView(p1, w2, v => v?.mode === 'picture'),
+    ]);
+    const e1 = installedEntry(p1, w1, s1);
+    assert.equal(e1.status, 'failed');
+    assert.equal(classifyFailure(e1.error)?.kind, 'retryable');
+    assert.match(e1.error?.message ?? '', /drawing failed: boom/);
+    assert.equal(p1.status(s1).status, 'followed', 'a widget drawing fault does not fail the subscription');
+    p1.bind(w1, [surface()], { surfaces: [{ width: 2, height: 1, dpr: 1 }] });
+    assert.equal(p1.view(w1)?.mode, 'failed', 'widget drawing fault stays sticky across surface remounts');
+    assert.equal(p1.view(w1)?.failureOrigin, 'local', 'widget drawing fault preserves local failureOrigin across remounts');
+
+    shouldThrow = false;
+    p1.retryWidget(w1);
+    await env.waitView(p1, w1, v => v?.mode === 'picture');
+    assert.equal(p1.widgetError(w1), undefined, 'local retryWidget clears widget error without restarting pipeline');
+
+    shouldThrow = true;
+    p1.bind(w1, [surface()], { surfaces: [{ width: 3, height: 1, dpr: 1 }] });
+    await env.waitView(p1, w1, v => v?.mode === 'failed');
+    const e1Retry = installedEntry(p1, w1, s1);
+
+    shouldThrow = false;
+    const restarted = env.nextEvent('restart');
+    e1Retry.retry!();
+    await restarted;
+    const p2 = env.pipeline;
+    const c2 = env.nextEvent('follow-clock');
+    const w1Next = p2.acquire('flaky|0', { offset: 0, pin: null, view: 'flaky' });
+    const s1Next = p2.subscribe(w1Next, {}, env.source, '1', 0, { product: 'series-state', params: { k: 1 } }, 'followed')!;
+    p2.bind(w1Next, [surface()], { surfaces: [{ width: 2, height: 1, dpr: 1 }] });
+    await c2;
+    env.send(message(10, [{ id: s1Next, answer: { keys: [1n], columns: 1, values: [3n] } }], true, NATIVE, env.clock.getSnapshot().seekSequence));
+    await env.waitView(p2, w1Next, v => v?.mode === 'picture');
+  } finally { env.close(); }
+});
+
 test('retry on any follow failure restarts the whole pipeline cleanly without leaking readers, lanes, ports or listeners', async () => {
   let openAttempts = 0;
   let followAttempts = 0;
@@ -540,7 +765,7 @@ test('close aborts in-flight follow requests, terminates a pending reader immedi
   } as never;
   const source = { id: 's', revision: 'r', path: 'p', metadata: {} } as never;
   const pendingPipe = new Pipeline(clock, client, {
-    lanes: [{ onmessage: null, postMessage() {} }],
+    lanes: [{ onmessage: null, postMessage(m) { if (m.type === 'init') m.port.close(); } }],
     open: ports => (client as { openFollow(p: readonly MessagePort[]): unknown }).openFollow(ports) as never,
     channel: () => new MessageChannel(),
     frameRate: () => 60,
@@ -561,8 +786,10 @@ test('close aborts in-flight follow requests, terminates a pending reader immedi
     const w = p.acquire('disp|0', { offset: 0, pin: null });
     p.page.offer({ lane: 0, serial: 1, entries: [{ widget: w, id: 1, binding: 1, gen: { seek: p.page.seek, reset: 0 }, follows: true, h: 10, c: 10, lo: 10, hi: 10, mode: 'picture', surfaces: [makeBitmap(1)], content: {}, fields: {}, ms: 0 }] });
     p.page.offer({ lane: 0, serial: 2, entries: [{ widget: w, id: 2, binding: 1, gen: { seek: p.page.seek, reset: 0 }, follows: true, h: 20, c: 20, lo: 20, hi: 20, mode: 'picture', surfaces: [makeBitmap(2)], content: {}, fields: {}, ms: 0 }] });
+    p.page.frame();
+    p.page.offer({ lane: 0, serial: 3, entries: [{ widget: w, id: 3, binding: 1, gen: { seek: p.page.seek, reset: 0 }, follows: true, h: 30, c: 30, lo: 30, hi: 30, mode: 'picture', surfaces: [makeBitmap(3)], content: {}, fields: {}, ms: 0 }] });
     p.close();
-    assert.deepEqual(closedBitmaps.sort((a, b) => a - b), [1, 2], 'close disposes Page and closes queued and early bitmaps');
+    assert.deepEqual(closedBitmaps.sort((a, b) => a - b), [1, 2, 3], 'close disposes Page and closes queued, early and earlyMore bitmaps');
     assert.equal(p.page.widgets.size, 0, 'close clears Page widgets');
   } finally { env.close(); }
 
@@ -587,7 +814,7 @@ test('close aborts in-flight follow requests, terminates a pending reader immedi
     },
   } as never;
   const abortPipe = new Pipeline(clock, abortClient, {
-    lanes: [{ onmessage: null, postMessage() {} }],
+    lanes: [{ onmessage: null, postMessage(m) { if (m.type === 'init') m.port.close(); } }],
     open: ports => (abortClient as { openFollow(p: readonly MessagePort[]): Promise<string> }).openFollow(ports),
     channel: () => new MessageChannel(),
     frameRate: () => 60,
@@ -642,5 +869,203 @@ test('a superseded follow-clock rejection never overwrites a route failure cause
     assert.equal(entry.error?.message, 'Current stream failed', 'superseded clock rejection did not overwrite the current failure');
   } finally {
     env.close();
+  }
+});
+
+test('F6: a late successful registration reply after sub-failed never overwrites failed status and unfollows natively', async () => {
+  let releaseFollow!: () => void;
+  let notifyFollow!: () => void;
+  const followStarted = new Promise<void>(resolve => { notifyFollow = resolve; });
+  const env = managedInProcess({
+    gate: product => {
+      if (product === 'follow') {
+        notifyFollow();
+        return new Promise<void>(resolve => { releaseFollow = resolve; });
+      }
+      return undefined;
+    },
+  });
+  try {
+    env.clock.seek(10);
+    const p = env.pipeline;
+    const w = p.acquire('f6|0', { offset: 0, pin: null });
+    const s = p.subscribe(w, {}, env.source, '1', 0, { product: 'series-state', params: { k: 1 } }, 'followed')!;
+    await followStarted;
+    const huge = { keys: Array.from({ length: 12000 }, (_, i) => BigInt(i + 1)), columns: 1, values: Array.from({ length: 12000 }, () => 1n) };
+    const pkt = message(10, [{ id: s, answer: huge }], false, NATIVE, env.clock.getSnapshot().seekSequence);
+    for (let i = 0; i < 20 && p.status(s).status !== 'failed'; i++) env.send(pkt);
+    await env.waitView(p, w, v => v?.mode === 'failed');
+    assert.equal(p.status(s).status, 'failed');
+
+    const unfollowed = env.nextEvent('unfollow');
+    releaseFollow();
+    await unfollowed;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(p.status(s).status, 'failed', 'late follow reply must not overwrite terminal failed status');
+    p.bind(w, [surface()], { surfaces: [{ width: 2, height: 1, dpr: 1 }] });
+    assert.equal(p.view(w)?.mode, 'failed', 'rebinding after late registration reply keeps widget failed instead of Reading');
+  } finally {
+    env.close();
+  }
+});
+
+test('F7: releasing one of two tokens sharing a subscription on the same widget keeps the widget notified on later faults', async () => {
+  const env = managedInProcess();
+  try {
+    env.clock.seek(10);
+    const p = env.pipeline;
+    const w = p.acquire('f7|0', { offset: 0, pin: null });
+    const tokA = {}, tokB = {};
+    const c1 = env.nextEvent('follow-clock');
+    const sA = p.subscribe(w, tokA, env.source, '1', 0, { product: 'series-state', params: { k: 1 } }, 'followed')!;
+    const sB = p.subscribe(w, tokB, env.source, '1', 0, { product: 'series-state', params: { k: 1 } }, 'followed')!;
+    assert.equal(sA, sB);
+    await c1;
+    p.unsubscribe(w, tokB);
+    const seek = env.clock.getSnapshot().seekSequence;
+    env.send(message(10, [{ id: sA, answer: { keys: [1n], columns: 1, values: [10n] } }], true, NATIVE, seek));
+    await env.waitView(p, w, v => v?.mode === 'picture');
+    env.send(message(15, [{ id: sA, answer: { keys: [99n], columns: 1, values: [99n], changed: true } }], false, NATIVE, seek));
+    await env.waitView(p, w, v => v?.mode === 'failed');
+    assert.equal(p.view(w)?.mode, 'failed');
+    assert.match(p.view(w)?.reason ?? '', /does not hold/);
+  } finally {
+    env.close();
+  }
+});
+
+test('P2/F2: useFollowedAll recomputes failure outcome and Retry when a lane fault changes the installed view while entries stay stable', async () => {
+  const { createServer } = await import('vite');
+  const states = new Map<number, unknown>();
+  const memos = new Map<number, { deps: readonly unknown[]; value: unknown }>();
+  const effects = new Map<number, { deps?: readonly unknown[]; run: () => void | (() => void); cleanup?: () => void }>();
+  const pending = new Map<number, { deps?: readonly unknown[]; run: () => void | (() => void) }>();
+  let cursor = 0;
+  let dirty = false;
+  const hooks = {
+    useState(initial?: unknown) {
+      const i = cursor++;
+      if (!states.has(i)) states.set(i, typeof initial === 'function' ? (initial as () => unknown)() : initial);
+      return [states.get(i), (next: unknown) => {
+        const prev = states.get(i);
+        const val = typeof next === 'function' ? (next as (v: unknown) => unknown)(prev) : next;
+        if (!Object.is(prev, val)) { states.set(i, val); dirty = true; }
+      }];
+    },
+    useRef(initial?: unknown) {
+      const i = cursor++;
+      if (!states.has(i)) states.set(i, { current: initial });
+      return states.get(i);
+    },
+    useMemo(make: () => unknown, deps: readonly unknown[]) {
+      const i = cursor++, prev = memos.get(i);
+      if (!prev || prev.deps.length !== deps.length || prev.deps.some((d, at) => !Object.is(d, deps[at]))) {
+        memos.set(i, { deps: [...deps], value: make() });
+      }
+      return memos.get(i)!.value;
+    },
+    useCallback(fn: unknown, deps: readonly unknown[]) { return hooks.useMemo(() => fn, deps); },
+    useContext(ctx: { _currentValue?: unknown }) { return ctx._currentValue; },
+    useId() { cursor++; return 'sb-id'; },
+    useEffect(run: () => void | (() => void), deps?: readonly unknown[]) {
+      const i = cursor++, prev = effects.get(i);
+      if (!deps || !prev || !prev.deps || prev.deps.length !== deps.length || prev.deps.some((d, at) => !Object.is(d, deps[at]))) pending.set(i, { deps: deps ? [...deps] : undefined, run });
+    },
+    useLayoutEffect(run: () => void | (() => void), deps?: readonly unknown[]) { hooks.useEffect(run, deps); },
+    useSyncExternalStore(_sub: (onChange: () => void) => () => void, getSnapshot: () => unknown) {
+      cursor++;
+      return getSnapshot();
+    },
+    commit() {
+      for (const [i, next] of [...pending]) {
+        pending.delete(i);
+        effects.get(i)?.cleanup?.();
+        const cleanup = next.run();
+        effects.set(i, { deps: next.deps, run: next.run, cleanup: typeof cleanup === 'function' ? cleanup : undefined });
+      }
+    },
+    unmount() {
+      for (const e of effects.values()) e.cleanup?.();
+      effects.clear(); pending.clear(); states.clear(); memos.clear();
+    },
+  };
+  const g = globalThis as typeof globalThis & { __followedAllHooks?: typeof hooks };
+  g.__followedAllHooks = hooks;
+  const vite = await createServer({
+    configFile: false,
+    optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{
+      name: 'hook-shim',
+      transform(code, id) {
+        const norm = id.replace(/\\/g, '/');
+        if (norm.endsWith('/followedAll.ts') || norm.endsWith('/useFollowed.ts') || norm.endsWith('/useFollow.ts')) {
+          return code.replace(
+            /import\s*\{([^}]+)\}\s*from\s*['"]react['"];?/,
+            (_, names: string) => `const {${names}} = globalThis.__followedAllHooks;`,
+          );
+        }
+        return null;
+      },
+    }],
+  });
+  let env: ReturnType<typeof managedInProcess> | null = null;
+  try {
+    const fixtureMod = await vite.ssrLoadModule('/ui/src/dashboard/follow/inProcess.fixture.ts') as { managedInProcess: typeof managedInProcess };
+    const msgMod = await vite.ssrLoadModule('/ui/src/dashboard/follow/messages.fixture.ts') as { message: typeof message };
+    env = fixtureMod.managedInProcess();
+    const mod = await vite.ssrLoadModule('/ui/src/widgets/scoreboard/followedAll.ts') as {
+      useFollowedAll: (store: unknown, queries: readonly (Record<string, unknown> | null)[], target: { current: Element | null }, onScreen: (el: Element, cb: (v: boolean) => void) => () => void) => {
+        entries: readonly unknown[]; failure?: string; error?: { message: string }; retry: () => void;
+      };
+    };
+    const store = { client: env.client, source: env.source, clock: env.clock, offset: 0 };
+    const storeMod = await vite.ssrLoadModule('/ui/src/dashboard/follow/store.ts') as { FollowedCard: { _currentValue: unknown }; FollowedWidgetKey: { _currentValue: unknown } };
+    const fakeEl = { isConnected: true } as Element;
+    storeMod.FollowedCard._currentValue = fakeEl;
+    storeMod.FollowedWidgetKey._currentValue = 'sb-f2';
+    const alwaysOn = (_el: Element, cb: (v: boolean) => void) => { cb(true); return () => {}; };
+    const queries = [
+      { product: 'series-state', branchId: '1', params: { col: 'a' } },
+      { product: 'series-state', branchId: '1', params: { col: 'b' } },
+    ];
+    const render = () => {
+      let out!: ReturnType<typeof mod.useFollowedAll>;
+      for (let pass = 0; pass < 4; pass++) {
+        cursor = 0; dirty = false;
+        out = mod.useFollowedAll(store, queries, { current: fakeEl }, alwaysOn);
+        hooks.commit();
+        if (!dirty) break;
+      }
+      return out;
+    };
+    env.clock.seek(10);
+    const c1 = env.nextEvent('follow-clock');
+    const first = render();
+    const subA = (first.entries[0] as { id: number } | null)?.id;
+    const subB = (first.entries[1] as { id: number } | null)?.id;
+    assert.ok(subA !== undefined && subB !== undefined);
+    await c1;
+    while (env.pipeline.status(subA).status !== 'followed' || env.pipeline.status(subB).status !== 'followed') {
+      await env.nextEvent('follow');
+    }
+    assert.equal(first.error, undefined);
+    const widgetId = env.pipeline.page.widgets.keys().next().value!;
+    const seek = env.clock.getSnapshot().seekSequence;
+    env.send(msgMod.message(10, [{ id: subA, answer: { keys: [1n], columns: 1, values: [10n] } }], true, NATIVE, seek));
+    env.send(msgMod.message(15, [{ id: subA, answer: { keys: [99n], columns: 1, values: [99n], changed: true } }], false, NATIVE, seek));
+    await env.waitView(env.pipeline, widgetId, v => v?.mode === 'failed');
+    const second = render();
+    assert.equal(second.entries, first.entries, 'entries reference stays stable across view change');
+    assert.ok(second.error !== undefined, 'useFollowedAll must recompute error when view changes to failed');
+    assert.match(second.failure ?? '', /does not hold/);
+    const restarted = env.nextEvent('restart');
+    second.retry();
+    await restarted;
+  } finally {
+    hooks.unmount();
+    delete g.__followedAllHooks;
+    env?.close();
+    await vite.close();
   }
 });

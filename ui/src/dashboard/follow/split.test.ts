@@ -47,3 +47,14 @@ test('review 11: a reset is stamped once per route before the split, so every la
   assert.equal(stamp(message(12, [], true, 3, 2)), 2);
   assert.equal(stamp(message(12, [], true, 4, 2)), 1, 'each route keeps its own count');
 });
+
+test('splitting directed records across many lanes visits each record once rather than scanning every lane', () => {
+  const answers = Array.from({ length: 200 }, (_, i) => ({ id: i + 1, answer: one(BigInt(i + 1)) }));
+  const bytes = message(40, answers, false, 7, 1);
+  const stats = { recordVisits: 0 };
+  const split = splitForLanes(bytes, 8, stats);
+  assert.ok(split.kind === 'follow');
+  assert.equal(stats.recordVisits, 200, `visited ${stats.recordVisits} instead of 200`);
+  const total = split.lanes.reduce((sum, part) => sum + (part ? parseFollowed(part).answers.length : 0), 0);
+  assert.equal(total, 200);
+});

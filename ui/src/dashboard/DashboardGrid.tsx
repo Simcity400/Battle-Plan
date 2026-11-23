@@ -25,7 +25,7 @@ import { WidgetBody } from './widgets';
 import { HeldFailures, HeldFailuresContext } from './heldFailures';
 import HeldFailureNotices from './HeldFailureNotices';
 import { MeasuredWidget } from './widgetPerf';
-import { FollowedCard, FollowedWidgetKey } from './follow/store.ts';
+import { FollowedCard, FollowedWidgetKey, FollowedWidgetKind } from './follow/store.ts';
 import { usePipelineGeneration } from './follow/useFollowed.ts';
 import { WidgetFrames } from './widgetClock';
 import { perfLog } from '../shell/perf';
@@ -384,9 +384,9 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
       <div className="dash-widget-caption-slot" ref={setCaptionSlot} hidden={hasBodyState || undefined} />
       <div ref={contentRef} className="dash-widget-content">
         <div className="dash-widget-scaled" style={{ zoom: (widget.contentScale ?? 100) / 100 }}>
-          {!drawnHere ? null : active === null ? <WidgetState kind="loading" label={`Loading ${wording.subject}…`} /> : <HeldFailuresContext.Provider value={failures}><MeasuredWidget.Provider value={prepared ? null : widget.id}><FollowedWidgetKey.Provider value={widget.id}><FollowedCard.Provider value={card}>
+          {!drawnHere ? null : active === null ? <WidgetState kind="loading" label={`Loading ${wording.subject}…`} /> : <HeldFailuresContext.Provider value={failures}><MeasuredWidget.Provider value={prepared ? null : widget.id}><FollowedWidgetKey.Provider value={widget.id}><FollowedWidgetKind.Provider value={widget.kind}><FollowedCard.Provider value={card}>
             <Body key={widget.kind === 'map' ? 0 : pipelineGen} widget={widget} runtime={bodyRuntime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} setOption={saveOption} setOptions={saveOptions} />
-          </FollowedCard.Provider></FollowedWidgetKey.Provider></MeasuredWidget.Provider></HeldFailuresContext.Provider>}
+          </FollowedCard.Provider></FollowedWidgetKind.Provider></FollowedWidgetKey.Provider></MeasuredWidget.Provider></HeldFailuresContext.Provider>}
         </div>
         {widget.kind !== 'map' && readingBadge && <div className="dash-reading-badge">{readingBadge}</div>}
       </div>
