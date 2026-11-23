@@ -23,7 +23,6 @@ const START: &str = "start";
 const SAVE: &str = "save";
 const DISCARD: &str = "discard";
 const QUIT: &str = "quit";
-const NAME: &str = "BattlePlan Recorder";
 const RECORD_AT: usize = 1;
 const TOOLTIP_UNITS: usize = 127;
 const ICON_SIZE: u32 = 32;
@@ -89,7 +88,7 @@ pub fn tooltip(snapshot: &Snapshot) -> String {
         Phase::Discarded => "Session discarded",
         Phase::Unsaved => "Not saved yet",
     };
-    let mut text = format!("{NAME}\n{status}");
+    let mut text = format!("{}\n{status}", app_update::recorder_name());
     if let Some(name) = snapshot
         .name
         .as_ref()
@@ -272,9 +271,10 @@ mod tests {
 
     #[test]
     fn the_tooltip_names_the_status_the_recording_and_any_problem() {
+        let name = app_update::recorder_name();
         assert_eq!(
             tooltip(&Snapshot::default()),
-            "BattlePlan Recorder\nWaiting for the game"
+            format!("{name}\nWaiting for the game")
         );
         let mut snapshot = Snapshot {
             phase: Phase::Recording,
@@ -283,7 +283,7 @@ mod tests {
         };
         assert_eq!(
             tooltip(&snapshot),
-            "BattlePlan Recorder\nRecording · Germany 1936–1943"
+            format!("{name}\nRecording · Germany 1936–1943")
         );
         snapshot.problem = Some(crate::snapshot::Problem::caveat(
             "2 hours couldn’t be recorded.",
@@ -291,7 +291,7 @@ mod tests {
         ));
         assert_eq!(
             tooltip(&snapshot),
-            "BattlePlan Recorder\nRecording · Germany 1936–1943\n2 hours couldn’t be recorded."
+            format!("{name}\nRecording · Germany 1936–1943\n2 hours couldn’t be recorded.")
         );
     }
 
@@ -316,24 +316,25 @@ mod tests {
                 tooltip(&snapshot)
             })
             .collect();
-        let quiet = "BattlePlan Recorder\nRecording · Germany 1936–1943";
+        let name = app_update::recorder_name();
+        let quiet = format!("{name}\nRecording · Germany 1936–1943");
         let behind = |hours: u64| format!("{quiet} · falling behind by {hours} hours");
         assert_eq!(
             lines,
             [
-                quiet.to_owned(),
-                quiet.to_owned(),
+                quiet.clone(),
+                quiet.clone(),
                 behind(6),
                 behind(9),
                 behind(13),
                 behind(7),
-                quiet.to_owned(),
-                quiet.to_owned(),
+                quiet.clone(),
+                quiet.clone(),
             ]
         );
         snapshot.behind = Some(9);
         snapshot.phase = Phase::Saving;
-        assert_eq!(tooltip(&snapshot), "BattlePlan Recorder\nSaving recording · Germany 1936–1943");
+        assert_eq!(tooltip(&snapshot), format!("{name}\nSaving recording · Germany 1936–1943"));
     }
 
     #[test]
@@ -345,7 +346,7 @@ mod tests {
         };
         let text = tooltip(&snapshot);
         assert!(text.encode_utf16().count() <= TOOLTIP_UNITS);
-        assert!(text.starts_with("BattlePlan Recorder\nSaved · Nederland 🇳🇱"));
+        assert!(text.starts_with(&format!("{}\nSaved · Nederland 🇳🇱", app_update::recorder_name())));
         assert!(text.ends_with('…'));
     }
 
