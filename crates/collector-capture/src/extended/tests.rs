@@ -2,6 +2,177 @@ use super::*;
 use collector_extended_support::outcomes::failed_capture;
 use engine_native::carmy;
 
+pub(super) fn stage_fixture_acquisitions(
+    captured: &mut Captured,
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    hour: i32,
+    force_full: bool,
+) {
+    let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Extended);
+    macro_rules! staggered {
+        ($ticks:expr, $($pack:ident),+ $(,)?) => {$(
+            scatter(
+                &$pack::TABLES,
+                captured.$pack.capture(memory, base, game_state, hour, force_full),
+                $ticks,
+            );
+        )+};
+    }
+    macro_rules! stage {
+        ($slot:ident, $($pack:ident),+ $(,)?) => {
+            if captured.$slot.is_none() {
+                let mut ticks = [0; TABLE_COUNT];
+                staggered!(&mut ticks, $($pack),+);
+                captured.$slot = Some(ticks);
+            }
+        };
+    }
+    if captured.slow_ticks.is_none() {
+        let mut ticks = [0; TABLE_COUNT];
+        staggered!(
+            &mut ticks,
+            peace_bids,
+            map_names,
+            faction_theatres,
+            model_inputs,
+            modifier_definitions,
+            country_tactic_unlocks,
+            logistics,
+            country_factories,
+            state_building_inputs,
+            visibility,
+        );
+        // SAFETY: Fixture staging runs under isolated fixture control, as the sole capture pass.
+        let cost = unsafe { captured.hired_advisors.capture(memory, base, game_state, hour, force_full) };
+        scatter(&hired_advisors::TABLES, cost, &mut ticks);
+        // SAFETY: Fixture staging runs under isolated fixture control, as the sole capture pass.
+        let cost = unsafe { captured.combat_log.capture(memory, base, game_state, hour, force_full) };
+        scatter(&combat_log::TABLES, cost, &mut ticks);
+        captured.slow_ticks = Some(ticks);
+    }
+    if captured.stability_ticks.is_none() && captured.records_any(&country_stability::TABLES) {
+        let mut ticks = [0; TABLE_COUNT];
+        scatter(
+            &country_stability::TABLES,
+            captured
+                .country_stability
+                .capture(memory, base, game_state, hour, force_full, None),
+            &mut ticks,
+        );
+        captured.stability_ticks = Some(ticks);
+    }
+    if captured.production_daily_ticks.is_none()
+        && ProductionDailyPacks::recorded(captured.capture_mode)
+        && ProductionDailyPacks::due(hour, force_full)
+    {
+        let mut ticks = [0; TABLE_COUNT];
+        captured.assemble_production_daily(
+            memory, base, game_state, hour, force_full, &mut ticks, true,
+        );
+        captured.production_daily_ticks = Some(ticks);
+    }
+    if captured.records_any(&war_overview::TABLES) {
+        stage!(war_overview_ticks, war_overview);
+    }
+    if captured.template_ticks.is_none() {
+        // SAFETY: Fixture staging runs under isolated fixture control, as the sole capture pass.
+        captured.template_ticks = Some(unsafe {
+            captured
+                .division_templates
+                .capture(memory, base, game_state, hour, force_full)
+        });
+    }
+    if captured.raid_state_ticks.is_none() {
+        let mut ticks = [0; TABLE_COUNT];
+        staggered!(&mut ticks, raid_state_inputs);
+        scatter(
+            &resource_map::TABLES,
+            captured
+                .resource_map
+                .capture(memory, base, game_state, hour, force_full, None),
+            &mut ticks,
+        );
+        captured.raid_state_ticks = Some(ticks);
+    }
+    if captured.records_any(&raid_target_statuses::TABLES) {
+        stage!(raid_targets_ticks, raid_target_statuses);
+    }
+    stage!(raid_launch_ticks, raid_launch_inputs);
+    stage!(gated_ticks, fog, construction, projects);
+    if captured.character_inputs_ticks.is_none() {
+        captured.character_inputs_ticks = Some(
+            captured
+                .character_inputs
+                .capture(memory, base, game_state, hour, force_full),
+        );
+    }
+    if captured.supply_trains_report.is_none() && captured.records_any(&supply_trains::TABLES) {
+        let context = supply_trains::CaptureContext {
+            base,
+            game_state,
+            hour,
+            force_full,
+        };
+        captured.supply_trains_report = Some(captured.supply_trains.capture_owned(memory, context));
+    }
+    if captured.character_portraits_report.is_none() {
+        let context = character_portraits::CaptureContext { base, game_state };
+        captured.character_portraits_report =
+            Some(captured.character_portraits.capture_owned(memory, context));
+    }
+    if captured.province_unit_order_report.is_none() {
+        let context = province_unit_order::CaptureContext { base, game_state };
+        captured.province_unit_order_report = Some(
+            captured
+                .province_unit_order
+                .capture_owned(memory, context, None, None),
+        );
+    }
+}
+
+pub(super) fn stage_fixture_late(
+    captured: &mut Captured,
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    hour: i32,
+    force_full: bool,
+    orders: &mut Orders,
+) {
+    if captured.late_ticks.is_some() {
+        return;
+    }
+    let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Extended);
+    let mut packs = captured.late_spare.take().expect("late spare present");
+    captured.swap_late(&mut packs, orders);
+    packs.capture(
+        memory,
+        base,
+        game_state,
+        hour,
+        force_full,
+        captured.unit_inputs.as_deref(),
+        Some(&captured.divisions),
+        Some(&mut engine_raid_inputs::raid_air_scores::Held::default()),
+        None,
+    );
+    packs.ticks[TableId::DivisionMovement.index()] += captured.plans.capture_unit_transports(
+        memory,
+        base,
+        game_state,
+        captured.unit_inputs.as_deref(),
+        &packs.orders,
+    );
+    captured.late_ticks = Some(packs.ticks);
+    captured.swap_late(&mut packs, orders);
+    captured.late_spare = Some(packs);
+    captured
+        .plans
+        .install_order_transport(&mut captured.division_presentation);
+}
+
 #[test]
 fn periodic_live_input_sizing_keeps_land_events_prompt_and_skips_worker_hints() {
     struct Unreadable;
@@ -808,7 +979,9 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
         }
         captured.drop_and_reset();
         let counted = collector_memory::read_accounting::Capture::new();
+        stage_fixture_acquisitions(&mut captured, &memory, 11, 0x1000, hour, true);
         let mut ticks = captured.capture_tables(&memory, 11, 0x1000, hour, true);
+        stage_fixture_late(&mut captured, &memory, 11, 0x1000, hour, true, &mut orders);
         captured.capture_tables_late(&memory, 11, 0x1000, hour, true, &mut orders, &mut ticks);
         let reads = counted.finish();
         for id in [
@@ -1004,6 +1177,102 @@ fn ordinary_terminal_failures_forget_the_counter_censuses() {
             captured.naval_counters.held_censuses(),
             usize::from(failed.is_none()),
             "the per-hour reset keeps what the family held: {failed:?}"
+        );
+    }
+}
+
+#[derive(Default)]
+struct TerminalReadTrace(std::cell::RefCell<Vec<(usize, usize)>>);
+
+impl Memory for TerminalReadTrace {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.0.borrow_mut().push((address, output.len()));
+        false
+    }
+}
+
+impl TerminalReadTrace {
+    fn assert_only_inline_reads(self, base: usize, state: usize, hour: i32, late: bool) {
+        let mut inline = Captured::with_capacities(&Capacities::default());
+        let allowed = Self::default();
+        inline.state_flags.capture(&allowed, base, state);
+        inline.event_feed.capture(&allowed, base, state);
+        if late {
+            inline.lexical.capture(&allowed, base, state, hour, true);
+        }
+        let mut allowed = allowed.0.into_inner();
+        let mut actual = self.0.into_inner();
+        allowed.sort_unstable();
+        actual.sort_unstable();
+        assert_eq!(actual, allowed, "missing acquisitions must not read memory");
+    }
+}
+
+#[test]
+fn terminal_capture_keeps_missing_acquisition_reports_unavailable() {
+    let memory = TerminalReadTrace::default();
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    captured.weather.raw_mode = true;
+    captured.capture_tables(&memory, 11, 0x1000, 1, true);
+    memory.assert_only_inline_reads(11, 0x1000, 1, false);
+    let outcomes = captured.outcomes();
+    for (table, reason) in [
+        (supply_trains::TABLES[0], "supply_trains acquisition not supplied"),
+        (
+            character_portraits::TABLES[0],
+            "character_portraits acquisition not supplied",
+        ),
+        (
+            province_unit_order::TABLES[0],
+            "province_unit_order acquisition not supplied",
+        ),
+        (intel::TABLES[1], "residual Intel acquisition not supplied"),
+    ] {
+        assert_eq!(
+            outcomes[table.index()],
+            Outcome::Unavailable { reason },
+            "{table:?}"
+        );
+    }
+}
+
+#[test]
+fn terminal_capture_keeps_missing_worker_results_unavailable() {
+    let memory = TerminalReadTrace::default();
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    captured.supply_trains_report = Some(supply_trains::CaptureReport::default());
+    captured.character_portraits_report = Some(character_portraits::CaptureReport::default());
+    captured.province_unit_order_report = Some(province_unit_order::CaptureReport::default());
+    captured.intel_residual_report = Some(intel::CaptureReport::default());
+    let mut ticks = captured.capture_tables(&memory, 11, 0x1000, 1, true);
+    captured.capture_tables_late(
+        &memory,
+        11,
+        0x1000,
+        1,
+        true,
+        &mut Orders::vacant(),
+        &mut ticks,
+    );
+    memory.assert_only_inline_reads(11, 0x1000, 1, true);
+    let outcomes = captured.outcomes();
+    for (table, reason) in [
+        (weather::TABLES[0], "weather acquisition not supplied"),
+        (peace_bids::TABLES[0], "slow acquisition not supplied"),
+        (country_stability::TABLES[0], "stability acquisition not supplied"),
+        (war_overview::TABLES[0], "war overview acquisition not supplied"),
+        (division_templates::TABLES[0], "template acquisition not supplied"),
+        (raid_state_inputs::TABLES[0], "raid_state acquisition not supplied"),
+        (raid_target_statuses::TABLES[0], "raid target acquisition not supplied"),
+        (raid_launch_inputs::TABLES[0], "raid launch acquisition not supplied"),
+        (fog::TABLES[0], "gated acquisition not supplied"),
+        (character_inputs::TABLES[0], "character inputs acquisition not supplied"),
+        (army_icon_inputs::TABLES[0], "late acquisition not supplied"),
+    ] {
+        assert_eq!(
+            outcomes[table.index()],
+            Outcome::Unavailable { reason },
+            "{table:?}"
         );
     }
 }
@@ -1651,12 +1920,6 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
 
 #[test]
 fn intel_residual_handoff_preserves_terminal_results_without_repeating_live_reads() {
-    struct NoReads;
-    impl Memory for NoReads {
-        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-            panic!("completed residual capture and delegated raw jobs must not read again");
-        }
-    }
     let mut capacity = Capacities::default();
     capacity.intel.raise_for_countries(1);
     for failure in [
@@ -1711,7 +1974,7 @@ fn intel_residual_handoff_preserves_terminal_results_without_repeating_live_read
         assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 1);
         assert_eq!(captured.allocated_bytes(), bytes);
         let outcomes = captured.intel.outcomes();
-        let report = captured.acquire_intel(&NoReads, context);
+        let report = captured.finish_intel_residual(context);
         assert!(captured.intel_residual_report.is_none());
         for index in (1..=12).chain(15..intel::N) {
             assert_eq!(captured.intel.outcomes()[index], outcomes[index]);
@@ -1890,12 +2153,6 @@ fn ship_models_late_terminal_handoff_is_unavailable_until_new_sources() {
 
 #[test]
 fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_once() {
-    struct NoReads;
-    impl Memory for NoReads {
-        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-            panic!("a terminal hourly family must not read again");
-        }
-    }
     #[derive(Default)]
     struct Reads(std::cell::Cell<usize>);
     impl Memory for Reads {
@@ -2090,9 +2347,9 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
                 }
             }
         }
-        let supply = captured.acquire_supply_trains(&NoReads, supply_context);
-        let portraits = captured.acquire_character_portraits(&NoReads, portrait_context);
-        let province_order = captured.acquire_province_unit_order(&NoReads, province_order_context);
+        let supply = captured.finish_supply_trains();
+        let portraits = captured.finish_character_portraits();
+        let province_order = captured.finish_province_unit_order();
         assert_eq!(
             supply.ticks,
             if supply_failure.is_none() {
@@ -2165,9 +2422,11 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
         assert!(captured.character_portraits_report.is_none());
         assert!(captured.province_unit_order_report.is_none());
         let direct = Reads::default();
-        captured.acquire_supply_trains(&direct, supply_context);
-        captured.acquire_character_portraits(&direct, portrait_context);
-        captured.acquire_province_unit_order(&direct, province_order_context);
+        captured.supply_trains.capture_owned(&direct, supply_context);
+        captured.character_portraits.capture_owned(&direct, portrait_context);
+        captured
+            .province_unit_order
+            .capture_owned(&direct, province_order_context, None, None);
         assert_eq!(
             direct.0.get(),
             3 * supply_trains::PARTS + 1 + character_portraits::PARTS + 1
@@ -2883,11 +3142,13 @@ fn the_daily_production_tables_keep_slows_refusals_and_skip_off_their_slot() {
     let mut captured = Captured::with_capacities(&Capacities::default());
     let request = captured.take_production_daily_request(&countries, 11, 0x1000, SLOT, false);
     captured.restore_production_daily_request(request, false);
+    captured.slow_ticks = Some([0; TABLE_COUNT]);
     captured.capture_tables(&NoRead, 11, 0x1000, SLOT, false);
     refused(&captured, "slow acquisition failed");
     captured.capture_tables(&NoRead, 11, 0x1000, SLOT, false);
     refused(&captured, "slow acquisition failed");
     let mut captured = Captured::with_capacities(&Capacities::default());
+    captured.slow_ticks = Some([0; TABLE_COUNT]);
     let memory = CountedMemory::new(NoRead);
     for refusal in [None, Some("slow acquisition failed")] {
         captured.slow_refusal = refusal;
@@ -3410,6 +3671,7 @@ fn map_assembly_refuses_the_packs_it_leaves_out_and_keeps_the_rest() {
         let mut captured = Captured::with_capacities(&Capacities::default());
         captured.set_capture_mode(mode);
         assert_eq!(captured.capture_mode(), mode);
+        captured.slow_ticks = Some([0; TABLE_COUNT]);
         captured.capture_tables(&NoRead, 11, 0x1000, hour, true);
         captured.outcomes()
     });

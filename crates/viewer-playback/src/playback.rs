@@ -10,7 +10,7 @@ const PASSED_HOURS: Hour = 48;
 
 pub struct AirRosters(RosterHistory);
 
-impl viewer_counters::map::counters::AirPasses for AirRosters {
+impl viewer_counters_naval::air_missions::AirPasses for AirRosters {
     fn visited(&self, branch: BranchId, pass: Hour, slot: u32) -> Result<bool, String> {
         self.0.visited(branch, pass, slot)
     }

@@ -165,7 +165,7 @@ fn evaluate(document: &Document, today: &DecodedFrame, frame: &DecodedFrame, row
     };
 
     let branch = document.playback.branch();
-    let mut units = viewer_counters::map::unit_selection::Selection::default();
+    let mut units = viewer_counters::unit_selection::Selection::default();
     units.context(branch);
     for (kind, of) in [(Kind::Division, 0), (Kind::RailwayGun, 1), (Kind::TaskForce, 2)] {
         let members: Vec<u64> = picks
@@ -183,14 +183,14 @@ fn evaluate(document: &Document, today: &DecodedFrame, frame: &DecodedFrame, row
         format!("{:?}", units.units().iter().collect::<BTreeSet<_>>())
     }));
     let selected: BTreeSet<Unit> = units.units().iter().copied().collect();
-    let mut air = viewer_counters::map::air_selection::Selection::default();
+    let mut air = viewer_counters::air_selection::Selection::default();
     air.context(branch);
     air.click(&picks.wings, false);
     text("observe:air", timed(|| {
         air.observe(branch, ours, frame);
         format!("{:?}", air.wings())
     }));
-    let mut fleets = viewer_counters::map::naval_selection::Selection::default();
+    let mut fleets = viewer_counters::naval_selection::Selection::default();
     fleets.context(branch);
     for &fleet in &picks.fleets {
         fleets.click(fleet, true);
@@ -209,9 +209,9 @@ fn evaluate(document: &Document, today: &DecodedFrame, frame: &DecodedFrame, row
     text("clock", timed(|| format!("{:?}", MovementFrame::clock_speed(frame))));
     text("picker", timed(|| format!("{:?}", crate::app::picker::four_buttons_at(frame))));
     text("walk", timed(|| format!("{:?}", document.unit_models.infantry_figure(frame, ours))));
-    text("clicks:fleet_choices", timed(|| format!("{:?}", viewer_counters::map::naval_selection::fleet_choices(frame, ours))));
+    text("clicks:fleet_choices", timed(|| format!("{:?}", viewer_counters::naval_selection::fleet_choices(frame, ours))));
     text("clicks:grid", timed(|| {
-        let mut grid = viewer_counters::map::air_selection::Selection::default();
+        let mut grid = viewer_counters::air_selection::Selection::default();
         let clicked = grid.grid_click(frame, &picks.wings, false).map_err(|error| error.to_string());
         format!("{clicked:?} {:?} {:?}", grid.wings(), grid.bases())
     }));

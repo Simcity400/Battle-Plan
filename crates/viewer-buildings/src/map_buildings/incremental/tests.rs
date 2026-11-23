@@ -908,9 +908,11 @@ fn the_exact_comparator_tells_signed_zeros_apart() {
     negative.popup_speed = -0.0;
     assert!(negative == zero, "derived equality takes -0.0 for 0.0");
     assert!(!negative.bit_eq(&zero));
-    let instance = &mut other.slots.get_mut(0).entity_mut().instance;
-    assert_eq!(instance.position[1].to_bits(), 0.0_f32.to_bits());
-    instance.position[1] = -0.0;
+    other.slots.edit(0, |slot| {
+        let instance = &mut slot.entity_mut().instance;
+        assert_eq!(instance.position[1].to_bits(), 0.0_f32.to_bits());
+        instance.position[1] = -0.0;
+    });
     assert!(other != same, "slot equality compares instance bits");
     assert!(!other.bit_eq(&same));
 }

@@ -27,6 +27,7 @@ test-support = [
     "viewer-buildings/test-support",
     "viewer-counter-products/test-support",
     "viewer-counters/test-support",
+    "viewer-counter-kit/test-support",
     "viewer-engagements/test-support",
     "viewer-foundation/test-support",
     "viewer-gpu/test-support",
@@ -40,6 +41,7 @@ test-support = [
 ]
 
 [dependencies]
+viewer-counter-kit.workspace = true
 recorder-derive = { workspace = true, optional = true }
 content-reader-core = { workspace = true }
 dashboard-core = { workspace = true }
@@ -63,7 +65,7 @@ viewer-aircraft = { workspace = true }
 viewer-borders = { workspace = true }
 viewer-buildings = { workspace = true }
 viewer-counter-products = { path = "../viewer-counter-products" }
-viewer-counters = { path = "../viewer-counters" }
+viewer-counters.workspace = true
 viewer-engagements = { workspace = true }
 viewer-foundation = { workspace = true }
 viewer-gpu = { workspace = true }
@@ -112,7 +114,6 @@ unify-windows = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }
 viewer-map-icons = { workspace = true, features = ["test-support"] }
-viewer-native-gui = { workspace = true, features = ["test-support"] }
 viewer-scene-base = { workspace = true, features = ["test-support"] }
 viewer-terrain = { workspace = true, features = ["test-support"] }
 viewer-unit-history = { workspace = true, features = ["test-support"] }

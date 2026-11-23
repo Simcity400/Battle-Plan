@@ -12,7 +12,8 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use viewer_counters::map::counters::{FleetMarker, ForceFields, NavalJoins, NavalMember, Port, PortSummary, port_force_unrecorded, port_undecided_reason, naval_member, type_tint};
+use viewer_counter_kit::type_tint;
+use viewer_counters_naval::naval_members::{FleetMarker, ForceFields, NavalJoins, NavalMember, Port, PortSummary, port_force_unrecorded, port_undecided_reason, naval_member};
 use viewer_gpu::camera::{Placement, Pose};
 use viewer_unit_reads::{counter_inputs, counter_move::UnitRoute, task_force_visual};
 use viewer_foundation::{mode_visibility::UnitKinds, perspective::{Choice, Vision}};

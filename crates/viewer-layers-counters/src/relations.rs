@@ -11,7 +11,7 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_counters::map::counters::type_tint::{Index, Receiver, RelationFacts, volunteer_hosts};
+use viewer_counter_kit::type_tint::{Index, Receiver, RelationFacts, volunteer_hosts};
 
 const SLOT_ZERO: &str = "a viewer at country slot zero reads recorded packets the relations layer does not decode";
 

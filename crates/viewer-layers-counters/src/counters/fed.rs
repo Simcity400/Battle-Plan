@@ -11,7 +11,8 @@ use std::{
     thread,
     time::Instant,
 };
-use viewer_counters::map::counters::{LandStacks, Member, type_tint};
+use viewer_counter_kit::type_tint;
+use viewer_counters_land::members::{LandStacks, Member};
 use viewer_gpu::camera::Placement;
 use viewer_unit_reads::counter_action::Action;
 use viewer_foundation::perspective::{Choice, Vision};

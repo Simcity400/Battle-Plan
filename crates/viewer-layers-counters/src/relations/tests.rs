@@ -18,7 +18,7 @@ use std::{
         atomic::{AtomicU32, Ordering},
     },
 };
-use viewer_counters::map::counters::type_tint::{Index, Side};
+use viewer_counter_kit::type_tint::{Index, Side};
 
 #[derive(Default)]
 struct Memory {

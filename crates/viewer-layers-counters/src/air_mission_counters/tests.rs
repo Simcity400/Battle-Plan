@@ -21,7 +21,7 @@ use std::{
         atomic::{AtomicU32, Ordering},
     },
 };
-use viewer_counters::map::counters::{AirPasses, Ground, counts_withheld};
+use viewer_counters_naval::air_missions::{AirPasses, Ground, counts_withheld};
 use viewer_foundation::perspective::{Choice, Country, Vision};
 use viewer_map_modes::map_mode::{MapMode, Stock};
 

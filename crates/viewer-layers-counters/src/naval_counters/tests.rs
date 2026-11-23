@@ -4,7 +4,8 @@ use viewer_layer_core::{layers::{Layer, View}, test_support::recorded::{column, 
 use playhead::Settings;
 use replay_columnar::{manifest::Status, state::Cell, store::Store};
 use replay_data::rows::{Field, NativeValue, Opaque, ShipCounterInputs, TableId};
-use viewer_counters::map::counters::{NavalMember, Port, Sea, type_tint};
+use viewer_counter_kit::type_tint;
+use viewer_counters_naval::naval_members::{NavalMember, Port, Sea};
 use viewer_gpu::camera::Placement;
 use viewer_unit_reads::{counter_move::{Position, UnitRoute}, task_force_visual};
 use viewer_foundation::{perspective::{Choice, Country, Vision}, unit_rules::SHIP_IN_PORT};

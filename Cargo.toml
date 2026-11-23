@@ -48,6 +48,10 @@ product-codec = { path = "crates/product-codec" }
 content-witness = { path = "crates/content-witness" }
 map-products = { path = "crates/map-products" }
 map-content = { path = "crates/map-content" }
+viewer-counter-kit = { path = "crates/viewer-counter-kit" }
+viewer-counters-naval = { path = "crates/viewer-counters-naval" }
+viewer-counters-land = { path = "crates/viewer-counters-land" }
+viewer-counters = { path = "crates/viewer-counters" }
 viewer-playback = { path = "crates/viewer-playback" }
 viewer-layer-core = { path = "crates/viewer-layer-core" }
 viewer-layers-counters = { path = "crates/viewer-layers-counters" }

@@ -4,7 +4,7 @@ use content_reader_image::{dds, native::Decode};
 use std::{collections::BTreeMap, io, sync::Arc};
 use viewer_combat as combat;
 use viewer_native_gui::native_windows::NativeWindows;
-use viewer_counters::map::counters::CounterAssets;
+use viewer_counters::counters::CounterAssets;
 use viewer_runtime::errors::invalid;
 use viewer_native_gui::{lazy_icons::{DYNAMIC_BASE, LazyTextures}, sprites::Interface, text};
 
@@ -66,7 +66,7 @@ impl MapIcons {
             });
             let mut images = Vec::new();
             let windows = NativeWindows::load_at(layers, gui_viewport)?;
-            let layouts = viewer_counters::map::counters::Layouts::read(&windows);
+            let layouts = viewer_counter_kit::Layouts::read(&windows);
             let mut font_warnings = Vec::new();
             let arrow_font = viewer_gpu::ribbon_content::arrow_text_font(layers)?;
             let registry = content_reader_core::gui::native::resources::Registry::from_files(
