@@ -14,6 +14,8 @@ Rules, over first-party files (vendor/ and fuzz/ are not read):
   a hasher, along a chain of a hasher's calls), heading a method chain that calls `hash`, alone
   or in a tuple or array, or writing to a hasher. An error message (`map_err`, `expect`, ...)
   is not hashed input. Debug output is not an identity.
+- test-support-branch: `cfg!` checks of `test-support` and `#[cfg]` predicates that negate it,
+  outside test and fixture code in `crates/`.
 
 Test code is a `tests/` target, an item under a test-only `cfg` or `#[test]`, or a file the
 crate's targets reach only through such items (`mod` declarations, `#[path]` included). Files
@@ -36,7 +38,7 @@ from functools import cache
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
-RULES = ("test-clock", "box-leak", "debug-hash")
+RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch")
 JS_TEST = re.compile(r"\.test\.(?:ts|tsx|mts|js|mjs|cjs)$")
 PS_TEST = re.compile(r"\.tests\.ps1$", re.IGNORECASE)
 JS_CLOCK = re.compile(r"\bset(?:Timeout|Interval)\s*\(")
@@ -56,6 +58,14 @@ TOKEN = re.compile(r"""//|/\*|(?<![\w'])(?:b|c)?r(#*)"|(?<![\w'])[bc]?"|'(?:\\(?
 BLOCK = re.compile(r"/\*|\*/")
 STRING_END = re.compile(r'(?:[^"\\]|\\.)*"', re.DOTALL)
 ATTRIBUTE = re.compile(r"#\s*(!?)\s*\[")
+CFG_GATE = re.compile(r"\bcfg\s*!\s*([([{])|#\s*!?\s*\[\s*cfg\s*\(")
+CFG_NOT = re.compile(r"\bnot\s*\(")
+CFG_FEATURE = re.compile(r'\bfeature\s*=\s*(?:r#*)?"(\s*)"')
+TEST_FUNCTION_OR_MODULE = re.compile(
+    r'(?:pub\s*(?:\([^)]*\)\s*)?)?'
+    r'(?:(?:const|async|unsafe|safe|extern(?:\s*"\s*")?)\s+)*'
+    r'(?:fn|mod)\s+(?:r#)?\w+'
+)
 MOD_DECLARATION = re.compile(r"\bmod\s+(?:r#)?(\w+)\s*([;{])")
 PATH_START = re.compile(r'#\s*\[\s*path\s*=\s*"')
 
@@ -153,8 +163,9 @@ def item_end(code, at):
     return len(code)
 
 
-def test_spans(text, code):
-    """The (start, end) spans of items only tests compile, and whether the whole file is one."""
+def test_spans(text, code, *, functions_and_modules_only=False):
+    """Test-only spans and whether the whole file is test code. Restrict outer attributes to
+    functions and modules when an expression or pattern could extend past the next gate."""
     spans, whole = [], False
     for found in ATTRIBUTE.finditer(code):
         end = closing(code, found.end() - 1, "[", "]")
@@ -174,6 +185,8 @@ def test_spans(text, code):
         at = end
         while (more := ATTRIBUTE.match(code, skip_space(code, at))) and not more.group(1):
             at = closing(code, more.end() - 1, "[", "]")
+        if functions_and_modules_only and not TEST_FUNCTION_OR_MODULE.match(code, skip_space(code, at)):
+            continue
         spans.append((found.start(), item_end(code, at)))
     return spans, whole
 
@@ -455,6 +468,28 @@ def debug_format(text, code, opening):
     return bool(DEBUG_PLACEHOLDER.search(body.replace("{{", "")))
 
 
+def mentions_test_support(text, code, start, end):
+    return any(text[feature.start(1):feature.end(1)] == "test-support"
+               for feature in CFG_FEATURE.finditer(code, start, end))
+
+
+def test_support_branches(text, code):
+    """Offsets of runtime checks and negated feature gates in production code."""
+    spans, _ = test_spans(text, code, functions_and_modules_only=True)
+    for gate in CFG_GATE.finditer(code):
+        if within(spans, gate.start()):
+            continue
+        start = gate.end()
+        opening = code[start - 1]
+        end = closing(code, start - 1, opening, {"(": ")", "[": "]", "{": "}"}[opening]) - 1
+        if gate.group(1):
+            if mentions_test_support(text, code, start, end):
+                yield gate.start()
+        elif any(mentions_test_support(text, code, negation.end(), closing(code, negation.end() - 1) - 1)
+                 for negation in CFG_NOT.finditer(code, start, end)):
+            yield gate.start()
+
+
 def rust_matches(name, revision):
     """{rule: [line, ...]} for a Rust file at a revision."""
     text, code = revision.text(name), revision.code(name)
@@ -470,6 +505,11 @@ def rust_matches(name, revision):
         if not within(spans, match.start()):
             found["box-leak"].append(line_of(text, match.start()))
     found["debug-hash"] = [line_of(text, offset) for offset in debug_hashes(text, code, spans)]
+    parts = PurePosixPath(name).parts
+    if (parts[0] == "crates" and "test-support" in text
+            and not {"tests", "test_support"}.intersection(parts[2:-1])
+            and not parts[-1].endswith("tests.rs") and parts[-1] not in {"test_support.rs", "testing.rs"}):
+        found["test-support-branch"] = [line_of(text, offset) for offset in test_support_branches(text, code)]
     return found
 
 
