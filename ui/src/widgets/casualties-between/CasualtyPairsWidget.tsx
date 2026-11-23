@@ -96,7 +96,7 @@ const PairRows = memo(function PairRows({ rows, label, hour, colors, columns, sp
 });
 
 export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  const drillControl = useDrill(runtime, useRegion(widget));
+  const drillControl = useDrill(runtime, useRegion(widget), widget.options?.show === DETAIL.id ? DETAIL.id : null);
   const drill = drillControl.state;
   const dispatch = drillControl.dispatch;
   const speed = usePlaybackMotion(runtime.clock);
@@ -117,7 +117,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'casualty-pairs',
     params: { branchId: track.branch.id, countries: [], between: false, window: null } }) : null;
   const manifest = useProduct<CasualtyPairsReply>(runtime.client, request, active, validateCasualtyPairs, track?.source);
-  const drillFollows = drill.breakdown !== null && drill.follow;
+  const drillFollows = drill.breakdown !== null && drillControl.following;
   const headWindow = useCallback((at: number) => String(casualtyPairWindows(manifest.data, at, false)[0] ?? -1), [manifest.data]);
   const drillRows = useRef<() => string>(() => '');
   const playback = useHeadHour(runtime.clock, active && (widget.time.mode === 'follow' || drillFollows),
@@ -126,8 +126,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const hour = window?.lastHour ?? track?.branch.lastHour ?? 0;
   const pinned = options.show === DETAIL.id;
   const open = pinned || drill.breakdown !== null;
-  const effectiveDrill = drill.breakdown ? drill : pinned
-    ? { breakdown: DETAIL.id, follow: widget.time.mode === 'follow', hour } : CLOSED;
+  const effectiveDrill = drill.breakdown ? { ...drill, follow: drillControl.following } : CLOSED;
   const clockHour = track ? Math.floor(playback) + track.axisOffset : null;
   const drillRegion = drillControl.region;
   const detailAt = open ? regionHour(drillRegion, track, runtime.tracks, axisAt(playback)) : recordedHour(track, hour);
@@ -136,8 +135,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const detailOutside = !!track && detailAt === null;
   const pickDay = useCallback((at: number) => dispatch(drill.breakdown ? { type: 'pick', hour: at }
     : { type: 'open', breakdown: DETAIL.id, hour: at, follow: false }), [drill.breakdown]);
-  const follow = () => dispatch(drill.breakdown ? { type: 'follow' }
-    : { type: 'open', breakdown: DETAIL.id, hour: detailHour, follow: drillControl.followsAt(detailHour) });
+  const follow = () => drill.breakdown ? drillControl.follow()
+    : dispatch({ type: 'open', breakdown: DETAIL.id, hour: detailHour, follow: drillControl.followsAt(detailHour) });
   const savedSelection = useMemo(() => track ? readPairSelection(options.pairSelection, track) : null, [options.pairSelection, track]);
   const grouped = widget.countries.kind === 'group';
   const needsGroups = widget.countries.kind !== 'all';

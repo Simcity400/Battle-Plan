@@ -135,7 +135,8 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   };
   const drillHour = drillControl.hour;
   const drillAt = drillHour ?? hour;
-  const ownDay = picked !== null && drill.breakdown !== null && !drill.follow && track && drillHour !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+  const sharesParent = drillControl.following && widget.time.mode === 'follow';
+  const ownDay = picked !== null && drill.breakdown !== null && !sharesParent && track && drillHour !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
     product: PRODUCTION_LICENCES, params: { branchId: track.branch.id, hour: drillHour } }) : null;
   const own = useProduct(runtime.client, ownDay, active, validateLicences, track?.source);
   const drillData = ownDay ? own.data : data;

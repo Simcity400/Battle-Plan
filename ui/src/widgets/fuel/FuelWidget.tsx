@@ -387,7 +387,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
       }} />}
     <Segmented label="Breakdown of" value={drillMeasure} onChange={next => {
       setMeasure(next); setRecipient(null); setConsumption(null); setLevel(null);
-      if (drill.breakdown !== null && at !== null) dispatch({ type: 'open', breakdown: next, hour: at, follow: drillControl.followsAt(at), country: drill.country });
+      if (drill.breakdown !== null && at !== null) dispatch({ type: 'open', breakdown: next, hour: at, follow: drillControl.following, country: drill.country });
     }} options={BREAKDOWNS.map(item => ({ value: item.id, label: item.label }))} />
     {breakdown}
   </DrillHost>{menu.menu}</div>;

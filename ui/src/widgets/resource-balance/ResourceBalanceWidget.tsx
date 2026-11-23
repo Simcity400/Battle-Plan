@@ -138,6 +138,8 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   const axisOffset = track.axisOffset ?? 0;
   const liveHead = useMemo(() => following ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [following, runtime.clock, axisOffset]);
+  const drillLiveHead = useMemo(() => drillFollows ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
+    [drillFollows, runtime.clock, axisOffset]);
 
   const open = (resource: ResourceInfo, hour: number | null) => {
     setResourceId(resource.id);
@@ -156,7 +158,7 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
         : drillData.poolsMissing ? <WidgetState kind="unavailable" message={drillData.poolsMissing} />
           : !picked ? <p className="drill-empty">{saved && !savedKey ? 'No resource was recorded at this time.' : 'Resource unavailable. Choose another in settings.'}</p>
             : <ResourceBreakdown runtime={runtime} gate={drillControl.gate} track={track} active={active} history={drillControl.gate.country?.history ?? null} resource={picked} data={drillData} live={breakdown.live}
-              hour={dayAt} following={drillFollows} tokens={tokens} extent={extent} playhead={drillFollows ? null : drillAt} liveHead={drillFollows ? liveHead : undefined}
+              hour={dayAt} following={drillFollows} tokens={tokens} extent={extent} playhead={drillFollows ? null : drillAt} liveHead={drillLiveHead}
               playback={(options.playback as PlaybackMode) ?? 'draw-in'} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
               hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
               onPick={hour => dispatch({ type: 'pick', hour })}

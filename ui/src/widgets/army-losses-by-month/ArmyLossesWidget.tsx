@@ -44,6 +44,8 @@ const BAR_STYLE = { spacing: 'proportional', thinBands: true } as const;
 const structureOf = (reply: ArmyLossesReply) => JSON.stringify([reply.absent, reply.armies, reply.manpower.map(row => row.key),
   reply.equipment.map(row => [row.key, row.design]), reply.designs, reply.emptyMonths, reply.unknownMonths, reply.availability]);
 
+const DRILL_NEEDS = { holders: true };
+
 export default function ArmyLossesWidget({ widget, runtime, active, setOption, onDiagnostics }: WidgetProps) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const shown = useShownHour();
@@ -107,11 +109,12 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
     [following, hourAt, runtime.clock]);
   const monthAt = (at: number) => { const now = liveData?.read().bars; return now?.periods[columnAt(now.periods, Math.floor(at))] ?? null; };
   const caption = measure === 'manpower' ? 'Manpower lost' : LEDGER_LABELS[ledger];
-  const drillControl = useDrill(runtime, useRegion(widget));
+  const drillControl = useDrill(runtime, useRegion(widget), null, undefined, undefined, DRILL_NEEDS);
   const drill = drillControl.state;
   const dispatch = drillControl.dispatch;
   const month = drill.breakdown === null ? null : Number(drill.breakdown);
-  const drillState = useHeadProduct(runtime, gate, 'army-losses', tag && month !== null ? { country: countryFromKey(tag), view: monthView(month) } : null,
+  const drillTag = drillControl.gate.country?.tag ?? null;
+  const drillState = useHeadProduct(runtime, drillControl.gate, 'army-losses', drillTag && month !== null ? { country: countryFromKey(drillTag), view: monthView(month) } : null,
     { active, validate: validateArmyLosses, structure: structureOf });
   const drillReply = drillState.data;
   const drillHour = drillState.at ?? hour;
@@ -122,7 +125,7 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   }, [stateRoot, drillRoot]);
   const menu = useContextMenu('Army losses actions');
   const pinned = following || widget.time.mode === 'pin';
-  const pick = (at: number) => dispatch({ type: 'open', breakdown: String(monthOf(at)), hour: at, follow: false });
+  const pick = (at: number) => dispatch({ type: 'open', breakdown: String(monthOf(at)), hour: at, follow: false, country: tag ? { tag, origin: Math.floor(at) } : null });
   const kinds = LEDGERS[ledger];
   const drillData = useMemo(() => drillReply && drillHour !== null ? resolveArmyLosses(drillReply, drillHour, drillState.live.read()) : null, [drillReply, drillHour, drillState.live]);
   const drillRows = useMemo(() => drillData && month !== null ? monthArmies(drillData, month, kinds) : [], [drillData, month, kinds]);
