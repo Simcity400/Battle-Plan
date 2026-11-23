@@ -470,7 +470,7 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
         ("common/special_projects/specialization/test.txt", "mod_science={}"),
         (
             "common/special_projects/prototype_rewards/test.txt",
-            "mod_reward={option={token=mod_option iteration_output={country_effects={add_political_power=1 custom_effect_tooltip=PROJECT_VARIABLE if={limit={is_special_project_completed=sp:rival} add_political_power=5} else={add_political_power=7}}}}}",
+            "mod_reward={option={token=mod_option iteration_output={country_effects={add_political_power=1 custom_effect_tooltip=PROJECT_VARIABLE if={limit={is_special_project_completed=sp:rival} add_political_power=5} else={add_political_power=7} if={limit={ITA={is_special_project_completed=sp:rival}} add_political_power=3} else={add_political_power=4}}}}}",
         ),
         (
             "common/special_projects/projects/test.txt",
@@ -510,7 +510,7 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
         set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(spelled.collect()));
         let mut slices: Vec<SliceReadRow> = [TableId::Projects, TableId::ProjectHistory]
             .into_iter()
-            .flat_map(|table| [(11, hour), (9001, hour), (RIVAL_OWNER, hour.min(TRANSFERRED - 1))].map(|(owner, sample_hour)| SliceReadRow { table: table.index() as u32, owner, sample_hour }))
+            .flat_map(|table| [(11, hour), (21, hour), (9001, hour), (RIVAL_OWNER, hour.min(TRANSFERRED - 1))].map(|(owner, sample_hour)| SliceReadRow { table: table.index() as u32, owner, sample_hour }))
             .collect();
         slices.sort_by_key(|row| (row.table, row.owner));
         set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
@@ -539,6 +539,7 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
     assert_eq!(own["unavailable"], Value::Null, "{own}");
     assert!(own["sections"].to_string().contains("Variable 2"), "a choice made by the project the listing names shows its own values: {own}");
     assert!(own["sections"].to_string().contains("PP7") && !own["sections"].to_string().contains("PP5"), "every owner of the country supplies its read and none completed the rival, so the else branch is shown: {own}");
+    assert!(own["sections"].to_string().contains("PP4") && !own["sections"].to_string().contains("PP3"), "O-S1: the trigger asks about ITA, every owner of which supplies its read, so its else branch is shown too: {own}");
     let transferred = iteration(2, TRANSFERRED);
     let shown = transferred["sections"].to_string();
     assert!(!shown.contains("PP5") && !shown.contains("PP7"), "O-S1: the second owner's completed rival was read before it joined the country, so neither branch is shown: {transferred}");
