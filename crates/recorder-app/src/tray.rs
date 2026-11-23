@@ -319,7 +319,7 @@ mod tests {
         assert!(!newer(&mut wanted, Tray { revision: 4, ..Tray::default() }), "a worker’s status from before the Quit arrives after it");
         assert_eq!(wanted, question, "and the tray keeps the question");
         let saving = Snapshot { phase: Phase::Waiting, ..Snapshot::default() };
-        assert_eq!(tooltip_for(&saving, true), "BattlePlan Recorder\nSaving a recording, then quitting");
+        assert_eq!(tooltip_for(&saving, true), format!("{}\nSaving a recording, then quitting", app_update::recorder_name()));
     }
 
     #[test]
@@ -349,7 +349,7 @@ mod tests {
         snapshot.prompt = Some(crate::panel::Prompt { id: 3, quitting: false, discarding: true, session_key: 1 });
         assert_eq!(
             tooltip(&snapshot),
-            "BattlePlan Recorder\nRecording · Germany 1936–1943\nDiscard this session? Click to answer.\n2 hours couldn’t be recorded.",
+            format!("{name}\nRecording · Germany 1936–1943\nDiscard this session? Click to answer.\n2 hours couldn’t be recorded."),
             "a prompt dismissed with its panel waits in the tray"
         );
     }
@@ -419,7 +419,7 @@ mod tests {
         };
         let text = tooltip(&snapshot);
         assert!(text.encode_utf16().count() <= TOOLTIP_UNITS);
-        assert!(text.starts_with("BattlePlan Recorder\nRecording · Nederland 🇳🇱"), "{text}");
+        assert!(text.starts_with(&format!("{}\nRecording · Nederland 🇳🇱", app_update::recorder_name())), "{text}");
         assert!(text.ends_with("…\nQuit BattlePlan Recorder? Click to answer."), "the name is cut, never the question: {text}");
     }
 
