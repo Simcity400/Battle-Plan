@@ -42,7 +42,6 @@ import { preparingClient } from './prepare.ts';
 import './dashboard.css';
 import WidgetPicker from './WidgetPicker';
 import { campaignSlots, defaultAfterOpen, defaultAfterUnload, includeCampaigns, recordingKey, sameCampaignPath } from './campaigns';
-import { hasMapOverlay, isMapOverlay } from '../shell/mapOverlays';
 import type { Campaign, Relocation } from './campaigns';
 import { recordingDisplayName, recordingFilename } from './recordingNames';
 import { followMapPlayback, mapCommands } from './mapPlayback';
@@ -197,8 +196,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const defaultLoading = campaigns.some(campaign => campaign.id === defaultRoleId && campaign.loading);
   const lastClockIdentity = useRef('');
   const nativeHidden = !active || editing || saving;
-  const overlayBaseline = useRef(nativeHidden);
-  overlayBaseline.current = nativeHidden;
 
   useLayoutEffect(() => {
     const identity = `${primaryIdentity}:${template.alignment}:${tracks.find(track => track.roleId === defaultRoleId)?.branch.id}`;
@@ -280,25 +277,17 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     return followMapPlayback(clock, reference, seek, error => reportPopout(popoutClock, 'seek', error == null ? null : errorMessage(error)));
   }, [clock, tracks, defaultRoleId, defaultLoading, popoutClock, popout.generation, reportPopout, popoutRetry]);
   useLayoutEffect(() => active && viewport.current ? maps.start(viewport.current) : undefined, [maps, active]);
-  useLayoutEffect(() => { maps.setHidden(nativeHidden || hasMapOverlay()); maps.schedule(); }, [maps, nativeHidden, template.layouts]);
+  useLayoutEffect(() => { maps.setHidden(nativeHidden); maps.schedule(); }, [maps, nativeHidden, template.layouts]);
   useEffect(() => {
     mounted.current = true;
     const visibility = () => { if (document.hidden && !popoutOpen.current) clock.setPlaying(false); };
-    const beforeToggle = (event: Event) => {
-      if ('newState' in event && event.newState === 'open' && isMapOverlay(event.target)) maps.setHidden(true);
-    };
-    const afterToggle = () => maps.setHidden(overlayBaseline.current || hasMapOverlay());
     document.addEventListener('visibilitychange', visibility);
-    document.addEventListener('beforetoggle', beforeToggle, true);
-    document.addEventListener('toggle', afterToggle, true);
     return () => {
       mounted.current = false;
       document.removeEventListener('visibilitychange', visibility);
-      document.removeEventListener('beforetoggle', beforeToggle, true);
-      document.removeEventListener('toggle', afterToggle, true);
       clock.stop();
     };
-  }, [clock, maps]);
+  }, [clock]);
 
   const update = useCallback((change: (previous: DashboardTemplate) => DashboardTemplate) => {
     setTemplate((previous) => change(includeCampaigns(previous, campaignsRef.current)));

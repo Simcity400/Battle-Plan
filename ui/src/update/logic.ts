@@ -1,5 +1,5 @@
 import { plainFailure } from '../dashboard/queryError';
-import type { UpdateChannel, UpdateState } from './api';
+import type { ReleaseNotes, UpdateChannel, UpdateState } from './api';
 
 export type UpdateAction = 'check' | 'download' | 'install' | 'none';
 
@@ -107,6 +107,51 @@ export function confirmInstall(version: string, downgrade: boolean): string {
     : `BattlePlan and BattlePlan Recorder close, update to ${version} and reopen.`;
 }
 
-export function shownNotes(notes: readonly string[], shown = 6): { items: string[]; more: number } {
-  return { items: notes.slice(0, shown), more: Math.max(0, notes.length - shown) };
+export interface ReleaseView { items: { label: string | null; text: string }[]; footer: { text: string; strong: boolean } | null }
+
+const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+
+export function releaseView(notes: ReleaseNotes, shown = 6): ReleaseView {
+  const quiet = (text: string) => ({ text, strong: false });
+  if (!notes.changes) return { items: [], footer: quiet(notes.since ? 'No changes since the previous release.' : 'The first release on this channel.') };
+  if (notes.highlights) {
+    const more = notes.more ?? 0;
+    const unmerged = notes.changes - notes.pulls.length;
+    return {
+      items: notes.highlights.map(highlight => ({ label: highlight.label, text: highlight.detail })),
+      footer: more ? { text: `Plus ${plural(more, 'more fix or improvement', 'more fixes and improvements')}.`, strong: true }
+        : notes.highlights.length ? null
+        : quiet(unmerged ? `${plural(unmerged, 'change', 'changes')} made without a pull request.` : 'Nothing you’ll notice in the app: these changes are internal.'),
+    };
+  }
+  const items = notes.pulls.slice(0, shown).map(pull => ({ label: null, text: pull.title }));
+  const rest = notes.changes - items.length;
+  return { items, footer: rest > 0 ? quiet(`And ${plural(rest, 'more change', 'more changes')}.`) : null };
+}
+
+export function releaseLink(notes: ReleaseNotes): string {
+  return notes.changes ? `${plural(notes.changes, 'change', 'changes')} on GitHub` : 'Release on GitHub';
+}
+
+export function releaseAge(date: string | null, now = Date.now()): string | null {
+  const at = date ? Date.parse(date) : Number.NaN;
+  if (Number.isNaN(at)) return null;
+  const minutes = Math.floor((now - at) / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
+}
+
+export function releaseHeading(version: string, releases: readonly ReleaseNotes[], now = Date.now()): string {
+  const age = releaseAge(releases.find(notes => notes.version === version)?.date ?? null, now);
+  return age ? `${version} · ${age}` : version;
+}
+
+export function peekTitle(state: UpdateState): string {
+  if (state.status === 'downloading') return `Downloading ${offer(state)}${percent(state)}`;
+  const failure = updateFailure(state);
+  if (failure) return `${failure.text.replace(/\.$/, '')} · Try again`;
+  if (state.downloadedVersion) return state.installBlocked ? `${Offer(state)} downloaded` : `${Offer(state)} ready to install`;
+  return state.downgrade ? 'Older version available' : 'Update ready to download';
 }

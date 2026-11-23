@@ -46,6 +46,8 @@ pub(super) struct Pending {
     pub(super) seek: Option<SeekTarget>,
     pub(super) maps: Option<DashboardSnapshot>,
     pub(super) gamepad: Option<dashboard_core::protocol::GamepadMessage>,
+    pub(super) holes: Option<Vec<ViewBounds>>,
+    pub(super) hole_waiters: Vec<tokio::sync::oneshot::Sender<()>>,
     pub(super) close: bool,
 }
 
@@ -70,6 +72,7 @@ impl Pending {
             || self.bounds.is_some()
             || self.visibility.is_some()
             || self.gamepad.is_some()
+            || self.holes.is_some()
             || (visible && (self.open.is_some() || self.seek.is_some()))
     }
 
@@ -147,6 +150,9 @@ impl Inner {
     }
 
     pub(super) fn restore_commands(&mut self) {
+        if !self.holes.is_empty() {
+            self.pending.holes = Some(self.holes.clone());
+        }
         if self.active_dashboard {
             self.pending.maps = Some(self.dashboard_snapshot());
             return;

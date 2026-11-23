@@ -9,6 +9,8 @@ import {
   leaveApp,
   openReplay,
   selectNativeView,
+  onMapPressed,
+  setMapHoles,
 } from './api.ts';
 import { Icon } from '../components/Icons';
 import EmptyState from '../components/EmptyState';
@@ -40,7 +42,7 @@ import './shell.css';
 import { useReplayLibrary } from '../dashboard/replayLibrary';
 import { contentRevision } from '../dashboard/contentRevision';
 import type { ContentFolders, ReplayMetadata } from './api';
-import { hasMapOverlay, isMapOverlay } from './mapOverlays';
+import { dismissForMapPress, mapHoles } from './mapOverlays';
 import { useDiagnosticsShortcut } from './diagnosticsSetting';
 import { RecordingNotice } from './recordingNotice';
 import { commitZone } from './commitCount';
@@ -295,13 +297,12 @@ export default function App() {
     return next;
   }), []);
   const actionError = Object.values(mapFailures)[0] ?? null;
-  const [popoverOpen, setPopoverOpen] = useState(false);
   useEffect(() => {
-    const opening = (event: Event) => { if ('newState' in event && event.newState === 'open' && isMapOverlay(event.target)) setPopoverOpen(true); };
-    const toggled = () => setPopoverOpen(hasMapOverlay());
-    document.addEventListener('beforetoggle', opening, true);
-    document.addEventListener('toggle', toggled, true);
-    return () => { document.removeEventListener('beforetoggle', opening, true); document.removeEventListener('toggle', toggled, true); };
+    if (!desktopAvailable) return;
+    const stopHoles = mapHoles.start(setMapHoles);
+    let stopPresses: (() => void) | null = null, live = true;
+    void onMapPressed(dismissForMapPress).then(stop => { if (live) stopPresses = stop; else stop(); });
+    return () => { live = false; stopHoles(); stopPresses?.(); };
   }, []);
   const pendingPath = useRef<string | null>(null);
   const defaultRequest = useRef(0);
@@ -333,8 +334,8 @@ export default function App() {
     return () => { current = false; };
   }, [folders?.contentReady]);
   const shellError = actionError ?? native.error;
-  const mapSurface = tab === 'map' && !!path && !shellError && !sidebar.peek;
-  const boundsError = useMapSurface(content, mapSurface && !popoverOpen && !leaving && !closing, retry, tab === 'map');
+  const mapSurface = tab === 'map' && !!path && !shellError;
+  const boundsError = useMapSurface(content, mapSurface && !leaving && !closing, retry, tab === 'map');
   const nativePath = native.state?.viewer.path ?? null;
   const mapError = actionError ?? boundsError ?? native.error ?? native.state?.error ?? null;
 

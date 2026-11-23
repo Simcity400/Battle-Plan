@@ -34,7 +34,7 @@ in for the apps' key in a draft only.
 Environment: GITHUB_REPOSITORY, whose releases carry the installers and feeds; GH_TOKEN;
 TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD; AZURE_TENANT_ID, AZURE_CLIENT_ID,
 AZURE_CLIENT_SECRET, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT and AZURE_SIGNING_PROFILE, all or
-none, for Authenticode; LEAK_GATE_TERMS; PAUSE_NIGHTLY.
+none, for Authenticode; LEAK_GATE_TERMS; PAUSE_NIGHTLY; GROQ_API_KEY, for the notes' summary.
 """
 import argparse
 import base64
@@ -42,6 +42,7 @@ import binascii
 import contextlib
 import datetime
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -51,6 +52,8 @@ import sys
 import tempfile
 import time
 import tomllib
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -64,7 +67,20 @@ STABLE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 VERSION_LINE = re.compile(r'(?ms)^(\[workspace\.package\]\s*?\n(?:(?!\[).*\n)*?version = ")([^"]+)(")')
 MERGE = re.compile(r"^Merge pull request #(\d+) from ")
 SQUASHED = re.compile(r"\(#(\d+)\)$")
-NOTES_SHOWN = 40
+SUMMARY_MODEL = "openai/gpt-oss-120b"
+SUMMARY_URL = "https://api.groq.com/openai/v1/chat/completions"
+SUMMARY_TIMEOUT = 180
+SUMMARY_TOKENS = 8192
+HIGHLIGHTS = 7
+PULL_BODY_SHOWN = 300
+HISTORY = 10
+SUMMARY_INSTRUCTIONS = """Choose up to 7 highlights for the BattlePlan update popover. BattlePlan records strategy-game campaigns and replays them: the recorder, with its tray app, records a campaign, and the desktop app plays recordings back on a map and in a dashboard of charts, tables and a timeline.
+
+Give a change a highlight only when it lets users do something they could not do before, removes a real limitation they hit in normal use, or fixes a recording, a replay or the app where it was wrong or broken in normal use. Judge the outcome, not the title's wording. Skip internal work: CI, release tooling, tests, documentation, ADRs, refactoring, build and dependency changes. Group pull requests only when they deliver the same user outcome. Seven is a ceiling; stop when the qualifying changes run out, even at none.
+
+Each highlight has a short feature name and one sentence of at most 20 words saying what users can now do or what now works. Use the names people see in the app and leave out implementation details. No headings, introductions, hype, pull request numbers or em dashes.
+
+Return JSON: {"highlights": [{"label": "<plain text, no final period>", "detail": "<one sentence>", "pulls": [<the bracketed number of every pull request it covers>]}], "others": [<the bracketed numbers of the remaining pull requests that change what users see or get, such as smaller fixes and speed-ups>]}. Leave internal work out of both lists."""
 CHANNELS = ("stable", "nightly", "preview")
 PUBLISHED = ("stable", "nightly")
 AZURE = ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_SIGNING_ENDPOINT",
@@ -221,44 +237,158 @@ def stamp(tree, version):
 
 
 
-def write_notes(repository, channel, since, until, output):
-    """The pull requests merged on main since the last release on this channel, by their titles,
-    which GitHub gives; never commit text."""
-    if not since:
-        body = f"The first {channel} release.\n"
-    else:
-        subjects = git("log", "--first-parent", "--format=%s", f"{since}..{until}").splitlines()
-        numbers, unmerged = [], 0
-        for subject in subjects:
-            merged = MERGE.match(subject) or SQUASHED.search(subject)
-            if merged:
-                numbers.append(int(merged[1]))
-            elif subject.strip():
-                unmerged += 1
+def merged_pulls(repository, since, until):
+    """The pull requests merged on main's first-parent line in since..until, with the titles and
+    descriptions GitHub gives, never commit text; and how many commits came without one."""
+    subjects = git("log", "--first-parent", "--reverse", "--format=%s", f"{since}..{until}").splitlines()
+    numbers, unmerged = [], 0
+    for subject in subjects:
+        merged = MERGE.match(subject) or SQUASHED.search(subject)
+        if merged:
+            numbers.append(int(merged[1]))
+        elif subject.strip():
+            unmerged += 1
 
-        def title(number):
-            return run(["gh", "api", f"repos/{repository}/pulls/{number}", "--jq", ".title"]).stdout.strip()
+    def read(number):
+        return json.loads(run(["gh", "api", f"repos/{repository}/pulls/{number}", "--jq", "{title, body}"]).stdout)
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            items = [f"{name} (#{number})" for number, name in zip(numbers, pool.map(title, numbers))]
-        shown = [f"- {item}" for item in items[:NOTES_SHOWN]]
-        if len(items) > NOTES_SHOWN:
-            shown.append(f"- And {len(items) - NOTES_SHOWN} more pull requests.")
-        if unmerged:
-            shown.append(f"- And {unmerged} {'change' if unmerged == 1 else 'changes'} made without a pull request.")
-        body = "\n".join(shown) + "\n" if shown else "No changes since the last release.\n"
-    Path(output).write_text(body, encoding="utf-8", newline="\n")
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        pulls = [{"number": number, "title": pull["title"].strip(), "body": (pull["body"] or "").strip()}
+                 for number, pull in zip(numbers, pool.map(read, numbers))]
+    return pulls, unmerged
 
 
 
-def write_manifest(version, signature, url, notes, commit, output):
-    """Tauri's static update manifest, plus the commit it was built from, which the next promotion
-    compares main against."""
+def read_highlights(reply, numbers):
+    """The highlights in the model's reply and how many other pull requests change what users see.
+    Refused unless the reply is complete and every pull request it cites is one of `numbers`."""
+    try:
+        choice = reply["choices"][0]
+        finished, text, refused = choice.get("finish_reason"), choice["message"]["content"], choice["message"].get("refusal")
+    except (KeyError, IndexError, TypeError, AttributeError):
+        raise Refused("the model's reply is not a chat completion")
+    if refused:
+        raise Refused("the model refused to choose highlights")
+    if finished != "stop" or not isinstance(text, str):
+        raise Refused(f"the model's reply ended {finished}, not complete")
+    try:
+        chosen = json.loads(text)
+    except ValueError:
+        raise Refused("the model's reply is not JSON")
+    highlights = chosen.get("highlights") if isinstance(chosen, dict) else None
+    others = chosen.get("others", []) if isinstance(chosen, dict) else None
+    known = set(numbers)
+
+    def cited(value):
+        return isinstance(value, list) and all(type(number) is int and number in known for number in value)
+
+    if not isinstance(highlights, list) or not cited(others):
+        raise Refused("the model's reply has no highlights, or its other pull requests are not this release's")
+    shown, covered, beyond = [], set(), set()
+    for highlight in highlights:
+        fields = highlight if isinstance(highlight, dict) else {}
+        label, detail, pulls = fields.get("label"), fields.get("detail"), fields.get("pulls")
+        if not (isinstance(label, str) and label.strip() and isinstance(detail, str) and detail.strip()
+                and cited(pulls) and pulls):
+            raise Refused("a highlight lacks a label, a detail or pull requests of this release")
+        if len(shown) == HIGHLIGHTS:
+            beyond.update(pulls)
+            continue
+        shown.append({"label": label.strip().rstrip("."), "detail": detail.strip(), "pulls": sorted(set(pulls))})
+        covered.update(pulls)
+    return shown, len((set(others) | beyond) - covered)
+
+
+
+def summarize(pulls):
+    """The highlights a model chose among `pulls` and how many others change what users see, or None
+    when no summary is written, which the notes then say by listing the pull requests alone."""
+    if not pulls:
+        return [], 0
+    key = os.environ.get("GROQ_API_KEY", "").strip()
+    if not key:
+        say("GROQ_API_KEY is not set, so the notes list pull requests without a summary.")
+        return None
+    source = "\n\n".join(f"[{pull['number']}] {pull['title']}" + (f"\n{pull['body'][:PULL_BODY_SHOWN]}" if pull["body"] else "")
+                         for pull in pulls)
+    request = urllib.request.Request(SUMMARY_URL, method="POST", headers={
+        "Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "battleplan-release"}, data=json.dumps({
+            "model": SUMMARY_MODEL, "reasoning_effort": "medium", "include_reasoning": False,
+            "max_completion_tokens": SUMMARY_TOKENS,
+            "response_format": {"type": "json_object"},
+            "messages": [{"role": "system", "content": SUMMARY_INSTRUCTIONS},
+                         {"role": "user", "content": f"Choose highlights as JSON from these pull requests:\n{source}"}],
+        }).encode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=SUMMARY_TIMEOUT) as answer:
+            return read_highlights(json.load(answer), [pull["number"] for pull in pulls])
+    except urllib.error.HTTPError as error:
+        try:
+            said = error.read(2000).decode("utf-8", errors="replace").strip().replace(key, "<key>")
+        except (OSError, http.client.HTTPException):
+            said = ""
+        say(f"No summary was written, so the notes list pull requests without one: {error}: {said or 'no reason given'}.")
+        return None
+    except (OSError, ValueError, RecursionError, http.client.HTTPException, Refused) as error:
+        say(f"No summary was written, so the notes list pull requests without one: {error}.")
+        return None
+
+
+
+def release_notes(repository, version, previous, since, until, date):
+    """What this release changed since `previous`, the channel's release built from `since`: the
+    summary, None when none was written, and every pull request. Apps show it; the page lists it."""
+    pulls, unmerged = merged_pulls(repository, since, until) if since else ([], 0)
+    summary = summarize(pulls)
+    return {
+        "version": version, "since": previous, "date": date, "changes": len(pulls) + unmerged,
+        "highlights": summary and summary[0], "more": summary and summary[1],
+        "pulls": [{"number": pull["number"], "title": pull["title"]} for pull in pulls],
+    }
+
+
+
+def render_notes(notes):
+    """The release page's text: the summary the apps show, then every pull request."""
+    changes, highlights, more = notes["changes"], notes["highlights"], notes["more"]
+    if not changes:
+        return ("No changes since the previous release." if notes["since"] else "The first release on this channel.") + "\n"
+    lines = [f"**v{notes['version']}** · {changes} {'change' if changes == 1 else 'changes'}", ""]
+    if highlights is not None:
+        lines += [f"- **{item['label']}.** {item['detail']}" for item in highlights]
+        if more:
+            lines += ["", f"### Plus {more} more {'fix or improvement' if more == 1 else 'fixes and improvements'}."]
+        if not highlights and not more and changes == len(notes["pulls"]):
+            lines.append("Nothing you’ll notice in the app: these changes are internal.")
+        lines += ["", "<details>", "<summary>Every pull request</summary>", ""]
+    lines += [f"- {pull['title']} (#{pull['number']})" for pull in notes["pulls"]]
+    unmerged = changes - len(notes["pulls"])
+    if unmerged:
+        lines.append(f"- And {unmerged} {'change' if unmerged == 1 else 'changes'} made without a pull request.")
+    if highlights is not None:
+        lines += ["", "</details>"]
+    return "\n".join(lines) + "\n"
+
+
+
+def feed_history(notes, feed):
+    """The notes the feed carries: this release's, then the newest earlier ones of the feed it
+    replaces, so an app several releases behind lists each release it is offered."""
+    earlier = [entry for entry in (feed or {}).get("releases") or []
+               if precedence(entry["version"]) < precedence(notes["version"])]
+    earlier.sort(key=lambda entry: precedence(entry["version"]), reverse=True)
+    return [notes, *earlier[:HISTORY - 1]]
+
+
+
+def write_manifest(version, signature, url, releases, commit, date, output):
+    """Tauri's static update manifest, with the notes of its newest releases and the commit it was
+    built from, which the next promotion compares main against."""
     document = {
         "version": version,
-        "notes": Path(notes).read_text(encoding="utf-8").strip(),
-        "pub_date": datetime.datetime.now(datetime.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "pub_date": date,
         "commit": commit,
+        "releases": releases,
         "platforms": {"windows-x86_64": {
             "signature": Path(signature).read_text(encoding="utf-8").strip(),
             "url": url,
@@ -850,10 +980,11 @@ def taken_up(repo, tag, existing, chosen, dist, authenticode):
     return shipped, signature
 
 
-def previous_commit(repo, channel):
-    """The commit the channel's newest release was tagged on, which its notes run from."""
-    newest = newest_release(repo, channel)
-    return tag_commit(repo, f"v{newest}") if newest else None
+def taken_notes(repo, tag, existing, dist):
+    """The notes a release published earlier carries, which its feed lists as they were published."""
+    if not any(asset["name"] == "notes.json" for asset in existing.get("assets") or []):
+        raise Refused(f"{tag} has no notes.json, so its feed cannot list what it changed; publish its feed by hand or not at all.")
+    return download(repo, tag, "notes.json", dist)
 
 
 def publish(args):
@@ -920,19 +1051,22 @@ def publish(args):
         release_smoke.installed_layout(shipped, work / "smoke", chosen["shipped"], chosen["notices"])
         (dist / "SHA256SUMS").write_text(f"{sha256(shipped)}  {shipped.name}\n", encoding="utf-8", newline="\n")
     url = f"https://github.com/{repo}/releases/download/{tag}/{shipped.name}"
+    date = datetime.datetime.now(datetime.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     with clock.step("Notes and feed"):
         if existing:
-            notes = existing["body"].split("\nBuilt from commit ")[0].rstrip() + "\n"
-            (work / "notes.md").write_text(notes, encoding="utf-8", newline="\n")
+            notes = json.loads(taken_notes(repo, tag, existing, dist).read_text(encoding="utf-8"))
         else:
-            since = previous_commit(repo, channel) or (feed["commit"] if feed else "")
-            write_notes(repo, channel, since, commit, work / "notes.md")
-        write_manifest(version, signature, url, work / "notes.md", commit, work / "latest.json")
-        (work / "body.md").write_text((work / "notes.md").read_text(encoding="utf-8") + f"\nBuilt from commit {commit}. "
-                                      f"Signed installer SHA-256: {sha256(shipped)}.\n", encoding="utf-8", newline="\n")
-        say(leak_gate(["latest.json", "notes.md", "body.md", "dist/SHA256SUMS", f"dist/{signature.name}"], work))
+            previous = newest_release(repo, channel)
+            since = (tag_commit(repo, f"v{previous}") if previous else None) or (feed["commit"] if feed else "")
+            notes = release_notes(repo, version, previous, since, commit, date)
+            (dist / "notes.json").write_text(json.dumps(notes, indent=2) + "\n", encoding="utf-8", newline="\n")
+            (work / "body.md").write_text(render_notes(notes) + f"\nBuilt from commit {commit}. "
+                                          f"Signed installer SHA-256: {sha256(shipped)}.\n", encoding="utf-8", newline="\n")
+        write_manifest(version, signature, url, feed_history(notes, feed), commit, date, work / "latest.json")
+        say(leak_gate(["latest.json", "dist/notes.json", *([] if existing else ["body.md"]), "dist/SHA256SUMS",
+                       f"dist/{signature.name}"], work))
     if not existing:
-        assets = [shipped, signature, dist / "SHA256SUMS"]
+        assets = [shipped, signature, dist / "SHA256SUMS", dist / "notes.json"]
         name = release_name(channel, version)
         with clock.step("Publish the installer"):
             if draft:

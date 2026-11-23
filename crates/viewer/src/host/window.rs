@@ -44,6 +44,7 @@ pub(crate) struct Link {
     tracking: AtomicBool,
     surrogate: Mutex<Option<u16>>,
     window_released: AtomicBool,
+    pressed: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Link {
@@ -76,6 +77,7 @@ impl Window {
             tracking: AtomicBool::new(false),
             surrogate: Mutex::new(None),
             window_released: AtomicBool::new(false),
+            pressed: Mutex::new(None),
         });
         let class = wide(CLASS);
         let title = wide(title);
@@ -149,6 +151,10 @@ impl Window {
         };
         let size = [(client.right - client.left).max(0) as u32, (client.bottom - client.top).max(0) as u32];
         (size, if dpi == 0 { 1.0 } else { dpi as f32 / 96.0 })
+    }
+
+    pub fn on_press(&self, pressed: impl Fn() + Send + Sync + 'static) {
+        *self.link.pressed.lock().unwrap_or_else(|error| error.into_inner()) = Some(Arc::new(pressed));
     }
 
     pub fn focus(&self) {
@@ -374,6 +380,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 if pressed {
                     SetFocus(hwnd);
                     SetCapture(hwnd);
+                    let notify = link.pressed.lock().unwrap_or_else(|error| error.into_inner()).clone();
+                    if let Some(notify) = notify {
+                        notify();
+                    }
                 } else {
                     ReleaseCapture();
                 }

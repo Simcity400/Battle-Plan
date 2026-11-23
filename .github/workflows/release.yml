@@ -153,6 +153,7 @@ jobs:
           AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
           AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
           LEAK_GATE_TERMS: ${{ secrets.LEAK_GATE_TERMS }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: python tools/release.py publish --channel "$CHANNEL" --candidate candidate --commit "$COMMIT" --version "$VERSION" $DRAFT
 
   finalize:

@@ -38,7 +38,7 @@ test('map load errors hide diagnostics and retain Retry; an hour not available y
     host.__mapReview.hour = null;
     host.__mapsHidden = true;
     const hidden = render();
-    assert.match(hidden, /Map hidden while a menu is open/);
+    assert.match(hidden, /Map hidden for layout controls/);
     assert.doesNotMatch(hidden, /spinner|Preparing this map/);
     host.__mapsHidden = false;
     (props.runtime.clock as { getSnapshot: () => unknown }).getSnapshot = () => ({ position: 106, hour: 106, playing: false, sequence: 3, seekSequence: 1, fraction: 0, hoursPerSecond: 4 });
