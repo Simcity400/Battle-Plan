@@ -22,6 +22,8 @@ import { forgetProducts } from './products';
 import { productionLineToken } from '../widgets/production-lines/productionData';
 import { datedPanel } from './follow/messages.fixture.ts';
 import { packet, splitForLanes } from './follow/split.ts';
+import { pipelineOf } from './follow/pipeline.ts';
+import { pageClock } from './widgetClock.ts';
 
 class OnScreen {
   private readonly heard: IntersectionObserverCallback;
@@ -47,6 +49,15 @@ const follows = new Map<number, string>();
 const ROUTE = 9;
 let ports: readonly MessagePort[] = [];
 const panelFollows = new Map<number, { panel: string; params: Record<string, unknown> }>();
+const pushed = new Map<number, number>();
+const landed = () => {
+  if (!pushed.size || clock.getSnapshot().playing) return true;
+  const pipeline = pipelineOf(pageClock(clock));
+  if (!pipeline) return false;
+  const views = [...pipeline.page.widgets.keys()].flatMap(widget => { const view = pipeline.view(widget); return view?.fields ? [view] : []; });
+  return [...pushed].every(([id, hour]) => views.some(view => (`model:${id}` in view.fields! || `refused:${id}` in view.fields!)
+    && (view.through ?? -Infinity) >= Math.min(hour, view.target)));
+};
 const refusedPanel = (id: number, hour: number, reason: string, seek: number) => {
   const body = new TextEncoder().encode(reason), out = new Uint8Array((40 + body.length + 7) & ~7), words = new Uint32Array(out.buffer);
   words.set([0x324c4e50, 6, 1, 0, ROUTE, seek, id, hour, 0, body.length]);
@@ -61,6 +72,7 @@ const pushPanels = (hour: number, only?: number) => {
     let bytes: Uint8Array;
     try { bytes = datedPanel(id, hour, reply(hour, held.params), seek, ROUTE); }
     catch (error) { bytes = refusedPanel(id, hour, error instanceof Error ? error.message : String(error), seek); }
+    pushed.set(id, hour);
     const split = splitForLanes(bytes, ports.length);
     if (split.kind !== 'failure') split.lanes.forEach((part, lane) => { if (part) ports[lane]!.postMessage(packet('panels', part, undefined), [part.buffer]); });
   }
@@ -101,7 +113,7 @@ const client = {
   product: (request: { sourceId: string; revision: string; product: string; params?: Record<string, unknown> }) => delivered(() => {
     if (request.product === 'follow-clock') return answer(request, { available: true });
     const params = request.params ?? null;
-    if (request.product === 'unfollow') { follows.delete(params?.id as number); panelFollows.delete(params?.id as number); followLog.push(`unfollow ${params?.id}`); return answer(request, null); }
+    if (request.product === 'unfollow') { follows.delete(params?.id as number); panelFollows.delete(params?.id as number); pushed.delete(params?.id as number); followLog.push(`unfollow ${params?.id}`); return answer(request, null); }
     if (request.product === 'follow') {
       state.asks.push({ product: 'follow', hour: null, hours: hoursIn(params?.query), params });
       followLog.push(`follow ${params?.id}`);
@@ -162,7 +174,7 @@ const settle = async () => {
   for (let quiet = 0; quiet < 2;) {
     const before = quietState();
     await turn();
-    quiet = inFlight === 0 && importing === 0 && quietState() === before ? quiet + 1 : 0;
+    quiet = inFlight === 0 && importing === 0 && landed() && quietState() === before ? quiet + 1 : 0;
   }
 };
 let root: Root | null = null;
@@ -202,7 +214,7 @@ Object.assign(window, { findings: {
     await loadWidgetRenderer(scene.kind);
     root?.unmount();
     await settle();
-    follows.clear(); panelFollows.clear(); followLog.length = 0;
+    follows.clear(); panelFollows.clear(); pushed.clear(); followLog.length = 0;
     forgetProducts(client as never, 'findings');
     document.body.replaceChildren();
     Object.assign(state, { asks: [], options: [], pins: [], shown: [], props: {}, replies: Object.fromEntries(Object.entries(scene.replies ?? {}).map(([name, body]) => [name, replyOf(body)])),
