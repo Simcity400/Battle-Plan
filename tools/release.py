@@ -261,8 +261,11 @@ def read_highlights(reply, numbers):
     Refused unless the reply is complete and every pull request it cites is one of `numbers`."""
     if not isinstance(reply, dict) or reply.get("status") != "completed":
         raise Refused(f"the model's reply is {isinstance(reply, dict) and reply.get('status')}, not completed")
-    text = "".join(part.get("text") or "" for item in reply.get("output") or [] for part in item.get("content") or []
-                   if part.get("type") == "output_text").strip()
+    try:
+        text = "".join(part.get("text") or "" for item in reply.get("output") or [] for part in item.get("content") or []
+                       if part.get("type") == "output_text").strip()
+    except (AttributeError, TypeError):
+        raise Refused("the model's reply is not a Responses API answer")
     try:
         chosen = json.loads(text)
     except ValueError:

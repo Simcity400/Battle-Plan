@@ -271,7 +271,7 @@ mod tests {
         );
         let mut skipped = history();
         skipped.retain(|notes| notes.version != "0.1.2-nightly.20261122.4");
-        assert!(listed(skipped, &offered, &version("0.1.2-nightly.20261121.3")).1);
+        assert!(listed(skipped, &offered, &version("0.1.2-nightly.20261120.2")).1);
         assert!(listed(Vec::new(), &offered, &version("0.1.1")).1);
         assert!(
             !listed(

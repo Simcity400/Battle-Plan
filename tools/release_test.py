@@ -424,7 +424,7 @@ class Notes(unittest.TestCase):
         for reply, reason in ((model_reply(cited, "incomplete"), "not completed"), (model_reply("{\"highlights\": ["), "not JSON"),
                               (model_reply(cited), "lacks"), (model_reply({"highlights": [], "others": [99]}), "not this release's"),
                               (model_reply({"highlights": [{"label": "", "detail": "Works.", "pulls": [1]}]}), "lacks"),
-                              ([], "not completed")):
+                              ([], "not completed"), ({"status": "completed", "output": [None]}, "not a Responses API answer")):
             with self.assertRaisesRegex(release.Refused, reason):
                 release.read_highlights(reply, [1, 2])
         with mock.patch.object(release, "urllib") as network, mock.patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
