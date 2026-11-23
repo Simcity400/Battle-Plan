@@ -9,7 +9,7 @@ import { dayLabel } from '../../charts/draw';
 import { formatDateTime } from '../../dashboard/calendar';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
-import { useHeadProduct, whenDue } from '../../dashboard/headProduct';
+import { useHeadProduct } from '../../dashboard/headProduct';
 import type { BoundTrack } from '../../dashboard/model';
 import type { PanelFeed } from '../../dashboard/panelFeed';
 import { panelFeed } from '../../dashboard/panelFeed';
@@ -69,6 +69,13 @@ function Summary({ reply, card, hour, feed, active, clock }: { reply: SpecialPro
       </>}
     </div>
   </>;
+}
+
+function whenDue(hour: number, head: () => number, subscribe: (fn: () => void) => () => void, wake: () => void) {
+  const frame = () => { if (head() >= hour) { stop(); wake(); } };
+  const stop = subscribe(frame);
+  frame();
+  return stop;
 }
 
 function Runtime({ runtime, widget, tag, active, reply, card, hour, through }: Asked & {

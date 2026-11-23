@@ -4,7 +4,7 @@ use crate::document::Document;
 use viewer_layer_core::{layers::Layer, comparison::Compared, playhead_host::mirror::Mirrors};
 use serde_json::json;
 use std::{collections::BTreeMap, io, sync::Arc};
-use viewer_counters::map::counters::NavalMember;
+use viewer_counters_naval::naval_members::NavalMember;
 use viewer_foundation::mode_visibility::UnitKinds;
 
 const LEFT_OUT: [&str; 4] = ["ship-model cells (hull, capitals, carrier)", "native task-force operands (supply, status, port tooltip, pride)", "ideology frame", "the air map mode's carrier fleets (the layer is not drawn there)"];
@@ -35,7 +35,7 @@ pub fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     };
     if layer.hidden() {
         compared.entries = 1;
-        if layer.members().next().is_some() || !layer.fleets().is_empty() || *layer.ports() != viewer_counters::map::counters::PortSummary::default() {
+        if layer.members().next().is_some() || !layer.fleets().is_empty() || *layer.ports() != viewer_counters_naval::naval_members::PortSummary::default() {
             note(&mut compared, format!("the view draws no naval counter, the layer holds {} task forces, {} fleets, ports {:?}", layer.members().count(), layer.fleets().len(), layer.ports()));
         }
         compared.notes = json!({"not_drawn_at_this_view": true, "layer_refused": layer.refused()});
@@ -65,8 +65,8 @@ pub fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
         compared.entries += 1;
         let (a, b) = (theirs.get(id), mine.get(id));
         if let Some(member) = a {
-            sources += u64::from(matches!(member.sea, viewer_counters::map::counters::Sea::Source { .. }));
-            ports += u64::from(matches!(member.port, viewer_counters::map::counters::Port::In(_)));
+            sources += u64::from(matches!(member.sea, viewer_counters_naval::naval_members::Sea::Source { .. }));
+            ports += u64::from(matches!(member.port, viewer_counters_naval::naval_members::Port::In(_)));
         }
         if a != b {
             note(&mut compared, format!("task force {id}: today {a:?}, the layer {b:?}"));
@@ -88,7 +88,7 @@ pub fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     }
     let mut at_sea: BTreeMap<(u32, u32), u64> = BTreeMap::new();
     for member in &today.members {
-        if let viewer_counters::map::counters::Sea::Source { kind, .. } = member.sea {
+        if let viewer_counters_naval::naval_members::Sea::Source { kind, .. } = member.sea {
             *at_sea.entry((member.fields.province, kind)).or_default() += 1;
         }
     }

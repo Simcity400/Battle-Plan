@@ -4,7 +4,7 @@ use viewer_layer_core::{layers::{Layer, View}, engagements::{Engagements, Index}
 use content_reader_core::map::ProvinceKind;
 use replay_columnar::{manifest::Status, state::Cell, store::Store};
 use replay_data::rows::{Field, NativeValue, NavalCombatSideDetails, NavalProvinceCombatRow, Opaque, TableId};
-use viewer_counters::map::counters::NavalMarkerValues;
+use viewer_counters_naval::naval_markers::NavalMarkerValues;
 use viewer_engagements::{engaged::Engaged, engagement_history::{Covered, History, NAVAL}};
 use viewer_foundation::perspective::{Choice, Country, Vision};
 
@@ -284,7 +284,7 @@ fn a_view_that_hides_the_layer_declares_nothing_and_shown_again_composes() {
     });
     let mut hidden = View { fog: false, ..View::default() };
     hidden.overlay.naval_markers = false;
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "naval_markers");
     markers(&history()).inputs(&hidden, &mut inputs).unwrap();
     assert!(inputs.into_tables().is_empty(), "the naval markers switched off declare nothing");
@@ -307,7 +307,7 @@ fn a_view_that_hides_the_layer_declares_nothing_and_shown_again_composes() {
 
 #[test]
 fn the_layer_declares_against_this_schema() {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut layer = markers(&history());
     let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "naval_markers");
     layer.inputs(&View::default(), &mut inputs).unwrap();

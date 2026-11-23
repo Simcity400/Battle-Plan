@@ -36,7 +36,7 @@ import { useHeadHour } from '../army-size/headHour';
 import { motionOf } from '../../charts/easing.ts';
 import { OPTIONS, VIEWS } from './definition';
 import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, endedCount, historyProject, historyUnrecorded, historyKey, historyTooltip, iterationMark, iterationTooltip,
-  observedAt, completions, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, readLabel, scientistName, shownCard, statusRead,
+  observedAt, completions, progressStyle, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, readLabel, scientistName, shownCard, statusRead,
   unobservedReason, validateSpecialProjectsReply } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
@@ -59,19 +59,20 @@ type ItemProps = (card: ProjectCard) => HTMLAttributes<HTMLElement>;
 
 type HourNow = () => number;
 
-function CurrentList({ reply, at, item, open, clock, feed }: { clock: PlaybackController; reply: SpecialProjectsReply; at: number; item: ItemProps;
-  open: (card: ProjectCard, event: MouseEvent<HTMLElement>) => void;
+function CurrentList({ reply, at, item, open, clock, feed, placement }: { clock: PlaybackController; reply: SpecialProjectsReply; at: number; item: ItemProps;
+  open: (card: ProjectCard, event: MouseEvent<HTMLElement>) => void; placement?: number;
   feed: PanelFeed | null }) {
   const list = useRef<HTMLDivElement>(null);
   const valueId = useId();
   const exactRead = feed?.exactRead;
+  const painted = !!feed?.pipeline && feed.pipe !== undefined && feed.follow !== undefined;
   useDrawnPanel(list, clock, feed, true);
   const groups = useMemo(() => currentProjects(reply, at), [reply, at]);
   const { running, completed, earlier } = groups;
   const rows = (g: typeof groups) => (['running', 'completed', 'earlier'] as const).flatMap(section =>
     g[section].map(card => JSON.stringify([section, card.project.id, card.run.presentation])));
   useRecordedRows('special-projects', perfLog && exactRead ? { hour: at, rows: () => rows(groups),
-    exact: async () => rows(currentProjects(validateSpecialProjectsReply(await exactRead(at)), at)) } : undefined);
+    exact: async () => rows(currentProjects(validateSpecialProjectsReply(await exactRead(at)), at)) } : undefined, placement);
   if (!running.length && !completed.length && !earlier.length) return <WidgetState kind="empty" message="No current projects." />;
   return <div className="special-project-list" ref={list}>
     <div className="special-project-rows">
@@ -80,9 +81,10 @@ function CurrentList({ reply, at, item, open, clock, feed }: { clock: PlaybackCo
         const read = readLabel(statusRead(reply, card.project, at), at);
         const scientistRead = readLabel(run.scientistRead, at);
         return <div key={card.project.id} data-project={card.project.id} className={`special-project-now${run.state === 'paused' ? ' is-paused' : run.state === 'unknown' ? ' is-unknown' : ''}`}
-          style={{ '--project-progress': Math.max(0, run.progress) / 100 } as CSSProperties} {...item(card)}>
+          style={progressStyle(run.progress, painted) as CSSProperties | undefined} {...item(card)} aria-label={undefined}
+          aria-labelledby={['name', 'progress', 'iterations'].map(part => `${valueId}-${card.project.id}-${part}`).join(' ')}>
           <ProjectTile icon={info.icon} onClick={event => open(card, event)} />
-          <strong className="special-project-name is-open" onClick={event => open(card, event)}>{info.name}</strong>
+          <strong className="special-project-name is-open" id={`${valueId}-${card.project.id}-name`} onClick={event => open(card, event)}>{info.name}</strong>
           <span className="special-project-who">
             {run.state === 'paused' && <b className="special-project-state is-paused">Paused</b>}
             {run.state === 'unknown' && <b className="special-project-state">State unknown</b>}
@@ -269,7 +271,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
         card={observed ? shownCard(reply, at, shown.id) : null} hour={at} through={live.shownAt} anchor={shown}
         missing={observed ? 'This project is not in progress or completed at this time.' : unobservedReason(reply, at)}
         onClose={() => setOpened(null)} />;
-      body = observed ? <><CurrentList clock={runtime.clock} feed={feed} reply={reply} at={at} item={item(reply)}
+      body = observed ? <><CurrentList clock={runtime.clock} placement={live.placement} feed={feed} reply={reply} at={at} item={item(reply)}
         open={(card, event) => setOpened({ on: openedOn(track, reply.tag), id: card.project.id, x: event.clientX, y: event.clientY })} />{details}{popup}</>
         : <><WidgetState kind="unavailable" message={unobservedReason(reply, at)} />{details}{popup}</>;
     }

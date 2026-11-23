@@ -4,7 +4,7 @@ use crate::document::Document;
 use viewer_layer_core::{layers::{Layer, Upstream}, comparison::Compared, playhead_host::mirror::Mirrors};
 use serde_json::json;
 use std::io;
-use viewer_counters::map::counters::BaseValues;
+use viewer_counters_naval::bases::BaseValues;
 
 pub fn make(_document: &Document) -> Box<dyn Layer> {
     Box::new(BaseCountersFed::new(BaseCounters::new()))

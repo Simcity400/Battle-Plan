@@ -1,3 +1,4 @@
+use crate::spool_writer::{Schedule, Unrestricted};
 use crate::history::PreparedCampaigns;
 use collector_capture::pack_conversion::{HelperSplit, SpoolConversion};
 use collector_capture::sampling::{Captured, LossBatch, LostObservation};
@@ -10,11 +11,12 @@ use collector_projection::projection::{
 #[cfg(test)]
 use collector_projection::table_conversion::table_iter;
 use collector_status::status::status;
-use collector_workers::spool_phases::retry_cause;
+use collector_workers::spool_phases::{HELPER, PhaseObserver, Steps, retry_cause};
 use engine_native::{cgame_state::Clock, walk::Outcome};
 #[cfg(test)]
-use replay::spool::SegmentedSpool;
-use replay::{spool::ControlRecord, spool::FileBackend, spool::Record, spool::SegmentBackend};
+use replay_capture_spool::spool::SegmentedSpool;
+use replay_recording::control::ControlRecord;
+use replay_capture_spool::spool::{FileBackend, Record, SegmentBackend};
 use replay_data::rows::TABLE_COUNT;
 use replay_data::{
     BranchId, codec::invalid_static as invalid, identity::SessionStart, identity::is_campaign_uuid,
@@ -219,9 +221,9 @@ impl ReadHours {
     }
 }
 
-fn set_aside_in_context(
+fn set_aside_in_context<S: Schedule>(
     id: &str,
-    campaign: &mut Campaign,
+    campaign: &mut Campaign<FileBackend, S>,
     storage: Option<crate::spool_writer::ReceiptStorage>,
 ) -> io::Result<()> {
     let caller = collector_memory::terminal::context();
@@ -240,8 +242,8 @@ fn set_aside_in_context(
     result
 }
 
-struct Campaigns(Vec<(String, Campaign)>);
-impl Campaigns {
+struct Campaigns<S: Schedule>(Vec<(String, Campaign<FileBackend, S>)>);
+impl<S: Schedule> Campaigns<S> {
     fn new() -> Self {
         Self(Vec::new())
     }
@@ -254,11 +256,11 @@ impl Campaigns {
     fn contains_key(&self, id: &str) -> bool {
         self.position(id).is_ok()
     }
-    fn get_mut(&mut self, id: &str) -> Option<&mut Campaign> {
+    fn get_mut(&mut self, id: &str) -> Option<&mut Campaign<FileBackend, S>> {
         let index = self.position(id).ok()?;
         Some(&mut self.0[index].1)
     }
-    fn insert(&mut self, id: String, campaign: Campaign) -> io::Result<()> {
+    fn insert(&mut self, id: String, campaign: Campaign<FileBackend, S>) -> io::Result<()> {
         match self.position(&id) {
             Ok(index) => self.0[index].1 = campaign,
             Err(index) => {
@@ -268,18 +270,18 @@ impl Campaigns {
         }
         Ok(())
     }
-    fn values(&self) -> impl Clone + Iterator<Item = &Campaign> {
+    fn values(&self) -> impl Clone + Iterator<Item = &Campaign<FileBackend, S>> {
         self.0.iter().map(|(_, campaign)| campaign)
     }
     fn keys(&self) -> impl DoubleEndedIterator<Item = &String> {
         self.0.iter().map(|(id, _)| id)
     }
 }
-impl<'a> IntoIterator for &'a mut Campaigns {
-    type Item = (&'a String, &'a mut Campaign);
+impl<'a, S: Schedule> IntoIterator for &'a mut Campaigns<S> {
+    type Item = (&'a String, &'a mut Campaign<FileBackend, S>);
     type IntoIter = std::iter::Map<
-        std::slice::IterMut<'a, (String, Campaign)>,
-        fn(&mut (String, Campaign)) -> (&String, &mut Campaign),
+        std::slice::IterMut<'a, (String, Campaign<FileBackend, S>)>,
+        fn(&mut (String, Campaign<FileBackend, S>)) -> (&String, &mut Campaign<FileBackend, S>),
     >;
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter_mut().map(|(id, campaign)| (&*id, campaign))
@@ -465,7 +467,7 @@ fn validation_refusal(
     replay_data::codec::try_format(format_args!("spool validation failed: {detail}"))
 }
 
-struct Campaign<B: SegmentBackend = FileBackend> {
+struct Campaign<B: SegmentBackend = FileBackend, S: Schedule = Unrestricted> {
     validation_refusals: ValidationRefusals,
     world_generation: Option<u64>,
     directory: PathBuf,
@@ -473,7 +475,7 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     tracker: BranchTracker,
     resumed: Option<(BranchId, i32)>,
     encoder: FrameEncoder,
-    spool: crate::spool_writer::Output<B>,
+    spool: crate::spool_writer::Output<B, S>,
     disk_branch: Option<BranchId>,
     last_written: Option<i32>,
     pending: Vec<PendingBranch>,
@@ -507,13 +509,13 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     columnar: crate::columnar::Columnar,
 }
 
-impl Campaign {
+impl<S: Schedule> Campaign<FileBackend, S> {
     fn open(
         root: &Path,
         history: &mut PreparedCampaigns,
         id: &str,
         session: &SessionStart,
-        spool: crate::spool_writer::Output,
+        spool: crate::spool_writer::Output<FileBackend, S>,
         journal_thread: &std::sync::Arc<crate::columnar::JournalThread>,
     ) -> io::Result<Self> {
         let directory = root.join(id);
@@ -577,7 +579,7 @@ impl Campaign {
     }
 }
 
-impl<B: SegmentBackend> Campaign<B> {
+impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
     fn reset_after_write_failure(&mut self) {
         self.columnar.interrupt();
         self.spool.invalidate();
@@ -1177,17 +1179,17 @@ impl<B: SegmentBackend> Campaign<B> {
         unknown: u64,
         work: &mut WorkSample,
     ) -> io::Result<()> {
-        self.write_with(source.into(), qpc, signal, unknown, work, None)
+        self.write_with(source.into(), (qpc, signal), unknown, work, None, || {})
     }
 
     fn write_with(
         &mut self,
         mut source: FrameInput,
-        qpc: i64,
-        signal: Option<i64>,
+        witness: (i64, Option<i64>),
         unknown: u64,
         work: &mut WorkSample,
         helpers: Option<collector_workers::spool_helper::Helpers<'_>>,
+        before_publication: impl FnOnce(),
     ) -> io::Result<()> {
         source.scope_to(self.session.capture_mode);
         let _details = replay_data::codec::error_details_scope();
@@ -1198,7 +1200,7 @@ impl<B: SegmentBackend> Campaign<B> {
         work.construction_ic_receipt = self
             .construction_ic
             .receipt(&source.tables[TableId::ConstructionLineOutput.index()]);
-        let result = self.write_inner(source, qpc, signal, unknown, work, helpers);
+        let result = self.write_inner(source, witness, unknown, work, helpers, before_publication);
         if result.is_ok() && !self.spool.is_queued() {
             self.line_output.written(work.line_output_receipt);
             self.construction_ic.written(work.construction_ic_receipt);
@@ -1231,12 +1233,13 @@ impl<B: SegmentBackend> Campaign<B> {
     fn write_inner(
         &mut self,
         source: FrameInput,
-        qpc: i64,
-        signal: Option<i64>,
+        witness: (i64, Option<i64>),
         unknown: u64,
         work: &mut WorkSample,
         helpers: Option<collector_workers::spool_helper::Helpers<'_>>,
+        before_publication: impl FnOnce(),
     ) -> io::Result<()> {
+        let (qpc, signal) = witness;
         let (branch, hour) = (source.branch, source.hour);
         let restarting = !self.spool.is_open();
         if restarting {
@@ -1295,7 +1298,7 @@ impl<B: SegmentBackend> Campaign<B> {
         let mut prepared = frame?;
         let span = span.switch(collector_workers::spool_phases::Phase::Columnar);
         let lanes = crate::columnar::Lanes::new(helpers);
-        let row = replay::native_frame::RowFrame {
+        let row = replay_journal::native_frame::RowFrame {
             baselines: Some(&self.encoder),
             keyframe: prepared.frame().keyframe(),
             changed: prepared.changed_rows(),
@@ -1322,8 +1325,7 @@ impl<B: SegmentBackend> Campaign<B> {
         }));
         self.columnar.stage(&context);
         let queued = self.spool.is_queued();
-        #[cfg(any(test, feature = "test-support"))]
-        before_spool_publication();
+        before_publication();
         if collector_memory::terminal::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
@@ -1335,7 +1337,7 @@ impl<B: SegmentBackend> Campaign<B> {
                 span = span.switch(collector_workers::spool_phases::Phase::Write);
             }
             set_viewed(&mut work.viewed, viewed_flag(&self.encoder))?;
-            work.staged = Some(crate::spool_writer::Output::<B>::stage_frame(
+            work.staged = Some(crate::spool_writer::Output::<B, S>::stage_frame(
                 context, encoded, rotate,
             )?);
             self.columnar.queued(branch, hour);
@@ -1345,7 +1347,7 @@ impl<B: SegmentBackend> Campaign<B> {
                 self.columnar.commit(hour, true, &lanes)?;
                 span = span.switch(collector_workers::spool_phases::Phase::Write);
             }
-            let staged = crate::spool_writer::Output::<B>::stage_frame(context, encoded, rotate)?;
+            let staged = crate::spool_writer::Output::<B, S>::stage_frame(context, encoded, rotate)?;
             self.spool.write_frame(staged, 0)?;
             self.columnar.written();
             if collector_memory::terminal::failed() {
@@ -1834,12 +1836,12 @@ struct CommandWrite {
     storage: Option<crate::spool_writer::ReceiptStorage>,
 }
 
-pub struct Processor {
+pub struct Processor<S: Schedule = Unrestricted> {
     root: PathBuf,
     history: PreparedCampaigns,
     session: SessionStart,
     session_verified: bool,
-    campaigns: Campaigns,
+    campaigns: Campaigns<S>,
     stats: Statistics,
     unknown_pending: u64,
     suppress_origin: bool,
@@ -1848,7 +1850,7 @@ pub struct Processor {
     helpers: Vec<collector_workers::spool_helper::SpoolHelper>,
     backlogged: bool,
     comparison: Box<crate::spool_compare::Counters>,
-    writer: crate::spool_writer::Writer,
+    writer: crate::spool_writer::Writer<S>,
     journal_thread: std::sync::Arc<crate::columnar::JournalThread>,
     queued: std::collections::VecDeque<Box<QueuedFrame>>,
     flight: Option<(String, BranchId)>,
@@ -1864,7 +1866,7 @@ pub struct Processor {
     command_inflight: std::collections::BTreeMap<u64, CommandWrite>,
 }
 
-impl Drop for Processor {
+impl<S: Schedule> Drop for Processor<S> {
     fn drop(&mut self) {
         self.writer.shutdown();
         while let Some(completion) = self.writer.completion() {
@@ -1889,6 +1891,20 @@ impl Drop for Processor {
 }
 
 impl Processor {
+    /// # Safety
+    /// Only the runtime's spool startup may construct the processor for this session's directory
+    /// and history leases. It must join its writer before releasing those leases or unloading
+    /// collector code.
+    pub unsafe fn new(
+        root: &Path,
+        history: PreparedCampaigns,
+        session: SessionStart,
+    ) -> io::Result<Self> {
+        Self::new_scheduled(root, history, session, crate::spool_writer::Writer::start)
+    }
+}
+
+impl<S: Schedule> Processor<S> {
     pub fn account_writer(
         &self,
         counter: engine_allocation::SharedBox<std::sync::atomic::AtomicU64>,
@@ -1972,19 +1988,16 @@ impl Processor {
             self.writer.wait_receipt_progress()?;
         }
     }
-    /// # Safety
-    /// Only the runtime's spool startup may construct the processor for this session's directory
-    /// and history leases. It must join its writer before releasing those leases or unloading
-    /// collector code.
-    pub unsafe fn new(
+    fn new_scheduled(
         root: &Path,
         history: PreparedCampaigns,
         session: SessionStart,
+        make_writer: impl FnOnce(PathBuf) -> io::Result<crate::spool_writer::Writer<S>>,
     ) -> io::Result<Self> {
         let _details = replay_data::codec::error_details_scope();
         session.validate()?;
         fs::create_dir_all(root).map_err(engine_allocation::allocation_error)?;
-        let writer = crate::spool_writer::Writer::start(root.into())?;
+        let writer = make_writer(root.into())?;
         let journal_thread = crate::columnar::JournalThread::start()?;
         Ok(Self {
             root: root.into(),
@@ -2045,7 +2058,7 @@ impl Processor {
         Ok(())
     }
 
-    fn campaign(&mut self, id: &str) -> io::Result<&mut Campaign> {
+    fn campaign(&mut self, id: &str) -> io::Result<&mut Campaign<FileBackend, S>> {
         if !self.campaigns.contains_key(id) {
             let campaign_id = id
                 .as_bytes()
@@ -2206,12 +2219,22 @@ impl Processor {
     /// Only the session's spool may submit a frame. It must be the matching hour's fully decoded
     /// frame, owned by this spool until conversion is complete.
     pub unsafe fn frame(&mut self, captured: &Captured) -> io::Result<()> {
+        // SAFETY: The isolated fixture owns the decoded frame and processor.
+        unsafe { self.frame_before_publication(captured, || {}) }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    /// # Safety
+    /// The isolated fixture owns the decoded frame, its processor and any injected failure.
+    pub unsafe fn frame_before_publication(
+        &mut self,
+        captured: &Captured,
+        before_publication: impl FnOnce(),
+    ) -> io::Result<()> {
         let prepared =
         // SAFETY: This is the decoded frame held by its originating spool.
         unsafe { self.prepare_frame(captured) }?;
-        // SAFETY: This spool submits the prepared frame to its originating processor before
-        // teardown.
-        unsafe { self.write_prepared(prepared) }?;
+        self.write_prepared_with(prepared, before_publication)?;
         self.drain_writer()?;
         match self.writer_error.take() {
             Some(kind) => Err(kind.into()),
@@ -2557,6 +2580,14 @@ impl Processor {
     /// Submit exactly once to the same processor that prepared the frame, in capture order and
     /// before the associated observer logs are released.
     pub unsafe fn write_prepared(&mut self, prepared: PreparedFrame) -> io::Result<()> {
+        self.write_prepared_with(prepared, || {})
+    }
+
+    fn write_prepared_with(
+        &mut self,
+        prepared: PreparedFrame,
+        before_publication: impl FnOnce(),
+    ) -> io::Result<()> {
         let _details = replay_data::codec::error_details_scope();
         let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
         if collector_memory::terminal::failed() {
@@ -2626,11 +2657,11 @@ impl Processor {
         );
         let result = campaign.write_with(
             source,
-            qpc,
-            Some(clock.play_session_started_at),
+            (qpc, Some(clock.play_session_started_at)),
             unknown,
             &mut work,
             helpers,
+            before_publication,
         );
         let _span =
         // SAFETY: This worker records phases on the counters assigned to its spool role.
@@ -3260,7 +3291,7 @@ impl Processor {
                         .tracker
                         .observe_commands(
                             context.hour,
-                            replay::commands::load_marker(context.load_signal),
+                            replay_recording::command_packet::load_marker(context.load_signal),
                         )?
                         .branch;
                     campaign.world_generation = Some(world);
@@ -3288,7 +3319,7 @@ impl Processor {
                 // draining.
                 unsafe { collector_player_commands::player_commands::Drain::catalog() }?;
             }
-            let mut packet = replay::commands::Packet::pack(
+            let mut packet = replay_recording::command_packet::Packet::pack(
                 *branch,
                 drained.capture,
                 drained.world,
@@ -3306,7 +3337,7 @@ impl Processor {
                     .get(&(drained.world, *branch))
                     .copied()
                     .unwrap_or((context.qpc, context.hour, context.load_signal));
-                packet.phase = Some(replay::commands::Phase {
+                packet.phase = Some(replay_recording::command_packet::Phase {
                     start: campaign
                         .tracker
                         .branch_start(*branch)
@@ -3623,11 +3654,6 @@ impl Processor {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn lockstep_writer(&self) {
-        self.writer.lockstep();
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
     pub fn allocation_failure_publication_state(
         &self,
         last_hour: i32,
@@ -3924,6 +3950,16 @@ fn decoded_with_costs(
     branch: BranchId,
     conversion: &mut SpoolConversion<'_, '_>,
 ) -> (FrameInput, collector_capture::pack_conversion::HourCosts) {
+    decoded_with_helper_steps(captured, clock, branch, conversion, &HELPER)
+}
+
+fn decoded_with_helper_steps(
+    captured: &Captured,
+    clock: Clock<&[u8]>,
+    branch: BranchId,
+    conversion: &mut SpoolConversion<'_, '_>,
+    helper_steps: &Steps<impl PhaseObserver + Sync>,
+) -> (FrameInput, collector_capture::pack_conversion::HourCosts) {
     let mut costs = collector_capture::pack_conversion::HourCosts::EMPTY;
     let metrics = Metrics {
         total_ns: captured.total_ns,
@@ -3977,7 +4013,7 @@ fn decoded_with_costs(
                     split,
                     &mut tables,
                     &mut costs,
-                    span,
+                    (span, helper_steps),
                 );
             }
         }
@@ -4209,9 +4245,12 @@ fn convert_with_helper(
     split: HelperSplit<'_>,
     tables: &mut [TableInput; TABLE_COUNT],
     costs: &mut collector_capture::pack_conversion::HourCosts,
-    span: collector_workers::spool_phases::Span<'static>,
+    (span, helper_steps): (
+        collector_workers::spool_phases::Span<'static>,
+        &Steps<impl PhaseObserver + Sync>,
+    ),
 ) {
-    use collector_workers::spool_phases::{HELPER, Phase};
+    use collector_workers::spool_phases::Phase;
     struct Converted {
         map: Option<[TableInput; 10]>,
         packs: [Option<TableInput>; TABLE_COUNT],
@@ -4289,7 +4328,7 @@ fn convert_with_helper(
         let mut packs = [const { None }; TABLE_COUNT];
         let span =
         // SAFETY: This worker records phases on the counters assigned to its spool role.
-        unsafe { HELPER.span(Phase::ConvertCore) };
+        unsafe { helper_steps.span(Phase::ConvertCore) };
         let map = (index == 0).then(|| crate::map_spool::table_inputs(map, projection.as_mut()));
         let span = span.switch(Phase::ConvertPacks);
         // SAFETY: This conversion belongs to the joined spool round and uses its shared queue.
@@ -4430,6 +4469,21 @@ fn retired_reason(table: TableId) -> Option<&'static str> {
 pub unsafe fn spool_failure_fixture(root: &Path) -> io::Result<Processor> {
     // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
     unsafe { Processor::new(root, PreparedCampaigns::default(), session()) }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+/// # Safety
+/// Use only in the isolated allocation failure fixture with exclusive use of the spool state.
+pub unsafe fn spool_allocation_fixture(
+    root: &Path,
+    lockstep: bool,
+) -> io::Result<Processor<crate::spool_writer::FixtureSchedule>> {
+    Processor::new_scheduled(root, PreparedCampaigns::default(), session(), |root| {
+        crate::spool_writer::Writer::start_scheduled(
+            root,
+            crate::spool_writer::FixtureSchedule::new(lockstep),
+        )
+    })
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -4687,7 +4741,7 @@ mod tests {
         let mut frames = 0;
         for file in fs::read_dir(&campaign.directory).unwrap().flatten() {
             if file.file_name().to_string_lossy().starts_with("spool.") {
-                for record in replay::spool::recover_prefix(&fs::read(file.path()).unwrap()).records
+                for record in replay_capture_spool::spool::recover_prefix(&fs::read(file.path()).unwrap()).records
                 {
                     if let Record::Frame(frame) = record {
                         let decoded = decoder.apply(&frame).unwrap();
@@ -4715,7 +4769,7 @@ mod tests {
 
     #[test]
     fn paused_commands_publish_both_formats_with_or_without_a_later_hour() {
-        use replay::commands::{Batch, Event, Origin, Recording, Span};
+        use replay_recording::command_packet::{Batch, Event, Origin, Span};
         for hourly in [None, Some(10), Some(11)] {
             let directory = std::env::temp_dir().join(format!(
                 "hoi4-command-paused-{}-{}",
@@ -4814,7 +4868,7 @@ mod tests {
                 .map(|(index, file)| {
                     (
                         index as u32,
-                        replay::spool::recover_prefix(&fs::read(file.path()).unwrap()),
+                        replay_capture_spool::spool::recover_prefix(&fs::read(file.path()).unwrap()),
                     )
                 })
                 .collect();
@@ -4839,7 +4893,7 @@ mod tests {
             assert_eq!(resumed.current_branch(), Some(command_branch));
             drop((prepared, resumed, lease));
             for path in [row_path] {
-                let recording = Recording::open_path(&path).unwrap();
+                let recording = replay::campaign::commands::open_path(&path).unwrap();
                 let commands: Vec<_> = recording
                     .controls
                     .iter()
@@ -4866,7 +4920,6 @@ mod tests {
 
     #[test]
     fn same_world_reactivation_keeps_the_earliest_phase_in_both_formats() {
-        use replay::commands::Recording;
         let directory =
             std::env::temp_dir().join(format!("hoi4-command-reactivated-{}", std::process::id()));
         fs::create_dir_all(&directory).unwrap();
@@ -4904,7 +4957,7 @@ mod tests {
             .map(|(index, file)| {
                 (
                     index as u32,
-                    replay::spool::recover_prefix(&fs::read(file.path()).unwrap()),
+                    replay_capture_spool::spool::recover_prefix(&fs::read(file.path()).unwrap()),
                 )
             })
             .collect();
@@ -4912,7 +4965,7 @@ mod tests {
         let row_path = directory.join("reactivated.battleplan");
         replay.write_atomic(&row_path).unwrap();
         for path in [row_path] {
-            let recording = Recording::open_path(&path).unwrap();
+            let recording = replay::campaign::commands::open_path(&path).unwrap();
             assert_eq!(recording.branches.len(), 1);
             let packets: Vec<_> = recording
                 .controls
@@ -4950,7 +5003,7 @@ mod tests {
 
     #[test]
     fn command_submit_allocation_failure_retains_packet_for_exact_once_retry() {
-        use replay::commands::{Batch, Event, Origin, Packet, Phase, Recording, Span};
+        use replay_recording::command_packet::{Batch, Event, Origin, Packet, Phase, Span};
         let directory = std::env::temp_dir().join(format!(
             "hoi4-command-submit-retry-{}",
             std::process::id()
@@ -4971,7 +5024,7 @@ mod tests {
             let campaign = processor.campaign(campaign_id).unwrap();
             let branch = campaign
                 .tracker
-                .observe_commands(10, replay::commands::load_marker(1234))
+                .observe_commands(10, replay_recording::command_packet::load_marker(1234))
                 .unwrap()
                 .branch;
             let start = campaign.tracker.branch_start(branch).unwrap().clone();
@@ -5044,14 +5097,14 @@ mod tests {
             .map(|(index, file)| {
                 (
                     index as u32,
-                    replay::spool::recover_prefix(&fs::read(file.path()).unwrap()),
+                    replay_capture_spool::spool::recover_prefix(&fs::read(file.path()).unwrap()),
                 )
             })
             .collect();
         let replay = replay::campaign::Replay::from_recovered(recorder_derive::writers(), ID.to_vec(), &segments).unwrap();
         let row_path = directory.join("submit-retry.battleplan");
         replay.write_atomic(&row_path).unwrap();
-        let recording = Recording::open_path(&row_path).unwrap();
+        let recording = replay::campaign::commands::open_path(&row_path).unwrap();
         let ordinals: Vec<_> = recording
             .controls
             .iter()
@@ -5066,7 +5119,7 @@ mod tests {
 
     #[test]
     fn delayed_command_world_declares_its_branch_without_interrupting_hourly_frames() {
-        use replay::commands::{Batch, Span};
+        use replay_recording::command_packet::{Batch, Span};
         for later in [false, true] {
             let directory = std::env::temp_dir().join(format!(
                 "hoi4-command-delayed-{}-{later}",
@@ -5151,7 +5204,7 @@ mod tests {
                 .map(|(index, file)| {
                     (
                         index as u32,
-                        replay::spool::recover_prefix(&fs::read(file.path()).unwrap()),
+                        replay_capture_spool::spool::recover_prefix(&fs::read(file.path()).unwrap()),
                     )
                 })
                 .collect();
@@ -5274,7 +5327,7 @@ mod tests {
         );
         let [before, after] = segments().try_into().unwrap();
         assert_eq!(before, open);
-        let records = |path: &Path| replay::spool::recover_prefix(&fs::read(path).unwrap()).records;
+        let records = |path: &Path| replay_capture_spool::spool::recover_prefix(&fs::read(path).unwrap()).records;
         let summary = |records: &[Record]| {
             records
                 .iter()
@@ -5303,9 +5356,9 @@ mod tests {
             &[
                 (
                     0,
-                    replay::spool::recover_prefix(&fs::read(&before).unwrap()),
+                    replay_capture_spool::spool::recover_prefix(&fs::read(&before).unwrap()),
                 ),
-                (1, replay::spool::recover_prefix(&fs::read(&after).unwrap())),
+                (1, replay_capture_spool::spool::recover_prefix(&fs::read(&after).unwrap())),
             ],
         )
         .unwrap();
@@ -5344,14 +5397,14 @@ mod tests {
         let root = scratch_root("restart-unsaved");
         let target = root.join("recordings");
         let name = std::str::from_utf8(ID).unwrap();
-        let unsaved = replay::publication::unsaved_path(&target, name);
+        let unsaved = replay_settings::publication::unsaved_path(&target, name);
         let settings = root.join("settings.json");
         let naming = replay_io::Naming {
             localisation: None,
             settings: &settings,
             report: None,
         };
-        let recording = || replay::recording_files::recording_of(&target, ID).unwrap();
+        let recording = || replay_files::recording_files::recording_of(&target, ID).unwrap();
         let mut branches = Vec::new();
         for (process, signal, hours) in [(1, 1234, 10..=12), (2, 5678, 20..=21)] {
             let session = SessionStart {
@@ -5626,7 +5679,7 @@ mod tests {
             if !file.file_name().to_string_lossy().starts_with("spool.") {
                 continue;
             }
-            for record in replay::spool::recover_prefix(&fs::read(file.path()).unwrap()).records {
+            for record in replay_capture_spool::spool::recover_prefix(&fs::read(file.path()).unwrap()).records {
                 match record {
                     Record::Frame(frame) => hours.push(frame.hour),
                     Record::Gap(gap) => gaps.push((gap.first_hour, gap.last_hour, gap.reason)),
@@ -5679,7 +5732,7 @@ mod tests {
                 if !file.file_name().to_string_lossy().starts_with("spool.") {
                     continue;
                 }
-                for record in replay::spool::recover_prefix(&fs::read(file.path()).unwrap()).records
+                for record in replay_capture_spool::spool::recover_prefix(&fs::read(file.path()).unwrap()).records
                 {
                     let Record::Frame(frame) = record else {
                         continue;
@@ -5755,6 +5808,7 @@ mod tests {
             Role::CountryLeaderRoles,
             Role::AdvisorRoles,
         ];
+        #[cfg(feature = "acquisition_profile")]
         let exclusive_tables: Vec<_> = collector_capture::extended::mode_gated_walks()
             .into_iter()
             .flat_map(|(_, tables)| tables)
@@ -5787,6 +5841,7 @@ mod tests {
                             span.role
                                 .is_none_or(|role| !exclusive_roles.contains(&role))
                         }));
+                        #[cfg(feature = "acquisition_profile")]
                         for &table in &exclusive_tables {
                             assert_eq!(
                                 frame.table_reads[table.index()],
@@ -5847,7 +5902,7 @@ mod tests {
             let mut decoder = FrameDecoder::new();
             let mut frames = Vec::new();
             for spool in spools {
-                for record in replay::spool::recover_prefix(&fs::read(spool).unwrap()).records {
+                for record in replay_capture_spool::spool::recover_prefix(&fs::read(spool).unwrap()).records {
                     let Record::Frame(frame) = record else {
                         continue;
                     };
@@ -6170,7 +6225,7 @@ mod tests {
     }
 
     use engine_native::msvc_string::Text;
-    use replay::{spool::SegmentSink, spool::recover_prefix};
+    use replay_capture_spool::spool::{SegmentSink, recover_prefix};
     use replay_frame::{branches::BranchReason, branches::Parentage};
     use std::{cell::RefCell, io::Write, rc::Rc};
 
@@ -6816,7 +6871,7 @@ mod tests {
     }
     impl Write for MemorySink {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.last_tag = bytes[replay::spool::RECORD_HEADER_BYTES];
+            self.last_tag = bytes[replay_capture_spool::spool::RECORD_HEADER_BYTES];
             self.store
                 .borrow_mut()
                 .segments
@@ -9506,7 +9561,7 @@ mod tests {
 
     #[test]
     fn a_table_read_with_no_time_of_its_own_is_marked_read_and_a_skipped_one_is_not() {
-        use replay::native_frame::FrameWriter;
+        use replay_journal::native_frame::FrameWriter;
         use replay_data::rows::{CountryFuelRow, ProductionLineOutputRow, TableId};
         let (fuel, output, anchor) = (
             TableId::CountryFuel,
@@ -9664,25 +9719,4 @@ mod tests {
         );
         assert_eq!(decoder.apply(&frame).unwrap(), second);
     }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    static FAIL_PUBLICATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn before_spool_publication() {
-    if FAIL_PUBLICATION.replace(false) {
-        collector_memory::terminal::fail(
-            collector_memory::terminal::Phase::Spool,
-            collector_memory::terminal::Code::Reserve,
-        );
-    }
-}
-#[cfg(any(test, feature = "test-support"))]
-/// # Safety
-/// Run only in an isolated publication-failure fixture with no live collector or competing fixture.
-pub unsafe fn fail_publication_for_test(fail: bool) {
-    FAIL_PUBLICATION.set(fail);
 }

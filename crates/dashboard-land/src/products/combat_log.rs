@@ -449,7 +449,7 @@ impl Product for CombatLog {
             };
         }
         let available = |table: TableId| -> io::Result<Option<String>> {
-            Ok(replay::lanes::available_reads(recording, run, table, hour, hour)?.is_empty().then(|| format!("{}: not recorded at this hour", table.words())))
+            Ok(replay_lanes::lanes::available_reads(recording, run, table, hour, hour)?.is_empty().then(|| format!("{}: not recorded at this hour", table.words())))
         };
         let mut availability = CombatLogAvailability {
             groups: unavailable(&frame, &[TableId::CombatLogGroups]),

@@ -6,7 +6,7 @@ use dashboard_base::{Source, catalogue::{Refusals, View}, span::HourSpan};
 use dashboard_query::{Query, identity::Holder};
 use content_reader_core::special_projects::{Catalog, Project};
 use content_reader_localisation::localisation::Argument;
-use replay::lanes::{self, Cell, History, Keys, Step};
+use replay_lanes::lanes::{self, Cell, History, Keys, Step};
 use replay_columnar::manifest::Status;
 use replay_data::{
     cadence::STAGGER_PERIOD,

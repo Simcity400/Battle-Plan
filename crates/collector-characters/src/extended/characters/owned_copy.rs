@@ -191,6 +191,7 @@ impl CharactersJob {
         let mut job = Self::with_storage(0, 1 << 19, 24 << 20, true);
         job.traits = TraitCapture::with_test_capacities(4096, 4096, 4096, 1 << 20);
         job.source_bindings = Some(super::tests::fixture_bindings());
+        job.roster = quiet::QuietRoster::unobserved();
         job
     }
 

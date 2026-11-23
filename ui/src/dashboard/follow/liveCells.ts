@@ -71,7 +71,7 @@ export interface GroupValues {
 
 const missingGroup = (reason: string): GroupValues => ({ get: () => undefined, missing: () => reason });
 
-function valuedGroup(spec: LiveGroupSpec, values: readonly (number | string)[]): GroupValues {
+export function valuedGroup(spec: LiveGroupSpec, values: readonly (number | string)[]): GroupValues {
   const width = spec.columns.length;
   const rawValues = spec.rawValues;
   return {

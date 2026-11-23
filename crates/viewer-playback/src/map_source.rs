@@ -1,8 +1,5 @@
-use replay::{
-    campaign::Replay,
-    columnar_frames::Pool,
-    columnar_natives::{Cursor, Natives},
-};
+use replay::campaign::Replay;
+use replay_recording::{columnar_frames::Pool, columnar_natives::{Cursor, Natives}};
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
 use replay_frame::frame::{DecodedFrame, TableView};
 use std::{

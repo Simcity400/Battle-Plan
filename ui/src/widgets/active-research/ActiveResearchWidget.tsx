@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useId, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, MouseEvent } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import { Icon } from '../../components/Icons';
 import ListSkeleton from '../../components/Skeleton';
 import WidgetState from '../../components/WidgetState';
 import ProgressMeter from '../../charts/meter/ProgressMeter';
-import { hideTooltip, showTooltip } from '../../charts/tooltip';
+import { useOpenTooltip } from '../../charts/openTooltip.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { contentTitle } from '../../dashboard/contentTitles';
 import { openedOn } from '../../dashboard/gameWindows';
@@ -39,8 +39,8 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   const diagnostics = useMemo(() => [...new Set([...(data?.warnings ?? NO_WARNINGS), ...(reply?.warnings ?? NO_WARNINGS), ...images.warnings])], [data, reply, images.warnings]);
   useDiagnostics(onDiagnostics, diagnostics);
   const artwork = useMemo(() => researchArtwork(data, images.artwork), [data, images.artwork]);
-  const untip = useCallback(() => hideTooltip(owner), [owner]);
-  useEffect(() => untip, [untip]);
+  const tips = useOpenTooltip(owner, now.live.subscribe);
+  const untip = tips.hide;
   const [opened, setOpened] = useState<{ on: string; research: OpenedResearch; x: number; y: number } | null>(null);
   if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
   if (now.read === 'off') return <div className="dash-empty" role="status">This time is outside the recording.</div>;
@@ -63,19 +63,22 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
     const { token, slot } = item;
     const name = contentTitle(researchReadName(artwork, item.read), token, 'Technology name unavailable'), icon = artwork.get(token)?.icon ?? undefined;
     const click = (event: MouseEvent<HTMLElement>) => open(item, event.clientX, event.clientY);
-    const content = (): TooltipContent => {
-      const at = latest.current ?? reply, hour = at.hour, current = at.slots.find(read => read.index === slot.index) ?? item.read;
+    const content = (): TooltipContent | null => {
+      const at = latest.current ?? reply, hour = at.hour, current = at.slots.find(read => read.index === slot.index);
+      const shown = latest.inspect(slot.index);
+      if ((shown ? shown.token : current?.state.token) !== token || !current) return null;
       const full = data.history.slots.find(held => held.index === slot.index) ?? slot;
-      const progress = researchLatestProgress({ ...full, states: [current.state], progress: current.progress ? [current.progress] : [] }, current.state, hour);
-      const left = slotNumbers(current, hour).left;
+      const progress = shown ? shown.fraction === null ? null : { fraction: shown.fraction, hour: shown.hour }
+        : researchLatestProgress({ ...full, states: [current.state], progress: current.progress ? [current.progress] : [] }, current.state, hour);
+      const left = shown ? shown.left : slotNumbers(current, hour).left;
       return { title: name, icon, rows: [
         { label: 'Progress', value: progress ? `${Math.round(progress.fraction * 100)}% on ${researchDate(progress.hour)}` : 'Not recorded' },
         { label: 'Days left', value: left === null ? 'Not recorded' : `${left}` },
       ], note: left === null ? undefined : 'Days left is the game’s estimate at this hour’s research speed.' };
     };
     return <div key={key} className="active-row" data-research-slot={slot.index} tabIndex={0} aria-label={`${name}, researching`}
-      onPointerMove={event => showTooltip(owner, content(), event.clientX, event.clientY, key)} onPointerLeave={untip}
-      onFocus={event => { const box = event.currentTarget.getBoundingClientRect(); showTooltip(owner, content(), box.right, box.top, key); }} onBlur={untip}
+      onPointerMove={event => tips.show(content, key, event.clientX, event.clientY)} onPointerLeave={untip}
+      onFocus={event => { const box = event.currentTarget.getBoundingClientRect(); tips.show(content, key, box.right, box.top); }} onBlur={untip}
       onKeyDown={(event: KeyboardEvent<HTMLElement>) => {
         if (event.key !== 'Enter') return;
         event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); open(item, box.left + 40, box.bottom);
@@ -98,7 +101,7 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
       {rows.length > 0 && <p className="active-section">Researching<span>{researching.length}</span>{idle > 0 && <span className="is-idle">{idle} idle</span>}</p>}
       {rows.map(row)}
     </div>
-    {!rows.length && <p>{reply.missing ?? `No research slots recorded at ${researchDate(reply.hour)}.`}</p>}
+    {!rows.length && <p>{reply.missing ?? <>No research slots recorded at <span data-paint="date">{researchDate(reply.hour)}</span>.</>}</p>}
     {popup}
   </section>;
 }

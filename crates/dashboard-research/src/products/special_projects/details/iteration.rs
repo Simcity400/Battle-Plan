@@ -155,12 +155,12 @@ fn replaced(reads: &Reads<'_, '_>, owner: u32, id: u32, listed: i32) -> Result<b
         return Ok(true);
     }
     let key = u128::from(owner) << 64 | u128::from(id) << 32;
-    let history = dashboard_query::cost::storage(|| replay::lanes::history(recording, reads.run, TableId::ProjectHistory, &HISTORY_COLUMNS, replay::lanes::Keys::Range(key, key | u128::from(u32::MAX)), choice, listed))
+    let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, reads.run, TableId::ProjectHistory, &HISTORY_COLUMNS, replay_lanes::lanes::Keys::Range(key, key | u128::from(u32::MAX)), choice, listed))
         .map_err(|why| why.to_string())?;
     let columns = read_columns().map_err(|why| why.to_string())?;
-    let stamps = dashboard_query::cost::storage(|| replay::lanes::history(recording, reads.run, TableId::SliceReads, &columns, replay::lanes::Keys::These(&[read_key(TableId::ProjectHistory, owner)]), choice, listed))
+    let stamps = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, reads.run, TableId::SliceReads, &columns, replay_lanes::lanes::Keys::These(&[read_key(TableId::ProjectHistory, owner)]), choice, listed))
         .map_err(|why| why.to_string())?;
-    let whole: Vec<(i32, i32)> = dashboard_query::cost::storage(|| replay::lanes::statuses(recording, reads.run, TableId::ProjectHistory, choice, listed))
+    let whole: Vec<(i32, i32)> = dashboard_query::cost::storage(|| replay_lanes::lanes::statuses(recording, reads.run, TableId::ProjectHistory, choice, listed))
         .map_err(|why| why.to_string())?
         .into_iter()
         .filter(|run| run.status == replay_columnar::manifest::Status::Complete)

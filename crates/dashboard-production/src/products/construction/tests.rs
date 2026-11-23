@@ -4,7 +4,7 @@ use super::{
     spending::{deltas, identity_keys, leaf_keys, leaf_of, line_gap, totals},
     *,
 };
-use replay::lanes::Step;
+use replay_lanes::lanes::Step;
 use replay_data::rows::{ConstructionRise, ConstructionSpendRow, TagHolderRow};
 
 fn row(set: &[(usize, i64)]) -> Box<[Cell]> {

@@ -101,7 +101,7 @@ fn unread(query: &Query<'_>, log: &dashboard_declare::Log, from: i32, to: i32) -
                 Status::NotRecorded => format!("The {} log was not recorded here", log.name),
                 Status::Truncated { missing } => format!("The {} log was read in part here ({missing} rows not read)", log.name),
                 Status::Unavailable { reason } => {
-                    let held = dashboard_query::cost::storage(|| replay::lanes::at_keys(recording, stretch.run, log.table, run.first, None, replay::lanes::Keys::These(&[])))?;
+                    let held = dashboard_query::cost::storage(|| replay_lanes::lanes::at_keys(recording, stretch.run, log.table, run.first, None, replay_lanes::lanes::Keys::These(&[])))?;
                     held.strings.get(reason).map_or_else(|| format!("The {} log was not available here", log.name), |text| String::from_utf8_lossy(text).into_owned())
                 }
             };

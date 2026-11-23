@@ -287,10 +287,6 @@ pub fn restore_sequence(previous: u64) -> Result<(), &'static str> {
     Ok(())
 }
 pub fn lost_drain() {
-    #[cfg(any(test, feature = "test-support"))]
-    if !tests::owns_observation() {
-        return;
-    }
     LOST.fetch_add(1, Ordering::Relaxed);
     log(Event::Lost);
 }
@@ -308,10 +304,6 @@ pub fn prepare(memory: &impl Memory, base: usize) {
 }
 
 pub fn boundary(clock: Option<Clock>) {
-    #[cfg(any(test, feature = "test-support"))]
-    if !tests::owns_observation() {
-        return;
-    }
     GAME_THREAD.store(
         unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() } as usize,
         Ordering::Relaxed,
@@ -342,10 +334,6 @@ pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
     drain_buffer(engine_native::walk::Buffer::Growing(output))
 }
 fn drain_buffer(mut output: engine_native::walk::Buffer<'_, Entry>) -> Result<usize, &'static str> {
-    #[cfg(any(test, feature = "test-support"))]
-    if !tests::owns_observation() {
-        return Err("naval result sources hooks unavailable (see status unhooked)");
-    }
     if UNHOOKED.get().is_some() || !ENABLED.load(Ordering::SeqCst) {
         return Err("naval result sources hooks unavailable (see status unhooked)");
     }

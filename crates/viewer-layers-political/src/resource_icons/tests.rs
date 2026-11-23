@@ -199,7 +199,7 @@ fn campaign(name: &str, refuse: bool) -> (Units, Vec<DecodedFrame>) {
     let first = fixture::frame();
     let strings = strings_of(&first, &TABLES);
     let mut frames = vec![first];
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
     store.attach(Encoder::new(&kinds, Writing::at(3)).unwrap());
     let mut memory = Memory::default();
@@ -353,7 +353,7 @@ fn the_window_takes_the_layers_icons_in_the_resources_mode_and_todays_where_it_d
 
 #[test]
 fn outside_the_resources_mode_it_declares_nothing() {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let declared = |view: &View| {
         let mut layer = ResourceIcons::new(content());
         let mut inputs = Inputs::new(&kinds, "resource_icons");

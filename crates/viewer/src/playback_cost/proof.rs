@@ -1203,7 +1203,7 @@ impl Layer for Declare {
     }
 
     fn inputs(&mut self, _view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
-        let kinds = replay::columnar_frames::schema()?;
+        let kinds = replay_recording::schema::schema()?;
         for (table, columns) in &self.lines {
             inputs.table(*table, false)?;
             let held = &kinds[table.index()];

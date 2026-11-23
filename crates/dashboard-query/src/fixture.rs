@@ -4,11 +4,9 @@ use crate::{
     identity::{self, Holders},
     timeline::{Join, Stretch, Timeline, Unheld},
 };
-use replay::{
-    campaign::Replay,
-    columnar_frames::synthetic::{Input, Sample, Synthetic},
-    spool::Record,
-};
+use replay::campaign::Replay;
+use replay_journal::synthetic::{Input, Sample, Synthetic};
+use replay_capture_spool::spool::Record;
 use replay_columnar::envelope::{SPAN_BLOCKS, UNIT_ORDINALS};
 use replay_data::{
     identity::{CaptureMode, Identity, Roster, SampleBoundary, SessionStart, Verification},

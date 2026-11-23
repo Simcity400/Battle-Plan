@@ -43,7 +43,7 @@ pub(crate) fn first_difference(laid: &[Quad], fresh: &[Quad]) -> Option<String> 
 }
 
 pub(crate) fn layers_moved(painting: [usize; 6], fresh: [usize; 6]) -> Option<String> {
-    let moved = viewer_counters::map::counters::layers_moved(painting, fresh);
+    let moved = viewer_counters::counters::layers_moved(painting, fresh);
     (!moved.is_empty()).then(|| moved.join(", "))
 }
 

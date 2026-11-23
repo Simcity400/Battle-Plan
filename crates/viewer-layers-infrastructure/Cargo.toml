@@ -58,7 +58,7 @@ viewer-world = { workspace = true }
 content-reader-core = { workspace = true, features = ["test-support"] }
 content-reader-sound = { workspace = true, features = ["test-support"] }
 engine-heap = { workspace = true }
-replay = { workspace = true, features = ["test-support"] }
+replay-recording.workspace = true
 viewer-layers-infrastructure = { workspace = true, features = ["test-support"] }
 
 [lints]
@@ -74,8 +74,10 @@ content-reader-weather = { workspace = true, features = ["test-support"] }
 dashboard-effects = { workspace = true, features = ["test-support"] }
 map-content = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
+replay-tools = { workspace = true, features = ["default", "journal"] }
 test-unify = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }
@@ -87,7 +89,6 @@ unify-windows = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }
 viewer-map-icons = { workspace = true, features = ["test-support"] }
-viewer-native-gui = { workspace = true, features = ["test-support"] }
 viewer-scene-base = { workspace = true, features = ["test-support"] }
 viewer-terrain = { workspace = true, features = ["test-support"] }
 viewer-unit-history = { workspace = true, features = ["test-support"] }

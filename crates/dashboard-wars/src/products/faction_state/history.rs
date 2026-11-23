@@ -3,7 +3,7 @@ use super::ordinals;
 use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, Product, at_hour::{self, Read}}, queries::country_ids::Names, span::HourSpan};
 use dashboard_text::scripted_text::ScriptedText;
 use dashboard_query::{Query, read, timeline::Join};
-use replay::lanes::{self, Cell, Keys};
+use replay_lanes::lanes::{self, Cell, Keys};
 use replay_data::rows::{TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{

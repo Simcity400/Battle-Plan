@@ -4,7 +4,8 @@ use dashboard_base::products::Country;
 use super::{CHARACTER_REFERENCE, Naming, PROGRAM_REFERENCE, ProjectContent, ProjectPerson, RunLinks, country_key, needs_scope, scoped_at};
 use dashboard_base::{Source, catalogue::View, products::{LoadContext, at_hour::{At, AtHour, Keys, Owner, Read}, game_text::{GameRun, runs}}};
 use dashboard_query::{Index, Query, cost};
-use replay::{campaign::Replay, lanes};
+use replay::campaign::Replay;
+use replay_lanes::lanes;
 use replay_data::{
     cadence::STAGGER_PERIOD,
     rows::{CharacterRoleTraitRow, ProjectHistoryRow, ProjectRow, ProjectRuntime, Recorded, ScientistDailyRow, SliceReadRow, TableId, tables},

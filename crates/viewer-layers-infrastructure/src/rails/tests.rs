@@ -173,7 +173,7 @@ fn rails_above_the_cutoff_declare_and_hold_nothing_and_settle_again_when_shown()
     }
     let layer = rails(&side);
     assert!(!layer.shown() && layer.runs().is_empty() && layer.bridges().is_empty() && layer.network().graph.is_empty(), "hidden, the layer holds nothing");
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "rails");
     let mut probe = Rails::new(Arc::new(Stub));
     probe.inputs(&View { camera_height: 1000.0, ..View::default() }, &mut inputs).unwrap();

@@ -123,10 +123,15 @@ fn executor_success_plan_failure_and_caught_panic_return_the_original_naval_loan
 
 #[test]
 fn stopped_child_fronts_request_returns_its_unread_naval_loan() {
+    let trace = Arc::new(collector_memory::read_accounting::fixtures::ReadTrace::default());
+    let runner_trace = Arc::clone(&trace);
     // SAFETY: Test owns this local acquisition pool and shuts it down before test exit.
     let pool = unsafe {
-        collector_workers::acquisition::Pool::start(0, 1, |_: &mut Job| -> Report {
-            panic!("cancelled ChildFronts runner must not execute");
+        collector_workers::acquisition::Pool::start(0, 1, move |_: &mut Job| -> Report {
+            runner_trace.record((), || {
+                collector_memory::read_accounting::fixtures::read(1);
+                panic!("cancelled ChildFronts runner must not execute");
+            })
         })
     }
     .unwrap();
@@ -139,6 +144,8 @@ fn stopped_child_fronts_request_returns_its_unread_naval_loan() {
     unsafe { pool.shutdown() }.unwrap();
     let completed = pool.finish(ticket).unwrap();
     assert!(matches!(completed.report, Err(Failure::Stopped)));
+    assert_eq!(trace.take(()), collector_memory::read_accounting::ZERO);
+    #[cfg(feature = "acquisition_profile")]
     assert_eq!(
         completed.table_reads,
         collector_memory::read_accounting::ZERO

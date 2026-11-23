@@ -1,8 +1,8 @@
 use super::*;
 use crate::spool_writer::Writer;
-use replay::spool::SegmentSink;
+use replay_capture_spool::spool::SegmentSink;
 #[cfg(test)]
-use replay::spool::recover_prefix;
+use replay_capture_spool::spool::recover_prefix;
 #[cfg(test)]
 use replay_frame::branches::Parentage;
 use std::{
@@ -114,7 +114,7 @@ impl Write for Sink {
         let gate = {
             let mut store = self.store.lock().unwrap();
             let mut input =
-                replay_data::codec::Decoder::new(&bytes[replay::spool::RECORD_HEADER_BYTES..]);
+                replay_data::codec::Decoder::new(&bytes[replay_capture_spool::spool::RECORD_HEADER_BYTES..]);
             let hour = match Record::decode(&mut input).unwrap() {
                 Record::Control(ControlRecord::PlayerCommands { .. })
                     if std::mem::take(&mut store.fail_commands) =>
@@ -1254,18 +1254,18 @@ fn command_packets_retry_without_losing_first_catalog_or_later_packets() {
         .current_branch()
         .unwrap();
     for ordinal in 0..3 {
-        let mut batch = replay::commands::Batch::default();
+        let mut batch = replay_recording::command_packet::Batch::default();
         if ordinal == 0 {
-            batch.kinds.push(replay::commands::Kind {
+            batch.kinds.push(replay_recording::command_packet::Kind {
                 id: 0,
                 token: 0,
                 name: "synthetic".into(),
-                category: replay::commands::Category::Other,
+                category: replay_recording::command_packet::Category::Other,
             });
         }
         let record = Record::Control(ControlRecord::PlayerCommands {
             session: processor.session.id,
-            packet: replay::commands::Packet::pack(
+            packet: replay_recording::command_packet::Packet::pack(
                 branch,
                 1,
                 100,
@@ -1331,7 +1331,7 @@ fn command_declarations_wait_for_parent_hours_and_remain_immutable_across_retry(
     let branch = campaign.tracker.current_branch().unwrap();
     let start = campaign.tracker.branch_start(branch).unwrap().clone();
     assert!(matches!(start.parent, Parentage::Probable { hour: 11, .. }));
-    let mut packet = replay::commands::Packet::pack(
+    let mut packet = replay_recording::command_packet::Packet::pack(
         branch,
         1,
         100,
@@ -1339,10 +1339,10 @@ fn command_declarations_wait_for_parent_hours_and_remain_immutable_across_retry(
         100,
         200,
         0,
-        &replay::commands::Batch::default(),
+        &replay_recording::command_packet::Batch::default(),
     )
     .unwrap();
-    packet.phase = Some(replay::commands::Phase {
+    packet.phase = Some(replay_recording::command_packet::Phase {
         start,
         campaign: *ID,
         qpc: 100,

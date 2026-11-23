@@ -340,11 +340,11 @@ fn has_exact_in(exact_hours: &[i32], low: i32, high: i32) -> bool {
     exact_hours.get(at).is_some_and(|&hour| hour <= high)
 }
 
-pub fn bin_points(bins: &[replay::lanes::Bin], first_bin_hour: i64, bin_hours: i64, from: i32, to: i32) -> Vec<(i32, i64)> {
+pub fn bin_points(bins: &[replay_lanes::lanes::Bin], first_bin_hour: i64, bin_hours: i64, from: i32, to: i32) -> Vec<(i32, i64)> {
     bin_points_for(bins, first_bin_hour, bin_hours, from, to, &[])
 }
 
-fn bin_points_for(bins: &[replay::lanes::Bin], first_bin_hour: i64, bin_hours: i64, from: i32, to: i32, exact_hours: &[i32]) -> Vec<(i32, i64)> {
+fn bin_points_for(bins: &[replay_lanes::lanes::Bin], first_bin_hour: i64, bin_hours: i64, from: i32, to: i32, exact_hours: &[i32]) -> Vec<(i32, i64)> {
     let mut out: Vec<(i32, i64)> = Vec::new();
     for (at, bin) in bins.iter().enumerate() {
         if bin.hours == 0 {

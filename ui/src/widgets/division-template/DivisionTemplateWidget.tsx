@@ -19,7 +19,7 @@ import { useCountryNameAt, useReachedCountry } from '../../dashboard/reachedProd
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { useIdentityHour } from '../../dashboard/atHead';
-import { useFallbackHour } from '../../dashboard/follow/useFollow';
+import { usePlaybackHour } from '../../dashboard/follow/useFollow';
 import ReachedCountryChoice from '../../dashboard/ReachedCountryChoice';
 import { withWindowDiagnostics } from '../../dashboard/gameWindows';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
@@ -43,7 +43,7 @@ export default function DivisionTemplateWidget({ widget, runtime, active, setOpt
   const chosen = typeof widget.options?.country === 'string' ? [widget.options.country] : [];
   const identityHour = useIdentityHour(runtime.client, track, chosen, runtime.clock, active && widget.time.mode === 'follow',
     clockHour => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null);
-  const designerHead = useFallbackHour(runtime.clock, active && drill.breakdown !== null && drill.follow);
+  const designerHead = usePlaybackHour(runtime.clock, active && drill.breakdown !== null && drill.follow);
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const window = track && resolveWindow(widget, track, runtime.tracks, identityHour ?? runtime.clock.getHour());
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);

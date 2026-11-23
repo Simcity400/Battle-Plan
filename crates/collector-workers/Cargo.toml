@@ -10,6 +10,7 @@ license.workspace = true
 doctest = false
 
 [features]
+acquisition_profile = ["collector-memory/acquisition_profile"]
 default = []
 callback_profile = []
 executor_join_help = []

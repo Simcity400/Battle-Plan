@@ -14,6 +14,9 @@ export-types = ["dashboard-base/export-types", "dashboard-world/export-types"]
 test-support = ["dashboard-base/test-support"]
 
 [dependencies]
+replay.workspace = true
+replay-lanes.workspace = true
+replay-recording.workspace = true
 content-reader-localisation = { workspace = true }
 dashboard-base = { workspace = true }
 dashboard-core = { workspace = true }
@@ -23,7 +26,6 @@ dashboard-query = { workspace = true }
 dashboard-text = { workspace = true }
 dashboard-world = { workspace = true }
 engine-fuel = { workspace = true }
-replay = { workspace = true }
 replay-columnar = { workspace = true }
 replay-data = { workspace = true }
 replay-frame = { workspace = true }
@@ -32,6 +34,7 @@ serde_json = { workspace = true }
 ts-rs = "11.1"
 
 [dev-dependencies]
+replay = { workspace = true, features = ["test-support"] }
 recorder-derive.workspace = true
 content-reader-localisation = { workspace = true, features = ["test-support"] }
 dashboard-base = { workspace = true, features = ["test-support"] }
@@ -39,7 +42,6 @@ dashboard-core = { workspace = true, features = ["test-support"] }
 dashboard-economy = { workspace = true, features = ["export-types"] }
 dashboard-text = { workspace = true, features = ["test-support"] }
 engine-heap = { workspace = true }
-replay = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }
 
@@ -53,9 +55,11 @@ workspace = true
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 playhead = { path = "../playhead", features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
+replay-tools = { workspace = true, features = ["default", "journal"] }
 shader-pipeline = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-indexmap = { workspace = true }

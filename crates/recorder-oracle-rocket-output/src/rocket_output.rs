@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn a_refresh_off_the_slot_is_checked_where_the_rocket_output_is_marked_read() {
-        use replay::spool::Record;
+        use replay_capture_spool::spool::Record;
         use replay_data::rows::TableRows;
         use replay_frame::frame::TableUpdate;
         let scope = |country| RocketProductionOutputRow {

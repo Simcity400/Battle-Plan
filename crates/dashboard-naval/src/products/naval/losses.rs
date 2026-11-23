@@ -12,7 +12,7 @@ use dashboard_query::{
     series::{Line, Part},
 };
 use game_model::calendar::{HOUR_EPOCH, MONTH_LENGTHS};
-use replay::columnar_frames::Recording;
+use replay_recording::columnar_frames::Recording;
 use replay_columnar::summary;
 use replay_data::rows::{NavalLossTotalRow as Row, TableId};
 use serde::{Deserialize, Serialize};

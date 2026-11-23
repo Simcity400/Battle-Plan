@@ -66,7 +66,7 @@ pub fn record(name: &str, hours: u32, campaign: impl FnMut(u32, &mut Store)) -> 
 }
 
 pub fn record_naming(name: &str, hours: u32, texts: &[&[u8]], mut campaign: impl FnMut(u32, &mut Store)) -> units::Units {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
     store.attach(Encoder::new(&kinds, Writing::at(3)).unwrap());
     let mut memory = Memory::default();

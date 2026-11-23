@@ -11,10 +11,11 @@ tauri-build = { version = "2", features = [] }
 serde_json.workspace = true
 
 [dependencies]
+replay-files.workspace = true
+replay-settings.workspace = true
 viewer-runtime.workspace = true
 dashboard-core.workspace = true
 dashboard-text.workspace = true
-replay.workspace = true
 app-update.workspace = true
 engine-executable.workspace = true
 content-reader-settings.workspace = true
@@ -37,6 +38,8 @@ custom-protocol = ["tauri/custom-protocol"]
 served-ui = ["custom-protocol"]
 
 [dev-dependencies]
+replay = { workspace = true, features = ["test-support"] }
+replay-capture-spool.workspace = true
 recorder-derive.workspace = true
 content-reader-core = { workspace = true, features = ["test-support"] }
 
@@ -57,8 +60,10 @@ dashboard-land = { workspace = true, features = ["export-types", "test-support"]
 dashboard-politics = { workspace = true, features = ["export-types", "test-support"] }
 dashboard-wars = { workspace = true, features = ["export-types", "test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
+replay-tools = { workspace = true, features = ["default", "journal"] }
 tauri = { version = "2.11.5", default-features = false, features = ["common-controls-v6", "compression", "dbus", "default", "dynamic-acl", "tauri-runtime-wry", "tray-icon", "webkit2gtk", "webview2-com", "wry", "x11"] }
 test-unify = { workspace = true }
 unify-bitflags = { workspace = true }

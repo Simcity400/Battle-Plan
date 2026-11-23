@@ -1,12 +1,7 @@
 
 use super::{BlockIndex, Replay, SeekResult};
-use crate::{
-    BranchId, Hour,
-    branches::{BranchReason, BranchStart, Gap, Parentage},
-    codec::invalid_static,
-    frame::TableView,
-    rows::{ClockRow, TableId, TableRows},
-};
+use replay_data::{BranchId, Hour, codec::invalid_static, rows::{ClockRow, TableId, TableRows}};
+use replay_frame::{branches::{BranchReason, BranchStart, Gap, Parentage}, frame::TableView};
 use std::{
     collections::{BTreeMap, HashMap},
     io,
@@ -147,7 +142,7 @@ impl Timelines {
 
 pub fn choices_path(campaign: &[u8]) -> PathBuf {
     let digest = blake3::hash(campaign);
-    crate::recorder_settings::histories_folder()
+    replay_settings::recorder_settings::histories_folder()
         .join(format!("{}.json", &digest.to_hex()[..32]))
 }
 
@@ -672,7 +667,7 @@ impl Replay {
                 });
             }
             for control in &self.controls {
-                if let crate::spool::ControlRecord::EventLoss {
+                if let replay_recording::control::ControlRecord::EventLoss {
                     session,
                     branch,
                     after_hour,
@@ -683,7 +678,7 @@ impl Replay {
                         .is_some_and(|piece| piece.segment == branch)
                 {
                     engine_allocation::reserve(&mut losses, 1)?;
-                    losses.push(crate::spool::ControlRecord::EventLoss {
+                    losses.push(replay_recording::control::ControlRecord::EventLoss {
                         session,
                         branch: timeline.id,
                         after_hour,
@@ -693,13 +688,13 @@ impl Replay {
             }
         }
         self.controls
-            .retain(|control| !matches!(control, crate::spool::ControlRecord::EventLoss { .. }));
+            .retain(|control| !matches!(control, replay_recording::control::ControlRecord::EventLoss { .. }));
         engine_allocation::reserve(&mut self.controls, losses.len())?;
         self.controls.extend(losses);
         self.partial_control = self
             .controls
             .iter()
-            .position(|control| matches!(control, crate::spool::ControlRecord::Partial { .. }));
+            .position(|control| matches!(control, replay_recording::control::ControlRecord::Partial { .. }));
 
         self.gaps = gaps;
         let physical = Physical {

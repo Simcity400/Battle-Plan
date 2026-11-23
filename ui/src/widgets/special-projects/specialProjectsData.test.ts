@@ -556,3 +556,9 @@ test('R5-S3: a project seen only in history has a tooltip with status unknown an
   assert.equal(historyProject(data, 'history-only', 119), null, 'no menu before the read that first listed it');
   assert.equal(historyTooltip(data, 'history-only', null, 118, 119), null);
 });
+
+test('review 4 finding 12: a pinned or asked card sets its own progress variable; a page-painted one leaves it to the installed texts', async () => {
+  const { progressStyle } = await import('./specialProjectsData.ts');
+  assert.deepEqual(progressStyle(50, false), { '--project-progress': 0.5 });
+  assert.equal(progressStyle(50, true), undefined);
+});

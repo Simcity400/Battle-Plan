@@ -1,7 +1,7 @@
 
 use super::{MapHit, unit_family};
 use std::collections::HashMap;
-use viewer_counters::map::counters::CounterReport;
+use viewer_counter_kit::CounterReport;
 use viewer_native_gui::{anchored::Shifts, free_icons};
 use viewer_gpu::icon_tracks::IconFamily;
 
@@ -499,7 +499,7 @@ mod tests {
         for step in 0..40u32 {
             let at = |scale: f32| [f32::from(step as u16) * scale, f32::from(step as u16) * scale * 0.5];
             let [x, y] = at(61.0);
-            report.faction_pin_hovers.push(viewer_counters::map::counters::faction_pings::PinHover {
+            report.faction_pin_hovers.push(viewer_counter_kit::PinHover {
                 rect: [x, y, 24.0, 24.0],
                 theatre: (0, 0),
                 regions: Arc::from([step]),
@@ -541,14 +541,14 @@ mod tests {
                 order: step as usize,
                 supported: true,
             });
-            report.air_mission_hits.push(viewer_counters::map::counters::AirMissionHover {
+            report.air_mission_hits.push(viewer_counter_kit::AirMissionHover {
                 region: step,
-                part: viewer_counters::map::counters::AirMissionPart::Supply,
+                part: viewer_counter_kit::AirMissionPart::Supply,
                 rect: [x, y - 30.0, 50.0, 50.0],
                 layer: layer(8, step, 0),
                 text: Arc::default(),
             });
-            report.naval_mission_hits.push(viewer_counters::map::counters::NavalMissionHit {
+            report.naval_mission_hits.push(viewer_counter_kit::NavalMissionHit {
                 region: step,
                 mission: step,
                 rect: [x + 2.0, y - 28.0, 50.0, 50.0],

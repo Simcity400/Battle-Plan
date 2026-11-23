@@ -10,11 +10,8 @@ use dashboard_base::{
     span::HourSpan,
 };
 use dashboard_query::{Query, read};
-use replay::{
-    at::Seeker,
-    columnar_frames::Recording,
-    lanes::{self, Cell, Keys, Step},
-};
+use replay_lanes::{at::Seeker, lanes::{self, Cell, Keys, Step}};
+use replay_recording::columnar_frames::Recording;
 use replay_data::rows::{NavalResultObservationRow as Observation, NavalResultRow, Recorded, TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -353,7 +350,7 @@ fn results(source: &Source, query: &Query<'_>, run: u32, first: i32, last: i32) 
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let frame = replay::at::frame(recording, run, last, &[
+    let frame = replay_lanes::at::frame(recording, run, last, &[
         read::Read { table: TableId::NavalResults, columns: None, keys: Keys::These(&ids) },
         read::Read { table: TableId::NavalResultObservations, columns: None, keys: Keys::These(&ids) },
         read::Read::all(TableId::NavalResultCountries),

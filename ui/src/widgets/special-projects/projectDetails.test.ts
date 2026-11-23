@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { REWARDS_PANEL, detailsStructure, detailTexts, effectsRead, optionEffects, rewardsStructure, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData.ts';
-import { panelViews } from '../../draw/panels/views.ts';
-import { Followed } from '../../draw/followed.ts';
+import { panelViews, readingStructure } from '../../draw/panels/views.ts';
 import type { ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects } from '../../generated/dashboard';
 
 const person = { assigned: true, id: 7, name: 'Scientist', portrait: null, missing: null };
@@ -119,20 +118,32 @@ test('a daily read moves only painted texts: only the open reward join is given 
   assert.equal(detailTexts(unread).get('s:7:state'), 'State unavailable');
 });
 
-test('a project read alone sends the page a structure only for the open reward join, never the inline details', () => {
-  const updates = (product: string) => {
-    const followed = new Followed(() => {});
-    followed.add(1, 'a', product); followed.bind('a', 1, 1);
-    let led = 0;
-    for (let hour = 24; hour < 84; hour++) {
-      const data = { ...reply, hour, projects: [{ ...reply.projects[0], readHour: hour, historyReadHour: hour - 1 }] };
-      followed.land([{ kind: 'panels', batch: { route: 1, clock: 0, seek: 1, completed: hour,
-        panels: [{ id: 1, hour, stepped: true, panel: { data, refused: null } }] } }], message => { if (message.type === 'structureLead') led += message.updates.length; });
-      followed.drain(hour);
-      led += [...followed.structures(true)].length;
-    }
-    return led;
+const structureChanges = (product: string, replies: readonly unknown[]) => {
+  const structure = readingStructure(product)!;
+  let held: string | undefined, changes = 0;
+  replies.forEach((data, at) => {
+    const next = structure({ data, refused: null }, at);
+    if (next !== held) changes++;
+    held = next;
+  });
+  return changes;
+};
+
+test('a project read alone changes the structure only of the open reward join, never of the inline details', () => {
+  const reads = Array.from({ length: 60 }, (_, at) => ({ ...reply, hour: 24 + at, projects: [{ ...reply.projects[0], readHour: 24 + at, historyReadHour: 23 + at }] }));
+  assert.equal(structureChanges('special-project-details', reads), 1, 'sixty frames of new project reads update the inline details once, as they first arrive');
+  assert.equal(structureChanges(REWARDS_PANEL, reads), 60, 'the open pop-up is given every read it joins on');
+});
+
+test('a changed effects, stats or pending reward reply changes its structure, and an unchanged one keeps it', () => {
+  const runs = (text: string) => [{ kind: 'text', text, tone: null }];
+  const effects = (text: string) => ({ runs: runs(text), refusals: {} });
+  const replies: Record<string, (text: string) => unknown> = {
+    'technology-effects': text => ({ hour: 1, runs: runs(text), refusals: {}, unavailable: null, warnings: [] }),
+    'content-entity-stats': text => ({ kind: 'equipment', token: 'rifle', stats: [{ label: runs('Attack'), value: runs(text), source: null }], refusals: {}, unavailable: null, warnings: [] }),
+    'special-project-effects': text => ({ hour: 1, readHour: 1, output: effects('output'), pending: { reward: 'mod_reward', ordinal: 0, options: [{ token: 'mod_option', effects: effects(text) }] }, unavailable: null, warnings: [] }),
   };
-  assert.equal(updates('special-project-details'), 1, 'sixty frames of new project reads update the inline details once, as they first arrive');
-  assert.equal(updates(REWARDS_PANEL), 60, 'the open pop-up is given every read it joins on');
+  for (const [product, reply] of Object.entries(replies)) {
+    assert.equal(structureChanges(product, [reply('first'), reply('first'), reply('changed')]), 2, product);
+  }
 });

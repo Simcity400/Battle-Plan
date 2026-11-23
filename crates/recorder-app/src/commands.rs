@@ -6,7 +6,7 @@ use crate::{
     startup,
     worker::{Recorder, recordings_changed, save_folder},
 };
-use replay::{recorder_settings::NextLoad, recorder_settings::RecorderSettings};
+use replay_settings::recorder_settings::{NextLoad, RecorderSettings};
 use replay_data::identity::is_campaign_uuid;
 use replay_data::scope::CaptureMode;
 use serde::{Deserialize, Serialize};
@@ -125,7 +125,7 @@ pub struct SettingsPatch {
     start_with_windows: Option<bool>,
     start_with_replay: Option<bool>,
     capture_mode: Option<String>,
-    compression: Option<replay::compression::Compression>,
+    compression: Option<replay_settings::compression::Compression>,
     auto_compress: Option<bool>,
 }
 
@@ -421,7 +421,7 @@ fn recording_file(path: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(path)
         .canonicalize()
         .map_err(|error| format!("Couldn’t find that recording: {path}: {error}"))?;
-    if !path.is_file() || !replay::recording_files::is_recording(&path) {
+    if !path.is_file() || !replay_files::recording_files::is_recording(&path) {
         return Err("Choose a BattlePlan recording.".into());
     }
     Ok(plain_path(path))

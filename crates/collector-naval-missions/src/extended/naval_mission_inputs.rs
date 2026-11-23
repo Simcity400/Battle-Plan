@@ -268,26 +268,6 @@ pub struct Captured {
     ledger_sequence: fn(usize) -> Option<(u64, u64)>,
 }
 
-#[cfg(not(any(test, feature = "test-support")))]
-fn default_sequence() -> fn(usize) -> Option<(u64, u64)> {
-    collector_observers::naval_tree_changes::sequence
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn default_sequence() -> fn(usize) -> Option<(u64, u64)> {
-    |_| Some((1, 0))
-}
-
-#[cfg(not(any(test, feature = "test-support")))]
-fn default_ledger_sequence() -> fn(usize) -> Option<(u64, u64)> {
-    collector_missions::naval_map_changes::ledger_token
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn default_ledger_sequence() -> fn(usize) -> Option<(u64, u64)> {
-    |_| None
-}
-
 fn elapsed(started: i64) -> u64 {
     qpc().saturating_sub(started).max(0) as u64
 }
@@ -456,8 +436,8 @@ impl Captured {
             selection: SliceSelection::new(),
             witness: Vec::new(),
             ledger_counts: LedgerCounts::default(),
-            sequence: default_sequence(),
-            ledger_sequence: default_ledger_sequence(),
+            sequence: collector_observers::naval_tree_changes::sequence,
+            ledger_sequence: collector_missions::naval_map_changes::ledger_token,
         }
     }
 
@@ -664,7 +644,7 @@ impl Captured {
             hour,
             force_full,
             fingerprints,
-            LedgerSkip::NEVER,
+            LedgerSkip { enabled: false },
         )
     }
 

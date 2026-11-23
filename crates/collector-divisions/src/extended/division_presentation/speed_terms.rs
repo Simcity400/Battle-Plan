@@ -121,25 +121,18 @@ struct HeldCrossings {
     answers: std::collections::HashMap<(u32, u32), Option<u8>>,
     charge: collector_primitives::raw_memory::Charge,
 }
-#[cfg(not(any(test, feature = "test-support")))]
 static HELD_CROSSINGS: Mutex<Option<HeldCrossings>> = Mutex::new(None);
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    static HELD_CROSSINGS: Mutex<Option<HeldCrossings>> = const { Mutex::new(None) };
-}
 
-fn held_crossings<R>(visit: impl FnOnce(&mut HeldCrossings) -> R) -> R {
-    let with = |slot: &Mutex<Option<HeldCrossings>>| {
-        visit(
-            slot.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get_or_insert_with(HeldCrossings::default),
-        )
-    };
-    #[cfg(not(any(test, feature = "test-support")))]
-    return with(&HELD_CROSSINGS);
-    #[cfg(any(test, feature = "test-support"))]
-    HELD_CROSSINGS.with(with)
+fn held_crossings<R>(
+    cache: &Mutex<Option<HeldCrossings>>,
+    visit: impl FnOnce(&mut HeldCrossings) -> R,
+) -> R {
+    visit(
+        cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_with(HeldCrossings::default),
+    )
 }
 
 #[derive(Default)]
@@ -1238,12 +1231,23 @@ impl SpeedTerms {
         game: usize,
         countries: &Result<ccountry::Reader<'_, impl Memory>, &'static str>,
     ) -> Outcome {
+        self.capture_rivers_using(memory, base, game, countries, &HELD_CROSSINGS)
+    }
+
+    fn capture_rivers_using(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game: usize,
+        countries: &Result<ccountry::Reader<'_, impl Memory>, &'static str>,
+        cache: &Mutex<Option<HeldCrossings>>,
+    ) -> Outcome {
         if !self.movers.iter().any(|mover| mover.land == Ok(true)) {
             return self.finish(Ok(0), 3);
         }
         let mut crossings = std::mem::take(&mut self.crossings);
         let ready = crossings.begin(memory, base, game);
-        let result = held_crossings(|held| {
+        let result = held_crossings(cache, |held| {
             let world = collector_lifetime::world_lifetime::generation();
             if held.world != Some(world) || world == u64::MAX {
                 held.answers.clear();

@@ -8,10 +8,8 @@ use dashboard_query::{
     log::{self, Cell, Row},
     read,
 };
-use replay::{
-    columnar_frames::{Recording, available, complete},
-    lanes::StatusRun,
-};
+use replay_recording::columnar_frames::{Recording, available, complete};
+use replay_lanes::lanes::StatusRun;
 use replay_columnar::{manifest::Status, summary};
 use replay_data::rows::{AirLossTotalRow, BombingTotalRow, BuildingBombingDamageCause, TableId};
 use serde::{Deserialize, Serialize};

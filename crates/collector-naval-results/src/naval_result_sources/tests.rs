@@ -6,12 +6,6 @@ use engine_naval_history::cnaval_combat_results;
 static SERIAL: Mutex<()> = Mutex::new(());
 static FORWARDED: AtomicUsize = AtomicUsize::new(0);
 static PROBE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
-thread_local! {
-    static OWNER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-pub(super) fn owns_observation() -> bool {
-    OWNER.get()
-}
 
 pub fn with_active_observer(check: impl FnOnce()) {
     let call = Call::enter(0);
@@ -27,14 +21,12 @@ impl Observation {
         let serial = SERIAL
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        OWNER.set(true);
         Self { _serial: serial }
     }
 }
 impl Drop for Observation {
     fn drop(&mut self) {
         ENABLED.store(false, Ordering::SeqCst);
-        OWNER.set(false);
     }
 }
 
@@ -324,7 +316,21 @@ fn worker_drain_grows_empty_and_recycled_storage_for_every_owned_source() {
                 }
             });
         }
-        assert_eq!(drain(&mut output), Ok(count));
+        std::thread::scope(|threads| {
+            threads
+                .spawn(|| {
+                    assert_eq!(drain(&mut output), Ok(count));
+                    boundary(clock(12, 1));
+                    assert_eq!(CLOCK.lock().unwrap().unwrap().hour, 12);
+                    lost_drain();
+                    assert_eq!(
+                        drain(&mut output),
+                        Err("naval result sources lost observation; interval unavailable")
+                    );
+                })
+                .join()
+                .unwrap();
+        });
         assert_eq!(output[count - 1].id, count as u64);
         assert_eq!(output[count - 1].result, (count as u64) << 32 | 0x46);
     }
@@ -514,20 +520,27 @@ fn lost_interval_recovers_partial_then_complete_without_resetting_ids() {
 
 #[test]
 fn foreign_capture_and_decode_calls_cannot_mutate_observation_test_globals() {
-    let _observation = Observation::new();
-    setup(1, 0);
-    store().lock().unwrap().entries.push(Entry::default());
-    let lost = LOST.load(Ordering::Relaxed);
-    std::thread::spawn(|| {
+    const TEST: &str = "naval_result_sources::tests::foreign_capture_and_decode_calls_cannot_mutate_observation_test_globals";
+    const CHILD: &str = "BATTLEPLAN_NAVAL_OBSERVER_ISOLATION_TEST";
+    if std::env::var_os(CHILD).is_some() {
         lost_drain();
         boundary(clock(20, 2));
         assert_eq!(
             drain(&mut vec![Entry::default(); 1]).unwrap_err(),
             "naval result sources hooks unavailable (see status unhooked)"
         );
-    })
-    .join()
-    .unwrap();
+        return;
+    }
+    let _observation = Observation::new();
+    setup(1, 0);
+    store().lock().unwrap().entries.push(Entry::default());
+    let lost = LOST.load(Ordering::Relaxed);
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", TEST, "--nocapture"])
+        .env(CHILD, "1")
+        .status()
+        .unwrap();
+    assert!(status.success());
     assert_eq!(LOST.load(Ordering::Relaxed), lost);
     assert!(LOG.is_empty());
     assert!(CLOCK.lock().unwrap().is_none());

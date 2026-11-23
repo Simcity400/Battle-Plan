@@ -648,14 +648,10 @@ fn v1_published_supply_health_is_withheld_by_dashboard_query() {
         Definitions,
         definitions::{Define, Form},
     };
-    use replay::{
-        campaign::{Records, Replay},
-        columnar_file::{FileWriter, HourWriter, Settings},
-        columnar_frames::{
-            schema,
-            synthetic::{Input, Sample, Synthetic},
-        },
-    };
+    use replay_recording::{records::Records, schema::schema};
+    use replay::campaign::Replay;
+    use replay_journal::{columnar_file::{FileWriter, HourWriter}, synthetic::{Input, Sample, Synthetic}};
+    use replay_settings::compression::Settings;
     use replay_columnar::{
         container::{self, SectionKey, Tags},
         envelope::{self, Kind},
@@ -818,7 +814,7 @@ fn v1_published_supply_health_is_withheld_by_dashboard_query() {
 
     assert!(line.rank_at_by(first + 2, 5, false).unwrap().is_empty());
 
-    let top_err = replay::lanes::top(
+    let top_err = replay_lanes::lanes::top(
         replay.recording(),
         0,
         TableId::SupplyHealth,
@@ -827,13 +823,13 @@ fn v1_published_supply_health_is_withheld_by_dashboard_query() {
         last,
         2,
         5,
-        replay::lanes::By::Last,
+        replay_lanes::lanes::By::Last,
     )
     .unwrap_err();
     assert!(
         matches!(
-            replay::columnar_frames::Damage::of(&top_err).map(|damage| &damage.scope),
-            Some(replay::columnar_frames::DamageScope::Withheld { table }) if *table == TableId::SupplyHealth.index() as u32
+            replay_recording::columnar_frames::Damage::of(&top_err).map(|damage| &damage.scope),
+            Some(replay_recording::columnar_frames::DamageScope::Withheld { table }) if *table == TableId::SupplyHealth.index() as u32
         ),
         "lanes::top must withhold unmarked v1 SupplyHealth: {top_err}"
     );
@@ -859,14 +855,10 @@ fn resumed_v1_to_v2_supply_health_admits_v2_and_withholds_v1_and_spanning_bin() 
         Definitions,
         definitions::{Define, Form},
     };
-    use replay::{
-        campaign::{Records, Replay},
-        columnar_file::{FileWriter, HourWriter, Resumed, Settings},
-        columnar_frames::{
-            Damage, DamageScope, schema,
-            synthetic::{Input, Sample, Synthetic},
-        },
-    };
+    use replay_recording::{records::Records, columnar_frames::{Damage, DamageScope}, schema::schema};
+    use replay::campaign::Replay;
+    use replay_journal::{columnar_file::{FileWriter, HourWriter, Resumed}, synthetic::{Input, Sample, Synthetic}};
+    use replay_settings::compression::Settings;
     use replay_columnar::{
         container::{self, SectionKey, Tags},
         envelope::{self, Kind},
@@ -1016,7 +1008,7 @@ fn resumed_v1_to_v2_supply_health_admits_v2_and_withholds_v1_and_spanning_bin() 
     assert!(line.rank_at_by(last_v1, 5, false).unwrap().is_empty());
     assert_eq!(line.rank_at_by(first_v2, 5, false).unwrap(), vec!["GER"]);
 
-    let v1_top = replay::lanes::top(replay.recording(), 0, TableId::SupplyHealth, 0, first_v1, last_v1, 2, 5, replay::lanes::By::Last).unwrap_err();
+    let v1_top = replay_lanes::lanes::top(replay.recording(), 0, TableId::SupplyHealth, 0, first_v1, last_v1, 2, 5, replay_lanes::lanes::By::Last).unwrap_err();
     assert!(
         matches!(
             Damage::of(&v1_top).map(|damage| &damage.scope),
@@ -1024,7 +1016,7 @@ fn resumed_v1_to_v2_supply_health_admits_v2_and_withholds_v1_and_spanning_bin() 
         ),
         "v1 run must be withheld by lanes::top: {v1_top}"
     );
-    let v2_top = replay::lanes::top(replay.recording(), 1, TableId::SupplyHealth, 0, first_v2, last_v2, 2, 5, replay::lanes::By::Last).unwrap();
+    let v2_top = replay_lanes::lanes::top(replay.recording(), 1, TableId::SupplyHealth, 0, first_v2, last_v2, 2, 5, replay_lanes::lanes::By::Last).unwrap();
     assert!(v2_top.iter().any(|bin| !bin.is_empty()), "v2 run must be admitted by lanes::top: {v2_top:?}");
 
     let (summary, missing) = line.summary("GER", first_v1, last_v2, 4).unwrap();
@@ -1075,7 +1067,7 @@ fn resumed_v1_to_v2_supply_health_admits_v2_and_withholds_v1_and_spanning_bin() 
     let mid_run_bytes = rewritten.into_inner().into_inner();
 
     let mid_replay = Replay::open(mid_run_bytes).unwrap();
-    let mid_top = replay::lanes::top(mid_replay.recording(), 0, TableId::SupplyHealth, 0, first_v1, last_v2, 4, 5, replay::lanes::By::Last).unwrap();
+    let mid_top = replay_lanes::lanes::top(mid_replay.recording(), 0, TableId::SupplyHealth, 0, first_v1, last_v2, 4, 5, replay_lanes::lanes::By::Last).unwrap();
     assert_eq!(mid_top.len(), 5, "{mid_top:?}");
     assert!(mid_top[0].is_empty() && mid_top[1].is_empty() && mid_top[2].is_empty(), "v1 and spanning bins must be empty in mid-run lanes::top: {mid_top:?}");
     assert!(!mid_top[3].is_empty() && !mid_top[4].is_empty(), "pure v2 bins must be admitted in mid-run lanes::top: {mid_top:?}");
@@ -1100,14 +1092,14 @@ fn resumed_v1_to_v2_supply_health_admits_v2_and_withholds_v1_and_spanning_bin() 
     assert_eq!(mid_missing.len(), 1);
     assert_eq!((mid_missing[0].first_hour, mid_missing[0].last_hour), (first_v1, last_v1));
 
-    let mid_chart = replay::lanes::chart_at(mid_replay.recording(), 0, TableId::SupplyHealth, 0, None, first_v1, last_v2, 0, 6).unwrap();
+    let mid_chart = replay_lanes::lanes::chart_at(mid_replay.recording(), 0, TableId::SupplyHealth, 0, None, first_v1, last_v2, 0, 6).unwrap();
     let row = mid_chart.keys.iter().position(|&k| k == 7).unwrap();
     assert_eq!(mid_chart.values(row)[3].hours, 6, "6h bin [114,119] must not be double-counted: {:?}", mid_chart.values(row)[3]);
     assert_eq!(mid_chart.life(row)[3], 6, "6h bin [114,119] life must be 6: {:?}", mid_chart.life(row));
     assert_eq!(mid_chart.values(row)[4].hours, 4, "4h bin [120,123] must not be double-counted: {:?}", mid_chart.values(row)[4]);
     assert_eq!(mid_chart.life(row)[4], 4, "4h bin [120,123] life must be 4: {:?}", mid_chart.life(row));
 
-    let v2_edge_chart = replay::lanes::chart_at(mid_replay.recording(), 0, TableId::SupplyHealth, 0, None, first_v2, last_v2, 0, 6).unwrap();
+    let v2_edge_chart = replay_lanes::lanes::chart_at(mid_replay.recording(), 0, TableId::SupplyHealth, 0, None, first_v2, last_v2, 0, 6).unwrap();
     let row = v2_edge_chart.keys.iter().position(|&k| k == 7).unwrap();
     assert_eq!(v2_edge_chart.values(row)[0].hours, 2, "leading walked v2 hours [112,113]: {:?}", v2_edge_chart.values(row)[0]);
     assert_eq!(v2_edge_chart.life(row)[0], 2);
@@ -1116,8 +1108,8 @@ fn resumed_v1_to_v2_supply_health_admits_v2_and_withholds_v1_and_spanning_bin() 
     assert_eq!(v2_edge_chart.values(row)[2].hours, 4, "stored v2 bin [120,123]: {:?}", v2_edge_chart.values(row)[2]);
     assert_eq!(v2_edge_chart.life(row)[2], 4);
 
-    let reads = [replay::at::Read::all(TableId::SupplyHealth)];
-    let mut cursor = replay::at::Cursor::new(mid_replay.recording(), &reads).unwrap();
+    let reads = [replay_lanes::at::Read::all(TableId::SupplyHealth)];
+    let mut cursor = replay_lanes::at::Cursor::new(mid_replay.recording(), &reads).unwrap();
     let at_v1 = cursor.frame(0, last_v1).unwrap();
     assert!(
         matches!(&*at_v1.tables[TableId::SupplyHealth.index()], replay_frame::frame::TableView::Unavailable { reason } if reason.contains("SupplyHealth")),
@@ -1184,14 +1176,10 @@ fn wholly_v2_top_query_does_not_rank_earlier_peak_before_from() {
         Definitions,
         definitions::{Define, Form},
     };
-    use replay::{
-        campaign::{Records, Replay},
-        columnar_file::{FileWriter, HourWriter, Settings},
-        columnar_frames::{
-            schema,
-            synthetic::{Input, Sample, Synthetic},
-        },
-    };
+    use replay_recording::{records::Records, schema::schema};
+    use replay::campaign::Replay;
+    use replay_journal::{columnar_file::{FileWriter, HourWriter}, synthetic::{Input, Sample, Synthetic}};
+    use replay_settings::compression::Settings;
     use replay_columnar::{
         container::{self, SectionKey, Tags},
         envelope::{self, Kind},
@@ -1329,12 +1317,12 @@ fn wholly_v2_top_query_does_not_rank_earlier_peak_before_from() {
     let mixed = rewritten.into_inner().into_inner();
 
     let replay = Replay::open(mixed).unwrap();
-    let top = replay::lanes::top(replay.recording(), 0, TableId::SupplyHealth, 0, 166, 189, 2, 1, replay::lanes::By::Max).unwrap();
+    let top = replay_lanes::lanes::top(replay.recording(), 0, TableId::SupplyHealth, 0, 166, 189, 2, 1, replay_lanes::lanes::By::Max).unwrap();
     assert_eq!(top[0].len(), 1, "{top:?}");
     assert_eq!(top[0][0].0, 8, "earlier peak in 156..=161 must not win By::Max for 166..=189: {top:?}");
     assert_eq!(top[0][0].1.max, 1, "{top:?}");
 
-    let edge_top = replay::lanes::top(replay.recording(), 0, TableId::SupplyHealth, 0, 112, 135, 2, 1, replay::lanes::By::Max).unwrap();
+    let edge_top = replay_lanes::lanes::top(replay.recording(), 0, TableId::SupplyHealth, 0, 112, 135, 2, 1, replay_lanes::lanes::By::Max).unwrap();
     assert_eq!(edge_top[0].len(), 1, "{edge_top:?}");
     assert_eq!(edge_top[0][0].0, 7, "valid v2 edge peak at hour 112 must win By::Max for 112..=135: {edge_top:?}");
     assert_eq!(edge_top[0][0].1.max, 3, "{edge_top:?}");
@@ -1346,14 +1334,10 @@ fn walked_edge_top_preserves_cross_piece_by_last_order() {
         Definitions,
         definitions::{Define, Form},
     };
-    use replay::{
-        campaign::{Records, Replay},
-        columnar_file::{FileWriter, HourWriter, Settings},
-        columnar_frames::{
-            schema,
-            synthetic::{Input, Sample, Synthetic},
-        },
-    };
+    use replay_recording::{records::Records, schema::schema};
+    use replay::campaign::Replay;
+    use replay_journal::{columnar_file::{FileWriter, HourWriter}, synthetic::{Input, Sample, Synthetic}};
+    use replay_settings::compression::Settings;
     use replay_columnar::{
         container::{self, SectionKey, Tags},
         envelope::{self, Kind},
@@ -1487,8 +1471,8 @@ fn walked_edge_top_preserves_cross_piece_by_last_order() {
     let mixed = rewritten.into_inner().into_inner();
 
     let replay = Replay::open(mixed).unwrap();
-    let stored_only = replay::lanes::top(replay.recording(), 0, TableId::SupplyHealth, 0, 822, 1545, 120, 1, replay::lanes::By::Last).unwrap();
-    let walked_edge = replay::lanes::top(replay.recording(), 0, TableId::SupplyHealth, 0, 820, 1545, 121, 1, replay::lanes::By::Last).unwrap();
+    let stored_only = replay_lanes::lanes::top(replay.recording(), 0, TableId::SupplyHealth, 0, 822, 1545, 120, 1, replay_lanes::lanes::By::Last).unwrap();
+    let walked_edge = replay_lanes::lanes::top(replay.recording(), 0, TableId::SupplyHealth, 0, 820, 1545, 121, 1, replay_lanes::lanes::By::Last).unwrap();
     assert_eq!(stored_only[119].len(), 1, "{:?}", stored_only[119]);
     assert_eq!(stored_only[119][0].0, 8, "stored-only cross-piece bin 1536..=1541 must rank FRA first: {:?}", stored_only[119]);
     assert_eq!(stored_only[119][0].1.last, 2, "{:?}", stored_only[119]);
@@ -1506,14 +1490,10 @@ fn negative_hours_mixed_chart_does_not_double_count_six_hour_bin() {
         Definitions,
         definitions::{Define, Form},
     };
-    use replay::{
-        campaign::{Records, Replay},
-        columnar_file::{FileWriter, HourWriter, Settings},
-        columnar_frames::{
-            schema,
-            synthetic::{Input, Sample, Synthetic},
-        },
-    };
+    use replay_recording::{records::Records, schema::schema};
+    use replay::campaign::Replay;
+    use replay_journal::{columnar_file::{FileWriter, HourWriter}, synthetic::{Input, Sample, Synthetic}};
+    use replay_settings::compression::Settings;
     use replay_columnar::{
         container::{self, SectionKey, Tags},
         envelope::{self, Kind},
@@ -1628,7 +1608,7 @@ fn negative_hours_mixed_chart_does_not_double_count_six_hour_bin() {
     let mixed = rewritten.into_inner().into_inner();
 
     let replay = Replay::open(mixed).unwrap();
-    let chart = replay::lanes::chart_at(replay.recording(), 0, TableId::SupplyHealth, 0, None, first, last, 0, 6).unwrap();
+    let chart = replay_lanes::lanes::chart_at(replay.recording(), 0, TableId::SupplyHealth, 0, None, first, last, 0, 6).unwrap();
     let row = chart.keys.iter().position(|&k| k == 7).unwrap();
     assert_eq!(chart.values(row)[0].hours, 0);
     assert_eq!(chart.values(row)[1].hours, 0);
@@ -1644,14 +1624,10 @@ fn damaged_derived_version_marker_withholds_table_without_failing_open() {
         Definitions,
         definitions::{Define, Form},
     };
-    use replay::{
-        campaign::{Records, Replay},
-        columnar_file::{FileWriter, HourWriter, Settings},
-        columnar_frames::{
-            DamageScope, schema,
-            synthetic::{Input, Sample, Synthetic},
-        },
-    };
+    use replay_recording::{records::Records, columnar_frames::DamageScope, schema::schema};
+    use replay::campaign::Replay;
+    use replay_journal::{columnar_file::{FileWriter, HourWriter}, synthetic::{Input, Sample, Synthetic}};
+    use replay_settings::compression::Settings;
     use replay_columnar::{
         container::{self, SectionKey, Tags},
         envelope::{self, Kind},
@@ -1765,7 +1741,7 @@ fn damaged_derived_version_marker_withholds_table_without_failing_open() {
         "{:?}",
         corrupted.recording().damage()
     );
-    let countries_snap = replay::lanes::at(corrupted.recording(), 0, TableId::Countries, first, None).unwrap();
+    let countries_snap = replay_lanes::lanes::at(corrupted.recording(), 0, TableId::Countries, first, None).unwrap();
     assert_eq!(countries_snap.rows.len(), 1);
 
     let mut out_of_range = replay_columnar::leaf::Writer::new();
@@ -1777,6 +1753,6 @@ fn damaged_derived_version_marker_withholds_table_without_failing_open() {
         "{:?}",
         invalid_boundary.recording().withheld()
     );
-    let countries_snap = replay::lanes::at(invalid_boundary.recording(), 0, TableId::Countries, first, None).unwrap();
+    let countries_snap = replay_lanes::lanes::at(invalid_boundary.recording(), 0, TableId::Countries, first, None).unwrap();
     assert_eq!(countries_snap.rows.len(), 1);
 }

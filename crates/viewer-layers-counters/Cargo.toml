@@ -18,6 +18,9 @@ test-support = [
     "replay-data/test-support",
     "replay-derive/test-support",
     "viewer-counters/test-support",
+    "viewer-counter-kit/test-support",
+    "viewer-counters-land/test-support",
+    "viewer-counters-naval/test-support",
     "viewer-engagements/test-support",
     "viewer-foundation/test-support",
     "viewer-gpu/test-support",
@@ -28,6 +31,9 @@ test-support = [
 ]
 
 [dependencies]
+viewer-counter-kit.workspace = true
+viewer-counters-land.workspace = true
+viewer-counters-naval.workspace = true
 content-reader-core = { workspace = true }
 dashboard-text = { workspace = true }
 engine-executable = { workspace = true }
@@ -36,7 +42,7 @@ replay-columnar = { workspace = true }
 replay-data = { workspace = true }
 replay-derive = { workspace = true }
 serde_json = { workspace = true }
-viewer-counters = { path = "../viewer-counters" }
+viewer-counters.workspace = true
 viewer-engagements = { workspace = true }
 viewer-foundation = { workspace = true }
 viewer-gpu = { workspace = true }
@@ -47,7 +53,7 @@ viewer-unit-reads = { workspace = true }
 
 [dev-dependencies]
 engine-heap = { workspace = true }
-replay = { workspace = true, features = ["test-support"] }
+replay-recording.workspace = true
 synthetic-game = { workspace = true }
 viewer-layers-counters = { workspace = true, features = ["test-support"] }
 
@@ -65,8 +71,10 @@ content-reader-weather = { workspace = true, features = ["test-support"] }
 dashboard-effects = { workspace = true, features = ["test-support"] }
 map-content = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
+replay-tools = { workspace = true, features = ["default", "journal"] }
 test-unify = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }
@@ -78,7 +86,6 @@ unify-windows = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }
 viewer-map-icons = { workspace = true, features = ["test-support"] }
-viewer-native-gui = { workspace = true, features = ["test-support"] }
 viewer-scene-base = { workspace = true, features = ["test-support"] }
 viewer-terrain = { workspace = true, features = ["test-support"] }
 viewer-unit-history = { workspace = true, features = ["test-support"] }

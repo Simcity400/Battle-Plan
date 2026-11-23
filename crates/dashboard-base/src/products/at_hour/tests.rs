@@ -124,7 +124,7 @@ fn frame(hour: i32) -> DecodedFrame {
 fn recording() -> (Source, Arc<dyn Pages>) {
     let frames = (FIRST..=LAST).map(frame).collect();
     let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
-    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let source = Source::from_replay(crate::SourceKey { source_id: "at-hour".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     (source, pages)
 }
@@ -843,10 +843,10 @@ fn a_table_read_in_part_is_the_rows_its_hour_read_on_every_path() {
         })
         .collect();
     let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
-    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let source = Source::from_replay(crate::SourceKey { source_id: "at-hour-partly".into(), revision: "1".into() }, "partly.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let recorded = |hour: i32| {
-        let frame = replay::at::frame(source.replay_ref().recording(), 0, hour, &[replay::at::Read::all(TableId::CountryResources)]).unwrap();
+        let frame = replay_lanes::at::frame(source.replay_ref().recording(), 0, hour, &[replay_lanes::at::Read::all(TableId::CountryResources)]).unwrap();
         let (keys, missing) = partly_held(frame.tables[TableId::CountryResources.index()].held());
         (json!(keys), json!(missing))
     };

@@ -3,6 +3,10 @@ import type { CSSProperties, HTMLAttributes, ReactNode, RefObject } from 'react'
 import { flushSync } from 'react-dom';
 import { VirtualListIndex } from './virtualListIndex';
 
+function sameList<T>(held: readonly T[], next: readonly T[]): readonly T[] {
+  return held.length === next.length && held.every((value, at) => value === next[at]) ? held : next;
+}
+
 function focusables(node: HTMLElement) {
   return [...node.querySelectorAll<HTMLElement>('*')].filter(target => {
     if (target.tabIndex < 0 || target.matches(':disabled, input[type="hidden"]') || target.closest('[inert]')) return false;
@@ -40,7 +44,8 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
   const sequential = useRef<{ key: string; target: HTMLElement; keys: readonly string[]; gap: number; pointer?: boolean } | null>(null);
   const [resume, setResume] = useState<string | null>(null);
   const resuming = useRef(false);
-  const keys = useMemo(() => items.map(itemKey), [items]);
+  const keysHeld = useRef<readonly string[]>([]);
+  const keys = useMemo(() => keysHeld.current = sameList(keysHeld.current, items.map(itemKey)), [items]);
   const positions = useMemo(() => new Map(keys.map((key, at) => [key, at])), [keys]);
   useLayoutEffect(() => {
     const cursor = sequential.current;
@@ -56,11 +61,12 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
     }
     cursor.keys = keys;
   }, [keys, positions]);
+  const eligibleHeld = useRef<readonly number[]>([]);
   const eligible = useMemo(() => {
     if (!isInteractive) return null;
     const positions: number[] = [];
     items.forEach((item, at) => { if (isInteractive(item, at)) positions.push(at); });
-    return positions;
+    return eligibleHeld.current = sameList(eligibleHeld.current, positions);
   }, [items, isInteractive]);
   const destination = (at: number, direction: 1 | -1) => {
     if (!eligible) return at >= 0 && at < items.length ? at : null;
@@ -106,6 +112,20 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
       const pending = restoring.get(node) ?? new Set<HTMLDetailsElement>();
       pending.add(details); restoring.set(node, pending); details.open = open;
     });
+  };
+  const restoreLatest = useRef(restoreDetails);
+  restoreLatest.current = restoreDetails;
+  const rowRefs = useRef(new Map<string, (node: HTMLLIElement | null) => void>());
+  const rowRef = (key: string) => {
+    const ref = rowRefs.current.get(key);
+    if (ref) return ref;
+    const attach = (node: HTMLLIElement | null) => {
+      const old = nodes.current.get(key); if (old) observer.current?.unobserve(old);
+      if (node) { rowRefs.current.set(key, attach); nodes.current.set(key, node); observer.current?.observe(node); restoreLatest.current(node); }
+      else { nodes.current.delete(key); if (rowRefs.current.get(key) === attach) rowRefs.current.delete(key); }
+    };
+    rowRefs.current.set(key, attach);
+    return attach;
   };
   const gapShown = useRef(0);
   const index = useMemo(() => {
@@ -338,14 +358,7 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
     } }}>
     {visible.map(at => <li key={keys[at]} {...rowProps?.(items[at], at)} data-virtual-index={at} data-virtual-key={keys[at]} aria-setsize={items.length} aria-posinset={at + 1}
       style={flow ? undefined : { position: 'absolute', top: rowOffset + index.offset(at), left: padding.left, right: padding.right }}
-      ref={node => {
-        const key = keys[at], old = nodes.current.get(key); if (old) observer.current?.unobserve(old);
-        if (node) {
-          nodes.current.set(key, node); observer.current?.observe(node);
-          restoreDetails(node);
-        }
-        else nodes.current.delete(key);
-      }}
+      ref={rowRef(keys[at])}
       onFocusCapture={event => {
         setFocus(keys[at]); setResume(null);
         sequential.current = { key: keys[at], target: event.target as HTMLElement, keys, gap: at };

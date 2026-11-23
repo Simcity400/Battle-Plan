@@ -1,23 +1,30 @@
-import { readStream } from './pull.ts';
-import { FollowDecoder, type Release } from './follow/decode.ts';
-import type { FollowItem } from './follow/message';
+import { PUSH, readStream } from './pull.ts';
+import { charge, packet, resetStamps, splitForLanes } from './follow/split.ts';
+import { credits } from './credits.ts';
+import type { FromPull, ToPull } from '../draw/laneMessages';
+
+const CREDIT_EVERY_MS = 16;
 
 self.onmessage = ({ data }: MessageEvent<{ session: string; ports: MessagePort[] }>) => {
-  const { ports } = data;
-  const decoder = new FollowDecoder();
-  for (const port of ports) port.onmessage = ({ data }: MessageEvent<Release>) => decoder.release(data);
-  const failure = (reason: string): FollowItem => ({ kind: 'failure', reason });
-  void readStream({ session: data.session,
-    ready: () => self.postMessage('ready'), fail: reason => { for (const port of ports) port.postMessage([failure(reason)]); self.postMessage({ reason }); },
+  const { ports, session } = data;
+  const owed = credits(released => fetch(`${PUSH}credit?session=${encodeURIComponent(session)}&released=${released}`, { cache: 'no-store' }).then(reply => reply.ok),
+    run => setTimeout(run, CREDIT_EVERY_MS));
+  const credit = (bytes: number) => owed.owe(bytes);
+  for (const port of ports) port.onmessage = ({ data }: MessageEvent<ToPull>) => credit(data.release);
+  const all = (message: FromPull) => { for (const port of ports) port.postMessage(message); };
+  const stamp = resetStamps();
+  void readStream({ session,
+    ready: () => self.postMessage('ready'),
+    fail: reason => { all({ kind: 'failure', reason }); self.postMessage({ reason }); },
     answer: async buffers => {
-      const items = buffers.map(buffer => {
-        try { return decoder.item(buffer); } catch (error) { return failure(String(error)); }
-      });
-      const transfer = new Set<ArrayBuffer>();
-      for (const item of items) if (item.kind === 'followed') {
-        for (const { answer } of item.message.answers) if (answer.kind !== 'notRecorded') transfer.add(answer.views.u8.buffer as ArrayBuffer);
+      for (const buffer of buffers) {
+        let split, resets: number | undefined;
+        try { resets = stamp(new Uint8Array(buffer)); split = splitForLanes(new Uint8Array(buffer), ports.length); }
+        catch (error) { all({ kind: 'failure', reason: `A pushed message could not be read: ${error instanceof Error ? error.message : String(error)}` }); credit(charge(new Uint8Array(buffer))); continue; }
+        if (split.kind === 'failure') { all({ kind: 'failure', reason: split.reason }); continue; }
+        credit(split.header);
+        split.lanes.forEach((bytes, lane) => { if (bytes) ports[lane]!.postMessage(packet(split.kind, bytes, resets), [bytes.buffer]); });
       }
-      ports.forEach((port, at) => port.postMessage(items, at === ports.length - 1 ? [...transfer] : []));
     },
   });
 };

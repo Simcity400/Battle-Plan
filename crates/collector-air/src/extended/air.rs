@@ -1625,6 +1625,8 @@ pub use bases::{
     AirBasesMemoContext, AirBasesMemoReport, HeldSegment,
     copy_air_bases_refresh,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use bases::copy_air_bases_fixture;
 #[cfg(test)]
 use bases::{
     AIR_REGISTRATIONS_MASK, CarryRun, bases_pool_u32, bspan, copy_air_bases_pass, resolve_link,

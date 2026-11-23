@@ -1,4 +1,5 @@
-use replay::{campaign::Replay, campaign::SeekResult, spool::Record};
+use replay::campaign::{Replay, SeekResult};
+use replay_capture_spool::spool::Record;
 use replay_data::{
     rows::CountryLinkRow, rows::LandCombatRow, rows::LandCombatSideRow, rows::TableId,
     rows::TableRows,

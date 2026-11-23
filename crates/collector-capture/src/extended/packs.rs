@@ -21,7 +21,6 @@ use replay_data::rows::TableId;
 use std::mem::size_of;
 
 impl Captured {
-    #[cfg(any(test, not(feature = "test-support")))]
     pub(super) fn fail_missing_slow(&mut self, hour: i32, force_full: bool) {
         let mut packs = self.slow_spare.take().expect("slow spare present");
         self.swap_slow(&mut packs);
@@ -30,7 +29,6 @@ impl Captured {
         self.slow_spare = Some(packs);
         self.slow_refusal = Some("slow acquisition not supplied");
     }
-    #[cfg(not(any(test, feature = "test-support")))]
     pub(super) fn fail_missing_raid_state(&mut self, hour: i32, force_full: bool) {
         let mut packs = self
             .raid_state_spare
@@ -86,7 +84,6 @@ impl Captured {
         self.swap_stability(&mut packs);
         self.stability_spare = Some(packs);
     }
-    #[cfg(not(any(test, feature = "test-support")))]
     pub(super) fn fail_missing_raid_launch(&mut self, hour: i32, force_full: bool) {
         self.raid_launch_inputs.fail_capture(
             hour,
@@ -94,7 +91,6 @@ impl Captured {
             "raid launch acquisition not supplied",
         );
     }
-    #[cfg(not(any(test, feature = "test-support")))]
     pub(super) fn fail_missing_gated(&mut self, hour: i32, force_full: bool) {
         let mut packs = self.gated_spare.take().expect("gated spare present");
         self.swap_gated(&mut packs);
@@ -102,7 +98,6 @@ impl Captured {
         self.swap_gated(&mut packs);
         self.gated_spare = Some(packs);
     }
-    #[cfg(not(any(test, feature = "test-support")))]
     pub(super) fn fail_missing_late(&mut self, hour: i32, force_full: bool, orders: &mut Orders) {
         let mut packs = self.late_spare.take().expect("late spare present");
         self.swap_late(&mut packs, orders);

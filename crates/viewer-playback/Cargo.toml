@@ -11,6 +11,7 @@ doctest = false
 
 [features]
 test-support = [
+    "dep:replay-capture-spool",
     "dep:recorder-derive",
     "content-reader-core/test-support",
     "content-reader-country-names/test-support",
@@ -37,6 +38,9 @@ test-support = [
     "viewer-combat/test-support",
     "viewer-counter-products/test-support",
     "viewer-counters/test-support",
+    "viewer-counter-kit/test-support",
+    "viewer-counters-land/test-support",
+    "viewer-counters-naval/test-support",
     "viewer-engagements/test-support",
     "viewer-foundation/test-support",
     "viewer-gpu/test-support",
@@ -62,6 +66,10 @@ test-support = [
 ]
 
 [dependencies]
+replay-derive.workspace = true
+viewer-counter-kit.workspace = true
+viewer-counters-land.workspace = true
+viewer-counters-naval.workspace = true
 recorder-derive = { workspace = true, optional = true }
 content-reader-core = { workspace = true }
 content-reader-country-names = { workspace = true }
@@ -86,6 +94,8 @@ playhead = { path = "../playhead" }
 png = { workspace = true }
 pollster = { workspace = true }
 replay = { workspace = true }
+replay-capture-spool = { workspace = true, optional = true }
+replay-recording.workspace = true
 replay-columnar = { workspace = true }
 replay-data = { workspace = true }
 replay-frame = { workspace = true }
@@ -97,7 +107,7 @@ viewer-borders = { workspace = true }
 viewer-buildings = { workspace = true }
 viewer-combat = { path = "../viewer-combat" }
 viewer-counter-products = { path = "../viewer-counter-products" }
-viewer-counters = { path = "../viewer-counters" }
+viewer-counters.workspace = true
 viewer-engagements = { workspace = true }
 viewer-foundation = { workspace = true }
 viewer-gpu = { workspace = true }
@@ -123,6 +133,7 @@ viewer-world = { workspace = true }
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
+replay-capture-spool.workspace = true
 recorder-derive.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 content-reader-sound = { workspace = true, features = ["test-support"] }
@@ -142,8 +153,10 @@ content-reader-naval-path = { workspace = true, features = ["test-support"] }
 content-reader-weather = { workspace = true, features = ["test-support"] }
 dashboard-base = { workspace = true, features = ["export-types", "test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
+replay-tools = { workspace = true, features = ["default", "journal"] }
 test-unify = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }

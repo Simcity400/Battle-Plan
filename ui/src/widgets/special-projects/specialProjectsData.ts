@@ -372,3 +372,6 @@ export function historyTooltip(data: SpecialProjectsReply, id: string, span: Tim
   if (!run) return { title: latest ? data.presentations[latest.presentation].name : 'Special project', rows: [{ label: 'First recorded', value: dayLabel(project.firstRead) }], note: 'This project was not recorded at this hour.' };
   return projectTooltip(data, { project, run, info: data.presentations[run.presentation] }, at);
 }
+
+export const progressStyle = (progress: number, painted: boolean): Readonly<Record<string, number>> | undefined =>
+  painted ? undefined : { '--project-progress': Math.max(0, progress) / 100 };

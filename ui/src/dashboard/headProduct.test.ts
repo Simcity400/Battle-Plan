@@ -1,24 +1,30 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { headRead, headSource, headSubject, momentHour, retain, whenDue } from './headProduct.ts';
+import { headRead, headSubject, momentHour, retain, headKey } from './headProduct.ts';
 import type { BoundTrack, WidgetSpec } from './model';
-import { observeOnScreen } from './follow/useFollow.ts';
+import { observeOnScreen, screenHolder } from './follow/onScreen.ts';
 
 const track = { id: 'main', axisOffset: 10, branch: { id: 'b', firstHour: 100, lastHour: 500 } } as unknown as BoundTrack;
 const widget = (time: WidgetSpec['time']) => ({ kind: 'naval-yards', trackIds: ['main'], time }) as Pick<WidgetSpec, 'time' | 'kind' | 'trackIds'>;
 
-test('scrolling project details inside a visible widget keeps its follow', t => {
+test('content scrolled inside a visible widget, or replaced inside a pop-out, is watched by the container that outlives it', t => {
   let watched: Element | undefined;
   const placement = { closest: () => null } as unknown as Element;
-  const details = { closest: (selector: string) => selector === 'article.dash-widget' ? placement : null } as Element;
+  const inside = (container: string) => ({ closest: (selectors: string) => selectors.split(',').map(selector => selector.trim()).includes(container) ? placement : null }) as Element;
   const scope = globalThis as unknown as Record<string, unknown>;
   const before = [scope.IntersectionObserver, scope.getComputedStyle];
   t.after(() => { [scope.IntersectionObserver, scope.getComputedStyle] = before; });
   scope.IntersectionObserver = class { observe(e: Element) { watched = e; } disconnect() {} };
   scope.getComputedStyle = () => ({ display: 'block' });
-  const stop = observeOnScreen(details, () => {});
-  assert.equal(watched, placement);
-  stop();
+  for (const container of ['article.dash-widget', '[popover]']) {
+    watched = undefined;
+    const stop = observeOnScreen(inside(container), () => {});
+    assert.equal(watched, placement, `content inside ${container} is watched by it`);
+    assert.equal(screenHolder(inside(container)), placement, `a head keeps ${container} as its target, not content that may be replaced`);
+    stop();
+  }
+  const loose = inside('nothing');
+  assert.equal(screenHolder(loose), loose, 'content in no container is its own target');
 });
 
 test('a widget following playback is followed; pinned, on a range or hovered, it asks its own hour', () => {
@@ -38,17 +44,6 @@ test('an hour outside the recorded branch, or no track, asks nothing', () => {
   assert.equal(following.hourAt(50), null);
   assert.equal(following.hourAt(491), null);
   assert.equal(headRead(widget({ mode: 'follow' }), undefined, [], null).hourAt(200), null);
-});
-
-test('a followed panel whose first push has not landed is asked by the fallback’s clock, never held at an earlier hour', () => {
-  assert.equal(headSource(true, 'followed', false), 'fallback', 'a seek before the first push asks the hour sought');
-  assert.equal(headSource(true, 'followed', true), 'pushed');
-  assert.equal(headSource(true, 'pending', false), 'fallback');
-  assert.equal(headSource(true, 'unavailable', true), 'fallback');
-  assert.equal(headSource(true, 'off', false), 'asked', 'not watched yet, or with no element, it is asked as rendered');
-  assert.equal(headSource(true, 'off', false, true), 'idle', 'following but seen off screen, nothing is read for it, whatever renders around it');
-  assert.equal(headSource(false, 'off', false, true), 'asked', 'not following, its own hour is asked wherever it is');
-  assert.equal(headSource(false, 'followed', true), 'asked');
 });
 
 test('the reply shown while a newer hour loads is dated at the hour it was asked for', () => {
@@ -80,14 +75,7 @@ test('moving a dated pin backward clears the previous reply until the explicit t
   assert.equal(retain(later, client, 'projects', 'earlier header', 12, { exact: 12 })?.data, 'earlier header');
 });
 
-test('a future fallback reply wakes on its first eligible clock frame', () => {
-  let hour = 10, wakes = 0;
-  const frames = new Set<() => void>();
-  const stop = whenDue(14, () => hour, frame => { frames.add(frame); return () => frames.delete(frame); }, () => wakes++);
-  for (hour of [11, 13, 14, 16]) {
-    frames.forEach(frame => frame());
-    assert.equal(wakes, hour >= 14 ? 1 : 0);
-  }
-  assert.equal(frames.size, 0);
-  stop();
+test('review 8 4: a detail timed by its own hour owns its timing, and the card keeps one placement through its own pin', () => {
+  assert.notEqual(headKey('card', 0, 40), headKey('card', 0, null), 'a hovered detail never writes its pin into the followed parent');
+  assert.equal(headKey('card', 0, null), headKey('card', 0, null));
 });

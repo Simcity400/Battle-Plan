@@ -18,7 +18,7 @@ use std::{
         atomic::{AtomicU32, Ordering},
     },
 };
-use viewer_counters::map::counters::type_tint::{Index, Side};
+use viewer_counter_kit::type_tint::{Index, Side};
 
 #[derive(Default)]
 struct Memory {
@@ -70,7 +70,7 @@ fn column(table: TableId, field: &str) -> usize {
 }
 
 fn record(hours: u32, mut hour: impl FnMut(u32, &mut Store)) -> Units {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
     store.attach(Encoder::new(&kinds, Writing::at(3)).unwrap());
     let mut memory = Memory::default();

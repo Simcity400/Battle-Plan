@@ -247,7 +247,7 @@ impl Line {
             busiest.sort_by_key(|&(province, count)| (std::cmp::Reverse(count), province));
             cameras.extend(busiest.iter().filter_map(|&(province, _)| self.geometry.centroid(province)).take(CAMERAS).map(|center| Placement::map(center, NEAR).on(map, document.map_defines)));
         }
-        let settings = viewer_counters::map::counters::CounterSettings { color_mode: viewer_counters::map::counters::CounterColorMode::of(document.game_options.country_counter_colours), nato: document.game_options.nato_counters };
+        let settings = viewer_counter_kit::CounterSettings { color_mode: viewer_counter_kit::CounterColorMode::of(document.game_options.country_counter_colours), nato: document.game_options.nato_counters };
         let choice = perspective::Choice::default();
         let mut targets = Targets::default();
         let mut navy_sources = None;
@@ -263,7 +263,7 @@ impl Line {
                 targets.air_bases.extend(report.air_base_hits.values().copied());
                 targets.naval_bases.extend(report.naval_base_hits.values().copied());
                 for hover in &report.naval_region_hovers {
-                    use viewer_counters::map::counters::NavalRegionalControl;
+                    use viewer_counter_kit::NavalRegionalControl;
                     match hover.control {
                         NavalRegionalControl::Mines => targets.naval.insert((hover.region, true)),
                         NavalRegionalControl::Accidents => targets.naval.insert((hover.region, false)),

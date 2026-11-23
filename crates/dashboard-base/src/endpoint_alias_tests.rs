@@ -219,7 +219,7 @@ fn endpoint_accepted_stream_matches_plain_frames_across_aliases_and_keyframes() 
         let mut raw = encoder.encode(frame, records.len() % 24 == 2).unwrap();
         raw.metrics = raw.metrics.stored();
         decoded.push(plain.advance(&raw).unwrap().clone());
-        records.push(replay::spool::Record::Frame(raw));
+        records.push(replay_capture_spool::spool::Record::Frame(raw));
     }
     let (replay, derived) = Replay::from_records_derived(recorder_derive::writers(), crate::test_fixtures::CAMPAIGN.into(), &[records]).unwrap();
     assert_eq!(derived.len(), decoded.len());

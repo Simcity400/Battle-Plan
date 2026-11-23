@@ -546,7 +546,7 @@ fn busy_drain_span_never_bridges_an_unrecorded_hour_or_another_branch() {
 }
 
 fn settlement_replay(frames: Vec<DecodedFrame>) -> Replay {
-    use replay::spool::Record;
+    use replay_capture_spool::spool::Record;
     use replay_data::{
         identity::CaptureMode, identity::Identity, identity::Roster, identity::SampleBoundary,
         identity::SessionStart, identity::Verification,
@@ -642,7 +642,7 @@ fn recorded_settlements_refuse_an_in_branch_gap_and_note_the_branch_start() {
 
 #[test]
 fn recorded_event_loss_stops_finalizer_completeness_crossing_it() {
-    use replay::spool::ControlRecord;
+    use replay_recording::control::ControlRecord;
     let saved = empty_settlement_save();
     let mut resident = frame(100);
     *resident.tables[TableId::PeaceBids.index()] =

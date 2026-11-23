@@ -472,20 +472,6 @@ pub struct Rows<'a> {
     statuses: Vec<(usize, Status)>,
     fault: Option<io::Error>,
     refused: Option<String>,
-    #[cfg(any(test, feature = "test-support"))]
-    logged: Option<Vec<(usize, u128, bool)>>,
-    #[cfg(any(test, feature = "test-support"))]
-    noted: Option<Vec<(usize, u128, bool)>>,
-}
-
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    static NOTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn note_keys() {
-    NOTING.set(true);
 }
 
 fn check(table: TableId, kinds: &[Kind], cells: &[Value], opaques: &[Option<Vec<u8>>], lists: &[Option<Vec<u32>>]) -> io::Result<()> {
@@ -523,24 +509,10 @@ impl<'a> Rows<'a> {
             statuses: Vec::new(),
             fault: None,
             refused: None,
-            #[cfg(any(test, feature = "test-support"))]
-            logged: None,
-            #[cfg(any(test, feature = "test-support"))]
-            noted: NOTING.get().then(Vec::new),
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn logging(store: &'a Store) -> Self {
-        Self { logged: Some(Vec::new()), ..Self::new(store, Vec::new(), Vec::new(), Names::default(), Owner::RUN) }
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn lending(store: &'a Store, lent: Vec<Lent>) -> Self {
-        Self::new(store, lent, Vec::new(), Names::default(), Owner::RUN)
-    }
-
-    fn lent_at(&mut self, table: TableId, key: u128, set: bool) -> Option<usize> {
+    fn lent_at(&mut self, table: TableId, set: bool) -> Option<usize> {
         let index = table.index();
         if let Some(at) = self.lent.iter().position(|lent| lent.table() == index) {
             return Some(at);
@@ -550,12 +522,6 @@ impl<'a> Rows<'a> {
             self.refused.get_or_insert_with(|| format!("it {what} a row of log table {table:?}: a log's rows are appended and forgotten"));
             return None;
         }
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(logged) = &mut self.logged {
-            logged.push((index, key, set));
-            return None;
-        }
-        let _ = (key, set);
         self.fault.get_or_insert_with(|| invalid(format!("A writer names {table:?}, which it does not write")));
         None
     }
@@ -584,25 +550,17 @@ impl<'a> Rows<'a> {
         if self.fault.is_some() || self.refused.is_some() {
             return;
         }
-        let Some(at) = self.lent_at(table, key, true) else { return };
+        let Some(at) = self.lent_at(table, true) else { return };
         let lent = &mut self.lent[at];
         if let Err(error) = check(table, lent.kinds(), &cells, &self.opaques, &self.lists) {
             self.fault = Some(error);
             return;
         }
         let (opaques, lists) = (&self.opaques, &self.lists);
-        #[cfg(any(test, feature = "test-support"))]
-        let before = self.noted.is_some().then(|| (lent.view(self.store.strings()).slot(key).is_some(), lent.changed()));
         let set = {
             let _label = labels::enter(self.held, labels::Kind::Operator);
             lent.set(key, cells.iter().map(|cell| cell.cell(opaques, lists)))
         };
-        #[cfg(any(test, feature = "test-support"))]
-        if let (Some(noted), Some((held, changed))) = (&mut self.noted, before)
-            && (!held || lent.changed() > changed)
-        {
-            noted.push((table.index(), key, true));
-        }
         match set {
             Ok(true) => {}
             Ok(false) => self.refused = Some(format!("it set one {} row twice in one hour", table.words())),
@@ -618,11 +576,7 @@ impl<'a> Rows<'a> {
     }
 
     pub fn delete(&mut self, table: TableId, key: u128) {
-        if let Some(at) = self.lent_at(table, key, false) {
-            #[cfg(any(test, feature = "test-support"))]
-            if let Some(noted) = &mut self.noted {
-                noted.push((table.index(), key, false));
-            }
+        if let Some(at) = self.lent_at(table, false) {
             let _label = labels::enter(self.held, labels::Kind::Operator);
             self.lent[at].delete(key);
         }
@@ -731,17 +685,6 @@ impl<'a> Rows<'a> {
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn keys(&self, table: TableId) -> (Vec<u128>, Vec<u128>) {
-        let (mut sets, mut deletes) = (Vec::new(), Vec::new());
-        for &(_, key, set) in self.logged.iter().chain(&self.noted).flatten().filter(|(index, ..)| *index == table.index()) {
-            if set { sets.push(key) } else { deletes.push(key) }
-        }
-        sets.sort_unstable();
-        deletes.sort_unstable();
-        (sets, deletes)
-    }
-
     pub fn status(&mut self, table: TableId, status: Status) {
         let index = table.index();
         match self.statuses.iter_mut().find(|(held, _)| *held == index) {
@@ -754,6 +697,27 @@ impl<'a> Rows<'a> {
         if let Value::Bytes(reason) = self.text(reason) {
             self.status(table, Status::Unavailable { reason });
         }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl<'a> Rows<'a> {
+    pub fn lending(store: &'a Store, lent: Vec<Lent>) -> Self {
+        Self::new(store, lent, Vec::new(), Names::default(), Owner::RUN)
+    }
+
+    pub(crate) fn check_writes(self) -> io::Result<()> {
+        match (self.fault, self.refused) {
+            (Some(error), _) => Err(error),
+            (None, Some(reason)) => Err(invalid(reason)),
+            (None, None) => Ok(()),
+        }
+    }
+
+    pub fn keys(&self, table: TableId) -> (Vec<u128>, Vec<u128>) {
+        self.lent.iter()
+            .find(|lent| lent.table() == table.index())
+            .map_or_else(Default::default, Lent::pending_keys)
     }
 }
 

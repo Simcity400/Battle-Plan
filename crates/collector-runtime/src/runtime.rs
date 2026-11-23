@@ -5213,6 +5213,18 @@ impl SizingShared {
     }
 
     fn recycle_frame(&self, shared: &Shared, index: usize) {
+        self.recycle_frame_with(shared, index, |surplus| {
+            // SAFETY: The frame was removed from its slot after every previous use ended.
+            unsafe { shared.free_surplus(surplus) };
+        });
+    }
+
+    fn recycle_frame_with(
+        &self,
+        shared: &Shared,
+        index: usize,
+        free: impl FnOnce(Option<Box<sampling::Captured>>),
+    ) {
         // SAFETY: This stage owns the installed frame slot.
         unsafe { shared.frame_stage(index, sampling::FrameStage::Recycle) };
         let mut proposal = *self.capacities.lock();
@@ -5266,8 +5278,7 @@ impl SizingShared {
                     self.settled_world.store(generation, Ordering::Release);
                 }
                 drop(capacities);
-                // SAFETY: The frame was removed from its slot after every previous use ended.
-                unsafe { shared.free_surplus(surplus) };
+                free(surplus);
                 return;
             }
             proposal = *capacities;
@@ -5454,6 +5465,14 @@ fn handle_id(thread: &std::thread::JoinHandle<()>) -> Option<u32> {
 }
 
 fn frame_builder(shared: &Shared, sizing: &SizingShared) {
+    frame_builder_observing(shared, sizing, |_| {});
+}
+
+fn frame_builder_observing(
+    shared: &Shared,
+    sizing: &SizingShared,
+    observe: impl FnMut(sampling::BuildAhead),
+) {
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
     let mut priority =
     // SAFETY: This is the dedicated worker applying its own session's priority policy.
@@ -5461,13 +5480,13 @@ fn frame_builder(shared: &Shared, sizing: &SizingShared) {
     let built =
     // SAFETY: This is the session's designated builder, which the runtime joins before releasing
     // Shared.
-    unsafe { shared.build_ahead_until(&sizing.stop, || {
+    unsafe { shared.build_ahead_until_observing(&sizing.stop, || {
         priority.follow_pipeline(
             shared.frame_priority(),
             collector_workers::frame_priority::Role::Builder,
         ) ;
         collector_memory::terminal::set_context(*lock(&sizing.context));
-    }) };
+    }, observe) };
     if let Err(error) = built {
         let _ = sizing
             .failure
@@ -7173,7 +7192,7 @@ mod tests {
         let shared =
         // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
         // boundary or detach.
-        unsafe { Shared::with_sizing(0, 0, 1, &sizing) }.unwrap();
+        unsafe { Shared::with_fixture_sizing(0, 0, 1, &sizing, 0) }.unwrap();
         let capacities = BufferCapacities {
             core: sizing.core,
             map: sizing.map,
@@ -7531,14 +7550,11 @@ mod tests {
         }));
         let (built, spare) = mpsc::channel::<()>();
         let built = Mutex::new(built);
-        let installed =
-            // SAFETY: This is the test's fixture and its builder has not started.
-            unsafe { shared.build_ahead_seam_for_test() }.set(Box::new(move |at| {
+        let observe = move |at| {
             if at == sampling::BuildAhead::Free {
                 let _ = built.lock().unwrap().send(());
             }
-        }));
-        assert!(installed.is_ok());
+        };
         let watching = Arc::clone(&fixture);
         collector_test_support::watched(
             move || {
@@ -7554,7 +7570,7 @@ mod tests {
                 let builder = {
                     let fixture = Arc::clone(&fixture);
                     collector_test_support::spawn_ending(move || {
-                        frame_builder(&fixture.0, &fixture.1.sizing)
+                        frame_builder_observing(&fixture.0, &fixture.1.sizing, observe)
                     })
                 };
                 struct End<'a>(
@@ -7742,16 +7758,16 @@ mod tests {
         let (freeing, free_held) = mpsc::channel::<()>();
         let (release, released) = mpsc::channel::<()>();
         let released = Mutex::new(released);
-        let installed =
-            // SAFETY: This is the test's fixture and no fixture frame is being recycled.
-            unsafe { fixture.0.surplus_free_seam() }.set(Box::new(move || {
-            let _ = freeing.send(());
-            let _ = released
-                .lock()
-                .unwrap()
-                .recv_timeout(collector_test_support::TEST_HANG_GUARD);
-        }));
-        assert!(installed.is_ok());
+        let free = move |surplus: Option<Box<sampling::Captured>>| {
+            if surplus.is_some() {
+                let _ = freeing.send(());
+                let _ = released
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD);
+            }
+            drop(surplus);
+        };
         let watching = Arc::clone(&fixture);
         collector_test_support::watched(
             move || {
@@ -7795,7 +7811,7 @@ mod tests {
                 let spool = {
                     let fixture = Arc::clone(&fixture);
                     collector_test_support::spawn_ending(move || {
-                        fixture.1.sizing.recycle_frame(&fixture.0, surplus)
+                        fixture.1.sizing.recycle_frame_with(&fixture.0, surplus, free)
                     })
                 };
                 steps.at("waiting for the spool to free the surplus frame");

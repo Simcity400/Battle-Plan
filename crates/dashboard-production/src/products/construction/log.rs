@@ -3,7 +3,7 @@ use super::{COST_SCALE, Content, ConstructionStateName, ConstructionType, Projec
 use dashboard_base::{Source, products::{LoadContext, Product}, queries::country_ids::{Names, RunLinks}};
 use dashboard_base::products::{BranchParams, battles::BattleWindow};
 use dashboard_query::series::MissingSpan;
-use replay::lanes::{Cell, Keys, Step};
+use replay_lanes::lanes::{Cell, Keys, Step};
 use replay_data::{
     codec::Decoder,
     rows::{ConstructionProjectRow as P, ConstructionRise, TableId},
@@ -304,7 +304,7 @@ fn window(source: &Source, run: u32, from: i32, to: i32, lines: &RunLines, names
         return Ok(Vec::new());
     }
     keys.sort_unstable();
-    let history = dashboard_query::cost::storage(|| replay::lanes::history(recording, run, TableId::ConstructionProjects, &col::ALL, Keys::These(&keys), from, to))?;
+    let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, run, TableId::ConstructionProjects, &col::ALL, Keys::These(&keys), from, to))?;
     let mut asks = Vec::new();
     for (key, steps) in &history.keys {
         asks.extend(rise_hours(steps).into_iter().map(|hour| (hour, *key)));
@@ -312,7 +312,7 @@ fn window(source: &Source, run: u32, from: i32, to: i32, lines: &RunLines, names
     let mut rises: HashMap<(u128, i32), Rises> = HashMap::new();
     if !asks.is_empty() {
         dashboard_query::cost::storage(|| {
-            replay::lanes::at_each(recording, run, TableId::ConstructionProjects, Some(&[col::BUILT_RISES, col::REPAIRED_RISES][..]), &asks, &mut |hour, key, row| {
+            replay_lanes::lanes::at_each(recording, run, TableId::ConstructionProjects, Some(&[col::BUILT_RISES, col::REPAIRED_RISES][..]), &asks, &mut |hour, key, row| {
                 if let Some((view, slot)) = row {
                     let list = |column: usize| -> io::Result<Vec<ConstructionRise>> {
                         let Some(bytes) = view.list(column, slot) else { return Ok(Vec::new()) };

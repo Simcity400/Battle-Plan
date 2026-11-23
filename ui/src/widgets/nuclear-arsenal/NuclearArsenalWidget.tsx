@@ -22,12 +22,12 @@ export default function NuclearArsenalWidget({ widget, runtime, active, onDiagno
   const names = useProduct(runtime.client, !race && track ? { sourceId: track.source.id, revision: track.source.revision, product: 'nuclear-arsenal',
     params: { branchId: track.branch.id, hour: track.branch.lastHour } } : null, active, validateNuclearArsenal, track?.source);
   const head = useHeadProduct(runtime, widget, 'nuclear-arsenal', race ? {} : null, { active: active && race, validate: validateNuclearArsenal, structure: arsenalStructure });
-  const metadata = race ? head.data : names.data;
+  const metadata = race ? head.data : names.data, shown = metadata;
   const parts = useMemo(() => nukeParts(metadata), [metadata]);
   const onWarnings = useCallback((warnings: readonly string[]) => {
-    const all = [...warnings, ...(metadata?.warnings ?? []), ...(!race && names.error ? [`Weapon type names could not be loaded: ${names.error.message}`] : [])];
+    const all = [...warnings, ...(shown?.warnings ?? []), ...(!race && names.error ? [`Weapon type names could not be loaded: ${names.error.message}`] : [])];
     onDiagnostics(all.length ? all : NO_WARNINGS);
-  }, [onDiagnostics, metadata, names.error, race]);
+  }, [onDiagnostics, shown, names.error, race]);
   return <MeasureRace arsenal={race ? head : undefined} widget={widget} runtime={runtime} active={active} countrySlot={countrySlot} measure={TOTAL} decimals={0} view={view} options={options}
     label="Nuclear stockpile" icon="target" format={format} formatValue={formatValue} onWarnings={onWarnings} parts={parts}
     split={options.split !== false} positiveOnly />;

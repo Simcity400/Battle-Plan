@@ -8,7 +8,7 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_counters::map::counters::{Gun, GunGround};
+use viewer_counters_land::gun_members::{Gun, GunGround};
 
 const PHASE_NS: [&str; PHASES.len()] = ["ns guns", "ns on rail", "ns names"];
 

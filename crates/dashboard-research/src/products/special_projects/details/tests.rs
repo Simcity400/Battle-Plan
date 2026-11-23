@@ -522,7 +522,7 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
     }
     let (options, identity) = dashboard_base::test_fixtures::content_identity(&root);
     let mut input = records(1, (FIRST..=LAST).map(frame).collect());
-    let replay::spool::Record::SessionStart(session) = &mut input[0] else { unreachable!() };
+    let replay_capture_spool::spool::Record::SessionStart(session) = &mut input[0] else { unreachable!() };
     session.identity = identity.clone();
     let path = root.join("synthetic.battleplan");
     dashboard_base::test_fixtures::write_with_facts(&path, &options, &identity, input);

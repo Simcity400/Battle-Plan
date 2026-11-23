@@ -127,7 +127,7 @@ fn enabled_unsized_startup_records_known_template_and_country_values_through_spo
     use crate::template_changes::Changes;
     use engine_deployment::cdeployment_status as deployment;
     use engine_occupation::ccountry_occupation_status as occupation;
-    use replay::{spool::Record, spool::encode_record};
+    use replay_capture_spool::spool::{Record, encode_record};
     use replay_frame::{
         frame::FrameDecoder, frame::FrameEncoder, frame::FrameInput, frame::Metrics,
     };
@@ -246,7 +246,7 @@ fn enabled_unsized_startup_records_known_template_and_country_values_through_spo
 #[test]
 fn cold_and_post_gap_template_columns_pass_spool_validation_with_named_refusals() {
     use crate::template_changes::Watches;
-    use replay::{spool::Record, spool::encode_record};
+    use replay_capture_spool::spool::{Record, encode_record};
     use replay_data::{rows::RowCodec, rows::TableRows};
     use replay_frame::{
         frame::FrameDecoder, frame::FrameEncoder, frame::FrameInput, frame::Metrics,

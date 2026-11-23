@@ -1,7 +1,7 @@
 import type { LiveValues } from '../../charts/live';
-import { ArsenalPicture } from '../arsenal.ts';
 import type { PanelGeometry, PanelView } from './view';
-import type { SpecialProjectsReply, DoctrineMasteryReply, ResearchSlotsReply, SpecialProjectDetails } from '../../generated/dashboard';
+import type { Structure } from '../views/fields';
+import type { SpecialProjectsReply, DoctrineMasteryReply, ResearchSlotsReply, SpecialProjectDetails, WargoalsReply } from '../../generated/dashboard';
 import { arsenalNotice, arsenalStructure, arsenalStructureRows, validateNuclearArsenal } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import { liveKey } from '../../charts/live.ts';
 import { slotsStructure, slotValues } from '../../widgets/research/researchSlots.ts';
@@ -59,6 +59,13 @@ export function panelStructure(product: string, raw: unknown, hour: number): str
   return panelViews[product]?.structure?.(raw, hour) ?? tableStructures[product]?.(raw) ?? 'present';
 }
 
+export function readingStructure(product: string | undefined): Structure | undefined {
+  const view = product === undefined ? undefined : panelViews[product]?.structure, table = product === undefined ? undefined : tableStructures[product];
+  if (view) return (panel, hour) => panel.data === undefined ? undefined : view(panel.data, hour);
+  if (table) return panel => panel.data === undefined ? undefined : table(panel.data);
+  return undefined;
+}
+
 export function panelValues(product: string, raw: unknown, live: LiveValues<number> | null, hour: number, structure: string) {
   const view = panelViews[product];
   if (!view) return null;
@@ -67,6 +74,11 @@ export function panelValues(product: string, raw: unknown, live: LiveValues<numb
 
 export function recordedPanelRows(product: string, raw: unknown): string[] {
   if (product === 'nuclear-arsenal') return arsenalStructureRows(validateNuclearArsenal(raw));
+  if (product === 'wargoals') {
+    const r = raw as WargoalsReply;
+    return [...r.goals.map(g => JSON.stringify(['goal', g.handle, g.actor, g.recipient, g.name, g.available, g.expires])),
+      ...r.justifications.map(j => JSON.stringify(['justification', j.id, j.recipient, j.name, j.paused]))];
+  }
   if (product === 'research-slots') {
     const r = raw as ResearchSlotsReply;
     return r.slots.map(s => JSON.stringify([s.index, s.state.token, s.state.entryFirstObservedHour]));
@@ -89,7 +101,6 @@ export function recordedPanelRows(product: string, raw: unknown): string[] {
   return [];
 }
 
-export const raceViews = { 'nuclear-arsenal': ArsenalPicture };
 const nextDay = (hour: number) => (Math.floor(hour / 24) + 1) * 24;
 const extendInline = '.project-details [data-paint]:last-child';
 
@@ -128,7 +139,8 @@ export const panelViews: Readonly<Record<string, PanelView>> = {
   'special-projects': {
     structure: (raw, hour) => projectStructure(projectHistory(raw), hour),
     nextChange: (raw, hour) => projectChangeAfter(projectHistory(raw), hour),
-    geometry: { rowAttribute: 'data-project', extraFields: '.special-project-progress > span', meters: '.special-project-progress' },
+    geometry: { rowAttribute: 'data-project', extraFields: '.special-project-progress > span', meters: '.special-project-progress',
+      barVariable: { host: '[data-project]', name: '--project-progress' } },
     values(raw, _live, hour, shape) {
       const reply = projectHistory(raw);
       if (currentKey(reply, hour) !== shape && projectStructure(reply, hour) !== shape) return null;

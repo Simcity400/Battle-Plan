@@ -1,4 +1,5 @@
-use replay::{compression::Compression, recompress, recorder_settings::RecorderSettings};
+use replay_settings::{compression::Compression, recorder_settings::RecorderSettings};
+use replay_files::recompress;
 use serde::Serialize;
 use std::{
     collections::{HashMap, VecDeque},
@@ -21,7 +22,7 @@ use windows_sys::Win32::{
     },
 };
 
-pub const LEVEL: i32 = replay::columnar_file::Settings::HIGH.level;
+pub const LEVEL: i32 = replay_settings::compression::Settings::HIGH.level;
 
 pub const ARGUMENT: &str = "--recompress";
 
@@ -222,7 +223,7 @@ impl Jobs {
                 path.display()
             )
         })?;
-        if !path.is_file() || !replay::recording_files::is_recording(&path) {
+        if !path.is_file() || !replay_files::recording_files::is_recording(&path) {
             return Err("Choose a BattlePlan recording to compress.".into());
         }
         let mut state = self.lock();
@@ -373,7 +374,7 @@ mod tests {
         let _ = fs::remove_dir_all(&folder);
         fs::create_dir_all(&folder).unwrap();
         let path = folder.join("Germany 1936.battleplan");
-        let bytes = replay::columnar_frames::fixtures::restored(recorder_derive::writers(), 7, &[(1, 100, 1)]);
+        let bytes = replay_journal::fixtures::restored(recorder_derive::writers(), 7, &[(1, 100, 1)]);
         fs::write(&path, &bytes).unwrap();
         let jobs = Jobs::default();
         jobs.request(&path).unwrap();

@@ -193,7 +193,7 @@ fn trains_above_the_cutoff_declare_nothing_and_build_again_when_shown() {
     let mut side = side("trains-view", &probe);
     frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
     side.set_view(View { camera_height: 1000.0, ..View::default() }).unwrap();
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "trains");
     let mut hidden = Trains::new(Arc::new(Probe::default()), Some(1));
     hidden.inputs(&View { camera_height: 1000.0, ..View::default() }, &mut inputs).unwrap();
