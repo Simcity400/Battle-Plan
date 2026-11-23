@@ -113,6 +113,8 @@ call:collector_observers::building_bombing::buildings
 call:collector_observers::building_bombing::capacity
 call:collector_observers::building_bombing::prepare
 call:collector_observers::building_bombing::restore_sequence
+call:collector_observers::combat_engagement_refreshes::capacity
+call:collector_observers::combat_engagement_refreshes::presize
 call:collector_observers::country_input_changes::presize_countries
 call:collector_observers::market_changes::capacity
 call:collector_observers::market_changes::presize
@@ -225,7 +227,7 @@ call:world_restore_ready
 call:write_status
 call:write_status_bytes
 macro-definition:refuse_detach:408a3fa7f6e721c7
-macro-definition:retain_detach:5fdda758088583b2
+macro-definition:retain_detach:5ae2eb6c9af1e4b2
 macro:collector_status::status::status
 macro:format
 macro:format_args

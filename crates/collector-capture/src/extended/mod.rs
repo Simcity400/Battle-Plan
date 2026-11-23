@@ -140,6 +140,10 @@ macro_rules! spool_inputs {
         // SAFETY: Owning spool publication path converts this frame's building-bombing events once.
         unsafe { $captured.table_inputs() }
     };
+    (combat_engagement_refreshes, $captured:expr, $conversion:expr) => {
+        // SAFETY: Owning spool publication path converts this frame's combat-engagement-refresh events once.
+        unsafe { $captured.table_inputs() }
+    };
     (nuclear_strikes, $captured:expr, $conversion:expr) => {
         // SAFETY: Owning spool publication path converts this frame's nuclear-strike events once.
         unsafe { $captured.table_inputs() }
@@ -698,6 +702,7 @@ use collector_leaders::leader_paths;
 use collector_leaders::leader_portraits;
 use collector_ledger_tables::air_losses;
 use collector_ledger_tables::building_bombing;
+use collector_ledger_tables::combat_engagement_refreshes;
 use collector_ledger_tables::event_feed;
 use collector_ledger_tables::market;
 use collector_ledger_tables::nuclear_strikes;
@@ -772,6 +777,7 @@ packs!(
     pub air_losses,
     pub air_records,
     pub building_bombing,
+    pub combat_engagement_refreshes,
     pub nuclear_strikes,
     pub market,
     pub leader_paths,
@@ -3081,6 +3087,11 @@ impl Captured {
             scatter(&air_losses::TABLES, report.air_losses, ticks);
             scatter(&air_records::TABLES, report.air_records, ticks);
             scatter(&building_bombing::TABLES, report.bombing, ticks);
+            scatter(
+                &combat_engagement_refreshes::TABLES,
+                report.engagement_refreshes,
+                ticks,
+            );
             scatter(&nuclear_strikes::TABLES, report.nuclear, ticks);
             scatter(&market::TABLES, report.market, ticks);
             for (table, cost) in intel::TABLES.into_iter().zip(report.intel_delegated) {

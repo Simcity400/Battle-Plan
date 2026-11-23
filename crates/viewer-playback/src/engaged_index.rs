@@ -36,7 +36,11 @@ use viewer_engagements::{
     icon_frames::{IconFold, Kept},
     naval_check::{self, ByteCheck, Summary},
 };
-use viewer_foundation::{perspective::Country, tables::{Available, core}, visibility::Relations};
+use viewer_foundation::{
+    perspective::Country,
+    tables::{Available, core},
+    visibility::{Relations, ZeroVisibility},
+};
 
 const ICON_TABLES: [TableId; 5] = [
     TableId::LandCombats,
@@ -46,7 +50,7 @@ const ICON_TABLES: [TableId; 5] = [
     TableId::NavalCombatDetails,
 ];
 
-const VIEWER_TABLES: [TableId; 9] = [
+const VIEWER_TABLES: [TableId; 12] = [
     TableId::Campaign,
     TableId::CountryLinks,
     TableId::Countries,
@@ -56,25 +60,144 @@ const VIEWER_TABLES: [TableId; 9] = [
     TableId::FactionMembers,
     TableId::WarRelations,
     TableId::Subjects,
+    TableId::CountryCounterInputs,
+    TableId::ReservedCountryNaming,
+    TableId::CombatEngagementRefreshes,
 ];
+
+enum Witness {
+    Unavailable,
+    Complete {
+        land: BTreeMap<(u64, u8), engaged::SideWitness>,
+        naval: BTreeMap<(u64, u8), engaged::SideWitness>,
+        controller_targets: Vec<u32>,
+        local_viewers: Vec<u32>,
+        cache_written_viewers: Vec<u32>,
+    },
+}
 
 struct Inputs {
     links: BTreeMap<u32, u32>,
     relations: Result<Relations, &'static str>,
+    zero_visibility: ZeroVisibility,
     controllers: Option<engaged::Controllers>,
+    witness: Witness,
 }
 
 impl Inputs {
     fn read<F: Tables + ?Sized>(frame: &F) -> io::Result<Self> {
         let links: BTreeMap<u32, u32> = whole_core::<tables::CountryLinks, F>(frame)?.iter().map(|link| (link.id, link.canonical_slot)).collect();
         let relations = Relations::read_tables(frame, &links);
+        let zero_visibility = ZeroVisibility::read_tables(frame, &links);
         let controllers = controllers(frame, &links)?;
-        Ok(Self { links, relations, controllers })
+        let witness = witness(frame)?;
+        Ok(Self { links, relations, zero_visibility, controllers, witness })
     }
 }
 
+fn push_unique(list: &mut Vec<u32>, value: u32) {
+    if !list.contains(&value) {
+        list.push(value);
+    }
+}
+
+fn witness<F: Tables + ?Sized>(frame: &F) -> io::Result<Witness> {
+    use replay_data::rows::CombatEngagementRefreshRow;
+    let Available::Complete(rows) = available::<tables::CombatEngagementRefreshes, F>(frame)? else {
+        return Ok(Witness::Unavailable);
+    };
+    let mut land = BTreeMap::<(u64, u8), engaged::SideWitness>::new();
+    let mut naval = BTreeMap::<(u64, u8), engaged::SideWitness>::new();
+    let mut controller_targets = Vec::new();
+    let mut local_viewers = Vec::new();
+    let mut cache_written_viewers = Vec::new();
+    for row in rows {
+        let recorded = (row.triggers & CombatEngagementRefreshRow::TRIGGER_RECORDED) != 0;
+        let units = (row.triggers & CombatEngagementRefreshRow::TRIGGER_UNITS) != 0;
+        match row.kind {
+            CombatEngagementRefreshRow::LAND_SIDE => {
+                if row.target == 0
+                    || row.side > 1
+                    || row.viewer > i32::MAX as u32
+                    || row.triggers == 0
+                    || (row.triggers & !3) != 0
+                {
+                    return Ok(Witness::Unavailable);
+                }
+                let entry = land.entry((row.target, row.side)).or_default();
+                entry.lists.recorded |= recorded;
+                entry.lists.units |= units;
+                if recorded {
+                    push_unique(&mut entry.recorded_viewers, row.viewer);
+                }
+                if units {
+                    push_unique(&mut entry.units_viewers, row.viewer);
+                }
+            }
+            CombatEngagementRefreshRow::NAVAL_SIDE => {
+                if row.target == 0
+                    || row.side > 1
+                    || row.viewer > i32::MAX as u32
+                    || row.triggers == 0
+                    || (row.triggers & !3) != 0
+                {
+                    return Ok(Witness::Unavailable);
+                }
+                let entry = naval.entry((row.target, row.side)).or_default();
+                entry.lists.recorded |= recorded;
+                entry.lists.units |= units;
+                if recorded {
+                    push_unique(&mut entry.recorded_viewers, row.viewer);
+                }
+                if units {
+                    push_unique(&mut entry.units_viewers, row.viewer);
+                }
+            }
+            CombatEngagementRefreshRow::CONTROLLER_TARGET => {
+                if row.side != 0
+                    || row.viewer != 0
+                    || row.target == 0
+                    || row.target > i32::MAX as u64
+                    || row.triggers != CombatEngagementRefreshRow::TRIGGER_RECORDED
+                {
+                    return Ok(Witness::Unavailable);
+                }
+                controller_targets.push(row.target as u32);
+            }
+            CombatEngagementRefreshRow::LOCAL_ALL_SIDES => {
+                if row.side != 0
+                    || row.viewer != 0
+                    || row.target > i32::MAX as u64
+                    || (row.triggers != CombatEngagementRefreshRow::TRIGGER_RECORDED
+                        && row.triggers
+                            != (CombatEngagementRefreshRow::TRIGGER_RECORDED
+                                | CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE))
+                {
+                    return Ok(Witness::Unavailable);
+                }
+                let viewer = row.target as u32;
+                push_unique(&mut local_viewers, viewer);
+                if (row.triggers & CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE) != 0 {
+                    push_unique(&mut cache_written_viewers, viewer);
+                }
+            }
+            _ => return Ok(Witness::Unavailable),
+        }
+    }
+    Ok(Witness::Complete {
+        land,
+        naval,
+        controller_targets,
+        local_viewers,
+        cache_written_viewers,
+    })
+}
+
 struct Viewer {
-    slot: u32,
+    slot: Option<u32>,
+    raw: Option<u32>,
+    alternate_slot: Option<u32>,
+    alternate_raw: Option<u32>,
     inputs: Arc<Inputs>,
 }
 
@@ -144,22 +267,105 @@ impl Viewer {
             tags.insert(*slot, String::new());
         }
         let (slot, _) = viewer_foundation::fold_tables::viewer(frame, &inputs.links, &tags, country)?;
-        Ok(Self { slot, inputs: Arc::clone(inputs) })
+        Ok(Self {
+            slot: Some(slot),
+            raw: None,
+            alternate_slot: None,
+            alternate_raw: None,
+            inputs: Arc::clone(inputs),
+        })
     }
 
-    fn recording<F: Tables + ?Sized>(frame: &F, inputs: &Arc<Inputs>) -> Option<(Self, bool)> {
-        let slot = viewer_foundation::fold_tables::perspective(frame, &inputs.links)?;
-        let observing = viewer_foundation::fold_tables::whole::<tables::LocalPlayer, F>(frame)
-            .is_some_and(|rows| rows.iter().all(|row| row.country as i32 <= 0));
-        Some((Self { slot, inputs: Arc::clone(inputs) }, observing))
+    fn recording<F: Tables + ?Sized>(
+        frame: &F,
+        inputs: &Arc<Inputs>,
+    ) -> (Self, Option<(Option<u32>, u32)>) {
+        let local = viewer_foundation::fold_tables::whole::<tables::LocalPlayer, F>(frame)
+            .and_then(|rows| match rows {
+                [player] => {
+                    let raw = if (player.country as i32) > 0 {
+                        player.country
+                    } else if (player.observer_country as i32) > 0 {
+                        player.observer_country
+                    } else {
+                        0
+                    };
+                    let slot = if raw == 0 {
+                        Some(0)
+                    } else {
+                        inputs.links.get(&raw).copied()
+                    };
+                    Some((slot, raw))
+                }
+                _ => None,
+            });
+        match local {
+            Some((slot, raw)) => (
+                Self {
+                    slot,
+                    raw: Some(raw),
+                    alternate_slot: None,
+                    alternate_raw: None,
+                    inputs: Arc::clone(inputs),
+                },
+                Some((slot, raw)),
+            ),
+            None => (
+                Self {
+                    slot: None,
+                    raw: None,
+                    alternate_slot: None,
+                    alternate_raw: None,
+                    inputs: Arc::clone(inputs),
+                },
+                None,
+            ),
+        }
     }
 
-    fn sample(&self, sides: HourSides) -> engaged::Sample<'_> {
+    fn sample(&self, kind: usize, recording: bool, sides: HourSides) -> engaged::Sample<'_> {
+        let refreshes = match &self.inputs.witness {
+            Witness::Unavailable => engaged::RefreshWitness::Unavailable,
+            Witness::Complete {
+                land,
+                naval,
+                controller_targets,
+                local_viewers,
+                cache_written_viewers,
+            } => engaged::RefreshWitness::Complete {
+                sides: if kind == NAVAL {
+                    naval.clone()
+                } else {
+                    land.clone()
+                },
+                controller_targets: if recording {
+                    Vec::new()
+                } else {
+                    controller_targets.clone()
+                },
+                local_viewers: if recording {
+                    local_viewers.clone()
+                } else {
+                    Vec::new()
+                },
+                cache_written_viewers: if recording {
+                    cache_written_viewers.clone()
+                } else {
+                    Vec::new()
+                },
+            },
+        };
         engaged::Sample {
             viewer: self.slot,
+            viewer_raw: self.raw,
+            alternate_viewer: self.alternate_slot,
+            alternate_viewer_raw: self.alternate_raw,
+            recording,
             links: &self.inputs.links,
             relations: self.inputs.relations.as_ref().map_err(|reason| *reason),
+            zero_visibility: &self.inputs.zero_visibility,
             controllers: self.inputs.controllers.clone(),
+            refreshes,
             sides: sides.sides,
             complete: sides.complete,
             removal: sides.removal,
@@ -203,11 +409,11 @@ impl Track {
         self.ended.resize_with(SOURCES.len(), Vec::new);
     }
 
-    fn advance(&mut self, viewer: &Viewer, sides: Vec<HourSides>, continuity: Continuity) {
+    fn advance(&mut self, viewer: &Viewer, recording: bool, sides: Vec<HourSides>, continuity: Continuity) {
         self.sized();
         for (kind, sides) in sides.into_iter().enumerate() {
             self.histories[kind].advance_reporting(
-                viewer.sample(sides),
+                viewer.sample(kind, recording, sides),
                 continuity,
                 &mut self.changed[kind],
                 &mut self.ended[kind],
@@ -247,11 +453,21 @@ struct Fold {
     last: Option<(Hour, bool)>,
     recording: Track,
     recording_last: Option<(Hour, bool)>,
-    client_view: Option<u32>,
+    client_view: Option<(Option<u32>, u32, Arc<Inputs>)>,
     icons: Vec<IconFold>,
     icon_changed: Vec<Vec<(u64, Option<Kept>)>>,
     recording_icons: Vec<IconFold>,
     recording_icon_changed: Vec<Vec<(u64, Option<Kept>)>>,
+}
+
+fn same_raw_in(links: &BTreeMap<u32, u32>, a: u32, b: u32) -> bool {
+    a == b
+        || (a != 0
+            && b != 0
+            && links
+                .get(&a)
+                .zip(links.get(&b))
+                .is_some_and(|(sa, sb)| sa == sb))
 }
 
 fn advance_icons<F: Tables + ?Sized>(
@@ -465,28 +681,59 @@ impl Pass {
                 .collect::<io::Result<Vec<_>>>()
                 .ok()
         }));
-        let held = self.inputs.take().filter(|_| kept);
+        let held = self
+            .inputs
+            .take()
+            .filter(|inputs| kept && !inputs.zero_visibility.reverse_stale_at(hour));
         let inputs = sides.as_ref().and_then(|(frame, _)| held.or_else(|| Inputs::read(*frame).ok().map(Arc::new)));
         self.inputs.clone_from(&inputs);
         let held_viewer = self.viewer.take().filter(|viewer| kept && inputs.as_ref().is_some_and(|inputs| Arc::ptr_eq(&viewer.inputs, inputs)));
         let viewer = held_viewer.or_else(|| sides.as_ref().zip(inputs.as_ref()).and_then(|((frame, _), inputs)| Viewer::with(*frame, &self.country, inputs).ok()));
-        self.viewer = viewer.as_ref().map(|viewer| Viewer { slot: viewer.slot, inputs: Arc::clone(&viewer.inputs) });
+        self.viewer = viewer.as_ref().map(|viewer| Viewer {
+            slot: viewer.slot,
+            raw: None,
+            alternate_slot: None,
+            alternate_raw: None,
+            inputs: Arc::clone(&viewer.inputs),
+        });
         let player = sides
             .as_ref()
             .zip(inputs.as_ref())
-            .and_then(|((frame, _), inputs)| Viewer::recording(*frame, inputs));
+            .map(|((frame, _), inputs)| Viewer::recording(*frame, inputs));
         let previous_view = fold
             .client_view
+            .as_ref()
             .filter(|_| recording_continuity == Continuity::Next);
-        let player = player.map(|(mut viewer, observing)| {
-            let view = viewer.slot;
-            if let Some(slot) = previous_view
-                && observing
+        let player = player.map(|(mut viewer, view)| {
+            if let Some((view_slot, view_raw)) = view
+                && recording_continuity == Continuity::Next
             {
-                viewer.slot = slot;
+                if let Some((prev_slot, prev_raw, prev_inputs)) = previous_view {
+                    let prev_slot_now = if *prev_raw == 0 {
+                        Some(0)
+                    } else {
+                        viewer.inputs.links.get(prev_raw).copied()
+                    };
+                    viewer.slot = prev_slot_now.or(*prev_slot);
+                    viewer.raw = Some(*prev_raw);
+                    let same_view = same_raw_in(&prev_inputs.links, *prev_raw, view_raw)
+                        && same_raw_in(&viewer.inputs.links, *prev_raw, view_raw);
+                    if !same_view {
+                        viewer.alternate_slot = view_slot;
+                        viewer.alternate_raw = Some(view_raw);
+                    }
+                } else {
+                    viewer.slot = None;
+                    viewer.raw = None;
+                    viewer.alternate_slot = view_slot;
+                    viewer.alternate_raw = Some(view_raw);
+                }
             }
             (viewer, view)
         });
+        let identified = player
+            .as_ref()
+            .is_some_and(|(_, view)| view.is_some_and(|(slot, _)| slot.is_some()));
         match &sides {
             None => summary.unreadable_hours += 1,
             Some((_, sides)) => {
@@ -496,7 +743,7 @@ impl Pass {
                 }
                 if !naval.sides.is_empty() {
                     summary.naval_hours += 1;
-                    if player.is_none() {
+                    if !identified {
                         summary.unidentified_hours += 1;
                     }
                 }
@@ -505,9 +752,9 @@ impl Pass {
         match (&sides, &player) {
             (Some((frame, sides)), Some((viewer, view))) => {
                 fold.recording
-                    .advance(viewer, sides.clone(), recording_continuity);
+                    .advance(viewer, true, sides.clone(), recording_continuity);
                 fold.recording_last = Some((hour, true));
-                fold.client_view = Some(*view);
+                fold.client_view = view.map(|(slot, raw)| (slot, raw, Arc::clone(&viewer.inputs)));
                 let bytes = naval_check::recorded_bytes(frame).ok();
                 advance_icons(
                     &mut fold.recording_icons,
@@ -516,16 +763,17 @@ impl Pass {
                     bytes.as_ref(),
                     recording_continuity,
                 );
-                if self
-                    .check
-                    .compare(
-                        branch,
-                        hour,
-                        frame,
-                        &sides[NAVAL].sides,
-                        &fold.recording.histories[NAVAL],
-                    )
-                    .is_err()
+                if identified
+                    && self
+                        .check
+                        .compare(
+                            branch,
+                            hour,
+                            frame,
+                            &sides[NAVAL].sides,
+                            &fold.recording.histories[NAVAL],
+                        )
+                        .is_err()
                 {
                     self.check.summary.unreadable_hours += 1;
                 }
@@ -543,11 +791,11 @@ impl Pass {
                 );
             }
         }
-        let slot = viewer.as_ref().map(|viewer| viewer.slot);
+        let slot = viewer.as_ref().and_then(|viewer| viewer.slot);
         match (sides, viewer) {
             (Some((frame, sides)), Some(viewer)) => {
                 fold.perspective
-                    .advance(&viewer, sides, perspective_continuity);
+                    .advance(&viewer, false, sides, perspective_continuity);
                 fold.last = Some((hour, true));
                 advance_icons(
                     &mut fold.icons,
@@ -582,7 +830,10 @@ impl Pass {
             {
                 covered.viewers.push((hour, slot));
             }
-            let player_slot = player.as_ref().map(|(_, view)| *view);
+            let player_slot = player
+                .as_ref()
+                .and_then(|(_, view)| *view)
+                .and_then(|(slot, raw)| (raw != 0).then_some(slot).flatten());
             if covered
                 .players
                 .last()

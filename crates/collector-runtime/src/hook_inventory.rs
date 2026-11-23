@@ -11,7 +11,7 @@ use engine_land_inputs::{
 use engine_mutations::{
     advisor_mutations, advisor_pool_mutations, air_base_mutations, air_wing_equipment_mutations,
     army_stat_mutations, building_mutations, character_role_mutations, character_roster_mutations,
-    country_input_mutations, faction_companion_mutations, faction_goal_mutations,
+    combat_engagement_mutations, country_input_mutations, faction_companion_mutations, faction_goal_mutations,
     local_subunit_mutations, naval_tree_mutations, opinion_mutations, party_leader_mutations,
     political_party_mutations, political_status_mutations, province_combat_mutations,
     province_unit_mutations, raid_mutations, railway_mutations, regional_mission_mutations,
@@ -318,6 +318,9 @@ pub(crate) fn patches() -> Vec<Patch> {
     }
     for site in province_combat_mutations::MUTATIONS {
         add("province_combat_changes", site.name, site.rva, FIVE);
+    }
+    for site in combat_engagement_mutations::MUTATIONS {
+        add("combat_engagement_refreshes", site.name, site.rva, FIVE);
     }
     for (site, _) in air_base_mutations::MUTATIONS {
         add("air_base_carry_changes", site.name, site.rva, FIVE);
