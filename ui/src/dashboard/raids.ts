@@ -10,7 +10,7 @@ import { isOrderedSpans, runAt } from '../charts/series.ts';
 import type { Span } from '../charts/series';
 import type { RaidEpisode, RaidLogReply, RaidPhaseRun, RaidPreparationRun, RaidTypeInfo } from '../generated/dashboard';
 import { productRequest } from './request.ts';
-import { gatedRead } from './gatedRead.ts';
+import { gatedRead, readData } from './gatedRead.ts';
 
 export const RAIDS_AVAILABILITY = { product: 'raid-log', params: { catalogue: true } } as const;
 
@@ -50,7 +50,8 @@ export function useRaidLog(widget: WidgetSpec, runtime: WidgetRuntime, active: b
   const request = track && (!ranged || range) ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'raid-log',
     params: { branchId: track.branch.id, ...(catalogue ? { catalogue: true } : {}), ...(range ? { from: range.firstHour, to: range.lastHour } : {}) } }) : null;
   const product = useProduct<RaidLogReply>(runtime.client, request, active, validateRaidLog, track?.source);
-  return { track, read: catalogue ? null : gatedRead(gate, product, ranged && gate.open && !range ? UNRECORDED_MESSAGE : null), ...product };
+  const read = catalogue ? null : gatedRead(gate, { ...product, hour: range ? range.lastHour : undefined }, ranged && gate.open && !range ? UNRECORDED_MESSAGE : null);
+  return { track, read, ...product, data: read ? readData(read) : product.data };
 }
 
 export function startedBy(episodes: readonly RaidEpisode[], hour: number | null): number {

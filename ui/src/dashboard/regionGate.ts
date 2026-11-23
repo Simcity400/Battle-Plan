@@ -15,7 +15,8 @@ import { useCountryGroups } from './useCountryGroups.ts';
 import { axisAt, checkedTime, followedProduct, FOLLOW, recordedHour, refusedHours, regionFollows, regionHour, regionTrack, regionWindow, SPEC, type AxisHour,
   type BoundHour, type BoundWindow, type FollowQuery, type GatedHour, type GatedTime, type GatedWindow, type Outside, type PinTime, type Region, type RegionAction,
   type TimeRefusal, type TrackHour } from './regionTime.ts';
-import { epochOf, useRegion, useRegionHour, useRegionOutside } from './widgetTime.ts';
+import { epochOf, useRegion, useRegionHour, useRegionOutside } from './widgetTime.ts';
+import { NO_MEMBERS } from './noMembers.ts';
 
 export interface CountryNeed { stored?: unknown; held?: Holder | null; key?: string; setOption?: (key: string, value: string) => void }
 export interface GateNeeds { country?: CountryNeed; members?: boolean; holders?: boolean; changes?: readonly number[] }
@@ -193,7 +194,7 @@ function useCountryAt(region: Region, runtime: Runtime, track: BoundTrack | unde
   return { ...country, holders: resolved?.holders ?? null,
     pick: holder => { if (!picked && campaign !== undefined && branch !== undefined && chosen && track)
       keep({ campaign, branch, tag: chosen, originOffset: holder.origin - track.branch.firstHour }); },
-    error, retry: bySlot ? slotState.retry : groups.retry, historyHeld: bySlot ? !!slots : !!histories, aliasAt, edges, holder, history,
+    error, retry: bySlot ? slotState.retry : groups.retry, historyHeld: bySlot ? !!slots : !!histories && groups.complete, aliasAt, edges, holder, history,
     aliases: bySlot ? slotAliases : resolved?.holders || resolved?.rebind ? null : spans };
 }
 
@@ -318,6 +319,7 @@ export function gateStage(track: BoundTrack | undefined, outside: Outside | null
   if (needsMembers && members) {
     if (!groups.data) return groups.error ? { stage: 'failed', failure: groups.error, retry: groups.retry } : { stage: 'loading' };
     if (members.selectionReason) return { stage: 'no-members', reason: members.selectionReason };
+    if (members.countries?.size === 0) return { stage: 'no-members', reason: NO_MEMBERS.hour };
   }
   return { stage: 'open' };
 }

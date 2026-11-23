@@ -126,6 +126,9 @@ test('a gated read reaches its data only when the gate is open and the read land
   assert.equal(gatedRead(gate({ stage: 'open' }), { retry() {} }).state, 'pending');
   assert.equal(gatedRead(gate({ stage: 'open' }), { error: new Error('x'), retry() {} }).state, 'failed');
   assert.deepEqual(readData(gatedRead(gate({ stage: 'open' }), { data: [], retry() {} })), [], 'a landed empty reply is ready with no rows');
+  assert.equal(gatedRead(gate({ stage: 'open' }), { data: [1], hour: 1003, retry() {} }).state, 'pending', 'a reply landed for another hour never satisfies an exact pin');
+  const followed = gatedRead(gate({ stage: 'open' }), { data: [1], hour: 1003, retry() {} }, null, true);
+  assert.deepEqual(followed.state === 'ready' && followed.hour, 1003, 'ready carries the hour its reply landed for');
 });
 
 test('the gate’s stages run in a fixed order, and a country that holds nothing once its history is known is absent, never loading', () => {
@@ -142,6 +145,7 @@ test('the gate’s stages run in a fixed order, and a country that holds nothing
   assert.equal(stage({ country: country({ tag: null }) }), 'absent', 'a country whose history is known but holds no tag here is absent');
   assert.equal(stage({ country: country({ aliases: new Map() }) }), 'absent', 'a held identity with no aliases at all is absent, not an empty open view');
   assert.equal(stage({ members: members('No members') }), 'no-members');
+  assert.equal(stage({ members: { selectionReason: null, countries: new Set() } as unknown as Parameters<typeof gateStage>[7] }), 'no-members', 'a selection with no member at the hour is no-members, never an open empty read');
   assert.equal(stage({}), 'open');
 });
 

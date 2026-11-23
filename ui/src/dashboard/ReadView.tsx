@@ -3,11 +3,10 @@ import WidgetState from '../components/WidgetState';
 import ReachedCountryChoice from './ReachedCountryChoice';
 import { coverageOf } from './widgetTime.ts';
 import type { Gate } from './regionGate';
-import type { GatedHour } from './regionTime';
 import type { GatedRead } from './gatedRead.ts';
 
 export default function ReadView<T>({ read, loading, gate, children }: {
-  read: GatedRead<T>; loading: string; gate?: Pick<Gate, 'country'>; children: (data: T, hour: GatedHour | null) => ReactNode;
+  read: GatedRead<T>; loading: string; gate?: Pick<Gate, 'country'>; children: (data: T, hour: number | null) => ReactNode;
 }) {
   switch (read.state) {
     case 'ready': return <>{children(read.data, read.hour)}</>;

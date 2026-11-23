@@ -544,7 +544,7 @@ test('40. World tension’s breakdown open and paused at 105 is the region that 
   assert.ok(left.drillOpen, 'the paused breakdown stays open');
   const reported = [...mounted.shown, ...opened.shown, ...paused.shown, ...left.shown];
   assert.ok(reported.length > 0 && reported.at(-1) === 105, `the widget last reports the breakdown’s hour: ${JSON.stringify(reported)}`);
-  assert.deepEqual([...opened.shown, ...paused.shown, ...left.shown].filter(hour => hour !== 105), [], `only the breakdown’s hour is reported once it opens: ${JSON.stringify(reported)}`);
+  assert.deepEqual([...opened.shown, ...paused.shown, ...left.shown].filter(hour => hour !== 105 && hour !== null), [], `once it opens, only the hour the breakdown’s reply shows is reported, or nothing while it reads: ${JSON.stringify(reported)}`);
 }));
 
 test('41. Factories: GER picked at 103 and pinned after GER passes to another country pins the country it picked, by its verified identity', () => onPage(async act => {

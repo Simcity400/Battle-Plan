@@ -16,7 +16,7 @@ test('licences load until the groups come; with no licence, a group with no memb
   hour: ${BRANCH.lastHour}, at: ${BRANCH.lastHour}, live: { read: () => ({ get: () => undefined, missing: () => '' }), subscribe: () => () => {} }, shownAt: () => ${BRANCH.lastHour} });`,
     '/dashboard/products.ts': 'export const useProduct = () => ({ retry() {}, data: undefined });',
     '/dashboard/atHead.ts': `export const useAtHead = () => ${BRANCH.lastHour}; export const useIdentityHour = () => null;`,
-    '/dashboard/widgetPerf.ts': 'export const useShownEachFrame = () => {}; export const useDrillShown = () => {};',
+    '/dashboard/widgetPerf.ts': 'export const useShownEachFrame = () => {}; export const useDrillShown = () => {}; export const DrillScope = props => props.children;',
     '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ muted: "#777", fontSize: { title: 12, small: 10 } }); export const useViewportHeight = () => 1000;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',

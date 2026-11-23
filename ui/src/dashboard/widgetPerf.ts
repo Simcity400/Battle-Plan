@@ -6,6 +6,7 @@ import { perfLog, type WidgetWork } from '../shell/perf.ts';
 import { noteCause, widgetZones } from '../shell/commitCount.ts';
 
 export const MeasuredWidget = createContext<string | null>(null);
+export const DrillScope = createContext(false);
 
 export function measuredWidget(): string | null {
   return perfLog ? use(MeasuredWidget) : null;
@@ -61,14 +62,13 @@ export function shownReporter(widget: string | null, drill = false): (hour: numb
 
 export function useShownHour(): (hour: number | null) => void {
   const widget = measuredWidget();
-  return useMemo(() => shownReporter(widget), [widget]);
+  const inDrill = use(DrillScope);
+  return useMemo(() => shownReporter(widget, inDrill), [widget, inDrill]);
 }
 
-export function useDrillShown(clock: Pick<PlaybackController, 'subscribeFrame'>, on: boolean, at: () => number | null): void {
+export function useDrillShown(on: boolean): void {
   const widget = measuredWidget();
   const shown = useMemo(() => shownReporter(widget, true), [widget]);
-  const latest = useRef(at);
-  latest.current = at;
   const owns = on && shownSink() !== null, key = widget ?? '';
   useLayoutEffect(() => {
     if (!owns) return undefined;
@@ -78,11 +78,7 @@ export function useDrillShown(clock: Pick<PlaybackController, 'subscribeFrame'>,
       if (left > 0) drilled.set(key, left); else drilled.delete(key);
     };
   }, [key, owns]);
-  useEffect(() => { if (owns) shown(latest.current()); });
-  useEffect(() => {
-    if (!owns) return undefined;
-    return clock.subscribeFrame(() => shown(latest.current()));
-  }, [clock, shown, owns]);
+  useEffect(() => { if (owns) shown(null); }, [owns, shown]);
 }
 
 export function useShownEachFrame(clock: Pick<PlaybackController, 'subscribeFrame'>, at: (() => number | null) | null,

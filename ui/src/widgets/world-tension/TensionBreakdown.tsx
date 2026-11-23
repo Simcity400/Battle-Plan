@@ -1,5 +1,5 @@
 import type { SeriesGate } from '../../dashboard/keyedSeries';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { Select } from '../../components/Select';
 import DrillParts from '../../charts/drill/DrillParts';
@@ -18,7 +18,8 @@ import type { Failure } from '../../dashboard/queryError';
 import type { TensionContribution, ThreatEvent, WorldTensionReply } from '../../generated/dashboard';
 import TensionChart from './TensionChart';
 import { causeAt, contributionCell, contributorName, eventKeys, percent, percentOf, shareText, worldCells } from './tensionData.ts';
-import { type ReadCoverage } from '../../dashboard/widgetTime.ts';
+import { type ReadCoverage } from '../../dashboard/widgetTime.ts';
+import { useShownHour } from '../../dashboard/widgetPerf';
 
 export interface TensionBreakdownProps {
   runtime: WidgetRuntime; gate: SeriesGate; track: BoundTrack; active: boolean; options: Readonly<Record<string, OptionValue>>;
@@ -36,6 +37,8 @@ export interface TensionBreakdownProps {
 export default function TensionBreakdown({ runtime, gate, track, active, options, extent, playhead, following, hour, read, reply, live, error, onRetry, looks, colour,
   otherColour, layers, events, tooltip, onHover, onPick }: TensionBreakdownProps) {
   const [cause, setCause] = useState<string | null>(null);
+  const shown = useShownHour();
+  useEffect(() => { shown(reply ? hour : null); }, [reply, hour, shown]);
   const keys = useMemo(() => eventKeys(events), [events]);
   const name = (item: TensionContribution) => contributorName(item.tag, item.remembered, tag => looks.name(tag));
   const scale = reply?.contributionScale ?? 100_000;
