@@ -38,16 +38,16 @@ export default function UpdateSettings() {
       <strong>BattlePlan {state?.currentVersion ?? ''}</strong>
       {failure ? <FailureLine message={failure.text} detail={failure.detail} onRetry={failure.retry} retryDisabled={actions.pending} />
         : <small>{updateDescription(state)}</small>}
-      {state && !asking && (state.availableVersion || state.downloadedVersion) && <UpdateNotes state={state} />}</span>
+      {state && !asking && (state.availableVersion || state.downloadedVersion)
+        && <UpdateNotes state={state} onOpenRelease={release => void actions.openRelease(release)} />}</span>
       {!blocking && <button ref={opener} type="button" className={`button small${action === 'install' ? ' primary' : ''}`}
         disabled={updateDisabled(state) || actions.pending || asking} onClick={press}><Icon name="download" />{updateButtonLabel(state)}</button>}
     </div>
     {asking && state && version && <div className="settings-row update-confirm" role="alertdialog" aria-labelledby="update-confirm-title"
       onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancel(); } }}>
       <span className="settings-row-text"><strong id="update-confirm-title">{restartQuestion(version, state.downgrade)}</strong>
-        <small>{blockedReason(state) ?? confirmInstall(version, state.downgrade)}</small><UpdateNotes state={state} /></span>
+        <small>{blockedReason(state) ?? confirmInstall(version, state.downgrade)}</small><UpdateNotes state={state} onOpenRelease={release => void actions.openRelease(release)} /></span>
       <span className="update-confirm-actions">
-        <button type="button" className="button small quiet" onClick={() => void actions.openRelease(version)}>Release notes</button>
         <button type="button" className="button small quiet" autoFocus onClick={cancel}>Cancel</button>
         <button type="button" className="button small primary" disabled={state.installBlocked != null || actions.pending}
           onClick={() => { setConfirming(null); actions.install(opener.current); }}>{restartLabel(state)}</button>

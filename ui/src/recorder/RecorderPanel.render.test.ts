@@ -328,7 +328,7 @@ test('a downloaded update says so in words above the footer, and the footer glyp
     const listed = { version: '0.9.5', since: '0.9.3', date: null, changes: 3, highlights: null, more: null,
       pulls: [{ number: 10, title: 'Recorder: a spool survives a crash' }] };
     const behind = text(render({ view: 'settings', update: update({ status: 'available', availableVersion: '0.9.6', releases: [summarized, listed], unlisted: true }) }));
-    assert.match(behind, /0\.9\.6 Fog of war\. The map hides what a country cannot see\. Plus 2 more fixes and improvements\. 0\.9\.5 Recorder: a spool survives a crash And 2 more changes\. Earlier releases aren’t listed here\./,
+    assert.match(behind, /is available\. Fog of war\. The map hides what a country cannot see\. Plus 2 more fixes and improvements\. 0\.9\.5 Recorder: a spool survives a crash And 2 more changes\. Earlier releases aren’t listed here\./,
       'each release the update brings, newest first; one without a summary lists its pull requests, and a gap in the history is named');
     assert.match(text(render({ view: 'settings', update: update({ status: 'available', availableVersion: '0.9.6', unlisted: true }) })), /This update’s changes aren’t listed here\./,
       'an update whose notes are missing says so');

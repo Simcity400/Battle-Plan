@@ -107,36 +107,49 @@ export function confirmInstall(version: string, downgrade: boolean): string {
     : `BattlePlan and BattlePlan Recorder close, update to ${version} and reopen.`;
 }
 
-export interface ReleaseView { items: { label: string | null; text: string }[]; footer: string | null }
+export interface ReleaseView { items: { label: string | null; text: string }[]; footer: { text: string; strong: boolean } | null }
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
 export function releaseView(notes: ReleaseNotes, shown = 6): ReleaseView {
-  if (!notes.changes) return { items: [], footer: notes.since ? 'No changes since the previous release.' : 'The first release on this channel.' };
+  const quiet = (text: string) => ({ text, strong: false });
+  if (!notes.changes) return { items: [], footer: quiet(notes.since ? 'No changes since the previous release.' : 'The first release on this channel.') };
   if (notes.highlights) {
     const more = notes.more ?? 0;
     const unmerged = notes.changes - notes.pulls.length;
     return {
       items: notes.highlights.map(highlight => ({ label: highlight.label, text: highlight.detail })),
-      footer: more ? `Plus ${plural(more, 'more fix or improvement', 'more fixes and improvements')}.`
+      footer: more ? { text: `Plus ${plural(more, 'more fix or improvement', 'more fixes and improvements')}.`, strong: true }
         : notes.highlights.length ? null
-        : unmerged ? `${plural(unmerged, 'change', 'changes')} made without a pull request.` : 'Nothing you’ll notice in the app: these changes are internal.',
+        : quiet(unmerged ? `${plural(unmerged, 'change', 'changes')} made without a pull request.` : 'Nothing you’ll notice in the app: these changes are internal.'),
     };
   }
   const items = notes.pulls.slice(0, shown).map(pull => ({ label: null, text: pull.title }));
   const rest = notes.changes - items.length;
-  return { items, footer: rest > 0 ? `And ${plural(rest, 'more change', 'more changes')}.` : null };
+  return { items, footer: rest > 0 ? quiet(`And ${plural(rest, 'more change', 'more changes')}.`) : null };
+}
+
+export function releaseLink(notes: ReleaseNotes): string {
+  return notes.changes ? `${plural(notes.changes, 'change', 'changes')} on GitHub` : 'Release on GitHub';
 }
 
 export function releaseAge(date: string | null, now = Date.now()): string | null {
   const at = date ? Date.parse(date) : Number.NaN;
   if (Number.isNaN(at)) return null;
-  const day = (time: number) => { const local = new Date(time); return Date.UTC(local.getFullYear(), local.getMonth(), local.getDate()); };
-  const days = Math.round((day(now) - day(at)) / 86_400_000);
-  return days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
+  const minutes = Math.floor((now - at) / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
 }
 
-export function releaseHeading(notes: ReleaseNotes, now = Date.now()): string {
-  const age = releaseAge(notes.date, now);
-  return age ? `${notes.version} · ${age}` : notes.version;
+export function releaseHeading(version: string, releases: readonly ReleaseNotes[], now = Date.now()): string {
+  const age = releaseAge(releases.find(notes => notes.version === version)?.date ?? null, now);
+  return age ? `${version} · ${age}` : version;
+}
+
+export function peekTitle(state: UpdateState): string {
+  if (state.status === 'downloading') return `Downloading ${offer(state)}${percent(state)}`;
+  if (state.downloadedVersion) return state.installBlocked ? `${Offer(state)} downloaded` : `${Offer(state)} ready to install`;
+  return state.downgrade ? 'Older version available' : 'Update ready to download';
 }

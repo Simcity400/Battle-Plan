@@ -6,8 +6,8 @@ import { errorMessage } from '../shell/errors';
 import * as api from './api';
 import type { UpdateState } from './api';
 import { actionFailure } from '../dashboard/queryError';
-import { blockedReason, confirmInstall, releaseHeading, releaseView, restartLabel, restartQuestion, updateAction, updateDisabled, updateFailure, updateNews,
-  updateTooltip } from './logic';
+import { blockedReason, confirmInstall, peekTitle, releaseHeading, releaseLink, releaseView, restartLabel, restartQuestion, updateAction, updateDisabled,
+  updateFailure, updateNews, updateTooltip } from './logic';
 import './update.css';
 
 const RING_RADIUS = 14;
@@ -72,21 +72,24 @@ export function useUpdateActions() {
 const PEEK_OPEN_MS = 200;
 const PEEK_CLOSE_MS = 150;
 
-export function UpdateNotes({ state }: { state: UpdateState }) {
+export function UpdateNotes({ state, onOpenRelease }: { state: UpdateState; onOpenRelease?: (version: string) => void }) {
   if (!state.releases.length && !state.unlisted) return null;
   const now = Date.now();
+  const offered = state.downloadedVersion ?? state.availableVersion;
   return <div className="update-releases">
     {state.releases.map(notes => {
       const { items, footer } = releaseView(notes);
       return <section key={notes.version} className="update-release">
-        <h3 className="update-release-heading">{releaseHeading(notes, now)}</h3>
+        {notes.version !== offered && <h3 className="update-release-heading">{releaseHeading(notes.version, state.releases, now)}</h3>}
         {items.length > 0 && <ul className="update-notes">
           {items.map((item, index) => <li key={index}>{item.label && <><strong>{item.label}.</strong>{' '}</>}{item.text}</li>)}
         </ul>}
-        {footer && <p className="update-notes-more">{footer}</p>}
+        {footer && <p className={`update-release-footer${footer.strong ? ' is-strong' : ''}`}>{footer.text}</p>}
+        {onOpenRelease && state.enabled && <button type="button" className="update-release-link" onClick={() => onOpenRelease(notes.version)}>
+          {releaseLink(notes)}<Icon name="external" /></button>}
       </section>;
     })}
-    {state.unlisted && <p className="update-notes-more">{state.releases.length ? 'Earlier releases aren’t listed here.' : 'This update’s changes aren’t listed here.'}</p>}
+    {state.unlisted && <p className="update-release-footer">{state.releases.length ? 'Earlier releases aren’t listed here.' : 'This update’s changes aren’t listed here.'}</p>}
   </div>;
 }
 
@@ -147,11 +150,11 @@ export function UpdateButton({ state }: { state: UpdateState | null }) {
           </>;
         }
         if (state && peeking && !notice && offered) return <>
-          <strong className="update-popover-title">{tooltip}</strong>
-          <UpdateNotes state={state} />
-          {state.enabled && <div className="update-popover-actions">
-            <button type="button" className="button small quiet update-popover-link" onClick={() => void actions.openRelease(offered)}>Release notes</button>
-          </div>}
+          <div className="update-peek-head">
+            <strong className="update-peek-title">{peekTitle(state)}</strong>
+            <span className="update-peek-version">{releaseHeading(offered, state.releases)}</span>
+          </div>
+          <UpdateNotes state={state} onOpenRelease={version => void actions.openRelease(version)} />
         </>;
         if (!state || !notice || stale) return null;
         const { version } = notice;
@@ -159,10 +162,8 @@ export function UpdateButton({ state }: { state: UpdateState | null }) {
         return <>
           <strong className="update-popover-title">{restartQuestion(version, state.downgrade)}</strong>
           <p className="update-popover-text">{blocked ? blockedReason(state) : confirmInstall(version, state.downgrade)}</p>
-          <UpdateNotes state={state} />
+          <UpdateNotes state={state} onOpenRelease={release => void actions.openRelease(release)} />
           <div className="update-popover-actions">
-            {state.enabled && <button type="button" className="button small quiet update-popover-link" onClick={() => void actions.openRelease(version)}>Release notes</button>}
-            <span className="update-grow" />
             <button type="button" className="button small quiet" data-popover-autofocus onClick={menu.close}>{notice.kind === 'downloaded' ? 'Later' : 'Cancel'}</button>
             <button type="button" className="button small primary" disabled={blocked != null || actions.pending}
               onClick={() => { menu.close(); actions.install(menu.trigger.current); }}>{restartLabel(state)}</button>
