@@ -282,7 +282,7 @@ test('a downloaded update says so in words above the footer, and the footer glyp
   try {
     const { PanelView } = await vite.ssrLoadModule('/ui/src/recorder/RecorderPanel.tsx') as { PanelView: (props: PanelViewProps) => unknown };
     const state: UpdateState = { enabled: true, status: 'up-to-date', channel: 'stable', build: 'stable', currentVersion: '0.9.4', availableVersion: null,
-      downloadedVersion: null, releasedAt: null, notes: [], downloadPercent: null, checkedAt: null, message: null, errorContext: null, installBlocked: null, channelWarning: null };
+      downloadedVersion: null, releasedAt: null, notes: [], downloadPercent: null, checkedAt: null, message: null, errorContext: null, installBlocked: null, channelWarning: null, downgrade: false };
     const update = (change: Partial<UpdateState>, ask: PanelUpdate['ask'] = null): PanelUpdate =>
       ({ state: { ...state, ...change }, failure: null, ask, pending: false, press() {}, restart() {}, retry() {}, dismiss() {}, channel() {} });
     const render = (props: Partial<PanelViewProps>) => renderToStaticMarkup(createElement(PanelView as never, {
@@ -341,6 +341,14 @@ test('a downloaded update says so in words above the footer, and the footer glyp
     assert.match(text(fromSettings), /Stable: tested releases for BattlePlan and the recorder\. Stable Nightly Restart to update to 0\.9\.5\? .* Cancel Restart to update Open BattlePlan/,
       'a restart asked from Settings is asked there');
     assert.match(fromSettings, /data-focus="update-settings"/, 'dismissing it returns focus to the Settings button');
+    const switching = { status: 'downloaded', channel: 'stable', build: 'nightly', currentVersion: '0.9.5-nightly.20261123.7', availableVersion: '0.9.4',
+      downloadedVersion: '0.9.4', downgrade: true } as const;
+    assert.match(text(render({ update: update(switching) })), /Version 0\.9\.4 is ready Restart to switch Open BattlePlan/);
+    assert.match(text(render({ update: update(switching, 'confirm') })),
+      /Restart to switch to 0\.9\.4\? BattlePlan and BattlePlan Recorder close, switch to 0\.9\.4, an older version, and reopen\. Recordings made with this build may not open in it\. Cancel Restart to switch/,
+      'a channel switch to an older release says so before the restart');
+    assert.match(text(render({ view: 'settings', update: update({ ...switching, status: 'available', downloadedVersion: null }) })),
+      /Version 0\.9\.4 is available on this channel\. It’s older than 0\.9\.5-nightly\.20261123\.7\. Download Channel Stable: tested releases/);
     const updates = text(render({ view: 'settings', update: update({ checkedAt: Date.UTC(2026, 10, 21, 18, 0) }) }));
     assert.match(updates, /BattlePlan Recorder 0\.9\.4 Up to date \(checked \d\d:\d\d\)\. Check again Channel Stable: tested releases for BattlePlan and the recorder\. Stable Nightly/,
       'the check result sits with the version and its button, the channel note with the channel');

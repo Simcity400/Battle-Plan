@@ -22,7 +22,7 @@ import { AUTO_COMPRESS_NOTE, COMPRESS_TOOLTIP, COMPRESSION_NOTE } from './compre
 import type { Compression } from './compression';
 import { setUpdateChannel, updatesAvailable } from '../update/api';
 import type { UpdateChannel, UpdateState } from '../update/api';
-import { blockedReason, CHANNEL_LABELS, channelDescription, channelLocked, confirmInstall, restartQuestion, UPDATE_READ_FAILED, updateAction, updateButtonLabel,
+import { blockedReason, CHANNEL_LABELS, channelDescription, channelLocked, confirmInstall, restartLabel, restartQuestion, UPDATE_READ_FAILED, updateAction, updateButtonLabel,
   updateDescription, updateDisabled, updateFailure, updateNews, updateTooltip } from '../update/logic';
 import { UpdateIcon, useUpdateActions } from '../update/UpdateControl';
 import { useUpdateState } from '../update/useUpdateState';
@@ -358,8 +358,8 @@ export function PanelView({ snapshot, settings, view, asking, error, errorDetail
     {update?.ask && update.state && <UpdateAsk update={update} />}
     {ready && !prompt && <div className="recorder-update-ready" role={readyFailure ? undefined : 'status'}>
       {readyFailure ? <FailureLine message={readyFailure.text} detail={readyFailure.detail} />
-        : <><span className="update-dot" aria-hidden="true" /><span>Update {ready} is ready</span></>}
-      <button type="button" className="button small" data-focus="update" onClick={update!.press}><Icon name="download" />Restart to update</button>
+        : <><span className="update-dot" aria-hidden="true" /><span>{update!.state?.downgrade ? 'Version' : 'Update'} {ready} is ready</span></>}
+      <button type="button" className="button small" data-focus="update" onClick={update!.press}><Icon name="download" />{restartLabel(update!.state)}</button>
     </div>}
     {footer(<>
       {update && !ready && !update.ask && updateNews(update.state) && <button type="button" className="update-button" aria-label={updateTooltip(update.state)} data-tooltip={updateTooltip(update.state)}
@@ -378,13 +378,13 @@ function UpdateAsk({ update }: { update: PanelUpdate }) {
   const version = state.downloadedVersion ?? state.availableVersion ?? '';
   const blocked = state.installBlocked;
   return <div className="recorder-ask" role="alertdialog" aria-labelledby="recorder-update-question" aria-describedby="recorder-update-detail">
-    <p id="recorder-update-question" className="recorder-ask-question">{restartQuestion(version)}</p>
+    <p id="recorder-update-question" className="recorder-ask-question">{restartQuestion(version, state.downgrade)}</p>
     <p id="recorder-update-detail" className={`recorder-ask-detail${blocked ? ' is-warning' : ''}`} role={blocked ? 'status' : undefined}>
-      {blocked ? <><Icon name="alert" /><span>{blockedReason(state)}</span></> : confirmInstall(version)}</p>
+      {blocked ? <><Icon name="alert" /><span>{blockedReason(state)}</span></> : confirmInstall(version, state.downgrade)}</p>
     <div className="recorder-prompt-actions">
       <button key="later" type="button" className="button small quiet" autoFocus onClick={update.dismiss}>{update.ask === 'downloaded' ? 'Later' : 'Cancel'}</button>
       <button key="restart" type="button" className="button small primary" disabled={blocked != null || update.pending}
-        onClick={update.restart}>Restart to update</button>
+        onClick={update.restart}>{restartLabel(state)}</button>
     </div>
   </div>;
 }

@@ -27,8 +27,13 @@ pub struct Release {
     pub version: String,
     pub notes: Option<String>,
     pub released_at: Option<String>,
+    pub older: bool,
     url: String,
     signature: String,
+}
+
+fn offered(version: &semver::Version, current: &semver::Version, switching: bool) -> bool {
+    version > current || (switching && version != current)
 }
 
 pub fn client(current: &str) -> Result<reqwest::Client, String> {
@@ -40,10 +45,11 @@ pub fn client(current: &str) -> Result<reqwest::Client, String> {
         .map_err(|error| format!("The update client couldn’t start: {error}"))
 }
 
-pub async fn newer(
+pub async fn offer(
     client: &reqwest::Client,
     feed: &str,
     current: &semver::Version,
+    switching: bool,
 ) -> Result<Option<Release>, String> {
     let response = client
         .get(feed)
@@ -64,7 +70,7 @@ pub async fn newer(
         serde_json::from_slice(&body).map_err(|error| format!("it isn’t a release: {error}"))?;
     let version = semver::Version::parse(&manifest.version)
         .map_err(|error| format!("its version {} isn’t valid: {error}", manifest.version))?;
-    if version <= *current {
+    if !offered(&version, current, switching) {
         return Ok(None);
     }
     let platform = manifest
@@ -72,6 +78,7 @@ pub async fn newer(
         .get(PLATFORM)
         .ok_or_else(|| format!("its release {version} has no Windows build"))?;
     Ok(Some(Release {
+        older: version < *current,
         version: manifest.version,
         notes: manifest.notes,
         released_at: manifest.pub_date,
@@ -137,4 +144,21 @@ fn verify(package: &[u8], signature: &str, version: &str) -> Result<(), String> 
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::offered;
+
+    #[test]
+    fn a_channel_switch_offers_the_chosen_channels_release_even_when_it_is_older() {
+        let version = |text: &str| semver::Version::parse(text).unwrap();
+        let nightly = version("0.1.2-nightly.20261123.5");
+        let stable = version("0.1.1");
+        assert!(!offered(&stable, &nightly, false));
+        assert!(offered(&stable, &nightly, true));
+        assert!(offered(&nightly, &stable, false));
+        assert!(offered(&version("0.1.2"), &nightly, false));
+        assert!(!offered(&nightly, &nightly, true));
+    }
 }

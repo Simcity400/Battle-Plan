@@ -1,5 +1,17 @@
 
-!define HOI_RECORDER "BattlePlan Recorder"
+!searchparse /noerrors "$%BATTLEPLAN_VERSION%" "" HOI_RELEASE "-nightly." HOI_NIGHTLY
+!ifdef HOI_NIGHTLY
+  !define HOI_CHANNEL "Nightly"
+  !define HOI_OTHER_CHANNEL "Alpha"
+!else
+  !define HOI_CHANNEL "Alpha"
+  !define HOI_OTHER_CHANNEL "Nightly"
+!endif
+!define HOI_APP "BattlePlan (${HOI_CHANNEL})"
+!define HOI_OTHER_APP "BattlePlan (${HOI_OTHER_CHANNEL})"
+!define HOI_RECORDER "BattlePlan Recorder (${HOI_CHANNEL})"
+!define HOI_OTHER_RECORDER "BattlePlan Recorder (${HOI_OTHER_CHANNEL})"
+!define HOI_RUN_VALUE "BattlePlan Recorder"
 !define HOI_LEGACY_RECORDER "the game Recorder"
 !define HOI_LEGACY_APP "Battle Plan"
 !define HOI_RECORDER_EXE "battleplan-recorder.exe"
@@ -15,6 +27,7 @@ Var HoiReplayRan
 Var HoiGuard
 Var HoiClosing
 Var HoiStateFile
+Var HoiInstalled
 
 !define HOI_GUARD "Local\BattlePlan.Setup"
 !define HOI_STATE "BATTLEPLAN_SETUP_STATE"
@@ -116,15 +129,15 @@ Function HoiAbort
   ${EndIf}
 FunctionEnd
 
-!define MUI_WELCOMEPAGE_TEXT "This installs BattlePlan and BattlePlan Recorder for your Windows account. No administrator rights are needed.$\r$\n$\r$\nBattlePlan Recorder records your campaigns while the game runs.$\r$\n$\r$\n$_CLICK"
+!define MUI_WELCOMEPAGE_TEXT "This installs ${HOI_APP} and ${HOI_RECORDER} for your Windows account. No administrator rights are needed.$\r$\n$\r$\n${HOI_RECORDER} records your campaigns while the game runs.$\r$\n$\r$\n$_CLICK"
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW HoiWelcomeShow
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE HoiWelcomeLeave
 
 Function HoiWelcomeShow
-  ${NSD_CreateCheckbox} 120u 172u 195u 12u "Start BattlePlan Recorder when Windows starts"
+  ${NSD_CreateCheckbox} 120u 172u 195u 12u "Start ${HOI_RECORDER} when Windows starts"
   Pop $HoiStartCheckbox
   SetCtlColors $HoiStartCheckbox "" "${MUI_BGCOLOR}"
-  ReadRegStr $0 HKCU "${HOI_RUN_KEY}" "${HOI_RECORDER}"
+  ReadRegStr $0 HKCU "${HOI_RUN_KEY}" "${HOI_RUN_VALUE}"
   ${If} $0 != ""
   ${OrIfNot} ${FileExists} "$INSTDIR\${HOI_RECORDER_EXE}"
     ${NSD_Check} $HoiStartCheckbox
@@ -239,40 +252,62 @@ FunctionEnd
   !insertmacro HOI_READ_STATE
   !insertmacro HOI_CLOSE "recorder" "${HOI_RECORDER_EXE}" "${HOI_RECORDER}" "${HOI_RECORDER} is recording, saving a recording or attached to the game, so setup stopped. Run it again once ${HOI_RECORDER} is idle."
   ${IfThen} $HoiRunning == 1 ${|} StrCpy $HoiRecorderRan 1 ${|}
-  !insertmacro HOI_CLOSE "dashboard" "${MAINBINARYNAME}.exe" "${PRODUCTNAME}" "${PRODUCTNAME} has unsaved changes, so setup stopped. Save or discard them in ${PRODUCTNAME}, then run setup again."
+  !insertmacro HOI_CLOSE "dashboard" "${MAINBINARYNAME}.exe" "${HOI_APP}" "${HOI_APP} has unsaved changes, so setup stopped. Save or discard them in ${HOI_APP}, then run setup again."
   ${IfThen} $HoiAppClosed == 1 ${|} StrCpy $HoiReplayRan 1 ${|}
 !macroend
 
-!macro HOI_REPLACE_APP_SHORTCUT folder
-  ${If} ${FileExists} "${folder}\${HOI_LEGACY_APP}.lnk"
-    CreateShortcut "${folder}\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-    !insertmacro SetLnkAppUserModelId "${folder}\${PRODUCTNAME}.lnk"
-    Delete "${folder}\${HOI_LEGACY_APP}.lnk"
+!macro HOI_REPLACE_APP_SHORTCUT folder old
+  ${If} ${FileExists} "${folder}\${old}.lnk"
+    CreateShortcut "${folder}\${HOI_APP}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    !insertmacro SetLnkAppUserModelId "${folder}\${HOI_APP}.lnk"
+    Delete "${folder}\${old}.lnk"
   ${EndIf}
 !macroend
 
+!macro HOI_NAME_APP_SHORTCUTS folder
+  !insertmacro HOI_REPLACE_APP_SHORTCUT "${folder}" "${HOI_LEGACY_APP}"
+  !insertmacro HOI_REPLACE_APP_SHORTCUT "${folder}" "${PRODUCTNAME}"
+  !insertmacro HOI_REPLACE_APP_SHORTCUT "${folder}" "${HOI_OTHER_APP}"
+!macroend
+
+!macro HOI_REPLACE_RECORDER_SHORTCUT old
+  ${If} ${FileExists} "$SMPROGRAMS\${old}.lnk"
+    CreateShortcut "$SMPROGRAMS\${HOI_RECORDER}.lnk" "$INSTDIR\${HOI_RECORDER_EXE}"
+    Delete "$SMPROGRAMS\${old}.lnk"
+  ${EndIf}
+!macroend
+
+Function .onGUIEnd
+  ${If} $HoiInstalled == 1
+  ${AndIf} ${FileExists} "$DESKTOP\$(^Name).lnk"
+    Delete "$DESKTOP\${HOI_APP}.lnk"
+    Rename "$DESKTOP\$(^Name).lnk" "$DESKTOP\${HOI_APP}.lnk"
+  ${EndIf}
+FunctionEnd
+
 !macro NSIS_HOOK_POSTINSTALL
-  !insertmacro HOI_REPLACE_APP_SHORTCUT "$SMPROGRAMS"
-  !insertmacro HOI_REPLACE_APP_SHORTCUT "$DESKTOP"
+  !insertmacro HOI_NAME_APP_SHORTCUTS "$SMPROGRAMS"
+  !insertmacro HOI_NAME_APP_SHORTCUTS "$DESKTOP"
+  WriteRegStr SHCTX "${UNINSTKEY}" "DisplayName" "${HOI_APP}"
   Delete "$INSTDIR\viewer.exe"
   RMDir /r "$INSTDIR\shader-tools"
   !insertmacro HOI_REMOVE_LICENSES
-  ${If} ${FileExists} "$SMPROGRAMS\${HOI_LEGACY_RECORDER}.lnk"
-  ${OrIf} ${FileExists} "$SMPROGRAMS\${HOI_LEGACY_APP} Recorder.lnk"
-    CreateShortcut "$SMPROGRAMS\${HOI_RECORDER}.lnk" "$INSTDIR\${HOI_RECORDER_EXE}"
-    Delete "$SMPROGRAMS\${HOI_LEGACY_RECORDER}.lnk"
-    Delete "$SMPROGRAMS\${HOI_LEGACY_APP} Recorder.lnk"
-  ${ElseIf} $UpdateMode <> 1
+  ${If} $UpdateMode <> 1
   ${AndIf} $NoShortcutMode <> 1
     CreateShortcut "$SMPROGRAMS\${HOI_RECORDER}.lnk" "$INSTDIR\${HOI_RECORDER_EXE}"
   ${EndIf}
+  !insertmacro HOI_REPLACE_RECORDER_SHORTCUT "${HOI_LEGACY_RECORDER}"
+  !insertmacro HOI_REPLACE_RECORDER_SHORTCUT "${HOI_LEGACY_APP} Recorder"
+  !insertmacro HOI_REPLACE_RECORDER_SHORTCUT "${PRODUCTNAME} Recorder"
+  !insertmacro HOI_REPLACE_RECORDER_SHORTCUT "${HOI_OTHER_RECORDER}"
   ${If} $HoiStartRecorder == 1
-    WriteRegStr HKCU "${HOI_RUN_KEY}" "${HOI_RECORDER}" '"$INSTDIR\${HOI_RECORDER_EXE}"'
+    WriteRegStr HKCU "${HOI_RUN_KEY}" "${HOI_RUN_VALUE}" '"$INSTDIR\${HOI_RECORDER_EXE}"'
   ${ElseIf} $HoiStartRecorder == 0
-    DeleteRegValue HKCU "${HOI_RUN_KEY}" "${HOI_RECORDER}"
+    DeleteRegValue HKCU "${HOI_RUN_KEY}" "${HOI_RUN_VALUE}"
   ${EndIf}
   !insertmacro HOI_RELEASE_GUARD
   StrCpy $HoiClosing 0
+  StrCpy $HoiInstalled 1
   ${GetOptions} $CMDLINE "/BATTLEPLANRECORDER" $0
   ${IfNot} ${Errors}
     StrCpy $HoiRecorderRan 1
@@ -299,7 +334,7 @@ FunctionEnd
   ${AndIf} $HoiStateFile != ""
     WriteINIStr "$HoiStateFile" "closed" "recorder" "1"
   ${EndIf}
-  !insertmacro HOI_CLOSE "dashboard" "${MAINBINARYNAME}.exe" "${PRODUCTNAME}" "${PRODUCTNAME} has unsaved changes, so setup stopped. Save or discard them in ${PRODUCTNAME}, then run setup again."
+  !insertmacro HOI_CLOSE "dashboard" "${MAINBINARYNAME}.exe" "${HOI_APP}" "${HOI_APP} has unsaved changes, so setup stopped. Save or discard them in ${HOI_APP}, then run setup again."
   ${If} $HoiAppClosed == 1
   ${AndIf} $HoiStateFile != ""
     WriteINIStr "$HoiStateFile" "closed" "app" "1"
@@ -309,7 +344,11 @@ FunctionEnd
 
 !macro NSIS_HOOK_POSTUNINSTALL
   ${If} $UpdateMode <> 1
+    !insertmacro UnpinShortcut "$SMPROGRAMS\${HOI_APP}.lnk"
+    Delete "$SMPROGRAMS\${HOI_APP}.lnk"
+    !insertmacro UnpinShortcut "$DESKTOP\${HOI_APP}.lnk"
+    Delete "$DESKTOP\${HOI_APP}.lnk"
     Delete "$SMPROGRAMS\${HOI_RECORDER}.lnk"
-    DeleteRegValue HKCU "${HOI_RUN_KEY}" "${HOI_RECORDER}"
+    DeleteRegValue HKCU "${HOI_RUN_KEY}" "${HOI_RUN_VALUE}"
   ${EndIf}
 !macroend

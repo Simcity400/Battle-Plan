@@ -533,10 +533,13 @@ fn main() {
         };
         std::process::exit(code);
     }
-    if app_update::refused_during_setup("BattlePlan") {
+    if app_update::refused_during_setup(app_update::app_name()) {
         return;
     }
-    let context = context();
+    let mut context = context();
+    if let Some(window) = context.config_mut().app.windows.iter_mut().find(|window| window.label == "main") {
+        window.title = app_update::app_name().to_owned();
+    }
     perf::init();
     if let Some(prefix) = perf::map_prefix() {
         viewer::host::log_map_frames(prefix);
@@ -792,7 +795,7 @@ fn start_exit_worker() -> std::io::Result<&'static Exiting> {
     std::thread::Builder::new().name("ordered exit".into()).spawn(move || {
         let exit = &replay::exit::EXIT;
         exit.wait_sealed();
-        app_update::saving::wait_until_empty("BattlePlan", &exit.notices(), &|limit| exit.empty_within(limit), &|| exit.held().map(saving), &|| exiting.done.awaited());
+        app_update::saving::wait_until_empty(app_update::app_name(), &exit.notices(), &|limit| exit.empty_within(limit), &|| exit.held().map(saving), &|| exiting.done.awaited());
         app_update::control::stop();
         exiting.done.set();
         let Some(app) = exiting.app.get().cloned() else { end_now() };

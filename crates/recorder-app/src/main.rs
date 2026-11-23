@@ -27,7 +27,7 @@ fn start_exit_worker() -> std::io::Result<&'static Exiting> {
     std::thread::Builder::new().name("quitting".into()).spawn(move || {
         let exit = &replay::exit::EXIT;
         exit.wait_sealed();
-        app_update::saving::wait_until_empty("BattlePlan Recorder", &exit.notices(), &|limit| exit.empty_within(limit), &|| exit.held().map(worker::saving), &|| exiting.done.awaited());
+        app_update::saving::wait_until_empty(app_update::recorder_name(), &exit.notices(), &|limit| exit.empty_within(limit), &|| exit.held().map(worker::saving), &|| exiting.done.awaited());
         app_update::control::stop();
         exiting.done.set();
         let Some(app) = exiting.app.get() else { std::process::exit(0) };
@@ -47,7 +47,7 @@ fn main() {
     if first.is_some_and(|arg| arg == replay::recorder_settings::STARTED_WITH_REPLAY) && startup::held_by_a_job() {
         return;
     }
-    if app_update::refused_during_setup("BattlePlan Recorder") {
+    if app_update::refused_during_setup(app_update::recorder_name()) {
         return;
     }
     let Some(_instance) = startup::single_instance() else {
@@ -84,7 +84,7 @@ fn main() {
                 app_update::Role::Recorder,
                 Arc::new(updates::Host(Arc::clone(&recorder))),
             )?;
-            if let Err(error) = app_update::session::watch(Arc::new(worker::SessionEnding(handle.clone(), &exiting.done)), "BattlePlan Recorder") {
+            if let Err(error) = app_update::session::watch(Arc::new(worker::SessionEnding(handle.clone(), &exiting.done)), app_update::recorder_name()) {
                 eprintln!("BattlePlan Recorder can’t hear Windows end the session, so a sign-out or shutdown may not wait for its recording to be saved: {error}");
             }
             recorder.start(handle)?;
