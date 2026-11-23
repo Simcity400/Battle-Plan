@@ -16,9 +16,10 @@ const POOL: (u32, u8, u8, u64) = (0x18, 1, 0, 0);
 fn custody_holds_only_when_the_owner_stayed_linked_from_the_read_through_the_hour() {
     let links = RunLinks { slots: HashMap::from([(10, vec![(0, 49, Some(5)), (50, 99, Some(5)), (100, 199, Some(6))]), (11, vec![(50, 199, Some(5))]), (12, vec![(0, 199, Some(6))])]) };
     assert_eq!(owner_ids(&links, 5, 20, 150), BTreeMap::from([(10, vec![(20, 99)]), (11, vec![(50, 150)])]));
-    let piece = |held_from| Piece { run: 0, first: 100, last: 150, slot: 5, id: 1, held_from };
-    assert_eq!(piece(0).reach(), 100 - (STAGGER_PERIOD - 1), "an owner reaches back as far as a read that still supplies the first hour");
-    assert_eq!(piece(90).reach(), 90, "never past the start of the holder's continuous possession");
+    let piece = |held_from, opened| Piece { run: 0, first: 100, last: 150, slot: 5, id: 1, held_from, opened };
+    assert_eq!(piece(0, 0).reach(), 100 - (STAGGER_PERIOD - 1), "an owner reaches back as far as a read that still supplies the first hour");
+    assert_eq!(piece(90, 0).reach(), 90, "never past the start of the holder's continuous possession");
+    assert_eq!(piece(0, 95).reach(), 95, "R2-S1: nor past the first hour of the recording run it reads");
     let returned = RunLinks { slots: HashMap::from([(10, vec![(20, 30, Some(5)), (31, 31, Some(6)), (32, 60, Some(5))])]) };
     let custody = Custody::new(&returned, 5, 20, 60);
     assert_eq!(custody.usable(10, Some(25), &[(20, 60)], 28), Some(25));
@@ -170,7 +171,10 @@ fn frame(at: i32, spec: &Hour) -> replay_frame::frame::DecodedFrame {
 }
 
 fn recorded(id: &str, first: i32, last: i32, spec: impl Fn(i32) -> Hour) -> Facts {
-    let source = synthetic(id, first, last, |at| frame(at, &spec(at)));
+    recorded_in(id, synthetic(id, first, last, |at| frame(at, &spec(at))), first, last)
+}
+
+fn recorded_in(id: &str, source: Source, first: i32, last: i32) -> Facts {
     let query = dashboard_base::queries::query(&source, 1).unwrap();
     let country: Country = serde_json::from_value(serde_json::json!("GER")).unwrap();
     let cancelled = AtomicBool::new(false);
@@ -383,8 +387,43 @@ fn feed_completions_are_the_ledgers_counted_markers() {
         let (found, _) = counted(&query, 20, 34, &AtomicBool::new(false)).unwrap();
         found.into_iter().map(|counted| (counted.tag, counted.entry.date, counted.read, counted.definition)).collect::<Vec<_>>()
     };
-    let listed = completions("feed-listed", |at| Hour { history: if at < 25 { vec![(0, M, 21)] } else { vec![(0, M, 21), (1, M, 33)] }, ..hour(at, COMPLETED) });
-    assert_eq!(listed, [("GER".to_owned(), 21, 21, Some(40))], "one event per counted marker, named by the row read with it; a marker dated after its read is none");
+    let listed = completions("feed-listed", |at| Hour { history: if at >= 21 { vec![(0, M, 21)] } else { Vec::new() }, ..hour(at, COMPLETED) });
+    assert_eq!(listed, [("GER".to_owned(), 21, 21, Some(40))], "one event per counted marker, named by the row read with it");
+    let early = completions("feed-early", |at| Hour { history: if at >= 25 { vec![(0, M, 33)] } else { Vec::new() }, ..hour(at, COMPLETED) });
+    assert_eq!(early, [], "a marker dated after the read that first listed it is no completion, however often it is listed again");
     let renamed = completions("feed-renamed", |at| Hour { holder: Some(at >= 30), history: if at >= 30 { vec![(0, M, 25)] } else { Vec::new() }, ..hour(at, COMPLETED) });
     assert_eq!(renamed, [], "P-S7: a completion dated before this tag's holder took it is not credited to it, though the slot never changed");
+}
+
+fn adjacent(id: &str, first: i32, last: i32, load: i32, spec: impl Fn(i32) -> Hour) -> Source {
+    let frames = |hours: std::ops::RangeInclusive<i32>, branch: u64| {
+        hours
+            .map(|at| {
+                let mut frame = frame(at, &spec(at));
+                frame.branch = branch;
+                frame
+            })
+            .collect()
+    };
+    let segments = [records(1, frames(first..=load - 1, 1)), records(2, frames(load..=last, 2))];
+    let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &segments).unwrap().into_timelines(&Default::default()).unwrap();
+    Source::from_replay(dashboard_base::SourceKey { source_id: id.into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
+}
+
+#[test]
+fn t15_a_load_between_two_runs_reads_each_run_from_its_own_first_hour() {
+    let facts = recorded_in("t15", adjacent("t15", 20, 30, 25, |at| hour(at, RUNNING)), 20, 30);
+    assert_eq!(facts.observed, [(20, 30)], "R2-S1: the run after the load is read from its first hour, never asked for hours before it");
+    assert_eq!(runs(&facts).iter().map(|run| run.2).collect::<Vec<_>>(), [ProjectState::Running]);
+}
+
+#[test]
+fn h3b_a_completed_read_before_a_marker_does_not_name_it() {
+    let facts = recorded("h3-early", 20, 31, |at| Hour {
+        history: if at >= 30 { vec![(0, M, 20), (1, 41, 25), (2, M, 29)] } else { vec![(0, M, 20)] },
+        projects_read: Some(at.min(25)),
+        ..hour(at, COMPLETED)
+    });
+    let named: Vec<_> = facts.evidence.values().flat_map(|evidence| &evidence.entries).filter(|kept| kept.entry.completion()).map(|kept| (kept.entry.date, kept.definition)).collect();
+    assert_eq!(named, [(20, Some(40)), (29, None)], "P-S9, R3-S4: a completed row read at 25 names no completion dated 29; the marker and its date stay");
 }

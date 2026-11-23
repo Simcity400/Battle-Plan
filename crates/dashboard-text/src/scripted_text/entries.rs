@@ -454,7 +454,7 @@ impl<'a> ScriptedText<'a> {
         self.world
             .get_or_init(|| {
                 crate::triggers::inputs::unrecorded(|| {
-                    self.content.lazy_world(self.frame).map(|world| world.with_proven_projects(self.proven_projects.clone()))
+                    self.content.lazy_world(self.frame).map(|world| world.with_accepted_projects(self.accepted_projects.clone()))
                 })
             })
             .as_ref()

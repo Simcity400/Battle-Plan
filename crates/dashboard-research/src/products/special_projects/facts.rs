@@ -154,10 +154,10 @@ fn choices_after_last_marker(entries: &[Entry]) -> i32 {
 }
 
 impl Evidence {
-    pub fn read(&mut self, stamp: i32, entries: &[Entry], counted: impl Fn(&Entry) -> bool, continued: impl Fn(i32) -> bool, named: Option<u32>) {
+    pub fn read(&mut self, stamp: i32, entries: &[Entry], counted: impl Fn(&Entry) -> bool, continued: impl Fn(i32) -> bool, named: Option<(u32, i32)>) -> bool {
         if let Some((held, _)) = &self.latest {
             if *held == stamp {
-                return;
+                return false;
             }
             if !continued(*held) {
                 self.ordinals.clear();
@@ -167,7 +167,7 @@ impl Evidence {
         for (at, entry) in entries.iter().enumerate() {
             if !self.entries.iter().any(|kept| kept.entry == *entry) {
                 let counted = entry.completion() && counted(entry);
-                let definition = named.filter(|_| counted && at + 1 == entries.len());
+                let definition = named.filter(|&(_, read)| counted && at + 1 == entries.len() && read >= entry.date).map(|(definition, _)| definition);
                 self.entries.push(Kept { entry: *entry, read: stamp, counted, definition });
             }
         }
@@ -177,7 +177,8 @@ impl Evidence {
                 proven.push(Attempt { read: stamp, since: None, entry: *next });
             }
         }
-        if let Some((entry, (_, since))) = entries.iter().find_map(|entry| self.ordinals.get(&entry.ordinal).filter(|(old, _)| old != entry).map(|old| (entry, *old))) {
+        let changed = entries.iter().find_map(|entry| self.ordinals.get(&entry.ordinal).filter(|(old, _)| old != entry).map(|old| (entry, *old)));
+        if let Some((entry, (_, since))) = changed {
             proven.push(Attempt { read: stamp, since: Some(since), entry: *entry });
             self.ordinals.clear();
             self.most = 0;
@@ -190,6 +191,7 @@ impl Evidence {
         self.ordinals.extend(entries.iter().map(|entry| (entry.ordinal, (*entry, stamp))));
         self.most = self.most.max(entries.len());
         self.latest = Some((stamp, entries.to_vec()));
+        changed.is_some()
     }
 
     fn iterations(&self) -> Option<i32> {
@@ -281,7 +283,7 @@ impl Facts {
             let Some(&stamp) = hour.histories.get(&owner) else { continue };
             let entries = hour.listed.get(&(owner, local)).map_or(&[][..], Vec::as_slice);
             let held = hour.held;
-            let named = hour.reads.iter().find(|read| (read.row.owner, read.row.local) == (owner, local) && read.read <= stamp && completed(read.row)).map(|read| read.row.definition);
+            let named = hour.reads.iter().find(|read| (read.row.owner, read.row.local) == (owner, local) && read.read <= stamp && completed(read.row)).map(|read| (read.row.definition, read.read));
             self.evidence.entry((country.0, country.1, owner, local)).or_default().read(
                 stamp,
                 entries,

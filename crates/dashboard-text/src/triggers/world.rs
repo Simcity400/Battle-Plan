@@ -548,7 +548,14 @@ pub struct World<'a> {
     leader_roles: PreparedOperand<'a, Result<&'a LeaderRoles, &'a str>>,
     appearance: Index<Linked<BTreeMap<u32, u128>>>,
     template_names: Option<TemplateNames<'a>>,
-    proven_projects: Option<BTreeSet<u32>>,
+    accepted_projects: Option<Arc<AcceptedProjects>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AcceptedProjects {
+    pub rows: BTreeMap<(u32, u32), replay_data::rows::ProjectRow>,
+    pub owners: BTreeSet<u32>,
+    pub slots: BTreeSet<u32>,
 }
 
 pub struct ContentFacts<'a> {
@@ -1499,13 +1506,17 @@ impl<'a> World<'a> {
             leader_roles: content.leader_roles.into(),
             appearance: OnceLock::new(),
             template_names: None,
-            proven_projects: None,
+            accepted_projects: None,
         }
     }
 
-    pub fn with_proven_projects(mut self, owners: Option<BTreeSet<u32>>) -> Self {
-        self.proven_projects = owners;
+    pub fn with_accepted_projects(mut self, accepted: Option<Arc<AcceptedProjects>>) -> Self {
+        self.accepted_projects = accepted;
         self
+    }
+
+    pub(crate) fn accepted_projects(&self) -> Option<&AcceptedProjects> {
+        self.accepted_projects.as_deref()
     }
 
     #[cfg(test)]
@@ -2268,16 +2279,21 @@ impl<'a> World<'a> {
         let Some(token) = self.token_of(name)? else {
             return Ok(false);
         };
+        if let Some(accepted) = self.accepted_projects() {
+            if accepted.rows.values().any(|row| row.completed != 0 && row.definition_id == token && self.slot(row.owner) == Some(slot)) {
+                return Ok(true);
+            }
+            if accepted.slots.contains(&slot) {
+                return Ok(false);
+            }
+            return Err(format!("whether country slot {slot} completed this project is not recorded: not every owner of that country has a Projects read supplying this hour").into());
+        }
         let (projects, unresolved) = get(&self.projects, || {
             let mut out = BTreeSet::new();
             let mut unresolved = None;
             for row in each::<tables::Projects>(table::<tables::Projects>(self.frame, COMPLETED)?) {
                 let row = row?;
                 if row.completed == 0 {
-                    continue;
-                }
-                if self.proven_projects.as_ref().is_some_and(|proven| !proven.contains(&row.owner)) {
-                    unresolved = Some(format!("the projects of raw owner {} were not read while it belonged to its country", row.owner).into());
                     continue;
                 }
                 match self.slot(row.owner) {

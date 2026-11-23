@@ -591,6 +591,35 @@ fn an_iterations_project_values_open_from_compatible_reads_and_are_withheld_wher
         _ => vec![(0, 41, 21)],
     };
     assert!(operands(replaced, |hour| hour, 21, 0, 24).is_err(), "R2-S8: a read between the choice and its listing that held another entry at the ordinal proves a replacement, though the choice-hour history was empty");
+    let after_marker = |hour: i32| match hour {
+        ..=21 => vec![(0, COMPLETION_MARKER, 18)],
+        22 => vec![(0, COMPLETION_MARKER, 18), (1, 41, 21)],
+        _ => vec![(0, COMPLETION_MARKER, 18), (1, 43, 21)],
+    };
+    assert!(operands(after_marker, |hour| hour, 21, 1, 23).is_err(), "R2-S8: the changed entry after a marker proves the replacement, though the marker already proved a new attempt there");
+}
+
+#[test]
+fn details_programs_come_from_their_complete_read_with_its_own_labels() {
+    use replay_data::rows::ProjectFacilityOperand;
+    let frame = |hour: i32| {
+        let mut frame = source(1, hour, None);
+        for &table in DETAIL_TABLES.iter().filter(|&&table| table != TableId::CountryLinks) {
+            set(&mut frame, table, TableRows::empty(table));
+        }
+        let operand = ProjectFacilityOperand { kind: engine_projects::program_details::BUILDING, token: 61, raw: 100_000, ..Default::default() };
+        let program = ProjectProgramRow { id: 9, owner: 11, facility: Recorded::Value(Some(vec![operand])), ..Default::default() };
+        let rows = TableRows::ProjectPrograms(if hour < 30 { vec![program] } else { Vec::new() });
+        *frame.tables[TableId::ProjectPrograms.index()] = if hour == 30 { TableView::Truncated { rows, missing: 1 } } else { TableView::Complete(rows) };
+        frame.metrics.table_ns[TableId::ProjectPrograms.index()] = u64::from(hour == 28 || hour == 30);
+        set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(vec![LexicalTokenRow { token: 61, literal: b"mod_operand".to_vec() }]));
+        frame
+    };
+    let source = owned_source("special-project-programs-at-read", frame);
+    let reply = details(&source, 31);
+    let program = &reply["programs"][0];
+    assert_eq!(program["readHour"], json!(28), "R2-S7: the program comes from its last complete read, not a later read in part: {reply}");
+    assert_eq!(program["facility"]["sources"][0]["label"]["token"], json!("mod_operand"), "and its operand is labelled from that read");
 }
 
 fn owned_frame(hour: i32, linked: impl Fn(i32) -> bool, definition: impl Fn(i32) -> u32, read: impl Fn(i32) -> (Option<i32>, Option<i32>)) -> DecodedFrame {

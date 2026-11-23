@@ -633,7 +633,7 @@ pub struct ScriptedText<'a> {
     viewer: Option<u32>,
     pub(crate) nato_counters: bool,
     world: std::sync::OnceLock<Result<crate::triggers::World<'a>, String>>,
-    proven_projects: Option<std::collections::BTreeSet<u32>>,
+    accepted_projects: Option<std::sync::Arc<crate::triggers::AcceptedProjects>>,
 }
 
 fn named(segment: &str, name: &str) -> bool {
@@ -868,7 +868,7 @@ impl<'a> ScriptedText<'a> {
             viewer: None,
             nato_counters: content_reader_settings::settings::MapOptions::DEFAULT.nato_counters,
             world: std::sync::OnceLock::new(),
-            proven_projects: None,
+            accepted_projects: None,
         };
         if crate::triggers::inputs::recording() {
             text.names
@@ -908,12 +908,12 @@ impl<'a> ScriptedText<'a> {
             viewer: self.viewer,
             nato_counters: self.nato_counters,
             world: std::sync::OnceLock::new(),
-            proven_projects: self.proven_projects.clone(),
+            accepted_projects: self.accepted_projects.clone(),
         }
     }
 
-    pub fn with_proven_projects(mut self, owners: std::collections::BTreeSet<u32>) -> Self {
-        self.proven_projects = Some(owners);
+    pub fn with_accepted_projects(mut self, accepted: crate::triggers::AcceptedProjects) -> Self {
+        self.accepted_projects = Some(std::sync::Arc::new(accepted));
         self
     }
 

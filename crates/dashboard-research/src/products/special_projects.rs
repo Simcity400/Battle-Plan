@@ -562,11 +562,12 @@ struct Piece {
     slot: u32,
     id: u32,
     held_from: i32,
+    opened: i32,
 }
 
 impl Piece {
     fn reach(&self) -> i32 {
-        self.first.saturating_sub(STAGGER_PERIOD - 1).max(self.held_from)
+        self.first.saturating_sub(STAGGER_PERIOD - 1).max(self.held_from).max(self.opened)
     }
 }
 
@@ -744,7 +745,8 @@ fn pieces(query: &Query<'_>, country: &Country, from: i32, through: i32) -> (Vec
             _ => identities.push(CountryIdentityRun { first_hour: run.first, last_hour: run.last, slot, country_id: id }),
         }
         for stretch in query.timeline.within(run.first, run.last) {
-            pieces.push(Piece { run: stretch.run, first: stretch.first, last: stretch.last, slot, id, held_from });
+            let opened = query.replay.recording().run(stretch.run).map_or(stretch.first, |run| run.first_hour);
+            pieces.push(Piece { run: stretch.run, first: stretch.first, last: stretch.last, slot, id, held_from, opened });
         }
     }
     unknown.sort_unstable();
@@ -1123,7 +1125,7 @@ fn counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io:
     let mut found: BTreeMap<(u32, u32, u32, i32), Counted> = BTreeMap::new();
     for tag in tags {
         let mut facts = Facts::new(query.timeline.first);
-        let (pieces, _) = pieces(query, &Country::Tag(tag.clone()), from, to);
+        let (pieces, _) = pieces(query, &Country::Tag(tag.clone()), query.timeline.first, to);
         for piece in pieces {
             let read = read_piece(query, links_of(query, &mut links, piece.run)?, &piece)?;
             see_piece(&mut facts, &piece, &read, cancelled)?;

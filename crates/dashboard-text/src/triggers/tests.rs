@@ -202,8 +202,8 @@ fn with_world<T>(
     with_world_traits(frame, aliases, roles, Err("none"), None, run)
 }
 
-fn with_world_proven<T>(frame: &DecodedFrame, proven: BTreeSet<u32>, run: impl FnOnce(&World) -> T) -> T {
-    with_world_traits(frame, "", Err("none"), Err("none"), Some(proven), run)
+fn with_world_accepted<T>(frame: &DecodedFrame, accepted: AcceptedProjects, run: impl FnOnce(&World) -> T) -> T {
+    with_world_traits(frame, "", Err("none"), Err("none"), Some(Arc::new(accepted)), run)
 }
 
 fn with_world_traits<T>(
@@ -217,7 +217,7 @@ fn with_world_traits<T>(
         ),
         &str,
     >,
-    proven: Option<BTreeSet<u32>>,
+    accepted: Option<Arc<AcceptedProjects>>,
     run: impl FnOnce(&World) -> T,
 ) -> T {
     let aliases: Arc<TagAliases> = Arc::new(content_reader_core::tag_aliases::parse(
@@ -250,7 +250,7 @@ fn with_world_traits<T>(
             script_constants: Err("none"),
         },
     )
-    .with_proven_projects(proven);
+    .with_accepted_projects(accepted);
     run(&world)
 }
 

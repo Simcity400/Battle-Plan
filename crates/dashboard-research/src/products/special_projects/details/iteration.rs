@@ -1,5 +1,5 @@
 use dashboard_effects::ScriptedEffects;
-use super::{CHARACTER_REFERENCE, COMPLETION_MARKER, Context, OTHER_OWNER, ProjectContent, Reads, Withheld, branch, context, definition, effect_tables, owner_read, owners_of, project_slices, proven_owners, spelled, supplied_project};
+use super::{CHARACTER_REFERENCE, COMPLETION_MARKER, Context, OTHER_OWNER, ProjectContent, Reads, Withheld, branch, context, definition, effect_tables, owner_read, owners_of, accepted_projects, project_slices, spelled, supplied_project};
 use dashboard_base::{
     Source,
     products::{
@@ -168,7 +168,7 @@ fn replaced(reads: &Reads<'_, '_>, owner: u32, id: u32, listed: i32) -> Result<b
         .collect();
     let mut entries: Vec<(u32, Cursor<'_>)> = history.keys.iter().map(|(key, steps)| (*key as u32, Cursor::new(steps))).collect();
     let mut stamp = stamps.keys.first().map(|(_, steps)| Cursor::new(steps));
-    let (mut evidence, mut last) = (Evidence::default(), None);
+    let (mut evidence, mut last, mut replaced) = (Evidence::default(), None, false);
     for hour in choice..=listed {
         let Some(read) = stamp.as_mut().and_then(|cursor| sample(cursor.at(hour))) else { continue };
         if read < choice || last == Some(read) || !super::super::within(&whole, read) {
@@ -176,9 +176,9 @@ fn replaced(reads: &Reads<'_, '_>, owner: u32, id: u32, listed: i32) -> Result<b
         }
         last = Some(read);
         let listing: Vec<Entry> = entries.iter_mut().filter_map(|(ordinal, cursor)| cursor.at(read).and_then(|cells| history_entry(*ordinal, cells))).collect();
-        evidence.read(read, &listing, |_| false, |_| true, None);
+        replaced |= evidence.read(read, &listing, |_| false, |_| true, None);
     }
-    Ok(evidence.attempts.iter().any(|attempt| attempt.since.is_some()))
+    Ok(replaced)
 }
 
 fn chosen<'c>(content: &'c ProjectContent, listing: &Listing) -> Result<&'c content_reader_core::special_projects::PrototypeOption, String> {
@@ -218,11 +218,11 @@ fn shown(text: &str, refusals: &mut BTreeMap<String, usize>) -> Option<Vec<GameR
     runs(text).map_err(|why| *refusals.entry(why).or_default() += 1).ok()
 }
 
-fn render(content: &ProjectContent, frame: &DecodedFrame, slot: u32, listing: &Listing, option: &content_reader_core::special_projects::PrototypeOption, proven: std::collections::BTreeSet<u32>, out: &mut SpecialProjectIteration) -> Result<(), String> {
+fn render(content: &ProjectContent, frame: &DecodedFrame, slot: u32, listing: &Listing, option: &content_reader_core::special_projects::PrototypeOption, accepted: dashboard_text::triggers::AcceptedProjects, out: &mut SpecialProjectIteration) -> Result<(), String> {
     let catalogue = &content.politics.catalogue;
     let scripted = catalogue.scripted_content()?;
     let project = &listing.project;
-    let text = dashboard_text::scripted_text::ScriptedText::new(frame, &catalogue.localisation, scripted, slot).with_proven_projects(proven);
+    let text = dashboard_text::scripted_text::ScriptedText::new(frame, &catalogue.localisation, scripted, slot).with_accepted_projects(accepted);
     let cache = scripted.effects()?;
     let context = dashboard_effects::effect_description::Context::new(&text, &catalogue.localisation, slot, "special-project iteration", cache.view(None)).with_entity_links();
     let description = dashboard_effects::effect_description::project_iteration_description(&option.output, &context, project.owner, project.local_id, scopes(frame, &listing.row));
@@ -269,8 +269,8 @@ fn answer(frame: &DecodedFrame, params: &SpecialProjectIterationParams, at: &At<
     if let Err(why) = same_project(frame, &reads, &listing) {
         return Ok(Err(why));
     }
-    let proven = proven_owners(&reads, frame);
-    Ok(chosen(content, &listing).and_then(|option| render(content, frame, holder.slot, &listing, option, proven, out)))
+    let accepted = accepted_projects(&reads, frame);
+    Ok(chosen(content, &listing).and_then(|option| render(content, frame, holder.slot, &listing, option, accepted, out)))
 }
 
 impl AtHour for SpecialProjectIterationAt {

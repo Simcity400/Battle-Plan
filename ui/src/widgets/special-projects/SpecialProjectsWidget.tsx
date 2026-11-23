@@ -182,7 +182,8 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && view === 'history' && tags.length > 1);
   const menu = useContextMenu('Project actions');
   const [opened, setOpened] = useState<{ on: string; id: string; x: number; y: number } | null>(null);
-  const notes = data;
+  const bounded = useProducts<SpecialProjectsReply>(runtime.client, requests.map(r => ({ ...r, params: { ...r.params, hour: at } })), active && view === 'history', validateSpecialProjectsReply, track?.source);
+  const notes = view === 'history' ? bounded.data : currentData;
   const baseWarnings = useMemo(() => [...(notes?.flatMap(reply => reply.warnings) ?? []), ...(groups.data?.warnings ?? [])], [notes, groups.data]);
   const detailWarnings = useRef<readonly string[]>([]);
   const reportWarnings = useCallback((warnings: readonly string[]) => {
@@ -195,7 +196,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const from = extent[0];
   const lanes = useMemo(() => view !== 'history' ? [] : notes?.flatMap((reply, country) => {
     const membership = resolved.memberships.get(reply.tag) ?? [];
-    const history = projectHistory(reply, at, membership, from, following);
+    const history = projectHistory(reply, at, membership, from, following && track ? track.branch.lastHour : undefined);
     const closing = closedLane(JSON.stringify([country, null, 'closed']), history);
     const projects = [...history.lanes.map(lane => ({ ...lane, id: JSON.stringify([country, lane.id]) })), ...(closing ? [closing] : [])];
     const hour = projectCountryHour(reply, labelHour, membership);
@@ -203,18 +204,19 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     if (notes.length === 1) return projects;
     const empty = () => historyUnrecorded([reply], from, at, () => membership) ?? 'No special projects yet.';
     return [projectHeading(JSON.stringify([country, null]), labelAt(hour)(reply.tag), reply.unavailable ?? (projects.length ? '' : empty())), ...projects];
-  }) ?? [], [notes, at, from, labelAt, labelHour, resolved.memberships, view, following]);
+  }) ?? [], [notes, at, from, labelAt, labelHour, resolved.memberships, view, following, track]);
   useLayoutEffect(() => {
     if (view !== 'history' || !data) return;
     const report = () => shown(now());
     report();
     return subscribe(report);
   }, [view, data, now, subscribe, shown]);
-  const openMenu = (card: ProjectCard, x: number, y: number) => {
+  const openMenu = (card: ProjectCard, x: number, y: number, hour: number) => {
     if (!track) return;
-    const start = jumpItem(runtime, track.id, card.project.firstRead);
-    menu.open(x, y, [{ ...start, label: `Jump to first recorded · ${dayLabel(card.project.firstRead)}` },
-      ...completions(card.project, now()).map(entry => ({ ...jumpItem(runtime, track.id, entry.date), label: `Jump to completion · ${dayLabel(entry.date)}` }))]);
+    const project = (view === 'live' ? live.current()?.projects.find(project => project.id === card.project.id) : undefined) ?? card.project;
+    const start = jumpItem(runtime, track.id, project.firstRead);
+    menu.open(x, y, [{ ...start, label: `Jump to first recorded · ${dayLabel(project.firstRead)}` },
+      ...completions(project, hour).map(entry => ({ ...jumpItem(runtime, track.id, entry.date), label: `Jump to completion · ${dayLabel(entry.date)}` }))]);
   };
   const item = (reply: SpecialProjectsReply): ItemProps => card => {
     const atNow = () => {
@@ -226,13 +228,13 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     return { tabIndex: 0, role: 'group', 'aria-label': tooltipText(projectTooltip(reply, card, at)),
       onPointerMove: event => show(event.clientX, event.clientY, event.target), onPointerLeave: () => hideTooltip(owner),
       onFocus: event => { const box = event.currentTarget.getBoundingClientRect(); show(box.right, box.top, null); }, onBlur: () => hideTooltip(owner),
-      onContextMenu: event => { event.preventDefault(); openMenu(atNow(), event.clientX, event.clientY); },
+      onContextMenu: event => { event.preventDefault(); openMenu(atNow(), event.clientX, event.clientY, now()); },
       onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
         if (event.key === 'Enter') {
           event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); if (track) setOpened({ on: openedOn(track, reply.tag), id: card.project.id, x: box.left + 48, y: box.bottom });
         }
         else if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) {
-          event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); openMenu(atNow(), box.left, box.bottom);
+          event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); openMenu(atNow(), box.left, box.bottom, now());
         }
       } };
   };
@@ -252,7 +254,9 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   else if (!resolved.ready || !tags.length) body = <WidgetState kind="empty" message="No selected countries were recorded." />;
   else if (view === 'live' && !requestedNow.length) body = <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
   else if (!data) body = <WidgetState kind="loading" label="Loading special projects…" />;
-  else if (data.every(reply => reply.unavailable)) body = <WidgetState kind="unavailable" message={data.find(reply => reply.unavailable)?.unavailable ?? PROJECTS_UNRECORDED} />;
+  else if (view === 'history' && bounded.error) body = <WidgetState kind="error" failure={bounded.error} onRetry={bounded.retry} />;
+  else if (!notes) body = <WidgetState kind="loading" label="Loading special projects…" />;
+  else if (notes.every(reply => reply.unavailable)) body = <WidgetState kind="unavailable" message={notes.find(reply => reply.unavailable)?.unavailable ?? PROJECTS_UNRECORDED} />;
   else if (view === 'live') {
     const reply = data.find(reply => resolved.match.matches(reply.tag, at));
     if (!reply) body = <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
@@ -270,24 +274,24 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
         : <><WidgetState kind="unavailable" message={unobservedReason(reply, at)} />{details}{popup}</>;
     }
   } else if (!lanes.some(lane => lane.identity?.tile === 'blueprint' || lane.compact)) {
-    const unrecorded = historyUnrecorded(data, from, at, reply => resolved.memberships.get(reply.tag));
+    const unrecorded = historyUnrecorded(notes, from, at, reply => resolved.memberships.get(reply.tag));
     body = historyMembershipUnknown ? <WidgetState kind="unavailable" message="This group’s members were not recorded for part of this history." />
       : unrecorded ? <WidgetState kind="unavailable" message={unrecorded} /> : <WidgetState kind="empty" message="No special projects yet." />;
   }
   else body = <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Special project history" extent={extent} playhead={playhead}
-    liveHead={liveHead} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={false} active={active} revision={lanes}
+    liveHead={liveHead} growTo={options.grow === true && following ? last + 1 : undefined} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={false} active={active} revision={lanes}
     barHeight={18} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} labelMenu
     tooltip={(lane, span, hour) => {
       const [country, id] = JSON.parse(lane.id) as [number, string | null];
-      const reply = data[country];
-      return id === null || !reply ? null : historyTooltip(reply, id, span, hour, now(), resolved.memberships.get(reply.tag));
+      const reply = notes[country];
+      return id === null || !reply ? null : historyTooltip(reply, id, span, hour, at, resolved.memberships.get(reply.tag));
     }}
     onContextMenu={(_hour, x, y, lane) => {
       if (!lane) return;
       const [country, id] = JSON.parse(lane.id) as [number, string | null];
-      const reply = data[country];
-      const card = id === null || !reply ? null : historyCard(reply, id, now(), resolved.memberships.get(reply.tag));
-      if (card) openMenu(card, x, y);
+      const reply = notes[country];
+      const card = id === null || !reply ? null : historyCard(reply, id, at, resolved.memberships.get(reply.tag));
+      if (card) openMenu(card, x, y, at);
     }} />;
   return <div className="special-projects" ref={view === 'live' ? live.root : undefined}>{groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}{body}{menu.menu}</div>;
 }

@@ -266,17 +266,26 @@ export interface ProjectHistory {
   by: number | null;
 }
 
-export function projectHistory(data: SpecialProjectsReply, hour: number, membership?: readonly HourSpan[], from = -Infinity, open = false): ProjectHistory {
+export function projectHistory(data: SpecialProjectsReply, hour: number, membership?: readonly HourSpan[], from = -Infinity, openTo?: number): ProjectHistory {
   const history: ProjectHistory = { lanes: [], completed: 0, cancelled: 0, by: null };
   const order: { start: number; name: string; id: string; lane: TimelineLane }[] = [];
   for (const project of data.projects) {
     const shown = shownRuns(project, hour, membership);
-    if (!shown.length) continue;
+    if (!shown.length) {
+      const dated = completions(project, hour).filter(entry => !membership || runAt(membership, entry.date) !== null);
+      if (!dated.length) continue;
+      const named = dated.map(entry => entry.presentation).find(at => at !== null);
+      const info = named === undefined || named === null ? null : data.presentations[named];
+      order.push({ start: project.firstRead, name: info?.name ?? '', id: project.id, lane: { id: project.id, label: 'Status not recorded',
+        identity: { label: info?.name ?? 'Project name not recorded', icon: info?.icon ?? undefined, tile: 'blueprint' }, muted: true, names: true, icons: false,
+        spans: dated.map(entry => ({ id: JSON.stringify([project.id, 'completed', entry.ordinal, entry.date]), firstHour: entry.date, lastHour: entry.date, label: 'Completed', positive: true })) } });
+      continue;
+    }
     const latest = shown.at(-1)!;
     const info = data.presentations[latest.presentation];
     const spans: TimelineSpan[] = [];
     for (const run of shown) {
-      const lastHour = open && run === latest ? run.lastHour : Math.min(run.lastHour, hour);
+      const lastHour = openTo !== undefined && run === latest && run.lastHour >= hour ? openTo : Math.min(run.lastHour, hour);
       const label = `${run.progress}%`, positive = run.state === 'completed';
       const last = spans.at(-1);
       if (last && last.lastHour + 1 === run.firstHour && last.label === label && !!last.positive === positive) { last.lastHour = lastHour; continue; }

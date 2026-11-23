@@ -367,13 +367,6 @@ impl Reads<'_, '_> {
         super::Custody::new(&links, self.holder.slot, held_from, self.hour).held(owner, from, self.hour).then_some(()).ok_or(Withheld::Owner)
     }
 
-    fn stayed(&self, owner: u32, read: i32) -> bool {
-        let Some(links) = self.run_links() else { return false };
-        let mut held = links.within(owner, read, self.hour);
-        super::current(read, self.hour)
-            && self.spans(TableId::Projects, "Project reads", |coverage| super::within(&coverage.whole, read)).unwrap_or(false)
-            && matches!((held.next(), held.next()), (Some((Some(_), _, _)), None))
-    }
 
     fn usable(&self, table: TableId, owner: u32, read: i32) -> Result<(), Withheld> {
         if !super::current(read, self.hour) {
@@ -525,9 +518,23 @@ fn supplied_project(reads: &Reads<'_, '_>, owner: u32, id: u32) -> Result<(Proje
     rows.binary_search_by_key(&(owner, id), |row| (row.owner, row.local_id)).ok().map(|at| (rows[at].clone(), read)).ok_or_else(|| "The project is not recorded at this hour".to_owned())
 }
 
-fn proven_owners(reads: &Reads<'_, '_>, frame: &DecodedFrame) -> BTreeSet<u32> {
-    let slices = frame.complete::<tables::SliceReads>().unwrap_or(&[]);
-    slices.iter().filter(|row| row.table == TableId::Projects.index() as u32 && reads.stayed(row.owner, row.sample_hour)).map(|row| row.owner).collect()
+fn accepted_projects(reads: &Reads<'_, '_>, frame: &DecodedFrame) -> dashboard_text::triggers::AcceptedProjects {
+    let mut accepted = dashboard_text::triggers::AcceptedProjects::default();
+    let owners = owners_of(frame, reads.holder.slot).unwrap_or_default();
+    let mut whole = true;
+    for &owner in &owners {
+        match stamped(reads, TableId::Projects, owner).and_then(|(_, rows)| rows.complete::<tables::Projects>().map(|rows| prefixed(rows, owner, |row| row.owner).to_vec()).map_err(|why| why.to_string())) {
+            Ok(rows) => {
+                accepted.owners.insert(owner);
+                accepted.rows.extend(rows.into_iter().map(|row| ((row.owner, row.local_id), row)));
+            }
+            Err(_) => whole = false,
+        }
+    }
+    if whole {
+        accepted.slots.insert(reads.holder.slot);
+    }
+    accepted
 }
 
 fn owners_of(frame: &DecodedFrame, slot: u32) -> io::Result<BTreeSet<u32>> {
@@ -723,7 +730,7 @@ impl AtHour for SpecialProjectDetailsAt {
         };
         out.scientists = scientists(frame, &owners, &reads, &mut namer, at.context, &mut out.unavailable)?;
         out.breakthroughs = breakthroughs(frame, &owners, &reads, &mut namer, &mut out.unavailable);
-        out.programs = programs(frame, &owners, &reads, &mut namer, &mut out.unavailable);
+        out.programs = programs(&owners, &reads, &mut namer, &mut out.unavailable);
         out.projects = projects(frame, &owners, &reads, &mut namer, &at.holders.name(&params.country, at.hour), &mut out.unavailable);
         if !namer.scoped.is_empty() { at.context.scoped_details.store(true, std::sync::atomic::Ordering::Relaxed); }
         out.warnings = namer.warnings();
@@ -767,7 +774,7 @@ fn reread(frame: &DecodedFrame, params: &SpecialProjectDetailsParams, at: &At<'_
     for &owner in &owners {
         let has_rows = !prefixed(rows, owner, |r| r.owner).is_empty();
         let now = OwnerRead::of(slices, &reads, owner, has_rows);
-        if now.refusal() != OwnerRead::of(before_slices, &earlier, owner, has_rows).refusal() {
+        if now != OwnerRead::of(before_slices, &earlier, owner, has_rows) {
             return Ok(false);
         }
         match now {
@@ -904,7 +911,33 @@ fn breakthroughs(frame: &DecodedFrame, owners: &BTreeSet<u32>, reads: &Reads<'_,
     Some(out)
 }
 
-fn programs(frame: &DecodedFrame, owners: &BTreeSet<u32>, reads: &Reads<'_, '_>, namer: &mut Namer<'_, '_, '_>, unavailable: &mut Vec<String>) -> Option<Vec<ProgramDetails>> {
+fn program_labels(reads: &Reads<'_, '_>, read: i32, programs: &[&replay_data::rows::ProjectProgramRow]) -> Result<DecodedFrame, String> {
+    let (mut tokens, mut keys, mut people) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+    for program in programs {
+        if let Recorded::Value(Some(operands)) = &program.facility {
+            tokens.extend(operands.iter().map(|operand| operand.token).filter(|&token| token != 0));
+            keys.extend(operands.iter().map(|operand| operand.key).filter(|&key| key != 0));
+        }
+        if let Recorded::Value(Some(assignments)) = &program.assignments {
+            people.extend(assignments.iter().filter(|value| value.scientist as u32 == CHARACTER_REFERENCE).map(|value| (value.scientist >> 32) as u32));
+        }
+    }
+    let unavailable = |why: io::Error| format!("Program labels at their read are unavailable: {why}");
+    let people_keys = || people.iter().map(|&id| u128::from(id));
+    let mut frame = dashboard_base::products::at_hour::frame(
+        reads.query,
+        read,
+        &[Read::these(TableId::ModifierDefinitions, keys.iter().map(|&key| u128::from(key))), Read::these(TableId::Characters, people_keys()), Read::these(TableId::CharacterPortraits, people_keys())],
+        SpecialProjectDetailsAt::TITLE,
+    )
+    .map_err(unavailable)?;
+    tokens.extend(frame.complete::<tables::Characters>().map(|rows| rows.iter().filter_map(|row| u32::try_from(row.name_token_id).ok()).collect::<Vec<_>>()).unwrap_or_default());
+    let lexical = dashboard_base::products::at_hour::frame(reads.query, read, &[Read::these(TableId::LexicalTokens, tokens.into_iter().map(u128::from))], SpecialProjectDetailsAt::TITLE).map_err(unavailable)?;
+    frame.tables[TableId::LexicalTokens.index()] = lexical.tables[TableId::LexicalTokens.index()].clone();
+    Ok(frame)
+}
+
+fn programs(owners: &BTreeSet<u32>, reads: &Reads<'_, '_>, namer: &mut Namer<'_, '_, '_>, unavailable: &mut Vec<String>) -> Option<Vec<ProgramDetails>> {
     let read = reads.last_complete(TableId::ProjectPrograms, "Program assignments").and_then(|read| {
         dashboard_base::products::at_hour::frame(reads.query, read, &[Read::all(TableId::ProjectPrograms)], SpecialProjectDetailsAt::TITLE)
             .map_err(|why| format!("Program assignments are unavailable: {why}"))
@@ -912,15 +945,18 @@ fn programs(frame: &DecodedFrame, owners: &BTreeSet<u32>, reads: &Reads<'_, '_>,
     });
     let (stamp, read) = read.map_err(|why| unavailable.push(why)).ok()?;
     let rows = stamp.complete::<tables::ProjectPrograms>().map_err(|why| unavailable.push(format!("Program assignments are unavailable: {why}"))).ok()?;
-    let mut out = Vec::new();
+    let mut held = Vec::new();
     for program in rows.iter().filter(|row| owners.contains(&row.owner)) {
-        if reads.held_since(program.owner, read).is_err() {
-            let why = OTHER_OWNER.to_owned();
-            if !unavailable.contains(&why) {
-                unavailable.push(why);
-            }
-            continue;
+        if reads.held_since(program.owner, read).is_ok() {
+            held.push(program);
+        } else if !unavailable.iter().any(|why| why == OTHER_OWNER) {
+            unavailable.push(OTHER_OWNER.to_owned());
         }
+    }
+    let labels = program_labels(reads, read, &held).map_err(|why| unavailable.push(why)).ok()?;
+    let frame = &labels;
+    let mut out = Vec::new();
+    for program in held {
         let assignments = match &program.assignments {
             Recorded::Value(Some(values)) => Some(
                 values
@@ -1003,6 +1039,7 @@ fn history_read(slices: &[SliceReadRow], reads: &Reads<'_, '_>, owner: u32) -> R
     Ok(read)
 }
 
+#[derive(PartialEq, Eq)]
 enum OwnerRead {
     Read(i32, Option<Result<i32, String>>),
     Withheld,
@@ -1013,13 +1050,6 @@ impl OwnerRead {
         match projects_read(reads, owner, replay_data::sliced::read_hour(slices, TableId::Projects, owner)) {
             Ok(read) => Self::Read(read, has_rows.then(|| history_read(slices, reads, owner))),
             Err(_) => Self::Withheld,
-        }
-    }
-
-    fn refusal(&self) -> Option<&str> {
-        match self {
-            Self::Read(_, Some(Err(why))) => Some(why),
-            _ => None,
         }
     }
 }
@@ -1204,12 +1234,12 @@ fn effects(
     project: &ProjectRow,
     output: &content_reader_core::special_projects::Output,
     scientist: &Result<Option<u32>, String>,
-    proven: &BTreeSet<u32>,
+    accepted: &dashboard_text::triggers::AcceptedProjects,
 ) -> ProjectEffects {
     let render = || -> Result<_, String> {
         let catalogue = &content.politics.catalogue;
         let scripted = catalogue.scripted_content()?;
-        let text = dashboard_text::scripted_text::ScriptedText::new(frame, &catalogue.localisation, scripted, slot).with_proven_projects(proven.clone());
+        let text = dashboard_text::scripted_text::ScriptedText::new(frame, &catalogue.localisation, scripted, slot).with_accepted_projects(accepted.clone());
         let cache = scripted.effects()?;
         let context = dashboard_effects::effect_description::Context::new(&text, &catalogue.localisation, slot, "special-project output", cache.view(None)).with_entity_links();
         let facility = (|| {
@@ -1307,8 +1337,8 @@ impl AtHour for SpecialProjectEffectsAt {
         };
         let project = &project;
         let scientist = assigned(&reads, project).scientist();
-        let proven = proven_owners(&reads, frame);
-        out.output = Some(effects(content, frame, owner.slot, project, &found.output, &scientist, &proven));
+        let accepted = accepted_projects(&reads, frame);
+        out.output = Some(effects(content, frame, owner.slot, project, &found.output, &scientist, &accepted));
         if let Recorded::Value(runtime) = &project.runtime
             && let Some(id) = runtime.pending_reward
         {
@@ -1321,7 +1351,7 @@ impl AtHour for SpecialProjectEffectsAt {
                     let options = found
                         .options
                         .iter()
-                        .map(|option| OptionEffects { token: option.token.clone(), effects: effects(content, frame, owner.slot, project, &option.output, &scientist, &proven) })
+                        .map(|option| OptionEffects { token: option.token.clone(), effects: effects(content, frame, owner.slot, project, &option.output, &scientist, &accepted) })
                         .collect();
                     out.pending = Some(PendingEffects { reward, ordinal, options });
                 }

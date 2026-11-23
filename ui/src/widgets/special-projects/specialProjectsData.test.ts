@@ -528,9 +528,18 @@ test('X-S9: the pop-up joins the Projects read that supplied its card, though it
   assert.ok(joined && typeof joined === 'object', `${joined}`);
 });
 
-test('U-S5: with the playhead live, the latest status draws on to the head; earlier ones stay cut at their end', () => {
+test('U-S5: with the playhead live, the latest bounded status draws on to the head; earlier ones stay cut at their end', () => {
   const data = projects();
-  const beta = (open: boolean) => projectHistory(data, 160, undefined, -Infinity, open).lanes.find(lane => lane.id === 'beta')!.spans.map(span => span.lastHour);
-  assert.deepEqual(beta(false), [149, 160]);
-  assert.deepEqual(beta(true), [149, 172], 'the timeline clips the open status at the live head, so the bar grows without another request');
+  const beta = (openTo?: number) => projectHistory(data, 160, undefined, -Infinity, openTo).lanes.find(lane => lane.id === 'beta')!.spans.map(span => span.lastHour);
+  assert.deepEqual(beta(), [149, 160]);
+  assert.deepEqual(beta(199), [149, 199], 'the timeline clips the open status at the live head, so the bar grows without another request');
+});
+
+test('R3-S5: a project seen only in history shows its dated completions with status unknown', () => {
+  const data = fixture();
+  data.projects.push({ id: 'history-only', owner: 9, local: 4, firstRead: 120, firstState: 'unknown', statuses: [], entries: [marker(118, 120)], attempts: [] });
+  const lane = projectHistory(data, 130).lanes.find(lane => lane.id === 'history-only');
+  assert.equal(lane?.label, 'Status not recorded');
+  assert.deepEqual(lane?.spans.map(span => [span.firstHour, span.lastHour, span.label]), [[118, 118, 'Completed']]);
+  assert.equal(projectHistory(data, 119).lanes.find(lane => lane.id === 'history-only'), undefined, 'not before the read that first listed it');
 });
