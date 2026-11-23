@@ -58,6 +58,45 @@ impl Home {
         })?))
     }
 
+    pub fn grow(&self, capacity: &mut usize) {
+        let mut buffer = {
+            let mut guard = self.slot();
+            let slot = &mut *guard;
+            if slot.released {
+                slot.rows_cap = slot.rows_cap.max(*capacity);
+                if let Some(buffer) = slot.buffer.as_mut() {
+                    grow_capacity(capacity, buffer.reserved_required);
+                    slot.rows_cap = slot.rows_cap.max(*capacity);
+                    buffer.reserved_required = 0;
+                }
+                return;
+            }
+            match slot.buffer.take() {
+                Some(buffer)
+                    if buffer.rows.rows.len() < *capacity
+                        || buffer.reserved_required > *capacity =>
+                {
+                    buffer
+                }
+                idle => {
+                    slot.buffer = idle;
+                    return;
+                }
+            }
+        };
+        grow_capacity(capacity, buffer.reserved_required);
+        buffer.rows.grow(capacity);
+        buffer.rows.reset();
+        buffer.reserved_required = 0;
+        let bytes = buffer.allocated_bytes();
+        self.0.bytes.store(bytes, Ordering::Relaxed);
+        let mut slot = self.slot();
+        slot.rows_cap = slot.rows_cap.max(buffer.rows.rows.capacity());
+        slot.scratch_cap = slot.scratch_cap.max(buffer.scratch.capacity());
+        slot.released = false;
+        slot.buffer = Some(buffer);
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn new(rows: usize, scratch: usize) -> Self {
         Self::try_new(rows, scratch).unwrap()
@@ -173,33 +212,9 @@ impl Loan {
         let Some(home) = &self.home else {
             return;
         };
-        let mut buffer = match self.buffer.take() {
-            Some(buffer) => buffer,
-            None => {
-                let mut guard = home.slot();
-                let slot = &mut *guard;
-                if slot.released {
-                    slot.rows_cap = slot.rows_cap.max(*capacity);
-                    if let Some(buffer) = slot.buffer.as_mut() {
-                        grow_capacity(capacity, buffer.reserved_required);
-                        slot.rows_cap = slot.rows_cap.max(*capacity);
-                        buffer.reserved_required = 0;
-                    }
-                    return;
-                }
-                match slot.buffer.take() {
-                    Some(buffer)
-                        if buffer.rows.rows.len() < *capacity
-                            || buffer.reserved_required > *capacity =>
-                    {
-                        buffer
-                    }
-                    idle => {
-                        slot.buffer = idle;
-                        return;
-                    }
-                }
-            }
+        let Some(mut buffer) = self.buffer.take() else {
+            home.grow(capacity);
+            return;
         };
         grow_capacity(capacity, buffer.reserved_required);
         buffer.rows.grow(capacity);

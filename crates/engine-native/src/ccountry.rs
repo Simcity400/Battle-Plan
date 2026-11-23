@@ -1753,27 +1753,16 @@ impl<'a, M: Memory> Reader<'a, M> {
         let [countries, links] = if let Some(roster) = authenticated {
             roster.arrays()
         } else {
-            let countries_addr = game_state
-                .checked_add(cgame_state::COUNTRIES)
-                .ok_or("country array unreadable or invalid")?;
-            let links_addr = game_state
-                .checked_add(cgame_state::COUNTRY_LINKS)
-                .ok_or("country links unreadable or invalid")?;
-            let mut countries_raw = [0u8; 16];
-            let mut links_raw = [0u8; 16];
-            let copied = memory.copy_scattered(
-                [countries_addr, links_addr],
-                &mut [&mut countries_raw[..], &mut links_raw[..]],
-            );
-            let countries = (copied >= 1)
-                .then(|| Array::from_header(countries_raw, 8))
-                .flatten()
-                .ok_or("country array unreadable or invalid")?;
-            let links = (copied >= 2)
-                .then(|| Array::from_header(links_raw, 4))
-                .flatten()
-                .ok_or("country links unreadable or invalid")?;
-            [countries, links]
+            [
+                game_state
+                    .checked_add(cgame_state::COUNTRIES)
+                    .and_then(|p| Array::read(memory, p, 8))
+                    .ok_or("country array unreadable or invalid")?,
+                game_state
+                    .checked_add(cgame_state::COUNTRY_LINKS)
+                    .and_then(|p| Array::read(memory, p, 4))
+                    .ok_or("country links unreadable or invalid")?,
+            ]
         };
         Self::from_arrays(memory, base, game_state, [countries, links])
     }

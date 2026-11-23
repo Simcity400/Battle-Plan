@@ -4249,6 +4249,7 @@ fn grow_combat_hints(
         let success = frame
             .extended
             .apply_combat_hints(hint.land.as_ref(), hint.naval.as_ref());
+        shared.set_frame_bytes(index, frame.allocated_bytes() as u64);
         refused |= (hint.land.is_some() && !success[0]) || (hint.naval.is_some() && !success[1]);
         if success[0] {
             state.land = hint.land;
@@ -4296,6 +4297,9 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
         unsafe { shared.restore_idle_frame_prepared(idle_index) };
     }
     shared.grow_parked_packs(&mut capacities.extended);
+    // SAFETY: Sizing uses only the country intel home belonging to this live session.
+    unsafe { shared.country_intel() }.grow(&mut capacities.extended.intel.rows[15]);
+    sizing.account_homes(shared);
 }
 
 fn acquisition_work(shared: &Shared) -> impl serde::Serialize {
@@ -4350,7 +4354,7 @@ fn acquisition_work(shared: &Shared) -> impl serde::Serialize {
             "dropped_spool_stalled": frames.dropped_stalled,
             "dropped_frame_limit": frames.dropped_limit,
         },
-        "scope": "cumulative since attach: the game thread's waits outside the collector's own reading by cause, buffer_wait_* zero by construction (no frame or held store is ever waited on: an hour that finds the held division store still settling takes one of its own; while fewer than two frames are free, the frame builder thread builds frames ahead until the next hour's and a spare are, built_ahead, which hours take, ahead_taken; an hour that still finds no frame free builds one on the game thread, grown/grow_ns, unless the spool is stalled on an hour it cannot take, when no frame is built or built ahead and the hour is dropped, dropped_spool_stalled; frames past the steady count are freed once more than two are free, freed); frames now: live and all their bytes, free, ahead_ready (built ahead and not yet taken), in_flight (taken for an hour and not yet returned by the spool) and their bytes",
+        "scope": "cumulative since attach: the game thread's waits outside the collector's own reading by cause, buffer_wait_* zero by construction (no frame or held store is ever waited on: an hour that finds the held division store still settling takes one of its own; while no frame is free, the frame builder thread builds one spare frame ahead, built_ahead, which hours take, ahead_taken; an hour that still finds no frame free builds one on the game thread, grown/grow_ns, unless the spool is stalled on an hour it cannot take, dropped_spool_stalled, or the live frame count or byte limit is reached, dropped_frame_limit; frames past the steady count are freed once steady frames are idle or after a sustained idle streak, freed); frames now: live and all their bytes, free, ahead_ready (built ahead and not yet taken), in_flight (taken for an hour and not yet returned by the spool) and their bytes",
     })
 }
 
@@ -8015,6 +8019,7 @@ mod tests {
                 .slots()
                 .map(|slot| unsafe { slot.captured() }.allocated_bytes())
                 .sum::<usize>()
+                + shared.parked_bytes() as usize
                 +
                     // SAFETY: Sizing and the test use only the home associated with these session frames.
                     unsafe { shared.country_intel() }.allocated_bytes()
@@ -8705,6 +8710,7 @@ mod tests {
                 .slots()
                 .map(|slot| unsafe { slot.captured() }.allocated_bytes())
                 .sum::<usize>()
+                + shared.parked_bytes() as usize
         };
         let bytes = frame_bytes();
         let check_accounting = || {

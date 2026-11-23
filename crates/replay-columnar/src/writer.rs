@@ -2047,7 +2047,8 @@ impl TableWriter {
         if self.columns.is_none() {
             self.columns = Some(ColumnScratch::new(columns)?);
             self.dirty.fill(0);
-        } else if unfinished || self.sweep == Sweep::Every {
+        }
+        if unfinished || self.sweep == Sweep::Every {
             mark_all_dirty(&mut self.dirty, columns);
         }
         let Self {
@@ -2438,10 +2439,12 @@ impl TableWriter {
     }
 
     fn release_scratch(&mut self) {
-        for &slot in &self.visited {
-            self.seen[slot as usize / 64] &= !(1 << (slot % 64));
+        if self.visited.capacity().saturating_mul(size_of::<u32>()) > HOUR_SCRATCH_LIMIT {
+            for &slot in &self.visited {
+                self.seen[slot as usize / 64] &= !(1 << (slot % 64));
+            }
+            self.visited = Vec::new();
         }
-        drop_over(&mut self.visited, HOUR_SCRATCH_LIMIT);
         drop_over(&mut self.touched, HOUR_SCRATCH_LIMIT);
         drop_over(&mut self.removed, INSERT_SCRATCH_LIMIT);
         drop_over(&mut self.new_keys, INSERT_SCRATCH_LIMIT);

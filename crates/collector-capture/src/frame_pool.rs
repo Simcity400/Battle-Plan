@@ -25,10 +25,7 @@ pub const MAX_LIVE_BYTES: u64 = 384 * 1024 * 1024;
 
 const SURPLUS_CAP: usize = STEADY + 2;
 
-#[cfg(not(test))]
 const SURPLUS_STREAK: u32 = 48;
-#[cfg(test)]
-const SURPLUS_STREAK: u32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HourFrame {
@@ -513,7 +510,7 @@ impl FramePool {
             self.surplus_streak.store(0, Ordering::Relaxed);
             return false;
         }
-        if live > SURPLUS_CAP || self.live_bytes() > MAX_LIVE_BYTES {
+        if self.len() >= STEADY || live > SURPLUS_CAP || self.live_bytes() > MAX_LIVE_BYTES {
             self.surplus_streak.store(0, Ordering::Relaxed);
             return true;
         }

@@ -1175,8 +1175,8 @@ fn read_calls_per_hour_and_per_gun_are_pinned() {
         "railway gun inputs: standing {standing_hour} calls for one gun, {standing_gun} per \
          further gun; moving in combat {moving_hour}, {moving_gun} per further gun"
     );
-    assert_eq!((standing_hour, standing_gun), (56, 41));
-    assert_eq!((moving_hour, moving_gun), (92, 55));
+    assert_eq!((standing_hour, standing_gun), (57, 41));
+    assert_eq!((moving_hour, moving_gun), (93, 55));
 }
 
 #[test]

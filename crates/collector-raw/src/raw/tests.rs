@@ -1849,7 +1849,7 @@ fn unique_exact_hint_matches_linear_reads_in_sequential_and_arbitrary_order() {
     let mut log = RawLog::<1>::default();
     set_index_fixture(&mut log, &reads);
     let recorded = Recorded::build(&log).unwrap();
-    assert!(recorded.index.next.iter().all(|&next| next == usize::MAX));
+    assert!(recorded.index.next.iter().all(|&next| next == u32::MAX));
     let mut observations = std::collections::BTreeMap::new();
     for (index, &(address, len, _, _)) in reads.iter().enumerate() {
         assert_recorded_query(&log, &recorded, &mut observations, (address, len));
@@ -1883,7 +1883,7 @@ fn unique_exact_hint_never_skips_an_earlier_duplicate_observation() {
     let recorded = Recorded::build(&log).unwrap();
     assert_eq!(
         recorded.index.next,
-        [2, usize::MAX, 4, usize::MAX, 4, usize::MAX]
+        [2, u32::MAX, 4, u32::MAX, 4, u32::MAX]
     );
     let mut observations = std::collections::BTreeMap::new();
     for query in [
@@ -1987,7 +1987,7 @@ fn unique_exact_hint_uses_current_bytes_and_offsets_after_shape_reuse() {
         assert_index_fixture(&log);
         let cached = log.index.borrow();
         let next = &cached.as_ref().unwrap().next;
-        assert_eq!(next[0] == usize::MAX, tail.is_none());
+        assert_eq!(next[0] == u32::MAX, tail.is_none());
         if tail.is_some() {
             assert_eq!(next[4], 4);
         }
@@ -2152,7 +2152,10 @@ fn compact_index_resolves_early_duplicate_roots_after_all_rehashes() {
         let first_slot = recorded.index.slot(&log.spans, first, 4).unwrap();
         let second_slot = recorded.index.slot(&log.spans, second, 4).unwrap();
         assert_ne!(first_slot, RecordedIndex::hash(first, 4) & 7);
-        assert_eq!(recorded.index.repeated, [(first_slot, 0), (second_slot, 1)]);
+        assert_eq!(
+            recorded.index.repeated,
+            [(first_slot as u32, 0), (second_slot as u32, 1)]
+        );
         assert_eq!(recorded.index.slots[first_slot].get(), 0);
         assert_eq!(recorded.index.slots[second_slot].get(), 1);
     }
@@ -2243,7 +2246,7 @@ fn compact_index_shrink_clears_exhausted_cursors_before_using_new_spans() {
                 .index
                 .slots
                 .iter()
-                .all(|slot| slot.get() == usize::MAX)
+                .all(|slot| slot.get() == u32::MAX)
         );
         assert!(recorded.index.repeated.is_empty());
         assert!(!recorded.copy(0x1000, &mut [0; 4]));
@@ -2770,7 +2773,7 @@ fn bulk_cache_keeps_nested_winners_parent_fallback_and_exact_faults() {
                     .iter()
                     .rev()
                     .find(|span| span.0 <= address && address + len <= span.1)
-                    .map(|span| log.bytes[log.spans[span.2].start as usize])
+                    .map(|span| log.bytes[log.spans[span.2 as usize].start as usize])
             };
             let mut bytes = vec![0xa5; len];
             assert_eq!(

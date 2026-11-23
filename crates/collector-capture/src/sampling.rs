@@ -942,6 +942,7 @@ pub struct Shared {
     pub(crate) weather_temperature: Mutex<collector_weather::weather::temperature::Tracker>,
     parked_packs: Mutex<Vec<Box<extended::ParkedPacks>>>,
     parked_packs_bytes: AtomicU64,
+    growing_parked_bytes: AtomicU64,
     retired_parked: Mutex<Vec<Box<extended::ParkedPacks>>>,
     retired_parked_bytes: AtomicU64,
     retired_parked_pending: AtomicBool,
@@ -1529,6 +1530,7 @@ impl Shared {
             weather_temperature: Mutex::new(Default::default()),
             parked_packs: Mutex::new(Vec::new()),
             parked_packs_bytes: AtomicU64::new(0),
+            growing_parked_bytes: AtomicU64::new(0),
             retired_parked: Mutex::new(Vec::new()),
             retired_parked_bytes: AtomicU64::new(0),
             retired_parked_pending: AtomicBool::new(false),
@@ -1616,7 +1618,12 @@ impl Shared {
     fn parked_and_retired_bytes(&self) -> u64 {
         self.parked_packs_bytes
             .load(Ordering::Relaxed)
+            .saturating_add(self.growing_parked_bytes.load(Ordering::Relaxed))
             .saturating_add(self.retired_parked_bytes.load(Ordering::Relaxed))
+    }
+
+    pub fn parked_bytes(&self) -> u64 {
+        self.parked_and_retired_bytes()
     }
 
     fn at_frame_limit(&self) -> bool {
@@ -1891,22 +1898,47 @@ impl Shared {
     }
 
     pub fn grow_parked_packs(&self, capacities: &mut extended::Capacities) {
+        struct GrowingGuard<'a> {
+            shared: &'a Shared,
+            bytes: u64,
+        }
+        impl Drop for GrowingGuard<'_> {
+            fn drop(&mut self) {
+                self.shared
+                    .growing_parked_bytes
+                    .fetch_sub(self.bytes, Ordering::Relaxed);
+                self.shared
+                    .pool_bytes
+                    .fetch_sub(self.bytes, Ordering::Relaxed);
+            }
+        }
         let mut grown = 0usize;
         loop {
-            let mut parked = match self.parked_packs.lock() {
+            let (mut parked, guard) = match self.parked_packs.lock() {
                 Ok(mut slots) => {
                     if grown >= slots.len() {
                         break;
                     }
                     let parked = slots.remove(0);
+                    let bytes = parked.allocated_bytes() as u64;
+                    self.growing_parked_bytes
+                        .fetch_add(bytes, Ordering::Relaxed);
+                    self.pool_bytes.fetch_add(bytes, Ordering::Relaxed);
                     let remaining: usize = slots.iter().map(|entry| entry.allocated_bytes()).sum();
                     self.set_parked_packs_bytes(remaining as u64);
-                    parked
+                    (
+                        parked,
+                        GrowingGuard {
+                            shared: self,
+                            bytes,
+                        },
+                    )
                 }
                 Err(_) => break,
             };
             parked.grow(capacities);
             self.park_pack(parked);
+            drop(guard);
             grown += 1;
         }
     }

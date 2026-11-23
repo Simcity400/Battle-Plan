@@ -849,27 +849,13 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                         self.sliced_cache.remove(&table);
                         self.sliced_owners[table.index()] = Some(owners);
                         *input = TableInput::SharedComplete(Arc::new(fresh));
-                    } else if let (Some(previous_owners), Some(token)) = (
-                        self.sliced_owners[table.index()].as_deref(),
-                        self.encoder
-                            .untracked_slice_token(table, source.branch, hour, force),
-                    ) {
-                        let fresh_owners = replay_data::sliced::try_owners(&fresh)?;
-                        match replay_data::sliced::SliceUpdate::for_owners(
-                            previous_owners,
-                            fresh,
-                            captured,
-                            live,
-                        ) {
-                            Ok((update, next_owners)) => {
-                                self.sliced_reads
-                                    .merge(table, &fresh_owners, selection, hour)?;
-                                self.sliced_cache.remove(&table);
-                                self.sliced_owners[table.index()] = Some(next_owners);
-                                *input = TableInput::SliceUpdate {
-                                    token,
-                                    update: Arc::new(update),
-                                };
+                    } else if let Some(previous) = self.sliced_cache.remove(&table) {
+                        match replay_data::sliced::merge_slice(&previous, fresh, captured, live) {
+                            Ok(merged) => {
+                                let owners = replay_data::sliced::try_owners(&merged)?;
+                                self.sliced_reads.merge(table, &owners, selection, hour)?;
+                                self.sliced_owners[table.index()] = Some(owners);
+                                *input = TableInput::SharedComplete(Arc::new(merged));
                             }
                             Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
                                 return Err(error);
@@ -885,13 +871,26 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                                 retry = true;
                             }
                         }
-                    } else if let Some(previous) = self.sliced_cache.remove(&table) {
-                        match replay_data::sliced::merge_slice(&previous, fresh, captured, live) {
-                            Ok(merged) => {
-                                let owners = replay_data::sliced::try_owners(&merged)?;
-                                self.sliced_reads.merge(table, &owners, selection, hour)?;
-                                self.sliced_owners[table.index()] = Some(owners);
-                                *input = TableInput::SharedComplete(Arc::new(merged));
+                    } else if let (Some(previous_owners), Some(token)) = (
+                        self.sliced_owners[table.index()].as_deref(),
+                        self.encoder
+                            .untracked_slice_token(table, source.branch, hour, force),
+                    ) {
+                        let fresh_owners = replay_data::sliced::try_owners(&fresh)?;
+                        match replay_data::sliced::SliceUpdate::for_owners(
+                            previous_owners,
+                            fresh,
+                            captured,
+                            live,
+                        ) {
+                            Ok((update, next_owners)) => {
+                                self.sliced_reads
+                                    .merge(table, &fresh_owners, selection, hour)?;
+                                self.sliced_owners[table.index()] = Some(next_owners);
+                                *input = TableInput::SliceUpdate {
+                                    token,
+                                    update: Arc::new(update),
+                                };
                             }
                             Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
                                 return Err(error);
@@ -1235,11 +1234,18 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                 }
             } else {
                 if !cache_staggered {
+                    let compared_complete = matches!(
+                        input,
+                        TableInput::ComparedEqual(_) | TableInput::ComparedChanges { .. }
+                    ) && self.staggered_complete[index]
+                        && self
+                            .columnar
+                            .has_complete(table, source.branch, source.hour);
                     let complete = matches!(
                         input,
                         TableInput::Sampled(TableView::Complete(_))
                             | TableInput::SharedComplete(_)
-                    );
+                    ) || compared_complete;
                     if table == TableId::CountryIntel {
                         self.country_intel_hour = complete.then_some(source.hour);
                         self.country_intel_sample = if complete {
@@ -1253,6 +1259,12 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                     match input {
                         TableInput::Sampled(TableView::Complete(_))
                         | TableInput::SharedComplete(_) => {
+                            self.staggered_complete[index] = true;
+                            self.staggered_cache.remove(&table);
+                        }
+                        TableInput::ComparedEqual(_) | TableInput::ComparedChanges { .. }
+                            if compared_complete =>
+                        {
                             self.staggered_complete[index] = true;
                             self.staggered_cache.remove(&table);
                         }
@@ -10168,16 +10180,38 @@ mod tests {
             .unwrap();
 
         let branch = campaign.observe(None, 2, Some(1)).unwrap();
-        let refreshed = research_rows(&[(1, 0, 5, 2), (2, 0, 6, 2)]);
-        let mut third = sliced_input(branch, 2, TableView::Complete(refreshed));
+        let queued_slice = research_rows(&[(2, 0, 6, 2)]);
+        let mut queued = sliced_input(branch, 2, TableView::Complete(queued_slice));
+        assert!(!merge_with(
+            &mut campaign,
+            &mut queued,
+            SliceSelection::for_test(2, false, &[2]).with_census(&[1, 2])
+        ));
+        let expected_after_queued = research_rows(&[(1, 0, 5, 0), (2, 0, 6, 2)]);
+        assert!(
+            matches!(
+                merged(&queued),
+                TableInput::SharedComplete(rows) if **rows == expected_after_queued
+            ),
+            "queued non-full owner slice after truncation must merge onto saved complete baseline"
+        );
+        assert_eq!(reads(&queued), [(1, 0), (2, 2)]);
+        assert!(campaign.sliced_cache.get(&TableId::ResearchInputs).is_none());
+        campaign
+            .write(queued, 1002, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        let branch = campaign.observe(None, 3, Some(1)).unwrap();
+        let refreshed = research_rows(&[(1, 0, 5, 3), (2, 0, 6, 3)]);
+        let mut third = sliced_input(branch, 3, TableView::Complete(refreshed));
         assert!(!merge_with(
             &mut campaign,
             &mut third,
-            SliceSelection::for_test(2, true, &[]).with_census(&[1, 2])
+            SliceSelection::for_test(3, true, &[]).with_census(&[1, 2])
         ));
         assert!(campaign.sliced_cache.get(&TableId::ResearchInputs).is_none());
         campaign
-            .write(third, 1002, Some(1), 0, &mut WorkSample::default())
+            .write(third, 1003, Some(1), 0, &mut WorkSample::default())
             .unwrap();
         campaign.columnar.finish();
     }
@@ -10256,22 +10290,102 @@ mod tests {
         let branch = campaign.observe(None, 4, Some(1)).unwrap();
         let mut hour4: FrameInput = staggered_frame(branch, 4, false).into();
         hour4.tables[DAILY.index()] = TableInput::Sampled(TableView::Complete(daily_rows(10)));
+        hour4.tables[TableId::VariantDefinitions.index()] =
+            TableInput::Sampled(TableView::Complete(TableRows::VariantDefinitions(vec![
+                replay_data::rows::VariantDefinitionRow {
+                    id: 1,
+                    equipment_token: 2,
+                    ..Default::default()
+                },
+            ])));
         campaign.apply_staggered_inputs(&mut hour4);
         assert!(campaign.staggered_cache.get(&DAILY).is_none());
+        assert!(campaign.staggered_cache.get(&TableId::VariantDefinitions).is_none());
         campaign
             .write(hour4, 1004, Some(1), 0, &mut WorkSample::default())
             .unwrap();
 
         let branch = campaign.observe(None, 5, Some(1)).unwrap();
         let mut hour5: FrameInput = staggered_frame(branch, 5, true).into();
+        hour5.tables[TableId::VariantDefinitions.index()] =
+            TableInput::Sampled(unavailable(replay_data::cadence::SKIPPED_REASON));
         campaign.apply_staggered_inputs(&mut hour5);
         assert!(matches!(
             &hour5.tables[DAILY.index()],
             TableInput::Sampled(TableView::Unavailable { reason })
             if reason == replay_data::cadence::SKIPPED_REASON
         ));
+        assert!(matches!(
+            &hour5.tables[TableId::VariantDefinitions.index()],
+            TableInput::Sampled(TableView::Unavailable { reason })
+            if reason == replay_data::cadence::SKIPPED_REASON
+        ));
         campaign
             .write(hour5, 1005, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        let branch = campaign.observe(None, 6, Some(1)).unwrap();
+        let (token, _) = campaign
+            .encoder
+            .observed_comparison_baseline::<tables::VariantDefinitions>(branch, 6, false)
+            .unwrap();
+        let mut hour6: FrameInput = staggered_frame(branch, 6, true).into();
+        hour6.tables[TableId::VariantDefinitions.index()] = TableInput::ComparedEqual(token);
+        campaign.apply_staggered_inputs(&mut hour6);
+        assert!(campaign.staggered_cache.get(&TableId::VariantDefinitions).is_none());
+        campaign
+            .write(hour6, 1006, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        let branch = campaign.observe(None, 7, Some(1)).unwrap();
+        let mut hour7: FrameInput = staggered_frame(branch, 7, true).into();
+        hour7.tables[TableId::VariantDefinitions.index()] =
+            TableInput::Sampled(unavailable(replay_data::cadence::SKIPPED_REASON));
+        campaign.apply_staggered_inputs(&mut hour7);
+        assert!(matches!(
+            &hour7.tables[TableId::VariantDefinitions.index()],
+            TableInput::Sampled(TableView::Unavailable { reason })
+            if reason == replay_data::cadence::SKIPPED_REASON
+        ));
+        campaign
+            .write(hour7, 1007, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        let branch = campaign.observe(None, 8, Some(1)).unwrap();
+        let (token, _) = campaign
+            .encoder
+            .observed_comparison_baseline::<tables::VariantDefinitions>(branch, 8, false)
+            .unwrap();
+        let mut hour8: FrameInput = staggered_frame(branch, 8, true).into();
+        hour8.tables[TableId::VariantDefinitions.index()] = TableInput::ComparedChanges {
+            token,
+            indices: vec![0],
+            rows: TableRows::VariantDefinitions(vec![
+                replay_data::rows::VariantDefinitionRow {
+                    id: 1,
+                    equipment_token: 3,
+                    ..Default::default()
+                },
+            ]),
+        };
+        campaign.apply_staggered_inputs(&mut hour8);
+        assert!(campaign.staggered_cache.get(&TableId::VariantDefinitions).is_none());
+        campaign
+            .write(hour8, 1008, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        let branch = campaign.observe(None, 9, Some(1)).unwrap();
+        let mut hour9: FrameInput = staggered_frame(branch, 9, true).into();
+        hour9.tables[TableId::VariantDefinitions.index()] =
+            TableInput::Sampled(unavailable(replay_data::cadence::SKIPPED_REASON));
+        campaign.apply_staggered_inputs(&mut hour9);
+        assert!(matches!(
+            &hour9.tables[TableId::VariantDefinitions.index()],
+            TableInput::Sampled(TableView::Unavailable { reason })
+            if reason == replay_data::cadence::SKIPPED_REASON
+        ));
+        campaign
+            .write(hour9, 1009, Some(1), 0, &mut WorkSample::default())
             .unwrap();
         campaign.columnar.finish();
     }

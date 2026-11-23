@@ -110,6 +110,7 @@ pub(crate) enum CompactPayload {
         index: u32,
     },
     Reset {
+        country: u32,
         status: usize,
     },
 }
@@ -124,7 +125,10 @@ impl Default for CompactEntry {
     fn default() -> Self {
         Self {
             root: 0,
-            payload: CompactPayload::Reset { status: 0 },
+            payload: CompactPayload::Reset {
+                country: 0,
+                status: 0,
+            },
         }
     }
 }
@@ -135,6 +139,7 @@ impl CompactEntry {
             return Ok(Self {
                 root: entry.root,
                 payload: CompactPayload::Reset {
+                    country: entry.country,
                     status: entry.started.status,
                 },
             });
@@ -195,8 +200,9 @@ impl CompactEntry {
 
     fn into_entry(self, root_data: Option<RootData>) -> Entry {
         match self.payload {
-            CompactPayload::Reset { status } => Entry {
+            CompactPayload::Reset { country, status } => Entry {
                 root: self.root,
+                country,
                 reset: true,
                 started: native::Started {
                     status,
@@ -358,9 +364,14 @@ struct Slot {
     published: AtomicU64,
 }
 unsafe impl Sync for Slot {}
+struct RootSlot {
+    data: UnsafeCell<RootData>,
+    owner: AtomicU64,
+}
+unsafe impl Sync for RootSlot {}
 struct Buffer {
     entries: Vec<Slot>,
-    roots: Vec<UnsafeCell<RootData>>,
+    roots: Vec<RootSlot>,
     names: Vec<UnsafeCell<u8>>,
     stride: usize,
     publishers: AtomicUsize,
@@ -368,8 +379,7 @@ struct Buffer {
     disposed: AtomicPtr<Buffer>,
     base: AtomicU64,
     cursor: AtomicU64,
-    root_cursor: AtomicU64,
-    root_consumed: AtomicU64,
+    root_cursor: AtomicUsize,
     names_demand: AtomicUsize,
     entries_required: AtomicUsize,
     _charge: crate::raw_memory::Charge,
@@ -398,7 +408,10 @@ impl Buffer {
         });
         let root_count = entries.div_ceil(8).max(entries.min(64)).max(1);
         let mut roots = engine_allocation::vec(root_count)?;
-        roots.resize_with(root_count, || UnsafeCell::new(RootData::default()));
+        roots.resize_with(root_count, || RootSlot {
+            data: UnsafeCell::new(RootData::default()),
+            owner: AtomicU64::new(0),
+        });
         let stride = stride.max(names.div_ceil(entries.max(1)));
         let count = entries
             .checked_mul(stride)
@@ -423,12 +436,21 @@ impl Buffer {
             disposed: AtomicPtr::new(std::ptr::null_mut()),
             base: AtomicU64::new(0),
             cursor: AtomicU64::new(0),
-            root_cursor: AtomicU64::new(0),
-            root_consumed: AtomicU64::new(0),
+            root_cursor: AtomicUsize::new(0),
             names_demand: AtomicUsize::new(0),
             entries_required: AtomicUsize::new(0),
             _charge: charge,
         })
+    }
+    fn release_roots_up_to(&self, cursor: u64) {
+        for slot in &self.roots {
+            let owner = slot.owner.load(Ordering::Acquire);
+            if owner != 0 && owner <= cursor {
+                let _ =
+                    slot.owner
+                        .compare_exchange(owner, 0, Ordering::AcqRel, Ordering::Relaxed);
+            }
+        }
     }
 }
 struct Publishing<'a>(&'a Buffer);
@@ -865,6 +887,7 @@ fn append_buffer(
         CompactEntry {
             root: entry.root,
             payload: CompactPayload::Reset {
+                country: entry.country,
                 status: entry.started.status,
             },
         }
@@ -901,15 +924,24 @@ fn append_buffer(
             },
         }
     } else {
-        let root_slot = buffer.root_cursor.fetch_update(
-            Ordering::AcqRel,
-            Ordering::Acquire,
-            |cur| {
-                let used = cur.wrapping_sub(buffer.root_consumed.load(Ordering::Acquire));
-                (used < buffer.roots.len() as u64).then_some(cur.wrapping_add(1))
-            },
-        );
-        let Ok(root_index) = root_slot else {
+        let root_count = buffer.roots.len();
+        let start_pos = buffer.root_cursor.fetch_add(1, Ordering::Relaxed) % root_count;
+        let owner = index + 1;
+        let mut claimed = None;
+        for step in 0..root_count {
+            let pos = (start_pos + step) % root_count;
+            let root_slot = &buffer.roots[pos];
+            if root_slot.owner.load(Ordering::Relaxed) == 0
+                && root_slot
+                    .owner
+                    .compare_exchange(0, owner, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+            {
+                claimed = Some(pos);
+                break;
+            }
+        }
+        let Some(root_pos) = claimed else {
             return spill.push(index, entry, name, memory);
         };
         if let Some(name) = name {
@@ -924,10 +956,9 @@ fn append_buffer(
                 Err(reason) => entry.name_reason = Some(reason),
             }
         }
-        let root_pos = (root_index as usize) % buffer.roots.len();
-        // SAFETY: `root_index` was exclusively claimed within `buffer.roots.len()` unconsumed slots.
+        // SAFETY: `buffer.roots[root_pos].owner` was exclusively claimed from 0 to `index + 1`.
         unsafe {
-            *buffer.roots[root_pos].get() = RootData {
+            *buffer.roots[root_pos].data.get() = RootData {
                 started: entry.started,
                 settled: entry.settled,
                 amount: entry.amount,
@@ -1361,12 +1392,11 @@ fn handover_buffers(
     let epoch = log.epoch.load(Ordering::SeqCst);
     if let Some(reason) = unavailable {
         log.consumed.store(cursor, Ordering::Release);
-        buffer
-            .root_consumed
-            .store(buffer.root_cursor.load(Ordering::Acquire), Ordering::Release);
-        if let Some(old) = older {
-            old.root_consumed
-                .store(old.root_cursor.load(Ordering::Acquire), Ordering::Release);
+        if log.active() == 0 {
+            buffer.release_roots_up_to(cursor);
+            if let Some(old) = older {
+                old.release_roots_up_to(cursor);
+            }
         }
         spill.held().discard_before(cursor);
         return Err(reason);
@@ -1391,14 +1421,11 @@ fn handover_buffers(
                 (lost < cursor).then_some(u64::MAX)
             });
         COUNTERS[10].fetch_add(1, Ordering::Relaxed);
-        log.consumed.store(cursor, Ordering::Release);
-        buffer
-            .root_consumed
-            .store(buffer.root_cursor.load(Ordering::Acquire), Ordering::Release);
+        buffer.release_roots_up_to(cursor);
         if let Some(old) = older {
-            old.root_consumed
-                .store(old.root_cursor.load(Ordering::Acquire), Ordering::Release);
+            old.release_roots_up_to(cursor);
         }
+        log.consumed.store(cursor, Ordering::Release);
         held.discard_before(cursor);
         drained.first = cursor;
         return Ok((drained, 0, 0));
@@ -1439,7 +1466,7 @@ fn handover_buffers(
                     unsafe { (*slot.entry.get(), *slot.name_required.get() as usize) };
                 let root_data = match compact.payload {
                     CompactPayload::Root { index, .. } => {
-                        Some(unsafe { *domain.roots[index as usize].get() })
+                        Some(unsafe { *domain.roots[index as usize].data.get() })
                     }
                     _ => None,
                 };
@@ -1463,8 +1490,7 @@ fn handover_buffers(
     }
     let mut len = 0usize;
     let mut at = 0;
-    let mut current_roots = 0u64;
-    let mut older_roots = 0u64;
+    let mut has_roots = false;
     for (offset, target) in entries[..copied].iter_mut().enumerate() {
         let index = first + offset as u64;
         let entry = match spilled_at(&mut at, index) {
@@ -1485,12 +1511,8 @@ fn handover_buffers(
                 let compact = unsafe { *slot.entry.get() };
                 let root_data = match compact.payload {
                     CompactPayload::Root { index, .. } => {
-                        if std::ptr::eq(domain, buffer) {
-                            current_roots += 1;
-                        } else {
-                            older_roots += 1;
-                        }
-                        Some(unsafe { *domain.roots[index as usize].get() })
+                        has_roots = true;
+                        Some(unsafe { *domain.roots[index as usize].data.get() })
                     }
                     _ => None,
                 };
@@ -1514,15 +1536,28 @@ fn handover_buffers(
     if log.epoch.load(Ordering::SeqCst) != epoch {
         return Err("fuel award observation restarted");
     }
+    if has_roots {
+        let mut release_at = 0;
+        for offset in 0..copied {
+            let index = first + offset as u64;
+            if spilled_at(&mut release_at, index).is_some() {
+                continue;
+            }
+            if let Ok((domain, slot)) = slot(index) {
+                // SAFETY: `log.consumed` still holds `first`, so `slot` stays immutable until released.
+                let compact = unsafe { *slot.entry.get() };
+                if let CompactPayload::Root {
+                    index: root_pos, ..
+                } = compact.payload
+                {
+                    domain.roots[root_pos as usize]
+                        .owner
+                        .store(0, Ordering::Release);
+                }
+            }
+        }
+    }
     log.consumed.store(first + copied as u64, Ordering::Release);
-    if current_roots != 0 {
-        buffer.root_consumed.fetch_add(current_roots, Ordering::Release);
-    }
-    if older_roots != 0
-        && let Some(old) = older
-    {
-        old.root_consumed.fetch_add(older_roots, Ordering::Release);
-    }
     held.discard_before(first + copied as u64);
     drained.copied = copied;
     COUNTERS[7].fetch_add(copied as u64, Ordering::Relaxed);
@@ -1547,12 +1582,11 @@ fn handover_compact(
     let epoch = log.epoch.load(Ordering::SeqCst);
     if let Some(reason) = unavailable {
         log.consumed.store(cursor, Ordering::Release);
-        buffer
-            .root_consumed
-            .store(buffer.root_cursor.load(Ordering::Acquire), Ordering::Release);
-        if let Some(old) = older {
-            old.root_consumed
-                .store(old.root_cursor.load(Ordering::Acquire), Ordering::Release);
+        if log.active() == 0 {
+            buffer.release_roots_up_to(cursor);
+            if let Some(old) = older {
+                old.release_roots_up_to(cursor);
+            }
         }
         spill.held().discard_before(cursor);
         return Err(reason);
@@ -1577,14 +1611,11 @@ fn handover_compact(
                 (lost < cursor).then_some(u64::MAX)
             });
         COUNTERS[10].fetch_add(1, Ordering::Relaxed);
-        log.consumed.store(cursor, Ordering::Release);
-        buffer
-            .root_consumed
-            .store(buffer.root_cursor.load(Ordering::Acquire), Ordering::Release);
+        buffer.release_roots_up_to(cursor);
         if let Some(old) = older {
-            old.root_consumed
-                .store(old.root_cursor.load(Ordering::Acquire), Ordering::Release);
+            old.release_roots_up_to(cursor);
         }
+        log.consumed.store(cursor, Ordering::Release);
         held.discard_before(cursor);
         drained.first = cursor;
         return Ok((drained, 0, 0));
@@ -1628,7 +1659,7 @@ fn handover_compact(
                     unsafe { (*slot.entry.get(), *slot.name_required.get() as usize) };
                 let (root_data, is_root) = match compact.payload {
                     CompactPayload::Root { index, .. } => {
-                        (Some(unsafe { *domain.roots[index as usize].get() }), true)
+                        (Some(unsafe { *domain.roots[index as usize].data.get() }), true)
                     }
                     _ => (None, false),
                 };
@@ -1655,8 +1686,7 @@ fn handover_compact(
         .map_err(|_| "fuel root handover allocation failed")?;
     let mut len = 0usize;
     let mut at = 0;
-    let mut current_roots = 0u64;
-    let mut older_roots = 0u64;
+    let mut has_roots = false;
     for (offset, target) in entries[..copied].iter_mut().enumerate() {
         let index = first + offset as u64;
         let compact = match spilled_at(&mut at, index) {
@@ -1699,12 +1729,8 @@ fn handover_compact(
                         }
                     }
                     CompactPayload::Root { index, .. } => {
-                        if std::ptr::eq(domain, buffer) {
-                            current_roots += 1;
-                        } else {
-                            older_roots += 1;
-                        }
-                        let mut data = unsafe { *domain.roots[*index as usize].get() };
+                        has_roots = true;
+                        let mut data = unsafe { *domain.roots[*index as usize].data.get() };
                         if let Some((start, nlen)) = data.name {
                             let bytes = names
                                 .get_mut(len..len.saturating_add(nlen))
@@ -1732,15 +1758,28 @@ fn handover_compact(
     if log.epoch.load(Ordering::SeqCst) != epoch {
         return Err("fuel award observation restarted");
     }
+    if has_roots {
+        let mut release_at = 0;
+        for offset in 0..copied {
+            let index = first + offset as u64;
+            if spilled_at(&mut release_at, index).is_some() {
+                continue;
+            }
+            if let Ok((domain, slot)) = slot(index) {
+                // SAFETY: `log.consumed` still holds `first`, so `slot` stays immutable until released.
+                let compact = unsafe { *slot.entry.get() };
+                if let CompactPayload::Root {
+                    index: root_pos, ..
+                } = compact.payload
+                {
+                    domain.roots[root_pos as usize]
+                        .owner
+                        .store(0, Ordering::Release);
+                }
+            }
+        }
+    }
     log.consumed.store(first + copied as u64, Ordering::Release);
-    if current_roots != 0 {
-        buffer.root_consumed.fetch_add(current_roots, Ordering::Release);
-    }
-    if older_roots != 0
-        && let Some(old) = older
-    {
-        old.root_consumed.fetch_add(older_roots, Ordering::Release);
-    }
     held.discard_before(first + copied as u64);
     drained.copied = copied;
     COUNTERS[7].fetch_add(copied as u64, Ordering::Relaxed);

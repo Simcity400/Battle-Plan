@@ -52,7 +52,7 @@ struct Hot(AtomicU64);
 const PROBES: usize = 32;
 static REFUSED_TOTAL: AtomicU64 = AtomicU64::new(0);
 static PEAK_LOAD: AtomicU64 = AtomicU64::new(0);
-const SLOTS_PER_WATCH: usize = 2;
+const SLOTS_PER_WATCH: usize = 4;
 const MIN_SLOTS: usize = 1024;
 
 #[derive(Default)]
@@ -185,7 +185,7 @@ pub struct WatchRegistry {
     state: Hot,
     dirty: AtomicBool,
     revision: AtomicU64,
-    flushing: AtomicBool,
+    flush_seq: AtomicU64,
     enabled: AtomicBool,
     poisoned: AtomicBool,
     refused: AtomicU64,
@@ -263,7 +263,7 @@ impl WatchRegistry {
             state: Hot(AtomicU64::new(0)),
             dirty: AtomicBool::new(false),
             revision: AtomicU64::new(0),
-            flushing: AtomicBool::new(false),
+            flush_seq: AtomicU64::new(0),
             enabled: AtomicBool::new(false),
             poisoned: AtomicBool::new(false),
             refused: AtomicU64::new(0),
@@ -403,14 +403,25 @@ impl WatchRegistry {
         }
     }
 
-    fn lock_flush(&self) {
-        while self
-            .flushing
-            .compare_exchange_weak(false, true, Acquire, Relaxed)
-            .is_err()
-        {
-            std::hint::spin_loop();
+    fn lock_flush(&self) -> u64 {
+        loop {
+            let seq = self.flush_seq.load(Acquire);
+            if seq & 1 != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            if self
+                .flush_seq
+                .compare_exchange_weak(seq, seq + 1, SeqCst, Relaxed)
+                .is_ok()
+            {
+                return seq + 1;
+            }
         }
+    }
+
+    fn unlock_flush(&self, locked: u64) {
+        self.flush_seq.store(locked + 1, SeqCst);
     }
 
     fn quiet_now_fast(&self) -> bool {
@@ -449,10 +460,18 @@ impl WatchRegistry {
                 return None;
             }
         }
-        if !self.dirty.load(SeqCst) {
-            return Some(revision(state).wrapping_add(self.revision.load(SeqCst)));
+        let seq = self.flush_seq.load(SeqCst);
+        if seq & 1 == 0 && !self.dirty.load(SeqCst) {
+            let state = self.state.0.load(SeqCst);
+            if running(state) != 0 || state & UNTRUSTED != 0 {
+                return None;
+            }
+            let rev = revision(state).wrapping_add(self.revision.load(SeqCst));
+            if self.flush_seq.load(SeqCst) == seq {
+                return Some(rev);
+            }
         }
-        self.lock_flush();
+        let locked = self.lock_flush();
         let result = (|| {
             if self.dirty.swap(false, SeqCst) {
                 self.revision.fetch_add(1, SeqCst);
@@ -465,7 +484,7 @@ impl WatchRegistry {
             }
             Some(revision(state).wrapping_add(self.revision.load(SeqCst)))
         })();
-        self.flushing.store(false, Release);
+        self.unlock_flush(locked);
         result
     }
 
@@ -789,7 +808,8 @@ impl WatchRegistry {
             {
                 return Boundary::Installed;
             }
-            if refused_since_clear && self.offered.load(SeqCst).is_null() {
+            if QUIESCENT_GROWTH.get() && refused_since_clear && self.offered.load(SeqCst).is_null()
+            {
                 if !self.quiet_now() {
                     self.deferred.fetch_add(1, Relaxed);
                     return Boundary::Deferred;
@@ -801,6 +821,7 @@ impl WatchRegistry {
                     self.registered.store(0, Relaxed);
                     self.clears.fetch_add(1, Relaxed);
                     self.refused_at_clear.store(refused, Relaxed);
+                    self.refused_at_offer.fetch_max(refused, Relaxed);
                     self.purged_for_refusal.store(true, Relaxed);
                     return Boundary::Cleared;
                 }
@@ -978,8 +999,12 @@ impl WatchRegistry {
         let refused = self.refused.load(Relaxed);
         let cap = self.capacity.load(Relaxed);
         let grow_on_refusal = !self.purge || self.purged_for_refusal.load(Relaxed);
+        let floor = self
+            .refused_at_offer
+            .load(Relaxed)
+            .max(self.refused_at_clear.load(Relaxed));
         if grow_on_refusal
-            && refused > self.refused_at_offer.load(Relaxed)
+            && refused > floor
             && cap != 0
             && let Some(grown) = cap.checked_mul(2)
         {
@@ -2254,6 +2279,40 @@ mod tests {
         assert_eq!(registry.active(), 0);
         assert_eq!(registry.sequence(0x2000), Some((before.0, before.1 + 1)));
         assert_eq!(take(&registry), (Some(before.0), vec![0x2000]));
+        unsafe { registry.release() };
+    }
+
+    #[test]
+    fn quiet_state_waits_for_in_flight_flush_before_certifying_revision() {
+        let registry = std::sync::Arc::new(WatchRegistry::enabled(64));
+        let initial = registry.quiet().unwrap();
+        drop(registry.notify(0x2000));
+        let locked = registry.lock_flush();
+        assert!(registry.dirty.swap(false, SeqCst));
+        let started = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let done = std::sync::Arc::new(AtomicBool::new(false));
+        let reader = {
+            let (registry, started, done) = (
+                std::sync::Arc::clone(&registry),
+                std::sync::Arc::clone(&started),
+                std::sync::Arc::clone(&done),
+            );
+            std::thread::spawn(move || {
+                started.wait();
+                let quiet = registry.quiet();
+                done.store(true, Release);
+                quiet
+            })
+        };
+        started.wait();
+        for _ in 0..64 {
+            assert!(!done.load(Acquire));
+            std::thread::yield_now();
+        }
+        registry.revision.fetch_add(1, SeqCst);
+        registry.unlock_flush(locked);
+        let after = reader.join().unwrap().unwrap();
+        assert_ne!(after, initial);
         unsafe { registry.release() };
     }
 

@@ -207,32 +207,32 @@ fn surplus_waits_for_a_sustained_idle_streak_and_resets_when_popped() {
     let mut taken: Vec<_> = (0..=STEADY)
         .map(|_| unsafe { shared.take_frame(&mut 0) }.unwrap())
         .collect();
-    for _ in 0..STEADY {
+    for _ in 0..AHEAD {
         pool.push(taken.pop().unwrap()).unwrap();
     }
+    let in_flight = taken.pop().unwrap();
     let extra = taken.pop().unwrap();
     assert_eq!(pool.live(), STEADY + 1);
-    assert_eq!(pool.len(), STEADY);
+    assert_eq!(pool.len(), AHEAD);
     assert!(!pool.surplus_after(4));
     assert!(!pool.surplus_after(4));
-    let popped: Vec<_> = (0..=(STEADY - AHEAD))
-        .map(|_| unsafe { pool.pop() }.unwrap())
-        .collect();
+    let popped = unsafe { pool.pop() }.unwrap();
     assert!(!pool.surplus_after(4));
-    for slot in popped {
-        pool.push(slot).unwrap();
-    }
+    pool.push(popped).unwrap();
     for _ in 0..3 {
         assert!(!pool.surplus_after(4));
     }
     assert!(pool.surplus_after(4));
     assert!(!pool.surplus_after(4));
+    pool.push(in_flight).unwrap();
+    assert_eq!(pool.len(), STEADY);
+    assert!(pool.surplus_after(4));
     let mut all: Vec<_> = (0..STEADY).map(|_| unsafe { pool.pop() }.unwrap()).collect();
     all.push(extra);
     for _ in 0..(SURPLUS_CAP - STEADY) {
         all.push(unsafe { shared.take_frame(&mut 0) }.unwrap());
     }
-    for _ in 0..STEADY {
+    for _ in 0..AHEAD {
         pool.push(all.pop().unwrap()).unwrap();
     }
     assert_eq!(pool.live(), SURPLUS_CAP + 1);
@@ -258,11 +258,11 @@ fn byte_and_frame_limits_stop_pool_growth_and_resume_when_frames_vacate() {
     );
     assert!(!builds_ahead(0, pool.at_limit_with(usize::MAX, initial)));
 
-    pool.set_slot_bytes(0, MAX_LIVE_BYTES);
-    assert!(pool.at_limit());
     let mut held: Vec<_> = (0..STEADY)
         .map(|_| unsafe { shared.take_frame(&mut 0) }.unwrap())
         .collect();
+    pool.set_slot_bytes(0, MAX_LIVE_BYTES);
+    assert!(pool.at_limit());
     assert_eq!(unsafe { shared.take_frame(&mut 0) }, None);
     assert_eq!(pool.limit_drops(), 1);
     assert_eq!(pool.stalled_drops(), 0);

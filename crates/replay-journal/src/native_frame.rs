@@ -875,16 +875,13 @@ impl Part<'_> {
         {
             removed(id, writer, update, self.owners[index].as_ref(), &mut lane.removed)?;
         }
-        let skipped_carry = source.is_none()
+        let carried_complete = source.is_none()
             && !self.starting
             && matches!(input, TableInput::Sampled(TableView::Unavailable { reason })
                 if reason == replay_data::cadence::SKIPPED_REASON)
             && replay_data::cadence::is_staggered(id)
+            && writer.status() == Status::Complete
             && writer.acquisition().available_from.is_some();
-        let carried_complete = skipped_carry && writer.status() == Status::Complete;
-        let carried_unavailable = (skipped_carry
-            && matches!(writer.status(), Status::Unavailable { .. }))
-        .then_some(writer.status());
         let delta = source
             .and_then(|source| source.delta)
             .filter(|_| !self.starting && writer.status() == Status::Complete);
@@ -900,16 +897,6 @@ impl Part<'_> {
         }
         if !scope::records(self.mode, id) {
             return held.not_recorded();
-        }
-        if let Some(status) = carried_unavailable {
-            return Ok(TableHour {
-                prepared: None,
-                evidence: Evidence {
-                    status,
-                    read,
-                    sample: Sample::FromReadBit,
-                },
-            });
         }
         let complete = match input {
             TableInput::Sampled(TableView::Complete(rows)) => Some(rows),
