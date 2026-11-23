@@ -277,12 +277,35 @@ mod tests {
     #[test]
     fn top_ranking_with_unrecorded_ranking_table_returns_shared_missing_reason() {
         let hour = both_recorded();
-        let fixture = Fixture::new(Data::Power, hour..=hour);
-        let query = fixture.query();
         let factories = dashboard_declare::series("country-factories").unwrap();
-        let col = Column { line: Line::new(&query, factories, factories.measure("free1").unwrap()).unwrap(), partial: None };
-        let board = at(&[col], Rows::Top { by: 0, n: 2, least: false }, hour).unwrap();
-        assert!(board.rows.is_empty());
-        assert_eq!(board.missing, table_unrecorded(factories.table, Status::NotRecorded, None));
+        let free1 = factories.measure("free1").unwrap();
+
+        let unavailable = Fixture::new(Data::Power, hour..=hour);
+        let unavailable_query = unavailable.query();
+        let unavailable_col = Column { line: Line::new(&unavailable_query, factories, free1).unwrap(), partial: None };
+        let unavailable_board = at(&[unavailable_col], Rows::Top { by: 0, n: 2, least: false }, hour).unwrap();
+        assert!(unavailable_board.rows.is_empty());
+        assert_eq!(
+            unavailable_board.missing.as_deref(),
+            Some("Country factories not available at this hour: outside the fixture"),
+        );
+        assert_eq!(
+            unavailable_board.missing,
+            table_unrecorded(factories.table, Status::Unavailable { reason: 0 }, Some("outside the fixture")),
+        );
+
+        let unrecorded = Fixture::with_not_recorded_factories(hour..=hour);
+        let unrecorded_query = unrecorded.query();
+        let unrecorded_col = Column { line: Line::new(&unrecorded_query, factories, free1).unwrap(), partial: None };
+        let unrecorded_board = at(&[unrecorded_col], Rows::Top { by: 0, n: 2, least: false }, hour).unwrap();
+        assert!(unrecorded_board.rows.is_empty());
+        assert_eq!(
+            unrecorded_board.missing.as_deref(),
+            Some("Country factories not recorded at this hour"),
+        );
+        assert_eq!(
+            unrecorded_board.missing,
+            table_unrecorded(factories.table, Status::NotRecorded, None),
+        );
     }
 }

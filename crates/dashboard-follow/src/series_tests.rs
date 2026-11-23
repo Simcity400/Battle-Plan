@@ -530,3 +530,96 @@ fn golden_slot_and_tag_answers_match_checked_in_fixtures_and_board_reasons() {
     let parsed_525 = Answer::parse(&bytes_525).unwrap();
     assert_eq!(parsed_525.reason(0), board_525.rows[0].cells[0].missing.as_deref());
 }
+
+#[test]
+fn top_ranking_missing_reasons_match_exact_board_for_unavailable_and_not_recorded_tables() {
+    use dashboard_query::series::board;
+    use replay_data::rows::{ClockRow, CountryFactoriesRow};
+    use replay_journal::synthetic::{Input, Sample};
+
+    let factories = dashboard_declare::series("country-factories").unwrap();
+    let free1 = factories.measure("free1").unwrap();
+
+    let state = query();
+    let identity = Identity { holders: Arc::clone(&state.holders), timeline: Arc::clone(&state.timeline) };
+    let followed_unavailable = Query::series_top(factories, free1, 2, identity);
+    let pages: Arc<dyn Pages> = Arc::new(
+        WorldPages::over(replay_recording::columnar_frames::Recording::open(replay().bytes().to_vec()).unwrap(), Span::Whole).unwrap(),
+    );
+    let unavailable_lane = lane(&pages, &followed_unavailable, followed_unavailable.declared(), ITA_FROM);
+    let unavailable_answer = Answer::parse(&answer_at(&followed_unavailable, &unavailable_lane).unwrap()).unwrap();
+    let unavailable_cols = [board::Column { line: Line::new(&state, factories, free1).unwrap(), partial: None }];
+    let unavailable_board = board::at(&unavailable_cols, board::Rows::Top { by: 0, n: 2, least: false }, ITA_FROM).unwrap();
+    assert!(unavailable_board.rows.is_empty());
+    assert!(unavailable_answer.keys.is_empty());
+    assert_eq!(unavailable_board.missing.as_deref(), Some("Country factories not available at this hour: outside the fixture"));
+    assert_eq!(unavailable_answer.not_recorded, unavailable_board.missing);
+
+    let session = SessionStart {
+        id: 1,
+        process_id: 1,
+        process_start_time: 1,
+        qpc_frequency: 10_000_000,
+        sample_boundary: SampleBoundary::EndOfHour,
+        capture_mode: CaptureMode::Full,
+        identity: Recorded {
+            game_version: "synthetic".into(),
+            exe_hash: [1; 32],
+            exe_size: 1,
+            vanilla_hash: [2; 32],
+            dlc: vec![],
+            mods: vec![],
+            coverage_policy: 1,
+            language: "l_english".into(),
+            recorder_version: "test".into(),
+            collector_hash: [3; 32],
+            verification: Verification::Verified { launcher: Roster::default(), memory: Roster::default() },
+        },
+    };
+    let branch = BranchStart { id: 1, session: 1, loaded_hour: None, first_hour: FIRST, parent: Parentage::Unknown, reason: BranchReason::SessionStart };
+    let campaign = CampaignRow { id: b"follow-unrecorded".to_vec() };
+    let unrecorded_replay = Replay::from_synthetic(
+        recorder_derive::writers(),
+        campaign.id.clone(),
+        session,
+        branch,
+        FIRST,
+        |frame, hour| {
+            frame.table(TableId::Clock, Input::Snapshot { rows: &[ClockRow { hour, ..ClockRow::default() }], partial: None, read: true, sample: Sample::FromReadBit })?;
+            frame.table(TableId::Campaign, Input::Snapshot { rows: std::slice::from_ref(&campaign), partial: None, read: true, sample: Sample::FromReadBit })?;
+            frame.table(TableId::Countries, Input::Snapshot {
+                rows: &[CountryRow { id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), ..CountryRow::default() }],
+                partial: None,
+                read: true,
+                sample: Sample::FromReadBit,
+            })?;
+            frame.table(TableId::CountryLinks, Input::Snapshot {
+                rows: &[CountryLinkRow { id: 9001, canonical_slot: 7 }],
+                partial: None,
+                read: true,
+                sample: Sample::FromReadBit,
+            })?;
+            frame.table::<CountryFactoriesRow>(TableId::CountryFactories, Input::NotRecorded { read: false, sample: Sample::FromReadBit })
+        },
+    )
+    .unwrap();
+    let timeline = Arc::new(Timeline { id: 1, first: FIRST, last: FIRST, stretches: vec![Stretch { run: 0, first: FIRST, last: FIRST, join: Join::Start }], unheld: Vec::new() });
+    let holders = Arc::new(Holders::new(
+        [("GER".to_owned(), vec![HolderRun { first: FIRST, last: FIRST, holder: Holder::Found { slot: 7, id: 9001 }, starts_segment: true }])].into(),
+        Vec::new(),
+    ));
+    let unrecorded_state = dashboard_query::Query { replay: &unrecorded_replay, timeline: Arc::clone(&timeline), holders: Arc::clone(&holders) };
+    let unrecorded_identity = Identity { holders, timeline };
+    let followed_unrecorded = Query::series_top(factories, free1, 2, unrecorded_identity);
+    let unrecorded_pages: Arc<dyn Pages> = Arc::new(
+        WorldPages::over(replay_recording::columnar_frames::Recording::open(unrecorded_replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap(),
+    );
+    let unrecorded_lane = lane(&unrecorded_pages, &followed_unrecorded, followed_unrecorded.declared(), FIRST);
+    let unrecorded_answer = Answer::parse(&answer_at(&followed_unrecorded, &unrecorded_lane).unwrap()).unwrap();
+    let unrecorded_cols = [board::Column { line: Line::new(&unrecorded_state, factories, free1).unwrap(), partial: None }];
+    let unrecorded_board = board::at(&unrecorded_cols, board::Rows::Top { by: 0, n: 2, least: false }, FIRST).unwrap();
+    assert!(unrecorded_board.rows.is_empty());
+    assert!(unrecorded_answer.keys.is_empty());
+    assert_eq!(unrecorded_board.missing.as_deref(), Some("Country factories not recorded at this hour"));
+    assert_eq!(unrecorded_answer.not_recorded, unrecorded_board.missing);
+}
