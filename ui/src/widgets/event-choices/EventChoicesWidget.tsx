@@ -1,5 +1,5 @@
 import { countryNameDetails } from '../../charts/tooltip.ts';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { ChipSet } from '../../components/ChipSet';
 import ArtFallback from '../../components/ArtFallback';
@@ -10,7 +10,8 @@ import LiveText, { liveTexts } from '../../charts/LiveText';
 import LogList from '../../charts/log/LogList';
 import { countsAhead } from '../../charts/log/logSource';
 import LogGaps from '../../charts/log/LogGaps';
-import type { LogRow } from '../../charts/log/logData';
+import { NO_COUNTRY_REQUESTS, sameCountryRequests } from '../../charts/log/logData';
+import type { CountryRequest, LogRow } from '../../charts/log/logData';
 import { logSettings } from '../../charts/log/logOptions';
 import { jumpItem } from '../../charts/jump';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
@@ -20,6 +21,7 @@ import { countryMatch, countryScope } from '../../dashboard/groups';
 import { resolveOptions } from '../../dashboard/options';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
+import { useDistinctState } from '../../dashboard/useDistinctState';
 import { eventCountryName } from '../event-feed/eventFeedData';
 import { occurrenceCountryRequests } from '../event-feed/scriptOccurrences';
 import { useCards } from '../event-feed/useCards';
@@ -36,7 +38,6 @@ import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
 import type { EventFeedKind } from '../../generated/dashboard';
 
-const NO_ROWS: readonly LogRow<ChoiceAt>[] = [];
 const CONTINUING: readonly EventFeedKind[] = ['eventOptionSelected'];
 const cardHeight = (row: LogRow<ChoiceAt>) => 78 + 18 * Math.max(1, row.item.card.item?.options?.length ?? 1);
 
@@ -61,8 +62,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     edges: card => card.occurrence.edges, days: () => true, at: (row, hour, breaks) => choiceAt(row, hour, breaks, awaiting, country) }),
   [kindsKey, awaiting, country, scope]);
   const cards = useCards(runtime, widget, track, active && match.ready, list);
-  const [visible, setVisible] = useState<readonly LogRow<ChoiceAt>[]>(NO_ROWS);
-  const wanted = useMemo(() => occurrenceCountryRequests(visible.map(row => row.item.card.occurrence)), [visible]);
+  const [wanted, setWanted] = useDistinctState<readonly CountryRequest[]>(NO_COUNTRY_REQUESTS, sameCountryRequests);
+  const onVisible = useCallback((rows: readonly LogRow<ChoiceAt>[]) => setWanted(occurrenceCountryRequests(rows.map(row => row.item.card.occurrence))), [setWanted]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const nameHour = (row: LogRow<ChoiceAt>) => row.item.card.first.row.nameHour;
   const label = useCallback((hour: number, tag: string) => {
@@ -125,7 +126,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
       onToggle={key => setOption?.(key, !selected.includes(key))} /></div>}
     <LogGaps missing={cards.feed.missing} until={cards.hour} />
     <LogList pages={list.openers.length > 0 ? cards.pages : []} label="Event choices" layout="card" density={log.density} months={log.months}
-      rowHeight={cardHeight} anchorRows animate={log.animate && cards.follow} playhead={cards.follow ? cards.hour : null} onVisible={setVisible}
+      rowHeight={cardHeight} anchorRows animate={log.animate && cards.follow} playhead={cards.follow ? cards.hour : null} onVisible={onVisible}
       onWantedPages={cards.feed.onWantedPages} renderRow={renderRow} describe={row => choiceDescription(row.item, name)} tooltip={row => {
         const countries: ReturnType<typeof label>[] = [];
         const forms = choiceTooltip(row.item, (tag, hour) => { const found = label(hour, tag); countries.push(found); return found.name; });
