@@ -7,6 +7,7 @@ import type { Run } from '../../charts/series';
 import { battleDate, battleValueText } from '../battles/battleRows.ts';
 import type { BattleCountryLabel, BattleSide } from '../battles/battleRows';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
+import { landManpowerSides } from './landBattlesData.ts';
 import type { LandBattleRow } from './landBattlesData';
 
 export interface LandDesign { name: string | null; variant: string }
@@ -83,6 +84,11 @@ export function courseExtent(runs: readonly (readonly Run[])[]): [number, number
   let most = 1, any = false;
   for (const side of runs) for (const run of side) { any = true; if (run.value > most) most = run.value; }
   return any ? [0, most] : null;
+}
+
+export function drillChartHour(row: Pick<LandBattleRow, 'end' | 'settledHour'>, shownHour: number): number {
+  const bound = row.end && 'hour' in row.end ? row.end.hour : row.settledHour;
+  return bound !== undefined ? Math.min(shownHour, bound) : shownHour;
 }
 
 export function courseManpower(course: LandCourse, at: number): [Run[], Run[]] {
@@ -162,8 +168,9 @@ export function sideLook(side: BattleSide, country: BattleCountryLabel): SideLoo
 export type BattleOutcome = { kind: 'ongoing' } | { kind: 'won'; side: number } | { kind: 'unknown'; text: string };
 export function battleOutcome(row: LandBattleRow): BattleOutcome {
   if (row.end === null) return { kind: 'ongoing' };
+  if ('side' in row.winner) return { kind: 'won', side: row.winner.side };
   if ('unknown' in row.end) return { kind: 'unknown', text: row.end.unknown };
-  return 'unknown' in row.winner ? { kind: 'unknown', text: row.winner.unknown } : { kind: 'won', side: row.winner.side };
+  return { kind: 'unknown', text: row.winner.unknown };
 }
 
 export function lossNote(row: LandBattleRow): string | undefined {
@@ -175,9 +182,10 @@ export const peakText = (peak: { value: number; hour: number } | null, atLeast =
   peak === null ? 'Not recorded' : `${atLeast ? 'at least ' : ''}${usNumber.format(peak.value)}, ${dayLabel(peak.hour)}`;
 
 const SIDES = ['Attackers', 'Defenders'] as const;
-const placeName = (row: LandBattleRow, pending: boolean) => row.place.name ?? (pending ? 'Loading…' : 'Unnamed province');
+const placeName = (row: LandBattleRow, pending: boolean) => row.place.name ?? (row.provinceId === null ? 'Province not recorded' : pending ? 'Loading…' : 'Unnamed province');
 
 export function winners(look: SideLook, side: string): string {
+  if (look.unknown) return side;
   const names = look.countries.map(part => part.name);
   if (names.length === 0) return side;
   if (names.length <= 2) return names.join(' and ');
@@ -210,4 +218,63 @@ export function battleTooltip(row: LandBattleRow, looks: readonly SideLook[], te
   rows.push({ label: 'Result', divider: true, value: outcome.kind === 'ongoing' ? 'Ongoing' : outcome.kind === 'unknown' ? outcome.text
     : `${winners(looks[outcome.side], SIDES[outcome.side])} won` });
   return { title: placeName(row, pending), rows, note: lossNote(row) };
+}
+
+export const lossWidth = (value: number, larger: number) => larger > 0 && value > 0 ? `${Math.max(3, value / larger * 50)}%` : '0';
+
+export const sameKnownSides = (a: LandBattleRow, b: LandBattleRow) => {
+  const [left, right] = [landManpowerSides(a), landManpowerSides(b)];
+  return (left[0] === null) === (right[0] === null) && (left[1] === null) === (right[1] === null);
+};
+
+export function subLine(row: LandBattleRow): string | null {
+  const hours = row.length.value;
+  if (hours === null || row.end === null && hours < 24) return null;
+  return `${hours < 24 ? hours : `d${Math.floor(hours / 24)}`}${row.length.atLeast === true ? '+' : ''}`;
+}
+
+export function subText(row: LandBattleRow, terrain: string | null) {
+  return [terrain, row.end !== null || row.length.value !== null && row.length.value >= 24
+    ? row.length.value === null ? null : lengthText(row.length.value, row.length.atLeast === true, false) : null].filter(Boolean).join(' · ');
+}
+
+interface BattleParts { values: readonly HTMLElement[]; bars: readonly HTMLElement[]; sub: HTMLElement | null;
+  lost: readonly (number | null)[]; line: string | null; terrain: string | null | undefined }
+const battlePartsCache = new WeakMap<HTMLElement, BattleParts>();
+export function clearBattleParts(element: HTMLElement) { battlePartsCache.delete(element); }
+function battleParts(element: HTMLElement): BattleParts {
+  let held = battlePartsCache.get(element);
+  if (!held || (held.sub && !element.contains(held.sub)) || (held.values[0] && !element.contains(held.values[0]))) {
+    held = { values: [...element.querySelectorAll<HTMLElement>('.lb-losses .log-value')], bars: [...element.querySelectorAll<HTMLElement>('.lb-losses .lb-bar')],
+      sub: element.querySelector<HTMLElement>('.lb-place small'), lost: [], line: null, terrain: undefined };
+    battlePartsCache.set(element, held);
+  }
+  return held;
+}
+
+export function paintBattle(element: HTMLElement, row: LandBattleRow, terrain: string | null) {
+  const held = battleParts(element);
+  const { values, bars, sub } = held;
+  const lost = landManpowerSides(row);
+  if (values.length === 2 && (lost[0] !== held.lost[0] || lost[1] !== held.lost[1])) {
+    held.lost = lost;
+    const both = lost[0] !== null && lost[1] !== null;
+    const larger = both ? Math.max(lost[0]!, lost[1]!) : 0;
+    lost.forEach((value, side) => {
+      if (value !== null && !values[side].classList.contains('is-muted') && values[side].firstElementChild === null) {
+        const text = usNumber.format(value);
+        if (values[side].textContent !== text) values[side].textContent = text;
+      }
+      if (both && bars.length === 2) {
+        const width = lossWidth(value!, larger);
+        if (bars[side].style.width !== width) bars[side].style.width = width;
+      }
+    });
+  }
+  const line = subLine(row);
+  if (sub && (line !== held.line || terrain !== held.terrain)) {
+    held.line = line; held.terrain = terrain;
+    const text = subText(row, terrain);
+    if (sub.textContent !== text) sub.textContent = text;
+  }
 }

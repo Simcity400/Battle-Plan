@@ -32,7 +32,8 @@
 .lb-result { justify-content: flex-end; }
 .lb-result.is-unknown { color: var(--muted); font-weight: 400; font-size: var(--type-xs); white-space: normal; text-align: right; line-height: 1.15; }
 .lb-result.is-live { color: var(--accent); }
-.lb-result .lb-side-name { font-weight: 600; }
+.lb-result .lb-side-name, .lb-result .lb-winner-side { font-weight: 600; }
+.lb-winner-side { overflow: hidden; text-overflow: ellipsis; }
 .lb-won { flex: none; color: var(--muted); font-size: var(--type-xs); font-weight: 400; }
 
 @container (max-width: 640px) {

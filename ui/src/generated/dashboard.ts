@@ -2790,8 +2790,8 @@ export type LandManpower = number | string;
 export type LandLossTotal = { manpower: LandManpower, equipment: string, } | { manpower: LandManpower, unknown: string, };
 export type LandLossTotals = [LandLossTotal, LandLossTotal] | string;
 export type LandBattleLossRead = { hour: number, terminal: boolean, sides: LandLossTotals, };
-export type LandBattleResultRead = { hour: number, duration: number, winner: BattleWinner, countries: [Array<string>, Array<string>], countriesUnknown: [boolean, boolean], };
-export type LandBattleHistory = { id: string, provinceId: number, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number,
+export type LandBattleResultRead = { hour: number | null, duration: number, winner: BattleWinner, countries: [Array<string>, Array<string>], countriesUnknown: [boolean, boolean], };
+export type LandBattleHistory = { id: string, provinceId: number | null, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number,
 /**
  * The battle's most divisions at once as of the reply's first hour.
  */
@@ -2837,7 +2837,7 @@ export type LandEquipmentDesign = { name: string | null, variant: string, };
 export type LandLossSide = { manpower: LandManpower, variants: Array<[number, string]>, } | { manpower: LandManpower, changed: Array<[number, string]>, } | { manpower: LandManpower, unknown: string, };
 export type LandLossSides = [LandLossSide, LandLossSide] | string;
 export type LandBattleCourseRead = { hour: number, terminal: boolean, sides: LandLossSides, };
-export type LandBattleCourse = { id: string, provinceId: number, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number, runs: Array<LandBattleRun>, losses: Array<LandBattleCourseRead>, result: LandBattleResultRead | null, };
+export type LandBattleCourse = { id: string, provinceId: number | null, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number, runs: Array<LandBattleRun>, losses: Array<LandBattleCourseRead>, result: LandBattleResultRead | null, };
 export type LandBattleCourseReply = { battle: LandBattleCourse,
 /**
  * The designs the course's reads name by index.

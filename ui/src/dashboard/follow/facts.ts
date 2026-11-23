@@ -36,9 +36,9 @@ export interface FollowMessage<V> { hour: number; reset?: boolean; limited?: Rea
 export interface Generation { seek: number; reset: number }
 
 interface Owner<V> { id: number; route: number; channel: Channel; facts: Fact<V>[]; open: boolean }
-interface Sub<V> extends Owner<V> { stepped: boolean; carried: Picture<V> | null; uses: Set<number> }
+interface Sub<V> extends Owner<V> { stepped: boolean; openSeq: number; carried: Picture<V> | null; uses: Set<number>; nativeCells: Set<number> }
 interface Group<V> extends Owner<V> { users: Set<number> }
-interface Route { seek: number; reset: number; early: [number, () => void][] }
+interface Route { seek: number; reset: number; completedPanel: number; completedSeq: number; openStepped: Set<number>; pendingConfirm: Set<number>; early: [number, () => void][] }
 
 export type Window = readonly [lo: number, hi: number];
 
@@ -53,6 +53,7 @@ export const followsChannel = <V>(picture: Picture<V>) => picture.parts.some(par
 export const contentVersion = <V>(picture: Picture<V>) => picture.parts.map(part => part.version).join('.');
 
 export class Facts<V> {
+  readonly stats = { completionVisits: 0 };
   private readonly subs = new Map<number, Sub<V>>();
   private readonly groups = new Map<number, Group<V>>();
   private readonly routes = new Map<number, Route>();
@@ -62,31 +63,116 @@ export class Facts<V> {
 
   private route(id: number): Route {
     let route = this.routes.get(id);
-    if (!route) this.routes.set(id, route = { seek: 0, reset: 0, early: [] });
+    if (!route) this.routes.set(id, route = { seek: 0, reset: 0, completedPanel: -Infinity, completedSeq: 0, openStepped: new Set(), pendingConfirm: new Set(), early: [] });
     return route;
+  }
+
+  private materializePanel(sub: Sub<V>) {
+    if (sub.channel !== 'panel' || !sub.stepped || !sub.open) return;
+    const at = this.routes.get(sub.route);
+    if (!at || sub.openSeq === at.completedSeq) return;
+    const last = sub.facts.at(-1);
+    if (last && last.c < at.completedPanel) last.c = at.completedPanel;
+    sub.openSeq = at.completedSeq;
   }
 
   has(id: number) { return this.subs.has(id); }
 
   owns(id: number) { return this.subs.has(id) || this.groups.has(id); }
 
+  usesOf(id: number): ReadonlySet<number> | undefined { return this.subs.get(id)?.uses; }
+
+  usersOf(id: number): ReadonlySet<number> | undefined { return this.groups.get(id)?.users; }
+
   latest(id: number): V | undefined { return (this.subs.get(id) ?? this.groups.get(id))?.facts.at(-1)?.value; }
 
+  isOpenSteppedPanel(id: number): boolean {
+    const sub = this.subs.get(id);
+    return !!sub && sub.channel === 'panel' && sub.stepped && sub.open && sub.facts.length > 0;
+  }
+
+  fail(id: number) {
+    const sub = this.subs.get(id);
+    if (!sub) return;
+    this.removed.push(...sub.facts);
+    sub.facts = [];
+    sub.open = false;
+    sub.stepped = false;
+    sub.carried = null;
+    sub.nativeCells.clear();
+    const at = this.routes.get(sub.route);
+    at?.openStepped.delete(id);
+    at?.pendingConfirm.delete(id);
+    this.retain(sub, new Set());
+  }
+
+  nextStart(id: number, target: number): number {
+    const sub = this.subs.get(id);
+    if (!sub) return Infinity;
+    let best = Infinity;
+    for (const fact of sub.facts) {
+      if (fact.h > target && fact.h < best) best = fact.h;
+      for (const seed of fact.seeds.values()) if (seed.h > target && seed.h < best) best = seed.h;
+    }
+    if (sub.carried && sub.carried.h > target && sub.carried.h < best) best = sub.carried.h;
+    for (const groupId of sub.uses) {
+      for (const fact of this.groups.get(groupId)?.facts ?? []) {
+        if (fact.h > target) {
+          if (fact.h < best) best = fact.h;
+          break;
+        }
+      }
+    }
+    return best;
+  }
+
+  prunable(id: number): boolean {
+    const sub = this.subs.get(id);
+    if (!sub) return false;
+    if (sub.facts.length > 1 || sub.carried !== null) return true;
+    for (const groupId of sub.uses) {
+      const group = this.groups.get(groupId);
+      if (group && group.facts.length > 1) return true;
+    }
+    return false;
+  }
+
   follow(id: number, route: number, channel: Channel) {
-    if (channel !== 'pinned') this.route(route);
-    this.subs.set(id, { id, route, channel, facts: [], open: false, stepped: false, carried: null, uses: new Set() });
+    const seq = channel !== 'pinned' ? this.route(route).completedSeq : 0;
+    this.subs.set(id, { id, route, channel, facts: [], open: false, stepped: false, openSeq: seq, carried: null, uses: new Set(), nativeCells: new Set() });
   }
 
   unfollow(id: number): number[] {
     const sub = this.subs.get(id);
     if (!sub) return [];
     this.subs.delete(id);
+    const at = this.routes.get(sub.route);
+    at?.openStepped.delete(id);
+    at?.pendingConfirm.delete(id);
+    sub.nativeCells.clear();
     this.removed.push(...sub.facts);
     this.retain(sub, new Set());
     return this.drain();
   }
 
   drain(): number[] { const out = this.released; this.released = []; return out; }
+
+  hasRemoved() { return this.removed.length > 0; }
+
+  retireRoute(route: number) { this.routes.delete(route); }
+
+  retainedBytes(): number {
+    const held = new Set<Fact<V>>();
+    for (const sub of this.subs.values()) {
+      for (const fact of sub.facts) held.add(fact);
+      for (const part of sub.carried?.parts ?? []) held.add(part);
+    }
+    for (const group of this.groups.values()) for (const fact of group.facts) held.add(fact);
+    for (const fact of this.removed) held.add(fact);
+    let bytes = this.freed;
+    for (const fact of held) bytes += fact.bytes;
+    return bytes;
+  }
 
   releasedBytes(): number { return this.release(() => false); }
 
@@ -139,8 +225,12 @@ export class Facts<V> {
       this.removed.push(...group.facts);
       group.facts = []; group.open = false;
     }
+    at.completedPanel = -Infinity;
+    at.completedSeq++;
+    at.openStepped.clear();
+    at.pendingConfirm.clear();
+    for (const sub of this.subs.values()) if (sub.route === route && sub.channel !== 'pinned') sub.openSeq = at.completedSeq;
     at.seek = seek;
-    for (const sub of this.subs.values()) if (sub.route === route) this.retain(sub);
     const due = at.early.filter(([stamp]) => stamp <= seek);
     at.early = at.early.filter(([stamp]) => stamp > seek);
     for (const [, again] of due) again();
@@ -180,12 +270,17 @@ export class Facts<V> {
       if (seek < this.route(route).seek) for (const record of records) if ('bytes' in record) this.freed += record.bytes ?? 0;
       return;
     }
+    const at = this.route(route);
     for (const record of records) {
       const sub = this.subs.get(record.id);
       if (!sub || sub.route !== route || sub.channel !== 'panel') { if ('bytes' in record) this.freed += record.bytes ?? 0; continue; }
-      if ((record.kind === 'data' || record.kind === 'refused' || record.kind === 'stands') && record.stepped) sub.stepped = true;
+      this.materializePanel(sub);
+      if ((record.kind === 'data' || record.kind === 'refused' || record.kind === 'stands') && record.stepped) {
+        if (!sub.stepped) { sub.stepped = true; sub.openSeq = at.completedSeq; }
+      }
       if (record.kind === 'data' || record.kind === 'refused') {
         const seeds = new Map<number, Fact<V>>(), cells = record.kind === 'data' ? record.cells ?? [] : [];
+        sub.nativeCells = new Set(cells.map(cell => cell.id));
         for (const cell of cells) {
           this.group(cell.id, route, sub);
           if (cell.seedHour !== undefined && cell.seedHour <= record.hour && cell.values !== undefined)
@@ -193,18 +288,91 @@ export class Facts<V> {
         }
         this.add(sub, this.fact(record.hour, record.hour, record.value, record.kind === 'refused' ? record.reason : null, 'panel', record.bytes ?? 0,
           cells.map(cell => cell.id), seeds));
+        sub.openSeq = at.completedSeq;
+        if (sub.stepped) { at.openStepped.add(sub.id); at.pendingConfirm.add(sub.id); }
       } else if (record.kind === 'stands') {
         const last = sub.facts.at(-1);
-        if (last) { last.c = Math.max(last.c, record.hour); sub.open = true; }
+        if (last) {
+          last.c = Math.max(last.c, record.hour);
+          sub.open = true;
+          sub.openSeq = at.completedSeq;
+          if (sub.stepped) { at.openStepped.add(sub.id); at.pendingConfirm.add(sub.id); }
+        }
       } else {
         const last = sub.facts.at(-1);
         if (last && sub.open) last.c = Math.max(last.c, record.hour - 1);
         sub.open = false;
+        at.openStepped.delete(sub.id);
+        at.pendingConfirm.delete(sub.id);
       }
     }
-    if (completed !== undefined) for (const sub of this.subs.values()) if (sub.route === route && sub.stepped && sub.open && (!only || only.has(sub.id))) {
-      const last = sub.facts.at(-1);
-      if (last && last.c < completed) last.c = completed;
+    if (completed !== undefined) {
+      if (only) {
+        for (const id of only) {
+          const sub = this.subs.get(id);
+          if (!sub || sub.route !== route || !sub.stepped || !sub.open) continue;
+          this.stats.completionVisits++;
+          this.materializePanel(sub);
+          const last = sub.facts.at(-1);
+          if (last && last.c < completed) last.c = completed;
+          if (completed >= at.completedPanel) at.pendingConfirm.delete(id);
+        }
+      } else if (completed > at.completedPanel) {
+        at.completedPanel = completed;
+        at.completedSeq++;
+        at.pendingConfirm.clear();
+      } else if (completed === at.completedPanel) {
+        for (const id of at.pendingConfirm) {
+          const sub = this.subs.get(id);
+          if (!sub || sub.route !== route || !sub.stepped || !sub.open) continue;
+          this.stats.completionVisits++;
+          const last = sub.facts.at(-1);
+          if (last && last.c < completed) last.c = completed;
+        }
+        at.pendingConfirm.clear();
+      } else {
+        for (const id of at.openStepped) {
+          const sub = this.subs.get(id);
+          if (!sub || !sub.stepped || !sub.open) continue;
+          this.stats.completionVisits++;
+          const last = sub.facts.at(-1);
+          if (last && last.c < completed) last.c = completed;
+        }
+      }
+    }
+  }
+
+  resetFollowed(route: number, seek: number) {
+    if (!this.accept(route, seek, () => this.resetFollowed(route, seek))) return;
+    const at = this.route(route);
+    at.reset++;
+    for (const owner of this.owners(route)) if (owner.channel === 'followed') {
+      this.removed.push(...owner.facts);
+      owner.facts = []; owner.open = false;
+    }
+    for (const sub of this.subs.values()) if (sub.route === route && sub.carried && followsChannel(sub.carried)) sub.carried = null;
+  }
+
+  addFollowedAnswer(route: number, seek: number, answer: FollowAnswer<V>, extendPrevious = false) {
+    if (!this.accept(route, seek, () => this.addFollowedAnswer(route, seek, answer, extendPrevious))) {
+      if (seek < this.route(route).seek) this.freed += answer.bytes ?? 0;
+      return;
+    }
+    const owner = this.subs.get(answer.id) ?? this.groups.get(answer.id);
+    if (!owner || owner.route !== route || owner.channel !== 'followed') { this.freed += answer.bytes ?? 0; return; }
+    if (extendPrevious && owner.open) {
+      const last = owner.facts.at(-1);
+      if (last && last.h < answer.hour && last.c < answer.hour - 1) last.c = answer.hour - 1;
+    }
+    this.add(owner, this.fact(answer.hour, answer.hour, answer.value, answer.refused ?? null, 'followed', answer.bytes ?? 0));
+  }
+
+  confirmFollowed(route: number, seek: number, hour: number, limited?: ReadonlyMap<number, number>, only?: ReadonlySet<number>) {
+    if (!this.accept(route, seek, () => this.confirmFollowed(route, seek, hour, limited, only))) return;
+    for (const owner of this.owners(route)) {
+      if (owner.channel !== 'followed' || !owner.open || only && !only.has(owner.id)) continue;
+      const last = owner.facts.at(-1), confirmed = limited?.get(owner.id) ?? hour;
+      if (last && confirmed > last.c) last.c = confirmed;
     }
   }
 
@@ -269,6 +437,7 @@ export class Facts<V> {
   select(id: number, target: number): Picture<V> | null {
     const sub = this.subs.get(id);
     if (!sub) return null;
+    this.materializePanel(sub);
     let first = true;
     for (let at = sub.facts.length - 1; at >= 0; at--) {
       const fact = sub.facts[at]!;
@@ -287,6 +456,7 @@ export class Facts<V> {
   window(id: number, target: number, picture: Picture<V> | null = this.select(id, target)): Window | null {
     const sub = this.subs.get(id);
     if (!sub || !picture) return null;
+    this.materializePanel(sub);
     const points = new Set<number>();
     const add = (fact: Pick<Fact<V>, 'h' | 'c'>) => { points.add(fact.h); points.add(fact.c + 1); };
     for (const fact of sub.facts) { add(fact); for (const seed of fact.seeds.values()) add(seed); }
@@ -312,9 +482,9 @@ export class Facts<V> {
     return null;
   }
 
-  prune(id: number, actual: number, keep: readonly (Picture<V> | null | undefined)[]) {
+  prune(id: number, actual: number, keep: readonly (Picture<V> | null | undefined)[]): number {
     const sub = this.subs.get(id);
-    if (!sub) return;
+    if (!sub || (!sub.facts.length && !sub.carried)) return Infinity;
     const current = this.select(id, actual), held = new Set<Fact<V>>();
     const from = current && !current.carried ? sub.facts.indexOf(current.parts[0]!) : -1;
     const fallback = from > 0 ? this.before(sub, from, actual) : null;
@@ -327,6 +497,20 @@ export class Facts<V> {
     });
     if (sub.carried && sub.facts.length && current !== sub.carried && !keep.some(picture => picture === sub.carried)) sub.carried = null;
     this.retain(sub, undefined, actual, keep);
+    if (!this.prunable(id)) return Infinity;
+    let next = Infinity;
+    for (const fact of sub.facts) if (fact.h > actual && fact.h < next) next = fact.h;
+    if (sub.carried && sub.carried.h > actual && sub.carried.h < next) next = sub.carried.h;
+    for (const groupId of sub.uses) {
+      const group = this.groups.get(groupId);
+      if (!group) continue;
+      for (let i = 0; i < group.facts.length; i++) {
+        const fact = group.facts[i]!;
+        if (fact.h > actual && fact.h < next) next = fact.h;
+        if (!current && i < group.facts.length - 1 && fact.c >= actual && fact.c + 1 < next) next = fact.c + 1;
+      }
+    }
+    return next;
   }
 
   private floor(sub: Sub<V>, actual: number, keep: readonly (Picture<V> | null | undefined)[]) {
@@ -338,7 +522,7 @@ export class Facts<V> {
     return { floor, parts: new Set([...current?.parts ?? [], ...keep.flatMap(picture => picture?.parts ?? [])]) };
   }
 
-  private retain(sub: Sub<V>, uses = new Set([...sub.facts.flatMap(fact => fact.cells), ...sub.carried?.parts[0]?.cells ?? []]),
+  private retain(sub: Sub<V>, uses = new Set([...sub.facts.flatMap(fact => fact.cells), ...sub.carried?.parts[0]?.cells ?? [], ...sub.nativeCells]),
     actual?: number, keep: readonly (Picture<V> | null | undefined)[] = []) {
     for (const id of [...sub.uses]) if (!uses.has(id)) {
       sub.uses.delete(id);

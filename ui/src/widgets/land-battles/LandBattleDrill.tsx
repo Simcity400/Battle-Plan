@@ -9,7 +9,7 @@ import { useProduct } from '../../dashboard/products';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import type { BattleViewContext } from '../battles/BattleLogView';
 import { battleValueText } from '../battles/battleRows';
-import { battleOutcome, courseDivisions, courseEquipment, courseExtent, courseManpower, exactEquipment, lengthText, peakText, validateLandBattleCourse, wholeEquipment } from './landBattleCourse';
+import { battleOutcome, courseDivisions, courseEquipment, courseExtent, courseManpower, drillChartHour, exactEquipment, lengthText, peakText, validateLandBattleCourse, wholeEquipment } from './landBattleCourse';
 import type { DesignLoss, SideLook } from './landBattleCourse';
 import type { LandBattleRow } from './landBattlesData';
 import { productRequest } from '../../dashboard/request.ts';
@@ -67,7 +67,7 @@ export default function LandBattleDrill({ row, context, colours, looks, terrain,
   const { track, runtime, active, shownHour } = context;
   const request = productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'land-battle-course', params: { branchId: track.branch.id, id: row.id } });
   const course = useProduct(runtime.client, request, active, validateLandBattleCourse);
-  const at = Math.min(shownHour, row.end && 'hour' in row.end ? row.end.hour : shownHour);
+  const at = drillChartHour(row, shownHour);
   const start = row.start?.hour ?? row.place.hour;
   const extent: [number, number] = [start, Math.max(start + 1, at)];
   const manpower = useMemo(() => course.data ? courseManpower(course.data, at) : null, [course.data, at]);

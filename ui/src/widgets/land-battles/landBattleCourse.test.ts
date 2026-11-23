@@ -3,7 +3,7 @@ import test from 'node:test';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { landBattleRows } from './landBattlesData.ts';
 import type { LandBattle, LandBattlesWindow } from './landBattlesData.ts';
-import { battleOutcome, battleTooltip, courseDivisions, courseEquipment, courseExtent, courseManpower, heldTerrain, lengthText, missingTerrain, sideLook,
+import { battleOutcome, battleTooltip, courseDivisions, courseEquipment, courseExtent, courseManpower, drillChartHour, heldTerrain, lengthText, missingTerrain, paintBattle, sameKnownSides, sideLook,
   validateLandBattleCourse, validateLandBattleTerrain, winners } from './landBattleCourse.ts';
 
 const run = (firstHour: number, lastHour: number, counts: [number, number], rosterUnknown = false) =>
@@ -100,6 +100,25 @@ test('the outcome names the winners; endings and verdicts that were not read sta
   assert.deepEqual(battleOutcome(unread), { kind: 'unknown', text: 'Ending not recorded' });
   const verdict = landBattleRows(new Map([[0, window([battle({ result: { ...battle().result!, winner: { unknown: 'No winning side' } } })])]]), 21, () => true, true)[0];
   assert.deepEqual(battleOutcome(verdict), { kind: 'unknown', text: 'No winning side' });
+
+  const unreadHourWinner = landBattleRows(new Map([[0, window([battle({
+    end: { unknown: 'Ending hour not recorded' }, endUnknownHour: 25, settledHour: 25,
+    runs: [run(10, 24, [3, 2])],
+    result: { hour: null, duration: 15, winner: { side: 1 }, countries: [['A'], ['B', 'C', 'D']], countriesUnknown: [false, false] },
+  })])]]), 40, () => true, true)[0];
+  assert.deepEqual(battleOutcome(unreadHourWinner), { kind: 'won', side: 1 }, 'a missing end hour keeps a recorded winner');
+  const unreadHourLooks = unreadHourWinner.sides.map(side => sideLook(side, names));
+  const unreadHourTip = battleTooltip(unreadHourWinner, unreadHourLooks, null, ['blue', 'orange'], false);
+  assert.equal(unreadHourTip.rows.find(entry => entry.label === 'Ended')?.value, 'Ending hour not recorded');
+  assert.equal(unreadHourTip.rows.at(-1)?.value, 'Country B and 2 more won');
+  assert.equal(unreadHourWinner.settledHour, 25);
+  assert.equal(drillChartHour(unreadHourWinner, 40), 25, 'drill chart caps at settlement bound when end hour is unread');
+  const course = validateLandBattleCourse(wire([
+    { hour: 24, terminal: false, sides: [{ manpower: 12, variants: [] }, { manpower: 4, variants: [] }] },
+  ], [run(10, 24, [3, 2])]));
+  const [attackers, defenders] = courseManpower(course, drillChartHour(unreadHourWinner, 40));
+  assert.deepEqual(attackers, [{ firstHour: 24, lastHour: 25, value: 12 }]);
+  assert.deepEqual(defenders, [{ firstHour: 24, lastHour: 25, value: 4 }]);
 });
 
 test('the tooltip is one compact summary: no per-design rows, whole equipment and one dated loss note', () => {
@@ -115,6 +134,14 @@ test('the tooltip is one compact summary: no per-design rows, whole equipment an
   assert.equal(tip.rows.find(entry => entry.label === 'Length')?.value, '11 hours');
   assert.equal(battleTooltip({ ...row, place: { ...row.place, name: null } }, looks, null, ['blue', 'orange'], true).title, 'Loading…');
   assert.equal(battleTooltip({ ...row, place: { ...row.place, name: null } }, looks, null, ['blue', 'orange'], false).title, 'Unnamed province');
+  const missingTip = battleTooltip({ ...row, provinceId: null, place: { ...row.place, name: null } }, looks, null, ['blue', 'orange'], false);
+  assert.equal(missingTip.title, 'Province not recorded');
+
+  const unreadWinnerRow = landBattleRows(new Map([[0, window([battle({ result: { hour: 21, duration: 11, winner: { side: 0 }, countries: [[], ['B']], countriesUnknown: [true, false] } })])]]), 21, () => true, true)[0];
+  const unreadWinnerLooks = unreadWinnerRow.sides.map(side => sideLook(side, names));
+  assert.equal(winners(unreadWinnerLooks[0], 'Attackers'), 'Attackers', 'unread winning side displays the side, never earlier run countries');
+  const unreadWinnerTip = battleTooltip(unreadWinnerRow, unreadWinnerLooks, null, ['blue', 'orange'], false);
+  assert.equal(unreadWinnerTip.rows.at(-1)?.value, 'Attackers won');
 });
 
 test('terrain replies keep each province and its reason; a name and a reason never both appear', () => {
@@ -136,4 +163,37 @@ test('terrain names read are held for one client, recording and content, and ask
     assert.notEqual(changed, held);
     assert.deepEqual(missingTerrain(changed, [2, 1]), [1, 2]);
   }
+});
+
+
+test('partial battle losses update the known side during playback without bars or touching the unread side', () => {
+  const partialWindow = window([battle({
+    end: null,
+    result: null,
+    runs: [run(10, 25, [3, 2])],
+    losses: [
+      { hour: 12, terminal: false, sides: [[{ label: 'Manpower lost', value: 5 }], [{ label: 'Manpower lost', value: null, unknown: 'Defender losses not recorded' }]] },
+      { hour: 16, terminal: false, sides: [[{ label: 'Manpower lost', value: 9 }], [{ label: 'Manpower lost', value: null, unknown: 'Defender losses not recorded' }]] },
+    ],
+  })]);
+  const windows = new Map([[0, partialWindow]]);
+  const at12 = landBattleRows(windows, 12, () => true, true)[0];
+  const at16 = landBattleRows(windows, 16, () => true, true)[0];
+  assert.equal(sameKnownSides(at12, at16), true);
+
+  const attackerValue = { textContent: '5', classList: { contains: () => false }, firstElementChild: null };
+  const defenderValue = { textContent: 'Not recorded', classList: { contains: (name: string) => name === 'is-muted' }, firstElementChild: null };
+  const sub = { textContent: '' };
+  const host = {
+    contains: (node: unknown) => node === attackerValue || node === defenderValue || node === sub,
+    querySelectorAll: (selector: string) => selector === '.lb-losses .log-value' ? [attackerValue, defenderValue] : [],
+    querySelector: (selector: string) => selector === '.lb-place small' ? sub : null,
+  } as unknown as HTMLElement;
+
+  paintBattle(host, at12, 'Plains');
+  assert.equal(attackerValue.textContent, '5');
+  assert.equal(defenderValue.textContent, 'Not recorded');
+  paintBattle(host, at16, 'Plains');
+  assert.equal(attackerValue.textContent, '9', 'known side updates during playback when the other side is unread');
+  assert.equal(defenderValue.textContent, 'Not recorded', 'unread side stays untouched');
 });
