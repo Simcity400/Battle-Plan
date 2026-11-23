@@ -1,8 +1,7 @@
 import { PlaybackController } from '../playback.ts';
 import { Pipeline, type PipelineHost } from './pipeline.ts';
-import { splitForLanes } from './split.ts';
+import { packet, resetStamps, splitForLanes } from './split.ts';
 import type { DashboardClient, DashboardSource } from '../client';
-import type { FromPull } from '../../draw/laneMessages';
 
 const NATIVE = 3, HOURS = 6000, LANES = 2;
 const valueAt = (sub: number, hour: number) => sub * 100_000 + Math.floor(hour / (11 + sub)) * (11 + sub);
@@ -29,9 +28,10 @@ function message(hour: number, seek: number, reset: boolean, subs: readonly numb
 let ports: readonly MessagePort[] = [];
 let emitted = -1, seek = 0;
 const subs = new Set<number>();
+const stamp = resetStamps();
 const send = (bytes: Uint8Array) => {
-  const split = splitForLanes(bytes, LANES);
-  if (split.kind !== 'failure') split.lanes.forEach((part, lane) => { if (part) ports[lane]!.postMessage({ kind: 'follow', bytes: part } satisfies FromPull, [part.buffer]); });
+  const resets = stamp(bytes), split = splitForLanes(bytes, LANES);
+  if (split.kind !== 'failure') split.lanes.forEach((part, lane) => { if (part) ports[lane]!.postMessage(packet('follow', part, resets), [part.buffer]); });
 };
 const native = (to: number) => {
   while (emitted < Math.min(HOURS - 1, to)) { emitted++; const changed = [...subs].filter(sub => changesAt(sub, emitted)); send(message(emitted, seek, false, changed)); }

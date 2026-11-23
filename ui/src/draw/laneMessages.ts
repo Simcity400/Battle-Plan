@@ -23,6 +23,6 @@ export type FromLane =
   | { type: 'hit'; widget: number; key: string | null }
   | { type: 'served'; seek: number; target: number; exact: boolean; changed: number; ms: number };
 
-export type FromPull = { kind: 'follow' | 'panels'; bytes: Uint8Array; resets?: number } | { kind: 'failure'; reason: string };
+export type FromPull = { kind: 'follow'; bytes: Uint8Array; resets: number } | { kind: 'panels'; bytes: Uint8Array } | { kind: 'failure'; reason: string };
 
 export type ToPull = { release: number };

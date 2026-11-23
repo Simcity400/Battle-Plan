@@ -1,5 +1,5 @@
 import { PUSH, readStream } from './pull.ts';
-import { charge, resetStamps, splitForLanes } from './follow/split.ts';
+import { charge, packet, resetStamps, splitForLanes } from './follow/split.ts';
 import { credits } from './credits.ts';
 import type { FromPull, ToPull } from '../draw/laneMessages';
 
@@ -23,7 +23,7 @@ self.onmessage = ({ data }: MessageEvent<{ session: string; ports: MessagePort[]
         catch (error) { all({ kind: 'failure', reason: `A pushed message could not be read: ${error instanceof Error ? error.message : String(error)}` }); credit(charge(new Uint8Array(buffer))); continue; }
         if (split.kind === 'failure') { all({ kind: 'failure', reason: split.reason }); continue; }
         credit(split.header);
-        split.lanes.forEach((bytes, lane) => { if (bytes) ports[lane]!.postMessage({ kind: split.kind, bytes, ...resets !== undefined ? { resets } : {} } satisfies FromPull, [bytes.buffer]); });
+        split.lanes.forEach((bytes, lane) => { if (bytes) ports[lane]!.postMessage(packet(split.kind, bytes, resets), [bytes.buffer]); });
       }
     },
   });

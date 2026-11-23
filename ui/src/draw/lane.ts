@@ -119,9 +119,10 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private readonly resets = new Map<number, number>();
   private readonly unbound = new Map<number, Map<number, number>>();
   private readonly stamped = new Map<number, number>();
+  private readonly applied = new Map<number, number>();
   private readonly told = new Map<number, number>();
   private held: Held[] = [];
-  private early: { native: number; seek: number; bytes: Uint8Array }[] = [];
+  private early: { native: number; seek: number; bytes: Uint8Array; stamp?: number }[] = [];
   private heldBytes = 0;
   private readonly heldIds = new Map<number, number>();
   private readonly lost = new Map<number, number>();
@@ -350,7 +351,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const due = this.early.filter(item => (this.current(item) ?? 1) <= 0);
     if (!due.length) return;
     this.early = this.early.filter(item => !due.includes(item));
-    for (const item of due) this.follows(item.bytes);
+    for (const item of due) this.follows(item.bytes, item.stamp);
   }
 
   private replay() {
@@ -409,7 +410,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const count = data.getUint32(12, true);
     if (order === -1) { this.freed += recordsCharge(bytes); return; }
-    if (order === 1) { this.early.push({ native: message.route, seek: message.seek, bytes }); return; }
+    if (order === 1) { this.early.push({ native: message.route, seek: message.seek, bytes, stamp: stamped }); return; }
     if (message.reset && order === null) this.unboundReset(message.route, message.seek);
     else if (message.reset) {
       this.resets.set(message.route, (this.resets.get(message.route) ?? 0) + 1);
@@ -436,9 +437,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     }
     this.holdMessage('follow', message.route, message.seek, message.hour, unbound);
     if (route === undefined) return;
+    const behind = stamped !== undefined && (this.applied.get(message.route) ?? stamped) < stamped, reset = message.reset || behind;
+    if (stamped !== undefined) this.applied.set(message.route, stamped);
     const latest = new Map<number, AnswerValue>();
-    const answers = mine.flatMap(([id, start, length]) => { const record = bytes.subarray(start, start + 16 + length); return this.answer(id, record, charged(record), message.reset, latest) ?? []; });
-    this.facts.followed(route, message.seek, { hour: message.hour, reset: message.reset, answers, limited });
+    const answers = mine.flatMap(([id, start, length]) => { const record = bytes.subarray(start, start + 16 + length); return this.answer(id, record, charged(record), reset, latest) ?? []; });
+    this.facts.followed(route, message.seek, { hour: message.hour, reset, answers, limited });
   }
 
   private panel(record: Uint8Array): PanelRecord<Value> | null {
@@ -695,7 +698,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       fields[key] = widget.sent[key] === field.content ? SAME : field.value;
     }
     const route = this.routeOf(widget);
-    const gen = route === null ? { seek, reset: 0 } : { seek: this.facts.generation(route).seek, reset: this.resets.get(this.natives.get(route)!) ?? 0 };
+    const gen = route === null ? { seek, reset: 0 } : { seek: this.facts.generation(route).seek, reset: this.applied.get(this.natives.get(route)!) ?? this.resets.get(this.natives.get(route)!) ?? 0 };
     const sent: Sent = { id, request: this.requests, pictures: selected.pictures, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
       binding: widget.binding.generation, contents, inspect: widget.inspect, hit: painted.hit };
     widget.sent = { ...contents };

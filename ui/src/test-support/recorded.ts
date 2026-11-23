@@ -1,7 +1,7 @@
 import type { DashboardClient, DashboardSource, ProductReply, ProductRequest } from '../dashboard/client';
 import { queryFailure } from '../dashboard/queryError.ts';
 import type { QueryError, SourceReply } from '../generated/dashboard';
-import { splitForLanes } from '../dashboard/follow/split.ts';
+import { packet, resetStamps, splitForLanes } from '../dashboard/follow/split.ts';
 import { upgradeRecorded } from './recordedWire.ts';
 import { DATED_FOLLOW, DATED_PANEL, parseDatedPanels } from '../dashboard/follow/message.ts';
 import { isCellsId } from '../dashboard/follow/liveCells.ts';
@@ -253,10 +253,13 @@ export class RecordedClient implements DashboardClient {
     for (const port of ports) port.onmessage = () => {};
   }
 
+  private readonly stamp = resetStamps();
+
   private send(mapped: Uint8Array) {
+    const resets = this.stamp(mapped);
     const split = splitForLanes(mapped.slice(), this.ports.length);
     if (split.kind === 'failure') { for (const port of this.ports) port.postMessage({ kind: 'failure', reason: split.reason }); return; }
-    split.lanes.forEach((bytes, lane) => { if (bytes) this.ports[lane]!.postMessage({ kind: split.kind, bytes }, [bytes.buffer]); });
+    split.lanes.forEach((bytes, lane) => { if (bytes) this.ports[lane]!.postMessage(packet(split.kind, bytes, resets), [bytes.buffer]); });
   }
 
   private replay(ids: ReadonlySet<number>): void {

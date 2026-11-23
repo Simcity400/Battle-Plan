@@ -3,7 +3,7 @@ import { fieldsView } from '../../draw/views/fields.ts';
 import { drawnViews } from '../../draw/views/drawn.ts';
 import { PlaybackController } from '../playback.ts';
 import { Pipeline, type LaneWorker, type PipelineHost } from './pipeline.ts';
-import { splitForLanes } from './split.ts';
+import { packet, resetStamps, splitForLanes } from './split.ts';
 import type { DashboardClient, DashboardSource } from '../client';
 import type { FromLane, FromPull, ToLane } from '../../draw/laneMessages';
 import type { LaneView } from '../../draw/lane';
@@ -60,9 +60,10 @@ export function inProcess({ lanes = 1, views = () => undefined, follow, gate, se
   const host: PipelineHost = { lanes: Array.from({ length: lanes }, () => lane(views)), open: list => client.openFollow!(list),
     channel: () => new MessageChannel(), frameRate: () => 60, rate: () => 1 };
   const pipeline = new Pipeline(clock, client, host);
+  const stamp = resetStamps();
   const send = (bytes: Uint8Array) => {
-    const split = splitForLanes(bytes, lanes);
-    if (split.kind !== 'failure') split.lanes.forEach((part, index) => { if (part) ports[index]!.postMessage({ kind: split.kind, bytes: part } satisfies FromPull); });
+    const resets = stamp(bytes), split = splitForLanes(bytes, lanes);
+    if (split.kind !== 'failure') split.lanes.forEach((part, index) => { if (part) ports[index]!.postMessage(packet(split.kind, part, resets)); });
   };
   const source = { id: 's', revision: 'r', path: 'p', metadata: {} } as unknown as DashboardSource;
   const settle = async (done: () => boolean, rounds = 200) => {

@@ -1,4 +1,5 @@
 import { DATED_FOLLOW, DATED_PANEL, DATED_PANEL_VERSION, followFailure, wireKind } from './message.ts';
+import type { FromPull } from '../../draw/laneMessages';
 
 export const CELL_BIT = 0x8000_0000;
 export const laneOf = (id: number, lanes: number) => ((id & ~CELL_BIT) >>> 0) % lanes;
@@ -22,6 +23,9 @@ export function charge(bytes: Uint8Array): number {
   return total;
 }
 const COMPLETED = 4;
+
+export const packet = (kind: 'follow' | 'panels', bytes: Uint8Array, resets: number | undefined): FromPull =>
+  kind === 'follow' ? { kind, bytes, resets: resets ?? 0 } : { kind, bytes };
 
 export function resetStamps() {
   const held = new Map<number, { seek: number; count: number }>();

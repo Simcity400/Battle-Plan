@@ -251,9 +251,10 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
     const values = live.read();
     const pools = data ? poolsAt(values, resource.id) : null;
     if (!data || !pools) return { title: resourceName(resource), rows: [{ label: data?.poolsMissing ?? (data ? poolsMissing(values, resource.id) : 'Not recorded at this time'), tone: 'muted' }] };
-    return resourceTooltip({ title: resourceName(resource), icon: resource.icon ?? undefined, subtitle: `Per day · ${dayLabel(hour)}` },
-      balanceOf(pools), dealsOf(data, resource.id, values), data.decimals, labels.labelAt(hour), viewport);
-  }, [data, live, labels, hour, viewport]);
+    const at = head.atNow() ?? hour;
+    return resourceTooltip({ title: resourceName(resource), icon: resource.icon ?? undefined, subtitle: `Per day · ${dayLabel(at)}` },
+      balanceOf(pools), dealsOf(data, resource.id, values), data.decimals, labels.labelAt(at), viewport);
+  }, [data, live, labels, hour, viewport, head.atNow]);
   described.current = breakdown;
   const rowTips = useRowTooltips<number>({ owner, active, revision: `${hour}:${data ? barStructure(data) : ''}:${labels.revision}`, refresh: live.subscribe,
     content: id => { const resource = data?.resources.find(item => item.id === id); return resource ? breakdown(resource) : null; },

@@ -517,3 +517,23 @@ test('review 11: a lane that first binds on a later seek takes the stamped reset
   await step(10);
   assert.deepEqual([page.view(1).mode, page.widgets.get(1)!.installed?.gen.reset], ['picture', 1], 'the seek-0 reset counted on another lane is in this lane\'s count too');
 });
+
+test('review 12: a carried answer keeps the reset generation it was applied under, so a stamp from a discarded packet never reinstalls it', async () => {
+  const { page, lane, mount, step } = rig();
+  mount(1, [{ id: 5, channel: 'followed' }]);
+  mount(2, [{ id: 6, channel: 'followed' }]);
+  lane.bindRoute(5, ROUTE, NATIVE, 0);
+  lane.receive('follow', message(10, [{ id: 5, answer: rows([1n], [10n]) }], false, NATIVE, 0), 0);
+  await step(10, { playing: false });
+  await step(10, { playing: false, seek: true });
+  lane.receive('follow', message(10, [{ id: 5, answer: rows([1n], [99n]) }], true, NATIVE, 0), 1);
+  page.offer({ lane: 0, serial: 900, resets: [[ROUTE, 1]], entries: [] });
+  lane.bindRoute(6, ROUTE, NATIVE, 1);
+  page.rebind(1, {});
+  lane.bind(1, { generation: page.widgets.get(1)!.binding, surfaces: [], offset: 0, pin: null });
+  await step(10);
+  await step(10);
+  const view = page.view(1);
+  assert.ok(view.mode !== 'picture' || page.widgets.get(1)!.installed!.gen.reset >= 1 && valueOf(view, 5) !== 10n,
+    'the answer from before the reset another lane reported is not shown again: ' + JSON.stringify([view.mode, page.widgets.get(1)?.installed?.gen, view.mode === 'picture' ? String(valueOf(view, 5)) : null]));
+});
