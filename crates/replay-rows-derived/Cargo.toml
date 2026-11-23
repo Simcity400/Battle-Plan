@@ -29,5 +29,4 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 replay-rows-derived = { workspace = true, features = ["test-support"] }
-replay-rows-events = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

@@ -80,5 +80,10 @@ pub mod ops {
         TimedIdeas => TimedIdeaRow,
         DecisionRandomItems => DecisionRandomItemRow,
         CountryExperienceGains => CountryExperienceGainRow,
+        CountryPowerDaily => CountryPowerDailyRow,
+        CountryPowerChanges => CountryPowerChangeRow,
+        CountryPowerDailyCosts => CountryPowerDailyCostRow,
+        GovernmentChanges => GovernmentChangeRow,
+        PoliticsCaptureCoverage => PoliticsCaptureCoverageRow,
     }
 }

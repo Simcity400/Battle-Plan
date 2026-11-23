@@ -53,5 +53,6 @@ pub mod ops {
         IntelContributions => IntelContributionRow,
         IntelSources => IntelSourceRow,
         IntelNetworkAuxiliaries => IntelNetworkAuxiliaryRow,
+
     }
 }

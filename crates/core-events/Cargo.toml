@@ -33,3 +33,4 @@ replay-capture-spool = { workspace = true, features = ["journal", "test-support"
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-smallvec = { workspace = true }

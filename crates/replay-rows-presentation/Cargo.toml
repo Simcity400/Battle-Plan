@@ -31,7 +31,4 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
-replay-rows-land = { workspace = true, features = ["test-support"] }
-replay-rows-weather = { workspace = true, features = ["test-support"] }
-replay-rows-world = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

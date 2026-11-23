@@ -1,5 +1,5 @@
 [package]
-name = "replay-tables-e"
+name = "replay-tables-world"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,11 +11,11 @@ test = false
 doctest = false
 
 [features]
-test-support = ["replay-rows-derived/test-support"]
+test-support = ["replay-rows-world/test-support"]
 
 [dependencies]
 replay-rows.workspace = true
-replay-rows-derived.workspace = true
+replay-rows-world.workspace = true
 
 [lints]
 workspace = true
@@ -25,6 +25,5 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
-replay-rows-events = { workspace = true, features = ["test-support"] }
-replay-tables-e = { workspace = true, features = ["test-support"] }
+replay-tables-world = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

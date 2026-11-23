@@ -36,5 +36,6 @@ pub mod ops {
         RaidAirScores => RaidAirScoreRow,
         RaidIntelInputs => RaidIntelInputRow,
         RaidTooltipOperands => RaidTooltipOperandRow,
+
     }
 }
