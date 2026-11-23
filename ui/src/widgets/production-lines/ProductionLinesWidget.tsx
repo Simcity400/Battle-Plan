@@ -142,7 +142,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
     : breakdown.error ? <WidgetState kind="error" what="the breakdown" failure={breakdown.error} onRetry={breakdown.retry} />
       : bucketHour === null ? <WidgetState kind="unavailable" message={UNRECORDED_MESSAGE} />
       : !breakdown.data ? <WidgetState kind="loading" label="Loading breakdown…" />
-        : <ProductionDrill data={breakdown.data} selected={group} onFactor={setFactor} hour={breakdownHour} active={active} hoursPerSecond={motion}
+        : <ProductionDrill clock={runtime.clock} data={breakdown.data} selected={group} onFactor={setFactor} hour={breakdownHour} active={active} hoursPerSecond={motion}
           onPick={hour => dispatch({ type: 'pick', hour })} />;
   if (pinned) return <div ref={anchor} className="production-lines"><DrillHost drill={drillControl} runtime={runtime} mode="inline" anchor={anchor}
     title={part === 'output' ? 'Output breakdown' : 'Efficiency breakdown'} day={breakdownHour == null ? '' : dayLabel(breakdownHour)} canFollow main={null}>{drillView}</DrillHost></div>;

@@ -242,7 +242,7 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   if (resolved?.reason) return <WidgetState kind="empty" icon="alert" message={resolved.reason} />;
   const breakdownHour = drillAt;
   const breakdown = <TensionBreakdown runtime={runtime} gate={drillControl.gate} track={track} active={active} options={options} extent={extent} playhead={breakdownHour}
-    following={drillFollows} hour={breakdownHour} read={drillCoverage} reply={drillContribution} live={picked.live}
+    following={drillFollows} hour={breakdownHour} read={drillCoverage} reply={drillContribution} live={picked.live} shownAt={picked.shownAt}
     error={picked.error}
     onRetry={picked.retry} looks={drillLooks} colour={drillColourOf} otherColour={otherColour} layers={drillLayers} events={events.data?.events ?? []}
     tooltip={hour => tooltipIn(drillRegion)(hour, [])} onHover={hour => setHoverHour(hour === null ? null : Math.floor(hour))}

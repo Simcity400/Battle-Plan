@@ -9,12 +9,16 @@ import { fitTooltip } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { fixedNumber, formatAmount } from '../../charts/valueAxis';
 import { modifierTooltip } from './productionData.ts';
-import type { ProductionLineBreakdownReply } from '../../generated/dashboard';
+import type { ProductionLineBreakdownReply } from '../../generated/dashboard';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
+import type { PlaybackController } from '../../dashboard/playback';
 
-export default function ProductionDrill({ data, selected, onFactor, hour, active, hoursPerSecond, onPick }: {
+export default function ProductionDrill({ data, selected, onFactor, hour, active, hoursPerSecond, onPick, clock }: {
+  clock: Pick<PlaybackController, 'subscribeFrame'>;
   data: ProductionLineBreakdownReply; selected: string; onFactor: (factor: string) => void; hour: number | null;
   active: boolean; hoursPerSecond: number | undefined; onPick: (hour: number) => void;
 }) {
+  useShownEachFrame(clock, () => hour);
   const tokens = useChartTokens();
   const height = useViewportHeight();
   const groups = useMemo(() => data.groups.map(group => ({ value: group.id, label: group.label })), [data]);
