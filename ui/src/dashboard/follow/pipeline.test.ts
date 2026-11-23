@@ -9,6 +9,13 @@ import type { LaneView } from '../../draw/lane';
 
 const surface = (): PageSurface<ImageBitmap> & { cleared: number } => ({ cleared: 0, install() {}, clear() { this.cleared++; } });
 
+test('closing a pipeline closes every lane channel, though no follow ever opened them', () => {
+  const { channels, close } = inProcess({ lanes: 2 });
+  assert.deepEqual([...channels.values()], [false, false]);
+  close();
+  assert.deepEqual([...channels.values()], [true, true], 'a channel left open keeps the page, or a test process, alive');
+});
+
 test('astra 8: a child binding its first canvas, a view change and a new array of the same canvas keep the shared picture', async () => {
   const drawn: LaneView = { paint: input => ({ surfaces: input.binding.surfaces.map(() => ({ source: { width: 1, height: 1 }, content: 'drawn' })), fields: {}, motion: false }) };
   const { pipeline, clock, send, source, settle, close } = inProcess({ views: kind => kind === 'drawn' ? drawn : undefined });

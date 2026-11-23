@@ -57,8 +57,14 @@ export function inProcess({ lanes = 1, views = () => undefined, follow, gate, se
   } as unknown as DashboardClient;
   const clock = new PlaybackController();
   clock.setBounds({ firstHour: 0, lastHour: 100_000 });
+  const channels = new Map<MessagePort, boolean>();
   const host: PipelineHost = { lanes: Array.from({ length: lanes }, () => lane(views)), open: list => client.openFollow!(list),
-    channel: () => new MessageChannel(), frameRate: () => 60, rate: () => 1 };
+    channel: () => {
+      const made = new MessageChannel(), shut = made.port2.close.bind(made.port2);
+      made.port2.close = () => { channels.set(made.port2, true); shut(); };
+      channels.set(made.port2, false);
+      return made;
+    }, frameRate: () => 60, rate: () => 1 };
   const pipeline = new Pipeline(clock, client, host);
   const stamp = resetStamps();
   const send = (bytes: Uint8Array) => {
@@ -71,5 +77,5 @@ export function inProcess({ lanes = 1, views = () => undefined, follow, gate, se
     return done();
   };
   const fail = (reason: string) => { for (const port of ports) port.postMessage({ kind: 'failure', reason } satisfies FromPull); };
-  return { pipeline, clock, client, send, fail, source, asked, settle, close: () => { pipeline.close(); for (const port of ports) port.close(); } };
+  return { pipeline, clock, client, send, fail, source, asked, settle, channels, close: () => pipeline.close() };
 }

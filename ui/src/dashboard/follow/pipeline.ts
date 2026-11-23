@@ -83,7 +83,7 @@ export class Pipeline {
 
   get lanes() { return this.host.lanes.length; }
 
-  close() { this.stopPublish?.(); this.stopClock?.(); }
+  close() { this.stopPublish?.(); this.stopClock?.(); for (const port of this.ports) port.close(); }
 
   private post(lane: number | 'all', message: PageMessage) {
     if (lane === 'all') for (const worker of this.host.lanes) worker.postMessage(message);
