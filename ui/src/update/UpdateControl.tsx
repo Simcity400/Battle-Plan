@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { FailureLine } from '../components/FailureLine';
 import { Icon } from '../components/Icons';
 import { Popover, PopoverBody, usePopover } from '../components/Popover';
@@ -6,7 +6,8 @@ import { errorMessage } from '../shell/errors';
 import * as api from './api';
 import type { UpdateState } from './api';
 import { actionFailure } from '../dashboard/queryError';
-import { blockedReason, confirmInstall, restartLabel, restartQuestion, shownNotes, updateAction, updateDisabled, updateFailure, updateNews, updateTooltip } from './logic';
+import { blockedReason, confirmInstall, peekTitle, releaseHeading, releaseLink, releaseView, restartLabel, restartQuestion, updateAction, updateDisabled,
+  updateFailure, updateNews, updateTooltip } from './logic';
 import './update.css';
 
 const RING_RADIUS = 14;
@@ -68,19 +69,42 @@ export function useUpdateActions() {
   };
 }
 
-export function UpdateNotes({ state }: { state: UpdateState }) {
-  const { items, more } = shownNotes(state.notes);
-  if (!items.length) return null;
-  return <ul className="update-notes">
-    {items.map((item, index) => <li key={index}>{item}</li>)}
-    {more > 0 && <li className="update-notes-more">And {more} more</li>}
-  </ul>;
+const PEEK_OPEN_MS = 200;
+const PEEK_CLOSE_MS = 150;
+
+export function UpdateNotes({ state, onOpenRelease }: { state: UpdateState; onOpenRelease?: (version: string) => void }) {
+  if (!state.releases.length && !state.unlisted) return null;
+  const now = Date.now();
+  const offered = state.downloadedVersion ?? state.availableVersion;
+  const missing = offered != null && !state.releases.some(notes => notes.version === offered);
+  return <div className="update-releases">
+    {missing && <section className="update-release">
+      <p className="update-release-footer">This update’s changes aren’t listed here.</p>
+      {onOpenRelease && state.enabled && <button type="button" className="update-release-link" onClick={() => onOpenRelease(offered)}>
+        Release on GitHub<Icon name="external" /></button>}
+    </section>}
+    {state.releases.map(notes => {
+      const { items, footer } = releaseView(notes);
+      return <section key={notes.version} className="update-release">
+        {notes.version !== offered && <h3 className="update-release-heading">{releaseHeading(notes.version, state.releases, now)}</h3>}
+        {items.length > 0 && <ul className="update-notes">
+          {items.map((item, index) => <li key={index}>{item.label && <><strong>{item.label}.</strong>{' '}</>}{item.text}</li>)}
+        </ul>}
+        {footer && <p className={`update-release-footer${footer.strong ? ' is-strong' : ''}`}>{footer.text}</p>}
+        {onOpenRelease && state.enabled && <button type="button" className="update-release-link" onClick={() => onOpenRelease(notes.version)}>
+          {releaseLink(notes)}<Icon name="external" /></button>}
+      </section>;
+    })}
+    {state.unlisted && state.releases.length > 0 && <p className="update-release-footer">Earlier releases aren’t listed here.</p>}
+  </div>;
 }
 
 export function UpdateButton({ state }: { state: UpdateState | null }) {
   const actions = useUpdateActions();
   const menu = usePopover('start');
   const [notice, setNotice] = useState<{ kind: 'confirm' | 'downloaded'; version: string } | null>(null);
+  const [peeking, setPeeking] = useState(false);
+  const peekTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const action = updateAction(state);
   const disabled = updateDisabled(state) || actions.pending;
   const downloaded = state?.downloadedVersion ?? null;
@@ -92,7 +116,18 @@ export function UpdateButton({ state }: { state: UpdateState | null }) {
     setNotice(null);
     if (!actions.failure) menu.close();
   }, [stale, actions.failure, menu]);
+  useEffect(() => () => clearTimeout(peekTimer.current), []);
   if (!api.updatesAvailable || !(updateNews(state) || menu.open || actions.pending || actions.failure || notice)) return null;
+  const offered = state?.downloadedVersion ?? state?.availableVersion ?? null;
+  const peekable = !!state && offered != null && (state.releases.length > 0 || state.unlisted) && !actions.failure && !notice;
+  const peek = () => {
+    clearTimeout(peekTimer.current);
+    if (peekable && !menu.open) peekTimer.current = setTimeout(() => { setPeeking(true); open(); }, PEEK_OPEN_MS);
+  };
+  const unpeek = () => {
+    clearTimeout(peekTimer.current);
+    if (peeking && peekable) peekTimer.current = setTimeout(() => menu.popup.current?.hidePopover(), PEEK_CLOSE_MS);
+  };
   const click = () => {
     if (disabled) return;
     if (action === 'check') void actions.check();
@@ -103,10 +138,12 @@ export function UpdateButton({ state }: { state: UpdateState | null }) {
   const tooltip = updateTooltip(state);
   return <>
     <button ref={menu.trigger} type="button" className={`update-button${action === 'download' || action === 'install' || state?.status === 'downloading' ? ' is-offered' : ''}`}
-      aria-label={tooltip} aria-disabled={disabled || undefined} data-tooltip={menu.open ? undefined : tooltip} onClick={click}>
+      aria-label={tooltip} aria-disabled={disabled || undefined} data-tooltip={menu.open || peekable ? undefined : tooltip} onClick={click}
+      onPointerEnter={peek} onPointerLeave={unpeek}>
       <UpdateIcon state={state} />
     </button>
-    <Popover menu={menu} className="update-popover" aria-label="Update">
+    <Popover menu={menu} className="update-popover" aria-label="Update" onPointerEnter={() => clearTimeout(peekTimer.current)} onPointerLeave={unpeek}
+      onToggle={event => { if (event.newState !== 'open') { setPeeking(false); setNotice(null); } }}>
       <PopoverBody open={menu.open}>{() => {
         if (actions.failure) {
           const { retry } = actions.failure;
@@ -118,16 +155,22 @@ export function UpdateButton({ state }: { state: UpdateState | null }) {
             </div>
           </>;
         }
+        if (state && peeking && !notice && offered) return <>
+          <div className="update-peek-head">
+            <strong className="update-peek-title">{peekTitle(state)}</strong>
+            <span className="update-peek-version">{releaseHeading(offered, state.releases)}</span>
+            {state.installBlocked && state.downloadedVersion && <span className="update-peek-note">{blockedReason(state)}</span>}
+          </div>
+          <UpdateNotes state={state} onOpenRelease={version => void actions.openRelease(version)} />
+        </>;
         if (!state || !notice || stale) return null;
         const { version } = notice;
         const blocked = state.installBlocked;
         return <>
           <strong className="update-popover-title">{restartQuestion(version, state.downgrade)}</strong>
           <p className="update-popover-text">{blocked ? blockedReason(state) : confirmInstall(version, state.downgrade)}</p>
-          <UpdateNotes state={state} />
+          <UpdateNotes state={state} onOpenRelease={release => void actions.openRelease(release)} />
           <div className="update-popover-actions">
-            {state.enabled && <button type="button" className="button small quiet update-popover-link" onClick={() => void actions.openRelease(version)}>Release notes</button>}
-            <span className="update-grow" />
             <button type="button" className="button small quiet" data-popover-autofocus onClick={menu.close}>{notice.kind === 'downloaded' ? 'Later' : 'Cancel'}</button>
             <button type="button" className="button small primary" disabled={blocked != null || actions.pending}
               onClick={() => { menu.close(); actions.install(menu.trigger.current); }}>{restartLabel(state)}</button>
