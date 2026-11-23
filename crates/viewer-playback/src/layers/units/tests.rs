@@ -287,7 +287,7 @@ fn a_stack_that_moved_outside_the_view_gets_its_figure_when_the_camera_admits_it
 
 #[test]
 fn crossing_the_units_cutoff_declares_nothing_new_and_composes_no_reset() {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut far = Units::new(flat());
     let mut near = Units::new(flat());
     let declared = |layer: &mut Units, view: &View| {
@@ -393,7 +393,7 @@ fn sight_world(name: &str, enemy: bool) -> (Arc<crate::playhead_host::Entry>, Ar
         Arc::new(sight::Content::new(Ok(FogContent { topology: Topology { land: (1..=4).collect(), sea: BTreeSet::from([9]), neighbors }, defines: test_defines() })))
     };
     let timeline = Timeline::whole(&*pages).unwrap();
-    let recording = units::Units { name: name.to_owned(), pages, timeline, kinds: Arc::new(replay::columnar_frames::schema().unwrap()) };
+    let recording = units::Units { name: name.to_owned(), pages, timeline, kinds: Arc::new(replay_recording::schema::schema().unwrap()) };
     let entry = open(recording, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
     (entry, content)
 }
@@ -862,7 +862,7 @@ impl super::models::Select for NoModels {
 
 #[test]
 fn a_view_above_the_land_cutoff_and_below_the_ships_draws_the_ships_and_no_land_figure() {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let (entry, content) = sight_world("units-ships-only", false);
     let mut alone = Units::new(flat()).in_window(Arc::new(NoModels) as Arc<dyn super::models::Select>);
     let mut inputs = crate::layers::Inputs::new(&kinds, "units");

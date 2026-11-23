@@ -207,7 +207,7 @@ pub fn record(name: &str, hours: u32) -> Units {
 }
 
 pub fn record_with(name: &str, hours: u32, mut hour: impl FnMut(&mut ColumnarStore, u32)) -> Units {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut store = ColumnarStore::new(kinds.clone(), vec![false; kinds.len()]);
     store.attach(Encoder::new(&kinds, Writing::at(3)).unwrap());
     let mut memory = Memory::default();
@@ -669,7 +669,7 @@ fn recorded_unavailable_with_head_wording_emits_no_typed_head_failure() {
         kind: HeadFailureKind::BuildError(format!("{COUNTRIES:?} is held without keys")),
     }
     .format();
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut store = ColumnarStore::new(kinds.clone(), vec![false; kinds.len()]);
     store.attach(Encoder::new(&kinds, Writing::at(3)).unwrap());
     let mut memory = Memory::default();

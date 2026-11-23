@@ -670,7 +670,7 @@ fn project(
     Ok(reply)
 }
 
-fn fuel_frame(recording: &replay::columnar_frames::Recording, run: u32, frame: &DecodedFrame) -> Result<Box<DecodedFrame>, String> {
+fn fuel_frame(recording: &replay_recording::columnar_frames::Recording, run: u32, frame: &DecodedFrame) -> Result<Box<DecodedFrame>, String> {
     let Some(hour) = frame.tables[TableId::CountryFuel.index()].sampled_at() else {
         frame.complete::<tables::CountryFuel>().map_err(|e| format!("country fuel for its read hour: {e}"))?;
         return Err("country fuel's read hour is not carried at this hour".into());
@@ -681,8 +681,8 @@ fn fuel_frame(recording: &replay::columnar_frames::Recording, run: u32, frame: &
     if hour == frame.hour {
         return Ok(Box::new(frame.clone()));
     }
-    let reads: Vec<replay::at::Read<'_>> = super::intel_ranges::FUEL_TABLES.iter().map(|&table| replay::at::Read::all(table)).collect();
-    dashboard_query::cost::storage(|| replay::at::frame(recording, run, hour, &reads))
+    let reads: Vec<replay_lanes::at::Read<'_>> = super::intel_ranges::FUEL_TABLES.iter().map(|&table| replay_lanes::at::Read::all(table)).collect();
+    dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, hour, &reads))
         .map(Box::new)
         .map_err(|e| format!("country fuel supplying hour {hour}: {e}"))
 }
@@ -718,8 +718,8 @@ impl Product for IntelDetails {
         let query = dashboard_base::queries::query(source, p.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid intel branch"))?)?;
         let stretch = *query.timeline.at(p.hour).ok_or_else(|| dashboard_core::refused("Intel hour was not recorded"))?;
         let recording = query.replay.recording();
-        let reads: Vec<replay::at::Read<'_>> = TABLES.iter().map(|&table| replay::at::Read::all(table)).collect();
-        let frame = dashboard_query::cost::storage(|| replay::at::frame(recording, stretch.run, p.hour, &reads))?;
+        let reads: Vec<replay_lanes::at::Read<'_>> = TABLES.iter().map(|&table| replay_lanes::at::Read::all(table)).collect();
+        let frame = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, stretch.run, p.hour, &reads))?;
         dashboard_text::metadata::check_cancel(cancelled)?;
         let catalogue = context
             .content()

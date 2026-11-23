@@ -14,7 +14,7 @@ pub use live::ProductionLinesAt;
 use dashboard_base::products::Country;
 use dashboard_base::span::HourSpan;
 use dashboard_query::{Query, identity::Holder, read};
-use replay::columnar_frames::Recording;
+use replay_recording::columnar_frames::Recording;
 use replay_columnar::summary::Source as Column;
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};

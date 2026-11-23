@@ -1,6 +1,7 @@
 use crate::scope::{OriginalTagLists, tests::dynamic_frame};
 use crate::test_fixtures::{CAMPAIGN, session};
-use replay::{campaign::Replay, spool::Record};
+use replay::campaign::Replay;
+use replay_capture_spool::spool::Record;
 use replay_data::{rows::Recorded, rows::TableId, rows::TableRows};
 use replay_frame::{
     branches::BranchReason, branches::BranchStart, branches::Parentage, frame::FrameEncoder,

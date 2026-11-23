@@ -2,7 +2,7 @@
 use dashboard_base::{Source, products::{LoadContext, Product, at_hour::{At, AtHour}}, queries::country_ids::Names};
 use dashboard_intelligence::products::intelligence::{Country, IDENTITY, Tags, branch, missing};
 use dashboard_follow::live::{Cells, Source as Cell};
-use replay::{lanes, points::Cell as Read};
+use replay_lanes::{lanes, points::Cell as Read};
 use replay_columnar::manifest::Status;
 use replay_data::rows::{CountryOccupationReserveManpowerRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;

@@ -6,7 +6,7 @@ use dashboard_text::metadata::check_cancel;
 use dashboard_base::span::HourSpan;
 use dashboard_query::{Query, cost, identity::Holder};
 use dashboard_text::{catalogue::View, identity::character_script_token, metadata::link_slot, party_names::{PartyNaming, party_key_for_tag_checked}};
-use replay::lanes::{self, Cell, History, Keys};
+use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::rows::{PORTRAIT_CIVILIAN, PORTRAIT_LARGE, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::Serialize;
@@ -228,14 +228,14 @@ fn mark(spans: &mut Vec<HourSpan>, first_hour: i32, last_hour: i32) {
     }
 }
 
-pub(crate) fn observed_reads(recording: &replay::columnar_frames::Recording, run: u32, table: TableId, first: i32, last: i32) -> io::Result<Vec<(i32, i32)>> {
+pub(crate) fn observed_reads(recording: &replay_recording::columnar_frames::Recording, run: u32, table: TableId, first: i32, last: i32) -> io::Result<Vec<(i32, i32)>> {
     let reads = lanes::available_reads(recording, run, table, first, last)?;
     if !reads.is_empty() {
         return Ok(reads);
     }
     Ok(lanes::statuses(recording, run, table, first, last)?
         .into_iter()
-        .filter(|held| replay::columnar_frames::available(held.status))
+        .filter(|held| replay_recording::columnar_frames::available(held.status))
         .map(|held| (held.first, held.last))
         .collect())
 }
@@ -415,8 +415,8 @@ impl Parties {
 }
 
 fn party_tags(query: &Query<'_>, run: u32, hour: i32, raw: u32, who: (u32, u32), tag: &str) -> io::Result<(Option<String>, Result<String, String>)> {
-    let reads = [replay::at::Read::all(TableId::Countries), replay::at::Read::all(TableId::CountryLinks), replay::at::Read::all(TableId::CountryAppearance)];
-    let frame = cost::storage(|| replay::at::frame(query.replay.recording(), run, hour, &reads))?;
+    let reads = [replay_lanes::at::Read::all(TableId::Countries), replay_lanes::at::Read::all(TableId::CountryLinks), replay_lanes::at::Read::all(TableId::CountryAppearance)];
+    let frame = cost::storage(|| replay_lanes::at::frame(query.replay.recording(), run, hour, &reads))?;
     if raw == 0 {
         return Ok((
             content_reader_country_names::country_names::reserved_zero_tag(&frame).ok().map(str::to_owned),
@@ -457,15 +457,15 @@ fn leader_at(query: &Query<'_>, run: u32, hour: i32, id: u32) -> io::Result<Lead
     let recording = query.replay.recording();
     let key = [u128::from(id)];
     let reads = [
-        replay::at::Read { table: TableId::Characters, columns: None, keys: replay::at::Keys::These(&key) },
-        replay::at::Read { table: TableId::CharacterPortraits, columns: None, keys: replay::at::Keys::These(&key) },
+        replay_lanes::at::Read { table: TableId::Characters, columns: None, keys: replay_lanes::at::Keys::These(&key) },
+        replay_lanes::at::Read { table: TableId::CharacterPortraits, columns: None, keys: replay_lanes::at::Keys::These(&key) },
     ];
-    let frame = cost::storage(|| replay::at::frame(recording, run, hour, &reads))?;
+    let frame = cost::storage(|| replay_lanes::at::frame(recording, run, hour, &reads))?;
     let row = frame.complete::<tables::Characters>().ok().and_then(|rows| rows.iter().find(|row| row.id == id)).cloned();
     let token = match &row {
         Some(row) => {
             let words = u32::try_from(row.name_token_id).ok().map(u128::from).into_iter().collect::<Vec<_>>();
-            let lexicon: DecodedFrame = cost::storage(|| replay::at::frame(recording, run, hour, &[replay::at::Read { table: TableId::LexicalTokens, columns: None, keys: replay::at::Keys::These(&words) }]))?;
+            let lexicon: DecodedFrame = cost::storage(|| replay_lanes::at::frame(recording, run, hour, &[replay_lanes::at::Read { table: TableId::LexicalTokens, columns: None, keys: replay_lanes::at::Keys::These(&words) }]))?;
             lexicon.complete::<tables::LexicalTokens>().ok().and_then(|lexical| character_script_token(row, lexical)).unwrap_or_default().to_owned()
         }
         None => String::new(),

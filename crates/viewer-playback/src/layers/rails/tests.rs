@@ -104,7 +104,7 @@ fn key(from: u32, to: u32) -> u128 {
 }
 
 pub fn recorded(hours: u32, mut strings: impl FnMut(u32) -> Vec<String>, mut hour: impl FnMut(u32, &mut Store)) -> Arc<dyn Pages> {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
     store.attach(Encoder::new(&kinds, Writing::at(3)).unwrap());
     let mut memory = Memory::default();
@@ -309,7 +309,7 @@ fn rails_above_the_cutoff_declare_and_hold_nothing_and_settle_again_when_shown()
     }
     let layer = rails(&side);
     assert!(!layer.shown() && layer.runs().is_empty() && layer.bridges().is_empty() && layer.network().graph.is_empty(), "hidden, the layer holds nothing");
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut inputs = crate::layers::Inputs::new(&kinds, "rails");
     let mut probe = Rails::new(Arc::new(Stub));
     probe.inputs(&View { camera_height: 1000.0, ..View::default() }, &mut inputs).unwrap();

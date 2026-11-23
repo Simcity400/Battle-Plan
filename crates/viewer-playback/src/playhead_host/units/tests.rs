@@ -4,10 +4,8 @@ use crate::playhead_host::{
     views::{Need, Pace, apart::Apart, tests::hourly_steps},
 };
 use playhead::Piece;
-use replay::{
-    campaign::{Replay, SeekResult},
-    spool::Record,
-};
+use replay::campaign::{Replay, SeekResult};
+use replay_capture_spool::spool::Record;
 use replay_data::{
     BranchId, Hour,
     rows::{TableId, TableRows, tables},

@@ -13,6 +13,9 @@ doctest = false
 test-support = ["dep:recorder-derive", "playhead/test-support", "replay/test-support", "replay-data/test-support", "replay-frame/test-support", "viewer-world/test-support", "viewer-counters/test-support", "viewer-combat/test-support", "viewer-raids/test-support", "viewer-counter-products/test-support", "shader-pipeline/test-support", "viewer-foundation/test-support"]
 
 [dependencies]
+replay.workspace = true
+replay-capture-spool.workspace = true
+replay-recording.workspace = true
 replay-derive.workspace = true
 viewer-engagements.workspace = true
 viewer-foundation.workspace = true
@@ -42,7 +45,6 @@ job-priority.workspace = true
 map-display-data.workspace = true
 map-products.workspace = true
 map-snow.workspace = true
-replay.workspace = true
 replay-columnar.workspace = true
 playhead = { path = "../playhead" }
 engine-executable.workspace = true
@@ -76,6 +78,8 @@ dashboard-core.workspace = true
 dashboard-text.workspace = true
 
 [dev-dependencies]
+replay = { workspace = true, features = ["test-support"] }
+replay-journal = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }
 viewer-engagements = { workspace = true, features = ["test-support"] }
 viewer-foundation = { workspace = true, features = ["test-support"] }
@@ -106,8 +110,10 @@ content-reader-weather = { workspace = true, features = ["test-support"] }
 dashboard-base = { workspace = true, features = ["export-types", "test-support"] }
 map-content = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
+replay-tools = { workspace = true, features = ["default", "journal"] }
 test-unify = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }

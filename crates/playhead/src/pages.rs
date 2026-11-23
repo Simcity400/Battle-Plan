@@ -1,6 +1,6 @@
 
 use crate::{Piece, invalid};
-use replay::columnar_frames::{Damage, Open, Recording};
+use replay_recording::columnar_frames::{Damage, Open, Recording};
 use replay_columnar::{
     state::Kind,
     unit::{BLOCK, BlockPage, reader::Extents},
@@ -100,7 +100,7 @@ impl WorldPages {
 
     pub fn over(recording: Recording, span: Span) -> io::Result<Self> {
         let started = Instant::now();
-        let mut kinds = replay::columnar_frames::schema()?;
+        let mut kinds = replay_recording::schema::schema()?;
         for &(table, _) in recording.withheld() {
             kinds[table].clear();
         }
@@ -249,9 +249,9 @@ impl Pages for WorldPages {
     fn withheld_at(&self, run: usize, table: usize, hour: Hour) -> Option<&str> {
         let &recorded = self.recorded.get(run)?;
         match self.recording.table_coverage(table, recorded) {
-            replay::columnar_frames::TableCoverage::Valid => None,
-            replay::columnar_frames::TableCoverage::WithheldAll(reason) => Some(reason),
-            replay::columnar_frames::TableCoverage::WithheldBefore { ordinal, reason } => {
+            replay_recording::columnar_frames::TableCoverage::Valid => None,
+            replay_recording::columnar_frames::TableCoverage::WithheldAll(reason) => Some(reason),
+            replay_recording::columnar_frames::TableCoverage::WithheldBefore { ordinal, reason } => {
                 let first = self.recording.run(recorded).ok()?.first_hour;
                 (hour < first + ordinal as i32).then_some(reason)
             }

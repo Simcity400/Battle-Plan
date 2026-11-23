@@ -113,8 +113,8 @@ collector-production = { workspace = true, features = ["test-support"] }
 collector-ship-models = { workspace = true, features = ["default", "ship_model_changes", "test-support"] }
 collector-workers = { workspace = true, features = ["default", "test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
-replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }

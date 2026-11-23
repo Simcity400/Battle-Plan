@@ -7,7 +7,8 @@ use dashboard_query::{
     read,
     timeline::{Join, Stretch},
 };
-use replay::{columnar_frames::Recording, lanes, points::Cell};
+use replay_recording::columnar_frames::Recording;
+use replay_lanes::{lanes, points::Cell};
 use replay_columnar::manifest::Status;
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;

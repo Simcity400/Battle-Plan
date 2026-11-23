@@ -1,7 +1,7 @@
 use dashboard_base::products::{LoadContext, Product};
 use super::player_apm;
 use dashboard_base::Source;
-use replay::commands::{ClockMeasurement, Index};
+use replay_capture_spool::commands::{ClockMeasurement, Index};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Reverse,
@@ -175,10 +175,8 @@ pub fn query(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        commands::{self, Actor, Batch, Category, Event, Kind, Origin, Packet, Span},
-        spool::ControlRecord,
-    };
+    use replay_capture_spool::commands;
+    use replay_recording::{command_packet::{Actor, Batch, Category, Event, Kind, Origin, Packet, Span}, control::ControlRecord};
 
     fn packet(
         session: u64,

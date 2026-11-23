@@ -264,7 +264,7 @@ fn encode_capture(
     }
     let wire = encoder.encode_bytes(frame, false).unwrap();
     let frame = wire.decode().unwrap();
-    replay::spool::encode_record(&replay::spool::Record::Frame(frame.clone())).unwrap();
+    replay_capture_spool::spool::encode_record(&replay_capture_spool::spool::Record::Frame(frame.clone())).unwrap();
     let decoded = decoder.apply(&frame).unwrap();
     decoded.clone()
 }

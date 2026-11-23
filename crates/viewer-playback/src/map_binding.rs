@@ -1,4 +1,5 @@
-use replay::{campaign::Replay, columnar_natives::Natives};
+use replay::campaign::Replay;
+use replay_recording::columnar_natives::Natives;
 use std::{
     io,
     sync::{Arc, Mutex, PoisonError},
@@ -26,7 +27,7 @@ impl MapBinding {
         if let Some(natives) = held.as_ref() {
             return Ok(Arc::clone(natives));
         }
-        let natives = Arc::new(Natives::new(&self.replay)?);
+        let natives = Arc::new(Natives::new(self.replay.recording())?);
         *held = Some(Arc::clone(&natives));
         Ok(natives)
     }
