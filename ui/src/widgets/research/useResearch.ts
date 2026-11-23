@@ -13,6 +13,7 @@ import { useDrawnPanel } from '../../dashboard/DrawnPanel';
 import { panelFeed } from '../../dashboard/panelFeed';
 import type { RefObject } from 'react';
 import { researchFolderList, researchFolderLooks, validateResearchReply, validateResearchSlots } from './researchData';
+import { slotInspection } from './researchSlots.ts';
 import type { ResearchUse } from './researchData';
 
 export function historyTokens(history: ResearchHistory): ResearchUse[] {
@@ -53,7 +54,8 @@ export function useResearchSlots(widget: WidgetSpec, runtime: WidgetRuntime, act
   const headHour = () => fixed ? fallback : runtime.clock.getHour() + offset;
   const feed = panelFeed('research-slots', now, structure, widget, runtime);
   useDrawnPanel(root, runtime.clock, feed && hoverHour !== null ? { ...feed, fixed: hoverHour - offset } : feed, active);
-  const latest = { get current() { const read = now.current(), hour = now.shownAt(); return read && hour !== null ? { ...read, hour } : undefined; } };
+  const latest = { get current() { const read = now.current(), hour = now.shownAt(); return read && hour !== null ? { ...read, hour } : undefined; },
+    inspect: (slot: number) => { const shown = now.inspected(); return shown && slotInspection(shown.texts, slot, shown.hour); } };
   const data = useMemo<ResearchSlotsAt | undefined>(() => shown.data && fallback !== null ? { ...shown.data, hour: fallback } : undefined, [shown.data, fallback]);
   return { ...shown, root: attach, data, latest, hourNow: () => headHour() ?? fallback ?? 0 };
 }

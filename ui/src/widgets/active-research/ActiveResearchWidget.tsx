@@ -58,8 +58,10 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
     const content = (): TooltipContent => {
       const at = latest.current ?? reply, hour = at.hour, current = at.slots.find(read => read.index === slot.index) ?? item.read;
       const full = data.history.slots.find(held => held.index === slot.index) ?? slot;
-      const progress = researchLatestProgress({ ...full, states: [current.state], progress: current.progress ? [current.progress] : [] }, current.state, hour);
-      const left = slotNumbers(current, hour).left;
+      const shown = latest.inspect(slot.index);
+      const progress = shown ? shown.fraction === null ? null : { fraction: shown.fraction, hour: shown.hour }
+        : researchLatestProgress({ ...full, states: [current.state], progress: current.progress ? [current.progress] : [] }, current.state, hour);
+      const left = shown ? shown.left : slotNumbers(current, hour).left;
       return { title: name, icon, rows: [
         { label: 'Progress', value: progress ? `${Math.round(progress.fraction * 100)}% on ${researchDate(progress.hour)}` : 'Not recorded' },
         { label: 'Days left', value: left === null ? 'Not recorded' : `${left}` },

@@ -40,6 +40,15 @@ export function slotValues(reply: ResearchSlotsReply, hour: number, progress?: (
     const numbers = slotNumbers(read, hour, progress?.(read.index));
     for (const field of ['percent', 'days', 'saved'] as const) values.set(read.index + ':' + field, numbers[field]);
     values.set(read.index + ':bar', numbers.fraction === null ? '' : String(numbers.fraction));
+    values.set(read.index + ':left', numbers.left === null ? '' : String(numbers.left));
   }
   return values;
+}
+
+export interface SlotInspection { fraction: number | null; left: number | null; hour: number }
+
+export function slotInspection(texts: ReadonlyMap<string, string> | undefined, slot: number, hour: number | null): SlotInspection | undefined {
+  const bar = texts?.get(slot + ':bar'), left = texts?.get(slot + ':left');
+  if (bar === undefined || left === undefined || hour === null) return undefined;
+  return { fraction: bar === '' ? null : Number(bar), left: left === '' ? null : Number(left), hour };
 }

@@ -41,6 +41,7 @@ import { completedRow, completedTooltip, coverageAt, currentTooltip, gapTooltip,
   recordedResearchLanes, researchLanesAt, researchRevealKey, researchRows } from './researchLayout';
 import type { ResearchItem, ResearchLane, ResearchRow, ResearchText } from './researchLayout';
 import { slotNumbers, slotsStructure } from './researchSlots';
+import type { SlotInspection } from './researchSlots';
 import { historyTokens, useResearchReply, useResearchSlots } from './useResearch';
 import { useTechnologyArtwork } from './useTechnologyArtwork';
 import './research.css';
@@ -91,7 +92,7 @@ function LaneRow({ item, slots, text, dimmed, tip, untip, jump, onOpen }: {
 function NowCell({ lane, history, now, text, tip, untip, jump, onOpen, latest }: {
   lane: ResearchLane; history: ResearchData['history']; now: ResearchSlotsAt | undefined; text: ResearchText;
   tip: Tip; untip: () => void; jump: Jump; onOpen: (target: Breakdown, anchor: () => AnchorRect | null) => void;
-  latest: { current: ResearchSlotsAt | undefined };
+  latest: { current: ResearchSlotsAt | undefined; inspect?: (slot: number) => SlotInspection | undefined };
 }) {
   const { slot } = lane;
   const read = now?.slots.find(item => item.index === slot.index);
@@ -112,6 +113,8 @@ function NowCell({ lane, history, now, text, tip, untip, jump, onOpen, latest }:
   const databaseIndex = entry?.databaseIndex ?? null;
   const name = text.name(token, databaseIndex);
   const content = () => {
+    const shown = latest.inspect?.(slot.index);
+    if (shown) return currentTooltip(token, slot.index, shown.fraction === null ? null : { fraction: shown.fraction, hour: shown.hour }, shown.left, !!entry, text, null, databaseIndex);
     const reply = latest.current ?? now, current = reply.slots.find(item => item.index === slot.index) ?? read;
     const progress = researchLatestProgress({ ...full, states: [current.state], progress: current.progress ? [current.progress] : [] }, current.state, reply.hour);
     return currentTooltip(token, slot.index, progress, slotNumbers(current, reply.hour).left, !!entry, text, null, databaseIndex);
@@ -260,7 +263,7 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
 
 function ResearchColumns({ lanes, slots, hour, moment, now, latest, text, dimmed, tip, untip, jump, onOpen, data }: {
   lanes: readonly ResearchLane[]; slots: readonly ResearchSlotHistory[]; hour: number; moment: boolean; now: ResearchSlotsAt | undefined;
-  latest: { current: ResearchSlotsAt | undefined }; text: ResearchText;
+  latest: { current: ResearchSlotsAt | undefined; inspect?: (slot: number) => SlotInspection | undefined }; text: ResearchText;
   dimmed: (token: string) => boolean; tip: Tip; untip: () => void; jump: Jump; onOpen: (target: Breakdown, anchor: () => AnchorRect | null) => void;
   data: ResearchData;
 }) {

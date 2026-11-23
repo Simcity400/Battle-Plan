@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ResearchHistory } from '../research/types';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
-import { slotValues, slotNumbers, slotsStructure } from '../research/researchSlots.ts';
+import { slotInspection, slotValues, slotNumbers, slotsStructure } from '../research/researchSlots.ts';
 import { activeSlots } from './activeResearchData.ts';
 import type { ResearchEntry, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsAt } from '../research/types';
@@ -57,6 +57,16 @@ test('the drawn card uses the dated slot identity, progress and countdown', () =
   assert.equal(later.get('0:percent'), '63%');
   assert.equal(later.get('0:days'), '1 day left');
   assert.equal(later.get('0:bar'), '0.625');
+});
+
+test('review 7 B: a research tooltip reads the progress and countdown the installed card painted, not the retained reply', () => {
+  const read: ResearchSlotNow = { index: 0, state: state('radar', day(0), { details: { remainingDays: 3, bonuses: null, modifiers: null } }),
+    progress: { firstHour: day(96), lastHour: day(96), entryFirstObservedHour: day(0), baseDaysRaw: '100000', progressRaw: '50000' } };
+  const painted = slotValues(reply(day(97), [read]), day(98), () => .625);
+  assert.deepEqual(slotInspection(painted, 0, day(98)), { fraction: 0.625, left: 1, hour: day(98) }, 'the tooltip shows what the card shows at its painted hour');
+  assert.deepEqual(slotInspection(slotValues(reply(day(97), [{ ...read, progress: null, state: { ...read.state, details: null } }]), day(98)), 0, day(98)),
+    { fraction: null, left: null, hour: day(98) }, 'a value the card shows as not recorded stays not recorded');
+  assert.equal(slotInspection(undefined, 0, day(98)), undefined, 'with nothing installed the tooltip falls back to the asked reply');
 });
 
 test('a slot without a usable progress or estimate says so, an idle slot says what it saved, and a reading becoming usable redraws the row', () => {
