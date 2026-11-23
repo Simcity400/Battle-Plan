@@ -221,6 +221,15 @@ pub fn request_paths() -> std::collections::BTreeMap<String, std::collections::B
     for (head, _, walk) in dashboard_players::products::player_apm::head::HEADS {
         table.insert(format!("head:{head}"), paths(walk(), false));
     }
+    aliased(table)
+}
+
+fn aliased<T: Clone>(mut table: std::collections::BTreeMap<String, T>) -> std::collections::BTreeMap<String, T> {
+    for (alias, product) in panel::PANEL_ALIASES {
+        if let Some(row) = table.get(*product).cloned() {
+            table.insert((*alias).to_owned(), row);
+        }
+    }
     table
 }
 
@@ -240,7 +249,7 @@ pub fn request_fields() -> std::collections::BTreeMap<String, Vec<(&'static str,
     for (head, fields, _) in dashboard_players::products::player_apm::head::HEADS {
         table.insert(format!("head:{head}"), dated(fields));
     }
-    table
+    aliased(table)
 }
 
 #[derive(Default)]
