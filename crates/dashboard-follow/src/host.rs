@@ -402,7 +402,9 @@ pub struct PlayheadHost<E: Send + Sync + 'static> {
     stop: Arc<AtomicBool>,
     driver_gate: Arc<WaitGate>,
     panel_gate: Arc<WaitGate>,
-    _watch: Watcher,
+    panel_work: Arc<AtomicU64>,
+    _driver_watch: Watcher,
+    _panel_watch: Watcher,
     driver: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -515,15 +517,20 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
         let needs_seed = Arc::new(AtomicBool::new(false));
         let driver_gate = Arc::new(WaitGate::new());
         let panel_gate = Arc::new(WaitGate::new());
+        let panel_work = Arc::new(AtomicU64::new(0));
         follow.set_wake({
             let driver_gate = Arc::clone(&driver_gate);
             Arc::new(move || driver_gate.wake())
         });
-        let watch = playhead.watch({
+        let driver_watch = playhead.watch({
             let driver_gate = Arc::clone(&driver_gate);
+            Arc::new(move || driver_gate.wake())
+        });
+        let panel_watch = playhead.watch_control({
             let panel_gate = Arc::clone(&panel_gate);
+            let panel_work = Arc::clone(&panel_work);
             Arc::new(move || {
-                driver_gate.wake();
+                panel_work.fetch_add(1, Ordering::Release);
                 panel_gate.wake();
             })
         });
@@ -552,7 +559,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 let playing = playhead.playing();
                 let (has_work, told) = {
                     let held = waiting.lock().unwrap_or_else(PoisonError::into_inner);
-                    (!held.products.is_empty() || follow_ref.has_work(), held.push.clone().map(|push| (push, held.stamp.1, held.stamp.3)))
+                    (!held.products.is_empty() || !held.shown.is_empty() || follow_ref.has_work(), held.push.clone().map(|push| (push, held.stamp.1, held.stamp.3)))
                 };
                 let head = playhead.head(Instant::now());
                 if let Some((push, route, seek)) = told { push.head(route, seek, head); }
@@ -578,17 +585,26 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             }
         })?;
 
-        Ok(Arc::new(Self { owner, panels, reads, needs_seed, get, anchored, follow, reader, held, stop, driver_gate, panel_gate, _watch: watch, driver: Mutex::new(Some(driver)) }))
+        Ok(Arc::new(Self { owner, panels, reads, needs_seed, get, anchored, follow, reader, held, stop, driver_gate, panel_gate, panel_work, _driver_watch: driver_watch, _panel_watch: panel_watch, driver: Mutex::new(Some(driver)) }))
     }
 
     pub fn playhead(&self) -> &Playhead {
         (self.get)(&self.owner)
     }
 
+    fn wake_panels(&self) {
+        self.panel_work.fetch_add(1, Ordering::Release);
+        self.panel_gate.wake();
+    }
+
     pub fn show_panels(&self, rows: Arc<dyn PanelRows>, push: Arc<Push>) {
         rows.on_publish({
             let panel_gate = Arc::clone(&self.panel_gate);
-            Arc::new(move || panel_gate.wake())
+            let panel_work = Arc::clone(&self.panel_work);
+            Arc::new(move || {
+                panel_work.fetch_add(1, Ordering::Release);
+                panel_gate.wake();
+            })
         });
         {
             let mut panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
@@ -596,7 +612,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             panels.push = Some(push);
         }
         self.driver_gate.wake();
-        self.panel_gate.wake();
+        self.wake_panels();
     }
 }
 
@@ -633,32 +649,44 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
             panels.remove(id);
             panels.shown.insert(id, Shown::new(panel, reader, class));
             if panels.thread.is_none() {
-                let (held, stopping, gate) = (Arc::downgrade(&self.panels), Arc::clone(&self.stop), Arc::clone(&self.panel_gate));
+                let (held, stopping, gate, work_seq) = (Arc::downgrade(&self.panels), Arc::clone(&self.stop), Arc::clone(&self.panel_gate), Arc::clone(&self.panel_work));
                 let (owner, get) = (self.owner.clone(), self.get);
                 let thread = std::thread::Builder::new()
                     .name("follow panels".into())
                     .spawn(move || {
-                        let mut next = Instant::now();
+                        let mut next: Option<Instant> = None;
+                        let mut seen_work = u64::MAX;
                         while !stopping.load(Ordering::Acquire) {
                             let seen = gate.stamp();
+                            let work = work_seq.load(Ordering::Acquire);
+                            let now = Instant::now();
                             let Some(panels) = held.upgrade() else { return };
-                            let (active, poll) = {
+                            let playhead = get(&owner);
+                            let playing = playhead.playing();
+                            let poll = (playhead.frame_period() / 2).clamp(Duration::from_millis(4), PANEL_POLL);
+                            let due = work != seen_work || next.is_some_and(|deadline| now >= deadline);
+                            let active = if due {
                                 let mut panels = panels.lock().unwrap_or_else(PoisonError::into_inner);
-                                let playhead = get(&owner);
                                 panels.stamp.2 = playhead.epoch() as u32;
                                 evaluate(&mut panels);
-                                let poll = (playhead.frame_period() / 2).clamp(Duration::from_millis(4), PANEL_POLL);
-                                (!panels.shown.is_empty() && playhead.playing(), poll)
+                                seen_work = work;
+                                !panels.shown.is_empty() && playing
+                            } else {
+                                !panels.lock().unwrap_or_else(PoisonError::into_inner).shown.is_empty() && playing
                             };
                             drop(panels);
                             let timeout = if active {
-                                let now = Instant::now();
-                                if next <= now {
-                                    next = now + poll;
-                                }
-                                Some(next.saturating_duration_since(now))
+                                let deadline = match next {
+                                    Some(deadline) if deadline > now => deadline,
+                                    _ => {
+                                        let deadline = now + poll;
+                                        next = Some(deadline);
+                                        deadline
+                                    }
+                                };
+                                Some(deadline.saturating_duration_since(Instant::now()))
                             } else {
-                                next = Instant::now();
+                                next = None;
                                 None
                             };
                             if gate.wait(seen, timeout) {
@@ -670,7 +698,8 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
                 panels.thread = Some(thread);
             }
         }
-        self.panel_gate.wake();
+        self.driver_gate.wake();
+        self.wake_panels();
         Ok(())
     }
 
@@ -678,14 +707,14 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
         self.follow.serve(session);
         self.panels.lock().unwrap_or_else(PoisonError::into_inner).session = session;
         self.driver_gate.wake();
-        self.panel_gate.wake();
+        self.wake_panels();
     }
 
     fn unpanel(&self, id: u32) {
         self.reads.lock().unwrap_or_else(PoisonError::into_inner).remove(id);
         self.panels.lock().unwrap_or_else(PoisonError::into_inner).remove(id);
         self.driver_gate.wake();
-        self.panel_gate.wake();
+        self.wake_panels();
     }
 
     fn anchor(&self, anchor: Anchor) {
@@ -713,7 +742,7 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
             }
         }
         self.driver_gate.wake();
-        self.panel_gate.wake();
+        self.wake_panels();
     }
 }
 

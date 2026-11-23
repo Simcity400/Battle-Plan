@@ -212,32 +212,35 @@ impl Following {
             let stop = Arc::clone(&stop);
             move || {
                 let mut next_tick: Option<Instant> = None;
-                let mut last_playing_target: Option<(Hour, u64)> = None;
+                let mut last_control: Option<u64> = None;
+                let mut last_demand: Option<u64> = None;
+                let mut contended = false;
                 loop {
                     let playhead = entry.playhead();
+                    let control = playhead.control_seq();
                     let activity = playhead.activity();
                     let demand = apart.store().demand();
                     let has_readers = apart.store().has_readers();
                     let playing = playhead.playing();
                     let tick = pace_period(playhead);
                     let now = Instant::now();
-                    let mut contended = false;
+                    let control_changed = last_control != Some(control);
+                    let demand_changed = last_demand != Some(demand);
                     if has_readers {
-                        let target = target_hour(playhead, now);
-                        let epoch = playhead.epoch();
-                        contended = apart.step(target, demand);
-                        if playing {
-                            let key = (target, epoch);
-                            if last_playing_target != Some(key) || next_tick.is_none_or(|deadline| now >= deadline) {
-                                last_playing_target = Some(key);
-                                next_tick = Some(now + tick);
-                            }
-                        } else {
-                            last_playing_target = None;
+                        let due = !playing || contended || control_changed || demand_changed || next_tick.is_none_or(|deadline| now >= deadline);
+                        if due {
+                            let target = target_hour(playhead, now);
+                            contended = apart.step(target, demand);
+                            last_control = Some(control);
+                            last_demand = Some(demand);
+                            next_tick = if playing { Some(now + tick) } else { None };
+                        } else if !playing {
                             next_tick = None;
                         }
                     } else {
-                        last_playing_target = None;
+                        contended = false;
+                        last_control = Some(control);
+                        last_demand = Some(demand);
                         next_tick = None;
                     }
                     Self::notify_before_wait(&before_wait, apart.applied, demand);
@@ -245,7 +248,10 @@ impl Following {
                     if *stopping {
                         return;
                     }
-                    if apart.store().demand() != demand || playhead.activity() != activity {
+                    if apart.store().demand() != demand
+                        || playhead.control_seq() != control
+                        || (!playing && playhead.activity() != activity)
+                    {
                         continue;
                     }
                     if contended {
@@ -296,7 +302,7 @@ mod tests {
         },
     };
     use std::{
-        sync::{Arc, Barrier, atomic::{AtomicBool, Ordering}, mpsc},
+        sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}, mpsc},
         time::Duration,
     };
 
@@ -328,30 +334,34 @@ mod tests {
     fn seeking_while_apart_enters_wait_never_deadlocks() {
         let entry = open_clocked(record("apart seek lock order", 16), hourly_steps(), 0, Side::Follow).unwrap();
         entry.set_capture(replay_data::scope::CaptureMode::Full);
-        entry.playhead().seek(1);
-        let barrier = Arc::new(Barrier::new(2));
-        let armed = Arc::new(AtomicBool::new(false));
-        let synced = Arc::new(AtomicBool::new(false));
-        let following = Following::open_with_hook(&entry, RECORDING.branch, Some(Box::new({
-            let barrier = Arc::clone(&barrier);
-            let armed = Arc::clone(&armed);
-            let synced = Arc::clone(&synced);
-            move |_, _| {
-                if armed.load(Ordering::Acquire) && !synced.swap(true, Ordering::AcqRel) {
-                    barrier.wait();
+        let clock_locked = Arc::new(AtomicBool::new(false));
+        let watcher_calls = Arc::new(AtomicUsize::new(0));
+        let _probe = entry.playhead().watch({
+            let entry = Arc::clone(&entry);
+            let clock_locked = Arc::clone(&clock_locked);
+            let watcher_calls = Arc::clone(&watcher_calls);
+            Arc::new(move || {
+                watcher_calls.fetch_add(1, Ordering::Relaxed);
+                if !entry.playhead().clock_is_unlocked() {
+                    clock_locked.store(true, Ordering::Release);
                 }
-            }
-        }))).unwrap();
+            })
+        });
+        entry.playhead().seek(1);
+        entry.playhead().play(24.0);
+        entry.playhead().pause();
+        entry.playhead().place(3);
+        entry.playhead().frame_rate(60.0);
+        let following = Following::open(&entry, RECORDING.branch).unwrap();
         let reader = following.views().reader_at("reader", &[Need::every(COUNTRIES)], Pace::Step);
-        entry.playhead().wait_for(|| reader.frame().is_some_and(|frame| frame.hour == 1)).unwrap();
-        armed.store(true, Ordering::Release);
-        entry.playhead().seek(2);
-        barrier.wait();
+        entry.playhead().wait_for(|| reader.frame().is_some_and(|frame| frame.hour == 3)).unwrap();
         for step in 0..200 {
             entry.playhead().seek((step % 15) + 1);
         }
         entry.playhead().seek(15);
         entry.playhead().wait_for(|| reader.frame().is_some_and(|frame| frame.hour == 15)).unwrap();
+        assert!(watcher_calls.load(Ordering::Acquire) > 0, "watcher must have run on playhead control transitions");
+        assert!(!clock_locked.load(Ordering::Acquire), "playhead watcher ran while clock mutex was held");
     }
 
     #[test]

@@ -378,7 +378,11 @@ export class Page<B extends Bitmap = Bitmap> {
 
   private revalidate(widget: Widget<B>) {
     const shown = widget.installed, at = this.target(widget);
-    if (shown && !(shown.h <= at && at <= shown.c && shown.lo <= at && at <= shown.hi)) this.clear(widget, 'reading');
+    if (!shown) return;
+    if ((shown.mode === 'failed' && widget.pin === null && shown.gen.seek !== this.seek)
+      || !(shown.h <= at && at <= shown.c && shown.lo <= at && at <= shown.hi)) {
+      this.clear(widget, 'reading');
+    }
   }
 
   offer(presentation: Presentation<B>) {

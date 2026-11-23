@@ -391,11 +391,10 @@ test('differential: ordering hazards (batched resets, deferred crop, speculative
     }
     let seek = 0, clock = 0, playing = true, speed = 720, step = 12, nativeHead = 0;
     const sent = new Map<number, string | bigint[]>();
-    const faulted = new Set<number>();
+    const faulted = new Map<number, number>();
     const makeAnswers = (hour: number, whole: boolean) => subs.flatMap(sub => {
       const reason = truth.reason(sub, hour), rows = truth.rows(sub, hour), last = sent.get(sub);
-      if (whole) faulted.delete(sub);
-      else if (faulted.has(sub)) return [];
+      if (faulted.has(sub)) return [];
       if (reason !== null) {
         if (!whole && last === reason) return [];
         sent.set(sub, reason);
@@ -416,7 +415,7 @@ test('differential: ordering hazards (batched resets, deferred crop, speculative
     for (let tick = 0; tick < 80; tick++) {
       const action = rnd(14);
       if (action === 0) {
-        seek++; clock = rnd(HOURS - 200); playing = false; nativeHead = clock; sent.clear();
+        seek++; clock = rnd(HOURS - 200); playing = false; nativeHead = clock; sent.clear(); faulted.clear();
         lanes[0]!.receive('follow', message(clock, seek, true, makeAnswers(clock, true)));
       } else if (action === 1) {
         playing = !playing;
@@ -425,7 +424,7 @@ test('differential: ordering hazards (batched resets, deferred crop, speculative
         sent.clear();
         lanes[0]!.receive('follow', message(nativeHead, seek, true, makeAnswers(nativeHead, true)));
       } else if (action === 3 && !faulted.has(3)) {
-        faulted.add(3);
+        faulted.set(3, nativeHead);
         lanes[0]!.receive('follow', message(nativeHead, seek, false, [{ id: 3, hour: nativeHead, body: answerBody({ keys: [999n], columns: 1, values: [1n], changed: true }) }]));
       }
       if (playing) {
@@ -451,8 +450,9 @@ test('differential: ordering hazards (batched resets, deferred crop, speculative
       }
       for (const w of widgets) {
         const view = page.view(w.id), sub = w.subs[0]!;
-        if (!playing && faulted.has(sub)) {
-          if (view.mode !== 'failed') faults.push({ property: 'inflight-fault', detail: `seed ${seed} tick ${tick} w${w.id} mode ${view.mode} while sub ${sub} faulted` });
+        const faultHour = faulted.get(sub);
+        if (!playing && faultHour !== undefined && clock >= faultHour) {
+          if (view.mode !== 'failed') faults.push({ property: 'inflight-fault', detail: `seed ${seed} tick ${tick} w${w.id} mode ${view.mode} while sub ${sub} faulted at ${faultHour}` });
           continue;
         }
         if (view.mode === 'picture') {
@@ -515,7 +515,6 @@ test('differential: ordering hazards (batched resets, deferred crop, speculative
       } else if (op === 3 && seek > 0) {
         lane.receive('panels', corruptPanel(hour, seek - 1));
       } else {
-        expectFailed = false;
         lane.receive('panels', panelPacket([{ id: 3, hour, kind: 'data', stepped: true, data: { shape: `H${hour}` } }, { id: 0, hour, kind: 'completed' }], seek));
       }
       page.publish(hour, { playing: false, seek }); await flush(); await flush(); page.frame(); await flush(); page.frame();
@@ -587,5 +586,71 @@ test('differential: N3 rewinding into a carried panel while native switches and 
       assert.notEqual(view.mode, 'failed', `seed ${seed} step ${step} failed: ${view.reason}`);
     }
     assert.deepEqual(laneFailures, []);
+  }
+});
+
+test('differential: M2 future-seek panel replay preserves exact panel coverage across interleaved data, completed, stands and waiting packets', async () => {
+  const rawPanel = (records: { id: number; hour: number; kind: 'data' | 'stands' | 'completed' | 'waiting'; data?: unknown; stepped?: boolean }[], seek: number): Uint8Array => {
+    const parts = records.map(record => {
+      const body = record.kind === 'data' ? encode(record.data) : new Uint8Array();
+      const out = new Uint8Array((16 + body.length + 7) & ~7), view = new DataView(out.buffer);
+      view.setUint32(0, record.kind === 'completed' ? 0 : record.id, true);
+      view.setInt32(4, record.hour, true);
+      view.setUint8(8, { data: 1, stands: 3, completed: 4, waiting: 5 }[record.kind]);
+      view.setUint8(9, record.stepped ? 1 : 0);
+      view.setUint32(12, body.length, true);
+      out.set(body, 16);
+      return out;
+    });
+    const out = new Uint8Array(24 + parts.reduce((sum, part) => sum + part.length, 0)), view = new DataView(out.buffer);
+    view.setUint32(0, 0x324c4e50, true); view.setUint16(4, 6, true); view.setUint32(8, records.length, true);
+    view.setUint32(16, NATIVE, true); view.setUint32(20, seek, true);
+    let at = 24;
+    for (const part of parts) { out.set(part, at); at += part.length; }
+    return out;
+  };
+  for (let seed = 1; seed <= 30; seed++) {
+    const rnd = rng(0x55a1 + seed * 6133);
+    const makePair = () => {
+      const page = new Page<Fake>({ lanes: 1, post: (_lane, m: PageMessage) => {
+        if (m.type === 'frame') lane.frame(m); else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target);
+      } });
+      const lane = new Lane<Fake>({
+        lane: 0, lanes: 1, views: () => fieldsView(() => (panel => (panel.data as { shape?: string } | undefined)?.shape)),
+        crop: async () => [], present: p => page.offer(p), release: () => {}, later: () => {},
+        fail: reason => { throw new Error(reason); },
+      });
+      lane.follow(3, 'panel', 'demo'); lane.bindRoute(3, ROUTE, NATIVE, 0);
+      lane.mount(1, [3], 'fields'); lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+      page.mount(1, { route: ROUTE, lane: 0, surfaces: [] });
+      return { page, lane };
+    };
+    const buffered = makePair(), direct = makePair();
+    buffered.page.publish(0, { playing: false, seek: 0 });
+    direct.page.publish(0, { playing: false, seek: 1 });
+    await flush();
+    const packets: Uint8Array[] = [];
+    let hour = 10;
+    packets.push(rawPanel([{ id: 3, hour, kind: 'data', stepped: true, data: { shape: `H${hour}` } }, { id: 0, hour, kind: 'completed' }], 1));
+    for (let step = 0; step < 25; step++) {
+      hour += 1 + rnd(4);
+      const op = rnd(5);
+      if (op <= 1) packets.push(rawPanel([{ id: 0, hour, kind: 'completed' }], 1));
+      else if (op === 2) packets.push(rawPanel([{ id: 3, hour, kind: 'data', stepped: true, data: { shape: `H${hour}` } }, { id: 0, hour, kind: 'completed' }], 1));
+      else if (op === 3) packets.push(rawPanel([{ id: 3, hour, kind: 'stands', stepped: true }], 1));
+      else packets.push(rawPanel([{ id: 3, hour, kind: 'waiting' }], 1));
+    }
+    for (const pkt of packets) {
+      buffered.lane.receive('panels', pkt);
+      direct.lane.receive('panels', pkt);
+    }
+    buffered.page.publish(10, { playing: false, seek: 1 });
+    await flush();
+    for (let check = 10; check <= hour; check++) {
+      const a = buffered.lane.facts.select(3, check);
+      const b = direct.lane.facts.select(3, check);
+      assert.deepEqual(a ? [a.h, a.c, (a.value as { data?: unknown }).data] : null, b ? [b.h, b.c, (b.value as { data?: unknown }).data] : null,
+        `seed ${seed} hour ${check}: future-seek replay diverged from direct delivery`);
+    }
   }
 });

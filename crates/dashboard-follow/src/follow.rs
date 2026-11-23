@@ -177,13 +177,7 @@ impl Follow {
     }
 
     pub(crate) fn rehooker(&self) -> crate::panel::Wake {
-        let shared = Arc::downgrade(&self.shared);
-        Arc::new(move || {
-            if let Some(shared) = shared.upgrade() {
-                let _ = redeclare(&mut lock(&shared.control), false);
-                shared.notify_wake();
-            }
-        })
+        rehooker_for(&self.shared)
     }
 
     pub(crate) fn product_lanes(&self, id: u32, lanes: Vec<Declared>) -> io::Result<()> {
@@ -500,7 +494,17 @@ struct Engine {
     counters: Counters,
 }
 
-fn relist(shared: &Shared, followed: &mut Followed, lane: &Lane) {
+fn rehooker_for(shared: &Arc<Shared>) -> crate::panel::Wake {
+    let shared = Arc::downgrade(shared);
+    Arc::new(move || {
+        if let Some(shared) = shared.upgrade() {
+            let _ = redeclare(&mut lock(&shared.control), false);
+            shared.notify_wake();
+        }
+    })
+}
+
+fn relist(shared: &Arc<Shared>, followed: &mut Followed, lane: &Lane) {
     followed.standing.clear();
     followed.asked = None;
     followed.unread = None;
@@ -512,7 +516,10 @@ fn relist(shared: &Shared, followed: &mut Followed, lane: &Lane) {
     followed.standing.extend(ordinals.iter().map(|&ordinal| (ordinal, None)));
     let logs = lock(&shared.control).logs.clone();
     match logs {
-        Some(logs) => followed.asked = Some(logs.rows(Wanted { run: lane.run(), table: followed.table, ordinals, columns: followed.declared.clone() })),
+        Some(logs) => followed.asked = Some(logs.rows_notifying(
+            Wanted { run: lane.run(), table: followed.table, ordinals, columns: followed.declared.clone() },
+            rehooker_for(shared),
+        )),
         None => followed.unread = Some("Follow is bound to no playhead, which reads a log's listed rows".to_owned()),
     }
 }

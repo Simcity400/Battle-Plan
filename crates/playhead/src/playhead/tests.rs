@@ -2987,3 +2987,84 @@ fn a_completing_join_does_not_clobber_a_concurrent_redeclares_caught_up_state() 
     stepper.publish_newest(&mut control, last);
     assert_eq!(control.newest, Some(last), "a step of the current epoch is the newest hour");
 }
+
+#[test]
+fn taking_a_playing_seeks_reset_notifies_control_watchers_with_clock_unlocked() {
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 48)]);
+    let playhead = Arc::new(Playhead::new(Arc::clone(&pages), Timeline::single(0, 0, 47), settings(), None).unwrap());
+    let reader = playhead.declare(every(&[0]), None).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    consumer.set_blocking(true);
+    playhead.play(24.0);
+    playhead.seek(10);
+    assert!(!playhead.playing(), "clock is held while seek reset has not been taken");
+    playhead.wait_until(|| playhead.newest().is_some_and(|newest| newest >= 10));
+    let control_wakes = Arc::new(AtomicUsize::new(0));
+    let clock_locked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _watch = playhead.watch_control({
+        let playhead = Arc::clone(&playhead);
+        let control_wakes = Arc::clone(&control_wakes);
+        let clock_locked = Arc::clone(&clock_locked);
+        Arc::new(move || {
+            control_wakes.fetch_add(1, Ordering::AcqRel);
+            if !playhead.clock_is_unlocked() {
+                clock_locked.store(true, Ordering::Release);
+            }
+        })
+    });
+    let before_seq = playhead.control_seq();
+    let mut steps = Vec::new();
+    let taken = consumer.take(10, &mut steps);
+    assert!(taken > 0 && steps.iter().any(|step| step.reset));
+    assert!(playhead.playing(), "taking the seek reset clears the hold");
+    assert!(playhead.control_seq() > before_seq, "clearing the hold bumps control_seq");
+    assert!(control_wakes.load(Ordering::Acquire) > 0, "clearing the hold wakes control watchers");
+    assert!(!clock_locked.load(Ordering::Acquire), "clock mutex must be unlocked before notifying watchers");
+}
+
+#[test]
+fn watch_control_ignores_publications_and_rows_notifying_wakes_on_completion() {
+    let (bytes, run, _) = record_log(Writing { cap: 256, ..Writing::at(3) }, 0, 24);
+    let gated = gated(bytes);
+    let pages = Arc::new(Runs { extents: vec![gated], runs: vec![run], kinds: vec![LOG.to_vec()] });
+    let playhead = Arc::new(Playhead::new(Arc::clone(&pages), Timeline::single(0, 0, 23), settings(), None).unwrap());
+    let reader = playhead.declare(vec![Declared { table: 0, columns: vec![0, 1], keyed: true, passing: false, hourly: false }], None).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    consumer.set_blocking(true);
+    playhead.seek(0);
+    playhead.wait_until(|| playhead.newest().is_some());
+    let mut steps = Vec::new();
+    let _ = consumer.take(0, &mut steps);
+    steps.clear();
+    let all_wakes = Arc::new(AtomicUsize::new(0));
+    let control_wakes = Arc::new(AtomicUsize::new(0));
+    let _all = playhead.watch({
+        let all_wakes = Arc::clone(&all_wakes);
+        Arc::new(move || { all_wakes.fetch_add(1, Ordering::AcqRel); })
+    });
+    let _ctrl = playhead.watch_control({
+        let control_wakes = Arc::clone(&control_wakes);
+        Arc::new(move || { control_wakes.fetch_add(1, Ordering::AcqRel); })
+    });
+    let seq_before = playhead.control_seq();
+    let act_before = playhead.activity();
+    consumer.advance(23);
+    playhead.wait_until(|| playhead.newest() == Some(23));
+    let _ = consumer.take(23, &mut steps);
+    assert!(playhead.activity() > act_before && all_wakes.load(Ordering::Acquire) > 0, "publications bump activity and wake watch");
+    assert_eq!(playhead.control_seq(), seq_before, "publications must not bump control_seq");
+    assert_eq!(control_wakes.load(Ordering::Acquire), 0, "watch_control must not wake on plain publications");
+
+    pages.extents[0].close(0, u64::MAX);
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let asked = playhead.log_reads().rows_notifying(
+        Wanted { run: 0, table: 0, ordinals: vec![0], columns: vec![0, 1] },
+        Arc::new(move || { let _ = done_tx.send(()); }),
+    );
+    pages.extents[0].wait_blocked();
+    assert!(asked.take().is_none(), "read is still blocked behind extent gate");
+    pages.extents[0].open();
+    done_rx.recv().unwrap();
+    let rows = asked.take().expect("answer ready when on_done fires").unwrap();
+    assert_eq!(rows.ordinals(), &[0]);
+}

@@ -26,7 +26,7 @@ test('a recording of 1,500 countries plays through the lanes and the page: every
     lane: index, lanes: LANES, views: () => fieldsView(() => undefined),
     crop: async sources => sources.map((): Fake => ({ closed: false, width: 1, close() { this.closed = true; } })),
     present: presentation => page.offer({ ...presentation, entries: presentation.entries.map(cloned) }),
-    release: bytes => { released += bytes; }, fail: reason => failures.push(reason), later: () => {},
+    release: bytes => { released += bytes; }, fail: reason => failures.push(reason), later: () => {}, clock: () => 0,
   }));
   const subs = Array.from({ length: SUBS }, (_, at) => (at + 1) * LANES + at % LANES);
   for (const sub of subs) { lanes[sub % LANES]!.follow(sub, 'followed'); lanes[sub % LANES]!.bindRoute(sub, ROUTE, NATIVE); }
