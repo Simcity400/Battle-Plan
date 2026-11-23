@@ -99,8 +99,9 @@ export interface ListboxMirrorSyncOptions {
   readonly lastMirrorKeyRef: { current: string };
 }
 
-export function optionElementId(prefix: string, index: number): string {
-  return `${prefix}-opt-${index}`;
+export function optionElementId(prefix: string, key: string): string {
+  const encoded = key.replace(/[^A-Za-z0-9-]/g, ch => `_${ch.codePointAt(0)!.toString(16)}_`);
+  return `${prefix}-opt-${encoded}`;
 }
 
 export function syncListboxMirror(
@@ -121,15 +122,23 @@ export function syncListboxMirror(
   let activeId: string | null = null;
   let focusedPresent = false;
   const sig = JSON.stringify([
+    options.optionIdPrefix,
     options.total,
     options.focusedKey,
-    items.map(item => [item.key, item.spoken, item.role ?? 'option', item.index ?? -1, item.selected === true ? 1 : 0, item.description ?? '']),
+    items.map(item => [
+      item.key,
+      item.spoken,
+      item.role ?? 'option',
+      item.index ?? -1,
+      item.selected === undefined ? -1 : item.selected ? 1 : 0,
+      item.description ?? '',
+    ]),
   ]);
   if (sig === options.lastMirrorKeyRef.current) {
     for (let i = 0; i < items.length; i++) {
       const item = items[i]!;
       if ((item.role ?? 'option') === 'option' && options.focusedKey !== null && item.key === options.focusedKey) {
-        activeId = optionElementId(options.optionIdPrefix, item.index ?? i);
+        activeId = optionElementId(options.optionIdPrefix, item.key);
         focusedPresent = true;
         break;
       }
@@ -147,14 +156,15 @@ export function syncListboxMirror(
     el.dataset.rowKey = item.key;
     el.textContent = item.spoken;
     if (role === 'option') {
-      const id = optionElementId(options.optionIdPrefix, item.index ?? i);
+      const id = optionElementId(options.optionIdPrefix, item.key);
       el.id = id;
       if (item.index !== undefined) {
         el.setAttribute('aria-posinset', String(item.index + 1));
         el.setAttribute('aria-setsize', String(options.total));
       }
       const isActive = options.focusedKey !== null && item.key === options.focusedKey;
-      el.setAttribute('aria-selected', String(item.selected === true || isActive));
+      const selected = item.selected !== undefined ? item.selected : isActive;
+      el.setAttribute('aria-selected', String(selected));
       if (item.description) el.setAttribute('aria-description', item.description);
       if (isActive) {
         activeId = id;

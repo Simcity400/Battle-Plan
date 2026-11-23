@@ -34,15 +34,7 @@ export function handleFamilyKeyDown(event: ReactKeyboardEvent | KeyboardEvent, o
     return;
   }
 
-  if (!nav.length && totalCount <= 0) {
-    if (event.key === 'Escape') {
-      if (options.isPinnedTooltip()) {
-        event.preventDefault();
-        options.onUnpinTooltip?.();
-      } else {
-        options.onEscape?.();
-      }
-    }
+  if (!nav.length && (!options.onFocusOrdinal || totalCount <= 0)) {
     return;
   }
 
@@ -51,49 +43,51 @@ export function handleFamilyKeyDown(event: ReactKeyboardEvent | KeyboardEvent, o
   const hasExplicitFocus = matchedIdx >= 0;
   const idx = hasExplicitFocus ? matchedIdx : (nav.length > 0 ? 0 : -1);
   const entry = idx >= 0 ? nav[idx] : undefined;
-  const currentOrdinal = hasExplicitFocus
-    ? nav[matchedIdx]![2]
-    : (options.focusedIndex !== undefined && options.focusedIndex >= 0 ? options.focusedIndex : (entry ? entry[2] : 0));
+  const hasCurrentOrdinal = hasExplicitFocus || (options.focusedIndex !== undefined && options.focusedIndex >= 0);
+  const currentOrdinal = hasExplicitFocus ? nav[matchedIdx]![2] : (options.focusedIndex ?? 0);
 
-  const moveBy = (nextIdxInNav: number, nextOrdinal: number) => {
+  const moveBy = (delta: number) => {
     if (options.onFocusOrdinal) {
+      const nextOrdinal = hasCurrentOrdinal ? currentOrdinal + delta : 0;
       const clamped = Math.max(0, Math.min(Math.max(0, totalCount - 1), nextOrdinal));
       options.onFocusOrdinal(clamped);
       return;
     }
     if (!nav.length) return;
-    const clamped = Math.max(0, Math.min(nav.length - 1, nextIdxInNav));
+    const clamped = Math.max(0, Math.min(nav.length - 1, idx + delta));
     options.onFocusKey(nav[clamped]![0]);
   };
 
   if (event.key === 'ArrowDown') {
     event.preventDefault();
-    moveBy(idx + 1, currentOrdinal + 1);
+    moveBy(1);
     return;
   }
   if (event.key === 'ArrowUp') {
     event.preventDefault();
-    moveBy(idx - 1, currentOrdinal - 1);
+    moveBy(-1);
     return;
   }
   if (event.key === 'Home') {
     event.preventDefault();
-    moveBy(0, 0);
+    if (options.onFocusOrdinal) options.onFocusOrdinal(0);
+    else if (nav.length) options.onFocusKey(nav[0]![0]);
     return;
   }
   if (event.key === 'End') {
     event.preventDefault();
-    moveBy(nav.length - 1, Math.max(0, totalCount - 1));
+    if (options.onFocusOrdinal) options.onFocusOrdinal(Math.max(0, totalCount - 1));
+    else if (nav.length) options.onFocusKey(nav[nav.length - 1]![0]);
     return;
   }
   if (event.key === 'PageDown') {
     event.preventDefault();
-    moveBy(idx + pageStep, currentOrdinal + pageStep);
+    moveBy(pageStep);
     return;
   }
   if (event.key === 'PageUp') {
     event.preventDefault();
-    moveBy(idx - pageStep, currentOrdinal - pageStep);
+    moveBy(-pageStep);
     return;
   }
   if (event.key === 'Enter') {
