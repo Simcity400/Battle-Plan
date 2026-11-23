@@ -20,5 +20,5 @@ export const definition = {
   kind: 'lend-lease-agreements', version: 1, title: 'Lend-lease agreements', icon: 'link', category: 'Economy',
   description: 'Lend-lease each country sends or receives: schedule, delivered and lost.',
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'history', data: true, history: true,
-  minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 10 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true }, options: OPTIONS,
+  minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 10 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true }, options: OPTIONS, viewSwitch: { option: 'direction' },
 } as const satisfies WidgetMeta;

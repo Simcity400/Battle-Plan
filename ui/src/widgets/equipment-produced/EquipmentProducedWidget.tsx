@@ -6,7 +6,6 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { narrowTableOf } from '../../charts/table/options.ts';
 import WidgetState from '../../components/WidgetState';
 import ContentSetPicker from '../../components/ContentSetPicker';
-import { Segmented } from '../../components/Segmented';
 import { dayLabel } from '../../charts/draw';
 import LiveText, { liveTexts } from '../../charts/LiveText';
 import CountryRaceView from '../../charts/race/CountryRaceView';
@@ -34,7 +33,7 @@ import { WINDOW_HOURS } from '../../dashboard/heldWindows.ts';
 import { useFrameWindows } from '../army-size/frameWindows.ts';
 import type { Count, Measure, ProducedModel } from './producedData';
 import { producedDrillData, validateCountryReply } from './producedDrill';
-import { amountText, COUNTS, countDecimals, producedCaption, producedCaptionAt, producedWindowUnavailable } from './producedView';
+import { amountText, countDecimals, producedCaption, producedCaptionAt, producedWindowUnavailable } from './producedView';
 import ProducedDrillTable from './ProducedDrillTable';
 import { useProducedAt, useProducedTypes } from './useProduced';
 import './equipmentProduced.css';
@@ -160,7 +159,6 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
       onToggle={value => setOption('included', value)} onReset={() => setOption('included', '')} />
       : <span className="produced-pill"><span>{equipment}</span></span>}
     <span className="produced-caption-text">{captionTexts ? <LiveText live={captionTexts} at="caption" /> : caption}</span>
-    {setOption && <Segmented value={count} options={COUNTS} label="Count" onChange={value => setOption('count', value)} />}
   </div>;
 
   const [hovered, setHovered] = useChangedState<{ tag: string; hour: number } | null>(null);

@@ -12,6 +12,7 @@ import type { MapExpectation } from '../shell/perf';
 export { CAMPAIGN_MAP_VIEW, campaignToggled, toggleMapSetting } from './mapPicker';
 import { useTransitionValue } from './playback';
 import { engine } from '../engine/frame.ts';
+import { coveredBy, intersectRects, mapHoles, physicalRect } from '../shell/mapOverlays';
 import type { PlaybackController, PlaybackSnapshot } from './playback';
 
 const TOGGLE_NAMES: Record<MapToggle['setting'], string> = { dayNight: 'Day/night cycle', alliedPlans: 'Allied battle plans', fog: 'Fog of war' };
@@ -19,17 +20,6 @@ const TOGGLE_NAMES: Record<MapToggle['setting'], string> = { dayNight: 'Day/nigh
 export type MapTarget = Omit<DashboardMapView, 'id' | 'bounds' | 'clip' | 'visible' | 'composedAt' | 'clockId'>;
 interface Layout { bounds: MapBounds; clip: MapBounds; onScreen: boolean }
 interface Surface { element: HTMLElement; target: (clock: PlaybackSnapshot) => MapTarget | null; layout: Layout | null; present: boolean }
-interface Rect { left: number; top: number; right: number; bottom: number }
-
-export function intersectRects(...rects: Rect[]): Rect {
-  return { left: Math.max(...rects.map((rect) => rect.left)), top: Math.max(...rects.map((rect) => rect.top)),
-    right: Math.min(...rects.map((rect) => rect.right)), bottom: Math.min(...rects.map((rect) => rect.bottom)) };
-}
-export function physicalRect(rect: Rect, dpr: number): MapBounds {
-  const x = Math.round(rect.left * dpr);
-  const y = Math.round(rect.top * dpr);
-  return { x, y, width: Math.max(0, Math.round(rect.right * dpr) - x), height: Math.max(0, Math.round(rect.bottom * dpr) - y) };
-}
 
 function shownKey(state: DashboardMapState, playing: boolean): string {
   return JSON.stringify([state.sourceId, state.revision, state.branchId, state.loading, state.error ?? null,
@@ -108,6 +98,7 @@ export class MapViewsStore {
     const stopClock = this.clock.subscribe(this.retarget);
     const stopShown = this.clock.subscribe(this.presentAll);
     const stopFrame = this.clock.subscribeFrame(this.checkPresence);
+    const stopHoles = mapHoles.subscribe(this.retarget);
     let stopStates: (() => void) | undefined;
     let stopOptions: (() => void) | undefined;
     let stopToggles: (() => void) | undefined;
@@ -161,6 +152,7 @@ export class MapViewsStore {
       stopClock();
       stopShown();
       stopFrame();
+      stopHoles();
       stopStates?.();
       stopOptions?.();
       stopToggles?.();
@@ -301,12 +293,14 @@ export class MapViewsStore {
     const composedAt = this.clock.composedAt();
     const clockId = this.clock.clockId;
     const views: DashboardMapView[] = [];
+    const holes = mapHoles.holes();
+    const covered = mapHoles.covered();
     for (const [id, surface] of this.surfaces) {
       const target = surface.target(clock);
       surface.present = target != null;
       if (!target || !surface.layout) continue;
       const { bounds, clip, onScreen } = surface.layout;
-      const visible = onScreen && !this.hidden && !document.hidden && !this.states.get(id)?.error;
+      const visible = onScreen && !this.hidden && !covered && !document.hidden && !this.states.get(id)?.error && !coveredBy(clip, holes);
       const view = { id, ...target, composedAt, clockId, options: this.viewOptions(id, target.options), bounds, clip, visible };
       views.push(view);
       this.lastViews.set(id, view);

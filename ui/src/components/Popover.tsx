@@ -96,7 +96,7 @@ export function PopoverHeading({ title, menu, onDelete, onReset }: {
   title: string; menu: ReturnType<typeof usePopover>; onDelete?: () => void; onReset?: () => void;
 }) {
   return <div className="ui-popover-heading"><strong>{title}</strong><div className="ui-popover-actions">
-    {onReset && <button type="button" className="icon-button ui-popover-action" aria-label="Reset widget settings" data-tooltip="Reset to defaults" onClick={onReset}><Icon name="refresh" /></button>}
+    {onReset && <button type="button" className="button small quiet ui-popover-reset" aria-label="Reset widget settings" onClick={onReset}><Icon name="refresh" />Reset</button>}
     {onDelete && <button type="button" className="icon-button ui-popover-action is-danger" aria-label="Delete widget" data-tooltip="Delete widget"
       onClick={() => { menu.close(); onDelete(); }}><Icon name="trash" /></button>}
     <button type="button" className="icon-button ui-popover-action" aria-label={`Close ${title.toLowerCase()}`} onClick={menu.close}><Icon name="close" /></button>

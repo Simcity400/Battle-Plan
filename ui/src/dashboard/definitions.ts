@@ -5,7 +5,7 @@ import type { MapOptions } from '../shell/api';
 import type { DashboardClient, ReplayFile } from './client';
 import type { Campaign } from './campaigns';
 import type { MapViewsStore } from './geometry';
-import type { Alignment, BoundTrack, CountrySelection, DashboardTemplate, TrackSpec, WidgetSpec, WidgetTime } from './model';
+import type { Alignment, BoundTrack, CountrySelection, TrackSpec, WidgetSpec, WidgetTime } from './model';
 import type { PlaybackController } from './playback';
 import type { OptionField, OptionValue } from './options';
 import type { Failure } from './queryError';
@@ -41,22 +41,23 @@ export interface WidgetProps {
   setOptions?: (values: Readonly<Record<string, OptionValue>>) => void;
 }
 
-export interface HeaderControlsProps {
-  widget: WidgetSpec;
-  runtime: WidgetRuntime;
-  template: DashboardTemplate;
-  editing: boolean;
-  onApply: (widget: WidgetSpec, view?: boolean) => void;
-  onRemove?: () => void;
-  onReset?: () => void;
-  mapOptions: MapOptions;
-  onMapOptions: (options: MapOptions) => void;
+export interface WidgetViewSwitch {
+  option: string;
+  label?: string;
+  choices?: readonly { value: string; label: string }[];
+  when?: (options: Readonly<Record<string, OptionValue>>) => boolean;
 }
+
+export type WidgetSkeletonKind = 'generic' | 'table' | 'chart' | 'log' | 'sunburst' | 'list';
 
 export interface WidgetMeta {
   kind: string;
   version: number;
   title: string;
+  subject?: string;
+  things?: string;
+  viewSwitch?: WidgetViewSwitch;
+  skeleton?: WidgetSkeletonKind;
   description?: string;
   category?: string;
   preview?: false;
@@ -93,6 +94,7 @@ export interface WidgetPresets { presets: readonly WidgetPreset[]; reason: strin
 
 export type WidgetCountryChipProps = Pick<WidgetProps, 'widget' | 'runtime' | 'active'> & {
   onSlot: (element: HTMLSpanElement | null) => void;
+  compact?: boolean;
 };
 
 export interface WidgetDefinition extends WidgetMeta {
@@ -100,10 +102,9 @@ export interface WidgetDefinition extends WidgetMeta {
   usePresets?: (definition: WidgetMeta, runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean) => WidgetPresets;
   useOptionChoices?: (widget: WidgetSpec, runtime: WidgetRuntime) => OptionChoices;
   countryChip?: ComponentType<WidgetCountryChipProps>;
-  headerControls?: ComponentType<HeaderControlsProps>;
 }
 
-export type WidgetRenderer = Pick<WidgetDefinition, 'render' | 'headerControls' | 'countryChip' | 'useOptionChoices' | 'usePresets'>;
+export type WidgetRenderer = Pick<WidgetDefinition, 'render' | 'countryChip' | 'useOptionChoices' | 'usePresets'>;
 
 const registry = new Map<string, WidgetDefinition>();
 

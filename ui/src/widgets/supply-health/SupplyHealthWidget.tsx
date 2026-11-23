@@ -8,6 +8,7 @@ import SupplyBreakdown from './SupplyBreakdown';
 import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
+import { WidgetCaption } from '../../dashboard/widgetFrame';
 import StackedShareChart from '../../charts/StackedShareChart';
 import WindowedRows from '../../charts/WindowedRows';
 import type { MovingRow } from '../../charts/rowMotion';
@@ -47,7 +48,7 @@ import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: string[] = [];
 
-export default function SupplyHealthWidget({ widget, runtime, active, headerSlot, countrySlot = null, onDiagnostics }: WidgetProps) {
+export default function SupplyHealthWidget({ widget, runtime, active, countrySlot = null, onDiagnostics }: WidgetProps) {
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const body = useRef<HTMLDivElement>(null);
@@ -181,7 +182,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
 
   const problem = (() => {
     if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see supply health." />;
-    if (supply.refused) return <WidgetState kind="unavailable" message={supply.refused} />;
+    if (supply.refused) return <WidgetState kind="unavailable" technical={supply.refused} />;
     if ((widget.time.mode === 'pin' || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (invalidSavedSelection) return <WidgetState kind="unavailable" message="Selected country unavailable." />;
     if (groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
@@ -260,7 +261,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
   return <>
     {groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
     {neutralHeader}
-    {headerSlot && createPortal(<small className="dash-widget-subtitle"> · share of divisions</small>, headerSlot)}
+    <WidgetCaption>Share of divisions</WidgetCaption>
     <div ref={body} className="supply-health">{pinned ? problem ?? choice : <DrillHost drill={{ ...drillControl, open: drillOpen, follow }} runtime={runtime}
       mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={body} title="Supply classification"
       day={drillFollows ? <LiveText live={dayText} at="day" /> : formatDateTime(drillAt)} canFollow={choices === null && track !== undefined}

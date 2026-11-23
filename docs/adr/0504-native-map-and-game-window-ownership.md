@@ -2,7 +2,7 @@
 
 Send a batch of targets to the native viewer and track its acknowledgments per map. Layout dirtiness schedules measurement before frame writes. An anchor, visibility or option change can reuse the measured rectangles. Ignore scrolling inside lists that cannot move any surface. The native map's own clock advances between playhead anchors without a new target message each hour. Resend the last anchor when recovering a restarted viewer.
 
-While playing, a ready frame on the requested branch can answer the current target. Its changing hour and sequences are excluded from the widget's render key and its date lands through a frame painter. While paused, the requested hour and sequences matter. Open menus and layout controls can hide the native surfaces, whose own windows would otherwise cover the controls. A hidden surface does not report loading.
+While playing, a ready frame on the requested branch can answer the current target. Its changing hour and sequences are excluded from the widget's render key and its date lands through a frame painter. While paused, the requested hour and sequences matter. Layout controls hide the native surfaces, whose own windows would otherwise cover the controls, and open menus cut holes in them. A hidden surface does not report loading.
 
 Keep picker choices per view. Route fog to its view and host-owned options to the host. Scope save acknowledgments by view, recording revision and setting, and let only the latest save clear that setting's failure. A toggle changes an existing choice and a dropped response may follow a successful change. Sending it again would risk flipping it twice.
 

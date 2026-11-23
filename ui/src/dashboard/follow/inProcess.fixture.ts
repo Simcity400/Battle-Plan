@@ -2,7 +2,7 @@ import { laneDispatch } from '../../draw/laneDispatch.ts';
 import { fieldsView } from '../../draw/views/fields.ts';
 import { drawnViews } from '../../draw/views/drawn.ts';
 import { PlaybackController } from '../playback.ts';
-import { Pipeline, type LaneWorker, type PipelineHost } from './pipeline.ts';
+import { Pipeline, pipelineFor, subscribePipeline, type LaneWorker, type PipelineHost } from './pipeline.ts';
 import { packet, resetStamps, splitForLanes } from './split.ts';
 import type { DashboardClient, DashboardSource } from '../client';
 import type { FromLane, FromPull, ToLane } from '../../draw/laneMessages';
@@ -10,38 +10,69 @@ import type { LaneView } from '../../draw/lane';
 
 export const NATIVE = 3;
 
-function lane(views: (kind: string) => LaneView | undefined): LaneWorker {
+function lane(views: (kind: string) => LaneView | undefined, onClose?: () => void): LaneWorker & { close(): void } {
   const fields = fieldsView(() => undefined);
-  const worker: LaneWorker = {
+  let closed = false;
+  let lanePort: MessagePort | null = null;
+  const worker: LaneWorker & { close(): void } = {
     onmessage: null,
     postMessage(message: ToLane, transfer: Transferable[] = []) {
+      if (closed) return;
       const copy = structuredClone(message, { transfer: transfer as Transferable[] });
-      if (copy.type === 'init') (copy.port as MessagePort & { unref?(): void }).unref?.();
-      setImmediate(() => dispatch(copy));
+      if (copy.type === 'init') {
+        lanePort = copy.port;
+        (copy.port as MessagePort & { unref?(): void }).unref?.();
+      }
+      setImmediate(() => { if (!closed) dispatch(copy); });
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      worker.onmessage = null;
+      lanePort?.close();
+      lanePort = null;
+      onClose?.();
     },
   };
   const dispatch = laneDispatch((message: FromLane) => {
+    if (closed) return;
     const copy: FromLane = message.type === 'presentation'
       ? { ...structuredClone({ ...message, entries: [] }), entries: message.entries.map(entry => ({ ...structuredClone({ ...entry, surfaces: [] }), surfaces: entry.surfaces })) }
       : structuredClone(message);
-    setImmediate(() => worker.onmessage?.({ data: copy } as MessageEvent<FromLane>));
+    setImmediate(() => { if (!closed) worker.onmessage?.({ data: copy } as MessageEvent<FromLane>); });
   }, {
     views: (kind, wake) => views(kind) ?? (kind === 'fields' ? fields : drawnViews(kind, wake) ?? fields),
     crop: async sources => sources.map(() => ({ width: 1, height: 1, close() {} }) as unknown as ImageBitmap),
-    later: run => setTimeout(run, 16),
+    later: run => setImmediate(run),
   });
   return worker;
 }
 
-export function inProcess({ lanes = 1, views = () => undefined, follow, gate, session }: { lanes?: number; views?: (kind: string) => LaneView | undefined;
+export function inProcess({ lanes = 1, views = () => undefined, follow, followClock, gate, session, open }: { lanes?: number; views?: (kind: string) => LaneView | undefined;
   follow?: (id: number, query: Record<string, unknown>) => { available: boolean; reason?: string; route?: number };
-  gate?: (product: string) => Promise<void> | undefined; session?: string } = {}) {
+  followClock?: (params: Record<string, unknown>) => { available: boolean; reason?: string };
+  gate?: (product: string) => Promise<void> | undefined; session?: string;
+  open?: (opened: readonly MessagePort[]) => Promise<string | undefined>; } = {}) {
   let ports: readonly MessagePort[] = [];
   const asked: { product: string; params: Record<string, unknown> }[] = [];
   const followers = new Set<unknown>();
+  const takePorts = (opened: readonly MessagePort[]) => {
+    const owned = structuredClone([...opened], { transfer: [...opened] });
+    for (const port of owned) (port as MessagePort & { unref?(): void }).unref?.();
+    return owned;
+  };
   const client = {
     available: true,
-    openFollow: (opened: readonly MessagePort[]) => { ports = opened; for (const port of opened) (port as MessagePort & { unref?(): void }).unref?.(); return Promise.resolve(session); },
+    openFollow: (opened: readonly MessagePort[]) => {
+      const owned = takePorts(opened);
+      const replace = () => {
+        for (const port of ports) port.close();
+        ports = owned;
+      };
+      if (open) return open(owned).then(id => { replace(); return id; }, error => { for (const port of owned) port.close(); throw error; });
+      replace();
+      return Promise.resolve(session);
+    },
     product: async (request: { product: string; params: Record<string, unknown> }) => {
       asked.push(request);
       await gate?.(request.product);
@@ -51,7 +82,10 @@ export function inProcess({ lanes = 1, views = () => undefined, follow, gate, se
         return { data: told.available ? { available: true, route: told.route ?? NATIVE } : told };
       }
       if (request.product === 'unfollow') followers.delete(request.params.id);
-      if (request.product === 'follow-clock') return { data: { available: followers.size > 0 } };
+      if (request.product === 'follow-clock') {
+        const told = followClock ? followClock(request.params) : { available: followers.size > 0 };
+        return { data: told };
+      }
       return { data: { available: true } };
     },
   } as unknown as DashboardClient;
@@ -77,5 +111,145 @@ export function inProcess({ lanes = 1, views = () => undefined, follow, gate, se
     return done();
   };
   const fail = (reason: string) => { for (const port of ports) port.postMessage({ kind: 'failure', reason } satisfies FromPull); };
-  return { pipeline, clock, client, send, fail, source, asked, settle, channels, close: () => pipeline.close() };
+  return { pipeline, clock, client, send, fail, source, asked, settle, channels, close: () => { pipeline.close(); for (const port of ports) port.close(); } };
+}
+
+export function managedInProcess({ lanes = 1, views = () => undefined, follow, followClock, gate, open }: {
+  lanes?: number;
+  views?: (kind: string) => LaneView | undefined;
+  follow?: (id: number, query: Record<string, unknown>, session?: string) => { available: boolean; reason?: string; route?: number };
+  followClock?: (params: Record<string, unknown>) => { available: boolean; reason?: string };
+  gate?: (product: string, params: Record<string, unknown>) => Promise<void> | undefined;
+  open?: (opened: readonly MessagePort[]) => Promise<string | undefined>;
+} = {}) {
+  let ports: readonly MessagePort[] = [];
+  let stamp = resetStamps();
+  let openCalls = 0;
+  let activeReaders = 0;
+  let activeLanes = 0;
+  let activeOwnedPorts = 0;
+  let clockListeners = 0;
+  const followers = new Set<string>();
+  const waiters = new Map<string, (() => void)[]>();
+  const notify = (event: string) => {
+    const list = waiters.get(event);
+    if (!list?.length) return;
+    waiters.delete(event);
+    for (const resolve of list) resolve();
+  };
+  const nextEvent = (event: string) => new Promise<void>(resolve => {
+    let list = waiters.get(event);
+    if (!list) waiters.set(event, list = []);
+    list.push(resolve);
+  });
+  const client = {
+    available: true,
+    openFollow: async (opened: readonly MessagePort[]) => {
+      openCalls++;
+      const owned = structuredClone([...opened], { transfer: [...opened] });
+      for (const port of owned) (port as MessagePort & { unref?(): void }).unref?.();
+      activeReaders++;
+      activeOwnedPorts += owned.length;
+      let readerClosed = false;
+      const closeReader = () => {
+        if (readerClosed) return;
+        readerClosed = true;
+        activeReaders--;
+        for (const port of owned) { port.close(); activeOwnedPorts--; }
+        if (ports === owned) ports = [];
+      };
+      try {
+        const session = (open ? await open(owned) : undefined) ?? `session-${openCalls}`;
+        ports = owned;
+        stamp = resetStamps();
+        notify('open');
+        return { session, close: closeReader };
+      } catch (error) {
+        closeReader();
+        notify('open');
+        throw error;
+      }
+    },
+    product: async (request: { product: string; params: Record<string, unknown> }) => {
+      await gate?.(request.product, request.params);
+      const session = String(request.params.session ?? '');
+      if (request.product === 'follow') {
+        try {
+          const told = follow?.(request.params.id as number, request.params.query as Record<string, unknown>, session) ?? { available: true };
+          if (told.available) followers.add(`${session}:${request.params.id}`);
+          return { data: told.available ? { available: true, route: told.route ?? NATIVE } : told };
+        } finally {
+          queueMicrotask(() => notify('follow'));
+        }
+      }
+      if (request.product === 'unfollow') followers.delete(`${session}:${request.params.id}`);
+      if (request.product === 'follow-clock') {
+        try {
+          const told = followClock ? followClock(request.params) : { available: followers.size > 0 };
+          return { data: told };
+        } finally {
+          queueMicrotask(() => notify('follow-clock'));
+        }
+      }
+      return { data: { available: true } };
+    },
+  } as unknown as DashboardClient;
+  const clock = new PlaybackController();
+  clock.setBounds({ firstHour: 0, lastHour: 100_000 });
+  const rawSub = clock.subscribe.bind(clock);
+  clock.subscribe = listener => {
+    clockListeners++;
+    let done = false;
+    const stop = rawSub(listener);
+    return () => { if (!done) { done = true; clockListeners--; stop(); } };
+  };
+  const rawPub = clock.onPublish.bind(clock);
+  clock.onPublish = (listener, first) => {
+    clockListeners++;
+    let done = false;
+    const stop = rawPub(listener, first);
+    return () => { if (!done) { done = true; clockListeners--; stop(); } };
+  };
+  const makeHost = (): PipelineHost => {
+    const workers = Array.from({ length: lanes }, () => {
+      activeLanes++;
+      return lane(views, () => { activeLanes--; });
+    });
+    return {
+      lanes: workers,
+      open: list => client.openFollow!(list),
+      channel: () => new MessageChannel(),
+      frameRate: () => 60,
+      rate: () => 1,
+      close: () => { for (const worker of workers) worker.close(); },
+    };
+  };
+  let current = pipelineFor(clock, client, makeHost);
+  const stopSync = subscribePipeline(clock, client, () => {
+    current = pipelineFor(clock, client, makeHost);
+    notify('restart');
+  });
+  const send = (bytes: Uint8Array) => {
+    const resets = stamp(bytes), split = splitForLanes(bytes, lanes);
+    if (split.kind !== 'failure') split.lanes.forEach((part, index) => { if (part) ports[index]?.postMessage(packet(split.kind, part, resets)); });
+    return resets;
+  };
+  const fail = (reason: string) => { for (const port of ports) port.postMessage({ kind: 'failure', reason } satisfies FromPull); };
+  const source = { id: 's', revision: 'r', path: 'p', metadata: {} } as unknown as DashboardSource;
+  const waitView = (pipeline: Pipeline, widget: number, predicate: (view: ReturnType<Pipeline['view']>) => boolean) => {
+    if (predicate(pipeline.view(widget))) return Promise.resolve();
+    return new Promise<void>(resolve => {
+      const stop = pipeline.onInstall(widget, () => {
+        if (!predicate(pipeline.view(widget))) return;
+        stop();
+        resolve();
+      });
+    });
+  };
+  return {
+    get pipeline() { return current; },
+    clock, client, source, send, fail, nextEvent, waitView,
+    counts: () => ({ openCalls, activeReaders, activeLanes, activeOwnedPorts, clockListeners }),
+    close: () => { stopSync(); current.close(); },
+  };
 }

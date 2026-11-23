@@ -188,7 +188,7 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
       : groupFailure && !groups.data ? groupFailure
       : resolved?.reason ? <>{groupFailure}<WidgetState kind="empty" message={resolved.reason} /></>
       : none ? <>{groupFailure}<NoMembersState reason={none.reason} icon="handshake" /></>
-      : ranked.unavailable ? <>{groupFailure}<WidgetState kind="unavailable" message={ranked.unavailable} /></>
+      : ranked.unavailable ? <>{groupFailure}<WidgetState kind="unavailable" technical={ranked.unavailable} /></>
       : top !== null && ranked.error ? <>{groupFailure}<WidgetState kind="error" what="the top countries" failure={ranked.error} onRetry={ranked.retry} /></>
       : top !== null && !ranked.tags ? <>{groupFailure}<WidgetState kind="loading" label="Ranking countries…" /></>
       : tags.length < 2 ? <>{groupFailure}<WidgetState kind="empty" icon="handshake" message="Choose at least two countries." /></>

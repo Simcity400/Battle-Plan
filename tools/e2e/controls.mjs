@@ -169,14 +169,22 @@ export const CASES = [
   } },
   { id: 'widget/settings', page: '*', run: settingsSweep },
   { id: 'widget/live-toggle', page: '*', async run(s, page) {
-    const widgets = await s.app.evaluate(`[...document.querySelectorAll('article.dash-widget')].filter(a => a.querySelector('.live-toggle'))
+    const legacy = await s.app.evaluate(`[...document.querySelectorAll('article.dash-widget')].filter(a => a.querySelector('.live-toggle'))
       .map(a => ({ key: a.dataset.widget, title: a.getAttribute('aria-label'), live: a.querySelector('.live-toggle').getAttribute('aria-checked') }))`);
-    for (const { key, title, live } of widgets) {
+    for (const { key, title, live } of legacy) {
       const selector = `article.dash-widget[data-widget=${JSON.stringify(key)}] .live-toggle`;
       const is = value => `document.querySelector(${JSON.stringify(selector)})?.getAttribute('aria-checked') === ${JSON.stringify(value)}`;
       const other = live === 'true' ? 'false' : 'true';
       await press(s, this.id, `${page}: ${title} ${live === 'true' ? 'off' : 'on'}`, selector, is(other), { widget: key, control: `${page}: ${title}` });
       await press(s, this.id, `${page}: ${title} ${live === 'true' ? 'on' : 'off'}`, selector, is(live), { widget: key, ...back(`${page}: ${title}`) });
+    }
+    const chips = await s.app.evaluate(`[...document.querySelectorAll('article.dash-widget')].filter(a => a.querySelector('button.dash-time-chip'))
+      .map(a => ({ key: a.dataset.widget, title: a.getAttribute('aria-label') }))`);
+    for (const { key, title } of chips) {
+      const selector = `article.dash-widget[data-widget=${JSON.stringify(key)}] button.dash-time-chip`;
+      await press(s, this.id, `${page}: ${title} time menu`, selector, OPEN_POPOVER('.widget-time-menu'), { widget: key, control: `${page}: ${title}` });
+      await s.escape();
+      await s.until(CLOSED_POPOVER('.widget-time-menu'), 3000);
     }
   } },
   { id: 'tooltips/chart', page: '*', run: chartTooltips },

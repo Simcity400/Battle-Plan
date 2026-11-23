@@ -3,7 +3,6 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
-import { Segmented } from '../../components/Segmented';
 import DrillHost from '../../charts/drill/DrillHost';
 import { useDrill } from '../../charts/drill/useDrill';
 import Table, { CellBar } from '../../charts/table/Table';
@@ -23,7 +22,7 @@ import { useHeadProduct } from '../../dashboard/headProduct';
 import { useGate } from '../../dashboard/regionGate';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { OPTIONS, VIEWS } from './definition';
+import { OPTIONS } from './definition';
 import { counted, divisionName, equipmentStructure, fill, items, percent, share, templateName, templateTooltip, typeFill, typeKey, typeName, typeTooltip, validateDivisionEquipment } from './divisionEquipmentData';
 import './divisionEquipment.css';
 import type { DivisionPoolType, EquipmentDivision, EquipmentTemplate, EquipmentType } from '../../generated/dashboard';
@@ -130,10 +129,9 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   const menu = () => data?.poolHour == null || !track ? [] : [jumpItem(runtime, track.id, data.poolHour)];
   const short = data?.divisionsShort ?? null;
   const unknownShort = data?.unknownDivisions === null ? 'Divisions not recorded' : data?.unknownDivisions ? `${usNumber.format(data.unknownDivisions)} ${data.unknownDivisions === 1 ? 'division' : 'divisions'} not recorded` : undefined;
-  const header = <>
-    {headerSlot && setOption && createPortal(<Segmented value={view} options={VIEWS} label="Division equipment view" onChange={value => setOption('view', value)} />, headerSlot)}
-    {headerSlot && data && data.missing === null && createPortal(<span className="pill" data-tooltip={unknownShort}>{short === null ? 'Not recorded' : `${usNumber.format(short)} ${short === 1 ? 'division' : 'divisions'} short`}</span>, headerSlot)}
-  </>;
+  const header = headerSlot && data && data.missing === null
+    ? createPortal(<span className="pill" data-tooltip={unknownShort}>{short === null ? 'Not recorded' : `${usNumber.format(short)} ${short === 1 ? 'division' : 'divisions'} short`}</span>, headerSlot)
+    : null;
   let main;
   if (!track) main = <WidgetState kind="empty" message="Load a campaign to see division equipment." />;
   else if (!gate.open) main = <GateState gate={gate} loading="Loading division equipment…" choose="Choose a country to see its division equipment."

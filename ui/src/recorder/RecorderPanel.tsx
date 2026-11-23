@@ -24,7 +24,7 @@ import { setUpdateChannel, updatesAvailable } from '../update/api';
 import type { UpdateChannel, UpdateState } from '../update/api';
 import { blockedReason, CHANNEL_LABELS, channelDescription, channelLocked, confirmInstall, restartLabel, restartQuestion, UPDATE_READ_FAILED, updateAction, updateButtonLabel,
   updateDescription, updateDisabled, updateFailure, updateNews, updateTooltip } from '../update/logic';
-import { UpdateIcon, useUpdateActions } from '../update/UpdateControl';
+import { UpdateIcon, UpdateNotes, useUpdateActions } from '../update/UpdateControl';
 import { useUpdateState } from '../update/useUpdateState';
 import './recorder.css';
 
@@ -399,7 +399,8 @@ function UpdateSection({ update }: { update: PanelUpdate }) {
     <div className="group-label recorder-label">Updates</div>
     <div className="recorder-row recorder-toggle recorder-described"><span className="recorder-toggle-text"><span>BattlePlan Recorder {state?.currentVersion ?? ''}</span>
       {failure ? <FailureLine className="recorder-update-failure" message={failure.text} detail={failure.detail} onRetry={failure.retry} retryDisabled={update.pending} />
-        : <small>{updateDescription(state)}</small>}</span>
+        : <small>{updateDescription(state)}</small>}
+      {state && (state.availableVersion || state.downloadedVersion) && <UpdateNotes state={state} />}</span>
       {!failure && <button type="button" className={`button small${updateAction(state) === 'install' ? ' primary' : ''}`} disabled={updateDisabled(state) || update.pending}
         data-tooltip={updateTooltip(state)} data-focus="update-settings" onClick={update.press}>
         <Icon name="download" />{updateButtonLabel(state)}</button>}</div>

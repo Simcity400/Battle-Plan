@@ -35,6 +35,7 @@ import json
 import os
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -49,7 +50,11 @@ ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 DEFAULT_STATE = Path(os.environ.get("BATTLEPLAN_CAPTURES", os.environ.get("HOI4_CAPTURES", ROOT / "captures"))) / "ci" / "e2e"
 WINDOW = (1920, 1080)
-SCREEN_VIEWS, TALL_VIEW, SCREEN = ("AllWidgets", "AllWidgetsLegible"), "AllWidgetsTall", (3840, 2160)
+SCREEN_VIEWS, TALL_VIEW, SCREEN = ("AllWidgets", "AllWidgetsLegible", "Heaviest"), "AllWidgetsTall", (3840, 2160)
+PROFILES = {
+    "weak": {"cores": "4", "cpu_throttle": 4.0},
+    "weak8": {"cores": "4", "cpu_throttle": 8.0},
+}
 BOAT_FAILED = 75
 CLOSE_SECONDS = 60
 STAGES = ("copy", "sweep", "report")
@@ -61,9 +66,11 @@ SESSIONS = (
     ("catalogue", "catalogue", {}),
     ("controls", "controls", {}),
     ("pages at", "pages-at", {}),
+    ("widget costs", "widget-costs", {}),
 )
 QUICK_SESSIONS = (
     ("quick", "glance,playback,catalogue,controls", {}),
+    ("widget costs", "widget-costs", {}),
 )
 CACHES = ("local/BattlePlan/viewer", "local/BattlePlan/shader-cache", "local/BattlePlan/artwork", "local/Microsoft",
           "roaming", "webview")
@@ -137,6 +144,10 @@ class ProcessEntry(c.Structure):
                 ("exe", c.c_wchar * 260)]
 
 
+class JobProcessIdList(c.Structure):
+    _fields_ = [("assigned", w.DWORD), ("in_list", w.DWORD), ("pids", c.c_size_t * 256)]
+
+
 k.CreateJobObjectW.argtypes = [c.c_void_p, w.LPCWSTR]
 k.CreateJobObjectW.restype = w.HANDLE
 k.SetInformationJobObject.argtypes = [w.HANDLE, c.c_int, c.c_void_p, w.DWORD]
@@ -149,6 +160,9 @@ k.ResumeThread.argtypes = [w.HANDLE]
 k.WaitForSingleObject.argtypes = [w.HANDLE, w.DWORD]
 k.GetExitCodeProcess.argtypes = [w.HANDLE, c.POINTER(w.DWORD)]
 k.CloseHandle.argtypes = [w.HANDLE]
+k.GetCurrentProcess.restype = w.HANDLE
+k.GetProcessAffinityMask.argtypes = [w.HANDLE, c.POINTER(c.c_size_t), c.POINTER(c.c_size_t)]
+k.QueryFullProcessImageNameW.argtypes = [w.HANDLE, w.DWORD, w.LPWSTR, c.POINTER(w.DWORD)]
 k.GetSystemTimes.argtypes = [c.POINTER(c.c_uint64)] * 3
 k.GlobalMemoryStatusEx.argtypes = [c.POINTER(MemoryStatus)]
 k.CreateToolhelp32Snapshot.argtypes = [w.DWORD, w.DWORD]
@@ -178,17 +192,51 @@ WM_CLOSE = 0x10
 STILL_ACTIVE = 258
 
 
+def system_affinity_mask():
+    process_mask, system_mask = c.c_size_t(), c.c_size_t()
+    checked(k.GetProcessAffinityMask(k.GetCurrentProcess(), c.byref(process_mask), c.byref(system_mask)))
+    return system_mask.value
+
+
+def parse_cores(spec, system_mask=None):
+    if spec is None:
+        return None
+    text = str(spec).strip()
+    if not text:
+        raise ValueError("--cores must be a positive core count or hex mask such as 4 or 0x55")
+    allowed = system_affinity_mask() if system_mask is None else system_mask
+    available = [bit for bit in range(64) if (allowed >> bit) & 1]
+    if text.lower().startswith("0x"):
+        mask = int(text, 16)
+        if mask <= 0 or (mask & ~allowed):
+            raise ValueError(f"--cores mask {text} is outside the system affinity mask {allowed:#x}")
+        cpus = [bit for bit in available if (mask >> bit) & 1]
+        return {"requested": text, "count": len(cpus), "mask": mask, "cpus": cpus}
+    count = int(text, 10)
+    if count < 1 or count > len(available):
+        raise ValueError(f"--cores count {count} must be between 1 and {len(available)}")
+    ordered = [bit for bit in available if bit % 2 == 0] + [bit for bit in available if bit % 2 == 1]
+    cpus = ordered[:count]
+    mask = 0
+    for bit in cpus:
+        mask |= 1 << bit
+    return {"requested": text, "count": count, "mask": mask, "cpus": cpus}
+
+
 class App:
     """The desktop app in a Job of its own, on a desktop of its own: only this tree is ever stopped."""
 
-    def __init__(self, exe, args, environment, log, port):
+    def __init__(self, exe, args, environment, log, port, affinity_mask=None):
         self.port = port
+        self.affinity_mask = affinity_mask
         self.desktop_name = f"BattlePlanE2E-{uuid.uuid4().hex[:12]}"
         self.desktop = checked(u.CreateDesktopW(self.desktop_name, None, None, 0, 0x1FF, None))
         self.job = checked(k.CreateJobObjectW(None, None))
         limits = Extended()
-        limits.basic.flags = 0x2000 | 0x20
+        limits.basic.flags = 0x2000 | 0x20 | (0x10 if affinity_mask else 0)
         limits.basic.priority = 0x8000
+        if affinity_mask:
+            limits.basic.affinity = affinity_mask
         checked(k.SetInformationJobObject(self.job, 9, c.byref(limits), c.sizeof(limits)))
         self.log = open(log, "wb")
         null = open(os.devnull, "rb")
@@ -218,6 +266,35 @@ class App:
         checked(k.QueryInformationJobObject(self.job, 1, c.byref(basic), c.sizeof(basic), None))
         checked(k.QueryInformationJobObject(self.job, 9, c.byref(extended), c.sizeof(extended), None))
         return (basic.user + basic.kernel) / 1e7, extended.peak_job
+
+    def confinement(self):
+        """Processes currently in this app's Job object and their measured OS affinity masks."""
+        plist = JobProcessIdList()
+        checked(k.QueryInformationJobObject(self.job, 3, c.byref(plist), c.sizeof(plist), None))
+        processes = []
+        for index in range(plist.in_list):
+            pid = int(plist.pids[index])
+            handle = k.OpenProcess(0x1000, False, pid)
+            if not handle:
+                processes.append({"pid": pid, "exe": None, "affinity": None, "confined": False})
+                continue
+            try:
+                proc_mask, sys_mask = c.c_size_t(), c.c_size_t()
+                ok = bool(k.GetProcessAffinityMask(handle, c.byref(proc_mask), c.byref(sys_mask)))
+                buf = c.create_unicode_buffer(1024)
+                size = w.DWORD(1024)
+                exe = Path(buf.value).name if k.QueryFullProcessImageNameW(handle, 0, buf, c.byref(size)) else None
+                confined = ok and (self.affinity_mask is None or proc_mask.value == self.affinity_mask)
+                processes.append({"pid": pid, "exe": exe, "affinity": f"{proc_mask.value:#x}" if ok else None, "confined": confined})
+            finally:
+                k.CloseHandle(handle)
+        return {
+            "mask": f"{self.affinity_mask:#x}" if self.affinity_mask else None,
+            "jobProcesses": len(processes),
+            "confinedProcesses": sum(1 for item in processes if item["confined"]),
+            "allConfined": bool(processes) and all(item["confined"] for item in processes),
+            "processes": processes,
+        }
 
     def running(self):
         return k.WaitForSingleObject(self.info.process, 0) == STILL_ACTIVE
@@ -497,7 +574,8 @@ def launch(args, work, label, extra=None):
     if args.ui:
         environment["BATTLEPLAN_UI_DIST"] = args.ui
     app_args = ["--game-dir", args.game_dir, "--user-dir", str(args.user_folder)]
-    app = App(Path(args.app) / "replay-desktop.exe", app_args, environment, args.out / f"app-{label}.log", port)
+    app = App(Path(args.app) / "replay-desktop.exe", app_args, environment, args.out / f"app-{label}.log", port,
+              affinity_mask=args.cores["mask"] if args.cores else None)
     try:
         if args.window_client:
             app.client(*args.window_client)
@@ -568,6 +646,9 @@ def run_locked(args, started, state):
     phases = {}
     record = {"commit": git_head(), "started": datetime.datetime.now().isoformat(timespec="seconds"), "phases": phases,
               "refreshHz": refresh_hz(), "tier": args.tier, "requested": [],
+              "profile": args.profile, "cpuThrottle": args.cpu_throttle,
+              "cores": {**args.cores, "mask": f"{args.cores['mask']:#x}"} if args.cores else None,
+              "confinement": None,
               "windowClient": list(args.window_client) if args.window_client else None,
               "machine": {"logicalCpus": os.cpu_count(), "start": None, "end": None}}
     if args.ui:
@@ -594,11 +675,12 @@ def run_locked(args, started, state):
         raise RuntimeError(f"no copied recording in {work}: run the copy stage first")
     if "sweep" in stages:
         record["sessions"] = []
-        wanted = args.phases.split(",") if args.phases else None
+        wanted = args.phases.split(",") if args.phases else (["widget-costs"] if args.kinds else None)
         planned = []
         for name, session_phases, environment in (QUICK_SESSIONS if args.tier == "quick" else SESSIONS):
             chosen = [phase for phase in session_phases.split(",") if (wanted is None or phase in wanted)
-                      and (phase != "pages-at" or args.pages_at is not None)]
+                      and (phase != "pages-at" or args.pages_at is not None)
+                      and (phase != "widget-costs" or (wanted is not None and "widget-costs" in wanted))]
             if chosen:
                 planned.append((name, chosen, environment))
         for name, chosen, environment in planned:
@@ -625,13 +707,20 @@ def run_locked(args, started, state):
                                               "--work", work, "--session", slug, "--desktop", app.desktop_name, "--app-pid", app.info.pid,
                                               "--input", input_address,
                                               "--phases", ",".join(chosen), "--tier", args.tier, "--history", history, "--pin", args.pin,
+                                              *(["--cpu-throttle", args.cpu_throttle] if args.cpu_throttle != 1.0 else []),
+                                              *(["--cores-count", args.cores["count"]] if args.cores else []),
                                               *(["--cases", args.cases] if args.cases else []),
                                               *(["--pages", args.pages] if args.pages else []),
                                               *(["--pages-at", args.pages_at] if args.pages_at is not None else []),
+                                              *(["--kinds", args.kinds] if args.kinds else []),
+                                              *(["--costs", args.costs] if args.costs else []),
+                                              *(["--heaviest", args.heaviest] if args.heaviest is not None else []),
                                               *(["--record-replies", session["recordedReplies"]] if args.record_replies else []),
                                               seconds=3 * 3600)
             finally:
                 try:
+                    if args.cores and app.running():
+                        session["confinement"] = record["confinement"] = app.confinement()
                     session["machine"]["after"] = record["machine"]["end"] = machine_load(int(app.running()))
                 finally:
                     session["appExit"] = app.close()
@@ -696,6 +785,123 @@ def build(args):
     return code
 
 
+UI_BUNDLE_MARKER = ".battleplan-ui-bundle"
+STOCK_VITE_CONFIG = ROOT / "ui" / "vite.config.ts"
+UNGATED_VITE_CONFIG = ROOT / "ui" / "vite.ungated.config.ts"
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
+
+
+def _is_link_or_reparse(path):
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    if getattr(st, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT:
+        return True
+    isjunction = getattr(os.path, "isjunction", None)
+    return bool(isjunction and isjunction(path))
+
+
+def validate_ui_output(out):
+    """Refuses repo paths, links/junctions, and non-empty directories without the build-ui marker."""
+    raw = Path(os.path.abspath(str(out)))
+    for candidate in (raw, *raw.parents):
+        if os.path.lexists(candidate) and _is_link_or_reparse(candidate):
+            raise RuntimeError(f"refusing {raw}: {candidate} is a symlink or junction")
+    resolved_root = Path(os.path.realpath(str(ROOT)))
+    resolved_raw = Path(os.path.realpath(str(raw)))
+    for target, root in ((raw, ROOT), (resolved_raw, resolved_root)):
+        if target == root or root in target.parents:
+            raise RuntimeError("--out for build-ui must be outside the repository")
+    if os.path.lexists(raw):
+        st = os.lstat(raw)
+        if not stat.S_ISDIR(st.st_mode):
+            raise RuntimeError(f"refusing to overwrite {raw}: path exists and is not a directory")
+        marker = raw / UI_BUNDLE_MARKER
+        if os.path.lexists(marker):
+            if _is_link_or_reparse(marker) or not stat.S_ISREG(os.lstat(marker).st_mode):
+                raise RuntimeError(f"refusing to overwrite {raw}: {UI_BUNDLE_MARKER} is not a regular file")
+        elif any(raw.iterdir()):
+            raise RuntimeError(
+                f"refusing to overwrite {raw}: directory is not empty and does not hold {UI_BUNDLE_MARKER} "
+                "(pass a new or empty folder, or one previously created by `suite.py build-ui`)"
+            )
+    return raw
+
+
+def build_ui_command(out, ungated=False):
+    config = UNGATED_VITE_CONFIG if ungated else STOCK_VITE_CONFIG
+    return ["npx.cmd", "vite", "build", "--config", str(config), "--outDir", str(out), "--emptyOutDir", "false"]
+
+
+def _is_marked_bundle_dir(path):
+    marker = path / UI_BUNDLE_MARKER
+    return os.path.lexists(marker) and not _is_link_or_reparse(marker) and stat.S_ISREG(os.lstat(marker).st_mode)
+
+
+def find_ui_leftovers(target):
+    parent = target.parent
+    if not parent.is_dir():
+        return []
+    old = sorted(parent.glob(f".{target.name}.old-*"))
+    staging = sorted(parent.glob(f".{target.name}.staging-*"))
+    return [*old, *staging]
+
+
+def run_build_ui(out, ungated=False, runner=subprocess.run):
+    """Builds into a fresh staging folder beside `--out`, then swaps `--out` and writes the marker only on success."""
+    target = validate_ui_output(out)
+    leftovers = find_ui_leftovers(target)
+    if leftovers and not os.path.lexists(target):
+        names = ", ".join(str(p) for p in leftovers)
+        print(f"note: found recoverable leftover bundle(s) for missing {target}: {names}", file=sys.stderr)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.staging-", dir=str(target.parent)))
+    env = dict(os.environ)
+    env.pop("BATTLEPLAN_MEASURE_UNGATED", None)
+    try:
+        code = runner(build_ui_command(staging, ungated=ungated), cwd=ROOT, env=env).returncode
+        if code != 0:
+            shutil.rmtree(staging, ignore_errors=True)
+            return code
+        (staging / UI_BUNDLE_MARKER).write_text("built by tools/e2e/suite.py build-ui\n", encoding="utf-8")
+        validate_ui_output(target)
+        backup = None
+        if os.path.lexists(target):
+            backup = target.parent / f".{target.name}.old-{os.getpid()}-{time.time_ns()}"
+            target.rename(backup)
+        try:
+            staging.rename(target)
+        except OSError:
+            if backup is not None and os.path.lexists(backup) and not os.path.lexists(target):
+                backup.rename(target)
+            raise
+        if backup is not None:
+            if _is_marked_bundle_dir(backup):
+                shutil.rmtree(backup, ignore_errors=True)
+            else:
+                try:
+                    backup.rmdir()
+                except OSError as error:
+                    kept = sorted(entry.name for entry in backup.iterdir()) if backup.is_dir() else []
+                    raise RuntimeError(
+                        f"refusing to delete unmarked backup {backup}: unexpected entries appeared before swap "
+                        f"({', '.join(kept) or error}); new bundle is installed at {target}"
+                    ) from error
+        return 0
+    except BaseException:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
+def build_ui(args):
+    """Builds a production UI bundle into `--out`; `--ungated` selects the dedicated ungated Vite config."""
+    return run_build_ui(args.out, ungated=args.ungated)
+
+
 def parse(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -703,6 +909,10 @@ def parse(argv):
     build_command.add_argument("--out", required=True)
     build_command.add_argument("--shell", action="store_true",
                                help="the measuring shell: the release app serving its UI from the bundle `run --ui` names")
+    build_ui_command = commands.add_parser("build-ui", help="build a production UI bundle for the measuring shell")
+    build_ui_command.add_argument("--out", required=True)
+    build_ui_command.add_argument("--ungated", action="store_true",
+                                  help="measurement-only build that bypasses the playsBackDated placeholder gate")
     accept_command = commands.add_parser("accept", help="make a run's captures the visual baseline")
     accept_command.add_argument("--run", required=True, help="the run's report folder")
     accept_command.add_argument("--reason", required=True, help="the change this baseline accepts")
@@ -727,6 +937,12 @@ def parse(argv):
     run_command.add_argument("--cases", help="control case ids to run, all by default; in the map phases, the map interactions to run")
     run_command.add_argument("--pages", help="pages the playback and control phases visit, all by default")
     run_command.add_argument("--pages-at", type=float, help="share of the timeline (0 to 1) the pages-at phase visits every page at")
+    run_command.add_argument("--profile", choices=tuple(PROFILES), help="named machine profile: weak (4 cores, 4x) or weak8 (4 cores, 8x)")
+    run_command.add_argument("--cpu-throttle", type=float, help="CPU throttle rate (>= 1); forwarded to Chromium and drawing-lane stretch()")
+    run_command.add_argument("--cores", help="logical processor count or hex affinity mask applied to the app Job object and page")
+    run_command.add_argument("--kinds", help="comma-separated widget kinds for the widget-costs phase (all registered kinds by default)")
+    run_command.add_argument("--costs", help="path to widget-costs.json used to build the Heaviest fixture page")
+    run_command.add_argument("--heaviest", type=int, help="number of most expensive widget kinds placed on the Heaviest page (default 30)")
     run_command.add_argument("--window-client", help="window client area in device pixels, WxH")
     args = parser.parse_args(argv)
     if args.command == "run":
@@ -745,6 +961,8 @@ def parse(argv):
             args.history = str(history)
         if args.ui:
             args.ui = str(Path(args.ui).resolve())
+        if args.costs:
+            args.costs = str(Path(args.costs).resolve())
         if args.record_replies:
             replies = Path(args.record_replies).resolve()
             if ROOT in replies.parents:
@@ -756,7 +974,25 @@ def parse(argv):
             parser.error("--pages-at takes a share of the timeline from 0 to 1")
         if args.phases and "pages-at" in args.phases.split(",") and args.pages_at is None:
             parser.error("--phases pages-at needs --pages-at <fraction>")
+        if args.profile:
+            preset = PROFILES[args.profile]
+            if args.cores is None:
+                args.cores = preset["cores"]
+            if args.cpu_throttle is None:
+                args.cpu_throttle = preset["cpu_throttle"]
+        if args.cpu_throttle is None:
+            args.cpu_throttle = 1.0
+        if args.cpu_throttle < 1.0:
+            parser.error("--cpu-throttle must be >= 1")
+        try:
+            args.cores = parse_cores(args.cores)
+        except ValueError as error:
+            parser.error(str(error))
+        if args.heaviest is not None and args.heaviest < 1:
+            parser.error("--heaviest must be >= 1")
         pages = args.pages.split(",") if args.pages else []
+        if "Heaviest" in pages and not args.costs:
+            parser.error("--pages Heaviest needs --costs <widget-costs.json>")
         if any(view in pages for view in SCREEN_VIEWS) and TALL_VIEW in pages:
             parser.error(f"--pages {next(view for view in SCREEN_VIEWS if view in pages)} and {TALL_VIEW} need different windows")
         if any(view in pages for view in SCREEN_VIEWS) and not args.window_client:
@@ -777,6 +1013,12 @@ def main(argv):
     args = parse(argv)
     if args.command == "build":
         return build(args)
+    if args.command == "build-ui":
+        try:
+            return build_ui(args)
+        except Exception as error:
+            print(f"UI build failed: {error}", file=sys.stderr)
+            return 2
     if args.command == "accept":
         try:
             return accept(args)

@@ -17,7 +17,7 @@ export function PartsCountryChip(props: WidgetCountryChipProps) {
   return props.widget.options?.show === 'breakdown' ? <span className="dash-widget-country-slot" ref={props.onSlot} /> : <CountryChip {...props} />;
 }
 
-export default function CountryChip({ widget, runtime, active }: Omit<WidgetCountryChipProps, 'onSlot'>) {
+export default function CountryChip({ widget, runtime, active, compact = false }: Omit<WidgetCountryChipProps, 'onSlot'>) {
   const settings = useCampaignSettings();
   const effective = resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId);
   const track = runtime.tracks.find(item => item.id === effective.trackIds[0]);
@@ -33,14 +33,18 @@ export default function CountryChip({ widget, runtime, active }: Omit<WidgetCoun
   const faction = widget.countries.kind === 'group' && widget.countries.group.type === 'faction';
   const label = useAtHead(runtime.clock, active && widget.time.mode === 'follow' && faction, clockHour => widget.countries.kind === 'group'
     ? groupLabel(widget.countries.group, groups.data, name, track ? shownHour(clockHour) : undefined, overrides) : '');
-  if (track && widget.countries.kind === 'all') return <span className="dash-widget-country"><Icon name="globe" /><span>All countries</span></span>;
-  if (track && widget.countries.kind === 'factions') return <span className="dash-widget-country"><Icon name="layers" /><span>{widget.countries.count === Number.MAX_SAFE_INTEGER ? 'All factions' : `Top ${widget.countries.count} factions`}</span></span>;
-  if (track && widget.countries.kind === 'group') return <span className="dash-widget-country">
+  if (track && widget.countries.kind === 'all') return <span className="dash-widget-country" data-tooltip={compact ? 'All countries' : undefined}><Icon name="globe" /><span>All countries</span></span>;
+  if (track && widget.countries.kind === 'factions') {
+    const text = widget.countries.count === Number.MAX_SAFE_INTEGER ? 'All factions' : `Top ${widget.countries.count} factions`;
+    return <span className="dash-widget-country" data-tooltip={compact ? text : undefined}><Icon name="layers" /><span>{text}</span></span>;
+  }
+  if (track && widget.countries.kind === 'group') return <span className="dash-widget-country" data-tooltip={compact ? label : undefined}>
     <Icon name="layers" /><span>{label}</span></span>;
   if (!track || !tags.length) return null;
   const names = shownKeys.map((_, i) => chipName(labels[i]));
   const first = labels[0];
-  return <span className="dash-widget-country" data-tooltip={tags.length > 1 ? `${names.join(', ')}${tags.length > 3 ? ` and ${tags.length - 3} more` : ''}` : undefined}>
+  const tooltip = tags.length > 1 ? `${names.join(', ')}${tags.length > 3 ? ` and ${tags.length - 3} more` : ''}` : compact ? names[0] : undefined;
+  return <span className="dash-widget-country" data-tooltip={tooltip}>
     <CountryFlagUrl className="country-flag" url={first?.flag} detail={first?.flagDetail} reason={first?.flagReason ?? undefined} pending={first?.flagPending} />
     <span>{names[0]}</span>{tags.length > 1 && <small>+{tags.length - 1}</small>}
   </span>;

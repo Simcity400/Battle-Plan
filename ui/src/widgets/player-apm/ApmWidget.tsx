@@ -29,7 +29,7 @@ import { FollowedText } from '../../dashboard/follow/FollowedText.tsx';
 import { liveFollowed } from '../../dashboard/follow/liveFollowed.ts';
 import { shownThrough } from '../../dashboard/follow/store.ts';
 import type { FollowEntry } from '../../dashboard/follow/store';
-import { followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followFailure, followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { useProduct } from '../../dashboard/products';
 import { useTiles } from '../../dashboard/tiles/useTiles';
 import { useHeadHour } from '../army-size/headHour.ts';
@@ -82,6 +82,7 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
   }, [woken, shown]));
   const headEntry = followsHead(followed) ? followed.entry : null;
   const refused = followRefusal(followed);
+  const followErr = followFailure(followed);
   const entryRef = useRef(headEntry); entryRef.current = headEntry;
   useHeadHour(runtime.clock, headEntry !== null && !graph, () => apmHeadStructure(entryRef.current?.answer), woken);
   const headStructure = headEntry && !graph ? apmHeadStructure(headEntry.answer) : null;
@@ -196,12 +197,13 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
 
   const body = (() => {
     if (!track) return <WidgetState kind="empty" icon="chart-bars" message="Load a campaign to see eAPM." />;
-    if (refused) return <WidgetState kind="unavailable" message={refused} />;
+    if (refused) return <WidgetState kind="unavailable" technical={refused} />;
+    if (followErr) return <WidgetState kind="error" failure={followErr.error} onRetry={followErr.retry} />;
     if (!query.window || first == null || last == null || first > last) return <WidgetState kind="outside" />;
     if (query.groups.error && widget.countries.kind === 'group') return <WidgetState kind="error" failure={query.groups.error} onRetry={query.groups.retry} />;
     if (query.reason && !headEntry) return <WidgetState kind="unavailable" message={query.reason} />;
     if (players && registry.error) return <WidgetState kind="error" failure={registry.error} onRetry={registry.retry} />;
-    if (headRefused) return <WidgetState kind="unavailable" message={headRefused} />;
+    if (headRefused) return <WidgetState kind="unavailable" technical={headRefused} />;
     if (headEntry) {
       if (tiled && branchSeries.error) return <WidgetState kind="error" failure={branchSeries.error} onRetry={branchSeries.retry} />;
       if (headEntry.answer === undefined || (players && !registry.data) || (tiled && !branchSeries.data)) return <WidgetState kind="loading" label="Loading eAPM…" />;

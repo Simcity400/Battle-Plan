@@ -7,6 +7,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, fileURLToPath(new URL('.', import.meta.url)), 'BATTLEPLAN_');
   return {
     root: fileURLToPath(new URL('.', import.meta.url)),
+    define: { __BATTLEPLAN_MEASURE_UNGATED__: 'false' },
     plugins: [react(), browserBridge(fileURLToPath(new URL('..', import.meta.url)), env.BATTLEPLAN_RECORDINGS_DIR ?? '', env.BATTLEPLAN_GAME_DIR ?? '', env.BATTLEPLAN_USER_DIR ?? '')],
     clearScreen: false,
     server: { host: '127.0.0.1', port: 1420, strictPort: true },

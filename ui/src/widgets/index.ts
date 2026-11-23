@@ -15,7 +15,7 @@ const renderers = {
   'civil-wars': lazyWidget('civil-wars', ['render']),
   'event-choices': lazyWidget('event-choices', ['render']),
   'decisions': lazyWidget('decisions', ['render']),
-  'map': lazyWidget('map', ['render', 'headerControls']),
+  'map': lazyWidget('map', ['render']),
   'national-focus': lazyWidget('national-focus', ['render']),
   'research': lazyWidget('research', ['render']),
   'active-research': lazyWidget('active-research', ['render']),
