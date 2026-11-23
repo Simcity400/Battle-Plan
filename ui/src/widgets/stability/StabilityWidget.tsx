@@ -143,7 +143,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const single = resolved.tags.length === 1 ? resolved.tags[0] : null;
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const headQuery = (measure: Measure) => following && active && track && resolved.tags.length && !pinnedMeasure ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id,
     family: { kind: FAMILY, measure }, reads: resolved.tags.map(tag => ({ country: countryFromKey(tag) })) } }) : null;
   const stabilityQuery = useMemo(() => headQuery('stability'), [following, active, track?.branch.id, resolved.tags, pinnedMeasure, gate.follow]);

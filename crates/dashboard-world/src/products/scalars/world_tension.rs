@@ -217,6 +217,10 @@ impl AtHour for WorldTension {
 
 pub const SERIES: &str = "world-tension";
 
+pub fn step_walk() -> dashboard_query::fields::Walk {
+    dashboard_query::fields::walk::<Step>()
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Step {

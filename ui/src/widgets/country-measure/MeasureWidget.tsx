@@ -92,7 +92,7 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   const gate = useGate(runtime, widget, SPEC, active);
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const headQuery = useMemo(() => following && active && track && resolved.tags.length ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id,
     family: { kind: 'country-measure', measure: config.measure }, reads: resolved.tags.map(tag => ({ country: countryFromKey(tag) })) } }) : null,
   [following, active, track?.branch.id, config.measure, resolved.tags, gate.follow]);

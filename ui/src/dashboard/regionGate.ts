@@ -302,7 +302,7 @@ export function useRegionGate(runtime: Runtime, region: Region, active: boolean,
   return { region, track, active, hour: gated, window, outside, stage, open, country, members, groups, held, hourAt, recorded, within, span, follow, time, checkTime, hold, checkHold };
 }
 
-function gateStage(track: BoundTrack | undefined, outside: Outside | null, hour: TrackHour | null, country: CountryAt | null, needsCountry: boolean,
+export function gateStage(track: BoundTrack | undefined, outside: Outside | null, hour: TrackHour | null, country: CountryAt | null, needsCountry: boolean,
   needsMembers: boolean, groups: Gate['groups'], members: MembersAt | null): GateStage {
   if (!track) return { stage: 'unbound' };
   if (outside) return { stage: 'outside', outside };
@@ -312,8 +312,8 @@ function gateStage(track: BoundTrack | undefined, outside: Outside | null, hour:
     if (country.error && !country.historyHeld) return { stage: 'failed', failure: country.error, retry: country.retry };
     if (country.holders) return { stage: 'holders', holders: country.holders, pick: country.pick };
     if (country.reason) return { stage: 'absent', reason: country.reason };
-    if (country.absent) return { stage: 'absent', reason: null };
-    if (!country.tag) return { stage: 'loading' };
+    if (country.absent || country.aliases?.size === 0) return { stage: 'absent', reason: null };
+    if (!country.tag) return country.historyHeld ? { stage: 'absent', reason: null } : { stage: 'loading' };
   }
   if (needsMembers && members) {
     if (!groups.data) return groups.error ? { stage: 'failed', failure: groups.error, retry: groups.retry } : { stage: 'loading' };

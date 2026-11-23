@@ -72,7 +72,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
     air: useTiles(runtime.client, lane('air'), active, following) };
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const headQuery = (branch: ExperienceBranch) => following && active && track && resolved.tags.length && branches.includes(branch)
     ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family: experienceFamily(measure, branch), reads: resolved.tags.map(tag => ({ country: countryFromKey(tag) })) } }) : null;
   const followed = {

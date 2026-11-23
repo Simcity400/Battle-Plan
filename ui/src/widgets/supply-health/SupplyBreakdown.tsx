@@ -57,10 +57,10 @@ export default function SupplyBreakdown({ runtime, gate, track, active, options,
   const reads = useMemo(() => tag ? [...(liveHead || headAt === null ? [] : [{ tag, hour: headAt }]), ...(tipAt === null ? [] : [{ tag, hour: tipAt }])] : [],
     [tag, headAt, tipAt, liveHead]);
   const supply = useSupplySeries(runtime.client, runtime.clock, gate, track?.source, track?.branch, tags, within, track?.branch.lastHour ?? 0, active && !!identities, reads,
-    liveHead !== undefined, root, track?.axisOffset);
+    liveHead !== undefined, root);
   const { error, retry } = supply;
   useEffect(() => { onWarnings(error ? [`Supply could not be loaded: ${error.message}`] : []); return () => onWarnings([]); }, [error, onWarnings]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const colors = useMemo(() => [tokens.error, tokens.warning, tokens.positive], [tokens.error, tokens.warning, tokens.positive]);
   const head = useSupplyHead(store, gate, liveHead !== undefined && active, track?.branch.id, tag, root, colors);
   const actor = countryDrillTagAt(identitySpans, hour);

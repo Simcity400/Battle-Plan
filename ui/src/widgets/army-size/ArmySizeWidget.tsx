@@ -154,7 +154,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   useLayoutEffect(() => { if (drillAnchor.current !== rootElement) setRoot(drillAnchor.current); });
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const followQuery = useMemo(() => liveRaceView && track && !byType && (resolved.top != null || resolved.tags.length)
     ? gate.follow({ product: 'army-size', params: armySizeRequest(track.branch.id, resolved, measure, countFor, false) }) : null,
   [liveRaceView, track?.branch.id, byType, resolved, measure, countFor, gate.follow]);

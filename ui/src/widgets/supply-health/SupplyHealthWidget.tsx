@@ -105,7 +105,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
   const tipAt = gate.recorded(tip?.hour);
   const reads = useMemo(() => tip && tipAt !== null ? [{ tag: tip.tag, hour: tipAt }] : [], [tip, tipAt]);
   const supply = useSupplySeries(runtime.client, runtime.clock, gate, track?.source, track?.branch, countries.tags, countries.membership ?? undefined, lastHour, active, reads,
-    following, body, track?.axisOffset);
+    following, body);
   useShownEachFrame(runtime.clock, () => supply.drawn ? following ? Math.min(Math.floor(clockHead.read()), lastHour) : head : null);
   const { error, retry } = supply;
   const resetKey = JSON.stringify([track?.source.id, track?.branch.id, widget.countries, widget.time,

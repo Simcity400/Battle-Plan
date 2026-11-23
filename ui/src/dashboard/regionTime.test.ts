@@ -4,8 +4,9 @@ import { OpenedSources } from './openedSources.ts';
 import type { AskedRequest, ProductRequest, productRequest } from './request';
 import { REQUEST_HOURS } from '../generated/dashboard.ts';
 import { at, axisAt, bucketEdges, bucketRead, checkedTime, coverageAt, coverageSpan, FOLLOW, GatedTime, refusedHours, validTime, OUTSIDE_MESSAGE, recordedHour, regionFollows, regionHour, regionKey, regionOutside, regionWindow, resolveRegion,
-  SETTINGS_DETAIL, SPEC, stageOf, UNRECORDED_MESSAGE, type BoundHour, type GatedHour, type ParamsFor, type RegionAction, type TrackHour } from './regionTime.ts';
+  SETTINGS_DETAIL, SPEC, UNRECORDED_MESSAGE, type BoundHour, type GatedHour, type ParamsFor, type RegionAction, type TrackHour } from './regionTime.ts';
 import { drillAction, reduceDrill, CLOSED } from '../charts/drill/drillState.ts';
+import { gateStage } from './regionGate.ts';
 import type { BoundTrack, WidgetSpec, WidgetTime } from './model';
 
 const track = (id: string, firstHour: number, lastHour: number, axisOffset: number, gaps: { firstHour: number; lastHour: number; reason: string }[] = []) =>
@@ -114,15 +115,21 @@ test('only a recorded track hour is a track hour; the region key tells regions r
   assert.equal(regionKey({ widget: widget(SPECS.follow), action: SPEC }), regionKey({ widget: widget(SPECS.pin), action: FOLLOW }), 'following is one time whatever the spec');
 });
 
-test('the stages run in a fixed order: coverage, then the country, then membership, then the read', () => {
+test('the gate’s stages run in a fixed order, and a country that holds nothing once its history is known is absent, never loading', () => {
   const outside = { message: OUTSIDE_MESSAGE, detail: SETTINGS_DETAIL };
-  assert.deepEqual(stageOf({ hour: null, outside, country: 'absent', members: 'none', read: 'loading' }), { stage: 'outside', outside });
-  assert.deepEqual(stageOf({ hour: hour(1005), country: 'loading', members: 'none' }), { stage: 'loading' });
-  assert.deepEqual(stageOf({ hour: hour(1005), country: 'absent', members: 'none' }), { stage: 'absent' });
-  assert.deepEqual(stageOf({ hour: hour(1005), country: 'held', members: 'none', read: 'loading' }), { stage: 'no-members' });
-  assert.deepEqual(stageOf({ hour: hour(1005), country: 'held', members: 'loading' }), { stage: 'loading' });
-  assert.deepEqual(stageOf({ hour: hour(1005), country: 'held', members: 'held', read: 'loading' }), { stage: 'loading' });
-  assert.deepEqual(stageOf({ hour: hour(1005), country: 'held', members: 'held', read: 'held' }), { stage: 'ready' });
+  const groups = { data: {}, error: undefined, retry() {} } as unknown as Parameters<typeof gateStage>[6];
+  const country = (at: Partial<NonNullable<Parameters<typeof gateStage>[3]>>) => ({ chosen: 'GER', tag: 'GER', absent: false, reason: null, holders: null, historyHeld: true,
+    aliases: null, ...at }) as unknown as Parameters<typeof gateStage>[3];
+  const members = (selectionReason: string | null) => ({ selectionReason }) as unknown as Parameters<typeof gateStage>[7];
+  const stage = (at: Partial<{ outside: typeof outside | null; hour: number | null; country: Parameters<typeof gateStage>[3]; members: Parameters<typeof gateStage>[7] }>) =>
+    gateStage(late, at.outside ?? null, (at.hour === undefined ? 1005 : at.hour) as TrackHour | null, at.country ?? country({}), true, true, groups, at.members ?? members(null)).stage;
+  assert.equal(stage({ outside, country: country({ absent: true }), members: members('none') }), 'outside', 'coverage comes first');
+  assert.equal(stage({ hour: null }), 'loading');
+  assert.equal(stage({ country: country({ tag: null, historyHeld: false }) }), 'loading', 'a country whose history is pending is loading');
+  assert.equal(stage({ country: country({ tag: null }) }), 'absent', 'a country whose history is known but holds no tag here is absent');
+  assert.equal(stage({ country: country({ aliases: new Map() }) }), 'absent', 'a held identity with no aliases at all is absent, not an empty open view');
+  assert.equal(stage({ members: members('No members') }), 'no-members');
+  assert.equal(stage({}), 'open');
 });
 
 test('a declared gap is not a recorded hour: every region time and pick inside it is unrecorded, with the recording’s own reason, and the hours around it are read', () => {
@@ -161,9 +168,12 @@ test('only checked hours leave for the native side: each field’s role comes fr
   assert.match(refusedHours('series-state', { branchId: '1', reads: [{ country: 'GER', hour: 95 }] }, GAPPED) ?? '', /params\.reads\[0\]\.hour names hour 95/);
   assert.match(refusedHours('equipment-losses', { reads: [104, 105] }, GAPPED) ?? '', /hour 105, which was not recorded/);
   assert.equal(refusedHours('raid-log', { from: 105, to: 106 }, GAPPED), null, 'range bounds may lie in a gap');
+  assert.match(refusedHours('series-state', { branchId: '1', family: { kind: 'supply', measure: 'state' }, reads: [{ tag: 'GER', hour: 104 }] }, GAPPED) ?? '',
+    /params\.reads\[0\]\.tag is not a field the request type has/, 'a field the Rust request type does not name is refused before it is sent');
   assert.match(refusedHours('raid-log', { from: 99, to: 104 }, GAPPED) ?? '', /outside branch/);
   assert.match(refusedHours('equipment-produced', { rankHour: 105 }, GAPPED) ?? '', /rankHour names hour 105, which was not recorded/, 'a ranking hour is an exact read');
-  assert.equal(refusedHours('equipment-produced', { windowHour: 95 }, GAPPED), null, 'a name ending in Hour is not an hour unless the contract says so');
+  assert.match(refusedHours('equipment-produced', { windowHour: 95 }, GAPPED) ?? '', /params\.windowHour is not a field the request type has/,
+    'a name ending in Hour is not an hour unless the contract says so: a field the contract does not name is refused for its name, never read as an hour');
   assert.match(refusedHours('production-line-breakdown', { hour: 105 }, GAPPED) ?? '', /not recorded/, 'a bucket’s representative hour is recorded');
   assert.match(refusedHours('faction-lines', { from: 100, to: 109, members: [{ tag: 'GER', spans: [[90, 104]] }] }, GAPPED) ?? '', /members\[0\]\.spans\[0\]\[0\] names hour 90/);
   assert.match(refusedHours('series-tiles', { within: [[1, [{ firstHour: 100, lastHour: 120 }]]] }, GAPPED) ?? '', /within\[0\]\[1\]\[0\]\.lastHour names hour 120/);

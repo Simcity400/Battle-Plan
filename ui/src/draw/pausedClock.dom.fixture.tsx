@@ -369,7 +369,7 @@ async function heldSeek(hour: number, settled: () => boolean, done: () => boolea
 }
 
 async function staleStep() {
-  const hour = clock.getHour(), store = followStore(runtime.client, runtime.tracks[0]!.source, clock, track.axisOffset);
+  const hour = clock.getHour(), store = followStore(runtime.client, { source: runtime.tracks[0]!.source, axisOffset: track.axisOffset }, clock);
   const readings = (message: FromWorker): readonly (PageReading | undefined)[] =>
     message.type === 'structure' ? message.updates : message.type === 'inspection' ? [message.reading] : [];
   const carries = (message: FromWorker, type: 'structure' | 'inspection', hours: number) =>

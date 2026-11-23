@@ -207,7 +207,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const anchor = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => { if (anchor.current !== rootElement) setRoot(anchor.current); });
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const followQuery = useMemo(() => liveRaceView && params && !split ? gate.follow({ product: config.product, params }) : null,
     [liveRaceView, JSON.stringify(params), split, config.product, gate.follow]);
   const sticky = useRef<StickyMembers | null>(null);

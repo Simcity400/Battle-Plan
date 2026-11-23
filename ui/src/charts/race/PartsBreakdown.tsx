@@ -86,7 +86,7 @@ export default function PartsBreakdown({ runtime, gate, at, track, active, optio
   const { keys, within } = useMemo(() => ownerKeys(keyedFamily ? owner : null, (held.data?.parts ?? []).map(part => part.part)), [keyedFamily, held.data, owner]);
   const root = useRef<HTMLDivElement>(null);
   const keyed = useKeyedSeries(runtime.client, runtime.clock, gate, keyedFamily && keys.length ? { source: track.source, branch: track.branch, family: keyedFamily,
-    keys, within, partBits: parts.kind === 'keyed' ? parts.partBits : 0, lastHour: track.branch.lastHour, axisOffset: track.axisOffset } : null, following ? null : at, null, following, active, root);
+    keys, within, partBits: parts.kind === 'keyed' ? parts.partBits : 0, lastHour: track.branch.lastHour } : null, following ? null : at, null, following, active, root);
   const items = useMemo(() => parts.kind === 'measures' ? drawnItems(parts.items).map(item => ({ id: item.id, label: item.label }))
     : keys.map(key => ({ id: key.part, label: parts.name(key.part) })), [parts, keys]);
   const colours = useMemo(() => partColours(items, tokens.categories), [items, tokens.categories]);
@@ -167,11 +167,11 @@ export default function PartsBreakdown({ runtime, gate, at, track, active, optio
   const partHead = useCallback((id: string) => head ? () => head.values([tag]).get(tag)?.get(id) ?? null : null, [head, tag]);
   const atHour = rowsOf(values);
   const sum = total !== undefined ? total : atHour.every(part => part.value !== null) && values ? atHour.reduce((all, part) => all + part.value!, 0) : null;
-  const failure = error ?? held.error ?? keyed.error;
+  const [failure, retryFailure] = error ? [error, onRetry] : held.error ? [held.error, held.retry] : keyed.error ? [keyed.error, keyed.retry] : [undefined, undefined];
   return <div className="parts-race-breakdown" ref={root}>
     {parts.kind === 'measures' && drawnItems(parts.items).map(item => <PartTile key={item.id} client={runtime.client} track={track} family={item.measure as unknown as Record<string, unknown>}
       owner={owner ?? { key: tag, spans: null }} span={gate.span} id={item.id} active={active} live={following} lines={lines} head={partHead(item.id)} unrecorded={partUnrecorded} />)}
-    {failure ? <WidgetState kind="error" what="the breakdown" failure={asFailure(failure)} onRetry={onRetry ?? keyed.retry} /> : null}
+    {failure ? <WidgetState kind="error" what="the breakdown" failure={asFailure(failure)} onRetry={retryFailure} /> : null}
     <div className="country-race-chart">
       <TimeChart label={`${name} by ${parts.label.toLowerCase()}`} extent={extent} playhead={playhead} playback={playback} afterPlayhead={options.afterPlayhead === true}
         windowHours={Number(options.windowDays ?? 365) * 24} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}

@@ -141,7 +141,8 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
   };
 }
 
-export function followStore(client: DashboardClient, source: DashboardSource, widgetClock: PlaybackController, offset = 0): FollowStore {
+export function followStore(client: DashboardClient, track: { readonly source: DashboardSource; readonly axisOffset: number }, widgetClock: PlaybackController): FollowStore {
+  const source = track.source, offset = track.axisOffset;
   const clock = pageClock(widgetClock);
   let stores = clocks.get(clock);
   if (!stores) clocks.set(clock, stores = new PerClient());

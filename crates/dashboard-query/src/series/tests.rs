@@ -285,17 +285,23 @@ fn an_owners_parts_over_a_span_are_its_rows_lifetimes() {
     for (from, to) in [(FIRST, last), (FIRST + 3_000, FIRST + 4_000), (FIRST + 5_500, second + 100)] {
         let owners = line.part_lives(&tags, from, to).unwrap();
         for (owner, id) in owners.iter().zip([9001, 9002]) {
-            let mut wanted: BTreeMap<u32, (i32, i32)> = BTreeMap::new();
+            let mut wanted: BTreeMap<u32, Vec<(i32, i32)>> = BTreeMap::new();
             for hour in from..=to {
                 for resource in [1, 2, 3, 4] {
                     if produced(&query, id, resource, hour).is_some() {
-                        let span = wanted.entry(resource).or_insert((hour, hour));
-                        span.1 = hour;
+                        let spans = wanted.entry(resource).or_default();
+                        match spans.last_mut() {
+                            Some(span) if span.1 + 1 == hour => span.1 = hour,
+                            _ => spans.push((hour, hour)),
+                        }
                     }
                 }
             }
-            let got: BTreeMap<u32, (i32, i32)> = owner.parts.iter().map(|life| (life.part.parse().unwrap(), (life.first_hour, life.last_hour))).collect();
-            assert_eq!(got, wanted, "{}'s parts over {from}..{to}", owner.country);
+            let mut got: BTreeMap<u32, Vec<(i32, i32)>> = BTreeMap::new();
+            for life in &owner.parts {
+                got.entry(life.part.parse().unwrap()).or_default().push((life.first_hour, life.last_hour));
+            }
+            assert_eq!(got, wanted, "{}'s parts over {from}..{to}: each span it is present, never one span across a gap", owner.country);
             assert!(owner.parts.iter().all(|life| life.id.as_deref() == Some(life.part.as_str())), "a resource part names its resource");
         }
         if to >= second {
@@ -491,6 +497,10 @@ fn a_request_naming_1500_countries_is_answered() {
     let next: SeriesKeyReply =
         serde_json::from_value(ask("series-next-change", serde_json::json!({ "countries": tags, "key": "ArrowRight", "from": hour, "firstHour": first, "lastHour": last }))).unwrap();
     assert!(next.hour.is_some_and(|next| next > f64::from(hour)));
+    let held = serde_json::json!([["GER", [{ "firstHour": first, "lastHour": first }]]]);
+    let outside: SeriesKeyReply =
+        serde_json::from_value(ask("series-next-change", serde_json::json!({ "countries": ["GER"], "within": held, "key": "ArrowRight", "from": hour, "firstHour": first, "lastHour": last }))).unwrap();
+    assert_eq!(outside.hour, None, "a step from outside the held runs, with nothing after it inside them, goes nowhere rather than back to its origin");
     ask("events-page", serde_json::json!({ "countries": tags, "from": first, "to": last, "pageSize": 16 }));
 }
 

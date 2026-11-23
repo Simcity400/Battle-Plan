@@ -2,7 +2,7 @@ use dashboard_world::products::equipment_names::{self as names, EquipmentIcon, N
 
 use dashboard_base::products::{Country, validate_country};
 use super::{
-    held_hours, link_slots,
+    held_hours,
 };
 use dashboard_base::{Source, products::{LoadContext, Product, check_reply_budget, at_hour::{At, AtHour, Owner, Read}}, span::HourSpan};
 use dashboard_follow::live::Source as Cell;
@@ -402,7 +402,7 @@ impl Product for EquipmentDesigns {
             dashboard_text::metadata::check_cancel(cancelled)?;
             let held: Vec<_> = query.holders.within(&params.country, stretch.first, stretch.last).into_iter().filter(|run| matches!(run.holder, Holder::Found { .. })).collect();
             let (Some(first), Some(last)) = (held.first().map(|run| run.first), held.last().map(|run| run.last)) else { continue };
-            let slots = link_slots(recording, stretch.run, stretch.last)?;
+            let links = dashboard_query::cost::storage(|| dashboard_base::queries::country_ids::run_links(recording, stretch.run))?;
             let creators = read::runs(recording, stretch.run, TableId::VariantDefinitions, Column::Cell(creator), None, first, last)?;
             let mut flags = read::runs(recording, stretch.run, TableId::VariantDefinitions, Column::Cell(obsolete), None, first, last)?;
             for (key, runs) in creators {
@@ -412,20 +412,22 @@ impl Product for EquipmentDesigns {
                     for &(from, to, value) in &runs {
                         let (from, to) = (from.max(run.first), to.min(run.last));
                         let Some(raw) = value else { continue };
-                        if from > to || slots.get(&(raw as u32)) != Some(&slot) {
+                        if from > to {
                             continue;
                         }
-                        let entry = designs.entry(key as u64).or_default();
-                        push_span(&mut entry.0, from, to);
-                        for &(flag_from, flag_to, flag) in &flag_runs {
-                            let (flag_from, flag_to) = (flag_from.max(from), flag_to.min(to));
-                            if flag == Some(1) && flag_from <= flag_to {
-                                push_span(&mut entry.1, flag_from, flag_to);
+                        for (_, from, to) in links.within(raw as u32, from, to).filter(|(linked, ..)| *linked == Some(slot)) {
+                            let entry = designs.entry(key as u64).or_default();
+                            push_span(&mut entry.0, from, to);
+                            for &(flag_from, flag_to, flag) in &flag_runs {
+                                let (flag_from, flag_to) = (flag_from.max(from), flag_to.min(to));
+                                if flag == Some(1) && flag_from <= flag_to {
+                                    push_span(&mut entry.1, flag_from, flag_to);
+                                }
                             }
-                        }
-                        let seen = last_seen.entry(key as u64).or_insert((stretch.run, to));
-                        if to >= seen.1 {
-                            *seen = (stretch.run, to);
+                            let seen = last_seen.entry(key as u64).or_insert((stretch.run, to));
+                            if to >= seen.1 {
+                                *seen = (stretch.run, to);
+                            }
                         }
                     }
                 }

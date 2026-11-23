@@ -188,8 +188,44 @@ pub fn typescript_contract() -> String {
     text
 }
 
+pub fn series_walk() -> dashboard_query::fields::Walk {
+    use dashboard_query::fields::{Leaf, Walk};
+    dashboard_query::series::params_walk()
+        .join(dashboard_query::tile::params_walk())
+        .join(dashboard_land::products::army::series_params_walk())
+        .join(dashboard_players::products::player_apm::head::tile_ask_walk())
+        .join(dashboard_world::products::scalars::world_tension::step_walk())
+        .nest("family", dashboard_players::products::player_apm::head::tile_family_walk())
+        .nest("family", dashboard_land::products::army::tile_family_walk())
+        .join(Walk { heads: Some(vec!["least".to_owned()]), leaves: std::collections::BTreeMap::from([("least".to_owned(), Leaf::Text)]), ..Walk::default() })
+}
+
+pub fn request_paths() -> std::collections::BTreeMap<String, std::collections::BTreeMap<String, &'static str>> {
+    use dashboard_query::fields::{Leaf, Walk};
+    let paths = |walk: Walk, hour: bool| {
+        let mut out: std::collections::BTreeMap<String, &'static str> = walk.interiors.into_iter().filter(|path| !path.is_empty()).map(|path| (path, "node")).collect();
+        out.extend(walk.leaves.into_iter().map(|(path, leaf)| (path, if leaf == Leaf::Opaque { "any" } else { "leaf" })));
+        if hour {
+            out.entry("hour".to_owned()).or_insert("leaf");
+        }
+        out
+    };
+    let mut table = std::collections::BTreeMap::new();
+    for product in products::PRODUCTS {
+        table.insert(product.key.to_owned(), paths((product.params)(), product.read_hour));
+    }
+    let series = paths(series_walk(), false);
+    for key in answer::SERIES_PRODUCTS {
+        table.insert((*key).to_owned(), series.clone());
+    }
+    for (head, _, walk) in dashboard_players::products::player_apm::head::HEADS {
+        table.insert(format!("head:{head}"), paths(walk(), false));
+    }
+    table
+}
+
 pub fn request_fields() -> std::collections::BTreeMap<String, Vec<(&'static str, &'static str)>> {
-    let dated = |fields: products::Fields| fields.iter().filter_map(|(path, role)| role.name().map(|role| (*path, role))).collect::<Vec<_>>();
+    let dated = |fields: dashboard_base::products::Fields| fields.iter().filter_map(|(path, role)| role.name().map(|role| (*path, role))).collect::<Vec<_>>();
     let mut table = std::collections::BTreeMap::new();
     for product in products::PRODUCTS {
         let mut fields = dated(product.fields);
@@ -201,7 +237,7 @@ pub fn request_fields() -> std::collections::BTreeMap<String, Vec<(&'static str,
     for key in answer::SERIES_PRODUCTS {
         table.insert((*key).to_owned(), dated(dashboard_query::series::FIELDS));
     }
-    for (head, fields, _) in products::player_apm::head::HEADS {
+    for (head, fields, _) in dashboard_players::products::player_apm::head::HEADS {
         table.insert(format!("head:{head}"), dated(fields));
     }
     table
@@ -277,10 +313,17 @@ fn request_hours() -> String {
         fields: every.into_iter().filter_map(|(name, hour)| Some((name, ParamNode { hour: Some(hour?), ..ParamNode::default() }))).collect(),
         ..ParamNode::default()
     };
+    let names = request_paths()
+        .iter()
+        .map(|(key, paths)| format!("  {key:?}: {{ {} }},", paths.iter().map(|(path, kind)| format!("{path:?}: {kind:?}")).collect::<Vec<_>>().join(", ")))
+        .collect::<Vec<_>>()
+        .join("\n");
     let (rows, params, every) = (rows.join("\n"), params.join("\n"), every.object());
     [
         "export type HourRole = \"read\" | \"start\" | \"end\" | \"bucket\";".to_owned(),
         format!("export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, HourRole>>>> = {{\n{rows}\n}};"),
+        "/** Every field each product's request type names: a node holds named fields, a leaf a value, and any a value the contract does not spell out. */".to_owned(),
+        format!("export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, \"node\" | \"leaf\" | \"any\">>>> = {{\n{names}\n}};"),
         "/** Each product's dated request fields, with E an exact read's hour and B a range bound's. */".to_owned(),
         format!("export type RequestParams<E, B> = {{\n{params}\n}};"),
         "/** The top-level fields every product that names them dates as a plain hour, for a request whose product is not known where it is built. */".to_owned(),

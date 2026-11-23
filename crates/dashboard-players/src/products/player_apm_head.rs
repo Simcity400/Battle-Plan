@@ -336,8 +336,7 @@ pub fn head_of(source: &Source, asked: &Value) -> Option<Result<Head, String>> {
     Some(build().map_err(|error| error.to_string()))
 }
 
-#[cfg(test)]
-pub(crate) fn tile_family_walk() -> dashboard_query::fields::Walk {
+pub fn tile_family_walk() -> dashboard_query::fields::Walk {
     dashboard_query::fields::walk::<TileFamily>()
 }
 
@@ -350,6 +349,10 @@ struct TileFamily {
     #[serde(default)]
     players: Vec<String>,
     value: String,
+}
+
+pub fn tile_ask_walk() -> dashboard_query::fields::Walk {
+    dashboard_query::fields::walk::<TileAsk>()
 }
 
 #[derive(Deserialize)]

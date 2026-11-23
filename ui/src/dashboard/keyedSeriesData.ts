@@ -49,12 +49,22 @@ export function validateKeyedStates(value: unknown): KeyedStates {
   return { ...(value as unknown as KeyedStates), states };
 }
 
+function disjointParts(parts: readonly SeriesPart[]): boolean {
+  const last = new Map<string, number>();
+  for (const part of [...parts].sort((a, b) => a.firstHour - b.firstHour)) {
+    const before = last.get(part.part);
+    if (before !== undefined && part.firstHour <= before) return false;
+    last.set(part.part, part.lastHour);
+  }
+  return true;
+}
+
 export function validateSeriesParts(value: unknown, tag: string): SeriesParts {
   const owner = object(value) && Array.isArray(value.owners) && value.owners.length === 1 ? value.owners[0] : undefined;
   if (!object(value) || !Number.isInteger(value.partBits) || (value.partBits as number) < 1 || (value.partBits as number) > 127
     || !object(owner) || (typeof owner.country !== 'string' && typeof owner.country !== 'number') || countryKey(owner.country) !== tag || !Array.isArray(owner.parts) || !owner.parts.every(part => object(part)
     && raw(part.part) && (part.id === undefined || typeof part.id === 'string') && hour(part.firstHour) && hour(part.lastHour)
-    && part.firstHour <= part.lastHour) || new Set(owner.parts.map(part => (part as SeriesPart).part)).size !== owner.parts.length
+    && part.firstHour <= part.lastHour) || !disjointParts(owner.parts as SeriesPart[])
     || !Array.isArray(owner.missing) || !owner.missing.every(span => object(span) && hour(span.firstHour) && hour(span.lastHour)
       && typeof span.reason === 'string'))
     throw new Error('The series parts reply is malformed.');

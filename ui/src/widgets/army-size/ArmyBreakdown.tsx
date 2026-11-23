@@ -140,7 +140,7 @@ export default function ArmyBreakdown({ runtime, gate, track, active, options, c
   const heldRoster = useProduct<Roster>(runtime.client, !live && track && actor && heldAt !== null ? rosterAt(heldAt, actor) : null, active, rosterReply, track?.source);
   const [rosterElement, setRosterElement] = useState<HTMLElement | null>(null);
   const rosterRoot = useMemo(() => ({ current: rosterElement }), [rosterElement]);
-  const rosterStore = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const rosterStore = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const rosterQuery = useMemo(() => live && actor && track ? gate.follow({ panel: 'template-roster', branchId: track.branch.id, country: countryFromKey(actor)}) : null,
     [live, actor, track?.branch.id, gate.follow]);
   const followedRoster = useFollow(rosterStore, rosterQuery, rosterRoot, NO_PAINT, panelStructure);

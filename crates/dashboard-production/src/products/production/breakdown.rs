@@ -772,7 +772,7 @@ pub struct ProductionBreakdownParams {
     #[doc = " The held identity's own runs: lines are read only while the country holds them."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub within: Option<Vec<crate::span::HourSpan>>,
+    pub within: Option<Vec<dashboard_base::span::HourSpan>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -958,7 +958,7 @@ impl Product for ProductionLineBreakdown {
         }
         let reply = ProductionLineBreakdownReply {
             branch_id: params.branch_id.clone(),
-            tag: query.holders.name(&params.country, query.timeline.last),
+            tag: query.holders.name(&params.country, super::held_hours(&query, &params.country, params.within.as_deref(), first, last).last().map_or(last, |span| span.last_hour)),
             key: params.key.clone(),
             first_hour: first,
             last_hour: last,

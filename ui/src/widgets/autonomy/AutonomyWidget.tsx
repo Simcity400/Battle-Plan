@@ -136,7 +136,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
     const stops = [clock.subscribeFrame(changed), tilesLanded(changed)];
     return () => { for (const stop of stops) stop(); };
   } } : undefined, [followsClock, track, clock, axisOffset, tilesLanded]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, clock, track.axisOffset) : null, [runtime.client, clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, clock) : null, [runtime.client, clock, track?.source, track?.axisOffset]);
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const headQuery = useMemo(() => followsClock && active && track && tags.length ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id,

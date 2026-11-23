@@ -88,7 +88,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
 
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const branchId = track?.branch.id;
   const rankFamily = rank?.family ?? null;
   const rankQuery = useMemo<FollowQuery | null>(() => following && branchId && top != null && rankFamily

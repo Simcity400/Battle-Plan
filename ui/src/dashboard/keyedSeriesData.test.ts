@@ -43,7 +43,8 @@ test('states without a part and parts lists that repeat a part or name another o
     parts: [owner.parts[0], { ...owner.parts[1], id: null }] }, 'a part without a content id has none');
   assert.throws(() => validateSeriesParts(reply([owner]), 'GER'), /malformed/);
   assert.throws(() => validateSeriesParts(reply([owner, owner]), 'ENG'), /malformed/, 'another owner beside it');
-  assert.throws(() => validateSeriesParts(reply([{ ...owner, parts: [owner.parts[0], owner.parts[0]] }]), 'ENG'), /malformed/);
+  assert.throws(() => validateSeriesParts(reply([{ ...owner, parts: [owner.parts[0], owner.parts[0]] }]), 'ENG'), /malformed/, 'a part listed twice over the same hours');
+  assert.equal(validateSeriesParts(reply([{ ...owner, parts: [{ ...owner.parts[0], lastHour: 9 }, { ...owner.parts[0], firstHour: 20 }] }]), 'ENG').parts.length, 2, 'a part held over disjoint spans is listed once per span');
   assert.throws(() => validateSeriesParts(reply([{ ...owner, parts: [{ ...owner.parts[0], lastHour: -1 }] }]), 'ENG'), /malformed/);
   assert.throws(() => validateSeriesParts({ ...reply([owner]), partBits: 0 }, 'ENG'), /malformed/, 'no part bits');
 });

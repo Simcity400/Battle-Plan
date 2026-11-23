@@ -175,7 +175,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const raceView = pinnedParts || (view === 'mix' && !!parts) ? null : view === 'race' ? 'race' : 'lines';
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const asked = top == null && tags.length > 0;
   const racing = raceView === 'race' || (!!parts && raceView === null && top != null);
   const followQuery = useMemo(() => !arsenal && !pinnedParts && active && following && track && (top != null || asked) && (racing || asked)

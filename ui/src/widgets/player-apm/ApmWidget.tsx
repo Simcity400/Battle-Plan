@@ -71,7 +71,7 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
 
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const headKey = query.head ? JSON.stringify(query.head) : null;
   const headQuery = useMemo(() => following && active && track && query.head ? gate.follow(apmHeadQuery(query.head, track.branch, TRAILING_HOURS)) : null,
     [following, active, track?.branch.id, track?.branch.firstHour, track?.branch.lastHour, headKey, gate.follow]);

@@ -1,7 +1,7 @@
 import { resolveWindow, type BoundTrack, type HourWindow, type WidgetSpec } from './model.ts';
 
 import type { AnyRequestParams, HourRole, RecordingGap, RequestParams } from '../generated/dashboard';
-import { REQUEST_HOURS } from '../generated/dashboard.ts';
+import { REQUEST_HOURS, REQUEST_PATHS } from '../generated/dashboard.ts';
 
 declare const TRACK: unique symbol;
 declare const AXIS: unique symbol;
@@ -69,7 +69,7 @@ export function followedProduct(query: unknown): { product: string; params: unkn
   if (query === null || typeof query !== 'object') return null;
   const asked = query as Readonly<Record<string, unknown>>;
   if (typeof asked.product === 'string') return { product: asked.product, params: asked.params };
-  if (typeof asked.panel === 'string') return { product: asked.panel, params: asked };
+  if (typeof asked.panel === 'string') { const { panel, ...params } = asked; return { product: panel, params }; }
   if (typeof asked.head === 'string') return { product: `head:${asked.head}`, params: asked.params };
   return null;
 }
@@ -92,10 +92,29 @@ function visitPath(value: unknown, segments: readonly string[], path: string, vi
   item.forEach((each, position) => visitPath(each, rest, `${at}[${position}]`, visit, refuse));
 }
 
+function declaredNames(value: unknown, at: string, paths: Readonly<Record<string, string>>, shown: string, refuse: Refuse): void {
+  if (Array.isArray(value)) {
+    const items = `${at}[]`;
+    value.forEach((item, position) => {
+      const path = Object.hasOwn(paths, items) ? items : `${at}.${position}`;
+      if (Object.hasOwn(paths, path)) declaredNames(item, path, paths, `${shown}[${position}]`, refuse);
+    });
+    return;
+  }
+  if (!plainObject(value) || (at !== '' && paths[at] !== 'node')) return;
+  const wild = at ? `${at}.*` : '*';
+  for (const [key, item] of Object.entries(value)) {
+    const path = Object.hasOwn(paths, wild) ? wild : at ? `${at}.${key}` : key;
+    if (!Object.hasOwn(paths, path)) refuse(`${shown}.${key}`, 'a field the request type has');
+    else declaredNames(item, path, paths, `${shown}.${key}`, refuse);
+  }
+}
+
 export function hourFields(product: string, params: unknown, visit: (role: HourRole, hour: unknown, path: string) => void, refuse: Refuse = () => {}): boolean {
   const fields = requestFields(product);
   if (!fields) return false;
   if (!plainObject(params)) { refuse('params', 'an object naming its fields'); return true; }
+  if (Object.hasOwn(REQUEST_PATHS, product)) declaredNames(params, '', REQUEST_PATHS[product], 'params', refuse);
   for (const [path, role] of Object.entries(fields)) visitPath(params, path.split('.'), 'params', (hour, at) => visit(role, hour, at), refuse);
   return true;
 }
@@ -243,23 +262,4 @@ export function regionKey(region: Region): string {
 
 export function regionTrack(region: Region, tracks: readonly BoundTrack[]): BoundTrack | undefined {
   return tracks.find(track => track.id === region.widget.trackIds[0]);
-}
-
-export type StageState =
-  | { stage: 'outside'; outside: Outside }
-  | { stage: 'absent' }
-  | { stage: 'no-members' }
-  | { stage: 'loading' }
-  | { stage: 'ready' };
-
-export interface Stages { hour: TrackHour | null; outside?: Outside | null; country?: 'absent' | 'loading' | 'held' | null; members?: 'none' | 'loading' | 'held' | null; read?: 'loading' | 'held' | null }
-
-export function stageOf({ hour, outside = null, country = null, members = null, read = null }: Stages): StageState {
-  if (hour === null) return { stage: 'outside', outside: outside ?? { message: OUTSIDE_MESSAGE, detail: undefined } };
-  if (country === 'loading') return { stage: 'loading' };
-  if (country === 'absent') return { stage: 'absent' };
-  if (members === 'loading') return { stage: 'loading' };
-  if (members === 'none') return { stage: 'no-members' };
-  if (read === 'loading') return { stage: 'loading' };
-  return { stage: 'ready' };
 }

@@ -47,8 +47,6 @@ fn the_contract_names_the_refusals_a_reader_may_try_again() {
 
 #[test]
 fn every_product_request_field_declares_its_hour_role_and_the_contract_carries_it() {
-    use dashboard_query::fields::{Leaf, Walk};
-    use std::collections::BTreeMap;
     let table = crate::request_fields();
     let mut wrong = Vec::new();
     for product in crate::products::PRODUCTS {
@@ -57,16 +55,12 @@ fn every_product_request_field_declares_its_hour_role_and_the_contract_carries_i
         assert!(!(product.read_hour && product.fields.iter().any(|(path, _)| *path == "hour")), "{}: an hourly product's hour is its own", product.key);
         assert!(table.contains_key(product.key), "{} is missing from the contract", product.key);
     }
-    let series = dashboard_query::series::params_walk()
-        .join(dashboard_query::tile::params_walk())
-        .nest("family", crate::products::player_apm::head::tile_family_walk())
-        .nest("family", crate::products::army::tile_family_walk())
-        .join(Walk { heads: Some(vec!["least".to_owned()]), leaves: BTreeMap::from([("least".to_owned(), Leaf::Text)]), ..Walk::default() });
+    let series = crate::series_walk();
     wrong.extend(series.problems(dashboard_query::series::FIELDS).into_iter().map(|problem| format!("series: {problem}")));
     for key in crate::answer::SERIES_PRODUCTS {
         assert!(table.contains_key(*key), "{key} is missing from the contract");
     }
-    for (head, fields, walk) in crate::products::player_apm::head::HEADS {
+    for (head, fields, walk) in dashboard_players::products::player_apm::head::HEADS {
         wrong.extend(walk().problems(fields).into_iter().map(|problem| format!("head {head}: {problem}")));
         assert!(table.contains_key(&format!("head:{head}")));
     }
@@ -82,5 +76,10 @@ fn every_product_request_field_declares_its_hour_role_and_the_contract_carries_i
     assert_eq!(table["series-state"].iter().find(|(path, _)| *path == "reads[].hour"), Some(&("reads[].hour", "read")));
     assert!(table["research-breakdown"].contains(&("parts[].firstObservedHour", "read")));
     assert!(table["series-tiles"].contains(&("family.membership[].firstHour", "start")));
+    let paths = crate::request_paths();
+    assert_eq!(paths.keys().collect::<Vec<_>>(), table.keys().collect::<Vec<_>>(), "every product's field names are in the contract");
+    assert_eq!(paths["series-state"].get("reads[].country"), Some(&"any"));
+    assert_eq!(paths["series-state"].get("reads[].tag"), None, "a series read names its country, never a tag field");
+    assert_eq!(paths["series-tiles"].get("binHours"), Some(&"leaf"), "the eAPM and army tile asks are walked with the series");
 }
 

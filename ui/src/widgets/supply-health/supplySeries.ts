@@ -30,7 +30,7 @@ const NO_RUNS: ShareRun[] = [];
 
 export function useSupplySeries(client: DashboardClient, clock: PlaybackController, gate: SeriesGate, source: DashboardSource | undefined, branch: (CoveredBranch & { id: string }) | undefined,
   tags: readonly string[], within: ReadonlyMap<string, readonly HourSpan[]> | undefined, lastHour: number, active: boolean,
-  reads: readonly { tag: string; hour: GatedHour }[], following = false, root: { readonly current: Element | null } = { current: null }, axisOffset = 0) {
+  reads: readonly { tag: string; hour: GatedHour }[], following = false, root: { readonly current: Element | null } = { current: null }) {
   const branchId = branch?.id;
   const enabled = !!source && !!branchId && tags.length > 0;
   const ownerKey = JSON.stringify([source?.id, source?.revision, branchId, tags, within && [...within]]);
@@ -41,7 +41,8 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
   const strained = useTiles(client, lane(SHARE_MEASURES[1]), active, following);
   const held = useTiles(client, lane(SHARE_MEASURES[2]), active, following);
   const total = useTiles(client, lane(DIVISIONS), active, following);
-  const store = useMemo(() => source ? followStore(client, source, clock, axisOffset) : null, [client, clock, source, axisOffset]);
+  const track = gate.track;
+  const store = useMemo(() => source && track ? followStore(client, track, clock) : null, [client, clock, source, track]);
   const headQuery = (measure: string) => following && active && enabled ? gate.follow({ product: 'series-state', params: { branchId,
     family: { kind: SUPPLY_FAMILY, measure }, reads: tags.map(tag => ({ country: countryFromKey(tag) })) } }) : null;
   const queries = useMemo(() => SHARE_MEASURES.map(headQuery), [following, active, enabled, branchId, tags, gate.follow]);
@@ -78,7 +79,7 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
   const asked = useMemo(() => [...new Map(reads.map(read => [`${read.tag}\u0000${read.hour}`, read] as const)).values()], [JSON.stringify(reads)]);
   const stateRead = useViewRead<typeof asked, readonly (readonly SeriesState[])[]>(enabled && asked.length ? JSON.stringify([ownerKey, content]) : null,
     asked, JSON.stringify(asked), active, (at, signal, _publish, restart) => Promise.all(STATES.map(measure =>
-      loadProduct(client, request('series-state', measure, { reads: at }), signal, validateMeasureStates, source, restart)
+      loadProduct(client, request('series-state', measure, { reads: at.map(read => ({ country: countryFromKey(read.tag), hour: read.hour })) }), signal, validateMeasureStates, source, restart)
         .then(reply => reply.states))), client);
   const [failure, setFailure] = useState<{ owner: typeof owner; error: Failure }>();
   const [keyboard, setKeyboard] = useState<{ owner: typeof owner; hour: number | null; revision: number }>();

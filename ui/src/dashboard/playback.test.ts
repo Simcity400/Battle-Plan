@@ -9,8 +9,8 @@ test('visible widgets on one page share native subscriptions through their indiv
   const clock = new PlaybackController(), client = {} as DashboardClient;
   const source = { id: 'recording', revision: '1' } as DashboardSource;
   const a = new WidgetFrames(clock, 'research'), b = new WidgetFrames(clock, 'active-research');
-  assert.equal(followStore(client, source, a.clock), followStore(client, source, b.clock));
-  assert.notEqual(followStore(client, source, a.clock, 24), followStore(client, source, b.clock));
+  assert.equal(followStore(client, { source, axisOffset: 0 }, a.clock), followStore(client, { source, axisOffset: 0 }, b.clock));
+  assert.notEqual(followStore(client, { source, axisOffset: 24 }, a.clock), followStore(client, { source, axisOffset: 0 }, b.clock));
 });
 
 test('custom playback rates accept fractions without seeking or starting playback', () => {

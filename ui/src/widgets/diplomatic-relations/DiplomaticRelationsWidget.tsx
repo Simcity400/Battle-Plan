@@ -63,7 +63,7 @@ function PairHistory({ runtime, gate, track, pair: chosen, hour, active, followi
   const root = useRef<HTMLDivElement>(null);
   const keys = useMemo(() => pairKeys(chosen), [chosen]);
   const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const series = useKeyedSeries(runtime.client, runtime.clock, gate, { source: track.source, branch: track.branch, family: OPINIONS, keys, partBits: 32, lastHour: track.branch.lastHour, axisOffset: track.axisOffset },
+  const series = useKeyedSeries(runtime.client, runtime.clock, gate, { source: track.source, branch: track.branch, family: OPINIONS, keys, partBits: 32, lastHour: track.branch.lastHour },
     hour, gate.recorded(hoverHour), false, active, root);
   const looks = useHolderLooks(runtime.client, track, useMemo(() => pairHolders(chosen), [chosen]), active, useChartTokens());
   const label = (index: number) => looks.name(index ? 'second' : 'first');

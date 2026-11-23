@@ -211,7 +211,7 @@ pub const FIELDS: crate::fields::Fields = {
         ("key", Undated), ("measures", Undated), ("firstHour", Start), ("lastHour", End), ("cursor", Undated), ("pageSize", Undated), ("top", Undated),
         ("hour", Read), ("width", Undated), ("within[].1[].firstHour", Start), ("within[].1[].lastHour", End), ("binHours", Undated), ("index", Undated),
         ("withMarks", Undated), ("least", Undated), ("countries[]", Undated), ("lines[].country", Undated), ("reads[].country", Undated), ("within[].0", Undated),
-        ("family.membership[].firstHour", Start), ("family.membership[].lastHour", End), ("family.top", Undated),
+        ("family.membership[].firstHour", Start), ("family.membership[].lastHour", End), ("family.top", Undated), ("tags", Undated),
     ]
 };
 
@@ -1673,7 +1673,8 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 
     pub fn navigate_lines(&self, asks: &[Ask], measures: &[&'static Measure], origin: Option<i32>, key: NavigationKey, bounds: (i32, i32), within: &Within) -> io::Result<Option<i32>> {
-        Ok(self.change_lines(asks, measures, origin, key, bounds, within)?.or_else(|| origin.map(|hour| hour.clamp(bounds.0, bounds.1))))
+        let held = |hour: &i32| within.is_empty() || asks.iter().any(|ask| within.get(&ask.country).is_none_or(|spans| spans.iter().any(|&(first, last)| first <= *hour && *hour <= last)));
+        Ok(self.change_lines(asks, measures, origin, key, bounds, within)?.or_else(|| origin.map(|hour| hour.clamp(bounds.0, bounds.1)).filter(held)))
     }
 
     pub fn change_lines(&self, asks: &[Ask], measures: &[&'static Measure], origin: Option<i32>, key: NavigationKey, bounds: (i32, i32), within: &Within) -> io::Result<Option<i32>> {
@@ -1829,7 +1830,7 @@ impl<'q, 'a> Line<'q, 'a> {
         let mut lives: HashMap<u32, Vec<(u128, i64, i64)>> = HashMap::new();
         let mut out = Vec::with_capacity(tags.len());
         for tag in tags {
-            let mut found: BTreeMap<u128, (i32, i32)> = BTreeMap::new();
+            let mut found: BTreeMap<u128, Vec<(i32, i32)>> = BTreeMap::new();
             let country: Country = tag.clone().into();
             let held = self.parts(&country, from, to);
             for part in held.iter().filter_map(|part| self.valid_part(part)) {
@@ -1846,9 +1847,7 @@ impl<'q, 'a> Line<'q, 'a> {
                     if first > last {
                         continue;
                     }
-                    let span = found.entry(parts.part(key)).or_insert((first as i32, last as i32));
-                    span.0 = span.0.min(first as i32);
-                    span.1 = span.1.max(last as i32);
+                    found.entry(parts.part(key)).or_default().push((first as i32, last as i32));
                 }
             }
             let mut missing = self.unheld(&country, from, to, &held);
@@ -1859,7 +1858,18 @@ impl<'q, 'a> Line<'q, 'a> {
                 country,
                 parts: found
                     .into_iter()
-                    .map(|(part, (first_hour, last_hour))| SeriesPartLife { part: part.to_string(), id: parts.id(part).map(|id| id.to_string()), first_hour, last_hour })
+                    .flat_map(|(part, mut spans)| {
+                        spans.sort_unstable();
+                        let mut merged: Vec<(i32, i32)> = Vec::with_capacity(spans.len());
+                        for (first, last) in spans {
+                            match merged.last_mut() {
+                                Some(held) if first <= held.1.saturating_add(1) => held.1 = held.1.max(last),
+                                _ => merged.push((first, last)),
+                            }
+                        }
+                        let id = parts.id(part).map(|id| id.to_string());
+                        merged.into_iter().map(move |(first_hour, last_hour)| SeriesPartLife { part: part.to_string(), id: id.clone(), first_hour, last_hour })
+                    })
                     .collect(),
                 missing: joined(missing),
             });

@@ -129,7 +129,7 @@ export function useHeadProduct<T, const K extends DeclaredProduct>(runtime: Widg
   const [element, setElement] = useState<Element | null>(null);
   const root = useCallback((next: Element | null) => { if (next) setElement(screenHolder(next)); }, []);
   const target = useMemo(() => ({ current: element }), [element]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const query = useMemo(() => following ? gate.follow({ ...params, panel: product, branchId: track!.branch.id }) : null,
     [following, product, paramsKey, track?.branch.id, gate.follow]);
   const latest = useRef({ validate, structure, paint });

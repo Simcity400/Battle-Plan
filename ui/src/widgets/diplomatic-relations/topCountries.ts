@@ -33,7 +33,7 @@ export function useTopCountries({ widget, runtime, active }: Pick<WidgetProps, '
   const columns = registry.data;
   const rank = asked && columns ? rankingColumn(columns.columns, UNRANKED, measure, columns.defaultSort) : undefined;
   const following = active && widget.time.mode === 'follow';
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const branchId = track?.branch.id;
   const family = rank?.family ?? null;
   const rankQuery = useMemo<FollowQuery | null>(() => following && branchId && top != null && family

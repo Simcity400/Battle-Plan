@@ -61,7 +61,7 @@ pub struct ProductionLinesParams {
     #[doc = " The held identity's own runs: lines are read only while the country holds them."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub within: Option<Vec<crate::span::HourSpan>>,
+    pub within: Option<Vec<dashboard_base::span::HourSpan>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -96,7 +96,7 @@ pub struct ProductionDetailParams {
     #[doc = " The held identity's own runs: lines are read only while the country holds them."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub within: Option<Vec<crate::span::HourSpan>>,
+    pub within: Option<Vec<dashboard_base::span::HourSpan>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -220,7 +220,8 @@ fn part(values: &[Option<i64>]) -> Option<(OutputPart, i32, bool)> {
 }
 
 fn ended_rows(appearance: &Appearance, index: &RunLines) -> Vec<super::OutputLife> {
-    index.outputs_of(appearance.handle).iter().filter(|row| row.first <= appearance.last() && row.ended.is_some_and(|ended| ended >= appearance.last())).copied().collect()
+    let held_to = appearance.pieces.last().map_or(appearance.last(), |piece| piece.held_to);
+    index.outputs_of(appearance.handle).iter().filter(|row| row.first <= appearance.last() && row.ended.is_some_and(|ended| ended >= appearance.last() && ended <= held_to)).copied().collect()
 }
 
 fn ended_parts(recording: &replay::columnar_frames::Recording, run: u32, asks: &[(i32, u128)]) -> io::Result<BTreeMap<u128, (OutputPart, i32, bool)>> {
@@ -552,5 +553,6 @@ pub(super) fn detail_reply(source: &Source, query: &Query<'_>, params: &Producti
         .iter()
         .map(|appearance| LineDetail { key: appearance.key.clone(), runs: line_runs(appearance, &by_run, first, last), output: output_runs(appearance, &outputs, first, last) })
         .collect();
-    Ok(ProductionLineDetailReply { branch_id: params.branch_id.clone(), tag: query.holders.name(&params.country, last), decimals: DECIMALS, window: params.window, first_hour: first, last_hour: last, lines, warnings: Vec::new() })
+    let named_at = super::held_hours(query, &params.country, params.within.as_deref(), first, last).last().map_or(last, |span| span.last_hour);
+    Ok(ProductionLineDetailReply { branch_id: params.branch_id.clone(), tag: query.holders.name(&params.country, named_at), decimals: DECIMALS, window: params.window, first_hour: first, last_hour: last, lines, warnings: Vec::new() })
 }

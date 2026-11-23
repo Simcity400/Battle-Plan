@@ -96,7 +96,7 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   const members = useMemo(() => group ? [...new Set(group.members.map(member => member.tag))].sort() : rosterTags(rosterData), [group, rosterData]);
   const family = useMemo(() => ({ kind, measure }), [kind, measure]);
   const following = active && view === 'race' && (group ? widget.time.mode === 'follow' : fixed ? widget.time.mode === 'follow' && !!held : rosters.read === 'followed');
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
   const target = useMemo(() => ({ current: root }), [root]);
   const liveRef = useRef<ReturnType<typeof liveRace> | null>(null);

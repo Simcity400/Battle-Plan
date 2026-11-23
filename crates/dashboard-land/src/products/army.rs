@@ -675,8 +675,7 @@ fn token_name(tokens: &TableView<'_>, slot: Option<u32>, token: u32) -> String {
     read::text(tokens, literal, slot).and_then(|bytes| std::str::from_utf8(bytes).ok()).map_or_else(unresolved, str::to_owned)
 }
 
-#[cfg(test)]
-pub(crate) fn tile_family_walk() -> dashboard_query::fields::Walk {
+pub fn tile_family_walk() -> dashboard_query::fields::Walk {
     dashboard_query::fields::walk::<Family>()
 }
 
@@ -688,6 +687,10 @@ struct Family {
     measure: ArmyMeasure,
     count_for: ArmyAttribution,
     top: Option<usize>,
+}
+
+pub fn series_params_walk() -> dashboard_query::fields::Walk {
+    dashboard_query::fields::walk::<SeriesParams>()
 }
 
 #[derive(Deserialize)]

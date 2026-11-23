@@ -108,6 +108,9 @@ impl Walk {
             }
         }
         for (path, role) in &roles {
+            if path.split(['.', '[']).any(|segment| segment == "*") && *role != HourRole::Undated {
+                out.push(format!("{path} is dated inside a map, which no request may be"));
+            }
             match (self.leaves.get(*path), self.interiors.contains(*path)) {
                 (None, false) => out.push(format!("{path} is not a request field")),
                 (Some(Leaf::Text), _) | (None, true) if *role != HourRole::Undated => out.push(format!("{path} cannot hold an hour")),
@@ -585,6 +588,9 @@ mod tests {
             "spans.*.firstHour can carry a number and declares no role",
             "spans.*.lastHour can carry a number and declares no role",
         ], "a map's values are walked, so a dated field inside one declares its role");
+        let dated: Fields = &[("branchId", HourRole::Undated), ("spans", HourRole::Undated), ("bySlot", HourRole::Undated), ("bySlot.*[]", HourRole::Undated),
+            ("spans.*.firstHour", HourRole::Start), ("spans.*.lastHour", HourRole::Undated)];
+        assert_eq!(walk.problems(dated), ["spans.*.firstHour is dated inside a map, which no request may be"], "a client cannot walk a map's keys, so no hour may hide in one");
     }
 
     #[test]

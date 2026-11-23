@@ -15,7 +15,7 @@ import { useViewRead } from './viewRead.ts';
 import type { BoundWindow, CoveredBranch, GatedHour } from './regionTime.ts';
 import type { Gate } from './regionGate';
 
-export type SeriesGate = Pick<Gate, 'follow' | 'span' | 'within'>;
+export type SeriesGate = Pick<Gate, 'follow' | 'span' | 'within' | 'track'>;
 
 export interface SeriesOwner { readonly key: string; readonly spans: readonly HourSpan[] | null }
 
@@ -50,7 +50,6 @@ export interface KeyedSeriesSpec {
   within?: ReadonlyMap<string, readonly HourSpan[]>;
   lastHour: number;
   marks?: boolean;
-  axisOffset?: number;
 }
 
 const NO_PAINT = () => {};
@@ -113,7 +112,8 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
     return out;
   }, [lines]);
 
-  const store: FollowStore | null = useMemo(() => spec ? followStore(client, spec.source, clock, spec.axisOffset) : null, [client, clock, spec?.source, spec?.axisOffset]);
+  const track = gate.track;
+  const store: FollowStore | null = useMemo(() => spec && track ? followStore(client, track, clock) : null, [client, clock, !!spec, track]);
   const headQuery = useMemo(() => following && active && enabled ? gate.follow({ product: 'series-state', params: { branchId: spec!.branch.id, family: spec!.family,
     reads: [...new Set(spec!.keys.map(({ tag }) => tag))].map(tag => ({ country: countryFromKey(tag) })) } }) : null,
   [following, active, enabled, ownerKey, gate.follow]);

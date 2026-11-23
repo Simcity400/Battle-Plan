@@ -185,14 +185,6 @@ pub fn parse_key(key: &str) -> Option<(u64, u32)> {
     Some((handle.parse().ok()?, appearance))
 }
 
-pub fn link_slots(recording: &Recording, run: u32, hour: i32) -> io::Result<BTreeMap<u32, u32>> {
-    let slot = dashboard_declare::field(TableId::CountryLinks, "canonical_slot")?;
-    let links = read::Read { table: TableId::CountryLinks, columns: Some(&[slot]), keys: read::Keys::All };
-    let snapshot = read::at(recording, run, &[links], hour)?.remove(0);
-    let view = snapshot.view();
-    Ok(snapshot.rows.iter().filter_map(|&(key, row)| Some((key as u32, view.number(slot, row)? as u32))).collect())
-}
-
 pub fn appearances(query: &Query<'_>, tag: &Country, within: Option<&[HourSpan]>, from: i32, to: i32, lines: &dyn Fn(u32) -> io::Result<std::sync::Arc<RunLines>>) -> io::Result<Vec<Appearance>> {
     let recording = query.replay.recording();
     let mut pieces: BTreeMap<u64, Vec<Piece>> = BTreeMap::new();
@@ -202,7 +194,7 @@ pub fn appearances(query: &Query<'_>, tag: &Country, within: Option<&[HourSpan]>
             continue;
         }
         let index = lines(stretch.run)?;
-        let slots = link_slots(recording, stretch.run, stretch.last)?;
+        let links = dashboard_query::cost::storage(|| dashboard_base::queries::country_ids::run_links(recording, stretch.run))?;
         for run in &held {
             let Holder::Found { slot, .. } = run.holder else { continue };
             let spans: Vec<(i32, i32)> = match within {
@@ -211,14 +203,15 @@ pub fn appearances(query: &Query<'_>, tag: &Country, within: Option<&[HourSpan]>
             };
             for (held_from, held_to) in spans {
                 for life in &index.lines {
-                    if slots.get(&life.country) != Some(&slot) {
-                        continue;
-                    }
                     let (first, last) = (life.first.max(held_from), life.last.min(held_to));
                     if first > last {
                         continue;
                     }
-                    pieces.entry(life.handle).or_default().push(Piece { run: stretch.run, first, last, starts_segment: true, held_from, held_to });
+                    for (linked, first, last) in links.within(life.country, first, last) {
+                        if linked == Some(slot) {
+                            pieces.entry(life.handle).or_default().push(Piece { run: stretch.run, first, last, starts_segment: true, held_from, held_to });
+                        }
+                    }
                 }
             }
         }
@@ -228,6 +221,8 @@ pub fn appearances(query: &Query<'_>, tag: &Country, within: Option<&[HourSpan]>
         let index = lines(stretch.run)?;
         for life in &index.lines {
             if let Some(runs) = runs_of.get_mut(&life.handle)
+                && life.first <= stretch.last
+                && stretch.first <= life.last
                 && !runs.contains(&stretch.run)
             {
                 runs.push(stretch.run);

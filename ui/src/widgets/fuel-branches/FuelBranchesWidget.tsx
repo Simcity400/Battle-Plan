@@ -204,7 +204,7 @@ function FuelBranchesOverTime({ widget, runtime, active, onDiagnostics, within, 
   const keys = useMemo(() => (parts.data?.parts ?? []).map(part => ({ tag, part: part.part })).sort((a, b) => Number(a.part) - Number(b.part)), [parts.data, tag]);
   const membership = useMemo(() => within ? new Map(keys.map(key => [keyId(key), within])) : undefined, [keys, within]);
   const series = useKeyedSeries(runtime.client, runtime.clock, gate, keys.length ? { source: track.source, branch: track.branch, family: SHARE, keys,
-    partBits: parts.data?.partBits ?? 32, within: membership, lastHour: track.branch.lastHour, axisOffset: track.axisOffset } : null,
+    partBits: parts.data?.partBits ?? 32, within: membership, lastHour: track.branch.lastHour } : null,
   following ? null : gate.hour, gate.recorded(hoverHour, within), following, active, root);
   useDiagnostics(onDiagnostics, names.data?.warnings ?? NO_WARNINGS);
   const lines = useMemo(() => keys.map((key, index) => ({ key, color: tokens.categories[index % tokens.categories.length],
