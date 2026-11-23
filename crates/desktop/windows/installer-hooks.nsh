@@ -27,6 +27,7 @@ Var HoiReplayRan
 Var HoiGuard
 Var HoiClosing
 Var HoiStateFile
+Var HoiInstalled
 
 !define HOI_GUARD "Local\BattlePlan.Setup"
 !define HOI_STATE "BATTLEPLAN_SETUP_STATE"
@@ -250,7 +251,8 @@ FunctionEnd
 !macroend
 
 Function .onGUIEnd
-  ${If} ${FileExists} "$DESKTOP\$(^Name).lnk"
+  ${If} $HoiInstalled == 1
+  ${AndIf} ${FileExists} "$DESKTOP\$(^Name).lnk"
     Delete "$DESKTOP\${HOI_APP}.lnk"
     Rename "$DESKTOP\$(^Name).lnk" "$DESKTOP\${HOI_APP}.lnk"
   ${EndIf}
@@ -278,6 +280,7 @@ FunctionEnd
   ${EndIf}
   !insertmacro HOI_RELEASE_GUARD
   StrCpy $HoiClosing 0
+  StrCpy $HoiInstalled 1
   ${GetOptions} $CMDLINE "/BATTLEPLANRECORDER" $0
   ${IfNot} ${Errors}
     StrCpy $HoiRecorderRan 1

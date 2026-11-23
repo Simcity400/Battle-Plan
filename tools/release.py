@@ -22,8 +22,9 @@ as the workspace version, over SSH with the release deploy key the checkout carr
 
 `resolve` decides whether a release is due and from what. A nightly takes `--sha`, or the newest
 commit on main after the nightly feed's whose CI is green, and is due when there is one, unless
-PAUSE_NIGHTLY is true or another nightly release run is going; a scheduled one is also due at most
-once a UTC day, by the build date in the feed's version. A stable
+PAUSE_NIGHTLY is true, another nightly release run is going or main's last whole-workspace CI run
+failed; a scheduled one is also due at most once a UTC day, by the build date in the feed's
+version. A stable
 takes the commit the nightly feed offers unless `--sha` names one. A preview, a draft with no feed,
 takes main's head or `--sha`. `resolve --prepare` builds a stable candidate ahead, so its release
 only promotes. `publish --draft` is the dry run: everything goes to a new draft
@@ -630,11 +631,19 @@ def newest_green(repo, since):
     whose CI is green and whose workflows are main's, or None. Main's tip is usually still in CI,
     and a replaced push never turns green, so a nightly takes the newest commit that did."""
     line = git("rev-list", "--first-parent", "origin/main", *([f"^{since}"] if since else [])).split()
-    runs = json.loads(run(["gh", "api", f"repos/{repo}/actions/workflows/{CI_WORKFLOW}/runs?branch=main&event=push"
-                           "&status=success&per_page=100"]).stdout)["workflow_runs"]
-    passed = {found["head_sha"] for found in runs}
-    return next((commit for commit in line if commit in passed and ci_state(repo, commit) is None
-                 and not workflows_differ(commit)), None)
+    return next((commit for commit in line if not workflows_differ(commit) and ci_state(repo, commit) is None), None)
+
+
+def whole_run_state(repo):
+    """Why main's last whole-workspace CI run, the scheduled one, bars a nightly, or None when it
+    passed or none has run. A push's run tests only what changed since the last green commit, so a
+    break only the whole run sees holds every nightly until a whole run passes again."""
+    runs = json.loads(run(["gh", "api", f"repos/{repo}/actions/workflows/{CI_WORKFLOW}/runs?branch=main&event=schedule"
+                           "&status=completed&per_page=20"]).stdout)["workflow_runs"]
+    last = next((found for found in runs if found["conclusion"] != "cancelled"), None)
+    if last and last["conclusion"] not in SETTLED:
+        return f"main's last whole-workspace CI run, of {last['head_sha'][:12]}, ended {last['conclusion']}"
+    return None
 
 
 def built_today(feed, today):
@@ -671,10 +680,14 @@ def resolve(args):
         if args.scheduled and os.environ.get("PAUSE_NIGHTLY", "").strip().lower() in ("1", "true", "yes"):
             say("Nightlies are paused (PAUSE_NIGHTLY).")
             return outputs(found, args.github_output) or 0
+        if not args.draft and (going := nightly_going(repo)):
+            return not_yet(f"nightly release run {going} is going")
         feed = read_feed(repo, "nightly")
         if args.scheduled and built_today(feed, datetime.datetime.now(datetime.UTC)):
             say(f"Today's nightly, {feed['version']}, is out; the next is due tomorrow (UTC).")
             return outputs(found, args.github_output) or 0
+        if not args.draft and (why := whole_run_state(repo)):
+            return not_yet(why)
         since = feed["commit"] if feed and not args.draft else None
         if args.sha:
             commit = on_main(args.sha, "nightly")
@@ -689,8 +702,6 @@ def resolve(args):
                 return not_yet("no commit on main" + (f" since the nightly of {since[:12]}" if since else "")
                                + " has green CI and main's workflows")
             commit = on_main(green, "nightly")
-        if not args.draft and (going := nightly_going(repo)):
-            return not_yet(f"nightly release run {going} is going")
         name = artifact_name("nightly", commit)
         built, _ = find_candidate(repo, name)
         found.update(due="true", commit=commit, artifact=name, candidate_run=str(built or ""),

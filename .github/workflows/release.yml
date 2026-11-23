@@ -15,7 +15,7 @@ on:
           - stable
           - preview
       sha:
-        description: The commit to release; nightly defaults to main's head, stable to the nightly feed's commit
+        description: The commit to release; nightly defaults to main's newest green commit, stable to the nightly feed's commit
         type: string
         default: ""
       version:

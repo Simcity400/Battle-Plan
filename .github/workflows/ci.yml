@@ -54,7 +54,8 @@ jobs:
           fi
           green=
           shas=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=100" \
-            --jq '.workflow_runs[] | select(.event == "push" or .event == "schedule") | .head_sha') || shas=
+            --jq '.workflow_runs[] | select(.event == "push" or .event == "schedule") | .head_sha') \
+            || { echo "::error::Main's CI runs could not be listed, so its last green commit is unknown"; exit 1; }
           for sha in $shas; do
             if git merge-base --is-ancestor "$sha" HEAD 2>/dev/null; then green=$sha; break; fi
           done

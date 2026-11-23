@@ -236,7 +236,7 @@ class Resolve(unittest.TestCase):
                         read_feed=mock.Mock(return_value={"commit": "a" * 40, "version": "1.4.3-nightly.20261121.900"}),
                         run=mock.Mock(return_value=mock.Mock(returncode=1)),
                         ci_state=mock.Mock(return_value=None), nightly_going=mock.Mock(return_value=None),
-                        newest_green=mock.Mock(return_value="b" * 40),
+                        newest_green=mock.Mock(return_value="b" * 40), whole_run_state=mock.Mock(return_value=None),
                         find_candidate=mock.Mock(return_value=(None, "no candidate candidate-nightly-b was built")),
                         outputs=mock.Mock())
         settings.update(changes)
@@ -258,6 +258,20 @@ class Resolve(unittest.TestCase):
         everything.assert_called_once_with("owner/repo", None)
         with mock.patch.dict(os.environ, {"PAUSE_NIGHTLY": "true"}):
             self.assertEqual(self.resolve()["due"], "false")
+        broken = mock.Mock(return_value="main's last whole-workspace CI run, of cccccccccccc, ended failure")
+        self.assertEqual(self.resolve(whole_run_state=broken)["due"], "false")
+        self.assertEqual(self.resolve(draft=True, whole_run_state=broken)["due"], "true")
+
+    def test_a_failed_whole_workspace_run_bars_nightlies_until_one_passes(self):
+        def listed(*conclusions):
+            return json.dumps({"workflow_runs": [{"conclusion": found, "head_sha": "c" * 40} for found in conclusions]})
+
+        with mock.patch.object(release, "run", answers(listed("cancelled", "failure", "success"))):
+            self.assertIn("ended failure", release.whole_run_state("owner/repo"))
+        with mock.patch.object(release, "run", answers(listed("success", "failure"))):
+            self.assertIsNone(release.whole_run_state("owner/repo"))
+        with mock.patch.object(release, "run", answers(listed())):
+            self.assertIsNone(release.whole_run_state("owner/repo"))
 
     def test_a_scheduled_nightly_is_due_once_a_utc_day_and_a_dispatched_one_whenever_asked(self):
         today = f"{datetime.datetime.now(datetime.UTC):%Y%m%d}"
@@ -276,19 +290,20 @@ class Resolve(unittest.TestCase):
         self.assertEqual(self.resolve(sha="b" * 40, run=released)["due"], "false")
 
     def test_the_newest_green_commit_passes_by_a_tip_still_in_ci_and_one_whose_workflows_differ(self):
-        listed = json.dumps({"workflow_runs": [{"head_sha": sha} for sha in ("d", "c", "b", "a")]})
         line = mock.Mock(return_value="e\nd\nc\nb")
-        states = {"d": "its Comments run is still going", "c": None, "b": None}
-        with mock.patch.multiple(release, git=line, run=answers(listed), ci_state=mock.Mock(side_effect=lambda repo, sha: states[sha]),
+        states = {"e": "its CI run is still going", "d": "its Comments run is still going", "c": None, "b": None}
+        with mock.patch.multiple(release, git=line, ci_state=mock.Mock(side_effect=lambda repo, sha: states[sha]),
                                  workflows_differ=mock.Mock(side_effect=lambda sha: [".github/workflows/ci.yml"] if sha == "c" else [])):
             self.assertEqual(release.newest_green("owner/repo", "a"), "b")
         line.assert_called_once_with("rev-list", "--first-parent", "origin/main", "^a")
-        with mock.patch.multiple(release, git=mock.Mock(return_value="e"), run=answers(listed)):
+        with mock.patch.multiple(release, git=mock.Mock(return_value="e"), workflows_differ=mock.Mock(return_value=[]),
+                                 ci_state=mock.Mock(return_value="its CI run has not started")):
             self.assertIsNone(release.newest_green("owner/repo", None))
 
     def test_a_nightly_yields_to_another_nightly_run_going_and_a_dry_run_does_not(self):
-        going = mock.Mock(return_value=41)
-        self.assertEqual(self.resolve(nightly_going=going)["due"], "false")
+        going, feed = mock.Mock(return_value=41), mock.Mock()
+        self.assertEqual(self.resolve(nightly_going=going, read_feed=feed)["due"], "false")
+        feed.assert_not_called()
         self.assertEqual(self.resolve(draft=True, nightly_going=going)["due"], "true")
 
     def test_any_other_nightly_release_run_going_counts_and_dry_runs_and_other_channels_do_not(self):
