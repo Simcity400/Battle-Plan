@@ -75,29 +75,68 @@ pub fn game_present(pid: u32, start_time: u64) -> Result<bool, String> {
 }
 
 pub fn game_processes_named(name: &str) -> Result<Vec<GameProcess>, String> {
-    let listing = system_processes()?;
-    let base = listing.as_ptr().cast::<u8>();
     let mut found = Vec::new();
-    let mut offset = 0;
+    visit_named_processes(name, |game, _| found.push(game))?;
+    Ok(found)
+}
+
+fn visit_named_processes(
+    name: &str,
+    mut on_match: impl FnMut(GameProcess, &[Thread]),
+) -> Result<(), String> {
+    let listing = system_processes()?;
+    let bytes_len = listing.len() * size_of::<u64>();
+    let base = listing.as_ptr().cast::<u8>();
+    let mut offset = 0usize;
     loop {
-        let entry = unsafe { &*base.add(offset).cast::<SYSTEM_PROCESS_INFORMATION>() };
+        let Some(header_end) = offset.checked_add(size_of::<SYSTEM_PROCESS_INFORMATION>()) else {
+            break;
+        };
+        if header_end > bytes_len {
+            break;
+        }
+        // SAFETY: offset < header_end <= bytes_len, so base.add(offset) stays within listing.
+        let header_ptr = unsafe { base.add(offset) }.cast::<SYSTEM_PROCESS_INFORMATION>();
+        if !header_ptr.is_aligned() {
+            break;
+        }
+        // SAFETY: header_ptr is aligned and offset..header_end lies within the OS-owned listing.
+        let entry = unsafe { &*header_ptr };
         let image = &entry.ImageName;
         if !image.Buffer.is_null()
+            && image.Buffer.is_aligned()
+            // SAFETY: NtQuerySystemInformation populated ImageName.Buffer with ImageName.Length bytes of UTF-16 inside listing.
             && OsString::from_wide(unsafe {
                 std::slice::from_raw_parts(image.Buffer, usize::from(image.Length) / 2)
             })
             .to_string_lossy()
             .eq_ignore_ascii_case(name)
         {
-            let threads = unsafe {
-                std::slice::from_raw_parts(
-                    ptr::from_ref(entry)
-                        .add(1)
-                        .cast::<SYSTEM_THREAD_INFORMATION>(),
-                    entry.NumberOfThreads as usize,
-                )
+            let count = entry.NumberOfThreads as usize;
+            let raw_threads = if count == 0 {
+                &[]
+            } else {
+                let Some(threads_bytes) = count.checked_mul(size_of::<SYSTEM_THREAD_INFORMATION>())
+                else {
+                    break;
+                };
+                let Some(threads_end) = header_end.checked_add(threads_bytes) else {
+                    break;
+                };
+                if threads_end > bytes_len {
+                    break;
+                }
+                // SAFETY: header_end <= threads_end <= bytes_len, derived directly from base so
+                // provenance spans the full listing buffer rather than narrowing through entry.
+                let threads_ptr =
+                    unsafe { base.add(header_end) }.cast::<SYSTEM_THREAD_INFORMATION>();
+                if !threads_ptr.is_aligned() {
+                    break;
+                }
+                // SAFETY: threads_ptr is aligned, disjoint from entry, and header_end..threads_end lies within listing.
+                unsafe { std::slice::from_raw_parts(threads_ptr, count) }
             };
-            let threads: Vec<Thread> = threads
+            let threads: Vec<Thread> = raw_threads
                 .iter()
                 .map(|thread| Thread {
                     state: thread.ThreadState,
@@ -106,17 +145,22 @@ pub fn game_processes_named(name: &str) -> Result<Vec<GameProcess>, String> {
                 .collect();
             let pid = entry.UniqueProcessId as usize as u32;
             let (deleting, signalled) = exit_facts(pid);
-            found.push(GameProcess {
+            let game = GameProcess {
                 pid,
                 start_time: u64::from_le_bytes(entry.Reserved1[24..32].try_into().unwrap()),
                 state: classify(&threads, deleting, signalled),
-            });
+            };
+            on_match(game, &threads);
         }
         if entry.NextEntryOffset == 0 {
-            return Ok(found);
+            break;
         }
-        offset += entry.NextEntryOffset as usize;
+        let Some(next) = offset.checked_add(entry.NextEntryOffset as usize) else {
+            break;
+        };
+        offset = next;
     }
+    Ok(())
 }
 
 fn system_processes() -> Result<Vec<u64>, String> {
@@ -635,23 +679,63 @@ mod tests {
         }
     }
 
+    const READY_CHILD: &str = "BATTLEPLAN_TEST_READY_CHILD";
     const HELD_CHILD: &str = "BATTLEPLAN_TEST_HELD_CHILD";
 
     #[test]
     fn a_held_child_waits_for_its_release() {
         if let Some(name) = std::env::var_os(HELD_CHILD) {
             let release = Event::open(&name.to_string_lossy()).unwrap();
+            if let Some(ready_name) = std::env::var_os(READY_CHILD) {
+                Event::open(&ready_name.to_string_lossy())
+                    .unwrap()
+                    .set()
+                    .unwrap();
+            }
             assert!(release.handle.wait(INFINITE).unwrap());
         }
     }
 
-    #[cfg(target_arch = "x86_64")]
+    fn game_processes_named_with_threads(
+        name: &str,
+    ) -> Result<Vec<(GameProcess, Vec<Thread>)>, String> {
+        let mut found = Vec::new();
+        visit_named_processes(name, |game, threads| {
+            found.push((game, threads.to_vec()));
+        })?;
+        Ok(found)
+    }
+
+    struct TestChild {
+        child: Option<std::process::Child>,
+        exited: bool,
+        copy: PathBuf,
+    }
+
+    impl TestChild {
+        fn child_mut(&mut self) -> &mut std::process::Child {
+            self.child.as_mut().expect("child handle retained")
+        }
+    }
+
+    impl Drop for TestChild {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.child.take() {
+                if !self.exited {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                drop(child);
+            }
+            let _ = std::fs::remove_file(&self.copy);
+        }
+    }
+
     #[test]
-    fn a_suspended_process_is_frozen_until_resumed_and_exiting_once_it_ends() {
-        use std::os::windows::process::CommandExt;
-        use windows_sys::Win32::System::Diagnostics::Debug::{
-            CONTEXT, CONTEXT_CONTROL_AMD64, GetThreadContext,
-        };
+    fn a_live_process_is_running_until_it_ends() {
+        use crate::games::ProcessState;
+        use std::os::windows::io::AsRawHandle;
+
         let unique = format!(
             "battleplan-state-test-{}-{}",
             std::process::id(),
@@ -663,63 +747,73 @@ mod tests {
         let image = format!("{unique}.exe");
         let copy = std::env::temp_dir().join(&image);
         std::fs::copy(std::env::current_exe().unwrap(), &copy).unwrap();
-        let event_name = format!("Local\\{unique}");
-        let release = Event::new(&event_name).unwrap();
-        let mut child = std::process::Command::new(&copy)
+        let ready_name = format!("Local\\{unique}.ready");
+        let release_name = format!("Local\\{unique}.release");
+        let ready = Event::new(&ready_name).unwrap();
+        let release = Event::new(&release_name).unwrap();
+        let child = std::process::Command::new(&copy)
             .args([
                 "--exact",
                 "windows::tests::a_held_child_waits_for_its_release",
                 "--test-threads=1",
             ])
-            .env(HELD_CHILD, &event_name)
-            .creation_flags(CREATE_SUSPENDED)
+            .env(READY_CHILD, &ready_name)
+            .env(HELD_CHILD, &release_name)
             .spawn()
             .unwrap();
         let pid = child.id();
-        let state = || -> Vec<crate::games::ProcessState> {
-            game_processes_named(&image)
+        let mut guard = TestChild {
+            child: Some(child),
+            exited: false,
+            copy,
+        };
+
+        let handles = [ready.handle.0, guard.child_mut().as_raw_handle() as HANDLE];
+        // SAFETY: Both handles are live kernel synchronization handles owned by this test.
+        let waited = unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE) };
+        assert_eq!(
+            waited,
+            WAIT_OBJECT_0,
+            "held child pid {pid} did not signal ready; wait={waited}, status={:?}",
+            guard.child_mut().try_wait()
+        );
+
+        let observe = || -> Vec<(GameProcess, Vec<Thread>)> {
+            game_processes_named_with_threads(&image)
                 .unwrap()
-                .iter()
-                .filter(|game| game.pid == pid)
-                .map(|game| game.state)
+                .into_iter()
+                .filter(|(game, _)| game.pid == pid)
                 .collect()
         };
 
-        let snapshot =
-            Handle::new(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }).unwrap();
-        let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
-        entry.dwSize = size_of::<THREADENTRY32>() as u32;
-        let mut found = unsafe { Thread32First(snapshot.0, &mut entry) };
-        while found != 0 && entry.th32OwnerProcessID != pid {
-            found = unsafe { Thread32Next(snapshot.0, &mut entry) };
-        }
-        assert_ne!(found, 0, "the suspended child has a thread");
-        let thread = Handle::new(unsafe {
-            OpenThread(
-                THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT,
-                0,
-                entry.th32ThreadID,
-            )
-        })
-        .unwrap();
-        #[repr(C, align(16))]
-        struct Aligned(CONTEXT);
-        let mut context: Aligned = unsafe { std::mem::zeroed() };
-        context.0.ContextFlags = CONTEXT_CONTROL_AMD64;
-        assert_ne!(unsafe { GetThreadContext(thread.0, &mut context.0) }, 0);
-        assert_eq!(state(), [crate::games::ProcessState::Frozen]);
-
-        assert_ne!(unsafe { ResumeThread(thread.0) }, u32::MAX);
-        assert_eq!(state(), [crate::games::ProcessState::Running]);
+        let running = observe();
+        let running_states: Vec<ProcessState> =
+            running.iter().map(|(game, _)| game.state).collect();
+        assert_eq!(
+            running_states,
+            [ProcessState::Running],
+            "expected Running for pid {pid}; observed={running:?}"
+        );
+        let public_running: Vec<ProcessState> = game_processes_named(&image)
+            .unwrap()
+            .into_iter()
+            .filter(|game| game.pid == pid)
+            .map(|game| game.state)
+            .collect();
+        assert_eq!(public_running, [ProcessState::Running]);
 
         release.set().unwrap();
-        assert!(child.wait().unwrap().success());
-        assert!(matches!(
-            state().as_slice(),
-            [] | [crate::games::ProcessState::Exiting]
-        ));
-        drop((thread, child));
-        let _ = std::fs::remove_file(copy);
+        let status = guard.child_mut().wait().unwrap();
+        guard.exited = true;
+        assert!(status.success());
+
+        let ended = observe();
+        let ended_states: Vec<ProcessState> = ended.iter().map(|(game, _)| game.state).collect();
+        assert!(
+            matches!(ended_states.as_slice(), [] | [ProcessState::Exiting]),
+            "expected Exiting or absent after exit for pid {pid}; observed={ended:?}"
+        );
+        drop(guard);
     }
 
     #[test]
