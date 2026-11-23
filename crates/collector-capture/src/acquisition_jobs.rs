@@ -2174,7 +2174,9 @@ impl Pool {
         let runner_calibration = Arc::clone(&calibration);
         let run = move |job: &mut Job| {
             #[cfg(feature = "worker_sampler")]
-            let _sampler_job = collector_workers::worker_sampler::job(job.role());
+            let _sampler_job =
+                // SAFETY: The pool owns this worker and it guards the role through this job only.
+                unsafe { collector_workers::worker_sampler::job(job.role()) };
             // SAFETY: submit's callback lease remains admitted until every
             // accepted request is collected, including on callback unwind.
             let memory = unsafe { LiveMemory::new() };
@@ -2626,6 +2628,7 @@ mod scheduling_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "acquisition_profile")]
     use characters::CharactersCopyContext;
     use collector_memory::read_accounting::{self, Capture};
     use engine_native::memory::{CountedMemory, ReadCounts};
@@ -2642,6 +2645,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "acquisition_profile")]
     fn accounted_read(owner: TableId, len: usize) {
         read_accounting::with_table(owner, || {
             let source = [7; 8];
@@ -2657,6 +2661,7 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "acquisition_profile")]
     fn one_copy(bytes: u64) -> ReadCounts {
         ReadCounts {
             copy_calls: 1,

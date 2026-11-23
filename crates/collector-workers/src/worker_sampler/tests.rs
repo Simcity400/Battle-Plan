@@ -265,7 +265,8 @@ fn worker_sampler_real_pool_job_attribution_and_guard_reset() {
     });
     let job_barrier = Arc::clone(&barrier);
     let run = move |_: &mut ()| {
-        let _job = job(crate::roles::Role::World);
+        // SAFETY: The isolated fixture owns this registered worker for the duration of the job.
+        let _job = unsafe { job(crate::roles::Role::World) };
         let _ = entered_tx.send(());
         let _ = ready_tx.send(unsafe { GetCurrentThreadId() });
         job_barrier.wait();

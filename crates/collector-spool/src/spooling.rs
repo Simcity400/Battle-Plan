@@ -5795,6 +5795,7 @@ mod tests {
             Role::CountryLeaderRoles,
             Role::AdvisorRoles,
         ];
+        #[cfg(feature = "acquisition_profile")]
         let exclusive_tables: Vec<_> = collector_capture::extended::mode_gated_walks()
             .into_iter()
             .flat_map(|(_, tables)| tables)
