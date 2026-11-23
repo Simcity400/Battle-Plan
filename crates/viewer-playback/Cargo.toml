@@ -37,6 +37,9 @@ test-support = [
     "viewer-combat/test-support",
     "viewer-counter-products/test-support",
     "viewer-counters/test-support",
+    "viewer-counter-kit/test-support",
+    "viewer-counters-land/test-support",
+    "viewer-counters-naval/test-support",
     "viewer-engagements/test-support",
     "viewer-foundation/test-support",
     "viewer-gpu/test-support",
@@ -62,6 +65,10 @@ test-support = [
 ]
 
 [dependencies]
+replay-derive.workspace = true
+viewer-counter-kit.workspace = true
+viewer-counters-land.workspace = true
+viewer-counters-naval.workspace = true
 recorder-derive = { workspace = true, optional = true }
 content-reader-core = { workspace = true }
 content-reader-country-names = { workspace = true }
@@ -97,7 +104,7 @@ viewer-borders = { workspace = true }
 viewer-buildings = { workspace = true }
 viewer-combat = { path = "../viewer-combat" }
 viewer-counter-products = { path = "../viewer-counter-products" }
-viewer-counters = { path = "../viewer-counters" }
+viewer-counters.workspace = true
 viewer-engagements = { workspace = true }
 viewer-foundation = { workspace = true }
 viewer-gpu = { workspace = true }
