@@ -1172,17 +1172,40 @@ fn ordinary_terminal_failures_forget_the_counter_censuses() {
     }
 }
 
+#[derive(Default)]
+struct TerminalReadTrace(std::cell::RefCell<Vec<(usize, usize)>>);
+
+impl Memory for TerminalReadTrace {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.0.borrow_mut().push((address, output.len()));
+        false
+    }
+}
+
+impl TerminalReadTrace {
+    fn assert_only_inline_reads(self, base: usize, state: usize, hour: i32, late: bool) {
+        let mut inline = Captured::with_capacities(&Capacities::default());
+        let allowed = Self::default();
+        inline.state_flags.capture(&allowed, base, state);
+        inline.event_feed.capture(&allowed, base, state);
+        if late {
+            inline.lexical.capture(&allowed, base, state, hour, true);
+        }
+        let mut allowed = allowed.0.into_inner();
+        let mut actual = self.0.into_inner();
+        allowed.sort_unstable();
+        actual.sort_unstable();
+        assert_eq!(actual, allowed, "missing acquisitions must not read memory");
+    }
+}
+
 #[test]
 fn terminal_capture_keeps_missing_acquisition_reports_unavailable() {
-    struct Unreadable;
-    impl Memory for Unreadable {
-        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-            false
-        }
-    }
-
+    let memory = TerminalReadTrace::default();
     let mut captured = Captured::with_capacities(&Capacities::default());
-    captured.capture_tables(&Unreadable, 11, 0x1000, 1, true);
+    captured.weather.raw_mode = true;
+    captured.capture_tables(&memory, 11, 0x1000, 1, true);
+    memory.assert_only_inline_reads(11, 0x1000, 1, false);
     let outcomes = captured.outcomes();
     for (table, reason) in [
         (supply_trains::TABLES[0], "supply_trains acquisition not supplied"),
@@ -1206,17 +1229,15 @@ fn terminal_capture_keeps_missing_acquisition_reports_unavailable() {
 
 #[test]
 fn terminal_capture_keeps_missing_worker_results_unavailable() {
-    struct Unreadable;
-    impl Memory for Unreadable {
-        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-            false
-        }
-    }
-
+    let memory = TerminalReadTrace::default();
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let mut ticks = captured.capture_tables(&Unreadable, 11, 0x1000, 1, true);
+    captured.supply_trains_report = Some(supply_trains::CaptureReport::default());
+    captured.character_portraits_report = Some(character_portraits::CaptureReport::default());
+    captured.province_unit_order_report = Some(province_unit_order::CaptureReport::default());
+    captured.intel_residual_report = Some(intel::CaptureReport::default());
+    let mut ticks = captured.capture_tables(&memory, 11, 0x1000, 1, true);
     captured.capture_tables_late(
-        &Unreadable,
+        &memory,
         11,
         0x1000,
         1,
@@ -1224,6 +1245,7 @@ fn terminal_capture_keeps_missing_worker_results_unavailable() {
         &mut Orders::vacant(),
         &mut ticks,
     );
+    memory.assert_only_inline_reads(11, 0x1000, 1, true);
     let outcomes = captured.outcomes();
     for (table, reason) in [
         (weather::TABLES[0], "weather acquisition not supplied"),

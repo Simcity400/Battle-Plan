@@ -580,10 +580,16 @@ fn a_fleet_leader_reference_resolves_again_only_after_its_certificate_moves() {
 
 #[test]
 fn a_certified_navy_republishes_its_held_ledgers_and_reads_only_presence() {
-    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    fn certificate(navy: usize) -> Option<(u64, u64)> {
-        let moved = SEQUENCE.load(std::sync::atomic::Ordering::Relaxed);
-        Some((1, if navy == moved as usize { 1 } else { 0 }))
+    const TEST: &str = "extended::naval_mission_inputs::tests::a_certified_navy_republishes_its_held_ledgers_and_reads_only_presence";
+    const CHILD: &str = "BATTLEPLAN_LIVE_LEDGER_CERTIFICATE_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
     }
     fn read(
         captured: &mut Captured,
@@ -615,8 +621,9 @@ fn a_certified_navy_republishes_its_held_ledgers_and_reads_only_presence() {
         (ledgers, captured.ledger_counts(), memory.reads.into_inner())
     }
     let mut world = build(3);
-    let mut captured = Captured::with_capacities(&fixture_capacities(&world)).fixture();
-    captured.ledger_sequence = certificate;
+    let ledger_changed = collector_missions::naval_map_changes::ledger_observation_fixture(3);
+    let mut captured = Captured::with_capacities(&fixture_capacities(&world));
+    captured.sequence = |_| Some((1, 0));
     let (all, counts, _) = read(&mut captured, &world, 0, true);
     assert_eq!((counts.read, counts.carried), (3, 0));
     let headers = region_headers(&world, 2);
@@ -624,13 +631,10 @@ fn a_certified_navy_republishes_its_held_ledgers_and_reads_only_presence() {
     let count = headers - world.base + first * cstrategic_navy::REGION_MISSIONS_STRIDE + 12;
     world.bytes[count..count + 4].fill(0);
     let (ledgers, counts, reads) = read(&mut captured, &world, 1, false);
-    assert_eq!(ledgers, all);
     assert_eq!((counts.read, counts.carried), (0, 3));
+    assert_eq!(ledgers, all);
     assert!(reads.iter().all(|&(at, _)| at != headers));
-    SEQUENCE.store(
-        (world.base + navy_of(&world, 2)) as u64,
-        std::sync::atomic::Ordering::Relaxed,
-    );
+    ledger_changed(world.base + navy_of(&world, 2));
     let (ledgers, counts, _) = read(&mut captured, &world, 2, false);
     assert_eq!((counts.read, counts.carried), (1, 2));
     assert_eq!(ledgers.len(), all.len() - 1);
