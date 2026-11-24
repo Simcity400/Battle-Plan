@@ -35,7 +35,7 @@ import { validateFactionLines, validateFactionRosters } from '../../dashboard/te
 import type { SeriesStateReply } from '../../generated/dashboard';
 import { liveRace, rowsOf } from './measureRaceData.ts';
 import type { GroupTotal } from './factionTotalsData';
-import { answerShape, answerValues, factionEntries, factionNote, factionSummaries, fixedRosters, membersPushed, rosterRows, rosterTags, stateValues } from './factionTotalsData.ts';
+import { answerShape, answerValues, everRosters, factionEntries, factionNote, factionSummaries, membersPushed, rosterRows, rosterTags, stateValues } from './factionTotalsData.ts';
 import './countryRace.css';
 import type { FactionLines } from '../../dashboard/territoryReplies';
 import { useRegion } from '../../dashboard/widgetTime.ts';
@@ -85,8 +85,8 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   const rosters = useHeadProduct(runtime, gate, 'faction-rosters', track ? PARAMS : null,
     { active: active && view === 'race' && !fixed, validate: validateFactionRosters, structure: rosterRows });
   const groups = useCountryGroups(runtime, track, active && view === 'race' && fixed && !group);
-  const held = useMemo(() => fixed && !group && groups.data ? fixedRosters(groups.data, membership as 'end' | 'ever', extent[0], extent[1]) : undefined,
-    [fixed, group, groups.data, membership, extent[0], extent[1]]);
+  const held = useMemo(() => fixed && !group && groups.data ? everRosters(groups.data, extent[0], extent[1]) : undefined,
+    [fixed, group, groups.data, extent[0], extent[1]]);
   const moment = Math.floor((fixed ? null : rosters.hour) ?? playhead ?? extent[1]);
   const askAt = fixed ? gate.hour : gate.recorded(rosters.hour ?? rosters.at);
   const factionData = fixed ? held : rosters.data;
