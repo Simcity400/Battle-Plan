@@ -17,6 +17,7 @@ export interface ColumnPeriod {
 export interface ColumnStyle {
   spacing?: 'pixel' | 'proportional';
   thinBands?: boolean;
+  fullHeightUnknown?: boolean;
 }
 
 const GAP_FROM = 6;
@@ -47,7 +48,7 @@ const periodUnknown = (period: ColumnPeriod) => period.unknown === true || (peri
 export function columnsExtent(periods: readonly ColumnPeriod[], x: Range): Range | null {
   let low = 0, high = 0, any = false, unknown = false;
   for (const period of periods) {
-    if (periodUnknown(period) || period.lastHour < x[0] || period.firstHour > x[1]) continue;
+    if (period.lastHour < x[0] || period.firstHour > x[1] || periodUnknown(period)) continue;
     any = true;
     unknown ||= period.values.some(value => value == null) || period.uncertain?.some(Boolean) === true;
     for (const edge of columnEdges(period)) {
@@ -111,56 +112,76 @@ export function prepareColumn(period: ColumnPeriod): PreparedColumn {
   };
 }
 
+function drawPreparedColumn(period: PreparedColumn, colours: readonly string[], style: ColumnStyle,
+  ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens,
+  left: number, width: number, zero: number, cap: number, unknownHeight: number): void {
+  const hatch = (x: number, top: number, w: number, height: number) =>
+    fillHatched(ctx, x, top, w, height, tokens.muted, tokens.hatchSpacing, tokens.lineWidth.grid);
+  if (period.unknown) {
+    hatch(left, frame.plotTop, width, unknownHeight);
+    return;
+  }
+  let top = zero;
+  let marked = false;
+  period.edges.forEach((edge, band) => {
+    if (!edge) return;
+    const y0 = frame.toY(edge.high), y1 = frame.toY(edge.low);
+    let height = y1 - y0;
+    if (height < 1) {
+      if (!style.thinBands || period.zero[band]) {
+        marked ||= period.uncertain?.[band] === true;
+        return;
+      }
+      height = 1;
+    }
+    ctx.fillStyle = colours[band % colours.length];
+    ctx.fillRect(left, y0, width, height);
+    if (period.uncertain?.[band]) hatch(left, y0, width, height);
+    top = Math.min(top, y0);
+  });
+  if (marked) {
+    const markTop = Math.max(frame.plotTop, top - tokens.hatchSpacing);
+    hatch(left, markTop, width, top - markTop);
+    top = markTop;
+  }
+  if (period.hasNull) {
+    const capTop = Math.max(frame.plotTop, top - cap);
+    hatch(left, capTop, width, top - capTop);
+  }
+}
+
+const unknownColumnHeight = (frame: PlotFrame, style: ColumnStyle) => style.fullHeightUnknown
+  ? frame.plotHeight
+  : frame.toY(Math.max(frame.y[0], Math.min(frame.y[1], 0))) - frame.plotTop;
+
 export function drawPreparedColumns(periods: readonly PreparedColumn[], colours: readonly string[], style: ColumnStyle,
   ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, state: { playhead: number | null }): void {
   const until = Math.min(frame.x[1], state.playhead ?? Infinity);
   const zero = frame.toY(0);
   const cap = tokens.hatchSpacing * CAP_TILES;
-  const hatch = (left: number, top: number, width: number, height: number) =>
-    fillHatched(ctx, left, top, width, height, tokens.muted, tokens.hatchSpacing, tokens.lineWidth.grid);
+  const unknownHeight = unknownColumnHeight(frame, style);
   for (const period of periods) {
     if (period.lastHour < frame.x[0] || period.firstHour > until) continue;
     const box = columnBox(period, frame, style.spacing);
     if (!box) continue;
-    const { left, width } = box;
-    if (period.unknown) {
-      hatch(left, frame.plotTop, width, frame.plotHeight);
-      continue;
-    }
-    let top = zero;
-    let marked = false;
-    period.edges.forEach((edge, band) => {
-      if (!edge) return;
-      const y0 = frame.toY(edge.high), y1 = frame.toY(edge.low);
-      let height = y1 - y0;
-      if (height < 1) {
-        if (!style.thinBands || period.zero[band]) {
-          marked ||= period.uncertain?.[band] === true;
-          return;
-        }
-        height = 1;
-      }
-      ctx.fillStyle = colours[band % colours.length];
-      ctx.fillRect(left, y0, width, height);
-      if (period.uncertain?.[band]) hatch(left, y0, width, height);
-      top = Math.min(top, y0);
-    });
-    if (marked) {
-      const markTop = Math.max(frame.plotTop, top - tokens.hatchSpacing);
-      hatch(left, markTop, width, top - markTop);
-      top = markTop;
-    }
-    if (period.hasNull) {
-      const capTop = Math.max(frame.plotTop, top - cap);
-      hatch(left, capTop, width, top - capTop);
-    }
+    drawPreparedColumn(period, colours, style, ctx, frame, tokens, box.left, box.width, zero, cap, unknownHeight);
   }
 }
 
 export function columnsLayer(periods: readonly ColumnPeriod[], colours: readonly string[], style: ColumnStyle = {}): ChartLayer {
-  const prepared = periods.map(prepareColumn);
   return {
-    draw: (ctx, frame, tokens, state) => drawPreparedColumns(prepared, colours, style, ctx, frame, tokens, state),
+    draw(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, state: { playhead: number | null }) {
+      const until = Math.min(frame.x[1], state.playhead ?? Infinity);
+      const zero = frame.toY(0);
+      const cap = tokens.hatchSpacing * CAP_TILES;
+      const unknownHeight = unknownColumnHeight(frame, style);
+      for (const period of periods) {
+        if (period.lastHour < frame.x[0] || period.firstHour > until) continue;
+        const box = columnBox(period, frame, style.spacing);
+        if (!box) continue;
+        drawPreparedColumn(prepareColumn(period), colours, style, ctx, frame, tokens, box.left, box.width, zero, cap, unknownHeight);
+      }
+    },
     extent: x => columnsExtent(periods, x),
   };
 }

@@ -20,7 +20,7 @@ import { UNIT, formatAppliedIc, noProductionAt, spendingRecorded, spendingWidget
 import type { SpendingWindow } from '../production-spending/spendingData';
 import { useSpending } from '../production-spending/useSpending';
 import type { DockyardViewChoice } from './definition';
-import { LEVELS, createLiveMonthCache, formatExactIc, headMonthLayer, monthColumns, monthLabel, monthSpansFor, reasonLabel, shownMonthBands, visibleMonths } from './dockyardData';
+import { LEVELS, createLiveMonthCache, formatExactIc, headMonthLayer, monthColumns, monthLabel, monthSpansFor, monthlyHeadKey, reasonLabel, shownMonthBands, visibleMonths } from './dockyardData';
 import type { Exact, PurposeMonth } from './dockyardData';
 import './dockyardSpending.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
@@ -66,16 +66,16 @@ export function PurposeSpendingWidget({ kind, widget, runtime, active, onDiagnos
   }, [data, onDiagnostics]);
   headKey.current = at => {
     if (!data || !track || end == null) return view;
+    const floored = Math.floor(at);
+    const read = spendingRecorded(data) || kind.read?.(data, floored) === true;
     if (view === 'months') {
-      const floored = Math.floor(at);
       const date = gameDate(floored);
       const bucket = date ? monthIndex(date) : floored;
       const monthStart = date ? Math.max(from ?? track.branch.firstHour, firstHourOfMonth(bucket)) : floored;
       const current = liveMonthCache(data, options, optionsKey, monthStart, floored, track.branch.firstHour);
-      const remainders = shownMonthBands(kind.bands, [current]).map(entry => entry.band.id).join(',');
-      return `months:${bucket}:${remainders}`;
+      return monthlyHeadKey(bucket, read, kind.bands, current);
     }
-    return JSON.stringify(emptyAt(kind, data, { from, hour: at, end }));
+    return `${read ? 1 : 0}:${JSON.stringify(emptyAt(kind, data, { from, hour: at, end }))}`;
   };
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
 

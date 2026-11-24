@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BANDS, createLiveMonthCache, dockyardItems, dockyardMonth, formatExactIc, headMonthLayer, monthColumns, monthSpansFor, monthsOf, nearestInteger, rateSum, repairAmount, repairItems, repairsRead, repairsSince, shownMonthBands, validateDockyardSpendingReply, visibleMonths } from './dockyardData.ts';
+import { BANDS, createLiveMonthCache, dockyardItems, dockyardMonth, formatExactIc, headMonthLayer, monthColumns, monthSpansFor, monthlyHeadKey, monthsOf, nearestInteger, rateSum, repairAmount, repairItems, repairsRead, repairsSince, shownMonthBands, validateDockyardSpendingReply, visibleMonths } from './dockyardData.ts';
 import { columnAt } from '../../charts/columns.ts';
 import { plotFrame } from '../../charts/frame.ts';
 import { tokensFromValues } from '../../charts/tokens.ts';
 import { sunburstTree } from '../../charts/sunburst/layout.ts';
-import { mergeSpending } from '../production-spending/spendingData.ts';
-import { firstHourOfMonth } from '../../dashboard/calendar.ts';
+import { mergeSpending, spendingRecorded, spendingWidgetGate } from '../production-spending/spendingData.ts';
+import { firstHourOfMonth, gameDate, monthIndex } from '../../dashboard/calendar.ts';
 import type { ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun } from '../../generated/dashboard';
 
 const purposeSum = (items: readonly { path: readonly { id: string }[]; exact?: bigint | null }[], id: string) =>
@@ -363,4 +363,42 @@ test('createLiveMonthCache shares one monthly calculation between clock key and 
   assert.equal(calls, 1);
   cached(data, opts, '{}', 100, 141, 100);
   assert.equal(calls, 2);
+});
+
+test('dockyard By month clock key and gate transition when repairs first become recorded mid-month', () => {
+  const start = 60_772_680;
+  const end = 60_772_700;
+  const notRec = (firstHour: number, lastHour: number): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw: null, reason: 'notRecorded' });
+  const rocketUnavail = (firstHour: number, lastHour: number): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw: null, reason: 'rocketTableUnavailable' });
+  const data = validateDockyardSpendingReply({
+    ...reply(),
+    firstHour: start, lastHour: end,
+    reads: [], observations: [],
+    equipmentReads: [], rocketReads: [], equipmentObservations: [], rocketObservations: [],
+    rocketTotal: [rocketUnavail(start, end)],
+    production: [{ firstHour: start, lastHour: end, present: false, emptyCensusHour: null }],
+    leaves: [],
+    total: [notRec(start, end)],
+    totalWithoutRefits: [notRec(start, end)],
+    equipmentTotal: [notRec(start, end)],
+    equipmentTotalWithoutRefits: [notRec(start, end)],
+    repairs: {
+      denominator: 24,
+      total: [notRec(start, start), known(start + 1, end, '24000')],
+      parts: [{ variant: null, typeKey: '', name: null, domain: null, names: [], runs: [notRec(start, start), known(start + 1, end, '24000')] }],
+    },
+  });
+  const branch = { firstHour: start, lastHour: end };
+  const bucketBefore = monthIndex(gameDate(start)!);
+  const bucketAfter = monthIndex(gameDate(start + 1)!);
+  assert.equal(bucketBefore, bucketAfter);
+  const readBefore = spendingRecorded(data) || repairsRead(data, start);
+  const readAfter = spendingRecorded(data) || repairsRead(data, start + 1);
+  assert.equal(readBefore, false);
+  assert.equal(readAfter, true);
+  assert.equal(spendingWidgetGate({ hasTarget: true, hasError: false, branch, hour: start, end, hasData: true, recorded: readBefore }), 'unavailable');
+  assert.equal(spendingWidgetGate({ hasTarget: true, hasError: false, branch, hour: start + 1, end, hasData: true, recorded: readAfter }), 'ready');
+  const keyBefore = monthlyHeadKey(bucketBefore, readBefore, BANDS, dockyardMonth(data, start, start, start));
+  const keyAfter = monthlyHeadKey(bucketAfter, readAfter, BANDS, dockyardMonth(data, start, start + 1, start));
+  assert.notEqual(keyAfter, keyBefore);
 });

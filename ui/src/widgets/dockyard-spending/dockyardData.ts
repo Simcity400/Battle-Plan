@@ -328,7 +328,7 @@ export function headMonthLayer(columns: readonly ColumnPeriod[], colours: readon
   return {
     draw(ctx, frame, tokens, state) {
       sync(state.playhead ?? headRead());
-      drawPreparedColumns(drawn, colours, {}, ctx, frame, tokens, state);
+      drawPreparedColumns(drawn, colours, { fullHeightUnknown: true }, ctx, frame, tokens, state);
     },
     extent(x) {
       const rawHead = headRead();
@@ -444,6 +444,11 @@ export function shownMonthBands<T extends { id: string }>(bands: readonly T[], m
   return bands.flatMap((band, index) => !remainder.has(band.id)
     || months.some(month => { const part = month.bands[index]; return (part && (part.exact == null || part.exact !== 0n)) || month.uncertain[index] === true; })
     ? [{ index, band }] : []);
+}
+
+export function monthlyHeadKey(bucket: number, read: boolean, bands: readonly { id: string }[], current: PurposeMonth): string {
+  const remainders = shownMonthBands(bands, [current]).map(entry => entry.band.id).join(',');
+  return `months:${bucket}:${read ? 1 : 0}:${remainders}`;
 }
 
 export function monthColumns(months: readonly PurposeMonth[], decimals: number): ColumnPeriod[] {
