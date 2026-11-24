@@ -1,6 +1,5 @@
 import { auditingDesired, onAuditingChange } from '../dashboard/pulled.ts';
 import type { AuditRow } from '../draw/notifications';
-import type { FamilyAuditRow } from './auditRow.ts';
 import type { Scalar, Value } from './value.ts';
 
 export function isFamilyAuditing(): boolean {
@@ -46,11 +45,6 @@ function isFamilyValue(input: unknown): input is Value {
     default:
       return false;
   }
-}
-
-interface FamilyAuditField {
-  readonly id: number;
-  readonly rows: readonly FamilyAuditRow[];
 }
 
 function canonicalScalar(raw: Scalar): readonly ['str' | 'int' | 'num', string] {

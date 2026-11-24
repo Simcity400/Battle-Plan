@@ -17,7 +17,6 @@ import {
 import { resolveCachedArt } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { readyArt } from '../art/types.ts';
-import { hasMeasuredValue, type Value } from '../value.ts';
 import { drawHatchRect, MISSING_BOX_SIZE } from '../valueCanvas.ts';
 import { formatValueState } from '../valueFormat.ts';
 import { drawApprovedCell, treeLevelsOf, treeTextStart, type CellRenderContext } from './cellPainters.ts';
@@ -1025,10 +1024,6 @@ export function hitFamilyTable(
     x += col.width;
   }
   return { kind: 'row', rowKey: item.key };
-}
-
-function hasNonZeroMeasured(value: Value): boolean {
-  return hasMeasuredValue(value) && value.kind !== 'zero';
 }
 
 export function hitPanes(

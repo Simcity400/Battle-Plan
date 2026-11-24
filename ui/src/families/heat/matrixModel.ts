@@ -83,10 +83,6 @@ const SELF: MatrixCell = { kind: 'diagonal' };
 
 export const NO_CELLS: MatrixCells = { present: new Map(), absent: { kind: 'empty' } };
 
-function matrixPairIndex(columnCount: number, rowIndex: number, columnIndex: number): number {
-  return rowIndex * columnCount + columnIndex;
-}
-
 export function matrixCellAt(model: Pick<HeatMatrixModel, 'rows' | 'columns' | 'cells'>, rowIndex: number, columnIndex: number): MatrixCell {
   const present = model.cells.present.get(rowIndex * model.columns.length + columnIndex);
   if (present) return present;

@@ -20,7 +20,6 @@ import {
   type IdentityKey,
   type IdentityResult,
   type IdentityScope,
-  type IdentitySnapshot,
 } from './types.ts';
 
 const NO_SUBSCRIBE = () => () => {};

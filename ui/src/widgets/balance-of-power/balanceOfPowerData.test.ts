@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createBoundedReadView, type ArtResult } from '../../families/contract.ts';
+import { createBoundedReadView } from '../../families/boundedView.ts';
+import type { ArtResult } from '../../families/contract.ts';
 import type { BalanceHistory, BalanceRecord, PoliticsHistoryReply, PoliticsStateReply } from '../../generated/dashboard';
 import {
   SIDE_UNAVAILABLE,

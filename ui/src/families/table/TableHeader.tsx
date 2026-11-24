@@ -1,6 +1,5 @@
 import { useRef, useState } from 'react';
 import {
-  HEADER_CARET_LANE,
   CELL_INSET,
   endAligned,
   ROW_MARGIN_X,
