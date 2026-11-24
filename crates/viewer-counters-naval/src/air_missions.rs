@@ -628,7 +628,7 @@ impl Prepared {
             "AIRWING_MISSION_TYPE_SAM",
         ];
         let loc = inputs.localisation;
-        #[expect(clippy::type_complexity, reason = "each mission's wings with their own efficiency or refusal, refused as a whole when unread")]
+        #[expect(clippy::type_complexity, reason = "each region's wings with their own efficiency or refusal, refused as a whole when unread")]
         let efficiencies =
             (|| -> Result<BTreeMap<u32, Vec<(&AirWingRow, Result<i64, String>)>>, String> {
                 let links: BTreeMap<_, _> = frame

@@ -1198,7 +1198,7 @@ pub struct Fresh {
     of: Option<(Family, u64)>,
 }
 
-#[expect(clippy::large_enum_variant, reason = "one read per fresh update, consumed where it is made and never collected")]
+#[expect(clippy::large_enum_variant, reason = "a read is queued only until it is shown, and boxing it would add an allocation to every fresh update")]
 enum Read {
     Close,
     Hold {

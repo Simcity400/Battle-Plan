@@ -51,7 +51,7 @@ pub struct Inputs<'a> {
 }
 
 #[cfg(test)]
-#[expect(clippy::type_complexity, reason = "the arrow's two ends, its offset and its fixed-point progress, returned together")]
+#[expect(clippy::type_complexity, reason = "the arrow's endpoints, its interpolated map position and its fixed-point angle, returned together")]
 fn location(
     from: [f32; 3],
     to: [f32; 3],
@@ -67,7 +67,7 @@ fn location(
     )
 }
 
-#[expect(clippy::type_complexity, reason = "the arrow's two ends, its offset and its fixed-point progress, returned together")]
+#[expect(clippy::type_complexity, reason = "the arrow's endpoints, its interpolated map position and its fixed-point angle, returned together")]
 fn locate(
     mut points: [[i64; 2]; 2],
     width: u32,
