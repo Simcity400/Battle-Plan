@@ -123,7 +123,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
         if (h > hour) break;
         points.push({ hour: h, value: band.values[i] ?? null });
       }
-      const headValue = band.endValue;
+      const headValue = band.endValue !== null && Number.isFinite(band.endValue) ? band.endValue : null;
       return {
         id: band.tag ?? `slot:${band.slot}`,
         key: band.tag ?? `slot:${band.slot}`,

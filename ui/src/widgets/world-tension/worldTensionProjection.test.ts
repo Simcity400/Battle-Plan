@@ -144,4 +144,33 @@ describe('world-tension projections', () => {
     assert.equal(model.series[0]?.endLabel?.value, '60%');
     assert.equal(model.series[0]?.points?.length, 3);
   });
+
+  it('K1: world-tension preserves small shares as nonzero and never turns non-finite inputs into 0%', () => {
+    const reply = sampleStack();
+    const withEdge = {
+      ...reply,
+      bands: [
+        { slot: 1, tag: 'GER', remembered: false, values: [0, 0.4, 0.4], endValue: 0.4, endRaw: '40000' },
+        { slot: 2, tag: 'JAP', remembered: false, values: [0, 0.04, 0.04], endValue: 0.04, endRaw: '4000' },
+        { slot: 3, tag: 'ITA', remembered: false, values: [0, 1, 1], endValue: Number.NaN, endRaw: '0' },
+      ],
+      other: null,
+    };
+    const readView = createBoundedReadView({
+      hour: H1941,
+      panels: new Map([['main', withEdge]]),
+      identity: makeIdentity(),
+    });
+    const model = worldTensionProjection.project(readView, {
+      extent: [H1936, H1941],
+      surface: '#111111',
+      layers: 5,
+      values: 'share',
+      showMarkers: false,
+      gaps: [],
+    });
+    assert.equal(model.stack?.bands[0]?.endLabel?.value, '0.4%');
+    assert.equal(model.stack?.bands[1]?.endLabel?.value, '<0.1%');
+    assert.equal(model.stack?.bands[2]?.endLabel, null);
+  });
 });

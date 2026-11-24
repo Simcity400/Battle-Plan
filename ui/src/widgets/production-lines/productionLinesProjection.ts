@@ -111,7 +111,6 @@ export const productionLinesProjection: TableProjection<ProductionLinesProjectio
       const costRaw = readLiveWhole(live, line.handle, 'cost');
       const outputUnits = readLiveNum(live, line.handle, 'output');
       const weekly = weeklyRaw(speedRaw, costRaw);
-      const weeklyVal = weekly === null ? null : Number(weekly) / 10 ** reply.decimals;
       const effPct = effRaw === null ? null : Number(efficiencyPercent(effRaw));
       const effFrac = effRaw === null ? null : efficiencyFraction(effRaw);
 
@@ -138,12 +137,12 @@ export const productionLinesProjection: TableProjection<ProductionLinesProjectio
           bar: effFrac === null ? null : { fraction: effFrac === 0 ? zeroValue(0) : knownValue(effFrac) },
         },
         output: {
-          value: weeklyVal === null
+          value: weekly === null
             ? notRecorded('Weekly output not recorded')
-            : weeklyVal === 0
-              ? zeroValue(0)
-              : knownValue(weeklyVal),
-          format: weeklyVal !== null && weeklyVal > 0 && weeklyVal < 0.05 ? { decimals: 0, maxDecimals: reply.decimals } : 'decimal1',
+            : weekly === 0n
+              ? zeroValue(0n)
+              : knownValue(weekly),
+          format: { decimals: reply.decimals, maxDecimals: 1 },
         },
         total: { value: producedValue(line, reply.outputMissing, outputUnits) },
         priority: { value: knownValue(line.priority + 1) },
