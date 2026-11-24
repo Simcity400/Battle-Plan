@@ -7,9 +7,8 @@ import { DomArtCache, type DomArtImage } from './domCache.ts';
 import { LaneArtCache } from './laneCache.ts';
 import { flagEntryToArt, flagImageToArt, spriteImageToArt } from './adapters.ts';
 import { artUrlForHandle, createDomArtProvider, createLaneArtProvider, flagArtHandle, laneArtDemand } from './provider.ts';
-import { fetchArtHandles } from '../../dashboard/useSpriteArtwork.ts';
+import { fetchArtHandles, spriteResolutions } from './transport.ts';
 import type { ArtHandle } from '../plan.ts';
-import { spriteResolutions } from '../../dashboard/spriteArtwork.ts';
 import {
   artHandleKey,
   CURRENT_INSTALL_PROVENANCE,
