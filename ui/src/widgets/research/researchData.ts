@@ -91,18 +91,6 @@ export function researchRateAt(state: ResearchSlotState, hour: number): { rateRa
   return { rateRaw: (rate > minimum ? rate : minimum).toString(), penaltyRaw: penalty.toString(), floored: rate < minimum };
 }
 
-export function researchLatestProgress(slot: ResearchSlotHistory, state: ResearchSlotState, hour: number): { fraction: number; hour: number } | null {
-  if (state.entryFirstObservedHour === null) return null;
-  const samples = slot.progress.filter(sample => sample.entryFirstObservedHour === state.entryFirstObservedHour);
-  let low = 0, high = samples.length;
-  while (low < high) { const mid = (low + high) >>> 1; if (samples[mid].firstHour <= hour) low = mid + 1; else high = mid; }
-  const sample = samples[low - 1];
-  if (!sample?.baseDaysRaw) return null;
-  const base = BigInt(sample.baseDaysRaw), done = BigInt(sample.progressRaw);
-  if (base <= 0n || done < 0n) return null;
-  return { fraction: done >= base ? 1 : Number(done * 10_000n / base) / 10_000, hour: Math.min(sample.lastHour, hour) };
-}
-
 export interface ResearchFolderLook { key: string; name: string; colour: string; order: number }
 
 export type ResearchUse = string | readonly [token: string, databaseIndex: number];
