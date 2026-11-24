@@ -5,7 +5,7 @@ export const ICON_NAMES = [
   'copy', 'download', 'upload', 'image', 'palette', 'type', 'sun', 'moon', 'monitor', 'gamepad', 'sliders', 'grip', 'more', 'eject', 'pin',
   'target', 'flask', 'sparkle', 'play', 'volume', 'volume-off', 'pause', 'layers', 'history', 'helmet', 'anchor', 'droplet', 'hammer',
   'sunburst', 'factory', 'flows', 'shield', 'hierarchy', 'swords', 'flag-torn', 'flag-plus', 'flag-x', 'olive-branch', 'users-plus',
-  'users-minus', 'shield-check', 'ballot', 'lock', 'person', 'cube',
+  'users-minus', 'shield-check', 'ballot', 'lock', 'person', 'cube', 'filter',
 ] as const;
 
 export type IconName = typeof ICON_NAMES[number];

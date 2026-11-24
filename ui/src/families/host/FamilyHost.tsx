@@ -1,7 +1,6 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ComponentType, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useContextMenu, type MenuItem } from '../../components/ContextMenu';
-import { useViewportHeight } from '../../charts/useChartTokens';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { FailureOrigin } from '../../dashboard/follow/page.ts';
 import type { WidgetSpec } from '../../dashboard/model';
@@ -213,6 +212,17 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly held?: boolean;
   readonly loadingLabel?: string;
   readonly className?: string;
+}
+
+function useViewportHeight(): number {
+  const [height, setHeight] = useState(() => (typeof globalThis.innerHeight === 'number' ? globalThis.innerHeight : 800));
+  useEffect(() => {
+    if (typeof globalThis.addEventListener !== 'function') return;
+    const update = () => setHeight(typeof globalThis.innerHeight === 'number' ? globalThis.innerHeight : 800);
+    globalThis.addEventListener('resize', update);
+    return () => globalThis.removeEventListener('resize', update);
+  }, []);
+  return height;
 }
 
 export default function FamilyHost<TModel = unknown, TOptions = unknown, TBinding = unknown, TSettings = unknown>({
