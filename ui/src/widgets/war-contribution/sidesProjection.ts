@@ -42,7 +42,7 @@ export interface SidesOptions {
 function columnsOf(measures: readonly WarMeasure[] | null): TableColumnSpec[] {
   const present = measures ? new Set(measures.map(measure => measure.key)) : null;
   return [
-    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true, pinned: true, sortable: true, hideable: false, minWidth: 150 },
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true, pinned: true, sortable: true, hideable: false, minWidth: 150, maxWidth: 230 },
     ...MEASURES.filter(measure => !present || present.has(measure.key)).map((measure, at): TableColumnSpec => ({
       key: measure.key,
       label: measure.label,
@@ -58,7 +58,8 @@ function columnsOf(measures: readonly WarMeasure[] | null): TableColumnSpec[] {
   ];
 }
 
-const percent = (sorted: boolean) => ({ decimals: sorted ? 1 : 0, percent: true }) as const;
+const ZERO = { decimals: 0 } as const;
+const percent = (sorted: boolean) => ({ decimals: 0, maxDecimals: sorted ? 1 : 0, fixedDecimals: true, percent: true }) as const;
 
 function shareValue(permyriad: number | null, raw: string, partial: boolean, missing: string): Value<number> {
   if (permyriad === null) return notRecorded(missing);
@@ -71,7 +72,7 @@ function memberCell(member: WarMeasureMember | undefined, measure: WarMeasureKey
   const value = member ? shareValue(member.shareOfSide, member.value, member.partial, NO_SHARE) : notRecorded(NOT_A_MEMBER);
   return {
     value,
-    format: percent(sort === measure),
+    format: value.kind === 'zero' ? ZERO : percent(sort === measure),
     bar: { fraction: member && member.shareOfSide !== null ? knownValue(member.shareOfSide / 10000) : notRecorded(NOT_A_MEMBER) },
     ...(colour ? { countryColor: colour } : {}),
     ...(member?.shareOfSide != null ? { sortValue: knownValue(member.shareOfSide) } : {}),

@@ -47,6 +47,8 @@ test('rows come from the product’s measures in category order, its shares and 
   assert.equal(shareText(null), '—', 'no share is a dash, never zero');
 });
 
+const knownValueOf = (value: number) => ({ kind: 'known' as const, value });
+
 test('the Sides view draws the product’s shares in two panes: share of the war on top, then each side’s countries in the product’s order', async () => {
   const { warContributionSidesProjection } = await import('./sidesProjection.ts');
   const { createBoundedReadView } = await import('../../families/boundedView.ts');
@@ -70,10 +72,13 @@ test('the Sides view draws the product’s shares in two panes: share of the war
   assert.deepEqual(left!.totalRow!.cells.casualties!.value, { kind: 'partial', value: 59, reason: 'Part of this side’s casualties contribution is not attributed to a country' });
   assert.equal(left!.totalRow!.cells.participation!.value.kind, 'notApplicable', 'participation is already a share of the side');
   assert.equal(left!.rows[1]!.cells.casualties!.value.kind, 'zero', 'a part the product says is zero reads 0');
+  assert.deepEqual(left!.rows[1]!.cells.casualties!.format, { decimals: 0 }, 'a zero part reads 0, not 0%');
   assert.equal(left!.rows[0]!.cells.casualties!.value.kind, 'partial');
   assert.deepEqual(left!.rows[0]!.cells.participation!.value, { kind: 'known', value: 70 });
-  assert.deepEqual(left!.rows[0]!.cells.participation!.format, { decimals: 1, percent: true }, 'the sorted column carries a decimal');
-  assert.deepEqual(left!.rows[0]!.cells.casualties!.format, { decimals: 0, percent: true });
+  assert.deepEqual(left!.rows[0]!.cells.participation!.format, { decimals: 0, maxDecimals: 1, fixedDecimals: true, percent: true }, 'the sorted column carries a decimal');
+  assert.deepEqual(left!.rows[0]!.cells.casualties!.format, { decimals: 0, maxDecimals: 0, fixedDecimals: true, percent: true });
+  const { formatValueState } = await import('../../families/valueFormat.ts');
+  assert.equal((formatValueState(knownValueOf(69.24), left!.rows[0]!.cells.participation!.format) as { text: string }).text, '69.2%', 'a share reads as the game prints it');
   assert.equal(right!.rows[0]!.group?.label, 'Share of the side');
   assert.deepEqual(model.columns.map(column => column.key), ['country', 'participation', 'casualties'], 'only the measures the product answers are columns');
   const none = warContributionSidesProjection.project(createBoundedReadView({ hour: 5, panels: new Map() }), { wars, saved: null, sort: 'participation' });
