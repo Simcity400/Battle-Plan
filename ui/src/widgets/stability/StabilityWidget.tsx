@@ -1,21 +1,19 @@
-import type { WidgetProps } from '../../dashboard/definitions';
-import { DeclaredFamilyWidget } from '../../families/host/index.ts';
-import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
+import type { FamilyViewProps } from '../../dashboard/definitions';
+import { FamilyWidget } from '../../families/host/registry.tsx';
 import StabilityDetail from './StabilityDetail.tsx';
-import { stabilityDeclaration } from './stabilityProjection.ts';
 
-export default function StabilityWidget(props: WidgetProps) {
+export default function StabilityWidget(props: FamilyViewProps) {
   return (
     <StabilityDetail
       {...props}
-      chart={onActivate => (
-        <DeclaredFamilyWidget
+      chart={onActivate => (props.manifestDeclaration ? (
+        <FamilyWidget
           {...props}
-          adapter={timeChartHostAdapter}
-          declaration={stabilityDeclaration}
+          family={props.manifestDeclaration.family}
+          declaration={props.manifestDeclaration}
           onActivate={action => onActivate(action.subject, action.hour)}
         />
-      )}
+      ) : null)}
     />
   );
 }
