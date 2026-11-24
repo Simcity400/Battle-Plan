@@ -284,9 +284,18 @@ fn locators(index: &Index<Item>, answer: &Answer, hour: i32) -> Vec<Locator> {
     out
 }
 
-fn notices_for(prepared: &Prepared, answer: &Answer, from: i32, hour: i32, notices: &mut Notices) {
+fn next_change(prepared: &Prepared, answer: &Answer, windows: bool, hour: i32) -> Option<i32> {
+    let incomplete = &prepared.scanned.incomplete;
+    let read = incomplete.get(incomplete.partition_point(|(at, ..)| *at <= hour)).map(|(at, ..)| *at);
+    let reason = windows.then(|| prepared.scanned.windows_unrecorded.iter().map(|(first, ..)| *first).filter(|first| *first > hour).min()).flatten();
+    [answer.next_change, read, reason].into_iter().flatten().min()
+}
+
+fn notices_for(prepared: &Prepared, answer: &Answer, windows: bool, from: i32, hour: i32, notices: &mut Notices) {
     families::incomplete_notices(&prepared.scanned.incomplete, &prepared.losses, from, hour, notices);
-    families::window_notices(&prepared.scanned.windows_unrecorded, from, hour, notices);
+    if windows {
+        families::window_notices(&prepared.scanned.windows_unrecorded, from, hour, notices);
+    }
     if answer.unattributed > 0 {
         notices.unavailable(
             "unattributed",
@@ -329,16 +338,16 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         .zip(shapes)
         .map(|(shown, (head_at, choice))| {
             let occurrence = feed.index.get(shown.at);
-            let (row, choice) = match &occurrence.payload {
-                Item::Family(row) => (Some(row.as_ref().clone()), None),
+            let (key, row, choice) = match &occurrence.payload {
+                Item::Family(row) => (row.id.clone(), Some(row.as_ref().clone()), None),
                 Item::Log { .. } => {
                     let row = presented[head_at].take();
                     let choice = choice.and_then(|at| presented[at].take().map(|row| edge(events[at], row)));
-                    (row, choice)
+                    (events[head_at].id(), row, choice)
                 }
             };
             EventFeedPageRow {
-                key: occurrence.id.to_string(),
+                key,
                 hour: occurrence.date,
                 observed: occurrence.observed,
                 ordinal: shown.ordinal.to_string(),
@@ -351,7 +360,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         .collect();
     content_refusals(&presenter, &mut notices)?;
     let from = params.from.unwrap_or(query.timeline.first);
-    notices_for(prepared, &answer, from, hour, &mut notices);
+    notices_for(prepared, &answer, true, from, hour, &mut notices);
     families::unread(&params.categories, &mut notices);
     for (categories, kind, label, reason, count) in &feed.notices {
         if categories.iter().any(|category| params.categories.contains(category)) {
@@ -371,8 +380,8 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         live: answer.live.to_string(),
         counts: Vec::new(),
         rows,
+        next_change: next_change(prepared, &answer, true, hour),
         missing: answer.gaps,
-        next_change: answer.next_change,
         unavailable: notices.into_list(),
         warnings: feed.warnings.clone(),
     };
@@ -427,18 +436,20 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
             super::decision_state::enforce_same_incarnation(&events[first..end], &mut card);
         }
         let edges: Vec<ScriptEdge> = events[first..end].iter().zip(card).filter_map(|(event, row)| row.map(|row| edge(event, row))).collect();
+        let Item::Log { head, .. } = &occurrence.payload else { return Err(invalid("A card holds no feed rows")) };
+        let id = read.get(&head.key).map(FeedEvent::id).ok_or_else(|| invalid("A card's head was not read back"))?;
         rows.push(ScriptPageRow {
-            key: occurrence.id.to_string(),
+            key: id.clone(),
             hour: occurrence.date,
             observed: occurrence.observed,
             ordinal: shown.ordinal.to_string(),
             live: shown.live,
             status: shown.state.and_then(ScriptStatus::of_code),
-            occurrence: (!edges.is_empty()).then(|| ScriptOccurrence { id: occurrence.id.to_string(), opened, edges }),
+            occurrence: (!edges.is_empty()).then(|| ScriptOccurrence { id, opened, edges }),
         });
     }
     content_refusals(&presenter, &mut notices)?;
-    notices_for(prepared, &answer, params.from.unwrap_or(query.timeline.first), hour, &mut notices);
+    notices_for(prepared, &answer, list == List::EventChoices, params.from.unwrap_or(query.timeline.first), hour, &mut notices);
     let reply = ScriptOccurrenceTailReply {
         branch_id: params.branch_id.clone(),
         total: answer.total.to_string(),
@@ -446,8 +457,8 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         live: answer.live.to_string(),
         counts: occurrences::counts(&answer, keys),
         rows,
+        next_change: next_change(prepared, &answer, list == List::EventChoices, hour),
         missing: answer.gaps,
-        next_change: answer.next_change,
         unavailable: notices.into_list(),
         warnings: Vec::new(),
     };

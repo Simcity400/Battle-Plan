@@ -1,6 +1,7 @@
 import type { DashboardSource } from '../../dashboard/client';
-import type { MissingSpan } from '../../generated/dashboard';
+import type { MissingSpan, OccurrenceSelection } from '../../generated/dashboard';
 import type { ArtHandle, BoundedReadView, SourceEntry } from '../contract.ts';
+import type { FamilyPlanContext } from '../plan.ts';
 import { identityFlags, identityName, type IdentityBoundary, type IdentityOptions } from './identityCell.ts';
 
 export function urlArtHandle(url: string | null | undefined): ArtHandle | null {
@@ -203,6 +204,21 @@ export function tailFollowParams(query: LogTailQuery): Record<string, unknown> {
     ...(query.countFacets && query.countFacets.length ? { countFacets: query.countFacets } : {}),
     ...query.ask,
   };
+}
+
+export function occurrenceSelection(ctx: Pick<FamilyPlanContext, 'countries' | 'gateSpan'>): OccurrenceSelection | undefined {
+  const filter = ctx.countries.filter;
+  if (!filter.passing) return undefined;
+  const membership = Object.entries(filter.passing).flatMap(([country, ranges]) =>
+    ranges.flatMap(([first, last]) => {
+      const bound = ctx.gateSpan(first, last);
+      return bound ? [{ country, firstHour: bound.firstHour, lastHour: bound.lastHour }] : [];
+    }));
+  const unobserved = filter.unrecorded.flatMap(([first, last]) => {
+    const bound = ctx.gateSpan(first, last);
+    return bound ? [{ firstHour: bound.firstHour, lastHour: bound.lastHour }] : [];
+  });
+  return { membership, unobserved };
 }
 
 export function pagedTailEntry(

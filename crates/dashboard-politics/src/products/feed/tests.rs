@@ -582,7 +582,7 @@ fn decision_failed_state_requires_container_and_decodes_each_container_without_g
 #[test]
 fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_missing_inputs() {
     use super::{
-        DecisionsTail, EventFeedTail, FeedTailParams,
+        DecisionsTail, EventFeedCategory, EventFeedTail, EventFeedTailParams, ScriptTailParams,
         decision_state::{
             DECISION_CONTAINER_NOT_RECORDED, DECISION_INSTANCE_MISMATCH, DECISION_NO_MISSION_LIFECYCLE,
             DecisionLifecycleState, EVENT_FEED_HISTORY_NOT_RECORDED, resolve_all,
@@ -708,16 +708,19 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     .unwrap();
     let cancel = AtomicBool::new(false);
     let context = LoadContext { content: None };
-    let ask = |branch_id: &str| FeedTailParams {
+    let ask = |branch_id: &str| EventFeedTailParams {
         branch_id: branch_id.into(),
-        facets: Vec::new(),
-        from: Some(100.0),
         hour: Some(101),
+        from: Some(100),
+        to: None,
+        selection: None,
+        search: None,
+        sort: None,
         offset: None,
         limit: 64,
-        count_facets: Vec::new(),
-        scope: None,
+        categories: vec![EventFeedCategory::WarsPeace, EventFeedCategory::Diplomacy, EventFeedCategory::Politics, EventFeedCategory::Milestones],
     };
+    let cards_at = |hour: i32| ScriptTailParams { branch_id: "1".into(), hour: Some(hour), from: Some(100), to: None, selection: None, search: None, sort: None, offset: None, limit: 64, kinds: None, statuses: None };
 
     let feed_b1 = EventFeedTail::load(&replay_source, &ask("1"), &context, &cancel).unwrap();
     let state_of = |page: &super::EventFeedTailReply, id: &str| {
@@ -732,7 +735,7 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
         Some(DecisionLifecycleState::NotApplicable { reason: DECISION_NO_MISSION_LIFECYCLE.to_owned() })
     );
 
-    let card_end_state = |page: &super::cards::ScriptOccurrenceTailReply, opener_id: &str| {
+    let card_end_state = |page: &super::ScriptOccurrenceTailReply, opener_id: &str| {
         page.rows
             .iter()
             .filter_map(|row| row.occurrence.as_ref())
@@ -740,13 +743,7 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
             .and_then(|occ| occ.edges.last())
             .and_then(|edge| edge.row.decision_state.clone())
     };
-    let cards_b1_at_100 = DecisionsTail::load(
-        &replay_source,
-        &FeedTailParams { branch_id: "1".into(), facets: Vec::new(), from: Some(100.0), hour: Some(100), offset: None, limit: 64, count_facets: Vec::new(), scope: None },
-        &context,
-        &cancel,
-    )
-    .unwrap();
+    let cards_b1_at_100 = DecisionsTail::load(&replay_source, &cards_at(100), &context, &cancel).unwrap();
     assert_eq!(card_end_state(&cards_b1_at_100, "native:1:2"), Some(DecisionLifecycleState::Active));
     assert_eq!(card_end_state(&cards_b1_at_100, "native:1:4"), Some(DecisionLifecycleState::Active));
     assert_eq!(
@@ -754,7 +751,7 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
         Some(DecisionLifecycleState::NotApplicable { reason: DECISION_NO_MISSION_LIFECYCLE.to_owned() })
     );
 
-    let cards_b1 = DecisionsTail::load(&replay_source, &ask("1"), &context, &cancel).unwrap();
+    let cards_b1 = DecisionsTail::load(&replay_source, &cards_at(101), &context, &cancel).unwrap();
     assert_eq!(card_end_state(&cards_b1, "native:1:1"), Some(DecisionLifecycleState::Completed));
     assert_eq!(card_end_state(&cards_b1, "native:1:2"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
     assert_eq!(card_end_state(&cards_b1, "native:1:3"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
@@ -873,8 +870,8 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
                 ],
                 102 => vec![ev_choice(3, 102, EventFeedSource::EventOption, Some(1))],
                 103 => vec![dec_ev(4, 103, EventFeedSource::DecisionTimedOut, Some(DecisionChange::new(Operation::Update, TIMED)), Some(10), Some(2))],
-                104 => vec![ev_choice(6, 101, EventFeedSource::ScriptEvent, None)],
-                105 => vec![ev_choice(5, 105, EventFeedSource::NewsEvent, None)],
+                104 => vec![ev_choice(5, 101, EventFeedSource::ScriptEvent, None)],
+                105 => vec![ev_choice(6, 105, EventFeedSource::NewsEvent, None)],
                 _ => Vec::new(),
             };
             frame.metrics.table_ns[TableId::EventFeedHistory.index()] = replay_frame::frame::READ_TIME_NOT_RECORDED;

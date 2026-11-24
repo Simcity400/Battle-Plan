@@ -100,7 +100,7 @@ pub(crate) struct Scanned {
     briefs: Vec<Brief>,
     native: Vec<Occurrence<Item>>,
     pub incomplete: Vec<(i32, u128, FeedEvent)>,
-    pub windows_unrecorded: Vec<(i32, u128, FeedEvent)>,
+    pub windows_unrecorded: Vec<(i32, i32, String)>,
     states: HashMap<u128, DecisionLifecycleState>,
     breaks: Vec<(i32, i32)>,
     pub gaps: Vec<MissingSpan>,
@@ -229,6 +229,14 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     briefs.sort_by_key(|brief| brief.at);
     incomplete.sort_by_key(|(hour, key, _)| (*hour, *key));
     windows_unrecorded.sort_by_key(|(hour, key, _)| (*hour, *key));
+    let mut reasons: Vec<(i32, i32, String)> = Vec::new();
+    for (hour, _, read) in &windows_unrecorded {
+        let reason = String::from_utf8_lossy(&read.failure).into_owned();
+        match reasons.iter_mut().find(|(.., held)| *held == reason) {
+            Some(held) => held.1 = *hour,
+            None => reasons.push((*hour, *hour, reason)),
+        }
+    }
     let refs: Vec<&FeedEvent> = lifecycles.iter().collect();
     let resolved = decision_state::resolve_all(query, &refs)?;
     let states = lifecycles.iter().zip(resolved).filter_map(|(event, state)| state.map(|state| ((u128::from(event.generation) << 64) | u128::from(event.sequence), state))).collect();
@@ -237,7 +245,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     breaks.retain(|(first, last)| first <= last);
     breaks.sort_unstable();
     let gaps = dashboard_base::products::log_page::missing(query, declared, query.timeline.first, query.timeline.last)?;
-    Ok(Scanned { briefs, native, incomplete, windows_unrecorded, states, breaks, gaps })
+    Ok(Scanned { briefs, native, incomplete, windows_unrecorded: reasons, states, breaks, gaps })
 }
 
 fn break_after(breaks: &[(i32, i32)], from: i32, hour: i32) -> Option<(i32, i32)> {

@@ -13,11 +13,10 @@ const edge = (kind: EventFeedKind, hour: number, extra: Partial<ScriptEdge> = {}
     item: { token: 'mod_decision', name: 'Modded decision', icon: null, description: null }, amount: null } as EventFeedRow,
   option: null, lifecycle: null, days: null, costs: null, ...extra });
 const card = (edges: ScriptEdge[], opened = true): ScriptOccurrence => ({ id: edges[0].row.id, opened, edges });
-const every = new Set<string>(STATUS_CHOICES.map(status => status.value));
-const at = (edges: ScriptEdge[], hour: number, statuses: ReadonlySet<string> = every, breaks: { firstHour: number; lastHour: number }[] = [], opened = true) => {
+const at = (edges: ScriptEdge[], hour: number, breaks: { firstHour: number; lastHour: number }[] = [], opened = true) => {
   const held = decisionCard(card(edges, opened));
   const first = held?.occurrence.edges[0].row;
-  return decisionAt({ key: '1', id: held?.occurrence.id ?? '1', hour: first?.hour ?? edges[0].row.readHour, revealedHour: first?.readHour ?? edges[0].row.readHour, by: false, item: held }, hour, breaks, statuses, null)?.item ?? null;
+  return decisionAt({ key: '1', id: held?.occurrence.id ?? '1', hour: first?.hour ?? edges[0].row.readHour, revealedHour: first?.readHour ?? edges[0].row.readHour, by: false, item: held }, hour, breaks)?.item ?? null;
 };
 const pp = (amount: string): ScriptCost[] => [{ currency: 'politicalPower', amount }];
 
@@ -29,19 +28,18 @@ test('a decision\'s status moves in place with the hour shown: a timer counting 
   const removed = at(timed, day(6, 1))!;
   assert.deepEqual([statusLabel(removed), lifecycleLine(removed)], ['Removed', 'Removed by the game']);
   assert.equal(at(timed, start - 1), null, 'not read yet');
-  assert.equal(at(timed, day(6, 1), new Set(['active'])), null, 'a status not chosen is hidden');
 });
 
 test('a running decision across a break in the recording has no end recorded, never a guessed one', () => {
   const start = day(3, 1);
   const mission = [edge('decisionActivated', start, { days: 20 })];
-  const unknown = at(mission, day(5, 1), every, [{ firstHour: start + 100, lastHour: start + 200 }])!;
+  const unknown = at(mission, day(5, 1), [{ firstHour: start + 100, lastHour: start + 200 }])!;
   assert.deepEqual([unknown.status, statusLabel(unknown)], ['unknown', 'Not recorded']);
   assert.match(lifecycleLine(unknown), /no end recorded by/);
 });
 
 test('a step whose selection was not recorded is its own row', () => {
-  const alone = at([edge('decisionCompleted', day(4, 1))], day(4, 2), every, [], false)!;
+  const alone = at([edge('decisionCompleted', day(4, 1))], day(4, 2), [], false)!;
   assert.deepEqual([alone.start, alone.status], [null, 'completed']);
 });
 

@@ -286,6 +286,7 @@ export function buildNavigableSlots<TRow extends DatedLogRow>(
     .sort((a, b) => b.lastHour - a.lastHour || b.firstHour - a.firstHour);
 
   if (!activeGaps.length) return [...slots];
+  if (gaps.every(span => (span as PlacedSpan).before !== undefined)) return placeByOrdinal(readAt, slots, gaps as readonly PlacedSpan[], upperHour, total);
   if (total === 0) {
     return activeGaps.map(span => ({
       kind: 'gap',
@@ -339,6 +340,40 @@ export function buildNavigableSlots<TRow extends DatedLogRow>(
         beforeOrdinal: total,
       });
     }
+  }
+  return out;
+}
+
+function placeByOrdinal<TRow extends DatedLogRow>(
+  readAt: number,
+  slots: readonly LogRowSlot<TRow>[],
+  gaps: readonly PlacedSpan[],
+  upperHour: number,
+  total: number,
+): LogRowSlot<TRow>[] {
+  const placed = gaps
+    .filter(span => span.firstHour <= upperHour)
+    .map(span => ({ firstHour: span.firstHour, lastHour: Math.min(span.lastHour, upperHour), reason: span.reason, before: Number(span.before) }));
+  const gap = (span: typeof placed[number]): LogRowSlot<TRow> => ({
+    kind: 'gap',
+    key: `gap:${span.firstHour}:${span.lastHour}:${span.reason}`,
+    readAt,
+    firstHour: span.firstHour,
+    lastHour: span.lastHour,
+    reason: span.reason,
+    beforeOrdinal: span.before,
+  });
+  if (total === 0) return placed.map(gap);
+  const out: LogRowSlot<TRow>[] = [];
+  for (const slot of slots) {
+    if (slot.kind !== 'gap') {
+      for (const span of placed) if (span.before === slot.ordinal) out.push(gap(span));
+    }
+    out.push(slot);
+  }
+  const last = slots[slots.length - 1];
+  if (last && last.kind !== 'gap' && last.ordinal + 1 >= total) {
+    for (const span of placed) if (span.before >= total) out.push(gap(span));
   }
   return out;
 }

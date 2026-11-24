@@ -39,12 +39,9 @@ pub(crate) fn incomplete_notices(incomplete: &[(i32, u128, FeedEvent)], losses: 
     raised_notices(raised, losses, notices);
 }
 
-pub(crate) fn window_notices(unrecorded: &[(i32, u128, FeedEvent)], from: i32, to: i32, notices: &mut Notices) {
-    let first = unrecorded.partition_point(|(hour, ..)| *hour < from);
-    let held: Vec<&FeedEvent> = unrecorded[first..].iter().take_while(|(hour, ..)| *hour <= to).map(|(.., read)| read).collect();
-    let total = u32::try_from(held.len()).unwrap_or(u32::MAX);
-    for (at, read) in held.iter().take(3).enumerate() {
-        notices.sampled("eventWindows", "Event windows", format!("Read {}: {}", read.read_hour, String::from_utf8_lossy(&read.failure)), if at == 0 { total } else { 0 });
+pub(crate) fn window_notices(unrecorded: &[(i32, i32, String)], from: i32, to: i32, notices: &mut Notices) {
+    for (first, _, reason) in unrecorded.iter().filter(|(first, last, _)| *first <= to && *last >= from) {
+        notices.unavailable("eventWindows", "Event windows", format!("From read {}: {reason}", first.max(&from)), None);
     }
 }
 
