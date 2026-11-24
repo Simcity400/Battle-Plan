@@ -1,3 +1,4 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { categoricalPalette, CHART_MEASURE_COLOURS, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
@@ -170,7 +171,7 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
     });
     const auditRows = series
       .filter(s => s.role === 'primary' && s.headValue !== null && s.headValue !== undefined)
-      .map(s => ({ row: s.name, key: s.id, value: formatApm(s.headValue!) }));
+      .map(s => (auditRow(s.id, formatApm(s.headValue!))));
     return {
       kind: 'apm-graph',
       measureTitle: 'eAPM',

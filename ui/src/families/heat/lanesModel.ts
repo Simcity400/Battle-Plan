@@ -1,4 +1,4 @@
-import type { AuditRow } from '../../draw/notifications';
+import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import type { ArtHandle, BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
 import { formatDateOnly } from '../valueFormat.ts';
@@ -253,17 +253,17 @@ function laneAuditText(row: HeatLaneRow, hour: number): string {
 export function deriveLanesAudit(
   model: HeatLanesModel,
   window: { readonly firstRow: number; readonly endRow: number },
-): readonly AuditRow[] {
+): readonly FamilyAuditRow[] {
   const first = Math.max(0, window.firstRow);
   const end = Math.min(model.rows.length, window.endRow);
-  const out: AuditRow[] = [];
+  const out: FamilyAuditRow[] = [];
   for (let i = first; i < end; i++) {
     const row = model.rows[i]!;
-    out.push({ key: `${row.id}:readout`, row: row.id, value: row.audit ?? readoutAuditText(row.readout) });
-    out.push({ key: `${row.id}:lane`, row: row.id, value: laneAuditText(row, model.hour) });
+    out.push(auditCell(row.id, 'readout', row.audit ?? readoutAuditText(row.readout)));
+    out.push(auditCell(row.id, 'lane', laneAuditText(row, model.hour)));
   }
   const gaps = (model.gaps ?? []).filter(gap => gap.firstHour <= model.hour).map(gap => `${gap.firstHour}-${Math.min(gap.lastHour, model.hour)}`);
-  if (gaps.length) out.push({ key: 'gaps', row: 'gaps', value: gaps.join('; ') });
+  if (gaps.length) out.push(auditRow('gaps', gaps.join('; ')));
   return out;
 }
 
