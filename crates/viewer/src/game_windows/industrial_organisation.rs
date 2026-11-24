@@ -24,7 +24,9 @@ use content_reader_military::{
 use dashboard_text::metadata::link_slot;
 use content_reader_layers::content::ResolvedContent;
 use dashboard_effects::effect_description::{Content, Context, MioText, mio_text};
+use content_reader_parser::parser::Item;
 use dashboard_text::scripted_text::{EventScopes, ScriptedContent, ScriptedText};
+use dashboard_text::triggers::{Evaluator, OrganisationCondition, Undecided};
 use replay::campaign::SeekResult;
 use replay_frame::frame::DecodedFrame;
 use std::cell::RefCell;
@@ -203,6 +205,7 @@ pub fn history_lists(entries: &[HistoryEntry]) -> [HistoryList<'_>; 2] {
 pub enum TraitStatus {
     Unlocked,
     Queued(usize),
+    Available,
     Locked,
     Unknown(String),
 }
@@ -681,6 +684,32 @@ impl<'a> Loc<'a> {
             .into_iter()
             .map(|line| line.map(|text| strip_markup(&text)))
             .collect()
+    }
+
+    fn evaluate<R>(
+        &self,
+        work: impl FnOnce(&Evaluator<'_, '_>) -> Result<R, Undecided>,
+    ) -> Result<R, String> {
+        let scripted = self.scripted.as_ref().map_err(Clone::clone)?;
+        let world = scripted.trigger_world()?;
+        work(&Evaluator::new(world, None)).map_err(String::from)
+    }
+
+    pub fn trait_condition(
+        &self,
+        organisation: u64,
+        token: &str,
+        condition: OrganisationCondition,
+    ) -> Result<bool, String> {
+        self.evaluate(|evaluator| evaluator.trait_condition(organisation, token, condition))
+    }
+
+    pub fn organisation_conditions(
+        &self,
+        organisation: u64,
+        order: &[(OrganisationCondition, &[Item])],
+    ) -> Result<bool, String> {
+        self.evaluate(|evaluator| evaluator.organisation_conditions(organisation, order))
     }
 
     pub fn date(&self, hour: i32) -> String {
@@ -1963,7 +1992,33 @@ fn compose_trait_tree(
     ]);
     traits_box.before = tree_before;
 
-    let status_of = |token: &str| trait_status(&prepared.data.details, token);
+    let organisation = prepared.data.organisation_id;
+    let status_of = |token: &str| match trait_status(&prepared.data.details, token) {
+        TraitStatus::Locked => match loc.trait_condition(organisation, token, OrganisationCondition::Available) {
+            Ok(true) => TraitStatus::Available,
+            Ok(false) => TraitStatus::Locked,
+            Err(why) => TraitStatus::Unknown(format!(
+                "Not decided: whether the trait can be unlocked cannot be evaluated at this hour ({why})."
+            )),
+        },
+        recorded => recorded,
+    };
+    let mut hidden_why: HashMap<String, String> = HashMap::new();
+    let positions: Vec<(&TraitName, [i32; 2])> = positions
+        .into_iter()
+        .filter(|(trait_def, _)| {
+            match loc.trait_condition(organisation, &trait_def.token, OrganisationCondition::Visible) {
+                Ok(visible) => visible,
+                Err(why) => {
+                    hidden_why.insert(
+                        trait_def.token.to_ascii_lowercase(),
+                        format!("Not decided: whether the trait is visible cannot be evaluated at this hour ({why})."),
+                    );
+                    true
+                }
+            }
+        })
+        .collect();
 
     let pixel_of = |grid: [i32; 2]| -> [i32; 2] {
         [(grid[0] - min_x) * step_x, (grid[1] - min_y) * step_y]
@@ -2041,7 +2096,10 @@ fn compose_trait_tree(
 
     for (idx, (trait_def, grid)) in positions.iter().enumerate() {
         let px = pixel_of(*grid);
-        let status = status_of(&trait_def.token);
+        let status = match hidden_why.get(&trait_def.token.to_ascii_lowercase()) {
+            Some(why) => TraitStatus::Unknown(why.clone()),
+            None => status_of(&trait_def.token),
+        };
         let queue_pos = match status {
             TraitStatus::Queued(position) => Some(position),
             _ => None,
@@ -2049,7 +2107,7 @@ fn compose_trait_tree(
         let frame = match status {
             TraitStatus::Unlocked => Some(1),
             TraitStatus::Queued(_) => Some(2),
-            TraitStatus::Locked => Some(3),
+            TraitStatus::Available | TraitStatus::Locked => Some(3),
             TraitStatus::Unknown(_) => None,
         };
         let frame_sprite = if trait_def.special_background
@@ -2070,6 +2128,7 @@ fn compose_trait_tree(
             TraitStatus::Unknown(reason) => format!("Status: {NOT_RECORDED_VALUE} ({reason})"),
             TraitStatus::Unlocked => "Status: Unlocked".to_owned(),
             TraitStatus::Queued(pos) => format!("Status: Queued (#{pos})"),
+            TraitStatus::Available => "Status: Available".to_owned(),
             TraitStatus::Locked => "Status: Locked".to_owned(),
         };
 
@@ -2401,7 +2460,32 @@ fn compose_policy_list(
             });
         }
         RecordedDetails::Available(details) => {
-            let mut entries: Vec<Spelled> = details.allowed_policies.clone();
+            let mut undecided: HashMap<String, String> = HashMap::new();
+            let mut entries: Vec<Spelled> = details
+                .allowed_policies
+                .iter()
+                .filter(|entry| {
+                    let Some(token) = entry.text() else { return true };
+                    if details.policy.as_ref() == Some(*entry) {
+                        return true;
+                    }
+                    let Ok(policy) = org_db.policies.policy(token.as_bytes()) else { return true };
+                    match loc.organisation_conditions(
+                        prepared.data.organisation_id,
+                        &[(OrganisationCondition::Visible, policy.visible.as_slice())],
+                    ) {
+                        Ok(visible) => visible,
+                        Err(why) => {
+                            undecided.insert(
+                                token.to_ascii_lowercase(),
+                                format!("Not decided: whether this policy is visible cannot be evaluated at this hour ({why})."),
+                            );
+                            true
+                        }
+                    }
+                })
+                .cloned()
+                .collect();
             if let Some(attached) = &details.policy
                 && !entries.contains(attached)
             {
@@ -2487,6 +2571,7 @@ fn compose_policy_list(
                 let mut overrides = BTreeMap::new();
                 if let Some(btn) = find_direct(item_tpl, "background_button") {
                     let mut lines = Vec::new();
+                    lines.extend(undecided.get(&key).cloned());
                     lines.extend(cost_missing);
                     if let Some(def) = policy_def {
                         lines.extend(policy_lines(def, loc));
