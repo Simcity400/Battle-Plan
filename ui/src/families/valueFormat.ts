@@ -113,8 +113,11 @@ export function formatShareRatio(numerator: bigint, denominator: bigint): string
   if (numerator < 0n) {
     throw new InvalidFamilyValueError(`formatShareRatio: negative share (${numerator}/${denominator}) is not valid`);
   }
+  if (numerator > denominator) {
+    throw new InvalidFamilyValueError(`formatShareRatio: a share above one (${numerator}/${denominator}) is not valid`);
+  }
   if (numerator === 0n) return '0%';
-  if (numerator >= denominator) return '100%';
+  if (numerator === denominator) return '100%';
   if (numerator * 1000n < denominator) return '<0.1%';
   if (numerator * 10n >= denominator) {
     const whole = (numerator * 200n + denominator) / (denominator * 2n);
@@ -251,22 +254,8 @@ export function formatScalar(raw: Scalar, format?: ValueFormat): string {
 
 export function formatShare(share: number): string {
   assertFiniteNumber(share, 'formatShare');
-  if (share < 0) throw new InvalidFamilyValueError(`formatShare: negative share (${share}) is not valid`);
-  if (share === 0) return '0%';
-  if (share >= 1) return '100%';
-  const pct = share * 100;
-  if (pct < 0.1) return '<0.1%';
-  if (pct >= 10) return `${Math.min(99, Math.round(pct))}%`;
-  const { units, scale } = exactDecimal(pct);
-  let tenths: bigint;
-  if (scale > 1) {
-    const divisor = 10n ** BigInt(scale - 1);
-    tenths = (units + divisor / 2n) / divisor;
-  } else {
-    tenths = units * (10n ** BigInt(1 - scale));
-  }
-  const clamped = tenths > 99n ? 99n : tenths < 1n ? 1n : tenths;
-  return `${clamped / 10n}.${clamped % 10n}%`;
+  const { units, scale } = exactDecimal(share);
+  return formatShareRatio(units, 10n ** BigInt(scale));
 }
 
 export function formatProgress(fraction: number): string {
