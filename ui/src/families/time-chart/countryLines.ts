@@ -3,7 +3,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { OptionValue } from '../../dashboard/options';
 import { FutureDataError, type AuxProductSpec, type BoundedReadView, type FamilyPlanContext, type SourceEntry, type SourcePlan } from '../contract.ts';
 import type { HolderRun, HourRanges } from '../holders.ts';
-import { formatCompactRational, formatRational, formatScalar, formatShare, formatShareRatio } from '../valueFormat.ts';
+import { formatCompactRational, formatRational, formatRecordedPercent, formatScalar } from '../valueFormat.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from './declaration.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { formatChartAxisValue } from './layout.ts';
@@ -99,7 +99,7 @@ export function formatCountryValue(value: number, format: CountryLinesSpec['form
   if (format === 'compact') return formatChartAxisValue(value, 'compact');
   if (format === 'percent') {
     return digits === null
-      ? formatShare(value / 100)
+      ? formatRecordedPercent(value)
       : formatScalar(value, { decimals: 0, maxDecimals: digits, fixedDecimals: true, percent: true });
   }
   return formatScalar(value, { decimals: 0, maxDecimals: digits ?? 2 });
@@ -109,9 +109,7 @@ function formatCountryReading(reading: KnownHeadReading, format: CountryLinesSpe
   if (reading.raw !== undefined && reading.denominator !== undefined) {
     if (format === 'compact') return formatCompactRational(reading.raw, reading.denominator, { maxDecimals: 0 }).text;
     if (format === 'percent') {
-      return digits === null
-        ? formatShareRatio(reading.raw, reading.denominator * 100n)
-        : formatRational(reading.raw, reading.denominator, { maxDecimals: digits, fixedDecimals: true, percent: true });
+      return formatRational(reading.raw, reading.denominator, { maxDecimals: digits ?? 5, fixedDecimals: digits !== null, percent: true });
     }
     return formatRational(reading.raw, reading.denominator, { maxDecimals: digits ?? 2 });
   }

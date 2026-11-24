@@ -11,7 +11,7 @@ import type { FamilyPlanContext } from '../../families/plan.ts';
 import { contestedGrey, countryColourAt, readableOn, regionLabel, type DatedColour } from '../../families/heat/scale.ts';
 import { formatDateOnly, formatShare } from '../../families/valueFormat.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
-import { ADD_REGION_LABEL, mostActiveHeading, PICKED_REGIONS_HEADING } from '../../families/regions/regionRows.ts';
+import { ADD_REGION_LABEL, mostActiveHeading, noRegionsBody, PICKED_REGIONS_HEADING } from '../../families/regions/regionRows.ts';
 import { knownValue, notRecorded } from '../../families/value.ts';
 import type { MissionShips, NavalSupremacyReply, SupremacyRegion, SupremacyRun } from '../../generated/dashboard';
 
@@ -126,7 +126,8 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
     pickedHeading: PICKED_REGIONS_HEADING,
     automaticHeading: mostActiveHeading(look.viewer),
     addRegionLabel: ADD_REGION_LABEL,
-    ...(reply.regions.length ? {} : reply.rankMissing ? { empty: reply.rankMissing, emptyKind: 'unavailable' as const } : { empty: `No naval activity for ${look.viewer} at this date.` }),
+    ...(reply.empty ? noRegionsBody(reply.empty, { one: 'active sea region', many: 'active sea regions', none: `No naval activity for ${look.viewer} at this date.` }) : {}),
+    active: reply.activeUnlisted,
     warnings: reply.regions.length && reply.rankMissing ? [...reply.warnings, reply.rankMissing] : reply.warnings,
   });
 }
@@ -264,7 +265,7 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
     playhead: through,
     gaps: [...gaps.values()],
     rows,
-    regions: { pickedHeading: PICKED_REGIONS_HEADING, automaticHeading: mostActiveHeading(look.viewer), addLabel: ADD_REGION_LABEL },
+    regions: { pickedHeading: PICKED_REGIONS_HEADING, automaticHeading: mostActiveHeading(look.viewer), addLabel: ADD_REGION_LABEL, active: now.activeUnlisted },
     readoutWidth: 204,
     inspect: (rowIndex, at) => {
       const row = rows[rowIndex];
@@ -275,7 +276,7 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
       const readoutDay = reply === now && Math.floor((at - now.firstDayHour) / now.dayHours) === lastDay;
       return inspectDay(reply, region, row.label, at, look, findRunAtHour(row.runs, at, through)?.cell, readoutDay);
     },
-    ...(rows.length ? {} : now.rankMissing ? { empty: now.rankMissing, emptyKind: 'unavailable' as const } : { empty: `No naval activity for ${look.viewer} at this date.` }),
+    ...(now.empty ? noRegionsBody(now.empty, { one: 'active sea region', many: 'active sea regions', none: `No naval activity for ${look.viewer} at this date.` }) : {}),
     warnings: [...new Set(pieces.flatMap(reply => reply.warnings).concat(rows.length && now.rankMissing ? [now.rankMissing] : []))],
   };
 }
