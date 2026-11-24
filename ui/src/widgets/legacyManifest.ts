@@ -46,7 +46,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'nuclear-arsenal', view: 'lines', label: 'Lines', playsBackDated: true, slots: ['render', 'countryChip'], load: () => import('./nuclear-arsenal') },
   { kind: 'nuclear-arsenal', view: 'mix', label: 'Mix', playsBackDated: true, slots: ['render', 'countryChip'], load: () => import('./nuclear-arsenal') },
   { kind: 'occupation-reserve-manpower', load: () => import('./occupation-reserve-manpower') },
-  { kind: 'occupation-trend', view: 'lines', label: 'Lines', load: () => import('./occupation-trend') },
   { kind: 'occupation-trend', view: 'mix', label: 'Mix', load: () => import('./occupation-trend') },
   { kind: 'peace-deals', load: () => import('./peace-deals') },
   { kind: 'political-power-spending', load: () => import('./political-power-spending') },

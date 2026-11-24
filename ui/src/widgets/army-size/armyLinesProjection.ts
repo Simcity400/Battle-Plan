@@ -1,3 +1,4 @@
+import { OPTIONS } from './definition.ts';
 import type { ArmySizeReply } from './armySizeData.ts';
 import { createCountryLinesView } from '../../families/time-chart/countryLines.ts';
 import { armyMeasure, armyMetadataParams, validateArmySizeReply } from './armySizeData.ts';
@@ -9,6 +10,7 @@ export const { projection: armyLinesProjection, declaration: armyLinesDeclaratio
   view: 'lines',
   title: 'Army size',
   subject: 'army size',
+  optionFields: OPTIONS,
   format: 'compact',
   aux: {
     product: 'army-size',

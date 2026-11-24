@@ -720,7 +720,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
                 sourceId: entry.source.id,
                 revision: entry.source.revision,
                 product: 'series-tiles',
-                params: { branchId: entry.branch, family: read.family, binHours, index, top: readTop.n, ...(readTop.least ? { least: true } : {}), hour: gated, ...(read.marks ? { withMarks: true } : {}) },
+                params: { branchId: entry.branch, family: read.family, binHours, index, top: readTop.n, ...(readTop.least ? { least: true } : {}), ...(readTop.by ? { rankBy: readTop.by } : {}), hour: gated, ...(read.marks ? { withMarks: true } : {}) },
               });
               return validateProductReply(await runtime.client.product<TileReply>(request, new AbortController().signal), request).data;
             },

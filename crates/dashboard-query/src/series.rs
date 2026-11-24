@@ -199,7 +199,7 @@ pub const FIELDS: crate::fields::Fields = {
         ("key", Undated), ("measures", Undated), ("firstHour", Start), ("lastHour", End), ("top", Undated),
         ("hour", Read), ("width", Undated), ("within[].1[].firstHour", Start), ("within[].1[].lastHour", End), ("binHours", Undated), ("index", Undated),
         ("withMarks", Undated), ("least", Undated), ("countries[]", Undated), ("lines[].country", Undated), ("reads[].country", Undated), ("within[].0", Undated),
-        ("family.membership[].firstHour", Start), ("family.membership[].lastHour", End), ("family.top", Undated), ("tags", Undated),
+        ("family.membership[].firstHour", Start), ("family.membership[].lastHour", End), ("family.top", Undated), ("tags", Undated), ("rankBy", Undated),
     ]
 };
 
@@ -237,6 +237,8 @@ struct Params {
     _index: Option<i64>,
     #[serde(rename = "withMarks")]
     _with_marks: Option<bool>,
+    #[serde(rename = "rankBy")]
+    _rank_by: Option<String>,
 }
 
 #[derive(Deserialize)]
