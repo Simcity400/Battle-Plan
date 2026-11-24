@@ -6609,7 +6609,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "country-stability-breakdown": { "hour": "read" },
   "country-styles": { "hour": "read" },
   "decisions-tail": { "from": "start", "hour": "read", "scope[].firstHour": "start", "scope[].lastHour": "end", "facets[].membership[].firstHour": "start", "facets[].membership[].lastHour": "end", "facets[].unobserved[].firstHour": "start", "facets[].unobserved[].lastHour": "end", "countFacets[].facets[].membership[].firstHour": "start", "countFacets[].facets[].membership[].lastHour": "end", "countFacets[].facets[].unobserved[].firstHour": "start", "countFacets[].facets[].unobserved[].lastHour": "end" },
-  "decorated-divisions": { "hour": "read" },
+  "decorated-divisions": { "countries[].firstHour": "start", "countries[].lastHour": "end", "hour": "read" },
   "decryption": { "hour": "read" },
   "diplomatic-pacts": { "hour": "read" },
   "diplomatic-relations": { "hour": "read" },
@@ -6977,7 +6977,7 @@ export type RequestParams<E, B> = {
   "country-stability-breakdown": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "country-styles": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "decisions-tail": { readonly [key: string]: unknown; readonly "countFacets"?: readonly ({ readonly [key: string]: unknown; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null })[] | null; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "scope"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
-  "decorated-divisions": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "decorated-divisions": { readonly [key: string]: unknown; readonly "countries"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "hour"?: E | null };
   "decryption": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "diplomatic-pacts": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "diplomatic-relations": { readonly [key: string]: unknown; readonly "hour"?: E | null };
