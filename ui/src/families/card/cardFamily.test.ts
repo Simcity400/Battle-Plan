@@ -55,7 +55,7 @@ test('a focus card shows the product’s dated completions, then its undated one
   assert.equal(dated!.date?.hour, hour - 30 * DAY);
   assert.deepEqual(undated!.date, { hour: null, reason: 'Already complete when first read' });
   assert.deepEqual(undated!.title, { kind: 'notRecorded', reason: 'Name refused' });
-  assert.equal(undated!.art?.art.status, 'confirmedMissing', 'missing art is the hatched tile, not a blank');
+  assert.equal(undated!.art?.art.status, 'unavailable', 'art the product did not draw is unavailable with its reason, drawn as the hatched tile, not a blank');
 
   const unknownRate = nationalFocusProjection.project(view(hour, { ...reply, current: { ...reply.current!, daysLeft: null, progressMissing: 'Daily progress was not recorded' } }), {});
   assert.deepEqual((unknownRate.rows[0] as CardHeroRow).figure?.value, { kind: 'notRecorded', reason: 'Daily progress was not recorded' }, 'days left are not recorded, never zero');
@@ -107,7 +107,7 @@ test('war goals keep the product’s order and states, show a missing expiry by 
   assert.equal(withPause(null).figure?.value.kind, 'notRecorded');
   const named = warGoalsProjection.project(view(hour, reply, live), { targetNames: true });
   assert.equal(items(named)[0]!.subtitle, 'Take state');
-  assert.ok(deriveCardAudit(model).some(row => row.key === 'state' && String(row.value).endsWith(':Expired')));
+  assert.ok(deriveCardAudit(model).some(row => row.key === `${row.row}:state` && String(row.value).endsWith(':Expired')));
 });
 
 test('national spirits list the product’s membership at the displayed hour, in its order, with since dates and unclassified items kept', () => {
@@ -129,7 +129,7 @@ test('national spirits list the product’s membership at the displayed hour, in
   assert.deepEqual(rows.map(row => row.key), ['mod_spirit_b', 'mod_spirit_a'], 'the product decides the order; a law is not a spirit');
   assert.match(String(rows[1]!.figure?.value.kind === 'known' && rows[1]!.figure.value.value), /^Held before /);
   assert.match(String(rows[0]!.figure?.value.kind === 'known' && rows[0]!.figure.value.value), /^Since /);
-  assert.equal(rows[0]!.art?.art.status, 'confirmedMissing');
+  assert.equal(rows[0]!.art?.art.status, 'unavailable');
   assert.equal(model.nextChangeAt, first + 40 * DAY);
   const gained = first + 45 * DAY;
   const later = replyAt(gained, [held(0, first, gained, 'heldBefore'), held(1, first + 10 * DAY, gained, 'seen'), held(2, first + 41 * DAY, gained, 'firstObserved')], null);
@@ -198,7 +198,7 @@ test('special projects follow the product’s order: running with progress and s
   assert.equal(running!.figure?.value.kind, 'notRecorded', 'an unread scientist is named as not recorded');
   assert.deepEqual(radar!.figure?.value, { kind: 'known', value: 'No scientist' });
   assert.deepEqual(old!.date, { hour: null, reason: 'Already complete when the project was first recorded' });
-  assert.equal(radar!.art?.art.status, 'confirmedMissing');
+  assert.equal(radar!.art?.art.status, 'unavailable');
 });
 
 test('a stored "Show names" reaches the war goals projection through the declaration the host resolves', () => {
@@ -226,7 +226,7 @@ test('the card audit lists what is drawn: printed meter text, subtitle, hero det
       figure: { value: { kind: 'known', value: '58 days' }, caption: 'Due 3 Mar 1937' }, meter: { fraction: { kind: 'known', value: 0 }, text: '-20%' } },
     { kind: 'item', key: 'item', title: { kind: 'known', value: 'Invented project' }, subtitle: 'Invented science' },
   ] };
-  const audit = new Map(deriveCardAudit(model).map(row => [`${row.row}/${row.key}`, row.value]));
+  const audit = new Map(deriveCardAudit(model).map(row => [row.key.replace(`${row.row}:`, `${row.row}/`), row.value]));
   assert.equal(audit.get('hero/meterText'), '-20%');
   assert.equal(audit.get('hero/detail'), 'Day 12 of 70');
   assert.equal(audit.get('hero/caption'), 'Due 3 Mar 1937');

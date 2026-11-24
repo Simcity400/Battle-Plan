@@ -107,7 +107,7 @@ export function useKeyLabelsAt(
         } else if (drawn.url) {
           flag = drawn.url;
         } else {
-          flagReason = drawn.reason;
+          flagReason = drawn.resolution && 'reason' in drawn.resolution ? drawn.resolution.reason : undefined;
         }
       } else if (res.flagChoice.kind === 'pending') {
         flagPending = true;

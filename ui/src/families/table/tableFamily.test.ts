@@ -29,7 +29,7 @@ import { AuditSnapshotStore, canonicalAuditData, canonicalAuditValue } from '../
 import { CadenceGate, TrailingFlushScheduler } from '../cadence.ts';
 import { createBoundedReadView } from '../boundedView.ts';
 import { holderRunAt, nextHoldersChange, nextRangesChange, nextWindowRangesChange, overlapsHourRanges, resolveSlotHolderRuns } from '../holders.ts';
-import { showBundle, type Settlement } from '../readUnits.ts';
+import { showBundle } from '../readUnits.ts';
 import { effectiveCountryUnobserved, selectionUnobservedReason } from '../sources.ts';
 import { SlotTags } from '../../dashboard/countrySlots.ts';
 import { groupUnobserved } from '../../dashboard/groups.ts';
@@ -39,6 +39,8 @@ import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partia
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
 import { computeColumnMaxima, declareTableProjection, tableRank, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type FlatTableRow, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
 import { createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
+import { treeLevelsOf, treeTextStart } from './cellPainters.ts';
+import { TREE_CHEVRON_LANE } from './layout.ts';
 import { computeRowLayout, TABLE_WINDOW_OVERSCAN, tableRowWindow } from './layout.ts';
 import { NOT_NAMED } from '../../widgets/occupied-states/occupiedStatesData.ts';
 
@@ -1053,21 +1055,17 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
 
   const ctxA = { tag: 'A', role: 'occupier', settings: 'sA', looks: 'lA' };
   const ctxB = { tag: 'B', role: 'occupied', settings: 'sB', looks: 'lB' };
-  const complete: Settlement = { kind: 'complete', bundle: { hour: 50, span: [10, 50], proof: null, panels: new Map() } };
-  const holding: Settlement = { kind: 'hold' };
   const bundleAt50 = { span: [10, 50] };
   const bundleAt60 = { span: [20, 60] };
-  const first = showBundle(null, complete, bundleAt50, 'plan', ctxA);
-  const refreshed = showBundle(first.last, complete, bundleAt50, 'plan', ctxB);
+  const first = showBundle(null, bundleAt50, false, 'plan', ctxA);
+  const refreshed = showBundle(first.last, bundleAt50, false, 'plan', ctxB);
   assert.equal(refreshed.shown?.frozen, ctxB, 'F1: when every reply answers the current requests, option, role, settings and looks changes refresh immediately');
-  const retained = showBundle(refreshed.last, holding, null, 'plan', ctxA);
+  const retained = showBundle(refreshed.last, bundleAt50, true, 'plan', ctxA);
   assert.equal(retained.shown, refreshed.shown, 'S1: while a request is superseded, the last complete bundle is shown with its own context, settings and looks');
-  assert.equal(retained.held, true);
   assert.equal(retained.shown?.bundle, bundleAt50);
-  const updated = showBundle(retained.last, complete, bundleAt60, 'plan', ctxA);
+  const updated = showBundle(retained.last, bundleAt60, false, 'plan', ctxA);
   assert.equal(updated.shown?.bundle, bundleAt60, 'S1: updates once the new replies complete a bundle');
   assert.equal(updated.shown?.frozen, ctxA, 'S1: the updated bundle carries the new selection context');
-  assert.equal(showBundle(updated.last, holding, null, 'other plan', ctxB).shown, null, 'a bundle is never held across a change of plan');
 
   const emptyGsA = gameScoreProjection.project(createBoundedReadView({
     hour: 10,
@@ -2039,6 +2037,30 @@ test('cell kinds for converted tables: an item column takes the spare width, two
   } finally {
     (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
   }
+});
+
+test('tree rows align whether or not they can open: a level with openable rows gives every row of that level the chevron lane, children start under their parent\'s name', () => {
+  const tree: TableColumnSpec[] = [
+    { key: 'pic', label: '', as: 'plain', offered: ['plain'], priority: 0, cellKind: 'kind', sortable: false },
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item' },
+  ];
+  const settings = tableSettingsOf(undefined, tree, { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
+  const leaf = (key: string, children?: TableRow[]): TableRow => ({ key, name: key, cells: { name: { value: knownValue(key) } }, ...(children ? { children } : {}) });
+  const rows = resolveTableRows({ hour: 1, columns: tree, rows: [leaf('A', [leaf('A1')]), leaf('B'), leaf('C', [leaf('C1', [leaf('C1a')]), leaf('C2')])] }, settings, { A: true, C: true, C1: true });
+  const data = rows.filter((item): item is Extract<FlatTableRow, { kind: 'data' }> => item.kind === 'data');
+  assert.deepEqual(data.map(item => [item.key, item.level, item.isTreeGroup]), [['A', 1, true], ['A1', 2, false], ['B', 1, false], ['C', 1, true], ['C1', 2, true], ['C1a', 3, false], ['C2', 2, false]]);
+  const levels = treeLevelsOf(rows);
+  assert.equal(treeLevelsOf(rows), levels, 'held per row list');
+  const starts = Object.fromEntries(data.map(item => [item.key, treeTextStart(item.level, levels)]));
+  assert.deepEqual(starts, { A: TREE_CHEVRON_LANE, A1: 2 * TREE_CHEVRON_LANE, B: TREE_CHEVRON_LANE, C: TREE_CHEVRON_LANE, C1: 2 * TREE_CHEVRON_LANE, C1a: 2 * TREE_CHEVRON_LANE, C2: 2 * TREE_CHEVRON_LANE });
+  const flat = resolveTableRows({ hour: 1, columns: tree, rows: [leaf('A', [leaf('A1')]), leaf('B')] }, settings, { A: true });
+  const flatLevels = treeLevelsOf(flat);
+  assert.deepEqual(flat.map(item => item.kind === 'data' ? treeTextStart(item.level, flatLevels) : -1), [TREE_CHEVRON_LANE, TREE_CHEVRON_LANE, TREE_CHEVRON_LANE], 'a leaf, a group and a child of a two-level tree start at one x');
+  assert.equal(treeTextStart(1, treeLevelsOf(resolveTableRows({ hour: 1, columns: tree, rows: [leaf('B')] }, settings))), 0, 'a flat table reserves no lane');
+  const layout = layoutFamilyTable(buildColumnLayouts(tree, settings, { pic: 52, name: 200 }), 400);
+  const nameX = layout.columns[0]!.width;
+  assert.equal(hitFamilyTable(layout, flat, { x: nameX + 12, y: 10 }, 36, 0, 0, false, 0).toggle, true, 'the chevron opens its group');
+  assert.equal(hitFamilyTable(layout, flat, { x: nameX + 12, y: 36 * 2 + 10 }, 36, 0, 0, false, 0).toggle, false, 'a leaf has no chevron to hit');
 });
 
 test('log capability: headerless widths, date-grouped boundaries, gap/refused/loading slots, in-place children, and fresh-paint equality after seek back, same-hour correction and reorder', () => {

@@ -895,6 +895,7 @@ impl AtHour for AirSuperiorityAt {
     const KEY: &'static str = "air-superiority";
     const TITLE: &'static str = "Air superiority";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads country appearance looks and faction name runs from branch history context and stamps reply hour");
     type Params = AirSuperiorityParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, mode, viewpoint, viewpointCountry, sides, pinnedRegions, hiddenRegions, theatres, order, "pinnedRegions[]", "hiddenRegions[]"];
     type Reply = AirSuperiorityReply;

@@ -18,6 +18,7 @@ interface ChromeMeta {
   readonly unsorted?: boolean;
   readonly rankShown?: boolean;
   readonly rankWidth?: number;
+  readonly hasTree?: boolean;
   readonly columns?: readonly TableColumnSpec[];
 }
 
@@ -153,6 +154,7 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
       allColumns={columns}
       settings={settings}
       unsorted={meta.unsorted}
+      treeLane={meta.hasTree === true}
       editableColumns={editable}
       rankWidth={meta.rankShown ? meta.rankWidth : 0}
       pinnedCount={layout.pinnedCount}

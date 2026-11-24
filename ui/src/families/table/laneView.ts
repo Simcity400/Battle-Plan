@@ -1,8 +1,8 @@
+import type { FamilyAuditRow } from '../auditRow.ts';
 import type { LiveValues } from '../../charts/live';
 import { NOT_LIVE_CELL, NOT_RECORDED, repliedCells } from '../../dashboard/follow/liveCells.ts';
 import type { Picture } from '../../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
-import type { AuditRow } from '../../draw/notifications';
 import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '../../draw/lane.ts';
 import { sectionLiveValues, type LiveMap } from '../../draw/views/fields.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
@@ -54,6 +54,7 @@ export interface FamilyTableBinding<TOptions = unknown> {
   readonly settings: TableSettings;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
+  readonly staticShifts?: Readonly<Record<string, number>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly pagedRows?: Readonly<Record<string, PagedRowsSnapshot>>;
   readonly window?: { readonly first: number; readonly count: number };
@@ -172,7 +173,7 @@ interface HeldFamilyTable {
 
   cachedMaxima: Map<string, number> | null;
   cachedMaximaCols: string;
-  rowAuditCache: WeakMap<TableRow, { readonly sig: string; readonly rows: readonly AuditRow[] }>;
+  rowAuditCache: WeakMap<TableRow, { readonly sig: string; readonly rows: readonly FamilyAuditRow[] }>;
 
   auditId: number;
   auditWindowKey: string;
@@ -289,6 +290,7 @@ export function readViewFromScene(
   return createBoundedReadView({
     hour,
     revisions,
+    ...(binding.staticShifts ? { panelShifts: binding.staticShifts } : {}),
     ...(binding.window ? { rowWindow: binding.window } : {}),
     ...(rowSources.size ? { rows: rowSources } : {}),
     ensureNonLive: () => {

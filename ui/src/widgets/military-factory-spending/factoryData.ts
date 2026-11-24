@@ -1,11 +1,10 @@
 import type { SunburstItem } from '../../charts/sunburst/layout';
-import type { SpendingWindow } from '../production-spending/spendingData';
-import { REMAINDER_BANDS, colouredSplit, domainLeaves, monthNote, monthTotal, purposeItems, spentMonth } from '../dockyard-spending/dockyardData.ts';
-import type { Exact, PurposeMonth, PurposeSplit, SpentMonth } from '../dockyard-spending/dockyardData';
+import type { SpendingData, SpendingWindow } from '../production-spending/spendingData';
+import { REMAINDER_BANDS, colouredSplit, domainLeaves, purposeItems } from '../dockyard-spending/dockyardData.ts';
+import type { PurposeSplit } from '../dockyard-spending/dockyardData';
 import type { Domain } from '../../generated/dashboard';
-import type { SpendingData } from '../production-spending/spendingData';
 
-export const PURPOSES = [
+const PURPOSES = [
   { id: 'new', label: 'New' },
   { id: 'converted', label: 'Converted' },
 ] as const;
@@ -18,14 +17,3 @@ export function factoryItems(reply: SpendingData, domain: Domain, window: Spendi
 }
 
 export const BANDS = [...PURPOSES, ...REMAINDER_BANDS];
-
-const part = (month: SpentMonth, purpose: 'new' | 'converted' | 'unknown' | 'refit'): Exact =>
-  month.amounts ? { exact: month.amounts[purpose], reason: null } : { exact: null, reason: month.reason };
-
-export function factoryMonth(reply: SpendingData, domain: Domain, first: number, last: number, branchFirst: number): PurposeMonth {
-  const spent = spentMonth(reply, domainLeaves(reply, domain), first, last, branchFirst);
-  const bands = [part(spent, 'new'), part(spent, 'converted'), part(spent, 'unknown'), part(spent, 'refit')];
-  const purposes = spent.purposeUnproven || spent.unresolved;
-  return { firstHour: first, lastHour: last, bands, total: monthTotal(spent, bands), note: monthNote(spent, PURPOSE_NOTE),
-    uncertain: [purposes, purposes, spent.purposeUnproven, false] };
-}

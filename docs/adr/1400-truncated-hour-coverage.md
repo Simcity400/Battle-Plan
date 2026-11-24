@@ -59,7 +59,7 @@ No function in `dashboard-query` takes a `CoverageScope` argument.
 3. `Status::Truncated { missing }` with `witnessed == false` -> `Coverage::NotRecorded` with the canonical truncation reason below. An unwitnessed row is never carried forward, never treated as absent or zero (even on `absent_none` or `absent_is_zero` tables), and never silently dropped.
 4. `Status::NotRecorded` and `Status::Unavailable { .. }` -> `Coverage::NotRecorded` with the canonical reasons below.
 
-Note on complete-hour `absent_none`: on complete hours, `Line::states_of` keeps `origin/main`'s pre-existing `measure_unrecorded` reason for an absent row while `board::at` and `dashboard-follow` return `0`; on truncated hours, unwitnessed keys never return `0` on any surface.
+Note on complete-hour `absent_none`: on complete hours an absent row reads `0` on every surface (`Line::states_of`, `board::at`, `dashboard-follow`), as a rank counts it; on truncated hours, unwitnessed keys never return `0` on any surface.
 
 ### Canonical reason strings (`row_coverage`)
 
@@ -120,9 +120,15 @@ Let `{Name}` be `table.words()` with its first letter capitalized (for example, 
 | `ui/src/widgets/autonomy/AutonomyWidget.tsx`, `country-measure/MeasureWidget.tsx`, `experience/ExperienceWidget.tsx`, `fuel/FuelWidget.tsx`, `stability/StabilityWidget.tsx`, `supply-health/supplyHead.ts`, `supply-health/supplySeries.ts` | `Row` | Per-country keyed line heads. |
 | `ui/src/widgets/army-size/ArmyBreakdown.tsx`, `player-apm/ApmWidget.tsx`, `special-projects/useProjectHistory.ts` | `Table` | Non-series panel / log-page queries. |
 
+### A rank at an hour
+
+`Line::rank_at(hour, n, least) -> Result<Vec<tag>, reason>` is the one rank of a population at an hour, exact and followed (`dashboard-follow` `SeriesMode::Top { population: true }`) alike. It refuses with a reason, never an empty rank, when the table is not complete, when a row's value is unrecorded (a not-applicable value is not a contender), or when a row belongs to no country known at the hour. A named top (`population: false`) ranks only the named rows, and an unrecorded named row refuses it.
+
+`series-rank` (`series/ranked.rs`) is the one reply for a ranked view at an hour: `{ hour, top | countries, least?, measures? }` answers `rows` in the product's order, each with a reading per measure (the ranking measure first, then every measure the view displays), `refused`, and `from..until`. A top that is refused has no rows; chosen countries all stay, ranked first and then the ones whose ranking reading is missing, in the asked order, with `refused` naming why the order is unproven. `from..until` is where the reply holds unchanged: for chosen countries the intersection of every reading's run; for a top that, narrowed to hours whose own rank is the same order (at most `RANK_PROOF_HOURS` each side), so a country left out cannot overtake unseen; otherwise the asked hour only.
+
 ### Out of scope (deferred to follow-up)
 
-Whole-population results remain on `CoverageScope::Table` (`origin/main` behaviour) in this ADR and are left to a dedicated follow-up: ranks, totals, top-N, ranked summaries and their `membership` (`Line::ranked`, `rank_at_by`, `series/ranked.rs`), `totals_ranked`, faction lines/totals (`dashboard-wars/src/products/factions.rs`, `FactionTotalsView`), owner part enumerations (`part_lives`, `owned_at`), race-mode `MeasureRace` and `CasualtiesWidget`, multi-row `Cells::sum` totals, and any whole-population refusal fields in the generated TypeScript contract (`ui/src/generated/dashboard.ts`).
+Whole-population results remain on `CoverageScope::Table` (`origin/main` behaviour) in this ADR and are left to a dedicated follow-up: totals, ranked summaries and their `membership` (`Line::ranked`), `totals_ranked`, faction lines/totals (`dashboard-wars/src/products/factions.rs`, `FactionTotalsView`), owner part enumerations (`part_lives`, `owned_at`), race-mode `MeasureRace` and `CasualtiesWidget`, multi-row `Cells::sum` totals, and any whole-population refusal fields in the generated TypeScript contract (`ui/src/generated/dashboard.ts`).
 
 ## Consequences
 

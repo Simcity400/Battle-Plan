@@ -4,11 +4,12 @@ pub mod resolver;
 pub mod sprites;
 
 pub use resolver::{
-    ArtFrame, ArtOrigin, ArtProvenance, ArtRenderVariant, ArtResolution, ArtScopeKey, ArtTarget,
-    CURRENT_INSTALL_ART_LABEL, FlagSetKey, art_scope_key, resolve, resolve_equipment_icon,
+    ArtFile, ArtFrame, ArtOrigin, ArtProvenance, ArtRenderVariant, ArtResolution, ArtScopeKey,
+    ArtTarget, CURRENT_INSTALL_ART_LABEL, FlagSetKey, Searched, art_file, art_scope_key,
+    resolve, resolve_equipment_icon,
     resolve_flag, resolve_flag_pixels, resolve_portrait_entry, resolve_sprite,
     resolve_sprite_or_texture, resolve_sprite_type, resolve_sprite_type_on_layers,
-    resolve_text_icon, resolve_texture, resolve_with_sprites,
+    resolve_text_icon, resolve_texture, resolve_with_sprites, sprite_definition,
 };
 
 use super::ContentOptions;

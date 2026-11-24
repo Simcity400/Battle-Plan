@@ -53,6 +53,14 @@ test('a chosen slot counts its country under every tag it held, and never anothe
     'a success counts where it was first read, for the slot that owned it at its end, whatever the slot is called then');
 });
 
+test('a chosen slot keeps its raid when no tag names it, and a tag tally never borrows the opening tag', () => {
+  const untagged = syntheticEpisode('9', 10, 'GER', 20, 30, true, { raiderSlot: 3, launchedRaider: null, endedRaider: null });
+  const slot = countryKey(3);
+  assert.deepEqual(at(raidTally([untagged], SPAN, [], [slot], null), slot, 100), [1, 1], 'the selected slot counts first');
+  const byTag = raidTally([untagged], SPAN, [], ['GER'], null);
+  assert.deepEqual([at(byTag, 'GER', 100), byTag.unattributed], [[0, 0], 1], 'no tag at the launch or the end is unattributed');
+});
+
 test('a merged raid credits each tally event to the raider tag held at that event hour', () => {
   const renamed = syntheticEpisode('7', 10, 'GER', 20, 30, true, { launchedRaider: 'DDR', endedRaider: 'DDR' });
   const tally = raidTally([renamed], SPAN, [], ['GER', 'DDR'], null);

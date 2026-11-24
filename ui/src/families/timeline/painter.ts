@@ -17,7 +17,7 @@ import {
   type TimeAxisTick,
 } from '../../draw/kit.ts';
 import { drawMediaSlot, toArtSlotState } from '../art/adapters.ts';
-import { missingArt } from '../art/types.ts';
+import { unavailableArt } from '../art/types.ts';
 import type { ArtHandle, BoundedReadView, FamilyTheme } from '../contract.ts';
 import {
   BAR_HEIGHT,
@@ -72,14 +72,14 @@ function drawLabel(ctx: Canvas2D, placed: PlacedLane, y: number, input: Timeline
   if (lane.flag || lane.flagTag) {
     drawMediaSlot(ctx, x, mid, FLAG_W, FLAG_H, {
       kind: 'flag',
-      art: lane.flag ? readView.art(lane.flag) : missingArt('Flag unavailable'),
+      art: lane.flag ? readView.art(lane.flag) : unavailableArt('Flag unavailable'),
       tag: lane.flagTag,
     }, theme);
     x += FLAG_W + 8;
   } else if (lane.icon || lane.iconMissing) {
     drawMediaSlot(ctx, x, mid, LANE_ICON, LANE_ICON, {
       kind: 'art',
-      art: lane.icon ? readView.art(lane.icon) : missingArt('Art unavailable'),
+      art: lane.icon ? readView.art(lane.icon) : unavailableArt('Art unavailable'),
       resolvedName: lane.label,
     }, theme, { radius: 3 });
     x += LANE_ICON + 8;

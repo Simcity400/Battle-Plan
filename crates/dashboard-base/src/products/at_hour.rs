@@ -81,6 +81,13 @@ pub struct ReadsAt<'a, C> {
     pub since: Option<i32>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Clock {
+    InputsOnly,
+    Boundaries,
+    EveryHour(&'static str),
+}
+
 pub trait AtHour: 'static {
     const KEY: &'static str;
     const TITLE: &'static str;
@@ -136,11 +143,17 @@ pub trait AtHour: 'static {
     fn compares_previous(_table: TableId) -> bool { false }
 
 
-    const CLOCK_DEPENDENT: bool = true;
+    const CLOCK: Clock;
 
     const REPLY_NAMES_NO_HOUR: bool = false;
 
-    fn clock_dependent(_plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> bool { Self::CLOCK_DEPENDENT }
+    fn valid_through(_frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
+        i32::MAX
+    }
+
+    fn clock_dependent(_plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> bool {
+        matches!(Self::CLOCK, Clock::EveryHour(_))
+    }
 
     fn advance(_frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, _edits: &Edits, _live: &Live, _data: &mut Held<'_>) -> io::Result<bool> {
         Ok(false)
@@ -429,7 +442,7 @@ impl<P: AtHour> Panel for Followed<P> {
     fn unchanged(&mut self, frame: &DecodedFrame) -> bool {
         let Some((owner, views)) = &self.answered else { return false };
         P::REPLY_NAMES_NO_HOUR
-            && !P::CLOCK_DEPENDENT
+            && matches!(P::CLOCK, Clock::InputsOnly)
             && holder::<P>(&self.holders, &self.params, frame.hour).ok().is_some_and(|held| held == *owner)
             && self.tables.iter().zip(views).all(|(table, view)| replay_frame::frame::SharedView::ptr_eq(&frame.tables[table.index()], view))
     }
@@ -451,7 +464,7 @@ impl<P: AtHour> Panel for Followed<P> {
         finish(reply.warnings_mut(), &own, &self.content_warnings);
         self.live = Some(cells.finish()).filter(|live| !live.is_empty());
         let data = serde_json::to_value(&reply).map_err(|error| error.to_string())?;
-        if P::REPLY_NAMES_NO_HOUR && !P::CLOCK_DEPENDENT && let Some(owner) = held {
+        if P::REPLY_NAMES_NO_HOUR && matches!(P::CLOCK, Clock::InputsOnly) && let Some(owner) = held {
             self.answered = Some((owner, self.tables.iter().map(|table| frame.tables[table.index()].clone()).collect()));
         }
         Ok(data)

@@ -2,8 +2,7 @@ import { colour, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { rowName, type FollowedAnswer } from '../../dashboard/follow/message.ts';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
-import { flagArtHandle } from '../art/provider.ts';
-import { failedArt, missingArt, PENDING_ART } from '../art/types.ts';
+import { flagChoiceArt } from '../art/provider.ts';
 import { FutureDataError, type BoundedReadView, type BoundedSeries, type FamilyPlanContext, type SourceEntry } from '../contract.ts';
 import { holderTagAt, type HolderRun, type HourRanges } from '../holders.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
@@ -163,13 +162,7 @@ export function countrySeriesIdentity(
   const name = who.name.status === 'ready' ? who.name.value : identityTag;
   const flag: ChartArtSlot | undefined = !withFlag
     ? undefined
-    : who.flagChoice?.status === 'ready'
-      ? { art: readView.art(flagArtHandle(who.flagChoice.value, 'panel')), tag: identityTag }
-      : who.flagChoice?.status === 'absent'
-        ? { art: missingArt(who.flagChoice.reason), tag: identityTag }
-        : who.flagChoice?.status === 'failed'
-          ? { art: failedArt(who.flagChoice.reason, who.flagChoice.retryable), tag: identityTag }
-          : { art: PENDING_ART, tag: identityTag };
+    : { art: flagChoiceArt(readView, who.flagChoice), tag: identityTag };
   return { identityTag, name, ...(flag ? { flag } : {}) };
 }
 

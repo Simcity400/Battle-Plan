@@ -338,6 +338,7 @@ impl AtHour for CountryStabilityBreakdown {
     const KEY: &'static str = "country-stability-breakdown";
     const TITLE: &'static str = "Stability breakdown";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("stamps frame.hour into StabilityBreakdownReply.hour and missing-inputs warning");
     type Params = StabilityBreakdownParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = StabilityBreakdownReply;
@@ -480,6 +481,7 @@ impl AtHour for StabilityPartNames {
     const KEY: &'static str = "stability-part-names";
     const TITLE: &'static str = "Stability parts";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("stamps frame.hour into StabilityPartNamesReply.hour");
     type Params = StabilityPartNamesParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, parts];
     type Reply = StabilityPartNamesReply;

@@ -5,7 +5,9 @@ import { engineHour } from '../../dashboard/calendar.ts';
 import type { PaintInput } from '../../draw/lane.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
 import { createLaneArtProvider } from '../art/provider.ts';
-import { missingArt, PENDING_ART } from '../art/types.ts';
+import { PENDING_ART, productArt } from '../art/types.ts';
+
+const missingArt = (reason: string) => productArt({ status: 'confirmedMissing', reason });
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { IdentityIndex } from '../identity/index.ts';

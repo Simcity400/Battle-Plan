@@ -107,10 +107,10 @@ export const organisationsProjection: TableProjection<OrganisationsProjectionOpt
           funds: { value: funds(valueFromLive(live, liveKey(row.id, 'funds'), row.detailsMissing ? { overrideMissing: row.detailsMissing } : undefined)), format: 'integer' },
           traits: { value: count(row.traits, row.detailsMissing ?? 'Traits not recorded'), format: 'integer' },
           policy: { value: policyValue(row) },
-          view: { value: options.canOpen ? knownValue('View') : notApplicable('The policy window is not available yet') },
+          view: { value: options.canOpen ? knownValue('View') : notApplicable('The organisation window is not available yet') },
         },
         tooltipExtra: extra,
-        ...(options.canOpen ? { tooltipAction: 'Open its policies' } : {}),
+        ...(options.canOpen ? { tooltipAction: 'Open its organisation window' } : {}),
         meta,
       };
     });
