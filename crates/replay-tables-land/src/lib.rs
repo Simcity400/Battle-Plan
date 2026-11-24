@@ -48,6 +48,7 @@ replay_rows::row_ops! {
     DivisionLandInputs => DivisionLandInputsRow,
     LandCombatResults => LandCombatResultsRow,
     DestroyedDivisions => DestroyedDivisionsRow,
+    LandCombatEdges => LandCombatEdgesRow,
     LandEventCoverage => LandEventCoverageRow,
     LandCombatDivisionModifiers => LandCombatDivisionModifierRow,
     DivisionHistory => SharedDivisionHistoryRow,

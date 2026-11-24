@@ -3,7 +3,7 @@ use dashboard_base::products::{Country, regions::{ActiveRegions, NoRegions, auto
 use dashboard_base::{products::{LoadContext, Product}, queries::country_ids::{Names, RunLinks}};
 use dashboard_base::{Source, catalogue, span::HourSpan};
 use dashboard_base::products::resources::ResourceNaming;
-use dashboard_query::{Query, identity::Holder, read};
+use dashboard_query::{Query, coverage::{self, Witness}, identity::Holder, read};
 use dashboard_world::products::styles::LookResolver;
 use replay_recording::columnar_frames::{Recording, complete as status_complete};
 use replay_lanes::{at::Seeker, lanes::{self, Cell, History, Keys}};
@@ -30,6 +30,7 @@ const NO_ROUTE: u8 = 0;
 const NAVAL_ROUTE: u8 = 2;
 pub const TRAFFIC_NOT_RECORDED: &str = "regional convoy traffic was not recorded";
 const GAP_NOT_RECORDED: &str = "The recording holds no hour here";
+const UNREAD_PROBE: u128 = u128::MAX;
 
 const REGION_EFFICIENCY: usize = 0;
 const LINK_SLOT: usize = 0;
@@ -483,6 +484,7 @@ pub(crate) fn build_region_cells(
     efficiency: &[(i32, i32, i64)],
     traffic: &[(i32, i32, TrafficProof)],
     known: &[HourSpan],
+    unread: &[(i32, i32, String)],
     unheld: &[HourSpan],
     gaps: &[(HourSpan, &str)],
     from: i32,
@@ -510,6 +512,9 @@ pub(crate) fn build_region_cells(
     for span in known {
         mark(span.first_hour, span.last_hour);
     }
+    for &(a, b, _) in unread {
+        mark(a, b);
+    }
     for span in unheld {
         mark(span.first_hour, span.last_hour);
     }
@@ -525,6 +530,10 @@ pub(crate) fn build_region_cells(
         let idx = efficiency.partition_point(|r| r.1 < h);
         (idx < efficiency.len() && efficiency[idx].0 <= h).then(|| efficiency[idx].2)
     };
+    let unread_at = |h: i32| {
+        let idx = unread.partition_point(|r| r.1 < h);
+        unread.get(idx).filter(|r| r.0 <= h).map(|r| r.2.clone())
+    };
     let traffic_at = |h: i32| {
         let idx = traffic.partition_point(|r| r.1 < h);
         (idx < traffic.len() && traffic[idx].0 <= h).then(|| &traffic[idx].2)
@@ -537,10 +546,10 @@ pub(crate) fn build_region_cells(
             ConvoyCellState::NotRecorded { reason: if reason.is_empty() { GAP_NOT_RECORDED.to_owned() } else { (*reason).to_owned() } }
         } else if in_spans(unheld, start) {
             ConvoyCellState::NotRecorded { reason: "No country holds this tag at this hour".into() }
-        } else if !in_spans(known, start) {
-            ConvoyCellState::NotRecorded { reason: "Regional convoy efficiency was not recorded".into() }
         } else if let Some(value) = eff_at(start) {
             ConvoyCellState::Efficiency { value }
+        } else if !in_spans(known, start) {
+            ConvoyCellState::NotRecorded { reason: unread_at(start).unwrap_or_else(|| "Regional convoy efficiency was not recorded".into()) }
         } else {
             match traffic_at(start) {
                 Some(proof) if proof.crossed.contains(&region) => ConvoyCellState::Efficiency { value: i64::from(SCALE) },
@@ -564,6 +573,7 @@ struct Gathered {
     deals: BTreeMap<u128, ConvoyDeal>,
     leases: BTreeMap<u128, ConvoyLease>,
     known: [Vec<HourSpan>; 3],
+    unread: Vec<(i32, i32, String)>,
 }
 
 fn deal(key: u128) -> ConvoyDeal {
@@ -687,6 +697,11 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
                 (ConvoyView::Regions, ..) => {
                     let owner = u128::from(id) << 32;
                     let read = history(recording, run, TableId::RegionalConvoyEfficiency, &[REGION_EFFICIENCY], Keys::Range(owner, owner | u128::from(u32::MAX)), first, last)?;
+                    for held in read.statuses.iter().filter(|held| !status_complete(held.status)) {
+                        if let Witness::NotRecorded(reason) = coverage::reading_witness(TableId::RegionalConvoyEfficiency, read.reading(UNREAD_PROBE, held.first)) {
+                            gathered.unread.push((held.first.max(first), held.last.min(last), reason));
+                        }
+                    }
                     for (key, runs) in read.runs(REGION_EFFICIENCY).unwrap_or_default() {
                         let region = gathered.regions.entry(key as u32).or_default();
                         for run in numbers(&runs, &[(first, last)]) {
@@ -939,7 +954,7 @@ struct Window<'q> {
 
 impl Window<'_> {
     fn cells(&self, region: u32, efficiency: &[(i32, i32, i64)], from: i32, to: i32) -> Vec<ConvoyCellRun> {
-        build_region_cells(region, efficiency, &self.gathered.traffic, &self.known[0], &self.unheld, &self.gaps, from, to)
+        build_region_cells(region, efficiency, &self.gathered.traffic, &self.known[0], &self.gathered.unread, &self.unheld, &self.gaps, from, to)
     }
 }
 

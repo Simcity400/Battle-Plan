@@ -14494,6 +14494,7 @@ dependencies = [
  "dashboard-core",
  "dashboard-effects",
  "dashboard-follow",
+ "dashboard-intelligence",
  "dashboard-land",
  "dashboard-politics",
  "dashboard-text",

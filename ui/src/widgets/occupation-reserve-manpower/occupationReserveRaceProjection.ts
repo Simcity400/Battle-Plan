@@ -146,7 +146,9 @@ export const occupationReserveRaceProjection: BarsProjection<OccupationReserveRa
       ...baseModel,
       rows,
       warnings,
-      ...(!rows.length ? { empty: options.group ? GROUP_EMPTY : 'No reserve manpower is held at this date.', emptyKind: 'empty' as const } : {}),
+      ...(rows.length ? {} : reply.noneMissing !== null
+        ? { empty: reply.noneMissing, emptyKind: 'unavailable' as const }
+        : { empty: options.group ? GROUP_EMPTY : 'No reserve manpower is held at this date.', emptyKind: 'empty' as const }),
     };
   },
 }, 'main');
