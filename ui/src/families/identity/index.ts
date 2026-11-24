@@ -37,10 +37,16 @@ import {
   type IdentitySnapshot,
   type SnapshotFailure,
   type SnapshotFailures,
+  type SpanFailure,
   type StyleIntervalEntry,
 } from './types.ts';
 
 type FactRun = readonly [number, number, number, number, number];
+type EntityFailure = { readonly from: number; readonly to: number; readonly failure: Failure };
+
+function withoutSpan(failures: readonly EntityFailure[] | undefined, from: number, to: number): readonly EntityFailure[] {
+  return (failures ?? []).filter(held => held.to < from || held.from > to);
+}
 type RawSlotEntry = { readonly firstHour: number; readonly lastHour: number; readonly countryId: number; readonly tag: string };
 
 const NO_RUNS: readonly HolderRun[] = [];
@@ -195,7 +201,7 @@ export class IdentityIndex {
   private styleRuns = new Map<string, StyleIntervalEntry[]>();
   private styleFailures = new Map<string, Failure>();
   private entityRuns = new Map<string, EntityRunEntry[]>();
-  private entityFailures = new Map<string, Failure>();
+  private entityFailures = new Map<string, readonly EntityFailure[]>();
   private entityUnknown = new Map<EntityIdentityKey['kind'], RecordingGap[]>();
   private drawnFlags = new Map<string, DrawnFlagEntry>();
   private resolveChanges = 0;
@@ -233,7 +239,9 @@ export class IdentityIndex {
     if (failures?.identities) index.identitiesFailure = keptFailure(failures.identities);
     if (failures?.groups) index.groupsFailure = keptFailure(failures.groups);
     for (const [key, sent] of Object.entries(failures?.styles ?? {})) index.styleFailures.set(key, keptFailure(sent));
-    for (const [key, sent] of Object.entries(failures?.entities ?? {})) index.entityFailures.set(key, keptFailure(sent));
+    for (const [key, sent] of Object.entries(failures?.entities ?? {})) {
+      index.entityFailures.set(key, sent.map(span => ({ from: span.from, to: span.to, failure: keptFailure(span) })));
+    }
     return index;
   }
 
@@ -247,7 +255,10 @@ export class IdentityIndex {
     const entityUnknown: Partial<Record<EntityIdentityKey['kind'], readonly RecordingGap[]>> = {};
     for (const [kind, spans] of this.entityUnknown) entityUnknown[kind] = spans;
     const styleFailures = sentFailures(this.styleFailures);
-    const entityFailures = sentFailures(this.entityFailures);
+    let entityFailures: Record<string, readonly SpanFailure[]> | undefined;
+    for (const [key, spans] of this.entityFailures) {
+      if (spans.length) (entityFailures ??= {})[key] = spans.map(span => ({ from: span.from, to: span.to, ...sentFailure(span.failure) }));
+    }
     const failures: SnapshotFailures = {
       ...(this.factsFailure ? { facts: sentFailure(this.factsFailure) } : {}),
       ...(this.identitiesFailure ? { identities: sentFailure(this.identitiesFailure) } : {}),
@@ -443,7 +454,9 @@ export class IdentityIndex {
     kept.push(...runs);
     kept.sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour);
     this.entityRuns.set(id, kept);
-    this.entityFailures.delete(id);
+    const failures = withoutSpan(this.entityFailures.get(id), from, to);
+    if (failures.length) this.entityFailures.set(id, failures);
+    else this.entityFailures.delete(id);
     this.resolveChanges++;
   }
 
@@ -457,8 +470,9 @@ export class IdentityIndex {
     this.resolveChanges++;
   }
 
-  setEntityFailure(key: EntityIdentityKey, failure: Failure): void {
-    this.entityFailures.set(identityKeyString(key), failure);
+  setEntityFailure(key: EntityIdentityKey, from: number, to: number, failure: Failure): void {
+    const id = identityKeyString(key);
+    this.entityFailures.set(id, [...withoutSpan(this.entityFailures.get(id), from, to), { from, to, failure }]);
     this.resolveChanges++;
   }
 
@@ -914,8 +928,8 @@ export class IdentityIndex {
         warnings: entry.warnings ?? [],
       };
     }
-    const failure = this.entityFailures.get(id);
-    if (failure) return { kind: 'failed', failure };
+    const failed = this.entityFailures.get(id)?.find(span => span.from <= at && at <= span.to);
+    if (failed) return { kind: 'failed', failure: failed.failure };
     return { kind: 'pending' };
   }
 }
