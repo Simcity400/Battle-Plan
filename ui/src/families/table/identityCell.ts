@@ -24,10 +24,6 @@ export function artState(readView: BoundedReadView, handle: ArtHandle | null): A
   return {};
 }
 
-export function urlArtHandle(url: string | null | undefined): ArtHandle | null {
-  return url ? { kind: 'url', url } : null;
-}
-
 function flagState(readView: BoundedReadView, choice: FieldStatus<string> | undefined, size: ArtFlagSize): ArtState {
   if (!choice) return {};
   if (choice.status === 'ready') return artState(readView, flagArtHandle(choice.value, size));

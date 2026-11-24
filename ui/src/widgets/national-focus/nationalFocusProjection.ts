@@ -4,7 +4,7 @@ import { cardMediaFromIcon, type CardHeroRow, type CardModel, type CardProjectio
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notRecorded, type Value } from '../../families/value.ts';
-import { formatDateHover, formatDateOnly } from '../../families/valueFormat.ts';
+import { formatDateHover, formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { FocusCardArt, FocusCardCurrent, FocusCardReply } from '../../generated/dashboard';
 
 const COLUMNS = { date: true, art: { width: 30, height: 30 } } as const;
@@ -14,7 +14,7 @@ function nameOf(art: FocusCardArt): Value<string> {
 }
 
 function daysText(days: number): string {
-  return Number.isInteger(days) ? String(days) : days.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+  return formatScalar(days, { decimals: 0, maxDecimals: 2 });
 }
 
 function heroRow(readView: BoundedReadView, current: FocusCardCurrent, hour: number): CardHeroRow {

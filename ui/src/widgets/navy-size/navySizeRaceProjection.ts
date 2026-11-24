@@ -12,7 +12,6 @@ import {
   type SeriesRaceBaseOptions,
 } from '../../families/bars/seriesRace.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
-import { OPTIONS } from './definition.ts';
 
 export type NavyMeasureOption = 'ships' | 'strength';
 export type NavyOwnershipOption = 'roster' | 'logical';
@@ -147,7 +146,6 @@ export const navySizeRaceDeclaration: BarsWidgetDeclaration<NavySizeRaceOptions>
   subject: 'navies',
   emptyCampaign: 'Load a campaign to see its navies.',
   icon: 'flows',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

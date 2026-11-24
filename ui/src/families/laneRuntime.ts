@@ -9,7 +9,7 @@ import { IdentityIndex } from './identity/index.ts';
 import { createSnapshotIdentityProvider } from './identity/provider.ts';
 import type { IdentitySnapshot } from './identity/types.ts';
 import type { FamilyId } from './plan.ts';
-import { ensureFamilyProjection, familyProjectionFailure, retryFamilyProjection } from './registry.ts';
+import { ensureBoundProjection, familyProjectionFailure, retryFamilyProjection, unknownProjectionReason } from './registry.ts';
 import { projectScene, samePictures, sceneReadView, snapshotPictures, stringifyTooltipPayload, type SceneProjection, type SceneReaders } from './scene.ts';
 
 export interface LaneBinding<TOptions = unknown> {
@@ -21,6 +21,7 @@ export interface LaneBinding<TOptions = unknown> {
   readonly staticPanels?: Readonly<Record<string, unknown>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly scrollTop: number;
+  readonly scrollLeft?: number;
   readonly theme?: FamilyTheme;
   readonly identitySnapshot?: IdentitySnapshot | null;
   readonly artResolutions?: ArtResolutions;
@@ -48,6 +49,7 @@ export interface LaneFrame<TBinding extends LaneBinding, TModel, TLayout> {
   readonly now: number;
   readonly speed: number;
   readonly art: LaneArtCache;
+  readonly artProvider: ArtProvider;
   readonly index: IdentityIndex | null;
   readonly projection: FamilyProjection<TModel, unknown>;
   readonly projected: BoundedReadView;
@@ -129,6 +131,17 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   auditField: Field | null;
 }
 
+const snapshots = new WeakMap<IdentitySnapshot, { readonly index: IdentityIndex; readonly identity: IdentityProvider }>();
+
+function indexedSnapshot(snapshot: IdentitySnapshot): { readonly index: IdentityIndex; readonly identity: IdentityProvider } {
+  let held = snapshots.get(snapshot);
+  if (!held) {
+    const index = IdentityIndex.fromSnapshot(snapshot);
+    snapshots.set(snapshot, held = { index, identity: createSnapshotIdentityProvider(index) });
+  }
+  return held;
+}
+
 const MIRROR_CADENCE_MS = 1000;
 const TOOLTIP_CADENCE_MS = 250;
 const EMPTY: Painted = { surfaces: [], fields: {}, motion: false };
@@ -170,7 +183,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     return waker;
   };
   const projectionOf = (binding: TBinding, widget: number) =>
-    ensureFamilyProjection<TModel, unknown>(family.family, binding.kind, binding.view, wakerOf(widget)) as FamilyProjection<TModel, unknown> | 'loading' | 'unknown';
+    ensureBoundProjection<TModel, unknown>(binding, wakerOf(widget)) as FamilyProjection<TModel, unknown> | 'loading' | 'unknown';
   const sameInputs = (held: Held<TBinding, TModel, TLayout>, binding: TBinding, scene: Scene, hour: number): boolean =>
     held.projected !== null
     && held.kind === binding.kind
@@ -255,7 +268,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       if (projection === 'loading') return EMPTY;
       if (projection === 'unknown') {
         const failure = familyProjectionFailure(family.family, binding.kind, binding.view);
-        if (!failure) return { ...EMPTY, mode: 'refused', reason: `Unknown ${family.family} view: ${binding.kind}` };
+        if (!failure) return { ...EMPTY, mode: 'refused', reason: unknownProjectionReason(binding) };
         const failedAt = failedGenerations.get(input.widget);
         if (failedAt !== undefined && failedAt !== input.binding.generation) {
           failedGenerations.delete(input.widget);
@@ -264,7 +277,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           return EMPTY;
         }
         failedGenerations.set(input.widget, input.binding.generation);
-        throw new Error(`The ${binding.kind} view did not load: ${failure}`);
+        throw new Error(unknownProjectionReason(binding));
       }
 
       let held = state.get(stateKey) as Held<TBinding, TModel, TLayout> | undefined;
@@ -287,8 +300,9 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const readersChanged = keep.snapshot !== snapshot || keep.artResolutions !== binding.artResolutions;
       if (keep.snapshot !== snapshot) {
         keep.snapshot = snapshot;
-        keep.index = snapshot ? IdentityIndex.fromSnapshot(snapshot) : null;
-        keep.identity = keep.index ? createSnapshotIdentityProvider(keep.index) : undefined;
+        const indexed = snapshot ? indexedSnapshot(snapshot) : null;
+        keep.index = indexed?.index ?? null;
+        keep.identity = indexed?.identity;
       }
       if (readersChanged) {
         keep.artResolutions = binding.artResolutions;
@@ -360,6 +374,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         now: input.now,
         speed: input.speed,
         art: keep.art,
+        artProvider: keep.artProvider,
         index: keep.index,
         projection,
         projected: projected.view,
@@ -400,7 +415,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       Object.assign(fields, keep.structureFields);
 
       const now = input.now;
-      const mirrorKey = `${binding.focusedKey ?? ''}\u0000${binding.scrollTop}`;
+      const mirrorKey = `${binding.focusedKey ?? ''}\u0000${binding.scrollLeft ?? 0}\u0000${binding.scrollTop}`;
       if (!keep.mirrorField || keep.mirrorGate.due(now, input.speed, mirrorKey)) {
         keep.mirrorField = field(keep, 'mirror', family.mirror(frame), content);
         keep.mirrorGate.record(now, mirrorKey);
@@ -447,7 +462,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       return {
         ...(status === 'picture' ? { mode: 'picture' as const } : {}),
         ...nextChangeAt,
-        viewport: { width: surface.width, height: surface.height, dpr, scrollLeft: 0, scrollTop: binding.scrollTop },
+        viewport: { width: surface.width, height: surface.height, dpr, scrollLeft: binding.scrollLeft ?? 0, scrollTop: binding.scrollTop },
         surfaces: [{ source: keep.canvas, content: keep.content }],
         fields,
         motion: keep.motion,

@@ -35,6 +35,7 @@ test('a template row carries the product’s manpower total and the title its di
   assert.equal(order!.initiallyOpen, true, 'the first order opens, as the approved crop shows');
   const [first, second] = order!.children!;
   assert.deepEqual([first!.cells.training!.value, first!.cells.equipment!.value], [knownValue(92), knownValue(100)]);
+  assert.deepEqual([order!.cells.division!.iconSlot, first!.cells.division!.iconSlot], [true, undefined], 'only a template row has an art slot');
   assert.deepEqual(second!.cells.equipment!.value, notRecorded('A held design’s equipment type is unresolved'), 'an unmeasurable fill is missing with its reason, never 0');
 });
 

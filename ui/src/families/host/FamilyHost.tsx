@@ -28,6 +28,7 @@ import type {
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { CountryLooksMap } from '../looks.ts';
 import {
+  familyBinding,
   lazyActionKeys,
   type FamilyArtDemand,
   type FamilyContextHit,
@@ -533,7 +534,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
     const staticPanels = cur.staticSources?.panels;
     const staticAnswers = cur.staticSources?.answers;
-    const binding = curAdapter.buildBinding({
+    const binding = familyBinding(curAdapter, {
       kind: cur.declaration.kind,
       view: cur.view,
       options: cur.options,
@@ -626,7 +627,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const dispatch = useCallback((command: HostCommand, input: HostInput): boolean => {
     const current = resolveInstalledRef.current();
     const picture = input.picture;
-    if (heldRef.current || dimRef.current || !current || !picture || picture.id !== current.id || picture.owner !== current.owner) return false;
+    if (heldRef.current || dimRef.current || !current || !picture || picture.owner !== current.owner) return false;
     const activeAdapter = latestRef.current.adapter;
     if (input.key !== null && !input.hit && !keyInPicture(activeAdapter, picture, input.key)) return false;
     if (command === 'menu') {
@@ -787,7 +788,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       const frameNode = frameRef.current;
       const cur = latestRef.current;
       const activeAdapter = cur.adapter;
-      dimRef.current = !!shown?.dim && shown.installedBinding === shown.binding;
+      dimRef.current = shown?.expired === true;
       holdElement(frameNode, !!shown?.dim);
       const visible = shown?.mode === 'picture';
       if (lastVisibleRef.current !== visible) {

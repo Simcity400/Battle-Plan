@@ -1,5 +1,3 @@
-import { usNumber } from '../../charts/numberFormat.ts';
-import { formatDateTime } from '../../dashboard/calendar.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import {
@@ -12,9 +10,10 @@ import {
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, valueFromNullable, type Value } from '../../families/value.ts';
+import { formatDateHover, formatScalar } from '../../families/valueFormat.ts';
 import type { DivisionTemplatesReply, TemplateEntry } from '../../generated/dashboard';
 import { gameWindow } from '../../dashboard/gameWindows.ts';
-import { OPTIONS, TABLE_BASE } from './definition.ts';
+import { TABLE_BASE } from './definition.ts';
 import {
   battalionCount,
   priorityLabel,
@@ -232,8 +231,8 @@ export const divisionTemplateProjection: TableProjection<DivisionTemplateProject
           { label: 'Accepts new equipment', value: yesNoValue(entry.newEquipment) },
           { label: 'Accepts foreign equipment', value: yesNoValue(entry.foreignEquipment) },
         );
-        if (entry.manpower !== null) extra.push({ label: 'Manpower', value: knownValue(usNumber.format(entry.manpower)) });
-        if (entry.obsoleteHour !== null) extra.push({ label: 'Obsolete since', value: knownValue(formatDateTime(entry.obsoleteHour)) });
+        if (entry.manpower !== null) extra.push({ label: 'Manpower', value: knownValue(formatScalar(entry.manpower, 'integer')) });
+        if (entry.obsoleteHour !== null) extra.push({ label: 'Obsolete since', value: knownValue(formatDateHover(entry.obsoleteHour)) });
       } else {
         extra.push({ label: 'Settings', value: notRecorded(entry.settingsMissing), divider: true });
       }
@@ -248,7 +247,6 @@ export const divisionTemplateDeclaration: TableWidgetDeclaration<DivisionTemplat
   label: 'Division templates',
   subject: 'templates',
   emptyCampaign: 'Load a campaign to see templates.',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its templates.' },
   sources: ctx => {
     const params = ctx.countryTag

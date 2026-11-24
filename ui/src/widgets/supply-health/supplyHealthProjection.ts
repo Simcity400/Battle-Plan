@@ -1,4 +1,3 @@
-import { usNumber } from '../../charts/numberFormat.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import {
@@ -21,7 +20,7 @@ import {
   buildBoundedStack,
   seriesHeadValue,
 } from '../../families/time-chart/seriesHelpers.ts';
-import { notRecordedLabel } from '../../families/valueFormat.ts';
+import { formatScalar, notRecordedLabel } from '../../families/valueFormat.ts';
 import type { SeriesState } from '../../generated/dashboard';
 import {
   formatShare,
@@ -103,7 +102,7 @@ function supplyHoverDetail(readView: BoundedReadView, tag: string): ChartHoverDe
     return {
       label: STATE_LABELS[state],
       swatch: BAND_COLOURS[state],
-      value: `${formatShare(count, total)} · ${usNumber.format(count)} ${count === 1 ? 'division' : 'divisions'}`,
+      value: `${formatShare(count, total)} · ${formatScalar(count, 'integer')} ${count === 1 ? 'division' : 'divisions'}`,
     };
   });
   return { hour, replacesSeries: true, items };

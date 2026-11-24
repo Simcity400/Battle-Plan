@@ -3,10 +3,10 @@ import type { TableWidgetDeclaration } from '../../families/table/declaration.ts
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { formatDateOnly } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import { knownValue, textValue, notApplicable, notRecorded, valueFromNullable, type Value } from '../../families/value.ts';
 import type { NavalRefitsReply, RefitLine, YardShip } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
+import { COLUMNS, TABLE_BASE } from './definition.ts';
 import { fixedText, fraction, refitProgress, shipLabel, shipPicture, shipPictureCell, shipStrength, shipTooltip, validateRefits } from './yardsData.ts';
 import type { ArtState } from '../../families/table/identityCell.ts';
 
@@ -29,7 +29,7 @@ const [NAME, PROGRESS, STRENGTH, DOCKYARDS] = COLUMNS;
 const REFIT_COLUMNS: readonly DeclarativeColumnSpec<RefitRow, Record<string, never>>[] = [
   { ...NAME!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Early Cruiser C Klasse refit line'],
     value: row => row.kind === 'line' ? lineName(row.line) : knownValue(shipLabel(row.ship).name),
-    iconSlot: true, extra: row => (row.kind === 'ship' ? shipPictureCell(row.ship, row.picture) : {}) },
+    extra: row => (row.kind === 'ship' ? shipPictureCell(row.ship, row.picture) : {}) },
   { ...PROGRESS!, priority: 1, numeric: true, format: PERCENT, widest: ['100.0%'], value: () => notApplicable(ON_LINE) },
   { ...STRENGTH!, priority: 2, numeric: true, format: PERCENT, widest: ['100.0%'], value: () => notApplicable(ON_SHIP) },
   { ...DOCKYARDS!, priority: 3, numeric: true, format: 'integer', widest: ['99'],
@@ -68,7 +68,7 @@ export const refitsProjection: TableProjection<Record<string, never>> = register
             ? { empty: 'No refits at this date', emptyKind: 'empty' as const }
             : { empty: 'Refits were not fully recorded at this date', emptyKind: 'unavailable' as const }
           : {}),
-        titleSummary: reply.dockyards === null ? null : `${reply.dockyards.toLocaleString('en-US')} ${reply.dockyards === 1 ? 'dockyard' : 'dockyards'}`,
+        titleSummary: reply.dockyards === null ? null : `${formatScalar(reply.dockyards, 'integer')} ${reply.dockyards === 1 ? 'dockyard' : 'dockyards'}`,
         warnings: reply.warnings,
       };
     },
@@ -82,7 +82,7 @@ export const refitsProjection: TableProjection<Record<string, never>> = register
           { label: 'Work done', value: icText(row.line.progress, 'Refit progress not recorded'), divider: true },
           { label: 'Cost', value: icText(row.line.cost, 'Refit cost not recorded') },
           { label: 'Remaining cost', value: icText(row.line.remaining, 'Remaining cost not recorded') },
-          { label: 'Ships', value: knownValue(row.line.ships.length.toLocaleString('en-US')) },
+          { label: 'Ships', value: knownValue(formatScalar(row.line.ships.length, 'integer')) },
           ...(reply.costRead === null ? [] : [{ label: 'Cost read', value: knownValue(formatDateOnly(reply.costRead)) }]),
         ],
   }),
@@ -95,7 +95,6 @@ export const refitsDeclaration: TableWidgetDeclaration<Record<string, never>> = 
   subject: 'refits',
   emptyCampaign: 'Load a campaign to see refits.',
   icon: 'cube',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its refits.' },
   sources: ctx => {
     const params = ctx.countryTag ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) } : null;

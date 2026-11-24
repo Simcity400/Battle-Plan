@@ -5,6 +5,9 @@ import type { CountryFlowReply } from '../../generated/dashboard';
 import { projectCountryFlow, type CountryFlowText } from './countryFlow.ts';
 import { deriveFlowAudit, findFlowTooltip } from './model.ts';
 import { hitFlow, layoutFlow } from './painter.ts';
+import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
+import { registerFamilyProjection } from '../registry.ts';
+import { familyFlowLaneView } from './laneView.ts';
 
 const HOUR = 60_810_000;
 const TEXT: CountryFlowText = {
@@ -76,6 +79,19 @@ test('the layout gives every ribbon its width at both ends, keeps labels apart, 
   assert.equal(hitFlow(layout, middleX, middleY), 'ribbon:HOL>USA');
   assert.equal(hitFlow(layout, hol.x - 20, hol.y + hol.height / 2), 'node:HOL');
   assert.ok(layout.bodyTop + 26 * layout.scale <= 360);
+
+  registerFamilyProjection({ kind: 'test-flow', family: 'flow', project: readView => projectCountryFlow(readView, TEXT) });
+  const lane = (reply: CountryFlowReply) => ({ family: 'flow', kind: 'test-flow', options: {}, sources: {}, staticPanels: { main: reply }, scrollTop: 0, theme: LANE_THEME, width: 846, height: 360 });
+  const held = lane(centred);
+  const corrected: CountryFlowReply = { ...centred, outgoing: [{ ...centred.outgoing[0]!, total: amount(70), amounts: [{ part: 0, amount: amount(70) }] }], outgoingTotal: amount(70) };
+  const surface = { width: 846, height: 360, dpr: 1 };
+  assertQuietFrames(() => familyFlowLaneView(() => {}), { label: 'flow', binding: held, hour: HOUR }, 24, surface);
+  assertFreshPaint(() => familyFlowLaneView(() => {}), [
+    { label: 'held', binding: held, hour: HOUR, check: true },
+    { label: 'later', binding: held, hour: HOUR + 30, speed: 24 },
+    { label: 'seek back', binding: held, hour: HOUR, check: true },
+    { label: 'correction', binding: lane(corrected), hour: HOUR, check: true },
+  ], surface);
 });
 
 test('a group subject is a bipartite flow of the product\'s senders and receivers', () => {

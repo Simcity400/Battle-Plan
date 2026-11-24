@@ -24,7 +24,8 @@ import { AuditSnapshotStore, canonicalAuditData, canonicalAuditValue } from '../
 import { CadenceGate, TrailingFlushScheduler } from '../cadence.ts';
 import { createBoundedReadView } from '../boundedView.ts';
 import { holderRunAt, nextHoldersChange, nextRangesChange, nextWindowRangesChange, overlapsHourRanges, resolveSlotHolderRuns } from '../holders.ts';
-import { effectiveCountryUnobserved, resolveDisplayedStaticSnapshot, resolveRetainedHeadSpan, selectionUnobservedReason } from '../sources.ts';
+import { showBundle, type Settlement } from '../readUnits.ts';
+import { effectiveCountryUnobserved, selectionUnobservedReason } from '../sources.ts';
 import { SlotTags } from '../../dashboard/countrySlots.ts';
 import { groupUnobserved } from '../../dashboard/groups.ts';
 import { capturePictures, capturePicturesBatch } from '../../dashboard/pulled.ts';
@@ -33,7 +34,6 @@ import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partia
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
 import { computeColumnMaxima, declareTableProjection, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
 import { computeRowLayout, createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
-import { openGate } from '../../test-support/gated.ts';
 import { NOT_NAMED } from '../../widgets/occupied-states/occupiedStatesData.ts';
 
 const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
@@ -829,7 +829,6 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
   assert.throws(() => store.require(undefined), /Not auditable/);
   assert.throws(() => store.require(999), /Not auditable/);
 
-  assert.deepEqual(resolveRetainedHeadSpan(JSON.stringify([10, 100, 1]), [50, 200]), [10, 100], 'retained static head span comes from reply moment, not newer staticRange');
   assert.deepEqual(effectiveCountryUnobserved({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), []);
   assert.deepEqual(effectiveCountryUnobserved({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), [[10, 20]]);
 
@@ -1044,37 +1043,23 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
   assert.equal(selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), null);
   assert.equal(selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), null);
 
-  const retainedData = { series: [] };
-  const ctxA = { tag: 'A', role: 'occupier' };
-  const ctxB = { tag: 'B', role: 'occupied' };
-  const surfaceA = { settings: 'sA', looks: 'lA' };
-  const surfaceB = { settings: 'sB', looks: 'lB' };
-  const frozenGate = openGate(0, 100);
-  const snap1 = resolveDisplayedStaticSnapshot(null, {
-    data: retainedData, moment: undefined, requestKey: 'req-1', satisfiesCurrent: true,
-    requestedSpan: [10, 50], context: ctxA, gate: frozenGate, extra: surfaceA,
-  });
-  const snapRefreshed = resolveDisplayedStaticSnapshot(snap1, {
-    data: retainedData, moment: undefined, requestKey: 'req-1', satisfiesCurrent: true,
-    requestedSpan: [10, 50], context: ctxB, gate: frozenGate, extra: surfaceB,
-  });
-  assert.equal(snapRefreshed?.context, ctxB, 'F1: when reply satisfies current request, option/role/settings/looks changes refresh immediately');
-  assert.equal(snapRefreshed?.extra, surfaceB, 'F1: refreshed snapshot carries current settings and looks');
-  const snapHeld = resolveDisplayedStaticSnapshot(snapRefreshed, {
-    data: retainedData, moment: undefined, requestKey: 'req-2', satisfiesCurrent: false,
-    requestedSpan: [20, 60], context: ctxA, gate: frozenGate, extra: surfaceA,
-  });
-  assert.equal(snapHeld, snapRefreshed, 'S1: retained reply for superseded request freezes complete context, settings, looks and span');
-  assert.deepEqual(snapHeld?.span, [10, 50]);
-  assert.equal(snapHeld?.context, ctxB, 'S1: retained snapshot keeps its frozen context');
-  assert.equal(snapHeld?.extra, surfaceB, 'S1: retained snapshot keeps its frozen settings and looks without leaking current ones');
-  const snap2 = resolveDisplayedStaticSnapshot(snapHeld, {
-    data: { series: [1] }, moment: JSON.stringify([20, 60, 1]), requestKey: 'req-2', satisfiesCurrent: true,
-    requestedSpan: [20, 60], context: ctxA, gate: frozenGate, extra: surfaceA,
-  });
-  assert.deepEqual(snap2?.span, [20, 60], 'S1: updates once new reply arrives');
-  assert.equal(snap2?.context, ctxA, 'S1: updated snapshot carries the new selection context');
-  assert.equal(snap2?.extra, surfaceA, 'S1: updated snapshot carries the new settings and looks');
+  const ctxA = { tag: 'A', role: 'occupier', settings: 'sA', looks: 'lA' };
+  const ctxB = { tag: 'B', role: 'occupied', settings: 'sB', looks: 'lB' };
+  const complete: Settlement = { kind: 'complete', bundle: { hour: 50, span: [10, 50], proof: null, panels: new Map() } };
+  const holding: Settlement = { kind: 'hold' };
+  const bundleAt50 = { span: [10, 50] };
+  const bundleAt60 = { span: [20, 60] };
+  const first = showBundle(null, complete, bundleAt50, 'plan', ctxA);
+  const refreshed = showBundle(first.last, complete, bundleAt50, 'plan', ctxB);
+  assert.equal(refreshed.shown?.frozen, ctxB, 'F1: when every reply answers the current requests, option, role, settings and looks changes refresh immediately');
+  const retained = showBundle(refreshed.last, holding, null, 'plan', ctxA);
+  assert.equal(retained.shown, refreshed.shown, 'S1: while a request is superseded, the last complete bundle is shown with its own context, settings and looks');
+  assert.equal(retained.held, true);
+  assert.equal(retained.shown?.bundle, bundleAt50);
+  const updated = showBundle(retained.last, complete, bundleAt60, 'plan', ctxA);
+  assert.equal(updated.shown?.bundle, bundleAt60, 'S1: updates once the new replies complete a bundle');
+  assert.equal(updated.shown?.frozen, ctxA, 'S1: the updated bundle carries the new selection context');
+  assert.equal(showBundle(updated.last, holding, null, 'other plan', ctxB).shown, null, 'a bundle is never held across a change of plan');
 
   const emptyGsA = gameScoreProjection.project(createBoundedReadView({
     hour: 10,
@@ -1166,6 +1151,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
       model: {
         family: 'table',
         kind: 'game-score',
+        view: 'table',
         options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
         settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }),
         sources: { main: 7 },
@@ -1191,6 +1177,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
       model: {
         family: 'table',
         kind: 'game-score',
+        view: 'table',
         options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
         settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }),
         sources: {},
@@ -1230,6 +1217,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
       model: {
         family: 'table',
         kind: 'game-score',
+        view: 'table',
         options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
         settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }),
         sources: {},
