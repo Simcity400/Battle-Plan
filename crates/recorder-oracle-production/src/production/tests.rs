@@ -2650,4 +2650,5 @@ fn recorded_category_families_must_be_present_and_match_the_installed_executable
     compare_category_families(Ok(&families), Err("another build".into()), &mut withheld).unwrap();
     assert!(withheld.differences.is_empty());
     assert!(!withheld.limitations.is_empty());
+    assert!(withheld.compared_tables.is_empty(), "an uncertified recording is not counted as compared");
 }

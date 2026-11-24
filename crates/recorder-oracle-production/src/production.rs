@@ -1600,12 +1600,14 @@ pub fn compare_category_families(
 ) -> io::Result<()> {
     let recorded = recorded.map_err(|reason| invalid(format!("equipment category families not recorded: {reason}")))?;
     match installed {
-        Ok(installed) => equal(report, "equipment category families", recorded, installed),
+        Ok(installed) => {
+            equal(report, "equipment category families", recorded, installed);
+            report.compared("equipment category families", 1);
+        }
         Err(reason) => report.limitation(
             "the installed executable's category families cannot certify the recorded ones",
             reason,
         ),
     }
-    report.compared("equipment category families", 1);
     Ok(())
 }

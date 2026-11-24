@@ -325,7 +325,10 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
                 .map_err(ToString::to_string)
                 .and_then(|auxiliary| auxiliary.category_families.as_ref().map_err(ToString::to_string))
         };
-        let recorded = recorded_tables(&replay);
+        let recorded = recorded_facts(&replay).and_then(|pack| match pack.binding_differs(&session.identity) {
+            Some(why) => Err(why),
+            None => pack.tables(),
+        });
         let installed = engine_executable::executable_tables::current()
             .ok_or_else(|| "the installed executable's tables are not loaded".to_owned())
             .and_then(|installed| match &recorded {
@@ -1561,7 +1564,7 @@ fn validation_refusal_is_incomplete_even_when_publication_was_deferred() {
     );
 }
 
-fn recorded_tables(replay: &Replay) -> Result<engine_executable::executable_tables::Tables, String> {
+fn recorded_facts(replay: &Replay) -> Result<content_reader_layers::content::facts::Pack, String> {
     let at = replay
         .fact_packs
         .len()
@@ -1570,6 +1573,5 @@ fn recorded_tables(replay: &Replay) -> Result<engine_executable::executable_tabl
     let bytes = replay.facts(at).map_err(|error| error.to_string())?;
     let length = bytes.len() as u64;
     content_reader_layers::content::facts::Pack::open(std::sync::Arc::new(bytes), 0, length)
-        .map_err(|error| error.to_string())?
-        .tables()
+        .map_err(|error| error.to_string())
 }
