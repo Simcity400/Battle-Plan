@@ -8,7 +8,7 @@ import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } f
 import { holderTagAt, inHourRanges, nextHoldersChange, nextMembershipChange, nextRangesChange, type HolderRun, type HourRanges } from '../../families/holders.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notRecorded } from '../../families/value.ts';
-import { formatScalar } from '../../families/valueFormat.ts';
+import { formatScalar, formatShare } from '../../families/valueFormat.ts';
 import type { NuclearArsenalReply, NukeCountry, NukeType } from '../../generated/dashboard';
 import { typeName, validateNuclearArsenal } from './nuclearArsenalData.ts';
 
@@ -24,7 +24,7 @@ export interface NuclearArsenalMixOptions {
 }
 
 function sharePct(share: number): string {
-  return `${Math.round(share * 100)}%`;
+  return formatShare(share);
 }
 
 export const nuclearArsenalMixProjection: BarsProjection<NuclearArsenalMixOptions> = registerFamilyProjection({

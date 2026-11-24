@@ -12,11 +12,18 @@ use std::{collections::HashMap, io};
 
 pub fn touched(reader: &TableReader, key: u128) -> bool {
     let changes = reader.changes();
-    if changes.anew || changes.status_changed || changes.deleted.iter().any(|&(_, deleted)| deleted == key) {
+    if changes.anew || changes.coverage_changed || changes.deleted.iter().any(|&(_, deleted)| deleted == key) {
         return true;
     }
     let Some(slot) = reader.slot(key) else { return false };
     changes.inserted.contains(&slot) || changes.written.iter().any(|slots| slots.contains(&slot))
+}
+
+pub fn number(reader: &TableReader, key: u128, column: usize) -> Option<i64> {
+    if !reader.available() {
+        return None;
+    }
+    reader.view().number(column, reader.slot(key)?)
 }
 
 pub fn row<T: replay_data::rows::TableSchema>(reader: &TableReader, key: u128, format: u16) -> Option<T::Row>

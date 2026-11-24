@@ -272,8 +272,13 @@ impl AtHour for DecoratedDivisions {
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = DecoratedDivisionsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", by, descending, count];
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Reply = DecoratedDivisionsReply;
     type Context = Content;
+
+    fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        filter_valid_through(params.countries.as_deref(), at.hour)
+    }
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
@@ -607,6 +612,16 @@ pub(super) fn first_in_order(mut measured: Vec<Measures>, by: DecoratedRank, des
     }
     measured.sort_unstable_by(order);
     measured
+}
+
+pub(super) fn filter_valid_through(countries: Option<&[CountryHours]>, hour: i32) -> i32 {
+    countries
+        .into_iter()
+        .flatten()
+        .flat_map(|span| [span.first_hour, span.last_hour.saturating_add(1)])
+        .filter(|&boundary| boundary > hour)
+        .min()
+        .map_or(i32::MAX, |boundary| boundary - 1)
 }
 
 fn rank_word(by: DecoratedRank) -> &'static str {

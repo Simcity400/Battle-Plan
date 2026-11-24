@@ -48,6 +48,12 @@ const SHARE_PARTIAL_TAB = 11;
 const SORT_ARROW_WIDTH = 16;
 const KIND_COLUMN_ART = 32;
 const DEFAULT_TEXT_MIN_WIDTH = 128;
+export const TREE_CHEVRON_LANE = 18;
+
+export function treeColumnOf(columns: readonly Pick<FamilyColumnLayout, 'cellKind'>[]): number {
+  const at = columns.findIndex(col => col.cellKind !== 'kind');
+  return at < 0 ? 0 : at;
+}
 const DEFAULT_TEXT_MAX_WIDTH = 260;
 
 const fontString = (theme: Pick<TableTheme, 'font'>, size: number, weight: number) => `${weight} ${size}px ${theme.font}`;

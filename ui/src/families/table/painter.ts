@@ -16,8 +16,8 @@ import type { LaneArtCache } from '../art/laneCache.ts';
 import { hasMeasuredValue, type Value } from '../value.ts';
 import { drawHatchRect, MISSING_BOX_SIZE } from '../valueCanvas.ts';
 import { formatValueState } from '../valueFormat.ts';
-import { drawApprovedCell, TREE_CHEVRON_LANE, TREE_INDENT_PX, type CellRenderContext } from './cellPainters.ts';
-import { LIVE_END_GAP, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
+import { drawApprovedCell, treeLevelsOf, treeTextStart, type CellRenderContext } from './cellPainters.ts';
+import { LIVE_END_GAP, treeColumnOf, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
 import { computeColumnMaxima, resolveCellAtHour, resolveCellPaintModel, type FlatTableRow, type TableCell, type TableRow } from './model.ts';
 import {
   CELL_INSET,
@@ -35,7 +35,7 @@ import {
   type TableTheme,
 } from './settings.ts';
 
-export { computeColumnMaxima, TREE_CHEVRON_LANE, TREE_INDENT_PX };
+export { computeColumnMaxima };
 
 export const WATCHING_SPEED = 24;
 export const FAST_SPEED = 168;
@@ -165,11 +165,6 @@ function nonDataMark(item: Exclude<FlatTableRow, { kind: 'data' }>): string {
   if (item.kind === 'gap') return `gap:${item.firstHour}:${item.lastHour}:${item.reason}`;
   if (item.kind === 'refused') return `ref:${item.reason}`;
   return `load:${item.key}`;
-}
-
-export function treeColumnOf(columns: readonly Pick<FamilyColumnLayout, 'cellKind'>[]): number {
-  const at = columns.findIndex(col => col.cellKind !== 'kind');
-  return at < 0 ? 0 : at;
 }
 
 function barSpanOf(column: FamilyColumnLayout): number {
@@ -432,6 +427,7 @@ export function drawFamilyTable(
     return { kind: 'normal' as const, left: HAIRLINE_INSET };
   };
 
+  const treeLevels = treeLevelsOf(rows);
   const renderCtx: CellRenderContext = {
     ctx,
     theme,
@@ -439,6 +435,7 @@ export function drawFamilyTable(
     barsMode: settings.barsBehind ?? 'all',
     sortedColumn: settings.sort.column,
     treeColumn: treeColumnOf(layout.columns),
+    treeLevels,
     icons,
     artCache,
     measure,
@@ -495,7 +492,7 @@ export function drawFamilyTable(
     const icon = paintModel.icon ?? undefined;
     const iconPending = paintModel.iconPending === true;
     const art = icon === undefined && !iconPending ? '' : `${icon ?? ''}\u0003${icon === undefined ? 3 : artStateOf(icon)}`;
-    const treeKey = item.isTreeGroup ? (item.isOpen ? 'o' : 'c') : String(item.level);
+    const treeKey = `${item.isTreeGroup ? (item.isOpen ? 'o' : 'c') : ''}${treeTextStart(item.level, treeLevels)}`;
     const textVal = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? formatted.label : formatted.text;
     const secVal = cell?.secondaryValue ? (cell.secondaryValue.kind === 'known' || cell.secondaryValue.kind === 'zero' ? String(cell.secondaryValue.value) : cell.secondaryValue.kind) : '';
     const unitArt = cell?.unitIcon ? `${cell.unitIcon}\u0005${artStateOf(cell.unitIcon)}` : (cell?.unitIconPending ? 'p' : '');
@@ -1018,7 +1015,7 @@ export function hitFamilyTable(
   for (let colIndex = 0; colIndex < layout.columns.length; colIndex++) {
     const col = layout.columns[colIndex]!;
     if (bodyX >= x && bodyX < x + col.width) {
-      const toggle = colIndex === treeColumnOf(layout.columns) && item.isTreeGroup && bodyX - x <= CELL_INSET + (col.leadInset ?? 0) + (item.level - 1) * TREE_INDENT_PX + TREE_CHEVRON_LANE + 8;
+      const toggle = colIndex === treeColumnOf(layout.columns) && item.isTreeGroup && bodyX - x <= CELL_INSET + (col.leadInset ?? 0) + treeTextStart(item.level, treeLevelsOf(rows)) + 8;
       const action = col.cellKind === 'action';
       return { kind: 'row', rowKey: item.key, column: col.key, toggle, action };
     }
