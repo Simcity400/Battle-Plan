@@ -425,6 +425,7 @@ export interface FamilyTableLaneOptions {
   readonly clock?: () => number;
   readonly fetchBitmap?: LaneArtFetcher;
   readonly artMaxEntries?: number;
+  readonly artMaxConcurrent?: number;
 }
 
 export function familyTableLaneView(
@@ -500,6 +501,7 @@ export function familyTableLaneView(
         const focusTipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
         const art = new LaneArtCache({
           maxEntries: laneOptions?.artMaxEntries,
+          maxConcurrent: laneOptions?.artMaxConcurrent,
           fetchBitmap: laneOptions?.fetchBitmap,
         });
         state.set('familyTable', held = {

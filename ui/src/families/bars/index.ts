@@ -59,10 +59,8 @@ export {
   registeredBarsKinds,
 } from './registry.ts';
 export {
-  barsReadViewFromScene,
   familyBarsLaneView,
   isFamilyBarsBinding,
-  type BarsReadViewProviders,
   type FamilyBarsBinding,
   type FamilyBarsLaneOptions,
 } from './laneView.ts';
