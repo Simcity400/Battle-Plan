@@ -176,12 +176,12 @@ export default function FamilyHeatLanesHost<TOptions>({
   const metaSigRef = useRef('');
 
   const { theme } = useFamilyTheme(undefined, countryLooks);
-  const { hasFrame, liveRegionRef } = useFamilyAnnouncer('timeline');
+  const { hasFrame, liveRegionRef } = useFamilyAnnouncer('heat-lanes');
 
   const enabled = active && !prepared && !blockedState && (subscriptions.length > 0 || staticSources !== null || allowEmptyFollow);
   const auditable = !!exactReadView;
   const placement = useFamilyPlacement({
-    family: 'timeline',
+    family: 'heat-lanes',
     declarationKind: declaration.kind,
     widgetId: widget.id,
     widgetKind: widget.kind,
@@ -196,7 +196,7 @@ export default function FamilyHeatLanesHost<TOptions>({
     pin: pin ?? (subscriptions.length === 0 && staticSources ? staticSources.hour : null),
     bounds,
     frameRef,
-    surfaceLabel: 'timeline',
+    surfaceLabel: 'heat-lanes',
   });
   const { pipeline, pipe, sourceIdsRef, subsReady, tooltipOwner, dataContextKey, retryStream, retryLocal } = placement;
 
@@ -277,7 +277,7 @@ export default function FamilyHeatLanesHost<TOptions>({
     }
 
     const bindingModel: FamilyHeatLanesBinding<TOptions> = {
-      family: 'timeline',
+      family: 'heat-lanes',
       kind: cur.declaration.kind,
       options: cur.options,
       sources: sourceIdsRef.current,
@@ -296,7 +296,7 @@ export default function FamilyHeatLanesHost<TOptions>({
 
     mounted.canvas.style.width = `${w}px`;
     mounted.canvas.style.height = `${h}px`;
-    pipeline.present(pipe, 'timeline');
+    pipeline.present(pipe, 'heat-lanes');
     const dated = Object.keys(sourceIdsRef.current).length === 0
       ? (cur.staticSources
         ? { h: cur.staticSources.hour, c: cur.staticSources.hour }
@@ -332,7 +332,7 @@ export default function FamilyHeatLanesHost<TOptions>({
     if (!node || !pipeline || pipe === null) return;
     lastMirrorObjRef.current = null;
 
-    const mounted = mountFamilyCanvas(node, pipeline, pipe, 'timeline', 'hf-canvas', 'hf-extent');
+    const mounted = mountFamilyCanvas(node, pipeline, pipe, 'heat-lanes', 'hf-canvas', 'hf-extent');
     surfaceRef.current = mounted;
 
     const auditWatch = attachAuditWatch(pipeline, pipe, {

@@ -121,7 +121,7 @@ export interface HeatLanesModel {
 }
 
 export interface HeatLanesProjection<TOptions = Record<string, never>> extends FamilyProjection<HeatLanesModel, TOptions> {
-  readonly family: 'timeline';
+  readonly family: 'heat-lanes';
   project(readView: BoundedReadView, options: TOptions): HeatLanesModel;
   nextChange?(readView: BoundedReadView, options: TOptions): number;
 }

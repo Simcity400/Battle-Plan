@@ -22,7 +22,7 @@ import { heatMatrixProjection } from './matrixRegistry.ts';
 import { readViewFromHeatScene, samePictures, snapshotPictures, stringifyTooltipPayload } from './sceneReadView.ts';
 
 export interface FamilyHeatMatrixBinding<TOptions = unknown> {
-  readonly family: 'pairs';
+  readonly family: 'heat-matrix';
   readonly kind: string;
   readonly options: TOptions;
   readonly sources: Readonly<Record<string, number>>;
@@ -43,7 +43,7 @@ export interface FamilyHeatMatrixBinding<TOptions = unknown> {
 export function isFamilyHeatMatrixBinding(value: unknown): value is FamilyHeatMatrixBinding {
   return !!value
     && typeof value === 'object'
-    && (value as { family?: unknown }).family === 'pairs'
+    && (value as { family?: unknown }).family === 'heat-matrix'
     && typeof (value as { kind?: unknown }).kind === 'string';
 }
 

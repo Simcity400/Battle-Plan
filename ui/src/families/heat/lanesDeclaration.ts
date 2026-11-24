@@ -16,7 +16,7 @@ export interface LaneActivation {
 }
 
 export interface HeatLanesWidgetDeclaration<TProjectionOptions = Record<string, never>, TAux = unknown> {
-  readonly family: 'timeline';
+  readonly family: 'heat-lanes';
   readonly kind: string;
   readonly label: string;
   readonly subject: string;
@@ -41,7 +41,7 @@ export type AnyHeatLanesWidgetDeclaration = HeatLanesWidgetDeclaration<any, any>
 export function isHeatLanesWidgetDeclaration(value: unknown): value is AnyHeatLanesWidgetDeclaration {
   return !!value
     && typeof value === 'object'
-    && (value as { family?: unknown }).family === 'timeline'
+    && (value as { family?: unknown }).family === 'heat-lanes'
     && 'sources' in value
     && 'projection' in value;
 }

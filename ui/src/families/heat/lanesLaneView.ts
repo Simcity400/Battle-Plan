@@ -23,7 +23,7 @@ import { heatLanesProjection } from './lanesRegistry.ts';
 import { readViewFromHeatScene, samePictures, snapshotPictures, stringifyTooltipPayload } from './sceneReadView.ts';
 
 export interface FamilyHeatLanesBinding<TOptions = unknown> {
-  readonly family: 'timeline';
+  readonly family: 'heat-lanes';
   readonly kind: string;
   readonly options: TOptions;
   readonly sources: Readonly<Record<string, number>>;
@@ -44,7 +44,7 @@ export interface FamilyHeatLanesBinding<TOptions = unknown> {
 export function isFamilyHeatLanesBinding(value: unknown): value is FamilyHeatLanesBinding {
   return !!value
     && typeof value === 'object'
-    && (value as { family?: unknown }).family === 'timeline'
+    && (value as { family?: unknown }).family === 'heat-lanes'
     && typeof (value as { kind?: unknown }).kind === 'string';
 }
 

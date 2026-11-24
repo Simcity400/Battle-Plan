@@ -77,7 +77,7 @@ export interface HeatMatrixModel {
 }
 
 export interface HeatMatrixProjection<TOptions = Record<string, never>> extends FamilyProjection<HeatMatrixModel, TOptions> {
-  readonly family: 'pairs';
+  readonly family: 'heat-matrix';
   project(readView: BoundedReadView, options: TOptions): HeatMatrixModel;
   nextChange?(readView: BoundedReadView, options: TOptions): number;
 }

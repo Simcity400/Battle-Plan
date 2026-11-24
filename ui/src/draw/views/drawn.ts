@@ -90,8 +90,8 @@ export function drawnViews(kind: string, wake: (widget: number) => void): LaneVi
   if (kind === 'panel') return panelTexts();
   if (kind === 'table') return tableView(readingStructure, wake);
   if (kind === 'bars') return familyBarsLaneView(wake);
-  if (kind === 'pairs') return familyHeatMatrixLaneView(wake);
-  if (kind === 'timeline') return familyHeatLanesLaneView(wake);
+  if (kind === 'heat-matrix') return familyHeatMatrixLaneView(wake);
+  if (kind === 'heat-lanes') return familyHeatLanesLaneView(wake);
   if (kind === 'race') return race(wake);
   return undefined;
 }

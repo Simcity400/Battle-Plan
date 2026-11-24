@@ -174,12 +174,12 @@ export default function FamilyHeatMatrixHost<TOptions>({
   const metaSigRef = useRef('');
 
   const { theme } = useFamilyTheme(undefined, countryLooks);
-  const { announce, hasFrame, liveRegionRef } = useFamilyAnnouncer('pairs');
+  const { announce, hasFrame, liveRegionRef } = useFamilyAnnouncer('heat-matrix');
 
   const enabled = active && !prepared && !blockedState && (subscriptions.length > 0 || staticSources !== null || allowEmptyFollow);
   const auditable = !!exactReadView;
   const placement = useFamilyPlacement({
-    family: 'pairs',
+    family: 'heat-matrix',
     declarationKind: declaration.kind,
     widgetId: widget.id,
     widgetKind: widget.kind,
@@ -194,7 +194,7 @@ export default function FamilyHeatMatrixHost<TOptions>({
     pin: pin ?? (subscriptions.length === 0 && staticSources ? staticSources.hour : null),
     bounds,
     frameRef,
-    surfaceLabel: 'pairs',
+    surfaceLabel: 'heat-matrix',
   });
   const { pipeline, pipe, sourceIdsRef, subsReady, tooltipOwner, dataContextKey, retryStream, retryLocal } = placement;
 
@@ -273,7 +273,7 @@ export default function FamilyHeatMatrixHost<TOptions>({
     }
 
     const bindingModel: FamilyHeatMatrixBinding<TOptions> = {
-      family: 'pairs',
+      family: 'heat-matrix',
       kind: cur.declaration.kind,
       options: cur.options,
       sources: sourceIdsRef.current,
@@ -292,7 +292,7 @@ export default function FamilyHeatMatrixHost<TOptions>({
 
     mounted.canvas.style.width = `${w}px`;
     mounted.canvas.style.height = `${h}px`;
-    pipeline.present(pipe, 'pairs');
+    pipeline.present(pipe, 'heat-matrix');
     const dated = Object.keys(sourceIdsRef.current).length === 0
       ? (cur.staticSources
         ? { h: cur.staticSources.hour, c: cur.staticSources.hour }
@@ -330,7 +330,7 @@ export default function FamilyHeatMatrixHost<TOptions>({
     if (!node || !pipeline || pipe === null) return;
     lastMirrorObjRef.current = null;
 
-    const mounted = mountFamilyCanvas(node, pipeline, pipe, 'pairs', 'hf-canvas', 'hf-extent');
+    const mounted = mountFamilyCanvas(node, pipeline, pipe, 'heat-matrix', 'hf-canvas', 'hf-extent');
     surfaceRef.current = mounted;
 
     const auditWatch = attachAuditWatch(pipeline, pipe, {

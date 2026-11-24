@@ -18,7 +18,7 @@ export interface MatrixActivation {
 }
 
 export interface HeatMatrixWidgetDeclaration<TProjectionOptions = Record<string, never>, TAux = unknown> {
-  readonly family: 'pairs';
+  readonly family: 'heat-matrix';
   readonly kind: string;
   readonly label: string;
   readonly subject: string;
@@ -43,7 +43,7 @@ export type AnyHeatMatrixWidgetDeclaration = HeatMatrixWidgetDeclaration<any, an
 export function isHeatMatrixWidgetDeclaration(value: unknown): value is AnyHeatMatrixWidgetDeclaration {
   return !!value
     && typeof value === 'object'
-    && (value as { family?: unknown }).family === 'pairs'
+    && (value as { family?: unknown }).family === 'heat-matrix'
     && 'sources' in value
     && 'projection' in value;
 }
