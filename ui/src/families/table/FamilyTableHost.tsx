@@ -900,8 +900,8 @@ export default function FamilyTableHost<TOptions>({
 
     const resizeObserver = new ResizeObserver(entries => {
       const rect = entries[0]?.contentRect;
-      const w = Math.round(rect ? rect.width : node.clientWidth);
-      const h = Math.round(rect ? rect.height : node.clientHeight);
+      const w = Math.floor(rect ? rect.width : node.clientWidth);
+      const h = Math.floor(rect ? rect.height : node.clientHeight);
       refreshFocusAnchorRef.current();
       if (w === viewportRef.current.width && h === viewportRef.current.height) return;
       viewportRef.current.width = w;
@@ -1125,7 +1125,7 @@ export default function FamilyTableHost<TOptions>({
       </div>
       <div
         ref={bodyRef}
-        className="tf-body"
+        className="tf-body themed-scrollbar"
         data-overflow={settings.overflow}
         data-clickable={onActivate ? 'true' : undefined}
       />

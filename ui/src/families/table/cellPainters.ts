@@ -317,8 +317,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     const isFlag = column.display === 'flag' || column.display === 'flagName';
     if (isFlag) {
       const state = resolveFlagState(paintModel.icon, paintModel.iconPending === true, paintModel.country ?? undefined, rc);
-      const fx = column.display === 'flag' ? Math.round(x + (column.width - FLAG_SLOT_WIDTH) / 2) : left;
-      drawFlagSlot(ctx, fx, fy, state, theme);
+      drawFlagSlot(ctx, left, fy, state, theme);
       if (column.display === 'flag') return;
       left += FLAG_SLOT_WIDTH + 8;
     } else {

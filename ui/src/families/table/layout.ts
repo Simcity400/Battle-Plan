@@ -33,7 +33,7 @@ export interface FamilyTableLayout extends Omit<TableLayout, 'columns'> {
   readonly moreWidth: number;
 }
 
-const SORT_ARROW_WIDTH = 16;
+const SORT_ARROW_WIDTH = 22;
 const DEFAULT_TEXT_MIN_WIDTH = 128;
 const DEFAULT_TEXT_MAX_WIDTH = 260;
 
