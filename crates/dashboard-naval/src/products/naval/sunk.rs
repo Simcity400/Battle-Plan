@@ -1,4 +1,6 @@
 
+use super::sinking_details::{BattleIndex, resolve_attribution};
+pub use super::sinking_details::{SINKING_BATTLE_NOT_RECORDED, SINKING_CAUSE_NOT_RECORDED, ShipSinkingAttribution, ShipSinkingBattle};
 use dashboard_base::{products::{LoadContext, Product}, queries::country_ids};
 use dashboard_world::products::army_windows::ArmySpan;
 use dashboard_base::Source;
@@ -64,6 +66,8 @@ pub struct ShipsSunkRow {
     pub cause: ShipSinkingCause,
     pub attribution_name: Option<String>,
     pub assisted_kill: bool,
+    pub sinking_cause: ShipSinkingAttribution,
+    pub battle: ShipSinkingBattle,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -210,6 +214,20 @@ impl Content {
 }
 
 pub fn ship_names(seeker: &mut Seeker<'_>, run: u32, hour: i32, entries: &[SunkShipEntry], content: &Content, refused: &mut Refusals) -> io::Result<Vec<(Option<String>, Option<String>)>> {
+    Ok(ship_details(seeker, run, hour, entries, content, refused)?
+        .into_iter()
+        .map(|(name, class, _)| (name, class))
+        .collect())
+}
+
+pub fn ship_details(
+    seeker: &mut Seeker<'_>,
+    run: u32,
+    hour: i32,
+    entries: &[SunkShipEntry],
+    content: &Content,
+    refused: &mut Refusals,
+) -> io::Result<Vec<(Option<String>, Option<String>, ShipSinkingAttribution)>> {
     let held: Vec<&SunkShipEntry> = entries.iter().collect();
     let named = Named::new(seeker, run, hour, &held, content)?;
     refused.merge(&named.refused);
@@ -219,7 +237,8 @@ pub fn ship_names(seeker: &mut Seeker<'_>, run: u32, hour: i32, entries: &[SunkS
             let class = named.classes.get(named.class_at[&entry.class_token] as usize).and_then(|class| class.name.clone()).or_else(|| {
                 named.recorded_at.get(&entry.class_name).copied().flatten().map(|index| format!("{} (recorded class)", named.recorded_names[index as usize]))
             });
-            (stored(&entry.ship_name, "ship name", content, refused), class)
+            let sinking_cause = named.attribution_for(entry, content, refused);
+            (stored(&entry.ship_name, "ship name", content, refused), class, sinking_cause)
         })
         .collect())
 }
@@ -228,6 +247,7 @@ pub fn ship_names(seeker: &mut Seeker<'_>, run: u32, hour: i32, entries: &[SunkS
 struct Named {
     classes: Vec<ShipClassInfo>,
     class_at: HashMap<u32, u32>,
+    attr_classes: HashMap<u32, (Option<String>, Option<String>)>,
     recorded_names: Vec<String>,
     recorded_at: HashMap<Vec<u8>, Option<u32>>,
     places: Vec<String>,
@@ -265,9 +285,10 @@ fn class_info(token: u32, literal: Option<String>, content: &Content, refused: &
             }
             let sprite = format!("GFX_unit_{spelling}_icon_medium");
             match cat.sprites.find(&sprite) {
-                Ok(Some(found)) => match cat.gui_decode.as_ref().map_err(dashboard_core::invalid).and_then(|decode| catalogue::sprite_frame_png(&cat.content.layers, found, *decode, 0, ICON_EDGE)) {
-                    Ok(image) => info.icon = Some(image),
-                    Err(reason) => refused.note(reason.to_string(), &sprite),
+                Ok(Some(found)) => match dashboard_base::products::artwork::resolve_sprite_type(cat, found, 0, ICON_EDGE).into_result() {
+                    Ok(Some(image)) => info.icon = Some(image),
+                    Ok(None) => {}
+                    Err(reason) => refused.note(reason, &sprite),
                 },
                 Ok(None) => {}
                 Err(reason) => refused.note(reason, &sprite),
@@ -305,14 +326,61 @@ fn stored(bytes: &[u8], what: &str, content: &Content, refused: &mut Refusals) -
     }
 }
 
+fn class_key_and_name(literal: Option<String>, content: &Content) -> (Option<String>, Option<String>) {
+    let Some(literal) = literal.filter(|text| !text.is_empty()) else {
+        return (None, None);
+    };
+    let (Ok(cat), Ok(units)) = (&content.catalogue, &content.units) else {
+        return (Some(literal), None);
+    };
+    match units.token_name(&content_reader_parser::tokens::Token::c_str(literal.as_bytes())) {
+        Ok(spelling) if !spelling.is_empty() => {
+            let spelling = spelling.to_owned();
+            let name = cat.localisation.get(&spelling).and_then(|_| cat.localised(&spelling, View::Plain));
+            (Some(spelling), name)
+        }
+        _ => (Some(literal), None),
+    }
+}
+
 impl Named {
-    fn new(seeker: &mut Seeker<'_>, run: u32, hour: i32, entries: &[&SunkShipEntry], content: &Content) -> io::Result<Self> {
-        let tokens: BTreeSet<u32> = entries.iter().map(|entry| entry.class_token).collect();
-        let literals = literals(seeker, run, hour, &tokens)?;
-        Ok(Self::from_literals(tokens, &literals, entries, content))
+    fn attribution_for(&self, entry: &SunkShipEntry, content: &Content, refused: &mut Refusals) -> ShipSinkingAttribution {
+        let attr_text = stored(
+            &entry.attribution_name,
+            if entry.cause_record != 0 { "sinking cause" } else { "attribution ship name" },
+            content,
+            refused,
+        );
+        let (key, mut name) = if entry.attribution_class_present != 0 && entry.attribution_class_token != 0 {
+            self.attr_classes.get(&entry.attribution_class_token).cloned().unwrap_or((None, None))
+        } else {
+            (None, None)
+        };
+        if entry.attribution_class_present != 0 && name.is_none() {
+            name = text(&entry.attribution_class_name, "recorded attribution class name", refused);
+        }
+        resolve_attribution(entry, attr_text, key, name)
     }
 
-    fn from_literals(tokens: BTreeSet<u32>, literals: &HashMap<u32, String>, entries: &[&SunkShipEntry], content: &Content) -> Self {
+    fn new(seeker: &mut Seeker<'_>, run: u32, hour: i32, entries: &[&SunkShipEntry], content: &Content) -> io::Result<Self> {
+        let tokens: BTreeSet<u32> = entries.iter().map(|entry| entry.class_token).collect();
+        let attr_tokens: BTreeSet<u32> = entries
+            .iter()
+            .filter(|entry| entry.attribution_class_present != 0 && entry.attribution_class_token != 0)
+            .map(|entry| entry.attribution_class_token)
+            .collect();
+        let all_tokens: BTreeSet<u32> = tokens.union(&attr_tokens).copied().collect();
+        let literals = literals(seeker, run, hour, &all_tokens)?;
+        Ok(Self::from_literals(tokens, attr_tokens, &literals, entries, content))
+    }
+
+    fn from_literals(
+        tokens: BTreeSet<u32>,
+        attr_tokens: BTreeSet<u32>,
+        literals: &HashMap<u32, String>,
+        entries: &[&SunkShipEntry],
+        content: &Content,
+    ) -> Self {
         let mut out = Self::default();
         if let Err(reason) = &content.catalogue {
             out.warnings.push(format!("Ship class names, artwork and sea zones are unavailable: {reason}"));
@@ -326,6 +394,10 @@ impl Named {
             let info = class_info(token, literals.get(&token).cloned(), content, &mut out.refused);
             out.class_at.insert(token, out.classes.len() as u32);
             out.classes.push(info);
+        }
+        for token in attr_tokens {
+            let resolved = class_key_and_name(literals.get(&token).cloned(), content);
+            out.attr_classes.insert(token, resolved);
         }
         let mut names = HashMap::<String, u32>::new();
         for entry in entries {
@@ -395,7 +467,15 @@ impl Product for ShipsSunk {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![ShipsSunkParams::decl(), ShipsSunkReply::decl(), ShipClassInfo::decl(), ShipSinkingCause::decl(), ShipsSunkRow::decl()]
+        vec![
+            ShipsSunkParams::decl(),
+            ShipsSunkReply::decl(),
+            ShipClassInfo::decl(),
+            ShipSinkingCause::decl(),
+            ShipSinkingAttribution::decl(),
+            ShipSinkingBattle::decl(),
+            ShipsSunkRow::decl(),
+        ]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -405,13 +485,13 @@ impl Product for ShipsSunk {
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
         let content = Content::load(source, context);
-        let reply = window(&query, &params.branch_id, params.window, &content, cancelled)?;
+        let reply = window(source, &query, &params.branch_id, params.window, &content, cancelled)?;
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }
 }
 
-pub fn window(query: &Query<'_>, branch_id: &str, index: usize, content: &Content, cancelled: &AtomicBool) -> io::Result<ShipsSunkReply> {
+pub fn window(source: &Source, query: &Query<'_>, branch_id: &str, index: usize, content: &Content, cancelled: &AtomicBool) -> io::Result<ShipsSunkReply> {
     let windows = dashboard_world::products::army_windows::windows(query)?;
     let span = windows.get(index).cloned().ok_or_else(|| invalid("Unknown history window"))?;
     let (first, last) = (span.first_hour, span.last_hour);
@@ -473,15 +553,25 @@ pub fn window(query: &Query<'_>, branch_id: &str, index: usize, content: &Conten
     }
     let mut seeker = Seeker::new(recording)?;
     let mut all_tokens: BTreeSet<u32> = BTreeSet::new();
+    let mut all_attr_tokens: BTreeSet<u32> = BTreeSet::new();
     let mut all_literals: HashMap<u32, String> = HashMap::new();
+    let mut needed_combats: BTreeSet<u64> = BTreeSet::new();
     for (run, _, stretch_last, shown) in &groups {
         let tokens: BTreeSet<u32> = shown.iter().map(|(entry, _)| entry.class_token).collect();
+        let attr_tokens: BTreeSet<u32> = shown
+            .iter()
+            .filter(|(entry, _)| entry.attribution_class_present != 0 && entry.attribution_class_token != 0)
+            .map(|(entry, _)| entry.attribution_class_token)
+            .collect();
+        needed_combats.extend(shown.iter().map(|(entry, _)| entry.battle).filter(|&battle| battle != 0));
         all_tokens.extend(&tokens);
-        let missing: BTreeSet<u32> = tokens.into_iter().filter(|token| !all_literals.contains_key(token)).collect();
+        all_attr_tokens.extend(&attr_tokens);
+        let missing: BTreeSet<u32> = tokens.union(&attr_tokens).copied().filter(|token| !all_literals.contains_key(token)).collect();
         all_literals.extend(literals(&mut seeker, *run, *stretch_last, &missing)?);
     }
     let all_entries: Vec<&SunkShipEntry> = groups.iter().flat_map(|(_, _, _, shown)| shown.iter().map(|(entry, _)| entry)).collect();
-    let named = Named::from_literals(all_tokens, &all_literals, &all_entries, content);
+    let named = Named::from_literals(all_tokens, all_attr_tokens, &all_literals, &all_entries, content);
+    let battles = BattleIndex::build(source, query, last, &needed_combats, &BTreeSet::new())?;
     let names = country_ids::Names::new(&query.holders);
     let mut refused = named.refused.clone();
     for (run, full_first, stretch_last, shown) in groups {
@@ -489,6 +579,8 @@ pub fn window(query: &Query<'_>, branch_id: &str, index: usize, content: &Conten
         for (entry, known) in shown {
             let at = entry.sink_hour.clamp(full_first, stretch_last);
             let tag = |raw: u32| (raw != 0).then(|| names.tag_at(&links, raw, at).map(str::to_owned)).flatten();
+            let sinking_cause = named.attribution_for(&entry, content, &mut refused);
+            let battle = battles.resolve_sinking(entry.battle, entry.sink_hour);
             reply.rows.push(ShipsSunkRow {
                 sink_hour: entry.sink_hour,
                 known_at: known,
@@ -503,6 +595,8 @@ pub fn window(query: &Query<'_>, branch_id: &str, index: usize, content: &Conten
                 cause: cause(&entry),
                 attribution_name: stored(&entry.attribution_name, if entry.cause_record != 0 { "sinking cause" } else { "attribution ship name" }, content, &mut refused),
                 assisted_kill: entry.assisted_kill != 0,
+                sinking_cause,
+                battle,
             });
         }
     }

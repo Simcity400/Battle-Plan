@@ -6,10 +6,9 @@ import { formatDateTime } from './calendar';
 import { Icon } from '../components/Icons';
 import type { BoundTrack, DashboardTemplate } from './model';
 import type { PlaybackController } from './playback';
-import { useAtHead, useIdentityHour } from './atHead.ts';
+import { countrySlotKey, countryTagKey, useIdentityAtHead, useIdentityScope, type CountryIdentityResult } from '../families/identity/react.ts';
 import { timelineGaps, timelineHourAt } from './timelineGaps';
 import CountryPicker from '../components/CountryPicker';
-import { countryNameAt, useSlotTags } from './countrySlots.ts';
 import { useMapMuted } from '../shell/muteSetting';
 import { desktopAvailable } from '../shell/api';
 import { Popover, usePopover } from '../components/Popover';
@@ -22,15 +21,26 @@ export function PlaybackCountryPicker({ clock, track, selectedSlot, ...picker }:
   const first = track?.branch.firstHour, last = track?.branch.lastHour, offset = track?.axisOffset;
   const trackHour = useCallback((hour: number) => first === undefined || last === undefined || offset === undefined
     || hour + offset < first || hour + offset > last ? null : hour + offset, [first, last, offset]);
-  const slots = useSlotTags(picker.client, track, !!track && selectedSlot !== null);
-  const shown = useAtHead(clock, !!track && selectedSlot !== null, hour => {
-    const at = trackHour(hour);
-    return at === null ? null : countryNameAt(slots, selectedSlot, at);
+  const scope = useIdentityScope(picker.client, track?.source, track?.branch.id, !!track);
+  const branchBounds = useMemo(() => (first !== undefined && last !== undefined ? [first, last] as const : undefined), [first, last]);
+  const keys = useMemo(
+    () => (selectedSlot !== null ? [countrySlotKey(selectedSlot)] : picker.selectedTag ? [countryTagKey(picker.selectedTag)] : []),
+    [selectedSlot, picker.selectedTag],
+  );
+  const { hour, results } = useIdentityAtHead(picker.client, track?.source, scope, clock, keys, trackHour, {
+    active: !!track,
+    follow: true,
+    branchBounds,
   });
-  const selectedTag = selectedSlot === null ? picker.selectedTag : shown ?? picker.selectedTag;
-  const tags = useMemo(() => selectedTag ? [selectedTag] : [], [selectedTag]);
-  const raw = useIdentityHour(picker.client, track, tags, clock, !!track, trackHour);
-  const flagAt = useMemo(() => track && raw != null ? { branchId: track.branch.id, hour: raw } : null, [track?.branch.id, raw]);
+  const head = results[0] as CountryIdentityResult | undefined;
+  const selectedTag = selectedSlot === null
+    ? picker.selectedTag
+    : head?.kind === 'known' && head.tag.kind === 'known'
+      ? head.tag.value
+      : head?.kind === 'absent'
+        ? null
+        : picker.selectedTag;
+  const flagAt = useMemo(() => track && hour !== null ? { branchId: track.branch.id, hour } : null, [track?.branch.id, hour]);
   return <CountryPicker {...picker} selectedTag={selectedTag} flagAt={flagAt} />;
 }
 

@@ -6,6 +6,14 @@ import type { NavalBattleDetail, NavalBattleDetailsReply } from '../../generated
 
 const text = (v: unknown): v is string | null => v === null || typeof v === 'string';
 const hour = (v: unknown): v is number => int(v) && isEngineHour(v);
+const validAttribution = (v: unknown): boolean => {
+  if (!object(v) || typeof v.kind !== 'string') return false;
+  if (v.kind === 'cause') return typeof v.text === 'string' && typeof v.assisted === 'boolean';
+  if (v.kind === 'ship') return typeof v.name === 'string' && text(v.classKey) && text(v.className) && typeof v.assisted === 'boolean';
+  if (v.kind === 'airWing') return text(v.carrierName) && text(v.carrierClassKey) && text(v.carrierClassName) && typeof v.assisted === 'boolean';
+  if (v.kind === 'notRecorded') return typeof v.reason === 'string';
+  return false;
+};
 function detail(v: unknown): v is NavalBattleDetail {
   if (!object(v) || typeof v.id !== 'string' || v.id.length === 0 || !hour(v.hour)) return false;
   const readHour = v.hour;
@@ -14,7 +22,8 @@ function detail(v: unknown): v is NavalBattleDetail {
     && Array.isArray(v.fleets) && v.fleets.length === 2 && v.fleets.every(fleet => object(fleet)
       && Array.isArray(fleet.names) && fleet.names.every(name => typeof name === 'string' && name.length > 0) && text(fleet.unknown))
     && Array.isArray(v.namedShips) && v.namedShips.every(ship => object(ship) && hour(ship.sinkHour)
-      && hour(ship.knownAt) && ship.sinkHour <= ship.knownAt && ship.knownAt <= readHour && text(ship.name) && text(ship.className));
+      && hour(ship.knownAt) && ship.sinkHour <= ship.knownAt && ship.knownAt <= readHour && text(ship.name) && text(ship.className)
+      && validAttribution(ship.sinkingCause));
 }
 export function validateNavalBattleDetails(v: unknown): NavalBattleDetailsReply {
   if (!object(v) || !Array.isArray(v.rows) || !v.rows.every(detail)

@@ -1,4 +1,5 @@
 .country-flag { display: inline-block; width: 25px; height: 16px; flex: 0 0 25px; overflow: hidden; border-radius: 2px; box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 12%, transparent); }
+.country-flag-pending { background: transparent; box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 8%, transparent); }
 :root .country-flag.country-flag-unavailable { display: inline-grid; place-items: center; }
 .country-flag-unavailable {
   background: repeating-linear-gradient(135deg, var(--hatch) 0 1.2px, transparent 1.2px 4px);

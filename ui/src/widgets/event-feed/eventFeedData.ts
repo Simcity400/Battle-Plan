@@ -46,11 +46,25 @@ const cause = (row: Record<string, unknown>): boolean => {
     && Array.isArray(value.notes) && value.notes.every(note => typeof note === 'string');
 };
 
+const decisionState = (row: Record<string, unknown>): boolean => {
+  const value = row.decisionState;
+  if (value === undefined) return true;
+  if (!SCRIPT_KINDS.has(row.kind as string) || !object(value) || typeof value.kind !== 'string') return false;
+  switch (value.kind) {
+    case 'active': case 'available': case 'completed': case 'aborted': case 'reEnableCooldown': return true;
+    case 'failed': return int(value.observedHour);
+    case 'unsupported': return int(value.raw);
+    case 'notApplicable':
+    case 'notRecorded': return typeof value.reason === 'string' && value.reason.length > 0;
+    default: return false;
+  }
+};
+
 export function validateFeedRow(value: unknown): EventFeedRow {
   if (!object(value) || typeof value.id !== 'string' || value.id.length === 0 || !int(value.hour) || !int(value.readHour) || !int(value.nameHour)
     || value.hour > value.readHour || typeof value.exact !== 'boolean' || typeof value.category !== 'string' || !CATEGORY_NAMES.has(value.category)
     || typeof value.kind !== 'string' || !KINDS.has(value.kind) || !Array.isArray(value.tags) || !value.tags.every(opaqueTag)
-    || (!NATIVE_KINDS.has(value.kind) && value.tags.length === 0) || !roles(value) || !cause(value) || !strike(value)
+    || (!NATIVE_KINDS.has(value.kind) && value.tags.length === 0) || !roles(value) || !cause(value) || !strike(value) || !decisionState(value)
     || !(value.item === null || item(value.item)) || !(value.amount === null || (int(value.amount) && value.amount > 0))) {
     throw new Error('The event feed row is malformed.');
   }
@@ -218,17 +232,22 @@ function actionSentence(at: FeedEvent, stateName: StateName): SentencePart[] {
     case 'newsEventFired': return [country, { text: ` triggered news ${named} for ` }, other];
     case 'eventOptionSelected': return single(` selected an option in ${named}`);
     case 'decisionSelected': return single(` selected decision ${named}`);
-    case 'decisionRemoved': return single(` ended decision ${named}`);
-    case 'decisionCancelled': return single(` cancelled decision ${named}`);
-    case 'decisionTimedOut': return single(` reached the deadline of ${named}`);
+    case 'decisionRemoved': return single(event.decisionState?.kind === 'failed' ? ` failed mission ${named} (ended)`
+      : event.decisionState?.kind === 'unsupported' ? ` ended decision ${named} (unsupported native state ${event.decisionState.raw})` : ` ended decision ${named}`);
+    case 'decisionCancelled': return single(event.decisionState?.kind === 'failed' ? ` failed mission ${named} (cancelled)`
+      : event.decisionState?.kind === 'unsupported' ? ` cancelled decision ${named} (unsupported native state ${event.decisionState.raw})` : ` cancelled decision ${named}`);
+    case 'decisionTimedOut': return single(event.decisionState?.kind === 'failed' ? ` failed mission ${named} (reached the deadline)`
+      : event.decisionState?.kind === 'unsupported' ? ` reached the deadline of ${named} (unsupported native state ${event.decisionState.raw})` : ` reached the deadline of ${named}`);
     case 'decisionActivated': return single(` activated ${named}`);
-    case 'decisionCompleted': return single(` completed mission ${named}`);
+    case 'decisionCompleted': return single(event.decisionState?.kind === 'failed' ? ` failed mission ${named}`
+      : event.decisionState?.kind === 'unsupported' ? ` completed mission ${named} (unsupported native state ${event.decisionState.raw})` : ` completed mission ${named}`);
     case 'decisionReenabled': return single(` reenabled ${named}`);
     case 'decisionRemovalEffect': return single(` ran removal effects for ${named}`);
     case 'decisionCancellationEffect': return single(` ran cancellation effects for ${named}`);
     case 'decisionCompletionEffect': return single(` ran completion effects for ${named}`);
     case 'decisionTimeoutEffect': return single(` ran deadline effects for ${named}`);
-    case 'decisionDurationChanged': return single(` updated the duration of ${named}`);
+    case 'decisionDurationChanged': return single(event.decisionState?.kind === 'failed' ? ` updated the duration of failed mission ${named}`
+      : event.decisionState?.kind === 'unsupported' ? ` updated the duration of ${named} (unsupported native state ${event.decisionState.raw})` : ` updated the duration of ${named}`);
     case 'warDeclared': return words(' declared war on ');
     case 'warJoined': return words(' joined the war against ');
     case 'civilWarWarTransferred': return words(' inherited a war against ');
@@ -297,6 +316,20 @@ export function eventTooltip(at: FeedEvent, name: (tag: string) => string, state
   ];
   const struck = event.strike;
   if (struck) rows.push(...strikeRows(struck, event.hour, stateName));
+  if (event.decisionState) {
+    switch (event.decisionState.kind) {
+      case 'failed':
+        rows.push({ label: 'Mission state', value: 'Failed' });
+        rows.push({ label: 'Failure observed', value: formatDateTime(event.decisionState.observedHour) });
+        break;
+      case 'unsupported':
+        rows.push({ label: 'Mission state', value: `Unsupported (native state ${event.decisionState.raw})`, tone: 'muted' });
+        break;
+      case 'notRecorded':
+        rows.push({ label: 'Mission failure state', value: `Not recorded — ${event.decisionState.reason}`, tone: 'muted' });
+        break;
+    }
+  }
   const cause = event.cause;
   if (cause) {
     rows.push({ label: 'How', value: cause.how ?? 'No observed operation' });

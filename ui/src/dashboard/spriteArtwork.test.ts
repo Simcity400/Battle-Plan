@@ -96,3 +96,19 @@ test('sprite requests from multiple callers in the same tick coalesce into bound
   assert.deepEqual(calls, [15, SPRITE_BATCH, 10]);
   release();
 });
+
+test('failed sprite batches record errors without marking sprites as missing and notify watchers', async () => {
+  const caches = new SpriteCaches();
+  const release = caches.hold('err');
+  let notified = 0;
+  const stop = caches.watch('err', () => { notified++; });
+  const failing = async () => { throw new Error('disk offline'); };
+  caches.request('err', [{ key: 'GFX_fail', frame: 0 }], failing);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  const id = spriteId({ key: 'GFX_fail', frame: 0 });
+  assert.equal(caches.icons('err').has(id), false);
+  assert.equal(caches.errors('err').get(id), 'disk offline');
+  assert.equal(notified, 1);
+  stop();
+  release();
+});

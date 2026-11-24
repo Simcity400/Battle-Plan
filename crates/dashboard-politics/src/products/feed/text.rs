@@ -538,8 +538,9 @@ fn draw_picture(notices: &mut Notices, catalogue: &Catalogue, token: &str, pictu
         catalogue,
         |catalogue| {
             let sprite = catalogue.sprites.find(picture)?.ok_or_else(|| format!("Event {token}: picture {picture} is undeclared"))?;
-            let decode = *catalogue.gui_decode.as_ref().map_err(Clone::clone)?;
-            catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode, 0, artwork::ICON_EDGE).map_err(|why| why.to_string())
+            artwork::resolve_sprite_type(catalogue, sprite, 0, artwork::ICON_EDGE)
+                .into_result()?
+                .ok_or_else(|| format!("Event {token}: picture {picture} is unavailable"))
         },
     );
     match image.get() {

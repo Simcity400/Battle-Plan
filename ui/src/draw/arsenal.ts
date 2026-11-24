@@ -1,5 +1,6 @@
 import type { ChartTokens } from '../charts/tokens';
 import { font, dayLabel, LABEL_WEIGHT, VALUE_WEIGHT } from '../charts/draw.ts';
+import { drawFittedLabel, labelLineHeight } from '../charts/labels.ts';
 import { formatAxisValue } from '../charts/valueAxis.ts';
 import { countryRaceItem } from '../charts/race/countryRace.ts';
 import { drawDateOverlay, drawRaceBar, drawRaceEmpty, drawRaceGrid, FLAG, MIN_LABEL, NAME_X, NAME_PAD, VALUE_GAP, VALUE_PAD, wrapText } from '../charts/race/draw.ts';
@@ -7,6 +8,7 @@ import { raceLayout, raceTicks, rowAt, rowCentre, rowInView, stepRace, valueX } 
 import { textWidth } from '../charts/textWidth.ts';
 import type { RaceItem, RaceLayout, RaceState } from '../charts/race/race';
 import { fitCountryFlag } from '../components/countryFlagPresentation.ts';
+import { LaneArtCache } from '../families/art/laneCache.ts';
 import type { NuclearArsenalReply } from '../generated/dashboard';
 import { arsenalNotice, arsenalRows } from '../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import type { ArsenalSelection } from '../widgets/nuclear-arsenal/nuclearArsenalData';
@@ -34,7 +36,7 @@ export function arsenalNext(model: Pick<ArsenalModel, 'overlay' | 'membership' |
 
 export class ArsenalPicture {
   private readonly ctx: CanvasRenderingContext2D;
-  private readonly flags = new Map<string, ImageBitmap | null>();
+  private readonly flags: LaneArtCache;
   private state?: RaceState;
   private layout?: RaceLayout;
   private hour?: number;
@@ -66,6 +68,13 @@ export class ArsenalPicture {
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('The Nuclear arsenal drawing surface is unavailable');
     this.ctx = ctx as unknown as CanvasRenderingContext2D;
+    this.flags = new LaneArtCache({
+      onSettle: () => {
+        if (this.closed) return;
+        this.resize();
+        this.wake();
+      },
+    });
   }
   forget() {
     this.state = this.layout = this.reply = this.day = this.hour = this.position = undefined;
@@ -73,7 +82,7 @@ export class ArsenalPicture {
     this.notice = undefined;
     if (this.point) this.hover();
   }
-  close() { this.closed = true; for (const bitmap of this.flags.values()) bitmap?.close(); }
+  close() { this.closed = true; this.flags.dispose(); }
   resize() { this.invalid = true; }
 
   nextChange(model: ArsenalModel) {
@@ -86,17 +95,6 @@ export class ArsenalPicture {
       }
     }
     return next;
-  }
-
-  private flag(url: string) {
-    if (!this.flags.has(url)) {
-      this.flags.set(url, null);
-      void fetch(url).then(r => r.blob()).then(blob => createImageBitmap(blob)).then(image => {
-        if (this.closed) { image.close(); return; }
-        this.flags.set(url, image); this.resize(); this.wake();
-      }).catch(() => {});
-    }
-    return this.flags.get(url);
   }
 
   draw(model: ArsenalModel, reply: NuclearArsenalReply | undefined, position: number | null) {
@@ -170,20 +168,33 @@ export class ArsenalPicture {
     if (model.overlay) drawDateOverlay(ctx, layout, tokens, day);
     drawRaceGrid(ctx, layout, tokens, min, max, formatAxisValue);
     if (this.notice !== undefined) drawRaceEmpty(ctx, layout, tokens, this.notice);
+    const visibleFlagUrls: string[] = [];
+    for (const row of rows) {
+      if (!rowInView(layout, rowCentre(layout, row.y))) continue;
+      const flagUrl = model.looks.get(row.key)?.flag;
+      if (flagUrl) visibleFlagUrls.push(flagUrl);
+    }
+    this.flags.requestVisible(visibleFlagUrls);
     ctx.save(); ctx.beginPath(); ctx.rect(0, layout.view.top - 4, width, layout.view.bottom - layout.view.top + 8); ctx.clip();
     for (const row of rows) {
       const y = rowCentre(layout, row.y);
       if (!rowInView(layout, y)) continue;
-      const look = model.looks.get(row.key), bitmap = look?.flag && this.flag(look.flag);
+      const look = model.looks.get(row.key);
+      const bitmap = look?.flag ? this.flags.bitmapOf(look.flag) : undefined;
       if (bitmap) {
         const fit = fitCountryFlag(bitmap.width, bitmap.height, FLAG.width, FLAG.height);
         ctx.drawImage(bitmap, FLAG.x + fit.x, y - FLAG.height / 2 + fit.y, fit.width, fit.height);
-      } else {
+      } else if (!look?.flag || this.flags.stateOfUrl(look.flag) !== 'pending') {
         ctx.fillStyle = tokens.raised; ctx.fillRect(FLAG.x, y - FLAG.height / 2, FLAG.width, FLAG.height);
         ctx.strokeStyle = tokens.border; ctx.strokeRect(FLAG.x + .5, y - FLAG.height / 2 + .5, FLAG.width - 1, FLAG.height - 1);
       }
       ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = tokens.text;
-      ctx.font = font(tokens, tokens.fontSize.body, LABEL_WEIGHT); ctx.fillText(look?.name ?? row.key, NAME_X, y, layout.left - NAME_X - NAME_PAD);
+      ctx.font = font(tokens, tokens.fontSize.body, LABEL_WEIGHT);
+      drawFittedLabel(ctx, look?.name ?? row.key, NAME_X, y, Math.max(0, layout.left - NAME_X - NAME_PAD), {
+        fontSize: tokens.fontSize.body,
+        lineHeight: labelLineHeight(tokens.fontSize.body),
+        maxLines: 1,
+      });
       const end = drawRaceBar(ctx, layout, tokens, row, min, max);
       ctx.font = font(tokens, tokens.fontSize.body, VALUE_WEIGHT); ctx.fillStyle = tokens.text; ctx.fillText(row.item.label, end + VALUE_GAP, y);
     }

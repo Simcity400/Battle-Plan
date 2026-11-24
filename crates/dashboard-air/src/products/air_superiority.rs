@@ -1,8 +1,9 @@
 
 use dashboard_base::products::{BranchParams, LoadContext, Product};
-use dashboard_base::{Source, catalogue::{self, Catalogue}, products::at_hour::{At, AtHour, Read}};
+use dashboard_base::{Source, catalogue::{self, Catalogue}, products::at_hour::{At, AtHour, Read}, span::HourSpan};
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::identity::{Holder, Holders};
+use dashboard_world::products::{groups::{self, FactionGroup}, styles::{BranchLooks, LookResolver, ResolvedCountryLook}};
 use replay_data::rows::{AirTheatreGroupRow, AirTheatreMemberRow, AirTheatreRow, AirWingRow, CountryLinkRow, RaidAirScoreRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -98,6 +99,18 @@ pub struct AirAnchor {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
+pub struct AirCountryStyle {
+    pub tag: String,
+    pub hour: i32,
+    pub name: Option<String>,
+    pub name_missing: Option<String>,
+    pub color: Option<[u8; 3]>,
+    pub color_missing: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
 pub struct AirSide {
     pub key: String,
     #[doc = " Its anchor faction's id."]
@@ -111,6 +124,14 @@ pub struct AirSide {
     pub leader: Option<String>,
     pub co_belligerents: usize,
     pub anchor: Option<AirAnchor>,
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub color: Option<[u8; 3]>,
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub color_missing: Option<String>,
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub name: Option<String>,
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub name_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -177,8 +198,11 @@ pub struct AirSuperiorityReply {
     pub missing: Option<String>,
     #[doc = " The sides the cells name, by index."]
     pub sides: Vec<AirSide>,
+    pub legend: Vec<u32>,
     #[doc = " The viewpoint side's index, when a side is the viewpoint and present."]
     pub viewpoint: Option<u32>,
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub viewpoint_country_style: Option<AirCountryStyle>,
     pub regions: Vec<AirRegion>,
     #[doc = " The comparison of a region no country scores in."]
     pub fallback: AirCell,
@@ -248,9 +272,108 @@ fn region_name(names: &Names, region: u32) -> (Option<String>, Option<String>) {
     }
 }
 
+pub(crate) trait SideResolver {
+    fn country(&mut self, tag: &str, hour: i32) -> ResolvedCountryLook;
+    fn faction_name(&self, faction_id: u64, hour: i32) -> (Option<String>, Option<String>);
+}
+
+#[derive(Default)]
+pub(crate) struct NullSideResolver;
+
+impl SideResolver for NullSideResolver {
+    fn country(&mut self, _tag: &str, _hour: i32) -> ResolvedCountryLook {
+        ResolvedCountryLook::default()
+    }
+
+    fn faction_name(&self, _faction_id: u64, _hour: i32) -> (Option<String>, Option<String>) {
+        (None, Some("Faction name was not recorded at this hour".to_owned()))
+    }
+}
+
+pub(crate) struct RecordedSideResolver<'a> {
+    looks: LookResolver<'a>,
+    factions: HashMap<u64, FactionGroup>,
+}
+
+impl<'a> RecordedSideResolver<'a> {
+    pub(crate) fn new(
+        source: &'a Source,
+        query: &'a dashboard_query::Query<'a>,
+        branch: u64,
+        load: &LoadContext,
+        cancelled: &AtomicBool,
+        warnings: &mut Vec<String>,
+    ) -> io::Result<Self> {
+        let looks = LookResolver::new(source, &query.timeline, load, warnings)?;
+        let reply = groups::groups(source, query, &branch.to_string(), load, cancelled)?;
+        let factions = reply
+            .factions
+            .into_iter()
+            .filter_map(|faction| Some((faction.id.parse::<u64>().ok()?, faction)))
+            .collect();
+        Ok(Self { looks, factions })
+    }
+}
+
+impl SideResolver for RecordedSideResolver<'_> {
+    fn country(&mut self, tag: &str, hour: i32) -> ResolvedCountryLook {
+        self.looks.at(tag, hour).unwrap_or_else(|error| {
+            let reason = error.to_string();
+            ResolvedCountryLook { name: None, color: None, name_missing: Some(reason.clone()), color_missing: Some(reason) }
+        })
+    }
+
+    fn faction_name(&self, faction_id: u64, hour: i32) -> (Option<String>, Option<String>) {
+        match self.factions.get(&faction_id) {
+            Some(group) => groups::faction_name_at(group, hour),
+            None => (None, Some("Faction name was not recorded at this hour".to_owned())),
+        }
+    }
+}
+
+pub(crate) struct BranchSideResolver {
+    looks: BranchLooks,
+    factions: HashMap<u64, FactionGroup>,
+}
+
+impl BranchSideResolver {
+    fn load(
+        source: &Source,
+        query: &dashboard_query::Query<'_>,
+        branch: u64,
+        load: &LoadContext,
+        cancelled: &AtomicBool,
+        warnings: &mut Vec<String>,
+    ) -> io::Result<Self> {
+        let looks = BranchLooks::load(source, &query.timeline, load, warnings)?;
+        let reply = groups::groups(source, query, &branch.to_string(), load, cancelled)?;
+        let factions = reply
+            .factions
+            .into_iter()
+            .filter_map(|faction| Some((faction.id.parse::<u64>().ok()?, faction)))
+            .collect();
+        Ok(Self { looks, factions })
+    }
+}
+
+impl SideResolver for &BranchSideResolver {
+    fn country(&mut self, tag: &str, hour: i32) -> ResolvedCountryLook {
+        self.looks.at(tag, hour)
+    }
+
+    fn faction_name(&self, faction_id: u64, hour: i32) -> (Option<String>, Option<String>) {
+        match self.factions.get(&faction_id) {
+            Some(group) => groups::faction_name_at(group, hour),
+            None => (None, Some("Faction name was not recorded at this hour".to_owned())),
+        }
+    }
+}
+
 pub struct AirContext {
     names: Names,
     index: Result<Arc<index::AirIndex>, String>,
+    resolver: Option<Arc<BranchSideResolver>>,
+    resolver_warnings: Vec<String>,
 }
 
 pub(crate) struct HourScores {
@@ -334,16 +457,70 @@ fn selected_regions(frame: &DecodedFrame, ids: &[String]) -> Result<HashSet<u32>
     Ok(ids.iter().filter_map(|id| regions.get(id)).flatten().copied().collect())
 }
 
-fn side_of(index: &index::AirIndex, side: &AssignedSide) -> AirSide {
+pub(crate) fn country_style_at(tag: &str, hour: i32, resolver: &mut dyn SideResolver) -> AirCountryStyle {
+    let look = resolver.country(tag, hour);
+    AirCountryStyle {
+        tag: tag.to_owned(),
+        hour,
+        name: look.name,
+        name_missing: look.name_missing,
+        color: look.color,
+        color_missing: look.color_missing,
+    }
+}
+
+pub(crate) fn side_of(index: &index::AirIndex, side: &AssignedSide, hour: i32, resolver: &mut dyn SideResolver) -> AirSide {
+    let anchor = index.anchor(side).map(|(tag, hour)| AirAnchor { tag, hour });
+    let tag = side.factions.is_empty().then(|| side.members.first().cloned()).flatten();
+    let (color, color_missing) = if let Some(anchor) = &anchor {
+        let look = resolver.country(&anchor.tag, anchor.hour);
+        (look.color, look.color_missing)
+    } else if let Some(country) = tag.as_deref().or(side.leader.as_deref()) {
+        let look = resolver.country(country, hour);
+        (look.color, look.color_missing)
+    } else {
+        (None, Some("Side has no recorded colour anchor".to_owned()))
+    };
+    let (name, name_missing) = if !side.factions.is_empty() {
+        let mut parts = Vec::with_capacity(side.factions.len());
+        let mut missing = None;
+        for &faction_id in &side.factions {
+            let (resolved, reason) = resolver.faction_name(faction_id, hour);
+            match resolved {
+                Some(text) => parts.push(text),
+                None => {
+                    missing = Some(reason.unwrap_or_else(|| "Faction name was not recorded at this hour".to_owned()));
+                    break;
+                }
+            }
+        }
+        match missing {
+            Some(reason) => (None, Some(reason)),
+            None => (Some(parts.join(" / ")), None),
+        }
+    } else if let Some(country) = tag.as_deref().or(side.leader.as_deref()) {
+        let look = resolver.country(country, hour);
+        match look.name {
+            Some(text) if side.key.starts_with("w:") && side.co_belligerents > 0 => (Some(format!("{text} and allies")), None),
+            Some(text) => (Some(text), None),
+            None => (None, look.name_missing),
+        }
+    } else {
+        (None, Some("Side has no recorded name".to_owned()))
+    };
     AirSide {
         key: side.key.clone(),
         faction: side.faction.map(|id| id.to_string()),
         colour_faction: side.colour_faction.map(|id| id.to_string()),
         factions: side.factions.iter().map(ToString::to_string).collect(),
-        tag: side.factions.is_empty().then(|| side.members.first().cloned()).flatten(),
+        tag,
         leader: side.leader.clone(),
         co_belligerents: side.co_belligerents,
-        anchor: index.anchor(side).map(|(tag, hour)| AirAnchor { tag, hour }),
+        anchor,
+        color,
+        color_missing,
+        name,
+        name_missing,
     }
 }
 
@@ -431,13 +608,15 @@ fn shown(cell: compose::Cell, region: u32, dictionary: &Dictionary<'_>, live: &C
     }
 }
 
-fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders, hour: i32, context: &AirContext, live: &Cells) -> io::Result<AirSuperiorityReply> {
+fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders, hour: i32, context: &AirContext, live: &Cells, resolver: &mut dyn SideResolver) -> io::Result<AirSuperiorityReply> {
     let mut warnings = context.names.warnings.clone();
     let index = context.index.as_ref().map_err(|why| dashboard_core::refused(why.clone()))?;
     let reply = |missing: String, warnings: Vec<String>| AirSuperiorityReply {
         missing: Some(missing),
         sides: Vec::new(),
+        legend: Vec::new(),
         viewpoint: None,
+        viewpoint_country_style: None,
         regions: Vec::new(),
         fallback: AirCell::Reason { reason: "scores-unavailable".into() },
         scale: SCALE,
@@ -465,6 +644,7 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
         AirMode::Viewpoint if params.viewpoint_country == Some(true) => View::Country(viewpoint),
         AirMode::Viewpoint => View::Side(sides.iter().position(|side| side.key == viewpoint).map(|at| at as u32)),
     };
+    let viewpoint_country_style = (params.mode == Some(AirMode::Viewpoint) && params.viewpoint_country == Some(true) && !viewpoint.is_empty()).then(|| country_style_at(viewpoint, hour, resolver));
     let compose = Compose::new(roster.as_ref(), &scores.operands, view);
     let theatres = params.theatre_ids().map(|ids| selected_regions(frame, ids));
     let mut dictionary = Dictionary { sides, keep: params.side_keys(), at: BTreeMap::new() };
@@ -506,7 +686,7 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
     let columns = (dashboard_declare::field(TableId::RaidAirScores, "friendly")?, dashboard_declare::field(TableId::RaidAirScores, "enemy")?);
     let wings_column = dashboard_declare::field(TableId::AirRegionWings, "wings")?;
     let enemy = !matches!(view, View::Sides);
-    let regions = cells
+    let regions: Vec<AirRegion> = cells
         .into_iter()
         .map(|(region, cell)| {
             let (name, name_missing) = region_name(&context.names, region);
@@ -525,10 +705,28 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
     if let Err(error) = &wings_rows {
         warnings.push(format!("Air wings by region are not known at this hour: {error}"));
     }
+    let resolved_sides: Vec<AirSide> = dictionary.at.keys().map(|position| side_of(index, &sides[*position as usize], hour, resolver)).collect();
+    let viewpoint_index = viewpoint_side.map(|position| dictionary.index(position));
+    let legend = match params.mode.unwrap_or_default() {
+        AirMode::Viewpoint => viewpoint_index.into_iter().collect(),
+        AirMode::Sides => {
+            let mut seen: BTreeMap<&str, u32> = BTreeMap::new();
+            for region in &regions {
+                if let AirCell::Sides(cell) = &region.cell {
+                    for side in cell.parts.iter().map(|part| part.side).chain(cell.unknown.iter().copied()).chain(cell.no_air_object.iter().copied()) {
+                        seen.insert(&resolved_sides[side as usize].key, side);
+                    }
+                }
+            }
+            seen.into_values().collect()
+        }
+    };
     Ok(AirSuperiorityReply {
         missing: None,
-        sides: dictionary.at.keys().map(|position| side_of(index, &sides[*position as usize])).collect(),
-        viewpoint: viewpoint_side.map(|position| dictionary.index(position)),
+        sides: resolved_sides,
+        legend,
+        viewpoint: viewpoint_index,
+        viewpoint_country_style,
         regions,
         fallback,
         scale: SCALE,
@@ -560,12 +758,14 @@ impl AtHour for AirSuperiorityAt {
             AirSuperiorityReply::decl(),
             AirMode::decl(),
             AirAnchor::decl(),
+            AirCountryStyle::decl(),
             AirSide::decl(),
             AirPart::decl(),
             AirCell::decl(),
             AirSidesCell::decl(),
             AirWings::decl(),
             AirRegion::decl(),
+            HourSpan::decl(),
         ]
     }
 
@@ -601,16 +801,41 @@ impl AtHour for AirSuperiorityAt {
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(AirContext { names: names(source, load), index: Err("Air superiority needs its timeline".into()) })
+        Ok(AirContext {
+            names: names(source, load),
+            index: Err("Air superiority needs its timeline".into()),
+            resolver: None,
+            resolver_warnings: Vec::new(),
+        })
     }
 
     fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
         let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid air branch"))?;
-        Ok(AirContext { names: names(source, load), index: index::index(source, branch).map_err(|error| format!("Air sides are not known: {error}")) })
+        let mut resolver_warnings = Vec::new();
+        let resolver = match dashboard_base::queries::query(source, branch) {
+            Ok(query) => {
+                let cancelled = AtomicBool::new(false);
+                Some(Arc::new(BranchSideResolver::load(source, &query, branch, load, &cancelled, &mut resolver_warnings)?))
+            }
+            Err(_) => None,
+        };
+        Ok(AirContext {
+            names: names(source, load),
+            index: index::index(source, branch).map_err(|error| format!("Air sides are not known: {error}")),
+            resolver,
+            resolver_warnings,
+        })
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        moment(frame, params, at.holders, at.hour, at.context, at.live)
+        if let Some(resolver) = &at.context.resolver {
+            let mut active: &BranchSideResolver = resolver;
+            let mut reply = moment(frame, params, at.holders, at.hour, at.context, at.live, &mut active)?;
+            reply.warnings.extend(at.context.resolver_warnings.iter().cloned());
+            return Ok(reply);
+        }
+        let mut null = NullSideResolver;
+        moment(frame, params, at.holders, at.hour, at.context, at.live, &mut null)
     }
 }
 
@@ -647,7 +872,8 @@ impl Product for AirSuperiorityChoices {
         for side in index.epochs.iter().filter_map(|epoch| epoch.sides.as_deref()).flatten() {
             last.insert(&side.key, side);
         }
-        let sides = last.values().map(|side| side_of(&index, side)).collect();
+        let mut resolver = RecordedSideResolver::new(source, &query, branch, context, cancelled, &mut warnings)?;
+        let sides = last.values().map(|side| side_of(&index, side, query.timeline.last, &mut resolver)).collect();
         let (theatres, theatres_missing) = match theatres_at_end(&query, &names) {
             Ok(theatres) => (theatres, None),
             Err(why) => (Vec::new(), Some(why)),

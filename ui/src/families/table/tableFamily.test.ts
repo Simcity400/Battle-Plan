@@ -21,7 +21,7 @@ import { TABLE_BASE as SCOREBOARD_BASE } from '../../widgets/scoreboard/definiti
 import { RANK_SOURCE, scoreboardColumnsSpec, scoreboardProjection } from '../../widgets/scoreboard/scoreboardProjection.ts';
 import { AuditSnapshotStore, canonicalAuditData, canonicalAuditValue } from '../audit.ts';
 import { CadenceGate, TrailingFlushScheduler } from '../cadence.ts';
-import type { FamilySources } from '../contract.ts';
+import { createBoundedReadView } from '../boundedView.ts';
 import { holderRunAt, nextHoldersChange, nextRangesChange, nextWindowRangesChange, overlapsHourRanges, resolveSlotHolderRuns } from '../holders.ts';
 import { effectiveCountryUnobserved, resolveDisplayedStaticSnapshot, resolveRetainedHeadSpan, selectionUnobservedReason } from '../sources.ts';
 import { SlotTags } from '../../dashboard/countrySlots.ts';
@@ -30,7 +30,7 @@ import { capturePictures, capturePicturesBatch } from '../../dashboard/pulled.ts
 import { isFamilyAuditing, subscribeFamilyAuditing } from '../audit.ts';
 import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue, zeroValue } from '../value.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
-import { declareTableProjection, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, type TableColumnSpec } from './model.ts';
+import { computeColumnMaxima, declareTableProjection, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type TableColumnSpec, type TableModel, type TableRow } from './model.ts';
 import { createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
 import { openGate } from '../../test-support/gated.ts';
 import { NOT_NAMED } from '../../widgets/occupied-states/occupiedStatesData.ts';
@@ -156,12 +156,10 @@ test('declarative table projection refuses bare null where a 5-state value is re
     rowKey: row => row.id,
     rowName: row => row.id,
   });
-  const sources: FamilySources = {
-    answers: new Map(),
+  const model = broken.project(createBoundedReadView({
+    hour: 10,
     panels: new Map([['main', { items: [{ id: 'a', count: 1 }] }]]),
-    live: new Map(),
-  };
-  const model = broken.project(sources, 10, {});
+  }), {});
   const settings = tableSettingsOf(undefined, model.columns, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'count', direction: 'descending' } });
   assert.throws(() => resolveTableRows(model, settings), InvalidFamilyValueError);
 });
@@ -183,8 +181,8 @@ test('campaign-clock projection produces identical audit output for followed wir
   };
   const settings = tableSettingsOf(undefined, CLOCK_COLUMNS, CLOCK_TABLE_BASE);
   const clockLayouts = buildColumnLayouts(CLOCK_COLUMNS, settings);
-  const followedModel = campaignClockProjection.project({ answers: new Map([['main', wire]]), panels: new Map(), live: new Map() }, 50, {});
-  const exactModel = campaignClockProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 50, {});
+  const followedModel = campaignClockProjection.project(createBoundedReadView({ hour: 50, answers: new Map([['main', wire]]) }), {});
+  const exactModel = campaignClockProjection.project(createBoundedReadView({ hour: 50, panels: new Map([['main', reply]]) }), {});
   const followedAudit = deriveTableAudit({ model: followedModel, flatRows: resolveTableRows(followedModel, settings), visibleColumns: clockLayouts });
   const exactAudit = deriveTableAudit({ model: exactModel, flatRows: resolveTableRows(exactModel, settings), visibleColumns: clockLayouts });
   assert.equal(pictureError('table', followedAudit, { values: new Map(exactAudit.map(r => [r.key, r.value!])), ordered: true }), null);
@@ -243,16 +241,14 @@ test('scoreboard projection matches followed and exact audits with missing, part
 
   for (const direction of ['descending', 'ascending'] as const) {
     const settings: TableSettings = { ...tableSettingsOf(undefined, specs, SCOREBOARD_BASE), order: specs.map(s => s.key), sort: { column: 'factories', direction } };
-    const followedModel = scoreboardProjection.project({
+    const followedModel = scoreboardProjection.project(createBoundedReadView({
+      hour: 40,
       answers: new Map([[RANK_SOURCE, rankAns], ['factories', facAns], ['casualties', casAns], ['casualties:partial', partAns]]),
-      panels: new Map(),
-      live: new Map(),
-    }, 40, options);
-    const exactModel = scoreboardProjection.project({
-      answers: new Map(),
+    }), options);
+    const exactModel = scoreboardProjection.project(createBoundedReadView({
+      hour: 40,
       panels: new Map([['main', exactReply]]),
-      live: new Map(),
-    }, 40, options);
+    }), options);
 
     const followedFlat = resolveTableRows(followedModel, settings);
     const exactFlat = resolveTableRows(exactModel, settings);
@@ -293,8 +289,8 @@ test('apm-table projection matches followed wire answers and exact replies, incl
   const cols = apmTableColumns(false, true, true);
   const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'apm', direction: 'descending' } });
   const apmLayouts = buildColumnLayouts(cols, settings);
-  const fModel = apmTableProjection.project({ answers: new Map([['main', wire]]), panels: new Map(), live: new Map() }, 100, opts);
-  const eModel = apmTableProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 100, opts);
+  const fModel = apmTableProjection.project(createBoundedReadView({ hour: 100, answers: new Map([['main', wire]]) }), opts);
+  const eModel = apmTableProjection.project(createBoundedReadView({ hour: 100, panels: new Map([['main', reply]]) }), opts);
   const fAudit = deriveTableAudit({ model: fModel, flatRows: resolveTableRows(fModel, settings), visibleColumns: apmLayouts });
   const eAudit = deriveTableAudit({ model: eModel, flatRows: resolveTableRows(eModel, settings), visibleColumns: apmLayouts });
   assert.equal(pictureError('table', fAudit, { values: new Map(eAudit.map(r => [r.key, r.value!])), ordered: true }), null);
@@ -314,11 +310,11 @@ test('occupied-states, game-score (with faction groups), and division-template (
     garrisonRedRaw: '30000',
     warnings: [],
   };
-  const occModel = occupiedStatesProjection.project({
-    answers: new Map(),
+  const occModel = occupiedStatesProjection.project(createBoundedReadView({
+    hour: 50,
     panels: new Map([['main', occReply]]),
     live: new Map([['main', { get: k => (k.endsWith('resistance') ? 2_500_000 : k.endsWith('compliance') ? 1_000_000 : k.endsWith('garrison') ? 500_000 : 100_000), missing: () => 'Not recorded' }]]),
-  }, 50, {
+  }), {
     filter: { passing: null, unrecorded: [], bounds: [] },
     role: 'occupier',
     labels: { GER: [{ from: 0, name: 'Germany' }], POL: [{ from: 0, name: 'Poland' }] },
@@ -341,11 +337,11 @@ test('occupied-states, game-score (with faction groups), and division-template (
       { tag: 'ENG', total: { missing: null }, army: { missing: null }, navy: { missing: null }, air: { missing: null }, industry: { missing: null }, land: { missing: null } },
     ],
   };
-  const gsModel = gameScoreProjection.project({
-    answers: new Map(),
+  const gsModel = gameScoreProjection.project(createBoundedReadView({
+    hour: 50,
     panels: new Map([['main', gsReply]]),
     live: new Map([['main', { get: k => (k.startsWith('GER') ? 300 : 200), missing: () => 'Not recorded' }]]),
-  }, 50, {
+  }), {
     all: true,
     holders: null,
     membership: null,
@@ -376,7 +372,7 @@ test('occupied-states, game-score (with faction groups), and division-template (
   };
   const dtCols = divisionTemplateColumns(true);
   const dtSettings = tableSettingsOf(undefined, dtCols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'template', direction: 'ascending' } });
-  const dtModel = divisionTemplateProjection.project({ answers: new Map(), panels: new Map([['main', dtReply]]), live: new Map([['main', repliedCells(dtReply).read()]]) }, 50, {
+  const dtModel = divisionTemplateProjection.project(createBoundedReadView({ hour: 50, panels: new Map([['main', dtReply]]), live: new Map([['main', repliedCells(dtReply).read()]]) }), {
     countryName: 'Germany',
     cellBars: true,
     canOpenDesigner: true,
@@ -470,8 +466,8 @@ test('1,500 countries project, sort, audit identically, and paint only visible r
   const options = { shown: columns, candidates: tags, top: null, rankMarkers: false, looks };
   const specs = scoreboardColumnsSpec(columns, null);
   const settings: TableSettings = { ...tableSettingsOf(undefined, specs, SCOREBOARD_BASE), order: specs.map(s => s.key), sort: { column: 'factories', direction: 'descending' } };
-  const followedModel = scoreboardProjection.project({ answers: new Map([['factories', wire]]), panels: new Map(), live: new Map() }, 200, options);
-  const exactModel = scoreboardProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 200, options);
+  const followedModel = scoreboardProjection.project(createBoundedReadView({ hour: 200, answers: new Map([['factories', wire]]) }), options);
+  const exactModel = scoreboardProjection.project(createBoundedReadView({ hour: 200, panels: new Map([['main', reply]]) }), options);
   const followedRows = resolveTableRows(followedModel, settings);
   const exactRows = resolveTableRows(exactModel, settings);
   assert.equal(followedRows.length, count);
@@ -518,8 +514,7 @@ test('occupied-states projection carries country looks at hour, filter ranges, u
     [liveKey('1', 'garrisonStrength'), 87_500],
   ]), NOT_NAMED);
   const run = (hour: number) => occupiedStatesProjection.project(
-    { answers: new Map(), panels: new Map([['main', reply]]), live: new Map([['main', live]]) },
-    hour,
+    createBoundedReadView({ hour, panels: new Map([['main', reply]]), live: new Map([['main', live]]) }),
     { filter, role: 'occupier', labels, lawAs: 'dot', filterAll: false },
   );
   const at15 = run(15);
@@ -847,8 +842,8 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
   assert.equal(gate.due(115, 0, 'w'), true, 'pause flushes immediately');
   flusher.cancel();
 
-  const occMissingLaw = occupiedStatesProjection.project({
-    answers: new Map(),
+  const occMissingLaw = occupiedStatesProjection.project(createBoundedReadView({
+    hour: 50,
     panels: new Map([['main', {
       states: [{ state: 1, name: 'Warsaw', nameMissing: null, owner: 'POL', occupier: 'GER', occupied: 'POL', garrisonRequiredSign: 0, garrisonAlert: false, assignedKnown: true, garrisonMissing: null, law: 'custom_law', lawMissing: null }],
       complete: true,
@@ -859,7 +854,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
       warnings: [],
     }]]),
     live: new Map([['main', { get: () => 0, missing: () => 'Not recorded' }]]),
-  }, 50, { filter: { passing: null, unrecorded: [], bounds: [] }, role: 'occupier', labels: { GER: [{ from: 0, name: 'Germany' }], POL: [{ from: 0, name: 'Poland' }] }, lawAs: 'dot', filterAll: true });
+  }), { filter: { passing: null, unrecorded: [], bounds: [] }, role: 'occupier', labels: { GER: [{ from: 0, name: 'Germany' }], POL: [{ from: 0, name: 'Poland' }] }, lawAs: 'dot', filterAll: true });
   assert.deepEqual(occMissingLaw.rows[0]!.cells.law!.value, { kind: 'notRecorded', reason: 'Law localization absent' });
 
   const manyRows = Array.from({ length: 15 }, (_, i) => ({
@@ -1066,16 +1061,16 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
   assert.equal(snap2?.context, ctxA, 'S1: updated snapshot carries the new selection context');
   assert.equal(snap2?.extra, surfaceA, 'S1: updated snapshot carries the new settings and looks');
 
-  const emptyGsA = gameScoreProjection.project({
-    answers: new Map(),
+  const emptyGsA = gameScoreProjection.project(createBoundedReadView({
+    hour: 10,
     panels: new Map([['main', { missing: null, warnings: [], hints: {}, multipliers: [], rows: [] }]]),
     live: new Map([['main', { get: () => undefined, missing: () => 'Not recorded' }]]),
-  }, 10, { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} });
-  const emptyGsB = gameScoreProjection.project({
-    answers: new Map(),
+  }), { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} });
+  const emptyGsB = gameScoreProjection.project(createBoundedReadView({
+    hour: 250,
     panels: new Map([['main', { missing: null, warnings: [], hints: {}, multipliers: [], rows: [] }]]),
     live: new Map([['main', { get: () => undefined, missing: () => 'Not recorded' }]]),
-  }, 250, { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} });
+  }), { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} });
   assert.equal(emptyGsA.empty, 'No country’s scores recorded at this time.', 'M5: dateless empty message');
   assert.equal(emptyGsA.empty, emptyGsB.empty, 'M5: empty message does not depend on advancing hour');
 
@@ -1304,10 +1299,10 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
   registerTableProjection({
     kind: 'test-r5-reveal',
     family: 'table',
-    project(_sources, hour) {
+    project(readView) {
       return {
         columns: cols,
-        hour,
+        hour: readView.hour,
         unsorted: true,
         rows: [
           {
@@ -1328,10 +1323,10 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
   registerTableProjection({
     kind: 'test-r5-art-1500',
     family: 'table',
-    project(_sources, hour) {
+    project(readView) {
       return {
         columns: cols,
-        hour,
+        hour: readView.hour,
         unsorted: true,
         rows: Array.from({ length: 1500 }, (_, i) => {
           const tag = `C${String(i).padStart(4, '0')}`;
@@ -1361,11 +1356,11 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
   registerTableProjection({
     kind: 'test-r5-local-fail',
     family: 'table',
-    project(_sources, hour) {
+    project(readView) {
       if (throwLocalPaint) throw new Error('local projection crash');
       return {
         columns: cols,
-        hour,
+        hour: readView.hour,
         rows: [{ key: 'ok', name: 'Ok', cells: { name: { value: knownValue('Ok') }, val: { value: knownValue(7) } } }],
       };
     },
@@ -1514,4 +1509,207 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
     auditC.find(r => r.key === 'GER:_tooltip')?.value,
     'F8: tooltip audit distinguishes distinct underlying numeric values that format identically',
   );
+});
+
+test('incremental row resolution, column maxima, scrollable/grouped dirty painting, and one-shot rank marker timers', () => {
+  const cols: TableColumnSpec[] = [
+    { key: 'name', label: 'Country', as: 'plain', offered: ['plain'], priority: 0, text: true },
+    { key: 'score', label: 'Score', as: 'faint', tone: 'blue', offered: ['faint'], priority: 1, numeric: true, format: 'integer' },
+    { key: 'extra', label: 'Extra', as: 'faint', tone: 'blue', offered: ['faint'], priority: 2, numeric: true, format: 'integer' },
+  ];
+  const settings = tableSettingsOf(undefined, cols, { density: 'compact', overflow: 'tooltip', sort: { column: 'score', direction: 'descending' } });
+  const layouts = buildColumnLayouts(cols, settings);
+  const N = 120;
+  let seed = 0x51a7f00d;
+  const nextRand = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed;
+  };
+  const scores = Array.from({ length: N }, (_, i) => (i * 17) % 97);
+  const extras = Array.from({ length: N }, (_, i) => (i * 13) % 83);
+  const makeRow = (i: number): TableRow => {
+    const key = `C${String(i).padStart(3, '0')}`;
+    return {
+      key,
+      name: `Country ${key}`,
+      cells: {
+        name: { value: knownValue(`Country ${key}`) },
+        score: { value: scores[i] === 0 ? zeroValue(0) : knownValue(scores[i]!), format: 'integer' },
+        extra: { value: extras[i] === 0 ? zeroValue(0) : knownValue(extras[i]!), format: 'integer' },
+      },
+    };
+  };
+  let rows = Array.from({ length: N }, (_, i) => makeRow(i));
+  let prevModel: TableModel = { columns: cols, rows, hour: 1, rowTimeBoundaries: false, rank: true };
+  let prevFlat = resolveTableRows(prevModel, settings);
+  let prevIndex = new Map<string, number>();
+  prevFlat.forEach((item, idx) => { if (item.kind === 'data') prevIndex.set(item.key, idx); });
+  let prevMaxima = computeColumnMaxima(prevFlat, layouts, 1);
+
+  for (let step = 2; step <= 65; step++) {
+    const k = step % 7 === 0 ? 0 : 1 + (nextRand() % 8);
+    const nextRows = rows.slice();
+    const changedKeys = new Set<string>();
+    const changedRows = new Map<string, TableRow>();
+    for (let j = 0; j < k; j++) {
+      const idx = nextRand() % N;
+      if (j === 0 && step % 5 === 0) {
+        const leaderKey = prevFlat[0]!.key;
+        const leaderIdx = Number(leaderKey.slice(1));
+        scores[leaderIdx] = 1;
+        extras[leaderIdx] = 1;
+        const built = makeRow(leaderIdx);
+        nextRows[leaderIdx] = built;
+        changedKeys.add(built.key);
+        changedRows.set(built.key, built);
+      } else {
+        scores[idx] = nextRand() % 120;
+        extras[idx] = nextRand() % 150;
+        const built = makeRow(idx);
+        nextRows[idx] = built;
+        changedKeys.add(built.key);
+        changedRows.set(built.key, built);
+      }
+    }
+    const nextModel: TableModel = {
+      columns: cols,
+      rows: nextRows,
+      hour: step,
+      rowTimeBoundaries: false,
+      rank: true,
+      changedKeys,
+      changedRows,
+    };
+    const inc = resolveTableRowsIncremental(prevModel, prevFlat, prevIndex, nextModel, settings);
+    assert.ok(inc !== null, `step ${step} uses incremental sort`);
+    const incRows: ReturnType<typeof resolveTableRows> = inc.flatRows;
+    const full = resolveTableRows(nextModel, settings);
+    assert.equal(incRows.length, full.length, `step ${step} length matches`);
+    for (let i = 0; i < full.length; i++) {
+      const incItem = incRows[i]!;
+      const fullItem = full[i]!;
+      assert.equal(incItem.kind, 'data');
+      assert.equal(fullItem.kind, 'data');
+      assert.equal(incItem.key, fullItem.key, `step ${step} key at ${i}`);
+      assert.equal(incItem.rank, fullItem.rank, `step ${step} rank at ${i} (${incItem.key})`);
+      assert.equal(inc.rowIndex.get(incItem.key), i, `step ${step} rowIndex for ${incItem.key}`);
+    }
+    const incMax = updateColumnMaximaIncremental(prevMaxima, prevFlat, prevIndex, incRows, inc.rowIndex, layouts, changedKeys, prevModel.hour, step);
+    const fullMax = computeColumnMaxima(full, layouts, step);
+    assert.deepEqual([...incMax.entries()].sort(), [...fullMax.entries()].sort(), `step ${step} maxima match`);
+
+    rows = nextRows;
+    prevModel = nextModel;
+    prevFlat = incRows;
+    prevIndex = inc.rowIndex;
+    prevMaxima = incMax;
+  }
+
+  const { ctx, counts } = instrumentedContext();
+  (ctx as unknown as { createLinearGradient: () => { addColorStop: () => void } }).createLinearGradient = () => ({ addColorStop() {} });
+  const scrollSettings = tableSettingsOf(undefined, cols, { density: 'compact', overflow: 'scroll', sort: { column: 'score', direction: 'descending' } });
+  const scrollLayout = layoutFamilyTable(buildColumnLayouts(cols, scrollSettings, { name: 160, score: 160, extra: 160 }), 260, 'scroll');
+  assert.equal(scrollLayout.scrollable, true);
+  const groupedRows = resolveTableRows({
+    columns: cols,
+    hour: 1,
+    rank: true,
+    rows: [
+      { key: 'A', name: 'Alpha', group: { key: 'g1', label: 'Axis', order: 0 }, cells: { name: { value: knownValue('Alpha') }, score: { value: knownValue(100), format: 'integer' }, extra: { value: knownValue(50), format: 'integer' } } },
+      { key: 'B', name: 'Bravo', group: { key: 'g1', label: 'Axis', order: 0 }, cells: { name: { value: knownValue('Bravo') }, score: { value: knownValue(80), format: 'integer' }, extra: { value: knownValue(40), format: 'integer' } } },
+      ...Array.from({ length: 20 }, (_, i) => ({
+        key: `Z${i}`,
+        name: `Z${i}`,
+        group: { key: 'g2', label: 'Other', order: 1 },
+        cells: { name: { value: knownValue(`Z${i}`) }, score: { value: knownValue(20 - i), format: 'integer' as const }, extra: { value: knownValue(10), format: 'integer' as const } },
+      })),
+    ],
+  }, scrollSettings);
+  const pic = createTablePicture();
+  drawFamilyTable(ctx, { layout: scrollLayout, rows: groupedRows, settings: scrollSettings, hour: 1, width: 260, height: 100, scrollLeft: 0, scrollTop: 0, rankShown: true, rankWidth: 36, theme: TEST_THEME, now: 1, glideDuration: 0, glide: new Map(), markers: new Map(), icons: new Map(), dpr: 1 }, pic);
+  const fillsAfterFull = counts().fillTextCalls;
+  const offscreenMutated = groupedRows.slice();
+  const lastIdx = offscreenMutated.length - 1;
+  const lastItem = offscreenMutated[lastIdx]!;
+  if (lastItem.kind === 'data') {
+    offscreenMutated[lastIdx] = { ...lastItem, row: { ...lastItem.row, cells: { ...lastItem.row.cells, score: { value: knownValue(19), format: 'integer' } } } };
+  }
+  const offscreenRes = drawFamilyTable(ctx, { layout: scrollLayout, rows: offscreenMutated, settings: scrollSettings, hour: 2, width: 260, height: 100, scrollLeft: 0, scrollTop: 0, rankShown: true, rankWidth: 36, theme: TEST_THEME, now: 2, glideDuration: 0, glide: new Map(), markers: new Map(), icons: new Map(), dpr: 1 }, pic);
+  assert.equal(offscreenRes.drew, false, 'off-screen row change in scrollable grouped table performs zero paint');
+  assert.equal(counts().fillTextCalls, fillsAfterFull, 'off-screen row change emits zero fillText calls');
+
+  const visibleMutated = offscreenMutated.slice();
+  const visItem = visibleMutated[2]!;
+  if (visItem.kind === 'data') {
+    visibleMutated[2] = { ...visItem, row: { ...visItem.row, cells: { ...visItem.row.cells, score: { value: knownValue(81), format: 'integer' } } } };
+  }
+  const visRes = drawFamilyTable(ctx, { layout: scrollLayout, rows: visibleMutated, settings: scrollSettings, hour: 3, width: 260, height: 100, scrollLeft: 0, scrollTop: 0, rankShown: true, rankWidth: 36, theme: TEST_THEME, now: 3, glideDuration: 0, glide: new Map(), markers: new Map(), icons: new Map(), dpr: 1 }, pic);
+  assert.equal(visRes.drew, true);
+  assert.equal(visRes.paintedCells, 1, 'scrollable grouped single-cell change repaints only 1 dirty cell');
+  assert.ok(counts().fillTextCalls - fillsAfterFull < fillsAfterFull, `scrollable grouped single-cell change draws fewer texts (${counts().fillTextCalls - fillsAfterFull} vs full ${fillsAfterFull})`);
+
+  const prevOffscreen = globalThis.OffscreenCanvas;
+  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = class {
+    width: number;
+    height: number;
+    constructor(w: number, h: number) { this.width = w; this.height = h; }
+    getContext() {
+      const c = instrumentedContext().ctx as unknown as Record<string, unknown>;
+      c.setTransform = () => {};
+      return c;
+    }
+    transferToImageBitmap() { return { close() {} }; }
+  };
+  let wakes = 0;
+  let scheduledMs: number | null = null;
+  let timerCb: (() => void) | null = null;
+  try {
+    registerTableProjection(declareTableProjection<{ rows: { id: string; v: number }[] }, { id: string; v: number }, Record<string, never>>({
+      kind: 'test-rank-marker-timer',
+      rank: true,
+      rankMarkers: true,
+      columns: [
+        { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, field: 'id', text: true },
+        { key: 'v', label: 'Val', as: 'plain', offered: ['plain'], priority: 1, field: 'v', numeric: true },
+      ],
+      rows: reply => ({ rows: reply.rows }),
+      rowKey: r => r.id,
+      rowName: r => r.id,
+    }));
+    let clockNow = 1000;
+    const laneView = familyTableLaneView(() => { wakes++; }, {
+      clock: () => clockNow,
+      cadenceTimers: {
+        set: (fn, ms) => { timerCb = fn; scheduledMs = ms; return 1 as unknown as ReturnType<typeof setTimeout>; },
+        clear: () => { timerCb = null; },
+      },
+    });
+    const rmSettings = tableSettingsOf(undefined, [
+      { key: 'name', label: 'Name', as: 'plain', offered: ['plain'] },
+      { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
+    ], { density: 'compact', overflow: 'tooltip', sort: { column: 'v', direction: 'descending' } });
+    const state = new Map<string, unknown>();
+    let seq = 1;
+    const paintRows = (list: { id: string; v: number }[], hour: number) => laneView.paint({
+      widget: 1,
+      subs: [],
+      pictures: [],
+      model: { family: 'table' as const, kind: 'test-rank-marker-timer', options: {}, settings: rmSettings, sources: {}, staticPanels: { main: { rows: list } }, width: 320, height: 180, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
+      hour,
+      speed: 24,
+      binding: { generation: 1, surfaces: [{ width: 320, height: 180, dpr: 1 }], offset: 0, pin: null },
+      inspect: null,
+      now: clockNow,
+    }, state, () => `c${seq++}`);
+    paintRows([{ id: 'A', v: 20 }, { id: 'B', v: 10 }], 1);
+    clockNow = 1050;
+    const swapped = paintRows([{ id: 'A', v: 5 }, { id: 'B', v: 30 }], 2);
+    assert.equal(swapped.motion, false, 'rank marker expiry does not hold 60 FPS motion loop');
+    assert.ok(scheduledMs !== null && scheduledMs > 0, 'schedules one-shot wake timer for marker expiry');
+    (timerCb as (() => void) | null)?.();
+    assert.ok(wakes >= 1, 'one-shot timer wakes widget when markers expire');
+    laneView.unmount?.(1, state);
+  } finally {
+    (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
+  }
 });

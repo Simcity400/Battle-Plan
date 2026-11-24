@@ -1375,11 +1375,12 @@ fn dictionary_interns_and_reads_strings_across_table_growth() {
 
 #[test]
 fn commit_releases_oversized_keyframe_insert_scratch_while_preserving_state() {
+    const ROWS: usize = INSERT_SCRATCH_LIMIT / size_of::<u64>() + 1;
     let kinds = [Kind::U64, Kind::Bytes];
     let mut dict = Dictionary::new();
     let mut writer = TableWriter::new(&kinds).unwrap();
     let mut hour = writer.begin(&mut dict, Coverage::Complete).unwrap();
-    for key in 1..=2000_u128 {
+    for key in (1..=ROWS as u128).rev() {
         let name = format!("row-{key}");
         hour.row(
             key,
@@ -1392,9 +1393,9 @@ fn commit_releases_oversized_keyframe_insert_scratch_while_preserving_state() {
     }
     let prepared = hour.finish().unwrap();
     let scratch = writer.columns.as_ref().unwrap();
-    assert!(scratch.inserts[0].words.capacity() >= 2000);
-    assert!(scratch.insert_outs[0].u64s.capacity() >= 2000);
-    assert!(writer.parts.sorted_keys.capacity() >= 2000);
+    assert!(scratch.inserts[0].words.capacity() >= ROWS);
+    assert!(scratch.insert_outs[0].u64s.capacity() >= ROWS);
+    assert!(writer.parts.sorted_keys.capacity() >= ROWS);
     writer
         .commit(
             Some(prepared),
@@ -1410,7 +1411,7 @@ fn commit_releases_oversized_keyframe_insert_scratch_while_preserving_state() {
     assert_eq!(scratch.inserts[0].words.capacity(), 0);
     assert_eq!(scratch.insert_outs[0].u64s.capacity(), 0);
     assert_eq!(writer.parts.sorted_keys.capacity(), 0);
-    assert_eq!(writer.table().live().count(), 2000);
+    assert_eq!(writer.table().live().count(), ROWS);
 
     let mut next = writer
         .begin(&mut dict, Coverage::Changes { removed: &[] })
@@ -1437,4 +1438,71 @@ fn commit_releases_oversized_keyframe_insert_scratch_while_preserving_state() {
         writer.table().column(0).unwrap().cell(slot),
         Some(Cell::U64(999))
     );
+}
+
+#[test]
+fn ascending_all_new_batch_matches_descending_and_rejects_duplicates() {
+    let kinds = [Kind::U64, Kind::Bool, Kind::OptionalI32, Kind::U32List, Kind::Bytes];
+    let build = |keys: &[u128]| -> (TableWriter, Dictionary) {
+        let mut dict = Dictionary::new();
+        let mut writer = TableWriter::new(&kinds).unwrap();
+        let mut batch = Batch::new();
+        batch.begin(&kinds, keys.len()).unwrap();
+        for &key in keys {
+            batch.key(key).unwrap();
+            batch.value(0, Cell::U64(key as u64 * 3)).unwrap();
+            batch.value(1, Cell::Bool(key % 2 == 0)).unwrap();
+            let opt = (key % 3 != 0).then_some(key as i32);
+            batch.value(2, Cell::OptionalI32(opt)).unwrap();
+            let list = [key as u32, key as u32 + 1];
+            batch.value(3, Cell::U32List(&list)).unwrap();
+            let name = format!("k-{key}");
+            batch.text(4, name.as_bytes()).unwrap();
+        }
+        let prepared = writer.prepare(&mut dict, Coverage::Complete, &batch).unwrap();
+        writer
+            .commit(
+                Some(prepared),
+                Evidence {
+                    status: Status::Complete,
+                    read: true,
+                    sample: Sample::FromReadBit,
+                },
+                0,
+            )
+            .unwrap();
+        (writer, dict)
+    };
+    let asc_keys: Vec<u128> = (1..=600).collect();
+    let desc_keys: Vec<u128> = (1..=600).rev().collect();
+    let (asc, asc_dict) = build(&asc_keys);
+    let (desc, desc_dict) = build(&desc_keys);
+    assert_eq!(asc.table().live().count(), 600);
+    for &key in &asc_keys {
+        let s1 = asc.table().slot(key).unwrap();
+        let s2 = desc.table().slot(key).unwrap();
+        for col in 0..4 {
+            assert_eq!(
+                asc.table().column(col).unwrap().cell(s1),
+                desc.table().column(col).unwrap().cell(s2)
+            );
+        }
+        let Cell::Bytes(id1) = asc.table().column(4).unwrap().cell(s1).unwrap() else {
+            panic!()
+        };
+        let Cell::Bytes(id2) = desc.table().column(4).unwrap().cell(s2).unwrap() else {
+            panic!()
+        };
+        assert_eq!(asc_dict.get(id1), desc_dict.get(id2));
+    }
+
+    let mut dict = Dictionary::new();
+    let mut dup_writer = TableWriter::new(&[Kind::U64]).unwrap();
+    let mut dup_batch = Batch::new();
+    dup_batch.begin(&[Kind::U64], 2).unwrap();
+    dup_batch.key(7).unwrap();
+    dup_batch.value(0, Cell::U64(1)).unwrap();
+    dup_batch.key(7).unwrap();
+    dup_batch.value(0, Cell::U64(2)).unwrap();
+    assert!(dup_writer.prepare(&mut dict, Coverage::Complete, &dup_batch).is_err());
 }

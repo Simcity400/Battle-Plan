@@ -1,7 +1,7 @@
 use std::{
     cell::Cell,
     sync::atomic::{
-        AtomicBool, AtomicU64, AtomicUsize,
+        AtomicBool, AtomicU8, AtomicU64, AtomicUsize,
         Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst},
         compiler_fence,
     },
@@ -15,6 +15,9 @@ unsafe extern "system" {
 const THREAD_SLOTS: usize = 128;
 const SLOT_DEPTH: usize = 8;
 const OVERFLOW_SENTINEL: usize = THREAD_SLOTS;
+const QUIESCENCE_OFF: u8 = 0;
+const QUIESCENCE_ARMING: u8 = 1;
+const QUIESCENCE_ACTIVE: u8 = 2;
 
 #[repr(align(64))]
 struct ThreadSlot {
@@ -31,10 +34,16 @@ impl ThreadSlot {
 
 static SLOTS: [ThreadSlot; THREAD_SLOTS] = [const { ThreadSlot::new() }; THREAD_SLOTS];
 static CLAIMED: AtomicUsize = AtomicUsize::new(0);
-static CAPTURE_QUIESCENT: AtomicBool = AtomicBool::new(false);
+static QUIESCENCE: AtomicU8 = AtomicU8::new(QUIESCENCE_OFF);
 
 thread_local! {
     static SLOT: Cell<usize> = const { Cell::new(usize::MAX) };
+}
+
+#[cold]
+#[inline(never)]
+fn break_capture_quiescence() {
+    QUIESCENCE.store(QUIESCENCE_OFF, SeqCst);
 }
 
 #[cold]
@@ -70,12 +79,18 @@ pub fn enter_slot(tag: usize) -> Option<(u8, u8)> {
     if active[0].load(Relaxed) == 0 {
         active[0].store(tag, Relaxed);
         compiler_fence(SeqCst);
+        if QUIESCENCE.load(Relaxed) != QUIESCENCE_OFF {
+            break_capture_quiescence();
+        }
         return Some((slot_idx as u8, 0));
     }
     for entry in 1..SLOT_DEPTH {
         if active[entry].load(Relaxed) == 0 {
             active[entry].store(tag, Relaxed);
             compiler_fence(SeqCst);
+            if QUIESCENCE.load(Relaxed) != QUIESCENCE_OFF {
+                break_capture_quiescence();
+            }
             return Some((slot_idx as u8, entry as u8));
         }
     }
@@ -106,8 +121,23 @@ pub fn current_thread_has(tag: usize) -> bool {
     false
 }
 
+fn all_slots_empty() -> bool {
+    let count = CLAIMED.load(Acquire);
+    for slot in &SLOTS[..count] {
+        for entry in &slot.active {
+            if entry.load(SeqCst) != 0 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 #[inline]
 pub fn any_active(tag: usize) -> bool {
+    if QUIESCENCE.load(Acquire) == QUIESCENCE_ACTIVE {
+        return false;
+    }
     let count = CLAIMED.load(Acquire);
     for slot in &SLOTS[..count] {
         for entry in &slot.active {
@@ -121,6 +151,9 @@ pub fn any_active(tag: usize) -> bool {
 
 #[inline]
 pub fn count_active(tag: usize) -> usize {
+    if QUIESCENCE.load(Acquire) == QUIESCENCE_ACTIVE {
+        return 0;
+    }
     let count = CLAIMED.load(Acquire);
     let mut total = 0usize;
     for slot in &SLOTS[..count] {
@@ -140,35 +173,42 @@ pub struct CaptureQuiescence {
 impl Drop for CaptureQuiescence {
     fn drop(&mut self) {
         if self.active {
-            CAPTURE_QUIESCENT.store(false, Release);
+            QUIESCENCE.store(QUIESCENCE_OFF, Release);
         }
     }
 }
 
 pub fn begin_capture_quiescence(mut all_other_hooks_quiet: impl FnMut() -> bool) -> CaptureQuiescence {
-    // SAFETY: `FlushProcessWriteBuffers` is a stateless kernel32 synchronization barrier.
-    unsafe { FlushProcessWriteBuffers() };
-    let mut quiet = all_other_hooks_quiet();
+    let try_arm = |all_other_hooks_quiet: &mut dyn FnMut() -> bool| -> bool {
+        QUIESCENCE.store(QUIESCENCE_ARMING, SeqCst);
+        // SAFETY: `FlushProcessWriteBuffers` is a stateless kernel32 synchronization barrier.
+        unsafe { FlushProcessWriteBuffers() };
+        all_other_hooks_quiet()
+            && all_slots_empty()
+            && QUIESCENCE
+                .compare_exchange(QUIESCENCE_ARMING, QUIESCENCE_ACTIVE, SeqCst, SeqCst)
+                .is_ok()
+    };
+    let mut quiet = try_arm(&mut all_other_hooks_quiet);
     if !quiet {
+        QUIESCENCE.store(QUIESCENCE_OFF, SeqCst);
         for _ in 0..64 {
             std::hint::spin_loop();
-            if all_other_hooks_quiet() {
-                // SAFETY: `FlushProcessWriteBuffers` is a stateless kernel32 synchronization barrier.
-                unsafe { FlushProcessWriteBuffers() };
-                quiet = all_other_hooks_quiet();
+            if all_other_hooks_quiet() && all_slots_empty() {
+                quiet = try_arm(&mut all_other_hooks_quiet);
+                if !quiet {
+                    QUIESCENCE.store(QUIESCENCE_OFF, SeqCst);
+                }
                 break;
             }
         }
-    }
-    if quiet {
-        CAPTURE_QUIESCENT.store(true, Release);
     }
     CaptureQuiescence { active: quiet }
 }
 
 #[inline]
 pub fn flush_writers() -> bool {
-    if CAPTURE_QUIESCENT.load(Acquire) {
+    if QUIESCENCE.load(Acquire) == QUIESCENCE_ACTIVE {
         return false;
     }
     let claimed = CLAIMED.load(Acquire);
@@ -414,10 +454,13 @@ impl Drop for FlightGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Barrier};
+    use std::sync::{Arc, Barrier, Mutex};
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn flight_gate_tracks_nesting_epoch_and_cross_thread_quiescence() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let gate = Arc::new(FlightGate::new(7));
         let initial = gate.quiet_epoch().unwrap();
         assert_eq!(initial, 7);
@@ -462,6 +505,7 @@ mod tests {
 
     #[test]
     fn flight_gate_retains_without_leaking_thread_slot() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let gate = FlightGate::new(0);
         let guard = gate.enter(true);
         guard.leak_and_retain();
@@ -525,6 +569,7 @@ mod tests {
 
     #[test]
     fn clean_reader_waits_for_in_flight_flush_before_certifying_epoch() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let gate = Arc::new(FlightGate::new(10));
         drop(gate.enter(true));
         let locked = gate.lock_flush();
@@ -551,5 +596,32 @@ mod tests {
         assert_eq!(rev_reader.join().unwrap(), 11);
         assert_eq!(quiet_reader.join().unwrap(), Some(11));
         assert_eq!(gate.clean_epoch(), Some(11));
+    }
+
+    #[test]
+    fn capture_quiescence_fast_path_breaks_immediately_on_slot_entry() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let gate = FlightGate::new(3);
+        {
+            let _held = gate.enter(false);
+            let q = begin_capture_quiescence(|| true);
+            assert!(!q.active);
+            assert!(gate.any_active());
+            assert_eq!(gate.active(), 1);
+        }
+        {
+            let q = begin_capture_quiescence(|| true);
+            assert!(q.active);
+            assert!(!flush_writers());
+            assert!(!gate.any_active());
+            assert_eq!(gate.active(), 0);
+            let guard = gate.enter(true);
+            assert!(gate.any_active());
+            assert_eq!(gate.active(), 1);
+            assert_eq!(gate.quiet_epoch(), None);
+            drop(guard);
+            assert!(!gate.any_active());
+            assert!(gate.quiet_epoch().unwrap() > 3);
+        }
     }
 }

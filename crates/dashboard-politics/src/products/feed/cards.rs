@@ -205,11 +205,18 @@ fn cards(list: List, source: &Source, params: &FeedPageParams, context: &LoadCon
         })
         .collect();
     let events: Vec<&FeedEvent> = rows.iter().zip(&cards).flat_map(|(paged, (_, continued))| std::iter::once(&paged.event).chain(continued)).collect();
-    let mut presented = present_all(&events, &names, &presenter, &mut notices, cancelled)?.into_iter();
+    let mut presented = present_all(&query, &events, &names, &presenter, &mut notices, cancelled)?.into_iter();
     let mut out = Vec::with_capacity(rows.len());
     for (paged, (shown, continued)) in rows.into_iter().zip(cards) {
         let own = presented.next().ok_or_else(|| invalid("A card row was not presented"))?;
-        let rows_continuing: Vec<Option<EventFeedRow>> = presented.by_ref().take(continued.len()).collect();
+        let mut card_rows: Vec<Option<EventFeedRow>> = std::iter::once(own).chain(presented.by_ref().take(continued.len())).collect();
+        if list == List::Decisions {
+            let card_events: Vec<&FeedEvent> = std::iter::once(&paged.event).chain(continued.iter()).collect();
+            super::decision_state::enforce_same_incarnation(&card_events, &mut card_rows);
+        }
+        let mut card_rows = card_rows.into_iter();
+        let own = card_rows.next().flatten();
+        let rows_continuing: Vec<Option<EventFeedRow>> = card_rows.collect();
         let occurrence = match (shown, own) {
             (Some(kind), Some(row)) => {
                 let mut edges = vec![edge(&paged.event, row)];

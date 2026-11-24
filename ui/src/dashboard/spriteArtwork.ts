@@ -1,4 +1,5 @@
 import { drawableIcon } from './artwork.ts';
+import { asFailure } from './queryError.ts';
 
 export interface SpriteFrame { key: string; frame: number; recorded?: string; text?: boolean }
 
@@ -42,9 +43,10 @@ export type SpriteFetcher = (sprites: readonly SpriteFrame[], signal: AbortSigna
 interface SpriteScope {
   users: number;
   icons: Map<string, string | null>;
+  errors: Map<string, string>;
   inFlight: Set<string>;
   queued: Map<string, SpriteFrame>;
-  watchers: Set<(icons: ReadonlyMap<string, string | null>) => void>;
+  watchers: Set<(icons: ReadonlyMap<string, string | null>, errors: ReadonlyMap<string, string>) => void>;
   controllers: Set<AbortController>;
   scheduled: boolean;
   running: number;
@@ -56,7 +58,7 @@ export class SpriteCaches {
   private held(scope: string): SpriteScope {
     let held = this.scopes.get(scope);
     if (!held) {
-      held = { users: 0, icons: new Map(), inFlight: new Set(), queued: new Map(), watchers: new Set(), controllers: new Set(), scheduled: false, running: 0 };
+      held = { users: 0, icons: new Map(), errors: new Map(), inFlight: new Set(), queued: new Map(), watchers: new Set(), controllers: new Set(), scheduled: false, running: 0 };
       this.scopes.set(scope, held);
     }
     return held;
@@ -64,7 +66,9 @@ export class SpriteCaches {
 
   icons(scope: string): Map<string, string | null> { return this.held(scope).icons; }
 
-  watch(scope: string, watcher: (icons: ReadonlyMap<string, string | null>) => void): () => void {
+  errors(scope: string): Map<string, string> { return this.held(scope).errors; }
+
+  watch(scope: string, watcher: (icons: ReadonlyMap<string, string | null>, errors: ReadonlyMap<string, string>) => void): () => void {
     const held = this.held(scope);
     held.watchers.add(watcher);
     return () => { held.watchers.delete(watcher); };
@@ -75,7 +79,7 @@ export class SpriteCaches {
     let added = false;
     for (const sprite of sprites) {
       const id = spriteId(sprite);
-      if (held.icons.has(id) || held.inFlight.has(id)) continue;
+      if (held.icons.has(id) || held.errors.has(id) || held.inFlight.has(id)) continue;
       held.inFlight.add(id);
       held.queued.set(id, sprite);
       added = true;
@@ -103,14 +107,19 @@ export class SpriteCaches {
         const resolved = spriteIcons(reply, batch);
         for (const id of ids) {
           held.inFlight.delete(id);
+          held.errors.delete(id);
           held.icons.set(id, resolved.get(id) ?? null);
         }
-        for (const watcher of [...held.watchers]) watcher(held.icons);
-      }).catch(() => {
+        for (const watcher of [...held.watchers]) watcher(held.icons, held.errors);
+      }).catch(error => {
         if (this.scopes.get(scope) !== held) return;
+        const reason = controller.signal.aborted ? null : asFailure(error).message;
         for (const id of ids) {
           held.inFlight.delete(id);
-          if (!controller.signal.aborted && !held.icons.has(id)) held.icons.set(id, null);
+          if (reason !== null && !held.icons.has(id)) held.errors.set(id, reason);
+        }
+        if (reason !== null) {
+          for (const watcher of [...held.watchers]) watcher(held.icons, held.errors);
         }
       }).finally(() => {
         held.controllers.delete(controller);
@@ -129,6 +138,7 @@ export class SpriteCaches {
         held.controllers.clear();
         held.queued.clear();
         held.inFlight.clear();
+        held.errors.clear();
         this.scopes.delete(scope);
       }
     };

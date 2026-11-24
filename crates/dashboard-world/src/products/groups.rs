@@ -675,6 +675,17 @@ pub(crate) fn forget(source: &dashboard_base::Source) {
     Runs::forget(source);
 }
 
+pub fn faction_name_at(faction: &FactionGroup, hour: i32) -> (Option<String>, Option<String>) {
+    if let Some(run) = faction.names.iter().find(|run| run.first_hour <= hour && hour <= run.last_hour) {
+        match &run.name {
+            Some(name) => (Some(name.clone()), None),
+            None => (None, Some(run.reason.clone().unwrap_or_else(|| "Faction name was not recorded at this hour".to_owned()))),
+        }
+    } else {
+        (None, Some("Faction name was not recorded at this hour".to_owned()))
+    }
+}
+
 pub fn cached_groups(source: &dashboard_base::Source, run: u32) -> io::Result<std::sync::Arc<RunGroups>> {
     Runs::held(&source.state::<Runs>(), run, || run_groups(source.replay_ref().recording(), run))
 }
@@ -739,5 +750,66 @@ mod tests {
             |a, b| a.tag == b.tag,
         );
         assert_eq!(coalesced.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod faction_name_tests {
+    use super::*;
+
+    #[test]
+    fn unnamed_faction_at_hour_does_not_fall_back_to_later_name() {
+        let faction = FactionGroup {
+            id: "10".into(),
+            name: Some("New League".into()),
+            name_reason: None,
+            names: vec![
+                FactionNameRun { first_hour: 0, last_hour: 71, name: None, reason: Some("Faction name was not recorded".into()) },
+                FactionNameRun { first_hour: 72, last_hour: 200, name: Some("New League".into()), reason: None },
+            ],
+            recorded_name: "New League".into(),
+            first_hour: 0,
+            last_hour: 200,
+            members: Vec::new(),
+            leaders: Vec::new(),
+            incomplete: Vec::new(),
+        };
+        assert_eq!(faction_name_at(&faction, 47), (None, Some("Faction name was not recorded".into())));
+        assert_eq!(faction_name_at(&faction, 72), (Some("New League".into()), None));
+    }
+
+    #[test]
+    fn faction_names_never_coalesce_across_observed_absence_or_unnamed_run() {
+        let gaps = vec![HourSpan { first_hour: 1, last_hour: 9 }, HourSpan { first_hour: 11, last_hour: 19 }];
+        let runs = vec![
+            FactionNameRun { first_hour: 0, last_hour: 0, name: Some("Axis".into()), reason: None },
+            FactionNameRun { first_hour: 20, last_hour: 20, name: Some("Axis".into()), reason: None },
+            FactionNameRun { first_hour: 21, last_hour: 25, name: None, reason: Some("Faction name was not recorded".into()) },
+            FactionNameRun { first_hour: 26, last_hour: 30, name: Some("Axis".into()), reason: None },
+        ];
+        let coalesced = joined_across(
+            runs,
+            &gaps,
+            |_| 0u8,
+            |run| (run.first_hour, run.last_hour),
+            |run, last| run.last_hour = last,
+            |a, b| (&a.name, &a.reason) == (&b.name, &b.reason),
+        );
+        assert_eq!(coalesced.len(), 4);
+        let faction = FactionGroup {
+            id: "1".into(),
+            name: Some("Axis".into()),
+            name_reason: None,
+            names: coalesced,
+            recorded_name: "Axis".into(),
+            first_hour: 0,
+            last_hour: 30,
+            members: Vec::new(),
+            leaders: Vec::new(),
+            incomplete: Vec::new(),
+        };
+        assert_eq!(faction_name_at(&faction, 10), (None, Some("Faction name was not recorded at this hour".into())));
+        assert_eq!(faction_name_at(&faction, 22), (None, Some("Faction name was not recorded".into())));
+        assert_eq!(faction_name_at(&faction, 26), (Some("Axis".into()), None));
     }
 }

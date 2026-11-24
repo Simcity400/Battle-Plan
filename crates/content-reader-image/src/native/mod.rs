@@ -18,7 +18,7 @@ pub enum Failure {
     OverBudget(String),
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Decode {
     pub force_pow2_textures: bool,
 }

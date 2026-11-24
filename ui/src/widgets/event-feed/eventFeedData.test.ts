@@ -113,3 +113,38 @@ test('a nuclear strike names its bomb and target, totals only its complete parts
   assert.throws(() => validateFeedRow({ ...row('warDeclared', 40, ['USA', 'JAP']), strike }), /malformed/, 'only a strike carries one');
 });
 
+test('decision outcomes agree on the native Failed state, keep timeout cause, and surface named not-recorded and unsupported states', () => {
+  const item = { token: 'mod_mission', name: 'Hold Sector', icon: null, description: null };
+  const name = (tag: string) => tag;
+  const timedFailed = validateFeedRow(row('decisionTimedOut', 100, ['GER'], {
+    category: 'politics', participants: ['GER', null], item, decisionState: { kind: 'failed', observedHour: 101 },
+  }));
+  assert.equal(eventDescription({ event: timedFailed, item }, name), 'GER failed mission Hold Sector (reached the deadline)');
+  const [failedTip] = eventTooltip({ event: timedFailed, item }, name);
+  assert.ok(failedTip.rows.some(r => r.label === 'Mission state' && r.value === 'Failed'));
+  assert.ok(failedTip.rows.some(r => r.label === 'Failure observed'));
+
+  const completedFailed = validateFeedRow(row('decisionCompleted', 100, ['GER'], {
+    category: 'politics', participants: ['GER', null], item, decisionState: { kind: 'failed', observedHour: 100 },
+  }));
+  assert.equal(eventDescription({ event: completedFailed, item }, name), 'GER failed mission Hold Sector');
+
+  const unrecorded = validateFeedRow(row('decisionTimedOut', 100, ['GER'], {
+    category: 'politics', participants: ['GER', null], item, decisionState: { kind: 'notRecorded', reason: 'mission failure state was not recorded' },
+  }));
+  assert.equal(eventDescription({ event: unrecorded, item }, name), 'GER reached the deadline of Hold Sector');
+  assert.ok(eventTooltip({ event: unrecorded, item }, name)[0].rows.some(r => r.label === 'Mission failure state' && r.value === 'Not recorded — mission failure state was not recorded'));
+
+  const notApplicable = validateFeedRow(row('decisionSelected', 100, ['GER'], {
+    category: 'politics', participants: ['GER', null], item, decisionState: { kind: 'notApplicable', reason: 'decision has no mission lifecycle state' },
+  }));
+  assert.equal(eventDescription({ event: notApplicable, item }, name), 'GER selected decision Hold Sector');
+  assert.ok(!eventTooltip({ event: notApplicable, item }, name)[0].rows.some(r => r.label === 'Mission failure state'));
+
+  const unsupported = validateFeedRow(row('decisionTimedOut', 100, ['GER'], {
+    category: 'politics', participants: ['GER', null], item, decisionState: { kind: 'unsupported', raw: 77 },
+  }));
+  assert.equal(eventDescription({ event: unsupported, item }, name), 'GER reached the deadline of Hold Sector (unsupported native state 77)');
+  assert.throws(() => validateFeedRow(row('warDeclared', 100, ['GER', 'POL'], { decisionState: { kind: 'failed', observedHour: 100 } })), /malformed/);
+});
+

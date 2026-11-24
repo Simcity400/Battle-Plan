@@ -4,7 +4,7 @@ import { liveKey } from '../../charts/live.ts';
 import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import type { Spec } from '../../dashboard/follow/messages.fixture.ts';
-import { EMPTY_SOURCES } from '../../families/contract.ts';
+import { createBoundedReadView, emptyReadView } from '../../families/boundedView.ts';
 import { deriveTableTooltip, resolveCellAtHour, resolveTableRows } from '../../families/table/model.ts';
 import { tableSettingsOf } from '../../families/table/settings.ts';
 import type { ApmReply } from '../../generated/dashboard';
@@ -160,7 +160,7 @@ test('apm-table resolves country at row observation hour including hour 0, gives
     windowHours: 168,
     staticSpan: [300, 400] as readonly [number, number],
   };
-  const model = apmTableProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 400, opts);
+  const model = apmTableProjection.project(createBoundedReadView({ hour: 400, panels: new Map([['main', reply]]) }), opts);
   assert.equal(model.empty, undefined, 'early unobserved gap [10,20] does not suppress range [300,400]');
   const row = model.rows.find(r => r.key === 'p1')!;
   assert.deepEqual(row.cells.name!.value, { kind: 'known', value: 'Alice' }, 'M2: uses window dated name Alice, never branch-end RenamedLater');
@@ -183,7 +183,7 @@ test('apm-table resolves country at row observation hour including hour 0, gives
     { key: 0n, id: 'p1', values: [null, null, 12n, null, bits(0), 1n, 1n, 'GER', 0n, 'Alice', null] },
     { key: 1n, id: 'user:deadbeef', values: [bits(4.5), bits(4.5), 45n, 0n, bits(10), 1n, 0n, 'CUSTOM_MOD_TAG_12345', 0n, null, 'Player name is not valid UTF-8.'] },
   ]);
-  const followedModel = apmTableProjection.project({ answers: new Map([['main', followed]]), panels: new Map(), live: new Map() }, 400, opts);
+  const followedModel = apmTableProjection.project(createBoundedReadView({ hour: 400, answers: new Map([['main', followed]]) }), opts);
   assert.deepEqual(followedModel.rows.find(r => r.key === 'p1')!.cells.name!.value, { kind: 'known', value: 'Alice' });
   assert.deepEqual(followedModel.rows.find(r => r.key === 'user:deadbeef')!.cells.name!.value, { kind: 'notRecorded', reason: 'Player name is not valid UTF-8.' });
 
@@ -192,10 +192,10 @@ test('apm-table resolves country at row observation hour including hour 0, gives
   assert.equal(tip.rows.find(r => r.label === 'Country')?.valueState?.text, 'Weimar');
 
   const followOpts = { ...opts, staticSpan: null };
-  assert.equal(apmTableProjection.nextChange?.(EMPTY_SOURCES, 5, followOpts), 10, 'trailing window enters gap at 10');
-  assert.equal(apmTableProjection.nextChange?.(EMPTY_SOURCES, 15, followOpts), 188, 'trailing window leaves gap [10,20] at 20 + 168 = 188');
-  assert.equal(apmTableProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 180, followOpts).emptyKind, 'unavailable', 'trailing [13,180] overlaps [10,20]');
-  assert.equal(apmTableProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 188, followOpts).empty, undefined, 'trailing [21,188] is past [10,20]');
+  assert.equal(apmTableProjection.nextChange?.(emptyReadView(5), followOpts), 10, 'trailing window enters gap at 10');
+  assert.equal(apmTableProjection.nextChange?.(emptyReadView(15), followOpts), 188, 'trailing window leaves gap [10,20] at 20 + 168 = 188');
+  assert.equal(apmTableProjection.project(createBoundedReadView({ hour: 180, panels: new Map([['main', reply]]) }), followOpts).emptyKind, 'unavailable', 'trailing [13,180] overlaps [10,20]');
+  assert.equal(apmTableProjection.project(createBoundedReadView({ hour: 188, panels: new Map([['main', reply]]) }), followOpts).empty, undefined, 'trailing [21,188] is past [10,20]');
 });
 
 test('M2: APM graph legend and tooltips use dated player names from the window head and mark absent players not recorded with a reason', () => {

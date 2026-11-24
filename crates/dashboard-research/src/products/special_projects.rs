@@ -1134,7 +1134,10 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
     warnings.extend(facts.warnings.iter().map(|(reason, count)| format!("{reason} ({count} reads).")));
     warnings.extend(naming.warnings());
     if !projects.is_empty() {
-        warnings.push("Project icons and portraits are visual assets outside content hash coverage.".into());
+        warnings.push(format!(
+            "{}; project icons and portraits are visual assets outside content hash coverage.",
+            dashboard_base::products::artwork::CURRENT_INSTALL_ART_LABEL
+        ));
     }
     let Holding { identities, unresolved } = follow.holding.clone();
     let unavailable = if identities.is_empty() && !unresolved.is_empty() {

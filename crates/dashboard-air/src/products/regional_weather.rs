@@ -1,7 +1,7 @@
 
 use dashboard_base::products::{LoadContext, Product};
 use dashboard_world::products::place_names;
-use dashboard_base::{Source, catalogue::{self, Catalogue, KeyedResults, Refusals, View}, products::at_hour::{At, AtHour, Read}};
+use dashboard_base::{Source, catalogue::{self, Catalogue, KeyedResults, Refusals, View}, products::at_hour::{At, AtHour, Read}, span::HourSpan};
 use dashboard_query::{Query, read};
 use engine_executable::modifier_keys;
 use content_reader_map::province_graph::ProvinceGraph;
@@ -14,7 +14,7 @@ use replay_data::{
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -75,6 +75,15 @@ pub struct RegionalWeatherParams {
     #[doc = " Decimal region ids; every region without."]
     #[serde(default)]
     pub regions: Option<Vec<String>>,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub pinned_regions: Option<Vec<u32>>,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub hidden_regions: Option<Vec<u32>>,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub top: Option<usize>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -118,10 +127,42 @@ pub struct ColumnMeasure {
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WeatherReadout {
+    Condition {
+        id: String,
+        name: String,
+        since_hour: Option<i32>,
+        since_bounded: bool,
+        as_of_hour: i32,
+    },
+    Value {
+        value: String,
+        as_of_hour: i32,
+    },
+    NotRecorded {
+        reason: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct WeatherLegendItem {
+    pub id: String,
+    pub name: String,
+    pub ordinal: u32,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(any(test, feature = "export-types"), ts(rename = "RegionalWeatherColumnRegion"))]
 pub struct ColumnRegion {
     pub id: String,
+    pub pinned: bool,
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub readout: Option<WeatherReadout>,
     #[doc = " Conditions: the days the region's conditions were recorded, per column."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
@@ -158,6 +199,10 @@ pub struct RegionalWeatherReply {
     #[doc = " `available`, or why no temperature is shown."]
     pub temperature: String,
     pub columns: Columns,
+    pub legend: Vec<WeatherLegendItem>,
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub extrema: Option<[String; 2]>,
+    pub gaps: Vec<HourSpan>,
     pub warnings: Vec<String>,
 }
 
@@ -261,16 +306,44 @@ pub(crate) fn days(first: i32, last: i32, known: &[(u32, i32, i32)], reads: &[(i
 
 type Daily = BTreeMap<u32, Vec<Option<i128>>>;
 
+const CONDITION_PRIORITY: [&str; 6] = ["blizzard", "sandstorm", "heavy_rain", "snow", "light_rain", "arctic_water"];
+
+fn chunk_ranges(len: usize, size: usize, preserve_terminal: bool) -> Vec<(usize, usize)> {
+    if len == 0 {
+        return Vec::new();
+    }
+    if preserve_terminal && size > 1 && len > 1 && len % size != 1 {
+        let mut ranges: Vec<(usize, usize)> = (0..len - 1).step_by(size).map(|start| (start, (start + size).min(len - 1))).collect();
+        ranges.push((len - 1, len));
+        ranges
+    } else {
+        (0..len).step_by(size).map(|start| (start, (start + size).min(len))).collect()
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn fold(days: &[Day], width: u32, measures: &[(String, Daily)], conditions: bool) -> io::Result<Columns> {
+    fold_inner(days, width, measures, conditions, false)
+}
+
+pub(crate) fn fold_preserving_terminal(days: &[Day], width: u32, measures: &[(String, Daily)], conditions: bool) -> io::Result<Columns> {
+    fold_inner(days, width, measures, conditions, true)
+}
+
+fn fold_inner(days: &[Day], width: u32, measures: &[(String, Daily)], conditions: bool, preserve_terminal: bool) -> io::Result<Columns> {
     let size = days.len().div_ceil(width.max(1) as usize).max(1);
-    let columns = days
-        .chunks(size)
-        .map(|chunk| Column {
-            first_hour: chunk[0].first,
-            last_hour: chunk[chunk.len() - 1].last,
-            sampled_hour: chunk.iter().filter_map(|day| day.at.map(|(_, at)| at)).max(),
-            read_hour: chunk.iter().filter_map(|day| day.read).max(),
-            recorded: chunk.iter().filter(|day| day.at.is_some()).count() as u32,
+    let ranges = chunk_ranges(days.len(), size, preserve_terminal);
+    let columns = ranges
+        .iter()
+        .map(|&(start, end)| {
+            let chunk = &days[start..end];
+            Column {
+                first_hour: chunk[0].first,
+                last_hour: chunk[chunk.len() - 1].last,
+                sampled_hour: chunk.iter().filter_map(|day| day.at.map(|(_, at)| at)).max(),
+                read_hour: chunk.iter().filter_map(|day| day.read).max(),
+                recorded: chunk.iter().filter(|day| day.at.is_some()).count() as u32,
+            }
         })
         .collect();
     let mut regions: BTreeMap<u32, (Vec<bool>, Vec<bool>, Vec<ColumnMeasure>)> = BTreeMap::new();
@@ -283,13 +356,17 @@ pub(crate) fn fold(days: &[Day], width: u32, measures: &[(String, Daily)], condi
                     held.0[day] |= value.is_some();
                     held.1[day] |= value.is_some_and(|value| value != 0);
                 }
-                ColumnMeasure { id: id.clone(), days: values.chunks(size).map(|chunk| chunk.iter().filter(|value| value.is_some_and(|value| value != 0)).count() as u32).collect(), values: None }
+                ColumnMeasure {
+                    id: id.clone(),
+                    days: ranges.iter().map(|&(start, end)| values[start..end].iter().filter(|value| value.is_some_and(|value| value != 0)).count() as u32).collect(),
+                    values: None,
+                }
             } else {
-                let mut counts = Vec::new();
-                let stats = values
-                    .chunks(size)
-                    .map(|chunk| {
-                        let held: Vec<i128> = chunk.iter().flatten().copied().collect();
+                let mut counts = Vec::with_capacity(ranges.len());
+                let stats = ranges
+                    .iter()
+                    .map(|&(start, end)| {
+                        let held: Vec<i128> = values[start..end].iter().flatten().copied().collect();
                         counts.push(held.len() as u32);
                         let (Some(low), Some(high)) = (held.iter().min(), held.iter().max()) else { return Ok(None) };
                         let sum = held.iter().try_fold(0_i128, |sum, value| sum.checked_add(*value)).ok_or_else(|| dashboard_core::invalid("Weather column sum exceeds its exact range"))?;
@@ -303,17 +380,193 @@ pub(crate) fn fold(days: &[Day], width: u32, measures: &[(String, Daily)], condi
             }
         }
     }
-    let per_column = |keep: &dyn Fn(usize) -> bool| -> Vec<u32> { (0..days.len()).collect::<Vec<_>>().chunks(size).map(|chunk| chunk.iter().filter(|&&day| keep(day)).count() as u32).collect() };
+    let per_column = |keep: &dyn Fn(usize) -> bool| -> Vec<u32> { ranges.iter().map(|&(start, end)| (start..end).filter(|&day| keep(day)).count() as u32).collect() };
     let regions = regions
         .into_iter()
         .map(|(id, (observed, set, measures))| ColumnRegion {
             id: id.to_string(),
+            pinned: false,
+            readout: None,
             observed: conditions.then(|| per_column(&|day| observed[day])),
             clear: conditions.then(|| per_column(&|day| observed[day] && !set[day])),
             measures,
         })
         .collect();
     Ok(Columns { days: size as u32, columns, regions })
+}
+
+pub(crate) fn region_condition_on_day(region: u32, day: usize, measures: &[(String, Daily)]) -> Option<&'static str> {
+    let mut observed = false;
+    let mut active: [bool; 6] = [false; 6];
+    for (id, daily) in measures {
+        if let Some(pos) = CONDITION_PRIORITY.iter().position(|flag| flag == id)
+            && let Some(values) = daily.get(&region)
+            && let Some(Some(value)) = values.get(day)
+        {
+            observed = true;
+            if *value != 0 {
+                active[pos] = true;
+            }
+        }
+    }
+    if !observed {
+        return None;
+    }
+    for (pos, &flag) in CONDITION_PRIORITY.iter().enumerate() {
+        if active[pos] {
+            return Some(flag);
+        }
+    }
+    Some("clear")
+}
+
+pub(crate) fn region_readout(
+    region: u32,
+    days: &[Day],
+    measures: &[(String, Daily)],
+    show: Show,
+    flags: &[Choice],
+    temperature_status: &str,
+) -> WeatherReadout {
+    let Some(last) = days.last() else {
+        return WeatherReadout::NotRecorded { reason: "No recorded days in this window".into() };
+    };
+    let Some((_, as_of_hour)) = last.at else {
+        return WeatherReadout::NotRecorded { reason: "Weather was not recorded at this hour".into() };
+    };
+    let last_idx = days.len() - 1;
+    match show {
+        Show::Conditions => {
+            let Some(current) = region_condition_on_day(region, last_idx, measures) else {
+                return WeatherReadout::NotRecorded { reason: "Region weather was not recorded at this hour".into() };
+            };
+            let mut since_idx = last_idx;
+            let mut bounded = true;
+            while since_idx > 0 {
+                let prev = since_idx - 1;
+                if days[prev].at.is_none() {
+                    bounded = true;
+                    break;
+                }
+                match region_condition_on_day(region, prev, measures) {
+                    Some(cond) if cond == current => since_idx = prev,
+                    Some(_) => {
+                        bounded = false;
+                        break;
+                    }
+                    None => {
+                        bounded = true;
+                        break;
+                    }
+                }
+            }
+            let name = if current == "clear" {
+                "Clear".to_owned()
+            } else {
+                flags.iter().find(|choice| choice.id == current).map_or_else(|| current.to_owned(), |choice| choice.name.clone())
+            };
+            WeatherReadout::Condition {
+                id: current.to_owned(),
+                name,
+                since_hour: Some(days[since_idx].first),
+                since_bounded: bounded,
+                as_of_hour,
+            }
+        }
+        Show::Temperature | Show::Modifier => {
+            let value = measures.first().and_then(|(_, daily)| daily.get(&region)).and_then(|values| values.get(last_idx)).copied().flatten();
+            match value {
+                Some(v) => WeatherReadout::Value { value: v.to_string(), as_of_hour },
+                None => {
+                    let reason = if show == Show::Temperature && temperature_status != "available" {
+                        temperature_status.to_owned()
+                    } else {
+                        "Weather reading was not recorded at this hour".to_owned()
+                    };
+                    WeatherReadout::NotRecorded { reason }
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn rank_regions(
+    candidates: &[u32],
+    days: &[Day],
+    measures: &[(String, Daily)],
+    show: Show,
+    pinned: &[u32],
+    hidden: &HashSet<u32>,
+    top: Option<usize>,
+) -> Vec<(u32, bool)> {
+    let pinned_set: HashSet<u32> = pinned.iter().copied().collect();
+    let mut scored: Vec<(u32, u128)> = candidates
+        .iter()
+        .copied()
+        .filter(|id| !pinned_set.contains(id) && !hidden.contains(id))
+        .map(|region| {
+            let score = match show {
+                Show::Conditions => (0..days.len())
+                    .filter(|&day| matches!(region_condition_on_day(region, day, measures), Some(cond) if cond != "clear"))
+                    .count() as u128,
+                Show::Temperature | Show::Modifier => measures
+                    .first()
+                    .and_then(|(_, daily)| daily.get(&region))
+                    .map_or(0, |values| values.iter().flatten().map(|v| v.unsigned_abs()).sum()),
+            };
+            (region, score)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    if let Some(limit) = top {
+        scored.truncate(limit);
+    }
+    let mut out: Vec<(u32, bool)> = pinned.iter().copied().map(|id| (id, true)).collect();
+    out.extend(scored.into_iter().map(|(id, _)| (id, false)));
+    out
+}
+
+pub(crate) fn visible_extrema(displayed: &[u32], measures: &[(String, Daily)], show: Show) -> Option<[String; 2]> {
+    if show == Show::Conditions {
+        return None;
+    }
+    let (_, daily) = measures.first()?;
+    let mut low: Option<i128> = None;
+    let mut high: Option<i128> = None;
+    for region in displayed {
+        if let Some(values) = daily.get(region) {
+            for &value in values.iter().flatten() {
+                low = Some(low.map_or(value, |cur| cur.min(value)));
+                high = Some(high.map_or(value, |cur| cur.max(value)));
+            }
+        }
+    }
+    low.zip(high).map(|(l, h)| [l.to_string(), h.to_string()])
+}
+
+pub(crate) fn visible_legend(displayed: &[u32], days: &[Day], measures: &[(String, Daily)], show: Show, flags: &[Choice]) -> Vec<WeatherLegendItem> {
+    if show != Show::Conditions {
+        return Vec::new();
+    }
+    let mut present: BTreeSet<&str> = BTreeSet::new();
+    for &region in displayed {
+        for day in 0..days.len() {
+            if let Some(cond) = region_condition_on_day(region, day, measures) {
+                present.insert(cond);
+            }
+        }
+    }
+    let mut items = Vec::new();
+    for (ordinal, (id, _, _)) in FLAGS.iter().enumerate() {
+        if present.contains(id) {
+            let name = flags.iter().find(|choice| choice.id == *id).map_or_else(|| (*id).to_owned(), |choice| choice.name.clone());
+            items.push(WeatherLegendItem { id: (*id).to_owned(), name, ordinal: ordinal as u32 });
+        }
+    }
+    if present.contains("clear") {
+        items.push(WeatherLegendItem { id: "clear".into(), name: "Clear".into(), ordinal: FLAGS.len() as u32 });
+    }
+    items
 }
 
 pub(crate) fn modifiers(row: &WeatherRegionRow) -> [Option<i128>; 8] {
@@ -504,16 +757,20 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
             rows.extend(held.iter().map(|row| row.id));
         }
     }
-    let columns = fold(&days, params.width, &measures, params.show == Show::Conditions)?;
+    let mut columns = fold_preserving_terminal(&days, params.width, &measures, params.show == Show::Conditions)?;
     let shown = days.iter().rev().find_map(|day| day.at);
     let auxiliary = match shown {
         Some((run, at)) => dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, at, &[replay_lanes::at::Read::all(TableId::ModifierDefinitions)])).ok(),
         None => None,
     };
     let mut refused = Refusals::default();
-    let regions = rows
+    let all_candidates: Vec<u32> = rows
         .iter()
+        .copied()
         .filter(|region| weather.names.contains_key(region) && (weather.members.is_empty() || weather.members.get(region).is_some_and(|members| !members.is_empty())))
+        .collect();
+    let regions: Vec<Choice> = all_candidates
+        .iter()
         .map(|&region| Choice {
             id: region.to_string(),
             name: match weather.names.get(&region) {
@@ -528,14 +785,54 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
     warnings.extend(refused.counts("weather region names"));
     let flags = flag_choices(&weather.cat, &mut warnings);
     let modifiers = modifier_choices(auxiliary.as_ref(), &weather.cat, &mut warnings);
-    Ok(RegionalWeatherReply { first_hour: first, last_hour: last, day_hours: DAY_HOURS, regions, flags, modifiers, temperature, columns, warnings })
+    let use_ranking = params.regions.is_none() && (params.top.is_some() || params.pinned_regions.is_some() || params.hidden_regions.is_some());
+    let displayed_order: Vec<(u32, bool)> = if use_ranking {
+        let mut seen = HashSet::new();
+        let pinned: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
+        let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
+        rank_regions(&all_candidates, &days, &measures, params.show, &pinned, &hidden, params.top)
+    } else {
+        columns.regions.iter().filter_map(|r| Some((r.id.parse::<u32>().ok()?, params.regions.is_some()))).collect()
+    };
+    let mut by_id: HashMap<u32, ColumnRegion> = columns.regions.into_iter().filter_map(|r| Some((r.id.parse::<u32>().ok()?, r))).collect();
+    let col_count = columns.columns.len();
+    columns.regions = displayed_order
+        .iter()
+        .map(|&(region, pinned)| {
+            let mut entry = by_id.remove(&region).unwrap_or_else(|| ColumnRegion {
+                id: region.to_string(),
+                pinned,
+                readout: None,
+                observed: (params.show == Show::Conditions).then(|| vec![0; col_count]),
+                clear: (params.show == Show::Conditions).then(|| vec![0; col_count]),
+                measures: Vec::new(),
+            });
+            entry.pinned = pinned;
+            entry.readout = Some(region_readout(region, &days, &measures, params.show, &flags, &temperature));
+            entry
+        })
+        .collect();
+    let displayed_ids: Vec<u32> = displayed_order.iter().map(|&(id, _)| id).collect();
+    let extrema = visible_extrema(&displayed_ids, &measures, params.show);
+    let legend = visible_legend(&displayed_ids, &days, &measures, params.show, &flags);
+    let gaps: Vec<HourSpan> = query
+        .timeline
+        .unheld
+        .iter()
+        .filter_map(|gap| {
+            let a = gap.first.max(first);
+            let b = gap.last.min(last);
+            (a <= b).then_some(HourSpan { first_hour: a, last_hour: b })
+        })
+        .collect();
+    Ok(RegionalWeatherReply { first_hour: first, last_hour: last, day_hours: DAY_HOURS, regions, flags, modifiers, temperature, columns, legend, extrema, gaps, warnings })
 }
 
 impl Product for RegionalWeather {
     const KEY: &'static str = "regional-weather";
     const CONTENT_DEPENDENT: bool = true;
     type Params = RegionalWeatherParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, width, show, modifier, regions];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, width, show, modifier, regions, pinnedRegions, hiddenRegions, top, "pinnedRegions[]", "hiddenRegions[]"];
     type Reply = RegionalWeatherReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -565,6 +862,9 @@ impl Product for RegionalWeather {
             Column::decl(),
             ColumnRegion::decl(),
             ColumnMeasure::decl(),
+            WeatherReadout::decl(),
+            WeatherLegendItem::decl(),
+            HourSpan::decl(),
         ]
     }
 

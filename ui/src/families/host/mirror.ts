@@ -43,8 +43,89 @@ export function syncTableMirror(
   if (key === options.lastMirrorKeyRef.current) return;
   options.lastMirrorKeyRef.current = key;
   const wasFocused = options.focusInsideRef.current && document.activeElement instanceof HTMLElement && tbody.contains(document.activeElement);
-  const fragment = document.createDocumentFragment();
   let restore: HTMLTableRowElement | null = null;
+  const canReuseInPlace = typeof tbody.children?.length === 'number' && typeof tbody.lastElementChild !== 'undefined';
+
+  if (canReuseInPlace && tbody.children.length > 0) {
+    const existing = tbody.children;
+    const targetLen = mirror.rows.length;
+    while (existing.length > targetLen) {
+      tbody.lastElementChild?.remove();
+    }
+    for (let i = 0; i < targetLen; i++) {
+      const row = mirror.rows[i]!;
+      let tr = existing[i] as HTMLTableRowElement | undefined;
+      if (!tr) {
+        tr = document.createElement('tr');
+        tbody.append(tr);
+      }
+      if (tr.dataset.rowKey !== row.key) tr.dataset.rowKey = row.key;
+      const rowIndexStr = String(row.rowIndex + 2);
+      if (tr.getAttribute('aria-rowindex') !== rowIndexStr) tr.setAttribute('aria-rowindex', rowIndexStr);
+      if (row.groupHeader) {
+        if (tr.getAttribute('role') !== 'row') tr.setAttribute('role', 'row');
+        tr.removeAttribute('tabindex');
+        tr.removeAttribute('aria-level');
+        tr.removeAttribute('aria-expanded');
+        tr.removeAttribute('aria-selected');
+        if (tr.children.length !== 1) {
+          const td = document.createElement('td');
+          td.textContent = row.name;
+          tr.replaceChildren(td);
+        } else if (tr.children[0]!.textContent !== row.name) {
+          tr.children[0]!.textContent = row.name;
+        }
+        continue;
+      }
+      if (tr.hasAttribute('role')) tr.removeAttribute('role');
+      const nextTab = row.key === activeFocus ? 0 : -1;
+      if (tr.tabIndex !== nextTab) tr.tabIndex = nextTab;
+      if (row.level !== undefined) {
+        const lvl = String(row.level);
+        if (tr.getAttribute('aria-level') !== lvl) tr.setAttribute('aria-level', lvl);
+      } else if (tr.hasAttribute('aria-level')) {
+        tr.removeAttribute('aria-level');
+      }
+      if (row.group) {
+        const exp = String(row.open === true);
+        if (tr.getAttribute('aria-expanded') !== exp) tr.setAttribute('aria-expanded', exp);
+      } else if (tr.hasAttribute('aria-expanded')) {
+        tr.removeAttribute('aria-expanded');
+      }
+      if (selected && selected === row.key) {
+        if (tr.getAttribute('aria-selected') !== 'true') tr.setAttribute('aria-selected', 'true');
+      } else if (tr.hasAttribute('aria-selected')) {
+        tr.removeAttribute('aria-selected');
+      }
+      const hasRank = row.rank !== undefined;
+      const expectedCells = (hasRank ? 1 : 0) + row.cells.length;
+      while (tr.children.length > expectedCells) tr.lastElementChild?.remove();
+      while (tr.children.length < expectedCells) tr.append(document.createElement('td'));
+      let ci = 0;
+      if (hasRank) {
+        const rankText = String(row.rank);
+        const td = tr.children[ci++]!;
+        if (td.textContent !== rankText) td.textContent = rankText;
+      }
+      for (let j = 0; j < row.cells.length; j++) {
+        const td = tr.children[ci++]!;
+        const spoken = row.cells[j]!.spoken;
+        if (td.textContent !== spoken) td.textContent = spoken;
+      }
+      if (wasFocused && row.key === activeFocus) restore = tr;
+    }
+    if (restore && document.activeElement !== restore) {
+      options.restoringFocusRef.current = true;
+      try {
+        restore.focus({ preventScroll: true });
+      } finally {
+        options.restoringFocusRef.current = false;
+      }
+    }
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
   mirror.rows.forEach(row => {
     const tr = document.createElement('tr');
     tr.dataset.rowKey = row.key;

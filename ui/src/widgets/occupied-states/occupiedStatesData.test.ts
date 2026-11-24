@@ -80,6 +80,7 @@ test('the table says why it shows no rows at the hour, and nothing while it show
   assert.equal(emptyReason({ ...reply([state(1, 'GER', 'POL')]), missing: 'not read' }, view([{}])), 'Occupied states weren’t recorded at this time: not read');
 });
 
+import { createBoundedReadView } from '../../families/boundedView.ts';
 import { deriveTableTooltip, resolveTableRows } from '../../families/table/model.ts';
 import { tableSettingsOf } from '../../families/table/settings.ts';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
@@ -104,8 +105,7 @@ test('missing garrison and unresolved manpower report notRecorded with source re
     missing: () => 'Not a live cell of this reply',
   };
   const model = occupiedStatesProjection.project(
-    { answers: new Map(), panels: new Map([['main', rep]]), live: new Map([['main', live]]) },
-    50,
+    createBoundedReadView({ hour: 50, panels: new Map([['main', rep]]), live: new Map([['main', live]]) }),
     { filter: { passing: null, unrecorded: [], bounds: [] }, role: 'occupier', labels: { GER: [{ from: 0, name: 'Germany' }], POL: [{ from: 0, name: 'Poland' }] }, lawAs: 'dot', filterAll: true },
   );
   const s1 = model.rows.find(r => r.key === '1')!;

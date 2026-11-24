@@ -60,7 +60,7 @@ test.skip('a country’s faction is the one its tag was a member of at the hour,
   assert.equal(factionGroup(undefined, 'ENG', 4).key, 'faction-not-recorded');
 });
 
-import { EMPTY_SOURCES } from '../../families/contract.ts';
+import { createBoundedReadView, emptyReadView } from '../../families/boundedView.ts';
 import { gameScoreProjection } from './gameScoreProjection.ts';
 
 test('game-score projection resolves slot tag runs at the projected hour and honours faction rename bounds without latest-name fallback', () => {
@@ -98,22 +98,22 @@ test('game-score projection resolves slot tag runs at the projected hour and hon
     cellBars: false,
     labels: { GER: [{ from: 0, name: 'Germany' }], GDR: [{ from: 105, name: 'East Germany' }] },
   };
-  const at40 = gameScoreProjection.project({ answers: new Map(), panels: new Map([['main', rep]]), live: new Map([['main', live]]) }, 40, opts);
+  const at40 = gameScoreProjection.project(createBoundedReadView({ hour: 40, panels: new Map([['main', rep]]), live: new Map([['main', live]]) }), opts);
   assert.deepEqual(at40.rows.map(r => r.key), ['GER'], 'slot 7 resolves to GER before tag switch at 105');
   assert.equal(at40.rows[0]!.group?.label, 'Old Axis');
 
-  const at60 = gameScoreProjection.project({ answers: new Map(), panels: new Map([['main', rep]]), live: new Map([['main', live]]) }, 60, opts);
+  const at60 = gameScoreProjection.project(createBoundedReadView({ hour: 60, panels: new Map([['main', rep]]), live: new Map([['main', live]]) }), opts);
   assert.equal(at60.rows[0]!.group?.label, 'New Axis', 'rename at hour 51 replaces Old Axis');
 
-  const at90 = gameScoreProjection.project({ answers: new Map(), panels: new Map([['main', rep]]), live: new Map([['main', live]]) }, 90, opts);
+  const at90 = gameScoreProjection.project(createBoundedReadView({ hour: 90, panels: new Map([['main', rep]]), live: new Map([['main', live]]) }), opts);
   assert.notEqual(at90.rows[0]!.group?.label, 'New Axis', 'missing historical faction name never falls back to latest name');
   assert.equal(at90.rows[0]!.group?.order, 1);
 
-  const at110 = gameScoreProjection.project({ answers: new Map(), panels: new Map([['main', rep]]), live: new Map([['main', live]]) }, 110, opts);
+  const at110 = gameScoreProjection.project(createBoundedReadView({ hour: 110, panels: new Map([['main', rep]]), live: new Map([['main', live]]) }), opts);
   assert.deepEqual(at110.rows.map(r => r.key), ['GDR'], 'slot 7 resolves to GDR at hour 110');
 
-  assert.equal(gameScoreProjection.nextChange?.(EMPTY_SOURCES, 40, opts), 51, 'nextChange reports faction rename boundary');
-  assert.equal(gameScoreProjection.nextChange?.(EMPTY_SOURCES, 90, opts), 105, 'nextChange reports slot switch / faction end boundary');
+  assert.equal(gameScoreProjection.nextChange?.(emptyReadView(40), opts), 51, 'nextChange reports faction rename boundary');
+  assert.equal(gameScoreProjection.nextChange?.(emptyReadView(90), opts), 105, 'nextChange reports slot switch / faction end boundary');
 
   const ungroupedOpts = {
     ...opts,
@@ -121,14 +121,14 @@ test('game-score projection resolves slot tag runs at the projected hour and hon
     factionUnobserved: [[20, 30] as const],
     factionIncomplete: [[65, 75] as const],
   };
-  assert.equal(gameScoreProjection.nextChange?.(EMPTY_SOURCES, 10, ungroupedOpts), 20, 'nextChange includes faction coverage bounds even when grouping is off');
-  assert.equal(gameScoreProjection.nextChange?.(EMPTY_SOURCES, 40, ungroupedOpts), 51, 'nextChange includes faction rename bounds even when grouping is off');
+  assert.equal(gameScoreProjection.nextChange?.(emptyReadView(10), ungroupedOpts), 20, 'nextChange includes faction coverage bounds even when grouping is off');
+  assert.equal(gameScoreProjection.nextChange?.(emptyReadView(40), ungroupedOpts), 51, 'nextChange includes faction rename bounds even when grouping is off');
 
-  const unobsModel = gameScoreProjection.project({ answers: new Map(), panels: new Map([['main', rep]]), live: new Map([['main', live]]) }, 25, { ...opts, factionUnobserved: [[20, 30]] });
+  const unobsModel = gameScoreProjection.project(createBoundedReadView({ hour: 25, panels: new Map([['main', rep]]), live: new Map([['main', live]]) }), { ...opts, factionUnobserved: [[20, 30]] });
   assert.equal(unobsModel.rows[0]!.group?.key, 'faction-not-recorded', 'unobserved faction hours are notRecorded, never No faction');
   const unobsExtra = typeof unobsModel.rows[0]!.tooltipExtra === 'function' ? unobsModel.rows[0]!.tooltipExtra() : unobsModel.rows[0]!.tooltipExtra;
   assert.equal(unobsExtra?.[0]?.value.kind, 'notRecorded');
 
-  const incompModel = gameScoreProjection.project({ answers: new Map(), panels: new Map([['main', rep]]), live: new Map([['main', live]]) }, 110, { ...opts, factionIncomplete: [[108, 115]] });
+  const incompModel = gameScoreProjection.project(createBoundedReadView({ hour: 110, panels: new Map([['main', rep]]), live: new Map([['main', live]]) }), { ...opts, factionIncomplete: [[108, 115]] });
   assert.equal(incompModel.rows[0]!.group?.key, 'faction-not-recorded', 'incomplete faction roster hours are notRecorded for non-members, never No faction');
 });
