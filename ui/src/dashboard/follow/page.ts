@@ -44,7 +44,7 @@ export interface Presentation<B extends Bitmap = Bitmap> {
   lane: number;
   serial: number;
   resets?: readonly (readonly [route: number, reset: number])[];
-  closed?: readonly number[];
+  closed?: readonly (readonly [widget: number, lo: number, hi: number])[];
   confirmed?: readonly (readonly [route: number, channel: 'followed' | 'panel', hour: number, seek: number, reset: number])[];
   entries: readonly Entry<B>[];
 }
@@ -73,7 +73,7 @@ export interface Installed {
   id: number; owner?: string; h: number; c: number; lo: number; hi: number; gen: Generation; binding: number; follows: boolean;
   open?: 'followed' | 'panel';
   viewport?: InstalledViewport;
-  freeze?: () => void;
+  freeze?: (limit?: number) => void;
   mode: Mode; reason?: string; failureOrigin?: FailureOrigin; fields: Readonly<Record<string, unknown>>; ms: number; kept: readonly string[]; structure?: string;
 }
 
@@ -259,11 +259,11 @@ export class Page<B extends Bitmap = Bitmap> {
     else this.earlyWidgets.delete(widget);
   }
 
-  private freezeEarly(widget: Widget<B>, entries: readonly Entry<B>[]) {
+  private freezeEarly(widget: Widget<B>, entries: readonly Entry<B>[], limit = Infinity) {
     for (const entry of entries) {
       if (!entry.open || this.earlyClosed.has(entry)) continue;
       const box = this.confirmedBox(widget.lane, widget.route, entry.open);
-      this.earlyClosed.set(entry, Math.max(entry.c, box.hour));
+      this.earlyClosed.set(entry, Math.min(Math.max(entry.c, box.hour), limit));
     }
   }
 
@@ -466,13 +466,16 @@ export class Page<B extends Bitmap = Bitmap> {
       this.earlyWidgets.clear();
     }
     for (const presentation of queue) {
-      for (const widgetId of presentation.closed ?? []) {
+      for (const [widgetId, lo, hi] of presentation.closed ?? []) {
         const widget = this.widgets.get(widgetId);
         if (!widget) continue;
-        widget.installed?.freeze?.();
+        const shown = widget.installed;
+        if (shown?.freeze) shown.freeze(hi);
+        else if (shown && shown.c > hi) shown.c = hi;
+        if (shown && Number.isFinite(hi) && Math.min(shown.c, shown.hi) < Math.max(shown.h, lo)) this.clear(widget, 'reading');
         const prev = earlyByWidget.get(widgetId);
-        if (prev) this.freezeEarly(widget, prev);
-        if (widget.early) this.freezeEarly(widget, [widget.early, ...widget.earlyMore]);
+        if (prev) this.freezeEarly(widget, prev, hi);
+        if (widget.early) this.freezeEarly(widget, [widget.early, ...widget.earlyMore], hi);
       }
       for (const entry of presentation.entries) {
         this.stats.visited++;
@@ -620,7 +623,10 @@ export class Page<B extends Bitmap = Bitmap> {
       mode: entry.mode, reason: entry.reason, failureOrigin: entry.failureOrigin, fields, ms: entry.ms ?? 0, kept, structure: structureOf(widget.content, fields) };
     if (box) {
       Object.defineProperty(installed, 'c', { enumerable: true, configurable: true, get: () => live ? Math.max(baseC, box.hour) : baseC });
-      installed.freeze = () => { if (live) { baseC = Math.max(baseC, box.hour); live = false; installed.open = undefined; } };
+      installed.freeze = (limit = Infinity) => {
+        if (live) { baseC = Math.max(baseC, box.hour); live = false; installed.open = undefined; }
+        baseC = Math.min(baseC, limit);
+      };
     }
     widget.installed = installed;
     widget.status = entry.mode; widget.reason = entry.reason;
