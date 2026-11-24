@@ -4,14 +4,32 @@ import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry } from '.
 
 export const BARS_VIEWS: readonly FamilyViewEntry[] = [
   {
-    kind: 'naval-supremacy',
-    view: 'shares',
-    label: 'Shares',
+    kind: 'air-kills-losses',
+    view: 'butterfly',
+    label: 'Butterfly',
     family: 'bars',
     viewOption: 'view',
-    loadSpec: () => import('../naval-supremacy/navalSupremacyProjection.ts').then(m => ({
-      family: 'bars', kind: 'naval-supremacy', view: 'shares',
-      projection: m.supremacySharesProjection, declaration: m.supremacySharesDeclaration,
+    loadSpec: () => import('../air-kills-losses/airKillsLossesProjection.ts').then(mod => ({
+      family: 'bars', kind: 'air-kills-losses', view: 'butterfly',
+      projection: mod.airKillsLossesProjection, declaration: mod.airKillsLossesDeclaration,
+    })),
+  },
+  {
+    kind: 'air-superiority-region',
+    view: DEFAULT_VIEW,
+    family: 'bars',
+    loadSpec: () => import('../air-superiority-region/airSuperiorityProjection.ts').then(mod => ({
+      family: 'bars', kind: 'air-superiority-region', view: DEFAULT_VIEW,
+      projection: mod.airSuperiorityRegionProjection, declaration: mod.airSuperiorityRegionDeclaration,
+    })),
+  },
+  {
+    kind: 'bombing-damage',
+    view: DEFAULT_VIEW,
+    family: 'bars',
+    loadSpec: () => import('../bombing-damage/bombingDamageProjection.ts').then(mod => ({
+      family: 'bars', kind: 'bombing-damage', view: DEFAULT_VIEW,
+      projection: mod.bombingDamageProjection, declaration: mod.bombingDamageDeclaration,
     })),
   },
   {
@@ -26,12 +44,12 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     })),
   },
   {
-    kind: 'air-superiority-region',
+    kind: 'lend-lease-balance',
     view: DEFAULT_VIEW,
     family: 'bars',
-    loadSpec: () => import('../air-superiority-region/airSuperiorityProjection.ts').then(mod => ({
-      family: 'bars', kind: 'air-superiority-region', view: DEFAULT_VIEW,
-      projection: mod.airSuperiorityRegionProjection, declaration: mod.airSuperiorityRegionDeclaration,
+    loadSpec: () => import('../lend-lease-balance/lendLeaseBalanceProjection.ts').then(mod => ({
+      family: 'bars', kind: 'lend-lease-balance', view: DEFAULT_VIEW,
+      projection: mod.lendLeaseBalanceProjection, declaration: mod.lendLeaseBalanceDeclaration,
     })),
   },
   {
@@ -44,12 +62,14 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     })),
   },
   {
-    kind: 'lend-lease-balance',
-    view: DEFAULT_VIEW,
+    kind: 'naval-supremacy',
+    view: 'shares',
+    label: 'Shares',
     family: 'bars',
-    loadSpec: () => import('../lend-lease-balance/lendLeaseBalanceProjection.ts').then(mod => ({
-      family: 'bars', kind: 'lend-lease-balance', view: DEFAULT_VIEW,
-      projection: mod.lendLeaseBalanceProjection, declaration: mod.lendLeaseBalanceDeclaration,
+    viewOption: 'view',
+    loadSpec: () => import('../naval-supremacy/navalSupremacyProjection.ts').then(m => ({
+      family: 'bars', kind: 'naval-supremacy', view: 'shares',
+      projection: m.supremacySharesProjection, declaration: m.supremacySharesDeclaration,
     })),
   },
 ];
