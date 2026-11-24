@@ -758,14 +758,10 @@ test('share rows draw the category legend strip, wrap long category lists cleanl
 test('a bars race view breaks at the exact hour a country enters or leaves selection membership, not midnight', async () => {
   const { nextSeriesRaceChange } = await import('./seriesRace.ts');
   const leaveAt = nextSeriesRaceChange(101, {
-    top: null,
-    candidates: ['GER', 'ITA'],
     membership: { GER: [[100, 102]], ITA: [[100, 200]] },
   });
   assert.equal(leaveAt, 103, 'leaves at lastHour + 1 (hour 103), not midnight');
   const enterAt = nextSeriesRaceChange(101, {
-    top: null,
-    candidates: ['GER', 'ITA'],
     membership: { GER: [[100, 200]], ITA: [[105, 200]] },
   });
   assert.equal(enterAt, 105, 'enters at firstHour (hour 105), not midnight');
