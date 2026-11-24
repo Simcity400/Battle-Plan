@@ -302,16 +302,16 @@ test('scoreboard projection matches followed and exact audits with missing, part
 
 test('apm-table projection matches followed wire answers and exact replies, including partial gaps and notApplicable zero minutes', () => {
   const wire = headTextAnswer([
-    { key: 1n, id: 'GER', values: [floatBits(45.2), floatBits(45.2), 120n, 15n, floatBits(2.6), 1n, 1n, 'GER', 100n, 'GER', null] },
-    { key: 2n, id: 'ITA', values: [null, null, 0n, 0n, floatBits(0), 1n, 0n, 'ITA', 100n, 'ITA', null] },
+    { key: 1n, id: 'GER', values: [floatBits(45.2), floatBits(45.2), 113n, 15n, floatBits(2.5), 1n, 1n, 'GER', 100n, 'GER', null, '113', '5', '2'] },
+    { key: 2n, id: 'ITA', values: [null, null, 0n, 0n, floatBits(0), 1n, 0n, 'ITA', 100n, 'ITA', null, '0', '0', '1'] },
   ]);
   const reply: ApmReply = {
     available: true,
     warnings: [],
     players: [],
     series: [
-      { id: 'GER', name: 'GER', nameMissing: null, tag: 'GER', hour: 100, summary: { apm: 45.2, confirmedApm: 45.2, orders: '120', pausedOrders: '15', unpausedMinutes: 2.6, complete: true, gaps: true }, points: [] },
-      { id: 'ITA', name: 'ITA', nameMissing: null, tag: 'ITA', hour: 100, summary: { apm: null, confirmedApm: null, orders: '0', pausedOrders: '0', unpausedMinutes: 0, complete: true, gaps: false }, points: [] },
+      { id: 'GER', name: 'GER', nameMissing: null, tag: 'GER', hour: 100, summary: { apm: 45.2, confirmedApm: 45.2, orders: '113', confirmedOrders: '113', pausedOrders: '15', unpausedMinutes: 2.5, unpausedMinutesNum: '5', unpausedMinutesDen: '2', complete: true, gaps: true }, points: [] },
+      { id: 'ITA', name: 'ITA', nameMissing: null, tag: 'ITA', hour: 100, summary: { apm: null, confirmedApm: null, orders: '0', confirmedOrders: '0', pausedOrders: '0', unpausedMinutes: 0, unpausedMinutesNum: '0', unpausedMinutesDen: '1', complete: true, gaps: false }, points: [] },
     ],
   };
   const opts = {
@@ -329,7 +329,7 @@ test('apm-table projection matches followed wire answers and exact replies, incl
   const fAudit = deriveTableAudit({ model: fModel, flatRows: resolveTableRows(fModel, settings), visibleColumns: apmLayouts });
   const eAudit = deriveTableAudit({ model: eModel, flatRows: resolveTableRows(eModel, settings), visibleColumns: apmLayouts });
   assert.equal(pictureError('table', fAudit, { values: new Map(eAudit.map(r => [r.key, r.value!])), ordered: true }), null);
-  assert.ok(fAudit.find(r => r.key === 'GER:apm')?.value?.includes('["partial",["num","45.2"],'));
+  assert.ok(fAudit.find(r => r.key === 'GER:apm')?.value?.includes('["partial",["str","45.2"],'));
   assert.ok(fAudit.find(r => r.key === 'ITA:apm')?.value?.includes('["notApplicable",'));
 });
 

@@ -577,7 +577,7 @@ export type ApmReply = { available: boolean, players: Array<ApmPlayer>, series: 
 export type ApmGroup = "country" | "player";
 export type ApmPlayerRun = { firstHour: number, lastHour: number, tag: string, name: string | null, nameMissing: string | null, };
 export type ApmPlayer = { id: string, name: string | null, nameMissing: string | null, tags: Array<string>, runs: Array<ApmPlayerRun>, };
-export type ApmValue = { apm: number | null, confirmedApm: number | null, orders: string | null, pausedOrders: string | null, unpausedMinutes: number | null, complete: boolean,
+export type ApmValue = { apm: number | null, confirmedApm: number | null, orders: string | null, confirmedOrders: string | null, pausedOrders: string | null, unpausedMinutes: number | null, unpausedMinutesNum: string | null, unpausedMinutesDen: string | null, complete: boolean,
 /**
  * Part of the period no capture observed; orders and minutes both leave it out.
  */
