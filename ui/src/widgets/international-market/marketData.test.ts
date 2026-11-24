@@ -98,3 +98,8 @@ test('a contract of several equipment labels each variant\'s agreed price with i
   const empty = contracts.rows.find(row => row.key === '3')!.cells.price!.value;
   assert.ok(empty.kind === 'notApplicable' && !/Several/.test(empty.reason), `an empty contract's price: ${JSON.stringify(empty)}`);
 });
+
+test('the market offers no option its detail window does not read', async () => {
+  const { definition } = await import('./definition.ts');
+  assert.deepEqual(definition.options.map(field => field.key), ['view']);
+});
