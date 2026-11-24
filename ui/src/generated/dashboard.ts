@@ -3689,6 +3689,10 @@ parentShare: number | null, count: bigint | null,
  */
 last: number | null,
 /**
+ * Its picture, where the product names one.
+ */
+art: SpriteFrame | null,
+/**
  * In display order. Their known amounts add up to this part's: an amount given to this part
  * itself and to none of them is the last known child, `other`.
  */
