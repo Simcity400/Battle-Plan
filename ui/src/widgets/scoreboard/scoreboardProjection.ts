@@ -1,5 +1,8 @@
 import { tableSortOf, tableSortToken } from '../../charts/table/options.ts';
 import { countryFromKey, countryKey, isSlotKey } from '../../dashboard/countryKey.ts';
+import { rowName } from '../../dashboard/follow/message.ts';
+import type { FollowedAnswer } from '../../dashboard/follow/message';
+import { changedAnswerRows } from '../../dashboard/follow/tables.ts';
 import { contentKey, contentSet, setToken } from '../../dashboard/options.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourceEntry, SourcePlan } from '../../families/contract.ts';
@@ -12,7 +15,7 @@ import {
   type HourRanges,
   type TableWidgetDeclaration,
 } from '../../families/table/declaration.ts';
-import { lookAt, type CountryLooksMap } from '../../families/looks.ts';
+import { lookAt, nextLookChange, type CountryLooksMap } from '../../families/looks.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { encodeTableSettings, OFFERED, TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
@@ -99,6 +102,74 @@ function countryNameValue(tag: string, looks: CountryLooksMap, hour: number) {
   return { value: notRecorded(look?.status ?? 'Country name unavailable'), name: tag, runs };
 }
 
+interface ScoreboardIncCache {
+  readonly validFrom: number;
+  readonly validUntil: number;
+  readonly rankAnswer: FollowedAnswer | undefined;
+  readonly answers: readonly (FollowedAnswer | undefined)[];
+  readonly partials: readonly (FollowedAnswer | undefined)[];
+  readonly entries: readonly { readonly key: string; readonly displayTag: string; readonly wireName: string }[];
+  readonly wireToIndices: ReadonlyMap<string, readonly number[]>;
+  readonly model: TableModel;
+}
+
+const scoreboardIncCache = new WeakMap<ScoreboardProjectionOptions, ScoreboardIncCache>();
+
+function buildScoreboardRow(
+  entry: { readonly key: string; readonly displayTag: string; readonly wireName: string },
+  readView: BoundedReadView,
+  hour: number,
+  options: ScoreboardProjectionOptions,
+): TableRow {
+  const { key, displayTag, wireName } = entry;
+  const identity = countryNameValue(displayTag, options.looks, hour);
+  const cells: Record<string, TableCell> = {
+    country: { value: identity.value, iconSlot: true, country: displayTag, ...(identity.runs ? { looks: identity.runs } : {}) },
+  };
+  let hasPartial = false;
+  for (let i = 0; i < options.shown.length; i++) {
+    const column = options.shown[i]!;
+    const format = columnFormat(column);
+    if (!column.available || !column.family) {
+      cells[column.key] = { value: notRecorded(column.reason ?? 'Unavailable'), format, country: displayTag };
+      continue;
+    }
+    const answer = readView.answer(column.key);
+    const partialAns = column.partial ? readView.answer(partialSource(column.key)) : undefined;
+    let isPartialCell = false;
+    if (partialAns) {
+      const mark = valueFromNamedAnswer(partialAns, wireName);
+      if (mark.kind === 'known' && mark.value !== 0 && mark.value !== 0n) isPartialCell = true;
+    }
+    const base = valueFromNamedAnswer(answer, wireName);
+    let value: Value<NumericScalar> = base;
+    if (isPartialCell && (base.kind === 'known' || base.kind === 'zero')) {
+      value = partialValue(base.value, 'Some inputs were not recorded at this hour');
+      hasPartial = true;
+    }
+    cells[column.key] = { value, format, country: displayTag };
+  }
+  return {
+    key,
+    name: identity.name,
+    cells,
+    ...(hasPartial ? { tooltipNote: 'Partial values omit unrecorded inputs at this hour.' } : {}),
+  };
+}
+
+function sameRankedEntries(
+  entries: readonly { readonly key: string }[],
+  rankAnswer: FollowedAnswer | undefined,
+): boolean {
+  if (!rankAnswer || rankAnswer.kind === 'notRecorded') return false;
+  const tags = rankedTags(rankAnswer);
+  if (tags.length !== entries.length) return false;
+  for (let i = 0; i < tags.length; i++) {
+    if (entries[i]!.key !== tags[i]) return false;
+  }
+  return true;
+}
+
 export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> = registerTableProjection({
   kind: 'scoreboard',
   family: 'table',
@@ -112,16 +183,16 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
   },
   project(readView: BoundedReadView, options: ScoreboardProjectionOptions): TableModel {
     const hour = readView.hour;
-    const columns = scoreboardColumnsSpec(options.shown, options.top);
     const panel = readView.panel('main');
 
     if (panel !== undefined) {
+      const columns = scoreboardColumnsSpec(options.shown, options.top);
       const reply: ScoreboardReply = validateScoreboardReply(panel, options.shown.length);
       if (reply.missing !== null) {
-        return { columns, rows: [], hour: reply.hour, empty: reply.missing, emptyKind: 'unavailable', rank: true, rankMarkers: options.rankMarkers, warnings: reply.warnings };
+        return { columns, rows: [], hour: reply.hour, rowTimeBoundaries: false, empty: reply.missing, emptyKind: 'unavailable', rank: true, rankMarkers: options.rankMarkers, warnings: reply.warnings };
       }
       if (options.top == null && options.unobserved?.some(([first, last]) => first <= reply.hour && reply.hour <= last)) {
-        return { columns, rows: [], hour: reply.hour, empty: 'Group membership is unavailable at this time.', emptyKind: 'unavailable', rank: true, rankMarkers: options.rankMarkers, warnings: reply.warnings };
+        return { columns, rows: [], hour: reply.hour, rowTimeBoundaries: false, empty: 'Group membership is unavailable at this time.', emptyKind: 'unavailable', rank: true, rankMarkers: options.rankMarkers, warnings: reply.warnings };
       }
       const rows: TableRow[] = reply.rows.map(row => {
         const key = countryKey(row.country);
@@ -154,6 +225,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
         columns,
         rows,
         hour: reply.hour,
+        rowTimeBoundaries: false,
         rank: true,
         rankMarkers: options.rankMarkers,
         warnings: reply.warnings,
@@ -162,13 +234,94 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
     }
 
     const rankAnswer = options.top != null ? readView.answer(RANK_SOURCE) : undefined;
+    const prevInc = scoreboardIncCache.get(options);
+    if (
+      prevInc
+      && hour >= prevInc.validFrom
+      && hour < prevInc.validUntil
+      && prevInc.entries.length > 0
+      && (
+        options.top == null
+        || prevInc.rankAnswer === rankAnswer
+        || sameRankedEntries(prevInc.entries, rankAnswer)
+      )
+    ) {
+      const nextAnswers = options.shown.map(col => (col.available && col.family ? readView.answer(col.key) : undefined));
+      const nextPartials = options.shown.map(col => (col.available && col.family && col.partial ? readView.answer(partialSource(col.key)) : undefined));
+      const touchedIndices = new Set<number>();
+      let canPatch = true;
+      const collectDiff = (prevAns: FollowedAnswer | undefined, nextAns: FollowedAnswer | undefined) => {
+        if (prevAns === nextAns) return;
+        if (!prevAns || !nextAns || prevAns.kind !== 'rows' || nextAns.kind !== 'rows') {
+          canPatch = false;
+          return;
+        }
+        const diff = changedAnswerRows(prevAns, nextAns);
+        if (diff === null) {
+          canPatch = false;
+          return;
+        }
+        for (let d = 0; d < diff.length; d++) {
+          const name = rowName(nextAns, diff[d]!);
+          if (name === null) continue;
+          const indices = prevInc.wireToIndices.get(name);
+          if (!indices) continue;
+          for (let k = 0; k < indices.length; k++) touchedIndices.add(indices[k]!);
+        }
+      };
+      for (let i = 0; i < options.shown.length && canPatch; i++) {
+        collectDiff(prevInc.answers[i], nextAnswers[i]);
+        if (canPatch) collectDiff(prevInc.partials[i], nextPartials[i]);
+      }
+      if (canPatch) {
+        if (touchedIndices.size === 0) {
+          const nextModel: TableModel = { ...prevInc.model, hour, changedKeys: new Set(), changedRows: new Map() };
+          scoreboardIncCache.set(options, {
+            ...prevInc,
+            rankAnswer,
+            answers: nextAnswers,
+            partials: nextPartials,
+            model: nextModel,
+          });
+          return nextModel;
+        }
+        if (touchedIndices.size * 2 < prevInc.entries.length) {
+          const nextRows = prevInc.model.rows.slice();
+          const changedKeys = new Set<string>();
+          const changedRows = new Map<string, TableRow>();
+          for (const idx of touchedIndices) {
+            const built = buildScoreboardRow(prevInc.entries[idx]!, readView, hour, options);
+            nextRows[idx] = built;
+            changedKeys.add(built.key);
+            changedRows.set(built.key, built);
+          }
+          const nextModel: TableModel = {
+            ...prevInc.model,
+            hour,
+            rows: nextRows,
+            changedKeys,
+            changedRows,
+          };
+          scoreboardIncCache.set(options, {
+            ...prevInc,
+            rankAnswer,
+            answers: nextAnswers,
+            partials: nextPartials,
+            model: nextModel,
+          });
+          return nextModel;
+        }
+      }
+    }
+
+    const columns = scoreboardColumnsSpec(options.shown, options.top);
     if (options.top != null) {
-      if (!rankAnswer) return { columns, rows: [], hour, rank: true, rankMarkers: options.rankMarkers };
+      if (!rankAnswer) return { columns, rows: [], hour, rowTimeBoundaries: false, rank: true, rankMarkers: options.rankMarkers };
       if (rankAnswer.kind === 'notRecorded') {
-        return { columns, rows: [], hour, empty: rankAnswer.reason, emptyKind: 'unavailable', rank: true, rankMarkers: options.rankMarkers };
+        return { columns, rows: [], hour, rowTimeBoundaries: false, empty: rankAnswer.reason, emptyKind: 'unavailable', rank: true, rankMarkers: options.rankMarkers };
       }
     } else if (options.unobserved?.some(([first, last]) => first <= hour && hour <= last)) {
-      return { columns, rows: [], hour, empty: 'Group membership is unavailable at this time.', emptyKind: 'unavailable', rank: true, rankMarkers: options.rankMarkers };
+      return { columns, rows: [], hour, rowTimeBoundaries: false, empty: 'Group membership is unavailable at this time.', emptyKind: 'unavailable', rank: true, rankMarkers: options.rankMarkers };
     }
 
     const activeEntries: { readonly key: string; readonly displayTag: string; readonly wireName: string }[] = [];
@@ -191,49 +344,42 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
       }
     }
 
-    const rows: TableRow[] = activeEntries.map(({ key, displayTag, wireName }) => {
-      const identity = countryNameValue(displayTag, options.looks, hour);
-      const cells: Record<string, TableCell> = {
-        country: { value: identity.value, iconSlot: true, country: displayTag, ...(identity.runs ? { looks: identity.runs } : {}) },
-      };
-      let hasPartial = false;
-      for (const column of options.shown) {
-        const format = columnFormat(column);
-        if (!column.available || !column.family) {
-          cells[column.key] = { value: notRecorded(column.reason ?? 'Unavailable'), format, country: displayTag };
-          continue;
-        }
-        const answer = readView.answer(column.key);
-        const partialAns = column.partial ? readView.answer(partialSource(column.key)) : undefined;
-        let isPartialCell = false;
-        if (partialAns) {
-          const mark = valueFromNamedAnswer(partialAns, wireName);
-          if (mark.kind === 'known' && mark.value !== 0 && mark.value !== 0n) isPartialCell = true;
-        }
-        const base = valueFromNamedAnswer(answer, wireName);
-        let value: Value<NumericScalar> = base;
-        if (isPartialCell && (base.kind === 'known' || base.kind === 'zero')) {
-          value = partialValue(base.value, 'Some inputs were not recorded at this hour');
-          hasPartial = true;
-        }
-        cells[column.key] = { value, format, country: displayTag };
-      }
-      return {
-        key,
-        name: identity.name,
-        cells,
-        ...(hasPartial ? { tooltipNote: 'Partial values omit unrecorded inputs at this hour.' } : {}),
-      };
-    });
-
-    return {
+    const rows: TableRow[] = activeEntries.map(entry => buildScoreboardRow(entry, readView, hour, options));
+    const model: TableModel = {
       columns,
       rows,
       hour,
+      rowTimeBoundaries: false,
       rank: true,
       rankMarkers: options.rankMarkers,
       ...(!rows.length ? { empty: 'No countries available for this selection.', emptyKind: 'unavailable' } : {}),
     };
+    if (activeEntries.length > 0) {
+      const wireToIndices = new Map<string, number[]>();
+      for (let i = 0; i < activeEntries.length; i++) {
+        const w = activeEntries[i]!.wireName;
+        let list = wireToIndices.get(w);
+        if (!list) wireToIndices.set(w, list = [i]);
+        else list.push(i);
+      }
+      const validUntil = Math.min(
+        nextLookChange(options.looks, hour),
+        nextHoldersChange(options.holders, hour),
+        nextRangesChange(options.unobserved, hour),
+        nextMembershipChange(options.membership, hour),
+      );
+      scoreboardIncCache.set(options, {
+        validFrom: hour,
+        validUntil,
+        rankAnswer,
+        answers: options.shown.map(col => (col.available && col.family ? readView.answer(col.key) : undefined)),
+        partials: options.shown.map(col => (col.available && col.family && col.partial ? readView.answer(partialSource(col.key)) : undefined)),
+        entries: activeEntries,
+        wireToIndices,
+        model,
+      });
+    }
+    return model;
   },
 });
 

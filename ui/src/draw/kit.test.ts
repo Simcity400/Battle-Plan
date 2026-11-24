@@ -247,7 +247,12 @@ test('name slots report truncation, status marks use dots/rings, and date/missin
   drawSeriesMissingStrip(chromeCtx.ctx, 20, 115, 40, '#4f86f7', THEME);
   const tab = drawDateTab(chromeCtx.ctx, '14 Sep 1941', 5, 120, THEME, 'playhead', { left: 10, right: 200 });
   assert.equal(tab.x, 10);
-  assert.equal(resolveKitTokens(THEME).shortage, '#ff6b6f');
+  const hoverTab = drawDateTab(chromeCtx.ctx, '1 Sep 1939', 100, 120, THEME, 'hover', { left: 10, right: 200 });
+  assert.ok(hoverTab.width > 0);
+  const tokens = resolveKitTokens(THEME);
+  assert.equal(tokens.shortage, '#ff6b6f');
+  assert.equal(tokens.dateTabBg, THEME.raised);
+  assert.equal(tokens.hoverTabBg, THEME.text);
 });
 
 test('table cell kit primitives handle minimum bar width, win rate tinting, icon strips, actions, stockpile bars and clock summary', () => {

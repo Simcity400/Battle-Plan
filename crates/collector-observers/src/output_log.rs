@@ -150,7 +150,7 @@ impl Log {
         let consumed = self.consumed.load(Ordering::Acquire);
         let index = self.cursor.fetch_add(1, Ordering::SeqCst);
         let waiting = index.wrapping_add(1).wrapping_sub(consumed);
-        self.required.fetch_max(waiting as usize, Ordering::Relaxed);
+        raise(&self.required, waiting as usize, Ordering::Relaxed);
         let capacity = self.capacity.load(Ordering::Acquire) as u64;
         if waiting <= capacity {
             (index, Reserved::Slot((index % capacity) as usize))

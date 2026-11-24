@@ -1,4 +1,5 @@
 import '../../families/table/registerAll.ts';
+import '../../families/time-chart/registerAll.ts';
 import { familyBarsLaneView } from '../../families/bars/laneView.ts';
 import type { LaneView, Painted, PaintInput, Scene } from '../lane.ts';
 import { panelViews, readingStructure } from '../panels/views.ts';
@@ -6,6 +7,7 @@ import { ArsenalPicture, arsenalNext, type ArsenalModel } from '../arsenal.ts';
 import { validateNuclearArsenal } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import { fieldsOf, liveValues, sameLive, type LiveMap } from './fields.ts';
 import { tableView } from './table.ts';
+import { timeChartLaneView } from '../../families/time-chart/laneView.ts';
 
 export type PanelTexts = Map<string, string>;
 
@@ -89,5 +91,6 @@ export function drawnViews(kind: string, wake: (widget: number) => void): LaneVi
   if (kind === 'table') return tableView(readingStructure, wake);
   if (kind === 'bars') return familyBarsLaneView(wake);
   if (kind === 'race') return race(wake);
+  if (kind === 'time-chart') return timeChartLaneView(wake);
   return undefined;
 }

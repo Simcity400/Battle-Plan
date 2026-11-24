@@ -27,11 +27,12 @@ pub struct SpriteType {
     pub name: String,
     pub texture: Option<String>,
     pub frames: u32,
+    pub source_file: String,
     pub facts: SpriteFacts,
 }
 
 impl SpriteType {
-    fn new(facts: &SpriteFacts) -> Result<Self, String> {
+    fn new(source_file: &str, facts: &SpriteFacts) -> Result<Self, String> {
         let name = std::str::from_utf8(&facts.name)
             .map_err(|_| "its name is not UTF-8".to_owned())?
             .to_owned();
@@ -63,6 +64,7 @@ impl SpriteType {
             name,
             texture,
             frames,
+            source_file: source_file.to_owned(),
             facts: facts.clone(),
         })
     }
@@ -176,7 +178,7 @@ impl SpriteSet {
             );
             for facts in &file.sprites {
                 let read = if facts.refusals.is_empty() {
-                    SpriteType::new(facts)
+                    SpriteType::new(path, facts)
                 } else {
                     Err(facts
                         .refusals

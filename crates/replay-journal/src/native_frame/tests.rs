@@ -1587,16 +1587,13 @@ fn compact_owners_merge_narrow_and_wide_slices_in_key_order() {
     )
     .unwrap();
     assert!(matches!(narrow, Owners::U64(_)));
-    let slice = Slice {
-        owners: vec![1, 3],
-        keys: Owners::from_keys(
-            TableId::ResearchInputs,
-            2,
-            [(1_u128 << 32) | 9, (3_u128 << 32) | 4].into_iter(),
-        )
-        .unwrap(),
-    };
-    hold_slice(&mut narrow, &slice, TableId::ResearchInputs).unwrap();
+    let slice_keys = Owners::from_keys(
+        TableId::ResearchInputs,
+        2,
+        [(1_u128 << 32) | 9, (3_u128 << 32) | 4].into_iter(),
+    )
+    .unwrap();
+    hold_slice(&mut narrow, &[1, 3], &slice_keys, TableId::ResearchInputs).unwrap();
     let Owners::U64(keys) = narrow else {
         panic!("expected narrow u64 owners");
     };

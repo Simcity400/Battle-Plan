@@ -13,7 +13,7 @@ import { perfLog } from '../../shell/perf.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { auditIdOf } from '../audit.ts';
 import { displayedHour } from '../boundedView.ts';
-import type { BoundedReadView, EntityKind, FamilySourceSubscription, InstalledAction, InstalledActionTarget, InstalledPicture, MirrorModel } from '../contract.ts';
+import type { BoundedReadView, DisplayedHour, EntityKind, FamilySourceSubscription, InstalledAction, InstalledActionTarget, InstalledPicture, MirrorModel } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import {
   attachAuditWatch,
@@ -39,9 +39,60 @@ import type { CountryLooksMap } from '../looks.ts';
 import type { FamilyTableBinding } from './laneView.ts';
 import { buildColumnLayouts, layoutFamilyTable } from './layout.ts';
 import { deriveTableAudit, resolveTableRows, type CountryColorSource, type TableColumnSpec, type TableProjection } from './model.ts';
-import { ROW_HEIGHT, updateTableSettings, type TableSettings } from './settings.ts';
+import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, updateTableSettings, type TableSettings } from './settings.ts';
 import { columnWidthVar, DISPLAY_LABELS, FamilyTableHeader, type TableHeaderColumn } from './TableHeader.tsx';
 import './tableFamily.css';
+
+const navActionIndexCache = new WeakMap<readonly FamilyNavTuple[], Map<string, FamilyNavTuple>>();
+
+function lazyActionKeys(
+  nav: readonly FamilyNavTuple[],
+  hour: DisplayedHour,
+): ReadonlyMap<string, InstalledActionTarget> {
+  let materialized: Map<string, InstalledActionTarget> | null = null;
+  const toTarget = (entry: FamilyNavTuple): InstalledActionTarget => ({
+    subject: entry[0],
+    hour,
+    ...(entry[3] >= 0 ? { toggle: true } : {}),
+    label: entry[1],
+    meta: entry[5],
+  });
+  const index = () => {
+    let idx = navActionIndexCache.get(nav);
+    if (!idx) {
+      idx = new Map();
+      for (let i = 0; i < nav.length; i++) {
+        const e = nav[i]!;
+        idx.set(e[0], e);
+      }
+      navActionIndexCache.set(nav, idx);
+    }
+    return idx;
+  };
+  const ensureAll = () => {
+    if (!materialized) {
+      materialized = new Map();
+      for (let i = 0; i < nav.length; i++) {
+        const e = nav[i]!;
+        materialized.set(e[0], toTarget(e));
+      }
+    }
+    return materialized;
+  };
+  return {
+    get size() { return nav.length; },
+    has(key: string) { return index().has(key); },
+    get(key: string) {
+      const entry = index().get(key);
+      return entry ? toTarget(entry) : undefined;
+    },
+    forEach(cb, thisArg) { ensureAll().forEach(cb, thisArg); },
+    entries() { return ensureAll().entries(); },
+    keys() { return ensureAll().keys(); },
+    values() { return ensureAll().values(); },
+    [Symbol.iterator]() { return ensureAll()[Symbol.iterator](); },
+  };
+}
 
 export type { FamilySourceSubscription };
 
@@ -103,7 +154,13 @@ export interface FamilyTableHostProps<TOptions> {
   readonly subscriptions: readonly FamilySourceSubscription[];
   readonly allowEmptyFollow?: boolean;
   readonly owner?: string;
-  readonly staticSources?: { readonly panels?: Readonly<Record<string, unknown>>; readonly answers?: Readonly<Record<string, FollowedAnswer>>; readonly hour: number } | null;
+  readonly staticSources?: {
+    readonly panels?: Readonly<Record<string, unknown>>;
+    readonly answers?: Readonly<Record<string, FollowedAnswer>>;
+    readonly hour: number;
+    readonly follows?: boolean;
+    readonly provenInterval?: readonly [lo: number, hi: number];
+  } | null;
   readonly exactReadView?: (hour: number) => Promise<BoundedReadView | null>;
   readonly offset: number;
   readonly pin: number | null;
@@ -112,6 +169,7 @@ export interface FamilyTableHostProps<TOptions> {
   readonly countryLooks?: CountryLooksMap;
   readonly identitySnapshot?: IdentitySnapshot | null;
   readonly onIdentityDemands?: (demands: readonly (readonly [EntityKind, string, number])[]) => void;
+  readonly onViewportSize?: (width: number, height: number) => void;
   readonly selectedKey?: string | null;
   readonly onActivate?: (key: string, meta?: unknown, hour?: number) => void;
   readonly contextMenuItems?: (key: string | null, name: string | null, hour: number) => MenuItem[];
@@ -179,6 +237,7 @@ export default function FamilyTableHost<TOptions>({
   countryLooks,
   identitySnapshot = null,
   onIdentityDemands,
+  onViewportSize,
   selectedKey = null,
   onActivate,
   contextMenuItems,
@@ -262,6 +321,9 @@ export default function FamilyTableHost<TOptions>({
   const lastMetaKeyRef = useRef<{ mode: string; reason: string | null; failureOrigin: FailureOrigin; rawMeta: unknown } | null>(null);
   const lastWidthsRef = useRef<unknown>(null);
   const lastMirrorObjRef = useRef<MirrorModel | null>(null);
+  const lastNavFieldRef = useRef<unknown>(null);
+  const lastTableInfoRef = useRef<unknown>(null);
+  const lastVisibleRef = useRef<boolean | null>(null);
   const lastPhasesRef = useRef<unknown>(null);
   const lastAuditUpdatedRef = useRef<{ id: number; widths: unknown } | null>(null);
 
@@ -295,7 +357,7 @@ export default function FamilyTableHost<TOptions>({
     auditable,
     subscriptions,
     offset,
-    pin: pin ?? (subscriptions.length === 0 && staticSources ? staticSources.hour : null),
+    pin: pin ?? (subscriptions.length === 0 && staticSources && !staticSources.follows ? staticSources.hour : null),
     bounds,
     frameRef,
     surfaceLabel: 'table',
@@ -327,7 +389,7 @@ export default function FamilyTableHost<TOptions>({
   reportShownRef.current = reportShown;
 
   const surfaceRef = useRef<MountedFamilyCanvas | null>(null);
-  const rowHeight = ROW_HEIGHT[settings.density];
+  const rowHeight = meta.rowHeightMode === 'media' ? MEDIA_ROW_HEIGHT[settings.density] : ROW_HEIGHT[settings.density];
 
   const latestRef = useRef({
     declaration,
@@ -339,6 +401,7 @@ export default function FamilyTableHost<TOptions>({
     exactReadView,
     identitySnapshot,
     onIdentityDemands,
+    onViewportSize,
     selectedKey,
     onActivate,
     contextMenuItems,
@@ -360,6 +423,7 @@ export default function FamilyTableHost<TOptions>({
     exactReadView,
     identitySnapshot,
     onIdentityDemands,
+    onViewportSize,
     selectedKey,
     onActivate,
     contextMenuItems,
@@ -453,7 +517,9 @@ export default function FamilyTableHost<TOptions>({
     pipeline.present(pipe, 'table');
     const dated = Object.keys(sourceIdsRef.current).length === 0
       ? (cur.staticSources
-        ? { h: cur.staticSources.hour, c: cur.staticSources.hour }
+        ? (cur.staticSources.provenInterval
+          ? { h: cur.staticSources.provenInterval[0], c: cur.staticSources.provenInterval[1] }
+          : { h: cur.staticSources.hour, c: cur.staticSources.hour })
         : cur.allowEmptyFollow && cur.bounds
           ? { h: cur.bounds[0], c: cur.bounds[1] }
           : undefined)
@@ -537,6 +603,9 @@ export default function FamilyTableHost<TOptions>({
     lastMetaKeyRef.current = null;
     lastWidthsRef.current = null;
     lastMirrorObjRef.current = null;
+    lastNavFieldRef.current = null;
+    lastTableInfoRef.current = null;
+    lastVisibleRef.current = null;
     lastPhasesRef.current = null;
     lastAuditUpdatedRef.current = null;
 
@@ -566,8 +635,11 @@ export default function FamilyTableHost<TOptions>({
       const frameNode = frameRef.current;
       holdElement(frameNode, !!shown?.dim);
       const visible = shown?.mode === 'picture';
-      node.toggleAttribute('data-table-visible', visible);
-      node.toggleAttribute('data-table-pending', !visible);
+      if (lastVisibleRef.current !== visible) {
+        lastVisibleRef.current = visible;
+        node.toggleAttribute('data-table-visible', visible);
+        node.toggleAttribute('data-table-pending', !visible);
+      }
 
       const mode = shown?.mode ?? 'reading';
       const reason = shown?.reason ?? null;
@@ -642,19 +714,13 @@ export default function FamilyTableHost<TOptions>({
       }
 
       const navField = shown.fields.nav as readonly FamilyNavTuple[] | undefined;
-      if (navField) navRef.current = navField;
-      const activeNav = navField ?? navRef.current;
-      const installedHour = displayedHour(shownHour ?? shown.painted ?? shown.h ?? 0);
-      const actionKeys = new Map<string, InstalledActionTarget>();
-      for (const entry of activeNav) {
-        actionKeys.set(entry[0], {
-          subject: entry[0],
-          hour: installedHour,
-          ...(entry[3] >= 0 ? { toggle: true } : {}),
-          label: entry[1],
-          meta: entry[5],
-        });
+      if (navField && navField !== lastNavFieldRef.current) {
+        lastNavFieldRef.current = navField;
+        navRef.current = navField;
       }
+      const activeNav = navRef.current;
+      const installedHour = displayedHour(shownHour ?? shown.painted ?? shown.h ?? 0);
+      const actionKeys = lazyActionKeys(activeNav, installedHour);
       const installedViewport = shown.viewport ?? {
         width: viewportRef.current.width,
         height: viewportRef.current.height,
@@ -708,7 +774,8 @@ export default function FamilyTableHost<TOptions>({
       }
 
       const tableInfo = shown.fields.table as { count: number; totalHeight?: number; focusedIndex: number; inspectedPresent: boolean } | undefined;
-      if (tableInfo) {
+      if (tableInfo && (tableInfo !== lastTableInfoRef.current || focusInsideRef.current || inspectedKeyRef.current)) {
+        lastTableInfoRef.current = tableInfo;
         if (lastExtentRef.current.count !== tableInfo.count) {
           lastExtentRef.current.count = tableInfo.count;
           accessibleRef.current?.setAttribute('aria-rowcount', String(tableInfo.count + 1));
@@ -837,6 +904,7 @@ export default function FamilyTableHost<TOptions>({
       viewportRef.current.height = h;
       syncViewWindow();
       setViewportWidth(w);
+      latestRef.current.onViewportSize?.(w, h);
       bindRef.current();
     });
     resizeObserver.observe(node);
@@ -845,6 +913,7 @@ export default function FamilyTableHost<TOptions>({
     syncViewWindow();
     refreshFocusAnchorRef.current();
     setViewportWidth(node.clientWidth);
+    latestRef.current.onViewportSize?.(node.clientWidth, node.clientHeight);
 
     node.addEventListener('scroll', onScroll, { passive: true });
     bindRef.current();

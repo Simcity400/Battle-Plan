@@ -11,7 +11,11 @@ mod text;
 mod tests;
 
 pub use cards::{Decisions, EventChoices};
-pub use decision_state::{DecisionLifecycleState, MISSION_FAILURE_NOT_RECORDED};
+pub use decision_state::{
+    COUNTRY_DECISION_STATE_REFUSED, DECISION_CONTAINER_NOT_RECORDED, DECISION_INSTANCE_MISMATCH,
+    DECISION_NO_MISSION_LIFECYCLE, DECISION_OCCURRENCE_NOT_FOUND, DecisionLifecycleState,
+    EVENT_FEED_HISTORY_INCOMPLETE, EVENT_FEED_HISTORY_NOT_RECORDED,
+};
 pub(crate) use row::FeedEvent;
 
 use dashboard_base::products::log_page as logs;

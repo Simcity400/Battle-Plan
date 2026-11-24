@@ -2,9 +2,13 @@
 use crate::{
     hook::Hook,
     hook_errors,
-    source_state::{self as state, Event, Owner, Reference, Seed},
+    source_state::{self as state, Changed, Event, Owner, Reference, Seed},
 };
-use collector_primitives::{first_reason::FirstReason, shared_lane::SharedLane};
+use collector_primitives::{
+    asymmetric::{FlightGate, FlightGuard},
+    first_reason::FirstReason,
+    shared_lane::SharedLane,
+};
 use engine_allocation as allocation;
 use engine_intelligence::{intel_source_sites as sites, intel_sources as native};
 use engine_native_memory::{Memory, read};
@@ -14,6 +18,7 @@ use replay_data::{
 };
 use std::{
     cell::Cell,
+    collections::HashMap,
     ops::Range,
     ptr,
     sync::{
@@ -22,10 +27,9 @@ use std::{
     },
 };
 
-static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+static FLIGHT: FlightGate = FlightGate::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static EPOCH: AtomicU64 = AtomicU64::new(1);
-static REVISION: AtomicU64 = AtomicU64::new(0);
 static ORDER: AtomicU64 = AtomicU64::new(0);
 static FAILED: AtomicU64 = AtomicU64::new(0);
 static ORIGINAL: [AtomicUsize; sites::SITES.len()] =
@@ -54,22 +58,29 @@ impl Drop for ContextGuard {
     }
 }
 struct Flight {
+    guard: Option<FlightGuard<'static>>,
     complete: bool,
 }
 impl Flight {
+    #[inline(always)]
     fn new() -> Self {
-        ACTIVE.fetch_add(1, Ordering::SeqCst);
-        REVISION.fetch_add(1, Ordering::SeqCst);
-        Self { complete: false }
+        Self {
+            guard: Some(FLIGHT.enter(true)),
+            complete: false,
+        }
     }
 }
 impl Drop for Flight {
+    #[inline(always)]
     fn drop(&mut self) {
-        if !self.complete {
-            fail("intel source writer did not complete");
-            return;
+        if let Some(guard) = self.guard.take() {
+            if !self.complete {
+                fail("intel source writer did not complete");
+                guard.leak_and_retain();
+            } else {
+                drop(guard);
+            }
         }
-        ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -100,6 +111,9 @@ struct Store {
     )]
     lanes: Vec<Box<SharedLane<Event>>>,
     owners: Vec<Owner>,
+    owner_by_root: Option<HashMap<usize, usize>>,
+    ref_by_addr: Option<HashMap<usize, (usize, usize)>>,
+    net_by_addr: Option<HashMap<usize, usize>>,
     events: Vec<(u64, usize, u64, Event)>,
     networks: Vec<Reference>,
     network_seeds: Vec<(u32, u32, usize)>,
@@ -129,6 +143,9 @@ impl Store {
         Self {
             lanes: Vec::new(),
             owners: Vec::new(),
+            owner_by_root: None,
+            ref_by_addr: None,
+            net_by_addr: None,
             events: Vec::new(),
             networks: Vec::new(),
             network_seeds: Vec::new(),
@@ -165,7 +182,34 @@ impl Store {
         );
         Ok(())
     }
+    fn rebuild_lookups(&mut self) {
+        let owner_map = self.owner_by_root.get_or_insert_with(HashMap::new);
+        owner_map.clear();
+        if allocation::advisory(|| allocation::reserve_map(owner_map, self.owners.len())).is_ok() {
+            for (index, owner) in self.owners.iter().enumerate() {
+                owner_map.insert(owner.seed.root, index);
+            }
+        }
+        let ref_map = self.ref_by_addr.get_or_insert_with(HashMap::new);
+        ref_map.clear();
+        if allocation::advisory(|| allocation::reserve_map(ref_map, self.owners.len() * 3)).is_ok()
+        {
+            for (index, owner) in self.owners.iter().enumerate() {
+                for (position, reference) in owner.references.iter().enumerate() {
+                    ref_map.insert(reference.address, (index, position));
+                }
+            }
+        }
+        let net_map = self.net_by_addr.get_or_insert_with(HashMap::new);
+        net_map.clear();
+        if allocation::advisory(|| allocation::reserve_map(net_map, self.networks.len())).is_ok() {
+            for (index, reference) in self.networks.iter().enumerate() {
+                net_map.insert(reference.address, index);
+            }
+        }
+    }
     fn publish_index(&mut self) -> Result<(), &'static str> {
+        self.rebuild_lookups();
         self.index_scratch.clear();
         allocation::reserve(
             &mut self.index_scratch,
@@ -200,7 +244,7 @@ impl Store {
             self.retired.push(old);
         }
         REFERENCES.store(pointer, Ordering::SeqCst);
-        if ACTIVE.load(Ordering::SeqCst) == 0 {
+        if !FLIGHT.any_active() {
             self.retired.clear();
         }
         Ok(())
@@ -213,11 +257,10 @@ impl Store {
         force: bool,
         contributions: &mut Vec<IntelContributionRow>,
         sources: &mut Vec<IntelSourceRow>,
-    ) -> Result<Option<(usize, usize)>, &'static str> {
-        let revision = REVISION.load(Ordering::SeqCst);
-        if ACTIVE.load(Ordering::SeqCst) != 0 {
+    ) -> Result<(Option<usize>, Option<usize>), &'static str> {
+        let Some(revision) = FLIGHT.quiet_epoch() else {
             return Err("intel source writer in progress");
-        }
+        };
         let epoch = EPOCH.load(Ordering::SeqCst);
         let failure = FAILED.load(Ordering::SeqCst);
         let rejected = self.lanes.iter().map(|lane| lane.rejected()).sum::<u64>();
@@ -250,7 +293,11 @@ impl Store {
                     "intel source state requires existing daily or forced census after lost observation",
                 );
             }
-            let mut changed = bootstrap;
+            let mut changed = if bootstrap {
+                Changed::BOTH
+            } else {
+                Changed::NONE
+            };
             let membership = bootstrap || seeds.is_some() || self.network_due;
             self.acquired.clear();
             self.acquired_networks.clear();
@@ -259,7 +306,7 @@ impl Store {
                     .map_err(|_| "intel source bootstrap membership allocation failed")?;
                 let old_count = self.owners.len();
                 self.owners.retain(|owner| seeds.contains(&owner.seed));
-                changed |= self.owners.len() != old_count;
+                let mut owners_changed = self.owners.len() != old_count;
                 for &seed in seeds {
                     let index = if let Some(index) =
                         self.owners.iter().position(|owner| owner.seed == seed)
@@ -274,8 +321,12 @@ impl Store {
                     if bootstrap || self.owners[index].seed != seed {
                         self.owners[index].bootstrap(memory, base, seed)?;
                         self.acquired.push(seed.root);
-                        changed = true;
+                        owners_changed = true;
                     }
+                }
+                if owners_changed {
+                    self.owners.sort_unstable_by_key(|owner| owner.seed.owner);
+                    changed.merge(Changed::BOTH);
                 }
             }
             if self.network_due || bootstrap {
@@ -308,7 +359,9 @@ impl Store {
                         },
                     );
                 }
-                changed |= self.next_networks != self.networks;
+                self.next_networks
+                    .sort_unstable_by_key(|reference| (reference.owner, reference.target));
+                changed.sources |= self.next_networks != self.networks;
                 std::mem::swap(&mut self.networks, &mut self.next_networks);
                 self.network_due = false;
                 self.network_refresh = false;
@@ -316,8 +369,8 @@ impl Store {
             if membership {
                 self.publish_index()?;
             }
-            if events.is_empty() && !changed {
-                return Ok(None);
+            if events.is_empty() && !changed.any() {
+                return Ok((None, None));
             }
             self.dirty.clear();
             let mut reindex = false;
@@ -329,25 +382,46 @@ impl Store {
                         continue;
                     }
                     let value = SourceReferenceValue::from_event(*event);
-                    if let Some(reference) = self
-                        .networks
-                        .iter_mut()
-                        .find(|reference| reference.address == event.object)
-                    {
-                        changed |= reference.value != value;
-                        reference.value = value;
-                    } else if let Some((index, position)) =
-                        self.owners.iter().enumerate().find_map(|(index, owner)| {
-                            owner
-                                .references
+                    let net_idx = self
+                        .net_by_addr
+                        .as_ref()
+                        .and_then(|map| map.get(&event.object).copied())
+                        .filter(|&idx| {
+                            self.networks
+                                .get(idx)
+                                .is_some_and(|r| r.address == event.object)
+                        })
+                        .or_else(|| {
+                            self.networks
                                 .iter()
                                 .position(|reference| reference.address == event.object)
-                                .map(|position| (index, position))
+                        });
+                    if let Some(idx) = net_idx {
+                        let reference = &mut self.networks[idx];
+                        changed.sources |= reference.value != value;
+                        reference.value = value;
+                    } else if let Some((index, position)) = self
+                        .ref_by_addr
+                        .as_ref()
+                        .and_then(|map| map.get(&event.object).copied())
+                        .filter(|&(index, position)| {
+                            self.owners.get(index).is_some_and(|owner| {
+                                owner.references[position].address == event.object
+                            })
+                        })
+                        .or_else(|| {
+                            self.owners.iter().enumerate().find_map(|(index, owner)| {
+                                owner
+                                    .references
+                                    .iter()
+                                    .position(|reference| reference.address == event.object)
+                                    .map(|position| (index, position))
+                            })
                         })
                         && !self.acquired.contains(&self.owners[index].seed.root)
                     {
                         let reference = &mut self.owners[index].references[position];
-                        changed |= reference.value != value;
+                        changed.sources |= reference.value != value;
                         reference.value = value;
                     }
                     continue;
@@ -356,34 +430,72 @@ impl Store {
                     continue;
                 }
                 let index = self
-                    .owners
-                    .iter()
-                    .position(|owner| owner.seed.root == event.object)
+                    .owner_by_root
+                    .as_ref()
+                    .and_then(|map| map.get(&event.object).copied())
+                    .filter(|&index| {
+                        self.owners
+                            .get(index)
+                            .is_some_and(|owner| owner.seed.root == event.object)
+                    })
+                    .or_else(|| {
+                        self.owners
+                            .iter()
+                            .position(|owner| owner.seed.root == event.object)
+                    })
                     .ok_or("intel source writer root absent from existing census")?;
-                changed |= self.owners[index].apply(*event)?;
+                changed.merge(self.owners[index].apply(*event)?);
                 reindex |= event.kind == state::RESET;
                 if !self.dirty.contains(&index) {
                     self.dirty.push(index);
                 }
             }
             for &index in &self.dirty {
-                changed |= self.owners[index].acquire(memory)?;
+                changed.merge(self.owners[index].acquire(memory)?);
             }
             if reindex {
                 self.publish_index()?;
             }
-            if !changed {
-                return Ok(None);
+            if !changed.any() {
+                return Ok((None, None));
             }
-            contributions.clear();
-            sources.clear();
-            for owner in &self.owners {
-                owner.rows(contributions, sources)?;
-            }
-            allocation::reserve(sources, self.networks.len())
-                .map_err(|_| "intel network reference rows allocation failed")?;
-            sources.extend(self.networks.iter().map(Reference::row));
-            Ok(Some((contributions.len(), sources.len())))
+            let contribution_len = if changed.contributions {
+                contributions.clear();
+                for owner in &self.owners {
+                    owner.contribution_rows(contributions)?;
+                }
+                Some(contributions.len())
+            } else {
+                None
+            };
+            let source_len = if changed.sources {
+                sources.clear();
+                let mut net_at = 0;
+                for owner in &self.owners {
+                    let id = owner.seed.owner;
+                    while net_at < self.networks.len() && self.networks[net_at].owner < id {
+                        allocation::reserve(sources, 1)
+                            .map_err(|_| "intel network reference rows allocation failed")?;
+                        sources.push(self.networks[net_at].row());
+                        net_at += 1;
+                    }
+                    let net_start = net_at;
+                    while net_at < self.networks.len() && self.networks[net_at].owner == id {
+                        net_at += 1;
+                    }
+                    owner.source_rows(sources, &self.networks[net_start..net_at])?;
+                }
+                if net_at < self.networks.len() {
+                    let rest = &self.networks[net_at..];
+                    allocation::reserve(sources, rest.len())
+                        .map_err(|_| "intel network reference rows allocation failed")?;
+                    sources.extend(rest.iter().map(Reference::row));
+                }
+                Some(sources.len())
+            } else {
+                None
+            };
+            Ok((contribution_len, source_len))
         })();
         for (_, lane, index, _) in &events {
             self.lanes[*lane].release(*index);
@@ -393,8 +505,7 @@ impl Store {
         }
         self.events = events;
         self.prepare(demand)?;
-        if ACTIVE.load(Ordering::SeqCst) != 0
-            || REVISION.load(Ordering::SeqCst) != revision
+        if FLIGHT.quiet_epoch() != Some(revision)
             || EPOCH.load(Ordering::SeqCst) != epoch
             || FAILED.load(Ordering::SeqCst) != failure
         {
@@ -490,14 +601,19 @@ pub(crate) fn capture(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (left, right) = match store.capture(memory, base, seeds, force, contributions, sources) {
-        Ok(Some((left, right))) => (Outcome::Rows { len: left }, Outcome::Rows { len: right }),
-        Ok(None) => (
-            Outcome::Unavailable {
-                reason: SKIPPED_REASON,
-            },
-            Outcome::Unavailable {
-                reason: SKIPPED_REASON,
-            },
+        Ok((left, right)) => (
+            left.map_or(
+                Outcome::Unavailable {
+                    reason: SKIPPED_REASON,
+                },
+                |len| Outcome::Rows { len },
+            ),
+            right.map_or(
+                Outcome::Unavailable {
+                    reason: SKIPPED_REASON,
+                },
+                |len| Outcome::Rows { len },
+            ),
         ),
         Err(reason) => {
             store.valid = false;
@@ -541,7 +657,7 @@ pub fn boundary(invalidate: bool) {
     }
 }
 pub fn active() -> usize {
-    ACTIVE.load(Ordering::SeqCst)
+    FLIGHT.active()
 }
 pub fn status() -> impl serde::Serialize {
     crate::status::status!({
@@ -887,7 +1003,7 @@ mod tests {
         let result = crate::test_support::with_allocations_denied(|| {
             store.capture(&NoRead, 0, None, false, &mut contributions, &mut sources)
         });
-        assert_eq!(result.unwrap(), None);
+        assert_eq!(result.unwrap(), (None, None));
         assert!(contributions.is_empty());
         assert!(sources.is_empty());
         let lane = store.lanes.last().unwrap();
@@ -904,7 +1020,7 @@ mod tests {
             store
                 .capture(&NoRead, 0, None, false, &mut contributions, &mut sources)
                 .unwrap(),
-            None
+            (None, None)
         );
         assert_eq!(
             store.events.iter().map(|event| event.0).collect::<Vec<_>>(),
@@ -986,7 +1102,7 @@ mod tests {
             store
                 .capture(&NoRead, 0, None, false, &mut contributions, &mut sources)
                 .unwrap(),
-            None
+            (None, None)
         );
         world.u32(address + 16, 31);
         store.network_due = true;
@@ -1003,7 +1119,7 @@ mod tests {
                 values: [19, 7, 23, 29],
                 ..Default::default()
             });
-        store
+        let (contrib_out, source_out) = store
             .capture(
                 &world.memory(),
                 0,
@@ -1013,6 +1129,8 @@ mod tests {
                 &mut sources,
             )
             .unwrap();
+        assert_eq!(contrib_out, None);
+        assert!(source_out.is_some());
         assert_eq!(sources.iter().find(|row| row.source == 3).unwrap().id, 31);
         ENABLED.store(false, Ordering::SeqCst);
     }
