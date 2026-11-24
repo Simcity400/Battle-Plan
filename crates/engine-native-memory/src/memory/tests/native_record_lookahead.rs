@@ -72,6 +72,36 @@ impl Drop for Pages {
 }
 
 #[test]
+fn guard_page_reads_are_unreadable_and_leave_the_guard_armed() {
+    let pages = Pages::new(1);
+    let guarded = pages.at(0);
+    let memory = unsafe { LiveMemory::new() };
+    let layout = RecordLayout::new(&POINTER_FIELDS, 8).expect("valid record layout");
+    let reads: [(&str, &dyn Fn() -> bool); 7] = [
+        ("copy 4", &|| memory.copy(guarded, &mut [0; 4])),
+        ("copy 8", &|| memory.copy(guarded, &mut [0; 8])),
+        ("copy 13", &|| memory.copy(guarded, &mut [0; 13])),
+        ("read u32", &|| read::<u32>(&memory, guarded).is_some()),
+        ("read u64", &|| read::<u64>(&memory, guarded).is_some()),
+        ("scattered", &|| {
+            memory.copy_scattered([guarded], &mut [&mut [0; 8]]) != 0
+        }),
+        ("records", &|| {
+            memory.copy_records(RecordSources::Pointers(&[guarded]), &layout, &mut [0; 8]) != 0
+        }),
+    ];
+    pages.protect(0, READWRITE | GUARD);
+    for (name, attempt) in reads {
+        assert!(!attempt(), "{name} read a guard page");
+        assert_eq!(
+            pages.protect(0, READWRITE | GUARD),
+            READWRITE | GUARD,
+            "{name} disarmed the guard page"
+        );
+    }
+}
+
+#[test]
 fn prefetched_scattered_matches_native_faults_at_every_span_and_page_boundary() {
     const ROWS: usize = 9;
     let pages = Pages::new(ROWS * 2);
@@ -105,15 +135,7 @@ fn prefetched_scattered_matches_native_faults_at_every_span_and_page_boundary() 
                             .flatten()
                             .all(|&byte| byte == 0xa5)
                     );
-                    let observed = pages.protect(failed_page, READWRITE);
-                    assert_eq!(
-                        observed,
-                        if protection & GUARD != 0 {
-                            READWRITE
-                        } else {
-                            NOACCESS
-                        }
-                    );
+                    assert_eq!(pages.protect(failed_page, READWRITE), protection);
                 }
             }
         }
@@ -331,13 +353,7 @@ fn every_owned_page_fault_keeps_every_flattened_prefix_exact() {
                         output, expected,
                         "row={failed_row} field={failed_field} prefix={prefix}"
                     );
-                    let observed = pages.protect(failed_page, READWRITE);
-                    let expected_protection = if protection & GUARD != 0 && prefix > failed_index {
-                        READWRITE
-                    } else {
-                        protection
-                    };
-                    assert_eq!(observed, expected_protection);
+                    assert_eq!(pages.protect(failed_page, READWRITE), protection);
                 }
             }
         }
@@ -373,7 +389,7 @@ fn future_guard_pages_survive_an_earlier_noaccess_failure() {
         let mut actual = [0xa5; 8];
         assert!(!memory.copy(pointers[guarded_row] + 61, &mut actual));
         assert_eq!(actual, [0xa5; 8]);
-        assert_eq!(pages.protect(guarded_row, READWRITE), READWRITE);
+        assert_eq!(pages.protect(guarded_row, READWRITE), READWRITE | GUARD);
     }
 }
 
@@ -409,14 +425,9 @@ fn pointer_layout_keeps_owned_faults_and_every_prefix_exact() {
                         }
                     }
                     assert_eq!(output, expected);
-                    let expected_protection = if protection & GUARD != 0 && prefix > failed_row {
-                        READWRITE
-                    } else {
-                        protection
-                    };
                     assert_eq!(
                         pages.protect(failed_page, READWRITE),
-                        expected_protection,
+                        protection,
                         "a hint must not consume the failing row's guard"
                     );
                 }
@@ -448,7 +459,7 @@ fn pointer_layout_future_hints_preserve_guards_after_an_earlier_fault() {
         let mut actual = [0xa5; 8];
         assert!(!memory.copy(pointers[guarded_row], &mut actual));
         assert_eq!(actual, [0xa5; 8]);
-        assert_eq!(pages.protect(guarded_row, READWRITE), READWRITE);
+        assert_eq!(pages.protect(guarded_row, READWRITE), READWRITE | GUARD);
     }
 }
 
@@ -711,11 +722,7 @@ fn packed_two_every_owned_source_fault_preserves_the_exact_prefix() {
                     );
                     assert_eq!(
                         pages.protect(failed_page, READWRITE),
-                        if protection & GUARD != 0 && prefix > failed {
-                            READWRITE
-                        } else {
-                            protection
-                        },
+                        protection,
                         "unreached and odd-prefix excluded guards must remain armed"
                     );
                     let mut expected = [0xa5; ROWS * 16 + 2];
@@ -796,7 +803,7 @@ fn packed_two_future_endpoint_hints_do_not_consume_guards() {
                     &mut bytes[..fields[future_field].len],
                 ));
                 assert_eq!(bytes, [0xa5; 8]);
-                assert_eq!(pages.protect(future_page, READWRITE), READWRITE);
+                assert_eq!(pages.protect(future_page, READWRITE), READWRITE | GUARD);
             }
         }
     }
@@ -965,14 +972,9 @@ fn packed_five_every_owned_source_fault_preserves_the_exact_prefix() {
                         complete,
                         "last_byte={last_byte} failed={failed} prefix={prefix}"
                     );
-                    let old = pages.protect(failed_page, READWRITE);
                     assert_eq!(
-                        old,
-                        if protection & GUARD != 0 && prefix > failed {
-                            READWRITE
-                        } else {
-                            protection
-                        },
+                        pages.protect(failed_page, READWRITE),
+                        protection,
                         "hints must not consume an unreached guard"
                     );
                     let mut expected = [0xa5; ROWS * 52 + 2];
@@ -1054,7 +1056,7 @@ fn packed_five_future_endpoint_hints_do_not_consume_guards() {
                     &mut bytes[..fields[future_field].len]
                 ));
                 assert_eq!(bytes, [0xa5; 16]);
-                assert_eq!(pages.protect(future_page, READWRITE), READWRITE);
+                assert_eq!(pages.protect(future_page, READWRITE), READWRITE | GUARD);
             }
         }
     }
@@ -1243,14 +1245,7 @@ fn packed_five_owned_destination_faults_keep_previous_fields_and_canaries() {
                 };
                 let old = pages.protect(1, READWRITE);
                 assert_eq!(completed, failed_field);
-                assert_eq!(
-                    old,
-                    if protection & GUARD != 0 {
-                        READWRITE
-                    } else {
-                        protection
-                    }
-                );
+                assert_eq!(old, protection);
                 let mut actual: [u8; 54] = unsafe {
                     std::slice::from_raw_parts(destination.sub(1), 54)
                         .try_into()

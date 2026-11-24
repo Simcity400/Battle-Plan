@@ -84,6 +84,13 @@ pub fn refused(text: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::Other, Refusal(text.into()))
 }
 
+pub fn duplicate(error: &io::Error) -> io::Error {
+    match refusal(error) {
+        Some(text) => refused(text),
+        None => io::Error::new(error.kind(), error.to_string()),
+    }
+}
+
 pub fn refusal(error: &io::Error) -> Option<&str> {
     let mut inner: &(dyn std::error::Error + 'static) = error.get_ref()?;
     loop {

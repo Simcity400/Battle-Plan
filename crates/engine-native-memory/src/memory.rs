@@ -642,7 +642,9 @@ impl<const N: usize> FieldBatch<N> {
 
     #[inline]
     pub fn get<T: Raw>(&self, memory: &impl Memory, index: usize) -> Option<T> {
-        debug_assert_eq!(size_of::<T>(), self.lens[index]);
+        if size_of::<T>() != self.lens[index] {
+            return None;
+        }
         match index.cmp(&self.completed) {
             std::cmp::Ordering::Less => scalar_from_bytes(&self.bytes[index][..size_of::<T>()]),
             std::cmp::Ordering::Equal => None,

@@ -83,7 +83,11 @@ export function updateDescription(state: UpdateState | null): string {
 }
 
 export function channelLocked(state: UpdateState | null, pending: boolean): boolean {
-  return !state?.enabled || pending || state.status === 'checking' || state.status === 'downloading';
+  return !state?.enabled || pending || state.status === 'downloading';
+}
+
+export function latestUpdateState(current: UpdateState | null, next: UpdateState): UpdateState {
+  return current && current.revision > next.revision ? current : next;
 }
 
 export const CHANNEL_LABELS: Record<UpdateChannel, string> = { stable: 'Stable', nightly: 'Nightly' };

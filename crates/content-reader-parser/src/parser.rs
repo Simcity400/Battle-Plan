@@ -62,6 +62,7 @@ impl Value {
 pub enum NotText {
     Block,
     NotUtf8(Vec<u8>),
+    Unkeyed,
 }
 
 impl std::fmt::Display for NotText {
@@ -73,6 +74,7 @@ impl std::fmt::Display for NotText {
                 "the stored text `{}` is not UTF-8, which the port's text cannot hold",
                 bytes.escape_ascii()
             ),
+            Self::Unkeyed => f.write_str("absent: the entry has no key"),
         }
     }
 }
@@ -191,7 +193,7 @@ impl Item {
     }
 
     pub fn key_str(&self) -> Result<&str, NotText> {
-        text(self.key.as_deref().unwrap_or_default())
+        text(self.key.as_deref().ok_or(NotText::Unkeyed)?)
     }
 
     pub fn keyword_is(&self, name: &str) -> bool {
@@ -239,19 +241,6 @@ impl Document {
             .filter(move |item| item.key.as_deref() == Some(key.as_ref()))
             .map(|item| &item.value)
     }
-
-    pub fn get_all_keyword<'a>(&'a self, keyword: &'a str) -> impl Iterator<Item = &'a Value> + 'a {
-        self.items
-            .iter()
-            .filter(move |item| is_keyword(item, keyword))
-            .map(|item| &item.value)
-    }
-}
-
-pub fn is_keyword(item: &Item, keyword: &str) -> bool {
-    item.key
-        .as_deref()
-        .is_some_and(|key| key.eq_ignore_ascii_case(keyword.as_bytes()))
 }
 
 pub fn variable_hash(name: &[u8]) -> u32 {

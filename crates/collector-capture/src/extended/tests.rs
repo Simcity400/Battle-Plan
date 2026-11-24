@@ -2794,6 +2794,16 @@ fn country_naming_terminal_loan_restores_original_buffers_and_never_retries_nati
             })
             .unwrap();
         captured.country_appearance.raw.begin(hour);
+        captured.country_appearance.raw.link_controls(Ok([
+            engine_native_memory::cpdx_array::Array {
+                data: 0x2000,
+                count: 2,
+            },
+            engine_native_memory::cpdx_array::Array {
+                data: 0x3000,
+                count: 8,
+            },
+        ]));
         captured
             .country_appearance
             .raw

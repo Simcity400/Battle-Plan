@@ -64,3 +64,14 @@ fn set_malformed_child_and_parent_links_are_bounded() {
     put(&mut bytes, 0x300, RIGHT, 0x300);
     assert_eq!(walk(&bytes, 5), Err(SetError::ExcessNodes));
 }
+
+#[test]
+fn set_end_marker_must_be_this_trees_own_head() {
+    const FOREIGN: usize = 0x680;
+    for (node, offset) in [(0x300, RIGHT), (0x500, LEFT)] {
+        let mut bytes = fixture();
+        bytes[FOREIGN + NIL] = 1;
+        put(&mut bytes, node, offset, FOREIGN);
+        assert_eq!(walk(&bytes, 5), Err(SetError::ForeignSentinel));
+    }
+}

@@ -13,36 +13,36 @@ pub fn app_update_state(updates: State<'_, Arc<Updates>>) -> UpdateState {
 
 async fn blocking<T: Send + 'static>(
     app: AppHandle,
-    work: impl FnOnce(&AppHandle, Arc<Updates>) -> Result<T, String> + Send + 'static,
+    work: impl FnOnce(Arc<Updates>) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(move || work(&app, updates(&app)))
+    tauri::async_runtime::spawn_blocking(move || work(updates(&app)))
         .await
         .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
 pub async fn app_update_check(app: AppHandle) -> Result<UpdateState, String> {
-    blocking(app, |app, updates| {
-        tauri::async_runtime::block_on(updates.check(app))
+    blocking(app, |updates| {
+        tauri::async_runtime::block_on(updates.check())
     })
     .await
 }
 
 #[tauri::command]
 pub async fn app_update_download(app: AppHandle) -> Result<UpdateState, String> {
-    blocking(app, |app, updates| {
-        tauri::async_runtime::block_on(updates.download(app))
+    blocking(app, |updates| {
+        tauri::async_runtime::block_on(updates.download())
     })
     .await
 }
 
 #[tauri::command]
 pub async fn app_update_install(app: AppHandle) -> Result<(), String> {
-    blocking(app, |app, updates| updates.install(app)).await
+    blocking(app, |updates| updates.install()).await
 }
 
 pub fn install_now(app: &AppHandle) -> Result<(), String> {
-    updates(app).install(app)
+    updates(app).install()
 }
 
 #[tauri::command]
@@ -50,9 +50,9 @@ pub async fn app_update_set_channel(
     app: AppHandle,
     channel: Channel,
 ) -> Result<UpdateState, String> {
-    blocking(app, move |app, updates| {
-        updates.set_channel(app, channel)?;
-        let _ = tauri::async_runtime::block_on(updates.check(app));
+    blocking(app, move |updates| {
+        updates.set_channel(channel)?;
+        let _ = tauri::async_runtime::block_on(updates.check());
         Ok(updates.state())
     })
     .await

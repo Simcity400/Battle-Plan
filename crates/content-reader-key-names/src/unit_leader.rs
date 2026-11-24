@@ -736,7 +736,8 @@ fn c_string<'a>(name: &str, item: &'a Item) -> Result<&'a str, String> {
             "{name} value {} is not UTF-8",
             String::from_utf8_lossy(content_reader_parser::parser::c_string(scalar(item)))
         ),
-        content_reader_parser::parser::NotText::Block => format!("{name} value: {why}"),
+        content_reader_parser::parser::NotText::Block
+        | content_reader_parser::parser::NotText::Unkeyed => format!("{name} value: {why}"),
     })
 }
 
