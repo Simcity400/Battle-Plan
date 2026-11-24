@@ -1,7 +1,7 @@
 use crate::{Host, Role};
 use std::{
     io,
-    sync::{Arc, Condvar, Mutex, OnceLock, PoisonError},
+    sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak},
 };
 use windows_sys::Win32::{
     Foundation::{
@@ -78,7 +78,7 @@ impl Drop for Server {
     }
 }
 
-static SERVED: OnceLock<Arc<Server>> = OnceLock::new();
+static SERVED: OnceLock<Weak<Server>> = OnceLock::new();
 
 impl Server {
     fn lock(&self) -> std::sync::MutexGuard<'_, Serving> {
@@ -104,7 +104,7 @@ impl Server {
 }
 
 pub fn stop() {
-    if let Some(server) = SERVED.get() {
+    if let Some(server) = SERVED.get().and_then(Weak::upgrade) {
         server.stop();
     }
 }
@@ -199,7 +199,7 @@ impl Pipe {
 }
 
 pub(crate) fn serve(role: Role, host: Arc<dyn Host>) -> io::Result<()> {
-    serve_on(&pipe_name(role)?, host, |server| drop(SERVED.set(Arc::clone(server)))).map(drop)
+    serve_on(&pipe_name(role)?, host, |server| drop(SERVED.set(Arc::downgrade(server)))).map(drop)
 }
 
 fn serve_on(name: &[u16], host: Arc<dyn Host>, publish: impl FnOnce(&Arc<Server>)) -> io::Result<Arc<Server>> {
