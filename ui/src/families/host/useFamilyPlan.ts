@@ -1,12 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { IconName } from '../../components/Icons';
 import { validateProductReply, type ProductRequest } from '../../dashboard/client.ts';
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
-import { useSlotTagsState } from '../../dashboard/countrySlots.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
-import { repliedCells } from '../../dashboard/follow/liveCells.ts';
-import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { inFrame } from '../../dashboard/frameUpdates.ts';
@@ -28,9 +25,10 @@ import { countRead, measuredWidget } from '../../dashboard/widgetPerf.ts';
 import { useRegion, useRegionCoverage, watchBoundary } from '../../dashboard/widgetTime';
 import type { CountryFlagChoice, HourSpan } from '../../generated/dashboard';
 import { perfLog } from '../../shell/perf.ts';
+import type { FamilyStaticProof } from './adapter.ts';
 import { sharedDomArtCache } from '../art/domCache.ts';
 import { createDomArtProvider } from '../art/provider.ts';
-import { boundedUnrecorded, createBoundedReadView, displayedHour, type UnrecordedLine } from '../boundedView.ts';
+import { boundedUnrecorded, type UnrecordedLine } from '../boundedView.ts';
 import {
   buildTailPageRequest,
   compileFollowPlan,
@@ -51,6 +49,7 @@ import {
   flagChoiceKey,
   useIdentities,
   useIdentityScope,
+  useSlotIndex,
   type IdentityAsk,
   type IdentitySnapshot,
 } from '../identity/react.ts';
@@ -72,17 +71,12 @@ import type {
   SourcePlan,
 } from '../plan.ts';
 import {
-  askUnits,
-  reaskedUnits,
-  settleUnits,
+  ReadTarget,
   showBundle,
   unitEntries,
-  UnitReads,
-  watchSpan,
-  type ReadUnit,
-  type Settlement,
+  type PinnedAsk,
   type ShownBundle,
-  type UnitResult,
+  type TargetView,
 } from '../readUnits.ts';
 import {
   buildCountryLooksFromIdentity,
@@ -90,6 +84,7 @@ import {
   extractFactionData,
   freezeGate,
   selectionUnobservedReason,
+  trackGate,
   type FrozenGate,
 } from '../sources.ts';
 import {
@@ -134,18 +129,25 @@ function buildFilterTimeline(
   return { passing, unrecorded, bounds };
 }
 
-const NO_UNITS: readonly ReadUnit[] = [];
-const NO_RESULTS: ReadonlyMap<string, UnitResult> = new Map();
+const NO_ENTRIES: readonly SourceEntry[] = [];
+const NO_VIEW: TargetView = { kind: 'none', failure: null, bundle: null, held: false };
+const NO_PIN: PinnedAsk = {
+  timeMode: 'pin',
+  branch: { firstHour: 0, lastHour: 0 },
+  window: null,
+  pinHour: null,
+  gate: { recorded: () => null, span: () => null },
+};
 
 export interface StaticBundle {
   readonly hour: number;
   readonly span: readonly [number, number] | null;
-  readonly provenInterval?: readonly [lo: number, hi: number];
   readonly follows?: boolean;
   readonly panels: Readonly<Record<string, unknown>>;
-  readonly answers?: Readonly<Record<string, FollowedAnswer>>;
-  readonly readView: BoundedReadView;
+  readonly shifts?: Readonly<Record<string, number>>;
 }
+
+export type StaticProof = FamilyStaticProof;
 
 export interface BannerFailureInfo {
   readonly failure: Failure;
@@ -186,6 +188,7 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly allowEmptyFollow: boolean;
   readonly followRefused: string | null;
   readonly staticBundle: StaticBundle | null;
+  readonly staticProof: StaticProof;
   readonly staticHeld: boolean;
   readonly pagedRows: Readonly<Record<string, PagedRowsSnapshot>> | undefined;
   readonly onRowWindow: (window: FamilyRowWindow, hour: number | null) => void;
@@ -382,27 +385,33 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     || anySlot
     || (widget.countries.kind !== 'all' && resolvedMulti?.top == null)
   );
-  const slotState = useSlotTagsState(runtime.client, track, active && needsSlots);
+  const identityScope = useIdentityScope(runtime.client, track?.source, track?.branch.id, active && !!track);
+  const branchBounds = useMemo(
+    () => (track ? [track.branch.firstHour, track.branch.lastHour] as const : undefined),
+    [track?.branch.firstHour, track?.branch.lastHour],
+  );
+  const slotState = useSlotIndex(runtime.client, track?.source, identityScope, active && needsSlots, branchBounds);
   const slots = slotState.slots;
+  const slotRevision = slotState.revision;
 
   const effectiveMulti = useMemo(() => {
     if (!resolvedMulti) return null;
     if (typeof singleSlotId !== 'number') return resolvedMulti;
-    const runs = slots?.tagRuns(singleSlotId) ?? [];
+    const runs = [...(slots?.tagRuns(singleSlotId) ?? [])];
     return {
       ...resolvedMulti,
       tags: [...new Set(runs.map(run => run.tag))],
       membership: new Map([['', runs]]),
       known: (from: number, to?: number) => !!slots && resolvedMulti.known(from, to),
     };
-  }, [resolvedMulti, singleSlotId, slots]);
+  }, [resolvedMulti, singleSlotId, slots, slotRevision]);
 
   const holders = useMemo<Readonly<Record<string, readonly HolderRun[]>> | null>(() => {
     if (!isMulti || !effectiveMulti || effectiveMulti.top != null || !slots) return null;
     const out: Record<string, readonly HolderRun[]> = {};
     for (const key of effectiveMulti.tags) out[key] = slots.runsForKey(key);
     return out;
-  }, [isMulti, effectiveMulti, slots]);
+  }, [isMulti, effectiveMulti, slots, slotRevision]);
 
   const unobserved = useMemo(
     () => effectiveCountryUnobserved(widget.countries, effectiveMulti?.unobserved),
@@ -457,11 +466,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }, []);
 
   const wantsIdentity = wantsLabels || laneDemands.length > 0;
-  const identityScope = useIdentityScope(runtime.client, track?.source, track?.branch.id, active && !!track);
-  const branchBounds = useMemo(
-    () => (track ? [track.branch.firstHour, track.branch.lastHour] as const : undefined),
-    [track?.branch.firstHour, track?.branch.lastHour],
-  );
   const labelAskHour = pinHour ?? moment;
   const labelAsks = useMemo<readonly IdentityAsk[]>(() => {
     const asks: IdentityAsk[] = [];
@@ -954,10 +958,10 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const currentTiled = tiledState.key === pixelBinnedKey ? tiledState : null;
   const trackOffset = track?.axisOffset ?? 0;
 
-  const [tileClockHour, setTileClockHour] = useState<number>(() => Math.floor(runtime.clock.getHour()) + trackOffset);
+  const [tileCrossings, setTileCrossings] = useState(0);
   const tileSeenHour = useMemo(
     () => Math.floor(runtime.clock.getHour()) + trackOffset,
-    [currentTiled, tileClockHour, runtime.clock, trackOffset],
+    [currentTiled, tileCrossings, runtime.clock, trackOffset],
   );
   const tileHour = following ? tileSeenHour : Math.floor(pinHour ?? window?.lastHour ?? effectiveEndHour);
   useEffect(() => {
@@ -990,14 +994,14 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     if (!following || !active || tileLo === undefined || tileHi === undefined) return;
     const now = Math.floor(runtime.clock.getHour()) + trackOffset;
     if (now < tileLo || now > tileHi) {
-      setTileClockHour(now);
+      setTileCrossings(value => value + 1);
       return;
     }
     if (tileLo === -Infinity && tileHi === Infinity) return;
     return watchBoundary(
       runtime.clock,
       () => [tileLo - trackOffset, tileHi + 1 - trackOffset],
-      () => { setTileClockHour(Math.floor(runtime.clock.getHour()) + trackOffset); },
+      () => { setTileCrossings(value => value + 1); },
     );
   }, [following, active, runtime.clock, trackOffset, tileLo, tileHi]);
 
@@ -1012,115 +1016,74 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const content = useContentRevision(runtime.client);
   const displayHour = pinHour ?? Math.floor(window?.lastHour ?? effectiveEndHour);
   const branch = track?.branch;
-
-  const askedRef = useRef<{ readonly owner: string; readonly following: boolean; readonly hours: Map<string, number> }>({ owner: '', following: false, hours: new Map() });
-  if (askedRef.current.owner !== owner || askedRef.current.following !== following) askedRef.current = { owner, following, hours: new Map() };
-  const [askedRevision, setAskedRevision] = useState(0);
-
-  const units = useMemo<readonly ReadUnit[]>(() => {
-    if (!branch || !entries.length) return NO_UNITS;
-    if (!following) {
-      return askUnits(entries, {
-        following: false,
-        trackOffset,
-        content,
-        displayHour,
-        pinned: { timeMode: widget.time.mode, branch, window, pinHour, gate: frozenGate, countriesKnown: countriesState.known },
-      });
-    }
-    const hours = askedRef.current.hours;
-    const names = new Set(entries.map(entry => entry.name));
-    for (const name of [...hours.keys()]) if (!names.has(name)) hours.delete(name);
-    const now = Math.floor(runtime.clock.getHour()) + trackOffset;
-    return askUnits(entries, {
-      following: true,
-      trackOffset,
-      content,
-      askedAt: name => {
-        let at = hours.get(name);
-        if (at === undefined) hours.set(name, at = now);
-        return at;
-      },
-      playback: { branch, effectiveEndHour, gate: frozenGate, countriesKnown: countriesState.known },
-    });
-  }, [owner, branch, entries, following, trackOffset, content, displayHour, widget.time.mode, window, pinHour, frozenGate, countriesState.known, runtime.clock, effectiveEndHour, askedRevision]);
+  const subscribed = following && compiledFollow.subscriptions.length > 0;
 
   const perfWidget = measuredWidget();
-  const readInputs = useRef({ client: runtime.client, source: track?.source, content, perfWidget });
-  readInputs.current = { client: runtime.client, source: track?.source, content, perfWidget };
-  const [, setResultsRevision] = useState(0);
-  const readsRef = useRef<UnitReads | null>(null);
-  const unitReads = (): UnitReads => readsRef.current ??= new UnitReads(
+  const readInputs = useRef({ client: runtime.client, source: track?.source, content, perfWidget, clock: runtime.clock, trackOffset });
+  readInputs.current = { client: runtime.client, source: track?.source, content, perfWidget, clock: runtime.clock, trackOffset };
+  const targetRef = useRef<ReadTarget | null>(null);
+  const readTarget = useCallback((): ReadTarget => targetRef.current ??= new ReadTarget(
+    {
+      now: () => Math.floor(readInputs.current.clock.getHour()) + readInputs.current.trackOffset,
+      playing: () => readInputs.current.clock.getSnapshot().playing,
+      seek: () => readInputs.current.clock.getSnapshot().seekSequence,
+      subscribe: changed => readInputs.current.clock.subscribe(changed),
+      watch: ([lo, hi], left) => {
+        const { clock, trackOffset: offset } = readInputs.current;
+        return watchBoundary(clock, () => [lo - offset, hi + 1 - offset], left);
+      },
+    },
     (unit, signal, restart) => {
       const { client, source, perfWidget: widgetId } = readInputs.current;
       countRead(widgetId, unit.spec!.request);
       return loadProduct(client, unit.spec!.request, signal, unit.spec!.validate, source, restart, undefined, undefined, true);
     },
-    () => inFrame(() => setResultsRevision(value => value + 1)),
     unit => {
       const { client, content: revision } = readInputs.current;
       return peekProduct(client, unit.spec!.request, productKey(unit.spec!.request, revision), unit.spec!.validate);
     },
-  );
-  const results = unitReads().take(units);
-  useEffect(() => { unitReads().sync(units, active); }, [units, active]);
+  ), []);
   useEffect(() => () => {
-    readsRef.current?.dispose();
-    readsRef.current = null;
+    targetRef.current?.dispose();
+    targetRef.current = null;
   }, []);
-  const retryUnits = useCallback(() => { readsRef.current?.retry(); }, []);
-
-  const subscribed = following && compiledFollow.subscriptions.length > 0;
-  const subscribePlaying = useCallback((changed: () => void) => (following ? runtime.clock.subscribe(changed) : () => {}), [following, runtime.clock]);
-  const readPlaying = useCallback(() => following && runtime.clock.getSnapshot().playing, [following, runtime.clock]);
-  const moving = useSyncExternalStore(subscribePlaying, readPlaying, readPlaying);
-  const settlement = useMemo<Settlement>(
-    () => settleUnits(units, results, {
-      following,
-      moving,
-      hour: following ? Math.floor(runtime.clock.getHour()) + trackOffset : displayHour,
-      subscribed,
-      endHour: effectiveEndHour,
-    }),
-    [units, results, following, moving, runtime.clock, trackOffset, displayHour, subscribed, effectiveEndHour],
-  );
-
-  const watch = useMemo(
-    () => (following && active ? watchSpan(units, results, effectiveEndHour) : null),
-    [following, active, units, results, effectiveEndHour],
-  );
-  const watchLo = watch?.[0];
-  const watchHi = watch?.[1];
-  const unitsRef = useRef(units);
-  unitsRef.current = units;
-  useEffect(() => {
-    if (watchLo === undefined || watchHi === undefined) return;
-    const reask = () => {
-      const now = Math.floor(runtime.clock.getHour()) + trackOffset;
-      const moved = reaskedUnits(unitsRef.current, readsRef.current?.results ?? NO_RESULTS, now, effectiveEndHour);
-      if (!moved.length) return;
-      for (const name of moved) askedRef.current.hours.set(name, now);
-      setAskedRevision(value => value + 1);
+  const playback = useMemo(() => {
+    if (!branch || !track) return null;
+    const own = { branch, effectiveEndHour, gate: frozenGate, countriesKnown: countriesState.known };
+    const others = new Map<string, typeof own | Omit<typeof own, 'countriesKnown'>>();
+    return (entry: SourceEntry) => {
+      if (entry.source.id === track.source.id && entry.branch === track.branch.id) return own;
+      const key = JSON.stringify([entry.source.id, entry.branch]);
+      let made = others.get(key);
+      if (!made) {
+        const other = runtime.tracks.find(item => item.source.id === entry.source.id && item.branch.id === entry.branch);
+        made = other ? { branch: other.branch, effectiveEndHour: lastRecordedHour(other) ?? other.branch.lastHour, gate: trackGate(other) } : own;
+        others.set(key, made);
+      }
+      return made;
     };
-    const now = Math.floor(runtime.clock.getHour()) + trackOffset;
-    if (now < watchLo || now > watchHi) {
-      reask();
-      return;
-    }
-    if (watchLo === -Infinity && watchHi === Infinity) return;
-    return watchBoundary(runtime.clock, () => [watchLo - trackOffset, watchHi + 1 - trackOffset], reask);
-  }, [watchLo, watchHi, runtime.clock, trackOffset, effectiveEndHour]);
+  }, [branch, track, effectiveEndHour, frozenGate, countriesState.known, runtime.tracks]);
+  const pinned = useMemo(
+    () => (branch ? { timeMode: widget.time.mode, branch, window, pinHour, gate: frozenGate, countriesKnown: countriesState.known } : null),
+    [branch, widget.time.mode, window, pinHour, frozenGate, countriesState.known],
+  );
+  useLayoutEffect(() => {
+    const common = { entries: branch ? entries : NO_ENTRIES, active, content, trackOffset };
+    if (following && playback) readTarget().configure({ ...common, following: true, subscribed, playback });
+    else if (!following && pinned) readTarget().configure({ ...common, following: false, displayHour, pinned });
+    else readTarget().configure({ ...common, entries: NO_ENTRIES, following: false, displayHour, pinned: NO_PIN });
+  }, [readTarget, branch, entries, active, content, trackOffset, following, subscribed, playback, pinned, displayHour]);
+  const subscribeView = useCallback((changed: () => void) => readTarget().subscribe(() => inFrame(changed)), [readTarget]);
+  const readView = useCallback(() => targetRef.current?.view() ?? NO_VIEW, []);
+  const view = useSyncExternalStore(subscribeView, readView, readView);
+  const retryUnits = useCallback(() => { targetRef.current?.retry(); }, []);
+  const staticProof = useMemo<StaticProof>(() => ({
+    read: () => targetRef.current?.proof() ?? null,
+    subscribe: changed => readTarget().subscribeProof(changed),
+  }), [readTarget]);
 
-  const askedSpan = useMemo(() => {
-    let lo = Infinity;
-    let hi = -Infinity;
-    for (const unit of units) {
-      if (!unit.spec?.span) continue;
-      lo = Math.min(lo, unit.spec.span[0] - unit.shift);
-      hi = Math.max(hi, unit.spec.span[1] - unit.shift);
-    }
-    return lo <= hi ? `${lo}:${hi}` : '';
-  }, [units]);
+  const shownSpan = view.bundle?.span ?? null;
+  const askedSpan = shownSpan ? `${shownSpan[0]}:${shownSpan[1]}` : '';
   const ctxWithStaticSpan = useMemo<FamilyPlanContext<TAux> | null>(() => {
     if (!ctx) return null;
     if (!askedSpan) return ctx;
@@ -1147,37 +1110,19 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     [ctxWithStaticSpan, frozenGate, plan, currentCountryLooks, currentExtra],
   );
 
-  const completeBundle = useMemo<StaticBundle | null>(() => {
-    if (settlement.kind !== 'complete') return null;
-    const { bundle } = settlement;
-    const live = new Map<string, ReturnType<ReturnType<typeof repliedCells>['read']>>();
-    for (const unit of units) {
-      const read = unit.entry.read;
-      if (bundle.panels.has(unit.name) && read.shape === 'point' && read.channel === 'panel' && !read.exactProduct) {
-        live.set(unit.name, repliedCells(bundle.panels.get(unit.name)).read());
-      }
-    }
-    return {
-      hour: bundle.hour,
-      span: bundle.span,
-      ...(bundle.proof ? { provenInterval: bundle.proof, follows: true } : {}),
-      panels: Object.fromEntries(bundle.panels),
-      readView: createBoundedReadView({
-        hour: displayedHour(bundle.hour),
-        ...(bundle.proof ? { validInterval: bundle.proof } : {}),
-        panels: bundle.panels,
-        live,
-        identity: identityProvider,
-        art: artProvider,
-      }),
-    };
-  }, [settlement, units, identityProvider, artProvider]);
+  const viewBundle = view.bundle;
+  const viewedBundle = useMemo<StaticBundle | null>(
+    () => (viewBundle
+      ? { hour: viewBundle.hour, span: viewBundle.span, ...(viewBundle.follows ? { follows: true } : {}), panels: Object.fromEntries(viewBundle.panels), ...(viewBundle.shifts ? { shifts: viewBundle.shifts } : {}) }
+      : null),
+    [viewBundle],
+  );
 
   const shownRef = useRef<ShownBundle<StaticBundle, FrozenView> | null>(null);
-  const shown = showBundle(shownRef.current, settlement, completeBundle, sig, currentFrozen);
+  const shown = showBundle(shownRef.current, viewedBundle, view.held, sig, currentFrozen);
   shownRef.current = shown.last;
   const staticBundle = shown.shown?.bundle ?? null;
-  const staticHeld = shown.held;
+  const staticHeld = view.held && staticBundle !== null;
   const displayed = shown.shown?.frozen ?? currentFrozen;
   const displayedCtx = displayed.ctx;
   const displayedGate = displayed.gate;
@@ -1257,8 +1202,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     }
 
     if (isMulti) {
-      if (needsSlots && slotState.error && !slots) {
-        return { kind: 'failed', failure: slotState.error, origin: 'local', onRetry: slotState.retry };
+      if (needsSlots && slotState.failure && !slots) {
+        return { kind: 'failed', failure: slotState.failure, origin: 'local', onRetry: slotState.retry };
       }
       if ((needsGroups && !groups.data) || (needsSlots && !slots)) {
         return { kind: 'loading', label: loadingLabel };
@@ -1289,22 +1234,22 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     }
 
     const unitState = (): FamilyBodyStatus => {
-      if (settlement.kind === 'failed') return { kind: 'failed', failure: settlement.failure, origin: 'local', onRetry: retryUnits };
-      if (settlement.kind === 'outside') return { kind: 'outside' };
+      if (view.failure) return { kind: 'failed', failure: view.failure.failure, origin: 'local', onRetry: retryUnits };
+      if (view.kind === 'outside') return { kind: 'outside' };
       return hasStaticBundle ? { kind: 'ready' } : { kind: 'loading', label: loadingLabel };
     };
 
     if (following) {
       if (compiledFollow.unavailable) return { kind: 'refused', reason: compiledFollow.unavailable };
-      return settlement.kind === 'none' ? { kind: 'ready' } : unitState();
+      return view.kind === 'none' ? { kind: 'ready' } : unitState();
     }
 
     if (pixelBinnedKey) {
       if (pinHour === null && !window) return { kind: 'outside' };
       if (!currentTiled || !Object.keys(currentTiled.series).length) return { kind: 'loading', label: loadingLabel };
-      return settlement.kind === 'none' || settlement.kind === 'outside' ? { kind: 'ready' } : unitState();
+      return view.kind === 'none' || view.kind === 'outside' ? { kind: 'ready' } : unitState();
     }
-    if (settlement.kind === 'none') return pinHour === null ? { kind: 'outside' } : { kind: 'loading', label: loadingLabel };
+    if (view.kind === 'none') return pinHour === null ? { kind: 'outside' } : { kind: 'loading', label: loadingLabel };
     return unitState();
   }, [
     track,
@@ -1333,7 +1278,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     countriesState,
     isMulti,
     needsSlots,
-    slotState.error,
+    slotState.failure,
     slotState.retry,
     slots,
     effectiveMulti,
@@ -1348,7 +1293,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     tileUnrecorded,
     retryTiles,
     hasStaticBundle,
-    settlement,
+    view,
     retryUnits,
   ]);
 
@@ -1379,6 +1324,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     allowEmptyFollow: compiledFollow.allowEmptyFollow,
     followRefused: compiledFollow.refused,
     staticBundle,
+    staticProof,
     staticHeld,
     pagedRows,
     onRowWindow,

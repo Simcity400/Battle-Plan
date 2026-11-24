@@ -39,7 +39,7 @@ const unresolvedValue = (row: LeaderRow) => row.unresolved;
 const winRateValue = (row: LeaderRow) => row.winRate;
 
 const partialCount = (row: LeaderRow, count: number) => row.foughtPartial
-  ? <span data-tooltip="Battle counts are incomplete: some battles were not recorded.">≥{count}</span> : count;
+  ? <span data-tooltip="Battle counts are incomplete: some battles were not recorded.">{count}</span> : count;
 
 export default function GeneralsWidget(props: WidgetProps) {
   const { widget, runtime, active, onDiagnostics, setOption } = props;

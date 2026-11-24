@@ -142,6 +142,10 @@ export async function fetchArtHandles(
   return merged;
 }
 
+export function artCacheScope(track: Pick<BoundTrack, 'source' | 'branch'>, contentRevision: number): string {
+  return JSON.stringify([track.source.id, track.source.revision, track.branch.id, contentRevision]);
+}
+
 export const SPRITE_BATCH = 64;
 const MAX_SPRITE_CONCURRENCY = 2;
 

@@ -19,6 +19,7 @@ pub mod diplomacy_mutations;
 pub mod diplomatic_action_body;
 pub mod equipment_destruction;
 pub mod event_feed_sites;
+pub mod event_window_sites;
 pub mod experience_gain_sites;
 pub mod incoming_diplomatic_action_queue;
 pub mod map_event_sites;

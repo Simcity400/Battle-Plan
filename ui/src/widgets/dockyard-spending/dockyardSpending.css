@@ -1,2 +1,0 @@
-.dockyard-months { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; min-height: 0; padding: var(--space-2) 0; }
-.dockyard-months-chart { flex: 1; min-height: 0; }

@@ -14,7 +14,7 @@ const RANK = 'dealtAndTaken';
 const MEASURES = ['dealt', 'taken', 'unknown', 'partial'] as const;
 type Measure = typeof MEASURES[number];
 const MOST = 1500;
-const PARTIAL = 'Some casualties were recorded without their full detail: at least this many.';
+const PARTIAL = 'Some casualties were recorded without their full detail.';
 
 export interface CasualtiesOptions {
   readonly view: 'butterfly' | 'race';

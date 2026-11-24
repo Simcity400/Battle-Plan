@@ -295,10 +295,9 @@ export default function DeclaredFamilyWidget<
     if (!plan.staticBundle) return null;
     return {
       panels: plan.staticBundle.panels,
-      answers: plan.staticBundle.answers,
+      ...(plan.staticBundle.shifts ? { shifts: plan.staticBundle.shifts } : {}),
       hour: plan.staticBundle.hour,
       ...(plan.staticBundle.follows ? { follows: true } : {}),
-      ...(plan.staticBundle.provenInterval ? { provenInterval: plan.staticBundle.provenInterval } : {}),
     };
   }, [plan.staticBundle]);
 
@@ -330,6 +329,7 @@ export default function DeclaredFamilyWidget<
       allowEmptyFollow={plan.allowEmptyFollow}
       owner={view === DEFAULT_VIEW ? plan.owner : JSON.stringify([plan.owner, view])}
       staticSources={staticSources}
+      staticProof={plan.staticProof}
       pagedRows={plan.pagedRows}
       tiledSeries={hasPixelBinned ? plan.tiledSeries : undefined}
       tiledRevision={hasPixelBinned ? plan.tiledRevision : 0}

@@ -30,7 +30,8 @@ export function buildRendererLoaders(
       kind: entry.kind,
       view: normalizeView(entry.view),
       load: override
-        ? override.load
+        ? () => Promise.all([override.load(), entry.loadSpec()])
+          .then(([module, spec]) => ({ default: { ...module.default, declaration: spec.declaration } as WidgetRenderer }))
         : () => entry.loadSpec().then(spec => ({ default: { declaration: spec.declaration } as WidgetRenderer })),
     });
   }
