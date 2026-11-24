@@ -1094,10 +1094,20 @@ fn balance_at(runs: &[SpendBalanceRun], hour: i32) -> (Option<i128>, Option<Stri
     }
 }
 
-pub(super) fn continuity(from: i32, to: i32, held: &[Piece], recorded: impl Fn(i32, i32) -> bool) -> Option<String> {
-    let unheld = |first: i32, last: i32| first <= last && recorded(first, last);
+pub(super) fn continuity(from: i32, to: i32, held: &[Piece], recorded: impl Fn(i32, i32) -> i64) -> Option<String> {
+    let unheld = |first: i32, last: i32| first <= last && recorded(first, last) > 0;
     let Some((first, last)) = held.first().zip(held.last()) else {
-        return Some(if recorded(from, to) { "Country was not held during this span" } else { "This span was not recorded" }.to_owned());
+        let hours = if from <= to { recorded(from, to) } else { 0 };
+        return Some(
+            if hours == i64::from(to) - i64::from(from) + 1 {
+                "Country was not held during this span"
+            } else if hours > 0 {
+                "Country was not held for the entire span"
+            } else {
+                "This span was not recorded"
+            }
+            .to_owned(),
+        );
     };
     if unheld(from, first.first.saturating_sub(1)) || unheld(last.last.saturating_add(1), to) || held.windows(2).any(|pair| unheld(pair[0].last.saturating_add(1), pair[1].first.saturating_sub(1))) {
         Some("Country was not held for the entire span".to_owned())
@@ -1110,7 +1120,7 @@ pub(super) fn continuity(from: i32, to: i32, held: &[Piece], recorded: impl Fn(i
     }
 }
 
-fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpendingReply, allocations: &AllocationTotals, recorded: impl Fn(i32, i32) -> bool) -> SpendReconciliation {
+fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpendingReply, allocations: &AllocationTotals, recorded: impl Fn(i32, i32) -> i64) -> SpendReconciliation {
     let (from, to) = (params.from, params.to);
     let continuity_reason = continuity(from, to, held, recorded);
 
@@ -1355,8 +1365,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
     let mut unmatched = 0_u64;
     let has_day_log = query.replay.recording().predates(TableId::PowerSpendDays.index()).is_none();
     let held = pieces(query, &params.country, params.from, params.to)?;
-    let end = held.last().map_or(params.to.min(query.timeline.last), |piece| piece.last);
-    reply.tag = query.holders.tag_at(&params.country, end).map_or_else(|| params.country.key().into_owned(), str::to_owned);
+    reply.tag = query.holders.tag_at(&params.country, params.to.min(query.timeline.last)).map_or_else(|| params.country.key().into_owned(), str::to_owned);
     for piece in &held {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let coverage_start = reply.coverage.len();
@@ -1435,7 +1444,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
             unmatched: bucket.unmatched,
         })
         .collect();
-    reply.reconciliation = reconcile(params, &held, &reply, &allocations, |first, last| query.timeline.within(first, last).next().is_some());
+    reply.reconciliation = reconcile(params, &held, &reply, &allocations, |first, last| query.timeline.within(first, last).map(|stretch| i64::from(stretch.last) - i64::from(stretch.first) + 1).sum());
     let asked = &items.asked;
     let rows: Vec<naming::Asked<'_>> = asked.iter().map(|(run, row)| naming::Asked { run: *run, row }).collect();
     let mut icons = BTreeMap::new();
