@@ -238,6 +238,7 @@ fn leader_hour_reads_and_names_the_requested_leader_not_the_first_row_in_a_share
             "common/characters/test.txt",
             "characters = { ABK_zaitsev = { name = ABK_zaitsev } JAP_yamamoto = { name = JAP_yamamoto } }",
         ),
+        ("common/defines/test.lua", "NDefines = { NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { } } }"),
     ]);
     let (content, identity) = dashboard_base::test_fixtures::content_identity(&folder.0);
     let mut input = records(1, vec![frame.clone()]);
@@ -267,5 +268,5 @@ fn leader_hour_reads_and_names_the_requested_leader_not_the_first_row_in_a_share
         live: &live,
     };
     let reply = LeaderHour::reply(&frame, &params, &at).unwrap();
-    assert_eq!(reply.name.as_deref(), Some("Isoroku Yamamoto"));
+    assert_eq!(reply.name.as_deref(), Some("Isoroku Yamamoto"), "{:?}", reply.warnings);
 }

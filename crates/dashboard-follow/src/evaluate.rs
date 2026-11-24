@@ -354,11 +354,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
         Query::Series { countries: names, mode: SeriesMode::NavalLosses { attribution, kinds, top }, .. } => {
             let hour = head(lane);
             for &kind in *kinds {
-                let run_key = u128::from(NavalLossTotalRow::RUN) << 48
-                    | u128::from(NavalLossTotalRow::RUN) << 16
-                    | u128::from(NavalLossTotalRow::LOST) << 8
-                    | u128::from(kind);
-                let Some(slot) = find.slot(run_key) else {
+                let Some(slot) = find.slot(NavalLossTotalRow::run_key(kind)) else {
                     answer::not_recorded("Naval losses are not known at this hour", out);
                     return;
                 };
@@ -378,9 +374,8 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
             table.clear(1, false);
             let sum_for = |owner: u128| -> i64 {
                 kinds.iter().fold(0i64, |sum, &kind| {
-                    let key = owner << 16 | u128::from(*attribution) << 8 | u128::from(kind);
                     let count = find
-                        .slot(key)
+                        .slot(NavalLossTotalRow::holder_key(owner, *attribution, kind))
                         .and_then(|slot| match cells.value(0, slot) {
                             Value::Number(bits) => Some(bits as i64),
                             _ => None,

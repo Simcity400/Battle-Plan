@@ -668,6 +668,14 @@ impl NavalLossTotalRow {
     pub const SUNK_BY: u8 = 1;
     pub const SHIPS: u8 = 0;
     pub const CONVOYS: u8 = 1;
+
+    pub fn holder_key(holder: u128, attribution: u8, kind: u8) -> u128 {
+        Self { slot: (holder >> 32) as u32, country: holder as u32, attribution, kind, ..Self::default() }.key()
+    }
+
+    pub fn run_key(kind: u8) -> u128 {
+        Self { slot: Self::RUN, country: Self::RUN, attribution: Self::LOST, kind, ..Self::default() }.key()
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

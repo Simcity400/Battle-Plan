@@ -1724,52 +1724,54 @@ fn review_8_one_session_token_binds_every_page_command_and_every_packet() {
 fn naval_losses_evaluates_running_totals_and_refuses_when_sentinel_unknown() {
     use replay_data::rows::NavalLossTotalRow as Row;
     let table = TableId::NavalLossTotals.index();
-    let naval_kinds = vec![Kind::I64, Kind::I64, Kind::OptionalI32, Kind::U8, Kind::OptionalI32];
-    let mut kinds = vec![vec![Kind::I32]; table + 1];
-    kinds[table] = naval_kinds;
+    let kinds: Vec<Vec<Kind>> = replay_recording::schema::schema().unwrap().into_iter().take(table + 1).collect();
+    let number = |kind: Kind, value: i64| match kind {
+        Kind::I64 => Cell::I64(value),
+        Kind::I32 => Cell::I32(value as i32),
+        Kind::U32 => Cell::U32(value as u32),
+        Kind::U8 => Cell::U8(value as u8),
+        Kind::Bool => Cell::Bool(value != 0),
+        Kind::OptionalI32 => Cell::OptionalI32(Some(value as i32)),
+        Kind::OptionalI64 => Cell::OptionalI64(Some(value)),
+        other => panic!("naval loss totals hold no {other:?} column"),
+    };
+    let ger = Key::Holder.of(1, 9001);
+    let ita = Key::Holder.of(2, 9002);
+    let rows = [
+        (Row::run_key(Row::SHIPS), 0, 1),
+        (Row::run_key(Row::CONVOYS), 0, 1),
+        (Row::holder_key(ger, Row::LOST, Row::SHIPS), 3, 0),
+        (Row::holder_key(ger, Row::LOST, Row::CONVOYS), 5, 0),
+        (Row::holder_key(ita, Row::LOST, Row::SHIPS), 2, 0),
+        (Row::holder_key(ita, Row::SUNK_BY, Row::SHIPS), 40, 0),
+    ];
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
     store.attach(Encoder::new(&kinds, Writing { cap: 256, ..Writing::at(3) }).unwrap());
     let mut memory = Memory::default();
     store.begin_run(0);
-    let ger = Key::Holder.of(1, 9001);
-    let ita = Key::Holder.of(2, 9002);
-    let run_key = |kind: u8| {
-        u128::from(Row::RUN) << 48
-            | u128::from(Row::RUN) << 16
-            | u128::from(Row::LOST) << 8
-            | u128::from(kind)
-    };
-    let row_key = |owner: u128, attribution: u8, kind: u8| {
-        owner << 16 | u128::from(attribution) << 8 | u128::from(kind)
-    };
     for hour in 0..4 {
         store.begin_hour(hour, &[]).unwrap();
-        store.status(table, Status::Complete, true, Some(hour), true).unwrap();
+        for held in 0..=table {
+            store.status(held, Status::Complete, true, Some(hour), true).unwrap();
+        }
         let mut changes = store.table(table).unwrap();
+        let columns = &kinds[table];
         if hour == 0 {
-            for (slot, (key, total, counted_from, known)) in [
-                (run_key(Row::SHIPS), 0i64, Some(1i32), 0u8),
-                (run_key(Row::CONVOYS), 0i64, Some(1i32), 0u8),
-                (row_key(ger, Row::LOST, Row::SHIPS), 3, None, 0),
-                (row_key(ger, Row::LOST, Row::CONVOYS), 5, None, 0),
-                (row_key(ita, Row::LOST, Row::SHIPS), 2, None, 0),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                changes.insert_at(slot as u32, key).unwrap();
-                changes.write(slot as u32, 0, Cell::I64(total)).unwrap();
-                changes.write(slot as u32, 2, Cell::OptionalI32(counted_from)).unwrap();
-                changes.write(slot as u32, 3, Cell::U8(known)).unwrap();
+            for (slot, &(key, total, counted_from)) in rows.iter().enumerate() {
+                let slot = slot as u32;
+                changes.insert_at(slot, key).unwrap();
+                changes.write(slot, 0, number(columns[0], total)).unwrap();
+                changes.write(slot, 2, number(columns[2], counted_from)).unwrap();
+                changes.write(slot, 3, number(columns[3], 0)).unwrap();
             }
         } else if hour == 2 {
-            changes.write(0, 3, Cell::U8(1)).unwrap();
-            changes.write(1, 3, Cell::U8(1)).unwrap();
+            changes.write(0, 3, number(columns[3], 1)).unwrap();
+            changes.write(1, 3, number(columns[3], 1)).unwrap();
         }
         store.end_hour(&mut memory).unwrap();
     }
-    store.end_block();
-    let pages = Arc::new(Recording { bytes: memory.bytes, runs: vec![Run { blocks: memory.pages }], kinds });
+    store.end_run(&mut memory).unwrap();
+    let pages: Arc<dyn Pages> = Arc::new(Recording { bytes: memory.bytes, runs: vec![Run::new(0, memory.pages).unwrap()], kinds });
     let mut holders = Holders::default();
     let held = |slot, id| vec![HolderRun { first: 0, last: 3, holder: Holder::Found { slot, id }, starts_segment: true }];
     holders.tags.insert("GER".into(), held(1, 9001));
@@ -1777,24 +1779,19 @@ fn naval_losses_evaluates_running_totals_and_refuses_when_sentinel_unknown() {
     holders.tags.insert("JAP".into(), held(3, 9003));
     let timeline = Stretches { id: 1, first: 0, last: 3, stretches: vec![Stretch { run: 0, first: 0, last: 3, join: Join::Start }], unheld: Vec::new() };
     let identity = Identity { holders: Arc::new(holders), timeline: Arc::new(timeline) };
-    let top_q = crate::parse(
-        &serde_json::json!({ "product": "naval-losses", "params": { "branchId": "1", "countries": [], "top": 10, "attribution": "lost", "kind": "both", "period": "running" } }),
-        &identity,
-    )
-    .unwrap();
-    let chosen_q = crate::parse(
-        &serde_json::json!({ "product": "naval-losses", "params": { "branchId": "1", "countries": ["GER", "JAP"], "top": null, "attribution": "lost", "kind": "ships", "period": "running" } }),
-        &identity,
-    )
-    .unwrap();
-    let mut lane = Lane::new(table, &top_q.declared(), false);
-    lane.seek(pages.as_ref(), 0, 1).unwrap();
-    assert!(answer_at(&top_q, &lane).not_recorded.is_some(), "unknown sentinel must report not recorded");
-    lane.seek(pages.as_ref(), 0, 2).unwrap();
-    let top_ans = answer_at(&top_q, &lane);
-    let top_rows: Vec<(i64, &str)> = (0..top_ans.keys.len()).map(|i| (top_ans.values[i], top_ans.name(i).unwrap())).collect();
-    assert_eq!(top_rows, vec![(8, "GER"), (2, "ITA")], "sums ships + convoys and excludes zero-loss JAP");
-    let chosen_ans = answer_at(&chosen_q, &lane);
-    let chosen_rows: Vec<(i64, &str)> = (0..chosen_ans.keys.len()).map(|i| (chosen_ans.values[i], chosen_ans.name(i).unwrap())).collect();
-    assert_eq!(chosen_rows, vec![(3, "GER"), (0, "JAP")], "chosen ships returns 0 for JAP when sentinel is known");
+    let request = |countries: serde_json::Value, top: serde_json::Value, kind: &str| {
+        crate::parse(&serde_json::json!({ "product": "naval-losses", "params": { "branchId": "1", "countries": countries, "top": top, "attribution": "lost", "kind": kind, "period": "running" } }), &identity).unwrap()
+    };
+    let top = request(serde_json::json!([]), serde_json::json!(10), "both");
+    let chosen = request(serde_json::json!(["GER", "JAP"]), serde_json::Value::Null, "ships");
+    let at = |query: &Query, hour: Hour| {
+        let mut lane = Lane::new(Arc::clone(&pages), 0, table, &[0, 1, 2, 3, 4], false).unwrap();
+        lane.seek(hour).unwrap();
+        Answer::parse(&answer_at(query, &lane).unwrap()).unwrap()
+    };
+    let rows_of = |answer: &Answer| (0..answer.keys.len()).map(|row| (answer.values[row], answer.name(row).unwrap().to_owned())).collect::<Vec<_>>();
+    assert!(at(&top, 1).not_recorded.is_some(), "losses before the counting is known are not recorded");
+    assert!(at(&chosen, 1).not_recorded.is_some(), "losses before the counting is known are not recorded");
+    assert_eq!(rows_of(&at(&top, 2)), [(8, "GER".to_owned()), (2, "ITA".to_owned())], "ships and convoys summed, sinkings by others left out, no loss no row");
+    assert_eq!(rows_of(&at(&chosen, 2)), [(3, "GER".to_owned()), (0, "JAP".to_owned())], "a chosen country with no loss is a known zero");
 }
