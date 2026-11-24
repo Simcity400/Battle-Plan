@@ -23,6 +23,7 @@ export interface FlowNode {
   readonly numeric: number | null;
   readonly figure: string;
   readonly others?: number;
+  readonly unknown?: string;
   readonly spoken: string;
   readonly audit: string;
   readonly tooltip?: FamilyTooltipPayload;

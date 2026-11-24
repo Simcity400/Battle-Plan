@@ -1,6 +1,7 @@
-import type { CountryFlowReply, FlowLink } from '../../generated/dashboard';
+import { countryKey } from '../../dashboard/countryKey.ts';
+import type { CountryFlowReply, FlowEndpoint, FlowLink, FlowSide as ReplySide } from '../../generated/dashboard';
 import { countryRowPresentation } from '../bars/model.ts';
-import type { BoundedReadView } from '../contract.ts';
+import type { ArtResult, BoundedReadView } from '../contract.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import { formatCompactScalar, formatScalar, type ValueFormat } from '../valueFormat.ts';
 import type { FlowBand, FlowModel, FlowNode, FlowPartKey, FlowRibbon, FlowSide } from './model.ts';
@@ -17,11 +18,46 @@ export interface CountryFlowText {
   readonly ribbonTitle: (from: string, to: string) => string;
 }
 
-const OTHERS_IN = '\u0000others-in';
-const OTHERS_OUT = '\u0000others-out';
+export const UNKNOWN_COUNTRY = 'Unknown country';
 
 export function scaledAmount(amount: string, decimals: number): number {
   return decimals > 0 ? Number(BigInt(amount)) / 10 ** decimals : Number(BigInt(amount));
+}
+
+interface FlowEndpointPresentation {
+  readonly key: string;
+  readonly label: string;
+  readonly labelMissing: boolean;
+  readonly subject?: string;
+  readonly tag?: string;
+  readonly flag?: ArtResult;
+  readonly color?: string;
+  readonly unknown?: string;
+}
+
+export function flowEndpointKey(endpoint: FlowEndpoint): string {
+  return endpoint.slot === null ? 'unknown' : String(endpoint.slot);
+}
+
+export function presentFlowEndpoint(readView: BoundedReadView, endpoint: FlowEndpoint): FlowEndpointPresentation {
+  const key = flowEndpointKey(endpoint);
+  if (endpoint.slot === null) return { key, label: UNKNOWN_COUNTRY, labelMissing: true, unknown: endpoint.unknown ?? UNKNOWN_COUNTRY };
+  const subject = countryKey(endpoint.slot);
+  const shown = countryRowPresentation(readView, subject);
+  const named = shown.label !== subject;
+  return {
+    key,
+    label: named ? shown.label : endpoint.tag ?? UNKNOWN_COUNTRY,
+    labelMissing: shown.labelMissing || !named,
+    subject,
+    ...(endpoint.tag ? { tag: endpoint.tag } : {}),
+    flag: shown.media.art,
+    ...(shown.color ? { color: shown.color } : {}),
+  };
+}
+
+export function flowSideNotes(...sides: readonly ReplySide[]): readonly string[] {
+  return [...new Set(sides.flatMap(side => (side.missing ? [side.missing] : [])))];
 }
 
 function blank(hour: number, extra: Partial<FlowModel>): FlowModel {
@@ -50,16 +86,22 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       : { label: part?.label ?? '', value: exact(amount.amount) };
   });
   const bands = (link: FlowLink): FlowBand[] => link.amounts.filter(amount => amount.amount !== null).map(amount => ({ part: amount.part, numeric: scaledAmount(amount.amount!, decimals) }));
+  const endpoints = reply.endpoints.map(endpoint => presentFlowEndpoint(readView, endpoint));
+  const keyOf = (index: number | null, side: FlowSide) => `${side}:${index === null ? 'others' : endpoints[index]!.key}`;
+  const notes = (...sides: readonly ReplySide[]) => {
+    const said = flowSideNotes(...sides);
+    return said.length ? { notes: said } : {};
+  };
   let notRecordedKey = false;
 
-  const node = (index: number | null, side: FlowSide, link: FlowLink | null, total: string | null, others?: number): FlowNode => {
-    const missing = link ? link.total === null : total === null;
-    if (missing && side !== 'centre') notRecordedKey = true;
-    const amount = link ? link.total : total;
+  const node = (index: number | null, side: FlowSide, link: FlowLink, others?: number): FlowNode => {
+    if (link.total === null) notRecordedKey = true;
+    const key = keyOf(index, side);
+    const amount = link.total;
     if (index === null) {
       const label = text.others(others ?? 0);
       return {
-        key: side === 'left' ? OTHERS_IN : OTHERS_OUT,
+        key,
         side,
         label,
         numeric: value(amount),
@@ -67,46 +109,73 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
         others: others ?? 0,
         spoken: `${label}: ${exact(amount)}`,
         audit: exact(amount),
-        ...(link ? { tooltip: { title: label, hour, items: items(link) } } : {}),
+        tooltip: { title: label, hour, items: items(link) },
       };
     }
-    const tag = reply.countries[index]!;
-    const shown = countryRowPresentation(readView, tag);
+    const shown = endpoints[index]!;
+    const missingReason = link.missing ?? shown.unknown;
     return {
-      key: tag,
+      key,
       side,
       label: shown.label,
       ...(shown.labelMissing ? { labelMissing: true } : {}),
-      tag,
-      flag: shown.media.art,
+      ...(shown.tag ? { tag: shown.tag } : {}),
+      ...(shown.flag ? { flag: shown.flag } : {}),
       ...(shown.color ? { color: shown.color } : {}),
+      ...(shown.unknown ? { unknown: shown.unknown } : {}),
       numeric: value(amount),
-      figure: side === 'centre' ? '' : figure(amount),
+      figure: figure(amount),
       spoken: `${shown.label}: ${exact(amount)}`,
       audit: exact(amount),
-      subject: tag,
-      ...(link ? { tooltip: { title: shown.label, hour, items: items(link), ...(link.missing ? { missingReason: link.missing } : {}) } } : {}),
+      ...(shown.subject ? { subject: shown.subject } : {}),
+      tooltip: { title: shown.label, hour, items: items(link), ...(missingReason ? { missingReason } : {}) },
     };
   };
 
-  const ribbon = (link: FlowLink, from: string, to: string, fromLabel: string, toLabel: string): FlowRibbon => ({
-    key: `${from}>${to}`,
-    from,
-    to,
+  const ribbon = (link: FlowLink, from: FlowNode, to: FlowNode): FlowRibbon => ({
+    key: `${from.key}>${to.key}`,
+    from: from.key,
+    to: to.key,
     bands: bands(link),
     numeric: value(link.total),
     audit: exact(link.total),
-    tooltip: { title: text.ribbonTitle(fromLabel, toLabel), hour, items: items(link), ...(link.missing ? { missingReason: link.missing } : {}) },
+    tooltip: { title: text.ribbonTitle(from.label, to.label), hour, items: items(link), ...(link.missing ? { missingReason: link.missing } : {}) },
+  });
+
+  const unproven = (sides: readonly ReplySide[]) => blank(hour, {
+    mode: reply.subject === null ? 'bipartite' : 'centred',
+    empty: text.notRecorded,
+    emptyDetail: flowSideNotes(...sides).join(' '),
+    emptyKind: 'unavailable',
+    warnings: reply.warnings,
   });
 
   if (reply.subject !== null) {
-    if (!reply.incoming.length && !reply.outgoing.length) return blank(hour, { empty: text.none, warnings: reply.warnings, notes: reply.partial ? [reply.partial] : undefined });
-    const centre = node(reply.subject, 'centre', null, reply.largest);
-    const left = reply.incoming.map(link => node(link.from, 'left', link, null, link.others ?? undefined));
-    const right = reply.outgoing.map(link => node(link.to, 'right', link, null, link.others ?? undefined));
+    const { incoming, outgoing } = reply;
+    if (!incoming.links.length && !outgoing.links.length) {
+      return incoming.missing || outgoing.missing ? unproven([incoming, outgoing]) : blank(hour, { empty: text.none, warnings: reply.warnings });
+    }
+    const subject = endpoints[reply.subject]!;
+    const sideAudit = (label: string, side: ReplySide) => `${label} ${side.total === null ? `Not recorded: ${side.missing ?? text.notRecorded}` : exact(side.total)}`;
+    const centreAudit = `${sideAudit(text.leftHeader, incoming)} · ${sideAudit(text.rightHeader, outgoing)}`;
+    const centre: FlowNode = {
+      key: keyOf(reply.subject, 'centre'),
+      side: 'centre',
+      label: subject.label,
+      ...(subject.labelMissing ? { labelMissing: true } : {}),
+      ...(subject.tag ? { tag: subject.tag } : {}),
+      ...(subject.flag ? { flag: subject.flag } : {}),
+      numeric: value(reply.largest),
+      figure: '',
+      spoken: `${subject.label}: ${centreAudit}`,
+      audit: centreAudit,
+      ...(subject.subject ? { subject: subject.subject } : {}),
+    };
+    const left = incoming.links.map(link => node(link.from, 'left', link, link.others ?? undefined));
+    const right = outgoing.links.map(link => node(link.to, 'right', link, link.others ?? undefined));
     const ribbons = [
-      ...reply.incoming.map((link, at) => ribbon(link, left[at]!.key, centre.key, left[at]!.label, centre.label)),
-      ...reply.outgoing.map((link, at) => ribbon(link, centre.key, right[at]!.key, centre.label, right[at]!.label)),
+      ...incoming.links.map((link, at) => ribbon(link, left[at]!, centre)),
+      ...outgoing.links.map((link, at) => ribbon(link, centre, right[at]!)),
     ];
     return {
       hour,
@@ -121,17 +190,23 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       rightHeader: text.rightHeader,
       ...(text.unitNote ? { unitNote: text.unitNote } : {}),
       notRecordedKey,
-      ...(reply.partial ? { notes: [reply.partial] } : {}),
+      ...notes(incoming, outgoing),
       warnings: reply.warnings,
     };
   }
 
-  if (!reply.links.length) return blank(hour, { mode: 'bipartite', empty: text.none, warnings: reply.warnings });
-  const left = reply.senders.map(link => node(link.from, 'left', link, null, link.others ?? undefined));
-  const right = reply.receivers.map(link => node(link.to, 'right', link, null, link.others ?? undefined));
-  const keyOf = (index: number | null, side: 'left' | 'right') => (index === null ? (side === 'left' ? OTHERS_IN : OTHERS_OUT) : reply.countries[index]!);
-  const labelOf = (index: number | null, side: 'left' | 'right') => (side === 'left' ? left : right).find(item => item.key === keyOf(index, side))?.label ?? '';
-  const ribbons = reply.links.map(link => ribbon(link, keyOf(link.from, 'left'), keyOf(link.to, 'right'), labelOf(link.from, 'left'), labelOf(link.to, 'right')));
+  const { senders, receivers } = reply;
+  if (!reply.links.length) {
+    return senders.missing || receivers.missing ? unproven([senders, receivers]) : blank(hour, { mode: 'bipartite', empty: text.none, warnings: reply.warnings });
+  }
+  const left = senders.links.map(link => node(link.from, 'left', link, link.others ?? undefined));
+  const right = receivers.links.map(link => node(link.to, 'right', link, link.others ?? undefined));
+  const byKey = new Map([...left, ...right].map(item => [item.key, item]));
+  const ribbons = reply.links.flatMap(link => {
+    const from = byKey.get(keyOf(link.from, 'left'));
+    const to = byKey.get(keyOf(link.to, 'right'));
+    return from && to ? [ribbon(link, from, to)] : [];
+  });
   return {
     hour,
     mode: 'bipartite',
@@ -144,8 +219,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
     rightHeader: text.groupRightHeader,
     ...(text.unitNote ? { unitNote: text.unitNote } : {}),
     notRecordedKey,
-    ...(reply.partial ? { notes: [reply.partial] } : {}),
+    ...notes(senders, receivers),
     warnings: reply.warnings,
   };
 }
-

@@ -7,7 +7,7 @@ export interface PayloadsMessage {
   readonly drop?: readonly number[];
 }
 
-const KEYED: Readonly<Record<string, number>> = { staticPanels: 1, staticAnswers: 1, hovers: 1, tiledBySource: 2 };
+const KEYED: Readonly<Record<string, number>> = { staticPanels: 1, staticAnswers: 1, hovers: 1, pagedRows: 1, tiledBySource: 2 };
 
 const revisions = new WeakMap<object, number>();
 let nextRevision = 1;

@@ -16,6 +16,7 @@ const OPTS: AirSuperiorityProjectionOptions = {
 
 const REPLY: AirSuperiorityReply = {
   missing: null,
+  unlisted: null,
   sides: [
     { key: 'f:7', faction: '7', colourFaction: '7', factions: ['7'], tag: null, leader: 'ENG', coBelligerents: 1, anchor: { tag: 'ENG', hour: 0 }, name: 'Allies', color: [34, 197, 94] },
     { key: 'f:10', faction: '10', colourFaction: '10', factions: ['10'], tag: null, leader: 'GER', coBelligerents: 0, anchor: { tag: 'GER', hour: 0 }, name: 'Axis', color: [239, 68, 68] },

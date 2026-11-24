@@ -6,7 +6,7 @@ import type { DivisionEquipmentReply, EquipmentTemplate, EquipmentType } from '.
 import { equipmentTemplateProjection, equipmentTypeProjection } from './divisionEquipmentProjection.ts';
 
 const type = (archetype: string | null, extra: Partial<EquipmentType> = {}): EquipmentType => ({
-  archetype, name: archetype ? 'Infantry Equipment' : null, nameMissing: null, heldRaw: '26514100000', neededRaw: '26937000000',
+  key: archetype ? '17' : 'unclassified', unclassified: archetype === null, archetype, name: archetype ? 'Infantry Equipment' : null, nameMissing: null, heldRaw: '26514100000', neededRaw: '26937000000',
   filledRaw: '26514100000', missingRaw: '422900000', divisionsShort: 102, unknownDivisions: 0, stockpileRaw: null, stockpileHour: null, variants: [], ...extra,
 });
 
@@ -32,6 +32,17 @@ test('by equipment: whole items from the product, the shortfall as a red negativ
   assert.deepEqual([unclassified!.cells.type!.value, unclassified!.cells.missing!.value], [knownValue('Unclassified equipment'), zeroValue(0)]);
   assert.equal(unclassified!.cells.fill!.value.kind, 'notRecorded');
   assert.equal(model.titleSummary, '213 divisions short');
+});
+
+test('two types whose spelling was not read keep their own rows and say so; only equipment with no type is unclassified', () => {
+  const unread = 'Equipment names unavailable: Lexical tokens not read at this hour';
+  const model = project('equipment', reply({ types: [
+    type(null, { key: '31', unclassified: false, nameMissing: unread }),
+    type(null, { key: '32', unclassified: false, nameMissing: unread }),
+    type(null),
+  ] }));
+  assert.deepEqual(model.rows.map(row => row.key), ['31', '32', 'unclassified']);
+  assert.deepEqual(model.rows.map(row => row.cells.type!.value), [notRecorded(unread), notRecorded(unread), knownValue('Unclassified equipment')]);
 });
 
 test('by template: shares of the product’s own figures; a figure it does not hold is missing; unrecorded equipment is the body state', () => {
