@@ -28,7 +28,7 @@ export const navalDetailKey = (id: string, hour: number) => JSON.stringify([id, 
 export function navalFleetDescription(detail: NavalBattleDetail | undefined, read: { pending: boolean; error?: Failure | undefined }): string {
   if (!detail) return read.error ? failureText(read.error, 'Fleets couldn’t load') : read.pending ? 'Loading fleets…' : 'Fleets not read for this battle';
   return detail.fleets.map(side => side.names.length ? side.names.join(', ') + (side.unknown ? ' + unavailable' : '')
-    : side.unknown ? 'Fleet names not recorded' : 'No fleet recorded').join(' v ');
+    : side.unknown ? 'Fleet names not recorded' : 'No fleets').join(' v ');
 }
 export function navalDetailTooltip(detail: NavalBattleDetail | undefined, error?: Failure): TooltipRow[] {
   if (!detail) return [{ detail: error?.message, label: error ? failureText(error, 'Couldn’t load battle details.') : 'Loading battle details…', tone: 'muted', divider: true }];
@@ -37,7 +37,7 @@ export function navalDetailTooltip(detail: NavalBattleDetail | undefined, error?
     rows.push({ label: `${index === 0 ? 'Attacking' : 'Defending'} fleets`, strong: true, divider: true });
     rows.push(...side.names.map(label => ({ label, indent: true })));
     if (side.unknown) rows.push({ label: 'Fleet details unavailable.', indent: true, tone: 'muted' });
-    if (!side.names.length && !side.unknown) rows.push({ label: 'No fleet recorded', indent: true });
+    if (!side.names.length && !side.unknown) rows.push({ label: 'No fleets', indent: true });
   }
   rows.push({ label: 'Named ships lost', strong: true, divider: true });
   if (detail.unavailable || detail.shipRead === null) rows.push({ label: 'Named ship losses unavailable.', tone: 'muted' });
