@@ -2147,21 +2147,21 @@ export type TerritoryTransfersParams = { branchId: string,
 through: number, };
 export type TerritoryTransfersReply = { branchId: string, through: number,
 /**
- * State transfers known by `through`, a state transferred twice counted twice.
+ * State transfers known by `through`, a state transferred twice counted twice; at least this many when `partial`.
  */
 transfers: number,
 /**
- * Largest net gain first.
+ * Largest net gain first; in key order, unranked, when `partial`.
  */
 countries: Array<TerritoryCountry>,
 /**
- * The first hour after `through` at which this reply would differ; null when none.
+ * The first hour after `through` at which this reply would differ, a new unrecorded stretch included; null when none.
  */
 nextChange: number | null,
 /**
- * Hours up to `through` whose settlements or ownership were not recorded.
+ * Why the counts are only those observed: settlements or ownership were not recorded for part of the campaign by `through`.
  */
-unobserved: Array<HourSpan>, warnings: Array<string>, };
+partial: string | null, warnings: Array<string>, };
 export type TerritoryCountry = {
 /**
  * The country's identity, stable across tag changes.
@@ -2170,9 +2170,17 @@ key: string,
 /**
  * Its tag at `hour`, its latest transfer's read.
  */
-tag: string, hour: number, gained: number, lost: number, net: number,
+tag: string, hour: number,
 /**
- * Exact signed sum; null when a counted state's victory points are not known by `through`.
+ * Transfers observed; at least this many when the reply is `partial`.
+ */
+gained: number, lost: number,
+/**
+ * Null when the reply is `partial`: an unobserved transfer could change it.
+ */
+net: number | null,
+/**
+ * Exact signed sum; null when a counted state's victory points are not known by `through`, or the reply is `partial`.
  */
 netVictoryPoints: string | null, victoryPointsMissing: string | null, };
 export type ConvoyHealthParams = { branchId: string, view: ConvoyView,
@@ -3785,7 +3793,11 @@ missing: string | null, };
 export type AirMissionTheatre = { id: string, name: string, regions: Array<string>, };
 export type AirStatisticsParamsAtHour = AirStatisticsParams & { hour: number };
 export type PoliticsStateParams = { branchId: string, view: PoliticsView, };
-export type PoliticsStateReply = { branchId: string, view: PoliticsView, exiles: Array<StateExile>, balances: Array<BalanceRecord>,
+export type PoliticsStateReply = { branchId: string, view: PoliticsView, exiles: Array<StateExile>,
+/**
+ * Why `exiles` may not hold every government in exile at the hour; null when every country's exile status was read.
+ */
+exilesMissing: string | null, balances: Array<BalanceRecord>,
 /**
  * Null when the membership cannot say which record each country shows.
  */
@@ -3814,7 +3826,11 @@ ranges: Array<BalanceRange>, members: Array<BalanceMember>,
 sources: Array<BalanceSource> | null, };
 export type CurrentBalance = { tag: string, record: number, };
 export type PoliticsUnavailable = { label: string, reason: string, count: number, };
-export type StateExile = { id: string, tag: string, host: string | null, };
+export type StateExile = { id: string,
+/**
+ * Null when the country has no identity at this hour; the exile is still witnessed.
+ */
+tag: string | null, host: string | null, };
 export type PoliticsStateParamsAtHour = PoliticsStateParams & { hour: number };
 export type NextElectionsParams = { branchId: string,
 /**
@@ -3836,11 +3852,11 @@ next: number | null,
 last: number | null, };
 export type NextElectionsReply = { branchId: string,
 /**
- * False when the politics table was not recorded at this hour.
+ * False when the politics table was not recorded at this hour; `warnings` says why.
  */
 recorded: boolean, rows: Array<ElectionEntry>,
 /**
- * Countries whose election schedule was read but whose eligibility was not recorded.
+ * Asked or listed countries whose schedule or eligibility was not recorded at this hour: `rows` may miss them.
  */
 unknown: number, warnings: Array<string>, };
 export type NextElectionsParamsAtHour = NextElectionsParams & { hour: number };
@@ -4631,6 +4647,10 @@ experienceRaw: string,
  */
 experienceText: string | null, experienceRatio: number | null, experienceMissing: string | null,
 /**
+ * The skill is at its highest level: there is no progress to the next.
+ */
+experienceAtCap: boolean,
+/**
  * As the game numbers it: 0 captured, 1 cooling down, 3 on a mission, 4 in an operation.
  */
 assignment: number, assignmentName: string | null,
@@ -4940,11 +4960,7 @@ export type IndustrialOrganisationsReply = { branchId: string, tag: string, orga
 /**
  * Why the organisations are not known at the hour, when they are not.
  */
-missing: string | null,
-/**
- * Why their state (size, funds, traits, policy) is not known at the hour, when it is not.
- */
-detailsMissing: string | null, icons: Array<EquipmentIcon>, warnings: Array<string>, };
+missing: string | null, icons: Array<EquipmentIcon>, warnings: Array<string>, };
 export type OrganisationNow = { id: string, token: string, name: string | null, nameUnknown: string | null,
 /**
  * The icon's key in `icons`.
@@ -4966,7 +4982,11 @@ policyUnknown: string | null,
  * The hour the policy may change again; null when none is set. The days left are counted
  * where they are shown, as the game counts them: its day less the shown hour's.
  */
-cooldownHour: number | null, };
+cooldownHour: number | null,
+/**
+ * Why this organisation's state (size, funds, traits, policy) is not known at the hour, when it is not.
+ */
+detailsMissing: string | null, };
 export type IndustrialOrganisationsParamsAtHour = IndustrialOrganisationsParams & { hour: number };
 export type EquipmentDesignsParams = { branchId: string, country: CountryRef, };
 export type EquipmentDesignsReply = { branchId: string, tag: string,
@@ -5620,7 +5640,11 @@ countries: Array<CountryRef>,
 /**
  * The one section read; every section when absent.
  */
-only?: MarketSection, };
+only?: MarketSection,
+/**
+ * Lend-lease rows the chosen countries give (`sent`) or receive (`received`); either side when absent.
+ */
+leaseSide?: LeaseSide, };
 export type MarketLendLeaseReply = { branchId: string,
 /**
  * Null where the section was not asked or not recorded at the hour (`warnings` says which).
@@ -5631,10 +5655,11 @@ offers: Array<MarketOffer> | null, contracts: Array<MarketTerms> | null, agreeme
  */
 purchasesMissing: string | null,
 /**
- * Rows whose country in the chosen side has no tag at the hour: a chosen country may be theirs.
+ * Rows left out because a country on the chosen side has no country at the hour: a chosen country may be theirs.
  */
 unattributed: number, variants: Array<VariantName>, icons: Array<EquipmentIcon>, warnings: Array<string>, };
 export type MarketSection = "offers" | "contracts" | "agreements";
+export type LeaseSide = "sent" | "received";
 export type MarketItem = { variant: string, name: string | null, amountRaw: string, };
 export type MarketLevel = { variant: string, name: string | null,
 /**
@@ -6484,7 +6509,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "log-tail": { "branchId": "leaf", "columns": "node", "columns[]": "leaf", "countFacets": "node", "countFacets[]": "node", "countFacets[].facets": "node", "countFacets[].facets[]": "node", "countFacets[].facets[].countries": "node", "countFacets[].facets[].countries[]": "any", "countFacets[].facets[].deduplicate": "leaf", "countFacets[].facets[].membership": "node", "countFacets[].facets[].membership[]": "node", "countFacets[].facets[].membership[].country": "any", "countFacets[].facets[].membership[].firstHour": "leaf", "countFacets[].facets[].membership[].lastHour": "leaf", "countFacets[].facets[].name": "leaf", "countFacets[].facets[].unobserved": "node", "countFacets[].facets[].unobserved[]": "node", "countFacets[].facets[].unobserved[].firstHour": "leaf", "countFacets[].facets[].unobserved[].lastHour": "leaf", "countFacets[].facets[].values": "node", "countFacets[].facets[].values[]": "leaf", "countFacets[].key": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "hour": "leaf", "limit": "leaf", "log": "leaf", "offset": "leaf" },
   "market-ledger": { "branchId": "leaf", "cursor": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "pageSize": "leaf", "to": "leaf" },
   "market-ledger-tail": { "branchId": "leaf", "countFacets": "node", "countFacets[]": "node", "countFacets[].facets": "node", "countFacets[].facets[]": "node", "countFacets[].facets[].countries": "node", "countFacets[].facets[].countries[]": "any", "countFacets[].facets[].deduplicate": "leaf", "countFacets[].facets[].membership": "node", "countFacets[].facets[].membership[]": "node", "countFacets[].facets[].membership[].country": "any", "countFacets[].facets[].membership[].firstHour": "leaf", "countFacets[].facets[].membership[].lastHour": "leaf", "countFacets[].facets[].name": "leaf", "countFacets[].facets[].unobserved": "node", "countFacets[].facets[].unobserved[]": "node", "countFacets[].facets[].unobserved[].firstHour": "leaf", "countFacets[].facets[].unobserved[].lastHour": "leaf", "countFacets[].facets[].values": "node", "countFacets[].facets[].values[]": "leaf", "countFacets[].key": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf" },
-  "market-lendlease": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "only": "leaf" },
+  "market-lendlease": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "leaseSide": "leaf", "only": "leaf" },
   "military-air-at": { "branchId": "leaf", "causes": "node", "causes[]": "leaf", "countries": "node", "countries[]": "any", "family": "leaf", "fromHour": "leaf", "hour": "leaf", "metric": "leaf", "regions": "node", "regions[]": "leaf", "top": "leaf" },
   "military-air-ledger": { "branchId": "leaf", "causes": "node", "causes[]": "leaf", "family": "leaf", "fromHour": "leaf", "regions": "node", "regions[]": "leaf", "top": "node", "top.count": "leaf", "top.metric": "leaf", "window": "leaf" },
   "minefields": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "order": "leaf", "regions": "node", "regions[]": "leaf" },

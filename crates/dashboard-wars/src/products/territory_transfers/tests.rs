@@ -1,5 +1,6 @@
 use super::*;
-use crate::products::peace::{PeaceCaptured, PeaceDates, PeaceObservation, PeaceTransferGraph, PeaceTransferLink, PeaceTransferredState, PeaceUnobserved};
+use crate::products::peace::{PeaceCaptured, PeaceDates, PeaceObservation, PeaceTransferGraph, PeaceTransferLink, PeaceTransferredState};
+use dashboard_base::span::HourSpan;
 
 fn country(slot: u32, tag: &str, hour: i32) -> PeaceTransferCountry {
     PeaceTransferCountry { slot, country_id: slot + 100, tag: tag.to_owned(), hour }
@@ -56,15 +57,13 @@ fn deal(id: &str, captured: Option<(i32, i32)>, states: Vec<PeaceTransferredStat
     }
 }
 
-fn reply(deals: Vec<PeaceDeal>) -> PeaceDealsReply {
-    PeaceDealsReply {
-        branch_id: "1".to_owned(),
-        derived: false,
-        deals,
-        transfers: PeaceTransferGraph::default(),
-        unobserved: PeaceUnobserved { ownership: vec![HourSpan { first_hour: 40, last_hour: 60 }], ..PeaceUnobserved::default() },
-        warnings: Vec::new(),
-    }
+fn index(deals: Vec<PeaceDeal>) -> TransfersIndex {
+    let unobserved = PeaceUnobserved { ownership: vec![HourSpan { first_hour: 400, last_hour: 460 }], ..PeaceUnobserved::default() };
+    let warnings = vec![
+        PeaceWarning { hour: Some(300), text: "late".to_owned() },
+        PeaceWarning { hour: None, text: "always".to_owned() },
+    ];
+    TransfersIndex::new("1".to_owned(), &deals, &unobserved, warnings)
 }
 
 fn row<'a>(reply: &'a TerritoryTransfersReply, tag: &str) -> &'a TerritoryCountry {
@@ -72,35 +71,47 @@ fn row<'a>(reply: &'a TerritoryTransfersReply, tag: &str) -> &'a TerritoryCountr
 }
 
 #[test]
-fn a_transfer_counts_once_published_and_its_victory_points_once_read_with_nothing_after_the_hour() {
+fn a_transfer_counts_once_published_and_its_victory_points_once_read_with_nothing_after_the_hour_and_counts_partial_from_a_gap() {
     let (spr, spa, fin, sov) = (country(1, "SPR", 90), country(2, "SPA", 100), country(3, "FIN", 200), country(4, "SOV", 200));
-    let peace = reply(vec![
+    let peace = index(vec![
         deal("civil", Some((100, 110)), vec![state(7, spr.clone(), spa.clone(), 100, Some("12"), Some(120)), state(8, spr, spa, 100, Some("3"), Some(100))]),
         deal("winter", None, vec![state(9, fin.clone(), sov.clone(), 200, None, None), state(9, sov, fin, 200, None, None)]),
     ]);
 
-    let before = tally(&peace, 109);
+    let before = peace.answer(109);
     assert_eq!((before.transfers, before.countries.len(), before.next_change), (0, 0, Some(110)), "published at 110: unknown at 109");
-    assert_eq!(before.unobserved, vec![HourSpan { first_hour: 40, last_hour: 60 }]);
+    assert_eq!((before.partial.as_deref(), before.warnings.clone()), (None, vec!["always".to_owned()]), "a warning dated 300 is not known at 109");
 
-    let published = tally(&peace, 110);
+    let published = peace.answer(110);
     assert_eq!(published.transfers, 2);
     let (taker, giver) = (row(&published, "SPA"), row(&published, "SPR"));
-    assert_eq!((taker.gained, taker.lost, taker.net), (2, 0, 2));
-    assert_eq!((giver.gained, giver.lost, giver.net), (0, 2, -2));
+    assert_eq!((taker.gained, taker.lost, taker.net), (2, 0, Some(2)));
+    assert_eq!((giver.gained, giver.lost, giver.net), (0, 2, Some(-2)));
     assert_eq!(giver.tag, "SPR", "the giver keeps its own tag at its read");
     assert_eq!((taker.net_victory_points.as_deref(), taker.victory_points_missing.as_deref()), (None, Some(VP_NOT_YET_READ)), "one state's points read at 120");
     assert_eq!(published.next_change, Some(120));
     assert_eq!(published.countries.first().map(|row| row.tag.as_str()), Some("SPA"), "largest net gain first");
 
-    let read = tally(&peace, 150);
+    let read = peace.answer(150);
     assert_eq!((row(&read, "SPA").net_victory_points.as_deref(), row(&read, "SPR").net_victory_points.as_deref()), (Some("15"), Some("-15")));
     assert_eq!(read.next_change, Some(200));
 
-    let both = tally(&peace, 200);
+    let both = peace.answer(200);
     assert_eq!(both.transfers, 4, "a state transferred twice counts twice");
     let finland = row(&both, "FIN");
-    assert_eq!((finland.gained, finland.lost, finland.net), (1, 1, 0));
+    assert_eq!((finland.gained, finland.lost, finland.net), (1, 1, Some(0)));
     assert_eq!((finland.net_victory_points.as_deref(), finland.victory_points_missing.as_deref()), (None, Some(VP_NOT_RECORDED)));
-    assert_eq!(both.next_change, None);
+    assert_eq!(both.next_change, Some(300), "the dated warning is the next change");
+
+    let warned = peace.answer(300);
+    assert_eq!(warned.warnings, vec!["always".to_owned(), "late".to_owned()]);
+    assert_eq!((warned.partial, warned.next_change), (None, Some(400)), "the coming unrecorded stretch bounds the proof before it starts");
+
+    let gap = peace.answer(400);
+    assert_eq!((gap.partial.as_deref(), gap.transfers, gap.next_change), (Some(PARTIAL), 4, None), "observed counts are kept, marked partial");
+    let spain = row(&gap, "SPA");
+    assert_eq!((spain.gained, spain.net, spain.net_victory_points.as_deref(), spain.victory_points_missing.as_deref()), (2, None, None, Some(PARTIAL)), "no exact net across a gap");
+    let mut keys: Vec<&str> = gap.countries.iter().map(|row| row.key.as_str()).collect();
+    keys.sort_unstable();
+    assert_eq!(gap.countries.iter().map(|row| row.key.as_str()).collect::<Vec<_>>(), keys, "unranked, in key order");
 }
