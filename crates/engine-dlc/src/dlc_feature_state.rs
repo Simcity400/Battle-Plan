@@ -6,16 +6,19 @@ pub const EQUIPMENT_LOSSES_FEATURE: u32 = 3;
 pub const EQUIPMENT_LOSSES_MASK: u32 = 0x0000_0002;
 pub const DEEPER_FACTIONS_MASK: u32 = 0x0000_8000;
 pub const THUNDER_AT_OUR_GATES: u32 = 0x0002_0000;
+pub const MAN_THE_GUNS: u32 = 0x0000_0010;
+pub const NO_STEP_BACK: u32 = 0x0000_0080;
+pub const BY_BLOOD_ALONE: u32 = 0x0000_0100;
 pub const NAME_MASKS: &[(&str, u32)] = &[
     ("Poland: United and Ready", 0x0000_0001),
     ("Together for Victory", EQUIPMENT_LOSSES_MASK),
     ("Death or Dishonor", 0x0000_0004),
     ("Waking the Tiger", 0x0000_0008),
-    ("Man the Guns", 0x0000_0010),
+    ("Man the Guns", MAN_THE_GUNS),
     ("La Resistance", 0x0000_0020),
     ("Battle for the Bosporus", 0x0000_0040),
-    ("No Step Back", 0x0000_0080),
-    ("By Blood Alone", 0x0000_0100),
+    ("No Step Back", NO_STEP_BACK),
+    ("By Blood Alone", BY_BLOOD_ALONE),
     ("Axis Armor Pack", 0x0000_0200),
     ("Arms Against Tyranny", 0x0000_0400),
     ("Trial of Allegiance", 0x0000_0800),
