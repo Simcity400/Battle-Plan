@@ -3,6 +3,7 @@ import type { AnyTimelineWidgetDeclaration } from '../../families/timeline/decla
 import { timelineHostAdapter } from '../../families/timeline/hostAdapter.ts';
 import { familyTimelineLaneView } from '../../families/timeline/laneView.ts';
 import type { TimelineProjection } from '../../families/timeline/model.ts';
+import { OPTIONS as WARS_OPTIONS } from '../wars/definition.ts';
 
 function timelineView<TModule>(
   kind: string,
@@ -20,7 +21,23 @@ function timelineView<TModule>(
   };
 }
 
+function warsView(view: 'gantt' | 'countries', label: string): FamilyViewEntry {
+  return {
+    kind: 'wars',
+    view,
+    label,
+    family: 'timeline',
+    viewOption: 'view',
+    options: WARS_OPTIONS.filter(field => field.key === 'view' || (view === 'countries' && field.key === 'colour')),
+    loadSpec: () => import('../wars/warsProjection.ts').then(mod => ({
+      family: 'timeline', kind: 'wars', view, projection: mod.warsProjection, declaration: mod.warsDeclaration,
+    })),
+  };
+}
+
 export const TIMELINE_VIEWS: readonly FamilyViewEntry[] = [
+  warsView('gantt', 'Wars'),
+  warsView('countries', 'Countries'),
   timelineView('diplomatic-pacts', () => import('../diplomatic-pacts/diplomaticPactsProjection.ts'),
     mod => ({ projection: mod.diplomaticPactsProjection, declaration: mod.diplomaticPactsDeclaration })),
   timelineView('factions', () => import('../factions/factionsProjection.ts'),
