@@ -602,6 +602,16 @@ impl IndexedRunLooks {
         Self { run, by_tag }
     }
 
+    fn next_change(&self, hour: i32) -> i32 {
+        let spans = self.run.spans.iter().map(|&(_, _, first, last)| (first, last));
+        spans
+            .chain(self.run.unknown.iter().copied())
+            .flat_map(|(first, last)| [first, last.saturating_add(1)])
+            .filter(|&boundary| boundary > hour)
+            .min()
+            .unwrap_or(i32::MAX)
+    }
+
     fn resolve(&self, tag: &str, hour: i32, localisation: Option<&Localisation>) -> ResolvedCountryLook {
         let known = !self.run.unknown.iter().any(|&(a, b)| a <= hour && hour <= b);
         if let Some(spans) = self.by_tag.get(tag) {
@@ -673,6 +683,10 @@ impl BranchLooks {
         Ok(Self { timeline: timeline.clone(), localisation, runs })
     }
 
+    pub fn next_change(&self, hour: i32) -> i32 {
+        self.timeline.at(hour).and_then(|stretch| self.runs.get(&stretch.run)).map_or(i32::MAX, |run| run.next_change(hour))
+    }
+
     pub fn at(&self, tag: &str, hour: i32) -> ResolvedCountryLook {
         let Some(stretch) = self.timeline.at(hour) else {
             let reason = self.timeline.reason(hour);
@@ -709,6 +723,7 @@ mod tests {
         let indexed = IndexedRunLooks::new(run);
         assert_eq!(indexed.resolve("GER", 0, None).color, Some([200, 40, 40]));
         assert_eq!(indexed.resolve("GER", 72, None).color, Some([40, 80, 220]));
+        assert_eq!([indexed.next_change(0), indexed.next_change(72), indexed.next_change(200), indexed.next_change(201)], [72, 201, 201, i32::MAX], "a name or colour holds until the next look starts or ends");
         let missing = indexed.resolve("GER", 250, None);
         assert_eq!(missing.color, None);
         assert_eq!(missing.color_missing.as_deref(), Some(NOT_A_COUNTRY));

@@ -324,3 +324,31 @@ fn a_truncated_wings_read_keeps_each_witnessed_count_and_says_why_unlisted_regio
     let (whole, _) = moment_of(&frame(scores(), true), &params(AirMode::Sides));
     assert_eq!((whole.unlisted, whole.regions.iter().find(|region| region.id == 11).map(|region| region.wings)), (None, Some(AirWings::None)));
 }
+
+#[test]
+fn an_empty_comparison_says_whether_the_widget_left_every_active_region_out_the_read_was_partial_or_none_was_active() {
+    let mut chosen = params(AirMode::Sides);
+    chosen.order = Some(AirRegionOrder::Contested);
+    chosen.hidden_regions = Some(vec![10]);
+    let (hidden, _) = moment_of(&frame(vec![score(1, 10, 500, 0)], true), &chosen);
+    assert_eq!((hidden.regions.len(), hidden.empty), (0, Some(NoRegions::Filtered { hidden: 1, outside: 0 })), "hiding the only active region is not \"no air activity\"");
+    let (partial, _) = moment_of(&frame(vec![score(1, 10, 500, 0)], false), &chosen);
+    assert!(matches!(partial.empty, Some(NoRegions::Unread { .. })), "{:?}", partial.empty);
+    let mut quiet = frame(vec![score(4, 11, 0, 0)], true);
+    *quiet.tables[TableId::AirRegionWings.index()] = TableView::Complete(TableRows::AirRegionWings(Vec::new()));
+    let mut automatic = params(AirMode::Sides);
+    automatic.order = Some(AirRegionOrder::Contested);
+    let (none, _) = moment_of(&quiet, &automatic);
+    assert_eq!((none.regions.len(), none.empty), (0, Some(NoRegions::None)));
+    let (shown, _) = moment_of(&frame(scores(), true), &automatic);
+    assert_eq!(shown.empty, None, "a listed region: nothing to explain");
+    let mut theatres = automatic.clone();
+    theatres.theatres = Some(vec!["5".into()]);
+    let mut elsewhere = frame(vec![score(1, 10, 500, 0)], true);
+    *elsewhere.tables[TableId::AirTheatres.index()] = TableView::Complete(TableRows::AirTheatres(vec![AirTheatreRow { id: 5, owner: 1, ordinal: 0, name: Vec::new() }]));
+    *elsewhere.tables[TableId::AirTheatreGroups.index()] = TableView::Complete(TableRows::AirTheatreGroups(vec![AirTheatreGroupRow { id: 50, theatre: 5, ..Default::default() }]));
+    *elsewhere.tables[TableId::AirTheatreMembers.index()] = TableView::Complete(TableRows::AirTheatreMembers(vec![AirTheatreMemberRow { group: 50, wing: 900, ..Default::default() }]));
+    *elsewhere.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(vec![AirWingRow { id: 900, owner: 1, mission_region: Some(12), ..Default::default() }]));
+    let (outside, _) = moment_of(&elsewhere, &theatres);
+    assert_eq!((outside.regions.len(), outside.empty), (0, Some(NoRegions::Filtered { hidden: 0, outside: 1 })), "the only active region lies outside the chosen theatres");
+}

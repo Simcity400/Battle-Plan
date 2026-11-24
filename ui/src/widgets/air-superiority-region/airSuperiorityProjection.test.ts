@@ -17,6 +17,7 @@ const OPTS: AirSuperiorityProjectionOptions = {
 const REPLY: AirSuperiorityReply = {
   missing: null,
   unlisted: null,
+  empty: null,
   sides: [
     { key: 'f:7', faction: '7', colourFaction: '7', factions: ['7'], tag: null, leader: 'ENG', coBelligerents: 1, anchor: { tag: 'ENG', hour: 0 }, name: 'Allies', color: [34, 197, 94] },
     { key: 'f:10', faction: '10', colourFaction: '10', factions: ['10'], tag: null, leader: 'GER', coBelligerents: 0, anchor: { tag: 'GER', hour: 0 }, name: 'Axis', color: [239, 68, 68] },
@@ -121,4 +122,32 @@ test('air superiority projection shows missing when live total is absent and rej
   assert.equal(first.value?.value.kind, 'notRecorded');
   assert.equal(first.readout?.primary, '1 air wing');
   assert.throws(() => view.who('country', 'ENG', displayedHour(121)), FutureDataError);
+});
+
+test('a pick outside the selected air theatres keeps its row, place and controls, saying so', () => {
+  const outside: AirSuperiorityReply = { ...REPLY, regions: [
+    { ...REPLY.regions[0]!, id: 19, name: 'Northern France', pinned: true, active: false, wings: 'none', cell: { kind: 'reason', reason: 'outside-theatres' } },
+    REPLY.regions[1]!,
+  ] };
+  const view = createBoundedReadView({ hour: displayedHour(400), panels: new Map([['main', outside]]), live: new Map([['main', valuesOf(new Map(), 'Not recorded')]]) });
+  const model = airSuperiorityRegionProjection.project(view, OPTS);
+  assertBarsModelValid(model, 400);
+  assert.deepEqual(model.rows.map(row => [row.kind, row.key]), [
+    ['section', '__section:picked'], ['data', '19'], ['section', '__section:auto'], ['data', '12'], ['add-region', '__add-region'],
+  ]);
+  const pick = model.rows[1] as BarsDataRow;
+  assert.deepEqual([pick.region, pick.group, pick.value?.value.kind], [19, 'picked', 'notApplicable']);
+  assert.equal(pick.tooltip?.missingReason, 'Outside selected air theatres');
+});
+
+test('an empty comparison says whether the chart left every active region out, was read in part or found none', () => {
+  const body = (empty: AirSuperiorityReply['empty']) => {
+    const view = createBoundedReadView({ hour: displayedHour(400), panels: new Map([['main', { ...REPLY, regions: [], empty }]]) });
+    const model = airSuperiorityRegionProjection.project(view, OPTS);
+    return [model.empty, model.emptyKind];
+  };
+  assert.deepEqual(body({ kind: 'filtered', hidden: 1, outside: 0 }), ['The only active region at this date is removed from this chart.', 'empty'], 'hiding the only active region is not "no air activity"');
+  assert.deepEqual(body({ kind: 'filtered', hidden: 2, outside: 3 }), ['All 5 active regions at this date are removed from this chart (2) or outside the selected air theatres (3).', 'empty']);
+  assert.deepEqual(body({ kind: 'unread', reason: 'Air region wings read only in part at this hour' }), ['Air region wings read only in part at this hour.', 'unavailable']);
+  assert.deepEqual(body({ kind: 'none' }), ['No air activity at this date.', 'empty']);
 });

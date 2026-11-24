@@ -60,7 +60,7 @@ fn owners_not_asked_are_not_shown_and_lost_rows_leave_every_region_unknown() {
     assert_eq!(fold.mined[0].missing.as_deref(), Some(UNREAD), "the lost rows are named as such instead");
     assert!(fold.proven.is_empty(), "a region with an unknown owner has no total");
     let empty = super::fold(&[witness(1, 10)], name, |_| true, false, &BTreeSet::from([3]));
-    assert_eq!(empty, Fold::default(), "a complete witness with no rows is no mines and nothing unknown");
+    assert!(empty.mined.is_empty() && empty.unknown.is_empty() && empty.cells.is_empty(), "a complete witness with no rows is no mines and nothing unknown");
 }
 
 #[test]
@@ -122,11 +122,40 @@ fn chosen_regions_lead_in_order_with_unknown_and_empty_picks_and_hidden_regions_
     let rank = choose(&mut chosen, &[7, 5, 12], &[3, 12], false);
     chosen.mined.sort_by_key(|region| rank.get(&region.region).copied().unwrap_or(usize::MAX));
     let shown: Vec<(u32, bool, u32)> = chosen.mined.iter().map(|region| (region.region, region.pinned, region.unknown_owners)).collect();
-    assert_eq!(shown, [(7, true, 0), (5, true, 2), (12, true, 2)], "hiding a pick keeps it; the hidden mined region leaves");
+    assert_eq!(shown, [(7, true, 2), (5, true, 2), (12, true, 2)], "hiding a pick keeps it; the hidden mined region leaves; a pick outside the catalogue is still the unnamed owner and ENG, whose read has no extent");
     assert_eq!(chosen.unknown, [UnknownRegion { region: 15, unknown_owners: 3 }], "a pick is not also listed unknown");
     assert!(chosen.cells.iter().all(|(region, ..)| *region != 3));
 
     let mut lost = fold(&rows(), name, |_| true, true, &BTreeSet::new());
     choose(&mut lost, &[40], &[], true);
     assert!(lost.mined.iter().find(|region| region.region == 40).is_some_and(|region| region.missing.is_some()), "an unread pick is not shown as no mines");
+}
+
+#[test]
+fn every_pick_is_weighed_against_the_recorded_extents_even_without_the_sea_catalogue() {
+    let rows = vec![witness(1, 10), amount(1, 3, 500), witness(2, 20)];
+    let mut chosen = fold(&rows, name, |_| true, false, &BTreeSet::new());
+    choose(&mut chosen, &[4, 15, 25], &[], false);
+    let unknown: Vec<(u32, u32)> = chosen.mined.iter().filter(|region| region.pinned).map(|region| (region.region, region.unknown_owners)).collect();
+    assert_eq!(unknown, [(4, 0), (15, 1), (25, 2)], "below every extent a pick is a known zero; past GER's extent GER is unknown; past both, both are; never 0 mines for an unknown");
+}
+
+#[test]
+fn an_empty_reply_says_whether_the_user_hid_every_mined_region_the_read_was_partial_or_nothing_is_mined() {
+    let sea = BTreeSet::from([3, 4]);
+    let rows = vec![witness(1, 10), amount(1, 3, 500), witness(2, 10)];
+    let mut hidden = fold(&rows, name, |_| true, false, &sea);
+    choose(&mut hidden, &[], &[3], false);
+    assert_eq!(no_regions(&hidden, false, true), Some(NoRegions::Filtered { hidden: 1, outside: 0 }), "hiding the only mined region is not \"no minefields\"");
+    let mut none = fold(&[witness(1, 10), witness(2, 10)], name, |_| true, false, &sea);
+    choose(&mut none, &[], &[], false);
+    assert_eq!(no_regions(&none, false, true), Some(NoRegions::None));
+    assert!(matches!(no_regions(&none, false, false), Some(NoRegions::Unread { .. })), "without the sea regions, regions past the extents are not known");
+    let mut beyond = fold(&[witness(1, 2)], name, |_| true, false, &sea);
+    choose(&mut beyond, &[], &[], false);
+    assert!(matches!(no_regions(&beyond, false, true), Some(NoRegions::Unread { .. })), "a sea region past a country's extent is unread");
+    let mut lost = fold(&[], name, |_| true, true, &sea);
+    choose(&mut lost, &[], &[], true);
+    assert_eq!(no_regions(&lost, true, true), Some(NoRegions::Unread { reason: UNREAD.into() }));
+    assert_eq!(no_regions(&fold(&rows, name, |_| true, false, &sea), false, true), None, "a listed region: nothing to explain");
 }
