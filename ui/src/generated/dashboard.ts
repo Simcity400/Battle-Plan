@@ -1654,7 +1654,11 @@ export type NavalSupremacyParams = { branchId: string, country: CountryRef,
  * The window of days asked ([`super::windows`]).
  */
 window?: number, firstHour?: number, lastHour?: number, regions?: Array<number>, pinnedRegions?: Array<number>, hiddenRegions?: Array<number>, top?: number, };
-export type SupremacyRun = { firstDay: number, lastDay: number, control: number | null, friendly: string | null, enemy: string | null, share: string | null, own: string | null, };
+export type SupremacyRun = { firstDay: number, lastDay: number, control: number | null, friendly: string | null, enemy: string | null, share: string | null, own: string | null,
+/**
+ * Why the control is not recorded on these days, when the read did not reach the region.
+ */
+missing?: string, };
 export type SupremacyRegion = { id: string, name: string, pinned: boolean, ownShips: MissionShips, enemyShips: MissionShips, readout?: SupremacyReadout, runs: Array<SupremacyRun>, };
 export type SupremacyReadout = { "kind": "control", control: number, share: string | null, friendly: string | null, enemy: string | null, own: string | null, as_of_hour: number, } | { "kind": "notRecorded", reason: string, };
 export type MissionShips = { "kind": "counted", ships: number, } | { "kind": "notRecorded", reason: string, };

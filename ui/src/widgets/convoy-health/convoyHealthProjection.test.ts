@@ -76,7 +76,7 @@ test('a lend-lease route stays a status in the lane, the readout and the tooltip
 
 test('a hundred played hours ask each completed tile once, the current tile once a day and today alone each hour, never the whole history', async () => {
   const { askUnits } = await import('../../families/readUnits.ts');
-  const { DAY_PIECE_HOURS, DAY_TILE_HOURS } = await import('../../families/heat/dayTiles.ts');
+  const { DAY_TILE_HOURS } = await import('../../families/heat/dayTiles.ts');
   const { convoyHealthDeclaration } = await import('./convoyHealthProjection.ts');
   const end = 24 * 3000;
   const branch = { id: '1', firstHour: 0, lastHour: end };
@@ -109,8 +109,8 @@ test('a hundred played hours ask each completed tile once, the current tile once
       }
     }
     assert.ok(widest <= DAY_TILE_HOURS, `${view}: no ask covers more than one tile`);
-    assert.equal(tileAsks, Math.floor(1000 / 64) + Math.floor((1000 % 64) / 8), `${view}: every complete tile and every complete eight-day piece of the current tile once`);
-    assert.ok(nowAsks <= 100 && widestNow <= DAY_PIECE_HOURS, `${view}: the hourly ask covers the current eight-day piece only`);
+    assert.equal(tileAsks, Math.floor(1000 / 64) + Math.floor((1000 % 64) / 8) + 4, `${view}: every complete tile and every complete eight-day piece of the current tile and every complete day of the current piece once (four midnights)`);
+    assert.ok(nowAsks <= 100 && widestNow <= 24, `${view}: the hourly ask covers today only`);
     const now = plan.entries.find(entry => entry.name === 'now')!.read;
     assert.ok(now.shape === 'branch-to-hour');
     assert.deepEqual(now.provenInterval!({ ...reply(25), validThrough: 30 }, [24, 25], 25), [25, 30], `${view}: a reply proves the hours through its validThrough`);
