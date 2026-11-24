@@ -1122,7 +1122,9 @@ fn sparse_stretches_skip_re_reading_already_seen_completions() {
     assert_eq!(actual_reads[&TableId::SliceReads].opened, 1, "SliceReads should only be opened for the stretch introducing the completion: {actual_reads:?}");
     assert!(actual_reads[&TableId::Projects].opened <= 1, "Projects should only be opened once across 25 stretches: {actual_reads:?}");
     assert!(ref_reads[&TableId::SliceReads].opened >= 25, "reference path reads SliceReads on every stretch: {ref_reads:?}");
+}
 
+#[test]
 fn the_card_at_an_hour_orders_running_by_progress_and_completed_by_their_recorded_date_with_undated_last() {
     let info = |name: &str| ProjectPresentation { name: name.into(), specialization: None, specialization_name: None, icon: None, icon_missing: None, scientist: 0, last_scientist: None };
     let status = |presentation: u32, state: ProjectState, progress: i32| ProjectStatus { first_hour: 10, last_hour: 50, read_hour: 10, presentation, progress, state, iterations: None, scientist_read: None, last_scientist_read: None };
