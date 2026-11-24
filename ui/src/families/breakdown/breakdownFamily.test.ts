@@ -3,10 +3,9 @@ import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
 import type { Breakdown, BreakdownPart as WirePart, PowerSpendingBreakdownReply } from '../../generated/dashboard';
 import { ppSpendingProjection } from '../../widgets/political-power-spending-breakdown/ppSpendingProjection.ts';
-import { createBoundedReadView, displayedHour, FutureDataError } from '../boundedView.ts';
-import type { FamilyTheme, InstalledAction } from '../contract.ts';
-import { BACK, parseBreakdownHit, reduceBreakdown } from './hostAdapter.ts';
-import { NO_INTERACTION } from './laneView.ts';
+import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
+import type { FamilyTheme } from '../contract.ts';
+import { parseBreakdownHit } from './hostAdapter.ts';
 import { layoutBreakdown, type PartsViewLayout, type RingViewLayout, type MosaicViewLayout } from './layout.ts';
 import { deriveBreakdownAudit, deriveBreakdownNavAndMirror, partColour, resolveDrillLevel, type BreakdownModel } from './model.ts';
 import { breakdownParts, breakdownTotal, type BreakdownWords } from './product.ts';
@@ -83,10 +82,6 @@ function model(breakdown: Breakdown): BreakdownModel {
   return { hour: 10, rootLabel: 'Spent', total: breakdownTotal(breakdown, WORDS), parts: breakdownParts(breakdown, WORDS) };
 }
 
-function action(subject: string, meta: unknown = null): InstalledAction {
-  return { installedId: 1, owner: 'o', subject, hour: displayedHour(10), meta } as InstalledAction;
-}
-
 test('the product decides the whole, its order and its shares; the family only reads them', () => {
   const read = model(spent());
   assert.deepEqual(read.parts.map(part => part.key), ['Daily costs', 'Decisions', 'Other'], 'drawn in the order the product gave');
@@ -117,11 +112,11 @@ test('a partly known whole is drawn as at least, with parts not recorded never a
   assert.equal(read.parts[1]!.value, null);
   assert.equal(read.parts[1]!.missingReason, 'New ships was not recorded');
 
-  const parts = layoutBreakdown({ view: 'parts', level: resolveDrillLevel(read, []), width: 1111, height: 346, theme: THEME, namesInRing: true, userExpanded: {}, ringOpenKey: undefined, measure }) as PartsViewLayout;
+  const parts = layoutBreakdown({ view: 'parts', level: resolveDrillLevel(read, []), width: 1111, height: 346, theme: THEME, namesInRing: true, userExpanded: {}, measure }) as PartsViewLayout;
   assert.ok(parts.totalLine.partialTabRect, 'the at-least total carries the partial tab');
   assert.ok(parts.rows.every(row => row.shareText === ''), 'no shares beside a lower bound');
 
-  const ring = layoutBreakdown({ view: 'ring', level: resolveDrillLevel(read, []), width: 1111, height: 346, theme: THEME, namesInRing: true, userExpanded: {}, ringOpenKey: undefined, measure }) as RingViewLayout;
+  const ring = layoutBreakdown({ view: 'ring', level: resolveDrillLevel(read, []), width: 1111, height: 346, theme: THEME, namesInRing: true, userExpanded: {}, measure }) as RingViewLayout;
   assert.equal(ring.center.verb, 'At least');
   assert.ok(ring.innerSlices.every(slice => slice.label === null), 'no names on a hatched ring');
   assert.deepEqual(deriveBreakdownAudit(read).map(row => row.value), ['atLeast:211', '211', 'notRecorded:New ships was not recorded', 'notRecorded:Refits was not recorded']);
@@ -129,7 +124,7 @@ test('a partly known whole is drawn as at least, with parts not recorded never a
 
 test('the three views lay out the same parts', () => {
   const level = resolveDrillLevel(model(spent()), []);
-  const base = { level, width: 1111, height: 346, theme: THEME, namesInRing: true, userExpanded: {}, ringOpenKey: undefined, measure };
+  const base = { level, width: 1111, height: 346, theme: THEME, namesInRing: true, userExpanded: {}, measure };
   const parts = layoutBreakdown({ ...base, view: 'parts' }) as PartsViewLayout;
   assert.deepEqual(parts.rows.filter(row => row.depth === 0).map(row => row.key), ['Daily costs', 'Decisions', 'Other']);
   const ring = layoutBreakdown({ ...base, view: 'ring' }) as RingViewLayout;
@@ -141,22 +136,18 @@ test('the three views lay out the same parts', () => {
   assert.equal(narrow.sideList, null, 'at minimum size the ring has no list');
 });
 
-test('drill, open and expand are the family state; back returns', () => {
+test('expanding a part is held by the host, shared by the parts list and the ring list', () => {
   const read = model(spent());
   const level = resolveDrillLevel(read, []);
-  const { nav } = deriveBreakdownNavAndMirror(level, {}, 'mosaic');
-  const decisions = nav.find(entry => entry[0] === 'Decisions')!;
-  const drilled = reduceBreakdown(NO_INTERACTION, action('Decisions', decisions[5]))!;
-  assert.deepEqual(drilled.drill, ['Decisions']);
-  assert.deepEqual(resolveDrillLevel(read, drilled.drill).parts.map(part => part.key), ['War measures', 'Economy']);
-  assert.deepEqual(reduceBreakdown(drilled, action(BACK))!.drill, []);
-
-  const toggled = reduceBreakdown(NO_INTERACTION, action('Decisions', deriveBreakdownNavAndMirror(level, {}, 'parts').nav[1]![5]))!;
-  assert.equal(toggled.expanded.Decisions, true);
-  const ring = reduceBreakdown(NO_INTERACTION, action('Decisions', deriveBreakdownNavAndMirror(level, {}, 'ring').nav[1]![5]))!;
-  assert.equal(ring.ringOpen, 'Decisions');
-  assert.equal(reduceBreakdown(ring, action('Decisions', { act: 'ring', open: true }))!.ringOpen, '');
-  assert.equal(reduceBreakdown(NO_INTERACTION, action('Daily costs')), null, 'a part without sub-parts is not the family\'s to handle');
+  const base = { level, width: 1111, height: 346, theme: THEME, namesInRing: true, measure };
+  const closed = layoutBreakdown({ ...base, view: 'parts', userExpanded: { Decisions: false } }) as PartsViewLayout;
+  assert.equal(closed.rows.some(row => row.parentKey === 'Decisions'), false);
+  const open = layoutBreakdown({ ...base, view: 'parts', userExpanded: { Decisions: true } }) as PartsViewLayout;
+  assert.deepEqual(open.rows.filter(row => row.parentKey === 'Decisions').map(row => row.key), ['War measures', 'Economy']);
+  const { nav } = deriveBreakdownNavAndMirror(level, open.expanded);
+  assert.equal(nav.find(entry => entry[0] === 'Decisions')![3], 1, 'navigation reports the open part so a toggle closes it');
+  const ring = layoutBreakdown({ ...base, view: 'ring', userExpanded: { Decisions: false } }) as RingViewLayout;
+  assert.equal(ring.openKey, null, 'closing the default open part closes it');
   assert.deepEqual(parseBreakdownHit('toggle:Decisions'), { key: 'Decisions', subject: 'Decisions', kind: 'toggle', toggle: true, inspectToken: 'row:Decisions' });
 });
 

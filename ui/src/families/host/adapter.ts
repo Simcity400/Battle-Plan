@@ -155,15 +155,10 @@ export interface FamilyBindingContext<TOptions> {
   readonly identitySnapshot: IdentitySnapshot | null;
   readonly selectedKey: string | null;
   readonly focusedKey: string | null;
+  readonly expanded: Readonly<Record<string, boolean>>;
   readonly audit: boolean;
   readonly auditId: number | undefined;
   readonly pauseFlush: number;
-  readonly interaction?: unknown;
-}
-
-export interface FamilyInteraction<TState> {
-  readonly initial: TState;
-  readonly reduce: (state: TState, action: InstalledAction) => TState | null;
 }
 
 export interface FamilyAuditContext {
@@ -218,15 +213,4 @@ export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBindin
   readonly deriveAuditRows?: (model: TModel, hour: number, context: FamilyAuditContext) => readonly AuditRow[];
   readonly auditOrdered?: boolean;
   readonly gestures?: FamilyGestureHandlers;
-  readonly interaction?: FamilyInteraction<any>;
-}
-
-export function reduceInteraction(
-  interaction: FamilyInteraction<unknown> | undefined,
-  state: unknown,
-  action: InstalledAction,
-): { readonly handled: boolean; readonly state: unknown } {
-  if (!interaction) return { handled: false, state };
-  const next = interaction.reduce(state, action);
-  return next === null ? { handled: false, state } : { handled: true, state: next };
 }

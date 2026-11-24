@@ -27,14 +27,6 @@ import { hitTestBreakdown, layoutBreakdown, type BreakdownLayout } from './layou
 import { drawBreakdown } from './painter.ts';
 import { ensureBreakdownProjection } from './registry.ts';
 
-export interface BreakdownInteraction {
-  readonly drill: readonly string[];
-  readonly expanded: Readonly<Record<string, boolean>>;
-  readonly ringOpen?: string | null;
-}
-
-export const NO_INTERACTION: BreakdownInteraction = { drill: [], expanded: {} };
-
 export interface FamilyBreakdownBinding<TOptions extends BreakdownViewOptions = BreakdownViewOptions> {
   readonly family: 'breakdown';
   readonly kind: string;
@@ -47,7 +39,7 @@ export interface FamilyBreakdownBinding<TOptions extends BreakdownViewOptions = 
   readonly scrollTop: number;
   readonly theme?: FamilyTheme;
   readonly identitySnapshot?: IdentitySnapshot;
-  readonly interaction: BreakdownInteraction;
+  readonly expanded: Readonly<Record<string, boolean>>;
   readonly selectedKey?: string | null;
   readonly focusedKey?: string | null;
   readonly audit?: boolean;
@@ -394,12 +386,12 @@ export function familyBreakdownLaneView(
       const inspectedKey = typeof input.inspect === 'string' && input.inspect.startsWith('row:') ? input.inspect.slice(4) : null;
       const selectedKey = bound.selectedKey ?? null;
       const focusedKey = bound.focusedKey ?? null;
-      const structureKey: readonly unknown[] = [model, bound.interaction, bound.options, bound.width, bound.height, bound.theme];
+      const structureKey: readonly unknown[] = [model, bound.expanded, bound.options, bound.width, bound.height, bound.theme];
       const sameStructure = held.structure !== null
         && held.structureKey.length === structureKey.length
         && held.structureKey.every((part, at) => part === structureKey[at]);
       if (!sameStructure) {
-        const level = resolveDrillLevel(model, bound.interaction.drill);
+        const level = resolveDrillLevel(model, []);
         const measure = (text: string, font: string) => {
           const key = `${font}\u0000${text}`;
           let w = held!.measures.get(key);
@@ -420,14 +412,13 @@ export function familyBreakdownLaneView(
           height: bound.height,
           theme: bound.theme,
           namesInRing: bound.options.namesInRing,
-          userExpanded: bound.interaction.expanded,
-          ringOpenKey: bound.interaction.ringOpen,
+          userExpanded: bound.expanded,
           measure,
         }) : null;
         const contentHeight = layout
           ? (layout.view === 'ring' ? (layout.sideList?.contentHeight ?? bound.height) : layout.contentHeight)
           : bound.height;
-        const { nav, mirror } = deriveBreakdownNavAndMirror(level, layout?.expanded ?? {}, bound.options.view);
+        const { nav, mirror } = deriveBreakdownNavAndMirror(level, layout?.expanded ?? {});
         const revision = content();
         held.structure = {
           revision,

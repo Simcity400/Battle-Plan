@@ -38,7 +38,6 @@ import {
   type FamilyViewportChange,
   type FamilyViewportState,
   type ParsedFamilyHit,
-  reduceInteraction,
 } from './adapter.ts';
 import { createPlanAuditVerifier, type FamilyAuditVerifier, type PlanAuditSnapshot } from './auditBinding.ts';
 import { renderFamilyBodyState } from './FamilyBodyState.tsx';
@@ -48,6 +47,7 @@ import {
   handleFamilyPointsKeyDown,
   type FamilyNavTuple,
 } from './keyboard.ts';
+import { NO_EXPANSION, toggleExpansion, type FamilyExpansion } from './expansion.ts';
 import { syncListboxMirror, syncTableMirror, type ListboxMirrorItem } from './mirror.ts';
 import { bindFamilyPointer } from './pointer.ts';
 import { computeScrollGeometry, physicalToLogicalTop, scrollRangeIntoView, type ScrollGeometry } from './scroll.ts';
@@ -276,7 +276,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const resolveInstalledRef = useRef<() => InstalledPicture | null>(() => installedPictureRef.current);
   const navRef = useRef<readonly FamilyNavTuple[]>(EMPTY_NAV);
   const typeaheadRef = useRef({ query: '', until: 0 });
-  const interactionRef = useRef<unknown>(adapter.interaction?.initial);
+  const expansionRef = useRef<FamilyExpansion>(NO_EXPANSION);
 
   const lastMirrorKeyRef = useRef('');
   const lastMirrorObjRef = useRef<MirrorModel | null>(null);
@@ -485,10 +485,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       identitySnapshot: cur.identitySnapshot,
       selectedKey: cur.selectedKey,
       focusedKey: focusInsideRef.current ? focusedKeyRef.current : null,
+      expanded: expansionRef.current,
       audit: auditId !== undefined,
       auditId,
       pauseFlush: pauseFlushRef.current,
-      ...(curAdapter.interaction ? { interaction: interactionRef.current } : {}),
     });
     if (binding === null) return;
 
@@ -532,17 +532,15 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   const dispatchAction = useCallback((action: InstalledAction) => {
     const cur = latestRef.current;
-    const reduced = reduceInteraction(cur.adapter.interaction, interactionRef.current, action);
-    if (reduced.handled) {
-      if (reduced.state !== interactionRef.current) {
-        interactionRef.current = reduced.state;
-        bindRef.current();
-      }
-      return;
-    }
     if (action.toggle && cur.onToggle) cur.onToggle(action);
-    else cur.onActivate?.(action);
-  }, []);
+    else if (action.toggle) {
+      const toggled = toggleExpansion(expansionRef.current, navRef.current, action.subject);
+      if (!toggled) return;
+      expansionRef.current = toggled.next;
+      announce(`${toggled.label} ${toggled.open ? 'expanded' : 'collapsed'}.`);
+      bindRef.current();
+    } else cur.onActivate?.(action);
+  }, [announce]);
 
   const actionFor = useCallback((installed: InstalledPicture, hit: ParsedFamilyHit, toggle: boolean): InstalledAction | null => {
     const refine = latestRef.current.adapter.resolveHitAction;
@@ -636,6 +634,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     installedPictureRef.current = null;
     installedFieldsRef.current = EMPTY_FIELDS;
     navRef.current = EMPTY_NAV;
+    expansionRef.current = NO_EXPANSION;
     focusedKeyRef.current = null;
     inspectedKeyRef.current = null;
     inspectedHitRef.current = null;

@@ -196,15 +196,7 @@ export function resolveExpandedMap(
   return resolved;
 }
 
-export function resolveRingOpenKey(
-  parts: readonly BreakdownPart[],
-  userOpenKey: string | null | undefined,
-): string | null {
-  if (userOpenKey === '') return null;
-  if (userOpenKey) {
-    const match = parts.find(part => part.key === userOpenKey && part.children && part.children.length > 0);
-    if (match) return match.key;
-  }
+export function resolveRingOpenKey(parts: readonly BreakdownPart[]): string | null {
   return parts.find(part => !part.notRecorded && part.children?.length)?.key ?? null;
 }
 
@@ -305,19 +297,9 @@ export function buildBreakdownTooltip(
   });
 }
 
-export type BreakdownAct = 'toggle' | 'ring' | 'drill';
-
-export interface BreakdownActionMeta {
-  readonly act: BreakdownAct;
-  readonly open: boolean;
-}
-
-const ACT_BY_VIEW: Readonly<Record<string, BreakdownAct>> = { parts: 'toggle', ring: 'ring', mosaic: 'drill' };
-
 export function deriveBreakdownNavAndMirror(
   level: ResolvedBreakdownLevel,
   expanded: Readonly<Record<string, boolean>>,
-  view: string,
 ): { readonly nav: readonly FamilyNavTuple[]; readonly mirror: MirrorModel } {
   const nav: FamilyNavTuple[] = [];
   const rows: MirrorRow[] = [];
@@ -329,8 +311,7 @@ export function deriveBreakdownNavAndMirror(
     const valueSpoken = part.notRecorded || part.value === null
       ? `not recorded${part.missingReason ? `: ${part.missingReason}` : ''}`
       : `${part.exact ?? part.text}${unit ? ` ${unit}` : ''}${!level.total.atLeast && part.share != null ? `, ${formatShare(part.share)}` : ''}`;
-    const meta: BreakdownActionMeta | null = hasChildren ? { act: ACT_BY_VIEW[view] ?? 'toggle', open: isOpen } : null;
-    nav.push([part.key, part.name, index, hasChildren ? (isOpen ? 1 : 0) : -1, '', meta]);
+    nav.push([part.key, part.name, index, hasChildren ? (isOpen ? 1 : 0) : -1, '', null]);
     rows.push({ key: part.key, name: part.name, rowIndex: index, level: 0, ...(hasChildren ? { group: true, open: isOpen } : {}), cells: [{ column: 'value', spoken: valueSpoken }] });
     index++;
     if (isOpen && part.children) {

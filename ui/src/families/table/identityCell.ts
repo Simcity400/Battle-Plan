@@ -2,7 +2,7 @@ import { flagArtHandle } from '../art/provider.ts';
 import type { CountryLook } from '../looks.ts';
 import type { ArtFlagSize, ArtHandle, BoundedReadView, EntityKind, FieldStatus } from '../plan.ts';
 import { knownValue, notRecorded } from '../value.ts';
-import type { TableCell } from './model.ts';
+import type { TableCell, TableCellFlag } from './model.ts';
 
 const TIMELESS = Number.MIN_SAFE_INTEGER;
 
@@ -72,4 +72,25 @@ export function artNameCell(readView: BoundedReadView, name: string | null, hand
 export function identityName(readView: BoundedReadView, kind: EntityKind, key: string, atHour?: number): string {
   const who = readView.who(kind, key, atHour ?? readView.hour);
   return who.name.status === 'ready' ? who.name.value : key;
+}
+
+export interface IdentityFlagsOptions extends IdentityCellOptions {
+  readonly dimmed?: readonly boolean[];
+}
+
+export function identityFlags(readView: BoundedReadView, kind: EntityKind, keys: readonly string[], options: IdentityFlagsOptions = {}): TableCellFlag[] {
+  const atHour = options.atHour ?? readView.hour;
+  return keys.map((key, index) => {
+    const who = readView.who(kind, key, atHour);
+    if (options.boundary && atHour >= readView.hour) {
+      options.boundary.next = Math.min(options.boundary.next, who.nextChangeAt);
+    }
+    const look = flagLook(readView, who.flagChoice, options.flag ?? 'small');
+    return {
+      tag: who.tag?.status === 'ready' ? who.tag.value : key,
+      ...(look.flag ? { icon: look.flag } : {}),
+      ...(look.flagPending ? { pending: true } : {}),
+      ...(options.dimmed?.[index] ? { dimmed: true } : {}),
+    };
+  });
 }

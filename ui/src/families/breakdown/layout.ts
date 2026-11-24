@@ -219,7 +219,6 @@ export interface BreakdownLayoutInput {
   readonly theme: FamilyTheme;
   readonly namesInRing: boolean;
   readonly userExpanded: Readonly<Record<string, boolean>>;
-  readonly ringOpenKey: string | null | undefined;
   readonly measure: MeasureTextFn;
 }
 
@@ -552,7 +551,7 @@ function placeRingInnerLabel(
 }
 
 function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
-  const { level, periodLabel, comparison, width, height, theme, namesInRing, ringOpenKey, measure } = input;
+  const { level, periodLabel, comparison, width, height, theme, namesInRing, userExpanded, measure } = input;
   const narrow = width < NARROW_BREAKPOINT;
   const padX = narrow ? 10 : 16;
   const padTop = narrow ? 6 : 8;
@@ -689,8 +688,9 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
     }
   }
 
-  const openKey = resolveRingOpenKey(level.parts, ringOpenKey);
-  const expanded: Record<string, boolean> = openKey ? { [openKey]: true } : {};
+  const defaultOpen = resolveRingOpenKey(level.parts);
+  const expanded: Record<string, boolean> = { ...(defaultOpen ? { [defaultOpen]: true } : {}), ...userExpanded };
+  const openKey = level.parts.find(part => expanded[part.key] === true && part.children?.length)?.key ?? null;
 
   let sideList: RingViewLayout['sideList'] = null;
   if (showSideList) {
@@ -703,7 +703,7 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
     for (const part of level.parts) {
       const color = partColour(part, theme);
       const hasChildren = Boolean(!part.notRecorded && part.children && part.children.length > 0);
-      const isExpanded = hasChildren && openKey === part.key;
+      const isExpanded = hasChildren && expanded[part.key] === true;
       rows.push({
         key: part.key,
         parentKey: null,

@@ -191,7 +191,7 @@ interface TableMetaState {
   emptyDetail: string | null;
   emptyKind: 'empty' | 'unavailable';
   titleSummary: string | null;
-  summaryPill: string | null;
+  titleSummaryPartial: string | null;
   hideHeader: boolean;
   rowHeightMode: 'standard' | 'media';
   notes: readonly string[];
@@ -308,7 +308,7 @@ export default function FamilyTableHost<TOptions>({
     emptyDetail: null,
     emptyKind: 'empty',
     titleSummary: null,
-    summaryPill: null,
+    titleSummaryPartial: null,
     hideHeader: false,
     rowHeightMode: 'standard',
     notes: [],
@@ -667,7 +667,8 @@ export default function FamilyTableHost<TOptions>({
           rawMeta?.empty ?? null,
           rawMeta?.emptyDetail ?? null,
           rawMeta?.emptyKind ?? 'empty',
-          rawMeta?.titleSummary ?? rawMeta?.summaryPill ?? null,
+          rawMeta?.titleSummary ?? null,
+          rawMeta?.titleSummaryPartial ?? null,
           rawMeta?.hideHeader ?? false,
           rawMeta?.rowHeightMode ?? 'standard',
           rawMeta?.notes ?? [],
@@ -688,7 +689,7 @@ export default function FamilyTableHost<TOptions>({
             emptyDetail: rawMeta?.emptyDetail ?? null,
             emptyKind: rawMeta?.emptyKind ?? 'empty',
             titleSummary: rawMeta?.titleSummary ?? null,
-            summaryPill: rawMeta?.summaryPill ?? null,
+            titleSummaryPartial: rawMeta?.titleSummaryPartial ?? null,
             hideHeader: rawMeta?.hideHeader ?? false,
             rowHeightMode: rawMeta?.rowHeightMode ?? 'standard',
             notes: rawMeta?.notes ?? [],
@@ -1062,9 +1063,8 @@ export default function FamilyTableHost<TOptions>({
 
   if (blockedState) return <>{blockedState}</>;
 
-  const titleSummaryText = meta.titleSummary ?? meta.summaryPill;
-  const summaryNode = headerSlot && meta.mode === 'picture' && !meta.empty && titleSummaryText
-    ? createPortal(<span className="tf-title-summary">{titleSummaryText}</span>, headerSlot)
+  const summaryNode = headerSlot && meta.mode === 'picture' && !meta.empty && meta.titleSummary
+    ? createPortal(<span className="tf-title-summary">{meta.titleSummary}{meta.titleSummaryPartial && <span className="tf-title-hatch" role="img" aria-label={meta.titleSummaryPartial} title={meta.titleSummaryPartial} />}</span>, headerSlot)
     : null;
 
   const bodyStateNode = renderFamilyBodyState({
