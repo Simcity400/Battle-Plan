@@ -208,6 +208,10 @@ fn runs_apply_in_place_like_an_independent_row_model() {
     }
     let target = (partial.live.words.capacity() * 64) as u32;
     partial.resize(target as usize + 2).unwrap();
+    partial
+        .keys
+        .write_slots(&[target, target + 1], &[0, 0])
+        .unwrap();
     let denied = {
         let _reset = Reset;
         engine_allocation::set_stop_hook(Some(stopped));
