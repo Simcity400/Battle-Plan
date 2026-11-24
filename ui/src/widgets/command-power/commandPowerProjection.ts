@@ -23,7 +23,6 @@ import {
   spendMarkersOf,
   withinMapOf,
 } from '../../families/time-chart/seriesHelpers.ts';
-import { OPTIONS } from './definition.ts';
 
 export interface CommandPowerOptions {
   readonly tags: readonly string[];
@@ -179,7 +178,6 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
   subject: 'command power',
   emptyCampaign: 'Load a campaign to see command power.',
   icon: 'chart-line',
-  optionFields: OPTIONS,
   countries: { mode: 'multi', labels: true, colours: true, allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
     const tags = ctx.countries.tags;

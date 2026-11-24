@@ -9,7 +9,7 @@ import { knownValue, textValue, notRecorded, zeroValue, type Value } from '../..
 import type { CareerMedal, CareerRow, CareerTemplate, DivisionCareersReply } from '../../generated/dashboard';
 import { artState } from '../../families/table/identityCell.ts';
 import { validateDivisionCareers } from '../division-service-record/careersData.ts';
-import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
+import { COLUMNS, TABLE_BASE } from './definition.ts';
 
 export interface DecoratedOptions { readonly filter: DeclaredCountryFilter }
 
@@ -130,7 +130,6 @@ export const mostDecoratedDeclaration: TableWidgetDeclaration<DecoratedOptions> 
   subject: 'divisions',
   emptyCampaign: 'Load a campaign to see divisions.',
   icon: 'star',
-  optionFields: OPTIONS,
   countries: { mode: 'filter' },
   sources: ctx => ({
     owner: `most-decorated-divisions:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,

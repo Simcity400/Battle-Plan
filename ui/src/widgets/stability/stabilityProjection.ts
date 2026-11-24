@@ -37,7 +37,6 @@ import {
   seriesHeadAt,
   withinMapOf,
 } from '../../families/time-chart/seriesHelpers.ts';
-import { STABILITY_OPTIONS } from './definition.ts';
 import { breakdownRows, linesPerMeasure, type Measure } from './stabilityData.ts';
 
 export interface StabilityRawMarker {
@@ -315,7 +314,6 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
   subject: 'stability and war support',
   emptyCampaign: 'Load a campaign to see stability and war support.',
   icon: 'chart-line',
-  optionFields: STABILITY_OPTIONS,
   countries: { mode: 'multi', labels: true, colours: true, allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
     const tags = ctx.countries.tags;

@@ -21,7 +21,7 @@ import type {
   WeatherReadout,
 } from '../../generated/dashboard';
 import { surfaceMix } from '../../shell/appearance/color.ts';
-import { OPTIONS, type WeatherShow } from './definition.ts';
+import { type WeatherShow } from './definition.ts';
 
 export const WEATHER_WINDOW_HOURS = 7 * 24;
 export const WEATHER_TOP = 7;
@@ -252,7 +252,6 @@ export const weatherDeclaration: HeatLanesWidgetDeclaration<WeatherProjectionOpt
   subject: 'weather',
   emptyCampaign: 'Load a campaign to see weather.',
   icon: 'sun',
-  optionFields: OPTIONS,
   countries: { mode: 'none' },
   sources: (ctx, view): SourcePlan => {
     const show = weatherShow(ctx.options);

@@ -14,7 +14,6 @@ import { regionLabel } from '../../families/heat/scale.ts';
 import { regionIds } from '../../families/regionTokens.ts';
 import type { ConvoyCellState, ConvoyCountry, ConvoyHealthReply, ConvoyView, HourSpan } from '../../generated/dashboard';
 import { mix } from '../../shell/appearance/color.ts';
-import { OPTIONS } from './definition.ts';
 
 export const CONVOY_TOP_DEFAULT = 7;
 
@@ -195,7 +194,6 @@ export const convoyHealthDeclaration: HeatLanesWidgetDeclaration<ConvoyProjectio
   subject: 'convoys',
   emptyCampaign: 'Load a campaign to see convoys.',
   icon: 'anchor',
-  optionFields: OPTIONS,
   countries: { mode: 'single' },
   unavailable: ctx => (ctx.countryTag ? null : 'Choose a country in widget settings.'),
   sources: (ctx): SourcePlan => {

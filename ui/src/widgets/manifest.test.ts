@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { WidgetMeta } from '../dashboard/definitions';
-import { addOrderedToken, contentSet, moveOrderedToken, removeOrderedToken, resolveOptions, setOption } from '../dashboard/options.ts';
+import { addOrderedToken, contentSet, moveOrderedToken, parseStoredOptions, removeOrderedToken, resolveOptions, setOption, type OptionField, type OptionValue, type WidgetOptions } from '../dashboard/options.ts';
 import {
   DEFAULT_VIEW,
   declaredViewChoices,
@@ -38,6 +38,8 @@ import {
   resolveWidgetActiveView,
   resolveWidgetScopedOptions,
   resolveWidgetViewSwitch,
+  familyViewOptionFields,
+  widgetOptionFields,
 } from './manifest.ts';
 
 test('manifest accounts for every widget kind once across family views and legacy entries', () => {
@@ -57,7 +59,19 @@ test('manifest accounts for every widget kind once across family views and legac
   }
 });
 
-test('every manifest view reaches its own projection through the binding the host builds, and nothing registers under an undeclared view', async () => {
+function otherValue(field: OptionField): OptionValue {
+  switch (field.kind) {
+    case 'toggle': return !field.default;
+    case 'choice': return field.choices.find(choice => choice.value !== field.default)?.value ?? field.default;
+    case 'number': return field.default === field.min ? field.max : field.min;
+    case 'content-choice':
+    case 'content-set':
+    case 'ordered-set': return 'GER';
+    case 'table': return 'edited';
+  }
+}
+
+test('every manifest view reaches its own projection through the binding the host builds, every option its editors write is what the host reads after a reopen, and nothing registers under an undeclared view', async () => {
   const declared = new Set(FAMILY_VIEWS.map(entry => `${entry.family}\u0000${entry.kind}\u0000${normalizeView(entry.view)}`));
   for (const manifest of FAMILY_MANIFESTS) {
     assert.ok(manifest.hostAdapter, `${manifest.family} has a host adapter`);
@@ -79,6 +93,20 @@ test('every manifest view reaches its own projection through the binding the hos
         if (first !== 'loading') resolve(first);
       });
       assert.equal(found, spec.projection, `${entry.kind}/${view}: the worker finds this view's projection`);
+      const selected: WidgetOptions = view === DEFAULT_VIEW ? {} : { [entry.viewOption ?? 'view']: view };
+      const read = familyViewOptionFields(entry.kind, view);
+      for (const [editor, fields] of [['settings panel', resolveWidgetScopedOptions(entry.kind, selected)], ['grid', widgetOptionFields(entry.kind, selected)]] as const) {
+        for (const field of fields) {
+          if (field.key === (entry.viewOption ?? 'view')) continue;
+          const value = otherValue(field);
+          if (value === field.default) continue;
+          const written = setOption(fields, selected, field.key, value);
+          assert.ok(written, `${entry.kind}/${view}: the ${editor} writes ${field.key}`);
+          const reopened = parseStoredOptions(JSON.parse(JSON.stringify(written)));
+          assert.ok(reopened, `${entry.kind}/${view}: ${field.key} written by the ${editor} survives a save`);
+          assert.equal(resolveOptions(read, reopened)[field.key], value, `${entry.kind}/${view}: ${field.key} written by the ${editor} is what the host reads`);
+        }
+      }
     }
   }
   const kinds = new Set(FAMILY_VIEWS.map(entry => entry.kind));

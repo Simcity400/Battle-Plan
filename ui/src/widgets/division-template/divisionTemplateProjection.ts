@@ -14,7 +14,7 @@ import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, valueFromNullable, type Value } from '../../families/value.ts';
 import type { DivisionTemplatesReply, TemplateEntry } from '../../generated/dashboard';
 import { gameWindow } from '../../dashboard/gameWindows.ts';
-import { OPTIONS, TABLE_BASE } from './definition.ts';
+import { TABLE_BASE } from './definition.ts';
 import {
   battalionCount,
   priorityLabel,
@@ -248,7 +248,6 @@ export const divisionTemplateDeclaration: TableWidgetDeclaration<DivisionTemplat
   label: 'Division templates',
   subject: 'templates',
   emptyCampaign: 'Load a campaign to see templates.',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its templates.' },
   sources: ctx => {
     const params = ctx.countryTag

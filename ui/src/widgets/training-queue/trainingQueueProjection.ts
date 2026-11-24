@@ -7,7 +7,7 @@ import type { BoundedReadView } from '../../families/plan.ts';
 import { knownValue, textValue, notApplicable, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TrainingDivision, TrainingOrder, TrainingQueueReply } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
+import { COLUMNS, TABLE_BASE } from './definition.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
 const ON_DIVISION = 'Shown on each division';
@@ -151,7 +151,6 @@ export const trainingQueueDeclaration: TableWidgetDeclaration<Record<string, nev
   subject: 'training queue',
   emptyCampaign: 'Load a campaign to see the training queue.',
   icon: 'person',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its training queue.' },
   sources: ctx => {
     const params = ctx.countryTag ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) } : null;

@@ -18,7 +18,6 @@ import { regionIds } from '../../families/regionTokens.ts';
 import type { AirDayCell, AirReadout, AirSide, AirTimelineReply, AirTimelineRow } from '../../generated/dashboard';
 import { LANE_READOUT_MAX_WIDTH } from '../../families/heat/lanesLayout.ts';
 import { mix, surfaceMix } from '../../shell/appearance/color.ts';
-import { OPTIONS } from './definition.ts';
 
 export const AIR_TOP_DEFAULT = 7;
 
@@ -250,7 +249,6 @@ export const airTimelineDeclaration: HeatLanesWidgetDeclaration<AirTimelineProje
   subject: 'air superiority',
   emptyCampaign: 'Load a campaign to see its air superiority.',
   icon: 'plane',
-  optionFields: OPTIONS,
   countries: { mode: 'single' },
   unavailable: ctx => {
     const mode = airTimelineMode(ctx);

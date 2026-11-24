@@ -7,7 +7,6 @@ import { countryLook, inHourSpans, nextBoundaryAfter, timelineModel, spanStart, 
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection, type TimelineSpan } from '../../families/timeline/model.ts';
 import { registerTimelineProjection } from '../../families/timeline/registry.ts';
 import type { CountryGroupReply, SubjectLevel, SubjectReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import {
   changeHours,
   laneCountries,
@@ -145,7 +144,6 @@ export const subjectsDeclaration: TimelineWidgetDeclaration<SubjectsOptions> = {
   subject: 'subjects',
   emptyCampaign: 'Load a campaign to see its overlords and subjects.',
   icon: 'hierarchy',
-  optionFields: OPTIONS,
   countries: { mode: 'multi', labels: true, allTagsForLabels: true },
   jumpToDate: true,
   keyByBranch: true,
