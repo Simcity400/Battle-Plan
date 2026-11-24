@@ -691,7 +691,6 @@ fn a_keyed_read_names_the_rows_it_chose() {
 
 struct Stepped {
     hour: i32,
-    rows: u64,
     fresh: bool,
     pending: bool,
     waited: bool,
@@ -711,7 +710,7 @@ fn stepped(pages: &Arc<dyn Pages>, exact: &dashboard_follow::panel::AtHour, ever
             if waited { read = advance(step.last(), true, &token, None); }
             seeded = true;
             first = read.pending;
-            Stepped { hour: step.last(), rows: read.rows, fresh: read.fresh, pending: read.pending, waited, value: read.value, lanes: read.lanes }
+            Stepped { hour: step.last(), fresh: read.fresh, pending: read.pending, waited, value: read.value, lanes: read.lanes }
         });
         let _ = send.send((step.last(), read));
     });
@@ -995,7 +994,7 @@ fn a_quiet_advance_on_a_populated_product_visits_zero_rows() {
         type Context = std::sync::atomic::AtomicUsize;
 
         fn tables(_params: &Self::Params) -> Vec<TableId> {
-            vec![TableId::CountryLinks]
+            vec![TableId::CountryLinks, TableId::LexicalTokens]
         }
 
         fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
@@ -1005,6 +1004,7 @@ fn a_quiet_advance_on_a_populated_product_visits_zero_rows() {
         fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
             at.context.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let links = frame.complete::<tables::CountryLinks>()?;
+            count_rows(|| links.len() as u64);
             Ok(SteadyReply { tags: links.iter().map(|row| row.id.to_string()).collect(), warnings: Vec::new() })
         }
     }
@@ -1049,53 +1049,15 @@ fn a_quiet_advance_on_a_populated_product_visits_zero_rows() {
         })
         .collect();
     let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
-    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let source = Source::from_replay(crate::SourceKey { source_id: "at-hour-quiet".into(), revision: "1".into() }, "quiet.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
-
-    let run_declared = |exact: &dashboard_follow::panel::AtHour| -> Vec<Stepped> {
-        let seed = (exact.advance)(FIRST, true, &AtomicBool::new(false), None);
-        assert!(seed.rows > 0, "initial seed reads populated rows");
-        let (send, played) = std::sync::mpsc::channel();
-        let advance = exact.advance.clone();
-        let hook: playhead::Hook = Box::new(move |step, lanes| {
-            let token = AtomicBool::new(false);
-            let read = advance(step.last(), step.reset(), &token, Some(dashboard_follow::panel::ProductStep { step, lanes, held: None, wake: None }));
-            let _ = send.send((step.last(), Stepped { hour: step.last(), rows: read.rows, fresh: read.fresh, pending: read.pending, waited: false, value: read.value, lanes: read.lanes }));
-        });
-        let settings = playhead::Settings { step_threads: 1, fetch_threads: 1, ahead: 1, ring: 3, speed: 1.0, rate: 1.0, ..playhead::Settings::default() };
-        let playhead = playhead::Playhead::new(Arc::clone(&pages), playhead::Timeline::whole(&*pages).unwrap(), settings, Some(hook)).unwrap();
-        let reader = playhead.declare(seed.lanes, None).unwrap();
-        let mut consumer = playhead.consumer(reader);
-        playhead.seek(FIRST);
-        let (mut head, mut out) = (FIRST, Vec::new());
-        loop {
-            let mut next = None;
-            playhead
-                .drive_until(&mut consumer, head, || match played.try_recv() {
-                    Ok(item) => {
-                        next = Some(item);
-                        std::ops::ControlFlow::Break(Ok(()))
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => std::ops::ControlFlow::Continue(()),
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => std::ops::ControlFlow::Break(Err("step hook channel disconnected".into())),
-                })
-                .unwrap();
-            let (last, read) = next.unwrap();
-            out.push(read);
-            if last >= LAST { break; }
-            if last >= head { head = (head + 1).min(LAST); }
-        }
-        drop(consumer);
-        playhead.finish();
-        out
-    };
+    let run_declared = |exact: &dashboard_follow::panel::AtHour| crate::test_fixtures::played(&source.replay(), exact, FIRST, LAST);
 
     let quiet_panel = exact_panel::<Quiet>(&source, &load(), &json!({ "branchId": "1" })).unwrap();
     let quiet_reads = run_declared(quiet_panel.exact().unwrap());
     assert!(quiet_reads.len() >= 15);
     assert!(quiet_reads.iter().all(|r| !r.pending));
     for read in &quiet_reads[2..] {
-        assert_eq!(read.rows, 0, "quiet hour {} must visit zero rows", read.hour);
+        assert_eq!((read.rows, read.visited), (0, 0), "quiet hour {} must visit zero rows, though the optional lexical tokens stay unread", read.hour);
         assert!(Arc::ptr_eq(&read.value, &quiet_reads[1].value), "quiet hour {} reuses the held reply", read.hour);
     }
 

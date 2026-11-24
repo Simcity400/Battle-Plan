@@ -3,7 +3,7 @@ import { Select } from '../../components/Select';
 import WidgetState from '../../components/WidgetState';
 import { formatFixed } from '../../charts/valueAxis.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import type { WidgetProps } from '../../dashboard/definitions';
+import type { FamilyViewProps } from '../../dashboard/definitions';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
@@ -14,7 +14,7 @@ import type { InstalledAction } from '../../families/plan.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { ProductionLineBreakdownReply } from '../../generated/dashboard';
 import { breakdownAt, validateBreakdownReply } from './productionData.ts';
-import { productionLinesDeclaration, type ProductionLineMeta } from './productionLinesProjection.ts';
+import type { ProductionLineMeta } from './productionLinesProjection.ts';
 import './productionLines.css';
 import '../../families/table/gameWindowTable.css';
 
@@ -26,7 +26,7 @@ interface Opened {
 }
 
 function LineBreakdown({ runtime, trackId, opened, group, onGroup, active }: {
-  readonly runtime: WidgetProps['runtime'];
+  readonly runtime: FamilyViewProps['runtime'];
   readonly trackId: string | undefined;
   readonly opened: Opened;
   readonly group: string;
@@ -71,7 +71,7 @@ function LineBreakdown({ runtime, trackId, opened, group, onGroup, active }: {
   );
 }
 
-export default function ProductionLinesWidget(props: WidgetProps) {
+export default function ProductionLinesWidget(props: FamilyViewProps) {
   const { widget, runtime, active } = props;
   const anchor = useRef<HTMLDivElement>(null);
   const gate = useGate(runtime, widget, SPEC, active);
@@ -88,7 +88,7 @@ export default function ProductionLinesWidget(props: WidgetProps) {
 
   return (
     <div ref={anchor} className="game-window-table">
-      <FamilyWidget family="table" declaration={productionLinesDeclaration} {...props} selectedKey={opened?.handle ?? null} onActivate={onActivate} />
+      {props.manifestDeclaration ? <FamilyWidget family={props.manifestDeclaration.family} declaration={props.manifestDeclaration} {...props} selectedKey={opened?.handle ?? null} onActivate={onActivate} /> : null}
       <DetailWindowHost
         open={opened !== null}
         subject={opened?.handle ?? null}

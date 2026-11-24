@@ -1,8 +1,7 @@
 import { formatDate, formatDateTime, gameDate } from '../../dashboard/calendar.ts';
 import { int, object } from '../../dashboard/validation.ts';
 import { validateFeedRow } from './eventFeedData.ts';
-import type { Facet } from './eventFeedData';
-import type { EventFeedItem, EventFeedKind, FeedKindCode, ScriptEdge, ScriptOccurrence } from '../../generated/dashboard';
+import type { EventFeedItem, EventFeedKind, ScriptEdge, ScriptOccurrence } from '../../generated/dashboard';
 
 const CURRENCIES = new Set(['politicalPower', 'commandPower']);
 const RAW = /^-?\d+$/;
@@ -19,12 +18,6 @@ export function validateOccurrence(value: unknown): ScriptOccurrence {
   return { id: value.id, opened: value.opened, edges };
 }
 
-export function cardFacets(kinds: readonly FeedKindCode[], openers: readonly EventFeedKind[], continuing: readonly EventFeedKind[]): Facet[] {
-  const wanted = new Set<EventFeedKind>([...openers, ...continuing]);
-  return [{ name: 'kind', values: kinds.filter(kind => wanted.has(kind.kind)).map(kind => kind.code), countries: [] },
-    { name: 'opener', values: [-1], countries: [] }];
-}
-
 export function occurrenceItem(occurrence: ScriptOccurrence): EventFeedItem | null {
   for (const edge of occurrence.edges) if (edge.row.item) return edge.row.item;
   return null;
@@ -36,9 +29,6 @@ export function lastEdge(edges: readonly ScriptEdge[], kinds: readonly EventFeed
   for (let index = edges.length - 1; index >= 0; index--) if (kinds.includes(edges[index].row.kind)) return edges[index];
   return null;
 }
-
-export const occurrenceMatches = (occurrence: ScriptOccurrence, country: (tag: string, hour: number) => boolean): boolean =>
-  occurrence.edges.some(edge => edge.row.tags.some(tag => country(tag, edge.row.hour)));
 
 export interface RecordingBreak { firstHour: number; lastHour: number }
 export function recordingBreaks(branch: { gaps: readonly { firstHour: number; lastHour: number }[];

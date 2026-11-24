@@ -55,6 +55,9 @@ test('the stored sort, the row height and the dated country filter reach the pro
   assert.deepEqual(params(stored, 280).params, { branchId: '1', countries: null, by: 'casualtiesTaken', descending: false, count: 10 }, 'ten compact rows fit in 280 px');
   assert.deepEqual(params({}, 360).params, { branchId: '1', countries: null, by: 'medals', descending: true, count: 10 });
   assert.equal(params({}, 360).followQuery.panel, 'decorated-divisions');
+  const byCountry = { [TABLE_SETTINGS_KEY]: encodeTableSettings({ ...defaults, sort: { column: 'country', direction: 'ascending' } }) };
+  const byDivision = { [TABLE_SETTINGS_KEY]: encodeTableSettings({ ...defaults, sort: { column: 'division', direction: 'descending' } }) };
+  assert.deepEqual([params(byCountry, 360).params.by, params(byCountry, 360).params.descending, params(byDivision, 360).params.by], ['countryName', false, 'divisionName'], 'country and division sort in the product, by name at the hour');
   const germany: DeclaredCountryFilter = { passing: { GER: [[0, 99], [200, 300]] }, unrecorded: [], bounds: [0, 100, 200, 301] };
   assert.deepEqual(params({}, 360, germany).params.countries, [{ tag: 'GER', firstHour: 0, lastHour: 99 }, { tag: 'GER', firstHour: 200, lastHour: 300 }]);
 });

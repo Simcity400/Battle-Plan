@@ -1,7 +1,7 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { runAt } from '../../charts/series.ts';
 import type { TooltipRow } from '../../charts/tooltip';
-import { formatFixed } from '../../charts/valueAxis.ts';
+import { formatRational } from '../../families/valueFormat.ts';
 import type { FixedRun } from './types';
 import type { BreakdownLine, FormulaBreakdown, ModifierBreakdown, StabilityBreakdown } from '../../generated/dashboard';
 
@@ -11,8 +11,12 @@ const NATIONAL_SPIRIT_TYPE = 'national_spirit';
 export type Measure = 'stability' | 'warSupport';
 
 export function formatPercent(raw: string, decimals: number, signed = false): string {
-  const text = formatFixed(BigInt(raw) * 100n, decimals, 1);
-  return `${signed && BigInt(raw) > 0n ? '+' : ''}${text}%`;
+  return formatRational(BigInt(raw) * 100n, 10n ** BigInt(decimals), {
+    maxDecimals: 1,
+    fixedDecimals: true,
+    signed,
+    percent: true,
+  });
 }
 
 export function rawAt(runs: readonly FixedRun[], hour: number): string | null {

@@ -27,13 +27,3 @@ export interface FlowWidgetDeclaration<TProjectionOptions = Record<string, never
   readonly jumpToDate?: boolean;
   readonly keyByBranch?: boolean;
 }
-
-export type AnyFlowWidgetDeclaration = FlowWidgetDeclaration<any, any>;
-
-export function isFlowWidgetDeclaration(value: unknown): value is AnyFlowWidgetDeclaration {
-  return !!value
-    && typeof value === 'object'
-    && (value as { family?: unknown }).family === 'flow'
-    && 'sources' in value
-    && 'projection' in value;
-}

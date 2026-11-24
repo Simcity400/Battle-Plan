@@ -86,7 +86,7 @@ export interface LaneHost<B extends Bitmap> {
   release(bytes: number): void;
   fail(reason: string): void;
   failSub?(sub: number, reason: string): void;
-  failWidget?(widget: number, reason: string): void;
+  failWidget?(widget: number, reason: string, stamp?: number): void;
   later(run: () => void): void;
   schedule?(run: () => void): void;
   hit?(widget: number, key: string | null, installedId?: number, owner?: string): void;
@@ -408,7 +408,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     for (const owner of [...users]) this.failSub(owner, reason);
   }
 
-  private failWidget(widget: Widget, reason: string) {
+  private failWidget(widget: Widget, reason: string, stamp: number | undefined) {
     if (this.failedWidgets.has(widget.id)) return;
     this.failedWidgets.add(widget.id);
     widget.halted = widget.binding.generation;
@@ -418,7 +418,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.motionWidgets.delete(widget.id);
     this.dirtyWidgets.delete(widget.id);
     this.syncWindowTracking(widget);
-    this.host.failWidget?.(widget.id, reason);
+    this.host.failWidget?.(widget.id, reason, stamp);
   }
 
   private markSub(id: number, closeOpen = false) {
@@ -1713,7 +1713,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         } catch (error) {
           const message = 'drawing failed: ' + (error instanceof Error ? error.message : String(error));
           if (this.host.failWidget) {
-            this.failWidget(widget, message);
+            this.failWidget(widget, message, widget.supplied.stamp);
             failedLocally = true;
           } else {
             painted = { surfaces: [], fields: {}, motion: false };
@@ -1809,7 +1809,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           this.presented.delete(orig.id);
           const route = this.routeOf(widget);
           const stillCurrent = this.widgets.get(widget.id) === widget && widget.binding.generation === orig.binding && (route === null || this.facts.generation(route).seek === orig.gen.seek);
-          if (stillCurrent) this.failWidget(widget, reason);
+          if (stillCurrent) this.failWidget(widget, reason, orig.stamp);
           else if (widget.inflight?.id === orig.id) { widget.inflight = null; this.syncWindowTracking(widget); }
         }
       } else {
@@ -1883,7 +1883,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.syncWindowTracking(widget);
     return Object.freeze({ widget: widget.id, binding: widget.binding.generation, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), id, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
       gen: Object.freeze(gen), follows: selected.pictures.some(picture => followsChannel(picture)), mode: base.mode, ...base.reason !== undefined ? { reason: base.reason } : {},
-      ...open ? { open } : {}, ...(base.viewport ? { viewport: base.viewport } : {}), surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms: 0 });
+      ...open ? { open } : {}, ...(base.viewport ? { viewport: base.viewport } : {}), surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms: 0, ...widget.supplied.stamp !== undefined ? { stamp: widget.supplied.stamp } : {} });
   }
 
   private entry(widget: Widget, selected: Selected, painted: Painted, mode: Entry['mode'], reason: string | undefined, parts: (B | typeof SAME | null)[], seek: number, ms = 0, open?: 'followed' | 'panel', failureOrigin?: FailureOrigin): Entry<B> {
@@ -1915,7 +1915,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     return Object.freeze({ widget: widget.id, binding: widget.binding.generation, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), id, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
       gen: Object.freeze(gen), follows: selected.pictures.some(picture => followsChannel(picture)), mode, ...reason !== undefined ? { reason } : {},
       ...open ? { open } : {}, ...failureOrigin !== undefined ? { failureOrigin } : {}, ...(viewport ? { viewport } : {}),
-      surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms });
+      surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms, ...widget.supplied.stamp !== undefined ? { stamp: widget.supplied.stamp } : {} });
   }
 
   private prune(hour: number) {

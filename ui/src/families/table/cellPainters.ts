@@ -529,6 +529,11 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
         nrLeft += prefixW + 8;
       }
     }
+    if (kind === 'item' && formatted.kind === 'notRecorded' && !cell?.missingFigure) {
+      const hatchW = Math.min(148, Math.max(48, right - nrLeft - 8));
+      drawHatchRect(ctx, nrLeft, Math.round(middle - 6), hatchW, 12, 3, theme);
+      return;
+    }
     drawFormattedValue(ctx, formatted, { left: nrLeft, right, middle, endAligned: !!column.numeric, muted: item.row.muted }, theme, measure, fit);
     return;
   }

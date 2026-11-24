@@ -31,7 +31,7 @@ interface DecoratedRow {
 const UNIDENTIFIED = 'Medal not identified';
 const PREMEASURE_ROWS = 32;
 
-const RANKS: Readonly<Record<string, DecoratedRank>> = { medals: 'medals', experience: 'experience', casualtiesTaken: 'casualtiesTaken' };
+const RANKS: Readonly<Record<string, DecoratedRank>> = { medals: 'medals', experience: 'experience', casualtiesTaken: 'casualtiesTaken', division: 'divisionName', country: 'countryName' };
 
 export function decoratedRank(settings: TableSettings): { readonly by: DecoratedRank; readonly descending: boolean } {
   const by = RANKS[settings.sort.column];
@@ -106,9 +106,9 @@ const inProductOrder = (item: DecoratedRow, options: DecoratedOptions): Value<nu
 const DECORATED_COLUMNS: readonly DeclarativeColumnSpec<DecoratedRow, DecoratedOptions>[] = [
   { ...KIND!, priority: 5, sortable: false, cellKind: 'kind', extra: () => ({ artShape: 'counter' }), iconSlot: true, art: item => item.kind,
     value: item => textValue(item.template?.name ?? null, 'Template name unavailable'), sortValue: (item, _live, _hour, options) => inProductOrder(item, options) },
-  { ...COUNTRY!, priority: 1, sortable: false, iconSlot: true, art: item => item.flag, country: item => item.row.tag, value: item => item.country,
+  { ...COUNTRY!, priority: 1, iconSlot: true, art: item => item.flag, country: item => item.row.tag, value: item => item.country,
     sortValue: (item, _live, _hour, options) => inProductOrder(item, options) },
-  { ...DIVISION!, priority: 0, sortable: false, text: true, cellKind: 'item', hideable: false, widest: ['175 Guangxi Juntuán'],
+  { ...DIVISION!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['175 Guangxi Juntuán'],
     value: item => textValue(item.row.name, item.row.nameMissing ?? 'Division name unavailable'), sortValue: (item, _live, _hour, options) => inProductOrder(item, options) },
   { ...MEDALS!, priority: 2, numeric: true, cellKind: 'icons', format: 'integer', minWidth: MEDALS_SHOWN * MEDAL_ICON_SIZE + (MEDALS_SHOWN - 1) * ICON_STRIP_GAP + CELL_INSET * 2,
     extra: item => ({ iconStripKind: 'medals', icons: item.strip }),

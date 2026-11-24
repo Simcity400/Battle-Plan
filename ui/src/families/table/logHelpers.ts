@@ -1,7 +1,10 @@
 import { unavailableArt } from '../art/types.ts';
 import type { DashboardSource } from '../../dashboard/client';
-import type { MissingSpan } from '../../generated/dashboard';
+import type { CountryRef, GroupSelection, MissingSpan } from '../../generated/dashboard';
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { ArtHandle, BoundedReadView, SourceEntry } from '../contract.ts';
+import { groupSelection } from '../groupSelection.ts';
+import type { FamilyPlanContext } from '../plan.ts';
 import { identityFlags, identityName, type IdentityBoundary, type IdentityOptions } from './identityCell.ts';
 
 export function urlArtHandle(url: string | null | undefined): ArtHandle | null {
@@ -192,13 +195,20 @@ export function tailFollowParams(query: LogTailQuery): Record<string, unknown> {
     panel: query.product,
     branchId: query.branchId,
     ...(query.log !== undefined ? { log: query.log } : {}),
-    facets: query.facets,
+    ...(query.facets !== undefined ? { facets: query.facets } : {}),
     from: query.from,
     limit: query.limit,
     ...(query.columns !== undefined ? { columns: query.columns } : {}),
     ...(query.countFacets && query.countFacets.length ? { countFacets: query.countFacets } : {}),
-    ...(query.scope !== undefined ? { scope: query.scope } : {}),
+    ...query.ask,
   };
+}
+
+export function occurrenceSelection(ctx: Pick<FamilyPlanContext, 'countries' | 'widget'>): { readonly countries?: readonly CountryRef[]; readonly group?: GroupSelection } | undefined {
+  const group = groupSelection(ctx.widget.countries);
+  if (group) return { group };
+  if (ctx.countries.all) return undefined;
+  return { countries: ctx.countries.tags.map(countryFromKey) };
 }
 
 export function pagedTailEntry(

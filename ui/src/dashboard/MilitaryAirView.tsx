@@ -158,7 +158,7 @@ export default function MilitaryAirView({ widget, runtime, active, onDiagnostics
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, grouped, groups.data, onDiagnostics]);
   const leftLabel = air ? 'Own losses' : 'Damage suffered', rightLabel = air ? 'Enemy losses' : 'Damage inflicted';
-  const tooltip = (row: LedgerRow, name: string) => militaryAirTooltip(row, from, family, name);
+  const tooltip = (row: LedgerRow, name: string) => militaryAirTooltip(row, from, family, name, data);
   if (!track) return <WidgetState kind="empty" message={'Load a campaign to see ' + title.toLowerCase() + '.'} />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   const groupFailure = grouped && groups.error ? <WidgetState kind="error" what="country groups" failure={groups.error} onRetry={groups.retry} /> : null;

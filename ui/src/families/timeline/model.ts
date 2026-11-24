@@ -15,7 +15,30 @@ export interface TimelineSpan {
   readonly startBy?: boolean;
   readonly endUnseen?: boolean;
   readonly open: boolean;
+  readonly halves?: readonly [string, string];
+  readonly marks?: readonly TimelineMark[];
   readonly meta?: unknown;
+}
+
+export interface TimelineMark {
+  readonly hour: number;
+  readonly art: ArtResult;
+  readonly label: string;
+}
+
+export interface TimelineSideLabel {
+  readonly name: string;
+  readonly flag: ArtResult;
+  readonly flagTag: string;
+  readonly strip: readonly { readonly flag: ArtResult; readonly tag: string }[];
+  readonly dim?: boolean;
+}
+
+export interface TimelineOutcome {
+  readonly mark: 'ongoing' | 'ended' | 'flag';
+  readonly text: string;
+  readonly detail?: string;
+  readonly flag?: ArtResult;
 }
 
 export type TimelineLaneKind = 'item' | 'group' | 'heading';
@@ -26,6 +49,7 @@ export interface TimelineLane {
   readonly depth?: number;
   readonly label: string;
   readonly subtitle?: string;
+  readonly aside?: string;
   readonly icon?: ArtResult;
   readonly flag?: ArtResult;
   readonly flagTag?: string;
@@ -37,6 +61,10 @@ export interface TimelineLane {
   readonly openedMarker?: { readonly hour: number; readonly label: string };
   readonly ruleColor?: string;
   readonly endText?: string;
+  readonly sides?: readonly [TimelineSideLabel, TimelineSideLabel];
+  readonly outcome?: TimelineOutcome;
+  readonly barHeight?: number;
+  readonly height?: number;
   readonly auditValue: string;
   readonly meta?: unknown;
 }
@@ -49,6 +77,7 @@ export interface TimelineModel {
   readonly legend?: readonly LegendStripEntry[];
   readonly iconsOnBars: boolean;
   readonly labelWidth: number;
+  readonly outcomeWidth?: number;
   readonly summaryText?: string | null;
   readonly empty?: string | null;
   readonly emptyKind?: 'empty' | 'unavailable';

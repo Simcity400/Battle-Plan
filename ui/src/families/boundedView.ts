@@ -1,6 +1,5 @@
 import type { ChartBucket } from '../charts/chartSummary';
 import type { LiveValues } from '../charts/live';
-import type { MarkCluster } from '../charts/markSummary';
 import type { Run } from '../charts/series';
 import type { FollowedAnswer } from '../dashboard/follow/message';
 import type { TiledLine } from '../dashboard/tiles/view';
@@ -11,7 +10,6 @@ import type {
   ArtProvider,
   ArtResult,
   BoundedHover,
-  BoundedMarkCluster,
   BoundedReadView,
   BoundedSeries,
   BoundedSlice,
@@ -341,39 +339,6 @@ function clipSingleRun(run: Run, hour: DisplayedHour): Run {
   return { ...run, lastHour: hour };
 }
 
-const markTotals = new WeakMap<MarkCluster, Float64Array>();
-
-function markPrefixTotals(cluster: MarkCluster, bins: readonly (readonly [number, number])[]): Float64Array {
-  let totals = markTotals.get(cluster);
-  if (!totals) {
-    totals = new Float64Array(bins.length + 1);
-    for (let i = 0; i < bins.length; i++) totals[i + 1] = totals[i]! + bins[i]![1];
-    markTotals.set(cluster, totals);
-  }
-  return totals;
-}
-
-function clipSingleMark(cluster: MarkCluster, hour: DisplayedHour): BoundedMarkCluster | undefined {
-  const sourceBins = cluster.bins;
-  if (!sourceBins?.length) return undefined;
-  let lo = 0;
-  let hi = sourceBins.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (sourceBins[mid]![0] <= hour) lo = mid + 1;
-    else hi = mid;
-  }
-  if (lo === 0) return undefined;
-  const total = markPrefixTotals(cluster, sourceBins)[lo]!;
-  return {
-    firstHour: cluster.firstHour,
-    lastHour: Math.min(cluster.lastHour, sourceBins[lo - 1]![0]),
-    firstOrdinal: cluster.firstOrdinal,
-    count: String(total),
-    bins: createBoundedSlice(sourceBins, lo),
-  };
-}
-
 function clipSingleHourSpan(
   span: { readonly firstHour: number; readonly lastHour: number },
   hour: DisplayedHour,
@@ -389,14 +354,6 @@ export function sliceMissingSpans(
   return sliceSpansByHour(spans, hour, clipSingleMissing, counter);
 }
 
-export function sliceMarks(
-  clusters: readonly MarkCluster[],
-  hour: DisplayedHour,
-  counter?: BoundedWorkCounter,
-): SlicedSpanResult<BoundedMarkCluster> {
-  return sliceSpansByHour(clusters, hour, clipSingleMark, counter);
-}
-
 export function sliceRuns(
   runs: readonly Run[],
   hour: DisplayedHour,
@@ -409,9 +366,6 @@ export function clipMissingSpans(spans: readonly MissingSpan[], hour: DisplayedH
   return [...sliceMissingSpans(spans, hour).slice];
 }
 
-export function clipMarks(clusters: readonly MarkCluster[], hour: DisplayedHour): BoundedMarkCluster[] {
-  return [...sliceMarks(clusters, hour).slice];
-}
 
 export function clipRuns(runs: readonly Run[], hour: DisplayedHour): Run[] {
   return [...sliceRuns(runs, hour).slice];
@@ -558,21 +512,18 @@ export function boundTiledSeries(
   const runsResult = line.summary.runs ? sliceRuns(line.summary.runs, hour, counter) : undefined;
   const missingResult = sliceMissingSpans(line.missing, hour, counter);
   const approxResult = line.summary.approximate ? sliceSpansByHour(line.summary.approximate, hour, clipSingleHourSpan, counter) : undefined;
-  const marksResult = line.marks ? sliceMarks(line.marks.clusters, hour, counter) : undefined;
 
   const validLo = Math.max(
     bucketValidLo,
     runsResult?.validLo ?? -Infinity,
     missingResult.validLo,
     approxResult?.validLo ?? -Infinity,
-    marksResult?.validLo ?? -Infinity,
   );
   const validHi = Math.min(
     bucketValidHi,
     runsResult?.validHi ?? Infinity,
     missingResult.validHi,
     approxResult?.validHi ?? Infinity,
-    marksResult?.validHi ?? Infinity,
   );
 
   if (counter) counter.allocations++;
@@ -587,7 +538,6 @@ export function boundTiledSeries(
     ...(options?.headValue ? { headValue: options.headValue } : {}),
     missing: missingResult.slice,
     ...(approxResult ? { approximate: approxResult.slice } : {}),
-    marks: marksResult ? marksResult.slice : emptySlice<BoundedMarkCluster>(),
     validInterval: [validLo, Math.max(validLo, validHi)],
   };
 }

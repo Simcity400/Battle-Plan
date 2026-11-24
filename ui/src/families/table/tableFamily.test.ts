@@ -289,6 +289,15 @@ test('scoreboard projection matches followed and exact audits with missing, part
       ['casualties:partial', answer({ keys: [1n, 2n, 3n, 4n], columns: 1, names: ['ITA', 'FRA', 'GER', 'ENG'], values: [1n, 0n, 0n, 0n], states: [CELL.value, CELL.value, CELL.value, CELL.value] })],
     ]),
   }), hourly);
+  const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: '1', content: 1 });
+  const style = (name: string, valid: [number, number]) => ({ tag: 'GER', name, color: [102, 102, 102] as [number, number, number], valid, flagChoice: { keys: ['GER', null, null] as [string, null, null], reasons: [null, null, null] as [null, null, null] } });
+  index.ingestStylesReply({ branchId: '1', hour: 0, styles: [style('Germany', [0, 49])], warnings: [] });
+  index.ingestStylesReply({ branchId: '1', hour: 50, styles: [style('German Reich', [50, 100])], warnings: [] });
+  const identity = createSnapshotIdentityProvider(index);
+  const factoriesOnly = new Map([['factories', answer({ keys: [1n], columns: 1, names: ['GER'], values: [1n], states: [CELL.value] })]]);
+  assert.equal(scoreboardProjection.project(createBoundedReadView({ hour: 40, identity, answers: factoriesOnly }), hourly).rows.find(row => row.key === 'GER')?.name, 'Germany');
+  assert.equal(scoreboardProjection.project(createBoundedReadView({ hour: 50, identity, answers: factoriesOnly }), hourly).rows.find(row => row.key === 'GER')?.name, 'German Reich', 'a dated rename reaches the country cell through identity');
+
   const first = at(40, 0n);
   const quiet = at(41, 0n);
   assert.deepEqual(quiet.rows.map((row, index) => row === first.rows[index]), [true, true, true, true], 'a quiet hour\'s fresh answers rebuild no row');
@@ -390,6 +399,11 @@ test('occupied-states, game-score (with faction groups), and division-template (
   const gsCols = gameScoreColumns(undefined);
   const gsFlat = resolveTableRows(gsModel, tableSettingsOf(undefined, gsCols, { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }));
   assert.deepEqual(gsFlat.filter(r => r.kind === 'group-header').map(r => r.label), ['Allies', 'Axis']);
+
+  const gsRenamed = { all: true, holders: null, membership: null, top: null, by: 'total' as const, factions: false, factionRuns: null, rankMarkers: false,
+    labels: { GER: [{ from: 0, name: 'Germany' }, { from: 70, name: 'German Reich' }], ENG: [{ from: 0, name: 'United Kingdom' }] } };
+  assert.equal(gameScoreProjection.nextChange!(createBoundedReadView({ hour: 50, panels: new Map([['main', gsReply]]) }), gsRenamed), 70,
+    'a declarative table names its dated name changes as its next change');
 
   const gsTopOptions = { all: false, holders: null, membership: null, top: 1, by: 'army' as const, factions: false, factionRuns: null, rankMarkers: false, labels: {} };
   const gsTopAt = (top: unknown, live: (key: string) => number) => gameScoreProjection.project(createBoundedReadView({
@@ -2500,14 +2514,21 @@ test('the table host adapter stores and resolves table settings through its decl
 test('batch 1 log projections: market-ledger contract grouping, decisions running-first, event-choices awaiting-first and detail meta, and event-feed missing dated faction name', () => {
   const marketReply: MarketLedgerTailReply = {
     branchId: '1',
-    baseOrdinal: '0',
-    firstOrdinal: '0',
     offset: '0',
     total: '2',
+    live: '1',
+    counts: [{ key: 'active', total: '1' }],
+    nextChange: null,
     rows: [
       {
         key: '0000000000000012',
-        hour: 108,
+        hour: 100,
+        observed: 100,
+        exact: true,
+        ordinal: '0',
+        live: true,
+        request: false,
+        requestedHour: null,
         startedHour: 100,
         endedHour: null,
         status: 'active',
@@ -2524,9 +2545,12 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
           contractedRaw: '50000000',
           deliveryUnavailable: null,
         }],
+        deliveryMissing: null,
         paidRaw: '4800000',
-        paidNotRecorded: false,
-        agreedPriceRaw: '9600000',
+        paidMissing: null,
+        quotes: [{ variant: '6', name: 'Infantry Equipment I', nameMissing: null, priceRaw: '9600000' }],
+        termsMissing: null,
+        eventsTotal: '2',
         events: [
           { key: '3', hour: 108, kind: 'payment', variant: null, equipment: null, equipmentMissing: null, amountRaw: '4800000', amountNotRecorded: false, reason: null },
           { key: '2', hour: 105, kind: 'delivery', variant: '6', equipment: 'Infantry Equipment I', equipmentMissing: null, amountRaw: '25000000', amountNotRecorded: false, reason: null },
@@ -2534,7 +2558,13 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
       },
       {
         key: '0000000000000099',
-        hour: 102,
+        hour: 100,
+        observed: 100,
+        exact: true,
+        ordinal: '1',
+        live: false,
+        request: false,
+        requestedHour: null,
         startedHour: 100,
         endedHour: 102,
         status: 'ended',
@@ -2551,9 +2581,12 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
           contractedRaw: null,
           deliveryUnavailable: 'Delivery amount unavailable: purchase manifest not acquired before removal',
         }],
+        deliveryMissing: null,
         paidRaw: null,
-        paidNotRecorded: false,
-        agreedPriceRaw: null,
+        paidMissing: null,
+        quotes: [],
+        termsMissing: "The contract's terms were not recorded at its start",
+        eventsTotal: '0',
         events: [],
       },
     ],
@@ -2565,8 +2598,6 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
   const marketSource = buildRowSourceFromHead('mkt', marketReply, undefined, 110)!;
   const marketModel = marketLedgerProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', marketSource]]) }), {
     perspective: 'FRA',
-    showRequests: true,
-    showEnded: true,
     selectionEmpty: null,
   });
   assert.equal(marketModel.rows.length, 2);
@@ -2582,27 +2613,12 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
 
   const decRows: ScriptPageRow[] = [
     {
-      key: 'd-done',
-      hour: 108,
-      ordinal: '0',
-      cells: [],
-      occurrence: {
-        id: 'd-done',
-        opened: true,
-        edges: [{
-          row: { id: 'd-done-1', hour: 108, readHour: 108, nameHour: 108, exact: true, category: 'politics', kind: 'decisionSelected', tags: ['GER'], participants: ['GER', null], item: { token: 'dec_one', name: 'War Bonds', description: null, icon: null }, amount: null },
-          costs: [{ currency: 'politicalPower', amount: '-50000' }],
-          lifecycle: null,
-          days: null,
-          option: null,
-        }],
-      },
-    },
-    {
       key: 'd-run',
       hour: 104,
-      ordinal: '1',
-      cells: [],
+      observed: 104,
+      ordinal: '0',
+      live: true,
+      status: 'active',
       occurrence: {
         id: 'd-run',
         opened: true,
@@ -2615,16 +2631,33 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
         }],
       },
     },
+    {
+      key: 'd-done',
+      hour: 108,
+      observed: 108,
+      ordinal: '1',
+      live: false,
+      status: 'taken',
+      occurrence: {
+        id: 'd-done',
+        opened: true,
+        edges: [{
+          row: { id: 'd-done-1', hour: 108, readHour: 108, nameHour: 108, exact: true, category: 'politics', kind: 'decisionSelected', tags: ['GER'], participants: ['GER', null], item: { token: 'dec_one', name: 'War Bonds', description: null, icon: null }, amount: null },
+          costs: [{ currency: 'politicalPower', amount: '-50000' }],
+          lifecycle: null,
+          days: null,
+          option: null,
+        }],
+      },
+    },
   ];
   const decSource = buildRowSourceFromHead('dec', { baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '2', rows: decRows, missing: [] }, undefined, 110)!;
   const decModel = decisionsProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', decSource]]) }), {
-    statuses: ['active', 'taken', 'completed', 'failed', 'cancelled', 'timedOut', 'removed', 'unsupported', 'unknown'],
     artwork: true,
     breaks: [],
-    filter: { passing: null },
   });
   assert.equal(decModel.rows.length, 2);
-  assert.equal(decModel.rows[0]!.key, 'd-run', 'running decision pins above completed decision');
+  assert.equal(decModel.rows[0]!.key, 'd-run', 'the product\'s order: the running decision first');
   assert.equal(decModel.rows[0]!.live, true);
   assert.equal(decModel.rows[0]!.cells.cost.value.kind, 'notRecorded');
   assert.equal(decModel.rows[1]!.key, 'd-done');
@@ -2632,10 +2665,31 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
 
   const choiceRows: ScriptPageRow[] = [
     {
+      key: 'ev-open',
+      hour: 105,
+      observed: 105,
+      ordinal: '0',
+      live: true,
+      status: 'awaiting',
+      occurrence: {
+        id: 'ev-open',
+        opened: true,
+        edges: [{
+          row: { id: 'ev-o-1', hour: 105, readHour: 105, nameHour: 105, exact: true, category: 'politics', kind: 'newsEventFired', tags: ['FRA'], participants: [null, 'FRA'], item: { token: 'news.2', name: 'Crisis', description: null, icon: null }, amount: null },
+          costs: null,
+          lifecycle: null,
+          days: null,
+          option: null,
+        }],
+      },
+    },
+    {
       key: 'ev-chosen',
       hour: 109,
-      ordinal: '0',
-      cells: [],
+      observed: 107,
+      ordinal: '1',
+      live: false,
+      status: 'chosen',
       occurrence: {
         id: 'ev-chosen',
         opened: true,
@@ -2657,34 +2711,16 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
         ],
       },
     },
-    {
-      key: 'ev-open',
-      hour: 105,
-      ordinal: '1',
-      cells: [],
-      occurrence: {
-        id: 'ev-open',
-        opened: true,
-        edges: [{
-          row: { id: 'ev-o-1', hour: 105, readHour: 105, nameHour: 105, exact: true, category: 'politics', kind: 'newsEventFired', tags: ['FRA'], participants: [null, 'FRA'], item: { token: 'news.2', name: 'Crisis', description: null, icon: null }, amount: null },
-          costs: null,
-          lifecycle: null,
-          days: null,
-          option: null,
-        }],
-      },
-    },
   ];
   const choiceSource = buildRowSourceFromHead('evc', { baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '2', rows: choiceRows, missing: [] }, undefined, 110)!;
   const choiceModel = eventChoicesProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', choiceSource]]) }), {
-    openers: ['scriptEventFired', 'newsEventFired'],
+    events: ['country', 'news'],
     awaiting: false,
     artwork: true,
     breaks: [],
-    filter: { passing: null },
   });
   assert.equal(choiceModel.rows.length, 2);
-  assert.equal(choiceModel.rows[0]!.key, 'ev-open', 'awaiting event pins first');
+  assert.equal(choiceModel.rows[0]!.key, 'ev-open', 'the product\'s order: the awaiting event first');
   assert.equal(choiceModel.rows[0]!.cells.choice.statusKind, 'waiting');
   assert.equal(choiceModel.rows[0]!.cells.action.actionLabel, 'View');
   assert.equal(choiceModel.rows[1]!.cells.choice.inlinePrefix, 'A');
@@ -2694,8 +2730,10 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
     {
       key: 'f-1',
       hour: 106,
+      observed: 106,
       ordinal: '0',
-      cells: [],
+      live: false,
+      choice: null,
       row: {
         id: 'f-1',
         hour: 106,
@@ -2713,10 +2751,7 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
   const feedSource = buildRowSourceFromHead('feed', { baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '1', rows: feedRows, missing: [] }, undefined, 110)!;
   const feedModel = eventFeedProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', feedSource]]) }), {
     categories: ['diplomacy'],
-    excludedKinds: [],
     artwork: true,
-    from: null,
-    filter: { passing: null },
   });
   assert.equal(feedModel.rows.length, 1);
   assert.equal(feedModel.rows[0]!.cells.detail.value.kind, 'notRecorded', 'missing dated faction name stays notRecorded rather than guessing');

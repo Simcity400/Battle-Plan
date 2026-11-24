@@ -123,7 +123,7 @@ export function refitAmounts(reply: NavalRefitsReply, line: RefitLine, live: Liv
 
 export function childCount(count: number, missing: string | null): Value<string> {
   if (missing === null) return knownValue(formatScalar(count, 'integer'));
-  return count > 0 ? partialValue(formatScalar(count, 'integer'), missing, { atLeast: true }) : notRecorded(missing);
+  return count > 0 ? partialValue(formatScalar(count, 'integer'), missing) : notRecorded(missing);
 }
 
 export const fraction = (value: Value<number>): Value<number> =>

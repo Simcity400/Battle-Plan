@@ -62,7 +62,7 @@ test('ships linked or waiting are counted only from a whole read; the ships that
   const unread = 'Naval refit ships read only in part at this hour (2 rows not read)';
   const line = refits().lines[0]!;
   const refit = project(refitsProjection, refits({ lines: [{ ...line, shipsMissing: unread }, { ...line, handle: '9', ships: [], shipsMissing: unread }] }));
-  assert.deepEqual(tipValue(refit.rows[0], 'Ships'), partialValue('1', unread, { atLeast: true }));
+  assert.deepEqual(tipValue(refit.rows[0], 'Ships'), partialValue('1', unread), 'the figure with the partial mark; the reason travels with it');
   assert.equal(refit.rows[0]!.children?.length, 1, 'the witnessed ship stays');
   assert.deepEqual(tipValue(refit.rows[1], 'Ships'), notRecorded(unread), 'none seen in an unread list is not zero');
   assert.deepEqual(tipValue(project(refitsProjection, refits()).rows[0], 'Ships'), knownValue('1'));

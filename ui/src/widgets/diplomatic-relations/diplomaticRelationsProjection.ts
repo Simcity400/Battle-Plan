@@ -61,20 +61,19 @@ export function projectDiplomaticRelations(readView: BoundedReadView, options: D
   });
   const [low, high] = reply.domain;
   const n = owners.length;
-  const cells = reply.cells;
-  const hasMissing = cells.some(cell => cell.kind === 'missing');
+  const opinionCell = (opinion: number): MatrixCell => ({ kind: 'value', color: signedRampColour(opinion, low, high, grey, negative, positive), text: formatOpinion(opinion), value: opinion });
   const present = new Map<number, MatrixCell>();
-  cells.forEach((raw, at) => {
-    if (raw.kind === 'diagonal' || Math.floor(at / n) === at % n) return;
-    present.set(at, raw.kind === 'missing'
-      ? { kind: 'missing', reason: raw.reason }
-      : { kind: 'value', color: signedRampColour(raw.opinion, low, high, grey, negative, positive), text: formatOpinion(raw.opinion), value: raw.opinion });
-  });
+  for (const pair of reply.pairs) {
+    present.set(pair.row * n + pair.column, pair.cell.kind === 'missing' ? { kind: 'missing', reason: pair.cell.reason } : opinionCell(pair.cell.opinion));
+  }
+  const zero = opinionCell(0);
+  const rowDefault: MatrixCell[] = owners.map(owner => (owner.known ? zero : { kind: 'missing', reason: owner.reason ?? 'Opinion not recorded' }));
+  const hasMissing = owners.some(owner => !owner.known) || reply.pairs.some(pair => pair.cell.kind === 'missing');
   return {
     hour,
     rows: entities,
     columns: entities,
-    cells: { present, absent: { kind: 'missing', reason: 'Opinion not recorded' } },
+    cells: { present, absent: rowIndex => rowDefault[rowIndex]! },
     legend: {
       gradient: { lowLabel: formatOpinion(low), highLabel: formatOpinion(high), stops: [negative, grey, positive] },
       ...(hasMissing ? { entries: [{ id: 'missing', label: 'Not recorded', color: grey, hatched: true }] } : {}),
