@@ -236,7 +236,6 @@ export const convoyHealthDeclaration: HeatLanesWidgetDeclaration<ConvoyProjectio
       to: null,
       ...(view === 'regions' ? { top, ...(pinned.length ? { pinnedRegions: pinned } : {}) } : {}),
     };
-    const firstHour = ctx.branch.firstHour;
     return {
       owner: `convoy-health:${JSON.stringify(params)}`,
       entries: [{
@@ -245,14 +244,12 @@ export const convoyHealthDeclaration: HeatLanesWidgetDeclaration<ConvoyProjectio
         branch: ctx.branch.id,
         offset: ctx.track.axisOffset,
         read: {
-          shape: 'point',
-          channel: 'followed',
+          shape: 'branch-to-hour',
           coverage: view === 'regions' ? { mode: 'population', form: 'top', limit: top } : { mode: 'population', form: 'all' },
           product: 'convoy-health',
           followQuery: null,
           params,
-          dynamicKeys: ['to'],
-          buildExactParams: (base, hour) => ({ ...base, from: firstHour, to: hour }),
+          buildSpanParams: (base, span) => ({ ...base, from: span.firstHour, to: span.lastHour }),
         },
       }],
     };
