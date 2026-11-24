@@ -8,7 +8,6 @@ import { boundedRuns, clipSpansToHour, inHourSpans, nextBoundaryAfter, sortedBou
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection } from '../../families/timeline/model.ts';
 import { registerTimelineProjection } from '../../families/timeline/registry.ts';
 import type { IdeaHistoryReply, IdeaSpan } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { chosenCategory, lanesFor, lawLevel } from './ideaTimelineData.ts';
 
 export interface IdeaTimelineOptions {
@@ -133,7 +132,6 @@ export const ideaTimelineDeclaration: TimelineWidgetDeclaration<IdeaTimelineOpti
   subject: 'idea timeline',
   emptyCampaign: 'Load a campaign and choose a country to see its idea history.',
   icon: 'layers',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its idea history.' },
   jumpToDate: true,
   keyByBranch: true,

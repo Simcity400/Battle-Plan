@@ -6,6 +6,8 @@ import { nationalFocusProjection } from '../../widgets/national-focus/nationalFo
 import { nationalSpiritsProjection } from '../../widgets/national-spirits/nationalSpiritsProjection.ts';
 import { warGoalsDeclaration, warGoalsProjection } from '../../widgets/war-goals/warGoalsProjection.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
+import { familyViewOptionFields } from '../../widgets/manifest.ts';
+import '../../widgets/definitions.ts';
 import type { FamilyPlanContext, InstalledPicture } from '../plan.ts';
 import { displayedHour } from '../boundedView.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
@@ -198,7 +200,7 @@ test('special projects follow the product’s order: running with progress and s
 
 test('a stored "Show names" reaches the war goals projection through the declaration the host resolves', () => {
   const resolve = (stored: Record<string, boolean>) => warGoalsDeclaration.projectionOptions({
-    options: resolveOptions(warGoalsDeclaration.optionFields ?? [], stored),
+    options: resolveOptions(familyViewOptionFields('war-goals'), stored),
   } as FamilyPlanContext<unknown>);
   assert.equal(resolve({ targetNames: true }).targetNames, true);
   assert.equal(resolve({}).targetNames, false);
