@@ -207,8 +207,8 @@ function subsForPipe(pipeId: number): number[] {
 }
 
 
-const { rowGeometry: _rows, chromeState: _chrome, ...tableWithoutWindow } = tableHostAdapter;
-const BODY_FOCUS_ADAPTER = { ...tableWithoutWindow, mirrorFocus: 'body' as const };
+const { chromeState: _chrome, ...tableWithoutChrome } = tableHostAdapter;
+const BODY_FOCUS_ADAPTER = { ...tableWithoutChrome, mirrorFocus: 'body' as const };
 
 let root: Root | null = null;
 let genericCommits = 0;

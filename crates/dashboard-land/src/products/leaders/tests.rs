@@ -207,7 +207,7 @@ fn leader_hour_reads_and_names_the_requested_leader_not_the_first_row_in_a_share
     };
     let mut frame = source(1, 100, Some(1_000));
     frame.tables[TableId::UnitLeaders.index()] =
-        TableView::Complete(TableRows::UnitLeaders(vec![first_leader.clone(), second_leader.clone()])).into();
+        TableView::Complete(TableRows::UnitLeaders(vec![first_leader, second_leader.clone()])).into();
     frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(vec![
         CharacterRow { id: 10, token: b"ABK_zaitsev".to_vec(), ..Default::default() },
         CharacterRow { id: 20, token: b"JAP_yamamoto".to_vec(), ..Default::default() },

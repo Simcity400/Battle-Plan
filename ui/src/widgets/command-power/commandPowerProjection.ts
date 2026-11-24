@@ -3,11 +3,8 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { HolderRun, HourRanges } from '../../families/holders.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { formatChartAxisValue } from '../../families/time-chart/layout.ts';
 import type { ChartArtSlot, ChartGap, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import {
@@ -40,7 +37,7 @@ function formatEndAmount(value: number): string {
   return formatChartAxisValue(value, 'power');
 }
 
-export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = registerTimeChart({
+export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = registerFamilyProjection({
   kind: 'command-power',
   family: 'time-chart',
   variant: 'rate-with-ceiling',
