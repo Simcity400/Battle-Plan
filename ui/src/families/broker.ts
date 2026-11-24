@@ -250,14 +250,14 @@ function tailQueryParams(
   return {
     branchId: query.branchId,
     ...(query.log !== undefined ? { log: query.log } : {}),
-    facets: query.facets,
+    ...(query.facets !== undefined ? { facets: query.facets } : {}),
     from: query.from,
     hour,
     offset: String(Math.max(0, Math.floor(offset))),
     limit: Math.max(1, Math.floor(limit)),
     ...(query.columns !== undefined ? { columns: query.columns } : {}),
     ...(query.countFacets && query.countFacets.length ? { countFacets: query.countFacets } : {}),
-    ...(query.scope !== undefined ? { scope: query.scope } : {}),
+    ...query.ask,
   };
 }
 

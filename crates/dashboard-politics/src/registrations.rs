@@ -12,7 +12,6 @@ dashboard_base::register_products! {
     FEED_EVENTFEEDTAIL => crate::products::feed::EventFeedTail,
     FEED_EVENTCHOICESTAIL => crate::products::feed::EventChoicesTail,
     FEED_DECISIONSTAIL => crate::products::feed::DecisionsTail,
-    FEED_EVENTFEEDSPAN => crate::products::feed::EventFeedSpan,
     POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN => crate::products::power_ledger::breakdown::PowerSpendingBreakdown,
 }
 

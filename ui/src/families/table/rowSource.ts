@@ -1,6 +1,6 @@
 import type { BoundFacetFilter, LogReplyRow } from '../../charts/log/logSource';
 import type { BoundHour } from '../../dashboard/regionTime';
-import type { LogCell, LogFacetCountAsk, MembershipRun, MissingSpan } from '../../generated/dashboard';
+import type { LogCell, LogFacetCountAsk, MissingSpan } from '../../generated/dashboard';
 
 export type TailProduct =
   | 'log-tail'
@@ -13,13 +13,15 @@ export interface LogTailQuery {
   readonly product: TailProduct;
   readonly branchId: string;
   readonly log?: string;
-  readonly facets: readonly BoundFacetFilter[];
+  readonly facets?: readonly BoundFacetFilter[];
   readonly from: BoundHour | null;
   readonly limit: number;
   readonly columns?: readonly string[];
   readonly countFacets?: readonly LogFacetCountAsk[];
-  readonly scope?: readonly MembershipRun[];
+  readonly ask?: Readonly<Record<string, unknown>>;
 }
+
+export type PlacedSpan = MissingSpan & { readonly before?: string };
 
 export interface DatedLogRow {
   readonly key: string;
@@ -33,7 +35,7 @@ export interface TailReply<TRow extends DatedLogRow = LogReplyRow> {
   readonly firstOrdinal: number;
   readonly rows: readonly TRow[];
   readonly facetTotals: ReadonlyMap<string, number>;
-  readonly missing: readonly MissingSpan[];
+  readonly missing: readonly PlacedSpan[];
 }
 
 export type LogRowSlot<TRow extends DatedLogRow> =
@@ -136,7 +138,7 @@ export function validateRowTailReply<TRow extends DatedLogRow>(
   const missing = value.missing ?? [];
   if (!Array.isArray(missing) || !missing.every(isSpan)) throw malformed();
   const facetTotals = new Map<string, number>();
-  const rawTotals = value.facetTotals ?? [];
+  const rawTotals = value.counts ?? [];
   if (!Array.isArray(rawTotals)) throw malformed();
   for (const entry of rawTotals) {
     const count = isObject(entry) ? parseCount(entry.total) : null;

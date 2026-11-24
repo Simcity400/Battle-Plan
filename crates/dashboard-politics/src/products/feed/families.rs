@@ -1,118 +1,42 @@
 
 use super::{
-    EventFeedCategory, EventFeedItem, EventFeedKind, EventFeedRow, EventFeedUnavailable, LOG, Names, Notices, branch, invalid,
+    EventFeedCategory, EventFeedItem, EventFeedKind, EventFeedRow, LOG, Names, Notices, invalid,
     row::{Columns, FeedEvent, Slot},
 };
-use dashboard_base::{Source, products::{LoadContext, Product}};
+use dashboard_base::{Source, products::LoadContext};
 use dashboard_world::products::{groups, subjects};
 use dashboard_research::products::special_projects;
 use dashboard_query::{
     Query,
-    log::{FacetFilter, Pattern, Reader, bin_for, facet_shift},
+    log::{FacetFilter, Reader},
 };
-use replay_data::{
-    event_feed_rows::{EventFeedCoverage, SCRIPT_FAMILY_NAMES},
-    rows::FeedEventRow,
-};
-use serde::{Deserialize, Serialize};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io,
-    sync::atomic::AtomicBool,
-};
-#[cfg(any(test, feature = "export-types"))]
-use ts_rs::TS;
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EventFeedSpanParams {
-    pub branch_id: String,
-    #[doc = " The timeline's first and last hour when none."]
-    #[serde(default)]
-    pub from: Option<i32>,
-    #[serde(default)]
-    pub to: Option<i32>,
-    #[doc = " The categories whose other families' rows are wanted."]
-    pub categories: Vec<EventFeedCategory>,
-    #[doc = " Only the kinds' codes, which a page's facets need before anything is read: no rows and"]
-    #[doc = " no coverage notes, so the pages are never asked after a walk of the span's reads."]
-    #[serde(default)]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub kinds_only: Option<bool>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct FeedKindCode {
-    pub kind: EventFeedKind,
-    pub code: u8,
-    pub category: EventFeedCategory,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct EventFeedSpanReply {
-    pub branch_id: String,
-    pub first_hour: i32,
-    pub last_hour: i32,
-    pub kinds: Vec<FeedKindCode>,
-    #[doc = " The other families' rows in the span, by hour."]
-    pub rows: Vec<EventFeedRow>,
-    #[doc = " What the span could not show: reads whose events were not all observed, families not"]
-    #[doc = " read, refusals of their rows."]
-    pub unavailable: Vec<EventFeedUnavailable>,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(EventFeedSpanReply);
+use replay_data::event_feed_rows::{EventFeedCoverage, SCRIPT_FAMILY_NAMES};
+use std::{collections::{BTreeMap, BTreeSet}, io, sync::atomic::AtomicBool};
 
 pub(crate) const NOTICES: usize = 1 + SCRIPT_FAMILY_NAMES.len();
 
-pub(crate) fn notice_patterns(kinds: &[Pattern], shift: u32) -> Vec<Pattern> {
-    let facet = |pattern: &Pattern, mask: u32, value: u32, group: usize| Pattern { mask: pattern.mask | u128::from(mask) << shift, value: pattern.value | u128::from(value) << shift, group, ..*pattern };
-    let mut out = Vec::new();
-    for pattern in kinds {
-        for coverage in [EventFeedCoverage::Unavailable, EventFeedCoverage::Partial] {
-            out.push(facet(pattern, 0xFF, coverage as u32, 0));
+pub(crate) fn incomplete_notices(incomplete: &[(i32, u128, FeedEvent)], losses: &[(i32, i32)], from: i32, to: i32, notices: &mut Notices) {
+    let mut raised: Vec<(usize, u64, Vec<(i32, u128, FeedEvent)>)> = (0..NOTICES).map(|notice| (notice, 0, Vec::new())).collect();
+    let first = incomplete.partition_point(|(hour, ..)| *hour < from);
+    for (hour, key, read) in incomplete[first..].iter().take_while(|(hour, ..)| *hour <= to) {
+        let mut raise = |notice: usize| {
+            let held = &mut raised[notice];
+            held.1 += 1;
+            if held.2.len() < 3 {
+                held.2.push((*hour, *key, read.clone()));
+            }
+        };
+        if read.coverage.is_some_and(|coverage| coverage != EventFeedCoverage::Complete as u32) {
+            raise(0);
         }
+        let refused = read.refusals.unwrap_or(0);
         for (at, (family, _)) in SCRIPT_FAMILY_NAMES.into_iter().enumerate() {
-            let bit = (family as u32) << FeedEventRow::REFUSALS_SHIFT;
-            out.push(facet(pattern, bit | 1 << 31, bit, 1 + at));
+            if refused & family as u32 != 0 {
+                raise(1 + at);
+            }
         }
     }
-    out
-}
-
-pub(crate) fn coverage(source: &Source, query: &Query<'_>, branch: u64, from: i32, to: i32, notices: &mut Notices, cancelled: &AtomicBool) -> io::Result<()> {
-    let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
-    let reader = Reader::new(query, declared)?;
-    let at = declared.facets.iter().position(|facet| facet.name == "incomplete").ok_or_else(|| invalid("The feed's log has no incomplete facet"))?;
-    let filters = [FacetFilter { name: "kind".into(), values: vec![i64::from(FeedEventRow::READ_INCOMPLETE)], ..Default::default() }];
-    let selection = reader.select(&filters, query.timeline.first, to)?;
-    let patterns = notice_patterns(&selection.patterns, facet_shift(at));
-    let bin = bin_for(i64::from(to) - i64::from(from) + 1, 1);
-    let mut counts = [0u64; NOTICES];
-    for (at, bins) in reader.bins(&patterns, from, to, bin)?.into_iter().enumerate() {
-        counts[patterns[at].group] += bins.iter().map(|(_, count)| count).sum::<u64>();
-    }
-    let columns = Columns::new()?;
-    let mut raised: Vec<(usize, u64, Vec<(i32, u128, FeedEvent)>)> = Vec::new();
-    for (notice, &count) in counts.iter().enumerate() {
-        if count == 0 {
-            continue;
-        }
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let asked: Vec<Pattern> = patterns.iter().filter(|pattern| pattern.group == notice).map(|pattern| Pattern { group: 0, ..*pattern }).collect();
-        let page = reader.page(&asked, 1, from, to, 0, 3)?;
-        let examples = page.rows.iter().map(|paged| Ok((paged.row.hour, paged.row.key, columns.read(&paged.row)?))).collect::<io::Result<Vec<_>>>()?;
-        raised.push((notice, count, examples));
-    }
-    let losses: Vec<(i32, i32)> = source.replay_ref().event_losses(branch).collect();
-    raised_notices(raised, &losses, notices);
-    Ok(())
+    raised_notices(raised, losses, notices);
 }
 
 pub(crate) fn raised_notices(mut raised: Vec<(usize, u64, Vec<(i32, u128, FeedEvent)>)>, losses: &[(i32, i32)], notices: &mut Notices) {
@@ -301,14 +225,11 @@ pub(crate) fn subject_rows(source: &Source, query: &Query<'_>, from: i32, to: i3
     Ok(rows)
 }
 
-pub(crate) fn project_rows(source: &Source, query: &Query<'_>, context: &LoadContext, from: i32, to: i32, notices: &mut Notices, cancelled: &AtomicBool) -> io::Result<(Vec<EventFeedRow>, Vec<String>)> {
+pub(crate) fn project_completions(source: &Source, query: &Query<'_>, context: &LoadContext, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<(Vec<EventFeedRow>, Vec<String>, Vec<(i32, i32)>)> {
     let found = special_projects::completions(source, context, query, from, to, cancelled)?;
-    if !found.unrecorded.is_empty() {
-        let hours: i64 = found.unrecorded.iter().map(|span| i64::from(span.last_hour) - i64::from(span.first_hour) + 1).sum();
-        notices.unavailable("projectFinished", "Special projects", format!("Project histories were not recorded for {hours} hours of this span; a completion dated then is not listed."), None);
-    }
+    let unrecorded = found.unrecorded.iter().map(|span| (span.first_hour, span.last_hour)).collect();
     let rows = found.events.into_iter().filter_map(completion_row).collect();
-    Ok((rows, found.warnings))
+    Ok((rows, found.warnings, unrecorded))
 }
 
 pub(super) fn completion_row(event: special_projects::ProjectCompletion) -> Option<EventFeedRow> {
@@ -340,82 +261,5 @@ pub(crate) fn unread(categories: &[EventFeedCategory], notices: &mut Notices) {
             "war relations supplies the pair becoming at war. Declarations and joins require the native event history; refused intervals cannot distinguish those actions.",
             None,
         );
-    }
-}
-
-fn kinds() -> Vec<FeedKindCode> {
-    super::CODES.iter().map(|&(code, kind)| FeedKindCode { kind, code, category: kind.category() }).collect()
-}
-
-pub(crate) fn kinds_only(branch_id: &str, first_hour: i32, last_hour: i32) -> EventFeedSpanReply {
-    EventFeedSpanReply { branch_id: branch_id.to_owned(), first_hour, last_hour, kinds: kinds(), rows: Vec::new(), unavailable: Vec::new(), warnings: Vec::new() }
-}
-
-pub struct EventFeedSpan;
-
-impl Product for EventFeedSpan {
-    const KEY: &'static str = "event-feed-span";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = EventFeedSpanParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, from: Start, to: End, categories, kindsOnly];
-    type Reply = EventFeedSpanReply;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![EventFeedSpanParams::decl(), FeedKindCode::decl(), EventFeedSpanReply::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        branch(&params.branch_id)
-    }
-
-    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let branch: u64 = params.branch_id.parse().map_err(|_| invalid("Invalid branch"))?;
-        let query = dashboard_base::queries::query(source, branch)?;
-        let (from, to) = (params.from.unwrap_or(query.timeline.first), params.to.unwrap_or(query.timeline.last));
-        if from > to {
-            return Err(invalid("Invalid span"));
-        }
-        if params.kinds_only == Some(true) {
-            return Ok(kinds_only(&params.branch_id, from, to));
-        }
-        let mut notices = Notices::default();
-        coverage(source, &query, branch, from, to, &mut notices, cancelled)?;
-        let (mut rows, mut warnings) = group_rows(source, &query, context, from, to, &params.categories, cancelled)?;
-        if params.categories.contains(&EventFeedCategory::Diplomacy) {
-            rows.extend(subject_rows(source, &query, from, to, cancelled)?);
-        }
-        if params.categories.contains(&EventFeedCategory::Milestones) {
-            let (projects, notes) = project_rows(source, &query, context, from, to, &mut notices, cancelled)?;
-            rows.extend(projects);
-            warnings.extend(notes);
-        }
-        if params.categories.contains(&EventFeedKind::NuclearStrike.category()) {
-            let localisation = match context.content.as_ref() {
-                Some(content) => dashboard_base::content::localisation(source, content).map_err(|error| format!("Nuclear type names are unavailable: {error}")),
-                None => Err("Nuclear type names are unavailable until the game folders are chosen".to_owned()),
-            };
-            if let Err(reason) = &localisation {
-                warnings.push(reason.clone());
-            }
-            let localise = |spelling: &str| localisation.as_ref().ok().and_then(|held| dashboard_text::catalogue::localised(held, spelling, dashboard_text::catalogue::View::Plain).ok());
-            rows.extend(super::nuclear::strike_rows(&query, from, to, &localise, &mut notices, cancelled)?);
-        }
-        unread(&params.categories, &mut notices);
-        rows.sort_by(|a, b| (a.hour, a.read_hour, a.kind, &a.tags).cmp(&(b.hour, b.read_hour, b.kind, &b.tags)));
-        warnings.sort();
-        warnings.dedup();
-        let reply = EventFeedSpanReply {
-            branch_id: params.branch_id.clone(),
-            first_hour: from,
-            last_hour: to,
-            kinds: kinds(),
-            rows,
-            unavailable: notices.into_list(),
-            warnings,
-        };
-        dashboard_base::products::check_reply_budget(&reply)?;
-        Ok(reply)
     }
 }
