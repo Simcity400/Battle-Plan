@@ -5049,6 +5049,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-journal",
  "replay-lanes",
  "replay-recording",
  "replay-tools",
