@@ -201,7 +201,7 @@ test('ArtProvider plugs LaneArtCache and DomArtCache behind BoundedReadView.art(
     hour: 100,
     art: createDomArtProvider(domCache as unknown as DomArtCache<HTMLImageElement>),
   });
-  const domReady = domView.art({ scope: 'url', choice: 'https://art.test/icon.png' });
+  const domReady = domView.art({ kind: 'url', url: 'https://art.test/icon.png' });
   assert.equal(domReady.status, 'ready');
   assert.equal(domReady.url, 'https://art.test/icon.png');
   assert.equal(domReady.provenance.label, 'Current installation');

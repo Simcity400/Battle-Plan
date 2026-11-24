@@ -103,7 +103,13 @@ export interface FamilyTableHostProps<TOptions> {
   readonly subscriptions: readonly FamilySourceSubscription[];
   readonly allowEmptyFollow?: boolean;
   readonly owner?: string;
-  readonly staticSources?: { readonly panels?: Readonly<Record<string, unknown>>; readonly answers?: Readonly<Record<string, FollowedAnswer>>; readonly hour: number } | null;
+  readonly staticSources?: {
+    readonly panels?: Readonly<Record<string, unknown>>;
+    readonly answers?: Readonly<Record<string, FollowedAnswer>>;
+    readonly hour: number;
+    readonly follows?: boolean;
+    readonly provenInterval?: readonly [lo: number, hi: number];
+  } | null;
   readonly exactReadView?: (hour: number) => Promise<BoundedReadView | null>;
   readonly offset: number;
   readonly pin: number | null;
@@ -112,6 +118,7 @@ export interface FamilyTableHostProps<TOptions> {
   readonly countryLooks?: CountryLooksMap;
   readonly identitySnapshot?: IdentitySnapshot | null;
   readonly onIdentityDemands?: (demands: readonly (readonly [EntityKind, string, number])[]) => void;
+  readonly onViewportSize?: (width: number, height: number) => void;
   readonly selectedKey?: string | null;
   readonly onActivate?: (key: string, meta?: unknown, hour?: number) => void;
   readonly contextMenuItems?: (key: string | null, name: string | null, hour: number) => MenuItem[];
@@ -175,6 +182,7 @@ export default function FamilyTableHost<TOptions>({
   countryLooks,
   identitySnapshot = null,
   onIdentityDemands,
+  onViewportSize,
   selectedKey = null,
   onActivate,
   contextMenuItems,
@@ -287,7 +295,7 @@ export default function FamilyTableHost<TOptions>({
     auditable,
     subscriptions,
     offset,
-    pin: pin ?? (subscriptions.length === 0 && staticSources ? staticSources.hour : null),
+    pin: pin ?? (subscriptions.length === 0 && staticSources && !staticSources.follows ? staticSources.hour : null),
     bounds,
     frameRef,
     surfaceLabel: 'table',
@@ -331,6 +339,7 @@ export default function FamilyTableHost<TOptions>({
     exactReadView,
     identitySnapshot,
     onIdentityDemands,
+    onViewportSize,
     selectedKey,
     onActivate,
     contextMenuItems,
@@ -352,6 +361,7 @@ export default function FamilyTableHost<TOptions>({
     exactReadView,
     identitySnapshot,
     onIdentityDemands,
+    onViewportSize,
     selectedKey,
     onActivate,
     contextMenuItems,
@@ -445,7 +455,9 @@ export default function FamilyTableHost<TOptions>({
     pipeline.present(pipe, 'table');
     const dated = Object.keys(sourceIdsRef.current).length === 0
       ? (cur.staticSources
-        ? { h: cur.staticSources.hour, c: cur.staticSources.hour }
+        ? (cur.staticSources.provenInterval
+          ? { h: cur.staticSources.provenInterval[0], c: cur.staticSources.provenInterval[1] }
+          : { h: cur.staticSources.hour, c: cur.staticSources.hour })
         : cur.allowEmptyFollow && cur.bounds
           ? { h: cur.bounds[0], c: cur.bounds[1] }
           : undefined)
@@ -824,6 +836,7 @@ export default function FamilyTableHost<TOptions>({
       viewportRef.current.height = h;
       syncViewWindow();
       setViewportWidth(w);
+      latestRef.current.onViewportSize?.(w, h);
       bindRef.current();
     });
     resizeObserver.observe(node);
@@ -832,6 +845,7 @@ export default function FamilyTableHost<TOptions>({
     syncViewWindow();
     refreshFocusAnchorRef.current();
     setViewportWidth(node.clientWidth);
+    latestRef.current.onViewportSize?.(node.clientWidth, node.clientHeight);
 
     node.addEventListener('scroll', onScroll, { passive: true });
     bindRef.current();

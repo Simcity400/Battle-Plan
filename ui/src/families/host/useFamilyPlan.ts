@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { IconName } from '../../components/Icons';
+import { validateProductReply, type ProductRequest } from '../../dashboard/client.ts';
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useSlotTagsState } from '../../dashboard/countrySlots.ts';
@@ -7,23 +8,39 @@ import type { WidgetRuntime } from '../../dashboard/definitions';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
+import { inFrame } from '../../dashboard/frameUpdates.ts';
 import { countryMatch, countryMatchChangeHours, groupUnobserved, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
 import { resolveWindow, type WidgetSpec } from '../../dashboard/model';
 import { resolveOptions, type OptionField, type OptionValue } from '../../dashboard/options';
+import { prepareGate, preparing } from '../../dashboard/prepare.ts';
 import { useFollowedProduct, useProduct } from '../../dashboard/products';
-import type { Failure } from '../../dashboard/queryError';
+import { asFailure, type Failure } from '../../dashboard/queryError.ts';
 import { useCountryNameAt } from '../../dashboard/reachedProduct';
 import { useGate } from '../../dashboard/regionGate';
 import { axisAt, lastRecordedHour, SPEC } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
+import type { TileReply } from '../../dashboard/tiles/tile.ts';
+import { TileView, tileCache, unrecordedReason, type TiledLine, type TileViewport } from '../../dashboard/tiles/view.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime';
-import type { CountryFlagChoice } from '../../generated/dashboard';
+import { useRegion, useRegionCoverage, watchBoundary } from '../../dashboard/widgetTime';
+import type { CountryFlagChoice, HourSpan } from '../../generated/dashboard';
 import { perfLog } from '../../shell/perf.ts';
 import { sharedDomArtCache } from '../art/domCache.ts';
 import { createDomArtProvider } from '../art/provider.ts';
 import { createBoundedReadView, displayedHour } from '../boundedView.ts';
-import { buildStaticRequest, compileFollowPlan, planSignature, primaryStaticEntry, readPlanExact } from '../broker.ts';
+import {
+  buildPlaybackBoundedRequest,
+  buildStaticRequest,
+  compileFollowPlan,
+  FamilySourceBroker,
+  needsPlaybackBoundedRead,
+  planSignature,
+  primaryStaticEntry,
+  readPlanExact,
+  resolvePlaybackProvenInterval,
+  stabilizeCanvasDimension,
+  type PlaybackBoundedSpec,
+} from '../broker.ts';
 import type { HolderRun } from '../holders.ts';
 import { overlapsHourRanges } from '../holders.ts';
 import { identityBrokerFor } from '../identity/broker.ts';
@@ -100,6 +117,8 @@ function buildFilterTimeline(
 export interface StaticBundle {
   readonly hour: number;
   readonly span: readonly [number, number] | null;
+  readonly provenInterval?: readonly [lo: number, hi: number];
+  readonly follows?: boolean;
   readonly panels: Readonly<Record<string, unknown>>;
   readonly answers?: Readonly<Record<string, FollowedAnswer>>;
   readonly readView: BoundedReadView;
@@ -123,7 +142,11 @@ export interface UseFamilyPlanInput<TAux, TExtra> {
   readonly widget: WidgetSpec;
   readonly runtime: WidgetRuntime;
   readonly active: boolean;
+  readonly hoverHour?: number | null;
   readonly setOption?: (key: string, value: OptionValue) => void;
+  readonly viewport?: { readonly width?: number; readonly height?: number };
+  readonly viewportRef?: { readonly current: HTMLElement | null };
+  readonly viewportDeadbandPx?: number;
 }
 
 export interface UseFamilyPlanResult<TAux, TExtra> {
@@ -141,6 +164,11 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly followRefused: string | null;
   readonly staticBundle: StaticBundle | null;
   readonly staticHeld: boolean;
+  readonly tiledSeries: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
+  readonly tiledRevision: number;
+  readonly onSeriesViewport: (viewport: TileViewport) => void;
+  readonly retryTiles: () => void;
+  readonly hovers: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly exactReadView: ((hour: number) => Promise<BoundedReadView | null>) | undefined;
   readonly bodyStatus: FamilyBodyStatus;
   readonly bannerFailure: BannerFailureInfo | null;
@@ -155,6 +183,7 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly identityProvider: IdentityProvider | undefined;
   readonly artProvider: ArtProvider;
   readonly onIdentityDemands: (demands: readonly (readonly [EntityKind, string, number])[]) => void;
+  readonly measureViewport: (width: number, height?: number) => void;
 }
 
 export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
@@ -172,8 +201,42 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     widget,
     runtime,
     active,
+    hoverHour = null,
     setOption,
+    viewport,
+    viewportRef,
+    viewportDeadbandPx = 2,
   } = input;
+
+  const [measuredViewport, setMeasuredViewport] = useState<{ readonly width?: number; readonly height?: number }>({});
+  const measureViewport = useCallback((width: number, height?: number) => {
+    setMeasuredViewport(prev => {
+      const nextWidth = stabilizeCanvasDimension(width, prev.width, viewportDeadbandPx);
+      const nextHeight = height === undefined
+        ? prev.height
+        : stabilizeCanvasDimension(height, prev.height, viewportDeadbandPx);
+      if (nextWidth === prev.width && nextHeight === prev.height) return prev;
+      return {
+        ...(nextWidth !== undefined ? { width: nextWidth } : {}),
+        ...(nextHeight !== undefined ? { height: nextHeight } : {}),
+      };
+    });
+  }, [viewportDeadbandPx]);
+
+  useEffect(() => {
+    const node = viewportRef?.current;
+    if (!node || typeof ResizeObserver !== 'function') return;
+    measureViewport(node.clientWidth, node.clientHeight);
+    const ro = new ResizeObserver(entries => {
+      const rect = entries[0]?.contentRect;
+      measureViewport(rect ? rect.width : node.clientWidth, rect ? rect.height : node.clientHeight);
+    });
+    ro.observe(node);
+    return () => { ro.disconnect(); };
+  }, [viewportRef, measureViewport]);
+
+  const stableWidth = stabilizeCanvasDimension(viewport?.width, measuredViewport.width, viewportDeadbandPx);
+  const stableHeight = stabilizeCanvasDimension(viewport?.height, measuredViewport.height, viewportDeadbandPx);
 
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const following = widget.time.mode === 'follow';
@@ -512,8 +575,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const rawPlan = useMemo<SourcePlan | null>(() => {
     if (!ctx || !inputsReady) return null;
-    return buildSources(ctx, { following, staticSpan: null });
-  }, [ctx, inputsReady, buildSources, following]);
+    return buildSources(ctx, {
+      following,
+      ...(stableWidth !== undefined ? { width: stableWidth } : {}),
+      ...(stableHeight !== undefined ? { height: stableHeight } : {}),
+      staticSpan: null,
+    });
+  }, [ctx, inputsReady, buildSources, following, stableWidth, stableHeight]);
 
   const stablePlanRef = useRef<{ sig: string; plan: SourcePlan | null }>({ sig: '', plan: null });
   const sig = planSignature(rawPlan);
@@ -529,13 +597,196 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     return compileFollowPlan(plan, gate.checkFollow);
   }, [following, active, plan, gate.checkFollow]);
 
+  const pixelBinnedKey = useMemo(() => {
+    if (!plan) return '';
+    const entries = plan.entries.filter(e => e.read.shape === 'pixel-binned');
+    if (!entries.length) return '';
+    return JSON.stringify(entries.map(e => {
+      const r = e.read as Extract<typeof e.read, { shape: 'pixel-binned' }>;
+      return [e.name, e.source.id, e.source.revision, e.branch, r.family, r.tags, r.within ? [...r.within.entries()] : null, r.marks === true, lastHour];
+    }));
+  }, [plan, lastHour]);
+
+  const tileViewsRef = useRef<Map<string, TileView>>(new Map());
+  const seriesViewportRef = useRef<TileViewport | null>(null);
+  const [tiledState, setTiledState] = useState<{
+    readonly key: string;
+    readonly series: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
+    readonly revision: number;
+    readonly error: unknown;
+    readonly unrecorded: string | null;
+  }>({ key: '', series: {}, revision: 0, error: null, unrecorded: null });
+
+  const planForTilesRef = useRef(plan);
+  planForTilesRef.current = plan;
+  const gateSpanRef = useRef(gate.span);
+  gateSpanRef.current = gate.span;
+
+  useEffect(() => {
+    const currentPlan = planForTilesRef.current;
+    if (!active || !pixelBinnedKey || !currentPlan) {
+      for (const view of tileViewsRef.current.values()) view.close();
+      tileViewsRef.current.clear();
+      return;
+    }
+    const entries = currentPlan.entries.filter(
+      (e): e is typeof e & { readonly read: Extract<typeof e.read, { shape: 'pixel-binned' }> } => e.read.shape === 'pixel-binned',
+    );
+    const views = new Map<string, TileView>();
+    let disposed = false;
+    let rev = 0;
+
+    const publish = () => {
+      if (disposed) return;
+      const nextSeries: Record<string, ReadonlyMap<string, TiledLine>> = {};
+      let firstError: unknown = null;
+      let firstUnrecorded: string | null = null;
+      for (const [name, tv] of views) {
+        if (tv.current) {
+          nextSeries[name] = tv.current;
+          if (!firstUnrecorded) {
+            const reason = unrecordedReason(tv.current);
+            if (reason) firstUnrecorded = reason;
+          }
+        }
+        if (firstError === null && tv.error !== null) firstError = tv.error;
+      }
+      rev++;
+      const snapshot = { key: pixelBinnedKey, series: nextSeries, revision: rev, error: firstError, unrecorded: firstUnrecorded };
+      inFrame(() => {
+        if (!disposed) setTiledState(snapshot);
+      });
+    };
+
+    const prepared = preparing(runtime.client);
+    for (const entry of entries) {
+      const read = entry.read;
+      if (!read.tags.length) continue;
+      const tileRequest = (binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined): ProductRequest =>
+        productRequest({
+          sourceId: entry.source.id,
+          revision: entry.source.revision,
+          product: 'series-tiles',
+          params: {
+            branchId: entry.branch,
+            family: read.family,
+            binHours,
+            index,
+            countries: tags.map(countryFromKey),
+            ...(within
+              ? { within: tags.map(tag => [countryFromKey(tag), (within[tag] ?? []).flatMap(span => gateSpanRef.current(span.firstHour, span.lastHour) ?? [])] as const) }
+              : {}),
+            ...(read.marks ? { withMarks: true } : {}),
+          },
+        });
+      const ask = async (binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined) => {
+        const request = tileRequest(binHours, index, tags, within);
+        return validateProductReply(await runtime.client.product<TileReply>(request, new AbortController().signal), request).data;
+      };
+      const promote = prepared ? (...asked: Parameters<typeof tileRequest>) => prepareGate(runtime.client).promote(tileRequest(...asked)) : undefined;
+      const laneKey = `${entry.source.id}|${entry.source.revision}|${entry.branch}|${JSON.stringify(read.family)}`;
+      const tv = new TileView(
+        tileCache(runtime.client),
+        { key: laneKey, tags: read.tags, within: read.within, lastHour, marks: read.marks === true, ask, prepared, promote },
+        publish,
+      );
+      views.set(entry.name, tv);
+      if (seriesViewportRef.current) tv.setView(seriesViewportRef.current);
+    }
+    tileViewsRef.current = views;
+    return () => {
+      disposed = true;
+      for (const tv of views.values()) tv.close();
+      if (tileViewsRef.current === views) tileViewsRef.current = new Map();
+    };
+  }, [runtime.client, active, pixelBinnedKey, lastHour]);
+
+  const onSeriesViewport = useCallback((nextViewport: TileViewport) => {
+    const stableNextWidth = stabilizeCanvasDimension(nextViewport.width, seriesViewportRef.current?.width, viewportDeadbandPx) ?? nextViewport.width;
+    const normalized: TileViewport = stableNextWidth === nextViewport.width ? nextViewport : { ...nextViewport, width: stableNextWidth };
+    seriesViewportRef.current = normalized;
+    measureViewport(nextViewport.width);
+    for (const tv of tileViewsRef.current.values()) tv.setView(normalized);
+  }, [measureViewport, viewportDeadbandPx]);
+
+  const retryTiles = useCallback(() => {
+    for (const tv of tileViewsRef.current.values()) tv.retry();
+  }, []);
+
+  const hoverBrokerRef = useRef<FamilySourceBroker | null>(null);
+  const [hovers, setHovers] = useState<Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>>({});
+
+  useEffect(() => {
+    if (!hoverBrokerRef.current) hoverBrokerRef.current = new FamilySourceBroker();
+    const broker = hoverBrokerRef.current;
+    const entries = active && plan
+      ? plan.entries.filter((e): e is typeof e & { readonly read: Extract<typeof e.read, { shape: 'exact-hover' }> } => e.read.shape === 'exact-hover')
+      : [];
+    if (!entries.length || hoverHour === null || hoverHour === undefined || !Number.isFinite(hoverHour)) {
+      for (const e of entries) broker.cancelSlot(`hover:${e.name}`);
+      setHovers(prev => (Object.keys(prev).length ? {} : prev));
+      return;
+    }
+    const targetHour = Math.floor(hoverHour);
+    for (const entry of entries) {
+      const read = entry.read;
+      if (!read.params) continue;
+      const params = { ...read.params, [read.hourParam ?? 'hour']: targetHour };
+      const req = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params });
+      const key = `${entry.source.id}|${entry.source.revision}|${entry.branch}|${read.product}|${JSON.stringify(params)}`;
+      broker.runSlot(
+        `hover:${entry.name}`,
+        key,
+        async signal => {
+          const reply = validateProductReply(await runtime.client.product(req, signal), req);
+          return read.validate ? read.validate(reply.data) : reply.data;
+        },
+        data => {
+          setHovers(prev => ({ ...prev, [entry.name]: { hour: targetHour, data } }));
+        },
+      );
+    }
+  }, [active, plan, hoverHour, runtime.client]);
+
+  useEffect(() => () => {
+    hoverBrokerRef.current?.dispose();
+    hoverBrokerRef.current = null;
+  }, []);
+
+  const currentTiled = tiledState.key === pixelBinnedKey ? tiledState : null;
+
+  const playbackBounded = following && needsPlaybackBoundedRead(plan, compiledFollow.subscriptions);
+  const usesStatic = !following || playbackBounded;
+
   const frozenGate = useMemo(
     () => freezeGate(gate),
     [gate.open, track, countryTag, singleCountry?.aliases, singleCountry?.historyHeld],
   );
 
+  const trackOffset = track?.axisOffset ?? 0;
+  const [playbackAnchorHour, setPlaybackAnchorHour] = useState<number>(() => Math.floor(runtime.clock.getHour()) + trackOffset);
+  const playbackProvenRef = useRef<{ sig: string; interval: readonly [number, number]; anchorHour: number } | null>(null);
+  if (playbackProvenRef.current && playbackProvenRef.current.sig !== sig) {
+    playbackProvenRef.current = null;
+  }
+
+  const playbackSpec = useMemo<PlaybackBoundedSpec | null>(() => {
+    if (!playbackBounded || !plan || !ctx) return null;
+    const held = playbackProvenRef.current?.sig === sig ? playbackProvenRef.current : null;
+    return buildPlaybackBoundedRequest(plan, {
+      branch: ctx.branch,
+      effectiveEndHour,
+      currentHour: playbackAnchorHour,
+      gate: frozenGate,
+      previousProven: held?.interval ?? null,
+      previousAnchorHour: held?.anchorHour ?? null,
+      countriesKnown: countriesState.known,
+    });
+  }, [playbackBounded, plan, ctx, sig, effectiveEndHour, playbackAnchorHour, frozenGate, countriesState.known]);
+
   const staticSpec = useMemo(() => {
-    if (following || !plan || !ctx) return null;
+    if (!plan || !ctx) return null;
+    if (following) return playbackSpec;
     return buildStaticRequest(plan, {
       timeMode: widget.time.mode,
       branch: ctx.branch,
@@ -544,7 +795,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       gate: frozenGate,
       countriesKnown: countriesState.known,
     });
-  }, [following, plan, ctx, widget.time.mode, window, pinHour, frozenGate, countriesState.known]);
+  }, [following, playbackSpec, plan, ctx, widget.time.mode, window, pinHour, frozenGate, countriesState.known]);
 
   const staticValidate = useCallback((raw: unknown) => {
     return staticSpec?.validate ? staticSpec.validate(raw) : raw;
@@ -555,10 +806,44 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     runtime.client,
     staticSpec?.request ?? null,
     dynamicKeys,
-    active && !following,
+    active && usesStatic,
     staticValidate,
     track?.source,
   );
+
+  const activeProven = useMemo<readonly [number, number] | null>(() => {
+    if (!playbackBounded || !playbackSpec) return null;
+    if (staticProduct.data !== undefined) {
+      return resolvePlaybackProvenInterval(
+        playbackSpec.entry.read,
+        staticProduct.data,
+        playbackSpec.provenInterval,
+        playbackSpec.anchorHour,
+      );
+    }
+    return playbackSpec.provenInterval;
+  }, [playbackBounded, playbackSpec, staticProduct.data]);
+
+  if (playbackBounded && playbackSpec && activeProven) {
+    playbackProvenRef.current = { sig, interval: activeProven, anchorHour: playbackSpec.anchorHour };
+  }
+
+  useEffect(() => {
+    if (!active || !playbackBounded || !track || !activeProven) return;
+    const [lo, hi] = activeProven;
+    const nowHour = Math.floor(runtime.clock.getHour()) + trackOffset;
+    if (nowHour < lo || nowHour > hi) {
+      setPlaybackAnchorHour(prev => (prev === nowHour ? prev : nowHour));
+    }
+    return watchBoundary(
+      runtime.clock,
+      () => [lo - trackOffset, hi + 1 - trackOffset],
+      () => {
+        const next = Math.floor(runtime.clock.getHour()) + trackOffset;
+        setPlaybackAnchorHour(prev => (prev === next ? prev : next));
+      },
+    );
+  }, [active, playbackBounded, track, trackOffset, runtime.clock, activeProven?.[0], activeProven?.[1]]);
 
   const staticReqKey = useMemo(() => (staticSpec ? JSON.stringify(staticSpec.request) : null), [staticSpec]);
   const expectedStaticKey = useMemo(() => {
@@ -566,7 +851,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     const params = staticSpec.request.params as Record<string, unknown>;
     return JSON.stringify(dynamicKeys.map(name => params[name]));
   }, [staticSpec, dynamicKeys]);
-  const staticHeld = !following && staticSpec !== null && staticProduct.data !== undefined
+  const staticHeld = usesStatic && staticSpec !== null && staticProduct.data !== undefined
     && (staticProduct.asking !== undefined || (expectedStaticKey !== null && staticProduct.moment !== expectedStaticKey));
 
   const ctxWithStaticSpan = useMemo<FamilyPlanContext<TAux> | null>(
@@ -594,7 +879,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const pendingStaticByMomentRef = useRef(
     new Map<string, { readonly requestKey: string | null; readonly context: FamilyPlanContext<TAux>; readonly gate: FrozenGate; readonly span: readonly [number, number] | null; readonly extra: FrozenPlanExtra }>(),
   );
-  if (!following && staticSpec && ctxWithStaticSpan) {
+  if (usesStatic && staticSpec && ctxWithStaticSpan) {
     const key = expectedStaticKey ?? '__single__';
     pendingStaticByMomentRef.current.set(key, {
       requestKey: staticReqKey,
@@ -610,7 +895,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const displayedStaticRef = useRef<DisplayedStaticSnapshot<FamilyPlanContext<TAux>, FrozenPlanExtra> | null>(null);
   const displayedStatic = useMemo(() => {
-    if (following || staticProduct.data === undefined || !ctxWithStaticSpan) {
+    if (!usesStatic || staticProduct.data === undefined || !ctxWithStaticSpan) {
       displayedStaticRef.current = null;
       return null;
     }
@@ -632,29 +917,33 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     });
     displayedStaticRef.current = next;
     return next;
-  }, [following, staticSpec, staticReqKey, staticHeld, staticProduct.data, staticProduct.moment, ctxWithStaticSpan, frozenGate, currentFrozenExtra]);
+  }, [usesStatic, staticSpec, staticReqKey, staticHeld, staticProduct.data, staticProduct.moment, ctxWithStaticSpan, frozenGate, currentFrozenExtra]);
 
   const staticBundle = useMemo<StaticBundle | null>(() => {
-    if (following || !displayedStatic) return null;
+    if (!usesStatic || !displayedStatic) return null;
     const frozenPlan = displayedStatic.extra.plan ?? plan;
     const entry = frozenPlan ? primaryStaticEntry(frozenPlan) : null;
     const read = entry?.read;
     const entryName = entry?.name ?? 'main';
-    let shownHour = pinHour ?? effectiveEndHour;
+    let shownHour = playbackBounded ? Math.max(firstHour, Math.min(effectiveEndHour, playbackAnchorHour)) : (pinHour ?? effectiveEndHour);
     let shownSpan: readonly [number, number] | null = null;
-    if (read?.shape === 'point') {
-      if (read.channel === 'panel' && !read.exactProduct && displayedStatic.moment) {
-        try {
-          const parsed = JSON.parse(displayedStatic.moment) as number[];
-          if (typeof parsed[0] === 'number') shownHour = parsed[0];
-        } catch {
+    if (!playbackBounded) {
+      if (read?.shape === 'point') {
+        if (read.channel === 'panel' && !read.exactProduct && displayedStatic.moment) {
+          try {
+            const parsed = JSON.parse(displayedStatic.moment) as number[];
+            if (typeof parsed[0] === 'number') shownHour = parsed[0];
+          } catch {
+          }
+        } else if (typeof (displayedStatic.data as { hour?: unknown }).hour === 'number') {
+          shownHour = (displayedStatic.data as { hour: number }).hour;
         }
-      } else if (typeof (displayedStatic.data as { hour?: unknown }).hour === 'number') {
-        shownHour = (displayedStatic.data as { hour: number }).hour;
+      } else if (read?.shape === 'branch-to-hour' || read?.shape === 'trailing-window' || read?.shape === 'range') {
+        shownSpan = displayedStatic.span;
+        if (shownSpan) shownHour = shownSpan[1];
       }
-    } else if (read?.shape === 'branch-to-hour' || read?.shape === 'trailing-window' || read?.shape === 'range') {
-      shownSpan = displayedStatic.span;
-      if (shownSpan) shownHour = shownSpan[1];
+    } else {
+      shownSpan = activeProven ?? displayedStatic.span;
     }
     const isLivePanel = read?.shape === 'point' && read.channel === 'panel' && !read.exactProduct;
     const live = isLivePanel
@@ -664,27 +953,30 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     return {
       hour: shownHour,
       span: shownSpan,
+      ...(activeProven ? { provenInterval: activeProven } : {}),
+      ...(playbackBounded ? { follows: true } : {}),
       panels: { [entryName]: displayedStatic.data },
       readView: createBoundedReadView({
         hour: displayedHour(shownHour),
+        ...(activeProven ? { validInterval: activeProven } : {}),
         panels: panelsMap,
         live,
         identity: identityProvider,
         art: artProvider,
       }),
     };
-  }, [following, displayedStatic, plan, pinHour, effectiveEndHour, identityProvider, artProvider]);
+  }, [usesStatic, playbackBounded, displayedStatic, plan, firstHour, effectiveEndHour, playbackAnchorHour, pinHour, activeProven, identityProvider, artProvider]);
 
   const retainedStaticSpan = staticBundle?.span ?? null;
   const displayedCtx = useMemo<FamilyPlanContext<TAux> | null>(() => {
-    if (following) return ctxWithStaticSpan;
+    if (!usesStatic) return ctxWithStaticSpan;
     if (displayedStatic) return { ...displayedStatic.context, staticSpan: retainedStaticSpan };
     return ctxWithStaticSpan;
-  }, [ctxWithStaticSpan, following, displayedStatic, retainedStaticSpan]);
-  const displayedGate = !following && displayedStatic ? displayedStatic.gate : frozenGate;
-  const displayedPlan = !following && displayedStatic ? (displayedStatic.extra.plan ?? plan) : plan;
-  const displayedExtra = !following && displayedStatic ? displayedStatic.extra.extra : currentExtra;
-  const displayedCountryLooks = !following && displayedStatic ? displayedStatic.extra.countryLooks : currentCountryLooks;
+  }, [ctxWithStaticSpan, usesStatic, displayedStatic, retainedStaticSpan]);
+  const displayedGate = usesStatic && displayedStatic ? displayedStatic.gate : frozenGate;
+  const displayedPlan = usesStatic && displayedStatic ? (displayedStatic.extra.plan ?? plan) : plan;
+  const displayedExtra = usesStatic && displayedStatic ? displayedStatic.extra.extra : currentExtra;
+  const displayedCountryLooks = usesStatic && displayedStatic ? displayedStatic.extra.countryLooks : currentCountryLooks;
 
   const exactReadView = useMemo(() => {
     if (!displayedCtx || !displayedPlan || !perfLog) return undefined;
@@ -776,12 +1068,32 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
     if (auxEnabled && auxResult.data === undefined) return { kind: 'loading', label: loadingLabel };
 
+    if (pixelBinnedKey) {
+      if (currentTiled?.error) {
+        return { kind: 'failed', failure: asFailure(currentTiled.error), origin: 'local', onRetry: retryTiles };
+      }
+      if (currentTiled?.unrecorded) {
+        return { kind: 'not-recorded', reason: currentTiled.unrecorded };
+      }
+    }
+
     if (following) {
       if (compiledFollow.unavailable) return { kind: 'refused', reason: compiledFollow.unavailable };
+      if (!playbackBounded) return { kind: 'ready' };
+      if (!staticSpec) return { kind: 'outside' };
+      if (staticProduct.error) {
+        return { kind: 'failed', failure: staticProduct.error, origin: 'local', onRetry: staticProduct.retry };
+      }
+      if (staticProduct.data === undefined) return { kind: 'loading', label: loadingLabel };
       return { kind: 'ready' };
     }
 
     const staticEntry = plan ? primaryStaticEntry(plan) : null;
+    if (staticEntry?.read.shape === 'pixel-binned') {
+      if (pinHour === null && !window) return { kind: 'outside' };
+      if (!currentTiled || !Object.keys(currentTiled.series).length) return { kind: 'loading', label: loadingLabel };
+      return { kind: 'ready' };
+    }
     if (staticEntry && (staticEntry.read.shape === 'branch-to-hour' || staticEntry.read.shape === 'trailing-window' || staticEntry.read.shape === 'range')) {
       if (!window || !staticSpec) return { kind: 'outside' };
     } else if (pinHour === null) {
@@ -824,6 +1136,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     slots,
     effectiveMulti,
     following,
+    playbackBounded,
     widget.countries,
     moment,
     lastHour,
@@ -834,6 +1147,9 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     staticProduct.error,
     staticProduct.retry,
     staticProduct.data,
+    pixelBinnedKey,
+    currentTiled,
+    retryTiles,
   ]);
 
   const bannerFailure: BannerFailureInfo | null = (isSingle && singleCountry?.chosen && singleCountry.error && singleCountry.historyHeld)
@@ -849,7 +1165,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const staticEntry = displayedPlan ? primaryStaticEntry(displayedPlan) : null;
   const isPanelStatic = staticEntry?.read.shape === 'point' && staticEntry.read.channel === 'panel' && !staticEntry.read.exactProduct;
-  const pin = following ? null : (isPanelStatic ? (staticBundle?.hour ?? pinHour) : (staticBundle?.hour ?? null));
+  const pin = following ? null : (isPanelStatic ? (staticBundle?.hour ?? pinHour) : (staticBundle?.hour ?? (staticEntry?.read.shape === 'pixel-binned' ? (pinHour ?? window?.lastHour ?? null) : null)));
 
   return {
     track,
@@ -866,6 +1182,11 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     followRefused: compiledFollow.refused,
     staticBundle,
     staticHeld,
+    tiledSeries: currentTiled?.series ?? {},
+    tiledRevision: currentTiled?.revision ?? 0,
+    onSeriesViewport,
+    retryTiles,
+    hovers,
     exactReadView,
     bodyStatus,
     bannerFailure,
@@ -880,5 +1201,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     identityProvider,
     artProvider,
     onIdentityDemands,
+    measureViewport,
   };
 }
