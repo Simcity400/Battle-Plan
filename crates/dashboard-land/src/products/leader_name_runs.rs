@@ -138,10 +138,29 @@ fn read_hour(query: &dashboard_query::Query<'_>, frames: &mut at_hour::Frames<'_
     Ok(frame)
 }
 
-fn owned_by(owner: &Country, slot: Option<u32>, tag: Option<String>) -> Option<bool> {
-    match owner {
-        Country::Slot(asked) => slot.map(|held| held == *asked),
-        Country::Tag(asked) => tag.map(|held| held == *asked),
+enum Owners<'a> {
+    Slot(u32, HashMap<u32, u32>),
+    Tag(&'a str, Tags),
+}
+
+impl<'a> Owners<'a> {
+    fn read(frame: &DecodedFrame, owner: &'a Country) -> Result<Self, String> {
+        match owner {
+            Country::Slot(asked) => frame
+                .complete::<tables::CountryLinks>()
+                .map(|links| Self::Slot(*asked, dashboard_text::metadata::link_slots(links)))
+                .map_err(|error| format!("Leaders' owners are not linked at this hour: {error}")),
+            Country::Tag(asked) => Tags::read(frame)
+                .map(|tags| Self::Tag(asked, tags))
+                .map_err(|error| format!("Leaders' owners are not named at this hour: {error}")),
+        }
+    }
+
+    fn owns(&self, raw: u32) -> Option<bool> {
+        match self {
+            Self::Slot(asked, slots) => slots.get(&raw).map(|held| held == asked),
+            Self::Tag(asked, tags) => tags.tag(raw).map(|held| held == *asked),
+        }
     }
 }
 
@@ -150,7 +169,7 @@ fn answers(frame: &DecodedFrame, content: &Content, owner: &Country, keys: &[u64
         Ok(leaders) => leaders,
         Err(why) => return keys.iter().map(|_| Answer::unknown(why.to_string())).collect(),
     };
-    let tags = Tags::read(frame).map_err(|error| format!("Leaders' owners are not named at this hour: {error}"));
+    let owners = Owners::read(frame, owner);
     let characters = frame.complete::<tables::Characters>().ok();
     let lexical = frame.complete::<tables::LexicalTokens>().ok();
     keys.iter()
@@ -158,11 +177,11 @@ fn answers(frame: &DecodedFrame, content: &Content, owner: &Country, keys: &[u64
             let Some(row) = leaders.iter().find(|row| handle(row) == key) else {
                 return Answer { name: None, missing: Some(LEADER_ABSENT.into()), presence: Presence::Absent };
             };
-            let tags = match &tags {
-                Ok(tags) => tags,
+            let owners = match &owners {
+                Ok(owners) => owners,
                 Err(why) => return Answer::unknown(why.clone()),
             };
-            match owned_by(owner, tags.slot(row.owner), tags.tag(row.owner)) {
+            match owners.owns(row.owner) {
                 Some(true) => {}
                 Some(false) => return Answer { name: None, missing: Some(LEADER_ABSENT.into()), presence: Presence::Absent },
                 None => return Answer::unknown(OWNER_UNNAMED.into()),
@@ -259,15 +278,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_slot_owner_matches_on_the_slot_alone_and_an_unnamed_owner_is_unknown_not_another_country() {
+    fn a_slot_owner_resolves_from_the_country_links_alone_and_an_unnamed_owner_is_unknown_not_another_country() {
+        use replay_data::rows::{CountryLinkRow, CountryRow, TableRows};
+        use replay_frame::frame::TableView;
+        let mut frame = dashboard_core::test_fixtures::source(1, 1_000, Some(1));
+        *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
+            CountryLinkRow { id: 9001, canonical_slot: 7 },
+            CountryLinkRow { id: 9002, canonical_slot: 8 },
+        ]));
+        *frame.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "Countries not read at this hour".into() };
         let slot = Country::Slot(7);
         let tag = Country::Tag("AAA".into());
-        assert_eq!(owned_by(&slot, Some(7), None), Some(true), "a matching slot with an unnamed tag is the same owner");
-        assert_eq!(owned_by(&slot, Some(8), Some("AAA".into())), Some(false));
-        assert_eq!(owned_by(&slot, None, None), None, "an unlinked slot is not known to be another owner");
-        assert_eq!(owned_by(&tag, Some(7), None), None, "a tag owner with an unnamed tag is unknown, not absent");
-        assert_eq!(owned_by(&tag, Some(7), Some("AAA".into())), Some(true));
-        assert_eq!(owned_by(&tag, Some(7), Some("BBB".into())), Some(false));
+        let owners = Owners::read(&frame, &slot).expect("the Countries table is not needed to compare slots");
+        assert_eq!(owners.owns(9001), Some(true));
+        assert_eq!(owners.owns(9002), Some(false));
+        assert_eq!(owners.owns(9003), None, "an unlinked owner is not known to be another country");
+        assert!(Owners::read(&frame, &tag).is_err(), "a tag owner needs the Countries table");
+        *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![CountryRow { id: 7, canonical_slot: 7, tag: b"AAA".to_vec(), ..CountryRow::default() }]));
+        let owners = Owners::read(&frame, &tag).unwrap();
+        assert_eq!(owners.owns(9001), Some(true));
+        assert_eq!(owners.owns(9002), None, "a tag owner with an unnamed tag is unknown, not absent");
     }
 
     #[test]

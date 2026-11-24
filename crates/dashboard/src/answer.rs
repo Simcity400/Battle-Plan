@@ -213,7 +213,7 @@ mod tests {
         use dashboard_base::{SourceKey, queries, test_fixtures::{replay, source}};
         use dashboard_economy::products::convoys;
         use dashboard_land::products::{army, division_log, leaders::LeadersContext};
-        use dashboard_politics::products::feed::scope;
+        use dashboard_politics::products::feed::index as feed_index;
         use dashboard_production::products::{construction, production};
         use dashboard_wars::products::{casualties, diplomacy, wars};
         use dashboard_world::products::{groups, land_owners, styles, subjects};
@@ -241,7 +241,7 @@ mod tests {
         leaders.keep_test_verdict(run, hour);
         answer(&source, "wars", &serde_json::json!({ "branchId": branch.to_string() }), &load, &cancelled).unwrap();
         queries::spellings(&source, run, hour, &std::collections::BTreeSet::from([7])).unwrap();
-        scope::warm(&source, branch).unwrap();
+        feed_index::warm(&source, branch).unwrap();
         air_ledger::warm_observed(&source, branch).unwrap();
 
         let caches = [
@@ -268,7 +268,7 @@ mod tests {
         assert!(queries::has_cached_spellings(&source), "spellings should be warm");
         assert!(leaders.has_cached_verdicts(run, hour), "leader verdicts should be warm");
         assert!(wars::has_cached_walks(&source), "war walks should be warm");
-        assert_eq!(scope::kept(&source), [run], "feed scope should be warm");
+        assert_eq!(feed_index::kept(&source), [branch], "feed index should be warm");
         assert_eq!(air_ledger::kept_observed(&source).len(), 2, "both air ledgers should be warm");
 
         forget(&source);
@@ -276,7 +276,7 @@ mod tests {
         assert!(!queries::has_cached_spellings(&source), "spellings should be cold");
         assert!(!leaders.has_cached_verdicts(run, hour), "leader verdicts should be cold");
         assert!(!wars::has_cached_walks(&source), "war walks should be cold");
-        assert!(scope::kept(&source).is_empty(), "feed scope should be cold");
+        assert!(feed_index::kept(&source).is_empty(), "feed index should be cold");
         assert!(air_ledger::kept_observed(&source).is_empty(), "air ledgers should be cold");
         for check in caches.into_iter().chain(histories) {
             check();

@@ -67,7 +67,8 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     assert.ok(still.installs >= 20, `twenty same-hour installs happened (${still.installs})`);
     assert.deepEqual([still.storeUpdates, still.commits], [0, 0], `a stationary tooltip across installs: no tooltip-store update, no React render including TooltipLayer (${still.installs} installs)`);
 
-    const statics = await act<{ rounds: number; commits: number; binds: number; staticsSupplied: number; generationKept: boolean }>('testStaticPanelsReplaced()');
+    const statics = await act<{ rounds: number; commits: number; binds: number; staticsSupplied: number; generationKept: boolean; mode: string }>('testStaticPanelsReplaced()');
+    assert.ok(!statics.mode.startsWith('failed'), `the static host draws (${statics.mode})`);
     assert.deepEqual([statics.binds, statics.generationKept], [0, true], `replacing only a mounted host's static panels ${statics.rounds} times binds nothing and keeps the binding generation (R4-S4: ${statics.binds} binds)`);
     assert.equal(statics.staticsSupplied, statics.rounds, 'each new panel set is one statics supply');
     assert.equal(statics.commits, statics.rounds, 'and costs one React commit, the one that passed the panels');
@@ -77,7 +78,6 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
       blockedShown: boolean;
       description: string | null;
       clearedDescription: boolean;
-      dateOnly: boolean;
       activatedId: number | null;
       activatedHour: number | null;
       viewId: number | null;
@@ -87,8 +87,7 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     assert.equal(tuple.blockedShown, true, 'the blocked state shows inside the frame');
     assert.equal(tuple.description, 'Four countries ranked by factories', 'the installed description is what the body is described by');
     assert.equal(tuple.clearedDescription, true, 'the description goes when the picture goes');
-    assert.equal(tuple.dateOnly, true, 'a date-only install happened without an install notification');
-    assert.equal(tuple.activatedId, tuple.viewId, 'Enter after a date-only install carries the picture Page shows now');
+    assert.equal(tuple.activatedId, tuple.viewId, 'Enter after forty played hours carries the picture Page shows now');
     assert.equal(tuple.activatedHour, tuple.viewHour, 'and its hour');
 
     const f12 = await act<{

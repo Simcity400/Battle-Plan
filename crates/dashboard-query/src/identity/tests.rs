@@ -97,3 +97,14 @@ fn the_next_holder_change_is_the_first_run_edge_after_the_hour() {
     assert_eq!(holders.next_change(199), Some(200), "the last run ends");
     assert_eq!(holders.next_change(200), None);
 }
+
+#[test]
+fn a_reason_for_no_name_uses_only_what_was_known_at_its_hour() {
+    let holders = Holders::new([("GER".to_owned(), vec![run(120, 139, GER)])].into(), vec![(150, 159, "Countries were not read".to_owned())]);
+    let country = Country::Slot(5);
+    let said = |hour: i32| holders.say(&country, hour, |name| format!("{name} has no row"));
+    assert_eq!(said(110), NOT_IN_HISTORY, "before its first appearance nothing yet names the slot");
+    assert_eq!(said(130), "GER has no row");
+    assert_eq!(said(145), NOT_HELD_AT_HOUR);
+    assert_eq!(said(155), format!("Who holds {} is not known: Countries were not read", country.key()), "an hour whose holders were not read says so");
+}

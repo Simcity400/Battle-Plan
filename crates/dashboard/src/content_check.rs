@@ -327,13 +327,12 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             findings.push(Finding::new(Kind::Offline, key, "the goals, selections, pools and members a faction holds require recorded faction rows"));
             Ok("Faction goal and member-upgrade content loaded through the production readers; goal rewards and scripted names are described at a recorded hour.".into())
         }
-        wars::Wars::KEY => {
+        wars::Wars::KEY | wars::WarTimelineAt::KEY => {
             let catalogue = content.catalogue()?;
             catalogue.war_names()?;
             take(catalogue, "native war naming content", findings);
             Ok("Native war naming content loaded through the recorded stack; viewpoint groups, first-goal tokens, naming operands and continuity require recorded rows.".into())
         }
-        wars::WarLosses::KEY => Ok("No content dependency: casualties are the recorded CasualtyLifetimes counters of the relations each war held.".into()),
         <wars::contributions::WarContributions as at_hour::AtHour>::KEY => {
             content.catalogue()?.war_participation_factors()?;
             findings.push(Finding::new(Kind::Offline, "war-contributions", "participation ledgers and delivery histories need recorded WarParticipation and WarLendLeaseHistories rows; unavailable offline"));
@@ -436,7 +435,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         feed::EventFeedTail::KEY
         | feed::EventChoicesTail::KEY
         | feed::DecisionsTail::KEY
-        | feed::EventFeedSpan::KEY => {
+        | feed::EventFeedActivity::KEY => {
             let catalogue = content.catalogue()?;
             catalogue.scripted_content()?.effects()?;
             take(catalogue, "event feed text", findings);
@@ -644,7 +643,7 @@ fn flags_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), Str
                 );
                 match found {
                     FlagSearch::Found { .. } => any = true,
-                    FlagSearch::Unresolvable | FlagSearch::Absent(_) => {}
+                    FlagSearch::Unresolvable | FlagSearch::Refused(_) | FlagSearch::Absent(_) => {}
                 }
             }
         }

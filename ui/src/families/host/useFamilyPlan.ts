@@ -8,8 +8,8 @@ import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { inFrame } from '../../dashboard/frameUpdates.ts';
 import { countryMatch, countryMatchChangeHours, groupUnobserved, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
-import { resolveWindow, type WidgetSpec } from '../../dashboard/model';
-import { resolveOptions, type OptionField, type OptionValue } from '../../dashboard/options';
+import { resolveWindow, type WidgetBase } from '../../dashboard/model';
+import type { OptionValue } from '../../dashboard/options';
 import { prepareGate, preparing } from '../../dashboard/prepare.ts';
 import { loadProduct, peekProduct, productKey, useProduct } from '../../dashboard/products';
 import { asFailure, type Failure } from '../../dashboard/queryError.ts';
@@ -74,6 +74,7 @@ import type {
 import {
   ReadTarget,
   showBundle,
+  shownView,
   unitEntries,
   type PinnedAsk,
   type ShownBundle,
@@ -84,6 +85,7 @@ import {
   effectiveCountryUnobserved,
   extractFactionData,
   freezeGate,
+  planOwner,
   selectionUnobservedReason,
   trackGate,
   type FrozenGate,
@@ -131,7 +133,7 @@ function buildFilterTimeline(
 }
 
 const NO_ENTRIES: readonly SourceEntry[] = [];
-const NO_VIEW: TargetView = { kind: 'none', failure: null, bundle: null, held: false };
+const NO_VIEW: TargetView = { inputs: '', kind: 'none', failure: null, bundle: null, held: false };
 const NO_PIN: PinnedAsk = {
   timeMode: 'pin',
   branch: { firstHour: 0, lastHour: 0 },
@@ -141,8 +143,10 @@ const NO_PIN: PinnedAsk = {
 };
 
 export interface StaticBundle {
+  readonly stamp: object;
   readonly hour: number;
   readonly span: readonly [number, number] | null;
+  readonly proof: readonly [number, number] | null;
   readonly follows?: boolean;
   readonly panels: Readonly<Record<string, unknown>>;
   readonly shifts?: Readonly<Record<string, number>>;
@@ -160,12 +164,12 @@ export interface UseFamilyPlanInput<TAux, TExtra> {
   readonly subject: string;
   readonly emptyCampaign: string;
   readonly icon?: IconName;
-  readonly optionFields?: readonly OptionField[];
+  readonly options: Readonly<Record<string, OptionValue>>;
   readonly countries: CountryPolicy;
   readonly aux?: AuxProductSpec<TAux>;
   readonly sources: (ctx: FamilyPlanContext<TAux>, view: FamilyViewportRequest) => SourcePlan;
   readonly captureExtra?: (ctx: FamilyPlanContext<TAux>, countryLooks: CountryLooksMap | undefined) => TExtra;
-  readonly widget: WidgetSpec;
+  readonly widget: WidgetBase;
   readonly runtime: WidgetRuntime;
   readonly active: boolean;
   readonly hoverHour?: number | null;
@@ -222,7 +226,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     kind,
     subject,
     emptyCampaign,
-    optionFields,
+    options,
     countries: policy,
     aux: auxSpec,
     sources: buildSources,
@@ -269,10 +273,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const following = widget.time.mode === 'follow';
-  const options = useMemo(
-    () => resolveOptions(optionFields ?? [], widget.options),
-    [optionFields, widget.options],
-  );
   const isSingle = policy.mode === 'single';
   const isFilter = policy.mode === 'filter';
   const isMulti = policy.mode === 'multi';
@@ -282,7 +282,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     widget,
     SPEC,
     active,
-    isSingle ? { country: { stored: widget.options?.country, setOption } } : undefined,
+    isSingle ? { country: { stored: options.country, setOption } } : undefined,
   );
   const coverage = useRegionCoverage(runtime, useRegion(widget));
 
@@ -569,16 +569,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }), [widget.countries, effectiveMulti, filterUnobserved, holders, allTags, membership, membershipRuns, unobserved, filter, labels, factionData, filterMatch?.reason]);
 
   const owner = useMemo(
-    () => JSON.stringify([
-      kind,
-      track?.source.id ?? '',
-      track?.source.revision ?? '',
-      track?.branch.id ?? '',
-      track?.axisOffset ?? 0,
-      widget.time,
-      isSingle ? countryTag : widget.countries,
-    ]),
-    [kind, track?.source.id, track?.source.revision, track?.branch.id, track?.axisOffset, widget.time, isSingle, countryTag, widget.countries],
+    () => planOwner(kind, track, widget.time, widget.countries, isSingle ? countryTag : undefined),
+    [kind, track, widget.time, isSingle, countryTag, widget.countries],
   );
 
   const ctx = useMemo<FamilyPlanContext<TAux> | null>(() => {
@@ -1071,15 +1063,17 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     () => (branch ? { timeMode: widget.time.mode, branch, window, pinHour, gate: frozenGate, countriesKnown: countriesState.known } : null),
     [branch, widget.time.mode, window, pinHour, frozenGate, countriesState.known],
   );
+  const inputs = useMemo(() => JSON.stringify([owner, following ? null : displayHour, sig, content]), [owner, following, displayHour, sig, content]);
   useLayoutEffect(() => {
-    const common = { entries: branch ? entries : NO_ENTRIES, active, content, trackOffset };
+    const common = { inputs, entries: branch ? entries : NO_ENTRIES, active, content, trackOffset };
     if (following && playback) readTarget().configure({ ...common, following: true, subscribed, playback });
-    else if (!following && pinned) readTarget().configure({ ...common, following: false, displayHour, pinned });
+    else if (!following && pinned) readTarget().configure({ ...common, following: false, displayHour, pinned, ...(playback ? { track: playback } : {}) });
     else readTarget().configure({ ...common, entries: NO_ENTRIES, following: false, displayHour, pinned: NO_PIN });
-  }, [readTarget, branch, entries, active, content, trackOffset, following, subscribed, playback, pinned, displayHour]);
+  }, [readTarget, inputs, branch, entries, active, content, trackOffset, following, subscribed, playback, pinned, displayHour]);
   const subscribeView = useCallback((changed: () => void) => readTarget().subscribe(() => inFrame(changed)), [readTarget]);
   const readView = useCallback(() => targetRef.current?.view() ?? NO_VIEW, []);
-  const view = useSyncExternalStore(subscribeView, readView, readView);
+  const targetView = useSyncExternalStore(subscribeView, readView, readView);
+  const view = shownView(targetView, inputs, !!branch && entries.length > 0);
   const retryUnits = useCallback(() => { targetRef.current?.retry(); }, []);
   const staticProof = useMemo<StaticProof>(() => ({
     read: () => targetRef.current?.proof() ?? null,
@@ -1115,11 +1109,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   );
 
   const viewBundle = view.bundle;
+  const viewPanels = viewBundle?.panels;
+  const panelRecord = useMemo(() => (viewPanels ? Object.fromEntries(viewPanels) : null), [viewPanels]);
   const viewedBundle = useMemo<StaticBundle | null>(
-    () => (viewBundle
-      ? { hour: viewBundle.hour, span: viewBundle.span, ...(viewBundle.follows ? { follows: true } : {}), panels: Object.fromEntries(viewBundle.panels), ...(viewBundle.shifts ? { shifts: viewBundle.shifts } : {}) }
+    () => (viewBundle && panelRecord
+      ? { stamp: viewBundle, hour: viewBundle.hour, span: viewBundle.span, proof: viewBundle.proof, ...(viewBundle.follows ? { follows: true } : {}), panels: panelRecord, ...(viewBundle.shifts ? { shifts: viewBundle.shifts } : {}) }
       : null),
-    [viewBundle],
+    [viewBundle, panelRecord],
   );
 
   const shownRef = useRef<ShownBundle<StaticBundle, FrozenView> | null>(null);

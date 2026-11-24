@@ -31,12 +31,9 @@ const BASE_OPTS: ArmySizeRaceOptions = {
   measure: 'battalions',
   countFor: 'owner',
   split: true,
-  candidates: [],
-  holders: null,
-  membership: null,
-  unobserved: [],
   top: 10,
   all: false,
+  group: false,
 };
 
 test('army-size race and mix split battalion unit groups from army-at and withhold unreconciled parts', () => {
@@ -46,8 +43,8 @@ test('army-size race and mix split battalion unit groups from army-at and withho
       { key: 'group:armor', name: 'Armor', unresolved: false },
     ],
     rows: [
-      { country: 'GER', tag: 'GER', total: 200, missing: null, values: [150, 50], partsMissing: null },
-      { country: 'SOV', tag: 'SOV', total: 180, missing: null, values: [null, null], partsMissing: 'Part breakdown unavailable' },
+      { country: 'GER', slot: null, tag: 'GER', total: 200, missing: null, values: [150, 50], partsMissing: null },
+      { country: 'SOV', slot: null, tag: 'SOV', total: 180, missing: null, values: [null, null], partsMissing: 'Part breakdown unavailable' },
     ],
     missing: null,
     warnings: [],
@@ -67,7 +64,7 @@ test('army-size race and mix split battalion unit groups from army-at and withho
   assert.deepEqual(raceRows[0]!.segments?.map(s => [s.label, Math.round(s.share * 100)]), [['Infantry', 75], ['Armor', 25]]);
   assert.equal(raceRows[1]!.segments, undefined);
 
-  const mix = armySizeMixProjection.project(view, { countFor: 'owner', top: 10, all: false });
+  const mix = armySizeMixProjection.project(view, { countFor: 'owner', top: 10, all: false, group: false });
   assertBarsModelValid(mix, 300);
   assert.equal(mix.form, 'share');
   const mixRows = mix.rows.filter((r): r is BarsDataRow => r.kind === 'data');
@@ -106,7 +103,6 @@ test('army-size race under default Top handles unpopulated panel and preserves e
     measure: 'manpower',
     split: false,
     top: null,
-    candidates: ['GER', 'SOV'],
   });
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.deepEqual(rows.map(r => [r.key, r.value?.value.kind]), [['GER', 'known'], ['SOV', 'notRecorded']]);

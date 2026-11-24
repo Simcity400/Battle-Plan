@@ -5,7 +5,7 @@ pub mod sprites;
 
 pub use resolver::{
     ArtFile, ArtFrame, ArtOrigin, ArtProvenance, ArtRenderVariant, ArtResolution, ArtScopeKey,
-    ArtTarget, CURRENT_INSTALL_ART_LABEL, FlagSetKey, Searched, art_file, art_scope_key,
+    ArtTarget, CURRENT_INSTALL_ART_LABEL, FlagSetKey, Searched, art_file, art_scope_key, relayed_searches,
     resolve, resolve_equipment_icon,
     resolve_flag, resolve_flag_pixels, resolve_portrait_entry, resolve_sprite,
     resolve_sprite_or_texture, resolve_sprite_type, resolve_sprite_type_on_layers,

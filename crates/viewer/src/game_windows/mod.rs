@@ -3,12 +3,15 @@ use content_reader_image::{dds, native::Decode};
 use content_reader_layers::ResolvedLayers;
 use content_reader_localisation::localisation::{self, Localisation, Piece, pieces};
 use dashboard_base::Source;
+use replay::campaign::SeekResult;
+use replay_data::rows::TableId;
+use replay_frame::frame::DecodedFrame;
 use dashboard_core::config::Config;
 use eframe::wgpu;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fmt, io,
     path::PathBuf,
     sync::{
@@ -35,6 +38,7 @@ use viewer_native_gui::{
 #[cfg(test)]
 mod tests;
 
+mod compose;
 pub mod equipment_designer;
 pub mod industrial_organisation;
 
@@ -50,6 +54,7 @@ pub const DEFAULT_VIEWPORT: [u32; 2] = [2752, 1152];
 const MAX_CACHED_WINDOWS: usize = 8;
 const MAX_DYNAMIC_WINDOW_IMAGES: usize = 64;
 const MAX_CACHED_RENDERS: usize = 16;
+const MAX_DECODED_FRAMES: usize = 4;
 const MAX_SURFACE_DIM: u32 = 4096;
 const NO_COUNTRIES: &str =
     "a flag's country is unknown: the hour's countries (CountryAppearance) are not recorded";
@@ -120,12 +125,34 @@ pub struct RegionAlphaMask {
     pub bits_base64: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum GameWindowScrollControl {
+    List,
+    Step { direction: i32 },
+    Track,
+    Thumb { travel: i32, thumb: i32 },
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameWindowScroll {
+    pub list: String,
+    pub vertical: bool,
     pub position: f32,
     pub range: f32,
-    pub wheel: f32,
+    pub step: f32,
+    pub page: f32,
+    pub control: GameWindowScrollControl,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameWindowText {
+    pub path: String,
+    pub label: String,
+    pub value: Option<String>,
+    pub missing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -161,6 +188,7 @@ pub struct GameWindowRender {
     pub art_label: Option<String>,
     pub regions: Vec<GameWindowRegion>,
     pub warnings: Vec<String>,
+    pub text: Vec<GameWindowText>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -269,6 +297,24 @@ impl<V> WindowCache<V> {
     pub fn clear(&mut self) -> Vec<V> {
         self.order.clear();
         self.entries.drain().map(|(_, value)| value).collect()
+    }
+
+    pub fn drop_unused_interfaces<I>(
+        &self,
+        interfaces: &mut HashMap<InterfaceCacheKey, I>,
+        loading: &InterfaceCacheKey,
+    ) -> Vec<I> {
+        let used: HashSet<InterfaceCacheKey> =
+            self.entries.keys().map(WindowCacheKey::interface_key).collect();
+        let unused: Vec<InterfaceCacheKey> = interfaces
+            .keys()
+            .filter(|key| *key != loading && !used.contains(*key))
+            .cloned()
+            .collect();
+        unused
+            .into_iter()
+            .filter_map(|key| interfaces.remove(&key))
+            .collect()
     }
 
     pub fn len(&self) -> usize {
@@ -881,6 +927,7 @@ pub struct ComposedPlan {
     pub view_links: BTreeMap<String, String>,
     scroll: BTreeMap<String, f32>,
     scrollbars: Vec<ComposedSubWindow>,
+    text: Vec<GameWindowText>,
 }
 
 impl ComposedPlan {
@@ -891,6 +938,19 @@ impl ComposedPlan {
         }
     }
 
+    pub fn text(&mut self, path: &str, label: &str, value: Result<String, String>) {
+        let (value, missing) = match value {
+            Ok(value) => (Some(value), None),
+            Err(missing) => (None, Some(missing)),
+        };
+        self.text.push(GameWindowText {
+            path: path.to_owned(),
+            label: label.to_owned(),
+            value,
+            missing,
+        });
+    }
+
     pub fn list_rows(
         &mut self,
         list: &Element,
@@ -898,14 +958,15 @@ impl ComposedPlan {
         sizes: &[[i32; 2]],
         resources: &dyn Resources,
     ) -> Result<Vec<Option<[i32; 2]>>, GameWindowError> {
+        let native::Fields::ListBox(fields) = &list.fields else {
+            return Err(GameWindowError::failed(format!("{} is not a list box", list.path)));
+        };
         let mut bindings = native_gui::Bindings::default();
         bindings.viewport = Some(DEFAULT_VIEWPORT.map(|value| value as i32));
-        let lay = |current: Option<f32>| {
-            native_gui::widgets::list_box_rows(list, sizes, current, resources, &bindings)
-                .map_err(|refusals| GameWindowError::failed(format_refusals(&refusals)))
-        };
-        let mut rows = lay(None)?;
-        let range = rows.range.max(0) as f32;
+        bindings.regions = true;
+        let smooth = list.kind == native::Kind::SmoothListBox;
+        let vertical = !(smooth && fields.horizontal != 0);
+        let range = list_overflow(smooth, vertical, fields, sizes) as f32;
         let position = self
             .scroll
             .get(&list.path)
@@ -913,26 +974,42 @@ impl ComposedPlan {
             .filter(|position| position.is_finite())
             .unwrap_or(0.0)
             .clamp(0.0, range);
-        if position > 0.0 {
-            rows = lay(Some(position))?;
-        }
-        let [left, top, right, bottom] = holder.clip.unwrap_or([
-            holder.logical[0],
-            holder.logical[1],
-            holder.logical[0] + holder.content[0],
-            holder.logical[1] + holder.content[1],
-        ]);
+        let mut rows = native_gui::widgets::list_box_rows(
+            list,
+            sizes,
+            (position > 0.0).then_some(position),
+            resources,
+            &bindings,
+        )
+        .map_err(|refusals| GameWindowError::failed(format_refusals(&refusals)))?;
+        let [x, y, width, height] = rows.rect;
+        let own = [
+            holder.logical[0] + x,
+            holder.logical[1] + y,
+            holder.logical[0] + x + width,
+            holder.logical[1] + y + height,
+        ];
+        let [left, top, right, bottom] = match holder.clip {
+            Some(clip) => [
+                own[0].max(clip[0]),
+                own[1].max(clip[1]),
+                own[2].min(clip[2]),
+                own[3].min(clip[3]),
+            ],
+            None => own,
+        };
         if rows.range > 0 {
-            self.scrollbars.push(ComposedSubWindow {
-                before_part: holder.before,
-                parts: holder.place_scrollbar(&rows),
-                regions: Vec::new(),
-                diagnostics: std::mem::take(&mut rows.diagnostics),
-                root_window: list.path.clone(),
-                path_prefix: format!("{}:scrollbar/", list.path),
-                close_paths: Vec::new(),
-                tooltip_overrides: BTreeMap::new(),
-            });
+            let scroll = |control| {
+                Some(GameWindowScroll {
+                    list: list.path.clone(),
+                    vertical,
+                    position,
+                    range,
+                    step: list_row_step(smooth, vertical, sizes),
+                    page: rows.page.max(1) as f32,
+                    control,
+                })
+            };
             self.extra_regions.push(GameWindowRegion {
                 path: list.path.clone(),
                 rect: [
@@ -948,11 +1025,49 @@ impl ComposedPlan {
                 view: None,
                 tooltip: None,
                 alpha_mask: None,
-                scroll: Some(GameWindowScroll {
-                    position,
-                    range,
-                    wheel: list_row_step(list, sizes),
-                }),
+                scroll: scroll(GameWindowScrollControl::List),
+            });
+            let (controls, regions): (Vec<_>, Vec<_>) = rows.controls.drain(..).unzip();
+            for (control, region) in controls.into_iter().zip(holder.place_regions([0, 0], &regions)) {
+                let control = match control {
+                    native_gui::widgets::ListControl::Step(direction) => {
+                        GameWindowScrollControl::Step { direction }
+                    }
+                    native_gui::widgets::ListControl::Track => GameWindowScrollControl::Track,
+                    native_gui::widgets::ListControl::Thumb(slide) => GameWindowScrollControl::Thumb {
+                        travel: slide.travel,
+                        thumb: slide.thumb,
+                    },
+                };
+                self.extra_regions.push(GameWindowRegion {
+                    path: format!("{}:scrollbar/{}", list.path, region.path),
+                    rect: region.rect,
+                    clip: region.clip.map(|[left, top, right, bottom]| {
+                        [
+                            left as f32,
+                            top as f32,
+                            (right - left).max(0) as f32,
+                            (bottom - top).max(0) as f32,
+                        ]
+                    }),
+                    disabled: region.disabled,
+                    close: false,
+                    passthrough: false,
+                    view: None,
+                    tooltip: None,
+                    alpha_mask: None,
+                    scroll: scroll(control),
+                });
+            }
+            self.scrollbars.push(ComposedSubWindow {
+                before_part: holder.before,
+                parts: holder.place_scrollbar(&rows),
+                regions: Vec::new(),
+                diagnostics: std::mem::take(&mut rows.diagnostics),
+                root_window: list.path.clone(),
+                path_prefix: format!("{}:scrollbar/", list.path),
+                close_paths: Vec::new(),
+                tooltip_overrides: BTreeMap::new(),
             });
         }
         Ok(rows
@@ -970,14 +1085,23 @@ impl ComposedPlan {
     }
 }
 
-fn list_row_step(list: &Element, sizes: &[[i32; 2]]) -> f32 {
-    let native::Fields::ListBox(fields) = &list.fields else {
-        return 1.0;
-    };
-    match (list.kind, sizes.first()) {
-        (native::Kind::SmoothListBox, Some(&[width, height])) => {
-            (if fields.horizontal != 0 { width } else { height }).max(1) as f32
-        }
+fn list_overflow(smooth: bool, vertical: bool, fields: &native::ListBox, sizes: &[[i32; 2]]) -> i32 {
+    if smooth {
+        let axis = usize::from(vertical);
+        let run: i64 = sizes.iter().map(|size| i64::from(size[axis])).sum();
+        (run - i64::from(fields.size[axis])).clamp(0, i64::from(i32::MAX)) as i32
+    } else {
+        let fit = match sizes.last() {
+            Some(&[_, height]) if height > 0 => fields.size[1] / height,
+            _ => 0,
+        };
+        (sizes.len() as i32).saturating_sub(fit).max(0)
+    }
+}
+
+fn list_row_step(smooth: bool, vertical: bool, sizes: &[[i32; 2]]) -> f32 {
+    match (smooth, sizes.first()) {
+        (true, Some(&[width, height])) => (if vertical { height } else { width }).max(1) as f32,
         _ => 1.0,
     }
 }
@@ -1323,15 +1447,21 @@ fn region_alpha_mask(
     }))
 }
 
+pub struct RegionActions<'a> {
+    pub close_paths: &'a [&'a str],
+    pub tooltips: &'a BTreeMap<String, GameWindowTooltip>,
+    pub views: &'a BTreeMap<String, String>,
+}
+
 pub fn regions_from_layout(
     roots: &[&Element],
     regions: &[Region],
     origin: [f32; 2],
     resources: &dyn Resources,
     localisation: &Localisation,
-    close_paths: &[&str],
-    overrides: &BTreeMap<String, GameWindowTooltip>,
+    actions: &RegionActions<'_>,
 ) -> Vec<GameWindowRegion> {
+    let RegionActions { close_paths, tooltips: overrides, views } = *actions;
     let icons = RegistryIcons { resources };
     let mut out = Vec::new();
     for region in regions {
@@ -1413,7 +1543,8 @@ pub fn regions_from_layout(
                     }
                 })
         };
-        if close || tooltip.is_some() {
+        let view = (!through && !close).then(|| views.get(&region.path).cloned()).flatten();
+        if close || tooltip.is_some() || view.is_some() {
             out.push(GameWindowRegion {
                 path: region.path.clone(),
                 rect: [x0, y0, width, height],
@@ -1421,7 +1552,7 @@ pub fn regions_from_layout(
                 disabled: region.disabled,
                 close,
                 passthrough: through,
-                view: None,
+                view,
                 tooltip,
                 alpha_mask,
                 scroll: None,
@@ -1597,10 +1728,58 @@ impl RenderFrameCache {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DecodedFrameKey {
+    source_id: String,
+    revision: String,
+    branch: u64,
+    hour: i32,
+    tables: Vec<TableId>,
+}
+
+struct DecodedFrames<T> {
+    capacity: usize,
+    entries: VecDeque<(DecodedFrameKey, Arc<T>)>,
+}
+
+impl<T> DecodedFrames<T> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            entries: VecDeque::new(),
+        }
+    }
+
+    fn get(&mut self, key: &DecodedFrameKey) -> Option<Arc<T>> {
+        let at = self.entries.iter().position(|(held, _)| held == key)?;
+        let entry = self.entries.remove(at)?;
+        let frame = Arc::clone(&entry.1);
+        self.entries.push_back(entry);
+        Some(frame)
+    }
+
+    fn insert(&mut self, key: DecodedFrameKey, frame: Arc<T>) {
+        self.entries.retain(|(held, _)| *held != key);
+        self.entries.push_back((key, frame));
+        while self.entries.len() > self.capacity {
+            self.entries.pop_front();
+        }
+    }
+
+    fn evict_source(&mut self, source_id: &str) {
+        self.entries.retain(|(held, _)| held.source_id != source_id);
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
 struct CacheState {
     interfaces: HashMap<InterfaceCacheKey, Arc<SharedInterface>>,
     windows: WindowCache<Arc<Mutex<CachedWindow>>>,
     renders: RenderFrameCache,
+    frames: DecodedFrames<DecodedFrame>,
     source_generations: HashMap<String, u64>,
     global_generation: u64,
     cancels: HashMap<String, Arc<AtomicBool>>,
@@ -1612,6 +1791,7 @@ impl Default for CacheState {
             interfaces: HashMap::new(),
             windows: WindowCache::new(MAX_CACHED_WINDOWS),
             renders: RenderFrameCache::new(MAX_CACHED_RENDERS),
+            frames: DecodedFrames::new(MAX_DECODED_FRAMES),
             source_generations: HashMap::new(),
             global_generation: 0,
             cancels: HashMap::new(),
@@ -1707,6 +1887,7 @@ impl Service {
                 .collect();
             let windows = cache.windows.evict_source(source_id);
             cache.renders.evict_source(source_id);
+            cache.frames.evict_source(source_id);
             (interfaces, windows)
         };
         drop(dropped_windows);
@@ -1721,6 +1902,7 @@ impl Service {
                 cache.interfaces.drain().map(|(_, value)| value).collect();
             let windows = cache.windows.clear();
             cache.renders.clear();
+            cache.frames.clear();
             (interfaces, windows)
         };
         drop(dropped_windows);
@@ -1799,6 +1981,56 @@ impl Service {
         }
     }
 
+    pub fn frame_at(
+        &self,
+        source: &Source,
+        request: &GameWindowRequest,
+        admitted_gen: (u64, u64),
+        branch: u64,
+        tables: &[TableId],
+    ) -> Result<Arc<DecodedFrame>, GameWindowError> {
+        let key = DecodedFrameKey {
+            source_id: request.source_id.clone(),
+            revision: request.revision.clone(),
+            branch,
+            hour: request.hour,
+            tables: tables.to_vec(),
+        };
+        if let Some(frame) = self.cache.lock().unwrap_or_else(|e| e.into_inner()).frames.get(&key) {
+            return Ok(frame);
+        }
+        let frame: Arc<DecodedFrame> = match source
+            .replay_ref()
+            .seek_selected(branch, request.hour, Some(tables))
+            .map_err(|error| {
+                GameWindowError::failed(format!(
+                    "Could not seek recording to hour {}: {error}",
+                    request.hour
+                ))
+            })? {
+            SeekResult::Frame(frame) => Arc::from(frame),
+            SeekResult::Gap { reason, .. } => {
+                return Err(GameWindowError::refused(format!(
+                    "Hour {} is not recorded on this branch: {reason}",
+                    request.hour
+                )));
+            }
+        };
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let current = (
+            cache
+                .source_generations
+                .get(&request.source_id)
+                .copied()
+                .unwrap_or(0),
+            cache.global_generation,
+        );
+        if current == admitted_gen {
+            cache.frames.insert(key, Arc::clone(&frame));
+        }
+        Ok(frame)
+    }
+
     fn generations(&self, source_id: &str) -> (u64, u64) {
         let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         (
@@ -1853,7 +2085,12 @@ impl Service {
                 cache.global_generation,
             );
             if current_gen == req.expected_gen {
-                cache.windows.insert(req.key.clone(), Arc::clone(&wrapped))
+                let windows = cache.windows.insert(req.key.clone(), Arc::clone(&wrapped));
+                let state = &mut *cache;
+                let interfaces = state
+                    .windows
+                    .drop_unused_interfaces(&mut state.interfaces, &req.key.interface_key());
+                (windows, interfaces)
             } else {
                 return Err(GameWindowError::Cancelled);
             }
@@ -2018,7 +2255,7 @@ impl Service {
             (DEFAULT_VIEWPORT[1] as f32 * scale).round() as i32,
         ];
 
-        let (output, regions, warnings, title, effective_read_hour, effective_art_label) = {
+        let (output, regions, warnings, title, effective_read_hour, effective_art_label, text) = {
             let reloaded_entry: Option<Arc<Mutex<CachedWindow>>>;
             let mut cached = match window_entry.lock() {
                 Ok(guard) => guard,
@@ -2144,8 +2381,7 @@ impl Service {
                 output.origin,
                 &assets,
                 cached.localisation.as_ref(),
-                close_paths,
-                &main_tooltips,
+                &RegionActions { close_paths, tooltips: &main_tooltips, views: &plan.view_links },
             );
             let sub_region_groups: Vec<(usize, Vec<GameWindowRegion>)> = plan
                 .sub_windows
@@ -2164,8 +2400,7 @@ impl Service {
                         output.origin,
                         &assets,
                         cached.localisation.as_ref(),
-                        &sub_close,
-                        &sub.tooltip_overrides,
+                        &RegionActions { close_paths: &sub_close, tooltips: &sub.tooltip_overrides, views: &BTreeMap::new() },
                     );
                     if !sub.path_prefix.is_empty() {
                         for region in &mut sub_regions {
@@ -2177,11 +2412,6 @@ impl Service {
                 .collect();
             let part_paths: Vec<&str> = layout.parts.iter().map(|part| part.path.as_str()).collect();
             let mut regions = paint_ordered_regions(&part_paths, main_regions, sub_region_groups);
-            for region in &mut regions {
-                if !region.passthrough && !region.close {
-                    region.view = plan.view_links.get(&region.path).cloned();
-                }
-            }
             for mut region in plan.extra_regions {
                 region.rect[0] -= output.origin[0];
                 region.rect[1] -= output.origin[1];
@@ -2215,6 +2445,7 @@ impl Service {
                 plan.title,
                 plan.read_hour.or(read_hour),
                 plan.art_label,
+                plan.text,
             )
         };
 
@@ -2238,6 +2469,7 @@ impl Service {
             }),
             regions,
             warnings,
+            text,
         };
         if let Some(frame_key) = frame_key {
             self.store_render(frame_key, expected_gen, &render);

@@ -5,12 +5,11 @@ import type { HolderRun, HourRanges } from '../../families/holders.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { formatCompactScalar, formatScalar } from '../../families/valueFormat.ts';
+import { formatCompactRational, formatCompactScalar, formatRational, formatScalar } from '../../families/valueFormat.ts';
 import type { ChartArtSlot, ChartGap, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import {
-  assignCountrySeriesColours,
   branchGapsOf,
-  countrySeriesIdentity,
+  countrySeriesLooks,
   exactHoverReadings,
   memberAt,
   missingSpansOf,
@@ -22,6 +21,7 @@ import {
   headReading,
   headValueOf,
   type HeadReading,
+  type KnownHeadReading,
 } from '../../families/time-chart/seriesHelpers.ts';
 
 export interface CommandPowerOptions {
@@ -36,9 +36,17 @@ export interface CommandPowerOptions {
 }
 
 
-function formatEndAmount(value: number): string {
-  if (!Number.isFinite(value)) return '';
-  return Math.abs(value) >= 1e4 ? formatCompactScalar(Math.trunc(value), 'integer').text : formatScalar(value, 'integer');
+function formatEndAmount(reading: KnownHeadReading): string {
+  if (reading.raw !== undefined && reading.denominator !== undefined) {
+    const absWhole = (reading.raw < 0n ? -reading.raw : reading.raw) / reading.denominator;
+    return absWhole >= 10_000n
+      ? formatCompactRational(reading.raw, reading.denominator, { maxDecimals: 0 }).text
+      : formatRational(reading.raw, reading.denominator, { maxDecimals: 0 });
+  }
+  if (!Number.isFinite(reading.value)) return '';
+  return Math.abs(reading.value) >= 1e4
+    ? formatCompactScalar(Math.trunc(reading.value), 'integer').text
+    : formatScalar(reading.value, 'integer');
 }
 
 export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = registerFamilyProjection({
@@ -54,8 +62,8 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
     const tags = options.tags;
     const single = tags.length === 1;
 
-    const headByTag = new Map<string, number | null>();
-    const ceilingByTag = new Map<string, number | null>();
+    const headByTag = new Map<string, HeadReading | null>();
+    const ceilingByTag = new Map<string, HeadReading | null>();
     const readings: [string, HeadReading | null][] = [];
     for (const tag of tags) {
       if (!memberAt(options.membership, tag, hour)) {
@@ -64,11 +72,11 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       }
       const main = headReading(readView, 'main', { tag }, 5);
       readings.push([tag, main]);
-      headByTag.set(tag, headValueOf(main));
+      headByTag.set(tag, main);
       if (options.showCeiling) {
         const ceiling = headReading(readView, 'ceiling', { tag }, 5);
         readings.push([`${tag}:ceiling`, ceiling]);
-        ceilingByTag.set(tag, headValueOf(ceiling));
+        ceilingByTag.set(tag, ceiling);
       }
     }
 
@@ -77,15 +85,14 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
     const present = tags.filter(tag => memberAt(options.membership, tag, hour));
     const presentSet = new Set(present);
     const ordered = [...rankedOrder(readView, present), ...tags.filter(tag => !presentSet.has(tag))];
-    const colourMap = assignCountrySeriesColours(
-      ordered,
-      options.holders,
-      readView,
-      hour,
-      options.surface,
-      CHART_MEASURE_COLOURS.commandPower,
-      tag => rowOf.get(tag) ?? 0,
-    );
+    const looks = countrySeriesLooks(ordered, readView, {
+      holders: options.holders,
+      from: options.extent[0],
+      surface: options.surface,
+      withFlag: !single,
+      recordedOrdinal: tag => rowOf.get(tag) ?? 0,
+      singleColor: CHART_MEASURE_COLOURS.commandPower,
+    });
 
     const measureIcon: ChartArtSlot | undefined = single
       ? { art: readView.art(measureArtHandle('commandPower')), label: 'Command power' }
@@ -96,11 +103,12 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       const tag = ordered[rank]!;
       const isTail = !single && rank >= 8;
       const bounded = mainMap?.get(tag) ?? null;
-      const { name, flag } = countrySeriesIdentity(tag, options.holders, readView, hour, !single);
-      const color = isTail ? CHART_MEASURE_COLOURS.tailLine : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.commandPower);
-      const headValue = headByTag.get(tag) ?? null;
+      const { name, flag, color, identities } = looks.get(tag)!;
+      const mainReading = headByTag.get(tag) ?? null;
+      const headValue = headValueOf(mainReading);
       const ceilingBounded = options.showCeiling && !isTail ? (ceilingMap?.get(tag) ?? null) : null;
-      const ceilingHead = options.showCeiling && !isTail ? (ceilingByTag.get(tag) ?? null) : null;
+      const ceilingReading = options.showCeiling && !isTail ? (ceilingByTag.get(tag) ?? null) : null;
+      const ceilingHead = headValueOf(ceilingReading);
 
       series.push({
         id: tag,
@@ -115,16 +123,17 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
         headHour: hour,
         exact: exact?.[rowOf.get(tag) ?? -1] ?? null,
         flag,
+        ...(single ? {} : { identities }),
         icon: single ? measureIcon : undefined,
         missingSpans: missingSpansOf(bounded),
         rank,
-        endLabel: isTail || headValue === null
+        endLabel: isTail || !mainReading || !('value' in mainReading)
           ? null
           : {
               ...(single ? { icon: measureIcon } : { flag }),
               name: single ? (options.showCeiling ? 'Command power' : null) : name,
               fullName: single ? 'Command power' : name,
-              value: formatEndAmount(headValue),
+              value: formatEndAmount(mainReading),
             },
       });
 
@@ -134,6 +143,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
           key: `${tag}:ceiling`,
           name: single ? 'Maximum' : `${name} max`,
           color,
+          ...(single ? {} : { identities: identities.map(run => ({ ...run, name: `${run.name} max` })) }),
           role: 'ceiling',
           step: true,
           dash: [5, 4],
@@ -143,12 +153,12 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
           headValue: ceilingHead,
           headHour: hour,
           rank,
-          endLabel: ceilingHead === null
+          endLabel: !ceilingReading || !('value' in ceilingReading)
             ? null
             : {
                 name: single ? 'Maximum' : `${name} max`,
                 fullName: single ? 'Maximum command power' : `${name} maximum`,
-                value: formatEndAmount(ceilingHead),
+                value: formatEndAmount(ceilingReading),
                 valueMuted: true,
               },
         });

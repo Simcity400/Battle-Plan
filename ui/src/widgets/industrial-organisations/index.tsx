@@ -1,7 +1,6 @@
-import type { WidgetProps, WidgetRenderer } from '../../dashboard/definitions';
+import type { FamilyViewProps, FamilyViewRenderer } from '../../dashboard/definitions';
 import type { IndustrialOrganisationSelection } from '../../dashboard/gameWindows';
 import GameWindowTable, { type GameWindowRow } from '../../families/table/GameWindowTable';
-import { organisationsDeclaration } from './organisationsProjection';
 
 const ORGANISATION: GameWindowRow<IndustrialOrganisationSelection> = {
   kind: 'industrialOrganisation',
@@ -11,8 +10,8 @@ const ORGANISATION: GameWindowRow<IndustrialOrganisationSelection> = {
   label: 'Industrial organisation',
 };
 
-function IndustrialOrganisationsWidget(props: WidgetProps) {
-  return <GameWindowTable {...props} declaration={organisationsDeclaration} window={ORGANISATION} />;
+function IndustrialOrganisationsWidget(props: FamilyViewProps) {
+  return <GameWindowTable {...props} window={ORGANISATION} />;
 }
 
-export default { render: IndustrialOrganisationsWidget } satisfies WidgetRenderer;
+export default { render: IndustrialOrganisationsWidget } satisfies FamilyViewRenderer;

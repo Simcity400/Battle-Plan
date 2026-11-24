@@ -44,6 +44,36 @@ export interface ChartInlinePoint {
   readonly approximate?: boolean;
 }
 
+export interface ChartIdentityRun {
+  readonly firstHour: number;
+  readonly lastHour: number;
+  readonly name: string;
+  readonly color: string;
+  readonly flag?: ChartArtSlot;
+}
+
+export interface ChartSeriesLook {
+  readonly name: string;
+  readonly color: string;
+  readonly flag?: ChartArtSlot;
+}
+
+export function seriesLookAt(series: Pick<TimeChartSeriesModel, 'name' | 'color' | 'flag' | 'identities'>, hour: number): ChartSeriesLook {
+  const runs = series.identities;
+  if (runs && runs.length > 0) {
+    let lo = 0;
+    let hi = runs.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >>> 1;
+      const run = runs[mid]!;
+      if (hour < run.firstHour) hi = mid - 1;
+      else if (hour > run.lastHour) lo = mid + 1;
+      else return run;
+    }
+  }
+  return series;
+}
+
 export interface TimeChartSeriesModel {
   readonly id: string;
   readonly key: string;
@@ -63,10 +93,11 @@ export interface TimeChartSeriesModel {
   readonly headHour?: number | null;
   readonly endLabel?: ChartEndLabel | null;
   readonly flag?: ChartArtSlot;
+  readonly identities?: readonly ChartIdentityRun[];
   readonly icon?: ChartArtSlot;
   readonly missingSpans?: readonly ChartMissingSpan[];
   readonly absentReason?: string | null;
-  readonly exact?: { readonly hour: number; readonly value: number | null; readonly reason?: string } | null;
+  readonly exact?: { readonly hour: number; readonly value: number | null; readonly raw?: bigint; readonly denominator?: bigint; readonly reason?: string } | null;
   readonly rank?: number;
 }
 
@@ -84,6 +115,7 @@ export interface ChartStackBand {
 export interface ChartStackModel {
   readonly hours: readonly number[];
   readonly bands: readonly ChartStackBand[];
+  readonly bandFormat?: ChartValueFormat;
   readonly step?: boolean;
   readonly total?: {
     readonly color?: string;
@@ -184,7 +216,7 @@ export interface ChartHoverDetail {
   readonly replacesSeries?: boolean;
 }
 
-export type ChartValueFormat = 'number' | 'percent' | 'compact' | 'signed1' | 'power';
+export type ChartValueFormat = 'number' | 'share' | 'percent' | 'signedPercent' | 'compact' | 'signed1' | 'power';
 
 export interface ChartYAxisSpec {
   readonly format: ChartValueFormat;

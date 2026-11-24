@@ -1,5 +1,4 @@
-import type { LaneView } from '../../draw/lane.ts';
-import { createLaneView, type LaneBinding, type LaneFamily, type LaneRuntimeOptions } from '../laneRuntime.ts';
+import type { LaneBinding, LaneFamily } from '../laneRuntime.ts';
 import {
   deriveMeterAudit,
   deriveMeterMirror,
@@ -19,7 +18,7 @@ export interface FamilyMeterBinding<TOptions = unknown> extends LaneBinding<TOpt
 
 const inspectedRow = (inspect: string | null): string | null => (inspect?.startsWith('row:') ? inspect.slice(4) : null);
 
-const meterLane: LaneFamily<FamilyMeterBinding, MeterModel, MeterLayout> = {
+export const meterLane: LaneFamily<FamilyMeterBinding, MeterModel, MeterLayout> = {
   family: 'meters',
   boundary: nextMeterChange,
   redraw: () => Infinity,
@@ -65,7 +64,3 @@ const meterLane: LaneFamily<FamilyMeterBinding, MeterModel, MeterLayout> = {
   audit: frame => deriveMeterAudit(frame.model),
   visibleArt: () => [],
 };
-
-export function familyMeterLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
-  return createLaneView(meterLane, wake, options);
-}
