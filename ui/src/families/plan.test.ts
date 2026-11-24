@@ -1,3 +1,4 @@
+import { auditRow } from './auditRow.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ChartBucket } from '../charts/chartSummary';
@@ -44,7 +45,9 @@ import {
   stabilizeCanvasDimension,
 } from './broker.ts';
 import { createBoundAuditReader, createPlanAuditVerifier, type BoundAuditEntry, type PlanAuditSnapshot } from './host/auditBinding.ts';
-import { clientPointToInstalled, resolveInstalledAction } from './host/pointer.ts';
+import type { FamilyHostAdapter } from './host/adapter.ts';
+import { recordInstalled, resolveHostInput } from './host/installed.ts';
+import { clientPointToInstalled } from './host/pointer.ts';
 import { IdentityIndex } from './identity/index.ts';
 import { identityResultFromIndex } from './identity/provider.ts';
 import type {
@@ -717,7 +720,15 @@ test('held reply during a resize maps stationary client clicks through installed
     actionKeys: new Map([['SOV', { subject: 'SOV', hour: displayedHour(100), label: 'Soviet Union', meta: { slot: 2 } }]]),
     accessibleDescription: null,
   };
-  const action = resolveInstalledAction(installedPic, 'SOV', false);
+  const effect = resolveHostInput(
+    { family: 'test', navigation: 'rows' } as FamilyHostAdapter,
+    'activate',
+    { key: 'SOV', hit: null, picture: installedPic },
+    { current: recordInstalled(installedPic, {}, null), held: false, expired: false },
+    { expansion: {}, takesToggles: false, regions: false, menu: false },
+    () => null,
+  );
+  const action = effect?.kind === 'activate' ? effect.action : null;
   assert.deepEqual(action, {
     installedId: 7,
     owner: 'country:GER',
@@ -872,7 +883,7 @@ test('quiet ticks inside validInterval perform zero projections and zero paints,
       projection,
       options: {},
       exactReadView: async (hour: number) => createBoundedReadView({ hour, panels: new Map([['main', { score: 42 }]]) }),
-      deriveRows: (m: { hour: number; score: number }) => [{ row: 'score', key: 'score', value: JSON.stringify(knownValue(m.score)) }],
+      deriveRows: (m: { hour: number; score: number }) => [auditRow('score', JSON.stringify(knownValue(m.score)))],
     },
     verify: createPlanAuditVerifier(),
   });

@@ -1,12 +1,11 @@
 import { colour } from '../../charts/palette.ts';
 import type { TooltipContent } from '../../charts/tooltip.ts';
 import { tintColour } from '../../shell/appearance/color.ts';
-import type { AuditRow } from '../../draw/notifications';
-import type { BoundedReadView, FamilyTheme, MirrorModel, MirrorRow } from '../contract.ts';
+import type { BoundedReadView, FamilyTheme } from '../contract.ts';
 import type { ArtResult } from '../plan.ts';
-import type { FamilyNavTuple } from '../host/keyboard.ts';
-import { buildTooltipContent, type FamilyTooltipPayload, type TooltipListItem } from '../host/tooltips.ts';
+import { buildTooltipContent, type TooltipListItem } from '../host/tooltips.ts';
 import { formatScalar, formatShare } from '../valueFormat.ts';
+import type { BreakdownViewMode } from './options.ts';
 
 export interface BreakdownPart {
   readonly key: string;
@@ -16,6 +15,7 @@ export interface BreakdownPart {
   readonly text: string;
   readonly exact?: string;
   readonly share?: number | null;
+  readonly parentShare?: number | null;
   readonly color?: string;
   readonly neutral?: boolean;
   readonly flag?: string;
@@ -51,11 +51,13 @@ export interface BreakdownTotal {
 export interface BreakdownComparison {
   readonly label: string;
   readonly value: string;
+  readonly partial?: boolean;
   readonly note?: string;
 }
 
 export interface BreakdownModel {
   readonly hour: number;
+  readonly view?: BreakdownViewMode;
   readonly rootLabel: string;
   readonly periodLabel?: string;
   readonly total: BreakdownTotal;
@@ -78,6 +80,10 @@ export interface ResolvedBreakdownLevel {
   readonly total: BreakdownTotal;
 }
 
+export const PATH = '\u001f';
+export const PARTIAL_KEY = '__partial__';
+export const COMPARISON_KEY = '__comparison__';
+
 const TOOLTIP_PARTS = 8;
 
 export function partColour(part: BreakdownPart, theme: FamilyTheme): string {
@@ -86,8 +92,28 @@ export function partColour(part: BreakdownPart, theme: FamilyTheme): string {
   return colour(theme.surface, part.ordinal);
 }
 
+export function childTint(parent: string, child: BreakdownPart, theme: FamilyTheme, tints: readonly number[]): string {
+  if (child.neutral) return theme.grey;
+  return tintColour(parent, tints[child.ordinal % tints.length]!);
+}
+
 export function breakdownLevel(model: BreakdownModel): ResolvedBreakdownLevel {
   return { parts: model.parts, total: model.total };
+}
+
+export function drawnChildren(part: BreakdownPart, first = true): readonly BreakdownPart[] {
+  const children = part.notRecorded ? undefined : part.children;
+  if (!children?.length) return [];
+  if (!first) return children;
+  const [only] = children;
+  const repeats = children.length === 1 && !only!.children?.length && only!.value === part.value && !only!.notRecorded === !part.notRecorded && !only!.partial === !part.partial;
+  return repeats ? [] : children;
+}
+
+export function rowsBelow(part: BreakdownPart): number {
+  let rows = 0;
+  for (const child of drawnChildren(part)) rows += 1 + drawnChildren(child, false).length;
+  return rows;
 }
 
 export function computeDefaultExpanded(
@@ -100,10 +126,11 @@ export function computeDefaultExpanded(
   let budget = visibleRows - parts.length;
   if (budget < 3) return expanded;
   for (const candidate of parts) {
-    if (candidate.notRecorded || !candidate.children?.length) continue;
+    const below = rowsBelow(candidate);
+    if (!below) continue;
     if (budget < 3) break;
     expanded[candidate.key] = true;
-    budget -= candidate.children!.length;
+    budget -= below;
   }
   return expanded;
 }
@@ -114,35 +141,30 @@ export function resolveExpandedMap(
   narrow: boolean,
   userToggles: Readonly<Record<string, boolean>>,
 ): Record<string, boolean> {
-  const defaults = computeDefaultExpanded(parts, visibleRows, narrow);
-  const resolved: Record<string, boolean> = { ...defaults };
-  for (const [key, open] of Object.entries(userToggles)) {
-    resolved[key] = open;
-  }
-  return resolved;
+  return { ...computeDefaultExpanded(parts, visibleRows, narrow), ...userToggles };
 }
 
 export function resolveRingOpenKey(parts: readonly BreakdownPart[]): string | null {
-  return parts.find(part => !part.notRecorded && part.children?.length)?.key ?? null;
+  return parts.find(part => rowsBelow(part) > 0)?.key ?? null;
 }
 
 export function findBreakdownPart(
   parts: readonly BreakdownPart[],
   key: string,
+  parent: BreakdownPart | null = null,
 ): { readonly part: BreakdownPart; readonly parent: BreakdownPart | null } | null {
   for (const part of parts) {
-    if (part.key === key) return { part, parent: null };
-    if (part.children) {
-      for (const child of part.children) {
-        if (child.key === key) return { part: child, parent: part };
-        if (child.children) {
-          const deeper = findBreakdownPart(child.children, key);
-          if (deeper) return deeper;
-        }
-      }
+    if (part.key === key) return { part, parent };
+    if (part.children && key.startsWith(`${part.key}${PATH}`)) {
+      const deeper = findBreakdownPart(part.children, key, part);
+      if (deeper) return deeper;
     }
   }
   return null;
+}
+
+function withUnit(text: string, unit: string): string {
+  return unit ? `${text} ${unit}` : text;
 }
 
 export function buildBreakdownTooltip(
@@ -151,21 +173,23 @@ export function buildBreakdownTooltip(
   targetKey: string,
   theme: FamilyTheme,
 ): TooltipContent | null {
-  if (targetKey === '__partial__') {
-    const reason = level.total.reason ?? level.total.shortReason ?? 'Part of this total was not recorded.';
-    const payload: FamilyTooltipPayload = {
+  if (targetKey === PARTIAL_KEY) {
+    return buildTooltipContent({
       title: 'Partial',
       hour: model.hour,
-      items: [
-        {
-          label: level.total.verb,
-          value: level.total.unit ? `${level.total.text} ${level.total.unit}` : level.total.text,
-          strong: true,
-        },
-      ],
-      note: reason,
-    };
-    return buildTooltipContent(payload);
+      items: [{ label: level.total.verb, value: withUnit(level.total.text, level.total.unit), strong: true }],
+      note: level.total.reason ?? level.total.shortReason ?? 'Part of this total was not recorded.',
+    });
+  }
+  if (targetKey === COMPARISON_KEY) {
+    const comparison = model.comparison;
+    if (!comparison) return null;
+    return buildTooltipContent({
+      title: comparison.label,
+      hour: model.hour,
+      items: [{ label: comparison.label, value: comparison.value, strong: true }],
+      ...(comparison.note ? { note: comparison.note } : {}),
+    });
   }
   const found = findBreakdownPart(level.parts, targetKey);
   if (!found) return null;
@@ -174,53 +198,25 @@ export function buildBreakdownTooltip(
   const unit = level.total.unit;
   const swatch = parent ? tintColour(partColour(parent, theme), 0.16) : partColour(part, theme);
   if (part.notRecorded || part.value === null) {
-    items.push({
-      label: level.total.verb,
-      missingReason: part.missingReason ?? 'Not recorded',
-      swatch,
-    });
+    items.push({ label: level.total.verb, missingReason: part.missingReason ?? 'Not recorded', swatch });
   } else {
-    const valStr = unit ? `${part.exact ?? part.text} ${unit}` : (part.exact ?? part.text);
-    items.push({
-      label: level.total.verb,
-      value: valStr,
-      swatch,
-      strong: true,
-    });
-    if (!level.total.atLeast && part.share != null) {
-      items.push({
-        label: parent ? `Share of ${parent.name}` : 'Share',
-        value: formatShare(part.share),
-      });
-    }
-    if (part.count !== undefined && part.count > 0) {
-      items.push({
-        label: part.countLabel ?? 'Count',
-        value: formatScalar(part.count, 'integer'),
-      });
-    }
+    items.push({ label: level.total.verb, value: withUnit(part.exact ?? part.text, unit), swatch, strong: true });
+    if (!level.total.atLeast && part.share != null) items.push({ label: 'Share', value: formatShare(part.share) });
+    if (!level.total.atLeast && parent && part.parentShare != null) items.push({ label: `Share of ${parent.name}`, value: formatShare(part.parentShare) });
+    if (part.count !== undefined && part.count > 0) items.push({ label: part.countLabel ?? 'Count', value: formatScalar(part.count, 'integer') });
   }
-  if (part.partial && part.partialReason) {
-    items.push({
-      label: 'Coverage',
-      value: part.partialReason,
-      tone: 'muted',
-    });
-  }
-  if (part.detailRows) {
-    for (const row of part.detailRows) items.push(row);
-  }
-  const shown = part.notRecorded ? [] : (part.children ?? []).slice(0, TOOLTIP_PARTS);
-  shown.forEach((child, at) => items.push({
+  if (part.partial && part.partialReason) items.push({ label: 'Coverage', value: part.partialReason, tone: 'muted' });
+  if (part.detailRows) items.push(...part.detailRows);
+  const children = part.notRecorded ? [] : part.children ?? [];
+  children.slice(0, TOOLTIP_PARTS).forEach((child, at) => items.push({
     label: child.name,
-    ...(child.notRecorded || child.value === null ? { missingReason: child.missingReason ?? 'Not recorded' } : { value: unit ? `${child.text} ${unit}` : child.text }),
+    ...(child.notRecorded || child.value === null ? { missingReason: child.missingReason ?? 'Not recorded' } : { value: withUnit(child.text, unit) }),
     indent: true,
     ...(at === 0 ? { divider: true } : {}),
   }));
-  const subtitle = part.subtitle ?? (parent ? parent.name : undefined);
-  const note = [part.note, level.total.atLeast ? level.total.reason : undefined]
-    .filter((entry): entry is string => Boolean(entry && entry.trim()))
-    .join(' ');
+  if (children.length > TOOLTIP_PARTS) items.push({ label: `${children.length - TOOLTIP_PARTS} more in the list`, tone: 'muted', indent: true });
+  const subtitle = part.subtitle ?? parent?.name;
+  const note = [part.note, level.total.atLeast ? level.total.reason : undefined].filter((entry): entry is string => Boolean(entry && entry.trim())).join(' ');
   return buildTooltipContent({
     title: part.name,
     hour: model.hour,
@@ -228,59 +224,4 @@ export function buildBreakdownTooltip(
     items,
     ...(note ? { note } : {}),
   });
-}
-
-export function deriveBreakdownNavAndMirror(
-  level: ResolvedBreakdownLevel,
-  expanded: Readonly<Record<string, boolean>>,
-): { readonly nav: readonly FamilyNavTuple[]; readonly mirror: MirrorModel } {
-  const nav: FamilyNavTuple[] = [];
-  const rows: MirrorRow[] = [];
-  const unit = level.total.unit;
-  let index = 0;
-  for (const part of level.parts) {
-    const hasChildren = Boolean(part.children && part.children.length > 0);
-    const isOpen = hasChildren && expanded[part.key] === true;
-    const valueSpoken = part.notRecorded || part.value === null
-      ? `not recorded${part.missingReason ? `: ${part.missingReason}` : ''}`
-      : `${part.exact ?? part.text}${unit ? ` ${unit}` : ''}${!level.total.atLeast && part.share != null ? `, ${formatShare(part.share)}` : ''}`;
-    nav.push([part.key, part.name, index, hasChildren ? (isOpen ? 1 : 0) : -1, '', null]);
-    rows.push({ key: part.key, name: part.name, rowIndex: index, level: 0, ...(hasChildren ? { group: true, open: isOpen } : {}), cells: [{ column: 'value', spoken: valueSpoken }] });
-    index++;
-    if (isOpen && part.children) {
-      for (const child of part.children) {
-        const childSpoken = child.notRecorded || child.value === null
-          ? `not recorded${child.missingReason ? `: ${child.missingReason}` : ''}`
-          : `${child.exact ?? child.text}${unit ? ` ${unit}` : ''}${!level.total.atLeast && child.share != null ? `, ${formatShare(child.share)}` : ''}`;
-        nav.push([child.key, child.name, index, -1, part.key, null]);
-        rows.push({ key: child.key, name: `${part.name}, ${child.name}`, rowIndex: index, level: 1, cells: [{ column: 'value', spoken: childSpoken }] });
-        index++;
-      }
-    }
-  }
-  return { nav, mirror: { first: 0, total: rows.length, rows } };
-}
-
-export function deriveBreakdownAudit(
-  model: BreakdownModel,
-): readonly AuditRow[] {
-  const level = breakdownLevel(model);
-  const rows: AuditRow[] = [];
-  const totalVal = level.total.value === null
-    ? `notRecorded:${level.total.reason ?? 'Not recorded'}`
-    : level.total.atLeast
-      ? `partial:${level.total.exact ?? level.total.text}`
-      : level.total.partial
-        ? `partial:${level.total.exact ?? level.total.text}`
-        : (level.total.exact ?? level.total.text);
-  rows.push({ row: '__total__', key: '__total__', value: totalVal });
-  for (const part of level.parts) {
-    const val = part.notRecorded || part.value === null
-      ? `notRecorded:${part.missingReason ?? 'Not recorded'}`
-      : part.partial
-        ? `partial:${part.exact ?? part.text}`
-        : (part.exact ?? part.text);
-    rows.push({ row: part.key, key: part.key, value: val });
-  }
-  return rows;
 }

@@ -59,6 +59,9 @@ fn event(code: u8, hour: i32, actor: Slot, target: Slot) -> FeedEvent {
         outstanding: None,
         refusals: None,
         failure: Vec::new(),
+        incomplete: None,
+        window: None,
+        presentation: None,
     }
 }
 
@@ -205,6 +208,7 @@ fn a_decisions_cost_is_listed_only_when_proven_and_only_the_currencies_it_charge
         cause: None,
         strike: None,
         decision_state: None,
+        window: None,
     };
     let mut selected = event(EventFeedSource::DecisionSelected as u8, 10, Slot::Of(7), Slot::None);
     selected.costs = Some([Some(-5_000_000), Some(0)]);
@@ -526,6 +530,7 @@ fn decision_failed_state_requires_container_and_decodes_each_container_without_g
         events,
         script_tokens: Vec::new(),
         script_scopes: Vec::new(),
+        windows: Default::default(),
     };
 
     let timed_fail = feed_ev(10, EventFeedSource::DecisionTimedOut, Some(50), Some(2));
@@ -642,6 +647,7 @@ fn decision_failed_state_requires_container_and_decodes_each_container_without_g
             cause: None,
             strike: None,
             decision_state: Some(DecisionLifecycleState::Active),
+            window: None,
         }),
         Some(super::EventFeedRow {
             id: timed_fail.id(),
@@ -658,6 +664,7 @@ fn decision_failed_state_requires_container_and_decodes_each_container_without_g
             cause: None,
             strike: None,
             decision_state: Some(DecisionLifecycleState::Failed { observed_hour: 101 }),
+            window: None,
         }),
     ];
     enforce_same_incarnation(&[&opener, &timed_fail], &mut rows);
@@ -675,7 +682,7 @@ fn decision_failed_state_requires_container_and_decodes_each_container_without_g
 #[test]
 fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_missing_inputs() {
     use super::{
-        Decisions, EventFeed, FeedPageParams,
+        DecisionsTail, EventFeedTail, FeedTailParams,
         decision_state::{
             DECISION_CONTAINER_NOT_RECORDED, DECISION_INSTANCE_MISMATCH, DECISION_NO_MISSION_LIFECYCLE,
             DecisionLifecycleState, EVENT_FEED_HISTORY_NOT_RECORDED, resolve_all,
@@ -733,6 +740,7 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
             events,
             script_tokens: tokens.to_vec(),
             script_scopes: Vec::new(),
+            windows: Default::default(),
         }
     };
     let with_pack = |branch: u64, hour: i32, row: Option<EventFeedHistoryRow>| {
@@ -762,10 +770,10 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
         101,
         EventFeedCoverage::Complete,
         vec![
-            dec_ev(5, 101, EventFeedSource::DecisionTimedOut, 0, Some(DecisionChange::new(Operation::Update, TIMED)), Some(10), Some(1), None),
-            dec_ev(6, 101, EventFeedSource::DecisionTimedOut, 1, Some(DecisionChange::new(Operation::Update, TIMED)), Some(11), Some(2), None),
-            dec_ev(7, 101, EventFeedSource::DecisionTimedOut, 2, Some(DecisionChange::new(Operation::Update, TARGETED_TIMED)), Some(12), Some(3), Some(9001)),
-            dec_ev(8, 101, EventFeedSource::DecisionCompleted, 3, Some(DecisionChange::new(Operation::Update, TIMED)), Some(99), Some(2), None),
+            dec_ev(10, 101, EventFeedSource::DecisionTimedOut, 0, Some(DecisionChange::new(Operation::Update, TIMED)), Some(10), Some(1), None),
+            dec_ev(11, 101, EventFeedSource::DecisionTimedOut, 1, Some(DecisionChange::new(Operation::Update, TIMED)), Some(11), Some(2), None),
+            dec_ev(12, 101, EventFeedSource::DecisionTimedOut, 2, Some(DecisionChange::new(Operation::Update, TARGETED_TIMED)), Some(12), Some(3), Some(9001)),
+            dec_ev(13, 101, EventFeedSource::DecisionCompleted, 3, Some(DecisionChange::new(Operation::Update, TIMED)), Some(99), Some(2), None),
         ],
     );
     let b2_h100 = pack(
@@ -776,7 +784,7 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     let b2_h101 = pack(
         101,
         EventFeedCoverage::Complete,
-        vec![dec_ev(6, 101, EventFeedSource::DecisionTimedOut, 1, None, Some(11), Some(2), None)],
+        vec![dec_ev(11, 101, EventFeedSource::DecisionTimedOut, 1, None, Some(11), Some(2), None)],
     );
 
     let replay = Replay::from_records(
@@ -800,30 +808,31 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     .unwrap();
     let cancel = AtomicBool::new(false);
     let context = LoadContext { content: None };
-    let ask = |branch_id: &str| FeedPageParams {
+    let ask = |branch_id: &str| FeedTailParams {
         branch_id: branch_id.into(),
         facets: Vec::new(),
         from: Some(100.0),
-        to: 101.0,
-        cursor: None,
-        page_size: 64,
+        hour: Some(101),
+        offset: None,
+        limit: 64,
+        count_facets: Vec::new(),
         scope: None,
     };
 
-    let feed_b1 = EventFeed::load(&replay_source, &ask("1"), &context, &cancel).unwrap();
-    let state_of = |page: &super::EventFeedPage, id: &str| {
+    let feed_b1 = EventFeedTail::load(&replay_source, &ask("1"), &context, &cancel).unwrap();
+    let state_of = |page: &super::EventFeedTailReply, id: &str| {
         page.rows.iter().filter_map(|row| row.row.as_ref()).find(|row| row.id == id).and_then(|row| row.decision_state.clone())
     };
-    assert_eq!(state_of(&feed_b1, "native:1:5"), Some(DecisionLifecycleState::Completed));
-    assert_eq!(state_of(&feed_b1, "native:1:6"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
-    assert_eq!(state_of(&feed_b1, "native:1:7"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
-    assert_eq!(state_of(&feed_b1, "native:1:8"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
+    assert_eq!(state_of(&feed_b1, "native:1:10"), Some(DecisionLifecycleState::Completed));
+    assert_eq!(state_of(&feed_b1, "native:1:11"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
+    assert_eq!(state_of(&feed_b1, "native:1:12"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
+    assert_eq!(state_of(&feed_b1, "native:1:13"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
     assert_eq!(
         state_of(&feed_b1, "native:1:9"),
         Some(DecisionLifecycleState::NotApplicable { reason: DECISION_NO_MISSION_LIFECYCLE.to_owned() })
     );
 
-    let card_end_state = |page: &super::cards::ScriptOccurrencePage, opener_id: &str| {
+    let card_end_state = |page: &super::cards::ScriptOccurrenceTailReply, opener_id: &str| {
         page.rows
             .iter()
             .filter_map(|row| row.occurrence.as_ref())
@@ -831,9 +840,9 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
             .and_then(|occ| occ.edges.last())
             .and_then(|edge| edge.row.decision_state.clone())
     };
-    let cards_b1_at_100 = Decisions::load(
+    let cards_b1_at_100 = DecisionsTail::load(
         &replay_source,
-        &FeedPageParams { branch_id: "1".into(), facets: Vec::new(), from: Some(100.0), to: 100.0, cursor: None, page_size: 64, scope: None },
+        &FeedTailParams { branch_id: "1".into(), facets: Vec::new(), from: Some(100.0), hour: Some(100), offset: None, limit: 64, count_facets: Vec::new(), scope: None },
         &context,
         &cancel,
     )
@@ -845,7 +854,7 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
         Some(DecisionLifecycleState::NotApplicable { reason: DECISION_NO_MISSION_LIFECYCLE.to_owned() })
     );
 
-    let cards_b1 = Decisions::load(&replay_source, &ask("1"), &context, &cancel).unwrap();
+    let cards_b1 = DecisionsTail::load(&replay_source, &ask("1"), &context, &cancel).unwrap();
     assert_eq!(card_end_state(&cards_b1, "native:1:1"), Some(DecisionLifecycleState::Completed));
     assert_eq!(card_end_state(&cards_b1, "native:1:2"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
     assert_eq!(card_end_state(&cards_b1, "native:1:3"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
@@ -855,9 +864,9 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
         "different instance incarnation across opener and end must withhold failure state"
     );
 
-    let feed_b2 = EventFeed::load(&replay_source, &ask("2"), &context, &cancel).unwrap();
+    let feed_b2 = EventFeedTail::load(&replay_source, &ask("2"), &context, &cancel).unwrap();
     assert_eq!(
-        state_of(&feed_b2, "native:1:6"),
+        state_of(&feed_b2, "native:1:11"),
         Some(DecisionLifecycleState::NotRecorded { reason: DECISION_CONTAINER_NOT_RECORDED.to_owned() }),
         "branch 2 lacks container metadata and must never join branch 1"
     );
@@ -882,9 +891,9 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
 }
 
 #[test]
-fn feed_tail_products_and_dated_panels_match_pages_in_reverse_and_wake_on_continuing_edges() {
+fn feed_tail_products_and_dated_panels_return_newest_first_and_wake_on_continuing_edges() {
     use super::{
-        Decisions, DecisionsTail, EventChoices, EventChoicesTail, EventFeed, EventFeedTail, FeedPageParams, FeedTailParams,
+        DecisionsTail, EventChoicesTail, EventFeedTail, FeedTailParams,
         decisions_dated_panel, event_choices_dated_panel, event_feed_dated_panel,
     };
     use dashboard_base::{
@@ -952,6 +961,7 @@ fn feed_tail_products_and_dated_panels_match_pages_in_reverse_and_wake_on_contin
             events,
             script_tokens: tokens.to_vec(),
             script_scopes: Vec::new(),
+            windows: Default::default(),
         }
     };
     let frames: Vec<_> = (100..=106)
@@ -987,13 +997,6 @@ fn feed_tail_products_and_dated_panels_match_pages_in_reverse_and_wake_on_contin
     let context = LoadContext { content: None };
     let scope = Some(vec![MembershipRun { tag: "GER".into(), first_hour: 100, last_hour: 106 }]);
 
-    let page_all = EventFeed::load(
-        &replay_source,
-        &FeedPageParams { branch_id: "1".into(), facets: Vec::new(), from: Some(100.0), to: 106.0, cursor: None, page_size: 64, scope: None },
-        &context,
-        &cancel,
-    )
-    .unwrap();
     let tail_all = EventFeedTail::load(
         &replay_source,
         &FeedTailParams {
@@ -1013,26 +1016,11 @@ fn feed_tail_products_and_dated_panels_match_pages_in_reverse_and_wake_on_contin
         &cancel,
     )
     .unwrap();
-    let newest_feed = |mut rows: Vec<super::EventFeedPageRow>| {
-        rows.sort_by_key(|row| (std::cmp::Reverse(row.hour), row.ordinal.parse::<u64>().unwrap()));
-        rows
-    };
-    let newest_script = |mut rows: Vec<super::cards::ScriptPageRow>| {
-        rows.sort_by_key(|row| (std::cmp::Reverse(row.hour), row.ordinal.parse::<u64>().unwrap()));
-        rows
-    };
-    assert_eq!(tail_all.total, page_all.total);
-    assert_eq!(tail_all.rows, newest_feed(page_all.rows));
+    assert_eq!(tail_all.total, "5");
+    assert_eq!(tail_all.rows.iter().map(|row| row.hour).collect::<Vec<_>>(), vec![105, 103, 102, 100, 100]);
     assert_eq!(tail_all.facet_totals.len(), 1);
     assert_eq!(tail_all.facet_totals[0].total, "2");
 
-    let page_scoped = EventFeed::load(
-        &replay_source,
-        &FeedPageParams { branch_id: "1".into(), facets: Vec::new(), from: Some(100.0), to: 106.0, cursor: None, page_size: 64, scope: scope.clone() },
-        &context,
-        &cancel,
-    )
-    .unwrap();
     let tail_scoped = EventFeedTail::load(
         &replay_source,
         &FeedTailParams {
@@ -1052,8 +1040,8 @@ fn feed_tail_products_and_dated_panels_match_pages_in_reverse_and_wake_on_contin
         &cancel,
     )
     .unwrap();
-    assert_eq!(tail_scoped.total, page_scoped.total);
-    assert_eq!(tail_scoped.rows, newest_feed(page_scoped.rows));
+    assert_eq!(tail_scoped.total, tail_all.total);
+    assert_eq!(tail_scoped.rows, tail_all.rows);
     assert_eq!(tail_scoped.facet_totals[0].total, "2");
 
     let dec_facets = vec![
@@ -1064,13 +1052,6 @@ fn feed_tail_products_and_dated_panels_match_pages_in_reverse_and_wake_on_contin
         },
         FacetFilter { name: "opener".into(), values: vec![-1], ..Default::default() },
     ];
-    let dec_page = Decisions::load(
-        &replay_source,
-        &FeedPageParams { branch_id: "1".into(), facets: dec_facets.clone(), from: Some(100.0), to: 106.0, cursor: None, page_size: 64, scope: None },
-        &context,
-        &cancel,
-    )
-    .unwrap();
     let dec_tail = DecisionsTail::load(
         &replay_source,
         &FeedTailParams { branch_id: "1".into(), facets: dec_facets.clone(), from: Some(100.0), hour: Some(106), offset: None, limit: 64, count_facets: Vec::new(), scope: None },
@@ -1078,8 +1059,8 @@ fn feed_tail_products_and_dated_panels_match_pages_in_reverse_and_wake_on_contin
         &cancel,
     )
     .unwrap();
-    assert_eq!(dec_tail.total, dec_page.total);
-    assert_eq!(dec_tail.rows, newest_script(dec_page.rows));
+    assert_eq!(dec_tail.total, "1");
+    assert_eq!(dec_tail.rows.len(), 1);
     assert_eq!(dec_tail.rows[0].occurrence.as_ref().unwrap().edges.len(), 2);
 
     let dec_panel = decisions_dated_panel(
@@ -1113,13 +1094,6 @@ fn feed_tail_products_and_dated_panels_match_pages_in_reverse_and_wake_on_contin
         },
         FacetFilter { name: "opener".into(), values: vec![-1], ..Default::default() },
     ];
-    let choice_page = EventChoices::load(
-        &replay_source,
-        &FeedPageParams { branch_id: "1".into(), facets: choice_facets.clone(), from: Some(100.0), to: 106.0, cursor: None, page_size: 64, scope: scope.clone() },
-        &context,
-        &cancel,
-    )
-    .unwrap();
     let choice_tail = EventChoicesTail::load(
         &replay_source,
         &FeedTailParams { branch_id: "1".into(), facets: choice_facets.clone(), from: Some(100.0), hour: Some(106), offset: None, limit: 64, count_facets: Vec::new(), scope: scope.clone() },
@@ -1127,8 +1101,8 @@ fn feed_tail_products_and_dated_panels_match_pages_in_reverse_and_wake_on_contin
         &cancel,
     )
     .unwrap();
-    assert_eq!(choice_tail.total, choice_page.total);
-    assert_eq!(choice_tail.rows, newest_script(choice_page.rows));
+    assert_eq!(choice_tail.total, "3");
+    assert_eq!(choice_tail.rows.iter().map(|row| row.hour).collect::<Vec<_>>(), vec![105, 102, 100]);
 
     let choice_panel = event_choices_dated_panel(
         &replay_source,
@@ -1155,4 +1129,57 @@ fn feed_tail_products_and_dated_panels_match_pages_in_reverse_and_wake_on_contin
         let cold = (feed_exact.cold)(hour, &cancel);
         assert_eq!(*stepped.value, cold, "event-feed-tail stepped vs cold at {hour}");
     }
+}
+
+#[test]
+fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
+    use dashboard_base::{
+        products::LoadContext,
+        test_fixtures::{CAMPAIGN, records, source},
+    };
+    use replay::campaign::Replay;
+    use replay_data::rows::{FactionMemberRow, FactionRow, TableRows};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let frames: Vec<_> = (100..=104)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            let factions = if hour >= 101 {
+                vec![FactionRow {
+                    id: 1,
+                    name: if hour >= 103 { b"Axis".to_vec() } else { Vec::new() },
+                    ..Default::default()
+                }]
+            } else {
+                Vec::new()
+            };
+            let members = if hour >= 101 {
+                vec![FactionMemberRow { faction: 1, country: 9001, ordinal: 0 }]
+            } else {
+                Vec::new()
+            };
+            *frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(factions));
+            *frame.tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(members));
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let replay_source = dashboard_base::Source::from_replay(
+        dashboard_base::SourceKey { source_id: "faction-dated-name".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let query = dashboard_base::queries::query(&replay_source, 1).unwrap();
+    let (rows, _) = families::group_rows(&replay_source, &query, &LoadContext { content: None }, 100, 104, &[super::EventFeedCategory::Diplomacy], &AtomicBool::new(false)).unwrap();
+    let joined = rows.iter().find(|row| row.kind == EventFeedKind::FactionJoined).expect("faction join row at hour 101");
+    assert_eq!(joined.hour, 101);
+    let item = joined.item.as_ref().expect("faction item");
+    assert_eq!(item.name, None, "must not fall back to the faction's later name when unrecorded at the join hour");
+    assert!(item.name_missing.is_some(), "missing dated faction name must carry a reason");
 }

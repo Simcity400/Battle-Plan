@@ -8,13 +8,10 @@ function breakdownView(kind: string, load: () => Promise<BreakdownWidgetSpec<any
     kind,
     view: DEFAULT_VIEW,
     family: 'breakdown',
-    loadSpec: () => load().then(spec => ({
-      family: 'breakdown',
-      kind,
-      view: DEFAULT_VIEW,
-      projection: spec.projection,
-      declaration: breakdownDeclaration(spec),
-    })),
+    loadSpec: () => load().then(spec => {
+      const declaration = breakdownDeclaration(spec);
+      return { family: 'breakdown', kind, view: DEFAULT_VIEW, projection: declaration.projection, declaration };
+    }),
   };
 }
 
@@ -24,6 +21,7 @@ export const BREAKDOWN_FAMILY_VIEWS: readonly FamilyViewEntry[] = [
     () => import('../political-power-spending-breakdown/ppSpendingProjection.ts').then(mod => mod.ppSpendingBreakdown),
   ),
   breakdownView('construction-spending', () => import('../construction-spending/constructionProjection.ts').then(mod => mod.constructionBreakdown)),
+  breakdownView('territory-breakdown', () => import('../territory-breakdown/territoryBreakdownProjection.ts').then(mod => mod.territoryBreakdown)),
 ];
 
 export const breakdownFamilyManifest: FamilyManifestModule = {

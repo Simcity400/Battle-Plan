@@ -25,6 +25,7 @@ for (const mod of FAMILY_MANIFESTS) {
   if (registeredFamilies.has(mod.family)) errors.push(`duplicate FAMILY_MANIFESTS family: ${mod.family}`);
   registeredFamilies.add(mod.family);
   if (typeof mod.laneView !== 'function') errors.push(`FAMILY_MANIFESTS(${mod.family}) missing laneView factory`);
+  if (typeof mod.hostAdapter?.deriveAuditRows !== 'function') errors.push(`FAMILY_MANIFESTS(${mod.family}) host adapter has no deriveAuditRows, so its audit checks nothing`);
   for (const entry of mod.views) {
     if (entry.family !== mod.family) {
       errors.push(`view (${entry.kind}, ${normalizeView(entry.view)}) declares family "${entry.family}" inside "${mod.family}" manifest`);

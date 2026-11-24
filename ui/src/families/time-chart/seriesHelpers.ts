@@ -1,9 +1,10 @@
 import { colour, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
-import { rowName, type FollowedAnswer } from '../../dashboard/follow/message.ts';
+import { rowName, rowReason, type FollowedAnswer } from '../../dashboard/follow/message.ts';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
-import { flagArtHandle } from '../art/provider.ts';
-import { failedArt, missingArt, PENDING_ART } from '../art/types.ts';
+import { followedRow, keyId } from '../../dashboard/keyedSeriesData.ts';
+import { answerRowOf } from '../sceneTiles.ts';
+import { flagChoiceArt } from '../art/provider.ts';
 import { FutureDataError, type BoundedReadView, type BoundedSeries, type FamilyPlanContext, type SourceEntry } from '../contract.ts';
 import { holderTagAt, type HolderRun, type HourRanges } from '../holders.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
@@ -53,6 +54,62 @@ export function seriesHeadValue(
   if (lastMissing && lastMissing.lastHour > lastHour) return null;
   return lastValue * scale;
 }
+
+export type HeadReading = { readonly value: number } | { readonly missing: string };
+
+export interface HeadKey {
+  readonly tag: string;
+  readonly part?: string;
+  readonly partBits?: number;
+}
+
+interface PanelState {
+  readonly country: string | number;
+  readonly part?: string;
+  readonly run: { readonly valueRaw: string } | null;
+  readonly missing: string | null;
+}
+
+const NOT_READ_AT_HOUR = 'Not recorded at this hour';
+
+export function headReading(
+  readView: BoundedReadView,
+  name: string,
+  key: HeadKey,
+  decimals: number,
+  scale = 1,
+): HeadReading | null {
+  const bounded = readView.series(name)?.get(key.part === undefined ? key.tag : keyId({ tag: key.tag, part: key.part }));
+  const places = bounded?.decimals ?? decimals;
+  const answer = readView.answer(name);
+  if (answer) {
+    if (answer.kind === 'notRecorded') return { missing: answer.reason };
+    const row = key.part === undefined
+      ? answerRowOf(answer, key.tag)
+      : followedRow(answer, { tag: key.tag, part: key.part }, key.partBits ?? 0);
+    if (row >= 0) {
+      const value = rowAmount(answer, row, places);
+      return value === null || value === undefined || !Number.isFinite(value)
+        ? { missing: rowReason(answer, row) ?? NOT_READ_AT_HOUR }
+        : { value: value * scale };
+    }
+  }
+  const panel = readView.panel<{ readonly decimals?: number; readonly states?: readonly PanelState[] }>(name);
+  const state = panel?.states?.find(item => countryKey(item.country) === key.tag && (key.part === undefined || item.part === key.part));
+  if (state) {
+    if (!state.run) return { missing: state.missing ?? NOT_READ_AT_HOUR };
+    const value = Number(state.run.valueRaw) / 10 ** (panel?.decimals ?? places);
+    return Number.isFinite(value) ? { value: value * scale } : { missing: NOT_READ_AT_HOUR };
+  }
+  const head = bounded?.headValue;
+  if (!head) return null;
+  if (head.kind === 'notRecorded' || head.kind === 'notApplicable') return { missing: head.reason };
+  const value = Number(head.value);
+  return Number.isFinite(value) ? { value: value * scale } : { missing: NOT_READ_AT_HOUR };
+}
+
+export const headValueOf = (reading: HeadReading | null): number | null =>
+  reading !== null && 'value' in reading ? reading.value : null;
 
 export interface ExactReading {
   readonly hour: number;
@@ -163,13 +220,7 @@ export function countrySeriesIdentity(
   const name = who.name.status === 'ready' ? who.name.value : identityTag;
   const flag: ChartArtSlot | undefined = !withFlag
     ? undefined
-    : who.flagChoice?.status === 'ready'
-      ? { art: readView.art(flagArtHandle(who.flagChoice.value, 'panel')), tag: identityTag }
-      : who.flagChoice?.status === 'absent'
-        ? { art: missingArt(who.flagChoice.reason), tag: identityTag }
-        : who.flagChoice?.status === 'failed'
-          ? { art: failedArt(who.flagChoice.reason, who.flagChoice.retryable), tag: identityTag }
-          : { art: PENDING_ART, tag: identityTag };
+    : { art: flagChoiceArt(readView, who.flagChoice), tag: identityTag };
   return { identityTag, name, ...(flag ? { flag } : {}) };
 }
 
@@ -338,23 +389,26 @@ export function rankedOrder(readView: BoundedReadView, tags: readonly string[], 
   return order;
 }
 
+export interface StackPart {
+  readonly series?: BoundedSeries;
+  readonly within?: readonly (readonly [number, number])[];
+}
+
 export interface BoundedStackBandInput {
   readonly id: string;
   readonly key: string;
   readonly name: string;
   readonly color: string;
   readonly opacity?: number;
-  readonly bounded?: BoundedSeries | null;
-  readonly parts?: readonly BoundedSeries[];
+  readonly parts: readonly StackPart[];
   readonly valueScale?: number;
-  readonly headValue?: number | null;
+  readonly head?: HeadReading | null;
   readonly endLabel?: ChartEndLabel | null;
   readonly flag?: ChartArtSlot;
 }
 
-export interface BoundedStackOptions {
-  readonly missingMode?: 'all-required' | 'zero-absent';
-}
+const covers = (part: StackPart, hour: number) =>
+  !part.within || part.within.some(([first, last]) => first <= hour && hour <= last);
 
 function inMissing(series: BoundedSeries, hour: number): boolean {
   for (const span of series.missing) {
@@ -363,8 +417,8 @@ function inMissing(series: BoundedSeries, hour: number): boolean {
   return false;
 }
 
-function sampleOneBounded(series: BoundedSeries, hour: number, scale: number): { readonly value: number | null; readonly missing: boolean } {
-  if (inMissing(series, hour)) return { value: null, missing: true };
+function sampleOneBounded(series: BoundedSeries, hour: number, scale: number): number | null {
+  if (inMissing(series, hour)) return null;
   if (series.runs && series.runs.length > 0) {
     let lo = 0;
     let hi = series.runs.length - 1;
@@ -373,16 +427,16 @@ function sampleOneBounded(series: BoundedSeries, hour: number, scale: number): {
       const run = series.runs.at(mid)!;
       if (hour < run.firstHour) hi = mid - 1;
       else if (hour > run.lastHour) lo = mid + 1;
-      else return { value: Number.isFinite(run.value) ? run.value * scale : null, missing: false };
+      else return Number.isFinite(run.value) ? run.value * scale : null;
     }
-    return { value: null, missing: false };
+    return null;
   }
   const idx = Math.floor((hour - series.from) / series.binHours);
-  if (idx < 0 || idx >= series.buckets.length) return { value: null, missing: false };
+  if (idx < 0 || idx >= series.buckets.length) return null;
   const b = series.buckets.at(idx);
-  if (!b || b.hasBreak || hour < b.firstHour || hour > b.lastHour) return { value: null, missing: false };
+  if (!b || b.hasBreak || hour < b.firstHour || hour > b.lastHour) return null;
   const raw = hour === b.lastHour ? b.lastValue : b.firstValue;
-  return { value: Number.isFinite(raw) ? raw * scale : null, missing: false };
+  return Number.isFinite(raw) ? raw * scale : null;
 }
 
 function collectSeriesHours(series: BoundedSeries, until: number, target: Set<number>): void {
@@ -407,10 +461,8 @@ function collectSeriesHours(series: BoundedSeries, until: number, target: Set<nu
         const gapHour = Math.min(until, prevLast + 1);
         if (gapHour < b.firstHour) target.add(gapHour);
       }
-      if (b.hasBreak) {
-        target.add(b.firstHour);
-      } else {
-        target.add(b.firstHour);
+      target.add(b.firstHour);
+      if (!b.hasBreak) {
         const end = Math.min(until, b.lastHour);
         if (end > b.firstHour) target.add(end);
       }
@@ -422,68 +474,52 @@ function collectSeriesHours(series: BoundedSeries, until: number, target: Set<nu
   }
 }
 
-export function buildBoundedStack(
-  inputs: readonly BoundedStackBandInput[],
-  hour: number,
-  options?: BoundedStackOptions,
-): ChartStackModel {
-  const mode = options?.missingMode ?? 'all-required';
+export function buildBoundedStack(inputs: readonly BoundedStackBandInput[], hour: number): ChartStackModel {
   const hourSet = new Set<number>();
-  const sources = inputs.map(input => {
-    const list: BoundedSeries[] = [];
-    if (input.parts && input.parts.length > 0) list.push(...input.parts);
-    else if (input.bounded) list.push(input.bounded);
-    for (const s of list) collectSeriesHours(s, hour, hourSet);
-    return list;
-  });
-  if (inputs.some(input => input.headValue !== undefined && input.headValue !== null) || hourSet.size > 0) {
-    hourSet.add(hour);
+  for (const input of inputs) {
+    for (const part of input.parts) {
+      if (part.series) collectSeriesHours(part.series, hour, hourSet);
+      for (const [first, last] of part.within ?? []) {
+        if (first <= hour) hourSet.add(first);
+        if (last < hour) {
+          hourSet.add(last);
+          hourSet.add(last + 1);
+        }
+      }
+    }
   }
+  if (hourSet.size > 0 || inputs.some(input => input.head)) hourSet.add(hour);
   const hours = [...hourSet].filter(h => h <= hour).sort((a, b) => a - b);
   const valuesByBand: (number | null)[][] = inputs.map(() => new Array<number | null>(hours.length).fill(null));
+  const row = new Array<number>(inputs.length);
 
   for (let i = 0; i < hours.length; i++) {
     const h = hours[i]!;
-    const row = new Array<number | null>(inputs.length).fill(null);
-    let anyMissing = false;
-    let anyPresent = false;
-    for (let b = 0; b < inputs.length; b++) {
+    let present = 0;
+    let missing = false;
+    for (let b = 0; b < inputs.length && !missing; b++) {
       const input = inputs[b]!;
-      if (h === hour && input.headValue !== undefined) {
-        if (input.headValue !== null && Number.isFinite(input.headValue)) {
-          row[b] = input.headValue;
-          anyPresent = true;
-        } else {
-          anyMissing = true;
-        }
+      const owned = input.parts.filter(part => covers(part, h));
+      if (owned.length === 0) {
+        row[b] = 0;
         continue;
       }
-      const scale = input.valueScale ?? 1;
-      const list = sources[b]!;
-      let picked: number | null = null;
-      let missing = false;
-      for (const s of list) {
-        const res = sampleOneBounded(s, h, scale);
-        if (res.value !== null) {
-          picked = res.value;
-          break;
+      present++;
+      let value: number | null = null;
+      if (h === hour && input.head) {
+        value = 'value' in input.head ? input.head.value : null;
+      } else {
+        const scale = input.valueScale ?? 1;
+        for (const part of owned) {
+          value = part.series ? sampleOneBounded(part.series, h, scale) : null;
+          if (value !== null) break;
         }
-        if (res.missing) missing = true;
       }
-      if (picked !== null) {
-        row[b] = picked;
-        anyPresent = true;
-      } else if (missing) {
-        anyMissing = true;
-      }
+      if (value === null) missing = true;
+      else row[b] = value;
     }
-    if (!anyPresent || anyMissing) continue;
-    if (mode === 'all-required') {
-      if (row.some(v => v === null)) continue;
-      for (let b = 0; b < inputs.length; b++) valuesByBand[b]![i] = row[b]!;
-    } else {
-      for (let b = 0; b < inputs.length; b++) valuesByBand[b]![i] = row[b] ?? 0;
-    }
+    if (missing || present === 0) continue;
+    for (let b = 0; b < inputs.length; b++) valuesByBand[b]![i] = row[b]!;
   }
 
   const bands: ChartStackBand[] = inputs.map((input, idx) => ({

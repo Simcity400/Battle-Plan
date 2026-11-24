@@ -9,6 +9,7 @@ use dashboard_text::{
     subunit_requirements::Sources,
 };
 use replay_data::rows::{DeploymentLineRow, TableId, tables};
+use dashboard_query::coverage::witnessed_rows;
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -20,6 +21,7 @@ use std::{
 use ts_rs::TS;
 
 const QUEUE: [TableId; 4] = [TableId::DeploymentConveyors, TableId::DeploymentLines, TableId::DeploymentManpower, TableId::DeploymentEquipment];
+const ORDERS: [TableId; 2] = [TableId::DeploymentConveyors, TableId::DeploymentLines];
 const NAMING: [TableId; 10] = [
     TableId::Countries,
     TableId::CountryAppearance,
@@ -92,11 +94,14 @@ pub struct TrainingDivision {
     #[doc = " Fixed-point training and its maximum, five decimals."]
     pub training_raw: String,
     pub max_training_raw: String,
-    #[doc = " Signed sums of the available and needed entries, as the game adds them."]
-    pub manpower: i32,
-    pub manpower_needed: i32,
+    #[doc = " Signed sums of the available and needed entries, as the game adds them; none with `manpower_missing` when the entries were not read whole."]
+    pub manpower: Option<i32>,
+    pub manpower_needed: Option<i32>,
+    pub manpower_missing: Option<String>,
     pub max_manpower: i32,
+    #[doc = " The manpower entries that were read."]
     pub contributors: Vec<TrainingManpower>,
+    #[doc = " The held equipment that was read; `comparison_missing` says when it is not all of it."]
     pub equipment: Vec<TrainingEquipment>,
     #[doc = " What the template needs; empty with `need_missing` when unknown."]
     pub need: Vec<TrainingNeed>,
@@ -134,11 +139,11 @@ pub struct TrainingOrder {
     #[doc = " A government in exile's order names that country."]
     pub exile: Option<String>,
     pub divisions: Vec<TrainingDivision>,
-    #[doc = " The divisions' available and needed manpower, added."]
-    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
-    pub manpower: i64,
-    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
-    pub manpower_needed: i64,
+    #[doc = " The divisions' available and needed manpower, added; none when any division's is not known."]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number | null"))]
+    pub manpower: Option<i64>,
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number | null"))]
+    pub manpower_needed: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -184,6 +189,14 @@ fn localised(cat: &Result<Arc<Catalogue>, String>, key: &str) -> Result<String, 
 
 fn unavailable(frame: &DecodedFrame, id: TableId) -> Option<String> {
     dashboard_text::scope::unread(id, &frame.tables[id.index()])
+}
+
+fn withheld(frame: &DecodedFrame) -> Option<String> {
+    ORDERS.iter().find_map(|&id| unavailable(frame, id))
+}
+
+fn comparison_missing(need_missing: Option<&str>, equipment_missing: Option<&str>, unclassified: bool) -> Option<String> {
+    need_missing.or(equipment_missing).map(str::to_owned).or_else(|| unclassified.then(|| "A held design's equipment type is unresolved".to_owned()))
 }
 
 fn template_name(frame: &DecodedFrame, handle: u64, cat: &Result<Arc<Catalogue>, String>) -> Result<String, String> {
@@ -271,6 +284,7 @@ impl AtHour for TrainingQueue {
     const KEY: &'static str = "training-queue";
     const TITLE: &'static str = "Training queue";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = TrainingQueueParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = TrainingQueueReply;
@@ -313,10 +327,20 @@ impl AtHour for TrainingQueue {
         Ok(Content::load(source, load))
     }
 
+    fn valid_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
+        match frame.tables[TableId::DeploymentLines.index()].sampled_at() {
+            Some(read) if read > frame.hour => read - 1,
+            Some(read) if i64::from(frame.hour) - i64::from(read) < i64::from(replay_data::cadence::STAGGER_PERIOD) => {
+                read.saturating_add(replay_data::cadence::STAGGER_PERIOD - 1)
+            }
+            _ => i32::MAX,
+        }
+    }
+
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Training queue country is unavailable at this hour"))?;
         let mut reply = TrainingQueueReply { tag: at.holders.name(&params.country, at.hour), read_hour: None, missing: None, orders: Vec::new(), in_training: None, warnings: Vec::new() };
-        if let Some(why) = QUEUE.iter().find_map(|&id| unavailable(frame, id)) {
+        if let Some(why) = withheld(frame) {
             reply.missing = Some(why);
             return Ok(reply);
         }
@@ -345,8 +369,10 @@ impl AtHour for TrainingQueue {
         let units = cat.as_ref().ok().and_then(|cat| catalogue::equipment_units(cat).ok());
         let conveyors = frame.complete::<tables::DeploymentConveyors>()?;
         let lines = frame.complete::<tables::DeploymentLines>()?;
-        let manpower = frame.complete::<tables::DeploymentManpower>()?;
-        let equipment = frame.complete::<tables::DeploymentEquipment>()?;
+        let manpower_read = witnessed_rows::<tables::DeploymentManpower>(frame);
+        let equipment_read = witnessed_rows::<tables::DeploymentEquipment>(frame);
+        let (manpower, manpower_missing) = (manpower_read.rows, manpower_read.missing.map(|why| format!("Training manpower not read whole: {why}")));
+        let (equipment, equipment_missing) = (equipment_read.rows, equipment_read.missing.map(|why| format!("Held equipment not read whole: {why}")));
         let icons = frame.complete::<tables::DivisionTemplateIcons>().ok();
         let mut orders: Vec<_> = conveyors.iter().filter(|row| link_slot(links, row.country) == Some(owner.slot)).collect();
         orders.sort_by_key(|row| (row.ordinal, row.handle));
@@ -402,7 +428,7 @@ impl AtHour for TrainingQueue {
                         (Vec::new(), Some(why.clone()))
                     }
                 };
-                let comparison_missing = need_missing.clone().or_else(|| unclassified.then(|| "A held design's equipment type is unresolved".to_owned()));
+                let comparison_missing = comparison_missing(need_missing.as_deref(), equipment_missing.as_deref(), unclassified);
                 let equipment_fill_raw = if comparison_missing.is_none() { equipment_fill(&need).map(|fill| fill.to_string()) } else { None };
                 divisions.push(TrainingDivision {
                     line: line.handle.to_string(),
@@ -411,8 +437,9 @@ impl AtHour for TrainingQueue {
                     name_missing,
                     training_raw: line.training_raw.to_string(),
                     max_training_raw: line.max_training_raw.to_string(),
-                    manpower: sum(0),
-                    manpower_needed: sum(1),
+                    manpower: manpower_missing.is_none().then(|| sum(0)),
+                    manpower_needed: manpower_missing.is_none().then(|| sum(1)),
+                    manpower_missing: manpower_missing.clone(),
                     max_manpower: line.max_manpower,
                     contributors,
                     equipment: held,
@@ -426,8 +453,8 @@ impl AtHour for TrainingQueue {
             let priority = usize::try_from(order.priority).ok().and_then(|at| priority_names.get(at).cloned()).unwrap_or_else(|| Err(format!("Deployment priority {} has no proved name", order.priority)));
             let (priority_name, priority_missing) = refusals.keep(priority);
             let (location_name, location_missing) = refusals.keep(location(frame, cat, order.location));
-            let manpower_total = divisions.iter().map(|division| i64::from(division.manpower)).sum();
-            let needed_total = divisions.iter().map(|division| i64::from(division.manpower_needed)).sum();
+            let manpower_total = divisions.iter().map(|division| division.manpower.map(i64::from)).sum();
+            let needed_total = divisions.iter().map(|division| division.manpower_needed.map(i64::from)).sum();
             reply.orders.push(TrainingOrder {
                 order: order.handle.to_string(),
                 ordinal: order.ordinal,

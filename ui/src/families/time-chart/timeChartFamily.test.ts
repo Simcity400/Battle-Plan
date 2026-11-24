@@ -372,6 +372,12 @@ describe('time-chart layout & rules C1-C12', () => {
     assert.equal(formatChartAxisValue(-0.5, 'signed1'), '\u22120.5');
     assert.equal(formatChartAxisValue(0.5, 'signed1'), '+0.5');
     assert.equal(formatChartAxisValue(0, 'signed1'), '0');
+    const bopTicks = [-1, -0.5, 0, 0.5, 1];
+    assert.deepEqual(
+      bopTicks.map(v => formatChartAxisValue(v, 'signed1', bopTicks)),
+      ['\u22121.0', '\u22120.5', '0', '+0.5', '+1.0'],
+      'K4: all non-zero signed axis labels carry the same decimal count',
+    );
   });
 });
 
@@ -438,7 +444,7 @@ describe('time-chart laneView integration', () => {
       pictures: [],
       model: binding,
       hour: H1936 + 100 * 24,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: 0,
@@ -462,7 +468,7 @@ describe('time-chart laneView integration', () => {
       pictures: [],
       model: { ...binding, focusedKey: `plot:${H1936 + 100 * 24}` },
       hour: H1936 + 100 * 24,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: 0,
@@ -477,7 +483,7 @@ describe('time-chart laneView integration', () => {
       pictures: [],
       model: binding,
       hour: H1936 + 100 * 24,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: hit ?? null,
       now: 1,
@@ -493,7 +499,7 @@ describe('time-chart laneView integration', () => {
       pictures: [],
       model: { ...binding, zoom: { x: zoomWindow } },
       hour: H1936 + 100 * 24,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 2, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: 2,
@@ -561,6 +567,9 @@ describe('time-chart laneView integration', () => {
         ['stability', new Map([['GER', boundTiledSeries(stabLine, displayedHour(until), { headValue: knownValue(1.0) })]])],
         ['warSupport', new Map([['GER', boundTiledSeries(warLine, displayedHour(until), { headValue: knownValue(0.9) })]])],
       ]),
+      panels: new Map([['markers', { hour: until, nextChange: until + 48, warnings: [], markers: [
+        { id: 'w1', hour: H1936 + 100, kind: 'war', title: 'War with POL began', verb: 'began', other: 'POL', faction: null, sprite: null, alert: true },
+      ] }]]),
       identity: createSnapshotIdentityProvider(index),
     });
     const model = stabilityProjection.project(readView, {
@@ -571,17 +580,13 @@ describe('time-chart laneView integration', () => {
       showStability: true,
       showWarSupport: true,
       zoom: false,
-      rawMarkers: [
-        { id: 'w1', hour: H1936 + 100, kind: 'war', title: 'War', otherTag: 'POL', warVerb: 'began', warAlert: true },
-        { id: 'future', hour: until + 48, kind: 'focus', title: 'Future focus' },
-      ],
     });
     assert.equal(model.series.length, 2);
     assert.equal(model.series[0]!.step, true);
     assert.equal(model.series[0]!.valueScale, 100);
     assert.equal(model.series[0]!.endLabel?.value, '100%');
     assert.equal(model.series[1]!.endLabel?.value, '90%');
-    assert.equal(model.markers?.length, 1, 'future marker must be clamped');
+    assert.equal(model.markers?.length, 1, 'the recorded markers are drawn from the plan entry');
     assert.equal(model.markers![0]!.title, 'War with Poland began');
 
     const fullLayout = layoutTimeChart(model, 960, 276, FONT, measure);
@@ -607,7 +612,7 @@ describe('time-chart laneView integration', () => {
       series: new Map([['stability', new Map([['GER', boundTiledSeries(stabLine, displayedHour(until), { headValue: knownValue(1.0) })]])]]),
       hovers,
       identity: createSnapshotIdentityProvider(index),
-    }), { tags: ['GER'], extent: [H1936, until], gaps: [], surface: '#111111', showStability: true, showWarSupport: false, zoom: false, rawMarkers: [] });
+    }), { tags: ['GER'], extent: [H1936, until], gaps: [], surface: '#111111', showStability: true, showWarSupport: false, zoom: false });
     const hovered = projectHovered(new Map([['hover', { hour: hoverAt, data: breakdown }]]));
     assert.equal(hovered.hoverDetail?.hour, hoverAt);
     const tip = deriveTimeChartTooltip(hovered, layoutTimeChart(hovered, 960, 276, FONT, measure), `plot:${hoverAt}`);
@@ -807,7 +812,7 @@ describe('time-chart picture authority', () => {
         tiledLines: [tiled(rev, first, last)], keepTiled: [rev], tiledBySource: { main: { GER: rev } },
       } satisfies TimeChartBinding,
       hour,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: 0,
@@ -831,7 +836,7 @@ describe('time-chart picture authority', () => {
       { label: 'corrected history', binding: bound(2, 30, 10), hour, check: true },
     ], surface);
   });
-  it('reads head rows by an index, not a scan per tag', () => {
+  it('reads head rows by an index, not a scan per tag, and a missing head cell travels as missing with its reason', () => {
     registerFamilyProjection({
       kind: 'test-head-index',
       family: 'time-chart',
@@ -843,7 +848,7 @@ describe('time-chart picture authority', () => {
         const head = bounded?.headValue;
         return {
           kind: 'test-head-index', measureTitle: 'Index', mode: 'lines', hour: readView.hour, extent: [H1936, H1936 + 95], yAxis: { format: 'number' },
-          series: [], auditRows: [{ row: 'ITA', key: 'ITA', value: head && head.kind === 'known' ? String(head.value) : 'none' }],
+          series: [], auditRows: [{ row: 'ITA', key: 'ITA', value: head?.kind === 'known' ? String(head.value) : head?.kind === 'notRecorded' ? head.reason : `last bucket ${seriesHeadValue(bounded, undefined, 0, 0)}` }],
         };
       },
     });
@@ -855,19 +860,21 @@ describe('time-chart picture authority', () => {
     const hour = H1936 + 95;
     const line = (tag: string) => ({ rev: tag === 'GER' ? 11 : 12, source: 'main', tag, head: 'h', decimals: 0, binHours: 96, from: H1936, to: hour, width: 1,
       buckets: [makeBucket(H1936, hour, 1)], missing: [], parts: [], marks: null });
-    const painted = view.paint({
+    const paint = (followed: typeof answer) => (view.paint({
       widget: 1, subs: [], pictures: [],
       model: {
         family: 'time-chart', kind: 'test-head-index', options: {}, sources: {}, extent: [H1936, hour], width: 600, height: 240, scrollTop: 0, theme: LANE_THEME, audit: true, auditId: 1,
         tiledLines: [line('GER'), line('ITA')], keepTiled: [11, 12], tiledBySource: { main: { GER: 11, ITA: 12 } },
         headSourceBySeries: { main: { answerName: 'main', tags } },
-        staticAnswers: { main: answer },
+        staticAnswers: { main: followed },
       } satisfies TimeChartBinding,
-      hour, speed: 0,
+      hour, seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: null, now: 0,
-    }, new Map(), () => 'c');
-    assert.deepEqual((painted.fields.audit?.value as { rows: readonly { value?: string }[] }).rows.map(row => row.value), ['7']);
+    }, new Map(), () => 'c').fields.audit?.value as { rows: readonly { value?: string }[] }).rows.map(row => row.value);
+    assert.deepEqual(paint(answer), ['7']);
+    const unread = parseFollowed(message(10, [{ id: 1, answer: { keys: [1n, 2n], columns: 1, values: [5n, 0n], states: [0, 1], reasons: [null, 'Popularity not read at this hour'] } }])).answers[0]!.answer;
+    assert.deepEqual(paint(unread), ['Popularity not read at this hour'], 'an unread followed cell after a known earlier bucket is missing, never the bucket');
   });
 });
 
@@ -964,7 +971,7 @@ describe('several countries, one measure', () => {
   const rank = parseFollowed(message(10, [{ id: 1, answer: { keys: ranked.map((_, at) => BigInt(at + 1)), columns: 1, values: ranked.map(() => 1n), names: ranked } }])).answers[0]!.answer;
   const project = (projection: typeof navyLinesProjection, membership: Readonly<Record<string, readonly (readonly [number, number])[]>> | null) =>
     projection.project(createBoundedReadView({ hour, series: new Map([['main', lines]]), answers: new Map([['rank', rank]]) }),
-      { tags, top: null, membership, decimals: 0, extent: [base, base + 95], gaps: [], surface: '#111111' });
+      { tags, top: null, membership, decimals: 0, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
 
   it('orders by the product ranking, colours eight and keeps the rest a grey tail without end labels', () => {
     const model = project(navyLinesProjection, null);
@@ -992,12 +999,23 @@ describe('several countries, one measure', () => {
       { country: 'A03', hour: base + 10, run: null, missing: 'Country did not exist' },
     ] } }]]);
     const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', named]]), hovers }),
-      { tags: [], top: 3, membership: null, decimals: 0, extent: [base, base + 95], gaps: [], surface: '#111111' });
+      { tags: [], top: 3, membership: null, decimals: 0, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
     assert.deepEqual(model.series.map(s => s.id), ['A07', 'A01', 'A03']);
     assert.equal(model.series.find(s => s.id === 'A07')!.exact, null);
     assert.deepEqual(model.series.find(s => s.id === 'A01')!.exact, { hour: base + 10, value: 1234 });
     assert.deepEqual(model.series.find(s => s.id === 'A03')!.exact, { hour: base + 10, value: null, reason: 'Country did not exist' });
     assert.equal(model.series[0]!.endLabel?.value, '7,000');
+  });
+
+  it('draws a second measure dashed beside each country in the same colour, keyed apart, with a legend naming both', () => {
+    const named = new Map(['A07', 'A01'].map(tag => [tag, lines.get(tag)!]));
+    const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', named], ['second', named]]) }),
+      { tags: ['A07', 'A01'], top: null, membership: null, decimals: 0, digits: null, endLabels: false, second: { measure: 'other', legend: ['Resistance', 'Compliance'] }, options: {},
+        extent: [base, base + 95], gaps: [], surface: '#111111' });
+    assert.deepEqual(model.series.map(s => [s.key.replace('\u0000', '|'), s.dash ? 'dashed' : 'solid']), [['A07', 'solid'], ['A07|second', 'dashed'], ['A01', 'solid'], ['A01|second', 'dashed']]);
+    assert.equal(model.series[1]!.color, model.series[0]!.color);
+    assert.ok(model.series.every(s => s.endLabel === null), 'end labels off by option');
+    assert.deepEqual(model.legend?.map(entry => [entry.label, !!entry.dash]), [['Resistance', false], ['Compliance', true]]);
   });
 });
 
@@ -1022,8 +1040,8 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     const boundedA = boundTiledSeries(lineA, displayedHour(hour), { headPoint: { hour, value: 0.4 }, headValue: knownValue(0.4) });
     const boundedB = boundTiledSeries(lineB, displayedHour(hour), { headPoint: { hour, value: 0.6 }, headValue: knownValue(0.6) });
     const stack = buildBoundedStack([
-      { id: 'a', key: 'a', name: 'A', color: '#e5484d', bounded: boundedA, valueScale: 100, headValue: 40 },
-      { id: 'b', key: 'b', name: 'B', color: '#3fae63', bounded: boundedB, valueScale: 100, headValue: 60 },
+      { id: 'a', key: 'a', name: 'A', color: '#e5484d', parts: [{ series: boundedA }], valueScale: 100, head: { value: 40 } },
+      { id: 'b', key: 'b', name: 'B', color: '#3fae63', parts: [{ series: boundedB }], valueScale: 100, head: { value: 60 } },
     ], hour);
     assert.ok(stack.hours.every(h => h <= hour), 'stack hours stay at or before playhead');
     const gapIdx = stack.hours.indexOf(base + 96);
@@ -1035,27 +1053,29 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     assert.equal(stack.bands[1]!.values[headIdx], 60);
   });
 
-  it('projects supply health in red/amber/green stack with end labels, gap breaks, band hit-testing, and exact hover counts', () => {
-    const mk = (v: number) => boundTiledSeries(makeTiledLine('GER', [makeBucket(base, base + 95, v), makeBucket(base + 192, base + 287, v)]), displayedHour(hour), { headPoint: { hour, value: v }, headValue: knownValue(v) });
+  it('projects supply health from one reply: Rust shares, counts and total, a recorded zero, and an audit from the exact read', () => {
+    const subject = '\u00007';
+    const mk = (v: number) => boundTiledSeries(makeTiledLine(subject, [makeBucket(base, base + 95, v), makeBucket(base + 192, base + 287, v)]), displayedHour(hour), { headPoint: { hour, value: v }, headValue: knownValue(v) });
     const hoverAt = base + 50;
-    const mkHover = (raw: string) => ({ hour: hoverAt, data: { states: [{ country: 'GER', hour: hoverAt, drop: null, missing: null, run: { firstHour: hoverAt, lastHour: hoverAt, valueRaw: raw, slot: 1, countryId: 1, startsSegment: false, segmentFirstHour: hoverAt, firstExact: true, lastExact: true } }] } });
+    const reading = (raw: string | null, missing: string | null = null) => ({ country: 7, hour: hoverAt, drop: null, missing,
+      run: raw === null ? null : { firstHour: hoverAt, lastHour: hoverAt, valueRaw: raw, slot: 7, countryId: 1, startsSegment: false, segmentFirstHour: hoverAt, firstExact: true, lastExact: true } });
+    const measures = [{ name: 'divisions', decimals: 0 }, ...['noSupply', 'strained', 'inSupply'].map(name => ({ name, decimals: 0 })),
+      ...['noSupplyShare', 'strainedShare', 'inSupplyShare'].map(name => ({ name, decimals: 5 }))];
+    const rankReply = (readings: ReturnType<typeof reading>[]) => ({ hour: hoverAt, data: { branchId: '1', hour: hoverAt, measures, rows: [{ country: 7, readings }], refused: null, from: hoverAt, until: hoverAt } });
+    const options = { subject, extent: [base, base + 287] as const, gaps: [] };
     const model = supplyHealthProjection.project(createBoundedReadView({
       hour,
       series: new Map([
-        ['noSupply', new Map([['GER', mk(0.07)]])],
-        ['strained', new Map([['GER', mk(0.66)]])],
-        ['inSupply', new Map([['GER', mk(0.27)]])],
+        ['noSupply', new Map([[subject, mk(0.07)]])],
+        ['strained', new Map([[subject, mk(0.66)]])],
+        ['inSupply', new Map([[subject, mk(0.27)]])],
       ]),
-      hovers: new Map([
-        ['noSupplyHover', mkHover('7')],
-        ['strainedHover', mkHover('66')],
-        ['inSupplyHover', mkHover('27')],
-      ]),
-    }), { tag: 'GER', extent: [base, base + 287], gaps: [] });
+      hovers: new Map([['hover', rankReply([reading('100'), reading('7'), reading('66'), reading('27'), reading('7000'), reading('66000'), reading('27000')])]]),
+    }), options);
 
     assert.equal(model.mode, 'stack');
     assert.deepEqual(model.stack?.bands.map(b => [b.id, b.color, b.endLabel?.value]), [
-      ['noSupply', CHART_MEASURE_COLOURS.supplyNone, '7%'],
+      ['noSupply', CHART_MEASURE_COLOURS.supplyNone, '7.0%'],
       ['strained', CHART_MEASURE_COLOURS.supplyStrained, '66%'],
       ['inSupply', CHART_MEASURE_COLOURS.supplyOk, '27%'],
     ]);
@@ -1067,7 +1087,7 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     drawTimeChart(ctx, model, layout, undefined, null, 1);
     assert.ok(ops.some(op => op === 'text:27%'));
     assert.ok(ops.some(op => op === 'text:66%'));
-    assert.ok(ops.some(op => op === 'text:7%'));
+    assert.ok(ops.some(op => op === 'text:7.0%'));
 
     const hitBand = hitTestTimeChart(model, layout, [layout.toX(base + 20), layout.toY(90)]);
     assert.ok(hitBand?.startsWith('line:inSupply@'));
@@ -1075,83 +1095,95 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     assert.equal(labelTip?.payload?.title, 'Strained');
     const hoverTip = deriveTimeChartTooltip(model, layout, `plot:${hoverAt}`);
     assert.deepEqual(hoverTip?.payload?.items?.map(i => `${i.label}:${i.value}`), [
-      'In supply:27.00% · 27 divisions',
-      'Strained:66.00% · 66 divisions',
-      'No supply:7.00% · 7 divisions',
-    ]);
+      'In supply:27% · 27 divisions',
+      'Strained:66% · 66 divisions',
+      'No supply:7.0% · 7 divisions',
+    ], 'the shares are the product’s, not a sum of three replies');
+
+    const hoverOf = (readings: ReturnType<typeof reading>[]) => supplyHealthProjection.project(createBoundedReadView({ hour, hovers: new Map([['hover', rankReply(readings)]]) }), options).hoverDetail?.items.map(i => `${i.label}:${i.value ?? i.missingReason}`);
+    assert.deepEqual(hoverOf([reading('0'), reading('0'), reading('0'), reading('0'), reading(null, 'No divisions'), reading(null, 'No divisions'), reading(null, 'No divisions')]), ['Divisions:0'], 'none only for a recorded zero');
+    assert.deepEqual(hoverOf([reading(null, 'Supply was not read at this hour'), reading(null), reading('1'), reading('1'), reading(null), reading(null), reading(null)]), ['Divisions:Supply was not read at this hour']);
+
+    const share = (raw: string) => ({ decimals: 5, states: [{ country: 7, hour, run: { valueRaw: raw }, missing: null }] });
+    const audited = supplyHealthProjection.project(createBoundedReadView({ hour, panels: new Map([['noSupply', share('7000')], ['strained', share('66000')], ['inSupply', share('27000')]]) }), options);
+    assert.deepEqual(audited.auditRows?.map(row => `${row.row}=${row.value}`), ['noSupply=7.0%', 'strained=66%', 'inSupply=27%'], 'the audit reads the exact panels, not tiles');
   });
 
-  it('projects ruling party with ruling-first bands, future-clamped markers, leader note, and exact hover', () => {
+  it('projects ruling party in the product’s order with dated part ownership, witnessed elections, leader note, exact hover and audit', () => {
+    const subject = '\u00007';
+    const reusedFrom = base + 150;
     const history = {
       branchId: '1',
       tag: 'GER',
-      asked: 'GER',
+      asked: 7,
       decimals: 5,
       warnings: [],
       unobserved: [],
       ideologies: [
         { token: 'democratic', name: 'Democratic', color: [0, 0, 255] as [number, number, number] },
         { token: 'fascism', name: 'Fascist', color: [150, 75, 0] as [number, number, number] },
+        { token: 'communism', name: 'Communist', color: [200, 0, 0] as [number, number, number] },
+        { token: 'neutrality', name: 'Non-aligned', color: [120, 120, 120] as [number, number, number] },
       ],
       parties: [
-        { token: 'democratic', parts: [0] },
-        { token: 'fascism', parts: [1] },
+        { token: 'democratic', parts: [{ part: 0, firstHour: base, lastHour: reusedFrom - 1 }] },
+        { token: 'fascism', parts: [{ part: 1, firstHour: base, lastHour: hour + 200 }] },
+        { token: 'communism', parts: [{ part: 0, firstHour: reusedFrom, lastHour: hour + 200 }] },
+        { token: 'neutrality', parts: [{ part: 2, firstHour: hour + 100, lastHour: hour + 200 }] },
       ],
-      ruling: [
-        { token: 'fascism', firstHour: base, lastHour: hour + 200, startsSegment: true },
-      ],
-      elections: [base + 48, hour + 96],
-      leaders: [
-        { ideology: 'nazism', person: 0, firstHour: base, lastHour: hour + 200, startsSegment: true },
-      ],
-      people: [
-        { character: { id: 1, token: 'GER_leader', name: 'GER_leader' }, name: 'Test Leader', portrait: null, portraitMissing: null },
-      ],
+      ruling: [{ token: 'fascism', firstHour: base, lastHour: hour + 200, startsSegment: true }],
+      elections: [{ hour: base + 48, witnessed: base + 50 }, { hour: hour - 10, witnessed: hour + 5 }, { hour: hour + 96, witnessed: hour + 96 }],
+      leaders: [{ ideology: 'nazism', person: 0, firstHour: base, lastHour: hour + 200, startsSegment: true }],
+      people: [{ character: { id: 1, token: 'GER_leader', name: 'GER_leader' }, name: 'Test Leader', portrait: null, portraitMissing: null }],
       ideologyTypes: [{ token: 'nazism', name: 'Nazism' }],
       partyNames: ['Test Party'],
       partyNameRuns: [{ name: 0, firstHour: base, lastHour: hour + 200 }],
     };
-    const demLine = boundTiledSeries(makeTiledLine('GER\u00000', [makeBucket(base, base + 287, 30)]), displayedHour(hour), { headPoint: { hour, value: 30 }, headValue: knownValue(30) });
-    const fasLine = boundTiledSeries(makeTiledLine('GER\u00001', [makeBucket(base, base + 287, 70)]), displayedHour(hour), { headPoint: { hour, value: 70 }, headValue: knownValue(70) });
+    const part0 = boundTiledSeries(makeTiledLine(`${subject}\u00000`, [makeBucket(base, base + 287, 30)]), displayedHour(hour), { headPoint: { hour, value: 30 }, headValue: knownValue(30) });
+    const part1 = boundTiledSeries(makeTiledLine(`${subject}\u00001`, [makeBucket(base, base + 287, 70)]), displayedHour(hour), { headPoint: { hour, value: 70 }, headValue: knownValue(70) });
     const hoverAt = base + 50;
+    const options = { subject, history, extent: [base, base + 287] as const, gaps: [], surface: '#111111', showChanges: true, showLeaders: true };
     const model = rulingPartyProjection.project(createBoundedReadView({
       hour,
-      series: new Map([['popularity', new Map([['GER\u00000', demLine], ['GER\u00001', fasLine]])]]),
+      series: new Map([['popularity', new Map([[`${subject}\u00000`, part0], [`${subject}\u00001`, part1]])]]),
       hovers: new Map([['popularityHover', {
         hour: hoverAt,
         data: {
           decimals: 5,
           states: [
-            { country: 'GER', part: '0', hour: hoverAt, run: { valueRaw: '3000000' }, missing: null },
-            { country: 'GER', part: '1', hour: hoverAt, run: { valueRaw: '7000000' }, missing: null },
+            { country: 7, part: '0', hour: hoverAt, run: { valueRaw: '3000000' }, missing: null },
+            { country: 7, part: '1', hour: hoverAt, run: { valueRaw: '7000000' }, missing: null },
           ],
         },
       }]]),
-    }), {
-      tag: 'GER',
-      history,
-      extent: [base, base + 287],
-      gaps: [],
-      surface: '#111111',
-      showChanges: true,
-      showLeaders: true,
-    });
+    }), options);
 
     assert.equal(model.mode, 'stack');
-    assert.deepEqual(model.stack?.bands.map(b => [b.id, b.endLabel?.value]), [
-      ['fascism', '70.0%'],
-      ['democratic', '30.0%'],
-    ]);
+    assert.deepEqual(model.stack?.bands.map(b => [b.id, b.endLabel?.value ?? null]), [
+      ['democratic', null],
+      ['fascism', '70%'],
+      ['communism', '30%'],
+      ['neutrality', null],
+    ], 'bands keep the product order whoever rules; a part read by its new party belongs to it alone');
+    const stack = model.stack!;
+    const at = (h: number) => stack.hours.indexOf(h);
+    assert.equal(stack.bands[0]!.values[at(base)], 30, 'democratic owns part 0 before it was reused');
+    assert.equal(stack.bands[2]!.values[at(base)], 0, 'communism owns nothing yet');
+    assert.equal(stack.bands[0]!.values[at(hour)], 0);
+    assert.equal(stack.bands[3]!.values[at(hour)], 0, 'a party that exists only later does not blank the current stack');
     assert.equal(model.note, 'Test Leader · Nazism · Test Party');
-    assert.equal(model.markers?.length, 1, 'future election marker must be clamped');
-    assert.equal(model.markers![0]!.hour, base + 48);
+    assert.deepEqual(model.markers?.map(marker => marker.hour), [base + 48], 'an election shows at its recorded date once read, never before');
     const hoverTip = deriveTimeChartTooltip(model, layoutTimeChart(model, 720, 260, FONT, measure), `plot:${hoverAt}`);
     assert.deepEqual(hoverTip?.payload?.items?.map(i => `${i.label}=${i.value}`), [
       'Leader=Test Leader',
       'Ideology · party=Nazism · Test Party',
-      'Fascist (ruling)=70.0%',
-      'Democratic=30.0%',
-    ]);
+      'Democratic=30%',
+      'Fascist (ruling)=70%',
+    ], 'the hover lists the parties that existed at the hovered hour, each from its own part');
+
+    const exact = (raw: string, part: string) => ({ country: 7, part, hour, run: { valueRaw: raw }, missing: null });
+    const audited = rulingPartyProjection.project(createBoundedReadView({ hour, panels: new Map([['popularity', { decimals: 5, states: [exact('7000000', '1'), exact('3000000', '0')] }]]) }), options);
+    assert.deepEqual(audited.auditRows?.map(row => `${row.row}=${row.value}`), ['fascism=70%', 'communism=30%'], 'the audit reads the exact read of each owned part');
   });
 
   it('installs a cleared surface when model.empty is set and draws overlays on compact wide plots', () => {
@@ -1192,6 +1224,7 @@ describe('stacked bounded series, supply health, and ruling party', () => {
           theme: LANE_THEME,
         },
         hour: H1936 + 200,
+        seek: 0,
         speed: 0,
         binding: { surfaces: [{ width: 480, height: 180, dpr: 1 }], generation: 1, offset: 0, pin: null },
         inspect: null,
@@ -1213,7 +1246,13 @@ describe('stacked bounded series, supply health, and ruling party', () => {
         color: CHART_MEASURE_COLOURS.bopRight,
         role: 'primary',
         step: true,
-        points: [{ hour: H1936, value: 0.2 }, { hour: H1936 + 200, value: 0.4 }],
+        points: [{ hour: H1936, value: 0.2 }, { hour: H1936 + 200, value: 0.9 }],
+        endLabel: {
+          icon: { art: readyArt('bop'), label: 'Balance of power' },
+          name: 'Very Long Consolidated Power Range Name',
+          shortName: 'Very Long Consolidated Power Range Name',
+          value: '0.36',
+        },
       }],
       overlays: [
         { position: 'top-right', text: 'Benito Mussolini', arrow: 'right', color: CHART_MEASURE_COLOURS.bopRight },
@@ -1222,8 +1261,19 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     };
     const { ctx, ops } = mockCanvas(960, 160);
     const layout = layoutTimeChart(withOverlays, 960, 160, FONT, measure);
-    drawTimeChart(ctx, withOverlays, layout, undefined, null, 1);
-    assert.ok(ops.includes('text:Benito Mussolini'), 'top-right overlay renders on wide 160px plot');
+    drawTimeChart(ctx, withOverlays, layout, LANE_THEME, null, 1);
+    const overlayTextIdx = ops.indexOf('text:Benito Mussolini');
+    const plateIdx = ops.lastIndexOf('roundRect', overlayTextIdx);
+    assert.ok(overlayTextIdx > 0, 'top-right overlay renders on wide 160px plot');
+    assert.ok(plateIdx > 0 && plateIdx < overlayTextIdx, 'side overlay paints a surface plate behind the label so the line stays clear');
     assert.ok(ops.includes('text:Grand Council of Fascism'), 'bottom-right overlay renders on wide 160px plot');
+    assert.ok(layout.endLabels[0]?.name?.endsWith('…'), 'long end-label name truncates to fit the right gutter');
+    assert.equal(layout.endLabels[0]?.value, '0.36');
+
+    const narrowLayout = layoutTimeChart(withOverlays, 320, 160, FONT, measure);
+    const narrowLabel = narrowLayout.endLabels[0]!;
+    assert.equal(narrowLabel.value, '0.36', 'value never truncates before the name');
+    assert.ok(narrowLabel.name === null || narrowLabel.name.endsWith('…'), 'narrow end-label truncates or drops name before clipping value');
+    assert.ok(narrowLabel.x + narrowLabel.width <= 320, 'fitted end-label stays inside the chart width');
   });
 });

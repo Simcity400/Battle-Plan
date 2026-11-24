@@ -1,8 +1,8 @@
 import type { FamilyPlanContext } from '../plan.ts';
-import type { FamilyHostAdapter, FamilySettingsPolicy, ParsedFamilyHit } from '../host/adapter.ts';
+import type { FamilyHostAdapter, FamilyRowWindow, FamilySettingsPolicy, ParsedFamilyHit } from '../host/adapter.ts';
 import type { AnyTableWidgetDeclaration } from './declaration.ts';
 import type { FamilyTableBinding } from './laneView.ts';
-import { buildColumnLayouts, computeRowLayout, layoutFamilyTable, tableRowWindow } from './layout.ts';
+import { buildColumnLayouts, layoutFamilyTable, tableRowWindow } from './layout.ts';
 import { deriveTableAudit, resolveTableRows, tableRank, type TableColumnSpec, type TableModel } from './model.ts';
 import { combinedPaneRows, paneGeometry, resolvePanes } from './panes.ts';
 import { encodeTableSettings, MEDIA_ROW_HEIGHT, ROW_HEIGHT, TABLE_SETTINGS_KEY, tableSettingsOf, type TableSettings } from './settings.ts';
@@ -83,6 +83,12 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
       ...(table ? { height: table.totalHeight } : {}),
     };
   },
+  rowWindow: (viewport, settings, fields) => {
+    if (!settings) return null;
+    const media = (fields.meta as { readonly rowHeightMode?: string } | undefined)?.rowHeightMode === 'media';
+    const count = (fields.table as TableInfoField | undefined)?.count ?? Number.POSITIVE_INFINITY;
+    return tableRowWindow(count, null, (media ? MEDIA_ROW_HEIGHT : ROW_HEIGHT)[settings.density], viewport.scrollTop, viewport.height);
+  },
   deriveAuditRows: (model, _hour, { settings, expanded, viewport, theme, fields }) => {
     if (!settings) return [];
     const measured = (fields.widths as TableWidthsField | undefined)?.widths ?? {};
@@ -100,13 +106,14 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
       flatRows,
       visibleColumns: layout.columns,
       rankShown,
-      window: panes ? { first: 0, count: flatRows.length } : tableRowWindow(flatRows.length, computeRowLayout(flatRows, settings.density, mode), (mode === 'media' ? MEDIA_ROW_HEIGHT : ROW_HEIGHT)[settings.density], viewport.scrollTop, viewport.height),
+      ...(fields.range ? { window: fields.range as FamilyRowWindow } : {}),
       countryColors: theme ? { countryLooks: theme.countryLooks, country: theme.country } : undefined,
     });
   },
   buildBinding: ctx => (ctx.settings
     ? {
         settings: ctx.settings,
+        ...(ctx.pagedRows ? { pagedRows: ctx.pagedRows } : {}),
         expanded: ctx.expanded,
         reducedMotion: ctx.reducedMotion,
       }

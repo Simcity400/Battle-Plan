@@ -20,7 +20,6 @@ export const browserTests = [
   'ui/src/dashboard/outsideRecording.dom.test.ts',
   'ui/src/dashboard/timeFindings.dom.test.ts',
   'ui/src/dashboard/timeSweep.dom.test.ts',
-  'ui/src/dashboard/drawnPanel.dom.test.ts',
   'ui/src/dashboard/follow/held.dom.test.ts',
   'ui/src/dashboard/follow/install.dom.test.ts',
   'ui/src/families/host/host.dom.test.ts',

@@ -161,6 +161,16 @@ impl Holders {
         }
     }
 
+    pub fn slot_at(&self, country: &Country, hour: i32) -> Option<u32> {
+        match country {
+            Country::Slot(slot) => Some(*slot),
+            Country::Tag(_) => match self.at(country, hour)?.holder {
+                Holder::Found { slot, .. } => Some(slot),
+                Holder::Unresolved => None,
+            },
+        }
+    }
+
     pub fn goes_by(&self, country: &Country, tag: &str, hour: i32) -> bool {
         match country {
             Country::Tag(chosen) => chosen == tag,
@@ -218,6 +228,12 @@ impl Holders {
 
     pub fn named<K: Key + ?Sized>(&self, country: &K) -> bool {
         !country.runs(self).is_empty()
+    }
+
+    pub fn slot_tag(&self, slot: u32, hour: i32) -> Option<&str> {
+        let held = self.slots().get(&slot)?;
+        let end = held.tags.partition_point(|(first, ..)| *first <= hour);
+        held.tags[..end].iter().rev().find(|(_, last, ..)| hour <= *last).map(|(.., tag)| tag.as_str())
     }
 }
 

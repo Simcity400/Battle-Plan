@@ -167,7 +167,7 @@ group = "linux"
 tier = "check"
 toolchain = "node"
 base = true
-inputs = ["ui/**", "crates/**", "tools/check-dead-code.mjs", "tools/ui-import-graph.mjs", "tools/legacy-widgets-ratchet.json"]
+inputs = ["ui/**", "crates/**", "tools/**/*.mjs", "tools/**/*.ts", "tools/**/*.js", "tools/**/*.cjs", "tools/**/*.py", "tools/**/*.ps1", "tools/**/*.json", "tools/**/*.toml"]
 command = ["{node}", "tools/check-dead-code.mjs", "--against", "{base}"]
 
 [[job]]

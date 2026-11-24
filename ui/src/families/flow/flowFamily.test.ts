@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../boundedView.ts';
-import type { CountryFlowReply } from '../../generated/dashboard';
+import type { CountryFlowReply, FlowEndpoint, FlowLink, FlowSide } from '../../generated/dashboard';
 import { projectCountryFlow, type CountryFlowText } from './countryFlow.ts';
 import { deriveFlowAudit, findFlowTooltip } from './model.ts';
 import { hitFlow, layoutFlow } from './painter.ts';
 import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { familyFlowLaneView } from './laneView.ts';
+import { projectTradeMatrix, projectTradeTable } from '../../widgets/trade-flows/tradeFlowsProjection.ts';
 
 const HOUR = 60_810_000;
 const TEXT: CountryFlowText = {
@@ -25,65 +26,142 @@ const parts = [
   { key: 'oil', name: 'Oil', nameMissing: null, ordinal: 0, icon: null },
   { key: 'steel', name: 'Steel', nameMissing: null, ordinal: 1, icon: null },
 ];
+const side = (links: FlowLink[], total: string | null, missing: string | null = null): FlowSide => ({ links, total, missing });
+const NONE = side([], '0');
 const base: CountryFlowReply = {
-  countries: [], subject: null, decimals: 5, parts, incoming: [], outgoing: [], incomingTotal: null, outgoingTotal: null,
-  links: [], senders: [], receivers: [], table: [], largest: '0', largestLink: '0', missing: null, partial: null, warnings: [],
+  endpoints: [], subject: null, decimals: 5, parts, incoming: NONE, outgoing: NONE,
+  links: [], senders: NONE, receivers: NONE, table: [], largest: '0', largestLink: '0', missing: null, warnings: [],
 };
 const amount = (value: number) => String(value * 100_000);
+const endpoint = (slot: number | null, tag: string | null, unknown: string | null = null): FlowEndpoint => ({ slot, tag, unknown });
+const link = (from: number | null, to: number | null, parts: [number, number | null][], others: number | null = null): FlowLink => {
+  const known = parts.every(([, value]) => value !== null);
+  return {
+    from, to, others,
+    amounts: parts.map(([part, value]) => ({ part, amount: value === null ? null : amount(value) })),
+    total: known ? amount(parts.reduce((sum, [, value]) => sum + (value ?? 0), 0)) : null,
+    missing: known ? null : 'A deal\'s daily delivery was not recorded at this hour',
+  };
+};
 const view = (reply: unknown) => createBoundedReadView({ hour: HOUR, panels: new Map([['main', reply]]) });
 
+const USA = 0;
+const HOL = 1;
+const RAJ = 2;
+const ENG = 3;
 const centred: CountryFlowReply = {
   ...base,
-  countries: ['USA', 'HOL', 'RAJ', 'ENG'],
-  subject: 0,
-  incoming: [
-    { from: 1, to: 0, others: null, amounts: [{ part: 0, amount: amount(20) }, { part: 1, amount: amount(6) }], total: amount(26), missing: null },
-    { from: 2, to: 0, others: null, amounts: [{ part: 1, amount: null }], total: null, missing: 'A deal\'s daily delivery was not recorded at this hour' },
-    { from: null, to: 0, others: 14, amounts: [{ part: 0, amount: amount(14) }], total: amount(14), missing: null },
-  ],
-  outgoing: [{ from: 0, to: 3, others: null, amounts: [{ part: 0, amount: amount(74) }], total: amount(74), missing: null }],
-  incomingTotal: null,
-  outgoingTotal: amount(74),
+  endpoints: [endpoint(1, 'USA'), endpoint(2, 'HOL'), endpoint(3, 'RAJ'), endpoint(6, 'ENG')],
+  subject: USA,
+  incoming: side([
+    link(HOL, USA, [[0, 20], [1, 6]]),
+    link(null, USA, [[0, 14]], 14),
+    link(RAJ, USA, [[1, null]]),
+  ], null, 'A deal\'s daily delivery was not recorded at this hour'),
+  outgoing: side([link(USA, ENG, [[0, 74]])], amount(74)),
   largest: amount(74),
   largestLink: amount(74),
 };
 
-test('a country-centred flow: partners by the product\'s order, an unrecorded partner hatched with its reason, the rest folded, never a zero', () => {
+test('a country-centred flow: partners in the product\'s order, an unrecorded partner hatched with its reason, the rest folded, never a zero', () => {
   const model = projectCountryFlow(view(centred), TEXT);
   assert.equal(model.mode, 'centred');
   assert.deepEqual(model.left.map(node => [node.key, node.numeric, node.figure]), [
-    ['HOL', 26, '26'],
-    ['RAJ', null, 'Not recorded'],
-    ['\u0000others-in', 14, '14'],
+    ['left:2', 26, '26'],
+    ['left:others', 14, '14'],
+    ['left:3', null, 'Not recorded'],
   ]);
-  assert.equal(model.left[2]!.label, '14 other partners');
+  assert.equal(model.left[1]!.label, '14 other partners');
   assert.equal(model.right[0]!.numeric, 74);
   assert.equal(model.notRecordedKey, true, 'a hatched partner adds the not-recorded key');
-  const ribbon = model.ribbons.find(item => item.from === 'HOL')!;
+  const ribbon = model.ribbons.find(item => item.from === 'left:2')!;
   assert.deepEqual(ribbon.bands, [{ part: 0, numeric: 20 }, { part: 1, numeric: 6 }]);
-  assert.equal(findFlowTooltip(model, 'ribbon:RAJ>USA')?.missingReason, 'A deal\'s daily delivery was not recorded at this hour');
-  assert.ok(deriveFlowAudit(model).some(row => row.key === 'node:RAJ' && row.value === 'Not recorded'));
+  assert.equal(findFlowTooltip(model, 'ribbon:left:3>centre:1')?.missingReason, 'A deal\'s daily delivery was not recorded at this hour');
+  assert.ok(deriveFlowAudit(model).some(row => row.key === 'node:left:3' && row.value === 'Not recorded'));
+  assert.deepEqual(model.notes, ['A deal\'s daily delivery was not recorded at this hour'], 'the side whose total is unproven says why');
+  assert.match(model.centre!.audit, /Imports from Not recorded: .*Exports to 74/);
+});
+
+test('a partner on both sides has a node on each side: the incoming ribbon starts on the left and each node reads its own figures', () => {
+  const reply: CountryFlowReply = {
+    ...base,
+    endpoints: [endpoint(1, 'USA'), endpoint(6, 'ENG')],
+    subject: 0,
+    incoming: side([link(1, 0, [[0, 5]])], amount(5)),
+    outgoing: side([link(0, 1, [[0, 45]])], amount(45)),
+    largest: amount(45),
+    largestLink: amount(45),
+  };
+  const model = projectCountryFlow(view(reply), TEXT);
+  assert.deepEqual([model.left[0]!.key, model.right[0]!.key], ['left:6', 'right:6']);
+  const layout = layoutFlow(model, 846, 360);
+  const left = layout.nodes.find(box => box.node.key === 'left:6')!;
+  const right = layout.nodes.find(box => box.node.key === 'right:6')!;
+  assert.ok(left.x < right.x, 'the two boxes are apart');
+  const incoming = layout.ribbons.find(box => box.ribbon.to === 'centre:1')!;
+  assert.equal(incoming.x0, left.x + 6, 'the incoming ribbon starts at the left box');
+  assert.equal(hitFlow(layout, right.x + 20, right.y + right.height / 2), 'node:right:6');
+  assert.equal(findFlowTooltip(model, 'node:right:6')?.items?.[0]?.value, '45');
+  assert.equal(findFlowTooltip(model, 'node:left:6')?.items?.[0]?.value, '5');
+  assert.equal(new Set(deriveFlowAudit(model).map(row => row.key)).size, deriveFlowAudit(model).length, 'audit keys are unique');
+});
+
+test('a licence with an unknown giver stays one licence, from a partner named as unknown with its reason', () => {
+  const reason = 'The licence names a country the recording cannot link at this hour';
+  const reply: CountryFlowReply = {
+    ...base,
+    decimals: 0,
+    parts: [{ key: 'licences', name: 'Licences', nameMissing: null, ordinal: 0, icon: null }],
+    endpoints: [endpoint(7, 'GER'), endpoint(8, 'ITA'), endpoint(null, null, reason)],
+    subject: 0,
+    incoming: side([{ from: 1, to: 0, others: null, amounts: [{ part: 0, amount: '1' }], total: '1', missing: null }, { from: 2, to: 0, others: null, amounts: [{ part: 0, amount: '1' }], total: '1', missing: null }], '2'),
+    largest: '2',
+    largestLink: '1',
+  };
+  const model = projectCountryFlow(view(reply), TEXT);
+  assert.deepEqual(model.left.map(node => [node.key, node.label, node.numeric]), [['left:8', 'ITA', 1], ['left:unknown', 'Unknown country', 1]]);
+  assert.equal(model.left[1]!.unknown, reason);
+  assert.equal(findFlowTooltip(model, 'node:left:unknown')?.missingReason, reason);
+  assert.equal(model.left[1]!.subject, undefined, 'an unknown partner is no country to open');
+});
+
+test('a partial reply never says there is none: emptiness needs both sides proven', () => {
+  const unproven = 'The deal names a country the recording cannot link at this hour';
+  const partial = projectCountryFlow(view({ ...base, endpoints: [endpoint(1, 'USA')], subject: 0, incoming: side([], null, unproven) }), TEXT);
+  assert.equal(partial.emptyKind, 'unavailable');
+  assert.notEqual(partial.empty, TEXT.none);
+  assert.equal(partial.emptyDetail, unproven);
+  const group = projectCountryFlow(view({ ...base, senders: side([], null, unproven), receivers: side([], null, unproven) }), TEXT);
+  assert.equal(group.emptyKind, 'unavailable');
+  const table = projectTradeTable(view({ ...base, endpoints: [endpoint(1, 'USA')], subject: 0, incoming: side([], null, unproven) }));
+  assert.equal(table.emptyKind, 'unavailable');
+  const matrix = projectTradeMatrix(view({ ...base, senders: side([], null, unproven), receivers: side([], null, unproven) }));
+  assert.equal(matrix.emptyKind, 'unavailable');
+  const none = projectCountryFlow(view({ ...base, endpoints: [endpoint(1, 'USA')], subject: 0 }), TEXT);
+  assert.equal(none.empty, TEXT.none);
+  assert.equal(none.emptyKind, undefined);
+  assert.equal(projectCountryFlow(view({ ...base, missing: 'Trade flows were not read at this hour' }), TEXT).emptyKind, 'unavailable');
 });
 
 test('the layout gives every ribbon its width at both ends, keeps labels apart, and hit-tests what it draws', () => {
   const model = projectCountryFlow(view(centred), TEXT);
   const layout = layoutFlow(model, 846, 360);
-  const hol = layout.nodes.find(box => box.node.key === 'HOL')!;
-  const holRibbon = layout.ribbons.find(box => box.ribbon.from === 'HOL')!;
+  const hol = layout.nodes.find(box => box.node.key === 'left:2')!;
+  const holRibbon = layout.ribbons.find(box => box.ribbon.from === 'left:2')!;
   assert.ok(Math.abs((holRibbon.a1 - holRibbon.a0) - (holRibbon.b1 - holRibbon.b0)) < 0.01, 'a ribbon keeps its width');
   assert.ok(Math.abs(hol.height - 26 * layout.scale) < 0.01);
   const lefts = layout.nodes.filter(box => box.node.side === 'left');
   for (let i = 1; i < lefts.length; i++) assert.ok(lefts[i]!.slotTop >= lefts[i - 1]!.slotTop + lefts[i - 1]!.slotHeight, 'label slots never overlap');
   const middleX = (holRibbon.x0 + holRibbon.x1) / 2;
   const middleY = (holRibbon.a0 + holRibbon.b0 + holRibbon.a1 + holRibbon.b1) / 4;
-  assert.equal(hitFlow(layout, middleX, middleY), 'ribbon:HOL>USA');
-  assert.equal(hitFlow(layout, hol.x - 20, hol.y + hol.height / 2), 'node:HOL');
+  assert.equal(hitFlow(layout, middleX, middleY), 'ribbon:left:2>centre:1');
+  assert.equal(hitFlow(layout, hol.x - 20, hol.y + hol.height / 2), 'node:left:2');
   assert.ok(layout.bodyTop + 26 * layout.scale <= 360);
 
   registerFamilyProjection({ kind: 'test-flow', family: 'flow', project: readView => projectCountryFlow(readView, TEXT) });
   const lane = (reply: CountryFlowReply) => ({ family: 'flow', kind: 'test-flow', options: {}, sources: {}, staticPanels: { main: reply }, scrollTop: 0, theme: LANE_THEME, width: 846, height: 360 });
   const held = lane(centred);
-  const corrected: CountryFlowReply = { ...centred, outgoing: [{ ...centred.outgoing[0]!, total: amount(70), amounts: [{ part: 0, amount: amount(70) }] }], outgoingTotal: amount(70) };
+  const corrected: CountryFlowReply = { ...centred, outgoing: side([link(USA, ENG, [[0, 70]])], amount(70)) };
   const surface = { width: 846, height: 360, dpr: 1 };
   assertQuietFrames(() => familyFlowLaneView(() => {}), { label: 'flow', binding: held, hour: HOUR }, 24, surface);
   assertFreshPaint(() => familyFlowLaneView(() => {}), [
@@ -94,36 +172,45 @@ test('the layout gives every ribbon its width at both ends, keeps labels apart, 
   ], surface);
 });
 
-test('a group subject is a bipartite flow of the product\'s senders and receivers', () => {
+test('a group subject is a bipartite flow of the product\'s senders and receivers, a country on both sides drawn on both', () => {
+  const ITA = 0;
+  const SOV = 1;
+  const SPD = 2;
+  const SPR = 3;
   const reply: CountryFlowReply = {
     ...base,
-    countries: ['ITA', 'SOV', 'SPD', 'SPR'],
-    senders: [
-      { from: 0, to: null, others: null, amounts: [{ part: 0, amount: amount(9) }], total: amount(9), missing: null },
-      { from: 1, to: null, others: null, amounts: [{ part: 0, amount: amount(4) }], total: amount(4), missing: null },
-    ],
-    receivers: [
-      { from: null, to: 2, others: null, amounts: [{ part: 0, amount: amount(9) }], total: amount(9), missing: null },
-      { from: null, to: 3, others: null, amounts: [{ part: 0, amount: amount(4) }], total: amount(4), missing: null },
-    ],
-    links: [
-      { from: 0, to: 2, others: null, amounts: [{ part: 0, amount: amount(9) }], total: amount(9), missing: null },
-      { from: 1, to: 3, others: null, amounts: [{ part: 0, amount: amount(4) }], total: amount(4), missing: null },
-    ],
+    endpoints: [endpoint(10, 'ITA'), endpoint(8, 'SOV'), endpoint(11, 'SPD'), endpoint(9, 'SPR')],
+    senders: side([link(ITA, null, [[0, 9]]), link(SOV, null, [[0, 4]]), link(SPD, null, [[0, 1]])], amount(14)),
+    receivers: side([link(null, SPD, [[0, 9]]), link(null, SPR, [[0, 4]]), link(null, ITA, [[0, 1]])], amount(14)),
+    links: [link(ITA, SPD, [[0, 9]]), link(SOV, SPR, [[0, 4]]), link(SPD, ITA, [[0, 1]])],
     largest: amount(9),
     largestLink: amount(9),
   };
   const model = projectCountryFlow(view(reply), TEXT);
   assert.equal(model.mode, 'bipartite');
-  assert.deepEqual(model.left.map(node => node.key), ['ITA', 'SOV']);
-  assert.deepEqual(model.right.map(node => node.key), ['SPD', 'SPR']);
-  assert.deepEqual(model.ribbons.map(ribbon => ribbon.key), ['ITA>SPD', 'SOV>SPR']);
+  assert.deepEqual(model.left.map(node => node.key), ['left:10', 'left:8', 'left:11']);
+  assert.deepEqual(model.right.map(node => node.key), ['right:11', 'right:9', 'right:10']);
+  assert.deepEqual(model.ribbons.map(ribbon => ribbon.key), ['left:10>right:11', 'left:8>right:9', 'left:11>right:10']);
   assert.equal(model.leftHeader, 'Exporters');
+  const layout = layoutFlow(model, 846, 360);
+  const back = layout.ribbons.find(box => box.ribbon.key === 'left:11>right:10')!;
+  assert.ok(back.x0 < back.x1, 'a link back to a sender runs left to right, to its receiver box');
 });
 
-test('not recorded and empty are different states', () => {
-  assert.equal(projectCountryFlow(view({ ...base, missing: 'Trade flows were not read at this hour' }), TEXT).emptyKind, 'unavailable');
-  const none = projectCountryFlow(view({ ...base, countries: ['USA'], subject: 0 }), TEXT);
-  assert.equal(none.empty, 'No trade at this date.');
-  assert.equal(none.emptyKind, undefined);
+test('the trade matrix keys a partner by its recorded slot and an unproven population leaves absent cells unknown, never "No trade"', () => {
+  const unproven = 'The deal names a country the recording cannot link at this hour';
+  const reply: CountryFlowReply = {
+    ...base,
+    endpoints: [endpoint(1, 'USA'), endpoint(6, 'ENG'), endpoint(null, null, unproven)],
+    senders: side([link(0, null, [[0, 3]]), link(2, null, [[0, 2]])], null, unproven),
+    receivers: side([link(null, 1, [[0, 5]])], null, unproven),
+    links: [link(0, 1, [[0, 3]]), link(2, 1, [[0, 2]])],
+    largestLink: amount(3),
+  };
+  const model = projectTradeMatrix(view(reply));
+  assert.deepEqual(model.rows.map(row => [row.id, row.label]), [['1', 'USA'], ['unknown', 'Unknown country']]);
+  assert.deepEqual(model.columns.map(column => column.id), ['6']);
+  assert.equal(model.cells.present.size, 2);
+  const absent = model.cells.absent;
+  assert.equal(typeof absent === 'function' ? absent(0).kind : absent.kind, 'missing');
 });

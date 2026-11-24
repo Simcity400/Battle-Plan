@@ -4,7 +4,7 @@ export function niceStep(span: number, count = 5): number {
   const raw = span / Math.max(1, count);
   const power = 10 ** Math.floor(Math.log10(raw));
   const fraction = raw / power;
-  return (fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10) * power;
+  return (fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 2.5 ? 2.5 : fraction <= 5 ? 5 : 10) * power;
 }
 
 export function linearTicks(min: number, max: number, count = 5): number[] {
@@ -12,7 +12,7 @@ export function linearTicks(min: number, max: number, count = 5): number[] {
   const step = niceStep(max - min, count);
   const start = Math.ceil(min / step - 1e-9);
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(Math.floor(max / step) + 1)) return [min, max];
-  const decimals = Math.min(100, Math.max(0, -Math.floor(Math.log10(step))));
+  const decimals = Math.min(100, exactDecimal(step).scale);
   const ticks: number[] = [];
   for (let index = start; index * step <= max + step * 1e-9 && ticks.length < 1000; index++) ticks.push(Number((index * step).toFixed(decimals)));
   return ticks;

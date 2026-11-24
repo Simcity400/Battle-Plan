@@ -8,13 +8,18 @@ import { laneArtDemand, type ArtResolutions } from './art/provider.ts';
 import { createBoundedReadView } from './boundedView.ts';
 import type { ArtHandle, ArtProvider, ArtResult, BoundedReadView, BoundedSeries, DisplayedHour, EntityKind, FieldStatus, IdentityProvider, IdentityResult } from './contract.ts';
 import type { IdentityIndex } from './identity/index.ts';
+import { buildRowSourceFromHead, type DatedLogRow, type PagedRowsSnapshot, type RowWindow, type TableRowSource } from './table/rowSource.ts';
 
 export interface SceneSources {
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
+  readonly staticShifts?: Readonly<Record<string, number>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly series?: ReadonlyMap<string, ReadonlyMap<string, BoundedSeries>>;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
+  readonly kind?: string;
+  readonly pagedRows?: Readonly<Record<string, PagedRowsSnapshot>>;
+  readonly window?: RowWindow;
 }
 
 export interface SceneReaders {
@@ -39,6 +44,7 @@ export interface SceneProjection<TModel> {
 export interface SceneReads {
   readonly identity: number;
   readonly art: number;
+  readonly rows: boolean;
   unchanged(readers: SceneReaders): boolean;
 }
 
@@ -50,6 +56,7 @@ function readScene(
   hour: number,
   readers: SceneReaders | undefined,
   demands: { readonly identity: Map<string, SceneIdentityDemand>; readonly urls: Set<string>; readonly asks: Map<string, ArtHandle> } | null,
+  noteRows?: () => void,
 ): BoundedReadView {
   let byName: Map<string, Picture<LaneValue>> | null = null;
   const pictureOf = (name: string): Picture<LaneValue> | undefined => {
@@ -69,11 +76,13 @@ function readScene(
     if (rev !== undefined) revisions[name] = rev;
   }
   const liveCache = new Map<string, Live | null>();
+  const rowsCache = new Map<string, TableRowSource<DatedLogRow> | undefined>();
   return createBoundedReadView({
     hour,
     revisions,
     ...(sources.series ? { series: sources.series } : {}),
     ...(sources.hovers ? { hovers: new Map(Object.entries(sources.hovers)) } : {}),
+    ...(sources.window ? { rowWindow: sources.window } : {}),
     ...(readers?.identity ? { identity: readers.identity } : {}),
     ...(readers?.art ? { art: readers.art } : {}),
     ...(demands
@@ -84,6 +93,7 @@ function readScene(
           onArtDemand: (handle: ArtHandle) => laneArtDemand(handle, readers?.index, readers?.artResolutions, demands.urls, demands.asks),
         }
       : {}),
+    ...(sources.staticShifts ? { panelShifts: sources.staticShifts } : {}),
     ensureNonLive: () => {
       const answers = new Map<string, FollowedAnswer | undefined>();
       const panels = new Map<string, unknown>();
@@ -115,6 +125,21 @@ function readScene(
       const live = sectionLiveValues(picture);
       liveCache.set(name, live);
       return live;
+    },
+    resolveRows: name => {
+      noteRows?.();
+      if (rowsCache.has(name)) return rowsCache.get(name);
+      const snapshot = sources.pagedRows?.[name];
+      const identity = snapshot?.identity ?? `${sources.kind ?? ''}:${name}`;
+      let rows: TableRowSource<DatedLogRow> | undefined;
+      if (sources.staticPanels && Object.hasOwn(sources.staticPanels, name)) {
+        rows = buildRowSourceFromHead(identity, sources.staticPanels[name], undefined, hour, snapshot) ?? undefined;
+      } else if (Object.hasOwn(sources.sources, name)) {
+        const head = pictureOf(name)?.parts[0]?.value;
+        if (head?.kind === 'panel') rows = buildRowSourceFromHead(identity, head.refused === null ? head.data : undefined, head.refused ?? undefined, hour, snapshot) ?? undefined;
+      }
+      rowsCache.set(name, rows);
+      return rows;
     },
   });
 }
@@ -163,7 +188,8 @@ export function projectScene<TModel>(
         }
       : {}),
   };
-  const view = readScene(scene, sources, hour, recorded, demands);
+  let rowsRead = false;
+  const view = readScene(scene, sources, hour, recorded, demands, () => { rowsRead = true; });
   const model = project(view);
   recording = false;
   let boundary = Infinity;
@@ -178,6 +204,7 @@ export function projectScene<TModel>(
     reads: {
       identity: whoReads.length,
       art: artReads.length,
+      rows: rowsRead,
       unchanged: next => {
         if (!next.identity !== !inner || !next.art !== !innerArt) return false;
         for (const [kind, key, atHour, was] of whoReads) {

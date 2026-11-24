@@ -65,9 +65,12 @@ pub struct AirSuperiorityParams {
     #[doc = " The side keys compared; all when none."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub sides: Option<Vec<String>>,
-    #[doc = " The regions shown; all active when none."]
+    #[doc = " The user's regions, shown first in this order whether active or not."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub regions: Option<Vec<u32>>,
+    pub pinned_regions: Option<Vec<u32>>,
+    #[doc = " Regions the user removed from the automatic set."]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub hidden_regions: Option<Vec<u32>>,
     #[doc = " The air theatres whose regions are shown; all when none."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub theatres: Option<Vec<String>>,
@@ -200,6 +203,8 @@ pub struct AirRegion {
     pub name_missing: Option<String>,
     #[doc = " Any country scores in it."]
     pub active: bool,
+    #[doc = " One of the user's regions."]
+    pub pinned: bool,
     pub cell: AirCell,
     pub wings: AirWings,
 }
@@ -218,6 +223,8 @@ pub struct AirSuperiorityReply {
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub viewpoint_country_style: Option<AirCountryStyle>,
     pub regions: Vec<AirRegion>,
+    #[doc = " Why a region not listed may still hold scores or wings: a read that lists regions was not whole at the hour."]
+    pub unlisted: Option<String>,
     #[doc = " The comparison of a region no country scores in."]
     pub fallback: AirCell,
     pub scale: i32,
@@ -238,8 +245,6 @@ pub struct AirChoice {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirChoicesReply {
-    #[doc = " Every strategic region of the recorded stack, by id."]
-    pub regions: Vec<AirChoice>,
     #[doc = " Every side the timeline assigns, as last assigned."]
     pub sides: Vec<AirSide>,
     #[doc = " The air theatres at the timeline's last hour, by id."]
@@ -725,6 +730,7 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
         viewpoint: None,
         viewpoint_country_style: None,
         regions: Vec::new(),
+        unlisted: None,
         fallback: AirCell::Reason { reason: "scores-unavailable".into() },
         scale: SCALE,
         bad_below: BAD_BELOW,
@@ -762,22 +768,25 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
         }
         _ => None,
     };
-    let wings_rows = frame.complete::<tables::AirRegionWings>();
-    let wings: Option<BTreeMap<u32, i64>> = wings_rows.as_ref().ok().map(|rows| rows.iter().map(|row| (row.region, row.wings)).collect());
-    let chosen: Option<BTreeSet<u32>> = params.regions.as_ref().map(|regions| regions.iter().copied().collect());
+    let wings_whole = dashboard_query::coverage::population::<tables::AirRegionWings>(frame, &replay_frame::frame::Keys::All).err();
+    let wings: Option<BTreeMap<u32, i64>> = dashboard_text::metadata::recorded_rows::<tables::AirRegionWings>(frame).ok().map(|rows| rows.iter().map(|row| (row.region, row.wings)).collect());
+    let unlisted = dashboard_query::coverage::population::<tables::RaidAirScores>(frame, &replay_frame::frame::Keys::All).err().or_else(|| wings_whole.clone());
+    let pinned: Vec<u32> = {
+        let mut seen = HashSet::new();
+        params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect()
+    };
+    let pin_rank: HashMap<u32, usize> = pinned.iter().enumerate().map(|(at, &id)| (id, at)).collect();
+    let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().filter(|id| !pin_rank.contains_key(id)).collect();
     let mut ids: BTreeSet<u32> = scores.pairs.keys().chain(&scores.active).copied().collect();
     ids.extend(wings.iter().flat_map(|wings| wings.iter().filter(|(_, count)| **count != 0).map(|(region, _)| *region)));
     if params.order == Some(AirRegionOrder::Name)
-        && chosen.is_none()
         && theatres.is_none()
         && let Ok(all) = &context.names.regions
     {
         ids.extend(all.regions.keys().copied());
     }
-    if let Some(chosen) = &chosen {
-        ids.retain(|region| chosen.contains(region));
-        ids.extend(chosen.iter().copied());
-    }
+    ids.retain(|region| !hidden.contains(region));
+    ids.extend(pinned.iter().copied());
     let filter = |region: Option<u32>| match &theatres {
         None => None,
         Some(Err(())) => Some("theatres-not-recorded"),
@@ -808,29 +817,30 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
         let (lead, total) = if ordered { region_lead_and_total(&cell, scores.pairs.get(&region).map(Vec::as_slice)) } else { (f64::INFINITY, 0) };
         let wing_count = wings.as_ref().and_then(|map| map.get(&region)).copied().unwrap_or(0);
         let active = scores.active.contains(&region);
+        let is_pinned = pin_rank.contains_key(&region);
         if let Some(order) = params.order {
-            if matches!(cell, compose::Cell::Reason("outside-theatres")) {
+            if !is_pinned && matches!(cell, compose::Cell::Reason("outside-theatres")) {
                 continue;
             }
-            if chosen.is_none() && order != AirRegionOrder::Name && !active && total <= 0 && wing_count <= 0 {
+            if !is_pinned && order != AirRegionOrder::Name && !active && total <= 0 && wing_count <= 0 {
                 continue;
             }
         }
         let (name, name_missing) = region_name(&context.names, region);
-        let wings_kind = match wings.as_ref().map(|wings| wings.get(&region)) {
-            Some(Some(_)) => {
+        let wings_kind = match dashboard_query::coverage::witnessed::<tables::AirRegionWings>(frame, u128::from(region)) {
+            dashboard_query::coverage::Witness::Row(_) => {
                 live.value(&region.to_string(), "wings", Cell { table: TableId::AirRegionWings, column: wings_column, key: u128::from(region) }, 1.0);
                 AirWings::Live
             }
-            Some(None) => AirWings::None,
-            None => AirWings::Unknown,
+            dashboard_query::coverage::Witness::Absent => AirWings::None,
+            dashboard_query::coverage::Witness::NotRecorded(_) => AirWings::Unknown,
         };
         let mut shown_cell = shown(cell, region, &dictionary, live, columns, enemy, ordered);
         if let (Some(ranks), AirCell::Sides(sides_cell)) = (&ranks, &mut shown_cell) {
             sides_cell.parts.sort_by_key(|part| ranks.get(part.side as usize).copied().unwrap_or(usize::MAX));
         }
         ordered_regions.push((
-            AirRegion { id: region, name, name_missing, active, cell: shown_cell, wings: wings_kind },
+            AirRegion { id: region, name, name_missing, active, pinned: is_pinned, cell: shown_cell, wings: wings_kind },
             lead,
             total,
             wing_count,
@@ -847,10 +857,11 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
             AirRegionOrder::Active => b.2.cmp(&a.2).then_with(|| b.3.cmp(&a.3)).then_with(|| a.0.id.cmp(&b.0.id)),
         });
     }
+    ordered_regions.sort_by_key(|(region, ..)| pin_rank.get(&region.id).copied().unwrap_or(usize::MAX));
     let regions: Vec<AirRegion> = ordered_regions.into_iter().map(|(region, ..)| region).collect();
     let fallback = shown(fallback, 0, &dictionary, live, columns, enemy, false);
-    if let Err(error) = &wings_rows {
-        warnings.push(format!("Air wings by region are not known at this hour: {error}"));
+    if let Some(error) = &wings_whole {
+        warnings.push(format!("Air wings by region are not all known at this hour: {error}"));
     }
     let viewpoint_index = viewpoint_side.map(|position| dictionary.index(position));
     let legend = match params.mode.unwrap_or_default() {
@@ -874,6 +885,7 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
         viewpoint: viewpoint_index,
         viewpoint_country_style,
         regions,
+        unlisted,
         fallback,
         scale: SCALE,
         bad_below: BAD_BELOW,
@@ -888,8 +900,9 @@ impl AtHour for AirSuperiorityAt {
     const KEY: &'static str = "air-superiority";
     const TITLE: &'static str = "Air superiority";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads country appearance looks and faction name runs from branch history context and stamps reply hour");
     type Params = AirSuperiorityParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, mode, viewpoint, viewpointCountry, sides, regions, theatres, order, "regions[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, mode, viewpoint, viewpointCountry, sides, pinnedRegions, hiddenRegions, theatres, order, "pinnedRegions[]", "hiddenRegions[]"];
     type Reply = AirSuperiorityReply;
     type Context = AirContext;
 
@@ -1011,10 +1024,6 @@ impl Product for AirSuperiorityChoices {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let names = names(source, context);
         let mut warnings = names.warnings.clone();
-        let regions = match &names.regions {
-            Ok(regions) => regions.regions.keys().map(|&id| AirChoice { id: id.to_string(), name: region_name(&names, id).0.unwrap_or_else(|| format!("Region {id}")) }).collect(),
-            Err(_) => Vec::new(),
-        };
         let mut last: BTreeMap<&str, &AssignedSide> = BTreeMap::new();
         for side in index.epochs.iter().filter_map(|epoch| epoch.sides.as_deref()).flatten() {
             last.insert(&side.key, side);
@@ -1028,7 +1037,7 @@ impl Product for AirSuperiorityChoices {
         if let Some(why) = &theatres_missing {
             warnings.push(why.clone());
         }
-        Ok(AirChoicesReply { regions, sides, theatres, theatres_missing, countries: query.holders.tags.keys().cloned().collect(), warnings })
+        Ok(AirChoicesReply { sides, theatres, theatres_missing, countries: query.holders.tags.keys().cloned().collect(), warnings })
     }
 }
 

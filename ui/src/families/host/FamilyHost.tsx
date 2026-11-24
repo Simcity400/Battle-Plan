@@ -27,24 +27,27 @@ import type {
 } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { CountryLooksMap } from '../looks.ts';
+import type { PagedRowsSnapshot } from '../table/rowSource.ts';
 import {
   familyBinding,
   familyInspectToken,
   lazyActionKeys,
   parseFamilyHit,
+  requestedRowWindow,
   type FamilyArtDemand,
   type FamilyContextHit,
   type FamilyGestureContext,
   type FamilyHostAdapter,
   type FamilyMetaState,
   type FamilyRowWindow,
+  type FamilyStaticProof,
   type FamilyStaticSources,
   type FamilyViewportChange,
   type FamilyViewportState,
   type ParsedFamilyHit,
 } from './adapter.ts';
 import { createPlanAuditVerifier, type FamilyAuditVerifier, type PlanAuditSnapshot } from './auditBinding.ts';
-import { boundDated } from './dated.ts';
+import { boundDated, type BoundDated } from './dated.ts';
 import { renderFamilyBodyState } from './FamilyBodyState.tsx';
 import {
   handleFamilyGridKeyDown,
@@ -53,9 +56,11 @@ import {
   navPageStep,
   type FamilyNavTuple,
 } from './keyboard.ts';
-import { NO_EXPANSION, toggleExpansion, type FamilyExpansion } from './expansion.ts';
+import { NO_EXPANSION, type FamilyExpansion } from './expansion.ts';
+import { BoundSelections, inputBlocked, installedRecordOf, recordInstalled, resolveHostInput, type HostCommand, type HostInput, type HostInputGate, type InstalledRecord } from './installed.ts';
 import { syncListboxMirror, syncTableMirror, type ListboxMirrorItem } from './mirror.ts';
 import { bindFamilyPointer } from './pointer.ts';
+import { regionDropAt, regionRowOf, type RegionCommand, type RegionRowRef, type RegionRowsField } from '../regions/regionRows.ts';
 import { computeScrollGeometry, physicalToLogicalTop, scrollRangeIntoView, type ScrollGeometry } from './scroll.ts';
 import { reportFamilyShownHour } from './shownHour.ts';
 import {
@@ -79,7 +84,6 @@ const PLAN_VERIFIER = createPlanAuditVerifier<unknown, unknown>() as FamilyAudit
 const EMPTY_NAV: readonly FamilyNavTuple[] = [];
 const EMPTY_FIELDS: Readonly<Record<string, unknown>> = {};
 const NO_STRINGS: readonly string[] = [];
-const PICTURE_FIELDS = new WeakMap<InstalledPicture, Readonly<Record<string, unknown>>>();
 
 interface RawMeta {
   readonly empty?: string | null;
@@ -129,20 +133,8 @@ function listboxItems(mirror: MirrorModel, selectedKey: string | null): readonly
   }));
 }
 
-type HostCommand = 'activate' | 'toggle' | 'menu' | 'pin';
-
-interface HostInput {
-  readonly key: string | null;
-  readonly hit: ParsedFamilyHit | null;
-  readonly picture: InstalledPicture | null;
+interface HostInputAt extends HostInput {
   readonly at?: { readonly x: number; readonly y: number };
-}
-
-function keyInPicture(adapter: FamilyHostAdapter<any, any, any, any>, picture: InstalledPicture, key: string): boolean {
-  if (adapter.navigation !== 'grid') return picture.actionKeys.has(key);
-  const metrics = adapter.getGridMetrics?.(PICTURE_FIELDS.get(picture) ?? EMPTY_FIELDS);
-  const cell = (adapter.parseGridKey ?? parseGridKey)(key);
-  return !!metrics && !!cell && cell.row < metrics.rows && cell.column < metrics.columns;
 }
 
 function currentDpr(): number {
@@ -190,13 +182,15 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly allowEmptyFollow?: boolean;
   readonly owner?: string;
   readonly staticSources?: FamilyStaticSources | null;
+  readonly staticProof?: FamilyStaticProof;
+  readonly pagedRows?: Readonly<Record<string, PagedRowsSnapshot>>;
   readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly tiledRevision?: number;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
   readonly extent?: readonly [number, number] | null;
   readonly plan?: SourcePlan | null;
-  readonly exactReadView?: (hour: number) => Promise<BoundedReadView | null>;
+  readonly exactReadView?: (hour: number, rowWindow: FamilyRowWindow | null) => Promise<BoundedReadView | null>;
   readonly offset: number;
   readonly pin: number | null;
   readonly bounds?: readonly [number, number] | null;
@@ -209,6 +203,8 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly selectedKey?: string | null;
   readonly onActivate?: (action: InstalledAction) => void;
   readonly onToggle?: (action: InstalledAction) => void;
+  readonly onRegions?: (command: RegionCommand) => string | null;
+  readonly emptyAction?: ReactNode;
   readonly contextMenuItems?: (hit: FamilyContextHit) => MenuItem[];
   readonly headerSlot?: HTMLElement | null;
   readonly onDiagnostics?: (warnings: string[]) => void;
@@ -238,6 +234,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   allowEmptyFollow = false,
   owner,
   staticSources = null,
+  staticProof,
+  pagedRows,
   tiledSeries,
   tiledRevision = 0,
   hovers,
@@ -257,6 +255,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   selectedKey = null,
   onActivate,
   onToggle,
+  onRegions,
+  emptyAction,
   contextMenuItems,
   headerSlot = null,
   onDiagnostics,
@@ -282,6 +282,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const bodyWrapRef = useRef<HTMLDivElement>(null);
   const [targets, setTargets] = useState<FamilyChromeTargets>(NO_TARGETS);
   const windowRef = useRef<FamilyRowWindow | null>(null);
+  const requestedWindowRef = useRef<FamilyRowWindow | null>(null);
   const [chromeState, setChromeState] = useState<unknown>(undefined);
   const chromeStateRef = useRef<unknown>(undefined);
   const [chromeWidth, setChromeWidth] = useState(0);
@@ -307,6 +308,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const focusedKeyRef = useRef<string | null>(null);
   const focusInsideRef = useRef(false);
   const focusAnchorRef = useRef({ x: 0, y: 0 });
+  const regionDragRef = useRef<RegionRowRef | null>(null);
+  const regionDropRef = useRef<HTMLDivElement>(null);
   const restoringFocusRef = useRef(false);
   const inspectedKeyRef = useRef<string | null>(null);
   const inspectedHitRef = useRef<ParsedFamilyHit | null>(null);
@@ -314,18 +317,18 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const lastHoverHourRef = useRef<number | null>(null);
   const heldRef = useRef(held);
   heldRef.current = held;
-  const dimRef = useRef(false);
   const pauseFlushRef = useRef(0);
-  const installedPictureRef = useRef<InstalledPicture | null>(null);
-  const installedFieldsRef = useRef<Readonly<Record<string, unknown>>>(EMPTY_FIELDS);
-  const resolveInstalledRef = useRef<() => InstalledPicture | null>(() => installedPictureRef.current);
-  const navRef = useRef<readonly FamilyNavTuple[]>(EMPTY_NAV);
+  const recordRef = useRef<InstalledRecord | null>(null);
+  const resolveInstalledRef = useRef<() => InstalledPicture | null>(() => recordRef.current?.picture ?? null);
+  const selectionsRef = useRef(new BoundSelections());
   const typeaheadRef = useRef({ query: '', until: 0 });
   const expansionRef = useRef<FamilyExpansion>(NO_EXPANSION);
 
   const lastMirrorKeyRef = useRef('');
   const lastMirrorObjRef = useRef<MirrorModel | null>(null);
   const lastMirrorSelectedRef = useRef<string | null>(null);
+  const fieldsNow = () => recordRef.current?.fields ?? EMPTY_FIELDS;
+  const navNow = () => recordRef.current?.nav ?? EMPTY_NAV;
   const lastVisibleRef = useRef<boolean | null>(null);
   const lastExtentRef = useRef({ width: -1, height: -1 });
   const lastRawMetaRef = useRef<{ mode: string; reason: string | null; failureOrigin: FailureOrigin; raw: unknown } | null>(null);
@@ -408,13 +411,14 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     theme,
     reducedMotion,
     staticSources,
+    staticProof,
+    pagedRows,
     tiledSeries,
     hovers,
     artResolutions,
     extent,
     plan,
     exactReadView,
-    identitySnapshot,
     onIdentityDemands,
     onArtDemands,
     onViewportChange,
@@ -422,6 +426,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     selectedKey,
     onActivate,
     onToggle,
+    onRegions,
     contextMenuItems,
     viewportHeight,
     bounds,
@@ -454,9 +459,18 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     if (box) focusAnchorRef.current = { x: box.left + Math.min(200, box.width / 2), y: box.top + 48 };
   }, []);
 
+  const reportWindow = useCallback(() => {
+    const requested = requestedWindowRef.current;
+    const installed = recordRef.current?.picture;
+    const reported = windowRef.current;
+    if (!requested || !installed || (reported && reported.first === requested.first && reported.count === requested.count)) return;
+    windowRef.current = requested;
+    latestRef.current.onWindowChange?.(requested, installed.hour);
+  }, []);
+
   const syncMirror = useCallback((mirror: MirrorModel | null) => {
     const kind = latestRef.current.adapter.mirror ?? 'none';
-    const selected = latestRef.current.selectedKey ?? null;
+    const selected = recordRef.current?.selectedKey ?? null;
     if (kind === 'table') {
       const moved = syncTableMirror(mirrorBodyRef.current, mirror, {
         selectedKey: selected,
@@ -483,6 +497,17 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const syncMirrorRef = useRef(syncMirror);
   syncMirrorRef.current = syncMirror;
 
+  const datedNow = useCallback(() => {
+    const cur = latestRef.current;
+    return boundDated(
+      cur.staticSources,
+      cur.staticProof?.read()?.proof ?? null,
+      Object.keys(sourceIdsRef.current).length > 0,
+      cur.allowEmptyFollow || (!!cur.tiledSeries && Object.keys(cur.tiledSeries).length > 0),
+      cur.bounds,
+    );
+  }, [sourceIdsRef]);
+
   const bind = useCallback(() => {
     const mounted = surfaceRef.current;
     if (!mounted || !pipeline || pipe === null) return;
@@ -502,20 +527,22 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       scrollTop: physicalToLogicalTop(vp.scrollTop, scrollGeometryRef.current),
       zoomWindow: vp.zoomWindow,
     };
+    const rowWindow = requestedRowWindow(curAdapter, cur.plan, viewport, cur.settings, fieldsNow());
 
     let auditId: number | undefined;
     if (perfLog && cur.captureActive && cur.exactReadView && curAdapter.deriveAuditRows) {
-      const key = [cur.declaration, cur.options, cur.exactReadView, curAdapter.deriveAuditRows, viewport.width, viewport.height, viewport.scrollLeft, viewport.scrollTop, cur.settings, expansionRef.current, cur.theme];
+      const key = [cur.declaration, cur.options, cur.exactReadView, curAdapter.deriveAuditRows, viewport.width, viewport.height, viewport.scrollLeft, viewport.scrollTop, rowWindow?.first, rowWindow?.count, cur.settings, expansionRef.current, cur.theme];
       const prev = lastAuditRef.current;
       if (prev && prev.key.length === key.length && prev.key.every((part, i) => part === key[i])) {
         auditId = prev.id;
       } else {
         const deriveRows = curAdapter.deriveAuditRows;
-        const context = { viewport, settings: cur.settings, expanded: expansionRef.current, theme: cur.theme, fields: installedFieldsRef.current };
+        const readExact = cur.exactReadView;
+        const context = { viewport, settings: cur.settings, expanded: expansionRef.current, theme: cur.theme, fields: fieldsNow() };
         const snapshot: PlanAuditSnapshot<TModel, TOptions> = {
           projection: cur.declaration,
           options: cur.options,
-          exactReadView: cur.exactReadView,
+          exactReadView: hour => readExact(hour, rowWindow),
           deriveRows: (model, hour) => deriveRows(model, hour, context),
           ...(curAdapter.auditOrdered !== undefined ? { ordered: curAdapter.auditOrdered } : {}),
         };
@@ -524,16 +551,13 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       }
     }
 
-    const staticPanels = cur.staticSources?.panels;
-    const staticAnswers = cur.staticSources?.answers;
     const binding = familyBinding(curAdapter, {
       kind: cur.declaration.kind,
       view: cur.view,
       options: cur.options,
       settings: cur.settings,
       sources: sourceIdsRef.current,
-      ...(staticPanels && Object.keys(staticPanels).length ? { staticPanels } : {}),
-      ...(staticAnswers && Object.keys(staticAnswers).length ? { staticAnswers } : {}),
+      ...(cur.pagedRows && Object.keys(cur.pagedRows).length ? { pagedRows: cur.pagedRows } : {}),
       ...(cur.tiledSeries ? { tiledSeries: cur.tiledSeries } : {}),
       ...(cur.hovers ? { hovers: cur.hovers } : {}),
       ...(cur.artResolutions ? { artResolutions: cur.artResolutions } : {}),
@@ -542,30 +566,31 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       viewport,
       theme: cur.theme,
       reducedMotion: cur.reducedMotion,
-      identitySnapshot: cur.identitySnapshot,
       selectedKey: cur.selectedKey,
       focusedKey: focusInsideRef.current ? focusedKeyRef.current : null,
       expanded: expansionRef.current,
       audit: auditId !== undefined,
       auditId,
       pauseFlush: pauseFlushRef.current,
+      window: rowWindow,
     });
     if (binding === null) return;
+    requestedWindowRef.current = rowWindow;
+    reportWindow();
 
     const widthPx = `${w}px`;
     const heightPx = `${h}px`;
     if (mounted.canvas.style.width !== widthPx) mounted.canvas.style.width = widthPx;
     if (mounted.canvas.style.height !== heightPx) mounted.canvas.style.height = heightPx;
     pipeline.present(pipe, curAdapter.family);
-    const dated = boundDated(
-      cur.staticSources,
-      Object.keys(sourceIdsRef.current).length > 0,
-      cur.allowEmptyFollow || (!!cur.tiledSeries && Object.keys(cur.tiledSeries).length > 0),
-      cur.bounds,
-    );
+    const dated = datedNow();
+    suppliedDatedRef.current = dated ?? null;
     pipeline.bind(pipe, [mounted.surface], { surfaces: [{ width: w, height: h, dpr }], ...(dated ? { dated } : {}) }, {}, binding);
-  }, [pipeline, pipe, audit.capture, sourceIdsRef]);
+    const bound = pipeline.view(pipe)?.binding;
+    if (bound !== undefined) selectionsRef.current.bound(bound, cur.selectedKey);
+  }, [pipeline, pipe, audit.capture, sourceIdsRef, datedNow, reportWindow]);
 
+  const suppliedDatedRef = useRef<BoundDated | null>(null);
   const bindRef = useRef(bind);
   bindRef.current = bind;
   const clearHoverRef = useRef<() => void>(() => {});
@@ -580,82 +605,68 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   }, [notifyViewportChange]);
 
   const gestureContext = useCallback((): FamilyGestureContext => ({
-    fields: installedFieldsRef.current,
+    fields: fieldsNow(),
     viewport: { ...viewportRef.current },
     extent: latestRef.current.extent,
     setZoomWindow,
   }), [setZoomWindow]);
 
-  const dispatchAction = useCallback((action: InstalledAction) => {
+  const gateNow = useCallback((): HostInputGate => ({
+    current: installedRecordOf(resolveInstalledRef.current()),
+    held: heldRef.current,
+    expired: !!pipeline && pipe !== null && pipeline.view(pipe)?.expired === true,
+  }), [pipeline, pipe]);
+
+  const dispatch = useCallback((command: HostCommand, input: HostInputAt): boolean => {
     const cur = latestRef.current;
-    if (action.toggle && cur.onToggle) cur.onToggle(action);
-    else if (action.toggle) {
-      const toggled = toggleExpansion(expansionRef.current, navRef.current, action.subject, cur.adapter.exclusiveExpansion?.(installedFieldsRef.current) ?? false);
-      if (!toggled) return;
-      expansionRef.current = toggled.next;
-      say(`${toggled.label} ${toggled.open ? 'expanded' : 'collapsed'}.`);
-      bindRef.current();
-    } else cur.onActivate?.(action);
-  }, [say]);
-
-  const actionFor = useCallback((installed: InstalledPicture, hit: ParsedFamilyHit, toggle: boolean): InstalledAction | null => {
-    const refine = latestRef.current.adapter.resolveHitAction;
-    if (refine) return refine(hit, installed, PICTURE_FIELDS.get(installed) ?? EMPTY_FIELDS);
-    const target = installed.actionKeys.get(hit.key);
-    const label = hit.label ?? target?.label;
-    const meta = hit.meta ?? target?.meta;
-    return {
-      installedId: installed.id,
-      owner: installed.owner,
-      subject: hit.subject ?? target?.subject ?? hit.key,
-      hour: displayedHour(hit.hour ?? target?.hour ?? installed.hour),
-      ...(toggle || target?.toggle ? { toggle: true } : {}),
-      ...(label !== undefined ? { label } : {}),
-      ...(meta !== undefined ? { meta } : {}),
-    };
-  }, []);
-
-  const dispatch = useCallback((command: HostCommand, input: HostInput): boolean => {
-    const current = resolveInstalledRef.current();
-    const picture = input.picture;
-    if (heldRef.current || dimRef.current || !current || !picture || picture.owner !== current.owner) return false;
-    const activeAdapter = latestRef.current.adapter;
-    if (input.key !== null && !input.hit && !keyInPicture(activeAdapter, picture, input.key)) return false;
-    if (command === 'menu') {
-      const build = latestRef.current.contextMenuItems;
-      if (!build) return false;
-      const key = input.key;
-      const hit = input.hit;
-      const target = key ? picture.actionKeys.get(key) : undefined;
-      const hitHour = hit?.hour ?? target?.hour ?? null;
-      const items = build({
-        key,
-        subject: hit?.subject ?? target?.subject ?? key,
-        label: hit?.label ?? target?.label ?? key,
-        hour: hitHour ?? picture.hour,
-        hitHour,
-        ...(hit?.kind !== undefined ? { kind: hit.kind } : {}),
-        ...(hit?.meta !== undefined ? { meta: hit.meta } : target?.meta !== undefined ? { meta: target.meta } : {}),
-        installed: picture,
-      });
-      if (!items.length) return false;
-      const at = input.at ?? focusAnchorRef.current;
-      contextMenuRef.current.open(at.x, at.y, items);
-      return true;
+    const effect = resolveHostInput(cur.adapter, command, input, gateNow(), {
+      expansion: expansionRef.current,
+      takesToggles: !!cur.onToggle,
+      regions: !!cur.onRegions,
+      menu: !!cur.contextMenuItems,
+    }, parseGridKey);
+    if (!effect) return false;
+    switch (effect.kind) {
+      case 'menu': {
+        const items = cur.contextMenuItems!(effect.hit);
+        if (!items.length) return false;
+        const at = input.at ?? focusAnchorRef.current;
+        contextMenuRef.current.open(at.x, at.y, items);
+        return true;
+      }
+      case 'pin':
+        tooltips.pinFocused(effect.tip, effect.hour, focusAnchorRef.current, cur.viewportHeight, say);
+        return true;
+      case 'region-open': {
+        const field = effect.field;
+        const box = bodyRef.current?.getBoundingClientRect();
+        const at = field.add
+          ? { x: (box?.left ?? 0) + field.nameLeft, y: (box?.top ?? 0) + field.add.top + field.add.height - viewportRef.current.scrollTop }
+          : focusAnchorRef.current;
+        cur.onRegions!({ op: 'open', x: at.x, y: at.y, rows: field.rows });
+        return true;
+      }
+      case 'region-remove': {
+        const message = cur.onRegions!({ op: 'remove', row: effect.row });
+        if (message) say(message);
+        return true;
+      }
+      case 'activate':
+        tooltips.dismissActivated(effect.key);
+        cur.onActivate?.(effect.action);
+        return true;
+      case 'toggle':
+        if (command !== 'toggle' && input.key !== null) tooltips.dismissActivated(input.key);
+        if (!effect.expansion) {
+          cur.onToggle?.(effect.action);
+          return true;
+        }
+        expansionRef.current = effect.expansion.next;
+        say(`${effect.expansion.label} ${effect.expansion.open ? 'expanded' : 'collapsed'}.`);
+        bindRef.current();
+        return true;
     }
-    if (input.key === null) return false;
-    if (command === 'pin') {
-      const focusTip = (PICTURE_FIELDS.get(picture) ?? EMPTY_FIELDS).focusTooltip as FamilyTooltipField | undefined;
-      if (!focusTip?.text || focusTip.text.rowKey !== input.key) return false;
-      tooltips.pinFocused(focusTip.text, picture.hour, focusAnchorRef.current, latestRef.current.viewportHeight, say);
-      return true;
-    }
-    const toggle = command === 'toggle';
-    const action = actionFor(picture, input.hit ?? parseFamilyHit(activeAdapter, input.key) ?? { key: input.key }, toggle);
-    if (!action) return false;
-    dispatchAction(toggle ? { ...action, toggle: true } : action);
-    return true;
-  }, [actionFor, say, dispatchAction, tooltips]);
+  }, [gateNow, say, tooltips]);
 
   const revealRow = useCallback((entry: FamilyNavTuple): boolean => {
     const top = entry[6];
@@ -665,7 +676,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   }, []);
 
   const focusRowByKey = useCallback((key: string) => {
-    const entry = navRef.current.find(item => item[0] === key);
+    const entry = navNow().find(item => item[0] === key);
     if (!entry) return;
     focusedKeyRef.current = key;
     revealRow(entry);
@@ -684,7 +695,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   const focusGridCell = useCallback((row: number, column: number) => {
     const curAdapter = latestRef.current.adapter;
-    const metrics = curAdapter.getGridMetrics?.(installedFieldsRef.current);
+    const metrics = curAdapter.getGridMetrics?.(fieldsNow());
     focusedKeyRef.current = (curAdapter.formatGridKey ?? formatGridKey)(row, column);
     const node = bodyRef.current;
     if (node && metrics) {
@@ -701,9 +712,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   }, [say]);
 
   useLayoutEffect(() => {
-    installedPictureRef.current = null;
-    installedFieldsRef.current = EMPTY_FIELDS;
-    navRef.current = EMPTY_NAV;
+    recordRef.current = null;
+    regionDragRef.current = null;
     expansionRef.current = NO_EXPANSION;
     focusedKeyRef.current = null;
     inspectedKeyRef.current = null;
@@ -779,7 +789,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       const frameNode = frameRef.current;
       const cur = latestRef.current;
       const activeAdapter = cur.adapter;
-      dimRef.current = shown?.expired === true;
       holdElement(frameNode, !!shown?.dim);
       const visible = shown?.mode === 'picture';
       if (lastVisibleRef.current !== visible) {
@@ -806,9 +815,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       }
 
       if (!visible || !fields || shown?.id === undefined) {
-        installedPictureRef.current = null;
-        installedFieldsRef.current = EMPTY_FIELDS;
-        navRef.current = EMPTY_NAV;
+        recordRef.current = null;
         describe(null);
         if (lastMirrorObjRef.current !== null) {
           lastMirrorObjRef.current = null;
@@ -818,8 +825,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         return;
       }
 
-      installedFieldsRef.current = fields;
-      navRef.current = (fields.nav as readonly FamilyNavTuple[] | undefined) ?? EMPTY_NAV;
       const installedHour = displayedHour(shownHour ?? shown.painted ?? shown.h ?? 0);
       const base = shown.viewport ?? {
         width: viewportRef.current.width,
@@ -846,18 +851,13 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         viewport: rawMeta?.transform && !base.transform ? { ...base, transform: rawMeta.transform } : base,
         optionsRevision: '',
         themeRevision: '',
-        actionKeys: lazyActionKeys(navRef.current, installedHour),
+        actionKeys: lazyActionKeys((fields.nav as readonly FamilyNavTuple[] | undefined) ?? EMPTY_NAV, installedHour),
         accessibleDescription: typeof fields.accessibleDescription === 'string' ? fields.accessibleDescription : null,
         ...(installedAuditId !== undefined ? { auditId: installedAuditId } : {}),
       };
-      PICTURE_FIELDS.set(installed, fields);
-      installedPictureRef.current = installed;
-      const range = fields.range as FamilyRowWindow | undefined;
-      const shownWindow = windowRef.current;
-      if (range && (!shownWindow || shownWindow.first !== range.first || shownWindow.count !== range.count)) {
-        windowRef.current = range;
-        cur.onWindowChange?.(range, installedHour);
-      }
+      const record = recordInstalled(installed, fields, selectionsRef.current.at(installed.generation.binding));
+      recordRef.current = record;
+      reportWindow();
       describe(installed.accessibleDescription);
 
       const extentSize = activeAdapter.getScrollExtent?.(fields);
@@ -887,24 +887,25 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         }
       }
 
-      const table = fields.table as { readonly count: number; readonly inspectedPresent: boolean } | undefined;
+      const table = fields.table as { readonly count: number } | undefined;
       if (table && table !== lastTableRef.current) {
         lastTableRef.current = table;
         if (lastRowCountRef.current !== table.count) {
           lastRowCountRef.current = table.count;
           accessibleTableRef.current?.setAttribute('aria-rowcount', String(table.count + 1));
         }
-        if (inspectedKeyRef.current && !table.inspectedPresent) clearHoverRef.current();
+        const hovered = inspectedKeyRef.current;
+        if (hovered && !record.nav.some(entry => entry[0] === hovered)) clearHoverRef.current();
       }
-      if (focusInsideRef.current && focusedKeyRef.current && navRef.current !== lastFocusNavRef.current) {
-        lastFocusNavRef.current = navRef.current;
+      if (focusInsideRef.current && focusedKeyRef.current && navNow() !== lastFocusNavRef.current) {
+        lastFocusNavRef.current = navNow();
         const focusedKey = focusedKeyRef.current;
-        const entry = navRef.current.find(item => item[0] === focusedKey);
+        const entry = navNow().find(item => item[0] === focusedKey);
         if (entry && revealRow(entry)) queueMicrotask(() => bindRef.current());
       }
 
       const mirror = fields.mirror as MirrorModel | undefined;
-      const selectedNow = cur.selectedKey ?? null;
+      const selectedNow = record.selectedKey;
       if (mirror && (mirror !== lastMirrorObjRef.current || selectedNow !== lastMirrorSelectedRef.current)) {
         lastMirrorObjRef.current = mirror;
         lastMirrorSelectedRef.current = selectedNow;
@@ -952,8 +953,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const resolveInstalled = () => {
       const shown = pipeline.view(pipe);
       const shownId = shown?.mode === 'picture' ? shown.id : undefined;
-      if (shownId !== installedPictureRef.current?.id) install();
-      return installedPictureRef.current;
+      if (shownId !== recordRef.current?.picture?.id) install();
+      return recordRef.current?.picture ?? null;
     };
     resolveInstalledRef.current = resolveInstalled;
 
@@ -972,7 +973,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       focusAnchorRef,
       accessibleRef: (mountAdapter.mirror ?? 'none') === 'table' ? accessibleTableRef : (mountAdapter.mirror ?? 'none') === 'listbox' ? listboxMirrorRef : bodyRef,
       pointerMode,
-      isBlocked: () => heldRef.current || dimRef.current || !installedPictureRef.current,
+      isBlocked: () => inputBlocked(gateNow()),
       getInstalled: resolveInstalled,
       getViewportHeight: () => latestRef.current.viewportHeight,
       parseHit: hitKey => parseFamilyHit(latestRef.current.adapter, hitKey),
@@ -989,7 +990,37 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
             },
           }
         : {}),
-      onActivate: (key, toggle, _action, hit, picture) => { dispatch(toggle ? 'toggle' : 'activate', { key: hit?.key ?? key, hit: hit ?? null, picture: picture ?? null }); },
+      rowDrag: {
+        starts: hit => {
+          const row = hit.kind === 'region-grip' && latestRef.current.onRegions
+            ? regionRowOf(fieldsNow().regions as RegionRowsField | undefined, hit.key)
+            : null;
+          regionDragRef.current = row;
+          return row !== null;
+        },
+        move: point => {
+          const row = regionDragRef.current;
+          const field = fieldsNow().regions as RegionRowsField | undefined;
+          const line = regionDropRef.current;
+          if (!line) return;
+          const drop = row && field ? regionDropAt(field, row, point[1] + viewportRef.current.scrollTop) : null;
+          line.hidden = drop === null;
+          if (drop) line.style.top = `${Math.round(drop.lineY - viewportRef.current.scrollTop) - 1}px`;
+        },
+        end: point => {
+          const row = regionDragRef.current;
+          const field = fieldsNow().regions as RegionRowsField | undefined;
+          const send = latestRef.current.onRegions;
+          regionDragRef.current = null;
+          if (regionDropRef.current) regionDropRef.current.hidden = true;
+          if (!row || !field || !point || !send) return;
+          const drop = regionDropAt(field, row, point[1] + viewportRef.current.scrollTop);
+          if (!drop) return;
+          const message = send({ op: 'drop', row, to: drop.to });
+          if (message) say(message);
+        },
+      },
+      onActivate: (key, toggle, hit, picture) => { dispatch(toggle ? 'toggle' : 'activate', { key, hit, picture }); },
       onContextMenu: (key, clientX, clientY, hit, picture) => dispatch('menu', { key, hit: hit ?? null, picture: picture ?? null, at: { x: clientX, y: clientY } }),
     });
     clearHoverRef.current = stopPointer.clearHover;
@@ -1009,7 +1040,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     bindRef.current();
 
     return () => {
-      resolveInstalledRef.current = () => installedPictureRef.current;
+      resolveInstalledRef.current = () => recordRef.current?.picture ?? null;
       describe(null);
       if (onScroll) node.removeEventListener('scroll', onScroll);
       clearHoverRef.current = () => {};
@@ -1018,16 +1049,14 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       auditWatch.dispose();
       lastMirrorObjRef.current = null;
       syncMirrorRef.current(null);
-      installedPictureRef.current = null;
-      installedFieldsRef.current = EMPTY_FIELDS;
-      navRef.current = EMPTY_NAV;
+      recordRef.current = null;
       publishHoverHour(null);
       mounted.unmount();
       surfaceRef.current = null;
       holdElement(frameRef.current, false);
       reportFamilyShownHour(reportShownRef.current, false, null);
     };
-  }, [pipeline, pipe, instanceId, tooltips, scrollMode, pointerMode, gestureContext, dispatch, publishHoverHour]);
+  }, [pipeline, pipe, instanceId, tooltips, scrollMode, pointerMode, gestureContext, dispatch, gateNow, publishHoverHour, reportWindow]);
 
   useLayoutEffect(() => {
     const node = bodyRef.current;
@@ -1068,13 +1097,13 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     theme,
     reducedMotion,
     staticSources,
+    pagedRows,
     tiledSeries,
     tiledRevision,
     hovers,
     artResolutions,
     extent,
     plan,
-    identitySnapshot,
     selectedKey,
     subsReady,
     auditable,
@@ -1082,6 +1111,28 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     audit.captureActive,
     settings,
   ]);
+
+  const supplyDated = useCallback(() => {
+    if (!pipeline || pipe === null) return;
+    const dated = datedNow() ?? null;
+    const was = suppliedDatedRef.current;
+    if (was === dated || (was && dated && was.h === dated.h && was.c === dated.c)) return;
+    suppliedDatedRef.current = dated;
+    pipeline.supply(pipe, { dated });
+  }, [pipeline, pipe, datedNow]);
+
+  useLayoutEffect(() => {
+    if (!pipeline || pipe === null) return;
+    pipeline.supply(pipe, { statics: staticSources ? { staticPanels: staticSources.panels, staticAnswers: staticSources.answers, ...(staticSources.shifts ? { staticShifts: staticSources.shifts } : {}) } : null });
+    supplyDated();
+  }, [pipeline, pipe, staticSources, supplyDated]);
+
+  useLayoutEffect(() => {
+    if (!pipeline || pipe === null) return;
+    pipeline.supply(pipe, { identity: identitySnapshot });
+  }, [pipeline, pipe, identitySnapshot]);
+
+  useLayoutEffect(() => staticProof?.subscribe(supplyDated), [staticProof, supplyDated]);
 
   useFamilyPauseFlush(runtime.clock, () => {
     if (!pipeline || pipe === null) return;
@@ -1100,8 +1151,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const onKeyDown = useCallback((event: ReactKeyboardEvent) => {
     const picture = resolveInstalledRef.current();
     const activeAdapter = latestRef.current.adapter;
-    const fields = installedFieldsRef.current;
-    const blocked = heldRef.current || dimRef.current || !picture;
+    const gate = gateNow();
+    const fields = gate.current?.fields ?? EMPTY_FIELDS;
+    const keyNav = gate.current?.nav ?? EMPTY_NAV;
+    const blocked = inputBlocked(gate);
     const run = (command: HostCommand, key: string | null) => {
       refreshFocusAnchor();
       return dispatch(command, { key, hit: null, picture });
@@ -1130,7 +1183,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
     if (activeAdapter.navigation === 'points') {
       handleFamilyPointsKeyDown(event, {
-        nav: navRef.current,
+        nav: keyNav,
         focusedKey: focusedKeyRef.current,
         pageStep: DEFAULT_POINTS_PAGE,
         blocked,
@@ -1149,10 +1202,21 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       return;
     }
 
+    const sendRegions = latestRef.current.onRegions;
+    const regionRow = sendRegions && !blocked ? regionRowOf(fields.regions as RegionRowsField | undefined, focusedKeyRef.current) : null;
+    if (sendRegions && regionRow && (event.key === 'Delete' || (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')))) {
+      event.preventDefault();
+      const message = event.key === 'Delete'
+        ? sendRegions({ op: 'remove', row: regionRow })
+        : sendRegions({ op: 'step', row: regionRow, delta: event.key === 'ArrowUp' ? -1 : 1 });
+      if (message) say(message);
+      return;
+    }
+
     handleFamilyKeyDown(event, {
-      nav: navRef.current,
+      nav: keyNav,
       focusedKey: focusedKeyRef.current,
-      pageStep: navPageStep(navRef.current, focusedKeyRef.current, viewportRef.current.height),
+      pageStep: navPageStep(keyNav, focusedKeyRef.current, viewportRef.current.height),
       blocked,
       typeaheadRef,
       isPinnedTooltip: () => tooltips.isPinned(),
@@ -1163,7 +1227,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       onTogglePinTooltip: key => { run('pin', key); },
       onUnpinTooltip: unpin,
     });
-  }, [say, dispatch, focusGridCell, focusRowByKey, publishHoverHour, refreshFocusAnchor, tooltips]);
+  }, [say, dispatch, gateNow, focusGridCell, focusRowByKey, publishHoverHour, refreshFocusAnchor, tooltips]);
 
   const onFocus = useCallback(() => {
     focusInsideRef.current = true;
@@ -1171,10 +1235,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const activeAdapter = latestRef.current.adapter;
     if (!focusedKeyRef.current) {
       if (activeAdapter.navigation === 'grid') {
-        const metrics = activeAdapter.getGridMetrics?.(installedFieldsRef.current);
+        const metrics = activeAdapter.getGridMetrics?.(fieldsNow());
         if (metrics && metrics.rows > 0 && metrics.columns > 0) focusedKeyRef.current = (activeAdapter.formatGridKey ?? formatGridKey)(0, 0);
-      } else if (navRef.current.length) {
-        focusedKeyRef.current = navRef.current[0]![0];
+      } else if (navNow().length) {
+        focusedKeyRef.current = navNow()[0]![0];
       }
     }
     bindRef.current();
@@ -1221,6 +1285,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     pipe,
     onRetryStream: retryStream,
     onRetryLocal,
+    emptyAction,
   });
 
   const summary = meta.mode === 'picture' && !meta.empty && meta.summaryText
@@ -1260,6 +1325,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         >
           {mirrorKind === 'listbox' ? <div ref={listboxMirrorRef} className="fh-sr-only" /> : null}
         </div>
+        <div ref={regionDropRef} className="fh-region-drop" hidden />
         {bodyStateNode ? <div className="fh-overlay">{bodyStateNode}</div> : null}
       </div>
       <div ref={descriptionRef} id={`${adapter.family}-${instanceId}-description`} className="fh-sr-only" />

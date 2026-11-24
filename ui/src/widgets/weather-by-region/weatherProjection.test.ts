@@ -112,6 +112,22 @@ test('a temperature column shows the mean of its days and a missing reading name
   assert.equal(deriveLanesTooltip(model, 0, first!.firstHour)!.items![0]!.value, '12.5 °C');
   assert.deepEqual(second!.cell, { kind: 'missing', reason: 'Weather reading was not recorded' });
   assert.deepEqual(model.rows[0]!.readout, { kind: 'missing', reason: 'Weather reading was not recorded at this hour' });
+
+  const smallNeg = reply(48, {
+    columns: {
+      days: 1,
+      columns: [{ firstHour: 0, lastHour: 48, sampledHour: 48, readHour: 48, recorded: 1 }],
+      regions: [{
+        id: '5', pinned: false,
+        measures: [{ id: 'temp', days: [1], values: [['-4000', '-4000', '-4000']] }],
+        readout: { kind: 'value', value: '255000', as_of_hour: 48 },
+      }],
+    },
+    extrema: ['-4000', '255000'],
+  });
+  const smallModel = projectWeather(view(48, smallNeg), { show: 'temperature', modifier: null, surface: SURFACE });
+  assert.equal(deriveLanesTooltip(smallModel, 0, 0)!.items![0]!.value, '−<0.1 °C');
+  assert.equal(smallModel.rows[0]!.readout?.kind === 'value' ? smallModel.rows[0]!.readout.primary : '', '2.5 °C');
 });
 
 test('a folded column with unrecorded days keeps them unknown instead of spreading the known days over the column', () => {
@@ -126,4 +142,12 @@ test('a folded column with unrecorded days keeps them unknown instead of spreadi
   assert.equal(cell.kind, 'parts');
   const shares = cell.kind === 'parts' ? cell.parts.map(part => [part.id, part.share]) : [];
   assert.deepEqual(shares, [['light_rain', 0.25], ['clear', 0.25]]);
+});
+
+test('conditions take their colour from the identity register, and an unknown one from the palette, never a registered colour', async () => {
+  const { identityColour, readableColour, IDENTITY_COLOURS } = await import('../../charts/palette.ts');
+  assert.equal(identityColour(SURFACE, 'weather', 'heavy_rain', 0), readableColour(IDENTITY_COLOURS.weather.heavy_rain, SURFACE), 'heavy rain is the storm violet whatever its order');
+  assert.equal(identityColour(SURFACE, 'weather', 'light_rain', 5), readableColour(IDENTITY_COLOURS.weather.light_rain, SURFACE));
+  const registered = new Set(Object.values(IDENTITY_COLOURS.weather).map(hex => readableColour(hex, SURFACE)));
+  for (let ordinal = 0; ordinal < 12; ordinal++) assert.ok(!registered.has(identityColour(SURFACE, 'weather', 'mod_acid_rain', ordinal)), 'a mod condition gets its own colour');
 });

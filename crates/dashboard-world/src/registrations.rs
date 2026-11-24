@@ -5,6 +5,7 @@ dashboard_base::register_products! {
     STYLES_COUNTRYFACTS => crate::products::styles::CountryFacts,
     STYLES_COUNTRYSTYLES => crate::products::styles::CountryStyles,
     GROUPS_COUNTRYGROUPS => crate::products::groups::CountryGroups,
+    GROUP_COUNTS_GROUPCOUNTS => crate::products::group_counts::GroupCounts,
     LAND_OWNERS_LANDOWNERSPRODUCT => crate::products::land_owners::LandOwnersProduct,
     SCALARS_WORLDTENSIONSTACK => crate::products::scalars::WorldTensionStack,
     SCALARS_FACTORYGROUPS => crate::products::scalars::FactoryGroups,

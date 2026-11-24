@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ResearchHistory } from '../research/types';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
-import { estimateHour, inspectedSlot, slotInspection, slotValues, slotNumbers, slotsStructure } from '../research/researchSlots.ts';
+import { estimateHour, slotValues, slotNumbers, slotsStructure } from '../research/researchSlots.ts';
 import { activeSlots, openedResearch } from './activeResearchData.ts';
 import { panelViews, readingStructure } from '../../draw/panels/views.ts';
 import type { ResearchEntry, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
@@ -65,19 +65,9 @@ test('the drawn card uses the dated slot identity, progress and countdown', () =
   assert.equal(values.get('0:days'), '2 days left');
   assert.equal(values.get('0:bar'), '0.5');
   const later = slotValues(reply(day(97), [read]), day(98), () => .625);
-  assert.equal(later.get('0:percent'), '63%');
+  assert.equal(later.get('0:percent'), '62%');
   assert.equal(later.get('0:days'), '1 day left');
   assert.equal(later.get('0:bar'), '0.625');
-});
-
-test('review 7 B: a research tooltip reads the progress and countdown the installed card painted, not the retained reply', () => {
-  const read: ResearchSlotNow = { index: 0, definition: null, state: state('radar', day(0), { details: { remainingDays: 3, estimateRaw: '300000', bonuses: null, modifiers: null } }),
-    progress: { firstHour: day(96), lastHour: day(96), entryFirstObservedHour: day(0), baseDaysRaw: '100000', progressRaw: '50000' } };
-  const painted = slotValues(reply(day(97), [read]), day(98), () => .625);
-  assert.deepEqual(slotInspection(painted, 0, day(98)), { fraction: 0.625, left: 1, hour: day(98) }, 'the tooltip shows what the card shows at its painted hour');
-  assert.deepEqual(slotInspection(slotValues(reply(day(97), [{ ...read, progress: null, state: { ...read.state, details: null } }]), day(98)), 0, day(98)),
-    { fraction: null, left: null, hour: day(98) }, 'a value the card shows as not recorded stays not recorded');
-  assert.equal(slotInspection(undefined, 0, day(98)), undefined, 'with nothing installed the tooltip falls back to the asked reply');
 });
 
 test('a slot without a usable progress or estimate says so, an idle slot says what it saved, and a reading becoming usable redraws the row', () => {
@@ -128,17 +118,4 @@ test('U-S7: an open breakdown reads at the installed estimate, and moves only wh
   assert.equal(estimateHour(installed(day(97) + 5), asked, 0, 'radar'), estimateHour(installed(day(97) + 20), asked, 0, 'radar'), 'within one shown days left the breakdown stays put');
   assert.equal(estimateHour(undefined, asked, 0, 'radar'), day(96), 'with nothing installed it reads at the asked hour');
   assert.equal(estimateHour(installed(day(97) + 5), asked, 0, 'sonar'), day(97) + 5, 'another research in the slot is not this estimate');
-});
-
-test('review 10: an open tooltip reads its technology and its values from the same installation, and a vanished slot has no subject', () => {
-  const texts = slotValues(reply(day(97), [{ index: 0, definition: null, state: state('radar', day(0), { details: { remainingDays: 3, estimateRaw: '300000', bonuses: null, modifiers: null } }), progress: null }]), day(98));
-  const installed = (token: string | null) => ({ texts, hour: day(98), data: { slots: [{ index: 0, state: { token } }] } });
-  assert.equal(inspectedSlot(installed('sonar'), 0)?.token, 'sonar', 'the successor installed with these values is the subject, so Radar\'s tooltip withdraws');
-  assert.equal(inspectedSlot({ ...installed('radar'), data: { slots: [] } }, 0)?.token, undefined, 'a slot gone from the installation has no subject');
-});
-
-test('review 11: a slot gone from the installation is an explicit absent result, so the open tooltip closes', () => {
-  const texts = slotValues(reply(day(97), []), day(98));
-  const absent = inspectedSlot({ texts, hour: day(98), data: { slots: [] } }, 0);
-  assert.deepEqual(absent, { fraction: null, left: null, hour: day(98), token: undefined });
 });

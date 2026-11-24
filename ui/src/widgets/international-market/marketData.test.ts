@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { validateMarketReply } from '../../dashboard/market.ts';
 import type { MarketAt } from '../../dashboard/market';
-import { contractRows, offerRows } from './marketData.ts';
+import { contractRows, marketDetail, offerRows } from './marketData.ts';
 import { internationalMarketProjection } from './internationalMarketProjection.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { liveKey, valuesOf } from '../../charts/live.ts';
@@ -19,6 +19,7 @@ const raw = { branchId: '1', purchasesMissing: null, unattributed: 1, warnings: 
     { key: '1', id: '51', seller: 'FRA', buyer: 'GER', request: false, speed: 1, equipment: [item('5', '100000'), item('6', '1')], prices: [], levels: [], subsidies: [], purchase: true },
     { key: '2', id: '52', seller: 'FRA', buyer: null, request: true, speed: 0, equipment: [item('5', '1')], prices: [], levels: [{ variant: '5', name: null, level: 0 }], subsidies: [], purchase: false },
     { key: '3', id: '53', seller: 'ITA', buyer: 'ENG', request: false, speed: 0, equipment: [], prices: [], levels: [], subsidies: [], purchase: false },
+    { key: '4', id: '54', seller: 'ITA', buyer: 'ENG', request: true, speed: 0, equipment: [item('6', '200000')], prices: [], levels: [{ variant: '5', name: null, level: 0 }, { variant: '6', name: null, level: 2 }], subsidies: [], purchase: false },
   ],
   agreements: null };
 const reply: MarketAt = { ...validateMarketReply(raw), hour: 7 };
@@ -61,4 +62,28 @@ test('contract cells show the live figures exactly as recorded and say why one i
   assert.deepEqual(cells.deliveries!.value, { kind: 'known', value: 4 });
   const unread = model.rows.find(row => row.key === '3')!.cells;
   assert.deepEqual(unread.collected!.value, { kind: 'notRecorded', reason: 'Convoy progress was not recorded at this hour' });
+});
+
+test('each amount, price and level belongs to its own variant: reordered levels never swap prices between variants, and several equipment are listed one by one', () => {
+  const view = createBoundedReadView({ hour: 7, panels: new Map([['main', raw]]) });
+  const all = { passing: null, unrecorded: [], bounds: [] };
+  const requests = internationalMarketProjection.project(view, { view: 'requests', filterAll: true, filter: all });
+  assert.deepEqual(requests.rows.find(row => row.key === '4')!.cells.level!.value, { kind: 'known', value: 'High' }, 'variant 6 is High though variant 5 is listed first');
+  const contracts = internationalMarketProjection.project(view, { view: 'contracts', filterAll: true, filter: all });
+  const several = contracts.rows.find(row => row.key === '1')!;
+  assert.equal(several.cells.price!.value.kind, 'notApplicable', 'two equipment never show one price');
+  const extra = (typeof several.tooltipExtra === 'function' ? several.tooltipExtra() : several.tooltipExtra) ?? [];
+  assert.deepEqual(extra.filter(entry => entry.lookupKey).map(entry => entry.lookupKey), ['5', '6']);
+});
+
+test('a row opens its own detail at the clicked hour: an inventory click marks its own equipment, a contract lists each equipment with its own price and level', () => {
+  const offer = marketDetail(raw, 'offer:44:6');
+  assert.equal(offer.missing, null);
+  const listed = offer.sections.find(section => section.title === 'Listed inventory')!.lines;
+  assert.deepEqual(listed.map(line => [line.label, line.marked]), [['Rifle', false], ['Equipment name unavailable', true]], 'two equipment rows of one seller open different details');
+  assert.match(listed[1]!.value, /High/);
+  const request = marketDetail(raw, 'contract:true:54').sections.find(section => section.title === 'Equipment')!.lines;
+  assert.match(request[0]!.value, /High/, 'the level of its own variant, though another variant is listed first');
+  assert.equal(marketDetail(raw, 'contract:false:99').missing, 'This request or contract is not on the market at this date.');
+  assert.equal(marketDetail({ ...raw, offers: null }, 'offer:44:5').missing, 'Market inventory was not recorded at this date.');
 });

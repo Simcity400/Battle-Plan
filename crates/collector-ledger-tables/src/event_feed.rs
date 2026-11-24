@@ -96,7 +96,10 @@ impl Captured {
         if self.sampled {
             // SAFETY: Caller owns discarding this uncommitted event-feed publication receipt.
             unsafe {
-                collector_observers::event_feed_observer::discarded(self.snapshot.publication());
+                collector_observers::event_feed_observer::discarded(
+                    self.snapshot.publication(),
+                    self.snapshot.boundary.generation,
+                );
             }
             self.sampled = false;
         }

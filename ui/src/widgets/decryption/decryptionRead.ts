@@ -1,11 +1,11 @@
 import { liveKey } from '../../charts/live.ts';
-import { flagArtHandle } from '../../families/art/provider.ts';
-import { failedArt, missingArt, PENDING_ART } from '../../families/art/types.ts';
+import { flagArtHandle, flagChoiceArt } from '../../families/art/provider.ts';
+import { unavailableArt } from '../../families/art/types.ts';
 import type { ArtHandle, ArtResult } from '../../families/contract.ts';
 import type { HourRanges } from '../../families/holders.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import type { BoundedReadView, DeclaredCountryFilter, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
-import { formatDateHover, formatDateOnly } from '../../families/valueFormat.ts';
+import { formatDateHover, formatDateOnly, formatProgress } from '../../families/valueFormat.ts';
 import type { CipherCounts, CipherPair, CipherStatus, Country, DecryptionReply, Observation } from '../../generated/dashboard';
 import {
   activeBonusDays,
@@ -76,24 +76,15 @@ function resolveCountry(readView: BoundedReadView, country: Country, hour: numbe
       tag: '?',
       name: `Country ${country.id}`,
       flagHandle: null,
-      flag: missingArt('Country tag not recorded'),
+      flag: unavailableArt('Country tag not recorded'),
     };
   }
   const who = readView.who('country', tag, hour);
   const name = who.name.status === 'ready' ? who.name.value : tag;
   const colour = who.colour?.status === 'ready' ? who.colour.value : undefined;
   let flagHandle: ArtHandle | null = null;
-  let flag: ArtResult;
-  if (who.flagChoice?.status === 'ready') {
-    flagHandle = flagArtHandle(who.flagChoice.value, 'panel');
-    flag = readView.art(flagHandle);
-  } else if (who.flagChoice?.status === 'absent') {
-    flag = missingArt(who.flagChoice.reason);
-  } else if (who.flagChoice?.status === 'failed') {
-    flag = failedArt(who.flagChoice.reason, who.flagChoice.retryable);
-  } else {
-    flag = PENDING_ART;
-  }
+  if (who.flagChoice?.status === 'ready') flagHandle = flagArtHandle(who.flagChoice.value, 'panel');
+  const flag: ArtResult = flagChoiceArt(readView, who.flagChoice);
   return { key: String(country.id), tag, name, ...(colour ? { colour } : {}), flagHandle, flag };
 }
 
@@ -132,7 +123,7 @@ export function pairTooltipItems(
       label: 'Progress',
       ...(percent === null
         ? { missingReason: pair.thresholdUnknown ?? (numbers.missing || 'Progress not recorded') }
-        : { value: `${percent}%` }),
+        : { value: formatProgress(percent / 100) }),
     },
     ...(percent === null && numbers.amount !== undefined ? [{ label: 'Recorded amount', value: amountText(numbers) }] : []),
     ...(pair.broken === true ? [] : [{

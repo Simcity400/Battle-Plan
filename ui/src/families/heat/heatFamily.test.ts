@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Canvas2D } from '../../charts/textWidth.ts';
-import { computeTimeAxisTicks } from '../../draw/kit.ts';
+import { computeTimeAxisTicks, ROW_SECTION_HEIGHT } from '../../draw/kit.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { marginColour, sequentialRampColour, signedRampColour, splitStripes } from './scale.ts';
 import {
@@ -369,7 +369,7 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
   });
   assert.equal(layout.showReadout, true);
 
-  const hit = hitHeatLanes(layout.plotLeft + 20, layout.plotTop + 10, 0, layout, model.rows.length);
+  const hit = hitHeatLanes(layout.plotLeft + 20, layout.plotTop + 10, 0, layout, model.rows);
   assert.equal(hit?.kind, 'lane');
   if (hit?.kind === 'lane') {
     assert.equal(hit.rowIndex, 0);
@@ -428,6 +428,24 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
     { label: 'reorder', binding: lane(reordered), hour: 119, check: true },
     { label: 'scrolled', binding: lane(reordered, 12), hour: 119, check: true },
   ], surface);
+
+  const regions = { pickedHeading: 'Your regions', automaticHeading: 'Most active for Germany', addLabel: 'Add region' };
+  const regionRows = [{ ...model.rows[0]!, pinned: true, region: 10 }, { ...model.rows[1]!, region: 11 }];
+  const regionLayout = layoutHeatLanes({ width: 720, height: 220, scrollTop: 0, firstHour: model.firstHour, lastHour: model.lastHour, displayedHour: model.hour, rows: regionRows, regions });
+  const stride = regionLayout.rowStride;
+  assert.deepEqual(regionLayout.sections, [{ label: 'Your regions', top: 0 }, { label: 'Most active for Germany', top: ROW_SECTION_HEIGHT + stride }]);
+  assert.deepEqual(regionLayout.rowTops, [ROW_SECTION_HEIGHT, 2 * ROW_SECTION_HEIGHT + stride]);
+  assert.equal(regionLayout.addTop, 2 * ROW_SECTION_HEIGHT + 2 * stride);
+  const middle = (top: number) => regionLayout.plotTop + top + regionLayout.rowHeight / 2;
+  assert.deepEqual(hitHeatLanes(10, middle(regionLayout.addTop!), 0, regionLayout, regionRows), { kind: 'add' });
+  assert.equal(hitHeatLanes(10, regionLayout.plotTop + 5, 0, regionLayout, regionRows), null, 'a section label is not a row');
+  assert.deepEqual(hitHeatLanes(regionLayout.nameWidth - 4, middle(regionLayout.rowTops[1]!), 0, regionLayout, regionRows, 1), { kind: 'remove', rowIndex: 1 });
+  assert.deepEqual(hitHeatLanes(regionLayout.nameWidth - 4, middle(regionLayout.rowTops[1]!), 0, regionLayout, regionRows, null), { kind: 'row', rowIndex: 1 }, 'no remove where none is drawn');
+  assert.deepEqual(hitHeatLanes(4, middle(regionLayout.rowTops[0]!), 0, regionLayout, regionRows, 0), { kind: 'grip', rowIndex: 0 });
+  const regionPaint = makeFakeCtx();
+  drawHeatLanes(regionPaint.ctx, { model: { ...model, rows: regionRows, regions }, layout: regionLayout, theme: THEME, scrollTop: 0, hoveredRow: 1, hoveredHour: null, selectedRowId: null, focusedRowId: null });
+  const texts = regionPaint.ops.filter(op => op.op === 'fillText').map(op => String(op.args[0]));
+  for (const text of ['Your regions', 'Most active for Germany', 'Add region', '×']) assert.ok(texts.includes(text), `${text} is drawn`);
 });
 
 test('heat scale helpers preserve zero neutrality, signed extremes, margin blend, and proportional stripes', () => {
@@ -471,7 +489,7 @@ test('a sub-pixel last observation gets one pixel at its own hour, and an uncove
   assert.equal(deriveLanesTooltip(model, 0, null)?.exactValue, '71%', 'the readout answers only when the readout itself is hit');
   const layout = layoutHeatLanes({ width: 400, height: 120, scrollTop: 0, firstHour: 0, lastHour: 1000, displayedHour: 500, rows: model.rows });
   const pastPlayhead = layout.plotLeft + layout.plotWidth * 0.9;
-  assert.equal(hitHeatLanes(pastPlayhead, layout.plotTop + 4, 0, layout, 1), null, 'nothing after the displayed hour is hit');
+  assert.equal(hitHeatLanes(pastPlayhead, layout.plotTop + 4, 0, layout, model.rows), null, 'nothing after the displayed hour is hit');
 });
 
 test('stripes draw the fractions they are given and leave an unknown remainder unfilled', () => {
@@ -499,4 +517,40 @@ test('a stable row id is never read as a row position, and a reorder refreshes t
   assert.equal(byId?.subject, '1', 'Enter on stable id "1" activates "1", not the row at position 1');
   const byPointer = heatLanesHostAdapter.resolveHitAction!({ key: '#1@40' } as never, installed, fields as never);
   assert.equal(byPointer?.subject, '0', 'a pointer token names a position');
+});
+
+test('K5: heat lanes crosshair line and hover date tab share one hour-to-pixel transform', () => {
+  const model: HeatLanesModel = {
+    hour: 23,
+    firstHour: 0,
+    lastHour: 23,
+    dayHours: 24,
+    playhead: null,
+    rows: [{ id: 'r', label: 'Region', runs: [{ firstHour: 0, lastHour: 23, readHour: 23, cell: { kind: 'solid', color: '#4f86f7' } }] }],
+  };
+  const layout = layoutHeatLanes({
+    width: 340,
+    height: 120,
+    scrollTop: 0,
+    firstHour: 0,
+    lastHour: 23,
+    displayedHour: 23,
+    rows: model.rows,
+  });
+  const fake = makeFakeCtx();
+  drawHeatLanes(fake.ctx, {
+    model,
+    layout,
+    theme: THEME,
+    scrollTop: 0,
+    hoveredRow: 0,
+    hoveredHour: 12,
+    selectedRowId: null,
+    focusedRowId: null,
+  });
+  const expectedX = layout.plotLeft + (12 / 24) * layout.plotWidth;
+  const crosshairMove = fake.ops.find(op => op.op === 'moveTo' && op.args[1] === layout.plotTop && Math.abs(Number(op.args[0]) - (Math.floor(expectedX) + 0.5)) < 0.01);
+  assert.ok(crosshairMove, 'crosshair line is drawn at hourToLaneX(12)');
+  const tabText = fake.ops.find(op => op.op === 'fillText' && Number(op.args[2]) > layout.plotTop + layout.plotHeight && Math.abs(Number(op.args[1]) - expectedX) < 1);
+  assert.ok(tabText, `hover date tab should centre at ${expectedX}px to match the crosshair`);
 });

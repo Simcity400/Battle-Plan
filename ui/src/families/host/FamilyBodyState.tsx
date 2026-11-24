@@ -23,6 +23,7 @@ export interface FamilyBodyStateProps {
   readonly onRetryStream: () => void;
   readonly onRetryLocal: () => void;
   readonly localError?: Failure | null;
+  readonly emptyAction?: ReactNode;
 }
 
 export function renderFamilyStatus(
@@ -74,6 +75,7 @@ export function renderFamilyBodyState(props: FamilyBodyStateProps): ReactNode {
     onRetryStream,
     onRetryLocal,
     localError = null,
+    emptyAction,
   } = props;
 
   if (localError) {
@@ -88,6 +90,10 @@ export function renderFamilyBodyState(props: FamilyBodyStateProps): ReactNode {
     return <WidgetState kind="error" what={subject} failure={failure} onRetry={onRetry} />;
   }
   if (mode === 'reading') return <WidgetState kind="loading" label={loadingLabel ?? `Loading ${subject}…`} />;
-  if (empty) return <WidgetState kind={emptyKind} message={empty} detail={emptyDetail ?? undefined} />;
+  if (empty) {
+    return emptyKind === 'empty'
+      ? <WidgetState kind="empty" message={empty} detail={emptyDetail ?? undefined} action={emptyAction} />
+      : <WidgetState kind="unavailable" message={empty} detail={emptyDetail ?? undefined} />;
+  }
   return null;
 }

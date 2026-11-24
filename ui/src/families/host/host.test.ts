@@ -1,3 +1,5 @@
+import { pictureError } from '../../shell/perf.ts';
+import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { tooltipStore } from '../../charts/tooltip.ts';
@@ -5,12 +7,22 @@ import { engineHour } from '../../dashboard/calendar.ts';
 import type { Pipeline, PointerHitMeta } from '../../dashboard/follow/pipeline.ts';
 import { AuditSnapshotStore } from '../audit.ts';
 import { barsHostAdapter, parseBarsHit } from '../bars/hostAdapter.ts';
-import { displayedHour } from '../boundedView.ts';
+import { createBoundedReadView, displayedHour } from '../boundedView.ts';
 import type { FamilyTheme, InstalledAction, InstalledPicture } from '../contract.ts';
 import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHeatMatrixHit } from '../heat/hostAdapter.ts';
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
-import { lazyActionKeys, type ParsedFamilyHit } from './adapter.ts';
-import { createBoundAuditReader, type BoundAuditEntry } from './auditBinding.ts';
+import { familyBinding, lazyActionKeys, requestedRowWindow, type FamilyBindingContext, type FamilyHostAdapter, type ParsedFamilyHit } from './adapter.ts';
+import { BoundSelections, installedRecordOf, recordInstalled, resolveHostInput, type HostInputGate } from './installed.ts';
+import type { DashboardClient, DashboardSource } from '../../dashboard/client';
+import { readPlanExact } from '../broker.ts';
+import type { SourcePlan } from '../contract.ts';
+import type { FrozenGate } from '../sources.ts';
+import { tableHostAdapter } from '../table/hostAdapter.ts';
+import { pagedTailEntry } from '../table/logHelpers.ts';
+import { DEFAULT_TAIL_PAGE_SIZE } from '../table/rowSource.ts';
+import { ROW_HEIGHT, tableSettingsOf } from '../table/settings.ts';
+import type { TableModel } from '../table/model.ts';
+import { createBoundAuditReader, createPlanAuditVerifier, type BoundAuditEntry } from './auditBinding.ts';
 import { boundDated } from './dated.ts';
 import { NO_EXPANSION, toggleExpansion } from './expansion.ts';
 import {
@@ -262,6 +274,16 @@ test('F6: bound audit reader verifies an earlier snapshot with the verifier capt
   assert.deepEqual(calls, ['verifierA:snapA@100', 'verifierB:snapB@200']);
   assert.equal(resA?.values.get('row'), 'A');
   assert.equal(resB?.values.get('row'), 'B');
+
+  const shown = [auditCell('GER', 'label', 'Germany'), auditCell('GER', 'value', '3'), auditCell('FRA', 'label', 'France'), auditCell('FRA', 'value', '2')];
+  const exactOf = (rows: readonly FamilyAuditRow[]) => createPlanAuditVerifier<null, Record<string, never>>()(5, {
+    projection: { family: 'bars', kind: 'synthetic-audit', project: () => null },
+    options: {},
+    exactReadView: async () => createBoundedReadView({ hour: 5, panels: new Map() }),
+    deriveRows: () => rows,
+  }, undefined);
+  assert.equal(pictureError('bars', shown, await exactOf(shown)), null, 'two rows with the same cell names compare cell by cell and a correct picture passes');
+  await assert.rejects(exactOf([auditRow('GER', '3'), auditRow('GER', '4')]), /Audit key GER repeats/, 'a repeated audit key is refused, never collapsed');
 });
 
 test('F8 & F9: listbox mirror uses stable key-based IDs, invalidates on prefix change, and honors explicit selected state', () => {
@@ -402,6 +424,28 @@ test('tooltip payloads carry full truncated text, exact hours, date bounds, miss
   };
   assert.equal(action.subject, 'battle:42');
   assert.equal(action.hour, hour);
+});
+
+test('activating a row closes its tooltip, which stays closed under the opened window until the pointer or focus reaches another row', () => {
+  const tooltips = new FamilyTooltipController('activated-row');
+  const tip = (rowKey: string): FamilyTooltipEntry => ({ hour: 10, rowKey, content: { title: rowKey, rows: [] } });
+  const sync = (inspectedKey: string | null, focusedKey: string | null = null) => tooltips.syncFromInstall({
+    dim: false, held: false, inspectedKey, pointerPos: inspectedKey ? { x: 5, y: 5 } : null, hoverTip: inspectedKey ? tip(inspectedKey) : null,
+    focusInside: focusedKey !== null, focusedKey, focusAnchor: { x: 0, y: 0 }, focusTip: focusedKey ? tip(focusedKey) : null, viewportHeight: 800,
+  });
+  sync('org');
+  assert.equal(tooltips.isHoverShown(), true);
+  tooltips.dismissActivated('org');
+  assert.equal(tooltips.isHoverShown(), false, 'activation closes the tooltip');
+  sync('org');
+  assert.equal(tooltips.isHoverShown(), false, 'a later install does not reopen it over the window');
+  sync(null, 'org');
+  assert.equal(tooltips.isHoverShown(), false, 'the focused activated row stays quiet too');
+  sync('other');
+  assert.equal(tooltips.isHoverShown(), true, 'another row shows its tooltip');
+  sync('org');
+  assert.equal(tooltips.isHoverShown(), true, 'coming back to the row shows it again');
+  tooltips.dispose();
 });
 
 test('window placement clamps and centres within viewport bounds and sameFamilyTheme detects presentation token changes', () => {
@@ -638,7 +682,7 @@ test('bindFamilyPointer resolves actions against the installed picture, rejects 
       onDragEnd: () => dragEvents.push('end'),
       onDoubleClick: () => { doubleClicks++; return true; },
     },
-    onActivate: (_key, _toggle, action) => { if (action) activations.push(action); },
+    onActivate: (key, _toggle, hit, picture) => { if (picture) activations.push({ installedId: picture.id, owner: picture.owner, subject: hit?.subject ?? key, hour: displayedHour(hit?.hour ?? picture.hour) }); },
   });
 
   body.dispatch('pointerdown', { button: 0, clientX: 110, clientY: 70, pointerId: 1 });
@@ -806,7 +850,7 @@ test('grid and points keyboard navigation and family host adapters cover all fou
   assert.deepEqual(activatedPts, ['plot:200']);
 
   assert.deepEqual(parseBarsHit('right:GER'), { key: 'GER', subject: 'GER', kind: 'right-row', toggle: false, inspectToken: 'right:GER' });
-  assert.deepEqual(parseBarsHit('remove:reg1'), { key: 'reg1', subject: 'reg1', kind: 'remove-region', toggle: true, inspectToken: 'remove:reg1' });
+  assert.equal(parseBarsHit('remove:reg1'), null, 'removing a region is the regions control, never a canvas hit');
   assert.deepEqual(parseHeatMatrixHit('cell:2:5'), { key: '2:5', subject: '2:5', toggle: false, inspectToken: 'cell:2:5' });
   assert.equal(parseHeatLanesHit('lane:#0@144')?.hour, 144);
   assert.equal(parseTimeChartHit('line:GER@512')?.hour, 512);
@@ -883,7 +927,7 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
     getInstalled: () => installed,
     getViewportHeight: () => 800,
     parseHit: hit => parseDefaultRowHit(hit),
-    onActivate: (_key, _toggle, action) => { if (action) activations.push(action); },
+    onActivate: (key, _toggle, hit, picture) => { if (picture) activations.push({ installedId: picture.id, owner: picture.owner, subject: hit?.subject ?? key, hour: displayedHour(hit?.hour ?? picture.hour) }); },
     onContextMenu: key => { menus.push(key); return true; },
   });
 
@@ -952,9 +996,157 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
 });
 
 test('a followed bounded read dates its picture by its proof even when the widget also has subscriptions', () => {
-  const followed = { hour: 120, follows: true, provenInterval: [100, 140] as const };
-  assert.deepEqual(boundDated(followed, true, false, null), { h: 100, c: 140 }, 'held back between a seek back and the new bounded reply');
-  assert.equal(boundDated({ hour: 120 }, true, false, null), undefined, 'a pinned read beside subscriptions is dated by the stream');
-  assert.deepEqual(boundDated({ hour: 120 }, false, false, null), { h: 120, c: 120 });
-  assert.deepEqual(boundDated(null, false, true, [0, 500]), { h: 0, c: 500 });
+  const followed = { hour: 120, follows: true };
+  assert.deepEqual(boundDated(followed, [100, 140], true, false, null), { h: 100, c: 140 }, 'held back between a seek back and the new bounded reply');
+  assert.equal(boundDated({ hour: 120 }, null, true, false, null), undefined, 'a pinned read beside subscriptions is dated by the stream');
+  assert.deepEqual(boundDated({ hour: 120 }, null, false, false, null), { h: 120, c: 120 });
+  assert.deepEqual(boundDated(null, null, false, true, [0, 500]), { h: 0, c: 500 });
+});
+
+test('R3-S1: a paged table scrolled past its head asks the absolute rows under the viewport before projection, of the lane, the page broker and the exact audit read alike', async () => {
+  const source = { id: 'log-src', revision: 'r1', path: 'p', metadata: { branches: [{ id: '1', firstHour: 0, lastHour: 5000 }] } } as unknown as DashboardSource;
+  const HEAD = 64;
+  const TOTAL = 1000;
+  const entry = pagedTailEntry('main', source, '1', 0, { product: 'event-choices-tail', branchId: '1', facets: [], from: null, limit: HEAD }, true);
+  const plan: SourcePlan = { owner: 'log', entries: [entry] };
+  const columns = [{ key: 'event', label: 'Event', as: 'plain', offered: ['plain'], priority: 0 }] as never;
+  const settings = tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'event', direction: 'descending' } });
+  const rowHeight = ROW_HEIGHT.normal;
+  const installed = { table: { count: TOTAL, totalHeight: TOTAL * rowHeight }, meta: {} };
+  const viewport = { width: 600, height: 10 * rowHeight, dpr: 1, scrollLeft: 0, scrollTop: 600 * rowHeight, zoomWindow: null };
+
+  const window = requestedRowWindow(tableHostAdapter, plan, viewport, settings, installed);
+  assert.deepEqual(window, { first: 596, count: 18 }, 'the ordinals under the scroll position with overscan, far beyond the 64-row head');
+  assert.equal(requestedRowWindow(tableHostAdapter, { owner: 'log', entries: [] }, viewport, settings, installed), null, 'a table with no paged read asks no window');
+  assert.deepEqual(
+    requestedRowWindow(tableHostAdapter, plan, { ...viewport, scrollTop: (TOTAL - 10) * rowHeight }, settings, installed),
+    { first: 986, count: 14 },
+    'the deepest scroll asks the last rows the recording holds, not past them',
+  );
+
+  const ctx: FamilyBindingContext<unknown, typeof settings> = {
+    kind: 'event-choices', view: 'default', options: {}, settings, sources: {}, extent: null, plan, viewport,
+    theme: {} as never, reducedMotion: false, selectedKey: null, focusedKey: null, expanded: {}, audit: false, auditId: undefined, pauseFlush: 0,
+    window,
+  };
+  assert.deepEqual((familyBinding(tableHostAdapter, ctx) as { window?: unknown } | null)?.window, window, 'the lane is bound to the requested window, so the projection reads those rows');
+
+  const asked: [number, number][] = [];
+  const client = {
+    product: async (request: { params: Record<string, unknown> }) => {
+      const offset = Number(request.params.offset ?? 0);
+      const limit = Number(request.params.limit);
+      asked.push([offset, limit]);
+      const rows = Array.from({ length: Math.max(0, Math.min(limit, TOTAL - offset)) }, (_, i) => ({ key: `e${offset + i}`, hour: 100 }));
+      return { data: { total: String(TOTAL), offset: String(offset), baseOrdinal: '0', firstOrdinal: '0', rows, missing: [], facetTotals: [] } };
+    },
+  } as unknown as DashboardClient;
+  const gate: FrozenGate = { recorded: (h: number | null | undefined) => (typeof h === 'number' ? h : null) as never, span: (firstHour: number, lastHour: number) => ({ firstHour, lastHour } as never) };
+  const exact = await readPlanExact(plan, 200, { client, following: false, timeMode: 'pin', branch: { firstHour: 0, lastHour: 5000 }, window: null, staticSpan: null, gate, rowWindow: window });
+  assert.deepEqual(asked, [[0, HEAD], [HEAD + 2 * DEFAULT_TAIL_PAGE_SIZE, DEFAULT_TAIL_PAGE_SIZE]], 'the exact read takes the head and the one page holding rows 596 to 613');
+  assert.deepEqual(exact?.rowWindow, window, 'and projects the same window the lane painted');
+  assert.deepEqual(exact?.rows('main')?.sliceAt(200, 596, 2).map(slot => (slot.kind === 'data' ? slot.row.key : slot.kind)), ['e596', 'e597']);
+
+  const model: TableModel = { columns, hour: 200, rows: Array.from({ length: 18 }, (_, i) => ({ key: `e${596 + i}`, name: `e${596 + i}`, cells: { event: { value: { kind: 'known', value: `e${596 + i}` } } } })) as never, windowOffset: 596, totalRows: TOTAL };
+  const audited = tableHostAdapter.deriveAuditRows!(model, 200, { viewport, settings, expanded: {}, theme: undefined, fields: { ...installed, range: { first: 4, count: 10 } } });
+  assert.deepEqual(
+    [...new Set(audited.map(row => row.key.split(':')[0]!).filter(key => key.startsWith('e')))].sort(),
+    Array.from({ length: 10 }, (_, i) => `e${600 + i}`),
+    'the audit covers the painted local slice the installed picture names, not rows found from the absolute scroll offset',
+  );
+});
+
+test('class D: every action and published state comes from the installed picture record the input was aimed at (R3-S5, R3-S13, R3-S9, R3-S4)', () => {
+  type Listener = (event: unknown) => void;
+  const listeners = new Map<string, Set<Listener>>();
+  const body = {
+    addEventListener(type: string, fn: Listener) { (listeners.get(type) ?? listeners.set(type, new Set()).get(type)!).add(fn); },
+    removeEventListener(type: string, fn: Listener) { listeners.get(type)?.delete(fn); },
+    dispatch(type: string, event: Record<string, unknown>) { for (const fn of listeners.get(type) ?? []) fn({ target: body, preventDefault() {}, ...event }); },
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 200, height: 100 }),
+    contains: (node: unknown) => node === body,
+    setPointerCapture() {},
+    releasePointerCapture() {},
+  };
+  const nav = (rows: readonly (readonly [string, number])[]): FamilyNavTuple[] => rows.map(([key, tree], i) => [key, `${key} name`, i, tree, '', null] as FamilyNavTuple);
+  const picture = (id: number, rows: readonly (readonly [string, number])[], owner = 'owner-A'): InstalledPicture => ({
+    id, owner, generation: { seek: 1, reset: 0, binding: 1 }, factRevisions: {}, validInterval: [100, 120], through: 100, hour: displayedHour(100 + id),
+    viewport: { width: 200, height: 100, dpr: 1, scrollLeft: 0, scrollTop: 0 }, optionsRevision: '', themeRevision: '',
+    actionKeys: lazyActionKeys(nav(rows), displayedHour(100 + id)), accessibleDescription: null,
+  });
+
+  let installed = picture(7, [['A', -1], ['B', -1]]);
+  const pending: ((key: string | null, meta?: PointerHitMeta) => void)[] = [];
+  const fakePipeline = {
+    pointer(_pipe: number, _slot: number, _pt: unknown, cb?: (key: string | null, meta?: PointerHitMeta) => void) { if (cb) pending.push(cb); },
+    inspect() {},
+    view() { return null; },
+  } as unknown as Pipeline;
+  const reply = (key: string | null, id: number, owner = 'owner-A') => pending.shift()!(key, { installedId: id, owner });
+  const inspectedKeyRef = { current: null as string | null };
+  const drags: string[] = [];
+  const tooltips = new FamilyTooltipController('class-d');
+  const stop = bindFamilyPointer({
+    bodyNode: body as unknown as HTMLElement,
+    menuHost: body as unknown as HTMLElement,
+    pipeline: fakePipeline,
+    pipe: 1,
+    tooltips,
+    inspectedKeyRef,
+    inspectedHitRef: { current: null },
+    lastPointerRef: { current: null },
+    focusInsideRef: { current: false },
+    focusedKeyRef: { current: null },
+    focusAnchorRef: { current: { x: 0, y: 0 } },
+    accessibleRef: { current: body as unknown as HTMLElement },
+    isBlocked: () => false,
+    getInstalled: () => installed,
+    getViewportHeight: () => 800,
+    parseHit: hit => parseDefaultRowHit(hit),
+    rowDrag: {
+      starts: hit => { drags.push(`start ${hit.key}`); return true; },
+      move: () => { drags.push('move'); },
+      end: point => { drags.push(point ? 'drop' : 'cancel'); },
+    },
+    onActivate: () => {},
+  });
+
+  body.dispatch('pointermove', { isTrusted: true, clientX: 20, clientY: 10 });
+  installed = picture(8, [['B', -1], ['A', -1]]);
+  reply('row:A', 7);
+  assert.equal(inspectedKeyRef.current, null, 'R3-S13: a hover reply for a replaced picture inspects nothing');
+  assert.equal(pending.length, 1, 'and the last pointer position is hit again on the current picture');
+  reply('row:B', 8);
+  assert.equal(inspectedKeyRef.current, 'B', 'so the row now under the stationary pointer is inspected');
+
+  body.dispatch('pointerdown', { button: 0, clientX: 20, clientY: 10, pointerId: 1 });
+  reply('row:B', 8);
+  body.dispatch('pointermove', { isTrusted: true, clientX: 20, clientY: 40 });
+  installed = picture(9, [['B', -1]], 'owner-B');
+  body.dispatch('pointermove', { isTrusted: true, clientX: 20, clientY: 60 });
+  body.dispatch('pointerup', { button: 0, clientX: 20, clientY: 60, pointerId: 1 });
+  assert.deepEqual(drags, ['start B', 'move', 'cancel'], 'R3-S5: a drag begun on owner A is cancelled when the owner changes, never dropped on owner B');
+  stop();
+  tooltips.dispose();
+
+  const adapter = { family: 'regions-test', navigation: 'rows' } as FamilyHostAdapter;
+  const p1 = picture(20, [['GER', 0], ['ITA', -1]]);
+  const p2 = picture(21, [['ITA', -1], ['GER', 1]]);
+  const r1 = recordInstalled(p1, { nav: nav([['GER', 0], ['ITA', -1]]), regions: { rows: [{ key: 'r1' }], add: { top: 40, height: 20 }, nameLeft: 8 } }, 'GER');
+  const r2 = recordInstalled(p2, { nav: nav([['ITA', -1], ['GER', 1]]), regions: { rows: [{ key: 'r1' }, { key: 'r2' }], add: { top: 60, height: 20 }, nameLeft: 8 } }, 'ITA');
+  assert.equal(installedRecordOf(p1), r1);
+  const gate = (current: typeof r2 | null, expired = false): HostInputGate => ({ current, held: false, expired });
+  const options = { expansion: {}, takesToggles: false, regions: true, menu: true };
+  const grid = () => null;
+  const addRegion = resolveHostInput(adapter, 'activate', { key: '__add-region', hit: { key: '__add-region', kind: 'region-add' }, picture: p1 }, gate(r2), options, grid);
+  assert.deepEqual(addRegion?.kind === 'region-open' ? addRegion.field : null, r1.fields.regions, 'R3-S5: a delayed Add region click opens the region list of the picture it hit, not the replacement');
+  const toggled = resolveHostInput(adapter, 'toggle', { key: 'GER', hit: null, picture: p1 }, gate(r2), options, grid);
+  assert.deepEqual(toggled?.kind === 'toggle' ? [toggled.action.installedId, toggled.expansion?.open, toggled.expansion?.next] : null, [20, true, { GER: true }], 'a tree toggle opens what the event picture showed closed, though the latest picture shows it open');
+  assert.equal(resolveHostInput(adapter, 'activate', { key: 'ITA', hit: null, picture: p1 }, gate(r2, true), options, grid), null, 'R3-S4: Enter on an expired picture does nothing, read at input time');
+  assert.equal(resolveHostInput(adapter, 'activate', { key: 'ITA', hit: null, picture: p1 }, gate(recordInstalled(picture(22, [['ITA', -1]], 'owner-B'), {}, null)), options, grid), null, 'an input aimed at owner A never acts once owner B is installed');
+
+  const selections = new BoundSelections();
+  selections.bound(3, 'A');
+  selections.bound(5, 'B');
+  assert.deepEqual([selections.at(3), selections.at(4), selections.at(5)], ['A', 'A', 'B'], 'R3-S9: the mirror announces the selection the installed picture was bound with');
 });

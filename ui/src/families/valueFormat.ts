@@ -1,14 +1,27 @@
 import type { ValueStateProps } from '../components/ValueState';
-import { formatNativeFixed5 } from '../charts/valueAxis.ts';
+import { exactDecimal } from '../charts/valueAxis.ts';
 import { formatDateTime, formatDay, gameDate, monthNames } from '../dashboard/calendar.ts';
 import { canonicalAuditValue } from './audit.ts';
-import { assertValue, type Scalar, type Value } from './value.ts';
+import { InvalidFamilyValueError, assertValue, type Scalar, type Value } from './value.ts';
 
-function percentCell(raw: string | bigint): string {
-  const value = BigInt(raw);
-  const rounded = BigInt.asIntN(32, (value + (value < 0n ? -50000n : 50000n)) / 100000n);
-  const clamped = rounded < 0n ? 0n : rounded > 100n ? 100n : rounded;
-  return `${formatNativeFixed5(clamped * 100000n, 0)}%`;
+function assertFiniteScalar(raw: unknown, context: string): asserts raw is Scalar {
+  if (raw === null || raw === undefined) {
+    throw new InvalidFamilyValueError(`${context}: bare ${String(raw)} is not a valid scalar`);
+  }
+  if (typeof raw === 'number') {
+    if (!Number.isFinite(raw)) {
+      throw new InvalidFamilyValueError(`${context}: non-finite number (${String(raw)}) is not a valid scalar`);
+    }
+    return;
+  }
+  if (typeof raw === 'bigint' || typeof raw === 'string') return;
+  throw new InvalidFamilyValueError(`${context}: unsupported scalar type ${typeof raw}`);
+}
+
+function assertFiniteNumber(raw: unknown, context: string): asserts raw is number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+    throw new InvalidFamilyValueError(`${context}: expected a finite number, received ${String(raw)}`);
+  }
 }
 
 function exactTruncBigInt(value: number | bigint): bigint {
@@ -21,52 +34,66 @@ function groupDigits(digits: string): string {
   return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
-function formatFixedDecimal(raw: number | bigint, maxDecimals: number, fixed: boolean, group: boolean, minus: string, plus = false): string {
-  if (typeof raw === 'bigint' || (Number.isFinite(raw) && Math.abs(raw) >= 2 ** 53)) {
-    const big = exactTruncBigInt(raw);
-    if (big === 0n) return '0';
-    const negative = big < 0n;
-    const digits = (negative ? -big : big).toString();
-    const whole = group ? groupDigits(digits) : digits;
-    const frac = fixed && maxDecimals > 0 ? `.${'0'.repeat(maxDecimals)}` : '';
-    return `${negative ? minus : plus ? '+' : ''}${whole}${frac}`;
-  }
-  if (raw === 0) return '0';
-  const negative = raw < 0;
-  const rounded = Math.abs(raw).toFixed(maxDecimals);
-  const dot = rounded.indexOf('.');
-  const wholeDigits = dot < 0 ? rounded : rounded.slice(0, dot);
-  const fracRaw = dot < 0 ? '' : rounded.slice(dot + 1);
-  const frac = fixed ? fracRaw : fracRaw.replace(/0+$/, '');
-  const isZero = /^0+$/.test(wholeDigits) && (!frac || /^0+$/.test(frac));
-  if (isZero) return fixed && maxDecimals > 0 ? `0.${'0'.repeat(maxDecimals)}` : '0';
-  const whole = group ? groupDigits(wholeDigits) : wholeDigits;
-  return `${negative ? minus : plus ? '+' : ''}${whole}${frac ? `.${frac}` : ''}`;
+function smallestUnitStep(maxDecimals: number): string {
+  return maxDecimals > 0 ? `0.${'0'.repeat(maxDecimals - 1)}1` : '1';
 }
 
-function amountText(value: number | bigint, decimals: number, percent = false): string {
-  let raw: number | bigint = typeof value === 'bigint'
-    ? value
-    : Math.abs(value) >= 2 ** 53
-      ? exactTruncBigInt(value)
-      : Math.trunc(value);
-  if (percent) raw = typeof raw === 'number' && Math.abs(raw) < 2 ** 46 ? raw * 100 : BigInt(raw) * 100n;
-  const negative = raw < 0;
-  const abs = negative ? -raw : raw;
-  const digits = (typeof abs === 'bigint' ? abs.toString() : abs >= 2 ** 53 ? BigInt(abs).toString() : String(abs)).padStart(decimals + 1, '0');
-  const whole = groupDigits(digits.slice(0, digits.length - decimals));
-  const fraction = decimals ? digits.slice(digits.length - decimals).replace(/0+$/, '') : '';
-  return `${negative ? '−' : ''}${whole}${fraction ? `.${fraction}` : ''}${percent ? '%' : ''}`;
+function formatTruncatedFixed(
+  units: bigint,
+  scale: number,
+  maxDecimals: number,
+  fixed: boolean,
+  signed: boolean,
+  percent: boolean,
+  suffix: string,
+): string {
+  const pct = percent ? '%' : '';
+  if (units === 0n) {
+    const zero = fixed && maxDecimals > 0 ? `0.${'0'.repeat(maxDecimals)}` : '0';
+    return `${zero}${pct}${suffix}`;
+  }
+  const negative = units < 0n;
+  const abs = negative ? -units : units;
+  const cut = scale > maxDecimals
+    ? abs / (10n ** BigInt(scale - maxDecimals))
+    : scale < maxDecimals
+      ? abs * (10n ** BigInt(maxDecimals - scale))
+      : abs;
+  const sign = negative ? '\u2212' : signed ? '+' : '';
+  if (cut === 0n) {
+    return `${sign}<${smallestUnitStep(maxDecimals)}${pct}${suffix}`;
+  }
+  const digits = cut.toString().padStart(maxDecimals + 1, '0');
+  const whole = groupDigits(digits.slice(0, digits.length - maxDecimals));
+  const fracRaw = maxDecimals > 0 ? digits.slice(digits.length - maxDecimals) : '';
+  const frac = fixed ? fracRaw : fracRaw.replace(/0+$/, '');
+  return `${sign}${whole}${frac ? `.${frac}` : ''}${pct}${suffix}`;
+}
+
+function toFixedDecimal(raw: number | bigint, decimals: number): { readonly units: bigint; readonly scale: number } {
+  if (decimals > 0) {
+    return { units: exactTruncBigInt(raw), scale: decimals };
+  }
+  if (typeof raw === 'bigint') {
+    return { units: raw, scale: 0 };
+  }
+  if (Math.abs(raw) >= 2 ** 53) {
+    return { units: exactTruncBigInt(raw), scale: 0 };
+  }
+  return exactDecimal(raw);
 }
 
 export type ValueFormat =
   | 'integer'
+  | 'progress'
   | 'fixed5Percent'
   | 'fixed5Amount'
   | 'fixed5Width'
   | 'clockSeconds'
   | 'decimal1'
   | 'percent2'
+  | 'share'
+  | 'recordedPercent'
   | { readonly decimals: number; readonly percent?: boolean; readonly unit?: string; readonly signed?: boolean; readonly maxDecimals?: number; readonly fixedDecimals?: boolean };
 
 export interface FormatValueOptions {
@@ -115,81 +142,101 @@ export function formatClockSeconds(seconds: number | bigint): string {
 }
 
 export function formatFixed5Amount(value: number | bigint): string {
+  assertFiniteScalar(value, 'formatFixed5Amount');
   const big = exactTruncBigInt(value);
   if (big === 0n) return '0';
   if (big < 0n) return '!';
-  const [whole, fraction = ''] = formatNativeFixed5(big, 2).split('.');
-  const grouped = whole!.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  const kept = fraction.replace(/0+$/, '');
-  return kept ? `${grouped}.${kept}` : grouped;
+  return formatTruncatedFixed(big, 5, 2, false, false, false, '');
 }
 
 export function formatScalar(raw: Scalar, format?: ValueFormat): string {
+  assertFiniteScalar(raw, 'formatScalar');
   if (typeof raw === 'string') return raw;
   if (!format || format === 'integer') {
-    if (typeof raw === 'bigint' || (Number.isFinite(raw) && Math.abs(raw) >= 2 ** 53)) {
-      return formatGroupedBigInt(exactTruncBigInt(raw));
-    }
-    const whole = Math.trunc(raw);
-    if (whole === 0) return '0';
-    const negative = whole < 0;
-    const digits = groupDigits(String(Math.abs(whole)));
-    return `${negative ? '\u2212' : ''}${digits}`;
+    const { units, scale } = toFixedDecimal(raw, 0);
+    return formatTruncatedFixed(units, scale, 0, false, false, false, '');
   }
+  if (format === 'progress') return formatProgress(Number(raw) / 100);
   if (format === 'clockSeconds') return formatClockSeconds(raw);
+  if (format === 'share') return formatShare(Number(raw));
+  if (format === 'recordedPercent') return formatRecordedPercent(raw);
   if (format === 'decimal1') {
-    return formatFixedDecimal(raw, 1, false, true, '\u2212');
+    const { units, scale } = toFixedDecimal(raw, 0);
+    return formatTruncatedFixed(units, scale, 1, false, false, false, '');
   }
   if (format === 'percent2') {
-    if (raw === 0 || raw === 0n) return '0%';
-    return `${formatFixedDecimal(raw, 2, true, false, '-')}%`;
+    const { units, scale } = toFixedDecimal(raw, 0);
+    return formatTruncatedFixed(units, scale, 2, units !== 0n, false, true, '');
   }
   if (format === 'fixed5Percent') {
-    if (raw === 0 || raw === 0n) return '0%';
-    if (typeof raw === 'bigint' || Math.abs(raw) >= 2 ** 40) {
-      return percentCell(exactTruncBigInt(raw));
-    }
-    const int = Math.trunc(raw);
-    const pct = Math.min(100, Math.max(0, Math.trunc((int + (int < 0 ? -50000 : 50000)) / 100000)));
-    return `${pct}%`;
+    const big = exactTruncBigInt(raw);
+    if (big <= 0n) return '0%';
+    if (big >= 10_000_000n) return '100%';
+    return formatTruncatedFixed(big, 5, 0, false, false, true, '');
   }
   if (format === 'fixed5Amount') return formatFixed5Amount(raw);
   if (format === 'fixed5Width') {
     const big = exactTruncBigInt(raw);
-    if (big === 0n) return '0';
-    return formatNativeFixed5(big, 1);
+    return formatTruncatedFixed(big, 5, 1, false, false, false, '');
   }
   const suffix = format.unit ? ` ${format.unit}` : '';
-  const sign = format.signed && raw > 0 ? '+' : '';
-  if (raw === 0 || raw === 0n) {
-    if (format.fixedDecimals && format.maxDecimals !== undefined && format.maxDecimals > 0) {
-      return `0.${'0'.repeat(format.maxDecimals)}${format.percent ? '%' : ''}${suffix}`;
-    }
-    return `${format.percent ? '0%' : '0'}${suffix}`;
+  const fixed = format.fixedDecimals === true;
+  const signed = format.signed === true;
+  const percent = format.percent === true;
+  if (format.decimals > 0) {
+    let units = exactTruncBigInt(raw);
+    if (percent) units *= 100n;
+    const shownDecimals = format.maxDecimals ?? format.decimals;
+    return formatTruncatedFixed(units, format.decimals, shownDecimals, fixed, signed, percent, suffix);
   }
-  if (format.maxDecimals !== undefined && format.decimals > format.maxDecimals) {
-    const scaled = typeof raw === 'bigint' ? raw : exactTruncBigInt(raw);
-    const negative = scaled < 0n;
-    const divisor = 10n ** BigInt(format.decimals - format.maxDecimals);
-    const rounded = ((negative ? -scaled : scaled) + divisor / 2n) / divisor;
-    if (rounded === 0n) return `${format.percent ? '0%' : '0'}${suffix}`;
-    return `${negative ? '−' : sign}${amountText(rounded, format.maxDecimals, format.percent)}${suffix}`;
-  }
-  if (format.maxDecimals !== undefined && format.decimals === 0) {
-    const formatted = formatFixedDecimal(raw, format.maxDecimals, format.fixedDecimals === true, true, '\u2212', format.signed === true);
-    return `${formatted}${format.percent ? '%' : ''}${suffix}`;
-  }
-  return `${sign}${amountText(raw, format.decimals, format.percent)}${suffix}`;
+  const { units, scale } = toFixedDecimal(raw, 0);
+  const shownDecimals = format.maxDecimals ?? 0;
+  return formatTruncatedFixed(units, scale, shownDecimals, fixed, signed, percent, suffix);
 }
 
-export function formatShare(share: number | null | undefined): string {
-  if (share == null || !Number.isFinite(share) || share < 0) return '';
+export function formatShare(share: number): string {
+  assertFiniteNumber(share, 'formatShare');
+  if (share < 0) throw new InvalidFamilyValueError(`formatShare: negative share (${share}) is not valid`);
+  if (share === 0) return '0%';
+  if (share >= 1) return '100%';
   const pct = share * 100;
-  if (pct === 0) return '0%';
-  if (pct < 0.05) return '<0.1%';
-  if (pct >= 99.95) return '100%';
-  if (pct >= 10) return `${Math.round(pct)}%`;
-  return `${pct.toFixed(1)}%`;
+  if (pct < 0.1) return '<0.1%';
+  if (pct >= 10) return `${Math.min(99, Math.round(pct))}%`;
+  const { units, scale } = exactDecimal(pct);
+  let tenths: bigint;
+  if (scale > 1) {
+    const divisor = 10n ** BigInt(scale - 1);
+    tenths = (units + divisor / 2n) / divisor;
+  } else {
+    tenths = units * (10n ** BigInt(1 - scale));
+  }
+  const clamped = tenths > 99n ? 99n : tenths < 1n ? 1n : tenths;
+  return `${clamped / 10n}.${clamped % 10n}%`;
+}
+
+export function formatProgress(fraction: number): string {
+  assertFiniteNumber(fraction, 'formatProgress');
+  if (fraction <= 0) return '0%';
+  if (fraction >= 1) return '100%';
+  return `${Math.min(99, Math.floor(fraction * 100 + 1e-12))}%`;
+}
+
+export function formatRecordedPercent(
+  value: number | bigint,
+  options?: { readonly signed?: boolean; readonly decimals?: number },
+): string {
+  assertFiniteScalar(value, 'formatRecordedPercent');
+  if (typeof value === 'string') {
+    throw new InvalidFamilyValueError('formatRecordedPercent: expected a numeric value');
+  }
+  if (options?.decimals !== undefined && options.decimals > 0) {
+    return formatTruncatedFixed(exactTruncBigInt(value), options.decimals, options.decimals, false, options.signed === true, true, '');
+  }
+  if (typeof value === 'bigint' || Math.abs(value) >= 2 ** 53) {
+    return `${formatGroupedBigInt(exactTruncBigInt(value), options?.signed === true)}%`;
+  }
+  const { units, scale } = exactDecimal(value);
+  return formatTruncatedFixed(units, scale, Math.min(5, scale), false, options?.signed === true, true, '');
 }
 
 export interface CompactScalar {
@@ -198,43 +245,48 @@ export interface CompactScalar {
   readonly compacted: boolean;
 }
 
-const COMPACT_UNITS = [
-  { divisor: 1e12, suffix: 'T' },
-  { divisor: 1e9, suffix: 'B' },
-  { divisor: 1e6, suffix: 'M' },
-  { divisor: 1e3, suffix: 'K' },
+const COMPACT_TIERS = [
+  { exp: 12, threshold: 10n ** 12n, suffix: 'T' },
+  { exp: 9, threshold: 10n ** 9n, suffix: 'B' },
+  { exp: 6, threshold: 10n ** 6n, suffix: 'M' },
+  { exp: 3, threshold: 10n ** 3n, suffix: 'K' },
 ] as const;
 
 export function formatCompactScalar(raw: Scalar, format?: ValueFormat): CompactScalar {
   const exact = formatScalar(raw, format);
   if (typeof raw === 'string') return { text: exact, exact, compacted: false };
-  if (format === 'clockSeconds' || format === 'fixed5Percent' || format === 'percent2') {
+  if (
+    format === 'clockSeconds'
+    || format === 'fixed5Percent'
+    || format === 'percent2'
+    || format === 'progress'
+    || format === 'share'
+    || format === 'recordedPercent'
+  ) {
     return { text: exact, exact, compacted: false };
   }
   if (typeof format === 'object' && format.percent) {
     return { text: exact, exact, compacted: false };
   }
-  let scaled: number;
-  if (format === 'fixed5Amount' || format === 'fixed5Width') {
-    scaled = Number(raw) / 100000;
-  } else if (typeof format === 'object' && format.decimals > 0) {
-    scaled = Number(raw) / (10 ** format.decimals);
-  } else {
-    scaled = Number(raw);
-  }
-  if (!Number.isFinite(scaled) || Math.abs(scaled) < 1000) {
+  const { units, scale } = format === 'fixed5Amount' || format === 'fixed5Width'
+    ? { units: exactTruncBigInt(raw), scale: 5 }
+    : typeof format === 'object' && format.decimals > 0
+      ? { units: exactTruncBigInt(raw), scale: format.decimals }
+      : toFixedDecimal(raw, 0);
+  const negative = units < 0n;
+  const absUnits = negative ? -units : units;
+  const whole = absUnits / (10n ** BigInt(scale));
+  if (whole < 1000n) {
     return { text: exact, exact, compacted: false };
   }
-  const negative = scaled < 0;
-  const abs = Math.abs(scaled);
-  const unit = COMPACT_UNITS.find(entry => abs >= entry.divisor);
-  if (!unit) return { text: exact, exact, compacted: false };
-  const quotient = abs / unit.divisor;
-  const decimals = quotient >= 100 ? 0 : quotient >= 10 ? 1 : 2;
-  const digits = quotient.toFixed(decimals).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
-  const sign = negative ? '\u2212' : (typeof format === 'object' && format.signed && scaled > 0 ? '+' : '');
-  const suffix = typeof format === 'object' && format.unit ? ` ${format.unit}` : '';
-  return { text: `${sign}${digits}${unit.suffix}${suffix}`, exact, compacted: true };
+  const tier = COMPACT_TIERS.find(entry => whole >= entry.threshold);
+  if (!tier) return { text: exact, exact, compacted: false };
+  const wholeInTier = whole / tier.threshold;
+  const compactDecimals = wholeInTier >= 100n ? 0 : wholeInTier >= 10n ? 1 : 2;
+  const signed = typeof format === 'object' && format.signed === true;
+  const unitSuffix = typeof format === 'object' && format.unit ? ` ${format.unit}` : '';
+  const text = formatTruncatedFixed(units, scale + tier.exp, compactDecimals, false, signed, false, `${tier.suffix}${unitSuffix}`);
+  return { text, exact, compacted: true };
 }
 
 export function formatValueState(value: Value, format?: ValueFormat, options?: FormatValueOptions): FormattedValue {
@@ -273,8 +325,7 @@ export function formatValueState(value: Value, format?: ValueFormat, options?: F
       const compact = options?.compact ? formatCompactScalar(value.value, format) : null;
       const text = compact ? compact.text : formatScalar(value.value, format);
       const exact = compact ? compact.exact : text;
-      const lead = value.atLeast ? `at least ${exact}` : exact;
-      const spoken = `${lead}, partial: ${value.reason}`;
+      const spoken = `${exact}, partial: ${value.reason}`;
       return {
         kind: 'partial',
         text,
@@ -469,7 +520,7 @@ export function auditValue(value: Value, _format?: ValueFormat): string {
 
 export function defaultWidestSamples(format?: ValueFormat): readonly string[] {
   if (!format) return [];
-  if (format === 'fixed5Percent') return ['100%'];
+  if (format === 'fixed5Percent' || format === 'progress' || format === 'share' || format === 'recordedPercent') return ['100%'];
   if (format === 'fixed5Amount') return ['999.99'];
   if (format === 'fixed5Width') return ['99.9'];
   if (format === 'clockSeconds') return ['99:59:59'];

@@ -165,6 +165,8 @@ struct Entry {
     dispatch_frame: usize,
     dispatch_scope: usize,
     dispatch_definition: usize,
+    window_frame: usize,
+    window: Option<replay_data::event_feed_rows::WindowVerdict>,
 }
 
 pub struct Snapshot {
@@ -174,6 +176,8 @@ pub struct Snapshot {
     events: Vec<EventFeedEvent>,
     script_tokens: Vec<u8>,
     script_scopes: Vec<EventFeedScope>,
+    verdicts: Vec<replay_data::event_feed_rows::VerdictEntry>,
+    windows: Option<crate::event_window_observer::Taken>,
     publication: u64,
     pub required: usize,
 }
@@ -191,6 +195,8 @@ impl Snapshot {
             events: allocation::owned_vec(allocation::vec(capacity)),
             script_tokens: Vec::new(),
             script_scopes: Vec::new(),
+            verdicts: Vec::new(),
+            windows: None,
             publication: 0,
             required: 0,
         }
@@ -199,10 +205,14 @@ impl Snapshot {
         self.events.capacity() * size_of::<EventFeedEvent>()
             + self.script_tokens.capacity()
             + self.script_scopes.capacity() * size_of::<EventFeedScope>()
+            + self.verdicts.capacity() * size_of::<replay_data::event_feed_rows::VerdictEntry>()
+            + self.windows.as_ref().map_or(0, crate::event_window_observer::Taken::allocated_bytes)
     }
     pub fn grow(&mut self, capacity: usize) -> io::Result<()> {
         let additional = capacity.saturating_sub(self.events.len());
-        allocation::reserve_exact(&mut self.events, additional)
+        allocation::reserve_exact(&mut self.events, additional)?;
+        let additional = capacity.saturating_sub(self.verdicts.len());
+        allocation::reserve_exact(&mut self.verdicts, additional)
     }
     pub fn reserve(&mut self, demand: SealDemand) -> Result<(), &'static str> {
         self.grow(demand.events)
@@ -236,6 +246,8 @@ impl Snapshot {
         self.events.clear();
         self.script_tokens.clear();
         self.script_scopes.clear();
+        self.verdicts.clear();
+        self.windows = None;
         self.boundary = OwnerBoundary {
             generation,
             read_hour: hour,
@@ -270,6 +282,21 @@ impl Snapshot {
                 0
             },
             events: allocation::copy_vec(&self.events)?,
+            windows: Recorded::Value(match &self.windows {
+                Some(taken) => taken.windows(&self.verdicts)?,
+                None => {
+                    let reason = self
+                        .boundary
+                        .failure
+                        .unwrap_or("Event feed interval unavailable")
+                        .as_bytes();
+                    replay_data::event_feed_rows::EventWindows {
+                        verdicts: Err(allocation::copy_vec(reason)?),
+                        presentations: Vec::new(),
+                        presentations_unrecorded: Some(allocation::copy_vec(reason)?),
+                    }
+                }
+            }),
         };
         row.intern_tokens()?;
         Ok(Prepared {
@@ -302,6 +329,7 @@ impl Prepared {
             + self.row.script_tokens.capacity()
             + self.row.script_scopes.capacity() * size_of::<EventFeedScope>()
             + self.row.failure.as_ref().map_or(0, Vec::capacity)
+            + replay_data::value::Value::heap_bytes(&self.row.windows)
     }
 
     pub fn row(&self) -> &EventFeedHistoryRow {
@@ -804,6 +832,8 @@ impl Store {
             dispatch_frame: 0,
             dispatch_scope: 0,
             dispatch_definition: 0,
+            window_frame: 0,
+            window: None,
         });
         self.next_sequence = next;
         self.counts.acquired = acquired;
@@ -1046,6 +1076,7 @@ impl Store {
             None,
         )?;
         self.entries[ticket.slot].dispatch_frame = fact.dispatch_frame;
+        self.entries[ticket.slot].window_frame = fact.dispatch_frame;
         self.entries[ticket.slot].dispatch_scope = fact.scope.unwrap_or(0);
         self.entries[ticket.slot].dispatch_definition = fact.dispatch_definition;
         self.tokens_used = token_end;
@@ -1069,6 +1100,29 @@ impl Store {
         {
             script.instance = Some(instance);
             entry.dispatch_frame = 0;
+        }
+    }
+
+    pub fn script_window(
+        &mut self,
+        generation: u64,
+        frame: usize,
+        verdict: Option<replay_data::event_feed_rows::WindowVerdict>,
+    ) {
+        if self.observation(generation).is_err() {
+            return;
+        }
+        if let Some(entry) = self.entries[self.unpublished_from..]
+            .iter_mut()
+            .rev()
+            .find(|entry| {
+                entry.window_frame == frame
+                    && entry.event.generation == generation
+                    && entry.publication.is_none()
+            })
+        {
+            entry.window = verdict;
+            entry.window_frame = 0;
         }
     }
 
@@ -1602,8 +1656,17 @@ impl Store {
         output.events.clear();
         output.script_tokens.clear();
         output.script_scopes.clear();
+        output.verdicts.clear();
         for entry in &mut self.entries[unpublished..] {
             if entry.publication.is_none() && entry.fact() {
+                if let Some(verdict) = entry.window.filter(|_| entry.window_frame == 0)
+                    && output.verdicts.len() < output.verdicts.capacity()
+                {
+                    output.verdicts.push(replay_data::event_feed_rows::VerdictEntry {
+                        sequence: entry.event.sequence,
+                        verdict,
+                    });
+                }
                 let mut event = entry.event;
                 if let Some(script) = event.script.as_mut() {
                     let token_start = script.token_start as usize;
@@ -1633,6 +1696,7 @@ impl Store {
         output.counts = self.counts_valid.then_some(self.counts);
         output.outstanding = outstanding;
         output.publication = self.revision;
+        output.windows = Some(crate::event_window_observer::take(boundary.generation));
         self.track_handoff(self.revision, boundary.coverage);
         self.first_interval = boundary.coverage == EventFeedCoverage::Unavailable;
         Ok(())

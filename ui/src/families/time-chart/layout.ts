@@ -1,9 +1,9 @@
 import { ellipsise, layoutEndLabels } from '../../charts/labels.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { MeasureText } from '../../charts/textWidth.ts';
-import { linearTicks } from '../../charts/valueAxis.ts';
+import { exactDecimal, linearTicks } from '../../charts/valueAxis.ts';
 import { monthNames } from '../../dashboard/calendar.ts';
-import { computeTimeAxisTicks } from '../../draw/kit.ts';
+import { computeTimeAxisTicks, type TimeAxisTick } from '../../draw/kit.ts';
 import type { BoundedSeries } from '../plan.ts';
 import { formatCompactScalar, formatDateOnly, formatScalar } from '../valueFormat.ts';
 import type {
@@ -20,12 +20,27 @@ function shortMonth(month: number): string {
   return monthNames[month - 1]!.slice(0, 3);
 }
 
-export function formatChartAxisValue(value: number, format: ChartValueFormat): string {
+function axisDecimalPlaces(ticks: readonly number[] | undefined, cap: number): number | null {
+  if (!ticks || ticks.length === 0) return null;
+  let max = 0;
+  for (const tick of ticks) {
+    if (!Number.isFinite(tick)) continue;
+    const scale = exactDecimal(tick).scale;
+    if (scale > max) max = scale;
+  }
+  return Math.min(cap, max);
+}
+
+export function formatChartAxisValue(value: number, format: ChartValueFormat, ticks?: readonly number[]): string {
   if (!Number.isFinite(value)) return '';
-  if (format === 'percent') return `${Math.round(value)}%`;
+  if (format === 'percent') {
+    const places = axisDecimalPlaces(ticks, 2) ?? Math.min(2, exactDecimal(value).scale);
+    return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0, percent: true });
+  }
   if (format === 'signed1') {
     if (Math.abs(value) < 1e-9) return '0';
-    return formatScalar(value, { decimals: 0, maxDecimals: 1, signed: true });
+    const places = axisDecimalPlaces(ticks, 1) ?? Math.min(1, exactDecimal(value).scale);
+    return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0, signed: true });
   }
   if (format === 'compact') {
     if (value === 0) return '0';
@@ -33,9 +48,11 @@ export function formatChartAxisValue(value: number, format: ChartValueFormat): s
   }
   if (format === 'power') {
     if (Math.abs(value) >= 1e4) return formatCompactScalar(Math.round(value), 'integer').text;
-    return formatScalar(value, { decimals: 0, maxDecimals: 0 });
+    const places = axisDecimalPlaces(ticks, 2) ?? 0;
+    return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0 });
   }
-  return formatScalar(value, { decimals: 0, maxDecimals: 0 });
+  const places = axisDecimalPlaces(ticks, 2) ?? 0;
+  return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0 });
 }
 
 export interface PlacedEndLabel {
@@ -119,6 +136,7 @@ export interface TimeChartLayout {
   readonly dateTabX: number;
   readonly dateTabWidth: number;
   readonly axisTicks: readonly PlacedAxisTick[];
+  readonly rawAxisTicks: readonly TimeAxisTick[];
   readonly endLabels: readonly PlacedEndLabel[];
   readonly markers: readonly PlacedMarker[];
   readonly gaps: readonly PlacedGap[];
@@ -345,7 +363,8 @@ export function layoutTimeChart(
   hoverHour?: number | null,
   hoveredSeriesId?: string | null,
 ): TimeChartLayout {
-  const small = width <= 490 || height <= 200;
+  const narrow = width <= 490;
+  const small = narrow || height <= 200;
   const smallFont = `11px ${fontFamily}`;
   const tabFont = `600 11px ${fontFamily}`;
   const labelNameFont = `500 12px ${fontFamily}`;
@@ -380,15 +399,20 @@ export function layoutTimeChart(
       const h = hours[i]!;
       if (h > model.hour) break;
       if (h < xDomain[0]) continue;
-      let sum = 0;
+      let posSum = 0;
+      let negSum = 0;
       for (const band of bands) {
         const v = band.values[i];
-        if (v !== null && v !== undefined && Number.isFinite(v)) sum += v;
+        if (v === null || v === undefined || !Number.isFinite(v)) continue;
+        if (v >= 0) posSum += v;
+        else negSum += v;
       }
       const tv = total?.values[i];
-      const top = tv !== null && tv !== undefined && Number.isFinite(tv) ? Math.max(sum, tv) : sum;
-      if (0 < dataMin) dataMin = 0;
-      if (top > dataMax) dataMax = top;
+      const hasTotal = tv !== null && tv !== undefined && Number.isFinite(tv);
+      const lo = hasTotal ? Math.min(0, negSum, tv) : Math.min(0, negSum);
+      const hi = hasTotal ? Math.max(0, posSum, tv) : Math.max(0, posSum);
+      if (lo < dataMin) dataMin = lo;
+      if (hi > dataMax) dataMax = hi;
     }
   } else {
     for (const s of model.series) {
@@ -424,13 +448,13 @@ export function layoutTimeChart(
   const yDomain: readonly [number, number] = [yLo, yHi];
   const yTicks = model.yAxis.ticks
     ? [...model.yAxis.ticks]
-    : model.yAxis.format === 'percent' && yLo === 0 && yHi === 100
-      ? (small ? [0, 50, 100] : [0, 25, 50, 75, 100])
+    : model.yAxis.fixed
+      ? linearTicks(yLo, yHi, small ? 2 : 4)
       : linearTicks(yLo, yHi, small ? 3 : 5);
 
   let maxYLabelW = 0;
   for (const t of yTicks) {
-    maxYLabelW = Math.max(maxYLabelW, measure(formatChartAxisValue(t, model.yAxis.format), smallFont));
+    maxYLabelW = Math.max(maxYLabelW, measure(formatChartAxisValue(t, model.yAxis.format, yTicks), smallFont));
   }
   const left = Math.ceil(Math.max(30, maxYLabelW + 16));
 
@@ -456,6 +480,7 @@ export function layoutTimeChart(
     value: string;
     valueColor?: string;
     valueMuted?: boolean;
+    fixedWidth: number;
     estWidth: number;
   }[] = [];
 
@@ -467,8 +492,11 @@ export function layoutTimeChart(
       if (!s.endLabel) continue;
       const end = seriesEndPoint(s, model.hour);
       if (!end || Math.abs(end.hour - model.hour) > 48) continue;
-      const showName = !!(s.endLabel.name && (!small || (!s.endLabel.flag && !s.endLabel.icon)));
-      const nameText = showName ? ellipsise(s.endLabel.name!, END_LABEL_MAX_NAME_PX, measureName) : null;
+      const rawName = small && s.endLabel.shortName !== undefined
+        ? s.endLabel.shortName
+        : s.endLabel.name;
+      const showName = !!(rawName && (!small || s.endLabel.shortName !== undefined || (!s.endLabel.flag && !s.endLabel.icon)));
+      const nameText = showName ? ellipsise(rawName!, END_LABEL_MAX_NAME_PX, measureName) : null;
       const artW = s.endLabel.flag && s.endLabel.flag.art.status !== 'noArtExpected'
         ? 24
         : s.endLabel.icon && s.endLabel.icon.art.status !== 'noArtExpected'
@@ -476,7 +504,8 @@ export function layoutTimeChart(
           : 0;
       const nameW = nameText ? measure(nameText, labelNameFont) + 6 : 0;
       const valW = measure(s.endLabel.value, labelValueFont);
-      const estWidth = artW + nameW + valW + 8;
+      const fixedWidth = artW + valW;
+      const estWidth = fixedWidth + nameW + 8;
       const isNegative = s.negRed && end.value < 0;
       rawEndLabels.push({
         id: s.id,
@@ -491,6 +520,7 @@ export function layoutTimeChart(
         value: s.endLabel.value,
         valueColor: isNegative ? CHART_MEASURE_COLOURS.shortInk : s.endLabel.valueColor,
         valueMuted: s.endLabel.valueMuted,
+        fixedWidth,
         estWidth,
       });
     }
@@ -503,33 +533,38 @@ export function layoutTimeChart(
     const ySpan = Math.max(1e-9, yDomain[1] - yDomain[0]);
     const trailingGap = model.stack.step === true && lastIdx >= 0
       && (model.gaps?.some(g => g.firstHour > model.stack!.hours[lastIdx]! && g.firstHour <= model.hour) ?? false);
+    const lastTotalVal = model.stack.total?.values[lastIdx];
+    const hasTotalAtLast = lastTotalVal !== null && lastTotalVal !== undefined && Number.isFinite(lastTotalVal);
+    const hasAnyBandAtLast = model.stack.bands.some(band => {
+      const v = band.values[lastIdx];
+      return v !== null && v !== undefined && Number.isFinite(v);
+    });
     const lastValid = lastIdx >= 0
       && !trailingGap
       && (model.stack.step === true || Math.abs(model.hour - model.stack.hours[lastIdx]!) <= 48)
-      && (model.stack.total
-        ? model.stack.total.values[lastIdx] !== null && model.stack.total.values[lastIdx] !== undefined && Number.isFinite(model.stack.total.values[lastIdx])
-        : model.stack.bands.every(band => {
-          const v = band.values[lastIdx];
-          return v !== null && v !== undefined && Number.isFinite(v);
-        }));
+      && (hasTotalAtLast || hasAnyBandAtLast);
     if (lastValid) {
-      let acc = 0;
+      let posAcc = 0;
+      let negAcc = 0;
       for (const band of model.stack.bands) {
-        const v = band.values[lastIdx] ?? 0;
-        const mid = acc + v / 2;
-        acc += v;
+        const rawV = band.values[lastIdx];
+        if (rawV === null || rawV === undefined || !Number.isFinite(rawV)) continue;
+        const mid = rawV >= 0 ? posAcc + rawV / 2 : negAcc + rawV / 2;
+        if (rawV >= 0) posAcc += rawV;
+        else negAcc += rawV;
         if (!band.endLabel) continue;
-        const bandPx = (Math.abs(v) / ySpan) * estPlotHeight;
+        const bandPx = (Math.abs(rawV) / ySpan) * estPlotHeight;
         if (small && bandPx < 10) continue;
         const rawName = small && band.endLabel.shortName !== undefined
           ? band.endLabel.shortName
           : band.endLabel.name;
-        const showName = !!(rawName && (!small || !band.endLabel.flag));
+        const showName = !!(rawName && (!narrow || !band.endLabel.flag));
         const nameText = showName ? ellipsise(rawName!, END_LABEL_MAX_NAME_PX, measureName) : null;
         const barW = 9;
         const artW = band.endLabel.flag && band.endLabel.flag.art.status !== 'noArtExpected' ? 24 : 0;
         const nameW = nameText ? measure(nameText, labelNameFont) + 6 : 0;
         const valW = measure(band.endLabel.value, labelValueFont);
+        const fixedWidth = barW + artW + valW;
         rawEndLabels.push({
           id: band.id,
           seriesId: band.id,
@@ -542,14 +577,16 @@ export function layoutTimeChart(
           fullName: band.endLabel.fullName ?? band.name,
           value: band.endLabel.value,
           valueColor: band.endLabel.valueColor,
-          estWidth: barW + artW + nameW + valW + 8,
+          fixedWidth,
+          estWidth: fixedWidth + nameW + 8,
         });
       }
-      if (model.stack.total?.endLabel) {
-        const tv = model.stack.total.values[lastIdx] ?? acc;
+      if (model.stack.total?.endLabel && hasTotalAtLast) {
+        const tv = lastTotalVal!;
         const el = model.stack.total.endLabel;
         const artW = el.icon && el.icon.art.status !== 'noArtExpected' ? 22 : 0;
         const valW = measure(el.value, labelValueFont);
+        const fixedWidth = artW + valW;
         rawEndLabels.push({
           id: '__total__',
           seriesId: '__total__',
@@ -561,7 +598,8 @@ export function layoutTimeChart(
           fullName: model.measureTitle,
           value: el.value,
           valueColor: el.valueColor,
-          estWidth: artW + valW + 8,
+          fixedWidth,
+          estWidth: fixedWidth + 8,
         });
       }
     }
@@ -570,7 +608,7 @@ export function layoutTimeChart(
   if (rawEndLabels.length > 0) {
     let widest = 0;
     for (const l of rawEndLabels) widest = Math.max(widest, l.estWidth);
-    const maxRight = Math.max(76, Math.floor(width * (small ? 0.36 : 0.32)));
+    const maxRight = Math.max(76, Math.floor(width * (narrow ? 0.36 : 0.32)));
     right = Math.min(maxRight, Math.max(56, Math.ceil(widest + 16)));
   }
 
@@ -603,23 +641,35 @@ export function layoutTimeChart(
     const anchors = rawEndLabels.map(l => ({ id: l.id, y: toY(l.anchorVal), height: END_LABEL_HEIGHT }));
     const placedY = layoutEndLabels(anchors, Math.max(2, top - END_LABEL_HEIGHT / 2), baseY + 4, END_LABEL_GAP);
     const lx = playheadX + 10;
+    const availWidth = Math.max(0, width - lx - 4);
+    const minEllipsis = measure('\u2026', labelNameFont);
     for (const l of rawEndLabels) {
       const anchorY = toY(l.anchorVal);
       const ly = placedY.get(l.id) ?? anchorY;
+      let fittedName = l.name;
+      if (fittedName) {
+        const nameBudget = availWidth - l.fixedWidth - 6;
+        if (nameBudget < minEllipsis) {
+          fittedName = null;
+        } else if (measureName(fittedName) > nameBudget) {
+          fittedName = ellipsise(fittedName, nameBudget, measureName);
+        }
+      }
+      const fittedWidth = l.fixedWidth + (fittedName ? measureName(fittedName) + 6 : 0) + 8;
       endLabels.push({
         id: l.id,
         seriesId: l.seriesId,
         anchorY,
         y: ly,
         x: lx,
-        width: Math.min(l.estWidth, Math.max(0, width - lx - 4)),
+        width: Math.min(fittedWidth, availWidth),
         height: 16,
         color: l.color,
         faded: l.faded,
         colorBar: l.colorBar,
         flag: l.flag,
         icon: l.icon,
-        name: l.name,
+        name: fittedName,
         fullName: l.fullName,
         value: l.value,
         valueColor: l.valueColor,
@@ -674,13 +724,15 @@ export function layoutTimeChart(
   }
 
   const axisTicks: PlacedAxisTick[] = [];
+  const rawAxisTicks: TimeAxisTick[] = model.mode !== 'columns'
+    ? computeTimeAxisTicks(xDomain[0], xDomain[1], plotWidth)
+    : [];
   if (model.mode !== 'columns') {
-    const rawTicks = computeTimeAxisTicks(xDomain[0], xDomain[1], plotWidth);
     let shownFirst = false;
     let lastLabelRight = -1e9;
-    for (const tick of rawTicks) {
+    for (const tick of rawAxisTicks) {
       const x = toX(tick.hour);
-      let label: string | null = tick.label;
+      let label: string | null = tick.label || null;
       if (label) {
         const lw = measure(label, smallFont);
         const hiddenByTab = keepOut.some(([kx, kr]) => Math.abs(x - kx) < kr);
@@ -718,6 +770,7 @@ export function layoutTimeChart(
     dateTabX,
     dateTabWidth,
     axisTicks,
+    rawAxisTicks,
     endLabels,
     markers: placedMarkers,
     gaps: placedGaps,

@@ -28,24 +28,22 @@ function fakeIdentity(names: Record<string, { name: string; color: string }>): I
 
 const REPLY: MinefieldsReply = {
   regions: [
-    { region: 3, owners: [{ tag: 'ENG' }, { tag: 'GER' }], unknownOwners: 0 },
-    { region: 5, owners: [], unknownOwners: 2 },
+    { region: 7, owners: [], unknownOwners: 0, pinned: true, missing: "Some countries' minefields were not read at this hour" },
+    { region: 3, owners: [{ tag: 'ENG' }, { tag: 'GER' }], unknownOwners: 0, pinned: false, missing: null },
+    { region: 5, owners: [], unknownOwners: 2, pinned: false, missing: null },
   ],
   unknown: [],
-  choices: [
-    { id: '3', name: 'North Sea' },
-    { id: '5', name: 'Baltic Sea' },
-  ],
   scale: 100000,
   warnings: [],
 };
 
-test('minefields projection projects owner shares from Rust live totals and labels mines clearly', () => {
+test("minefields projection projects owner shares from Rust live totals, the user's regions first, and labels mines clearly", () => {
   const identity = fakeIdentity({
     ENG: { name: 'United Kingdom', color: '#e11d48' },
     GER: { name: 'German Reich', color: '#6b7280' },
     'region:3': { name: 'North Sea', color: '' },
     'region:5': { name: 'Baltic Sea', color: '' },
+    'region:7': { name: 'Skagerrak', color: '' },
   });
   const live = valuesOf(new Map([
     [liveKey('3', 'ENG'), 900000],
@@ -64,8 +62,13 @@ test('minefields projection projects owner shares from Rust live totals and labe
   assertBarsModelValid(model, 350);
   assert.equal(model.form, 'share');
 
-  const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
-  assert.deepEqual(rows.map(r => [r.key, r.label]), [['3', 'North Sea'], ['5', 'Baltic Sea']]);
+  assert.deepEqual(model.rows.map(r => [r.kind, r.key]), [
+    ['section', '__section:picked'], ['data', '7'], ['section', '__section:auto'], ['data', '3'], ['data', '5'], ['add-region', '__add-region'],
+  ]);
+  const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data').slice(1);
+  const pick = model.rows[1] as BarsDataRow;
+  assert.deepEqual([pick.label, pick.region, pick.group, pick.value?.value.kind], ['Skagerrak', 7, 'picked', 'notRecorded'], 'an unread pick is not shown as no mines');
+  assert.deepEqual(rows.map(r => [r.key, r.label, r.region]), [['3', 'North Sea', 3], ['5', 'Baltic Sea', 5]]);
   assert.equal(rows[0]!.readout?.primary, '14 mines');
   assert.deepEqual(rows[0]!.segments?.map(s => [s.key, s.label, Math.round(s.share * 100)]), [
     ['ENG', 'United Kingdom', 64],
@@ -90,7 +93,7 @@ test('minefields projection marks truncated total as notRecorded rather than zer
 
   const model = minefieldsProjection.project(view, { order: 'mines' });
   assertBarsModelValid(model, 100);
-  const first = model.rows[0] as BarsDataRow;
+  const first = model.rows.find(row => row.key === '3') as BarsDataRow;
   assert.equal(first.value?.value.kind, 'notRecorded');
   assert.equal(first.segments?.length, 0);
   assert.equal(first.readout?.primary, 'Not recorded');
@@ -104,9 +107,9 @@ test('an owner without a recorded colour keeps one colour whichever place its am
       ...owners.map((tag, at) => [liveKey('3', tag), amounts[at]!] as const),
       [liveKey('3', 'total'), amounts.reduce((sum, amount) => sum + amount, 0)],
     ]), 'Not recorded at this hour');
-    const reply: MinefieldsReply = { ...REPLY, regions: [{ region: 3, owners: owners.map(tag => ({ tag })), unknownOwners: 0 }] };
+    const reply: MinefieldsReply = { ...REPLY, regions: [{ region: 3, owners: owners.map(tag => ({ tag })), unknownOwners: 0, pinned: false, missing: null }] };
     const view = createBoundedReadView({ hour: displayedHour(350), panels: new Map([['main', reply]]), live: new Map([['main', live]]), identity });
-    const row = minefieldsProjection.project(view, { order: 'mines' }).rows[0] as BarsDataRow;
+    const row = minefieldsProjection.project(view, { order: 'mines' }).rows.find(item => item.key === '3') as BarsDataRow;
     return row.segments!.find(segment => segment.key === 'ENG')!.color;
   };
   assert.equal(colourOf(['ENG', 'GER'], [900000, 500000]), colourOf(['GER', 'ENG'], [900000, 500000]));

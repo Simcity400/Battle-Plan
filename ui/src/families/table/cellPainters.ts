@@ -27,7 +27,7 @@ import {
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { formatDateParts, formatScalar, formatValueState } from '../valueFormat.ts';
 import { drawFormattedValue, drawHatchRect, MISSING_BOX_SIZE, PARTIAL_TAB_GAP, PARTIAL_TAB_HEIGHT, PARTIAL_TAB_WIDTH } from '../valueCanvas.ts';
-import { SHARE_FIGURE_SLOT, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, type FamilyColumnLayout } from './layout.ts';
+import { SHARE_FIGURE_SLOT, TREE_CHEVRON_LANE, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, type FamilyColumnLayout } from './layout.ts';
 import type { CellPaintModel, FlatTableRow, TableCell } from './model.ts';
 import {
   CELL_INSET,
@@ -38,7 +38,6 @@ import {
   type TableTheme,
 } from './settings.ts';
 
-export const TREE_INDENT_PX = 16;
 export const TWO_WAY_SLOT = 72;
 export const TWO_WAY_GAP = 8;
 
@@ -47,7 +46,29 @@ function signedText(text: string, signed: number): string {
   if (signed < 0) return text.replace(/^-/, '−');
   return text;
 }
-export const TREE_CHEVRON_LANE = 18;
+
+const TREE_LEVEL_LIMIT = 30;
+const treeLevelCache = new WeakMap<readonly FlatTableRow[], number>();
+
+export function treeLevelsOf(rows: readonly FlatTableRow[]): number {
+  const held = treeLevelCache.get(rows);
+  if (held !== undefined) return held;
+  let levels = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const item = rows[i]!;
+    if (item.kind === 'data' && item.isTreeGroup) levels |= 1 << Math.min(item.level, TREE_LEVEL_LIMIT);
+  }
+  treeLevelCache.set(rows, levels);
+  return levels;
+}
+
+export function treeTextStart(level: number, levels: number): number {
+  let start = 0;
+  for (let at = 1; at <= Math.min(level, TREE_LEVEL_LIMIT); at++) {
+    if (levels & (1 << at)) start += TREE_CHEVRON_LANE;
+  }
+  return start;
+}
 
 export interface CellRenderContext {
   readonly ctx: TableCanvasContext;
@@ -56,6 +77,7 @@ export interface CellRenderContext {
   readonly barsMode: TableBarsMode;
   readonly sortedColumn: string;
   readonly treeColumn: number;
+  readonly treeLevels: number;
   readonly icons?: ReadonlyMap<string, ImageBitmap | null>;
   readonly artCache?: LaneArtCache;
   readonly measure: (text: string, font: string) => number;
@@ -231,11 +253,8 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   if (column.notRecordedReason || cell?.blank) return;
 
   if (colIndex === rc.treeColumn) {
-    if (item.level > 1) left += (item.level - 1) * TREE_INDENT_PX;
-    if (item.isTreeGroup) {
-      drawChevron(ctx, left - 2, middle, item.isOpen, theme);
-      left += TREE_CHEVRON_LANE;
-    }
+    left += treeTextStart(item.level, rc.treeLevels);
+    if (item.isTreeGroup) drawChevron(ctx, left - TREE_CHEVRON_LANE - 2, middle, item.isOpen, theme);
   }
 
   const kind = column.cellKind;
@@ -326,16 +345,16 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     ctx.font = font;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    const producedText = sp.producedMissing ? '' : sp.produced !== null ? `+${formatScalar(sp.produced, { decimals: 0, maxDecimals: 0 })}/d` : '0';
+    const producedText = sp.producedMissing ? '' : sp.produced !== null ? `+${formatScalar(sp.produced, 'integer')}/d` : '';
     ctx.fillStyle = sp.produced && sp.produced > 0 ? theme.text : theme.muted;
     if (producedText) ctx.fillText(fit(producedText, font, partW - 6), left + partW - 4, middle);
     if (sp.needMissing == null && sp.need !== null) {
       ctx.fillStyle = theme.muted;
-      ctx.fillText(fit(formatScalar(sp.need, { decimals: 0, maxDecimals: 0 }), font, partW - 6), left + partW * 2 - 4, middle);
+      ctx.fillText(fit(formatScalar(sp.need, 'integer'), font, partW - 6), left + partW * 2 - 4, middle);
     }
     if (sp.balanceMissing == null && sp.balance !== null) {
       ctx.fillStyle = sp.balance < 0 ? tokens.shortage : sp.balance > 0 ? theme.text : theme.muted;
-      ctx.fillText(fit(formatScalar(sp.balance, { decimals: 0, maxDecimals: 0, signed: true }), font, partW - 4), right, middle);
+      ctx.fillText(fit(formatScalar(sp.balance, { decimals: 0, signed: true }), font, partW - 4), right, middle);
     }
     ctx.restore();
     return;
@@ -438,7 +457,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     return;
   }
 
-  if (kind === 'status') {
+  if (kind === 'status' || (cell?.statusKind && formatted.kind === 'known')) {
     if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
       drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: false, muted: item.row.muted }, theme, measure, fit);
       return;
@@ -463,19 +482,34 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       return;
     }
     const valFont = fontOf(theme, 13.5, 500);
-    const numSlot = 42;
-    const trackW = Math.min(56, Math.max(18, right - left - numSlot - 8));
-    const trackX = right - numSlot - 8 - trackW;
+    const suffixFont = fontOf(theme, 12, 400);
+    const suffix = cell?.unitSuffix ? ` ${cell.unitSuffix}` : '';
+    const suffixW = suffix ? measure(suffix, suffixFont) : 0;
+    const textW = measure(formatted.text, valFont);
+    const numSlot = Math.max(42, Math.ceil(textW + suffixW));
+    const trackW = Math.min(56, Math.max(18, right - left - numSlot - 10));
+    const trackX = right - numSlot - 10 - trackW;
     if (trackW >= 18 && fraction !== null) {
       const barColor = paintModel.bar.alert ? CHART_MEASURE_COLOURS.short : trackFillOf(column, theme);
       drawTrackBar(ctx, trackX, middle, trackW, 6, fraction, barColor, theme);
+    }
+    let numRight = right;
+    if (suffix && suffixW + 12 <= Math.max(0, right - left)) {
+      ctx.save();
+      ctx.font = suffixFont;
+      ctx.fillStyle = theme.muted;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(suffix, right, middle);
+      ctx.restore();
+      numRight = right - suffixW;
     }
     ctx.save();
     ctx.font = valFont;
     ctx.fillStyle = item.row.muted || formatted.kind === 'zero' ? theme.muted : theme.text;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    ctx.fillText(formatted.text, right, middle);
+    ctx.fillText(fit(formatted.text, valFont, Math.max(0, numRight - left)), numRight, middle);
     ctx.restore();
     return;
   }

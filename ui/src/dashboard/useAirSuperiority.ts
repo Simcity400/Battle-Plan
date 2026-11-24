@@ -1,8 +1,7 @@
 import { useMemo } from 'react';
 import type { OptionChoices, WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
-import { contentKey, contentSet, resolveOptions, setToken } from './options';
-import type { OptionField } from './options';
+import { setToken } from './options';
 import { useProduct } from './products';
 import { useFactionColours } from './FactionColours';
 import { useCountryLooks } from './countryLooks';
@@ -32,7 +31,7 @@ export function factionNamer(factions: readonly FactionGroup[], own: ReadonlyMap
   };
 }
 
-export function useAirChoices(widget: WidgetSpec, runtime: WidgetRuntime, fields: readonly OptionField[]): OptionChoices {
+export function useAirChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const choices = useAirChoicesReply(runtime, widget, true);
   const factions = useFactionColours(runtime.client, track?.source);
@@ -40,19 +39,15 @@ export function useAirChoices(widget: WidgetSpec, runtime: WidgetRuntime, fields
   const tags = useMemo(() => [...new Set([...(choices.data?.countries ?? []), ...(choices.data?.sides.flatMap(side => [side.tag, side.leader].flatMap(tag => tag ? [tag] : [])) ?? [])])],
     [choices.data]);
   const looks = useCountryLooks(runtime.client, track, tags, hour, true);
-  const options = resolveOptions(fields, widget.options);
   return useMemo(() => {
     const campaign = track?.source.metadata.campaignKey ?? '';
     const faction = factionNamer(factions.factions, factions.displayNames, null);
     const country = (tag: string) => looks.name(tag, hour);
     const sides = (choices.data?.sides ?? []).map(side => ({ value: airChoiceToken(campaign, side.key), label: airSideName(side, country, faction) }));
-    const chosenRegions = contentSet(options.regions).map(contentKey);
-    const regions = (choices.data?.regions ?? []).map(region => ({ value: setToken(`r:${region.id}`), label: region.name }));
-    for (const key of chosenRegions) if (!regions.some(region => contentKey(region.value) === key)) regions.push({ value: setToken(key), label: `Region ${key.slice(2)} · not recorded` });
     return {
-      viewpoint: [...sides, ...(choices.data?.countries ?? []).map(tag => ({ value: setToken(`country:${tag}`), label: country(tag) }))], sides, regions,
+      viewpoint: [...sides, ...(choices.data?.countries ?? []).map(tag => ({ value: setToken(`country:${tag}`), label: country(tag) }))], sides,
       theatres: (choices.data?.theatres ?? []).map(theatre => ({ value: airChoiceToken(campaign, theatre.id), label: theatre.name })),
     };
-  }, [choices.data, looks, hour, factions.factions, factions.displayNames, options.regions, track?.source.metadata.campaignKey]);
+  }, [choices.data, looks, hour, factions.factions, factions.displayNames, track?.source.metadata.campaignKey]);
 }
 

@@ -5,10 +5,10 @@ import { urlArtHandle } from '../../families/art/provider.ts';
 import { artKindCell, artState, identityFlags, identityName, newIdentityBoundary, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableCellIconItem, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, zeroValue, type Value } from '../../families/value.ts';
-import { formatDateOnly } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatProgress } from '../../families/valueFormat.ts';
 import type { Country, OperativesRosterReply, OperativeTrait, RosterOperative } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 
@@ -89,7 +89,7 @@ function progressCell(operative: RosterOperative): TableCell {
   if (ratio === null && operative.experienceAtCap) return { value: notApplicable(operative.experienceText ?? 'Highest skill level'), bar: null };
   if (ratio === null) return { value: notRecorded(operative.experienceMissing ?? 'Progress not recorded'), bar: null };
   const painted = Math.max(0, Math.min(1, ratio));
-  return { value: knownValue(`${Math.floor(ratio * 100)}%`), sortValue: ratio === 0 ? zeroValue(0) : knownValue(ratio), bar: { fraction: painted === 0 ? zeroValue(0) : knownValue(painted) } };
+  return { value: knownValue(formatProgress(ratio)), sortValue: ratio === 0 ? zeroValue(0) : knownValue(ratio), bar: { fraction: painted === 0 ? zeroValue(0) : knownValue(painted) } };
 }
 
 function missionCell(readView: BoundedReadView, operative: RosterOperative, boundary: IdentityBoundary): TableCell {
@@ -115,7 +115,7 @@ function rosterExtra(readView: BoundedReadView, operative: RosterOperative): rea
   ];
 }
 
-export const rosterProjection: TableProjection<RosterProjectionOptions> = registerTableProjection({
+export const rosterProjection: TableProjection<RosterProjectionOptions> = registerFamilyProjection({
   kind: 'operatives-roster',
   family: 'table',
   project(readView, _options): TableModel {

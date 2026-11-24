@@ -245,6 +245,16 @@ export function colour(surface: string, ordinal: number, options?: ColourOptions
   }
 }
 
+const IDENTITY_COLOURS = {
+  weather: { light_rain: '#3987e5', heavy_rain: '#9085e9', snow: '#9fc9e6', sandstorm: '#c98500' },
+} as const satisfies Readonly<Record<string, Readonly<Record<string, string>>>>;
+
+export function identityColour(surface: string, register: keyof typeof IDENTITY_COLOURS, token: string, ordinal: number): string {
+  const known: Readonly<Record<string, string>> = IDENTITY_COLOURS[register];
+  const authored = known[token];
+  if (authored) return readableColour(authored, surface);
+  return colour(surface, ordinal, { avoid: Object.values(known).map(hex => readableColour(hex, surface)) });
+}
 export function readableColour(color: AuthoredColour, surface: string, minContrast = MARK_CONTRAST): string {
   const background = parseColor(surface) ?? { r: 0, g: 0, b: 0 };
   const rgb = typeof color === 'string'

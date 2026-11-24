@@ -1,17 +1,21 @@
 import type { FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
+import { parseRegionHitKey } from '../regions/regionRows.ts';
 import type { FamilyBarsBinding } from './laneView.ts';
+import { barsAuditWindow, layoutFamilyBars } from './layout.ts';
 import { deriveBarsAudit, type BarsModel } from './model.ts';
+import { pickAudit } from './pickList.ts';
 
 export function parseBarsHit(hitKey: string | null): ParsedFamilyHit | null {
   if (!hitKey) return null;
-  if (hitKey.startsWith('add:')) return { key: '__add-region', subject: '__add-region', kind: 'add-region', toggle: false, inspectToken: hitKey };
-  if (hitKey.startsWith('remove:')) {
-    const key = hitKey.slice(7);
-    return key ? { key, subject: key, kind: 'remove-region', toggle: true, inspectToken: hitKey } : null;
-  }
+  const region = parseRegionHitKey(hitKey);
+  if (region) return { key: region.key, subject: region.key, kind: `region-${region.part}`, toggle: false, inspectToken: `row:${region.key}` };
   if (hitKey.startsWith('right:')) {
     const key = hitKey.slice(6);
     return key ? { key, subject: key, kind: 'right-row', toggle: false, inspectToken: hitKey } : null;
+  }
+  if (hitKey.startsWith('pick:')) {
+    const key = hitKey.slice(5);
+    return key ? { key: hitKey, subject: key, kind: 'pick', toggle: false, inspectToken: hitKey, meta: { pick: key } } : null;
   }
   if (hitKey.startsWith('row:')) {
     const key = hitKey.slice(4);
@@ -28,10 +32,13 @@ export const barsHostAdapter: FamilyHostAdapter<BarsModel, unknown, FamilyBarsBi
   auditOwnerId: -2,
   parseHit: parseBarsHit,
   getScrollExtent: fields => {
-    const meta = fields.meta as { readonly totalHeight?: number } | undefined;
-    return meta?.totalHeight !== undefined ? { height: meta.totalHeight } : null;
+    const meta = fields.meta as { readonly scrollHeight?: number } | undefined;
+    return meta?.scrollHeight !== undefined ? { height: meta.scrollHeight } : null;
   },
-  deriveAuditRows: model => deriveBarsAudit(model),
+  deriveAuditRows: (model, _hour, { viewport }) => [
+    ...(model.pickList ? pickAudit(model.pickList) : []),
+    ...deriveBarsAudit(model, { window: barsAuditWindow(layoutFamilyBars(model, viewport.width, viewport.height), viewport.scrollTop) }),
+  ],
   auditOrdered: true,
   buildBinding: ctx => ({ reducedMotion: ctx.reducedMotion }),
 };

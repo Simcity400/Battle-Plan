@@ -144,6 +144,7 @@ impl AtHour for AutonomyLevels {
     const KEY: &'static str = "autonomy-levels";
     const TITLE: &'static str = "Autonomy levels";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = AutonomyLevelsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = AutonomyLevelsReply;
@@ -166,6 +167,16 @@ impl AtHour for AutonomyLevels {
         let mut warnings = Vec::new();
         let levels = content_levels(source, load, &mut warnings);
         Ok(AutonomyLevelsContext { levels, warnings })
+    }
+
+    fn valid_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
+        frame.complete::<tables::Subjects>().map_or(i32::MAX, |rows| {
+            rows.iter()
+                .filter(|row| row.cancel == 0 && row.end_hour > row.start_hour && row.end_hour > frame.hour)
+                .map(|row| row.end_hour - 1)
+                .min()
+                .unwrap_or(i32::MAX)
+        })
     }
 
     fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -213,7 +224,7 @@ mod tests {
 
     #[test]
     fn subjects_closest_to_a_change_come_first_and_an_unread_one_is_last_not_zero() {
-        let mut list = vec![
+        let mut list = [
             subject("MID", Ok(50_000)),
             subject("UNREAD", Err("not recorded")),
             subject("NEARTOP", Ok(97_000)),

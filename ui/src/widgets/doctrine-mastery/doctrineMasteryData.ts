@@ -1,7 +1,8 @@
 import { formatAmount, formatRate } from '../../charts/valueAxis.ts';
-interface MeterMark { id: string; at: number; reached: boolean; label?: string }
 import type { SpriteFrame } from '../../generated/dashboard';
 import type { DescribedReward, DoctrineMasteryReply, DoctrineRewardsReply, MasteryChoice, MasteryFolder, MasteryReward, MasteryTrack } from '../../generated/dashboard';
+
+interface MeterMark { id: string; at: number; reached: boolean; label?: string }
 
 const text = (value: unknown): value is string => typeof value === 'string';
 const optional = (value: unknown) => value === null || text(value);
