@@ -119,6 +119,10 @@ function cellOf(cell: AirDayCell | null, reply: AirTimelineReply, look: Look, su
       tip: { items: [{ label: 'Air superiority', value: `${Math.round(share * 100)}%`, swatch: color }] },
     };
   }
+  if (cell.unknown.length) {
+    const reason = 'A side’s air score was not recorded';
+    return { cell: { kind: 'missing', reason }, tip: { missingReason: reason } };
+  }
   let total = 0;
   let best: { side: number; score: number } | null = null;
   const items = [];
@@ -127,10 +131,7 @@ function cellOf(cell: AirDayCell | null, reply: AirTimelineReply, look: Look, su
     total += score;
     if (!best || score > best.score) best = { side: part.side, score };
   }
-  if (total <= 0) {
-    if (cell.unknown.length) return { cell: { kind: 'missing', reason: 'Air superiority could not be determined' }, tip: { missingReason: 'Air superiority could not be determined' } };
-    return { cell: { kind: 'clear' }, tip: { items: [{ label: 'No activity' }] } };
-  }
+  if (total <= 0) return { cell: { kind: 'clear' }, tip: { items: [{ label: 'No activity' }] } };
   for (const part of cell.parts) {
     const score = Math.max(0, Number(part.friendly));
     if (score <= 0) continue;

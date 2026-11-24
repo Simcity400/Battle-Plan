@@ -83,3 +83,10 @@ test('a reply that reaches past the displayed hour draws nothing from it', () =>
   const model = projectAirTimeline(view(40, reply(50)), OPTIONS);
   assert.deepEqual(model.rows, []);
 });
+
+test('a day with a side whose score is unknown is not recorded, never a full lead for the known side', () => {
+  const data = reply(50);
+  const row = { ...data.rows[0]!, cells: [[3, { kind: 'sides', parts: [{ side: 0, tag: 'GER', friendly: '71' }], viewpoints: [], unknown: [1], noAirObject: [], filtered: false }]] as AirTimelineReply['rows'][number]['cells'] };
+  const model = projectAirTimeline(view(50, { ...data, rows: [row] }), OPTIONS);
+  assert.deepEqual(model.rows[0]!.runs[0]!.cell, { kind: 'missing', reason: 'A side’s air score was not recorded' });
+});
