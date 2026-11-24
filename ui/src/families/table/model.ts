@@ -1481,7 +1481,7 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
             if (changed.size === 0) {
               return { ...prevInc.model, hour, changedKeys: changed, changedRows: new Map() };
             }
-            if (changed.size * 2 < prevInc.rawRows.length) {
+            {
               const colSpecs = prevInc.colSpecs;
               const buildRow = (row: TRow): TableRow => buildDeclarativeRow(spec, colSpecs, reply, live, hour, options, labels, row);
               const nextRows = prevInc.model.rows.slice();
