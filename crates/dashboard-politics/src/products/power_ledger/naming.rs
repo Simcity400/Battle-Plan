@@ -2,6 +2,7 @@
 use super::SpendItem;
 use crate::products::ideas::{IdeaInfo, idea_info};
 use dashboard_base::{Source, catalogue::{self, Catalogue}, products::at_hour};
+use dashboard_base::products::artwork::sprites::SpriteFrame;
 use dashboard_world::products::equipment_names as names;
 use dashboard_world::products::equipment_names::EquipmentIcon;
 use dashboard_base::products::{
@@ -423,6 +424,29 @@ pub(super) fn cause_category(cause: PowerCause) -> (&'static str, &'static str) 
         PowerCause::CapCorrection => ("capCorrection", "Cap correction"),
         PowerCause::NotIdentified => ("notIdentified", "Not identified"),
     }
+}
+
+const IDEA_CATEGORY: &str = "ideas:";
+
+pub(super) fn category_art(category: &str) -> Option<SpriteFrame> {
+    let icon = match category {
+        "advisors" | "ideas" => "pol_idea",
+        "laws" => "change_government",
+        "decisions" => "decision_icon_small",
+        "diplomacy" => "war_score",
+        "dailyCosts" => "pol_power",
+        "organisationUpkeep" => "industry_texticon",
+        "scriptEffects" => "icons_mods",
+        "autonomy" => "autonomy_texticon",
+        "scientists" => "research_icon",
+        "traits" => "doctrine_mastery",
+        "promotions" => "hq_texticon",
+        "tactics" => "in_combat",
+        "raids" => "generic_war_escalation_text_icon",
+        idea if idea.starts_with(IDEA_CATEGORY) => "pol_idea",
+        _ => return None,
+    };
+    Some(SpriteFrame { key: icon.to_owned(), frame: 0, recorded: None, text: Some(true) })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -59,6 +59,7 @@ function wire(key: string, ordinal: number, raw: string | null, extra: Partial<W
     parentShare: null,
     count: null,
     last: null,
+    art: null,
     children: [],
     ...extra,
   };

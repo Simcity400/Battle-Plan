@@ -8,8 +8,10 @@ import { commandSpendingProjection } from './powerSpendingProjection.ts';
 
 const part = (key: string, raw: string | null, extra: Partial<BreakdownPart> = {}): BreakdownPart => ({
   key, name: key, ordinal: 0, other: false, raw, state: raw === null ? 'notRecorded' : 'known', reason: raw === null ? `${key} was not recorded` : null,
-  share: null, parentShare: null, nameMissing: null, count: null, last: null, children: [], ...extra,
+  share: null, parentShare: null, nameMissing: null, count: null, last: null, art: null, children: [], ...extra,
 });
+
+const icon = (key: string) => ({ key, frame: 0, text: true });
 
 test('spending rows are the product\'s categories and items, dated by their latest payment, with the title figures the rows do not show', () => {
   const reply: PowerSpendingBreakdownReply = {
@@ -18,9 +20,9 @@ test('spending rows are the product\'s categories and items, dated by their late
       decimals: 2,
       total: { raw: '145000', state: 'partial', reason: 'Some hours were not recorded' },
       parts: [
-        part('decisions', '101000', { share: 0.7, last: 90, children: [part('war', '2500', { share: 0.02, last: 90 })] }),
-        part('laws', null),
-        part('ideas:mod_category', '2000', { share: 11 / 5975 }),
+        part('decisions', '101000', { share: 0.7, last: 90, art: icon('decision_icon_small'), children: [part('war', '2500', { share: 0.02, last: 90 })] }),
+        part('laws', null, { art: icon('change_government') }),
+        part('ideas:mod_category', '2000', { share: 11 / 5975, art: icon('pol_idea') }),
         part('modSpend', '1000', { share: 0 }),
       ],
       unrecordedHours: 4,
@@ -41,7 +43,7 @@ test('spending rows are the product\'s categories and items, dated by their late
   assert.equal(share(0), 'known 70%');
   assert.equal(share(2), 'known 0.2%', 'a share above zero never prints 0%');
   assert.equal(share(3), 'zero 0%');
-  assert.deepEqual(model.rows.map(row => row.cells.picture!.iconSlot === true), [true, true, true, false], 'a category the mapping does not know shows its row with no picture');
+  assert.deepEqual(model.rows.map(row => row.cells.picture!.iconSlot === true), [true, true, true, false], 'a category the product names no picture for shows its row with none');
   assert.deepEqual(asked.map(handle => handle.kind === 'sprite' && handle.text === true ? handle.key : null), ['decision_icon_small', 'change_government', 'pol_idea']);
   const child = decisions.children![0]!;
   assert.equal(child.cells.picture, undefined, 'items carry no category picture');

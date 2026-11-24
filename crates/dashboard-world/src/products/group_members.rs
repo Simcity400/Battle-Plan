@@ -1,7 +1,14 @@
 use super::groups::{CountryGroupReply, MembershipRun};
-use dashboard_base::span::HourSpan;
-use dashboard_query::series::ranked::{GroupKind, GroupMembership, GroupSelection, Members};
-use std::io;
+use dashboard_base::{Source, products::LoadContext, span::HourSpan};
+use dashboard_query::{
+    identity::{Country, Holders},
+    series::ranked::{GroupKind, GroupMembership, GroupSelection, Members},
+};
+use std::{
+    collections::HashSet,
+    io,
+    sync::{Arc, atomic::AtomicBool},
+};
 
 const UNKNOWN: &str = "Membership of this group is not recorded at this hour";
 
@@ -78,6 +85,40 @@ pub fn members_at(reply: &CountryGroupReply, group: &GroupSelection, hour: i32, 
     Ok(Members { tags, refused: None, from, until })
 }
 
+#[derive(Clone, Default)]
+pub struct GroupsAt {
+    reply: Option<Arc<CountryGroupReply>>,
+    first: i32,
+}
+
+impl GroupsAt {
+    pub fn load(source: &Source, load: &LoadContext, branch_id: &str, group: Option<&GroupSelection>) -> io::Result<Self> {
+        let (Some(_), Ok(branch)) = (group, branch_id.parse::<u64>()) else { return Ok(Self::default()) };
+        let query = dashboard_base::queries::query(source, branch)?;
+        let reply = super::groups::shared(source, &query, load, &AtomicBool::new(false))?;
+        Ok(Self { reply: Some(reply), first: query.timeline.first })
+    }
+
+    pub fn members(&self, group: &GroupSelection, hour: i32) -> io::Result<Members> {
+        let reply = self.reply.as_deref().ok_or_else(|| invalid("The group's memberships were not loaded"))?;
+        members_at(reply, group, hour, self.first)
+    }
+
+    pub fn chosen_slots(&self, group: Option<&GroupSelection>, countries: &[Country], holders: &Holders, hour: i32) -> io::Result<Result<Option<HashSet<u32>>, String>> {
+        let slot = |country: &Country| holders.slot_at(country, hour);
+        let Some(group) = group else { return Ok(Ok((!countries.is_empty()).then(|| countries.iter().filter_map(slot).collect()))) };
+        let members = self.members(group, hour)?;
+        if let Some(refused) = members.refused {
+            return Ok(Err(refused));
+        }
+        Ok(Ok(Some(members.tags.into_iter().filter_map(|tag| slot(&Country::Tag(tag))).collect())))
+    }
+
+    pub fn valid_through(&self, group: Option<&GroupSelection>, hour: i32) -> i32 {
+        group.map_or(i32::MAX, |group| self.members(group, hour).map_or(hour, |members| members.until.max(hour)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +172,21 @@ mod tests {
         assert_eq!(members_at(&reply(), &war, 250, 0).unwrap().tags, Vec::<String>::new(), "a known empty group is empty, not unknown");
         let missing = GroupSelection { id: Some("7".into()), ..faction(GroupMembership::Hour) };
         assert!(members_at(&reply(), &missing, 150, 0).unwrap().refused.is_some());
+    }
+
+    #[test]
+    fn flows_choose_the_group_members_at_the_hour_by_slot_and_hold_only_until_the_next_join() {
+        use dashboard_query::identity::{Holder, HolderRun};
+        let run = |slot: u32| vec![HolderRun { first: 0, last: 1000, holder: Holder::Found { slot, id: slot * 10 }, starts_segment: true }];
+        let holders = Holders::new([("GER".to_owned(), run(7)), ("ITA".to_owned(), run(8))].into_iter().collect(), Vec::new());
+        let groups = GroupsAt { reply: Some(Arc::new(reply())), first: 0 };
+        let group = faction(GroupMembership::Hour);
+        let chosen = |hour: i32| groups.chosen_slots(Some(&group), &[], &holders, hour).unwrap();
+        assert_eq!(chosen(500), Ok(Some([7].into_iter().collect())), "ITA joins at 600: its flows are not the faction's before");
+        assert_eq!(chosen(700), Ok(Some([7, 8].into_iter().collect())));
+        assert_eq!(chosen(310), Err(UNKNOWN.to_owned()));
+        assert_eq!(groups.valid_through(Some(&group), 500), 599);
+        assert_eq!(groups.valid_through(None, 500), i32::MAX);
+        assert_eq!(groups.chosen_slots(None, &[Country::Tag("ITA".into())], &holders, 500).unwrap(), Ok(Some([8].into_iter().collect())));
     }
 }
