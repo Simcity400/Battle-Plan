@@ -3,7 +3,7 @@ import type { CampaignClockReply } from '../../generated/dashboard';
 import type { ClockSummaryData } from '../../draw/kit.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, type TableBase } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, valueFromNullable, wireFloat, wireWhole, type Value } from '../../families/value.ts';
 import { formatDateOnly, formatValueState } from '../../families/valueFormat.ts';
@@ -85,7 +85,7 @@ function buildClockSummary(parsed: ParsedClock, hour: number, firstHour?: number
   };
 }
 
-export const campaignClockProjection: TableProjection<CampaignClockProjectionOptions> = registerTableProjection(
+export const campaignClockProjection: TableProjection<CampaignClockProjectionOptions> = registerFamilyProjection(
   declareTableProjection<ParsedClock, ClockRow, CampaignClockProjectionOptions>({
     kind: 'campaign-clock',
     validate: parseReply,

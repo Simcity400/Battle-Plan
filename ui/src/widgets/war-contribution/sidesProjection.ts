@@ -6,7 +6,7 @@ import type { BoundedReadView } from '../../families/contract.ts';
 import type { FamilyPlanContext, SourceEntry } from '../../families/plan.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import type { TableCell, TableColumnSpec, TableModel, TablePane, TablePaneTitle, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
 import type { WarContributionGroup, WarContributionsReply, WarMeasure, WarMeasureKey, WarMeasureMember, WarMeasureSide, WarsReply, WarTimeline } from '../../generated/dashboard';
 import { observationAt, validateWarContributions, validateWarsReply, warContributions } from '../wars/warsData.ts';
@@ -167,7 +167,7 @@ function replyFor(readView: BoundedReadView, war: WarTimeline, hour: number): Wa
   return reply.hour >= war.firstHour && reply.hour <= war.lastHour && reply.hour <= hour ? reply : undefined;
 }
 
-export const warContributionSidesProjection: TableProjection<SidesOptions> = registerTableProjection({
+export const warContributionSidesProjection: TableProjection<SidesOptions> = registerFamilyProjection({
   kind: 'war-contribution',
   family: 'table',
   project(readView, options): TableModel {

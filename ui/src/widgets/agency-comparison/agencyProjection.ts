@@ -4,7 +4,7 @@ import type { BoundedReadView } from '../../families/contract.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { identityCell, identityName, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
@@ -88,7 +88,7 @@ function upgradeRows(agency: Agency): readonly TooltipExtraRow[] {
   }));
 }
 
-export const agencyProjection: TableProjection<AgencyProjectionOptions> = registerTableProjection({
+export const agencyProjection: TableProjection<AgencyProjectionOptions> = registerFamilyProjection({
   kind: 'agency-comparison',
   family: 'table',
   nextChange: (readView: BoundedReadView, options: AgencyProjectionOptions) => (options.topped ? Infinity : filterNext(options.filter, readView.hour)),

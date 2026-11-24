@@ -2,7 +2,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notRecorded, textValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { DivisionEquipmentReply, EquipmentTemplate, EquipmentType, StockpileArtworkReply } from '../../generated/dashboard';
@@ -119,7 +119,7 @@ function typeTooltip(row: EquipmentType): TooltipExtraRow[] {
   return rows;
 }
 
-export const equipmentTypeProjection: TableProjection<Record<string, never>> = registerTableProjection(declareTableProjection<DivisionEquipmentReply, TypeRow, Record<string, never>>({
+export const equipmentTypeProjection: TableProjection<Record<string, never>> = registerFamilyProjection(declareTableProjection<DivisionEquipmentReply, TypeRow, Record<string, never>>({
     kind: 'division-equipment',
     validate: validateDivisionEquipment,
     columns: TYPE_SPEC,
@@ -164,7 +164,7 @@ const TEMPLATE_SPEC: readonly DeclarativeColumnSpec<TemplateRow, Record<string, 
   { ...TYPES_SHORT!, priority: 5, numeric: true, format: 'integer', widest: ['99'], value: row => count(row.template.typesShort, 'Types short not recorded') },
 ];
 
-export const equipmentTemplateProjection: TableProjection<Record<string, never>> = registerTableProjection(declareTableProjection<DivisionEquipmentReply, TemplateRow, Record<string, never>>({
+export const equipmentTemplateProjection: TableProjection<Record<string, never>> = registerFamilyProjection(declareTableProjection<DivisionEquipmentReply, TemplateRow, Record<string, never>>({
     kind: 'division-equipment',
     validate: validateDivisionEquipment,
     columns: TEMPLATE_SPEC,

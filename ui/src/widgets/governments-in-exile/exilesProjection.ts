@@ -5,7 +5,7 @@ import type { BoundedReadView } from '../../families/contract.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { identityCell, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, valueFromLive, valueNumber, zeroValue, type Value } from '../../families/value.ts';
 import { object, opaqueTag } from '../../dashboard/validation.ts';
@@ -73,7 +73,7 @@ function exileExtra(live: LiveValues<number | bigint | string> | null, id: strin
   ];
 }
 
-export const exilesProjection: TableProjection<ExilesProjectionOptions> = registerTableProjection({
+export const exilesProjection: TableProjection<ExilesProjectionOptions> = registerFamilyProjection({
   kind: 'governments-in-exile',
   family: 'table',
   nextChange: (readView: BoundedReadView, options: ExilesProjectionOptions) => filterNext(options.filter, readView.hour),

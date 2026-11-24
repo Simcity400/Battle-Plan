@@ -3,7 +3,7 @@ import { inHourRanges, nextChangeAfter } from '../../families/holders.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableCellIconItem, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { CELL_INSET, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { ICON_STRIP_GAP, MEDAL_ICON_SIZE } from '../../draw/kit.ts';
 import { knownValue, textValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
@@ -95,7 +95,7 @@ const DECORATED_COLUMNS: readonly DeclarativeColumnSpec<DecoratedRow, DecoratedO
     value: item => count(item.row.facts.casualtiesTaken, 'Casualties taken not recorded') },
 ];
 
-export const mostDecoratedProjection: TableProjection<DecoratedOptions> = registerTableProjection(
+export const mostDecoratedProjection: TableProjection<DecoratedOptions> = registerFamilyProjection(
   declareTableProjection<DivisionCareersReply, DecoratedRow, DecoratedOptions>({
     kind: 'most-decorated-divisions',
     validate: validateDivisionCareers,

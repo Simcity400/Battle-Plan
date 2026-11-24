@@ -3,7 +3,7 @@ import { inHourRanges, nextChangeAfter } from '../../families/holders.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, textValue, notRecorded, type Value } from '../../families/value.ts';
 import { formatDateHover, formatDateOnly } from '../../families/valueFormat.ts';
@@ -94,7 +94,7 @@ function aceTooltip(row: AceRow): TooltipExtraRow[] {
   return rows;
 }
 
-export const acesProjection: TableProjection<AcesOptions> = registerTableProjection(
+export const acesProjection: TableProjection<AcesOptions> = registerFamilyProjection(
   declareTableProjection<AirAcesReply, AceRow, AcesOptions>({
     kind: 'aces',
     validate: validateAces,

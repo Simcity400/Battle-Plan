@@ -206,3 +206,46 @@ test('next() builds no identity index, and one snapshot is indexed once for ever
     recording.restore();
   }
 });
+
+test('the previous layout is given only while the same placement plays forward or stays on its hour, never across a seek back', () => {
+  const recording = installRecordingCanvas();
+  try {
+    const seen: (number | null)[] = [];
+    const remembering: LaneFamily<Binding, Model, Layout> = {
+      ...family,
+      layout(model, binding, surface, theme, measure, hour, step) {
+        seen.push(step.previous ? step.previous.hour : null);
+        return family.layout(model, binding, surface, theme, measure, hour, step);
+      },
+    };
+    const lane = driveLane(createLaneView(remembering, () => {}), recording.canvases);
+    lane.paint({ label: 'first', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 10, speed: 24 });
+    lane.paint({ label: 'forward', binding: binding(rowsAt([{ key: 'A', v: 2 }])), hour: 12, speed: 24 });
+    lane.paint({ label: 'seek back', binding: binding(rowsAt([{ key: 'A', v: 3 }])), hour: 5, speed: 24 });
+    lane.paint({ label: 'paused, same hour', binding: binding(rowsAt([{ key: 'A', v: 4 }])), hour: 5, speed: 0 });
+    lane.paint({ label: 'paused jump', binding: binding(rowsAt([{ key: 'A', v: 5 }])), hour: 9, speed: 0 });
+    assert.deepEqual(seen, [null, 10, null, 5, null]);
+  } finally {
+    recording.restore();
+  }
+});
+
+test('a drawing that expires at a wall-clock time arms the one timer, even while paused, and redraws when it passes', () => {
+  const recording = installRecordingCanvas();
+  const set: number[] = [];
+  const timers = { set: (_fn: () => void, ms: number) => { set.push(ms); return set.length as unknown as ReturnType<typeof setTimeout>; }, clear: () => {} };
+  try {
+    let draws = 0;
+    const holding: LaneFamily<Binding, Model, Layout> = { ...family, paint: (ctx, frame) => { draws++; family.paint(ctx, frame); return frame.now + 500; } };
+    const lane = driveLane(createLaneView(holding, () => {}, { timers }), recording.canvases);
+    const bound = binding(rowsAt([{ key: 'A', v: 1 }]));
+    lane.paint({ label: 'held', binding: bound, hour: 12, speed: 0 });
+    assert.deepEqual([draws, set], [1, [500]], 'one timer for the expiry while paused');
+    lane.paint({ label: 'still held', binding: bound, hour: 12, speed: 0 });
+    assert.deepEqual([draws, set.length], [1, 1], 'no redraw and no second timer before it passes');
+    lane.paint({ label: 'expired', binding: bound, hour: 12, speed: 0, now: 1600 });
+    assert.equal(draws, 2, 'the expired drawing is redrawn');
+  } finally {
+    recording.restore();
+  }
+});

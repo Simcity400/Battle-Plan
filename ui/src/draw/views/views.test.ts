@@ -6,6 +6,7 @@ import { Lane, type Bitmapped, type Scene } from '../lane.ts';
 import { bindFamilyManifest } from '../../families/registry.ts';
 import type { FamilyTableBinding } from '../../families/table/laneView.ts';
 import { tableSettingsOf } from '../../families/table/settings.ts';
+import { LANE_THEME } from '../../families/laneRuntime.fixture.ts';
 
 const scene = (model: unknown): Scene => ({ widget: 1, subs: [], pictures: [], model });
 test('astra 7: a table breaks at its filter bounds and at the hours its country names and flags change', async () => {
@@ -18,7 +19,7 @@ test('astra 7: a table breaks at its filter bounds and at the hours its country 
     options: { filter: { passing: null, unrecorded: [], bounds: [0, 109, 300] }, role: 'occupier', labels: {}, lawAs: 'dot', filterAll: true },
   };
   const initial = table.next!(scene(filtered as unknown as FamilyTableBinding), 100);
-  if (initial === 101) {
+  if (!Number.isFinite(initial)) {
     assert.equal(await woken, 1, 'lazy projection load wakes the widget once loaded');
   }
   assert.equal(table.next!(scene(filtered as unknown as FamilyTableBinding), 100), 109, 'the filter changes at 109, never sampled a day later');
@@ -95,6 +96,7 @@ test('lazy projection arriving after first next wakes the lane and reports its t
       height: 120,
       scrollLeft: 0,
       scrollTop: 0,
+      theme: LANE_THEME,
     };
 
     lane.mount(1, [], 'table', binding);

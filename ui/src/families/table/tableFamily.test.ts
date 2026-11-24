@@ -2,14 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
-import { NOT_LIVE_CELL, NOT_RECORDED, repliedCells } from '../../dashboard/follow/liveCells.ts';
+import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
+import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import { ROW_HEIGHT, tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
 import { nextLookChange } from '../looks.ts';
 import { resolveHeadSpan } from './declaration.ts';
 import { tableHostAdapter } from './hostAdapter.ts';
-import { familyTableLaneView, liveAdapter } from './laneView.ts';
-import { registerTableProjection } from './registry.ts';
+import { familyTableLaneView } from './laneView.ts';
+import { registerFamilyProjection } from '../registry.ts';
 import type { ApmReply, CampaignClockReply, DivisionTemplatesReply, EventFeedPageRow, MarketLedgerTailReply, ScoreboardColumn, ScoreboardReply, ScriptPageRow } from '../../generated/dashboard';
 import { pictureError } from '../../shell/perf.ts';
 import { CLOCK_COLUMNS, CLOCK_TABLE_BASE, campaignClockProjection } from '../../widgets/campaign-clock/clockProjection.ts';
@@ -596,7 +597,7 @@ test('lane view skips projection on next(), caches unchanged sources across serv
     rowKey: row => row.id,
     rowName: row => row.id,
   });
-  registerTableProjection(proj);
+  registerFamilyProjection(proj);
   const prevOffscreen = globalThis.OffscreenCanvas;
   class FakeOffscreenCanvas {
     width: number;
@@ -614,7 +615,7 @@ test('lane view skips projection on next(), caches unchanged sources across serv
     const staticPanels = { main: { rows: [{ id: 'GER', v: 10 }] } };
     const options = {};
     const model = {
-      family: 'table' as const,
+      family: 'table' as const, theme: TEST_THEME,
       kind: 'test-lane-cache',
       options,
       settings,
@@ -659,7 +660,7 @@ test('lane view skips projection on next(), caches unchanged sources across serv
   }
 });
 
-test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay independent, animated hit testing uses painted Y, and meta/audit/liveAdapter/headSpan hold invariants', () => {
+test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay independent, animated hit testing uses painted Y, and meta/audit/headSpan hold invariants', () => {
   const prevOffscreen = globalThis.OffscreenCanvas;
   class FakeOffscreenCanvas {
     width: number;
@@ -676,7 +677,7 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
       { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
     ], { density: 'comfortable', sort: { column: 'v', direction: 'descending' } });
     const makeModel = (rows: { id: string; v: number }[], focusedKey: string | null = null, extra: Record<string, unknown> = {}) => ({
-      family: 'table' as const,
+      family: 'table' as const, theme: TEST_THEME,
       kind: 'test-lane-cache',
       options: {},
       settings,
@@ -753,16 +754,6 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
     assert.deepEqual(resolveHeadSpan('trailing-window', 168, 'follow', branch, { firstHour: 10, lastHour: 500 }, 300), { first: 133, last: 300 }, 'follow mode uses trailing window');
     assert.deepEqual(resolveHeadSpan('branch-to-hour', 168, 'pin', branch, { firstHour: 10, lastHour: 240 }, 240), { first: 10, last: 240 }, 'branch-to-hour pin runs from branch start to pinned hour');
     assert.deepEqual(resolveHeadSpan('branch-to-hour', 168, 'range', branch, { firstHour: 40, lastHour: 240 }, 240), { first: 40, last: 240 }, 'branch-to-hour range keeps explicit range');
-
-    const adapted = liveAdapter(new Map<string, number | bigint | string>([
-      ['present', 42],
-      ['missing-reason', 'Sensor offline'],
-      ['missing-empty', ''],
-    ]))!;
-    assert.equal(adapted.get('present'), 42);
-    assert.equal(adapted.missing('missing-reason'), 'Sensor offline');
-    assert.equal(adapted.missing('missing-empty'), NOT_RECORDED);
-    assert.equal(adapted.missing('undeclared'), NOT_LIVE_CELL);
 
     const { ctx } = instrumentedContext();
     const numCols: TableColumnSpec[] = [
@@ -928,7 +919,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
     rowName: r => r.id,
     rowMeta: r => ({ designer: r.designer }),
   });
-  registerTableProjection(metaProj);
+  registerFamilyProjection(metaProj);
   const prevOffscreen = globalThis.OffscreenCanvas;
   class FakeOffscreenCanvas {
     width: number;
@@ -946,7 +937,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
       subs: [],
       pictures: [],
       model: {
-        family: 'table',
+        family: 'table', theme: TEST_THEME,
         kind: 'test-meta-priority-inv',
         options: {},
         settings: tableSettingsOf(undefined, [
@@ -1155,7 +1146,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
       subs: [{ id: 7, channel: 'panel' }],
       pictures: [{ parts: [{ value: { kind: 'panel', data: null, refused: 'Game score panel refused by recording' } }] }],
       model: {
-        family: 'table',
+        family: 'table', theme: TEST_THEME,
         kind: 'game-score',
         view: 'table',
         options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
@@ -1181,7 +1172,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
       subs: [],
       pictures: [],
       model: {
-        family: 'table',
+        family: 'table', theme: TEST_THEME,
         kind: 'game-score',
         view: 'table',
         options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
@@ -1221,7 +1212,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
       subs: [],
       pictures: [],
       model: {
-        family: 'table',
+        family: 'table', theme: TEST_THEME,
         kind: 'game-score',
         view: 'table',
         options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
@@ -1305,9 +1296,9 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
   ];
   const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', sort: { column: 'name', direction: 'ascending' } });
 
-  registerTableProjection({
+  registerFamilyProjection({
     kind: 'test-r5-reveal',
-    family: 'table',
+    family: 'table', theme: TEST_THEME,
     project(readView) {
       return {
         columns: cols,
@@ -1329,9 +1320,9 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
     },
   });
 
-  registerTableProjection({
+  registerFamilyProjection({
     kind: 'test-r5-art-1500',
-    family: 'table',
+    family: 'table', theme: TEST_THEME,
     project(readView) {
       return {
         columns: cols,
@@ -1362,9 +1353,9 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
   });
 
   let throwLocalPaint = false;
-  registerTableProjection({
+  registerFamilyProjection({
     kind: 'test-r5-local-fail',
-    family: 'table',
+    family: 'table', theme: TEST_THEME,
     project(readView) {
       if (throwLocalPaint) throw new Error('local projection crash');
       return {
@@ -1426,7 +1417,7 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
     page.mount(1, { route: 0, lane: 0, surfaces: [{ install() {}, clear() {} }] });
     lane.mount(1, [], 'table');
     lane.bind(1, { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: 10, c: 100 } }, {
-      family: 'table', kind: 'test-r5-reveal', options: {}, settings, sources: {}, width: 320, height: 200, scrollLeft: 0, scrollTop: 0,
+      family: 'table', theme: TEST_THEME, kind: 'test-r5-reveal', options: {}, settings, sources: {}, width: 320, height: 200, scrollLeft: 0, scrollTop: 0,
     });
     page.publish(10, { playing: false });
     await flushTicks();
@@ -1442,7 +1433,7 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
     lane.mount(2, [], 'table');
     const viewportHeight20Rows = 20 * ROW_HEIGHT[settings.density];
     lane.bind(2, { generation: 1, surfaces: [{ width: 320, height: viewportHeight20Rows, dpr: 1 }], offset: 0, pin: null, dated: { h: 120, c: 120 } }, {
-      family: 'table', kind: 'test-r5-art-1500', options: {}, settings, sources: {}, width: 320, height: viewportHeight20Rows, scrollLeft: 0, scrollTop: 0,
+      family: 'table', theme: TEST_THEME, kind: 'test-r5-art-1500', options: {}, settings, sources: {}, width: 320, height: viewportHeight20Rows, scrollLeft: 0, scrollTop: 0,
     });
     page.publish(120, { playing: false });
     await flushTicks();
@@ -1463,7 +1454,7 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
     lane.mount(3, [], 'table');
     throwLocalPaint = true;
     lane.bind(3, { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: 10, dated: { h: 10, c: 10 } }, {
-      family: 'table', kind: 'test-r5-local-fail', options: {}, settings, sources: {}, width: 320, height: 200, scrollLeft: 0, scrollTop: 0,
+      family: 'table', theme: TEST_THEME, kind: 'test-r5-local-fail', options: {}, settings, sources: {}, width: 320, height: 200, scrollLeft: 0, scrollTop: 0,
     });
     page.publish(10, { playing: false });
     await flushTicks();
@@ -1472,7 +1463,7 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
     throwLocalPaint = false;
     page.retryLocal(3);
     lane.bind(3, { generation: page.view(3).binding!, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: 10, dated: { h: 10, c: 10 } }, {
-      family: 'table', kind: 'test-r5-local-fail', options: {}, settings, sources: {}, width: 320, height: 200, scrollLeft: 0, scrollTop: 0,
+      family: 'table', theme: TEST_THEME, kind: 'test-r5-local-fail', options: {}, settings, sources: {}, width: 320, height: 200, scrollLeft: 0, scrollTop: 0,
     });
     await flushTicks();
     assert.equal(page.view(3).mode, 'picture', 'F7: local retry recovers without restarting pipeline');
@@ -1675,7 +1666,7 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
   let scheduledMs: number | null = null;
   let timerCb: (() => void) | null = null;
   try {
-    registerTableProjection(declareTableProjection<{ rows: { id: string; v: number }[] }, { id: string; v: number }, Record<string, never>>({
+    registerFamilyProjection(declareTableProjection<{ rows: { id: string; v: number }[] }, { id: string; v: number }, Record<string, never>>({
       kind: 'test-rank-marker-timer',
       rank: true,
       rankMarkers: true,
@@ -1689,8 +1680,7 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
     }));
     let clockNow = 1000;
     const laneView = familyTableLaneView(() => { wakes++; }, {
-      clock: () => clockNow,
-      cadenceTimers: {
+      timers: {
         set: (fn, ms) => { timerCb = fn; scheduledMs = ms; return 1 as unknown as ReturnType<typeof setTimeout>; },
         clear: () => { timerCb = null; },
       },
@@ -1770,9 +1760,9 @@ test('an incremental table paint after a seek back, a same-hour correction and a
     { key: 'flag', label: 'Flag', as: 'plain', offered: ['plain'], priority: 1, text: true },
     { key: 'v', label: 'Val', as: 'faint', barEligible: true, offered: ['plain', 'faint'], priority: 2, numeric: true },
   ];
-  registerTableProjection({
+  registerFamilyProjection({
     kind: 'test-fresh-equals-incremental',
-    family: 'table',
+    family: 'table', theme: TEST_THEME,
     project: readView => {
       const reply = readView.panel('main') as { rows: Row[] };
       return {
@@ -1805,7 +1795,7 @@ test('an incremental table paint after a seek back, a same-hour correction and a
   try {
     const settingsFor = (direction: 'ascending' | 'descending') => tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'v', direction } });
     const lane = () => {
-      const view = familyTableLaneView(() => {}, { clock: () => 5000 });
+      const view = familyTableLaneView(() => {});
       const state = new Map<string, unknown>();
       let seq = 1;
       const before = contexts.length;
@@ -1859,15 +1849,31 @@ test('an incremental table paint after a seek back, a same-hour correction and a
       ],
     }, descending);
     assert.deepEqual(grouped.map(item => item.kind), ['data'], 'a group revealed later adds no heading before its hour');
+
+    const laneBinding = (rows: Row[], settings: TableSettings, scrollTop = 0) => ({
+      family: 'table' as const, theme: TEST_THEME, kind: 'test-fresh-equals-incremental', options: {}, settings, sources: {}, staticPanels: { main: { rows } },
+      width: 360, height: 200, scrollLeft: 0, scrollTop, reducedMotion: true,
+    });
+    const tableSurface = { width: 360, height: 200, dpr: 1 };
+    const heldOne = laneBinding(atOne, descending);
+    assertQuietFrames(() => familyTableLaneView(() => {}), { label: 'table', binding: heldOne, hour: 1 }, 24, tableSurface);
+    assertFreshPaint(() => familyTableLaneView(() => {}), [
+      { label: 'at one', binding: heldOne, hour: 1, check: true },
+      { label: 'at two', binding: laneBinding(atTwo, descending), hour: 2, speed: 24 },
+      { label: 'seek back', binding: heldOne, hour: 1, check: true },
+      { label: 'correction', binding: laneBinding(corrected, descending), hour: 1, check: true },
+      { label: 'reorder', binding: laneBinding(corrected, ascending), hour: 1, check: true },
+      { label: 'scrolled', binding: laneBinding(corrected, ascending, 10), hour: 1, check: true },
+    ], tableSurface);
     type Side = { key: string; lead: string; total: number; rows: Row[] };
     const shareColumns: TableColumnSpec[] = [
       { key: 'name', label: 'Country', as: 'plain', offered: ['plain'], priority: 0, text: true },
       ...['a', 'b', 'c', 'd', 'e', 'f'].map((key, at): TableColumnSpec => ({ key, label: key.toUpperCase(), as: 'plain', offered: ['plain'], priority: at + 1, numeric: true, cellKind: 'share', barEligible: false, minWidth: 96 })),
     ];
     const shareCell = (v: number) => ({ value: v === 0 ? { kind: 'zero' as const, value: 0 } : knownValue(v), format: { decimals: 1, percent: true } as const, bar: { fraction: knownValue(v / 100) }, countryColor: '#cc3333' });
-    registerTableProjection({
+    registerFamilyProjection({
       kind: 'test-panes-fresh',
-      family: 'table',
+      family: 'table', theme: TEST_THEME,
       project: readView => {
         const sides = (readView.panel('main') as { sides: Side[] }).sides;
         const row = (key: string, name: string, v: number, group?: boolean) => ({
@@ -1889,7 +1895,7 @@ test('an incremental table paint after a seek back, a same-hour correction and a
       },
     });
     const paneLane = () => {
-      const view = familyTableLaneView(() => {}, { clock: () => 5000 });
+      const view = familyTableLaneView(() => {});
       const state = new Map<string, unknown>();
       let seq = 1;
       const before = contexts.length;
@@ -2000,9 +2006,9 @@ test('cell kinds for converted tables: an item column takes the spare width, two
   assert.equal(texts.filter(t => t === '—').length, 1, 'the group row shows its not-applicable dash; the blank child cell draws nothing');
 
   const names = new Map<string, string>([['A', 'A']]);
-  registerTableProjection({
+  registerFamilyProjection({
     kind: 'test-names-arrive',
-    family: 'table',
+    family: 'table', theme: TEST_THEME,
     project: readView => ({
       hour: readView.hour,
       columns: [{ key: 'name', label: 'Country', as: 'plain', offered: ['plain'], priority: 0, text: true }],
@@ -2018,7 +2024,7 @@ test('cell kinds for converted tables: an item column takes the spare width, two
     transferToImageBitmap() { return { close() {} }; }
   };
   try {
-    const view = familyTableLaneView(() => {}, { clock: () => 1 });
+    const view = familyTableLaneView(() => {});
     const state = new Map<string, unknown>();
     let seq = 1;
     const settings = tableSettingsOf(undefined, [{ key: 'name', label: 'Country', as: 'plain', offered: ['plain'] }], { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
@@ -2190,9 +2196,9 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
     readonly slots?: readonly TableModelSlot[];
     readonly unsorted?: boolean;
   };
-  registerTableProjection({
+  registerFamilyProjection({
     kind: 'test-log-fresh-equals-incremental',
-    family: 'table',
+    family: 'table', theme: TEST_THEME,
     project: readView => {
       const reply = readView.panel('main') as LogScene;
       return {
@@ -2304,7 +2310,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
   };
   try {
     const createLane = () => {
-      const view = familyTableLaneView(() => {}, { clock: () => 5000 });
+      const view = familyTableLaneView(() => {});
       const state = new Map<string, unknown>();
       let seq = 1;
       const idx = grids.length;

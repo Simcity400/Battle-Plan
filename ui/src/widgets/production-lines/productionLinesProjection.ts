@@ -12,7 +12,7 @@ import {
   type TableRow,
   type TooltipExtraRow,
 } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, zeroValue } from '../../families/value.ts';
 import type { ProductionLinesAtReply } from '../../generated/dashboard';
@@ -46,7 +46,7 @@ function readLiveWhole(live: ReturnType<BoundedReadView['live']>, handle: string
   return typeof num === 'number' && Number.isSafeInteger(num) ? BigInt(num) : null;
 }
 
-export const productionLinesProjection: TableProjection<ProductionLinesProjectionOptions> = registerTableProjection({
+export const productionLinesProjection: TableProjection<ProductionLinesProjectionOptions> = registerFamilyProjection({
   kind: 'production-lines',
   family: 'table',
   project(readView: BoundedReadView): TableModel {

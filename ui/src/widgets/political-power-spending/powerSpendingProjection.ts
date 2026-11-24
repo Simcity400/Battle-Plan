@@ -3,7 +3,7 @@ import type { OptionField } from '../../dashboard/options';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import type { TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY, tableFamilyOptions, type TableBase } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
@@ -79,7 +79,7 @@ function summary(reply: PowerSpendingBreakdownReply, currency: SpendCurrency): {
 }
 
 function spendingProjection(kind: 'political-power-spending' | 'command-power-spending'): TableProjection<PowerSpendingProjectionOptions> {
-  return registerTableProjection({ kind, family: 'table', project: projectSpending });
+  return registerFamilyProjection({ kind, family: 'table', project: projectSpending });
 }
 
 function projectSpending(readView: BoundedReadView, options: PowerSpendingProjectionOptions): TableModel {

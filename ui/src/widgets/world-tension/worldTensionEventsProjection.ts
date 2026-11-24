@@ -7,7 +7,7 @@ import {
   type TableColumnSpec,
   type TableProjection,
 } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
@@ -56,7 +56,7 @@ export function worldTensionEventsColumns(): readonly TableColumnSpec[] {
   ];
 }
 
-export const worldTensionEventsProjection: TableProjection<WorldTensionEventsOptions> = registerTableProjection(
+export const worldTensionEventsProjection: TableProjection<WorldTensionEventsOptions> = registerFamilyProjection(
   declareTableProjection<ParsedEvents, TensionStackEvent, WorldTensionEventsOptions>({
     kind: 'world-tension',
     validate: parseEvents,

@@ -1,7 +1,7 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, textValue, notApplicable, valueFromNullable, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
@@ -52,7 +52,7 @@ function summary(reply: NavalRepairsReply): string | null {
   return parts.length ? parts.join(' · ') : null;
 }
 
-export const dockyardsProjection: TableProjection<Record<string, never>> = registerTableProjection(
+export const dockyardsProjection: TableProjection<Record<string, never>> = registerFamilyProjection(
   declareTableProjection<NavalRepairsReply, DockRow, Record<string, never>>({
     kind: 'dockyards-and-repairs',
     validate: validateRepairs,
