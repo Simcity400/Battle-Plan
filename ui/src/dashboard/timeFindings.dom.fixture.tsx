@@ -179,7 +179,7 @@ const host = () => document.getElementById('finding');
 const read = () => {
   const element = host();
   const drill = element?.querySelector('.drill-host[data-open] > .drill-view, .drill-saved, .drill-popout:has(.drill-body)');
-  return { text: element?.textContent ?? '', drillOpen: !!drill, drill: drill?.textContent ?? '', day: drill?.querySelector('.drill-day')?.textContent ?? null,
+  return { text: element?.textContent ?? '', detail: element?.querySelector('[data-detail]')?.getAttribute('data-detail') ?? null, drillOpen: !!drill, drill: drill?.textContent ?? '', day: drill?.querySelector('.drill-day')?.textContent ?? null,
     asks: state.asks.splice(0), options: state.options.splice(0), pins: state.pins.splice(0),
     follows: [...follows.values()], followLog: followLog.splice(0), shown: state.shown.splice(0),
     buttons: [...element?.querySelectorAll('button') ?? []].map(button => button.getAttribute('aria-label') ?? button.textContent ?? ''), errors: errors.splice(0) };
