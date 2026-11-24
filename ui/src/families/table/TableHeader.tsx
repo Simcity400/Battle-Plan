@@ -1,7 +1,9 @@
 import { useRef, useState } from 'react';
 import {
   HEADER_CARET_LANE,
+  CELL_INSET,
   endAligned,
+  ROW_MARGIN_X,
   type TableColumnLayout,
   type TableDisplay,
   type TableSettings,
@@ -163,7 +165,12 @@ export function FamilyTableHeader({
           role="columnheader"
           aria-sort={canSort ? (active ? sort.direction : 'none') : undefined}
           className={`tf-th${end ? ' end' : ''}${active ? ' sorted' : ''}${isPinned ? ' pinned' : ''}${isLastPinned && showPinShadow ? ' pinned-shadow' : ''}${item.notRecordedReason ? ' is-unrecorded' : ''}${dropClass}`}
-          style={{ width: `var(${columnWidthVar(item.key)}, ${item.width}px)`, ...(isPinned && { transform: `translateX(${scrollLeft}px)` }) }}
+          style={{
+            width: `var(${columnWidthVar(item.key)}, ${item.width}px)`,
+            ...(index === 0 && { paddingLeft: CELL_INSET + ROW_MARGIN_X }),
+            ...(index === columns.length - 1 && { paddingRight: CELL_INSET + ROW_MARGIN_X }),
+            ...(isPinned && { transform: `translateX(${scrollLeft}px)` }),
+          }}
           draggable={canDrag}
           onDragStart={canDrag ? event => {
             dragCol.current = item.key;
@@ -231,7 +238,8 @@ export function FamilyTableHeader({
               const now = dragResize.current;
               dragResize.current = null;
               onResizing(item.key, now?.current ?? item.width, null);
-              if (now && now.current !== now.width) onResize(now.key, now.current);
+              const insets = (index === 0 ? ROW_MARGIN_X : 0) + (index === columns.length - 1 ? ROW_MARGIN_X : 0);
+              if (now && now.current !== now.width) onResize(now.key, Math.max(40, now.current - insets));
             }}
             onPointerCancel={() => {
               dragResize.current = null;

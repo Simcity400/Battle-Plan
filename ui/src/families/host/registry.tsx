@@ -24,6 +24,7 @@ function AdaptedFamilyHost({ spec, ...props }: FamilyHostProps) {
     <DeclaredFamilyWidget
       {...props}
       adapter={adapter}
+      view={spec.view}
       declaration={spec.declaration as DeclaredFamilyWidgetDeclaration<any, any, any>}
     />
   );

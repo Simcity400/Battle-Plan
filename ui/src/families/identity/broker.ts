@@ -15,7 +15,6 @@ import type {
   CountryGroupReply,
   CountryIdentitiesReply,
   CountryStyleReply,
-  EquipmentDesignsReply,
   PlaceNamesReply,
   StrategicRegionsReply,
   UnitLeadersReply,
@@ -29,7 +28,6 @@ import {
   type DrawnFlagEntry,
   type EntityIdentityKey,
   type EntityRunEntry,
-  type HourSpan,
   type HourInterval,
   type IdentityAsk,
   type IdentityKey,
@@ -45,7 +43,6 @@ export interface IdentityTransport {
   loadStyles(scope: IdentityScope, hour: number, tags: readonly string[], signal: AbortSignal, recording?: DashboardSource): Promise<CountryStyleReply>;
   loadFlags(scope: IdentityScope, size: CountryFlagSize, choices: readonly CountryFlagChoice[], signal: AbortSignal, recording?: DashboardSource): Promise<CountryFlagReply>;
   loadRegions(scope: IdentityScope, signal: AbortSignal, recording?: DashboardSource): Promise<StrategicRegionsReply>;
-  loadDesigns(scope: IdentityScope, owner: string, signal: AbortSignal, recording?: DashboardSource): Promise<EquipmentDesignsReply>;
   loadPlaceNames(scope: IdentityScope, hour: number, states: readonly number[], provinces: readonly number[], signal: AbortSignal, recording?: DashboardSource): Promise<PlaceNamesReply>;
   loadLeaders(scope: IdentityScope, owner: string, hour: number, signal: AbortSignal, recording?: DashboardSource): Promise<UnitLeadersReply>;
 }
@@ -93,13 +90,6 @@ export function clientIdentityTransport(client: DashboardClient): IdentityTransp
       undefined,
       recording,
     ),
-    loadDesigns: (scope, owner, signal, recording) => loadProduct<EquipmentDesignsReply>(
-      client,
-      productRequest({ sourceId: scope.sourceId, revision: scope.revision, product: 'equipment-designs', params: { branchId: scope.branchId, country: countryFromKey(owner) } }),
-      signal,
-      undefined,
-      recording,
-    ),
     loadPlaceNames: (scope, hour, states, provinces, signal, recording) => loadTransientProduct<PlaceNamesReply>(
       client,
       productRequest({ sourceId: scope.sourceId, revision: scope.revision, product: 'place-names', params: {
@@ -132,15 +122,12 @@ export const FLAG_MAX_CONCURRENT = 2;
 export const ENTITY_MAX_CONCURRENT = 2;
 
 const REGION_ABSENT = 'Not a strategic region of this recording';
-const DESIGN_ABSENT = 'Not one of the country’s saved designs at this hour';
-const DESIGNS_NOT_RECORDED = 'The country’s designs were not recorded at this hour';
 const LEADER_ABSENT = 'Not a leader of this country at this hour';
 const LEADER_NAME_MISSING = 'Leader name not recorded';
 const PLACE_NOT_ANSWERED = 'Place name not answered';
 
 type EntityRequest =
   | { readonly kind: 'regions'; readonly id: string }
-  | { readonly kind: 'designs'; readonly id: string; readonly owner: string }
   | { readonly kind: 'places'; readonly id: string; readonly hour: number }
   | { readonly kind: 'leaders'; readonly id: string; readonly owner: string; readonly hour: number };
 
@@ -155,12 +142,12 @@ interface EntityTask {
   readonly controller: AbortController;
 }
 
-function entityRequestOf(key: EntityIdentityKey, at: number): EntityRequest {
+function entityRequestOf(key: EntityIdentityKey, at: number): EntityRequest | null {
   switch (key.kind) {
     case 'region':
       return { kind: 'regions', id: 'regions' };
     case 'design':
-      return { kind: 'designs', id: `designs\u0000${key.owner}`, owner: key.owner };
+      return null;
     case 'state':
     case 'province':
       return { kind: 'places', id: `places\u0000${at}`, hour: at };
@@ -174,33 +161,6 @@ function numericId(id: number | string): number | null {
   return Number.isSafeInteger(value) ? value : null;
 }
 
-function designRuns(
-  lives: readonly HourSpan[],
-  known: readonly HourSpan[],
-  bounds: HourInterval,
-  named: Omit<EntityRunEntry, 'firstHour' | 'lastHour'>,
-): EntityRunEntry[] {
-  const runs: EntityRunEntry[] = [];
-  const sortedKnown = [...known].sort((a, b) => a.firstHour - b.firstHour);
-  const sortedLives = [...lives].sort((a, b) => a.firstHour - b.firstHour);
-  let cursor = bounds[0];
-  for (const span of sortedKnown) {
-    if (span.firstHour > cursor) runs.push({ firstHour: cursor, lastHour: span.firstHour - 1, name: null, nameReason: DESIGNS_NOT_RECORDED });
-    let at = Math.max(cursor, span.firstHour);
-    for (const life of sortedLives) {
-      const first = Math.max(life.firstHour, at);
-      const last = Math.min(life.lastHour, span.lastHour);
-      if (last < first) continue;
-      if (first > at) runs.push({ firstHour: at, lastHour: first - 1, absent: true, reason: DESIGN_ABSENT, name: null });
-      runs.push({ firstHour: first, lastHour: last, ...named });
-      at = last + 1;
-    }
-    if (at <= span.lastHour) runs.push({ firstHour: at, lastHour: span.lastHour, absent: true, reason: DESIGN_ABSENT, name: null });
-    cursor = Math.max(cursor, span.lastHour + 1);
-  }
-  if (cursor <= bounds[1]) runs.push({ firstHour: cursor, lastHour: bounds[1], name: null, nameReason: DESIGNS_NOT_RECORDED });
-  return runs;
-}
 
 interface DemandEntry {
   readonly asks: readonly IdentityAsk[];
@@ -524,6 +484,7 @@ export class IdentityBroker {
           wantFacts = true;
         } else if (state.index.resolve(ask.key, at).kind === 'pending') {
           const request = entityRequestOf(ask.key, at);
+          if (!request) continue;
           let wanted = wantedEntities.get(request.id);
           if (!wanted) wantedEntities.set(request.id, wanted = { request, keys: new Map() });
           wanted.keys.set(identityKeyString(ask.key), ask.key);
@@ -563,7 +524,7 @@ export class IdentityBroker {
 
   private pumpEntities(state: ScopeState, wanted: Map<string, WantedEntities>): void {
     for (const [id, task] of [...state.entityRunning]) {
-      if (wanted.has(id) || task.request.kind === 'regions' || task.request.kind === 'designs') continue;
+      if (wanted.has(id) || task.request.kind === 'regions') continue;
       task.controller.abort();
       state.entityRunning.delete(id);
     }
@@ -604,11 +565,6 @@ export class IdentityBroker {
             state.index.setEntityRuns(key, [{ firstHour: bounds[0], lastHour: bounds[1], absent: true, reason: REGION_ABSENT, name: null }]);
           }
           break;
-        case 'designs':
-          if (state.index.resolve(key, bounds[0]).kind === 'pending') {
-            state.index.setEntityRuns(key, [{ firstHour: bounds[0], lastHour: bounds[1], absent: true, reason: DESIGN_ABSENT, name: null }]);
-          }
-          break;
         case 'places':
           if (state.index.resolve(key, request.hour).kind === 'pending') {
             state.index.addEntityRun(key, { firstHour: request.hour, lastHour: request.hour, name: null, nameReason: PLACE_NOT_ANSWERED });
@@ -637,22 +593,6 @@ export class IdentityBroker {
               ...(region.nameMissing ? { nameReason: region.nameMissing } : {}),
               warnings: reply.warnings,
             }]);
-          }
-        });
-      case 'designs':
-        return this.transport.loadDesigns(state.scope, request.owner, signal, state.recording).then(reply => {
-          const bounds = index.bounds();
-          const icons = new Map(reply.icons.map(icon => [icon.key, icon.image]));
-          for (const design of reply.designs) {
-            const named = design.name;
-            index.setEntityRuns({ kind: 'design', owner: request.owner, variant: design.id }, designRuns(design.lives, reply.known, bounds, {
-              name: named.known ? named.name : null,
-              ...(named.nameUnknown ? { nameReason: named.nameUnknown } : {}),
-              subtitle: named.typeName,
-              artKey: named.icon === null ? null : icons.get(named.icon) ?? null,
-              ...(named.iconUnknown ? { artReason: named.iconUnknown } : {}),
-              warnings: reply.warnings,
-            }));
           }
         });
       case 'places': {
@@ -703,7 +643,7 @@ export class IdentityBroker {
         if (state.entityRunning.get(request.id) !== task || controller.signal.aborted) return;
         state.entityRunning.delete(request.id);
         state.entityRetryAt.delete(request.id);
-        if (request.kind === 'regions' || request.kind === 'designs') state.entityLoaded.add(request.id);
+        if (request.kind === 'regions') state.entityLoaded.add(request.id);
         this.settleUnanswered(state, request, keys.values());
         this.notify(state);
         this.reconcile(state);

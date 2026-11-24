@@ -49,7 +49,7 @@ test('manifest accounts for every widget kind once across family views and legac
     const pair = `${entry.kind}:${normalizeView(entry.view)}`;
     assert.equal(familyPairs.has(pair), false, `${pair} must not appear in both lists`);
   }
-  assert.ok(FAMILY_VIEWS.length >= 10);
+  assert.equal(FAMILY_VIEWS.length, familyPairs.size, 'each (kind, view) is declared once');
   for (const kind of ['factories', 'air-superiority-region', 'minefields']) {
     assert.ok(familyKinds.has(kind), `${kind} must appear in FAMILY_VIEWS`);
   }
@@ -215,9 +215,9 @@ test('worker projection registry loads table and bars projections lazily on dema
 
   assert.deepEqual(
     FAMILY_MANIFESTS.map(entry => entry.family),
-    ['bars', 'heat-lanes', 'heat-matrix', 'table', 'time-chart'],
+    ['bars', 'heat-lanes', 'heat-matrix', 'table', 'time-chart', 'timeline'],
   );
-  for (const family of ['bars', 'heat-lanes', 'heat-matrix', 'table', 'time-chart']) {
+  for (const family of ['bars', 'heat-lanes', 'heat-matrix', 'table', 'time-chart', 'timeline']) {
     assert.ok(familyLaneView(family, () => {}), `familyLaneView resolves ${family}`);
   }
 });
@@ -295,7 +295,7 @@ test('scopedOptionFields and manifestViewSwitch support a second family view on 
       view: 'bars',
       label: 'Bars',
       family: 'bars',
-      options: [regionPickerControl()],
+      options: [regionPickerControl(), rowHeightControl()],
       loadSpec: async () => ({ family: 'bars', kind: 'synthetic-dual', view: 'bars', projection: { family: 'bars', kind: 'synthetic-dual', project: () => ({}) } }),
     },
   ];
@@ -308,7 +308,16 @@ test('scopedOptionFields and manifestViewSwitch support a second family view on 
   assert.equal(resolveActiveView(undefined, undefined, entries, legacy), 'table');
   assert.equal(resolveActiveView({ view: 'bars' }, undefined, entries, legacy), 'bars');
   assert.deepEqual(scopedOptionFields(undefined, 'table', entries, legacy).map(field => field.key), ['view', 'rowHeight', 'barsBehind']);
-  assert.deepEqual(scopedOptionFields(undefined, 'bars', entries, legacy).map(field => field.key), ['view', 'regions']);
+  assert.deepEqual(scopedOptionFields(undefined, 'bars', entries, legacy).map(field => field.key), ['view', 'regions', 'rowHeight']);
+  const tableFields = scopedOptionFields(undefined, 'table', entries, legacy);
+  const barsFields = scopedOptionFields(undefined, 'bars', entries, legacy);
+  const rowHeightField = tableFields.find(field => field.key === 'rowHeight')!;
+  const otherValue = rowHeightField.kind === 'choice' ? rowHeightField.choices.find(choice => choice.value !== rowHeightField.default)!.value : null;
+  assert.ok(otherValue);
+  const stored = setOption(tableFields, { view: 'table' }, 'rowHeight', otherValue)!;
+  assert.equal(resolveOptions(tableFields, stored).rowHeight, otherValue, 'the table view reads the row height it stored');
+  assert.equal(resolveOptions(barsFields, { ...stored, view: 'bars' }).rowHeight, rowHeightField.default, 'the bars view keeps its own row height');
+  assert.equal(resolveOptions(barsFields, { ...stored, view: 'bars' }).view, 'bars', 'the view switch itself is shared by the kind');
   assert.deepEqual(manifestViewSwitch(undefined, entries, legacy), {
     option: 'view',
     choices: [{ value: 'table', label: 'Table' }, { value: 'bars', label: 'Bars' }],

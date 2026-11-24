@@ -7,7 +7,6 @@ import type {
   CountryGroupReply,
   CountryIdentitiesReply,
   CountryStyleReply,
-  EquipmentDesignsReply,
   PlaceNamesReply,
   StrategicRegionsReply,
   UnitLeadersReply,
@@ -121,9 +120,8 @@ function sampleGroups(): CountryGroupReply {
   };
 }
 
-const UNUSED_ENTITY_READS: Pick<IdentityTransport, 'loadRegions' | 'loadDesigns' | 'loadPlaceNames' | 'loadLeaders'> = {
+const UNUSED_ENTITY_READS: Pick<IdentityTransport, 'loadRegions' | 'loadPlaceNames' | 'loadLeaders'> = {
   loadRegions: () => deferred<StrategicRegionsReply>().promise,
-  loadDesigns: () => deferred<EquipmentDesignsReply>().promise,
   loadPlaceNames: () => deferred<PlaceNamesReply>().promise,
   loadLeaders: () => deferred<UnitLeadersReply>().promise,
 };
@@ -586,7 +584,7 @@ test('an identity key and an art handle keep their whole identity from demand to
   assert.equal(new Set([plain, asText, asRecorded].map(artHandleKey)).size, 3);
 });
 
-test('leader, design, state, province and region asks each start their product read and answer with its validity', async () => {
+test('leader, state, province and region asks each start their product read and answer with its validity', async () => {
   const calls: string[] = [];
   const transport: IdentityTransport = {
     loadFacts: () => deferred<CountryFactsReply>().promise,
@@ -597,15 +595,6 @@ test('leader, design, state, province and region asks each start their product r
     loadRegions: async () => {
       calls.push('regions');
       return { regions: [{ id: 3, name: 'Coral Reach', nameMissing: null, land: false, sea: true }], warnings: [] };
-    },
-    loadDesigns: async (_scope, owner) => {
-      calls.push(`designs ${owner}`);
-      return {
-        branchId: '1', tag: 'ALP', known: [{ firstHour: 0, lastHour: 400 }], icons: [], warnings: [],
-        designs: [{ id: '42', lives: [{ firstHour: 100, lastHour: 300 }], obsolete: [], name: {
-          id: '42', known: true, token: 'tank', name: 'Iron Mule', typeName: 'Medium tank', nameUnknown: null, icon: null, iconUnknown: null,
-        } }],
-      };
     },
     loadPlaceNames: async (_scope, hour, states, provinces) => {
       calls.push(`places ${hour} ${states.join(',')} ${provinces.join(',')}`);
@@ -627,28 +616,25 @@ test('leader, design, state, province and region asks each start their product r
   const provider = createBrokerIdentityProvider(broker, SCOPE, {}, { branchBounds: [0, 500], needFlags: false });
   const view = createBoundedReadView({ hour: 200, identity: provider });
   const ask = () => [
-    view.who('region', '3', 150), view.who('region', '9', 150), view.who('design', 'ALP:42', 150), view.who('design', 'ALP:42', 50),
+    view.who('region', '3', 150), view.who('region', '9', 150),
     view.who('state', '64', 150), view.who('province', '7', 150), view.who('leader', 'ALP:L1', 150), view.who('leader', 'ALP:L2', 150),
   ];
   assert.ok(ask().every(result => result.name.status === 'pending'));
   for (let i = 0; i < 20; i++) await Promise.resolve();
   ask();
   for (let i = 0; i < 20; i++) await Promise.resolve();
-  assert.deepEqual([...calls].sort(), ['designs ALP', 'leaders ALP 150', 'places 150 64 7', 'regions']);
+  assert.deepEqual([...calls].sort(), ['leaders ALP 150', 'places 150 64 7', 'regions']);
 
-  const [region, unknownRegion, design, designBefore, state, province, leader, otherLeader] = ask();
+  const [region, unknownRegion, state, province, leader, otherLeader] = ask();
   assert.deepEqual(region!.name, { status: 'ready', value: 'Coral Reach' });
   assert.deepEqual(region!.validInterval, [0, 500]);
   assert.equal(unknownRegion!.name.status, 'absent');
-  assert.deepEqual(design!.name, { status: 'ready', value: 'Iron Mule' });
-  assert.deepEqual(design!.validInterval, [100, 300]);
-  assert.equal(designBefore!.holder.status, 'absent');
   assert.deepEqual(state!.name, { status: 'ready', value: 'State 64' });
   assert.deepEqual(state!.validInterval, [150, 150]);
   assert.deepEqual(province!.name, { status: 'absent', reason: 'Province unnamed in this map' });
   assert.deepEqual(leader!.name, { status: 'ready', value: 'Ada Vance' });
   assert.equal(otherLeader!.holder.status, 'absent');
-  assert.equal(calls.length, 4, 'answers inside their validity ask nothing again');
+  assert.equal(calls.length, 3, 'answers inside their validity ask nothing again');
   broker.dispose();
 });
 

@@ -145,8 +145,8 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   const { item, column, colIndex, x, y, rowHeight, paintModel, formatted, fraction, rowHovered, rowFocused, stockpileMaxAbs } = args;
   const cell = item.row.cells[column.key];
   const tokens = resolveKitTokens(theme);
-  const leftBase = x + CELL_INSET;
-  const right = x + column.width - CELL_INSET;
+  const leftBase = x + CELL_INSET + (column.leadInset ?? 0);
+  const right = x + column.width - CELL_INSET - (column.trailInset ?? 0);
   const middle = y + rowHeight / 2;
   let left = leftBase;
 
