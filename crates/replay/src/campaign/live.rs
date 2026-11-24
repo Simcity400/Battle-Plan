@@ -115,6 +115,10 @@ pub trait Host {
         None
     }
 
+    fn facts_packing(&mut self) -> bool {
+        false
+    }
+
     fn hour(&mut self, hour: &Applied<'_>) {
         let _ = hour;
     }
@@ -145,6 +149,7 @@ pub enum Taken {
     Moved,
     Settled,
     Waits(Asked),
+    AwaitsFacts,
     Finished,
 }
 
@@ -153,6 +158,7 @@ pub enum Progress {
     Waiting,
     Paused,
     Undecided(Asked),
+    AwaitsFacts,
     Finished,
 }
 
@@ -744,6 +750,7 @@ impl LiveWriter {
             };
             match taken {
                 Taken::Waits(asked) => return Ok(Progress::Undecided(asked)),
+                Taken::AwaitsFacts => return Ok(Progress::AwaitsFacts),
                 Taken::Moved => source.advance(),
                 Taken::Settled => {
                     source.advance();
@@ -973,6 +980,9 @@ impl LiveWriter {
 
     fn hour(&mut self, witness: Option<Witness>, manifest: &[u8], mut sections: Sections<'_>, host: &mut dyn Host) -> io::Result<Taken> {
         let run = self.run.ok_or_else(|| invalid("An hour needs a run under way"))?;
+        if !run.skipped && !self.defined && !self.known.facts && !self.writers.wanted().is_empty() && host.facts_packing() {
+            return Ok(Taken::AwaitsFacts);
+        }
         if let Some(witness) = witness {
             let known = self.branches.entry(run.branch).or_default();
             known.qpc.get_or_insert(witness.qpc);
