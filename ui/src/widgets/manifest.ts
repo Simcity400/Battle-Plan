@@ -20,6 +20,7 @@ export { DEFAULT_VIEW, FAMILY_VIEWS, LEGACY_WIDGETS };
 export interface FamilyViewUiLoader {
   readonly load: () => Promise<{ default: WidgetRenderer }>;
   readonly slots?: readonly ('render' | 'countryChip' | 'subjectMenu')[];
+  readonly views?: readonly string[];
 }
 
 export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
@@ -50,7 +51,7 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'production-lines': { load: () => import('./production-lines') },
   'research': { load: () => import('./research') },
   'scoreboard': { load: () => import('./scoreboard') },
-  'special-projects': { load: () => import('./special-projects/current.ts') },
+  'special-projects': { load: () => import('./special-projects'), views: ['live'] },
   'stability': { load: () => import('./stability') },
   'war-contribution': { load: () => import('./war-contribution'), slots: ['render', 'countryChip', 'subjectMenu'] },
   'convoy-health': { load: () => import('./convoy-health'), slots: ['render', 'countryChip'] },

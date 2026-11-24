@@ -46,7 +46,7 @@ const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, Breakdow
   boundary: () => Infinity,
   redraw: () => Infinity,
   status: () => 'scene',
-  view: binding => [binding.expanded],
+  view: ['expanded'],
   layout(model, binding, surface, theme, measure) {
     const level = breakdownLevel(model);
     const layout = layoutBreakdown({
