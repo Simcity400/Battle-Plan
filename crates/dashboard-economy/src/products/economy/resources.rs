@@ -1,11 +1,10 @@
 use dashboard_base::products::{Country, validate_country};
-use dashboard_base::products::{LoadContext, Product};
+use dashboard_base::products::LoadContext;
 use dashboard_base::{Source, products::at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt}};
 use dashboard_base::products::{
     resources::{RESOURCE_DECIMALS, ResourceInfo, ResourceNaming},
 };
 use dashboard_follow::live::{Cells, Source as Cell};
-use dashboard_query::series::{Ask, MissingSpan};
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::{DecodedFrame, TableView};
 use serde::{Deserialize, Serialize};
@@ -113,7 +112,7 @@ pub struct ResourceBalanceReply {
     pub warnings: Vec<String>,
 }
 
-dashboard_base::reply_warnings!(ResourceBalanceReply, ResourceSizesReply);
+dashboard_base::reply_warnings!(ResourceBalanceReply);
 
 fn range(id: u32) -> Keys {
     let owner = u128::from(id) << 32;
@@ -380,100 +379,5 @@ impl AtHour for ResourceBalance {
         let reply = reply(frame, params, &at.holders.name(&params.country, at.hour), owner.id, &at.context.naming, at.live, at.cancelled)?;
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
-    }
-}
-
-pub struct ResourceSizes;
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ResourceSizesParams {
-    pub branch_id: String,
-    pub country: Country,
-    #[doc = " The span; the whole timeline when absent."]
-    #[serde(default)]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub from: Option<i32>,
-    #[serde(default)]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub to: Option<i32>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct ResourceSize {
-    #[doc = " The resource's native index."]
-    pub id: u32,
-    #[doc = " Its longest bar, fixed5; null where no hour of it is recorded."]
-    pub longest_raw: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct ResourceSizesReply {
-    pub tag: String,
-    pub sizes: Vec<ResourceSize>,
-    #[doc = " The span's hours no holder of the tag, or no row, is known, with why."]
-    pub missing: Vec<MissingSpan>,
-    pub warnings: Vec<String>,
-}
-
-impl Product for ResourceSizes {
-    const KEY: &'static str = "resource-sizes";
-    const CONTENT_DEPENDENT: bool = false;
-    type Params = ResourceSizesParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, from: Start, to: End];
-    type Reply = ResourceSizesReply;
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_country(&params.country)
-    }
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![ResourceSizesParams::decl(), ResourceSizesReply::decl(), ResourceSize::decl(), MissingSpan::decl()]
-    }
-
-    fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
-        let series = dashboard_declare::series("resource-balance").ok_or_else(|| dashboard_core::invalid("Resource balance is not declared"))?;
-        let measure = series.measure("barLength").ok_or_else(|| dashboard_core::invalid("Resource balance has no bar length"))?;
-        let parts = series.parts.ok_or_else(|| dashboard_core::invalid("Resource balance has no parts"))?;
-        let from = params.from.unwrap_or(query.timeline.first).max(query.timeline.first);
-        let to = params.to.unwrap_or(query.timeline.last).min(query.timeline.last);
-        if from > to {
-            return Err(dashboard_core::invalid("Invalid span"));
-        }
-        let line = dashboard_query::series::Line::new(&query, series, measure)?;
-        let Some(last) = query.timeline.stretches.last() else {
-            return Ok(ResourceSizesReply { tag: query.holders.name(&params.country, to), sizes: Vec::new(), missing: Vec::new(), warnings: Vec::new() });
-        };
-        let read = dashboard_query::cost::storage(|| {
-            dashboard_query::read::at(query.replay.recording(), last.run, &[dashboard_query::read::Read { table: TableId::ResourceDefinitions, columns: None, keys: dashboard_query::read::Keys::All }], last.last)
-        })?;
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let asks: Vec<(Ask, Vec<(i32, i32)>)> = read[0].rows.iter().map(|&(key, _)| (Ask { country: params.country.clone(), part: parts.key(0, key) }, vec![(from, to)])).collect();
-        let scale = 10f64.powi(i32::from(measure.decimals));
-        let drawn = line.summaries_within(&asks, from, to, 1)?;
-        let missing = asks.first().map(|(ask, _)| line.unheld(&ask.country, from, to, &line.held(ask, from, to))).unwrap_or_default();
-        let sizes = drawn
-            .into_iter()
-            .zip(&asks)
-            .map(|((summary, _), (ask, _))| ResourceSize {
-                id: parts.id(ask.part).and_then(|id| u32::try_from(id).ok()).unwrap_or_default(),
-                longest_raw: summary
-                    .buckets
-                    .iter()
-                    .flatten()
-                    .map(|bucket| bucket.max_value)
-                    .reduce(f64::max)
-                    .map(|most| format!("{:.0}", most * scale)),
-            })
-            .collect();
-        Ok(ResourceSizesReply { tag: query.holders.name(&params.country, to), sizes, missing, warnings: Vec::new() })
     }
 }

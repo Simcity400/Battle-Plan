@@ -35,6 +35,10 @@ export function tagAt(tags: readonly HolderTag[], hour: number): string | null {
 }
 
 export const valueAt = (runs: readonly PoliticsRun[], hour: number): string | null => runAt(runs, hour)?.value ?? null;
+export function integerAt(runs: readonly PoliticsRun[], hour: number): number | null {
+  const value = valueAt(runs, hour);
+  return value === null ? null : Number(value);
+}
 
 export function validatePoliticsHistory(value: unknown, mode: PoliticsHistoryMode, body: (reply: Record<string, unknown>) => boolean): PoliticsHistoryReply {
   if (!object(value) || typeof value.branchId !== 'string' || value.mode !== mode

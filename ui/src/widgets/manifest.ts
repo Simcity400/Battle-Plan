@@ -22,7 +22,6 @@ export type OptionChoicesHook = NonNullable<WidgetRenderer['useOptionChoices']>;
 export const OPTION_CHOICES: Readonly<Record<string, () => Promise<OptionChoicesHook>>> = {
   'air-kills-losses': () => import('../dashboard/useMilitaryAirLedger').then(module => module.useAirLossChoices),
   'equipment-stockpile': () => import('./equipment-stockpile/useEquipmentStockpile').then(module => module.useStockpileChoices),
-  'resource-balance': () => import('./resource-balance/resourceChoices.ts').then(module => module.useResourceChoices),
 };
 
 export interface FamilyViewUiLoader {
@@ -61,6 +60,7 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'occupation-reserve-manpower': { load: () => import('./occupation-reserve-manpower/family.tsx') },
   'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },
   'production-lines': { load: () => import('./production-lines') },
+  'raid-log': { load: () => import('./raid-log') },
   'research': { load: () => import('./research') },
   'scoreboard': { load: () => import('./scoreboard') },
   'special-projects': { load: () => import('./special-projects'), views: ['live'] },

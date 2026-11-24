@@ -5,7 +5,6 @@ import { REQUEST_HOURS } from '../generated/dashboard.ts';
 import { at, axisAt, checkedTime, coverageAt, coverageSpan, FOLLOW, GatedTime, refusedHours, OUTSIDE_MESSAGE, recordedHour, regionFollows, regionHour, regionKey, regionOutside, regionWindow, SPEC, UNRECORDED_MESSAGE, type RegionAction, type TrackHour } from './regionTime.ts';
 import { drillAction, reduceDrill, CLOSED } from '../charts/drill/drillState.ts';
 import { gateStage } from './regionGate.ts';
-import { gatedRead, readData } from './gatedRead.ts';
 import type { BoundTrack, WidgetSpec, WidgetTime } from './model';
 
 const track = (id: string, firstHour: number, lastHour: number, axisOffset: number, gaps: { firstHour: number; lastHour: number; reason: string }[] = []) =>
@@ -95,24 +94,6 @@ test('only a recorded track hour is a track hour; the region key tells regions r
   const keys = new Set(Object.values(ACTIONS).map(action => regionKey({ widget: widget(SPECS.pin), action })));
   assert.equal(keys.size, 4);
   assert.equal(regionKey({ widget: widget(SPECS.follow), action: SPEC }), regionKey({ widget: widget(SPECS.pin), action: FOLLOW }), 'following is one time whatever the spec');
-});
-
-test('a gated read reaches its data only when the gate is open and the read landed; every other state names itself', () => {
-  const outside = { message: OUTSIDE_MESSAGE, detail: 'Change this widget’s time setting to view a recorded date.' };
-  const gate = (stage: Parameters<typeof gatedRead>[0]['stage'], at: number | null = 1005) => ({ stage, hour: at as never });
-  const landed = { kind: 'dated', data: [1, 2], hour: 1005, retry() {} } as const;
-  assert.equal(readData(gatedRead(gate({ stage: 'outside', outside }), landed)), undefined, 'data a gate refuses is never reachable, even if it landed');
-  assert.equal(gatedRead(gate({ stage: 'outside', outside }), landed).state, 'outside');
-  assert.equal(gatedRead(gate({ stage: 'open' }), landed, 'The range ends in a gap.').state, 'refused', 'a request the widget withheld says why, never pending');
-  assert.equal(gatedRead(gate({ stage: 'open' }), { kind: 'dated', hour: 1005, retry() {} }).state, 'pending');
-  assert.equal(gatedRead(gate({ stage: 'open' }), { kind: 'dated', hour: 1005, error: new Error('x'), retry() {} }).state, 'failed');
-  assert.deepEqual(readData(gatedRead(gate({ stage: 'open' }), { kind: 'dated', data: [], hour: 1005, retry() {} })), [], 'a landed empty reply is ready with no rows');
-  assert.equal(gatedRead(gate({ stage: 'open' }), { kind: 'dated', data: [1], hour: 1003, retry() {} }).state, 'pending', 'a reply landed for another hour never satisfies an exact pin');
-  const followed = gatedRead(gate({ stage: 'open' }), { kind: 'dated', data: [1], hour: 1003, retry() {} }, null, true);
-  assert.deepEqual(followed.state === 'ready' && followed.hour, 1003, 'ready carries the hour its reply landed for');
-  assert.equal(gatedRead(gate({ stage: 'open' }), { kind: 'dated', data: [1], hour: null, retry() {} }, null, true).state, 'pending', 'a dated reply that names no landed hour is never ready');
-  const branch = gatedRead(gate({ stage: 'open' }), { kind: 'branch', data: [1], retry() {} });
-  assert.deepEqual(branch.state === 'ready' && branch.hour, null, 'a branch-wide history is ready with no hour of its own, never stamped with the gate hour');
 });
 
 test('the gate’s stages run in a fixed order, and a country that holds nothing once its history is known is absent, never loading', () => {

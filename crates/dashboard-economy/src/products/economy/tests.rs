@@ -114,8 +114,7 @@ mod fuel {
 
 mod resources {
     use super::*;
-    use dashboard_base::products::Product;
-    use crate::products::economy::resources::{ResourceBalance, ResourceSizes};
+    use crate::products::economy::resources::ResourceBalance;
     use replay_data::rows::{CountryResourceRow, CountryRow, LexicalTokenRow, ResourceDefinitionRow, ResourceExchangeRow, tables};
 
     const DEALS_UNREAD: i32 = 118;
@@ -228,15 +227,6 @@ mod resources {
         assert_eq!(deals_through(&index, GER, 122), (vec![6, 8], 140));
         assert_eq!(deals_through(&index, GER, 141), (vec![8], 200));
         assert_eq!(deals_through(&index, GER, 201), (vec![], i32::MAX), "with no deal begun or to begin, nothing expires");
-    }
-
-    #[test]
-    fn a_resources_campaign_size_is_its_longest_bar_over_the_span() {
-        let source = recording();
-        let params = serde_json::from_value(json!({ "branchId": "1", "country": "GER" })).unwrap();
-        let reply = ResourceSizes::load(&source, &params, &load(), &AtomicBool::new(false)).unwrap();
-        let sizes: Vec<(u32, Option<&str>)> = reply.sizes.iter().map(|size| (size.id, size.longest_raw.as_deref())).collect();
-        assert_eq!(sizes, [(1, Some("1300000")), (2, Some("700000")), (3, Some("3")), (4, Some("0")), (5, None)]);
     }
 }
 
@@ -423,6 +413,65 @@ mod market {
         assert_eq!(side("received")["agreements"], json!([]), "GER receives nothing");
         let ended = asked::<MarketLendLease>(&source, params, ENDS).unwrap();
         assert_eq!(ended["agreements"], json!([]));
+    }
+
+    #[test]
+    fn each_terms_tab_counts_only_its_own_kind_and_a_group_is_its_members_at_the_hour() {
+        use crate::products::economy::market::MarketContext;
+        use dashboard_base::{products::at_hour::At, span::HourSpan};
+        use dashboard_follow::live::Cells;
+        use dashboard_query::series::ranked::{GroupKind, GroupMembership, GroupSelection};
+        use dashboard_world::products::{group_members::GroupsAt, groups::{CountryGroupReply, FactionGroup, MembershipRun, UnobservedHours}};
+        let source = recording();
+        let tab = |only: &str| asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": ["GER"], "only": only }), 110).unwrap();
+        let requests = tab("requests");
+        assert_eq!((&requests["contracts"], requests["unattributed"].as_u64()), (&json!([]), Some(1)), "FRA's request to a buyer with no country may be GER's");
+        let contracts = tab("contracts");
+        assert_eq!((contracts["contracts"].as_array().unwrap().len(), contracts["unattributed"].as_u64()), (1, Some(0)), "a request never makes the contracts tab unknown");
+
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        let run = |tag: &str, first_hour, last_hour| MembershipRun { tag: tag.into(), first_hour, last_hour };
+        let groups = GroupsAt::new(
+            Arc::new(CountryGroupReply {
+                branch_id: "1".into(),
+                humans: Vec::new(),
+                factions: vec![FactionGroup {
+                    id: "42".into(),
+                    name: None,
+                    name_reason: None,
+                    names: Vec::new(),
+                    recorded_name: String::new(),
+                    first_hour: FIRST,
+                    last_hour: LAST,
+                    members: vec![run("GER", FIRST, LAST), run("FRA", 112, LAST)],
+                    leaders: Vec::new(),
+                    incomplete: vec![HourSpan { first_hour: 120, last_hour: 121 }],
+                }],
+                wars: Vec::new(),
+                war_starts: Vec::new(),
+                capitulations: Vec::new(),
+                identity_changes: Vec::new(),
+                country_identities: Vec::new(),
+                unobserved: UnobservedHours::default(),
+                warnings: Vec::new(),
+            }),
+            FIRST,
+        );
+        let context = MarketContext { names: Err("no content".into()), groups };
+        let faction = GroupSelection { kind: GroupKind::Faction, id: Some("42".into()), tag: None, membership: GroupMembership::Hour };
+        let params: crate::products::economy::market::MarketLendLeaseParams = serde_json::from_value(json!({ "branchId": "1", "countries": [], "only": "offers" })).unwrap();
+        let params = crate::products::economy::market::MarketLendLeaseParams { group: Some(faction), ..params };
+        assert!(MarketLendLease::validate(&crate::products::economy::market::MarketLendLeaseParams { countries: vec![dashboard_base::products::Country::from("GER")], ..params.clone() }).is_err());
+        let (live, cancelled) = (Cells::default(), AtomicBool::new(false));
+        let at = |hour: i32| At { owner: None, holders: &query.holders, hour, context: &context, cancelled: &cancelled, live: &live };
+        let sellers = |hour: i32| {
+            let reply = MarketLendLease::reply(&frame(hour), &params, &at(hour)).unwrap();
+            (reply.offers.map(|offers| offers.into_iter().filter_map(|offer| offer.tag).collect::<Vec<_>>()), reply.refused)
+        };
+        assert_eq!(sellers(110), (Some(vec!["GER".to_owned()]), None), "FRA joins at 112: its listing is not the group's at 110");
+        assert_eq!(MarketLendLease::valid_through(&frame(110), &params, &at(110)), 111);
+        assert_eq!(sellers(112), (Some(vec!["FRA".to_owned(), "GER".to_owned()]), None));
+        assert_eq!(sellers(120), (None, Some("Membership of this group is not recorded at this hour".to_owned())), "unknown membership is never a guess");
     }
 
     #[test]

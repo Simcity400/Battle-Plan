@@ -464,3 +464,51 @@ fn balance_scripted_names_respect_scopes_causality_staged_reads_and_named_refusa
     assert_eq!(shared.range.as_ref().unwrap().name, None, "shared multi-member record without chosen country refuses scripted active range");
     assert!(shared.range.as_ref().unwrap().reason.as_deref().unwrap().contains("country event scope"));
 }
+
+#[test]
+fn next_elections_for_a_group_reads_only_its_members_at_the_hour_and_never_guesses_unknown_membership() {
+    use super::elections::{NextElections, NextElectionsParams};
+    use dashboard_base::{products::at_hour::{At, AtHour}, span::HourSpan};
+    use dashboard_query::series::ranked::{GroupKind, GroupMembership, GroupSelection};
+    use dashboard_world::products::{group_members::GroupsAt, groups::{CountryGroupReply, FactionGroup, MembershipRun, UnobservedHours}};
+    let source = recording();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let run = |tag: &str, first_hour, last_hour| MembershipRun { tag: tag.into(), first_hour, last_hour };
+    let groups = GroupsAt::new(
+        Arc::new(CountryGroupReply {
+            branch_id: "1".into(),
+            humans: Vec::new(),
+            factions: vec![FactionGroup {
+                id: "42".into(),
+                name: None,
+                name_reason: None,
+                names: Vec::new(),
+                recorded_name: String::new(),
+                first_hour: FIRST,
+                last_hour: LAST,
+                members: vec![run("GER", FIRST, LAST), run("ENG", 108, LAST)],
+                leaders: Vec::new(),
+                incomplete: vec![HourSpan { first_hour: 125, last_hour: 126 }],
+            }],
+            wars: Vec::new(),
+            war_starts: Vec::new(),
+            capitulations: Vec::new(),
+            identity_changes: Vec::new(),
+            country_identities: Vec::new(),
+            unobserved: UnobservedHours::default(),
+            warnings: Vec::new(),
+        }),
+        FIRST,
+    );
+    let faction = GroupSelection { kind: GroupKind::Faction, id: Some("42".into()), tag: None, membership: GroupMembership::Hour };
+    let params = NextElectionsParams { branch_id: "1".into(), countries: None, group: Some(faction) };
+    assert!(NextElections::validate(&NextElectionsParams { countries: Some(Vec::new()), ..params.clone() }).is_err(), "a group is never sent with countries");
+    let (live, cancelled) = (Cells::default(), AtomicBool::new(false));
+    let at = |hour: i32| At { owner: None, holders: &query.holders, hour, context: &groups, cancelled: &cancelled, live: &live };
+    let before = NextElections::reply(&frame(105), &params, &at(105)).unwrap();
+    assert_eq!((before.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), before.unknown), (vec!["GER"], 0), "ENG's unread schedule is not counted before it joins");
+    assert_eq!(NextElections::valid_through(&frame(105), &params, &at(105)), 107, "the reply holds until the hour before ENG joins");
+    assert_eq!(NextElections::reply(&frame(110), &params, &at(110)).unwrap().unknown, 1, "a member's unread eligibility is counted once it is a member");
+    let unknown = NextElections::reply(&frame(125), &params, &at(125)).unwrap();
+    assert_eq!((unknown.rows.len(), unknown.refused.as_deref()), (0, Some("Membership of this group is not recorded at this hour")));
+}

@@ -22,7 +22,7 @@ export const isLease = (row: Record<string, unknown>) => typeof row.key === 'str
   && ['fuelDailyRaw', 'fuelPercentageRaw', 'lastFuelDeliveredRaw'].every(key => raw(row[key]));
 export function validateMarketReply(value: unknown): MarketLendLeaseReply {
   const nullable = (v: unknown, valid: (row: Record<string, unknown>) => boolean) => v === null || list(v, valid);
-  if (!object(value) || typeof value.branchId !== 'string' || !named(value) || !text(value.purchasesMissing) || !integer(value.unattributed)
+  if (!object(value) || typeof value.branchId !== 'string' || !named(value) || !text(value.purchasesMissing) || !integer(value.unattributed) || !text(value.refused)
     || !nullable(value.offers, row => integer(row.country) && text(row.tag) && items(row.inventory) && levels(row.prices) && grants(row.subsidies) && raw(row.subsidyTotalRaw) && typeof row.autoSendMarketAccess === 'boolean')
     || !nullable(value.contracts, row => typeof row.key === 'string' && typeof row.id === 'string' && text(row.seller) && text(row.buyer) && typeof row.request === 'boolean'
       && integer(row.speed) && items(row.equipment) && items(row.prices) && levels(row.levels) && grants(row.subsidies) && typeof row.purchase === 'boolean')

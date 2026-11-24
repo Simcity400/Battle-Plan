@@ -157,17 +157,7 @@ test('12. A missing pin reads no branch-end facts: Factories’ saved breakdown 
   assert.deepEqual(dated(gapped.asks, 105), [], `a pin in a gap sends its literal hour nowhere: ${JSON.stringify(gapped.asks)}`);
 }));
 
-const RESOURCES = `({ tag: 'GER', decimals: 3, resources: [{ id: 1, token: 'oil', ordinal: 1, name: 'Oil', icon: null }], pools: [], rows: [], short: 0, unrecorded: 0, poolsMissing: null,
-  dealsMissing: null, deals: [], warnings: [] })`;
-
-test('13. Hover, expansion, ranking and follow obey coverage: nothing is sent into a 105–106 gap and a paused seek past the track releases a follow', () => onPage(async act => {
-  await act(scene({ kind: 'resource-balance', time: { mode: 'follow' }, hour: 107, countries: GER, options: { view: 'time', resources: 'oil' }, gaps: GAP,
-    replies: { 'resource-balance': RESOURCES } }));
-  const extent = (await act<{ extent: [number, number] } | null>('props("TimeChart")'))?.extent;
-  assert.ok(extent && extent[0] <= 105 && 105 <= extent[1], `105 lies on the chart: ${JSON.stringify(extent)}`);
-  const hovered = await act<Read & { called: boolean }>('call("TimeChart", "onHover", 105)');
-  assert.ok(hovered.called, 'the chart takes the hover');
-  assert.deepEqual(dated(hovered.asks, 105), [], `no hover read inside the gap: ${JSON.stringify(hovered.asks)}`);
+test('13. Ranking and follow obey coverage: nothing is sent into a 105–106 gap and a paused seek past the track releases a follow', () => onPage(async act => {
   const ranked = await act<Read>(scene({ kind: 'equipment-produced', time: pinAt(105), hour: 107, countries: TOP, options: { count: 'ic' }, gaps: GAP, groups: groupsOf(['GER']) }));
   assert.deepEqual(dated(ranked.asks, 105), [], `no ranking at 105: ${JSON.stringify(ranked.asks)}`);
   const followed = await act<Read>(scene({ kind: 'casualties', time: { mode: 'follow' }, hour: 105, countries: TOP, groups: groupsOf(['GER']), accept: true }));
@@ -211,16 +201,6 @@ const RENAMED = { ...groupsOf([]), countryIdentities: [
   { tag: 'GDR', identities: [{ slot: 1, countryId: 101, firstHour: 105, lastHour: 109 }] }] };
 
 const HUMANS = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false };
-
-test('20. Exact reads are checked for coverage and membership: Resource balance’s GER, a member from 107, sends no hover read at 103', () => onPage(async act => {
-  await act(scene({ kind: 'resource-balance', time: { mode: 'follow' }, hour: 108, countries: HUMANS, options: { view: 'time', resources: 'oil' },
-    groups: groupsOf(['GER'], [{ tag: 'GER', firstHour: 107, lastHour: 109 }]), replies: { 'resource-balance': RESOURCES } }));
-  const hovered = await act<Read & { called: boolean }>('call("TimeChart", "onHover", 103)');
-  assert.ok(hovered.called, 'the chart takes the hover');
-  assert.deepEqual(hovered.asks.filter(ask => ask.product === 'resource-balance' && ask.hours.includes(103)), [], `no read before GER joins: ${JSON.stringify(hovered.asks)}`);
-  const member = await act<Read>('call("TimeChart", "onHover", 107)');
-  assert.ok(member.asks.some(ask => ask.product === 'resource-balance' && ask.hour === 107), `a member hour is read: ${JSON.stringify(member.asks)}`);
-}));
 
 test('24. Training queue saves a chosen country only once its holder is verified: nothing while country groups are pending, failed or split between holders', () => onPage(async act => {
   const base = { kind: 'training-queue', time: { mode: 'follow' }, hour: 105, countries: GER, replies: { 'training-queue': QUEUE } };
@@ -270,12 +250,6 @@ test('33. A saved range starting before its branch is clipped to the branch befo
   const shown = await act<Read>(scene({ kind: 'raid-tally', time: { mode: 'range', firstOffset: -20, lastOffset: 5 }, hour: 105, options: { view: 'race' }, groups: groupsOf(['GER']) }));
   const raids = shown.asks.filter(ask => ask.product === 'raid-log');
   assert.ok(raids.length > 0 && raids.every(ask => ask.params?.from === 100 && ask.params?.to === 105), `the range is clipped to 100–105: ${JSON.stringify(raids)}`);
-}));
-
-test('39. Resource balance’s saved breakdown on its “First resource” setting shows the first resource of the reply at its hour', () => onPage(async act => {
-  const shown = await act<Read>(scene({ kind: 'resource-balance', time: pinAt(105), hour: 107, countries: GER, options: { view: 'time', show: 'resource' }, groups: groupsOf(['GER']),
-    replies: { 'resource-balance': RESOURCES } }));
-  assert.ok(!/Resource unavailable/.test(shown.text), `the setting chooses the first resource: ${shown.text}`);
 }));
 
 const SUBJECTS = `({ branchId: '1', warnings: [], unobserved: [], levels: [{ token: 'puppet', name: 'Puppet', ordered: true }],

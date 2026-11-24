@@ -493,6 +493,7 @@ fn artwork_queries_fetch_state_continent_tokens_appearance_refs_and_reserved_nam
         countries: Vec::new(),
         only: Some(MarketSection::Offers),
         lease_side: None,
+        group: None,
         row: None,
     };
     let mut market_held = DecodedFrame {

@@ -241,6 +241,33 @@ pub struct EspionageOperationsReply {
 
 dashboard_base::reply_warnings!(EspionageOperationsReply);
 
+pub fn under_way(frame: &DecodedFrame, keep: impl Fn(&Tags, &OperationRow) -> bool) -> io::Result<(Vec<OperationUnderWay>, Vec<String>)> {
+    let tags = Tags::read(frame)?;
+    let rows = frame.complete::<tables::Operations>()?;
+    let tokens: HashMap<u32, String> = frame
+        .complete::<tables::LexicalTokens>()
+        .map(|rows| rows.iter().filter_map(|row| Some((row.token, literal(&row.literal)?))).collect())
+        .unwrap_or_default();
+    let mut warnings = Vec::new();
+    warnings.extend(missing(frame, TableId::LexicalTokens));
+    let unnamed = rows.iter().filter(|row| !tokens.contains_key(&row.definition_token)).count();
+    if unnamed != 0 && frame.complete::<tables::LexicalTokens>().is_ok() {
+        warnings.push(format!("{unnamed} operations name a definition token with no recorded text"));
+    }
+    let operations = rows
+        .iter()
+        .filter(|row| row.terminal == 0 && keep(&tags, row))
+        .map(|row| OperationUnderWay {
+            id: row.id.to_string(),
+            owner: Country::of(&tags, row.owner),
+            target: Country::of(&tags, row.target),
+            operation: tokens.get(&row.definition_token).cloned(),
+            state: OperationState::of(row, frame.hour),
+        })
+        .collect();
+    Ok((operations, warnings))
+}
+
 impl AtHour for EspionageOperations {
     const KEY: &'static str = "espionage-operations";
     const TITLE: &'static str = "Espionage operations";
@@ -296,33 +323,10 @@ impl AtHour for EspionageOperations {
     }
 
     fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let made = (|| -> io::Result<(Vec<OperationUnderWay>, Vec<String>)> {
-            let tags = Tags::read(frame)?;
-            let rows = frame.complete::<tables::Operations>()?;
-            let tokens: HashMap<u32, String> = frame
-                .complete::<tables::LexicalTokens>()
-                .map(|rows| rows.iter().filter_map(|row| Some((row.token, literal(&row.literal)?))).collect())
-                .unwrap_or_default();
-            let mut warnings = Vec::new();
-            warnings.extend(missing(frame, TableId::LexicalTokens));
-            let unnamed = rows.iter().filter(|row| !tokens.contains_key(&row.definition_token)).count();
-            if unnamed != 0 && frame.complete::<tables::LexicalTokens>().is_ok() {
-                warnings.push(format!("{unnamed} operations name a definition token with no recorded text"));
-            }
+        let made = under_way(frame, |tags, row| {
             let mine = |raw: u32| at.owner.is_none_or(|owner| tags.slot(raw) == Some(owner.slot));
-            let operations = rows
-                .iter()
-                .filter(|row| row.terminal == 0 && (mine(row.owner) || mine(row.target)))
-                .map(|row| OperationUnderWay {
-                    id: row.id.to_string(),
-                    owner: Country::of(&tags, row.owner),
-                    target: Country::of(&tags, row.target),
-                    operation: tokens.get(&row.definition_token).cloned(),
-                    state: OperationState::of(row, frame.hour),
-                })
-                .collect();
-            Ok((operations, warnings))
-        })();
+            mine(row.owner) || mine(row.target)
+        });
         Ok(match made {
             Ok((operations, warnings)) => EspionageOperationsReply { operations, missing: missing(frame, TableId::Operations), warnings },
             Err(error) => EspionageOperationsReply { operations: Vec::new(), missing: Some(error.to_string()), warnings: Vec::new() },

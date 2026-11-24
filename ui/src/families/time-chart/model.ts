@@ -165,6 +165,25 @@ export interface ChartColumnModel {
   readonly unit?: string;
 }
 
+export interface ChartRowMonth {
+  readonly firstHour: number;
+  readonly lastHour: number;
+  readonly value: number | null;
+  readonly valueText: string;
+  readonly reason?: string;
+  readonly partial?: boolean;
+}
+
+export interface ChartRowModel {
+  readonly id: string;
+  readonly name: string;
+  readonly icon?: ChartArtSlot;
+  readonly color: string;
+  readonly valueText: string;
+  readonly valueMissing?: string | null;
+  readonly months: readonly ChartRowMonth[];
+}
+
 export interface ChartMarkerItem {
   readonly title: string;
   readonly detail?: string;
@@ -222,7 +241,7 @@ export interface TimeChartModel {
   readonly kind: string;
   readonly subject?: string;
   readonly measureTitle: string;
-  readonly mode: 'lines' | 'stack' | 'columns';
+  readonly mode: 'lines' | 'stack' | 'columns' | 'rows';
   readonly hour: number;
   readonly extent: readonly [number, number];
   readonly view?: { readonly x?: readonly [number, number] | null; readonly y?: readonly [number, number] | null };
@@ -230,6 +249,7 @@ export interface TimeChartModel {
   readonly series: readonly TimeChartSeriesModel[];
   readonly stack?: ChartStackModel;
   readonly columns?: ChartColumnModel;
+  readonly rows?: readonly ChartRowModel[];
   readonly markers?: readonly ChartMarker[];
   readonly gaps?: readonly ChartGap[];
   readonly legend?: readonly ChartLegendEntry[];
