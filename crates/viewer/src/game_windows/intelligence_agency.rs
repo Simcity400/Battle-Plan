@@ -22,7 +22,7 @@ use dashboard_intelligence::products::intelligence::{
 };
 use dashboard_text::catalogue::View;
 use replay_data::rows::{TableId, tables};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     sync::atomic::AtomicBool,
@@ -69,7 +69,7 @@ struct Target {
     country: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Pip {
     pub token: String,
     pub name: Shown,
@@ -77,14 +77,14 @@ pub struct Pip {
     pub level: Result<i32, String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Branch {
     pub token: String,
     pub name: Shown,
     pub pips: Vec<Pip>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct Operation {
     token: Option<String>,
     name: Shown,
@@ -95,7 +95,7 @@ struct Operation {
     preparing: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 struct AgencyView {
     agency: Agency,
     branches: Result<Vec<Branch>, String>,
@@ -285,9 +285,9 @@ pub fn render(
     render_view(service, layers, key, view, request.scale, &request.scroll, admitted_gen, cancel)
 }
 
-fn fingerprint(view: &AgencyView) -> [u8; 32] {
+fn fingerprint(view: &AgencyView) -> Option<[u8; 32]> {
     use sha2::{Digest, Sha256};
-    Sha256::digest(format!("{view:?}").as_bytes()).into()
+    serde_json::to_vec(view).ok().map(|bytes| Sha256::digest(bytes).into())
 }
 
 #[expect(clippy::too_many_arguments, reason = "the window's one render entry passes the host's request parts through unchanged")]
@@ -330,7 +330,7 @@ fn render_view(
                     assets.sprites.insert(sprite.as_bytes().to_vec());
                 }
             }
-            Ok(Prepared { assets, state: (), fingerprint: Some(print) })
+            Ok(Prepared { assets, state: (), fingerprint: print })
         },
         |root, _, _, _, instance, tooltips, ()| configure_main(root, instance, tooltips, &view),
         |plan, main_layout, root, guis, resources, localisation, ()| {
