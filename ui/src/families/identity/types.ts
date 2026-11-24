@@ -1,9 +1,9 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { Failure } from '../../dashboard/queryError';
+import type { ArtResolution } from '../plan.ts';
 import type {
   CountryFactsReply,
   CountryFlagChoice,
-  ArtResolution,
   CountryFlagImage,
   CountryGroupReply,
   CountryIdentitiesReply,
@@ -138,6 +138,7 @@ export type EntityIdentityResult =
       readonly entityKind: 'leader' | 'design' | 'state' | 'province' | 'region';
       readonly valid: HourInterval;
       readonly nextBoundary: number;
+      readonly holder: IdentityField<string>;
       readonly name: IdentityField<string>;
       readonly subtitle?: IdentityField<string>;
       readonly artKey?: IdentityField<string>;
@@ -173,6 +174,7 @@ export interface EntityRunEntry {
   readonly lastHour: number;
   readonly absent?: boolean;
   readonly reason?: string;
+  readonly holderReason?: string;
   readonly name: string | null;
   readonly nameReason?: string;
   readonly subtitle?: string | null;
@@ -186,7 +188,6 @@ export interface DrawnFlagEntry {
   readonly url?: string;
   readonly image?: CountryFlagImage;
   readonly resolution?: ArtResolution;
-  readonly reason?: string;
   readonly failed?: Failure;
 }
 
@@ -276,26 +277,23 @@ export function identityScopeKey(scope: IdentityScope): string {
 }
 
 export function flagChoiceKey(choice: CountryFlagChoice): string {
-  return JSON.stringify([choice.keys, choice.reasons]);
+  const searched = choice.searched?.some(Boolean) ? choice.searched.map(atlas => atlas === true) : null;
+  return JSON.stringify(searched ? [choice.keys, choice.reasons, searched] : [choice.keys, choice.reasons]);
 }
 
 export function parseFlagChoiceKey(raw: string): CountryFlagChoice | null {
   try {
     const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed) || parsed.length !== 2) return null;
-    const [keys, reasons] = parsed;
+    if (!Array.isArray(parsed) || parsed.length < 2 || parsed.length > 3) return null;
+    const [keys, reasons, searched] = parsed as unknown[];
     if (!Array.isArray(keys) || keys.length !== 3 || !Array.isArray(reasons) || reasons.length !== 3) return null;
+    if (searched !== undefined && (!Array.isArray(searched) || searched.length !== 3)) return null;
+    const atlas = (value: unknown) => typeof value === 'string' ? value : null;
+    const found = (value: unknown) => value === true ? true : null;
     return {
-      keys: [
-        typeof keys[0] === 'string' ? keys[0] : null,
-        typeof keys[1] === 'string' ? keys[1] : null,
-        typeof keys[2] === 'string' ? keys[2] : null,
-      ],
-      reasons: [
-        typeof reasons[0] === 'string' ? reasons[0] : null,
-        typeof reasons[1] === 'string' ? reasons[1] : null,
-        typeof reasons[2] === 'string' ? reasons[2] : null,
-      ],
+      keys: [atlas(keys[0]), atlas(keys[1]), atlas(keys[2])],
+      reasons: [atlas(reasons[0]), atlas(reasons[1]), atlas(reasons[2])],
+      ...(Array.isArray(searched) ? { searched: [found(searched[0]), found(searched[1]), found(searched[2])] } : {}),
     };
   } catch {
     return null;

@@ -97,7 +97,7 @@ pub struct SpriteArtworkReply {
 }
 
 #[derive(Clone, Debug)]
-pub struct NotDrawn(pub super::ArtResolution);
+pub struct NotDrawn(pub Box<super::ArtResolution>);
 
 impl std::fmt::Display for NotDrawn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -112,15 +112,37 @@ pub fn drawn_art(
     shown: &Catalogue,
     resolve: impl Fn(&Catalogue) -> super::ArtResolution,
 ) -> DrawnArt {
-    catalogue::draw(what, shown, |drawing| match resolve(drawing) {
-        ready @ super::ArtResolution::Ready { .. } => Ok(ready),
-        other => Err(NotDrawn(other)),
+    let first = std::sync::Mutex::new(None::<super::ArtResolution>);
+    catalogue::draw(what, shown, move |drawing| {
+        let attempt = resolve(drawing);
+        let mut first = first.lock().unwrap_or_else(|error| error.into_inner());
+        match (attempt, first.take()) {
+            (ready @ super::ArtResolution::Ready { .. }, _) => Ok(ready),
+            (attempt, None) => {
+                *first = Some(attempt.clone());
+                Err(NotDrawn(Box::new(attempt)))
+            }
+            (attempt, Some(earlier)) => Err(NotDrawn(Box::new(neither_drew(earlier, attempt)))),
+        }
     })
+}
+
+fn neither_drew(earlier: super::ArtResolution, later: super::ArtResolution) -> super::ArtResolution {
+    match earlier {
+        super::ArtResolution::ConfirmedMissing { .. } => later,
+        super::ArtResolution::NoArtExpected
+        | super::ArtResolution::Pending
+        | super::ArtResolution::Ready { .. }
+        | super::ArtResolution::Unavailable { .. }
+        | super::ArtResolution::Refused { .. }
+        | super::ArtResolution::Failed { .. } => earlier,
+    }
 }
 
 pub fn settled_art(drawn: &DrawnArt) -> super::ArtResolution {
     match drawn.get() {
-        Ok(resolution) | Err(NotDrawn(resolution)) => resolution.clone(),
+        Ok(resolution) => resolution.clone(),
+        Err(NotDrawn(resolution)) => super::ArtResolution::clone(resolution),
     }
 }
 
@@ -294,6 +316,19 @@ fn images(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn when_neither_attempt_draws_a_refusal_or_failure_outranks_a_confirmed_miss() {
+        let missing: super::super::ArtResolution = serde_json::from_str(r#"{"status":"confirmedMissing","reason":"no layer holds it"}"#).unwrap();
+        let refused = super::super::ArtResolution::Refused { reason: "visual mod refused".into(), construct: "sprite-render".into(), origin: None, file: None };
+        let failed = super::super::ArtResolution::Failed { reason: "read failed".into(), retryable: true };
+        let unrecorded = super::super::ArtResolution::Unavailable { reason: "not recorded".into() };
+        assert_eq!(neither_drew(refused.clone(), missing.clone()), refused, "the visual mods' refusal survives the recorded content's miss");
+        assert_eq!(neither_drew(missing.clone(), refused.clone()), refused, "a miss followed by a refusal is the refusal");
+        assert_eq!(neither_drew(failed.clone(), missing.clone()), failed);
+        assert_eq!(neither_drew(unrecorded.clone(), missing.clone()), unrecorded);
+        assert_eq!(neither_drew(missing.clone(), missing.clone()), missing, "only two completed misses are a confirmed miss");
+    }
     use crate::catalogue::{
         tests::{folder_catalogue, layers_catalogue},
         texture_tests::{from_url, png_bytes},

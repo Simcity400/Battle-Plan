@@ -93,6 +93,7 @@ export interface LaneStep {
   readonly pictures?: readonly Picture<Value>[];
   readonly inspect?: string | null;
   readonly speed?: number;
+  readonly generation?: number;
   readonly check?: boolean;
 }
 
@@ -117,7 +118,7 @@ export function driveLane(view: LaneView, canvases: RecordedCanvas[], surface = 
         model: step.binding,
         hour: step.hour,
         speed: step.speed ?? 0,
-        binding: { generation: 1, surfaces: [surface], offset: 0, pin: null },
+        binding: { generation: step.generation ?? 1, surfaces: [surface], offset: 0, pin: null },
         inspect: step.inspect ?? null,
         now: 1000,
       }, state, () => `c${++seq}`);

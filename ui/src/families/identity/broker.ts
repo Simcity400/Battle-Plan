@@ -15,12 +15,13 @@ import type {
   CountryGroupReply,
   CountryIdentitiesReply,
   CountryStyleReply,
+  LeaderNameRunsReply,
   NameRun,
   PlaceNameRunsReply,
   StrategicRegionsReply,
-  UnitLeadersReply,
 } from '../../generated/dashboard';
 import { busyWait } from '../../shell/busy.ts';
+import { productArt } from '../art/types.ts';
 import { BRANCH_READS, IdentityIndex, drawnFlagKey, type BranchRead } from './index.ts';
 import {
   identityKeyString,
@@ -45,7 +46,7 @@ export interface IdentityTransport {
   loadFlags(scope: IdentityScope, size: CountryFlagSize, choices: readonly CountryFlagChoice[], signal: AbortSignal, recording?: DashboardSource): Promise<CountryFlagReply>;
   loadRegions(scope: IdentityScope, signal: AbortSignal, recording?: DashboardSource): Promise<StrategicRegionsReply>;
   loadPlaceNameRuns(scope: IdentityScope, from: number, to: number, states: readonly number[], provinces: readonly number[], signal: AbortSignal, recording?: DashboardSource): Promise<PlaceNameRunsReply>;
-  loadLeaders(scope: IdentityScope, owner: string, hour: number, signal: AbortSignal, recording?: DashboardSource): Promise<UnitLeadersReply>;
+  loadLeaderNameRuns(scope: IdentityScope, owner: string, from: number, to: number, references: readonly string[], signal: AbortSignal, recording?: DashboardSource): Promise<LeaderNameRunsReply>;
 }
 
 export function clientIdentityTransport(client: DashboardClient): IdentityTransport {
@@ -104,13 +105,14 @@ export function clientIdentityTransport(client: DashboardClient): IdentityTransp
       signal,
       recording,
     ),
-    loadLeaders: (scope, owner, hour, signal, recording) => loadTransientProduct<UnitLeadersReply>(
+    loadLeaderNameRuns: (scope, owner, from, to, references, signal, recording) => loadTransientProduct<LeaderNameRunsReply>(
       client,
-      productRequest({ sourceId: scope.sourceId, revision: scope.revision, product: 'unit-leaders', params: {
+      productRequest({ sourceId: scope.sourceId, revision: scope.revision, product: 'leader-name-runs', params: {
         branchId: scope.branchId,
-        hour: hour as GatedHour,
-        selection: owner ? { kind: 'countries', countries: [countryFromKey(owner)] } : { kind: 'all' },
-        leaders: 'all',
+        owner: countryFromKey(owner),
+        references: [...references],
+        from: from as GatedHour,
+        to: to as GatedHour,
       } }),
       signal,
       recording,
@@ -130,13 +132,28 @@ function drawn(entry: DrawnFlagEntry | undefined): boolean {
 
 const REGION_ABSENT = 'Not a strategic region of this recording';
 const LEADER_ABSENT = 'Not a leader of this country at this hour';
-const LEADER_NAME_MISSING = 'Leader name not recorded';
+const PLACE_ABSENT = 'No such place at this hour';
 const PLACE_NOT_ANSWERED = 'Place name not answered';
+const LEADER_NOT_ANSWERED = 'Leader not answered';
+const PRESENCE_UNKNOWN = 'Not known at this hour';
+
+function runEntry(run: NameRun, absent: string, warnings: readonly string[]): EntityRunEntry {
+  switch (run.presence) {
+    case 'absent':
+      return { firstHour: run.firstHour, lastHour: run.lastHour, absent: true, reason: run.missing ?? absent, name: null };
+    case 'unknown': {
+      const reason = run.missing ?? PRESENCE_UNKNOWN;
+      return { firstHour: run.firstHour, lastHour: run.lastHour, name: null, nameReason: reason, holderReason: reason, warnings };
+    }
+    case 'present':
+      return { firstHour: run.firstHour, lastHour: run.lastHour, name: run.name, ...(run.missing ? { nameReason: run.missing } : {}), warnings };
+  }
+}
 
 type EntityRequest =
   | { readonly kind: 'regions'; readonly id: string }
   | { readonly kind: 'places'; readonly id: string; readonly from: number; readonly to: number }
-  | { readonly kind: 'leaders'; readonly id: string; readonly owner: string; readonly hour: number };
+  | { readonly kind: 'leaders'; readonly id: string; readonly owner: string; readonly from: number; readonly to: number };
 
 interface WantedEntities {
   readonly request: EntityRequest;
@@ -149,7 +166,12 @@ interface EntityTask {
   readonly controller: AbortController;
 }
 
-const PLACE_WINDOW_HOURS = 720;
+const ENTITY_WINDOW_HOURS = 720;
+
+function windowOf(at: number, bounds: HourInterval): { readonly start: number; readonly from: number; readonly to: number } {
+  const start = Math.floor(at / ENTITY_WINDOW_HOURS) * ENTITY_WINDOW_HOURS;
+  return { start, from: Math.max(start, bounds[0]), to: Math.min(start + ENTITY_WINDOW_HOURS - 1, bounds[1]) };
+}
 
 function entityRequestOf(key: EntityIdentityKey, at: number, bounds: HourInterval): EntityRequest | null {
   switch (key.kind) {
@@ -160,11 +182,13 @@ function entityRequestOf(key: EntityIdentityKey, at: number, bounds: HourInterva
     case 'state':
     case 'province':
     {
-      const start = Math.floor(at / PLACE_WINDOW_HOURS) * PLACE_WINDOW_HOURS;
-      return { kind: 'places', id: `places\u0000${start}`, from: Math.max(start, bounds[0]), to: Math.min(start + PLACE_WINDOW_HOURS - 1, bounds[1]) };
+      const { start, from, to } = windowOf(at, bounds);
+      return { kind: 'places', id: `places\u0000${start}`, from, to };
     }
-    case 'leader':
-      return { kind: 'leaders', id: `leaders\u0000${key.owner}\u0000${at}`, owner: key.owner, hour: at };
+    case 'leader': {
+      const { start, from, to } = windowOf(at, bounds);
+      return { kind: 'leaders', id: `leaders\u0000${key.owner}\u0000${start}`, owner: key.owner, from, to };
+    }
   }
 }
 
@@ -590,12 +614,12 @@ export class IdentityBroker {
           break;
         case 'places':
           if (state.index.resolve(key, request.from).kind === 'pending') {
-            state.index.replaceEntityRuns(key, request.from, request.to, [{ firstHour: request.from, lastHour: request.to, name: null, nameReason: PLACE_NOT_ANSWERED }]);
+            state.index.replaceEntityRuns(key, request.from, request.to, [{ firstHour: request.from, lastHour: request.to, name: null, nameReason: PLACE_NOT_ANSWERED, holderReason: PLACE_NOT_ANSWERED }]);
           }
           break;
         case 'leaders':
-          if (state.index.resolve(key, request.hour).kind === 'pending') {
-            state.index.addEntityRun(key, { firstHour: request.hour, lastHour: request.hour, absent: true, reason: LEADER_ABSENT, name: null });
+          if (state.index.resolve(key, request.from).kind === 'pending') {
+            state.index.replaceEntityRuns(key, request.from, request.to, [{ firstHour: request.from, lastHour: request.to, name: null, nameReason: LEADER_NOT_ANSWERED, holderReason: LEADER_NOT_ANSWERED }]);
           }
           break;
       }
@@ -627,29 +651,24 @@ export class IdentityBroker {
           if (id !== null) (key.kind === 'state' ? states : provinces).push(id);
         }
         return this.transport.loadPlaceNameRuns(state.scope, request.from, request.to, states, provinces, signal, state.recording).then(reply => {
-          const entry = (run: NameRun): EntityRunEntry => ({
-            firstHour: run.firstHour, lastHour: run.lastHour, name: run.name, ...(run.missing ? { nameReason: run.missing } : {}), warnings: reply.warnings,
-          });
+          const entry = (run: NameRun) => runEntry(run, PLACE_ABSENT, reply.warnings);
           index.replaceEntityUnknown(['state', 'province'], reply.from, reply.to, reply.unknown);
           for (const place of reply.states) index.replaceEntityRuns({ kind: 'state', id: place.id }, reply.from, reply.to, place.runs.map(entry));
           for (const place of reply.provinces) index.replaceEntityRuns({ kind: 'province', id: place.id }, reply.from, reply.to, place.runs.map(entry));
         });
       }
       case 'leaders':
-        return this.transport.loadLeaders(state.scope, request.owner, request.hour, signal, state.recording).then(reply => {
-          const hour = request.hour;
-          const run = (named: Omit<EntityRunEntry, 'firstHour' | 'lastHour'>): EntityRunEntry => ({ firstHour: hour, lastHour: hour, ...named, warnings: reply.warnings });
-          if (reply.missing !== null) {
-            for (const key of keys.values()) index.addEntityRun(key, run({ name: null, nameReason: reply.missing }));
-            return;
-          }
-          for (const row of reply.leaders) {
-            index.addEntityRun({ kind: 'leader', owner: request.owner, id: row.reference }, run({ name: row.name, ...(row.name === null ? { nameReason: LEADER_NAME_MISSING } : {}) }));
-          }
-          for (const held of reply.withheld) {
-            index.addEntityRun({ kind: 'leader', owner: request.owner, id: held.reference }, run({ name: null, nameReason: held.reason }));
+      {
+        const references: string[] = [];
+        for (const key of keys.values()) if (key.kind === 'leader') references.push(String(key.id));
+        return this.transport.loadLeaderNameRuns(state.scope, request.owner, request.from, request.to, references, signal, state.recording).then(reply => {
+          const entry = (run: NameRun) => runEntry(run, LEADER_ABSENT, reply.warnings);
+          index.replaceEntityUnknown(['leader'], reply.from, reply.to, reply.unknown);
+          for (const leader of reply.leaders) {
+            index.replaceEntityRuns({ kind: 'leader', owner: request.owner, id: leader.reference }, reply.from, reply.to, leader.runs.map(entry));
           }
         });
+      }
     }
   }
 
@@ -889,7 +908,7 @@ export class IdentityBroker {
           const entry: DrawnFlagEntry = image
             ? { url: image.png, image }
             : resolution
-              ? { resolution }
+              ? { resolution: productArt(resolution) }
               : { resolution: { status: 'failed', reason: 'The flag reply left this choice out', retryable: true } };
           state.index.setDrawnFlag(size, choice, entry);
         });

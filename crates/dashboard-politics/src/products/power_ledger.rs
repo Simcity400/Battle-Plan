@@ -1,12 +1,10 @@
 
 pub mod breakdown;
-pub mod day;
 mod naming;
 #[cfg(test)]
 mod tests;
 
-use dashboard_base::products::{Country, validate_country};
-use dashboard_base::products::{LoadContext, Product, check_reply_budget};
+use dashboard_base::products::Country;
 use super::{politics::{Holding, holdings}, ideas::{IdeaInfo, effect_keys, recorded_definitions}};
 use dashboard_world::products::equipment_names::EquipmentIcon;
 use dashboard_base::products::idea_format::{self, LocalisedText, ModifierFormat};
@@ -16,7 +14,7 @@ use dashboard_query::{Query, coverage};
 use replay_frame::frame::DecodedFrame;
 use replay_lanes::{lanes::{self, Keys}, points::Cell};
 use replay_columnar::manifest::Status;
-use replay_data::rows::{PowerCause, PowerCurrency, PowerItemRow, RowCodec, PowerOperation, PowerSite, PowerSpendCoverageRow, PowerSpendTotalRow, TableId, tables};
+use replay_data::rows::{PowerCause, PowerCurrency, PowerItemRow, PowerOperation, PowerSite, PowerSpendCoverageRow, PowerSpendTotalRow, TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -255,52 +253,6 @@ pub struct PowerSpendingReply {
 }
 
 dashboard_base::reply_warnings!(PowerSpendingReply);
-
-pub struct PowerSpending;
-
-impl Product for PowerSpending {
-    const KEY: &'static str = "power-spending";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = PowerSpendingParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, currency, from: Start, to: End];
-    type Reply = PowerSpendingReply;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![
-            PowerSpendingParams::decl(),
-            PowerSpendingReply::decl(),
-            SpendCurrency::decl(),
-            SpendItem::decl(),
-            SpendKind::decl(),
-            SpendCategory::decl(),
-            SpendPayment::decl(),
-            SpendDay::decl(),
-            SpendGain::decl(),
-            SpendCoverage::decl(),
-            SpendBalanceRun::decl(),
-            SpendReconciliation::decl(),
-            SpendIdeaTooltips::decl(),
-        ]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map_err(|_| "Invalid power spending branch")?;
-        validate_country(&params.country)?;
-        if params.from > params.to {
-            return Err("A power spending span ends before it starts");
-        }
-        Ok(())
-    }
-
-    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid power spending branch"))?)?;
-        let naming = naming::context(source, context)?;
-        let reply = spending(source, &query, params, &naming, cancelled)?;
-        check_reply_budget(&reply)?;
-        Ok(reply)
-    }
-}
 
 pub(super) fn recurring(row: &PowerItemRow) -> bool {
     row.kind != PowerItemRow::CHANGE || matches!(row.cause, PowerCause::DailyGain | PowerCause::AbilityUpkeep)
@@ -1143,13 +1095,13 @@ fn balance_at(runs: &[SpendBalanceRun], hour: i32) -> (Option<i128>, Option<Stri
 }
 
 pub(super) fn continuity(from: i32, to: i32, held: &[Piece], recorded: impl Fn(i32, i32) -> bool) -> Option<String> {
-    if held.is_empty() {
-        Some("Country was not held during this span".to_owned())
-    } else if held[0].first > from || held.last().expect("non-empty").last < to {
+    let unheld = |first: i32, last: i32| first <= last && recorded(first, last);
+    let Some((first, last)) = held.first().zip(held.last()) else {
+        return Some(if recorded(from, to) { "Country was not held during this span" } else { "This span was not recorded" }.to_owned());
+    };
+    if unheld(from, first.first.saturating_sub(1)) || unheld(last.last.saturating_add(1), to) || held.windows(2).any(|pair| unheld(pair[0].last.saturating_add(1), pair[1].first.saturating_sub(1))) {
         Some("Country was not held for the entire span".to_owned())
-    } else if held.windows(2).any(|pair| pair[0].last.checked_add(1).is_some_and(|after| after < pair[1].first && recorded(after, pair[1].first - 1))) {
-        Some("Country was not held for the entire span".to_owned())
-    } else if held.windows(2).any(|pair| pair[0].run != pair[1].run || pair[1].baseline != pair[1].first.checked_sub(1)) {
+    } else if first.first > from || last.last < to || held.windows(2).any(|pair| pair[0].run != pair[1].run || pair[1].baseline != pair[1].first.checked_sub(1)) {
         Some("Continuity broke across a load or recording gap during this span".to_owned())
     } else if held.len() > 1 {
         Some("Country holder changed during this span".to_owned())
@@ -1253,9 +1205,9 @@ fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpending
             (other, why)
         }
         _ => {
-            let why = spend_coverage_reason
+            let why = continuity_reason
+                .or(spend_coverage_reason)
                 .or(gain_coverage_reason)
-                .or(continuity_reason)
                 .or(opening_reason)
                 .or(closing_reason)
                 .or(spent_item_reason)
@@ -1355,7 +1307,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
     let currency = params.currency;
     let mut reply = PowerSpendingReply {
         branch_id: params.branch_id.clone(),
-        tag: query.holders.name(&params.country, query.timeline.last),
+        tag: String::new(),
         currency,
         from: params.from,
         to: params.to,
@@ -1381,7 +1333,8 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
     let mut unmatched = 0_u64;
     let has_day_log = query.replay.recording().predates(TableId::PowerSpendDays.index()).is_none();
     let held = pieces(query, &params.country, params.from, params.to)?;
-    reply.tag = query.holders.name(&params.country, held.last().map_or(params.to.min(query.timeline.last), |piece| piece.last));
+    let end = held.last().map_or(params.to.min(query.timeline.last), |piece| piece.last);
+    reply.tag = query.holders.tag_at(&params.country, end).map_or_else(|| params.country.key().into_owned(), str::to_owned);
     for piece in &held {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let coverage_start = reply.coverage.len();

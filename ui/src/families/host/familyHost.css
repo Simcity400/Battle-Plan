@@ -128,3 +128,12 @@
     rgba(255, 255, 255, 0.35) 3.5px
   );
 }
+
+.fh-region-drop {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}

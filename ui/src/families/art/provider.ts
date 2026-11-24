@@ -3,7 +3,7 @@ import type { CountryFlagChoice } from '../../generated/dashboard';
 import type { IdentityBroker } from '../identity/broker.ts';
 import type { IdentityIndex } from '../identity/index.ts';
 import { parseFlagChoiceKey, type DrawnFlagEntry, type IdentityScope } from '../identity/types.ts';
-import type { ArtFlagSize, ArtHandle, ArtProvider, ArtResult } from '../plan.ts';
+import type { ArtFlagSize, ArtHandle, ArtProvider, ArtResult, FieldStatus } from '../plan.ts';
 import { flagEntryToArt } from './adapters.ts';
 import type { DomArtCache } from './domCache.ts';
 import type { LaneArtCache } from './laneCache.ts';
@@ -12,12 +12,73 @@ import {
   PENDING_ART,
   artHandleKey,
   defaultArtFrame,
+  failedArt,
   readyArt,
+  unavailableArt,
   type ArtResolution,
 } from './types.ts';
 
 export function flagArtHandle(flagChoice: string, size: ArtFlagSize = 'panel'): ArtHandle {
   return { kind: 'flag', choice: flagChoice, size };
+}
+
+export function flagChoiceArt(
+  readView: { art(handle: ArtHandle): ArtResult },
+  choice: FieldStatus<string> | undefined,
+  size: ArtFlagSize = 'panel',
+): ArtResult {
+  if (!choice) return PENDING_ART;
+  switch (choice.status) {
+    case 'ready':
+      return readView.art(flagArtHandle(choice.value, size));
+    case 'pending':
+      return PENDING_ART;
+    case 'absent':
+      return unavailableArt(choice.reason);
+    case 'failed':
+      return failedArt(choice.reason, choice.retryable);
+  }
+}
+
+export function urlArtHandle(url: string | null | undefined): ArtHandle | null {
+  return url ? { kind: 'url', url } : null;
+}
+
+export type ArtUrlInput =
+  | string
+  | ArtHandle
+  | ArtResult
+  | { readonly iconUrl?: string | null; readonly art?: ArtResult }
+  | null
+  | undefined;
+
+export function artUrlOf(
+  input: ArtUrlInput,
+  index?: IdentityIndex | null,
+  resolutions?: ArtResolutions,
+): string | null {
+  if (!input) return null;
+  if (typeof input === 'string') return input || null;
+  if ('status' in input) return input.status === 'ready' && input.url ? input.url : null;
+  if ('iconUrl' in input || 'art' in input) {
+    if (input.iconUrl) return input.iconUrl;
+    return input.art?.status === 'ready' && input.art.url ? input.art.url : null;
+  }
+  if ('kind' in input) return artUrlForHandle(input, index, resolutions);
+  return null;
+}
+
+export function collectArtUrls(
+  items: Iterable<ArtUrlInput>,
+  index?: IdentityIndex | null,
+  resolutions?: ArtResolutions,
+): string[] {
+  const urls = new Set<string>();
+  for (const item of items) {
+    const url = artUrlOf(item, index, resolutions);
+    if (url) urls.add(url);
+  }
+  return [...urls];
 }
 
 export function mergeArtDemands(held: readonly ArtHandle[], asked: readonly ArtHandle[]): readonly ArtHandle[] {

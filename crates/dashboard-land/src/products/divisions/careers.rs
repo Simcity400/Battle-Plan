@@ -11,7 +11,7 @@ use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use content_reader_military::unit_medals::{Medal, Medals};
 use dashboard_base::products::artwork::sprites::SpriteFrame;
-use std::{collections::BTreeMap, io};
+use std::{cmp::Ordering, collections::{BTreeMap, HashSet}, io};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -63,8 +63,8 @@ pub struct CareerTemplate {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CareerAward {
-    #[doc = " Index into the reply's medals."]
-    pub medal: usize,
+    #[doc = " Index into the reply's medals; none for the awards of the recorded total that could not be identified."]
+    pub medal: Option<usize>,
     pub count: u32,
 }
 
@@ -110,6 +110,58 @@ pub struct DivisionCareersReply {
 }
 
 dashboard_base::reply_warnings!(DivisionCareersReply);
+
+pub struct DecoratedDivisions;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum DecoratedRank {
+    Medals,
+    Experience,
+    CasualtiesTaken,
+}
+
+const RANKS: [DecoratedRank; 3] = [DecoratedRank::Medals, DecoratedRank::Experience, DecoratedRank::CasualtiesTaken];
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CountryHours {
+    pub tag: String,
+    pub first_hour: i32,
+    pub last_hour: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DecoratedDivisionsParams {
+    pub branch_id: String,
+    #[doc = " The countries whose divisions rank and the hours each counts; none ranks every country's."]
+    pub countries: Option<Vec<CountryHours>>,
+    pub by: DecoratedRank,
+    pub descending: bool,
+    #[doc = " How many divisions to return, from the first in order."]
+    pub count: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct DecoratedDivisionsReply {
+    #[doc = " The first `count` divisions in order: by the measure, then the other measures largest first, then by id; a division without the measure follows those with it."]
+    pub divisions: Vec<CareerRow>,
+    pub medals: Vec<CareerMedal>,
+    pub templates: Vec<CareerTemplate>,
+    #[doc = " Why the order holds only among the divisions it could place: a measure or a country not read for some."]
+    pub partial: Option<String>,
+    #[doc = " Why divisions are unknown at this hour, when they are."]
+    pub missing: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+dashboard_base::reply_warnings!(DecoratedDivisionsReply);
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -162,6 +214,7 @@ impl AtHour for DivisionCareers {
     const KEY: &'static str = "division-careers";
     const TITLE: &'static str = "Division careers";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = DivisionCareersParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]"];
     type Reply = DivisionCareersReply;
@@ -212,10 +265,52 @@ impl AtHour for DivisionCareers {
     }
 }
 
+impl AtHour for DecoratedDivisions {
+    const KEY: &'static str = "decorated-divisions";
+    const TITLE: &'static str = "Most decorated divisions";
+    const CONTENT_DEPENDENT: bool = true;
+    type Params = DecoratedDivisionsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", by, descending, count];
+    type Reply = DecoratedDivisionsReply;
+    type Context = Content;
+
+    #[cfg(any(test, feature = "export-types"))]
+    fn types() -> Vec<String> {
+        vec![DecoratedDivisionsParams::decl(), DecoratedDivisionsReply::decl(), DecoratedRank::decl(), CountryHours::decl()]
+    }
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        for span in params.countries.iter().flatten() {
+            dashboard_core::protocol::validate_tag(&span.tag)?;
+            if span.first_hour > span.last_hour {
+                return Err("Invalid country hours");
+            }
+        }
+        branch(&params.branch_id)
+    }
+
+    fn tables(_params: &Self::Params) -> Vec<TableId> {
+        TABLES.to_vec()
+    }
+
+    fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
+        Ok(Content::load(source, load))
+    }
+
+    fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+        let mut refusals = Refusals::default();
+        let mut reply = decorated(frame, params, at, &mut refusals)?;
+        reply.warnings = refusals.lines();
+        dashboard_base::products::check_reply_budget(&reply)?;
+        Ok(reply)
+    }
+}
+
 impl AtHour for DivisionRecord {
     const KEY: &'static str = "division-record";
     const TITLE: &'static str = "Division record";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = DivisionRecordParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, division];
     type Reply = DivisionRecordReply;
@@ -284,12 +379,12 @@ fn division(params: &DivisionRecordParams) -> u64 {
 #[derive(Default)]
 struct MedalIndex {
     medals: Vec<CareerMedal>,
-    by_token: BTreeMap<i32, usize>,
+    by_identity: BTreeMap<(Option<i32>, i32), usize>,
 }
 
 impl MedalIndex {
-    fn index(&mut self, frame: &DecodedFrame, token: i32, content: &Content, refusals: &mut Refusals) -> Option<usize> {
-        if let Some(&at) = self.by_token.get(&token) {
+    fn index(&mut self, frame: &DecodedFrame, token: i32, definition: Option<i32>, content: &Content, refusals: &mut Refusals) -> Option<usize> {
+        if let Some(&at) = self.by_identity.get(&(definition, token)) {
             return Some(at);
         }
         let key = frame.complete::<tables::LexicalTokens>().map_err(|why| format!("Medal names unavailable: {why}")).and_then(|rows| token_key(rows, token as u32));
@@ -301,9 +396,9 @@ impl MedalIndex {
             }
         };
         let (name, _) = refusals.keep(content.localised(&key).map_err(|_| "Medal name unavailable".to_owned()));
-        let (icon, icon_missing) = refusals.keep(medal_icon(content, &key));
+        let (icon, icon_missing) = refusals.keep(medal_icon(content, definition, &key));
         self.medals.push(CareerMedal { key, name, icon, icon_missing });
-        self.by_token.insert(token, self.medals.len() - 1);
+        self.by_identity.insert((definition, token), self.medals.len() - 1);
         Some(self.medals.len() - 1)
     }
 }
@@ -323,10 +418,14 @@ pub(super) fn sprite_of(definition: &Medal) -> Result<SpriteFrame, String> {
     Ok(SpriteFrame { key, frame: definition.frame.unwrap_or(1).saturating_sub(1), recorded: None, text: None })
 }
 
-fn medal_icon(content: &Content, key: &str) -> Result<SpriteFrame, String> {
-    let medals = medal_definitions(content)?;
-    let definition = medals.definitions.iter().find(|medal| medal.name.eq_ignore_ascii_case(key.as_bytes())).ok_or_else(|| format!("Medal {key} is absent from the recorded content"))?;
-    sprite_of(definition)
+fn medal_icon(content: &Content, definition: Option<i32>, key: &str) -> Result<SpriteFrame, String> {
+    let definition = definition.ok_or("The award's medal definition was not recorded")?;
+    sprite_of(medal_definitions(content)?.get(definition, key.as_bytes())?)
+}
+
+pub(super) fn unidentified(total: i32, identified: u32) -> Option<CareerAward> {
+    let total = u32::try_from(total).ok()?;
+    (total > identified).then(|| CareerAward { medal: None, count: total - identified })
 }
 
 fn history_of(rows: &[SharedDivisionHistoryRow], division: u64) -> &[SharedDivisionHistoryRow] {
@@ -379,7 +478,7 @@ impl Facts<'_> {
                         refusals.note("An award's medal identity was not recorded");
                         continue;
                     };
-                    if let Some(at) = self.medals.index(self.frame, token, self.content, refusals) {
+                    if let Some(at) = self.medals.index(self.frame, token, entry.medal_definition, self.content, refusals) {
                         let count = counts.entry(at).or_default();
                         if *count == 0 {
                             order.push(at);
@@ -387,7 +486,11 @@ impl Facts<'_> {
                         *count += 1;
                     }
                 }
-                out.awards = order.into_iter().map(|medal| CareerAward { medal, count: counts[&medal] }).collect();
+                out.awards = order.into_iter().map(|medal| CareerAward { medal: Some(medal), count: counts[&medal] }).collect();
+                if let Some(rest) = unidentified(summary.amount, counts.values().sum()) {
+                    refusals.note("A division's medal total includes awards that were not identified");
+                    out.awards.push(rest);
+                }
             }
         }
         if let Some(experience) = status.zip(manpower).and_then(|(status, manpower)| status.normalized_experience(manpower)) {
@@ -457,6 +560,132 @@ fn careers(frame: &DecodedFrame, slots: Option<&[u32]>, at: &At<'_, Content>, re
     Ok(reply)
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Measures {
+    pub id: u64,
+    pub medals: Option<i32>,
+    pub experience: Option<i64>,
+    pub casualties_taken: Option<i32>,
+}
+
+impl Measures {
+    fn of(&self, by: DecoratedRank) -> Option<i64> {
+        match by {
+            DecoratedRank::Medals => self.medals.map(i64::from),
+            DecoratedRank::Experience => self.experience,
+            DecoratedRank::CasualtiesTaken => self.casualties_taken.map(i64::from),
+        }
+    }
+}
+
+fn missing_last(a: Option<i64>, b: Option<i64>, descending: bool) -> Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) if descending => b.cmp(&a),
+        (Some(a), Some(b)) => a.cmp(&b),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+fn rank_order(a: &Measures, b: &Measures, by: DecoratedRank, descending: bool) -> Ordering {
+    missing_last(a.of(by), b.of(by), descending)
+        .then_with(|| RANKS.iter().filter(|&&other| other != by).map(|&other| missing_last(a.of(other), b.of(other), true)).find(|order| order.is_ne()).unwrap_or(Ordering::Equal))
+        .then(a.id.cmp(&b.id))
+}
+
+pub(super) fn first_in_order(mut measured: Vec<Measures>, by: DecoratedRank, descending: bool, count: usize) -> Vec<Measures> {
+    let order = |a: &Measures, b: &Measures| rank_order(a, b, by, descending);
+    if count < measured.len() {
+        measured.select_nth_unstable_by(count, order);
+        measured.truncate(count);
+    }
+    measured.sort_unstable_by(order);
+    measured
+}
+
+fn rank_word(by: DecoratedRank) -> &'static str {
+    match by {
+        DecoratedRank::Medals => "medals",
+        DecoratedRank::Experience => "experience",
+        DecoratedRank::CasualtiesTaken => "casualties taken",
+    }
+}
+
+fn summary_medals(history: &[SharedDivisionHistoryRow]) -> Option<i32> {
+    history.first().filter(|row| row.list == DivisionHistoryRow::SUMMARY && row.available != 0).map(|row| row.amount)
+}
+
+fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_, Content>, refusals: &mut Refusals) -> io::Result<DecoratedDivisionsReply> {
+    let mut reply = DecoratedDivisionsReply { divisions: Vec::new(), medals: Vec::new(), templates: Vec::new(), partial: None, missing: None, warnings: Vec::new() };
+    let divisions = match frame.complete::<tables::Divisions>() {
+        Ok(rows) => rows,
+        Err(why) => {
+            reply.missing = Some(format!("Divisions were not read at this hour: {why}"));
+            return Ok(reply);
+        }
+    };
+    let content = at.context;
+    let countries = Countries::read(frame)?.named(at.holders, at.hour);
+    let passing = params.countries.as_ref().map(|spans| spans.iter().filter(|span| span.first_hour <= at.hour && at.hour <= span.last_hour).map(|span| span.tag.as_str()).collect::<HashSet<&str>>());
+    let history = frame.complete::<tables::DivisionHistory>().unwrap_or(&[]);
+    let mut measured = Vec::new();
+    let (mut unplaced, mut unmeasured) = (0usize, 0usize);
+    for (seen, division) in divisions.iter().filter(|row| row.reveal_skip == 0).enumerate() {
+        if seen.is_multiple_of(4096) {
+            dashboard_text::metadata::check_cancel(at.cancelled)?;
+        }
+        if let Some(passing) = &passing {
+            match countries.tag(attributed(division, ArmyAttribution::Owner)) {
+                Some(tag) if passing.contains(tag.as_str()) => {}
+                Some(_) => continue,
+                None => {
+                    unplaced += 1;
+                    continue;
+                }
+            }
+        }
+        let status = status_of(frame, division.id);
+        let measures = Measures {
+            id: division.id,
+            medals: summary_medals(history_of(history, division.id)),
+            experience: status.zip(manpower_of(frame, division.id)).and_then(|(status, manpower)| status.normalized_experience(manpower)),
+            casualties_taken: status.and_then(DivisionStatusRow::casualties_taken),
+        };
+        unmeasured += usize::from(measures.of(params.by).is_none());
+        measured.push(measures);
+    }
+    let mut partial = Vec::new();
+    if unmeasured > 0 {
+        partial.push(format!("{unmeasured} of {} divisions' {} were not read at this hour; they follow the others", measured.len(), rank_word(params.by)));
+    }
+    if unplaced > 0 {
+        partial.push(format!("{unplaced} divisions' countries were not recorded at this hour; they are left out"));
+    }
+    reply.partial = (!partial.is_empty()).then(|| partial.join(". "));
+    let first = first_in_order(measured, params.by, params.descending, usize::try_from(params.count).unwrap_or(usize::MAX));
+    let mut facts = Facts { frame, content, medals: MedalIndex::default(), levels: Levels::read(content) };
+    content.group_notes(refusals);
+    let mut templates = BTreeMap::<u64, ()>::new();
+    for measures in first {
+        let Some(division) = find(Some(divisions), measures.id, |row| row.id) else { continue };
+        let status = status_of(frame, division.id);
+        let (name, name_missing) = refusals.keep(content.division_name(status));
+        let row_facts = facts.of(history_of(history, division.id), status, manpower_of(frame, division.id), refusals);
+        templates.insert(division.template, ());
+        reply.divisions.push(CareerRow { division: division.id.to_string(), tag: countries.tag(attributed(division, ArmyAttribution::Owner)), template: division.template.to_string(), name, name_missing, facts: row_facts });
+    }
+    for template in templates.into_keys() {
+        reply.templates.push(CareerTemplate {
+            template: template.to_string(),
+            name: refusals.keep(content.template_name(frame, template)).0,
+            icon: refusals.keep(content.template_icon(frame, template)).0,
+        });
+    }
+    reply.medals = facts.medals.medals;
+    Ok(reply)
+}
+
 fn record(frame: &DecodedFrame, division: u64, at: &At<'_, Content>, refusals: &mut Refusals) -> io::Result<DivisionRecordReply> {
     let mut reply = DivisionRecordReply {
         division: division.to_string(),
@@ -495,7 +724,7 @@ fn record(frame: &DecodedFrame, division: u64, at: &At<'_, Content>, refusals: &
             if award && entry.medal_enabled == 0 {
                 continue;
             }
-            let medal = if award { entry.medal_token.and_then(|token| facts.medals.index(frame, token, content, refusals)) } else { None };
+            let medal = if award { entry.medal_token.and_then(|token| facts.medals.index(frame, token, entry.medal_definition, content, refusals)) } else { None };
             let description = if award {
                 medal.and_then(|at| facts.medals.medals[at].name.clone()).ok_or_else(|| "Medal name unavailable".to_owned())
             } else {

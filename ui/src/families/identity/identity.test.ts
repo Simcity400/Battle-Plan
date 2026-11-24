@@ -9,13 +9,13 @@ import type {
   CountryStyleReply,
   PlaceNameRunsReply,
   StrategicRegionsReply,
-  UnitLeadersReply,
+  LeaderNameRunsReply,
 } from '../../generated/dashboard';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
 import { artUrlForHandle, createLaneArtProvider, flagArtHandle, laneArtDemand, mergeArtDemands, requestDemandedFlags } from '../art/provider.ts';
 import { toFlagSlotState } from '../art/adapters.ts';
-import { NO_ART, artHandleKey, missingArt, refusedArt } from '../art/types.ts';
+import { NO_ART, artHandleKey, productArt, refusedArt } from '../art/types.ts';
 import { RefusedError } from '../../dashboard/queryError.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { ArtHandle, DisplayedHour } from '../plan.ts';
@@ -123,10 +123,10 @@ function sampleGroups(): CountryGroupReply {
   };
 }
 
-const UNUSED_ENTITY_READS: Pick<IdentityTransport, 'loadRegions' | 'loadPlaceNameRuns' | 'loadLeaders'> = {
+const UNUSED_ENTITY_READS: Pick<IdentityTransport, 'loadRegions' | 'loadPlaceNameRuns' | 'loadLeaderNameRuns'> = {
   loadRegions: () => deferred<StrategicRegionsReply>().promise,
   loadPlaceNameRuns: () => deferred<PlaceNameRunsReply>().promise,
-  loadLeaders: () => deferred<UnitLeadersReply>().promise,
+  loadLeaderNameRuns: () => deferred<LeaderNameRunsReply>().promise,
 };
 
 function deferred<T>() {
@@ -457,7 +457,7 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
 
   const ger149 = view.who('country', 'GER', 149);
   assert.deepEqual(ger149.name, { status: 'ready', value: 'Early Republic' });
-  assert.deepEqual(ger149.colour, { status: 'ready', value: 'rgb(51, 68, 85)' });
+  assert.deepEqual(ger149.colour, { status: 'ready', value: '#334455' });
   assert.equal(ger149.flagChoice?.status, 'ready');
   assert.deepEqual(ger149.validInterval, [0, 149]);
   assert.equal(ger149.nextChangeAt, 150);
@@ -473,7 +473,7 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
   const faction = view.who('faction', '7', 100);
   assert.deepEqual(faction.name, { status: 'ready', value: 'Berlin Pact' });
   assert.deepEqual(faction.holder, { status: 'ready', value: 'GER' });
-  assert.deepEqual(faction.colour, { status: 'ready', value: 'rgb(51, 68, 85)' });
+  assert.deepEqual(faction.colour, { status: 'ready', value: '#334455' });
   assert.equal(workerDemands.length, 0);
 
   assert.throws(() => view.who('country', 'GER', 201), FutureDataError);
@@ -741,16 +741,22 @@ test('leader, state, province and region asks each start their product read and 
         from,
         to,
         unknown: [{ firstHour: 100, lastHour: 120, reason: 'Not in this recording: the game was paused' }],
-        states: states.map(id => ({ id, runs: [{ firstHour: from, lastHour: 199, name: `State ${id}`, missing: null }, { firstHour: 200, lastHour: to, name: `Renamed ${id}`, missing: null }] })),
-        provinces: provinces.map(id => ({ id, runs: [{ firstHour: from, lastHour: to, name: null, missing: 'Province unnamed in this map' }] })),
+        states: states.map(id => ({ id, runs: [{ firstHour: from, lastHour: 199, name: `State ${id}`, missing: null, presence: 'present' }, { firstHour: 200, lastHour: to, name: `Renamed ${id}`, missing: null, presence: 'present' }] })),
+        provinces: provinces.map(id => ({ id, runs: [{ firstHour: from, lastHour: to, name: null, missing: 'Province unnamed in this map', presence: 'present' }] })),
         warnings: [],
       };
     },
-    loadLeaders: async (_scope, owner, hour) => {
-      calls.push(`leaders ${owner} ${hour}`);
+    loadLeaderNameRuns: async (_scope, owner, from, to, references) => {
+      calls.push(`leaders ${owner} ${from}-${to} ${references.join(',')}`);
       return {
-        leaders: [{ reference: 'L1', name: 'Ada Vance', role: { owner: 'ALP', kind: 0, category: 0, rank: null, attributeNames: [null, null, null, null], maximumSkill: null }, skill: 3, components: [1, 1, 1, 0], traits: null, traitDates: [], firstSeenHour: 0, fought: 0, won: 0, lost: 0 }],
-        traits: [], withheld: [], missing: null, battlesPartialFrom: null, resultsMissing: '', warnings: [],
+        from,
+        to,
+        unknown: [],
+        leaders: [
+          { reference: 'L1', runs: [{ firstHour: from, lastHour: 179, name: null, missing: 'Not a leader of this country at this hour', presence: 'absent' }, { firstHour: 180, lastHour: to, name: 'Ada Vance', missing: null, presence: 'present' }] },
+          { reference: 'L2', runs: [{ firstHour: from, lastHour: to, name: null, missing: "The leader's owner is not named at this hour", presence: 'unknown' }] },
+        ],
+        warnings: [],
       };
     },
   };
@@ -765,7 +771,7 @@ test('leader, state, province and region asks each start their product read and 
   for (let i = 0; i < 20; i++) await Promise.resolve();
   ask();
   for (let i = 0; i < 20; i++) await Promise.resolve();
-  assert.deepEqual([...calls].sort(), ['leaders ALP 150', 'places 0-500 64 7', 'regions']);
+  assert.deepEqual([...calls].sort(), ['leaders ALP 0-500 L1,L2', 'places 0-500 64 7', 'regions']);
 
   const [region, unknownRegion, state, province, leader, otherLeader] = ask();
   assert.deepEqual(region!.name, { status: 'ready', value: 'Coral Reach' });
@@ -779,8 +785,12 @@ test('leader, state, province and region asks each start their product read and 
   const worker = createSnapshotIdentityProvider(IdentityIndex.fromSnapshot(structuredClone(broker.snapshotOf(SCOPE))));
   assert.deepEqual(worker.resolve('state', '64', 110 as DisplayedHour).name, { status: 'absent', reason: 'Not in this recording: the game was paused' }, 'unknown spans cross to the worker');
   assert.deepEqual(province!.name, { status: 'absent', reason: 'Province unnamed in this map' });
-  assert.deepEqual(leader!.name, { status: 'ready', value: 'Ada Vance' });
-  assert.equal(otherLeader!.holder.status, 'absent');
+  assert.equal(leader!.holder.status, 'absent', 'a leader before it serves its owner is absent, not named');
+  assert.deepEqual(view.who('leader', 'ALP:L1', 190).name, { status: 'ready', value: 'Ada Vance' });
+  assert.deepEqual(view.who('leader', 'ALP:L1', 190).validInterval, [180, 500]);
+  assert.deepEqual(otherLeader!.holder, { status: 'absent', reason: "The leader's owner is not named at this hour" }, 'an unnamed owner is not known, never another owner and never ready');
+  assert.deepEqual(view.who('state', '64', 110).holder, { status: 'absent', reason: 'Not in this recording: the game was paused' }, 'a place inside a recording gap is not ready');
+  assert.deepEqual(worker.resolve('leader', 'ALP:L2', 150 as DisplayedHour).holder, otherLeader!.holder, 'unknown ownership crosses to the worker');
   assert.equal(calls.length, 3, 'answers inside their validity ask nothing again');
   broker.dispose();
 });
@@ -940,5 +950,5 @@ test('a status is carried, not rebuilt: unresolved holders, failures across the 
 
   assert.deepEqual(toFlagSlotState(refusedArt('Unsupported flag format')), { kind: 'refused', reason: 'Unsupported flag format' });
   assert.deepEqual(toFlagSlotState(NO_ART), { kind: 'none' });
-  assert.deepEqual(toFlagSlotState(missingArt('No flag file'), 'GER'), { kind: 'missing', tag: 'GER' });
+  assert.deepEqual(toFlagSlotState(productArt({ status: 'confirmedMissing', reason: 'No flag file' }), 'GER'), { kind: 'missing', tag: 'GER' });
 });

@@ -7,7 +7,7 @@ use engine_native_air::raid_tooltip_operands::{
 };
 use content_reader_localisation::localisation::Localisation;
 use replay_data::rows::{NukeRow, TableId, tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, Keys};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io, sync::Arc};
 #[cfg(any(test, feature = "export-types"))]
@@ -20,6 +20,9 @@ pub struct NuclearArsenal;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NuclearArsenalParams {
     pub branch_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub top: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -80,23 +83,42 @@ pub fn type_token(ordinal: u32) -> Option<u32> {
     }
 }
 
-pub(super) fn countries(rows: &[NukeRow], tag_of: impl Fn(u32) -> Option<String>) -> (Vec<NukeCountry>, usize) {
+pub(super) fn countries(rows: &[NukeRow], tag_of: impl Fn(u32) -> Option<String>) -> (Vec<NukeCountry>, usize, Vec<i32>) {
     let mut by_country: BTreeMap<u32, Vec<NukeCount>> = BTreeMap::new();
     for row in rows {
         by_country.entry(row.country).or_default().push(NukeCount { ordinal: row.nuke_type, value: NukeRow::shown(row.amount_raw), ready: row.ready });
     }
     let mut unheld = 0;
+    let mut unplaced_totals = Vec::new();
     let mut out: Vec<NukeCountry> = Vec::new();
     for (country, counts) in by_country {
+        let total = counts.iter().fold(0i32, |sum, count| sum.wrapping_add(count.value));
         let Some(tag) = tag_of(country) else {
             unheld += 1;
+            unplaced_totals.push(total);
             continue;
         };
-        let total = counts.iter().fold(0i32, |sum, count| sum.wrapping_add(count.value));
         out.push(NukeCountry { tag, country_id: country, total, counts });
     }
     out.sort_unstable_by(|a, b| b.total.cmp(&a.total).then_with(|| a.tag.cmp(&b.tag)));
-    (out, unheld)
+    (out, unheld, unplaced_totals)
+}
+
+pub(super) fn top_countries(mut countries: Vec<NukeCountry>, unplaced_totals: &[i32], holders_unresolved: bool, limit: u32) -> Result<Vec<NukeCountry>, String> {
+    countries.retain(|country| country.total > 0);
+    let count = usize::try_from(limit).unwrap_or(usize::MAX);
+    countries.truncate(count);
+    if holders_unresolved && !unplaced_totals.is_empty() {
+        let full = countries.len() >= count;
+        let floor = countries.last().map(|country| country.total);
+        let contending = unplaced_totals.iter().filter(|&&total| total > 0 && (!full || floor.is_none_or(|floor| total >= floor))).count();
+        if contending > 0 {
+            return Err(format!(
+                "The top {limit} nuclear stockpiles are not known: {contending} countries with a stockpile could not be matched to a tag at this hour and could be among them"
+            ));
+        }
+    }
+    Ok(countries)
 }
 
 pub(super) fn rerank(rank: &mut serde_json::Value, rows: &[NukeRow], country: u32, tag: &str) -> io::Result<()> {
@@ -117,11 +139,11 @@ pub(super) fn rerank(rank: &mut serde_json::Value, rows: &[NukeRow], country: u3
 
 impl AtHour for NuclearArsenal {
     const KEY: &'static str = "nuclear-arsenal";
-    const CLOCK_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     const TITLE: &'static str = "Nuclear arsenal";
     const CONTENT_DEPENDENT: bool = true;
     type Params = NuclearArsenalParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, top];
     type Reply = NuclearArsenalReply;
     type Context = Result<Arc<Localisation>, String>;
 
@@ -132,10 +154,17 @@ impl AtHour for NuclearArsenal {
 
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        super::branch(&params.branch_id)
+        super::branch(&params.branch_id)?;
+        if params.top == Some(0) {
+            return Err("top must be at least 1");
+        }
+        Ok(())
     }
 
-    fn advance(frame: &DecodedFrame, _: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
+    fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
+        if params.top.is_some() && (edits.tables.contains_key(&TableId::Nukes) || edits.replaced.contains(&TableId::Nukes)) {
+            return Ok(false);
+        }
         if !edits.only_columns(TableId::Nukes, u64::MAX) { return Ok(false); }
         let rows = frame.complete::<tables::Nukes>()?;
         let mut last = None;
@@ -175,9 +204,9 @@ impl AtHour for NuclearArsenal {
         })
     }
 
-    fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+    fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let mut reply = NuclearArsenalReply { types: Vec::new(), countries: Vec::new(), missing: None, warnings: Vec::new() };
-        let nukes = match rows::<tables::Nukes>(frame) {
+        let nukes = match dashboard_query::coverage::population::<tables::Nukes>(frame, &Keys::All) {
             Ok(nukes) => nukes,
             Err(reason) => {
                 reply.missing = Some(format!("Nuclear stockpiles are not known at this hour: {reason}"));
@@ -185,8 +214,19 @@ impl AtHour for NuclearArsenal {
             }
         };
         let named = Named::new(at.holders, frame.hour);
-        let (countries, unheld) = countries(nukes, |country| named.id(country).map(str::to_owned));
-        reply.countries = countries;
+        let (countries, unheld, unplaced_totals) = countries(nukes, |country| named.id(country).map(str::to_owned));
+        if let Some(limit) = params.top {
+            let unresolved = super::game_score::holders_unresolved(at.holders, frame.hour);
+            match top_countries(countries, &unplaced_totals, unresolved, limit) {
+                Ok(top) => reply.countries = top,
+                Err(reason) => {
+                    reply.missing = Some(reason);
+                    return Ok(reply);
+                }
+            }
+        } else {
+            reply.countries = countries;
+        }
         if unheld > 0 {
             reply.warnings.push(format!("{unheld} countries with a stockpile are held by no tag at this hour and are not shown"));
         }

@@ -8,9 +8,9 @@ export function validateMinefields(value: unknown): MinefieldsReply {
   const reply = value as MinefieldsReply;
   if (!reply || typeof reply !== 'object' || !Number.isSafeInteger(reply.scale) || reply.scale <= 0 || !strings(reply.warnings)
     || !Array.isArray(reply.regions) || !reply.regions.every(region => !!region && count(region.region) && count(region.unknownOwners)
+      && typeof region.pinned === 'boolean' && (region.missing === null || text(region.missing))
       && Array.isArray(region.owners) && region.owners.every(owner => !!owner && text(owner.tag)))
-    || !Array.isArray(reply.unknown) || !reply.unknown.every(region => !!region && count(region.region) && count(region.unknownOwners))
-    || !Array.isArray(reply.choices) || !reply.choices.every(choice => !!choice && text(choice.id) && text(choice.name)))
+    || !Array.isArray(reply.unknown) || !reply.unknown.every(region => !!region && count(region.region) && count(region.unknownOwners)))
     throw new Error('The minefields reply is malformed.');
   return reply;
 }

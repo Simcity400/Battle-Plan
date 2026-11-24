@@ -43,6 +43,7 @@ struct Params {
     #[serde(default)]
     least: bool,
     hour: Option<f64>,
+    rank_by: Option<String>,
 }
 
 #[doc = " How far the membership of a top is proven on each side of its hour, in hours."]
@@ -167,10 +168,18 @@ pub fn reply(line: &Line<'_, '_>, branch_id: &str, params: &serde_json::Value) -
     }
     let n = usize::try_from(top).ok().filter(|n| *n >= 1).ok_or_else(|| invalid("A top names one country or more"))?;
     let hour = crate::series::hour_of(params.hour, "hour")?;
-    let (tags, ranking) = match line.rank_at_by_checked(hour, n, params.least)? {
+    let by = match params.rank_by.as_deref() {
+        None => None,
+        Some(name) => {
+            let measure = line.series().measure(name).ok_or_else(|| invalid(format!("{} has no measure {name} to rank by", line.series().kind)))?;
+            Some(Line::new(line.query(), line.series(), measure)?)
+        }
+    };
+    let ranker = by.as_ref().unwrap_or(line);
+    let (tags, ranking) = match ranker.rank_at_by_checked(hour, n, params.least)? {
         Err(reason) => (Vec::new(), TileRanking { hour, from: hour, until: hour, refused: Some(reason) }),
         Ok(tags) => {
-            let (from, until) = same_top(line, hour, n, params.least, &tags)?;
+            let (from, until) = same_top(ranker, hour, n, params.least, &tags)?;
             (tags, TileRanking { hour, from, until, refused: None })
         }
     };

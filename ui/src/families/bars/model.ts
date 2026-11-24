@@ -1,6 +1,6 @@
 import type { AuditRow } from '../../draw/notifications.ts';
-import { flagArtHandle } from '../art/provider.ts';
-import { failedArt, missingArt, PENDING_ART, type ArtResult } from '../art/types.ts';
+import { flagChoiceArt } from '../art/provider.ts';
+import type { ArtResult } from '../art/types.ts';
 import { canonicalAuditValue } from '../audit.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyActionPayload, FamilyTooltipPayload, TooltipListItem } from '../host/tooltips.ts';
@@ -9,7 +9,7 @@ import { formatValueState, notRecordedLabel, type ValueFormat } from '../valueFo
 
 export type BarsForm = 'ordered' | 'two-sided' | 'share' | 'net' | 'stacked';
 
-export type BarsTwoSidedLayout = 'paired' | 'split-sides';
+export type BarsTwoSidedLayout = 'paired' | 'split-sides' | 'stacked-pair';
 
 export interface BarsRowMedia {
   readonly kind: 'none' | 'flag' | 'art';
@@ -37,16 +37,7 @@ export function countryRowPresentation(
   const labelMissing = identity.name.status === 'absent' || identity.name.status === 'failed';
   const label = identity.name.status === 'ready' ? identity.name.value : tag;
   const color = identity.colour?.status === 'ready' ? identity.colour.value : fallbackColor;
-  let art: ArtResult;
-  if (identity.flagChoice?.status === 'ready') {
-    art = readView.art(flagArtHandle(identity.flagChoice.value));
-  } else if (identity.flagChoice?.status === 'absent') {
-    art = missingArt(identity.flagChoice.reason);
-  } else if (identity.flagChoice?.status === 'failed') {
-    art = failedArt(identity.flagChoice.reason, identity.flagChoice.retryable);
-  } else {
-    art = PENDING_ART;
-  }
+  const art: ArtResult = flagChoiceArt(readView, identity.flagChoice);
   const iconUrl = art.status === 'ready' ? art.url : undefined;
   return {
     label,
@@ -132,8 +123,7 @@ export interface BarsDataRow {
   readonly media?: BarsRowMedia;
   readonly color?: string;
   readonly muted?: boolean;
-  readonly removable?: boolean;
-  readonly reorderable?: boolean;
+  readonly region?: number;
   readonly group?: 'picked' | 'auto';
   readonly value?: BarsValueField;
   readonly numeric?: number | null;
@@ -299,10 +289,26 @@ export function formatBarsValueField(field: BarsValueField): { readonly text: st
   };
 }
 
+const rowIndexes = new WeakMap<readonly BarsRow[], ReadonlyMap<string, number>>();
+
+export function barsRowIndex(model: BarsModel, key: string): number {
+  let index = rowIndexes.get(model.rows);
+  if (!index) {
+    const built = new Map<string, number>();
+    for (let i = 0; i < model.rows.length; i++) {
+      const row = model.rows[i]!;
+      if (!built.has(row.key)) built.set(row.key, i);
+      if (row.kind === 'data' && row.rightSide && !built.has(row.rightSide.key)) built.set(row.rightSide.key, i);
+    }
+    index = built;
+    rowIndexes.set(model.rows, index);
+  }
+  return index.get(key) ?? -1;
+}
+
 export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left' | 'right'): FamilyTooltipPayload | null {
-  const row = model.rows.find((item): item is BarsDataRow =>
-    item.kind === 'data' && (item.key === rowKey || item.rightSide?.key === rowKey));
-  if (!row) return null;
+  const row = model.rows[barsRowIndex(model, rowKey)];
+  if (row?.kind !== 'data') return null;
   if (side === 'right' && row.rightSide) {
     const formatted = formatBarsValueField(row.rightSide.value);
     return {
@@ -381,7 +387,7 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
   if (row.readout?.primary && !items.length && !missingReason) {
     items.push({ label: row.readout.secondary ?? 'Count', value: row.readout.primary });
   }
-  if (row.media?.art.status === 'confirmedMissing') {
+  if (row.media?.art.status === 'confirmedMissing' || row.media?.art.status === 'unavailable') {
     items.push({ label: 'Artwork', missingReason: row.media.art.reason });
   }
 
@@ -440,8 +446,8 @@ export function deriveBarsMirror(
     pushRow(i);
   }
   if (focusedKey && !hasFocused) {
-    const idx = model.rows.findIndex(r => r.key === focusedKey);
-    if (idx >= 0) pushRow(idx);
+    const idx = barsRowIndex(model, focusedKey);
+    if (idx >= 0 && model.rows[idx]!.key === focusedKey) pushRow(idx);
   }
   return { first, total: model.rows.length, rows };
 }
@@ -452,7 +458,8 @@ export function deriveBarsAudit(
 ): AuditRow[] {
   const rows: AuditRow[] = [];
   if (model.empty !== undefined && model.rows.length === 0) {
-    rows.push({ row: 'empty', key: model.emptyKind ?? 'empty', value: model.empty });
+    const key = model.emptyKind ?? 'empty';
+    rows.push({ row: key, key, value: model.empty });
     return rows;
   }
   const first = options?.window ? Math.max(0, options.window.first) : 0;
@@ -461,7 +468,7 @@ export function deriveBarsAudit(
     const item = model.rows[i]!;
     if (item.kind !== 'data') continue;
     const label = item.labelMissing ? notRecordedLabel('Name') : item.label;
-    const cell = (row: string, name: string, value: string) => rows.push({ row, key: `${row}\u0000${name}`, value });
+    const cell = (row: string, name: string, value: string) => rows.push({ row, key: `${row}:${name}`, value });
     cell(item.key, 'label', label);
     if (item.value) cell(item.key, 'value', canonicalAuditValue(item.value.value));
     if (item.left) cell(item.key, 'left', canonicalAuditValue(item.left.value.value));
@@ -475,8 +482,12 @@ export function deriveBarsAudit(
     if (item.segments?.length) {
       for (let s = 0; s < item.segments.length; s++) {
         const seg = item.segments[s]!;
-        cell(item.key, `segment:${seg.key}`, `${Math.round(seg.share * 10000)}:${canonicalAuditValue(seg.value)}`);
+        cell(item.key, `segment:${seg.key}`, `${Math.round(seg.share * 10000)}:${seg.hatched ? 'hatched:' : ''}${canonicalAuditValue(seg.value)}`);
       }
+    }
+    if (item.readout) {
+      const { primary, secondary, shortfall, tone, iconMissing } = item.readout;
+      cell(item.key, 'readout', JSON.stringify([primary, secondary ?? null, shortfall ?? null, tone ?? 'default', iconMissing === true]));
     }
   }
   return rows;

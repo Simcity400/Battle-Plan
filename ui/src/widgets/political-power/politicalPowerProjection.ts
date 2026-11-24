@@ -2,11 +2,8 @@ import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { HolderRun, HourRanges } from '../../families/holders.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { formatChartAxisValue } from '../../families/time-chart/layout.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
 import type { ChartArtSlot, ChartGap, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
@@ -33,12 +30,10 @@ export interface PoliticalPowerOptions {
 }
 
 function formatEndAmount(value: number): string {
-  if (Math.abs(value) >= 10_000) return formatChartAxisValue(value, 'power');
-  const sign = value < 0 ? '−' : '';
-  return `${sign}${Math.round(Math.abs(value)).toLocaleString('en-US')}`;
+  return formatChartAxisValue(value, 'power');
 }
 
-export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions> = registerTimeChart({
+export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions> = registerFamilyProjection({
   kind: 'political-power',
   family: 'time-chart',
   variant: 'line',
@@ -71,7 +66,7 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
       const isTail = !single && rank >= 8;
       const bounded = seriesMap?.get(tag) ?? null;
       const { name, flag } = countrySeriesIdentity(tag, options.holders, readView, hour, !single);
-      const color = isTail ? 'rgba(245, 245, 245, 0.22)' : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.politicalPower);
+      const color = isTail ? CHART_MEASURE_COLOURS.tailLine : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.politicalPower);
       const headValue = headByTag.get(tag) ?? null;
       return {
         id: tag,

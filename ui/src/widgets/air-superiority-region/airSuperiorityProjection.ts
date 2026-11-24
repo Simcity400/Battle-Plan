@@ -1,15 +1,18 @@
 import { liveKey } from '../../charts/live.ts';
-import { airMode, airParams, airPercent, airScore, regionLabel, validateAirSuperiority } from '../../dashboard/airSuperiority.ts';
+import { authoredHex, CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { airMode, airParams, airPercent, airScore, validateAirSuperiority } from '../../dashboard/airSuperiority.ts';
+import { ADD_REGION_LABEL, mostActiveHeading, PICKED_REGIONS_HEADING } from '../../families/regions/regionRows.ts';
 import { defaultCountryKey, selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection, BarsSegment } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { regionLabel } from '../../families/heat/scale.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { buildShareRowsModel, type ShareRowEntry } from '../../families/bars/shareRows.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notApplicable, notRecorded, zeroValue } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { AirRegion, AirSide, AirSuperiorityReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 
 export type AirRegionOrderOption = 'contested' | 'active' | 'name';
 
@@ -17,8 +20,6 @@ export interface AirSuperiorityProjectionOptions {
   readonly mode: 'sides' | 'viewpoint';
   readonly filteredSides: boolean;
   readonly order: AirRegionOrderOption;
-  readonly factionColours: Readonly<Record<string, string>>;
-  readonly factionNames: Readonly<Record<string, string>>;
   readonly enemyColor: string;
   readonly mutedColor: string;
 }
@@ -32,24 +33,11 @@ const AIR_REASONS: Readonly<Record<string, string>> = {
   'theatres-not-recorded': 'Air groups unavailable.',
 };
 
-function rgbCss(rgb: readonly [number, number, number]): string {
-  return `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
-}
-
-function resolveSideName(
-  side: AirSide,
-  readView: BoundedReadView,
-  options: AirSuperiorityProjectionOptions,
-): string {
+function resolveSideName(side: AirSide, readView: BoundedReadView): string {
   if (side.factions.length) {
     const names: string[] = [];
     let resolvedAll = true;
     for (const id of side.factions) {
-      const override = options.factionNames[id];
-      if (override) {
-        names.push(override);
-        continue;
-      }
       const identity = readView.who('faction', id);
       if (identity.name.status === 'ready') {
         names.push(identity.name.value);
@@ -60,7 +48,7 @@ function resolveSideName(
     }
     if (resolvedAll && names.length) return names.join(' / ');
     if (side.name) return side.name;
-    return side.factions.map(id => options.factionNames[id] ?? `Faction ${id}`).join(' / ');
+    return side.factions.map(id => `Faction ${id}`).join(' / ');
   }
   const tag = side.tag ?? side.leader;
   if (tag) {
@@ -80,12 +68,10 @@ function resolveSideColor(
   options: AirSuperiorityProjectionOptions,
 ): string {
   if (side.colourFaction) {
-    const override = options.factionColours[side.colourFaction];
-    if (override) return override;
     const factionIdentity = readView.who('faction', side.colourFaction);
     if (factionIdentity.colour?.status === 'ready') return factionIdentity.colour.value;
   }
-  if (side.color) return rgbCss(side.color);
+  if (side.color) return authoredHex(side.color);
   const tag = side.anchor?.tag ?? side.tag ?? side.leader;
   if (tag) {
     const countryIdentity = readView.who('country', tag);
@@ -100,7 +86,7 @@ function wingsText(region: AirRegion, live: ReturnType<BoundedReadView['live']>)
   const raw = live?.get(liveKey(String(region.id), 'wings'));
   if (raw === undefined) return { text: 'Wings not recorded', count: null };
   const count = Math.trunc(Number(raw));
-  return { text: `${count.toLocaleString('en-US')} air ${count === 1 ? 'wing' : 'wings'}`, count };
+  return { text: `${formatScalar(count, 'integer')} air ${count === 1 ? 'wing' : 'wings'}`, count };
 }
 
 function superiorityState(friendly: number, total: number, scale: number, badBelow: number, goodAbove: number): string {
@@ -118,8 +104,9 @@ function projectRegion(
   options: AirSuperiorityProjectionOptions,
 ): ShareRowEntry | null {
   const live = readView.live('main');
-  const name = regionLabel(region);
-  const labelMissing = region.name === null;
+  const named = regionLabel(readView, region.id, region.name);
+  const name = named.label;
+  const labelMissing = named.nameMissing !== undefined;
   const wings = wingsText(region, live);
   const cell = region.cell;
   const baseTooltip: TooltipListItem[] = [];
@@ -148,7 +135,7 @@ function projectRegion(
   if (cell.kind === 'view') {
     const side = cell.side === null ? undefined : reply.sides[cell.side];
     const vpName = side
-      ? resolveSideName(side, readView, options)
+      ? resolveSideName(side, readView)
       : cell.leader
         ? (() => {
             const id = readView.who('country', cell.leader);
@@ -158,7 +145,7 @@ function projectRegion(
     const vpColor = side
       ? resolveSideColor(side, readView, options)
       : reply.viewpointCountryStyle?.color
-        ? rgbCss(reply.viewpointCountryStyle.color)
+        ? authoredHex(reply.viewpointCountryStyle.color)
         : cell.leader
           ? (() => {
               const id = readView.who('country', cell.leader);
@@ -287,7 +274,7 @@ function projectRegion(
         hour: readView.hour,
         missingReason: reason,
         items: [
-          ...cell.unknown.map(idx => ({ label: resolveSideName(reply.sides[idx]!, readView, options), missingReason: 'Score unknown' })),
+          ...cell.unknown.map(idx => ({ label: resolveSideName(reply.sides[idx]!, readView), missingReason: 'Score unknown' })),
           { label: 'Air wings', value: wings.text },
         ],
       },
@@ -359,7 +346,7 @@ function projectRegion(
     const score = Number(scoreRaw);
     if (score <= 0) continue;
     const side = reply.sides[part.side]!;
-    const sideName = resolveSideName(side, readView, options);
+    const sideName = resolveSideName(side, readView);
     const sideColor = resolveSideColor(side, readView, options);
     const share = total > 0 ? score / total : 0;
     segments.push({
@@ -397,7 +384,7 @@ function projectRegion(
   };
 }
 
-export const airSuperiorityRegionProjection: BarsProjection<AirSuperiorityProjectionOptions> = registerBarsProjection({
+export const airSuperiorityRegionProjection: BarsProjection<AirSuperiorityProjectionOptions> = registerFamilyProjection({
   kind: 'air-superiority-region',
   family: 'bars',
   project(readView: BoundedReadView, options: AirSuperiorityProjectionOptions): BarsModel {
@@ -415,16 +402,22 @@ export const airSuperiorityRegionProjection: BarsProjection<AirSuperiorityProjec
       return buildShareRowsModel({ hour, rows: [], empty: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings });
     }
 
-    const rows: ShareRowEntry[] = [];
+    const picked: ShareRowEntry[] = [];
+    const automatic: ShareRowEntry[] = [];
     for (const region of reply.regions) {
       const entry = projectRegion(region, reply, readView, options);
-      if (entry) rows.push(entry);
+      if (entry) (region.pinned ? picked : automatic).push({ ...entry, region: region.id });
     }
 
     const knownEmpty = reply.fallback.kind !== 'reason' && reply.regions.every(region => region.wings !== 'unknown');
+    const rows = [...picked, ...automatic];
     return buildShareRowsModel({
       hour,
-      rows,
+      picked,
+      automatic,
+      pickedHeading: PICKED_REGIONS_HEADING,
+      automaticHeading: mostActiveHeading(options.mode === 'viewpoint' ? reply.viewpointCountryStyle?.name ?? null : null),
+      addRegionLabel: ADD_REGION_LABEL,
       ...(!rows.length
         ? {
             empty: knownEmpty ? 'No regions have a score or assigned wings at this time.' : 'Air activity is unknown at this time.',
@@ -437,8 +430,6 @@ export const airSuperiorityRegionProjection: BarsProjection<AirSuperiorityProjec
 });
 
 export interface AirSuperiorityAux {
-  readonly factionColours: Readonly<Record<string, string>>;
-  readonly factionNames: Readonly<Record<string, string>>;
   readonly enemyColor: string;
   readonly mutedColor: string;
 }
@@ -484,7 +475,6 @@ export const airSuperiorityRegionDeclaration: BarsWidgetDeclaration<AirSuperiori
   subject: 'air superiority',
   emptyCampaign: 'Load a campaign to see its air superiority.',
   icon: 'plane',
-  optionFields: OPTIONS,
   countries: { mode: 'none' },
   sources: airSuperioritySources,
   projection: airSuperiorityRegionProjection,
@@ -497,10 +487,8 @@ export const airSuperiorityRegionDeclaration: BarsWidgetDeclaration<AirSuperiori
       mode: mode.mode,
       filteredSides: mode.sides.length > 0,
       order,
-      factionColours: ctx.aux?.factionColours ?? {},
-      factionNames: ctx.aux?.factionNames ?? {},
-      enemyColor: ctx.aux?.enemyColor ?? '#e5484d',
-      mutedColor: ctx.aux?.mutedColor ?? '#8a8a8a',
+      enemyColor: ctx.aux?.enemyColor ?? CHART_MEASURE_COLOURS.short,
+      mutedColor: ctx.aux?.mutedColor ?? CHART_MEASURE_COLOURS.mutedFallback,
     };
   },
   jumpToDate: true,

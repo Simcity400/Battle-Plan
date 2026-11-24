@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { WidgetMeta } from '../dashboard/definitions';
-import { addOrderedToken, contentSet, moveOrderedToken, removeOrderedToken, resolveOptions, setOption } from '../dashboard/options.ts';
+import { parseStoredOptions, resolveOptions, setOption, type OptionField, type OptionValue, type WidgetOptions } from '../dashboard/options.ts';
+import { addRegion, moveRegion, readRegionChoice, regionParams, removeRegion, writeRegionChoice } from '../families/regions/regionChoice.ts';
+import { keyboardMove, regionDropAt, type RegionRowsField } from '../families/regions/regionRows.ts';
 import {
   DEFAULT_VIEW,
   declaredViewChoices,
@@ -9,10 +11,13 @@ import {
   normalizeView,
   resolveActiveView,
   scopedOptionFields,
+  viewOwnedFields,
   type FamilyViewEntry,
   type LegacyWidgetEntry,
 } from '../families/manifest.ts';
-import { bindFamilyManifest, ensureFamilyProjection, familyProjection } from '../families/registry.ts';
+import { bindFamilyManifest, ensureBoundProjection, ensureFamilyProjection, familyProjection, registeredFamilyProjections } from '../families/registry.ts';
+import { familyBinding, type FamilyBindingContext, type FamilyBindingIdentity } from '../families/host/adapter.ts';
+import type { FamilyTheme } from '../families/contract.ts';
 import {
   BARS_BEHIND_CHOICES,
   ROW_HEIGHT_CHOICES,
@@ -36,6 +41,8 @@ import {
   resolveWidgetActiveView,
   resolveWidgetScopedOptions,
   resolveWidgetViewSwitch,
+  familyViewOptionFields,
+  widgetOptionFields,
 } from './manifest.ts';
 
 test('manifest accounts for every widget kind once across family views and legacy entries', () => {
@@ -53,6 +60,63 @@ test('manifest accounts for every widget kind once across family views and legac
   for (const kind of ['factories', 'air-superiority-region', 'minefields', 'active-research', 'doctrine-mastery', 'decryption']) {
     assert.ok(familyKinds.has(kind), `${kind} must appear in FAMILY_VIEWS`);
   }
+});
+
+function otherValue(field: OptionField): OptionValue {
+  switch (field.kind) {
+    case 'toggle': return !field.default;
+    case 'choice': return field.choices.find(choice => choice.value !== field.default)?.value ?? field.default;
+    case 'number': return field.default === field.min ? field.max : field.min;
+    case 'content-choice':
+    case 'content-set': return 'GER';
+    case 'regions': return 'r:3a:16';
+    case 'table': return 'edited';
+  }
+}
+
+test('every manifest view reaches its own projection through the binding the host builds, every option its editors write is what the host reads after a reopen, and nothing registers under an undeclared view', async () => {
+  const declared = new Set(FAMILY_VIEWS.map(entry => `${entry.family}\u0000${entry.kind}\u0000${normalizeView(entry.view)}`));
+  for (const manifest of FAMILY_MANIFESTS) {
+    assert.ok(manifest.hostAdapter, `${manifest.family} has a host adapter`);
+    for (const entry of manifest.views) {
+      const view = normalizeView(entry.view);
+      const spec = await entry.loadSpec();
+      const declaration = spec.declaration as { readonly kind?: string } | undefined;
+      assert.equal(declaration?.kind ?? entry.kind, entry.kind, `${entry.kind}/${view}: the declaration is for its own kind`);
+      const ctx: FamilyBindingContext<unknown, unknown> = {
+        kind: declaration?.kind ?? entry.kind, view, options: {}, settings: {}, sources: {}, extent: [0, 100], plan: null,
+        viewport: { width: 400, height: 300, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null }, theme: {} as FamilyTheme, reducedMotion: false,
+        identitySnapshot: null, selectedKey: null, focusedKey: null, expanded: {}, audit: false, auditId: undefined, pauseFlush: 0,
+      };
+      const binding: FamilyBindingIdentity | null = familyBinding(manifest.hostAdapter!, ctx);
+      assert.ok(binding, `${entry.kind}/${view}: the ${manifest.family} adapter builds a binding`);
+      const lookup = (onReady: () => void): ReturnType<typeof ensureBoundProjection> => ensureBoundProjection(binding, onReady);
+      const found = await new Promise<ReturnType<typeof ensureBoundProjection>>(resolve => {
+        const first = lookup(() => resolve(lookup(() => {})));
+        if (first !== 'loading') resolve(first);
+      });
+      assert.equal(found, spec.projection, `${entry.kind}/${view}: the worker finds this view's projection`);
+      const selected: WidgetOptions = view === DEFAULT_VIEW ? {} : { [entry.viewOption ?? 'view']: view };
+      const read = familyViewOptionFields(entry.kind, view);
+      for (const [editor, fields] of [['settings panel', resolveWidgetScopedOptions(entry.kind, selected)], ['grid', widgetOptionFields(entry.kind, selected)]] as const) {
+        for (const field of fields) {
+          if (field.key === (entry.viewOption ?? 'view')) continue;
+          const value = otherValue(field);
+          if (value === field.default) continue;
+          const written = setOption(fields, selected, field.key, value);
+          assert.ok(written, `${entry.kind}/${view}: the ${editor} writes ${field.key}`);
+          const reopened = parseStoredOptions(JSON.parse(JSON.stringify(written)));
+          assert.ok(reopened, `${entry.kind}/${view}: ${field.key} written by the ${editor} survives a save`);
+          assert.equal(resolveOptions(read, reopened)[field.key], value, `${entry.kind}/${view}: ${field.key} written by the ${editor} is what the host reads`);
+        }
+      }
+    }
+  }
+  const kinds = new Set(FAMILY_VIEWS.map(entry => entry.kind));
+  const stray = registeredFamilyProjections()
+    .filter(entry => kinds.has(entry.kind) && !declared.has(`${entry.family}\u0000${entry.kind}\u0000${entry.view}`))
+    .map(entry => `${entry.family}/${entry.kind}/${entry.view}`);
+  assert.deepEqual(stray, [], 'every registered projection is under a view the manifest declares');
 });
 
 test('multi-view widget routes each (kind, view) to its own family or legacy entry with scoped options', () => {
@@ -204,7 +268,7 @@ test('worker projection registry loads table and bars projections lazily on dema
   const matrixWakes: number[] = [];
   const matrixView = drawnViews('heat-matrix', wid => matrixWakes.push(wid))!;
   const matrixBinding = { family: 'heat-matrix', kind: 'synthetic-heat-matrix', options: {}, sources: {}, width: 100, height: 100, scrollLeft: 0, scrollTop: 0 };
-  assert.equal(matrixView.next!({ widget: 7, subs: [], pictures: [], model: matrixBinding }, 50), 51);
+  assert.equal(matrixView.next!({ widget: 7, subs: [], pictures: [], model: matrixBinding }, 50), Infinity, 'a loading projection answers no boundary, so the lane walks no history');
   for (let i = 0; i < 16 && !matrixWakes.length; i++) await Promise.resolve();
   assert.equal(heatMatrixLoads, 1);
   assert.deepEqual(matrixWakes, [7]);
@@ -213,7 +277,7 @@ test('worker projection registry loads table and bars projections lazily on dema
   const lanesWakes: number[] = [];
   const lanesView = drawnViews('heat-lanes', wid => lanesWakes.push(wid))!;
   const lanesBinding = { family: 'heat-lanes', kind: 'synthetic-heat-lanes', options: {}, sources: {}, width: 100, height: 100, scrollTop: 0 };
-  assert.equal(lanesView.next!({ widget: 9, subs: [], pictures: [], model: lanesBinding }, 50), 51);
+  assert.equal(lanesView.next!({ widget: 9, subs: [], pictures: [], model: lanesBinding }, 50), Infinity, 'a loading projection answers no boundary, so the lane walks no history');
   for (let i = 0; i < 16 && !lanesWakes.length; i++) await Promise.resolve();
   assert.equal(heatLanesLoads, 1);
   assert.deepEqual(lanesWakes, [9]);
@@ -221,9 +285,9 @@ test('worker projection registry loads table and bars projections lazily on dema
 
   assert.deepEqual(
     FAMILY_MANIFESTS.map(entry => entry.family),
-    ['bars', 'breakdown', 'card', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline'],
+    ['bars', 'breakdown', 'card', 'flow', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline'],
   );
-  for (const family of ['bars', 'breakdown', 'card', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline']) {
+  for (const family of ['bars', 'breakdown', 'card', 'flow', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline']) {
     assert.ok(familyLaneView(family, () => {}), `familyLaneView resolves ${family}`);
   }
 });
@@ -262,17 +326,23 @@ test('shared data-driven settings controls expose bars-behind, three row heights
   assert.deepEqual(BARS_BEHIND_CHOICES.map(c => c.label), ['Every column', 'Sorted column', 'Off']);
   assert.deepEqual(ROW_HEIGHT_CHOICES.map(c => c.label), ['Compact', 'Default', 'Comfortable']);
 
-  const added1 = addOrderedToken('', 'reg_1');
-  const added2 = addOrderedToken(added1!, 'reg_2');
-  const added3 = addOrderedToken(added2!, 'reg_3');
-  assert.deepEqual(contentSet(added3!), ['reg_1', 'reg_2', 'reg_3']);
-  const moved = moveOrderedToken(added3!, 2, -1);
-  assert.deepEqual(contentSet(moved), ['reg_1', 'reg_3', 'reg_2']);
-  const removed = removeOrderedToken(moved, 'reg_3');
-  assert.deepEqual(contentSet(removed), ['reg_1', 'reg_2']);
-  const stored = setOption(fields, undefined, 'regions', removed);
-  assert.deepEqual(stored, { regions: 'reg_1 reg_2' });
-  assert.equal(resolveOptions(fields, stored!).regions, 'reg_1 reg_2');
+  const choice = moveRegion(removeRegion(addRegion(addRegion(readRegionChoice(''), 12), 4), 30), 4, 0);
+  assert.deepEqual(choice, { picks: [4, 12], hidden: [30] }, 'removing an automatic region hides it');
+  assert.deepEqual(readRegionChoice(writeRegionChoice(choice)), choice);
+  assert.deepEqual(removeRegion(choice, 12), { picks: [4], hidden: [30] }, 'removing a pick does not hide it');
+  assert.deepEqual(addRegion(choice, 30), { picks: [4, 12, 30], hidden: [] }, 'choosing a hidden region picks it');
+  assert.deepEqual(regionParams(choice), { pinnedRegions: [4, 12], hiddenRegions: [30] });
+  const stored = setOption(fields, undefined, 'regions', writeRegionChoice(choice));
+  assert.equal(resolveOptions(fields, stored!).regions, writeRegionChoice(choice));
+
+  const row = (id: number, picked: boolean, top: number) => ({ key: `r${id}`, id, label: `R${id}`, picked, top, height: 26 });
+  const shown: RegionRowsField = { rows: [row(4, true, 20), row(12, true, 50), row(7, false, 100), row(9, false, 130)], add: { top: 160, height: 26 }, nameLeft: 8 };
+  assert.deepEqual(regionDropAt(shown, shown.rows[1]!, 22), { to: 0, lineY: 20 }, 'a pick dragged above the first pick leads');
+  assert.deepEqual(regionDropAt(shown, shown.rows[2]!, 55), { to: 1, lineY: 50 }, 'an automatic row dragged among the picks becomes a pick');
+  assert.equal(regionDropAt(shown, shown.rows[3]!, 140), null, 'an automatic row dropped among the automatic rows does nothing');
+  assert.deepEqual(keyboardMove(shown.rows[0]!, 1, choice), { picks: [12, 4], hidden: [30] });
+  assert.equal(keyboardMove(shown.rows[0]!, -1, choice), null);
+  assert.deepEqual(keyboardMove(shown.rows[2]!, -1, choice), { picks: [4, 12, 7], hidden: [30] }, 'Alt+Up on an automatic row picks it');
 
   const tblDefaults = tableDefaults(cols, base);
   assert.equal(tblDefaults.density, 'normal');
@@ -324,6 +394,8 @@ test('scopedOptionFields and manifestViewSwitch support a second family view on 
   assert.equal(resolveOptions(tableFields, stored).rowHeight, otherValue, 'the table view reads the row height it stored');
   assert.equal(resolveOptions(barsFields, { ...stored, view: 'bars' }).rowHeight, rowHeightField.default, 'the bars view keeps its own row height');
   assert.equal(resolveOptions(barsFields, { ...stored, view: 'bars' }).view, 'bars', 'the view switch itself is shared by the kind');
+  const picked = setOption(barsFields, { view: 'bars' }, 'regions', 'r:3a:16')!;
+  assert.equal(resolveOptions(viewOwnedFields([regionPickerControl()], 'timeline'), picked).regions, 'r:3a:16', 'every view shows the same regions in the same order');
   assert.deepEqual(manifestViewSwitch(undefined, entries, legacy), {
     option: 'view',
     choices: [{ value: 'table', label: 'Table' }, { value: 'bars', label: 'Bars' }],

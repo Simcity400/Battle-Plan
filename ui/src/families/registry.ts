@@ -24,12 +24,8 @@ export function bindFamilyManifest(entries: readonly FamilyViewEntry[]): void {
   }
 }
 
-export function registerFamilyProjection<TModel, TOptions>(
-  projection: FamilyProjection<TModel, TOptions>,
-  view = DEFAULT_VIEW,
-  familyOverride?: FamilyId,
-): FamilyProjection<TModel, TOptions> {
-  projections.set(registryKey(familyOverride ?? projection.family, projection.kind, view), projection as FamilyProjection<any, any>);
+export function registerFamilyProjection<P extends FamilyProjection<any, any>>(projection: P, view = DEFAULT_VIEW): P {
+  projections.set(registryKey(projection.family, projection.kind, view), projection);
   return projection;
 }
 
@@ -89,4 +85,29 @@ export function ensureFamilyProjection<TModel = unknown, TOptions = unknown>(
 
 export function familyProjectionFailure(family: FamilyId, kind: string, view?: string): string | undefined {
   return failures.get(resolveLookupKey(family, kind, view));
+}
+
+export interface BoundProjectionKey {
+  readonly family: string;
+  readonly kind: string;
+  readonly view?: string;
+}
+
+export function ensureBoundProjection<TModel = unknown, TOptions = unknown>(
+  binding: BoundProjectionKey,
+  onReady: () => void,
+): FamilyProjection<TModel, TOptions> | 'loading' | 'unknown' {
+  return ensureFamilyProjection<TModel, TOptions>(binding.family as FamilyId, binding.kind, binding.view, onReady);
+}
+
+export function unknownProjectionReason(binding: BoundProjectionKey): string {
+  const view = normalizeView(binding.view);
+  const failure = familyProjectionFailure(binding.family as FamilyId, binding.kind, view);
+  return failure
+    ? `The ${binding.kind} view "${view}" did not load: ${failure}`
+    : `No ${binding.family} projection for ${binding.kind}, view "${view}"`;
+}
+
+export function retryFamilyProjection(family: FamilyId, kind: string, view?: string): void {
+  failures.delete(resolveLookupKey(family, kind, view));
 }

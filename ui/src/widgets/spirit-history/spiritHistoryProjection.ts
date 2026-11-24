@@ -1,45 +1,63 @@
 import { colour } from '../../charts/palette.ts';
-import { bridgeGaps, describeRun } from '../../charts/timeline/runState.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
+import { holdingLabel, holdingSince, holdingSpanFlags, holdingUntil, ideaHistoryProof, lookOf, unobservedThrough, validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
-import { boundedRuns, clipSpansToHour, inHourSpans, nextBoundaryAfter, sortedBoundaries, spanStart, timelineModel, untilItem, urlArtHandle, wholeBranchProof } from '../../families/timeline/helpers.ts';
+import { urlArtHandle } from '../../families/art/provider.ts';
+import { inHourSpans, timelineModel } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection } from '../../families/timeline/model.ts';
-import { registerTimelineProjection } from '../../families/timeline/registry.ts';
-import type { IdeaHistoryReply } from '../../generated/dashboard';
-import { spirits, spiritsShown, type SpiritSort } from '../national-spirits/spiritsData.ts';
-import { OPTIONS } from './definition.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
+import type { IdeaHistoryReply, IdeaHolding } from '../../generated/dashboard';
 
 export interface SpiritHistoryOptions {
-  readonly sort: SpiritSort;
   readonly showEnded: boolean;
   readonly iconsOnBars: boolean;
   readonly firstHour: number;
   readonly surface: string;
 }
 
-function boundaries(reply: IdeaHistoryReply): number[] {
-  const hours: number[] = [];
-  for (const span of reply.spans) hours.push(span.firstHour, span.lastHour + 1);
-  for (const gap of reply.unobserved) hours.push(gap.firstHour, gap.lastHour + 1);
-  return sortedBoundaries(hours);
+const NATIONAL_SPIRIT = 'national_spirit';
+const UNCLASSIFIED = 'Category not recorded';
+
+interface SpiritRow {
+  readonly token: string;
+  readonly holdings: IdeaHolding[];
+  readonly unclassified: string | null;
 }
 
-const WORDS = {
-  since: (h: number) => `Active since ${formatDateOnly(h)}`,
-  before: (h: number) => `Held before ${formatDateOnly(h)}`,
-  ended: (h: number) => `Ended ${formatDateOnly(h)}`,
-  endedBy: (h: number) => `Ended by ${formatDateOnly(h)}`,
-  lastSeen: (h: number) => `Last recorded ${formatDateOnly(h)}`,
-};
+function spiritRows(reply: IdeaHistoryReply): SpiritRow[] {
+  const spiritCategories = new Set(reply.categories.filter(category => category.kind === NATIONAL_SPIRIT).map(category => category.token));
+  const rows = new Map<string, SpiritRow>();
+  for (const holding of reply.holdings) {
+    const info = lookOf(reply, holding).info;
+    if (info.category !== null && !spiritCategories.has(info.category)) continue;
+    const row = rows.get(holding.token);
+    if (row) row.holdings.push(holding);
+    else rows.set(holding.token, { token: holding.token, holdings: [holding], unclassified: info.category === null ? info.unknown ?? 'The idea is in no category the content defines' : null });
+  }
+  return [...rows.values()];
+}
 
-export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> = registerTimelineProjection<SpiritHistoryOptions>({
+function describe(holding: IdeaHolding): string {
+  switch (holding.end.kind) {
+    case 'held':
+      return holding.start === 'heldBefore' ? `Held before ${formatDateOnly(holding.firstHour)}`
+        : holding.start === 'firstObserved' ? `First observed ${formatDateOnly(holding.firstHour)}`
+          : `Active since ${formatDateOnly(holding.firstHour)}`;
+    case 'ended': return `Ended ${formatDateOnly(holding.lastHour + 1)}`;
+    case 'endedBy': return `Ended by ${formatDateOnly(holding.end.hour)}`;
+    case 'lastSeen': return `Last recorded ${formatDateOnly(holding.lastHour)}`;
+  }
+}
+
+const ended = (holding: IdeaHolding) => holding.end.kind === 'ended' || holding.end.kind === 'endedBy';
+
+export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> = registerFamilyProjection<TimelineProjection<SpiritHistoryOptions>>({
+  family: 'timeline',
   kind: 'spirit-history',
 
   nextChange(readView) {
-    const reply = readView.panel<IdeaHistoryReply>('main');
-    return reply ? nextBoundaryAfter(boundaries(reply), readView.hour) : Infinity;
+    return readView.panel<IdeaHistoryReply>('main')?.nextChange ?? Infinity;
   },
 
   project(readView, opt) {
@@ -47,47 +65,47 @@ export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> =
     const reply = readView.panel<IdeaHistoryReply>('main');
     const base = { hour, firstHour: opt.firstHour, labelWidth: 220, iconsOnBars: opt.iconsOnBars };
     if (!reply) return timelineModel(base);
-    const nextChangeAt = nextBoundaryAfter(boundaries(reply), hour);
-    const gaps = clipSpansToHour(reply.unobserved, hour);
-    const seen = spiritsShown(spirits({ ...reply, spans: boundedRuns(reply.spans, hour) }), hour, opt.sort, opt.showEnded, gaps);
-    if (!seen.length) {
-      const classified = new Set(reply.ideas.filter(info => info.category).map(info => info.token));
-      const unclassified = reply.spans.some(span => span.firstHour <= hour && !classified.has(span.token));
-      return timelineModel(unclassified
-        ? { ...base, empty: 'National spirits not recorded: some held ideas could not be classified', emptyKind: 'unavailable', warnings: reply.warnings, nextChangeAt }
-        : { ...base, empty: 'No national spirits recorded yet', warnings: reply.warnings, nextChangeAt });
+    const nextChangeAt = reply.nextChange ?? Infinity;
+    const all = spiritRows(reply);
+    const shown = opt.showEnded ? all : all.filter(row => !ended(row.holdings.at(-1)!));
+    if (!shown.length) {
+      const empty = all.length ? 'No national spirits held'
+        : reply.unrecorded && !reply.holdings.length ? `National spirits not recorded: ${reply.unrecorded}` : 'No national spirits recorded yet';
+      return timelineModel({ ...base, empty, ...(all.length || !reply.unrecorded || reply.holdings.length ? {} : { emptyKind: 'unavailable' as const }), warnings: reply.warnings, nextChangeAt });
     }
     const fill = colour(opt.surface, 0);
-    const lanes: TimelineLane[] = seen.map(spirit => {
-      const icon = urlArtHandle(spirit.icon);
-      const spans = bridgeGaps(spirit.spans, gaps).map(span => {
-        const open = span.lastHour >= hour;
+    const lanes: TimelineLane[] = shown.map(row => {
+      const latest = row.holdings.at(-1)!;
+      const latestLook = lookOf(reply, latest);
+      const name = holdingLabel(latestLook, latest);
+      const icon = urlArtHandle(latestLook.artwork.icon);
+      const spans = row.holdings.map(holding => {
+        const look = lookOf(reply, holding);
+        const spanIcon = urlArtHandle(look.artwork.icon);
         return {
-          id: `${spirit.token}:${span.firstHour}`,
-          firstHour: span.firstHour,
-          lastHour: Math.min(span.lastHour, hour),
+          id: `${row.token}:${holding.firstHour}`,
+          firstHour: holding.firstHour,
           color: fill,
-          label: spirit.name,
-          icon,
-          iconMissing: !icon,
-          ...spanStart(span.firstHour, opt.firstHour, gaps),
-          endUnseen: !open && inHourSpans(gaps, span.lastHour + 1),
-          open,
+          label: holdingLabel(look, holding),
+          icon: spanIcon,
+          iconMissing: !spanIcon,
+          ...holdingSpanFlags(holding, hour),
+          meta: { holding },
         };
       });
-      const subtitle = describeRun(spirit.spans, hour, WORDS, gaps, opt.firstHour) ?? '';
+      const subtitle = row.unclassified ? UNCLASSIFIED : describe(latest);
       return {
-        key: spirit.token,
+        key: row.token,
         kind: 'item' as const,
-        label: spirit.name,
+        label: name,
         subtitle,
         icon,
         iconMissing: !icon,
         spans,
-        auditValue: `${spirit.name}|${subtitle}`,
+        auditValue: `${name}|${subtitle}`,
       };
     });
-    return timelineModel({ ...base, lanes, unobserved: gaps, warnings: reply.warnings, nextChangeAt });
+    return timelineModel({ ...base, lanes, unobserved: unobservedThrough(reply, hour), warnings: reply.warnings, nextChangeAt });
   },
 
   tooltip(model, hit, readView) {
@@ -95,18 +113,19 @@ export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> =
     const lane = laneByKey(model, hit.laneKey);
     if (!lane) return null;
     const span = spanAt(lane, hit);
-    const art = reply?.artwork.find(item => item.token === lane.key);
+    const at = hit.hour ?? model.hour;
+    if (!span || !reply) {
+      return { title: lane.label, subtitle: 'National spirit', hour: at, items: [{ label: 'Held', value: inHourSpans(model.unobserved, at) ? 'Not recorded' : 'Not held' }] };
+    }
+    const holding = (span.meta as { holding: IdeaHolding }).holding;
+    const look = lookOf(reply, holding);
     return {
-      title: lane.label,
-      subtitle: 'National spirit',
-      hour: hit.hour ?? model.hour,
-      items: span
-        ? [
-            { label: span.heldBefore ? 'Held before' : 'Since', value: `${span.startBy ? 'By ' : ''}${formatDateOnly(span.firstHour)}` },
-            untilItem(span, model.unobserved, hit.hour ?? model.hour, { held: 'Held now', until: 'Until' }),
-          ]
-        : [{ label: 'Held', value: inHourSpans(model.unobserved, hit.hour ?? model.hour) ? 'Not recorded' : 'Not held' }],
-      ...(art?.description ? { description: art.description } : {}),
+      title: span.label ?? lane.label,
+      subtitle: look.info.category === null ? UNCLASSIFIED : 'National spirit',
+      hour: at,
+      items: [holdingSince(holding), holdingUntil(holding)],
+      ...(look.artwork.description ? { description: look.artwork.description } : {}),
+      ...(look.info.category === null ? { note: look.info.unknown ?? 'The idea is in no category the content defines' } : {}),
     };
   },
 });
@@ -118,7 +137,6 @@ export const spiritHistoryDeclaration: TimelineWidgetDeclaration<SpiritHistoryOp
   subject: 'national spirits',
   emptyCampaign: 'Load a campaign and choose a country to see its national spirits.',
   icon: 'history',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its national spirits.' },
   jumpToDate: true,
   keyByBranch: true,
@@ -136,8 +154,9 @@ export const spiritHistoryDeclaration: TimelineWidgetDeclaration<SpiritHistoryOp
             product: 'idea-history',
             followQuery: null,
             params: { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) },
-            buildSpanParams: params => params,
-            provenInterval: wholeBranchProof,
+            buildSpanParams: (params, span) => ({ ...params, hour: span.lastHour }),
+            provenInterval: ideaHistoryProof,
+            dynamicKeys: ['hour'],
             validate: validateIdeaHistoryReply,
           },
         }]
@@ -145,7 +164,6 @@ export const spiritHistoryDeclaration: TimelineWidgetDeclaration<SpiritHistoryOp
   }),
   projection: spiritHistoryProjection,
   projectionOptions: (ctx, extra) => ({
-    sort: (ctx.options.sort as SpiritSort) ?? 'gained',
     showEnded: ctx.options.ended !== 'hidden',
     iconsOnBars: ctx.options.iconsOnBars !== false,
     firstHour: extra.extent[0],

@@ -13,10 +13,13 @@ import { SPEC, type GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
 import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
 import { DeclaredFamilyWidget, DetailWindowHost } from '../../families/host/index.ts';
+import { parseChartInspect } from '../../families/time-chart/hitTest.ts';
+import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
 import type { InstalledAction } from '../../families/plan.ts';
 import type { FactoryPartsReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
 import { COUNT_MODES, countMode, factoryMeasure, factoryParts, partRows, validateFactoryGroups, validateFactoryParts } from './factoriesData.ts';
+import { factoriesLinesDeclaration } from './factoriesLinesProjection.ts';
 import { factoriesDeclaration, type FactoriesRowMeta } from './factoriesProjection.ts';
 
 const NO_WARNINGS: string[] = [];
@@ -51,18 +54,20 @@ export default function FactoriesWidget(props: WidgetProps) {
   const mode = countMode(options.count);
   const types = useMemo(() => contentSet(options.types), [options.types]);
   const isBarsRace = view === 'race' && options.show !== 'breakdown';
+  const isLines = view === 'lines';
+  const isFamily = isBarsRace || isLines;
 
   const anchorRef = useRef<HTMLDivElement>(null);
   const [detail, setDetail] = useState<{ readonly tag: string; readonly key: string; readonly hour: GatedHour } | null>(null);
-  const gate = useGate(runtime, widget, SPEC, active && isBarsRace);
+  const gate = useGate(runtime, widget, SPEC, active && isFamily);
 
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const named = useProduct(
     runtime.client,
-    !isBarsRace && track
+    !isFamily && track
       ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'factory-groups', params: { branchId: track.branch.id } })
       : null,
-    active && !isBarsRace,
+    active && !isFamily,
     validateFactoryGroups,
     track?.source,
   );
@@ -74,22 +79,24 @@ export default function FactoriesWidget(props: WidgetProps) {
   }, [onDiagnostics, named.data]);
 
   const onActivate = useCallback((action: InstalledAction) => {
+    if (isLines && parseChartInspect(action.subject) !== null) return;
     const gated = gate.recorded(Math.floor(action.hour));
     if (gated === null) return;
     const rowMeta = action.meta as FactoriesRowMeta | null | undefined;
     setDetail({ tag: rowMeta?.tag ?? action.subject, key: rowMeta?.key ?? action.subject, hour: gated });
-  }, [gate]);
+  }, [gate, isLines]);
 
-  if (isBarsRace) {
+  if (isFamily) {
     return (
       <div ref={anchorRef} className="fh-frame">
-        <DeclaredFamilyWidget
+        {isLines ? <DeclaredFamilyWidget {...props} view="lines" adapter={timeChartHostAdapter} declaration={factoriesLinesDeclaration} onActivate={onActivate} /> : <DeclaredFamilyWidget
           {...props}
+          view="race"
           adapter={barsHostAdapter}
           declaration={factoriesDeclaration}
           selectedKey={detail?.key ?? null}
           onActivate={onActivate}
-        />
+        />}
         <DetailWindowHost
           open={detail !== null}
           subject={detail?.tag ?? null}

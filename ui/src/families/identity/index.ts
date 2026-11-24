@@ -407,16 +407,6 @@ export class IdentityIndex {
     this.resolveChanges++;
   }
 
-  addEntityRun(key: EntityIdentityKey, run: EntityRunEntry): void {
-    const id = identityKeyString(key);
-    const kept = (this.entityRuns.get(id) ?? []).filter(item => item.lastHour < run.firstHour || item.firstHour > run.lastHour);
-    kept.push(run);
-    kept.sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour);
-    this.entityRuns.set(id, kept);
-    this.entityFailures.delete(id);
-    this.resolveChanges++;
-  }
-
   replaceEntityRuns(key: EntityIdentityKey, from: number, to: number, runs: readonly EntityRunEntry[]): void {
     const id = identityKeyString(key);
     const kept = (this.entityRuns.get(id) ?? []).filter(item => item.lastHour < from || item.firstHour > to);
@@ -842,12 +832,14 @@ export class IdentityIndex {
     const before = after < 0 ? unknown.length - 1 : after - 1;
     const gap = before >= 0 && unknown[before]!.lastHour >= at ? unknown[before]! : null;
     if (gap) {
+      const unrecorded: IdentityField<never> = { kind: 'missing', reason: gap.reason };
       return {
         kind: 'known',
         entityKind: key.kind,
         valid: [gap.firstHour, gap.lastHour],
         nextBoundary: nextBoundaryOf(gap.lastHour),
-        name: { kind: 'missing', reason: gap.reason },
+        holder: unrecorded,
+        name: unrecorded,
         warnings: [],
       };
     }
@@ -877,11 +869,15 @@ export class IdentityIndex {
         : entry.artKey !== null
           ? { kind: 'known', value: entry.artKey }
           : { kind: 'missing', reason: entry.artReason ?? `${key.kind} art unavailable` };
+      const holder: IdentityField<string> = entry.holderReason === undefined
+        ? { kind: 'known', value: id }
+        : { kind: 'missing', reason: entry.holderReason };
       return {
         kind: 'known',
         entityKind: key.kind,
         valid,
         nextBoundary: nextBoundaryOf(valid[1]),
+        holder,
         name,
         ...(subtitle ? { subtitle } : {}),
         ...(artKey ? { artKey } : {}),

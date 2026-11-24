@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../boundedView.ts';
 import { IdentityIndex } from '../identity/index.ts';
-import { flagChoiceKey } from '../identity/types.ts';
+import { flagChoiceKey, parseFlagChoiceKey } from '../identity/types.ts';
 import { DomArtCache, type DomArtImage } from './domCache.ts';
 import { LaneArtCache } from './laneCache.ts';
-import { flagEntryToArt, flagImageToArt, spriteImageToArt } from './adapters.ts';
-import { artUrlForHandle, createDomArtProvider, createLaneArtProvider, flagArtHandle, laneArtDemand } from './provider.ts';
+import { drawMediaSlot, flagEntryToArt, resolveCachedArt, spriteImageToArt, toArtSlotState, toFlagSlotState } from './adapters.ts';
+import { artUrlForHandle, collectArtUrls, createDomArtProvider, createLaneArtProvider, flagArtHandle, laneArtDemand, urlArtHandle } from './provider.ts';
+import { DEFAULT_FAMILY_THEME } from '../../draw/kit.ts';
 import { fetchArtHandles, spriteResolutions } from './transport.ts';
 import type { ArtHandle } from '../plan.ts';
 import {
@@ -16,11 +17,15 @@ import {
   PENDING_ART,
   defaultArtFrame,
   failedArt,
-  missingArt,
+  productArt,
   readyArt,
   refusedArt,
   type ArtBitmap,
 } from './types.ts';
+import { IdentityBroker, type IdentityTransport } from '../identity/broker.ts';
+import type { CountryFlagChoice } from '../../generated/dashboard';
+
+const missingArt = (reason: string) => productArt({ status: 'confirmedMissing', reason });
 
 function fakeBitmap(): ArtBitmap & { closed: boolean } {
   return {
@@ -309,7 +314,6 @@ test('Rust ArtResolution on CountryFlagImage and SpriteImage passes straight thr
     png: 'asset://md/flags/USA.png',
     resolution: readyModRes,
   };
-  assert.strictEqual(flagImageToArt(flagImage), readyModRes);
   assert.strictEqual(flagEntryToArt({ url: flagImage.png, image: flagImage }), readyModRes);
 
   const spriteImage = { key: 'GFX_md_spirit_none', frame: 0, icon: null, resolution: missingSpiritRes };
@@ -346,7 +350,7 @@ test('sprite, portrait, technology and relative-path handles are asked of their 
 
   const requests: { product: string; params: unknown }[] = [];
   const ready = readyArt('art://drawn');
-  const missing = missingArt('The game generates this portrait from unrecorded inputs');
+  const missing = { status: 'unavailable', reason: 'The game generates this portrait from unrecorded inputs' } as const;
   const answered = await fetchArtHandles(async request => {
     requests.push({ product: request.product, params: request.params });
     if (request.product === 'unit-leader-portraits') return { portraits: [{ reference: '12', image: null, missing: missing.reason, resolution: missing }], warnings: [] };
@@ -373,14 +377,107 @@ test('sprite, portrait, technology and relative-path handles are asked of their 
   assert.deepEqual(resolutions[artHandleKey(portrait)], missing);
   assert.deepEqual(resolutions[artHandleKey(path)], ready);
   assert.equal(resolutions[artHandleKey(radar)]?.status, 'ready');
-  assert.deepEqual(resolutions[artHandleKey(unjoined)], missingArt('Art missing from the current installation'));
-  assert.deepEqual(resolutions[artHandleKey(absent)], missingArt('Technology artwork was not returned for this technology'));
+  assert.deepEqual(resolutions[artHandleKey(unjoined)], failedArt('The technology artwork product drew no icon and does not say why', false));
+  assert.deepEqual(resolutions[artHandleKey(absent)], failedArt('The technology artwork reply left this technology out', false));
 
   const lane = createLaneArtProvider(new LaneArtCache(), { resolutions });
-  assert.equal(lane.resolve(portrait).status, 'confirmedMissing');
+  assert.equal(lane.resolve(portrait).status, 'unavailable');
   assert.equal(artUrlForHandle(path, null, resolutions), 'art://drawn');
   const again = new Map<string, ArtHandle>();
   laneArtDemand(path, null, resolutions, urls, again);
   assert.equal(again.size, 0);
   assert.ok(urls.has('art://drawn'));
+});
+
+test('urlArtHandle, collectArtUrls, resolveCachedArt, and drawMediaSlot unify family media handling', () => {
+  assert.equal(urlArtHandle(null), null);
+  assert.equal(urlArtHandle(''), null);
+  assert.deepEqual(urlArtHandle('art://icon'), { kind: 'url', url: 'art://icon' });
+
+  const collected = collectArtUrls([
+    null,
+    undefined,
+    'art://direct',
+    urlArtHandle('art://handle'),
+    readyArt('art://ready'),
+    PENDING_ART,
+    { iconUrl: 'art://direct' },
+    { art: readyArt('art://slot') },
+  ]);
+  assert.deepEqual(collected, ['art://direct', 'art://handle', 'art://ready', 'art://slot']);
+
+  const bmp = fakeBitmap() as unknown as ImageBitmap;
+  const icons = new Map<string, ImageBitmap | null>([['art://cached', bmp]]);
+  const resolved = resolveCachedArt(readyArt('art://cached'), { icons });
+  assert.equal(resolved.status, 'ready');
+  assert.equal(resolved.bitmap, bmp);
+
+  const ops: string[] = [];
+  const ctx = {
+    save() { ops.push('save'); },
+    restore() { ops.push('restore'); },
+    beginPath() {},
+    roundRect() {},
+    fill() { ops.push('fill'); },
+    stroke() { ops.push('stroke'); },
+    clip() {},
+    drawImage() { ops.push('drawImage'); },
+    fillText() { ops.push('fillText'); },
+    measureText: (t: string) => ({ width: t.length * 6 }),
+    font: '',
+    fillStyle: '',
+    strokeStyle: '',
+    lineWidth: 1,
+    globalAlpha: 1,
+    textAlign: 'left',
+    textBaseline: 'middle',
+  } as unknown as CanvasRenderingContext2D;
+
+  drawMediaSlot(ctx, 4, 14, 18, 12, { kind: 'flag', art: readyArt('art://cached'), tag: 'GER' }, DEFAULT_FAMILY_THEME, { icons });
+  drawMediaSlot(ctx, 4, 14, 18, 18, { kind: 'art', art: readyArt('art://cached'), name: 'Tank' }, DEFAULT_FAMILY_THEME, { icons, radius: 3 });
+  assert.equal(ops.filter(op => op === 'drawImage').length, 2);
+});
+
+test('a status is the product\'s to the drawn slot: an unread table, an unrecorded hour, a refusal and a failure are never a confirmed miss', async () => {
+  const unreadTable = { status: 'unavailable', reason: 'hour 300 UnitLeaders is truncated (2 missing rows)' } as const;
+  const unrecordedHour = { status: 'unavailable', reason: 'Portrait hour not recorded: gap' } as const;
+  const refused = { status: 'refused', reason: 'visual mod refused', construct: 'sprite-render' } as const;
+  const failed = { status: 'failed', reason: 'read failed', retryable: true } as const;
+  const searched = { status: 'confirmedMissing', reason: 'no layer holds it' } as const;
+  const leaders = { unread: unreadTable, gap: unrecordedHour, refused, failed, searched };
+  const portraits = Object.keys(leaders).map(leader => ({ kind: 'portrait', leader, hour: 300 }) as const);
+  const sprites = Object.keys(leaders).map(key => ({ kind: 'sprite', key, frame: 0 }) as const);
+  const answered = await fetchArtHandles(async request => request.product === 'unit-leader-portraits'
+    ? { portraits: Object.entries(leaders).map(([reference, resolution]) => ({ reference, image: null, missing: resolution.reason, resolution })), warnings: [] }
+    : { items: Object.entries(leaders).map(([key, resolution]) => ({ key, frame: 0, icon: null, resolution })), warnings: [] },
+  { source: { id: 's', revision: 'r' }, branch: { id: '1' } } as never, [...portraits, ...sprites], new AbortController().signal);
+  const lane = createLaneArtProvider(new LaneArtCache(), { resolutions: Object.fromEntries(answered) });
+  for (const handle of [...portraits, ...sprites]) {
+    const id = handle.kind === 'portrait' ? handle.leader : handle.key;
+    const art = lane.resolve(handle);
+    assert.equal(art.status, leaders[id as keyof typeof leaders].status, `${handle.kind} ${id}`);
+    const slot = toArtSlotState(art);
+    assert.equal(slot.kind, { unread: 'missing', gap: 'missing', refused: 'refused', failed: 'failed', searched: 'missing' }[id], `${handle.kind} ${id} slot`);
+  }
+
+  const choice = (key: string): CountryFlagChoice => ({ keys: [key, key, key], reasons: [null, null, null] });
+  const flags = { unread: unreadTable, refused, searched };
+  const transport = {
+    loadFlags: async (_scope: unknown, _size: unknown, choices: readonly CountryFlagChoice[]) => ({
+      flags: [], warnings: [],
+      unavailable: choices.map((asked, flag) => ({ flag, reason: '', resolution: flags[asked.keys[0] as keyof typeof flags] })),
+    }),
+  } as unknown as IdentityTransport;
+  const broker = new IdentityBroker({ transport, clock: { now: () => 0, after: () => () => {} } });
+  const scope = { sourceId: 's', revision: 'r', branchId: '1', content: 1 };
+  broker.requestFlagChoices(scope, 'small', Object.keys(flags).map(choice));
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  for (const [key, resolution] of Object.entries(flags)) {
+    const art = flagEntryToArt(broker.flagFor(scope, 'small', choice(key)));
+    assert.equal(art.status, resolution.status, `flag ${key}`);
+    assert.equal(toFlagSlotState(art, 'AAA').kind, { unread: 'missing', refused: 'refused', searched: 'missing' }[key], `flag ${key} slot`);
+  }
+  const relayed: CountryFlagChoice = { keys: [null, 'aaa', 'aaa'], reasons: ['none drawn', null, null], searched: [true, null, null] };
+  assert.deepEqual(parseFlagChoiceKey(flagChoiceKey(relayed)), relayed, 'a completed search travels with the choice to the flag product');
+  assert.notEqual(flagChoiceKey(relayed), flagChoiceKey({ ...relayed, searched: undefined }));
 });

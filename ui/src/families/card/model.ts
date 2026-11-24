@@ -1,7 +1,7 @@
 import type { StatusMarkKind } from '../../draw/kit.ts';
 import type { AuditRow } from '../../draw/notifications.ts';
-import { flagArtHandle } from '../art/provider.ts';
-import { failedArt, missingArt, PENDING_ART, type ArtResult } from '../art/types.ts';
+import { flagChoiceArt } from '../art/provider.ts';
+import { unavailableArt, type ArtResult } from '../art/types.ts';
 import { canonicalAuditValue } from '../audit.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyTooltipPayload, TooltipListItem } from '../host/tooltips.ts';
@@ -130,25 +130,27 @@ export function assertCardModelValid(model: CardModel, displayedHour: number): v
   }
 }
 
+export function cardRowHours(model: CardModel): Readonly<Record<string, number>> {
+  const hours: Record<string, number> = {};
+  for (const row of model.rows) if (row.kind === 'item' && row.date?.hour != null) hours[row.key] = row.date.hour;
+  return hours;
+}
+
 export function cardMediaFromIcon(readView: BoundedReadView, url: string | null | undefined, missing: string | null | undefined, name?: string): CardMedia {
   if (url) {
     return { kind: 'art', art: readView.art({ kind: 'url', url }), iconUrl: url, ...(name ? { name } : {}) };
   }
-  return { kind: 'art', art: missingArt(missing ?? 'Art missing from the current installation'), ...(name ? { name } : {}) };
+  return { kind: 'art', art: unavailableArt(missing ?? 'The product drew no icon'), ...(name ? { name } : {}) };
 }
 
-export function cardFlag(readView: BoundedReadView, tag: string): { readonly media: CardMedia; readonly name: Value<string> } {
-  const identity = readView.who('country', tag);
+export function cardFlag(readView: BoundedReadView, tag: string, atHour?: number): { readonly media: CardMedia; readonly name: Value<string> } {
+  const identity = readView.who('country', tag, atHour);
   const name: Value<string> = identity.name.status === 'ready'
     ? { kind: 'known', value: identity.name.value }
     : identity.name.status === 'pending'
       ? { kind: 'known', value: tag }
       : { kind: 'notRecorded', reason: identity.name.reason };
-  let art: ArtResult;
-  if (identity.flagChoice?.status === 'ready') art = readView.art(flagArtHandle(identity.flagChoice.value));
-  else if (identity.flagChoice?.status === 'absent') art = missingArt(identity.flagChoice.reason);
-  else if (identity.flagChoice?.status === 'failed') art = failedArt(identity.flagChoice.reason, identity.flagChoice.retryable);
-  else art = PENDING_ART;
+  const art: ArtResult = flagChoiceArt(readView, identity.flagChoice);
   return { media: { kind: 'flag', art, ...(art.status === 'ready' ? { iconUrl: art.url } : {}), tag }, name };
 }
 
@@ -190,6 +192,7 @@ export function deriveCardTooltip(model: CardModel, key: string): FamilyTooltipP
   }
   const media = row.kind === 'item' ? row.art ?? row.flag : row.art;
   if (media?.art.status === 'confirmedMissing') items.push({ label: 'Art', missingReason: `${media.art.reason}; art missing from the current installation` });
+  else if (media?.art.status === 'unavailable') items.push({ label: 'Art', missingReason: media.art.reason });
   return { title, fullText: title, hour: model.hour, ...(items.length ? { items } : {}) };
 }
 
@@ -234,16 +237,25 @@ export function deriveCardAudit(model: CardModel): AuditRow[] {
       continue;
     }
     rows.push({ row: row.key, key: 'title', value: canonicalAuditValue(row.title) });
-    if (row.meter) rows.push({ row: row.key, key: 'meter', value: canonicalAuditValue(row.meter.fraction) });
+    if (row.meter) {
+      rows.push({ row: row.key, key: 'meter', value: canonicalAuditValue(row.meter.fraction) });
+      if (row.meter.text !== undefined) rows.push({ row: row.key, key: 'meterText', value: row.meter.text });
+    }
     if (row.kind === 'hero') {
-      rows.push({ row: row.key, key: 'state', value: row.state.label });
-      if (row.figure) rows.push({ row: row.key, key: 'figure', value: canonicalAuditValue(row.figure.value) });
+      rows.push({ row: row.key, key: 'state', value: `${row.state.mark}:${row.state.label}` });
+      if (row.detail !== undefined) rows.push({ row: row.key, key: 'detail', value: row.detail });
+      if (row.figure) {
+        rows.push({ row: row.key, key: 'figure', value: canonicalAuditValue(row.figure.value) });
+        rows.push({ row: row.key, key: 'caption', value: row.figure.caption });
+      }
       continue;
     }
-    if (row.date) rows.push({ row: row.key, key: 'date', value: row.date.hour === null ? 'notRecorded' : String(row.date.hour) });
+    if (row.subtitle !== undefined) rows.push({ row: row.key, key: 'subtitle', value: row.subtitle });
+    if (row.date) rows.push({ row: row.key, key: 'date', value: row.date.hour === null ? `notRecorded:${row.date.reason ?? ''}` : String(row.date.hour) });
     if (row.place) rows.push({ row: row.key, key: 'place', value: row.place });
-    if (row.figure) rows.push({ row: row.key, key: 'figure', value: canonicalAuditValue(row.figure.value) });
-    if (row.state) rows.push({ row: row.key, key: 'state', value: row.state.label });
+    if (row.figure) rows.push({ row: row.key, key: 'figure', value: `${canonicalAuditValue(row.figure.value)}${row.figure.figure ? `:${row.figure.figure}` : ''}${row.figure.muted ? ':muted' : ''}` });
+    if (row.state) rows.push({ row: row.key, key: 'state', value: `${row.state.mark}:${row.state.label}` });
+    if (row.muted) rows.push({ row: row.key, key: 'muted', value: 'true' });
   }
   return rows;
 }

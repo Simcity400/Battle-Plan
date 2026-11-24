@@ -7,6 +7,12 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
 import * as DIVISION_EQUIPMENT from '../division-equipment/definition.ts';
 import { MARKET_TABS, VIEWS, marketTableOptions } from '../international-market/definition.ts';
+import { EVENTS_TABLE_OPTIONS, OPTIONS as WORLD_TENSION_OPTIONS } from '../world-tension/definition.ts';
+
+const WORLD_TENSION_EVENTS_SCOPED_OPTIONS = [
+  ...WORLD_TENSION_OPTIONS.filter(field => field.key === 'view'),
+  ...EVENTS_TABLE_OPTIONS,
+];
 
 function tableSpec<TModule>(
   kind: string,
@@ -25,6 +31,19 @@ const GAME_SCORE_TABLE_OPTION_KEYS = new Set(['view', 'factions', 'topMeasure', 
 const GAME_SCORE_TABLE_OPTIONS = GAME_SCORE_OPTIONS.filter(field => GAME_SCORE_TABLE_OPTION_KEYS.has(field.key));
 
 export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
+  {
+    kind: 'war-contribution',
+    view: 'sides',
+    label: 'Sides',
+    family: 'table',
+    viewOption: 'view',
+    loadSpec: tableSpec(
+      'war-contribution',
+      'sides',
+      () => import('../war-contribution/sidesProjection.ts'),
+      mod => ({ projection: mod.warContributionSidesProjection, declaration: mod.warContributionSidesDeclaration }),
+    ),
+  },
   {
     kind: 'campaign-clock',
     view: DEFAULT_VIEW,
@@ -138,6 +157,19 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.rosterProjection, declaration: mod.rosterDeclaration }),
     ),
   },
+  ...(['political-power-spending', 'command-power-spending'] as const).map((kind): FamilyViewEntry => ({
+    kind,
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      kind,
+      DEFAULT_VIEW,
+      () => import('../political-power-spending/powerSpendingProjection.ts'),
+      mod => (kind === 'political-power-spending'
+        ? { projection: mod.politicalSpendingProjection, declaration: mod.politicalSpendingDeclaration }
+        : { projection: mod.commandSpendingProjection, declaration: mod.commandSpendingDeclaration }),
+    ),
+  })),
   {
     kind: 'production-lines',
     view: DEFAULT_VIEW,
@@ -310,6 +342,75 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       DEFAULT_VIEW,
       () => import('../most-decorated-divisions/mostDecoratedProjection.ts'),
       mod => ({ projection: mod.mostDecoratedProjection, declaration: mod.mostDecoratedDeclaration }),
+    ),
+  },
+  {
+    kind: 'trade-flows',
+    view: 'table',
+    label: 'Table',
+    family: 'table',
+    viewOption: 'view',
+    loadSpec: () => import('../trade-flows/tradeFlowsProjection.ts').then(mod => ({
+      family: 'table', kind: 'trade-flows', view: 'table',
+      projection: mod.tradeTableProjection, declaration: mod.tradeTableDeclaration,
+    })),
+  },
+  {
+    kind: 'world-tension',
+    view: 'events',
+    label: 'Threat events',
+    family: 'table',
+    viewOption: 'view',
+    options: WORLD_TENSION_EVENTS_SCOPED_OPTIONS,
+    loadSpec: tableSpec(
+      'world-tension',
+      'events',
+      () => import('../world-tension/worldTensionEventsProjection.ts'),
+      mod => ({ projection: mod.worldTensionEventsProjection, declaration: mod.worldTensionEventsDeclaration }),
+    ),
+  },
+  {
+    kind: 'market-ledger',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'market-ledger',
+      DEFAULT_VIEW,
+      () => import('../market-ledger/marketLedgerProjection.ts'),
+      mod => ({ projection: mod.marketLedgerProjection, declaration: mod.marketLedgerDeclaration }),
+    ),
+  },
+  {
+    kind: 'decisions',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'decisions',
+      DEFAULT_VIEW,
+      () => import('../decisions/decisionsProjection.ts'),
+      mod => ({ projection: mod.decisionsProjection, declaration: mod.decisionsDeclaration }),
+    ),
+  },
+  {
+    kind: 'event-choices',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'event-choices',
+      DEFAULT_VIEW,
+      () => import('../event-choices/eventChoicesProjection.ts'),
+      mod => ({ projection: mod.eventChoicesProjection, declaration: mod.eventChoicesDeclaration }),
+    ),
+  },
+  {
+    kind: 'event-feed',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'event-feed',
+      DEFAULT_VIEW,
+      () => import('../event-feed/eventFeedProjection.ts'),
+      mod => ({ projection: mod.eventFeedProjection, declaration: mod.eventFeedDeclaration }),
     ),
   },
 ];

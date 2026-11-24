@@ -45,7 +45,9 @@ export type TableCellKind =
   | 'status'
   | 'action'
   | 'twoWay'
-  | 'kind';
+  | 'shaded'
+  | 'kind'
+  | 'share';
 
 export type TableHeaderGroup =
   | { readonly kind: 'shortOver' }
@@ -189,6 +191,20 @@ export type TableModelSlot =
   | { readonly kind: 'refused'; readonly key: string; readonly reason: string }
   | { readonly kind: 'loading'; readonly key: string };
 
+export interface TablePaneTitle {
+  readonly name: Value<string>;
+  readonly flag?: string;
+  readonly flagPending?: boolean;
+  readonly country?: string;
+}
+
+export interface TablePane {
+  readonly key: string;
+  readonly title: TablePaneTitle;
+  readonly rows: readonly TableRow[];
+  readonly totalRow?: TableRow;
+}
+
 export interface TableModel {
   readonly columns: readonly TableColumnSpec[];
   readonly rows: readonly TableRow[];
@@ -213,10 +229,13 @@ export interface TableModel {
   readonly hideHeader?: boolean;
   readonly clockSummary?: ClockSummaryData;
   readonly totalRow?: TableRow;
+  readonly panes?: readonly TablePane[];
   readonly warnings?: readonly string[];
   readonly notes?: readonly string[];
   readonly titleSummary?: string | null;
   readonly titleSummaryPartial?: string | null;
+  readonly windowOffset?: number;
+  readonly totalRows?: number;
 }
 
 export type FlatTableRow =
@@ -256,6 +275,7 @@ export type FlatTableRow =
       readonly showDate?: boolean;
       readonly isDayEnd?: boolean;
       readonly isLiveEnd?: boolean;
+      readonly isTotal?: boolean;
     };
 
 export type TableProjection<TOptions = unknown> = FamilyProjection<TableModel, TOptions> & {
@@ -489,7 +509,37 @@ export function keepsProductOrder(model: Pick<TableModel, 'unsorted' | 'populati
   return model.unsorted === true || model.populationPartial !== undefined;
 }
 
+export function tableRank(model: TableModel, settings: TableSettings): { readonly shown: boolean; readonly markers: boolean; readonly width: number } {
+  const shown = model.rank === true && model.populationPartial === undefined && (settings.showRank === true || model.defaultRankShown === true);
+  const markers = shown && model.rankMarkers === true;
+  return { shown, markers, width: shown ? (markers ? 64 : 36) : 0 };
+}
+
 export function resolveTableRows(
+  model: TableModel,
+  settings: TableSettings,
+  expanded?: Readonly<Record<string, boolean>>,
+): FlatTableRow[] {
+  const body = resolveBodyRows(model, settings, expanded);
+  const total = model.totalRow;
+  if (!total || (total.revealAt !== undefined && total.revealAt > model.hour)) return body;
+  validateRowCells(total);
+  return [{
+    kind: 'data',
+    key: total.key,
+    name: rowNameAtHour(total, model.columns[0]?.key, model.hour),
+    row: total,
+    rank: 0,
+    level: 1,
+    parent: null,
+    isTreeGroup: false,
+    isOpen: false,
+    childCount: 0,
+    isTotal: true,
+  }, ...body];
+}
+
+function resolveBodyRows(
   model: TableModel,
   settings: TableSettings,
   expanded?: Readonly<Record<string, boolean>>,
@@ -659,6 +709,7 @@ export function resolveTableRowsIncremental(
     || prevModel.dateGrouped || model.dateGrouped
     || prevModel.gaps?.length || model.gaps?.length
     || prevModel.slots !== undefined || model.slots !== undefined
+    || prevModel.totalRow !== undefined || model.totalRow !== undefined
     || prevModel.rows.length !== model.rows.length
     || prevFlat.length !== model.rows.length
   ) return null;
@@ -822,11 +873,11 @@ export interface CellPaintModel {
 }
 
 const scaledColumn = (column: Pick<FamilyColumnLayout, 'display' | 'tone' | 'barEligible' | 'cellKind'>): boolean =>
-  column.cellKind === 'twoWay' || measuresColumn(column);
+  column.cellKind === 'twoWay' || column.cellKind === 'shaded' || measuresColumn(column);
 
 function scaleNumber(column: Pick<FamilyColumnLayout, 'cellKind'>, value: Value): number | undefined {
   const num = valueNumber(value);
-  return num !== undefined && column.cellKind === 'twoWay' ? Math.abs(num) : num;
+  return num !== undefined && (column.cellKind === 'twoWay' || column.cellKind === 'shaded') ? Math.abs(num) : num;
 }
 
 export function updateColumnMaximaIncremental(
@@ -946,7 +997,7 @@ export function resolveCellPaintModel(
     ? resolveCellAtHour(cell, hour)
     : { value: notRecorded('Not recorded'), icon: undefined, iconPending: undefined, missingName: false };
   const bar = cell
-    ? barFractionOf(cell, resolved.value, cell.maximum ?? maxima.get(column.key), column.cellKind === 'twoWay')
+    ? barFractionOf(cell, resolved.value, cell.maximum ?? maxima.get(column.key), column.cellKind === 'twoWay' || column.cellKind === 'shaded')
     : { fraction: null, alert: false };
   const tone = cell?.tone ?? column.tone ?? null;
   const country = cell?.country ?? null;
@@ -1328,7 +1379,7 @@ export interface DeclarativeColumnSpec<TRow, TOptions = unknown> extends TableCo
 }
 
 export type TableCellExtra = Partial<Pick<TableCell,
-  'secondaryValue' | 'subtext' | 'inlinePrefix' | 'inlineSubtext' | 'unitSuffix' | 'unitIcon' | 'unitIconPending' | 'missingFigure' | 'boundedDate' | 'splitBar' | 'flags' | 'icons' | 'iconStripKind' | 'artShape' | 'artName' | 'icon' | 'iconPending' | 'shortage' | 'blank' | 'actionLabel' | 'statusKind'>>;
+  'secondaryValue' | 'subtext' | 'inlinePrefix' | 'inlineSubtext' | 'unitSuffix' | 'unitIcon' | 'unitIconPending' | 'missingFigure' | 'boundedDate' | 'splitBar' | 'flags' | 'icons' | 'iconStripKind' | 'artShape' | 'artName' | 'icon' | 'iconSlot' | 'iconPending' | 'shortage' | 'blank' | 'actionLabel' | 'statusKind'>>;
 
 export interface DeclarativeTableSpec<TReply, TRow, TOptions = unknown> {
   readonly kind: string;

@@ -1,8 +1,7 @@
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
 import type { HeatMatrixModel, HeatMatrixProjection, MatrixAxisEntity, MatrixCell, MatrixCells } from '../../families/heat/matrixModel.ts';
-import { registerHeatMatrixProjection } from '../../families/heat/matrixRegistry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { CipherCounts, CipherPair } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { pairKey, percentOf } from './decryptionData.ts';
 import {
   decryptionFilterOptions,
@@ -51,7 +50,7 @@ function firstSeen(pairs: readonly CipherPair[], side: 'owner' | 'target'): numb
   return ids;
 }
 
-export const whoReadsWhomProjection: HeatMatrixProjection<DecryptionFilterOptions> = registerHeatMatrixProjection({
+export const whoReadsWhomProjection: HeatMatrixProjection<DecryptionFilterOptions> = registerFamilyProjection({
   family: 'heat-matrix',
   kind: 'decryption',
   nextChange(readView, options): number {
@@ -140,7 +139,7 @@ export const whoReadsWhomProjection: HeatMatrixProjection<DecryptionFilterOption
       warnings: reply.warnings,
     };
   },
-});
+}, 'matrix');
 
 export const whoReadsWhomDeclaration: HeatMatrixWidgetDeclaration<DecryptionFilterOptions> = {
   family: 'heat-matrix',
@@ -149,7 +148,6 @@ export const whoReadsWhomDeclaration: HeatMatrixWidgetDeclaration<DecryptionFilt
   subject: 'decryption',
   emptyCampaign: 'Load a campaign to see who reads whom.',
   icon: 'lock',
-  optionFields: OPTIONS,
   countries: { mode: 'filter', labels: true, colours: true },
   sources: decryptionSources,
   projection: whoReadsWhomProjection,

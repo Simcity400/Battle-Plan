@@ -1,12 +1,12 @@
 import { countryFromKey, countryKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsValueField } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { nextMembershipChange, nextRangesChange, type HourRanges } from '../../families/holders.ts';
 import { knownValue, notRecorded, type Value } from '../../families/value.ts';
 import type { LendLeaseBalanceReply, LendLeaseMeasure, LendLeaseRow } from '../../generated/dashboard';
-import { MEASURES, OPTIONS } from './definition.ts';
+import { MEASURES } from './definition.ts';
 
 export const LEND_LEASE_BALANCE = 'lend-lease-balance';
 const SCALE = 100000;
@@ -89,7 +89,7 @@ function missingRow(readView: BoundedReadView, key: string, reason: string): Bar
   };
 }
 
-export const lendLeaseBalanceProjection: BarsProjection<LendLeaseBalanceOptions> = registerBarsProjection({
+export const lendLeaseBalanceProjection: BarsProjection<LendLeaseBalanceOptions> = registerFamilyProjection({
   kind: LEND_LEASE_BALANCE,
   family: 'bars',
   nextChange(readView, options) {
@@ -170,7 +170,6 @@ export const lendLeaseBalanceDeclaration: BarsWidgetDeclaration<LendLeaseBalance
   subject: 'lend-lease',
   emptyCampaign: 'Load a campaign to see lend-lease.',
   icon: 'chart-bars',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

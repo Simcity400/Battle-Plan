@@ -3,7 +3,8 @@ import { formatAmount } from '../../charts/valueAxis.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artState, urlArtHandle } from '../../families/table/identityCell.ts';
+import { urlArtHandle } from '../../families/art/provider.ts';
+import { artState } from '../../families/table/identityCell.ts';
 import {
   type TableCell,
   type TableModel,
@@ -15,7 +16,7 @@ import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, zeroValue } from '../../families/value.ts';
 import type { ProductionLinesAtReply } from '../../generated/dashboard';
-import { OPTIONS, PRODUCTION_LINES_BASE, PRODUCTION_LINES_COLUMNS } from './definition.ts';
+import { PRODUCTION_LINES_BASE, PRODUCTION_LINES_COLUMNS } from './definition.ts';
 import {
   efficiencyFraction,
   efficiencyPercent,
@@ -229,7 +230,6 @@ export const productionLinesDeclaration: TableWidgetDeclaration<ProductionLinesP
   subject: 'production lines',
   emptyCampaign: 'Load a campaign and choose a country to see its production lines.',
   icon: 'grid',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its production lines.' },
   sources: productionLinesSources,
   projection: productionLinesProjection,

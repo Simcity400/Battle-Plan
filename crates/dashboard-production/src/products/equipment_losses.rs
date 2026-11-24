@@ -685,7 +685,7 @@ fn reply(
     warnings.extend(covered.warnings(combat_log));
     Ok(LossesReply {
         branch_id: params.branch_id.clone(),
-        tag: query.holders.name(&params.country, query.timeline.last),
+        tag: query.holders.nearest_name(&params.country, query.timeline.last),
         land_source: params.land_source,
         land_lower_bound: None,
         amount_scale: AMOUNT_SCALE as u32,
@@ -792,6 +792,7 @@ impl AtHour for EquipmentLossHead {
     const KEY: &'static str = "equipment-loss-head";
     const TITLE: &'static str = "Equipment losses";
     const CONTENT_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = LossHeadParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, identity, "identity.countryId", "identity.slot"];
     type Reply = LossHeadReply;

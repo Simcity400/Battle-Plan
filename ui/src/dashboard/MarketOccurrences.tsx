@@ -18,7 +18,6 @@ import { useDistinctState } from './useDistinctState';
 import type { LogCut, LogSpec } from './useLogPages';
 import { ledgerEntry, ledgerFacets, ledgerFigure, ledgerIcon, ledgerPartyName, ledgerSelection, ledgerTitle, MARKET_LEDGER, MARKET_LOG } from './marketLedger.ts';
 import type { LedgerItem, PartyState } from './marketLedger';
-import '../widgets/event-feed/eventFeed.css';
 import './market.css';
 import type { BoundWindow } from './regionTime';
 

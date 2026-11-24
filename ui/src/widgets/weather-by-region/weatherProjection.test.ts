@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { projectLaneRunsToPixels } from '../../families/heat/lanesLayout.ts';
+import { deriveLanesTooltip } from '../../families/heat/lanesModel.ts';
 import type { RegionalWeatherReply } from '../../generated/dashboard';
 import { projectWeather } from './weatherProjection.ts';
 
@@ -72,13 +73,18 @@ test('an unrecorded day is the hatch with its reason, never clear', () => {
   assert.equal(model.rows[1]!.runs[0]!.cell.kind, 'clear');
 });
 
-test('a condition reads as its name since the day it began, and a clear region as Clear', () => {
+test('a condition reads since the day it began, or observed since its first sampled day, and a clear region as Clear', () => {
   const model = projectWeather(view(48, reply(48)), OPTIONS);
   const rain = model.rows[0]!.readout!;
   assert.equal(rain.kind, 'value');
   assert.equal(rain.kind === 'value' && rain.form, 'word');
   assert.equal(rain.kind === 'value' && rain.primary, 'Light rain');
-  assert.match(rain.kind === 'value' ? rain.secondary ?? '' : '', /^Since \d+ \w{3}$/);
+  assert.match(rain.kind === 'value' ? rain.secondary ?? '' : '', /^Observed since \d+ \w{3}$/, 'the first sampled day is a bound, not the start');
+  assert.match(rain.kind === 'value' ? rain.audit ?? '' : '', /^Light rain observed since \d+ \w{3}$/);
+  const seen = reply(48);
+  const exact = { ...seen, columns: { ...seen.columns, regions: seen.columns.regions.map((region, index) => (index === 0 && region.readout?.kind === 'condition' ? { ...region, readout: { ...region.readout, since_bounded: false } } : region)) } };
+  const started = projectWeather(view(48, exact), OPTIONS).rows[0]!.readout!;
+  assert.match(started.kind === 'value' ? started.secondary ?? '' : '', /^Since \d+ \w{3}$/, 'a start the recording saw is exact');
   const clear = model.rows[1]!.readout!;
   assert.equal(clear.kind === 'value' && clear.swatch, 'hollow');
   assert.equal(model.rows[0]!.pinned, true);
@@ -103,7 +109,7 @@ test('a temperature column shows the mean of its days and a missing reading name
   });
   const model = projectWeather(view(48, data), { show: 'temperature', modifier: null, surface: SURFACE });
   const [first, second] = model.rows[0]!.runs;
-  assert.equal(first!.tooltip!.items![0]!.value, '12.5 °C');
+  assert.equal(deriveLanesTooltip(model, 0, first!.firstHour)!.items![0]!.value, '12.5 °C');
   assert.deepEqual(second!.cell, { kind: 'missing', reason: 'Weather reading was not recorded' });
   assert.deepEqual(model.rows[0]!.readout, { kind: 'missing', reason: 'Weather reading was not recorded at this hour' });
 });

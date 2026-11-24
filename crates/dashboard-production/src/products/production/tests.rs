@@ -251,16 +251,18 @@ fn a_request_reading_the_owners_rows_and_tokens_by_key_answers_as_the_panel_over
 #[test]
 fn licences_name_both_parties_by_their_countries_and_organisations_say_when_their_state_is_unread() {
     let source = recording();
-    let reply = asked(&source, entry::<ProductionLicences>(), json!({ "branchId": "1", "hour": 1_210 }));
-    let licences = reply["licences"].as_array().unwrap();
-    assert_eq!(licences.len(), 2);
-    assert_eq!((licences[0]["licensor"]["tag"].as_str(), licences[0]["licensee"]["tag"].as_str()), (Some("ITA"), Some("GER")), "the alias is GER");
-    assert_eq!((licences[0]["lent"].as_i64(), licences[0]["since"].as_i64()), (Some(2), Some(i64::from(FIRST))));
-    assert!(licences[1]["licensor"]["slot"].is_null() && licences[1]["licensor"]["tag"].is_null(), "an unlinked party is unknown, not another country");
+    let reply = asked(&source, entry::<ProductionLicences>(), json!({ "branchId": "1", "hour": 1_210, "subject": "GER" }));
+    let country = |at: &serde_json::Value| reply["countries"][at.as_u64().unwrap() as usize].as_str().map(str::to_owned);
+    let incoming = reply["incoming"].as_array().unwrap();
+    assert_eq!(incoming.len(), 1);
+    assert_eq!((country(&incoming[0]["from"]).as_deref(), incoming[0]["total"].as_str()), (Some("ITA"), Some("1")), "the alias is GER");
+    assert!(reply["partial"].as_str().is_some(), "an unlinked party is left out and said so, not counted as another country");
+    let world = asked(&source, entry::<ProductionLicences>(), json!({ "branchId": "1", "hour": 1_210 }));
+    assert_eq!(world["links"].as_array().unwrap().len(), 1);
     let early = asked(&source, entry::<IndustrialOrganisations>(), json!({ "branchId": "1", "country": "GER", "hour": 1_050 }));
     let organisations = early["organisations"].as_array().unwrap();
     assert_eq!(organisations.len(), 1, "ITA's organisation is not GER's");
-    assert!(organisations[0]["size"].is_null() && early["detailsMissing"].as_str().is_some());
+    assert!(organisations[0]["size"].is_null() && organisations[0]["detailsMissing"].as_str().is_some());
     let early_cells = cells(&early);
     assert!(cell(&early_cells, "40", "funds").is_err(), "funds not read are missing, never zero");
     let later = asked(&source, entry::<IndustrialOrganisations>(), json!({ "branchId": "1", "country": "GER", "hour": 1_150 }));
@@ -478,6 +480,7 @@ fn artwork_queries_fetch_state_continent_tokens_appearance_refs_and_reserved_nam
         branch_id: "1".into(),
         countries: Vec::new(),
         only: Some(MarketSection::Offers),
+        lease_side: None,
     };
     let mut market_held = DecodedFrame {
         branch: 1,

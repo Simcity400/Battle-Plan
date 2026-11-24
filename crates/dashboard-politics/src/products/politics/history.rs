@@ -2,18 +2,20 @@
 use dashboard_effects::ScriptedEffects;
 use dashboard_base::products::Country;
 use super::{
-    HolderTag, Holding, PoliticsRun, by_id, decimal, holdings, pieces, state::{BalanceRange, BalanceSide}, stretch_runs, tags_of, token,
-    value_at, within,
+    HolderTag, Holding, PoliticsRun, by_id, decimal, holdings, pieces,
+    state::{BALANCE_TABLES, BalanceRange, BalanceSide, NameScope, expand_scoped, raw_scripted_text, resolve_balance_name},
+    stretch_runs, tags_of, token, value_at, within,
 };
-use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, Product, check_reply_budget}};
+use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, Product, at_hour, check_reply_budget}};
 use dashboard_base::span::HourSpan;
 use dashboard_query::{Query, timeline::Stretch};
-use dashboard_text::catalogue::View;
+use dashboard_text::scripted_text::{ScriptedText, probe_unselected_tables};
 use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::rows::TableId;
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -39,6 +41,9 @@ pub struct PoliticsHistoryParams {
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub country: Option<Country>,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub hour: Option<i32>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -120,7 +125,7 @@ impl Product for PoliticsStateHistory {
     const KEY: &'static str = "politics-state-history";
     const CONTENT_DEPENDENT: bool = true;
     type Params = PoliticsHistoryParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, mode, country];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, mode, country, hour];
     type Reply = PoliticsHistoryReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -160,7 +165,7 @@ pub fn answer(query: &Query<'_>, params: &PoliticsHistoryParams, catalogue: Opti
         branch_id: params.branch_id.clone(),
         mode: params.mode,
         last_hour: Some(query.timeline.last),
-        tag: params.country.as_ref().map(|country| query.holders.name(country, query.timeline.last)),
+        tag: params.country.as_ref().map(|country| query.holders.nearest_name(country, query.timeline.last)),
         asked: params.country.clone(),
         known: Vec::new(),
         elections: Vec::new(),
@@ -174,11 +179,11 @@ pub fn answer(query: &Query<'_>, params: &PoliticsHistoryParams, catalogue: Opti
         PoliticsHistoryMode::Country => {
             let country = params.country.as_ref().ok_or_else(|| dashboard_core::invalid("A country history names its country"))?;
             let holders: Vec<u32> = held.iter().filter(|(_, held)| held.iter().any(|holding| dashboard_world::products::holder_tags::matches(country, (holding.slot, holding.id), &holding.tag))).map(|(&slot, _)| slot).collect();
-            balances(query, &held, &holders, true, catalogue, &mut reply, cancelled)?;
+            balances(query, &held, &holders, true, params.hour, catalogue, &mut reply, cancelled)?;
         }
         PoliticsHistoryMode::Memberships => {
             let holders: Vec<u32> = held.keys().copied().collect();
-            balances(query, &held, &holders, false, catalogue, &mut reply, cancelled)?;
+            balances(query, &held, &holders, false, None, catalogue, &mut reply, cancelled)?;
         }
     }
     Ok(reply)
@@ -348,36 +353,60 @@ fn tokens(history: &History, runs: &[(i32, i32, Option<Cell>)], first: i32, last
 
 struct Presentation<'a> {
     catalogue: Option<&'a Catalogue>,
+    catalogue_reason: Option<&'a str>,
     balances: Option<&'a content_reader_politics::power_balance::Database>,
 }
 
-impl Presentation<'_> {
-    fn name(&self, token: &str, names: &mut BTreeMap<String, String>, refused: &mut u64) -> Option<String> {
+impl<'a> Presentation<'a> {
+    fn resolve(
+        &self,
+        frame: Option<&'a DecodedFrame>,
+        scripted: &mut Option<Result<ScriptedText<'a>, String>>,
+        token: &str,
+        scope: NameScope,
+        names: &mut BTreeMap<String, String>,
+        refused: &mut u64,
+    ) -> (Option<String>, Option<String>) {
         if token.is_empty() {
-            return None;
+            return (None, None);
         }
         if let Some(name) = names.get(token) {
-            return Some(name.clone());
+            return (Some(name.clone()), None);
         }
-        match self.catalogue.and_then(|catalogue| catalogue.localised(token, View::Plain)) {
-            Some(text) if !(text.contains('[') && text.contains(']')) => {
+        let is_scripted = self.catalogue.and_then(|catalogue| raw_scripted_text(catalogue, token)).is_some();
+        let (resolved, reason) = resolve_balance_name(self.catalogue, self.catalogue_reason, frame, scripted, token, scope);
+        if let Some(text) = &resolved {
+            if !is_scripted {
                 names.insert(token.to_owned(), text.clone());
-                Some(text)
             }
-            _ if self.catalogue.is_some() => {
-                *refused += 1;
-                None
-            }
-            _ => None,
+        } else if self.catalogue.is_some() {
+            *refused += 1;
         }
+        (resolved, reason)
     }
 
-    fn side(&self, bytes: &[u8], names: &mut BTreeMap<String, String>, refused: &mut u64) -> BalanceSide {
+    fn side(
+        &self,
+        frame: Option<&'a DecodedFrame>,
+        scripted: &mut Option<Result<ScriptedText<'a>, String>>,
+        bytes: &[u8],
+        names: &mut BTreeMap<String, String>,
+        refused: &mut u64,
+    ) -> BalanceSide {
         let token = token(bytes);
-        BalanceSide { name: self.name(&token, names, refused), token }
+        let (name, reason) = self.resolve(frame, scripted, &token, NameScope::Empty, names, refused);
+        BalanceSide { token, name, reason }
     }
 
-    fn authored(&self, token: &str, names: &mut BTreeMap<String, String>, refused: &mut u64) -> (Option<BalanceSide>, Option<BalanceSide>, Vec<BalanceRange>) {
+    fn authored(
+        &self,
+        frame: Option<&'a DecodedFrame>,
+        scripted: &mut Option<Result<ScriptedText<'a>, String>>,
+        token: &str,
+        slot: u32,
+        names: &mut BTreeMap<String, String>,
+        refused: &mut u64,
+    ) -> (Option<BalanceSide>, Option<BalanceSide>, Vec<BalanceRange>) {
         let Some(balances) = self.balances else { return (None, None, Vec::new()) };
         let definition = balances.definition(token.as_bytes());
         let ranges = balances
@@ -386,11 +415,54 @@ impl Presentation<'_> {
             .iter()
             .map(|range| {
                 let token = super::token(&range.id);
-                BalanceRange { name: self.name(&token, names, refused), token, min: Some(range.min.to_string()), max: Some(range.max.to_string()) }
+                let (name, reason) = self.resolve(frame, scripted, &token, NameScope::Country(Some(slot)), names, refused);
+                BalanceRange { token, name, reason, min: Some(range.min.to_string()), max: Some(range.max.to_string()) }
             })
             .collect();
-        (definition.map(|definition| self.side(&definition.left, names, refused)), definition.map(|definition| self.side(&definition.right, names, refused)), ranges)
+        (
+            definition.map(|definition| self.side(frame, scripted, &definition.left, names, refused)),
+            definition.map(|definition| self.side(frame, scripted, &definition.right, names, refused)),
+            ranges,
+        )
     }
+}
+
+fn staged_history_frame(
+    query: &Query<'_>,
+    hour: i32,
+    catalogue: &Catalogue,
+    items: &[(String, NameScope)],
+) -> io::Result<Option<DecodedFrame>> {
+    if items.is_empty() || query.timeline.at(hour).is_none() {
+        return Ok(None);
+    }
+    let Ok(content) = catalogue.scripted_content() else {
+        return Ok(None);
+    };
+    let mut frames = at_hour::Frames::new(query)?;
+    let mut loaded: BTreeSet<TableId> = BALANCE_TABLES.into_iter().collect();
+    let reads: Vec<at_hour::Read> = loaded.iter().copied().map(at_hour::Read::all).collect();
+    let mut frame = frames.frame(hour, &reads, "Balance of power")?;
+    for _ in 0..8 {
+        let text = ScriptedText::new(&frame, &catalogue.localisation, content, 0);
+        let needed: Vec<TableId> = probe_unselected_tables(&frame, || {
+            for (raw, scope) in items {
+                let _ = expand_scoped(&text, raw, *scope);
+            }
+        })
+        .into_iter()
+        .filter(|table| loaded.insert(*table))
+        .collect();
+        if needed.is_empty() {
+            break;
+        }
+        let reads: Vec<at_hour::Read> = needed.iter().copied().map(at_hour::Read::all).collect();
+        let extra = frames.frame(hour, &reads, "Balance of power")?;
+        for table in needed {
+            frame.tables[table.index()] = extra.tables[table.index()].clone();
+        }
+    }
+    Ok(Some(frame))
 }
 
 fn texts(runs: impl IntoIterator<Item = (i32, i32, String)>) -> Vec<PoliticsRun> {
@@ -431,6 +503,7 @@ fn balances(
     held: &BTreeMap<u32, Vec<Holding>>,
     only: &[u32],
     whole: bool,
+    hour: Option<i32>,
     catalogue: Option<Result<Arc<Catalogue>, String>>,
     reply: &mut PoliticsHistoryReply,
     cancelled: &AtomicBool,
@@ -492,54 +565,88 @@ fn balances(
         }
     }
     reply.known = joined(query.timeline.stretches.iter().map(|stretch| (stretch.first, stretch.last)).collect());
-    let catalogue = match catalogue {
-        Some(Ok(catalogue)) => Some(catalogue),
+    let (catalogue, catalogue_reason) = match catalogue {
+        Some(Ok(catalogue)) => (Some(catalogue), None),
         Some(Err(error)) => {
             reply.warnings.push(format!("1 refused balance names: {error}"));
-            None
+            (None, Some(error))
         }
-        None => None,
+        None => (None, None),
     };
     let effects = catalogue.as_deref().map(|catalogue| catalogue.scripted_content().and_then(|content| content.effects()));
     if let Some(Err(error)) = &effects {
         reply.warnings.push(format!("1 refused balance ranges: {error}"));
     }
+    let power_balances = effects.as_ref().and_then(|effects| effects.as_ref().ok()).and_then(|effects| effects.view(None).power_balances);
     let presentation = Presentation {
         catalogue: catalogue.as_deref(),
-        balances: effects.as_ref().and_then(|effects| effects.as_ref().ok()).and_then(|effects| effects.view(None).power_balances),
+        catalogue_reason: catalogue_reason.as_deref(),
+        balances: power_balances,
+    };
+    let staged_frame = if let (Some(hour), Some(catalogue)) = (hour, catalogue.as_deref()) {
+        let mut items = Vec::new();
+        for (&slot, holder) in &gathered {
+            for balance_token in holder.values.keys() {
+                if let Some(raw) = raw_scripted_text(catalogue, balance_token) {
+                    items.push((raw, NameScope::Empty));
+                }
+                if let Some(definition) = power_balances.and_then(|db| db.definition(balance_token.as_bytes())) {
+                    for bytes in [&definition.left, &definition.right] {
+                        if let Some(raw) = raw_scripted_text(catalogue, &token(bytes)) {
+                            items.push((raw, NameScope::Empty));
+                        }
+                    }
+                }
+                if let Some(ranges) = power_balances.and_then(|db| db.ranges(balance_token.as_bytes())) {
+                    for range in ranges {
+                        if let Some(raw) = raw_scripted_text(catalogue, &token(&range.id)) {
+                            items.push((raw, NameScope::Country(Some(slot))));
+                        }
+                    }
+                }
+            }
+        }
+        staged_history_frame(query, hour, catalogue, &items)?
+    } else {
+        None
     };
     let mut refused = 0_u64;
-    for (slot, mut holder) in gathered {
-        let mut balances = Vec::new();
-        for (token, mut values) in std::mem::take(&mut holder.values) {
-            values.sort_unstable_by_key(|run| run.0);
-            let mut records = holder.records.remove(&token).unwrap_or_default();
-            records.sort_unstable_by_key(|run| run.0);
-            let mut held_ranges = holder.ranges.remove(&token).unwrap_or_default();
-            held_ranges.sort_by_key(|run| run.0);
-            let mut trending = holder.trending.remove(&token).unwrap_or_default();
-            trending.sort_by_key(|run| run.0);
-            let (left, right, ranges) = presentation.authored(&token, &mut reply.names, &mut refused);
-            balances.push(BalanceHistory {
-                name: presentation.name(&token, &mut reply.names, &mut refused),
-                token,
-                left,
-                right,
-                ranges,
-                values: decimal(values),
-                record: decimal(records),
-                range: texts(held_ranges),
-                trending: texts(trending),
+    {
+        let mut scripted = None;
+        for (slot, mut holder) in gathered {
+            let mut balances = Vec::new();
+            for (token, mut values) in std::mem::take(&mut holder.values) {
+                values.sort_unstable_by_key(|run| run.0);
+                let mut records = holder.records.remove(&token).unwrap_or_default();
+                records.sort_unstable_by_key(|run| run.0);
+                let mut held_ranges = holder.ranges.remove(&token).unwrap_or_default();
+                held_ranges.sort_by_key(|run| run.0);
+                let mut trending = holder.trending.remove(&token).unwrap_or_default();
+                trending.sort_by_key(|run| run.0);
+                let (left, right, ranges) = presentation.authored(staged_frame.as_ref(), &mut scripted, &token, slot, &mut reply.names, &mut refused);
+                let (name, _) = presentation.resolve(staged_frame.as_ref(), &mut scripted, &token, NameScope::Empty, &mut reply.names, &mut refused);
+                balances.push(BalanceHistory {
+                    name,
+                    token,
+                    left,
+                    right,
+                    ranges,
+                    values: decimal(values),
+                    record: decimal(records),
+                    range: texts(held_ranges),
+                    trending: texts(trending),
+                });
+            }
+            holder.shown.sort_by_key(|run| run.0);
+            reply.holder_balances.push(HolderBalances {
+                holder: slot.to_string(),
+                tags: held.get(&slot).map(|held| tags_of(held)).unwrap_or_default(),
+                balances,
+                shown: texts(holder.shown),
             });
         }
-        holder.shown.sort_by_key(|run| run.0);
-        reply.holder_balances.push(HolderBalances {
-            holder: slot.to_string(),
-            tags: held.get(&slot).map(|held| tags_of(held)).unwrap_or_default(),
-            balances,
-            shown: texts(holder.shown),
-        });
     }
+    drop(staged_frame);
     if refused != 0 {
         reply.warnings.push(format!("{refused} refused balance names: no plain localisation in the recorded content"));
     }

@@ -1,3 +1,4 @@
+import { authoredHex } from '../../charts/palette.ts';
 import type { DashboardSource } from '../../dashboard/client';
 import { classifyFailure, type Failure } from '../../dashboard/queryError.ts';
 import type {
@@ -28,10 +29,6 @@ import {
   type IdentityKey,
   type IdentityScope,
 } from './types.ts';
-
-function rgbCss(rgb: readonly [number, number, number]): string {
-  return `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
-}
 
 function failedFieldStatus(failure: Failure): FieldStatus<never> {
   return {
@@ -146,7 +143,7 @@ export function identityResultFromIndex(
       holder,
       tag: toFieldStatus(res.tag),
       name: toFieldStatus(res.name),
-      colour: toFieldStatus(res.color, rgbCss),
+      colour: toFieldStatus(res.color, authoredHex),
       flagChoice: toFieldStatus(res.flagChoice, flagChoiceKey),
       validInterval: res.valid,
       nextChangeAt: res.nextBoundary,
@@ -199,7 +196,7 @@ export function identityResultFromIndex(
       atHour,
       holder: toFieldStatus(res.leader),
       name: toFieldStatus(res.name),
-      colour: toFieldStatus(res.color, rgbCss),
+      colour: toFieldStatus(res.color, authoredHex),
       validInterval: res.valid,
       nextChangeAt: res.nextBoundary,
     };
@@ -245,7 +242,7 @@ export function identityResultFromIndex(
     kind,
     key,
     atHour,
-    holder: { status: 'ready', value: key },
+    holder: toFieldStatus(res.holder, () => key),
     name: toFieldStatus(res.name),
     validInterval: res.valid,
     nextChangeAt: res.nextBoundary,

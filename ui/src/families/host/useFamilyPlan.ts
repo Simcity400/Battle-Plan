@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { IconName } from '../../components/Icons';
 import { validateProductReply, type ProductRequest } from '../../dashboard/client.ts';
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
@@ -8,12 +8,13 @@ import type { WidgetRuntime } from '../../dashboard/definitions';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
+import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { inFrame } from '../../dashboard/frameUpdates.ts';
 import { countryMatch, countryMatchChangeHours, groupUnobserved, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
 import { resolveWindow, type WidgetSpec } from '../../dashboard/model';
 import { resolveOptions, type OptionField, type OptionValue } from '../../dashboard/options';
 import { prepareGate, preparing } from '../../dashboard/prepare.ts';
-import { useFollowedProduct, useFollowedProducts, useProduct } from '../../dashboard/products';
+import { loadProduct, peekProduct, productKey, useProduct } from '../../dashboard/products';
 import { asFailure, type Failure } from '../../dashboard/queryError.ts';
 import { useCountryNameAt } from '../../dashboard/reachedProduct';
 import { useGate } from '../../dashboard/regionGate';
@@ -23,6 +24,7 @@ import { keyId, keyedTileParams, keyedTileReply, type SeriesKey } from '../../da
 import type { TileReply } from '../../dashboard/tiles/tile.ts';
 import { TileView, tileCache, type TiledLine, type TileViewport } from '../../dashboard/tiles/view.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { countRead, measuredWidget } from '../../dashboard/widgetPerf.ts';
 import { useRegion, useRegionCoverage, watchBoundary } from '../../dashboard/widgetTime';
 import type { CountryFlagChoice, HourSpan } from '../../generated/dashboard';
 import { perfLog } from '../../shell/perf.ts';
@@ -30,23 +32,15 @@ import { sharedDomArtCache } from '../art/domCache.ts';
 import { createDomArtProvider } from '../art/provider.ts';
 import { boundedUnrecorded, createBoundedReadView, displayedHour, type UnrecordedLine } from '../boundedView.ts';
 import {
-  boundedEntries,
-  buildPlaybackBoundedRequest,
-  buildStaticRequest,
+  buildTailPageRequest,
   compileFollowPlan,
-  composeProof,
   currentHovers,
   FamilySourceBroker,
   hoverAsks,
   type HeldHover,
   planSignature,
-  playbackIdleInterval,
-  primaryStaticEntry,
   readPlanExact,
-  resolvePlaybackProvenInterval,
   stabilizeCanvasDimension,
-  type PlaybackBoundedSpec,
-  type StaticRequestSpec,
 } from '../broker.ts';
 import type { HolderRun } from '../holders.ts';
 import { overlapsHourRanges } from '../holders.ts';
@@ -78,15 +72,33 @@ import type {
   SourcePlan,
 } from '../plan.ts';
 import {
+  askUnits,
+  reaskedUnits,
+  settleUnits,
+  showBundle,
+  unitEntries,
+  UnitReads,
+  watchSpan,
+  type ReadUnit,
+  type Settlement,
+  type ShownBundle,
+  type UnitResult,
+} from '../readUnits.ts';
+import {
   buildCountryLooksFromIdentity,
   effectiveCountryUnobserved,
   extractFactionData,
   freezeGate,
-  resolveDisplayedStaticSnapshot,
   selectionUnobservedReason,
-  type DisplayedStaticSnapshot,
   type FrozenGate,
 } from '../sources.ts';
+import {
+  DEFAULT_TAIL_PAGE_SIZE,
+  validateGenericTailReply,
+  type DatedLogRow,
+  type PagedRowsSnapshot,
+} from '../table/rowSource.ts';
+import type { FamilyRowWindow } from './adapter.ts';
 
 const NO_TAGS: readonly string[] = [];
 const NO_LOOKS: CountryLooksMap = {};
@@ -122,25 +134,8 @@ function buildFilterTimeline(
   return { passing, unrecorded, bounds };
 }
 
-interface BoundRead {
-  readonly entry: SourceEntry;
-  readonly anchorHour: number | null;
-  readonly span: readonly [number, number] | null;
-  readonly data: unknown;
-}
-
-interface BoundBatch {
-  readonly reads: readonly BoundRead[];
-  readonly failure: Failure | null;
-}
-
-const NO_SPECS: readonly (StaticRequestSpec | null)[] = [];
-
-function askedHour(spec: StaticRequestSpec | PlaybackBoundedSpec | null): number | null {
-  return spec && 'anchorHour' in spec ? spec.anchorHour : null;
-}
-
-const NO_ANCHORS: Readonly<Record<string, number>> = Object.freeze({});
+const NO_UNITS: readonly ReadUnit[] = [];
+const NO_RESULTS: ReadonlyMap<string, UnitResult> = new Map();
 
 export interface StaticBundle {
   readonly hour: number;
@@ -192,6 +187,8 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly followRefused: string | null;
   readonly staticBundle: StaticBundle | null;
   readonly staticHeld: boolean;
+  readonly pagedRows: Readonly<Record<string, PagedRowsSnapshot>> | undefined;
+  readonly onRowWindow: (window: FamilyRowWindow, hour: number | null) => void;
   readonly tiledSeries: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly tiledRevision: number;
   readonly onSeriesViewport: (viewport: TileViewport) => void;
@@ -734,7 +731,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
                 sourceId: entry.source.id,
                 revision: entry.source.revision,
                 product: 'series-tiles',
-                params: { branchId: entry.branch, family: read.family, binHours, index, top: readTop.n, ...(readTop.least ? { least: true } : {}), hour: gated, ...(read.marks ? { withMarks: true } : {}) },
+                params: { branchId: entry.branch, family: read.family, binHours, index, top: readTop.n, ...(readTop.least ? { least: true } : {}), ...(readTop.by ? { rankBy: readTop.by } : {}), hour: gated, ...(read.marks ? { withMarks: true } : {}) },
               });
               return validateProductReply(await runtime.client.product<TileReply>(request, new AbortController().signal), request).data;
             },
@@ -804,6 +801,156 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     hoverBrokerRef.current = null;
   }, []);
 
+  interface HeldPagedEntry {
+    readonly identity: string;
+    readonly headLimit: number;
+    readonly pageSize: number;
+    frozenHour: number | null;
+    readonly pages: Map<number, readonly DatedLogRow[]>;
+    readonly refusals: Map<number, string>;
+    readonly inFlight: Set<number>;
+  }
+  const pageBrokerRef = useRef<FamilySourceBroker | null>(null);
+  const pagedHeldRef = useRef<{ sig: string; entries: Map<string, HeldPagedEntry> }>({ sig: '', entries: new Map() });
+  const [pagedRowsState, setPagedRowsState] = useState<{ readonly sig: string; readonly map: Readonly<Record<string, PagedRowsSnapshot>> }>({ sig: '', map: {} });
+  const pagedPlanRef = useRef<{ plan: SourcePlan | null; sig: string; active: boolean }>({ plan, sig, active });
+  pagedPlanRef.current = { plan, sig, active };
+
+  const publishPagedRows = useCallback((forSig: string) => {
+    const held = pagedHeldRef.current;
+    if (held.sig !== forSig) return;
+    const map: Record<string, PagedRowsSnapshot> = {};
+    for (const [name, state] of held.entries) {
+      map[name] = {
+        identity: state.identity,
+        frozenHour: state.frozenHour,
+        headLimit: state.headLimit,
+        pageSize: state.pageSize,
+        pages: Object.fromEntries(state.pages),
+        refusals: Object.fromEntries(state.refusals),
+      };
+    }
+    setPagedRowsState({ sig: forSig, map });
+  }, []);
+
+  useEffect(() => {
+    pageBrokerRef.current?.dispose();
+    pageBrokerRef.current = null;
+    pagedHeldRef.current = { sig, entries: new Map() };
+    setPagedRowsState({ sig, map: {} });
+  }, [sig]);
+
+  useEffect(() => () => {
+    pageBrokerRef.current?.dispose();
+    pageBrokerRef.current = null;
+  }, []);
+
+  const onRowWindow = useCallback((rowWindow: FamilyRowWindow, installedHour: number | null) => {
+    const { plan: curPlan, sig: curSig, active: curActive } = pagedPlanRef.current;
+    if (!curPlan || !curActive) return;
+    const pagedEntries = curPlan.entries.filter(
+      (entry): entry is SourceEntry & { readonly read: Extract<SourceEntry['read'], { shape: 'paged-rows' }> } => entry.read.shape === 'paged-rows',
+    );
+    if (!pagedEntries.length) return;
+    if (pagedHeldRef.current.sig !== curSig) {
+      pageBrokerRef.current?.dispose();
+      pageBrokerRef.current = null;
+      pagedHeldRef.current = { sig: curSig, entries: new Map() };
+    }
+    if (!pageBrokerRef.current) pageBrokerRef.current = new FamilySourceBroker();
+    const pageBroker = pageBrokerRef.current;
+    const first = Math.max(0, Math.floor(rowWindow.first));
+    const count = Math.max(0, Math.floor(rowWindow.count));
+    const end = first + count;
+    let changed = false;
+
+    for (const entry of pagedEntries) {
+      const headLimit = Math.max(1, entry.read.tailQuery.limit);
+      const pageSize = Math.max(1, entry.read.pageSize ?? DEFAULT_TAIL_PAGE_SIZE);
+      const identity = `${entry.source.id}|${entry.branch}|${entry.name}`;
+      let state = pagedHeldRef.current.entries.get(entry.name);
+      if (!state) {
+        state = { identity, headLimit, pageSize, frozenHour: null, pages: new Map(), refusals: new Map(), inFlight: new Set() };
+        pagedHeldRef.current.entries.set(entry.name, state);
+      }
+
+      if (first === 0 && end <= headLimit) {
+        if (state.frozenHour !== null || state.pages.size > 0 || state.refusals.size > 0 || state.inFlight.size > 0) {
+          for (const offset of state.inFlight) pageBroker.cancelSlot(`page:${entry.name}:${offset}`);
+          state.inFlight.clear();
+          state.frozenHour = null;
+          state.pages.clear();
+          state.refusals.clear();
+          changed = true;
+        }
+        continue;
+      }
+
+      if (end <= headLimit || installedHour === null || !Number.isFinite(installedHour)) continue;
+      const hour = Math.floor(installedHour);
+      if (state.frozenHour !== null && hour < state.frozenHour) {
+        for (const offset of state.inFlight) pageBroker.cancelSlot(`page:${entry.name}:${offset}`);
+        state.inFlight.clear();
+        state.frozenHour = null;
+        state.pages.clear();
+        state.refusals.clear();
+        changed = true;
+      }
+      if (state.frozenHour === null) {
+        state.frozenHour = hour;
+        changed = true;
+      }
+      const frozenHour = state.frozenHour;
+      const startPage = Math.max(0, Math.floor((Math.max(first, headLimit) - headLimit) / pageSize));
+      const endPage = Math.floor((end - 1 - headLimit) / pageSize);
+      const wanted = new Set<number>();
+      for (let p = startPage; p <= endPage; p++) wanted.add(headLimit + p * pageSize);
+
+      for (const offset of [...state.inFlight]) {
+        if (!wanted.has(offset)) {
+          state.inFlight.delete(offset);
+          pageBroker.cancelSlot(`page:${entry.name}:${offset}`);
+        }
+      }
+
+      for (const offset of wanted) {
+        if (state.pages.has(offset) || state.refusals.has(offset) || state.inFlight.has(offset)) continue;
+        const req = buildTailPageRequest(entry, { offset, limit: pageSize, hour: frozenHour });
+        if (!req) continue;
+        state.inFlight.add(offset);
+        const heldState = state;
+        const validate = entry.read.validate ?? validateGenericTailReply;
+        pageBroker.runSlot(
+          `page:${entry.name}:${offset}`,
+          `${curSig}|${entry.name}|${frozenHour}|${offset}|${pageSize}`,
+          async signal => {
+            const reply = validateProductReply(await runtime.client.product(req, signal), req);
+            return validate(reply.data, frozenHour);
+          },
+          tail => {
+            if (pagedHeldRef.current.sig !== curSig || heldState.frozenHour !== frozenHour) return;
+            heldState.inFlight.delete(offset);
+            heldState.refusals.delete(offset);
+            heldState.pages.set(offset, tail.rows);
+            publishPagedRows(curSig);
+          },
+          error => {
+            if (pagedHeldRef.current.sig !== curSig || heldState.frozenHour !== frozenHour) return;
+            heldState.inFlight.delete(offset);
+            heldState.refusals.set(offset, asFailure(error).message);
+            publishPagedRows(curSig);
+          },
+        );
+      }
+    }
+    if (changed) publishPagedRows(curSig);
+  }, [runtime.client, publishPagedRows]);
+
+  const pagedRows = useMemo(
+    () => (pagedRowsState.sig === sig && Object.keys(pagedRowsState.map).length ? pagedRowsState.map : undefined),
+    [pagedRowsState, sig],
+  );
+
   const currentTiled = tiledState.key === pixelBinnedKey ? tiledState : null;
   const trackOffset = track?.axisOffset ?? 0;
 
@@ -854,117 +1001,132 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     );
   }, [following, active, runtime.clock, trackOffset, tileLo, tileHi]);
 
-  const bounded = useMemo(
-    () => boundedEntries(plan, following, compiledFollow.subscriptions),
+  const entries = useMemo(
+    () => unitEntries(plan, following, compiledFollow.subscriptions),
     [plan, following, compiledFollow.subscriptions],
   );
-  const singleEntry = bounded[0] ?? null;
-  const batchEntries = useMemo(() => bounded.slice(1), [bounded]);
-  const playbackBounded = following && bounded.length > 0;
-  const usesStatic = !following || playbackBounded;
   const frozenGate = useMemo(
     () => freezeGate(gate, track ? (hour: number) => coverageSpan(track, hour) : undefined),
     [gate.open, track, countryTag, singleCountry?.aliases, singleCountry?.historyHeld],
   );
+  const content = useContentRevision(runtime.client);
+  const displayHour = pinHour ?? Math.floor(window?.lastHour ?? effectiveEndHour);
+  const branch = track?.branch;
 
-  const [playbackAnchorHour, setPlaybackAnchorHour] = useState<number>(() => Math.floor(runtime.clock.getHour()) + trackOffset);
-  const [entryAnchorState, setEntryAnchors] = useState<{ readonly sig: string; readonly anchors: Readonly<Record<string, number>> }>({ sig: '', anchors: NO_ANCHORS });
-  const entryAnchors = entryAnchorState.sig === sig ? entryAnchorState.anchors : NO_ANCHORS;
-  const firstAnchorsRef = useRef<{ sig: string; anchors: Record<string, number> }>({ sig: '', anchors: {} });
-  if (firstAnchorsRef.current.sig !== sig) firstAnchorsRef.current = { sig, anchors: {} };
-  const anchorOf = (name: string): number => entryAnchors[name] ?? (firstAnchorsRef.current.anchors[name] ??= playbackAnchorHour);
+  const askedRef = useRef<{ readonly owner: string; readonly following: boolean; readonly hours: Map<string, number> }>({ owner: '', following: false, hours: new Map() });
+  if (askedRef.current.owner !== owner || askedRef.current.following !== following) askedRef.current = { owner, following, hours: new Map() };
+  const [askedRevision, setAskedRevision] = useState(0);
 
-  const playbackOptions = useMemo(
-    () => (ctx ? { branch: ctx.branch, effectiveEndHour, currentHour: playbackAnchorHour, gate: frozenGate, countriesKnown: countriesState.known } : null),
-    [ctx, effectiveEndHour, playbackAnchorHour, frozenGate, countriesState.known],
-  );
-  const pinnedOptions = useMemo(
-    () => (ctx ? { timeMode: widget.time.mode, branch: ctx.branch, window, pinHour, gate: frozenGate, countriesKnown: countriesState.known } : null),
-    [ctx, widget.time.mode, window, pinHour, frozenGate, countriesState.known],
-  );
-
-  const playbackSpec = useMemo<PlaybackBoundedSpec | null>(
-    () => (playbackBounded && playbackOptions ? buildPlaybackBoundedRequest(singleEntry, playbackOptions) : null),
-    [playbackBounded, playbackOptions, singleEntry],
-  );
-
-  const staticSpec = useMemo<StaticRequestSpec | null>(() => {
-    if (!plan || !ctx) return null;
-    if (following) return playbackSpec;
-    return pinnedOptions ? buildStaticRequest(singleEntry, pinnedOptions) : null;
-  }, [following, playbackSpec, plan, ctx, pinnedOptions, singleEntry]);
-
-  const batchSpecs = useMemo<readonly (StaticRequestSpec | PlaybackBoundedSpec | null)[]>(() => {
-    if (!batchEntries.length) return NO_SPECS;
-    if (following) {
-      return playbackBounded && playbackOptions
-        ? batchEntries.map(entry => buildPlaybackBoundedRequest(entry, { ...playbackOptions, currentHour: anchorOf(entry.name) }))
-        : NO_SPECS;
+  const units = useMemo<readonly ReadUnit[]>(() => {
+    if (!branch || !entries.length) return NO_UNITS;
+    if (!following) {
+      return askUnits(entries, {
+        following: false,
+        trackOffset,
+        content,
+        displayHour,
+        pinned: { timeMode: widget.time.mode, branch, window, pinHour, gate: frozenGate, countriesKnown: countriesState.known },
+      });
     }
-    return pinnedOptions ? batchEntries.map(entry => buildStaticRequest(entry, pinnedOptions)) : NO_SPECS;
-  }, [batchEntries, following, playbackBounded, playbackOptions, pinnedOptions, entryAnchors]);
-  const batchLive = useMemo(() => batchSpecs.filter((spec): spec is StaticRequestSpec => spec !== null), [batchSpecs]);
-  const batchRequests = useMemo(() => batchLive.map(spec => spec.request), [batchLive]);
-  const batchMoving = useMemo(() => [...new Set(batchLive.flatMap(spec => spec.dynamicKeys))], [batchLive]);
-  const batchProduct = useFollowedProducts<unknown>(
-    runtime.client,
-    batchRequests,
-    batchMoving,
-    active && usesStatic && batchLive.length > 0,
-    undefined,
-    track?.source,
+    const hours = askedRef.current.hours;
+    const names = new Set(entries.map(entry => entry.name));
+    for (const name of [...hours.keys()]) if (!names.has(name)) hours.delete(name);
+    const now = Math.floor(runtime.clock.getHour()) + trackOffset;
+    return askUnits(entries, {
+      following: true,
+      trackOffset,
+      content,
+      askedAt: name => {
+        let at = hours.get(name);
+        if (at === undefined) hours.set(name, at = now);
+        return at;
+      },
+      playback: { branch, effectiveEndHour, gate: frozenGate, countriesKnown: countriesState.known },
+    });
+  }, [owner, branch, entries, following, trackOffset, content, displayHour, widget.time.mode, window, pinHour, frozenGate, countriesState.known, runtime.clock, effectiveEndHour, askedRevision]);
+
+  const perfWidget = measuredWidget();
+  const readInputs = useRef({ client: runtime.client, source: track?.source, content, perfWidget });
+  readInputs.current = { client: runtime.client, source: track?.source, content, perfWidget };
+  const [, setResultsRevision] = useState(0);
+  const readsRef = useRef<UnitReads | null>(null);
+  const unitReads = (): UnitReads => readsRef.current ??= new UnitReads(
+    (unit, signal, restart) => {
+      const { client, source, perfWidget: widgetId } = readInputs.current;
+      countRead(widgetId, unit.spec!.request);
+      return loadProduct(client, unit.spec!.request, signal, unit.spec!.validate, source, restart, undefined, undefined, true);
+    },
+    () => inFrame(() => setResultsRevision(value => value + 1)),
+    unit => {
+      const { client, content: revision } = readInputs.current;
+      return peekProduct(client, unit.spec!.request, productKey(unit.spec!.request, revision), unit.spec!.validate);
+    },
   );
-  const batchAskedRef = useRef(new Map<string, { readonly specs: readonly StaticRequestSpec[] }>());
-  if (usesStatic && batchLive.length) {
-    batchAskedRef.current.set(JSON.stringify(batchRequests), { specs: batchLive });
-    if (batchAskedRef.current.size > 32) batchAskedRef.current.delete(batchAskedRef.current.keys().next().value!);
-  }
-  const displayedBatch = useMemo<BoundBatch | null>(() => {
-    if (!usesStatic || !batchLive.length || !batchProduct.data || !batchProduct.requests) return null;
-    const asked = batchAskedRef.current.get(JSON.stringify(batchProduct.requests));
-    if (!asked || asked.specs.length !== batchProduct.data.length) return null;
-    try {
-      return {
-        reads: asked.specs.map((spec, index) => ({
-          entry: spec.entry,
-          anchorHour: askedHour(spec),
-          span: spec.span,
-          data: spec.validate ? spec.validate(batchProduct.data![index]) : batchProduct.data![index],
-        })),
-        failure: null,
-      };
-    } catch (error) {
-      return { reads: [], failure: asFailure(error) };
+  const results = unitReads().take(units);
+  useEffect(() => { unitReads().sync(units, active); }, [units, active]);
+  useEffect(() => () => {
+    readsRef.current?.dispose();
+    readsRef.current = null;
+  }, []);
+  const retryUnits = useCallback(() => { readsRef.current?.retry(); }, []);
+
+  const subscribed = following && compiledFollow.subscriptions.length > 0;
+  const subscribePlaying = useCallback((changed: () => void) => (following ? runtime.clock.subscribe(changed) : () => {}), [following, runtime.clock]);
+  const readPlaying = useCallback(() => following && runtime.clock.getSnapshot().playing, [following, runtime.clock]);
+  const moving = useSyncExternalStore(subscribePlaying, readPlaying, readPlaying);
+  const settlement = useMemo<Settlement>(
+    () => settleUnits(units, results, {
+      following,
+      moving,
+      hour: following ? Math.floor(runtime.clock.getHour()) + trackOffset : displayHour,
+      subscribed,
+      endHour: effectiveEndHour,
+    }),
+    [units, results, following, moving, runtime.clock, trackOffset, displayHour, subscribed, effectiveEndHour],
+  );
+
+  const watch = useMemo(
+    () => (following && active ? watchSpan(units, results, effectiveEndHour) : null),
+    [following, active, units, results, effectiveEndHour],
+  );
+  const watchLo = watch?.[0];
+  const watchHi = watch?.[1];
+  const unitsRef = useRef(units);
+  unitsRef.current = units;
+  useEffect(() => {
+    if (watchLo === undefined || watchHi === undefined) return;
+    const reask = () => {
+      const now = Math.floor(runtime.clock.getHour()) + trackOffset;
+      const moved = reaskedUnits(unitsRef.current, readsRef.current?.results ?? NO_RESULTS, now, effectiveEndHour);
+      if (!moved.length) return;
+      for (const name of moved) askedRef.current.hours.set(name, now);
+      setAskedRevision(value => value + 1);
+    };
+    const now = Math.floor(runtime.clock.getHour()) + trackOffset;
+    if (now < watchLo || now > watchHi) {
+      reask();
+      return;
     }
-  }, [usesStatic, batchLive.length, batchProduct.data, batchProduct.requests]);
+    if (watchLo === -Infinity && watchHi === Infinity) return;
+    return watchBoundary(runtime.clock, () => [watchLo - trackOffset, watchHi + 1 - trackOffset], reask);
+  }, [watchLo, watchHi, runtime.clock, trackOffset, effectiveEndHour]);
 
-  const staticValidate = useCallback((raw: unknown) => {
-    return staticSpec?.validate ? staticSpec.validate(raw) : raw;
-  }, [staticSpec]);
-
-  const dynamicKeys = staticSpec?.dynamicKeys ?? [];
-  const staticProduct = useFollowedProduct<unknown>(
-    runtime.client,
-    staticSpec?.request ?? null,
-    dynamicKeys,
-    active && usesStatic,
-    staticValidate,
-    track?.source,
-  );
-
-  const staticReqKey = useMemo(() => (staticSpec ? JSON.stringify(staticSpec.request) : null), [staticSpec]);
-  const expectedStaticKey = useMemo(() => {
-    if (!staticSpec || !dynamicKeys.length) return null;
-    const params = staticSpec.request.params as Record<string, unknown>;
-    return JSON.stringify(dynamicKeys.map(name => params[name]));
-  }, [staticSpec, dynamicKeys]);
-  const staticHeld = usesStatic && staticSpec !== null && staticProduct.data !== undefined
-    && (staticProduct.asking !== undefined || (expectedStaticKey !== null && staticProduct.moment !== expectedStaticKey));
-
-  const ctxWithStaticSpan = useMemo<FamilyPlanContext<TAux> | null>(
-    () => (ctx ? { ...ctx, staticSpan: staticSpec?.span ?? null } : null),
-    [ctx, staticSpec?.span],
-  );
+  const askedSpan = useMemo(() => {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const unit of units) {
+      if (!unit.spec?.span) continue;
+      lo = Math.min(lo, unit.spec.span[0] - unit.shift);
+      hi = Math.max(hi, unit.spec.span[1] - unit.shift);
+    }
+    return lo <= hi ? `${lo}:${hi}` : '';
+  }, [units]);
+  const ctxWithStaticSpan = useMemo<FamilyPlanContext<TAux> | null>(() => {
+    if (!ctx) return null;
+    if (!askedSpan) return ctx;
+    const [lo, hi] = askedSpan.split(':').map(Number) as [number, number];
+    return { ...ctx, staticSpan: [lo, hi] as const };
+  }, [ctx, askedSpan]);
 
   const currentCountryLooks = wantsColours ? labels : undefined;
   const currentExtra = useMemo<TExtra | undefined>(
@@ -972,225 +1134,56 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     [ctxWithStaticSpan, captureExtra, currentCountryLooks],
   );
 
-  interface FrozenPlanExtra {
+  interface FrozenView {
+    readonly ctx: FamilyPlanContext<TAux> | null;
+    readonly gate: FrozenGate;
     readonly plan: SourcePlan | null;
-    readonly entry: SourceEntry | null;
     readonly countryLooks: CountryLooksMap | undefined;
     readonly extra: TExtra | undefined;
   }
 
-  const currentFrozenExtra = useMemo<FrozenPlanExtra>(
-    () => ({ plan, entry: staticSpec?.entry ?? null, countryLooks: currentCountryLooks, extra: currentExtra }),
-    [plan, staticSpec?.entry, currentCountryLooks, currentExtra],
+  const currentFrozen = useMemo<FrozenView>(
+    () => ({ ctx: ctxWithStaticSpan, gate: frozenGate, plan, countryLooks: currentCountryLooks, extra: currentExtra }),
+    [ctxWithStaticSpan, frozenGate, plan, currentCountryLooks, currentExtra],
   );
 
-  const pendingStaticByMomentRef = useRef(
-    new Map<string, { readonly requestKey: string | null; readonly anchorHour: number | null; readonly context: FamilyPlanContext<TAux>; readonly gate: FrozenGate; readonly span: readonly [number, number] | null; readonly extra: FrozenPlanExtra }>(),
-  );
-  if (usesStatic && staticSpec && ctxWithStaticSpan) {
-    const key = expectedStaticKey ?? '__single__';
-    pendingStaticByMomentRef.current.set(key, {
-      requestKey: staticReqKey,
-      anchorHour: playbackSpec?.anchorHour ?? null,
-      context: ctxWithStaticSpan,
-      gate: frozenGate,
-      span: staticSpec.span,
-      extra: currentFrozenExtra,
-    });
-    if (pendingStaticByMomentRef.current.size > 32) {
-      pendingStaticByMomentRef.current.delete(pendingStaticByMomentRef.current.keys().next().value!);
-    }
-  }
-
-  const displayedStaticRef = useRef<DisplayedStaticSnapshot<FamilyPlanContext<TAux>, FrozenPlanExtra> | null>(null);
-  const displayedStatic = useMemo(() => {
-    if (!usesStatic || staticProduct.data === undefined || !ctxWithStaticSpan) {
-      displayedStaticRef.current = null;
-      return null;
-    }
-    const satisfiesCurrent = staticSpec !== null && !staticHeld;
-    const matched = !satisfiesCurrent ? pendingStaticByMomentRef.current.get(staticProduct.moment ?? '__single__') : undefined;
-    const sourceCtx = satisfiesCurrent ? ctxWithStaticSpan : (matched?.context ?? ctxWithStaticSpan);
-    const sourceGate = satisfiesCurrent ? frozenGate : (matched?.gate ?? frozenGate);
-    const sourceExtra = satisfiesCurrent ? currentFrozenExtra : (matched?.extra ?? currentFrozenExtra);
-    const requested = satisfiesCurrent ? (staticSpec?.span ?? null) : (matched?.span ?? staticSpec?.span ?? null);
-    const next = resolveDisplayedStaticSnapshot(displayedStaticRef.current, {
-      data: staticProduct.data,
-      moment: staticProduct.moment,
-      requestKey: satisfiesCurrent ? staticReqKey : (matched?.requestKey ?? staticReqKey),
-      anchorHour: satisfiesCurrent ? (playbackSpec?.anchorHour ?? null) : (matched?.anchorHour ?? null),
-      satisfiesCurrent,
-      requestedSpan: requested,
-      context: sourceCtx,
-      gate: sourceGate,
-      extra: sourceExtra,
-    });
-    displayedStaticRef.current = next;
-    return next;
-  }, [usesStatic, staticSpec, staticReqKey, staticHeld, staticProduct.data, staticProduct.moment, ctxWithStaticSpan, frozenGate, currentFrozenExtra, playbackSpec]);
-
-  const singleRead = useMemo<BoundRead | null>(() => {
-    if (!displayedStatic) return null;
-    const entry = displayedStatic.extra.entry;
-    return entry ? { entry, anchorHour: displayedStatic.anchorHour, span: displayedStatic.span, data: displayedStatic.data } : null;
-  }, [displayedStatic]);
-
-  const boundReads = useMemo<readonly BoundRead[] | null>(() => {
-    if (!usesStatic) return null;
-    const wantSingle = staticSpec !== null;
-    const wantBatch = batchLive.length > 0;
-    if (!wantSingle && !wantBatch) return null;
-    if (wantSingle && !singleRead) return null;
-    if (wantBatch && (!displayedBatch || displayedBatch.failure)) return null;
-    return [...(wantSingle ? [singleRead!] : []), ...(wantBatch ? displayedBatch!.reads : [])];
-  }, [usesStatic, staticSpec, batchLive.length, singleRead, displayedBatch]);
-
-  const readProofs = useMemo<ReadonlyMap<string, readonly [number, number]>>(() => {
-    const proofs = new Map<string, readonly [number, number]>();
-    if (!playbackBounded || !boundReads) return proofs;
-    for (const read of boundReads) {
-      if (read.anchorHour === null) continue;
-      proofs.set(read.entry.name, resolvePlaybackProvenInterval(read.entry.read, read.data, { anchorHour: read.anchorHour, span: read.span }, effectiveEndHour));
-    }
-    return proofs;
-  }, [playbackBounded, boundReads, effectiveEndHour]);
-
-  const boundProof = useMemo<readonly [number, number] | null>(() => {
-    if (!playbackBounded || !boundReads) return null;
-    const readings: { anchorHour: number; proof: readonly [number, number] }[] = [];
-    for (const read of boundReads) {
-      const proof = readProofs.get(read.entry.name);
-      if (read.anchorHour === null || !proof) return null;
-      readings.push({ anchorHour: read.anchorHour, proof });
-    }
-    return composeProof(readings);
-  }, [playbackBounded, boundReads, readProofs]);
-  const boundAnchor = boundProof ? boundProof[0] : null;
-
-  const entryWatches = useMemo<readonly { readonly name: string; readonly single: boolean; readonly lo: number; readonly hi: number }[] | null>(() => {
-    if (!playbackBounded || !playbackOptions) return null;
-    const watches: { name: string; single: boolean; lo: number; hi: number }[] = [];
-    bounded.forEach((entry, index) => {
-      const spec = index === 0 ? playbackSpec : batchSpecs[index - 1] ?? null;
-      const asked = index === 0 ? playbackAnchorHour : anchorOf(entry.name);
-      if (spec === null) {
-        const [lo, hi] = playbackIdleInterval(entry, { ...playbackOptions, currentHour: asked });
-        watches.push({ name: entry.name, single: index === 0, lo, hi });
-        return;
-      }
-      const read = boundReads?.find(candidate => candidate.entry.name === entry.name);
-      const proof = readProofs.get(entry.name);
-      if (!read || !proof || read.anchorHour !== askedHour(spec)) return;
-      watches.push({ name: entry.name, single: index === 0, lo: proof[0], hi: proof[1] });
-    });
-    return watches;
-  }, [playbackBounded, playbackOptions, bounded, playbackSpec, batchSpecs, playbackAnchorHour, entryAnchors, boundReads, readProofs]);
-  const watchKey = entryWatches ? JSON.stringify(entryWatches.map(watch => [watch.name, watch.lo, watch.hi])) : '';
-  const entryWatchesRef = useRef(entryWatches);
-  entryWatchesRef.current = entryWatches;
-
-  useEffect(() => {
-    const watches = entryWatchesRef.current;
-    if (!active || !track || !watches || !watches.length) return;
-    const reanchor = () => {
-      const now = Math.floor(runtime.clock.getHour()) + trackOffset;
-      const moved: Record<string, number> = {};
-      let any = false;
-      for (const watch of entryWatchesRef.current ?? []) {
-        if (now >= watch.lo && now <= watch.hi) continue;
-        if (watch.single) setPlaybackAnchorHour(prev => (prev === now ? prev : now));
-        else { moved[watch.name] = now; any = true; }
-      }
-      if (any) {
-        setEntryAnchors(prev => {
-          const base = prev.sig === sig ? prev.anchors : NO_ANCHORS;
-          return { sig, anchors: { ...base, ...moved } };
-        });
-      }
-    };
-    let lo = -Infinity;
-    let hi = Infinity;
-    for (const watch of watches) {
-      lo = Math.max(lo, watch.lo);
-      hi = Math.min(hi, watch.hi);
-    }
-    const now = Math.floor(runtime.clock.getHour()) + trackOffset;
-    if (now < lo || now > hi) {
-      reanchor();
-      return;
-    }
-    if (lo === -Infinity && hi === Infinity) return;
-    return watchBoundary(runtime.clock, () => [lo - trackOffset, hi + 1 - trackOffset], reanchor);
-  }, [active, track, trackOffset, runtime.clock, watchKey, sig]);
-
-  const heldBundleRef = useRef<{ readonly sig: string; readonly bundle: StaticBundle } | null>(null);
-  const staticBundle = useMemo<StaticBundle | null>(() => {
-    const held = heldBundleRef.current?.sig === sig ? heldBundleRef.current.bundle : null;
-    if (!usesStatic) return null;
-    if (!boundReads) return held;
-    if (playbackBounded && (boundAnchor === null || !boundProof)) return held;
-    const first = boundReads[0]!;
-    const read = first.entry.read;
-    let shownHour = playbackBounded && boundAnchor !== null ? boundAnchor : (pinHour ?? Math.floor(window?.lastHour ?? effectiveEndHour));
-    let shownSpan: readonly [number, number] | null = null;
-    if (!playbackBounded) {
-      if (read.shape === 'point') {
-        if (read.channel === 'panel' && !read.exactProduct && displayedStatic?.moment && first === singleRead) {
-          try {
-            const parsed = JSON.parse(displayedStatic.moment) as number[];
-            if (typeof parsed[0] === 'number') shownHour = parsed[0];
-          } catch {
-          }
-        } else if (typeof (first.data as { hour?: unknown } | null)?.hour === 'number') {
-          shownHour = (first.data as { hour: number }).hour;
-        }
-      } else if (first.span) {
-        shownSpan = first.span;
-        shownHour = first.span[1];
-      }
-    } else {
-      shownSpan = first.span;
-    }
-    const panels: Record<string, unknown> = {};
-    const panelsMap = new Map<string, unknown>();
+  const completeBundle = useMemo<StaticBundle | null>(() => {
+    if (settlement.kind !== 'complete') return null;
+    const { bundle } = settlement;
     const live = new Map<string, ReturnType<ReturnType<typeof repliedCells>['read']>>();
-    for (const bound of boundReads) {
-      panels[bound.entry.name] = bound.data;
-      panelsMap.set(bound.entry.name, bound.data);
-      const boundShape = bound.entry.read;
-      if (boundShape.shape === 'point' && boundShape.channel === 'panel' && !boundShape.exactProduct) {
-        live.set(bound.entry.name, repliedCells(bound.data).read());
+    for (const unit of units) {
+      const read = unit.entry.read;
+      if (bundle.panels.has(unit.name) && read.shape === 'point' && read.channel === 'panel' && !read.exactProduct) {
+        live.set(unit.name, repliedCells(bundle.panels.get(unit.name)).read());
       }
     }
-    const bundle: StaticBundle = {
-      hour: shownHour,
-      span: shownSpan,
-      ...(boundProof ? { provenInterval: boundProof } : {}),
-      ...(playbackBounded ? { follows: true } : {}),
-      panels,
+    return {
+      hour: bundle.hour,
+      span: bundle.span,
+      ...(bundle.proof ? { provenInterval: bundle.proof, follows: true } : {}),
+      panels: Object.fromEntries(bundle.panels),
       readView: createBoundedReadView({
-        hour: displayedHour(shownHour),
-        ...(boundProof ? { validInterval: boundProof } : {}),
-        panels: panelsMap,
+        hour: displayedHour(bundle.hour),
+        ...(bundle.proof ? { validInterval: bundle.proof } : {}),
+        panels: bundle.panels,
         live,
         identity: identityProvider,
         art: artProvider,
       }),
     };
-    heldBundleRef.current = { sig, bundle };
-    return bundle;
-  }, [usesStatic, playbackBounded, boundReads, displayedStatic, singleRead, boundAnchor, boundProof, sig, effectiveEndHour, pinHour, window, identityProvider, artProvider]);
+  }, [settlement, units, identityProvider, artProvider]);
 
-  const retainedStaticSpan = staticBundle?.span ?? null;
-  const displayedCtx = useMemo<FamilyPlanContext<TAux> | null>(() => {
-    if (!usesStatic) return ctxWithStaticSpan;
-    if (displayedStatic) return { ...displayedStatic.context, staticSpan: retainedStaticSpan };
-    return ctxWithStaticSpan;
-  }, [ctxWithStaticSpan, usesStatic, displayedStatic, retainedStaticSpan]);
-  const displayedGate = usesStatic && displayedStatic ? displayedStatic.gate : frozenGate;
-  const displayedPlan = usesStatic && displayedStatic ? (displayedStatic.extra.plan ?? plan) : plan;
-  const displayedExtra = usesStatic && displayedStatic ? displayedStatic.extra.extra : currentExtra;
-  const displayedCountryLooks = usesStatic && displayedStatic ? displayedStatic.extra.countryLooks : currentCountryLooks;
+  const shownRef = useRef<ShownBundle<StaticBundle, FrozenView> | null>(null);
+  const shown = showBundle(shownRef.current, settlement, completeBundle, sig, currentFrozen);
+  shownRef.current = shown.last;
+  const staticBundle = shown.shown?.bundle ?? null;
+  const staticHeld = shown.held;
+  const displayed = shown.shown?.frozen ?? currentFrozen;
+  const displayedCtx = displayed.ctx;
+  const displayedGate = displayed.gate;
+  const displayedPlan = displayed.plan ?? plan;
+  const displayedExtra = displayed.extra;
+  const displayedCountryLooks = displayed.countryLooks;
 
   const exactReadView = useMemo(() => {
     if (!displayedCtx || !displayedPlan || !perfLog) return undefined;
@@ -1218,7 +1211,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const loadingLabel = `Loading ${subject}…`;
   const hasStaticBundle = staticBundle !== null;
-  const batchFailure = displayedBatch?.failure ?? batchProduct.error ?? null;
 
   const bodyStatus = useMemo<FamilyBodyStatus>(() => {
     if (!track) return { kind: 'unbound', message: emptyCampaign };
@@ -1296,35 +1288,24 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       }
     }
 
+    const unitState = (): FamilyBodyStatus => {
+      if (settlement.kind === 'failed') return { kind: 'failed', failure: settlement.failure, origin: 'local', onRetry: retryUnits };
+      if (settlement.kind === 'outside') return { kind: 'outside' };
+      return hasStaticBundle ? { kind: 'ready' } : { kind: 'loading', label: loadingLabel };
+    };
+
     if (following) {
       if (compiledFollow.unavailable) return { kind: 'refused', reason: compiledFollow.unavailable };
-      if (!playbackBounded) return { kind: 'ready' };
-      if (!staticSpec && !batchLive.length) return { kind: 'outside' };
-      if (staticProduct.error) {
-        return { kind: 'failed', failure: staticProduct.error, origin: 'local', onRetry: staticProduct.retry };
-      }
-      if (batchFailure) return { kind: 'failed', failure: batchFailure, origin: 'local', onRetry: batchProduct.retry };
-      if (!hasStaticBundle) return { kind: 'loading', label: loadingLabel };
-      return { kind: 'ready' };
+      return settlement.kind === 'none' ? { kind: 'ready' } : unitState();
     }
 
-    const staticEntry = plan ? primaryStaticEntry(plan) : null;
-    if (staticEntry?.read.shape === 'pixel-binned') {
+    if (pixelBinnedKey) {
       if (pinHour === null && !window) return { kind: 'outside' };
       if (!currentTiled || !Object.keys(currentTiled.series).length) return { kind: 'loading', label: loadingLabel };
-      return { kind: 'ready' };
+      return settlement.kind === 'none' || settlement.kind === 'outside' ? { kind: 'ready' } : unitState();
     }
-    if (staticEntry && (staticEntry.read.shape === 'branch-to-hour' || staticEntry.read.shape === 'trailing-window' || staticEntry.read.shape === 'range')) {
-      if (!window || (!staticSpec && !batchLive.length)) return { kind: 'outside' };
-    } else if (pinHour === null) {
-      return { kind: 'outside' };
-    }
-    if (staticProduct.error) {
-      return { kind: 'failed', failure: staticProduct.error, origin: 'local', onRetry: staticProduct.retry };
-    }
-    if (batchFailure) return { kind: 'failed', failure: batchFailure, origin: 'local', onRetry: batchProduct.retry };
-    if (!hasStaticBundle) return { kind: 'loading', label: loadingLabel };
-    return { kind: 'ready' };
+    if (settlement.kind === 'none') return pinHour === null ? { kind: 'outside' } : { kind: 'loading', label: loadingLabel };
+    return unitState();
   }, [
     track,
     emptyCampaign,
@@ -1357,25 +1338,18 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     slots,
     effectiveMulti,
     following,
-    playbackBounded,
     widget.countries,
     moment,
     lastHour,
-    plan,
     window,
-    staticSpec,
     pinHour,
-    staticProduct.error,
-    staticProduct.retry,
-    staticProduct.data,
     pixelBinnedKey,
     currentTiled,
     tileUnrecorded,
     retryTiles,
     hasStaticBundle,
-    batchLive.length,
-    batchFailure,
-    batchProduct.retry,
+    settlement,
+    retryUnits,
   ]);
 
   const bannerFailure: BannerFailureInfo | null = (isSingle && singleCountry?.chosen && singleCountry.error && singleCountry.historyHeld)
@@ -1389,9 +1363,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     [track?.branch.firstHour, track?.branch.lastHour],
   );
 
-  const staticEntry = displayedPlan ? primaryStaticEntry(displayedPlan) : null;
-  const isPanelStatic = staticEntry?.read.shape === 'point' && staticEntry.read.channel === 'panel' && !staticEntry.read.exactProduct;
-  const pin = following ? null : (isPanelStatic ? (staticBundle?.hour ?? pinHour) : (staticBundle?.hour ?? (staticEntry?.read.shape === 'pixel-binned' ? (pinHour ?? window?.lastHour ?? null) : null)));
+  const pin = following ? null : (staticBundle?.hour ?? pinHour ?? (pixelBinnedKey ? window?.lastHour ?? null : null));
 
   return {
     track,
@@ -1408,6 +1380,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     followRefused: compiledFollow.refused,
     staticBundle,
     staticHeld,
+    pagedRows,
+    onRowWindow,
     tiledSeries: currentTiled?.series ?? {},
     tiledRevision: currentTiled?.revision ?? 0,
     onSeriesViewport,

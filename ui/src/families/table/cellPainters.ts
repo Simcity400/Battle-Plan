@@ -1,4 +1,5 @@
 import { LABEL_WEIGHT } from '../../charts/draw.ts';
+import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import {
   drawActionButton,
   drawArtSlot,
@@ -24,9 +25,9 @@ import {
   type IconStripItem,
 } from '../../draw/kit.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
-import { formatDateParts, formatValueState } from '../valueFormat.ts';
-import { drawFormattedValue, drawHatchRect, MISSING_BOX_SIZE } from '../valueCanvas.ts';
-import type { FamilyColumnLayout } from './layout.ts';
+import { formatDateParts, formatScalar, formatValueState } from '../valueFormat.ts';
+import { drawFormattedValue, drawHatchRect, MISSING_BOX_SIZE, PARTIAL_TAB_GAP, PARTIAL_TAB_HEIGHT, PARTIAL_TAB_WIDTH } from '../valueCanvas.ts';
+import { SHARE_FIGURE_SLOT, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, type FamilyColumnLayout } from './layout.ts';
 import type { CellPaintModel, FlatTableRow, TableCell } from './model.ts';
 import {
   CELL_INSET,
@@ -148,8 +149,8 @@ function shouldDrawBehindBar(column: FamilyColumnLayout, rc: CellRenderContext):
 
 function trackFillOf(column: FamilyColumnLayout, theme: TableTheme): string {
   const tokens = resolveKitTokens(theme);
-  if (column.trackTone === 'red' || column.tone === 'red') return '#e5484d';
-  if (column.trackTone === 'grey' || column.tone === 'grey') return tokens.dark ? '#c4c4c4' : '#64748b';
+  if (column.trackTone === 'red' || column.tone === 'red') return CHART_MEASURE_COLOURS.short;
+  if (column.trackTone === 'grey' || column.tone === 'grey') return tokens.trackGrey;
   return theme.accent;
 }
 
@@ -261,7 +262,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     }
     const signed = paintModel.value.kind === 'known' || paintModel.value.kind === 'partial' ? Number(paintModel.value.value) : 0;
     if (right - left >= TWO_WAY_SLOT + TWO_WAY_GAP) {
-      const grey = tokens.dark ? 'rgba(245, 245, 245, 0.28)' : 'rgba(15, 23, 42, 0.25)';
+      const grey = tokens.twoWayNeutral;
       const share = fraction === null ? 0 : (signed < 0 ? -fraction : fraction);
       drawTwoWayBar(ctx, left + TWO_WAY_SLOT / 2, middle, TWO_WAY_SLOT / 2, 12, share, grey, grey, theme);
     }
@@ -272,6 +273,33 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     ctx.textBaseline = 'middle';
     ctx.fillStyle = formatted.kind === 'zero' || item.row.muted ? theme.muted : theme.text;
     ctx.fillText(fit(signedText(formatted.text, signed), font, Math.max(0, right - left)), right, middle);
+    ctx.restore();
+    return;
+  }
+
+  if (kind === 'shaded') {
+    if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
+      drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: true, muted: item.row.muted }, theme, measure, fit);
+      return;
+    }
+    const signed = paintModel.value.kind === 'known' || paintModel.value.kind === 'partial' ? Number(paintModel.value.value) : 0;
+    if (signed !== 0 && fraction !== null) {
+      ctx.save();
+      ctx.fillStyle = signed > 0 ? theme.accent : tokens.shortage;
+      ctx.globalAlpha = 0.18 + 0.5 * Math.max(0, Math.min(1, fraction));
+      ctx.beginPath();
+      ctx.roundRect(left, middle - Math.min(rowHeight - 4, 18) / 2, Math.max(0, right - left), Math.min(rowHeight - 4, 18), 3);
+      ctx.fill();
+      ctx.restore();
+    }
+    if (formatted.kind === 'zero') return;
+    const font = fontOf(theme, 13, 500);
+    ctx.save();
+    ctx.font = font;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = item.row.muted ? theme.muted : theme.text;
+    ctx.fillText(fit(signedText(formatted.text, signed), font, Math.max(0, right - left - 6)), right - 4, middle);
     ctx.restore();
     return;
   }
@@ -298,17 +326,16 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     ctx.font = font;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    const producedText = sp.producedMissing ? '' : sp.produced !== null ? `+${Math.round(sp.produced).toLocaleString()}/d` : '0';
+    const producedText = sp.producedMissing ? '' : sp.produced !== null ? `+${formatScalar(sp.produced, { decimals: 0, maxDecimals: 0 })}/d` : '0';
     ctx.fillStyle = sp.produced && sp.produced > 0 ? theme.text : theme.muted;
     if (producedText) ctx.fillText(fit(producedText, font, partW - 6), left + partW - 4, middle);
     if (sp.needMissing == null && sp.need !== null) {
       ctx.fillStyle = theme.muted;
-      ctx.fillText(fit(Math.round(sp.need).toLocaleString(), font, partW - 6), left + partW * 2 - 4, middle);
+      ctx.fillText(fit(formatScalar(sp.need, { decimals: 0, maxDecimals: 0 }), font, partW - 6), left + partW * 2 - 4, middle);
     }
     if (sp.balanceMissing == null && sp.balance !== null) {
       ctx.fillStyle = sp.balance < 0 ? tokens.shortage : sp.balance > 0 ? theme.text : theme.muted;
-      const sign = sp.balance > 0 ? '+' : '';
-      ctx.fillText(fit(`${sign}${Math.round(sp.balance).toLocaleString()}`, font, partW - 4), right, middle);
+      ctx.fillText(fit(formatScalar(sp.balance, { decimals: 0, maxDecimals: 0, signed: true }), font, partW - 4), right, middle);
     }
     ctx.restore();
     return;
@@ -411,7 +438,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     return;
   }
 
-  if (kind === 'status') {
+  if (kind === 'status' || (cell?.statusKind && formatted.kind === 'known')) {
     if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
       drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: false, muted: item.row.muted }, theme, measure, fit);
       return;
@@ -425,25 +452,45 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     }
   }
 
+  if (kind === 'share') {
+    drawShareCell(rc, item, column, left, right, middle, formatted, fraction, paintModel.countryColor);
+    return;
+  }
+
   if (kind === 'track' || column.display === 'track' || column.display === 'meterAfter' || column.display === 'meterBefore') {
     if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
       drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: true, muted: item.row.muted }, theme, measure, fit);
       return;
     }
     const valFont = fontOf(theme, 13.5, 500);
-    const numSlot = 42;
-    const trackW = Math.min(56, Math.max(18, right - left - numSlot - 8));
-    const trackX = right - numSlot - 8 - trackW;
+    const suffixFont = fontOf(theme, 12, 400);
+    const suffix = cell?.unitSuffix ? ` ${cell.unitSuffix}` : '';
+    const suffixW = suffix ? measure(suffix, suffixFont) : 0;
+    const textW = measure(formatted.text, valFont);
+    const numSlot = Math.max(42, Math.ceil(textW + suffixW));
+    const trackW = Math.min(56, Math.max(18, right - left - numSlot - 10));
+    const trackX = right - numSlot - 10 - trackW;
     if (trackW >= 18 && fraction !== null) {
-      const barColor = paintModel.bar.alert ? '#e5484d' : trackFillOf(column, theme);
+      const barColor = paintModel.bar.alert ? CHART_MEASURE_COLOURS.short : trackFillOf(column, theme);
       drawTrackBar(ctx, trackX, middle, trackW, 6, fraction, barColor, theme);
+    }
+    let numRight = right;
+    if (suffix && suffixW + 12 <= Math.max(0, right - left)) {
+      ctx.save();
+      ctx.font = suffixFont;
+      ctx.fillStyle = theme.muted;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(suffix, right, middle);
+      ctx.restore();
+      numRight = right - suffixW;
     }
     ctx.save();
     ctx.font = valFont;
     ctx.fillStyle = item.row.muted || formatted.kind === 'zero' ? theme.muted : theme.text;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    ctx.fillText(formatted.text, right, middle);
+    ctx.fillText(fit(formatted.text, valFont, Math.max(0, numRight - left)), numRight, middle);
     ctx.restore();
     return;
   }
@@ -499,7 +546,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   if (kind === 'outOf') {
     const isSorted = column.key === rc.sortedColumn;
     if (shouldDrawBehindBar(column, rc) && fraction !== null && fraction > 0 && formatted.kind !== 'zero') {
-      const barFill = paintModel.countryColor ?? (tokens.dark ? '#cfcfcf' : '#64748b');
+      const barFill = paintModel.countryColor ?? tokens.barNeutral;
       drawBarBehindFigure(ctx, right, middle, fraction, barFill, { density, sorted: isSorted, theme });
     }
     const maxVal = cell?.secondaryValue;
@@ -513,7 +560,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     const isSorted = column.key === rc.sortedColumn;
     const isZero = formatted.kind === 'zero';
     if (!isZero && shouldDrawBehindBar(column, rc) && fraction !== null && fraction > 0) {
-      const barFill = paintModel.countryColor ?? (tokens.dark ? '#cfcfcf' : '#64748b');
+      const barFill = paintModel.countryColor ?? tokens.barNeutral;
       drawBarBehindFigure(ctx, right, middle, fraction, barFill, { density, sorted: isSorted, theme });
     }
     const font = fontOf(theme, 13, 500);
@@ -590,7 +637,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   if (subtext && rowHeight >= 36) {
     const titleFont = fontOf(theme, 13.5, isChild ? 500 : 600);
     const subFont = fontOf(theme, 12, 400);
-    const titleColor = item.row.muted ? theme.muted : (isChild ? (tokens.dark ? '#d4d4d4' : theme.text) : theme.text);
+    const titleColor = item.row.muted ? theme.muted : (isChild ? tokens.childText : theme.text);
     drawInlineRuns(rc, formatted.text, textLeft, middle - 8, avail, titleFont, titleColor);
     drawInlineRuns(rc, subtext, textLeft, middle + 9, avail, subFont, theme.muted);
     return;
@@ -600,7 +647,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   const textColor = item.row.muted
     ? theme.muted
     : isChild
-      ? (tokens.dark ? '#d4d4d4' : theme.text)
+      ? tokens.childText
       : theme.text;
   const drawnW = drawInlineRuns(rc, formatted.text, textLeft, middle, avail, textFont, textColor);
   if (cell?.inlineSubtext) {
@@ -611,4 +658,41 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       drawInlineRuns(rc, cell.inlineSubtext, textLeft + drawnW + gap, middle, rem, inlineFont, theme.muted);
     }
   }
+}
+
+
+function drawShareCell(
+  rc: CellRenderContext,
+  item: Extract<FlatTableRow, { kind: 'data' }>,
+  column: FamilyColumnLayout,
+  left: number,
+  right: number,
+  middle: number,
+  formatted: ReturnType<typeof formatValueState>,
+  fraction: number | null,
+  countryColor: string | null,
+): void {
+  const { ctx, theme, measure, fit } = rc;
+  const muted = item.row.muted === true;
+  if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
+    drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: true, muted }, theme, measure, fit);
+    return;
+  }
+  const font = fontOf(theme, 12, item.isTotal ? 600 : 500);
+  const partial = formatted.kind === 'partial';
+  const tab = partial ? PARTIAL_TAB_GAP + PARTIAL_TAB_WIDTH : 0;
+  const figureRight = right - tab;
+  if (rc.sortedColumn === column.key && !item.isTotal && fraction !== null) {
+    const trackX = figureRight - SHARE_FIGURE_SLOT - SHARE_TRACK_GAP - SHARE_TRACK_WIDTH;
+    if (trackX >= left) drawTrackBar(ctx, trackX, middle, SHARE_TRACK_WIDTH, SHARE_TRACK_HEIGHT, fraction, countryColor ?? theme.grey, theme);
+  }
+  ctx.save();
+  ctx.font = font;
+  ctx.fillStyle = muted || formatted.kind === 'zero' ? theme.muted : theme.text;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  const text = fit(formatted.text, font, Math.max(0, figureRight - left));
+  ctx.fillText(text, figureRight, middle);
+  ctx.restore();
+  if (partial) drawHatchRect(ctx, right - PARTIAL_TAB_WIDTH, Math.round(middle - PARTIAL_TAB_HEIGHT / 2), PARTIAL_TAB_WIDTH, PARTIAL_TAB_HEIGHT, 1.5, theme);
 }
