@@ -27,7 +27,8 @@ import type {
   FamilyRowWindow,
   FamilyViewportChange,
 } from './adapter.ts';
-import { DEFAULT_VIEW, viewOwnedFields } from '../manifest.ts';
+import { familyViewOptionFields } from '../../widgets/manifest.ts';
+import { DEFAULT_VIEW } from '../manifest.ts';
 import { renderFamilyStatus } from './FamilyBodyState.tsx';
 import FamilyHost, { type FamilyChromeProps } from './FamilyHost.tsx';
 import { useFamilyTheme } from './theme.ts';
@@ -58,7 +59,6 @@ export interface DeclaredFamilyWidgetDeclaration<
   readonly icon?: IconName;
   readonly className?: string;
   readonly frameClassName?: string;
-  readonly optionFields?: readonly OptionField[];
   readonly countries: CountryPolicy;
   readonly aux?: AuxProductSpec<TAux>;
   readonly sources: (ctx: FamilyPlanContext<TAux>, view: FamilyViewportRequest) => SourcePlan;
@@ -130,10 +130,7 @@ export default function DeclaredFamilyWidget<
   }, [externalHoverHour]);
 
 
-  const optionFields = useMemo(
-    () => (declaration.optionFields ? viewOwnedFields(declaration.optionFields, view) : undefined),
-    [declaration.optionFields, view],
-  );
+  const optionFields = familyViewOptionFields(declaration.kind, view);
   const settingsPolicy = adapter.settings;
   const captureSettings = useCallback(
     (ctx: FamilyPlanContext<TAux>) => settingsPolicy!.resolve(declaration, ctx as FamilyPlanContext<unknown>, ctx.options),

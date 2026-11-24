@@ -1,0 +1,16 @@
+.faction-details { display: grid; gap: 14px; min-width: 320px; padding: 4px 2px; font-size: 12px; }
+.faction-details h4 { margin: 0 0 6px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.faction-details h5 { margin: 6px 0 2px; color: var(--muted); font-size: 11px; font-weight: 500; }
+.faction-details ul { margin: 0; padding: 0; list-style: none; }
+.faction-details-head { display: flex; align-items: center; gap: 12px; }
+.faction-details-logo { width: 48px; height: 48px; flex: none; object-fit: contain; }
+.faction-details-logo.is-empty { width: 14px; height: 14px; }
+.faction-details-row { display: flex; align-items: center; gap: 8px; margin: 2px 0; }
+.faction-details-row > span:first-child { min-width: 72px; color: var(--muted); }
+.faction-details-row b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.faction-details-country { display: inline-flex; align-items: center; gap: 6px; }
+.faction-details-flag { width: 20px; height: 13px; border-radius: 2px; }
+.faction-details-members li { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 24px; }
+.faction-details-members small { color: var(--muted); font-size: 11px; }
+.faction-details-resources { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.faction-details-missing { margin: 0; color: var(--muted); }

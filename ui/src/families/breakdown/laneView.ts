@@ -1,4 +1,6 @@
+import { canvasMeasureText } from '../../charts/textWidth.ts';
 import type { LaneView } from '../../draw/lane.ts';
+import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { MirrorModel } from '../contract.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import { createLaneView, type LaneBinding, type LaneFamily, type LaneRuntimeOptions } from '../laneRuntime.ts';
@@ -30,29 +32,10 @@ interface BreakdownFrameLayout {
   readonly mirror: MirrorModel;
 }
 
-const measures = new WeakMap<OffscreenCanvasRenderingContext2D, Map<string, number>>();
-
-function measurer(ctx: OffscreenCanvasRenderingContext2D): (text: string, font: string) => number {
-  let cache = measures.get(ctx);
-  if (!cache) measures.set(ctx, cache = new Map());
-  const held = cache;
-  return (text, font) => {
-    const key = `${font}\u0000${text}`;
-    let width = held.get(key);
-    if (width === undefined) {
-      if (held.size > 4096) held.clear();
-      ctx.font = font;
-      width = ctx.measureText(text).width;
-      held.set(key, width);
-    }
-    return width;
-  };
-}
-
-function collectArtUrls(parts: readonly BreakdownPart[], out: string[]): string[] {
+function walkBreakdownArt(parts: readonly BreakdownPart[], out: ArtUrlInput[]): ArtUrlInput[] {
   for (const part of parts) {
-    if (part.flagArt?.status === 'ready' && part.flagArt.url) out.push(part.flagArt.url);
-    if (part.children) collectArtUrls(part.children, out);
+    out.push(part.flagArt);
+    if (part.children) walkBreakdownArt(part.children, out);
   }
   return out;
 }
@@ -77,11 +60,17 @@ const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, Breakdow
       theme,
       namesInRing: binding.options.namesInRing,
       userExpanded: binding.expanded,
-      measure: measurer(measure),
+      measure: canvasMeasureText(measure),
     });
     const contentHeight = layout.view === 'ring' ? (layout.sideList?.contentHeight ?? surface.height) : layout.contentHeight;
-    const { nav, mirror } = deriveBreakdownNavAndMirror(level, layout.expanded ?? {});
-    return { level, layout, contentHeight, nav, mirror };
+    const derived = deriveBreakdownNavAndMirror(level, layout.expanded ?? {});
+    const rows = layout.view === 'parts' ? layout.rows : layout.view === 'ring' ? layout.sideList?.rows ?? [] : [];
+    const placed = new Map(rows.map(row => [row.key, row] as const));
+    const nav = derived.nav.map((entry): FamilyNavTuple => {
+      const row = placed.get(entry[0]);
+      return row ? [entry[0], entry[1], entry[2], entry[3], entry[4], entry[5], row.y, row.height] : entry;
+    });
+    return { level, layout, contentHeight, nav, mirror: derived.mirror };
   },
   paint(ctx, frame) {
     drawBreakdown(ctx, {
@@ -117,7 +106,7 @@ const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, Breakdow
   },
   mirror: frame => frame.layout.mirror,
   audit: frame => deriveBreakdownAudit(frame.model),
-  visibleArt: frame => collectArtUrls(frame.model.parts, []),
+  visibleArt: frame => collectArtUrls(walkBreakdownArt(frame.model.parts, [])),
 };
 
 export function familyBreakdownLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {

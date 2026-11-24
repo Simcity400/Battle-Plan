@@ -3,15 +3,19 @@ mod factory_groups;
 mod factory_parts;
 mod game_score;
 pub mod nuclear_arsenal;
-mod threat_events;
 pub mod world_tension;
+pub mod world_tension_stack;
 
 pub use factory_groups::{FactoryGroups, FactoryGroupsParams, FactoryGroupsReply};
 pub use factory_parts::{FactoryParts, FactoryPartsParams, FactoryPartsReply};
 pub use game_score::{GameScore, GameScoreParams, GameScoreReply};
 pub use nuclear_arsenal::{NuclearArsenal, NuclearArsenalParams, NuclearArsenalReply};
-pub use threat_events::{ThreatEvents, ThreatEventsParams, ThreatEventsReply};
 pub use world_tension::{WorldTension, WorldTensionParams, WorldTensionReply};
+pub use world_tension_stack::{WorldTensionStack, WorldTensionStackParams, WorldTensionStackReply};
+
+pub(crate) fn forget(source: &dashboard_base::Source) {
+    world_tension_stack::forget(source);
+}
 
 use dashboard_query::identity::{Holder, Holders};
 use std::collections::HashMap;

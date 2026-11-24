@@ -26,6 +26,7 @@ export type MeterBar =
       readonly kind: 'threshold';
       readonly fraction: number | null;
       readonly ticks: readonly ThresholdTick[];
+      readonly ends?: boolean;
       readonly color?: string;
       readonly height?: number;
     };
@@ -43,6 +44,7 @@ export interface MeterRow {
   readonly subtitle?: string;
   readonly muted?: boolean;
   readonly art?: MeterArt;
+  readonly flag?: MeterFlag;
   readonly pair?: MeterPairLabel;
   readonly bar: MeterBar;
   readonly figure?: string;
@@ -105,23 +107,20 @@ export interface MeterProjection<TOptions = unknown> {
   nextChange?(readView: BoundedReadView, options: TOptions): number;
 }
 
-export function deriveMeterNav(model: MeterModel): readonly FamilyNavTuple[] {
+export function deriveMeterNav(
+  model: MeterModel,
+  bands?: ReadonlyMap<string, readonly [top: number, height: number]>,
+): readonly FamilyNavTuple[] {
   const nav: FamilyNavTuple[] = [];
   let index = 0;
-  if (model.sections) {
-    for (const section of model.sections) {
-      if (section.rows) {
-        for (const row of section.rows) {
-          nav.push([row.key, row.name, index++, -1, '', row.meta ?? null]);
-        }
-      }
-      if (section.chipLines) {
-        for (const line of section.chipLines) {
-          for (const chip of line.chips) {
-            nav.push([chip.key, `${line.ownerName} to ${chip.targetName}`, index++, -1, '', chip.meta ?? null]);
-          }
-        }
-      }
+  const push = (key: string, name: string, meta: unknown) => {
+    const band = bands?.get(key);
+    nav.push(band ? [key, name, index++, -1, '', meta, band[0], band[1]] : [key, name, index++, -1, '', meta]);
+  };
+  for (const section of model.sections ?? []) {
+    for (const row of section.rows ?? []) push(row.key, row.name, row.meta ?? null);
+    for (const line of section.chipLines ?? []) {
+      for (const chip of line.chips) push(chip.key, `${line.ownerName} to ${chip.targetName}`, chip.meta ?? null);
     }
   }
   return nav;

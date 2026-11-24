@@ -361,6 +361,19 @@ function drawSectionHeaderBlock(
   }
 }
 
+function drawMeterEnds(ctx: Canvas2D, x: number, midY: number, width: number, height: number, theme: FamilyTheme): void {
+  ctx.save();
+  ctx.strokeStyle = theme.muted;
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  for (const at of [Math.round(x) + 0.5, Math.round(x + width) - 0.5]) {
+    ctx.moveTo(at, midY - height / 2 - 4);
+    ctx.lineTo(at, midY + height / 2 + 4);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawStandardMeterRow(
   ctx: Canvas2D,
   block: PlacedRowItem,
@@ -394,6 +407,9 @@ function drawStandardMeterRow(
       drawArtSlot(ctx, cursorX, artY, size, size, toArtSlotState(row.art.result, row.art.resolvedName), theme, { radius: row.art.radius ?? 4 });
     }
     cursorX += size + 10;
+  } else if (row.flag) {
+    drawFlagSlot(ctx, cursorX, Math.round(midY - 6.5), toFlagSlotState(row.flag.result, row.flag.tag), theme, { width: 20, height: 13 });
+    cursorX += 28;
   }
 
   const showDays = width >= 460;
@@ -486,6 +502,7 @@ function drawStandardMeterRow(
         resolveBarColor(row.bar.color, theme),
         theme,
       );
+      if (row.bar.ends) drawMeterEnds(ctx, barX, midY, barW, row.bar.height ?? 7, theme);
     }
   }
 

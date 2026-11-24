@@ -10,6 +10,8 @@ use std::{
 };
 
 pub const HELD_AT_BRANCH_START: &str = "The war goal was already held when this branch began";
+pub const FIRST_SEEN_AFTER_GAP: &str = "The war goal was first seen after an unrecorded stretch, so its grant date was not recorded";
+pub const GRANT_NOT_READ: &str = "The war goal's grant was not read";
 pub const GRANT_SOURCE: &str = "War goal grant source was not recorded";
 pub const REMOVAL_REASON: &str = "War goal removal reason was not recorded";
 
@@ -19,6 +21,8 @@ pub struct Incarnation {
     pub granted: Option<i32>,
     pub removed: Option<i32>,
     pub removed_exact: bool,
+    pub granted_missing: Option<&'static str>,
+    pub last_seen: i32,
     pub country: u32,
     pub actor: Option<i64>,
     pub recipient: Option<i64>,
@@ -32,6 +36,7 @@ struct Segment {
     key: u128,
     starts_unseen: bool,
     ends_unseen: bool,
+    absent_at: Option<i32>,
 }
 
 fn value_at(runs: Option<&Runs>, hour: i32) -> Option<i64> {
@@ -51,12 +56,14 @@ pub(crate) fn incarnations<'a>(
         for (at, (start, end, value)) in runs.iter().enumerate() {
             let CoveredValue::Value(handle) = value else { continue };
             let unseen = |run: Option<&(i32, i32, CoveredValue)>| matches!(run, Some((_, _, CoveredValue::Uncovered)));
+            let absent_at = runs[at + 1..].iter().find(|run| !matches!(run.2, CoveredValue::Uncovered)).map(|run| run.0);
             by_handle.entry(*handle as u64).or_default().push(Segment {
                 first: *start,
                 last: *end,
                 key: *key,
                 starts_unseen: at > 0 && unseen(runs.get(at - 1)),
                 ends_unseen: unseen(runs.get(at + 1)),
+                absent_at,
             });
         }
     }
@@ -71,20 +78,30 @@ pub(crate) fn incarnations<'a>(
                         held.last = segment.last;
                         held.key = segment.key;
                         held.ends_unseen = segment.ends_unseen;
+                        held.absent_at = segment.absent_at;
                     }
                 }
                 _ => merged.push(segment),
             }
         }
         for segment in merged {
-            let granted = (first_read.is_none_or(|read| segment.first > read) && !segment.starts_unseen).then_some(segment.first);
-            let removed = (segment.last < last).then(|| segment.last + 1);
+            let held_at_start = first_read.is_some_and(|read| segment.first <= read);
+            let granted = (first_read.is_some() && !held_at_start && !segment.starts_unseen).then_some(segment.first);
+            let granted_missing = match granted {
+                Some(_) => None,
+                None if first_read.is_none() => Some(GRANT_NOT_READ),
+                None if held_at_start => Some(HELD_AT_BRANCH_START),
+                None => Some(FIRST_SEEN_AFTER_GAP),
+            };
+            let removed = if segment.ends_unseen { segment.absent_at } else { (segment.last < last).then(|| segment.last + 1) };
             let at = |column: usize| value_at(attributes[column].get(&segment.key), segment.last);
             out.push(Incarnation {
                 handle,
                 granted,
                 removed,
                 removed_exact: removed.is_some() && !segment.ends_unseen,
+                granted_missing,
+                last_seen: segment.last,
                 country: (segment.key >> 32) as u32,
                 actor: at(0),
                 recipient: at(1),
@@ -97,10 +114,36 @@ pub(crate) fn incarnations<'a>(
     out
 }
 
-#[derive(Default)]
-struct Kept(Option<(u64, Arc<Vec<Incarnation>>)>);
+pub struct Incarnations {
+    all: Vec<Incarnation>,
+    by_handle: HashMap<u64, Vec<usize>>,
+    by_country: HashMap<u32, Vec<usize>>,
+}
 
-pub fn follow(source: &Source, branch: u64) -> io::Result<Arc<Vec<Incarnation>>> {
+impl Incarnations {
+    pub fn new(all: Vec<Incarnation>) -> Self {
+        let mut by_handle: HashMap<u64, Vec<usize>> = HashMap::new();
+        let mut by_country: HashMap<u32, Vec<usize>> = HashMap::new();
+        for (at, incarnation) in all.iter().enumerate() {
+            by_handle.entry(incarnation.handle).or_default().push(at);
+            by_country.entry(incarnation.country).or_default().push(at);
+        }
+        Self { all, by_handle, by_country }
+    }
+
+    pub fn of_handle(&self, handle: u64) -> impl Iterator<Item = &Incarnation> {
+        self.by_handle.get(&handle).into_iter().flatten().map(|at| &self.all[*at])
+    }
+
+    pub fn of_country(&self, country: u32) -> impl Iterator<Item = &Incarnation> {
+        self.by_country.get(&country).into_iter().flatten().map(|at| &self.all[*at])
+    }
+}
+
+#[derive(Default)]
+struct Kept(Option<(u64, Arc<Incarnations>)>);
+
+pub fn follow(source: &Source, branch: u64) -> io::Result<Arc<Incarnations>> {
     let state = source.state::<Kept>();
     if let Some(held) = state.lock().unwrap_or_else(PoisonError::into_inner).0.as_ref().filter(|(at, _)| *at == branch).map(|(_, held)| Arc::clone(held)) {
         return Ok(held);
@@ -121,7 +164,7 @@ pub fn follow(source: &Source, branch: u64) -> io::Result<Arc<Vec<Incarnation>>>
         let first_read = cost::storage(|| lanes::reads(recording, stretch.run, table, stretch.first, stretch.last))?.first().map(|span| span.0);
         all.extend(incarnations(&handles, &columns, first_read, stretch.last));
     }
-    let held = Arc::new(all);
+    let held = Arc::new(Incarnations::new(all));
     state.lock().unwrap_or_else(PoisonError::into_inner).0 = Some((branch, Arc::clone(&held)));
     Ok(held)
 }

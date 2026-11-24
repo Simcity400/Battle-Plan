@@ -2,8 +2,12 @@ import { VALUE_WEIGHT } from '../../charts/draw.ts';
 import { DATE_COLUMN_WIDTH } from '../../draw/kit.ts';
 import {
   CELL_INSET,
+  CHILD_ROW_HEIGHT,
   displayExtra,
+  MEDIA_ROW_HEIGHT,
+  ROW_HEIGHT,
   ROW_MARGIN_X,
+  type TableDensity,
   type TableColumnLayout,
   type TableLayout,
   type TableSettings,
@@ -11,7 +15,7 @@ import {
 } from './settings.ts';
 import { defaultWidestSamples, type ValueFormat } from '../valueFormat.ts';
 import { TWO_WAY_GAP, TWO_WAY_SLOT } from './cellPainters.ts';
-import type { TableCellKind, TableColumnSpec, TableHeaderGroup } from './model.ts';
+import type { FlatTableRow, TableCellKind, TableColumnSpec, TableHeaderGroup } from './model.ts';
 
 export type MeasureText = (text: string, font: string) => number;
 
@@ -257,4 +261,77 @@ export function layoutFamilyTable(
     return { columns: expanded, totalWidth: available, scrollable: false, pinnedWidth: pinnedWidthOf(expanded), pinnedCount };
   }
   return { columns: shown, totalWidth: rawTotal, scrollable: rawTotal > available, pinnedWidth: pinnedWidthOf(shown), pinnedCount };
+}
+
+const GROUP_HEADER_HEIGHT = 30;
+const GAP_ROW_HEIGHT = 30;
+const REFUSED_ROW_HEIGHT = 32;
+const LOADING_ROW_HEIGHT = 32;
+export const LIVE_END_GAP = 9;
+
+export interface RowLayoutGeometry {
+  readonly tops: readonly number[];
+  readonly heights: readonly number[];
+  readonly totalHeight: number;
+}
+
+export function rowHeightOf(
+  item: FlatTableRow,
+  density: TableDensity,
+  mode: 'standard' | 'media' = 'standard',
+): number {
+  if (item.kind === 'group-header') return GROUP_HEADER_HEIGHT;
+  if (item.kind === 'gap') return GAP_ROW_HEIGHT;
+  if (item.kind === 'refused') return REFUSED_ROW_HEIGHT;
+  if (item.kind === 'loading') return LOADING_ROW_HEIGHT;
+  const base = item.level > 1 ? CHILD_ROW_HEIGHT : (mode === 'media' ? MEDIA_ROW_HEIGHT[density] : ROW_HEIGHT[density]);
+  return item.isLiveEnd ? base + LIVE_END_GAP : base;
+}
+
+export function computeRowLayout(
+  rows: readonly FlatTableRow[],
+  density: TableDensity,
+  mode: 'standard' | 'media' = 'standard',
+): RowLayoutGeometry {
+  const tops = new Array<number>(rows.length);
+  const heights = new Array<number>(rows.length);
+  let y = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const h = rowHeightOf(rows[i]!, density, mode);
+    tops[i] = y;
+    heights[i] = h;
+    y += h;
+  }
+  return { tops, heights, totalHeight: y };
+}
+
+export const TABLE_WINDOW_OVERSCAN = 4;
+
+export function tableRowWindow(
+  count: number,
+  geometry: RowLayoutGeometry | null,
+  rowHeight: number,
+  scrollTop: number,
+  height: number,
+): { readonly first: number; readonly count: number } {
+  let first: number;
+  let end: number;
+  if (geometry) {
+    let lo = 0;
+    let hi = count;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (geometry.tops[mid]! + geometry.heights[mid]! <= scrollTop) lo = mid + 1;
+      else hi = mid;
+    }
+    first = lo;
+    end = first;
+    while (end < count && geometry.tops[end]! < scrollTop + height) end++;
+  } else {
+    first = Math.floor(scrollTop / rowHeight);
+    end = Math.ceil((scrollTop + height) / rowHeight);
+  }
+  const from = Math.max(0, Math.min(count, first - TABLE_WINDOW_OVERSCAN));
+  const to = Math.max(from, Math.min(count, end + TABLE_WINDOW_OVERSCAN));
+  return { first: from, count: to - from };
 }

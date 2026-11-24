@@ -28,6 +28,7 @@ export interface ChartEndLabel {
   readonly flag?: ChartArtSlot;
   readonly icon?: ChartArtSlot;
   readonly name?: string | null;
+  readonly shortName?: string | null;
   readonly fullName?: string;
   readonly value: string;
   readonly exactValue?: string;
@@ -80,6 +81,7 @@ export interface ChartStackBand {
 export interface ChartStackModel {
   readonly hours: readonly number[];
   readonly bands: readonly ChartStackBand[];
+  readonly step?: boolean;
   readonly total?: {
     readonly color?: string;
     readonly values: readonly (number | null)[];

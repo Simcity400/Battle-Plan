@@ -14,10 +14,14 @@ import {
   type MatrixCell,
 } from './matrixModel.ts';
 import { hitHeatMatrix, layoutHeatMatrix, matrixKeyStep, revealMatrixOffset } from './matrixLayout.ts';
-import { createMatrixPicture, drawHeatMatrix } from './matrixPainter.ts';
+import { drawHeatMatrix } from './matrixPainter.ts';
 import { deriveLanesAudit, deriveLanesMirror, deriveLanesTooltip, findRunAtHour, type HeatLanesModel } from './lanesModel.ts';
 import { hitHeatLanes, layoutHeatLanes, projectLaneRunsToPixels } from './lanesLayout.ts';
-import { createLanesPicture, drawHeatLanes } from './lanesPainter.ts';
+import { drawHeatLanes } from './lanesPainter.ts';
+import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
+import { registerFamilyProjection } from '../registry.ts';
+import { familyHeatLanesLaneView } from './lanesLaneView.ts';
+import { familyHeatMatrixLaneView } from './matrixLaneView.ts';
 
 function gridCells(grid: readonly (readonly MatrixCell[])[], width: number) {
   return { present: new Map(grid.flatMap((row, r) => row.map((cell, c) => [r * width + c, cell] as const))), absent: { kind: 'empty' } as MatrixCell };
@@ -173,8 +177,7 @@ test('heat matrix supports grouped non-square axes, bounded viewport windows, hi
   assert.match(mirror.rows[1]!.cells[2]!.spoken, /^.+: Not recorded \(Opinions not recorded\)$/, 'each cell says which column it is');
 
   const fake = makeFakeCtx();
-  const picture = createMatrixPicture();
-  const firstDraw = drawHeatMatrix(fake.ctx, {
+  drawHeatMatrix(fake.ctx, {
     model,
     layout,
     theme: THEME,
@@ -182,21 +185,22 @@ test('heat matrix supports grouped non-square axes, bounded viewport windows, hi
     scrollTop: 0,
     hoveredCell: { row: 0, column: 1 },
     focusedCell: { row: 1, column: 0 },
-  }, picture);
-  assert.equal(firstDraw.drew, true);
+  });
   assert.ok(fake.ops.some(op => op.op === 'fillText' && op.args[0] === '-80'));
   assert.ok(fake.ops.some(op => op.op === 'fillText' && op.args[0] === 'Allies'));
 
-  const repeatDraw = drawHeatMatrix(fake.ctx, {
-    model,
-    layout,
-    theme: THEME,
-    scrollLeft: 0,
-    scrollTop: 0,
-    hoveredCell: { row: 0, column: 1 },
-    focusedCell: { row: 1, column: 0 },
-  }, picture);
-  assert.equal(repeatDraw.drew, false);
+  registerFamilyProjection({ kind: 'test-heat-matrix', family: 'heat-matrix', project: view => view.panel('main') as HeatMatrixModel });
+  const lane = (panel: HeatMatrixModel, scrollLeft = 0, scrollTop = 0) => ({ family: 'heat-matrix', kind: 'test-heat-matrix', options: {}, sources: {}, staticPanels: { main: panel }, scrollLeft, scrollTop, theme: THEME, width: 520, height: 300 });
+  const surface = { width: 520, height: 300, dpr: 1 };
+  const renamed: HeatMatrixModel = { ...model, rows: model.rows.map((row, index) => (index === 0 ? { ...row, label: `${row.label} (renamed)` } : row)) };
+  const reordered: HeatMatrixModel = { ...renamed, columns: [...renamed.columns].reverse() };
+  assertQuietFrames(() => familyHeatMatrixLaneView(() => {}), { label: 'matrix', binding: lane(model), hour: model.hour }, 24, surface);
+  assertFreshPaint(() => familyHeatMatrixLaneView(() => {}), [
+    { label: 'held', binding: lane(model), hour: model.hour, check: true },
+    { label: 'correction', binding: lane(renamed), hour: model.hour, check: true },
+    { label: 'reorder', binding: lane(reordered), hour: model.hour, check: true },
+    { label: 'scrolled', binding: lane(reordered, 4, 6), hour: model.hour, check: true },
+  ], surface);
 
   const marked: HeatMatrixModel = {
     hour: 1,
@@ -257,7 +261,7 @@ test('a 1,500 by 1,500 matrix reads only the cells a 20 by 20 viewport shows, it
   const shown = (layout.endRow - layout.firstRow) * (layout.endCol - layout.firstCol);
   assert.ok(shown <= 32 * 32, `the viewport is small: ${shown}`);
   const fake = makeFakeCtx();
-  drawHeatMatrix(fake.ctx, { model, layout, theme: THEME, scrollLeft: 22 * 700, scrollTop: 22 * 700, hoveredCell: null, focusedCell: null }, createMatrixPicture());
+  drawHeatMatrix(fake.ctx, { model, layout, theme: THEME, scrollLeft: 22 * 700, scrollTop: 22 * 700, hoveredCell: null, focusedCell: null });
   deriveMatrixMirror(model, layout.firstRow, layout.endRow, layout.firstCol, layout.endCol);
   deriveMatrixAudit(model, { firstRow: layout.firstRow, endRow: layout.endRow, firstCol: layout.firstCol, endCol: layout.endCol });
   deriveMatrixTooltip(model, layout.firstRow, layout.firstCol);
@@ -388,8 +392,7 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
   assert.ok(ticks.length >= 2);
 
   const fake = makeFakeCtx();
-  const picture = createLanesPicture();
-  const res = drawHeatLanes(fake.ctx, {
+  drawHeatLanes(fake.ctx, {
     model,
     layout,
     theme: THEME,
@@ -398,10 +401,25 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
     hoveredHour: 96,
     selectedRowId: null,
     focusedRowId: '10',
-  }, picture);
-  assert.equal(res.drew, true);
+  });
   assert.ok(fake.ops.some(op => op.op === 'fillText' && op.args[0] === '70%'));
   assert.ok(fake.ops.some(op => op.op === 'stroke'));
+
+  registerFamilyProjection({ kind: 'test-heat-lanes', family: 'heat-lanes', project: view => view.panel('main') as HeatLanesModel });
+  const lane = (panel: HeatLanesModel, scrollTop = 0) => ({ family: 'heat-lanes', kind: 'test-heat-lanes', options: {}, sources: {}, staticPanels: { main: panel }, scrollTop, theme: THEME, width: 720, height: 220 });
+  const held = lane(model);
+  const renamed = { ...model, rows: model.rows.map(row => (row.id === '11' ? { ...row, label: 'Normandy' } : row)) };
+  const reordered = { ...renamed, rows: [...renamed.rows].reverse() };
+  const surface = { width: 720, height: 220, dpr: 1 };
+  assertQuietFrames(() => familyHeatLanesLaneView(() => {}), { label: 'lanes', binding: held, hour: 119 }, 24, surface);
+  assertFreshPaint(() => familyHeatLanesLaneView(() => {}), [
+    { label: 'held', binding: held, hour: 119, check: true },
+    { label: 'later', binding: held, hour: 140, speed: 24 },
+    { label: 'seek back', binding: held, hour: 119, check: true },
+    { label: 'correction', binding: lane(renamed), hour: 119, check: true },
+    { label: 'reorder', binding: lane(reordered), hour: 119, check: true },
+    { label: 'scrolled', binding: lane(reordered, 12), hour: 119, check: true },
+  ], surface);
 
   const regions = { pickedHeading: 'Your regions', automaticHeading: 'Most active for Germany', addLabel: 'Add region' };
   const regionRows = [{ ...model.rows[0]!, pinned: true, region: 10 }, { ...model.rows[1]!, region: 11 }];
@@ -483,8 +501,7 @@ test('stripes draw the fractions they are given and leave an unknown remainder u
 
 test('a stable row id is never read as a row position, and a reorder refreshes the published rows', async () => {
   const { heatLanesHostAdapter } = await import('./hostAdapter.ts');
-  const { lanesExtentSignature, laneIdentities } = await import('./lanesModel.ts');
-  const { matrixExtentSignature } = await import('./matrixLaneView.ts');
+  const { laneIdentities } = await import('./lanesModel.ts');
   const rows = [{ id: '1', label: 'One', runs: [] }, { id: '0', label: 'Zero', runs: [] }];
   const installed = { id: 7, owner: 'w', hour: 50 } as unknown as Parameters<NonNullable<typeof heatLanesHostAdapter.resolveHitAction>>[1];
   const fields = { extent: { totalHeight: 100, rowStride: 30, plotTop: 0, plotHeight: 100, rows: laneIdentities(rows) } };
@@ -492,9 +509,4 @@ test('a stable row id is never read as a row position, and a reorder refreshes t
   assert.equal(byId?.subject, '1', 'Enter on stable id "1" activates "1", not the row at position 1');
   const byPointer = heatLanesHostAdapter.resolveHitAction!({ key: '#1@40' } as never, installed, fields as never);
   assert.equal(byPointer?.subject, '0', 'a pointer token names a position');
-  const layout = { totalHeight: 100, rowStride: 30, plotTop: 0, plotHeight: 100 };
-  assert.notEqual(lanesExtentSignature(layout, rows), lanesExtentSignature(layout, [rows[1]!, rows[0]!]));
-  const grid = { totalWidth: 100, totalHeight: 100, cellSize: 20, gridLeft: 10, gridTop: 10 };
-  const a = { id: 'A', label: 'A' }, b = { id: 'B', label: 'B' };
-  assert.notEqual(matrixExtentSignature(grid, { rows: [a, b], columns: [a, b] }), matrixExtentSignature(grid, { rows: [b, a], columns: [b, a] }));
 });

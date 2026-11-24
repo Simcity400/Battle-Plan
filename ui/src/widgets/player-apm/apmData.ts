@@ -1,6 +1,4 @@
-import { runAt } from '../../charts/series.ts';
-import type { Run } from '../../charts/series';
-import type { ApmReply, ApmSeries, ApmValue } from '../../generated/dashboard';
+import type { ApmReply, ApmValue } from '../../generated/dashboard';
 
 const count = (value: unknown) => value === null || (typeof value === 'string' && /^\d+$/.test(value));
 const rate = (value: unknown) => value === null || (typeof value === 'number' && Number.isFinite(value) && value >= 0);
@@ -24,18 +22,6 @@ export function validateApm(value: unknown): ApmReply {
         && point.firstHour <= point.lastHour && (!index || series.points[index - 1].lastHour < point.firstHour) && validValue(point.value))))
     throw new Error('The eAPM reply is malformed.');
   return reply;
-}
-
-export function apmRuns(series: ApmSeries, paused = false): Run[] {
-  const runs: Run[] = [];
-  let gap = true;
-  for (const point of series.points) {
-    const value = paused ? (point.value.pausedOrders === null ? null : Number(point.value.pausedOrders)) : point.value.apm;
-    if (value === null) { gap = true; continue; }
-    runs.push({ firstHour: point.firstHour, lastHour: point.lastHour, value, breakBefore: gap });
-    gap = false;
-  }
-  return runs;
 }
 
 export function playerNames(
@@ -75,11 +61,8 @@ export function playerNames(
 }
 
 export const apmText = (value: number | null | undefined) => value == null ? 'Unknown' : value.toLocaleString(undefined, { maximumFractionDigits: 1 });
-export const countText = (value: string | null | undefined) => value == null ? 'Unknown' : BigInt(value).toLocaleString();
-export const pointAt = (series: ApmSeries, hour: number) => runAt(series.points, Math.floor(hour));
 export const APM_EXPLANATION = 'Effective actions per minute (eAPM): accepted player-issued gameplay orders per unpaused real minute. Paused orders and paused time never affect eAPM. Camera movement, selections and unsaved interface edits do not count. Automatic battle-plan execution does not add orders.';
 export const GAPS_NOTE = 'Part of this period was not recorded; its orders and minutes are both left out.';
-export const apmValueText = (value: ApmValue | undefined) => value?.gaps && value.apm !== null ? `${apmText(value.apm)}*` : apmText(value?.apm);
 function rateNote(value: ApmValue): string {
   if (!value.complete) return 'Player orders or unpaused time were not fully recorded for this period; the rate is unknown.';
   if (value.unpausedMinutes === 0) return 'No unpaused time was observed in this period.';

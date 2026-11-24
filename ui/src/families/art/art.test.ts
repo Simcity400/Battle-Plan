@@ -5,8 +5,9 @@ import { IdentityIndex } from '../identity/index.ts';
 import { flagChoiceKey } from '../identity/types.ts';
 import { DomArtCache, type DomArtImage } from './domCache.ts';
 import { LaneArtCache } from './laneCache.ts';
-import { flagEntryToArt, flagImageToArt, spriteImageToArt } from './adapters.ts';
-import { artUrlForHandle, createDomArtProvider, createLaneArtProvider, flagArtHandle, laneArtDemand } from './provider.ts';
+import { drawMediaSlot, flagEntryToArt, flagImageToArt, resolveCachedArt, spriteImageToArt } from './adapters.ts';
+import { artUrlForHandle, collectArtUrls, createDomArtProvider, createLaneArtProvider, flagArtHandle, laneArtDemand, urlArtHandle } from './provider.ts';
+import { DEFAULT_FAMILY_THEME } from '../../draw/kit.ts';
 import { fetchArtHandles, spriteResolutions } from './transport.ts';
 import type { ArtHandle } from '../plan.ts';
 import {
@@ -383,4 +384,53 @@ test('sprite, portrait, technology and relative-path handles are asked of their 
   laneArtDemand(path, null, resolutions, urls, again);
   assert.equal(again.size, 0);
   assert.ok(urls.has('art://drawn'));
+});
+
+test('urlArtHandle, collectArtUrls, resolveCachedArt, and drawMediaSlot unify family media handling', () => {
+  assert.equal(urlArtHandle(null), null);
+  assert.equal(urlArtHandle(''), null);
+  assert.deepEqual(urlArtHandle('art://icon'), { kind: 'url', url: 'art://icon' });
+
+  const collected = collectArtUrls([
+    null,
+    undefined,
+    'art://direct',
+    urlArtHandle('art://handle'),
+    readyArt('art://ready'),
+    PENDING_ART,
+    { iconUrl: 'art://direct' },
+    { art: readyArt('art://slot') },
+  ]);
+  assert.deepEqual(collected, ['art://direct', 'art://handle', 'art://ready', 'art://slot']);
+
+  const bmp = fakeBitmap() as unknown as ImageBitmap;
+  const icons = new Map<string, ImageBitmap | null>([['art://cached', bmp]]);
+  const resolved = resolveCachedArt(readyArt('art://cached'), { icons });
+  assert.equal(resolved.status, 'ready');
+  assert.equal(resolved.bitmap, bmp);
+
+  const ops: string[] = [];
+  const ctx = {
+    save() { ops.push('save'); },
+    restore() { ops.push('restore'); },
+    beginPath() {},
+    roundRect() {},
+    fill() { ops.push('fill'); },
+    stroke() { ops.push('stroke'); },
+    clip() {},
+    drawImage() { ops.push('drawImage'); },
+    fillText() { ops.push('fillText'); },
+    measureText: (t: string) => ({ width: t.length * 6 }),
+    font: '',
+    fillStyle: '',
+    strokeStyle: '',
+    lineWidth: 1,
+    globalAlpha: 1,
+    textAlign: 'left',
+    textBaseline: 'middle',
+  } as unknown as CanvasRenderingContext2D;
+
+  drawMediaSlot(ctx, 4, 14, 18, 12, { kind: 'flag', art: readyArt('art://cached'), tag: 'GER' }, DEFAULT_FAMILY_THEME, { icons });
+  drawMediaSlot(ctx, 4, 14, 18, 18, { kind: 'art', art: readyArt('art://cached'), name: 'Tank' }, DEFAULT_FAMILY_THEME, { icons, radius: 3 });
+  assert.equal(ops.filter(op => op === 'drawImage').length, 2);
 });

@@ -18,6 +18,19 @@ function meterSpec<TModule>(
 
 export const METER_VIEWS: readonly FamilyViewEntry[] = [
   {
+    kind: 'autonomy',
+    view: 'meters',
+    label: 'Meters',
+    family: 'meters',
+    viewOption: 'view',
+    loadSpec: meterSpec(
+      'autonomy',
+      'meters',
+      () => import('../autonomy/autonomyLevelsProjection.ts'),
+      mod => ({ projection: mod.autonomyLevelsProjection, declaration: mod.autonomyLevelsDeclaration }),
+    ),
+  },
+  {
     kind: 'active-research',
     view: DEFAULT_VIEW,
     family: 'meters',

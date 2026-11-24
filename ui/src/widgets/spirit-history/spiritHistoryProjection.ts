@@ -4,15 +4,14 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
-import { boundedRuns, clipSpansToHour, inHourSpans, nextBoundaryAfter, sortedBoundaries, spanStart, timelineModel, untilItem, urlArtHandle, wholeBranchProof } from '../../families/timeline/helpers.ts';
+import { urlArtHandle } from '../../families/art/provider.ts';
+import { boundedRuns, clipSpansToHour, inHourSpans, nextBoundaryAfter, sortedBoundaries, spanStart, timelineModel, untilItem, wholeBranchProof } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection } from '../../families/timeline/model.ts';
-import { registerTimelineProjection } from '../../families/timeline/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { IdeaHistoryReply } from '../../generated/dashboard';
-import { spirits, spiritsShown, type SpiritSort } from '../national-spirits/spiritsData.ts';
-import { OPTIONS } from './definition.ts';
+import { spirits, spiritsShown } from '../national-spirits/spiritsData.ts';
 
 export interface SpiritHistoryOptions {
-  readonly sort: SpiritSort;
   readonly showEnded: boolean;
   readonly iconsOnBars: boolean;
   readonly firstHour: number;
@@ -34,7 +33,8 @@ const WORDS = {
   lastSeen: (h: number) => `Last recorded ${formatDateOnly(h)}`,
 };
 
-export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> = registerTimelineProjection<SpiritHistoryOptions>({
+export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> = registerFamilyProjection<TimelineProjection<SpiritHistoryOptions>>({
+  family: 'timeline',
   kind: 'spirit-history',
 
   nextChange(readView) {
@@ -49,7 +49,7 @@ export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> =
     if (!reply) return timelineModel(base);
     const nextChangeAt = nextBoundaryAfter(boundaries(reply), hour);
     const gaps = clipSpansToHour(reply.unobserved, hour);
-    const seen = spiritsShown(spirits({ ...reply, spans: boundedRuns(reply.spans, hour) }), hour, opt.sort, opt.showEnded, gaps);
+    const seen = spiritsShown(spirits({ ...reply, spans: boundedRuns(reply.spans, hour) }), hour, opt.showEnded, gaps);
     if (!seen.length) {
       const classified = new Set(reply.ideas.filter(info => info.category).map(info => info.token));
       const unclassified = reply.spans.some(span => span.firstHour <= hour && !classified.has(span.token));
@@ -118,7 +118,6 @@ export const spiritHistoryDeclaration: TimelineWidgetDeclaration<SpiritHistoryOp
   subject: 'national spirits',
   emptyCampaign: 'Load a campaign and choose a country to see its national spirits.',
   icon: 'history',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its national spirits.' },
   jumpToDate: true,
   keyByBranch: true,
@@ -145,7 +144,6 @@ export const spiritHistoryDeclaration: TimelineWidgetDeclaration<SpiritHistoryOp
   }),
   projection: spiritHistoryProjection,
   projectionOptions: (ctx, extra) => ({
-    sort: (ctx.options.sort as SpiritSort) ?? 'gained',
     showEnded: ctx.options.ended !== 'hidden',
     iconsOnBars: ctx.options.iconsOnBars !== false,
     firstHour: extra.extent[0],

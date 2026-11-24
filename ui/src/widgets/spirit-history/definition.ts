@@ -2,8 +2,6 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 
 export const OPTIONS: readonly OptionField[] = [
-  { key: 'sort', section: 'options', label: 'Sort', kind: 'choice', default: 'gained',
-    choices: [{ value: 'gained', label: 'Date gained' }, { value: 'ended', label: 'Date ended' }, { value: 'name', label: 'Name' }] },
   { key: 'ended', section: 'options', label: 'Ended spirits', kind: 'choice', default: 'shown',
     choices: [{ value: 'shown', label: 'Shown' }, { value: 'hidden', label: 'Hidden' }] },
   { key: 'iconsOnBars', section: 'options', label: 'Icons on bars', kind: 'toggle', default: true },

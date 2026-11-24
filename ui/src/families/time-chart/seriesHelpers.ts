@@ -61,6 +61,7 @@ export interface ExactReading {
 }
 
 interface ExactState {
+  readonly country?: string | number;
   readonly hour: number;
   readonly run: { readonly valueRaw: string } | null;
   readonly missing: string | null;
@@ -94,6 +95,31 @@ export function exactHoverReadings(
     if (!state.run) return { hour: hover.hour, value: null, reason: state.missing ?? 'Not recorded' };
     return { hour: hover.hour, value: (Number(state.run.valueRaw) / divisor) * scale };
   });
+}
+
+export function exactHoverByCountry(
+  readView: BoundedReadView,
+  name: string,
+  decimals: number,
+): ReadonlyMap<string, ExactReading> | null {
+  let hover;
+  try {
+    hover = readView.hover<{ readonly states?: readonly ExactState[]; readonly decimals?: number }>(name);
+  } catch (error) {
+    if (error instanceof FutureDataError) return null;
+    throw error;
+  }
+  const states = hover?.data?.states;
+  if (!hover || !Array.isArray(states)) return null;
+  const divisor = 10 ** (typeof hover.data.decimals === 'number' ? hover.data.decimals : decimals);
+  const out = new Map<string, ExactReading>();
+  for (const state of states) {
+    if (!state || state.country === undefined) continue;
+    out.set(countryKey(state.country), state.run
+      ? { hour: hover.hour, value: Number(state.run.valueRaw) / divisor }
+      : { hour: hover.hour, value: null, reason: state.missing ?? 'Not recorded' });
+  }
+  return out;
 }
 
 export function assignCountrySeriesColours(
@@ -248,12 +274,16 @@ export function seriesHeadAt(
 export function rankEntry(
   ctx: Pick<FamilyPlanContext, 'track' | 'branch' | 'following'>,
   family: Readonly<Record<string, unknown>>,
-  tags: readonly string[],
+  chosen: readonly string[] | number,
   name = 'rank',
 ): SourceEntry | null {
-  if (tags.length < 2) return null;
-  const coverage = { mode: 'population', form: 'top', limit: tags.length } as const;
-  const base = { branchId: ctx.branch.id, family, top: tags.length };
+  const top = typeof chosen === 'number';
+  const tags = top ? [] : chosen;
+  const limit = top ? chosen : tags.length;
+  if (limit < 2) return null;
+  const coverage = { mode: 'population', form: 'top', limit } as const;
+  const base = { branchId: ctx.branch.id, family, top: limit };
+  const reads = (hour?: number) => top ? {} : { reads: tags.map(tag => ({ country: countryFromKey(tag), ...(hour === undefined ? {} : { hour }) })) };
   const common = { name, source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset };
   if (ctx.following) {
     return {
@@ -263,7 +293,7 @@ export function rankEntry(
         channel: 'followed',
         coverage,
         product: 'series-state',
-        followQuery: { product: 'series-state', params: { ...base, reads: tags.map(tag => ({ country: countryFromKey(tag) })) } },
+        followQuery: { product: 'series-state', params: { ...base, ...reads() } },
         params: null,
       },
     };
@@ -278,7 +308,7 @@ export function rankEntry(
       exactProduct: 'series-state',
       followQuery: null,
       params: base,
-      buildExactParams: (params, hour) => ({ ...params, reads: tags.map(tag => ({ country: countryFromKey(tag), hour })) }),
+      buildExactParams: (params, hour) => ({ ...params, ...(top ? { hour } : reads(hour)) }),
     },
   };
 }

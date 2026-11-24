@@ -29,15 +29,11 @@ export const breakdownHostAdapter: FamilyHostAdapter<BreakdownModel, BreakdownVi
     const meta = fields.meta as { readonly contentHeight?: number } | undefined;
     return meta?.contentHeight !== undefined ? { height: meta.contentHeight } : null;
   },
-  getRowStride: () => 23,
-  getPageStep: (_fields, viewport) => Math.max(1, Math.floor(viewport.height / 23)),
   deriveAuditRows: model => deriveBreakdownAudit(model),
   auditOrdered: true,
   buildBinding: ctx => {
     if (!ctx.theme) return null;
     return {
-      family: 'breakdown',
-      kind: ctx.kind,
       options: ctx.options,
       sources: ctx.sources,
       ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),

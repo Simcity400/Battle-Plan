@@ -1,4 +1,4 @@
-import { validateRankReply } from '../../charts/race/measureRaceData.ts';
+import { seriesStateProvenInterval, validateRankReply } from '../../charts/race/measureRaceData.ts';
 import { countryFromKey, countryKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { rowName, type FollowedAnswer } from '../../dashboard/follow/message.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
@@ -100,6 +100,7 @@ export function seriesRaceSources(
       params: exactBase as unknown as Readonly<Record<string, unknown>>,
       buildExactParams: buildSeriesRaceExactParams,
       dynamicKeys: ['hour', 'reads'],
+      provenInterval: seriesStateProvenInterval,
       validate: validateRankReply,
     },
   };

@@ -1,6 +1,7 @@
 import {
   DEFAULT_VIEW,
-  ensureFamilyProjection,
+  ensureBoundProjection,
+  type BoundProjectionKey,
   familyProjection,
   registerFamilyProjection,
   registeredFamilyProjections,
@@ -19,11 +20,10 @@ export function tableProjection(kind: string, view?: string): TableProjection<an
 }
 
 export function ensureTableProjection(
-  kind: string,
-  view: string | undefined,
+  binding: BoundProjectionKey,
   onReady: () => void,
 ): TableProjection<any> | 'loading' | 'unknown' {
-  return ensureFamilyProjection<TableModel, any>('table', kind, view, onReady) as TableProjection<any> | 'loading' | 'unknown';
+  return ensureBoundProjection<TableModel, any>(binding, onReady) as TableProjection<any> | 'loading' | 'unknown';
 }
 
 export function registeredTableKinds(): string[] {

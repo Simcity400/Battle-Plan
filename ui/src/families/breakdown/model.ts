@@ -6,6 +6,7 @@ import type { BoundedReadView, FamilyTheme, MirrorModel, MirrorRow } from '../co
 import type { ArtResult } from '../plan.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import { buildTooltipContent, type FamilyTooltipPayload, type TooltipListItem } from '../host/tooltips.ts';
+import { formatScalar, formatShare } from '../valueFormat.ts';
 
 export interface BreakdownPart {
   readonly key: string;
@@ -78,16 +79,6 @@ export interface ResolvedBreakdownLevel {
 }
 
 const TOOLTIP_PARTS = 8;
-
-export function formatShare(share: number | null | undefined): string {
-  if (share == null || !Number.isFinite(share) || share < 0) return '';
-  const pct = share * 100;
-  if (pct === 0) return '0%';
-  if (pct < 0.05) return '<0.1%';
-  if (pct >= 99.95) return '100%';
-  if (pct >= 10) return `${Math.round(pct)}%`;
-  return `${pct.toFixed(1)}%`;
-}
 
 export function partColour(part: BreakdownPart, theme: FamilyTheme): string {
   if (part.color) return part.color;
@@ -205,7 +196,7 @@ export function buildBreakdownTooltip(
     if (part.count !== undefined && part.count > 0) {
       items.push({
         label: part.countLabel ?? 'Count',
-        value: part.count.toLocaleString('en-US'),
+        value: formatScalar(part.count, 'integer'),
       });
     }
   }

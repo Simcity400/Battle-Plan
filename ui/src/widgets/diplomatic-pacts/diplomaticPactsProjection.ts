@@ -5,9 +5,8 @@ import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { countryLook, nextBoundaryAfter, timelineModel, clipSpansToHour, wholeBranchProof } from '../../families/timeline/helpers.ts';
 import { laneByKey, type TimelineProjection } from '../../families/timeline/model.ts';
-import { registerTimelineProjection } from '../../families/timeline/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { DiplomacyPactsReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { aboutElsewhere, agreementKinds, agreementLanes, agreementsOf, changeHours, validatePacts, type AgreementLaneMeta } from './pactsData.ts';
 
 export interface DiplomaticPactsOptions {
@@ -18,7 +17,8 @@ export interface DiplomaticPactsOptions {
   readonly surface: string;
 }
 
-export const diplomaticPactsProjection: TimelineProjection<DiplomaticPactsOptions> = registerTimelineProjection<DiplomaticPactsOptions>({
+export const diplomaticPactsProjection: TimelineProjection<DiplomaticPactsOptions> = registerFamilyProjection<TimelineProjection<DiplomaticPactsOptions>>({
+  family: 'timeline',
   kind: 'diplomatic-pacts',
 
   nextChange(readView) {
@@ -79,7 +79,6 @@ export const diplomaticPactsDeclaration: TimelineWidgetDeclaration<DiplomaticPac
   subject: 'diplomacy',
   emptyCampaign: 'Load a campaign to see diplomacy.',
   icon: 'link',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its diplomatic agreements.' },
   jumpToDate: true,
   keyByBranch: true,

@@ -150,7 +150,8 @@ export function scopedOptionFields(
   const optionKey = resolveViewOptionKey(meta, familyEntries);
   const baseFields = meta?.options ?? [];
 
-  if (!activeFamily?.options) return baseFields;
+  if (!activeFamily) return baseFields;
+  if (!activeFamily.options) return viewOwnedFields(baseFields, activeView);
 
   const result: OptionField[] = [];
   const seen = new Set<string>();

@@ -2,8 +2,6 @@ import type { FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
 import type { FamilyFlowBinding } from './laneView.ts';
 import { deriveFlowAudit, type FlowModel } from './model.ts';
 
-const ROW_STRIDE_PX = 20;
-
 export function parseFlowHit(hitKey: string | null): ParsedFamilyHit | null {
   if (!hitKey || !(hitKey.startsWith('node:') || hitKey.startsWith('ribbon:'))) return null;
   const subject = hitKey.slice(hitKey.indexOf(':') + 1);
@@ -18,15 +16,11 @@ export const flowHostAdapter: FamilyHostAdapter<FlowModel, unknown, FamilyFlowBi
   auditOwnerId: -8,
   parseHit: parseFlowHit,
   inspectToken: key => key,
-  getRowStride: () => ROW_STRIDE_PX,
-  getPageStep: (_fields, viewport) => Math.max(1, Math.floor(viewport.height / ROW_STRIDE_PX) - 1),
   deriveAuditRows: model => deriveFlowAudit(model),
   auditOrdered: true,
   buildBinding: ctx => {
     if (!ctx.theme) return null;
     return {
-      family: 'flow',
-      kind: ctx.kind,
       options: ctx.options,
       sources: ctx.sources,
       ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),

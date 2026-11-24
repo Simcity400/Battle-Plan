@@ -19,12 +19,13 @@ import {
   deriveBarsTooltip,
   FutureBarsDataError,
   InvalidBarsModelError,
-  type BarsModel,
+  type BarsModel, type BarsProjection,
 } from './model.ts';
 import { axisCeiling, layoutFamilyBars } from './layout.ts';
 import { drawFamilyBars, hitFamilyBars } from './painter.ts';
-import { registerBarsProjection } from './registry.ts';
+import { registerFamilyProjection } from '../registry.ts';
 import { familyBarsLaneView, type FamilyBarsBinding } from './laneView.ts';
+import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
 import { buildShareRowsModel } from './shareRows.ts';
 
 const THEME: FamilyTheme = {
@@ -415,7 +416,7 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
     numeric: 1500 - i,
   }));
 
-  registerBarsProjection<{ readonly swapTop?: boolean }>({
+  registerFamilyProjection({
     kind: 'test-bars-1500',
     family: 'bars',
     project(readView, opts) {
@@ -508,10 +509,14 @@ test('audit rows keep one key per row and cell, so two bars never collapse in th
     { kind: 'data', key: 'USA', label: 'United States', value: { value: knownValue(292) }, numeric: 292 },
   ] });
   assert.equal(new Map(rows.map(row => [row.key, row.value])).size, rows.length);
+  const counted = (primary: string) => new Map(deriveBarsAudit({ form: 'share', hour: h, rows: [
+    { kind: 'data', key: '11', label: 'English Channel', segments: [], readout: { primary } },
+  ] }).map(row => [row.key, row.value]));
+  assert.notDeepEqual(counted('90 air wings'), counted('91 air wings'), 'a painted readout is compared');
 });
 
 test('a backward seek drops a cached model from a later hour', () => {
-  registerBarsProjection<Record<string, never>>({
+  registerFamilyProjection<BarsProjection<Record<string, never>>>({
     kind: 'test-bars-seek-back',
     family: 'bars',
     project(readView) {
@@ -546,6 +551,16 @@ test('a backward seek drops a cached model from a later hour', () => {
   } finally {
     (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = origOffscreen;
   }
+  const options: Record<string, never> = {};
+  const binding = { family: 'bars', kind: 'test-bars-seek-back', options, sources: {}, width: 480, height: 240, scrollTop: 0, theme: THEME, reducedMotion: true };
+  const surface = { width: 480, height: 240, dpr: 1 };
+  assert.equal(assertQuietFrames(() => familyBarsLaneView(() => {}), { label: 'before the change', binding, hour: 3 }, 24, surface), 10);
+  assertFreshPaint(() => familyBarsLaneView(() => {}), [
+    { label: 'before', binding, hour: 5, check: true },
+    { label: 'after', binding, hour: 20, speed: 24 },
+    { label: 'seek back', binding, hour: 5, check: true },
+    { label: 'scrolled', binding: { ...binding, scrollTop: 10 }, hour: 5, check: true },
+  ], surface);
 });
 
 test('the top painted gliding row takes the hit where two rows overlap', () => {
@@ -577,7 +592,7 @@ test('a known 40 percent share beside an unavailable part fills 40 percent and m
 
 test('a hover over 1,500 rows reuses navigation, meta and row bounds, and the mirror holds only visible rows', () => {
   const rows = Array.from({ length: 1500 }, (_, i) => ({ kind: 'data' as const, key: `K${i}`, label: `Country ${i}`, value: { value: knownValue(1500 - i) }, numeric: 1500 - i }));
-  registerBarsProjection<Record<string, never>>({
+  registerFamilyProjection<BarsProjection<Record<string, never>>>({
     kind: 'test-bars-hover',
     family: 'bars',
     project(readView) { return { form: 'ordered', hour: readView.hour, rows }; },

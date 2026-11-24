@@ -1,11 +1,8 @@
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceEntry, SourcePlan } from '../../families/contract.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { measureArtHandle, type ChartMeasureArt } from '../../families/time-chart/measureArt.ts';
 import type { ChartGap, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import {
@@ -15,6 +12,7 @@ import {
   seriesHeadValue,
   withinMapOf,
 } from '../../families/time-chart/seriesHelpers.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 
 export const EXPERIENCE_SCALE = 1 / 32_768;
 
@@ -31,11 +29,10 @@ export interface ExperienceOptions {
 }
 
 export function formatExperience(value: number): string {
-  const sign = value < 0 ? '−' : '';
-  return `${sign}${Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+  return formatScalar(value, { decimals: 0, maxDecimals: 2 });
 }
 
-export const experienceProjection: TimeChartProjection<ExperienceOptions> = registerTimeChart({
+export const experienceProjection: TimeChartProjection<ExperienceOptions> = registerFamilyProjection({
   kind: 'experience',
   family: 'time-chart',
   variant: 'line',
