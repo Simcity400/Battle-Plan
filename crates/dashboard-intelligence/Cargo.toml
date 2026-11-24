@@ -34,6 +34,7 @@ dashboard-declare = { workspace = true }
 dashboard-follow = { path = "../dashboard-follow" }
 dashboard-query = { workspace = true }
 dashboard-text = { workspace = true }
+dashboard-world = { workspace = true }
 engine-intelligence = { workspace = true }
 game-model = { workspace = true }
 replay-columnar = { workspace = true }
@@ -69,6 +70,7 @@ content-reader-gui = { workspace = true, features = ["test-support"] }
 content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
 content-reader-politics = { workspace = true, features = ["test-support"] }
+dashboard-world = { workspace = true, features = ["export-types"] }
 engine-native-land = { workspace = true, features = ["test-support"] }
 playhead = { path = "../playhead", features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }

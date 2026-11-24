@@ -46,7 +46,7 @@ export interface SerializedTiledLine {
 }
 
 export interface TimeChartProjection<TOptions = unknown> extends FamilyProjection<TimeChartModel, TOptions> {
-  readonly family: 'series';
+  readonly family: 'time-chart';
   readonly variant: TimeChartVariant;
   readonly joinMode?: TimeChartJoinMode;
   readonly measureTitle: string;
@@ -55,7 +55,7 @@ export interface TimeChartProjection<TOptions = unknown> extends FamilyProjectio
 }
 
 export interface TimeChartWidgetDeclaration<TProjectionOptions = Record<string, never>, TAux = unknown> {
-  readonly family: 'series';
+  readonly family: 'time-chart';
   readonly kind: string;
   readonly label: string;
   readonly subject: string;
@@ -96,6 +96,7 @@ export interface TimeChartBinding<TOptions = unknown> {
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly directModel?: TimeChartModel;
   readonly audit?: boolean;
+  readonly focusedKey?: string | null;
   readonly auditId?: number;
 }
 

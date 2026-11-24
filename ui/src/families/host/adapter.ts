@@ -119,6 +119,7 @@ export interface FamilyGridMetrics {
   readonly rows: number;
   readonly columns: number;
   readonly cellSize: number;
+  readonly cellWidth?: number;
   readonly gridLeft: number;
   readonly gridTop: number;
   readonly rowLabel?: (row: number) => string;

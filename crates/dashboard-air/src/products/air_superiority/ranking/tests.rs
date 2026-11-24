@@ -200,3 +200,10 @@ fn a_view_is_cut_where_its_reads_change_and_each_day_counts_once() {
     assert_eq!(cut.iter().map(|piece| (piece.run, piece.first, piece.last, piece.counts_last)).collect::<Vec<_>>(),
         [(0, 0, 59, false), (0, 60, 100, false), (1, 101, 119, true), (1, 120, 130, false)]);
 }
+
+#[test]
+fn a_one_hour_stretch_is_one_piece() {
+    let stretches = [Stretch { run: 0, first: 40, last: 40, join: Join::Start }, Stretch { run: 1, first: 50, last: 60, join: Join::Break }];
+    let cut = pieces(&stretches, 60, &[40, 41, 55].into());
+    assert_eq!(cut.iter().map(|piece| (piece.run, piece.first, piece.last)).collect::<Vec<_>>(), [(0, 40, 40), (1, 50, 54), (1, 55, 60)]);
+}

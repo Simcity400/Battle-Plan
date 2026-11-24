@@ -5,7 +5,7 @@ import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import type { TimeChartModel, TimeChartSeriesModel } from './model.ts';
 
 export type ParsedChartInspect =
-  | { readonly kind: 'marker'; readonly index: number }
+  | { readonly kind: 'marker'; readonly index: number; readonly hour?: number }
   | { readonly kind: 'label'; readonly seriesId: string }
   | { readonly kind: 'gap'; readonly index: number }
   | { readonly kind: 'fold'; readonly index: number }
@@ -16,8 +16,11 @@ export type ParsedChartInspect =
 export function parseChartInspect(key: string | null | undefined): ParsedChartInspect | null {
   if (!key) return null;
   if (key.startsWith('marker:')) {
-    const index = Number(key.slice(7));
-    return Number.isInteger(index) && index >= 0 ? { kind: 'marker', index } : null;
+    const [rawIndex, rawHour] = key.slice(7).split('@');
+    const index = Number(rawIndex);
+    const hour = rawHour === undefined ? undefined : Number(rawHour);
+    if (!Number.isInteger(index) || index < 0 || (hour !== undefined && !Number.isFinite(hour))) return null;
+    return hour === undefined ? { kind: 'marker', index } : { kind: 'marker', index, hour };
   }
   if (key.startsWith('label:')) {
     const seriesId = key.slice(6);
@@ -86,7 +89,7 @@ export function sampleSeriesValueAt(
   if (series.bounded) {
     const sampled = sampleBoundedAt(series.bounded, hour, series.valueScale ?? 1);
     if (sampled) return sampled;
-    if (series.headValue != null && Number.isFinite(series.headValue) && Math.abs(hour - until) <= series.bounded.binHours) {
+    if (series.headValue != null && Number.isFinite(series.headValue) && hour === (series.headHour ?? until)) {
       return { value: series.headValue, min: series.headValue, max: series.headValue, exact: true };
     }
   }
@@ -127,16 +130,16 @@ export function hitTestTimeChart(
   }
 
   if (layout.markerLaneHeight > 0 && py >= layout.baseY && py <= layout.axisY + 2 && px >= layout.left - 8 && px <= layout.left + layout.plotWidth + 8) {
-    let bestIdx = -1;
+    let best: (typeof layout.markers)[number] | null = null;
     let bestDist = 11;
     for (const m of layout.markers) {
       const d = Math.abs(px - m.x);
       if (d <= bestDist) {
         bestDist = d;
-        bestIdx = m.index;
+        best = m;
       }
     }
-    if (bestIdx >= 0) return `marker:${bestIdx}`;
+    if (best) return `marker:${best.index}@${best.marker.hour}`;
   }
 
   if (px < layout.left || px > layout.left + layout.plotWidth || py < layout.top - 4 || py > layout.baseY + 4) {
@@ -229,6 +232,34 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
     for (const s of model.series) {
       const flagUrl = artUrlOf(s.flag);
       const iconUrl = artUrlOf(s.icon);
+      if (s.exact && s.exact.hour === hour) {
+        if (s.exact.value === null) {
+          entries.push({
+            sortVal: -Infinity,
+            item: {
+              label: s.name,
+              missingReason: s.exact.reason ?? notRecordedLabel(),
+              swatch: s.color,
+              tone: 'muted',
+              ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
+            },
+          });
+        } else {
+          const negative = s.negRed && s.exact.value < 0;
+          entries.push({
+            sortVal: s.exact.value,
+            item: {
+              label: s.name,
+              value: formatExactFigure(s.exact.value, model),
+              swatch: negative ? '#ff6b6f' : s.color,
+              tone: negative ? 'negative' : undefined,
+              ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
+              ...(iconUrl ? { icon: iconUrl } : {}),
+            },
+          });
+        }
+        continue;
+      }
       const missingSpan = s.missingSpans?.find(sp => hour >= sp.firstHour && hour <= sp.lastHour);
       if (missingSpan) {
         entries.push({
@@ -288,9 +319,11 @@ export function deriveTimeChartTooltip(
   if (!parsed || !inspectKey) return null;
 
   if (parsed.kind === 'gap') {
-    const placed = layout.gaps[parsed.index];
+    const placed = layout.gaps.find(item => item.index === parsed.index);
     if (!placed) return null;
-    const span = `${formatDateOnly(placed.gap.firstHour)} \u2013 ${formatDateOnly(placed.gap.lastHour)}`;
+    const span = placed.ongoing
+      ? `From ${formatDateOnly(placed.gap.firstHour)}`
+      : `${formatDateOnly(placed.gap.firstHour)} \u2013 ${formatDateOnly(placed.gap.lastHour)}`;
     return {
       hour: placed.gap.firstHour,
       rowKey: inspectKey,
@@ -402,8 +435,9 @@ export function deriveTimeChartTooltip(
   }
 
   const hour = parsed.hour;
-  const items = seriesTooltipItemsAt(model, hour);
-  const detail = model.hoverDetail && model.hoverDetail.hour === hour ? model.hoverDetail.items : null;
+  const atHour = model.hoverDetail && model.hoverDetail.hour === hour ? model.hoverDetail : null;
+  const items = atHour?.replacesSeries ? [] : seriesTooltipItemsAt(model, hour);
+  const detail = atHour ? atHour.items : null;
   if (detail?.length) {
     if (items.length) items.push({ ...detail[0]!, divider: true }, ...detail.slice(1));
     else items.push(...detail);
