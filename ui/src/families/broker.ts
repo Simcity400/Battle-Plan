@@ -116,6 +116,9 @@ export function assertValidCoverage(
   if (params && (params.top !== undefined || params.least !== undefined)) {
     throw new CoverageContractError(`Source "${entryName}" declares keyed coverage and cannot request ranked population queries (top/least).`);
   }
+  if (query && (query as { coverage?: unknown }).coverage === 'row' && ((query as { reads?: unknown }).reads === 'every' || params?.reads === 'every')) {
+    throw new CoverageContractError(`Source "${entryName}" asks row-level coverage over every read, which is a population request.`);
+  }
 }
 
 export interface CompiledFollowPlan {
@@ -627,10 +630,13 @@ export async function readPlanExact(
     });
   }
 
-  if (read.shape === 'pixel-binned' && read.exactProduct && read.params) {
-    const span = options.gate.span(options.branch.firstHour, recorded);
-    if (!span) return null;
-    const params = { ...read.params, firstHour: span.firstHour, lastHour: span.lastHour };
+  if (read.shape === 'pixel-binned' && read.exactProduct) {
+    const base = read.params ?? (read.headQuery?.params as Readonly<Record<string, unknown>> | undefined) ?? null;
+    if (!base) return null;
+    const reads = (base as { reads?: unknown }).reads;
+    const params = Array.isArray(reads)
+      ? { ...base, reads: reads.map(asked => ({ ...(asked as Record<string, unknown>), hour: recorded })) }
+      : { ...base, hour: recorded };
     const request = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.exactProduct, params });
     const raw = await fetchRaw(request);
     return createBoundedReadView({
