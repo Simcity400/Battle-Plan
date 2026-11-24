@@ -151,3 +151,12 @@ test('an empty comparison says whether the chart left every active region out, w
   assert.deepEqual(body({ kind: 'unread', reason: 'Air region wings read only in part at this hour' }), ['Air region wings read only in part at this hour.', 'unavailable']);
   assert.deepEqual(body({ kind: 'none' }), ['No air activity at this date.', 'empty']);
 });
+
+test('the automatic heading names the order shown: only an Active sort is "Most active"', () => {
+  const heading = (order: AirSuperiorityProjectionOptions['order']) => {
+    const view = createBoundedReadView({ hour: displayedHour(400), panels: new Map([['main', REPLY]]) });
+    const model = airSuperiorityRegionProjection.project(view, { ...OPTS, order });
+    return model.rows.find(row => row.key === '__section:auto')?.label;
+  };
+  assert.deepEqual([heading('active'), heading('contested'), heading('name')], ['Most active', 'Most contested', 'Active regions']);
+});
