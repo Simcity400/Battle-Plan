@@ -1,13 +1,25 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { ideaName } from '../../dashboard/ideaHistoryReply.ts';
-import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
 import type { Artwork, CategoryInfo, IdeaHistoryReply, IdeaInfo, IdeaSpan } from '../../generated/dashboard';
 
-
-export type LawStyle = 'both' | 'shade' | 'icons';
-
 export const UNIDENTIFIED_HOLDER = 'Holder not recorded';
-export type HolderStyle = 'both' | 'name' | 'portrait';
+
+export interface IdeaLaneSpan {
+  readonly id: string;
+  readonly token: string;
+  readonly firstHour: number;
+  readonly lastHour: number;
+  readonly label: string;
+  readonly icon: string | null;
+  readonly holder: number | null;
+}
+
+export interface IdeaLane {
+  readonly id: string;
+  readonly label: string;
+  readonly slot: string;
+  readonly spans: IdeaLaneSpan[];
+}
 
 export function timelineCategories(categories: readonly CategoryInfo[]): CategoryInfo[] {
   return categories.filter(category => category.politicsTab && !category.hidden && category.slots.length > 0);
@@ -18,35 +30,25 @@ export function chosenCategory(categories: readonly CategoryInfo[], chosen: stri
   return chosen ? eligible.find(category => category.token === chosen) ?? null : eligible[0] ?? null;
 }
 
-export function lanesFor(reply: IdeaHistoryReply, category: CategoryInfo, styles: { laws: LawStyle; holders: HolderStyle }): TimelineLane[] {
+export function lanesFor(reply: IdeaHistoryReply, category: CategoryInfo): IdeaLane[] {
   const infos = new Map<string, IdeaInfo>(reply.ideas.map(info => [info.token, info]));
   const art = new Map<string, Artwork>(reply.artwork.map(item => [item.token, item]));
   const holder = (token: string, character: number, script: string, name: string) => JSON.stringify([token, character, script, name]);
   const holders = new Map<string, Artwork>(reply.holders.map(item => [holder(item.token, item.character, item.characterToken, item.name), item.artwork]));
-  const span = (item: IdeaSpan, shade?: number): TimelineSpan => {
-    const base = { id: `${item.token}:${item.firstHour}`, firstHour: item.firstHour, lastHour: item.lastHour, shade };
+  const span = (item: IdeaSpan): IdeaLaneSpan => {
+    const base = { id: `${item.token}:${item.firstHour}`, token: item.token, firstHour: item.firstHour, lastHour: item.lastHour, holder: item.character?.id ?? null };
     if (item.character) {
       const look = holders.get(holder(item.token, item.character.id, item.character.token, item.character.name));
-      return look ? { ...base, label: look.name ?? 'Holder name unavailable', icon: look.icon ?? undefined } : { ...base, label: UNIDENTIFIED_HOLDER };
+      return look ? { ...base, label: look.name ?? 'Holder name unavailable', icon: look.icon ?? null } : { ...base, label: UNIDENTIFIED_HOLDER, icon: null };
     }
     const look = art.get(item.token);
-    return { ...base, label: ideaName(look, infos.get(item.token), 'Idea name unavailable'), icon: look?.icon ?? undefined };
+    return { ...base, label: ideaName(look, infos.get(item.token), 'Idea name unavailable'), icon: look?.icon ?? null };
   };
-  const lanes: TimelineLane[] = [];
+  const lanes: IdeaLane[] = [];
   for (const slot of category.slots) {
     const label = contentTitle(slot.name, slot.token, 'Slot name unavailable');
     const held = reply.spans.filter(item => (item.slot ?? infos.get(item.token)?.slot) === slot.token).sort((a, b) => a.firstHour - b.firstHour);
-    if (!slot.character) {
-      const law = slot.laws.length > 0;
-      const shade = (token: string) => {
-        const level = slot.laws.indexOf(token);
-        return law && styles.laws !== 'icons' && level >= 0 ? (slot.laws.length > 1 ? level / (slot.laws.length - 1) : 0) : undefined;
-      };
-      lanes.push({ id: slot.token, label, spans: held.map(item => span(item, shade(item.token))),
-        icons: law ? styles.laws !== 'shade' : styles.holders !== 'name', names: law || styles.holders !== 'portrait' });
-      continue;
-    }
-    const seats: { spans: TimelineSpan[]; last: IdeaSpan | null }[] = Array.from({ length: Math.max(1, slot.seats) }, () => ({ spans: [], last: null }));
+    const seats: { spans: IdeaLaneSpan[]; last: IdeaSpan | null }[] = Array.from({ length: slot.character ? Math.max(1, slot.seats) : 1 }, () => ({ spans: [], last: null }));
     const endings = new Set(held.flatMap(other => other.character ? [`${other.character.id}#${other.lastHour + 1}`] : []));
     const continues = (item: IdeaSpan) => item.character != null && endings.has(`${item.character.id}#${item.firstHour}`);
     const order = held.map(item => ({ item, first: continues(item) ? 0 : 1 }))
@@ -58,8 +60,7 @@ export function lanesFor(reply: IdeaHistoryReply, category: CategoryInfo, styles
       seat.spans.push(span(item));
       seat.last = item;
     }
-    seats.forEach(({ spans }, index) => lanes.push({ id: `${slot.token}#${index}`, label, spans,
-      icons: styles.holders !== 'name', names: styles.holders !== 'portrait' }));
+    seats.forEach(({ spans }, index) => lanes.push({ id: slot.character || index > 0 ? `${slot.token}#${index}` : slot.token, label, slot: slot.token, spans }));
   }
   return lanes;
 }

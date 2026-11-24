@@ -14,6 +14,10 @@ use ts_rs::TS;
 
 pub struct SpriteArtwork;
 
+pub fn unit_icon_key(unit: &str) -> String {
+    format!("GFX_unit_{unit}_icon_medium")
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpriteFrame {
@@ -36,10 +40,23 @@ pub struct SpriteFrame {
     pub text: Option<bool>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TextureFrame {
+    pub path: String,
+    #[serde(default)]
+    pub frame: u32,
+    pub frames: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpriteArtworkParams {
+    #[serde(default)]
     pub sprites: Vec<SpriteFrame>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<TextureFrame>>", optional)]
+    pub textures: Vec<TextureFrame>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, TS)]
@@ -64,9 +81,47 @@ pub struct SpriteImage {
 
 #[derive(Clone, Debug, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+pub struct TextureImage {
+    pub path: String,
+    pub frame: u32,
+    pub frames: u32,
+    pub resolution: super::ArtResolution,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct SpriteArtworkReply {
     pub items: Vec<SpriteImage>,
+    pub textures: Vec<TextureImage>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct NotDrawn(pub super::ArtResolution);
+
+impl std::fmt::Display for NotDrawn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0.reason().unwrap_or("artwork unavailable"))
+    }
+}
+
+pub type DrawnArt = catalogue::Drawn<Result<super::ArtResolution, NotDrawn>>;
+
+pub fn drawn_art(
+    what: impl FnOnce() -> String,
+    shown: &Catalogue,
+    resolve: impl Fn(&Catalogue) -> super::ArtResolution,
+) -> DrawnArt {
+    catalogue::draw(what, shown, |drawing| match resolve(drawing) {
+        ready @ super::ArtResolution::Ready { .. } => Ok(ready),
+        other => Err(NotDrawn(other)),
+    })
+}
+
+pub fn settled_art(drawn: &DrawnArt) -> super::ArtResolution {
+    match drawn.get() {
+        Ok(resolution) | Err(NotDrawn(resolution)) => resolution.clone(),
+    }
 }
 
 crate::reply_warnings!(SpriteArtworkReply);
@@ -106,12 +161,13 @@ impl Product for SpriteArtwork {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = SpriteArtworkParams;
-    const FIELDS: crate::products::Fields = crate::fields![sprites, "sprites[].frame"];
+    const FIELDS: crate::products::Fields = crate::fields![sprites, "sprites[].frame", textures, "textures[].frame", "textures[].frames"];
     type Reply = SpriteArtworkReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         let invalid = |key: &str| key.is_empty() || key.contains('\0');
-        if params.sprites.is_empty()
+        if params.sprites.is_empty() && params.textures.is_empty()
+            || params.textures.iter().any(|texture| invalid(&texture.path) || texture.frames == 0)
             || params.sprites.iter().any(|sprite| {
                 invalid(&sprite.key) || sprite.recorded.as_deref().is_some_and(invalid) || sprite.text == Some(false) || sprite.text == Some(true) && sprite.frame != 0
             })
@@ -128,6 +184,8 @@ impl Product for SpriteArtwork {
             SpriteArtworkReply::decl(),
             SpriteFrame::decl(),
             SpriteImage::decl(),
+            TextureFrame::decl(),
+            TextureImage::decl(),
         ]
     }
 
@@ -151,6 +209,7 @@ fn images(
 ) -> io::Result<SpriteArtworkReply> {
     let mut reply = SpriteArtworkReply {
         items: Vec::new(),
+        textures: Vec::new(),
         warnings: catalogue.verification.clone(),
     };
     reply.warnings.extend(catalogue.warnings.clone());
@@ -164,7 +223,7 @@ fn images(
                 key,
                 asked,
             ),
-            recorded => catalogue::draw(
+            recorded => settled_art(&drawn_art(
                 || format!("sprite {key}"),
                 catalogue,
                 |drawing| {
@@ -172,23 +231,9 @@ fn images(
                         Some(recorded) if !std::ptr::eq(drawing, catalogue) => recorded,
                         _ => key,
                     };
-                    let resolved = asked_resolution(drawing, key, asked);
-                    match &resolved {
-                        super::ArtResolution::Ready { .. } => Ok(resolved),
-                        _ => Err(resolved
-                            .reason()
-                            .unwrap_or("sprite artwork unavailable")
-                            .to_owned()),
-                    }
+                    asked_resolution(drawing, key, asked)
                 },
-            )
-            .get()
-            .clone()
-            .unwrap_or_else(|why| super::ArtResolution::ConfirmedMissing {
-                reason: why,
-                origin: None,
-                file: None,
-            }),
+            )),
         };
         let icon = match &resolution {
             super::ArtResolution::Ready { url, .. } => Some(url.clone()),
@@ -209,6 +254,26 @@ fn images(
             text: asked.text,
             icon,
             resolution: Some(resolution),
+        });
+        check_reply_budget(&reply)?;
+    }
+    for asked in params.textures.iter().collect::<BTreeSet<_>>() {
+        crate::metadata::check_cancel(cancelled)?;
+        let resolution = settled_art(&drawn_art(
+            || format!("texture {}", asked.path),
+            catalogue,
+            |drawing| super::resolve_texture(drawing, &asked.path, asked.frames, asked.frame, super::ICON_EDGE),
+        ));
+        if let Some(error) = resolution.reason() {
+            *refusals
+                .entry(format!("texture {} frame {}: {error}", asked.path, asked.frame))
+                .or_default() += 1;
+        }
+        reply.textures.push(TextureImage {
+            path: asked.path.clone(),
+            frame: asked.frame,
+            frames: asked.frames,
+            resolution,
         });
         check_reply_budget(&reply)?;
     }
@@ -289,9 +354,16 @@ mod tests {
             .chain([frame("GFX_Mixed_Mod", 1)])
             .chain(["Mixed_Mod", "Strip", "Strip|3", "Absent_Icon"].map(|key| SpriteFrame { text: Some(true), ..frame(key, 0) }))
             .collect(),
+            textures: vec![
+                TextureFrame { path: "gfx/strip.png".into(), frame: 1, frames: 3 },
+                TextureFrame { path: "gfx/absent.png".into(), frame: 0, frames: 1 },
+            ],
         };
         let reply = images(&catalogue, &params, &AtomicBool::new(false)).unwrap();
         assert_eq!(reply.items.len(), 8);
+        let texture = |path: &str| &reply.textures.iter().find(|art| art.path == path).unwrap().resolution;
+        assert_eq!(from_url(texture("gfx/strip.png").url().unwrap()).pixels, colours[1], "a texture path draws the asked frame of its strip");
+        assert!(matches!(texture("gfx/absent.png"), super::super::ArtResolution::ConfirmedMissing { .. }), "{:?}", texture("gfx/absent.png"));
         let text = |key: &str| reply.items.iter().find(|art| art.key == key).unwrap().icon.as_deref();
         assert_eq!(from_url(text("Mixed_Mod").unwrap()).pixels, image.pixels, "a text icon is drawn from the sprite its name declares");
         assert_eq!(text("Absent_Icon"), None, "an undeclared text icon is refused by name");
@@ -404,6 +476,7 @@ mod tests {
         let (catalogue, expected, _folders) = shortened_strip();
         let params = SpriteArtworkParams {
             sprites: vec![frame("GFX_Mod", 0), frame("GFX_Mod", 2)],
+            textures: Vec::new(),
         };
         let reply = images(&catalogue, &params, &AtomicBool::new(false)).unwrap();
         assert!(reply.warnings.is_empty(), "{:?}", reply.warnings);
@@ -445,6 +518,7 @@ mod tests {
                 frame("GFX_Mod", 3),
                 frame("GFX_Mod", 1),
             ],
+            textures: Vec::new(),
         };
         let reply = images(&catalogue, &params, &AtomicBool::new(false)).unwrap();
         assert_eq!(reply.items.len(), 2);
@@ -486,6 +560,7 @@ mod tests {
             &catalogue,
             &SpriteArtworkParams {
                 sprites: vec![frame("GFX_Mod", 0)],
+                textures: Vec::new(),
             },
             &AtomicBool::new(false),
         )
@@ -505,7 +580,7 @@ mod tests {
     #[test]
     fn sprite_artwork_validates_keys() {
         for sprites in [vec![], vec![frame("", 0)], vec![frame("key\0tail", 0)]] {
-            assert!(SpriteArtwork::validate(&SpriteArtworkParams { sprites }).is_err());
+            assert!(SpriteArtwork::validate(&SpriteArtworkParams { sprites, textures: Vec::new() }).is_err());
         }
         let with_recorded = |recorded: &str| SpriteFrame {
             recorded: Some(recorded.into()),
@@ -513,20 +588,22 @@ mod tests {
         };
         assert!(
             SpriteArtwork::validate(&SpriteArtworkParams {
-                sprites: vec![with_recorded("")]
+                sprites: vec![with_recorded("")],
+                textures: Vec::new(),
             })
             .is_err()
         );
         assert!(
             SpriteArtwork::validate(&SpriteArtworkParams {
-                sprites: vec![with_recorded("GFX_a")]
+                sprites: vec![with_recorded("GFX_a")],
+                textures: Vec::new(),
             })
             .is_ok()
         );
         let text = |frame_index: u32, text: bool| SpriteFrame { text: Some(text), ..frame("Mixed_Mod", frame_index) };
-        assert!(SpriteArtwork::validate(&SpriteArtworkParams { sprites: vec![text(1, true)] }).is_err(), "a text icon's frame is its name's");
-        assert!(SpriteArtwork::validate(&SpriteArtworkParams { sprites: vec![text(0, false)] }).is_err(), "text is asked as true or not at all");
-        assert!(SpriteArtwork::validate(&SpriteArtworkParams { sprites: vec![text(0, true)] }).is_ok());
+        assert!(SpriteArtwork::validate(&SpriteArtworkParams { sprites: vec![text(1, true)], textures: Vec::new() }).is_err(), "a text icon's frame is its name's");
+        assert!(SpriteArtwork::validate(&SpriteArtworkParams { sprites: vec![text(0, false)], textures: Vec::new() }).is_err(), "text is asked as true or not at all");
+        assert!(SpriteArtwork::validate(&SpriteArtworkParams { sprites: vec![text(0, true)], textures: Vec::new() }).is_ok());
     }
 
     #[test]
@@ -579,6 +656,7 @@ mod tests {
                     &catalogue,
                     &SpriteArtworkParams {
                         sprites: vec![asked],
+                        textures: Vec::new(),
                     },
                     &AtomicBool::new(false),
                 )

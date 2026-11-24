@@ -567,7 +567,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (ownerChanged) {
       held.installed = null;
       held.parked = null;
+      held.inspect = null;
       this.parkedWidgets.delete(widget);
+      this.inspectedWidgets.delete(widget);
     }
     if (retry) {
       this.failedWidgets.delete(widget);
@@ -589,10 +591,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.wake();
   }
 
-  pointer(widget: number, _surface: number, point: [number, number] | null) {
+  pointer(widget: number, _surface: number, point: [number, number] | null, installed?: number) {
     const held = this.widgets.get(widget);
     if (!held) return;
-    const inst = held.installed;
+    const accepted = installed === undefined ? undefined : this.presented.get(installed);
+    const inst = accepted && accepted.widget === widget && accepted.sent.binding === held.binding.generation ? accepted.sent : held.installed;
     const hit = inst?.hit;
     this.host.hit?.(widget, point && hit ? hit(point) : null, inst?.id, inst?.owner);
   }
@@ -1376,6 +1379,13 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         components.push({ picture, window });
       }
       joined = joinComponents(components);
+      const dated = widget.binding.dated;
+      if (joined && dated) {
+        const lo = Math.max(joined.window[0], dated.h);
+        const c = Math.min(joined.c, dated.c);
+        if (target < dated.h || lo > c) return null;
+        joined = { h: Math.max(joined.h, dated.h), c, window: [lo, joined.window[1]] };
+      }
     }
     if (!joined) return null;
     const view = this.host.views(widget.view);
@@ -1523,6 +1533,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
             const h = this.facts.nextStart(id, target);
             if (h < next) next = h;
           }
+          if (widget.binding.dated && widget.binding.dated.h > target && widget.binding.dated.h < next) next = widget.binding.dated.h;
         }
         widget.validWindow = Number.isFinite(next) ? [-Infinity, next - 1] : null;
         this.syncWindowTracking(widget);

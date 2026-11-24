@@ -5,7 +5,7 @@ import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, TOP_COUNTRIE
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'race',
-    choices: [{ value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines over time' }] },
+    choices: [{ value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines' }] },
   { key: 'metric', section: 'options', label: 'Count', kind: 'choice', default: 'both',
     choices: [{ value: 'both', label: 'Both' }, { value: 'launched', label: 'Launched' }, { value: 'succeeded', label: 'Succeeded' }] },
   DATE_OVERLAY_OPTION,

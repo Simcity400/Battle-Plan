@@ -119,6 +119,20 @@ fn make_tga_rgba8(width: u16, height: u16, rgba: &[u8]) -> Vec<u8> {
     out
 }
 
+const SYNTHETIC_MAP_SIZE: [u32; 2] = [64, 32];
+
+fn rgb_bitmap(width: u32, height: u32) -> Vec<u8> {
+    let stride = (width * 3).div_ceil(4) * 4;
+    let mut bitmap = vec![0; 54 + (stride * height) as usize];
+    bitmap[..2].copy_from_slice(b"BM");
+    for (at, value) in [(10, 54_u32), (14, 40), (18, width), (22, height)] {
+        bitmap[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bitmap[26..28].copy_from_slice(&1_u16.to_le_bytes());
+    bitmap[28..30].copy_from_slice(&24_u16.to_le_bytes());
+    bitmap
+}
+
 fn cache_key(
     source_id: &str,
     revision: &str,
@@ -136,13 +150,14 @@ fn cache_key(
         visual_revision: visual_revision.into(),
         language: language.into(),
         force_pow2_textures: false,
+        art_stack: [0; 32],
         window: window.into(),
     }
 }
 
 #[test]
 fn cache_keys_vary_each_field_independently_and_evict_cleanly() {
-    let mut cache: WindowCache<u32> = WindowCache::new(9);
+    let mut cache: WindowCache<u32> = WindowCache::new(10);
     let base = cache_key("src-a", "rev-1", "game-1", "user-1", "vmod-1", "english", "ship");
     let diff_source = cache_key("src-b", "rev-1", "game-1", "user-1", "vmod-1", "english", "ship");
     let diff_rev = cache_key("src-a", "rev-2", "game-1", "user-1", "vmod-1", "english", "ship");
@@ -153,6 +168,8 @@ fn cache_keys_vary_each_field_independently_and_evict_cleanly() {
     let diff_window = cache_key("src-a", "rev-1", "game-1", "user-1", "vmod-1", "english", "tank");
     let mut diff_pow2 = base.clone();
     diff_pow2.force_pow2_textures = true;
+    let mut diff_art = base.clone();
+    diff_art.art_stack = [1; 32];
 
     for (idx, key) in [
         &base,
@@ -164,13 +181,15 @@ fn cache_keys_vary_each_field_independently_and_evict_cleanly() {
         &diff_lang,
         &diff_window,
         &diff_pow2,
+        &diff_art,
     ]
     .into_iter()
     .enumerate()
     {
         cache.insert(key.clone(), idx as u32 + 1);
     }
-    assert_eq!(cache.len(), 9);
+    assert_eq!(cache.len(), 10);
+    assert_ne!(base.interface_key(), diff_art.interface_key());
     assert_eq!(cache.get_mut(&base).copied(), Some(1));
     assert_eq!(cache.get_mut(&diff_source).copied(), Some(2));
     assert_eq!(cache.get_mut(&diff_rev).copied(), Some(3));
@@ -180,9 +199,10 @@ fn cache_keys_vary_each_field_independently_and_evict_cleanly() {
     assert_eq!(cache.get_mut(&diff_lang).copied(), Some(7));
     assert_eq!(cache.get_mut(&diff_window).copied(), Some(8));
     assert_eq!(cache.get_mut(&diff_pow2).copied(), Some(9));
+    assert_eq!(cache.get_mut(&diff_art).copied(), Some(10));
 
     let evicted = cache.evict_source("src-a");
-    assert_eq!(evicted.len(), 8);
+    assert_eq!(evicted.len(), 9);
     assert_eq!(cache.len(), 1);
     assert_eq!(cache.get_mut(&diff_source).copied(), Some(2));
     assert!(cache.get_mut(&base).is_none());
@@ -297,6 +317,40 @@ fn regions_map_nested_backgrounds_disabled_fallback_close_and_skip_passthrough()
         !regions.iter().any(|region| region.path.ends_with("ghost_close")),
         "alwaystransparent close buttons must not become clickable"
     );
+    let ghost_tips: BTreeMap<String, GameWindowTooltip> = layout
+        .regions
+        .iter()
+        .filter(|region| region.path.ends_with("ghost_icon") || region.path.ends_with("ghost_close"))
+        .map(|region| {
+            (
+                region.path.clone(),
+                GameWindowTooltip {
+                    title: "n/a".to_owned(),
+                    body: None,
+                    detail: None,
+                },
+            )
+        })
+        .collect();
+    assert_eq!(ghost_tips.len(), 2);
+    let explained = regions_from_layout(
+        &[root],
+        &layout.regions,
+        [0.0, 0.0],
+        &resources,
+        &localisation,
+        &["close_button", "ghost_close"],
+        &ghost_tips,
+    );
+    for name in ["ghost_icon", "ghost_close"] {
+        let ghost = explained
+            .iter()
+            .find(|region| region.path.ends_with(name))
+            .unwrap();
+        assert!(ghost.passthrough, "{name} keeps its tooltip but lets clicks through");
+        assert!(!ghost.close);
+    }
+    assert!(explained.iter().filter(|region| !region.passthrough).all(|region| !region.path.contains("ghost")));
 
     let alpha_gui = native::read_at(
         br#"guiTypes = {
@@ -438,30 +492,49 @@ impl SyntheticModFixture {
             "battleplan-game-window-mod-test-{}",
             uuid::Uuid::new_v4()
         ));
-        fs::create_dir_all(root_dir.join("gfx/FX")).unwrap();
-        fs::create_dir_all(root_dir.join("gfx/ui")).unwrap();
-        fs::create_dir_all(root_dir.join("interface")).unwrap();
-        fs::create_dir_all(root_dir.join("localisation/english")).unwrap();
+        let base_dir = root_dir.join("base");
+        let mod_dir = root_dir.join("mod");
+        fs::create_dir_all(base_dir.join("gfx/FX")).unwrap();
+        fs::create_dir_all(base_dir.join("gfx/ui")).unwrap();
+        fs::create_dir_all(base_dir.join("map")).unwrap();
+        fs::create_dir_all(mod_dir.join("gfx/ui")).unwrap();
+        fs::create_dir_all(mod_dir.join("interface")).unwrap();
+        fs::create_dir_all(mod_dir.join("localisation/english")).unwrap();
+        fs::write(
+            base_dir.join("map/default.map"),
+            b"definitions=d.csv provinces=provinces.bmp terrain=t.bmp rivers=r.bmp heightmap=h.bmp tree_definition=tr.bmp",
+        )
+        .unwrap();
+        fs::write(
+            base_dir.join("map/provinces.bmp"),
+            rgb_bitmap(SYNTHETIC_MAP_SIZE[0], SYNTHETIC_MAP_SIZE[1]),
+        )
+        .unwrap();
+        fs::write(
+            base_dir.join("gfx/ui/plate.tga"),
+            make_tga_rgba8(24, 16, &[10, 200, 10, 255].repeat(24 * 16)),
+        )
+        .unwrap();
 
-        fs::write(root_dir.join("gfx/FX/defines_hlsl_dx11.fxh"), b"").unwrap();
+        fs::write(base_dir.join("gfx/FX/defines_hlsl_dx11.fxh"), b"").unwrap();
         for path in [
             "gfx/FX/buttonstate.shader",
             "gfx/FX/buttonstate.lua",
             "gfx/FX/text.shader",
             "gfx/FX/text.lua",
         ] {
-            fs::write(root_dir.join(path), button_shader.as_bytes()).unwrap();
+            fs::write(base_dir.join(path), button_shader.as_bytes()).unwrap();
         }
 
         let tex_rgba = synthetic_plate_rgba();
         fs::write(
-            root_dir.join("gfx/ui/plate.tga"),
+            mod_dir.join("gfx/ui/plate.tga"),
             make_tga_rgba8(24, 16, &tex_rgba),
         )
         .unwrap();
 
         fs::write(
-            root_dir.join("interface/mod_sprites.gfx"),
+            mod_dir.join("interface/mod_sprites.gfx"),
             br#"spriteTypes = {
                 spriteType = {
                     name = "GFX_mod_plate"
@@ -475,7 +548,7 @@ impl SyntheticModFixture {
         )
         .unwrap();
         fs::write(
-            root_dir.join("interface/mod_window.gui"),
+            mod_dir.join("interface/mod_window.gui"),
             br#"guiTypes = {
                 containerWindowType = {
                     name = "mod_only_panel"
@@ -502,17 +575,18 @@ impl SyntheticModFixture {
         )
         .unwrap();
         fs::write(
-            root_dir.join("localisation/english/mod_l_english.yml"),
+            mod_dir.join("localisation/english/mod_l_english.yml"),
             "\u{feff}l_english:\n MOD_CLOSE:0 \"Close Mod Panel\"\n".as_bytes(),
         )
         .unwrap();
 
-        let layers = ResolvedLayers::from_folders(&[(&root_dir, &[][..])]).unwrap();
+        let layers =
+            ResolvedLayers::from_folders(&[(&base_dir, &[][..]), (&mod_dir, &[][..])]).unwrap();
         Self { root_dir, layers }
     }
 
     fn key(&self, window: &str) -> WindowCacheKey {
-        cache_key(
+        let mut key = cache_key(
             "mod-src",
             "rev-1",
             &self.root_dir.to_string_lossy(),
@@ -520,7 +594,9 @@ impl SyntheticModFixture {
             "",
             "english",
             window,
-        )
+        );
+        key.art_stack = self.layers.art_stack_key();
+        key
     }
 }
 
@@ -542,10 +618,9 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
 
     let empty_tips = BTreeMap::new();
     let missing_err = service
-        .render_window_from_layers(
+        .render_composed_from_layers(
             fixture.key("custom_mod_missing_window"),
             &fixture.layers,
-            &Assets::default(),
             RenderParams {
                 window_name: "custom_mod_missing_window",
                 scale: 1.0,
@@ -557,7 +632,9 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
                 admitted_gen: None,
             },
             &cancel,
-            |_, _, _| {},
+            |_| Ok(Prepared::uncached(Assets::default(), ())),
+            |_, _, _, _, _, _, _| {},
+            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
         )
         .err()
         .unwrap();
@@ -565,10 +642,9 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
     assert!(missing_err.to_string().contains("custom_mod_missing_window"));
 
     let blank_err = service
-        .render_window_from_layers(
+        .render_composed_from_layers(
             fixture.key("mod_blank_panel"),
             &fixture.layers,
-            &Assets::default(),
             RenderParams {
                 window_name: "mod_blank_panel",
                 scale: 1.0,
@@ -580,7 +656,9 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
                 admitted_gen: None,
             },
             &cancel,
-            |_, _, _| {},
+            |_| Ok(Prepared::uncached(Assets::default(), ())),
+            |_, _, _, _, _, _, _| {},
+            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
         )
         .err()
         .unwrap();
@@ -588,10 +666,9 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
 
     let cancelled = AtomicBool::new(true);
     let cancel_err = service
-        .render_window_from_layers(
+        .render_composed_from_layers(
             fixture.key("mod_only_panel"),
             &fixture.layers,
-            &Assets::default(),
             RenderParams {
                 window_name: "mod_only_panel",
                 scale: 1.0,
@@ -603,7 +680,9 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
                 admitted_gen: None,
             },
             &cancelled,
-            |_, _, _| {},
+            |_| Ok(Prepared::uncached(Assets::default(), ())),
+            |_, _, _, _, _, _, _| {},
+            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
         )
         .err()
         .unwrap();
@@ -881,7 +960,7 @@ fn stale_generation_cancels_without_evicting_newer_cache_entry() {
                 admitted_gen: Some(stale_gen),
             },
             &cancel,
-            |_| Ok((Assets::default(), ())),
+            |_| Ok(Prepared::uncached(Assets::default(), ())),
             |_, _, _, _, _, _, _| {},
             |_, _, _, _, _, _| Ok(ComposedPlan::default()),
         )
@@ -891,6 +970,117 @@ fn stale_generation_cancels_without_evicting_newer_cache_entry() {
     assert_eq!(service.capture_generation("mod-src"), fresh_gen);
     let cache = service.cache.lock().unwrap();
     assert!(cache.interfaces.contains_key(&key.interface_key()));
+}
+
+#[test]
+fn a_render_admitted_before_its_source_is_released_is_cancelled_and_caches_nothing() {
+    let fixture = SyntheticModFixture::create(SYNTHETIC_BUTTON_SHADER);
+    let service = Service::default();
+    let released_while_acquiring = service
+        .admit("mod-src", || {
+            service.evict_source("mod-src");
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+    assert!(released_while_acquiring.is_none());
+
+    let ((), admitted) = service.admit("mod-src", || Ok::<_, ()>(())).unwrap().unwrap();
+    service.evict_source("mod-src");
+    let cancel = AtomicBool::new(false);
+    let empty_tips = BTreeMap::new();
+    let err = service
+        .render_composed_from_layers(
+            fixture.key("mod_only_panel"),
+            &fixture.layers,
+            RenderParams {
+                window_name: "mod_only_panel",
+                scale: 1.0,
+                read_hour: Some(0),
+                art_from_current_install: true,
+                close_paths: &["close_button"],
+                tooltip_overrides: &empty_tips,
+                extra_warnings: Vec::new(),
+                admitted_gen: Some(admitted),
+            },
+            &cancel,
+            |_| {
+                Ok(Prepared {
+                    assets: Assets::default(),
+                    state: (),
+                    fingerprint: Some([7; 32]),
+                })
+            },
+            |_, _, _, _, _, _, _| {},
+            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(err, GameWindowError::Cancelled);
+    let cache = service.cache.lock().unwrap();
+    assert!(cache.interfaces.is_empty());
+    assert!(cache.windows.is_empty());
+    assert_eq!(cache.renders.len(), 0);
+}
+
+#[test]
+fn rendered_frames_are_reused_by_fingerprint_bounded_and_dropped_with_their_source() {
+    let render = |title: &str| GameWindowRender {
+        title: Some(title.to_owned()),
+        png_base64: String::new(),
+        logical_size: [1.0, 1.0],
+        pixel_size: [1, 1],
+        scale: 1.0,
+        read_hour: Some(0),
+        art_from_current_install: true,
+        art_label: None,
+        regions: Vec::new(),
+        warnings: Vec::new(),
+    };
+    let frame = |source: &str, fingerprint: u8| RenderFrameKey {
+        window: cache_key(source, "rev-1", "game", "user", "", "english", "ship"),
+        scale_bits: 1.0_f32.to_bits(),
+        fingerprint: [fingerprint; 32],
+    };
+    let mut cache = RenderFrameCache::new(2);
+    cache.insert(frame("a", 1), render("one"));
+    cache.insert(frame("a", 2), render("two"));
+    assert_eq!(cache.get(&frame("a", 1)).and_then(|hit| hit.title).as_deref(), Some("one"));
+    cache.insert(frame("b", 3), render("three"));
+    assert_eq!(cache.len(), 2);
+    assert!(cache.get(&frame("a", 2)).is_none(), "the least recently used frame is evicted");
+    assert!(cache.get(&frame("a", 1)).is_some());
+    cache.evict_source("a");
+    assert_eq!(cache.len(), 1);
+    assert!(cache.get(&frame("b", 3)).is_some());
+
+    let window = [9; 32];
+    let base = frame_fingerprint(window, Some(10), true, &[]);
+    assert_ne!(base, frame_fingerprint(window, Some(11), true, &[]));
+    assert_ne!(base, frame_fingerprint(window, Some(10), true, &["warned".to_owned()]));
+    assert_ne!(base, frame_fingerprint([8; 32], Some(10), true, &[]));
+}
+
+#[test]
+fn sub_window_regions_take_their_place_in_paint_order() {
+    let region = |path: &str| GameWindowRegion {
+        path: path.to_owned(),
+        rect: [0.0, 0.0, 1.0, 1.0],
+        clip: None,
+        disabled: false,
+        close: false,
+        passthrough: false,
+        view: None,
+        tooltip: None,
+        alpha_mask: None,
+    };
+    let parts = ["root", "root.backdrop", "root.slots", "root.close_button"];
+    let ordered = paint_ordered_regions(
+        &parts,
+        vec![region("root.backdrop"), region("root.close_button")],
+        vec![(2, vec![region("sub.slot")]), (9, vec![region("sub.top")])],
+    );
+    let paths: Vec<&str> = ordered.iter().map(|region| region.path.as_str()).collect();
+    assert_eq!(paths, ["root.backdrop", "sub.slot", "root.close_button", "sub.top"]);
 }
 
 #[test]
@@ -950,7 +1140,7 @@ fn production_effect_compilation_and_gui_binding_renders_mod_window() {
             assert_eq!(native_quad.effect.technique.as_str(), "Up");
             assert_eq!(
                 native_quad.effect.asset.defines,
-                shader_pipeline::library::globals(DEFAULT_VIEWPORT, Decode::default())
+                shader_pipeline::library::globals(SYNTHETIC_MAP_SIZE, Decode::default())
             );
             let wgsl_effect = compiled_wgsl_effect(&fixture.layers, b"gfx/FX/buttonstate.shader");
             for quad in &mut batch.quads {

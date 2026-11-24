@@ -11,7 +11,10 @@ mod text;
 mod tests;
 mod window;
 
-pub use cards::{Decisions, EventChoices};
+pub use cards::{
+    Decisions, DecisionsTail, EventChoices, EventChoicesTail, ScriptOccurrenceTailReply,
+    decisions_dated_panel, event_choices_dated_panel,
+};
 pub use decision_state::{
     COUNTRY_DECISION_STATE_REFUSED, DECISION_CONTAINER_NOT_RECORDED, DECISION_INSTANCE_MISMATCH,
     DECISION_NO_MISSION_LIFECYCLE, DECISION_OCCURRENCE_NOT_FOUND, DecisionLifecycleState,
@@ -22,6 +25,7 @@ pub(crate) use row::FeedEvent;
 use dashboard_base::products::log_page as logs;
 use dashboard_base::{products::{LoadContext, Product}, queries::country_ids::Names};
 use dashboard_base::{Source, catalogue::{self, Catalogue}};
+use dashboard_follow::panel::Panel;
 use dashboard_query::{
     Query,
     log::{self, FacetFilter},
@@ -30,8 +34,8 @@ use dashboard_query::{
 use replay_data::rows::FeedEventRow;
 use row::{Columns, Slot};
 use serde::{Deserialize, Serialize};
-use std::{io, sync::{Arc, atomic::AtomicBool}};
-use text::{Notices, Presenter, kept_naming};
+use std::{io, sync::{Arc, Mutex, atomic::AtomicBool}};
+use text::{KeptNaming, Notices, Presenter, kept_naming};
 pub use text::warm_naming;
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -393,6 +397,88 @@ pub struct EventFeedPage {
 
 dashboard_base::reply_warnings!(EventFeedPage);
 
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FeedTailParams {
+    pub branch_id: String,
+    #[serde(default)]
+    pub facets: Vec<FacetFilter>,
+    #[serde(default)]
+    pub from: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub hour: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub offset: Option<String>,
+    pub limit: u32,
+    #[serde(default)]
+    pub count_facets: Vec<logs::LogFacetCountAsk>,
+    #[serde(default)]
+    pub scope: Option<Vec<dashboard_world::products::groups::MembershipRun>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedTailReply {
+    pub branch_id: String,
+    pub log: String,
+    pub columns: Vec<String>,
+    pub base_ordinal: String,
+    pub first_ordinal: String,
+    pub offset: String,
+    pub total: String,
+    pub rows: Vec<EventFeedPageRow>,
+    pub facet_totals: Vec<logs::LogFacetTotal>,
+    pub missing: Vec<MissingSpan>,
+    pub unavailable: Vec<EventFeedUnavailable>,
+    pub warnings: Vec<String>,
+}
+
+dashboard_base::reply_warnings!(EventFeedTailReply);
+
+impl logs::TailPanelReply for EventFeedTailReply {
+    fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    fn missing(&self) -> &[MissingSpan] {
+        &self.missing
+    }
+
+    fn set_missing(&mut self, missing: Vec<MissingSpan>) {
+        self.missing = missing;
+    }
+}
+
+pub(crate) const TAIL_FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
+    branchId,
+    facets,
+    from: Start,
+    hour: Read,
+    offset,
+    limit,
+    countFacets,
+    "scope[].firstHour": Start,
+    "scope[].lastHour": End,
+    "facets[].countries[]",
+    "facets[].values[]",
+    "facets[].membership[].country",
+    "facets[].membership[].firstHour": Start,
+    "facets[].membership[].lastHour": End,
+    "facets[].unobserved[].firstHour": Start,
+    "facets[].unobserved[].lastHour": End,
+    "countFacets[].facets[].countries[]",
+    "countFacets[].facets[].values[]",
+    "countFacets[].facets[].membership[].country",
+    "countFacets[].facets[].membership[].firstHour": Start,
+    "countFacets[].facets[].membership[].lastHour": End,
+    "countFacets[].facets[].unobserved[].firstHour": Start,
+    "countFacets[].facets[].unobserved[].lastHour": End
+];
+
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
@@ -401,14 +487,22 @@ pub(crate) fn branch(text: &str) -> Result<(), &'static str> {
     text.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")
 }
 
-fn content(source: &Source, context: &LoadContext, notices: &mut Notices) -> Option<Arc<Catalogue>> {
-    match context.content().and_then(|options| catalogue::catalogue(source, options)) {
-        Ok(catalogue) => Some(catalogue),
+pub(crate) fn resolve_content(source: &Source, context: &LoadContext) -> Result<Arc<Catalogue>, String> {
+    context.content().and_then(|options| catalogue::catalogue(source, options)).map_err(|reason| reason.to_string())
+}
+
+pub(crate) fn content_from(resolved: &Result<Arc<Catalogue>, String>, notices: &mut Notices) -> Option<Arc<Catalogue>> {
+    match resolved {
+        Ok(catalogue) => Some(Arc::clone(catalogue)),
         Err(reason) => {
-            notices.unavailable("contentStack", "Recorded content stack", reason.to_string(), Some(1));
+            notices.unavailable("contentStack", "Recorded content stack", reason.clone(), Some(1));
             None
         }
     }
+}
+
+fn content(source: &Source, context: &LoadContext, notices: &mut Notices) -> Option<Arc<Catalogue>> {
+    content_from(&resolve_content(source, context), notices)
 }
 
 fn content_refusals(presenter: &Presenter<'_>, notices: &mut Notices) -> io::Result<()> {
@@ -451,6 +545,37 @@ pub(crate) fn page(source: &Source, query: &Query<'_>, params: &FeedPageParams) 
         .map(|(row, ordinal, own, tag)| Ok(Paged { event: columns.read(&row)?, hour: row.hour, key: row.key, ordinal, own, tag }))
         .collect::<io::Result<_>>()?;
     Ok((page, rows, missing))
+}
+
+pub(crate) fn tail_rows(
+    scope_index: &scope::ScopeIndex,
+    query: &Query<'_>,
+    params: &FeedTailParams,
+    hour: i32,
+    caches: Option<&logs::LogCaches>,
+) -> io::Result<(log::NewestPage, Vec<Paged>, Vec<logs::LogFacetTotal>, Vec<MissingSpan>)> {
+    let offset = params.offset.as_deref().unwrap_or("0").parse::<u64>().map_err(|_| invalid("Invalid offset"))?;
+    if let Some(runs) = &params.scope {
+        return scope::tail_with_index(scope_index, query, &params.facets, params.from, hour, offset, params.limit, &params.count_facets, runs, caches);
+    }
+    let columns = Columns::new()?;
+    let (page, rows, totals, missing) = logs::tail_with(
+        query,
+        LOG,
+        &params.facets,
+        params.from,
+        hour,
+        offset,
+        params.limit,
+        &params.count_facets,
+        caches,
+        |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.cloned()),
+    )?;
+    let rows = rows
+        .into_iter()
+        .map(|(row, ordinal, own, tag)| Ok(Paged { event: columns.read(&row)?, hour: row.hour, key: row.key, ordinal, own, tag }))
+        .collect::<io::Result<_>>()?;
+    Ok((page, rows, totals, missing))
 }
 
 fn tag(names: &Names, slot: Slot, hour: i32) -> Option<String> {
@@ -684,6 +809,130 @@ impl Product for EventFeed {
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }
+}
+
+fn load_event_feed_tail_at(
+    scope_index: &scope::ScopeIndex,
+    query: &Query<'_>,
+    content_result: &Result<Arc<Catalogue>, String>,
+    kept: &Arc<Mutex<KeptNaming>>,
+    caches: Option<&logs::LogCaches>,
+    params: &FeedTailParams,
+    hour: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<EventFeedTailReply> {
+    dashboard_text::metadata::check_cancel(cancelled)?;
+    let (page, rows, facet_totals, missing) = tail_rows(scope_index, query, params, hour, caches)?;
+    let names = Names::new(&query.holders);
+    let mut notices = Notices::default();
+    let presenter = Presenter::new(query, content_from(content_result, &mut notices), Arc::clone(kept));
+    let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
+    let events: Vec<&FeedEvent> = rows.iter().map(|paged| &paged.event).collect();
+    let presented = present_all(query, &events, &names, &presenter, &mut notices, cancelled)?;
+    let out: Vec<EventFeedPageRow> = rows
+        .into_iter()
+        .zip(presented)
+        .map(|(paged, row)| EventFeedPageRow {
+            hour: paged.hour,
+            key: paged.key.to_string(),
+            ordinal: paged.ordinal.to_string(),
+            country: paged.tag,
+            own_ordinal: tagged.then(|| paged.own.to_string()),
+            cells: Vec::new(),
+            row,
+        })
+        .collect();
+    content_refusals(&presenter, &mut notices)?;
+    let first_ordinal = out.first().map_or_else(|| page.base.to_string(), |row| row.ordinal.clone());
+    let reply = EventFeedTailReply {
+        branch_id: params.branch_id.clone(),
+        log: LOG.to_owned(),
+        columns: Vec::new(),
+        base_ordinal: page.base.to_string(),
+        first_ordinal,
+        offset: page.offset.to_string(),
+        total: page.total.to_string(),
+        rows: out,
+        facet_totals,
+        missing,
+        unavailable: notices.into_list(),
+        warnings: Vec::new(),
+    };
+    dashboard_base::products::check_reply_budget(&reply)?;
+    Ok(reply)
+}
+
+pub struct EventFeedTail;
+
+impl Product for EventFeedTail {
+    const KEY: &'static str = "event-feed-tail";
+    const CONTENT_DEPENDENT: bool = true;
+    const REPLAYS: bool = true;
+    type Params = FeedTailParams;
+    const FIELDS: dashboard_base::products::Fields = TAIL_FIELDS;
+    type Reply = EventFeedTailReply;
+
+    #[cfg(any(test, feature = "export-types"))]
+    fn types() -> Vec<String> {
+        vec![FeedTailParams::decl(), EventFeedTailReply::decl()]
+    }
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        branch(&params.branch_id)
+    }
+
+    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| invalid("Invalid branch"))?)?;
+        let hour = params.hour.unwrap_or(query.timeline.last);
+        let content_result = resolve_content(source, context);
+        let kept = kept_naming(source);
+        let scope_index = scope::index(source);
+        let caches = dashboard_base::queries::log_caches(source);
+        load_event_feed_tail_at(&scope_index, &query, &content_result, &kept, Some(&caches), params, hour, cancelled)
+    }
+}
+
+pub fn event_feed_dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
+    let mut request = asked.clone();
+    request.as_object_mut().ok_or("Invalid event-feed-tail panel")?.remove("panel");
+    let params: FeedTailParams = dashboard_query::named::named(&request).map_err(|error| format!("Invalid event-feed-tail panel: {error}"))?;
+    EventFeedTail::validate(&params)?;
+    let branch_id = params.branch_id.parse().map_err(|_| "Invalid branch")?;
+    let query = dashboard_base::queries::query(source, branch_id).map_err(|error| error.to_string())?;
+    let declared = dashboard_declare::log(LOG).ok_or_else(|| format!("No declared log {LOG}"))?;
+    let log_caches = dashboard_base::queries::log_caches(source);
+    let pre_reader = log::Reader::with_cache(&query, declared, Arc::clone(&log_caches.buckets)).map_err(|error| error.to_string())?;
+    let selection = Arc::new(pre_reader.select(&params.facets, query.timeline.first, query.timeline.last).map_err(|error| error.to_string())?);
+    let count_selections: Arc<Vec<log::Selection>> = Arc::new(
+        params
+            .count_facets
+            .iter()
+            .map(|ask| pre_reader.select(&ask.facets, query.timeline.first, query.timeline.last))
+            .collect::<io::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?,
+    );
+    let content_result = Arc::new(resolve_content(source, load));
+    let kept = kept_naming(source);
+    let scope_index = scope::index(source);
+    let (replay, timeline, holders, executable) = (source.replay(), query.timeline, query.holders, source.tables());
+    let params = Arc::new(params);
+    let q_replay = Arc::clone(&replay);
+    let q_timeline = timeline.clone();
+    let q_holders = Arc::clone(&holders);
+    let q_params = Arc::clone(&params);
+    let q_caches = log_caches.clone();
+    Ok(logs::dated_tail_panel(
+        executable,
+        move |prev_hour, hour, prev_reply, cancelled| {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            let query = Query { replay: &q_replay, timeline: q_timeline.clone(), holders: q_holders.clone() };
+            logs::quiet_tail_missing(&query, LOG, &q_caches, &selection, &count_selections, &q_params.facets, q_params.from, prev_hour, hour, prev_reply)
+        },
+        move |hour, cancelled| {
+            let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };
+            load_event_feed_tail_at(&scope_index, &query, &content_result, &kept, Some(&log_caches), &params, hour, cancelled)
+        },
+    ))
 }
 
 pub use families::{EventFeedSpan, EventFeedSpanParams, EventFeedSpanReply, FeedKindCode};

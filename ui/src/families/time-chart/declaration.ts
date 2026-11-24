@@ -46,7 +46,7 @@ export interface SerializedTiledLine {
 }
 
 export interface TimeChartProjection<TOptions = unknown> extends FamilyProjection<TimeChartModel, TOptions> {
-  readonly family: 'series';
+  readonly family: 'time-chart';
   readonly variant: TimeChartVariant;
   readonly joinMode?: TimeChartJoinMode;
   readonly measureTitle: string;
@@ -55,7 +55,7 @@ export interface TimeChartProjection<TOptions = unknown> extends FamilyProjectio
 }
 
 export interface TimeChartWidgetDeclaration<TProjectionOptions = Record<string, never>, TAux = unknown> {
-  readonly family: 'series';
+  readonly family: 'time-chart';
   readonly kind: string;
   readonly label: string;
   readonly subject: string;
@@ -85,17 +85,24 @@ export interface TimeChartBinding<TOptions = unknown> {
   readonly height: number;
   readonly theme?: FamilyTheme;
   readonly identitySnapshot?: IdentitySnapshot | null;
-  readonly spriteResolutions?: Readonly<Record<string, ArtResolution>>;
+  readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
   readonly view?: { readonly x?: readonly [number, number] | null; readonly y?: readonly [number, number] | null };
   readonly tiledLines?: readonly SerializedTiledLine[];
   readonly keepTiled?: readonly number[];
   readonly tiledBySource?: Readonly<Record<string, Readonly<Record<string, number>>>>;
-  readonly headSourceBySeries?: Readonly<Record<string, { readonly answerName: string; readonly tags: readonly string[]; readonly decimals?: number }>>;
+  readonly headSourceBySeries?: Readonly<Record<string, {
+    readonly answerName: string;
+    readonly tags: readonly string[];
+    readonly keys?: readonly { readonly tag: string; readonly part: string }[];
+    readonly partBits?: number;
+    readonly decimals?: number;
+  }>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly directModel?: TimeChartModel;
   readonly audit?: boolean;
+  readonly focusedKey?: string | null;
   readonly auditId?: number;
 }
 

@@ -8,6 +8,7 @@ export type OptionSection = 'countries' | 'time' | 'options' | 'axes' | 'interac
 
 interface FieldBase {
   key: string;
+  storeAs?: string;
   section: OptionSection;
   label: string;
   hint?: string;
@@ -79,9 +80,22 @@ export const AFTER_PLAYHEAD_OPTION: OptionField = { key: 'afterPlayhead', sectio
 
 export const MAX_OPTION_KEYS = 48;
 const KEY = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+const VIEW = /^[a-zA-Z][a-zA-Z0-9_-]{0,31}$/;
 const RESERVED = new Set(['__proto__', 'constructor', 'prototype']);
 
-const validKey = (key: string) => KEY.test(key) && !RESERVED.has(key);
+export function scopedOptionKey(key: string, view: string): string {
+  return `${key}@${view}`;
+}
+
+export function parseOptionKey(stored: string): { readonly key: string; readonly view: string | null } | null {
+  const at = stored.indexOf('@');
+  const key = at < 0 ? stored : stored.slice(0, at);
+  const view = at < 0 ? null : stored.slice(at + 1);
+  if (!KEY.test(key) || RESERVED.has(key) || (view !== null && !VIEW.test(view))) return null;
+  return { key, view };
+}
+
+const validKey = (key: string) => parseOptionKey(key) !== null;
 
 export function parseStoredOptions(input: unknown): WidgetOptions | null {
   if (typeof input !== 'object' || input == null || Array.isArray(input)) return null;
@@ -117,7 +131,8 @@ export function validOption(field: OptionField, value: unknown): value is Option
 export function resolveOptions(fields: readonly OptionField[] = [], stored?: WidgetOptions): Record<string, OptionValue> {
   const resolved: Record<string, OptionValue> = {};
   for (const field of fields) {
-    const value = stored && Object.hasOwn(stored, field.key) ? stored[field.key] : undefined;
+    const at = field.storeAs ?? field.key;
+    const value = stored && Object.hasOwn(stored, at) ? stored[at] : undefined;
     resolved[field.key] = validOption(field, value) ? value : field.default;
   }
   return resolved;
@@ -126,9 +141,10 @@ export function resolveOptions(fields: readonly OptionField[] = [], stored?: Wid
 export function setOption(fields: readonly OptionField[] = [], stored: WidgetOptions | undefined, key: string, value: OptionValue): WidgetOptions | null {
   const field = fields.find(item => item.key === key);
   if (!field || !validOption(field, value)) return null;
+  const at = field.storeAs ?? key;
   const next: Record<string, OptionValue> = { ...stored };
-  if (value === field.default) delete next[key];
-  else next[key] = value;
+  if (value === field.default) delete next[at];
+  else next[at] = value;
   return next;
 }
 

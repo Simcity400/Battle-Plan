@@ -74,7 +74,7 @@ test('table family plays live with zero React commits, zero layout reads on inst
       await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: px, y: pyRow0, button: 'left', clickCount: 1 });
 
       const clicked = await act<string[]>('readActivated()');
-      assert.deepEqual(clicked, ['GER'], `click activates inspected row GER after re-sort, and drag-out-and-back >4px cancels (afterClick1=${JSON.stringify(afterClick1)})`);
+      assert.deepEqual(clicked, ['FRA'], `a click after a re-sort activates the row its own hit names in the installed picture (FRA), not the cached hover, and drag-out-and-back >4px cancels (afterClick1=${JSON.stringify(afterClick1)})`);
 
       const focused = await act<{ key: string; ready: boolean }>('focusFirstAndWaitTooltip()');
       assert.equal(focused.ready, true, 'focused row FRA receives its own focusTooltip');
@@ -94,11 +94,10 @@ test('table family plays live with zero React commits, zero layout reads on inst
       cdp.close();
     }
 
-    const kbd = await act<{ firstKey: string | null; afterDown: string | null; activated: string[]; liveStatus: string; scrollsSideways: boolean; moreButton: boolean; totalInstallReads: number }>('testKeyboardAndNarrow()');
+    const kbd = await act<{ firstKey: string | null; afterDown: string | null; activated: string[]; liveStatus: string; scrollsSideways: boolean; totalInstallReads: number }>('testKeyboardAndNarrow()');
     assert.ok(kbd.afterDown !== null && kbd.afterDown !== kbd.firstKey, `S8: ArrowDown moved focus from ${kbd.firstKey} to ${kbd.afterDown}`);
     assert.equal(kbd.activated.length, 1, 'Enter activates focused row');
     assert.equal(kbd.scrollsSideways, true, 'a narrow table scrolls sideways and shows the right fade');
-    assert.equal(kbd.moreButton, false, 'a narrow table never drops columns behind a +N button');
 
     const r5 = await act<{ opened: boolean; menuLabel: string | null; tipShown: boolean; hasMissingState: boolean; hasKnownState: boolean }>('testEmptySpaceContextMenuAndValueStateTooltip()');
     assert.equal(r5.opened, true, 'F9: right-clicking empty space with no inspected or focused row opens context menu');

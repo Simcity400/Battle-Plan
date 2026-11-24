@@ -9,6 +9,8 @@ use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{DivisionHistoryRow, DivisionStatusRow, SharedDivisionHistoryRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
+use content_reader_military::unit_medals::{Medal, Medals};
+use dashboard_base::products::artwork::sprites::SpriteFrame;
 use std::{collections::BTreeMap, io};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -43,6 +45,9 @@ pub struct DivisionCareersParams {
 pub struct CareerMedal {
     pub key: String,
     pub name: Option<String>,
+    #[doc = " The medal's sprite and frame as its definition names them; none with `icon_missing` saying why."]
+    pub icon: Option<SpriteFrame>,
+    pub icon_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -76,8 +81,8 @@ pub struct CareerFacts {
     #[doc = " Zero-based experience level, and the level's in-game name."]
     pub level: Option<i32>,
     pub level_name: Option<String>,
-    #[doc = " The game's career kill counter."]
-    pub kills: Option<i32>,
+    #[doc = " The game's count of the men this division has lost (its panel's Casualties taken); excludes men lost at destruction and in paradrop disruption."]
+    pub casualties_taken: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -296,10 +301,32 @@ impl MedalIndex {
             }
         };
         let (name, _) = refusals.keep(content.localised(&key).map_err(|_| "Medal name unavailable".to_owned()));
-        self.medals.push(CareerMedal { key, name });
+        let (icon, icon_missing) = refusals.keep(medal_icon(content, &key));
+        self.medals.push(CareerMedal { key, name, icon, icon_missing });
         self.by_token.insert(token, self.medals.len() - 1);
         Some(self.medals.len() - 1)
     }
+}
+
+fn medal_definitions(content: &Content) -> Result<std::sync::Arc<Medals>, String> {
+    let cat = content.cat.as_ref().map_err(|_| "Medal artwork needs the recorded content stack".to_owned())?;
+    cat.content
+        .layers
+        .derived::<catalogue::CachedResult<Medals>>()
+        .get_or_init(|| Medals::load(&cat.content.layers, &|_| Some(true)))
+        .map_err(|why| format!("Medal definitions unavailable: {why}"))
+}
+
+pub(super) fn sprite_of(definition: &Medal) -> Result<SpriteFrame, String> {
+    let key = definition.icon.as_deref().filter(|icon| !icon.is_empty()).ok_or("The medal's definition names no icon")?;
+    let key = std::str::from_utf8(key).map_err(|_| "The medal's icon is not UTF-8")?.to_owned();
+    Ok(SpriteFrame { key, frame: definition.frame.unwrap_or(1).saturating_sub(1), recorded: None, text: None })
+}
+
+fn medal_icon(content: &Content, key: &str) -> Result<SpriteFrame, String> {
+    let medals = medal_definitions(content)?;
+    let definition = medals.definitions.iter().find(|medal| medal.name.eq_ignore_ascii_case(key.as_bytes())).ok_or_else(|| format!("Medal {key} is absent from the recorded content"))?;
+    sprite_of(definition)
 }
 
 fn history_of(rows: &[SharedDivisionHistoryRow], division: u64) -> &[SharedDivisionHistoryRow] {
@@ -332,7 +359,7 @@ struct Facts<'a> {
 
 impl Facts<'_> {
     fn of(&mut self, history: &[SharedDivisionHistoryRow], status: Option<&DivisionStatusRow>, manpower: Option<i32>, refusals: &mut Refusals) -> CareerFacts {
-        let mut out = CareerFacts { medals: None, awards: Vec::new(), history_missing: None, experience_raw: None, level: None, level_name: None, kills: status.and_then(|row| row.career_counter()) };
+        let mut out = CareerFacts { medals: None, awards: Vec::new(), history_missing: None, experience_raw: None, level: None, level_name: None, casualties_taken: status.and_then(|row| row.casualties_taken()) };
         match history.first().filter(|row| row.list == DivisionHistoryRow::SUMMARY) {
             None => {
                 refusals.note("A division's history was not read");

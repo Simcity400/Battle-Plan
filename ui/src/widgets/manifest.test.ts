@@ -49,8 +49,8 @@ test('manifest accounts for every widget kind once across family views and legac
     const pair = `${entry.kind}:${normalizeView(entry.view)}`;
     assert.equal(familyPairs.has(pair), false, `${pair} must not appear in both lists`);
   }
-  assert.ok(FAMILY_VIEWS.length >= 10);
-  for (const kind of ['factories', 'air-superiority-region', 'minefields']) {
+  assert.equal(FAMILY_VIEWS.length, familyPairs.size, 'each (kind, view) is declared once');
+  for (const kind of ['factories', 'air-superiority-region', 'minefields', 'active-research', 'doctrine-mastery', 'decryption']) {
     assert.ok(familyKinds.has(kind), `${kind} must appear in FAMILY_VIEWS`);
   }
 });
@@ -60,9 +60,15 @@ test('multi-view widget routes each (kind, view) to its own family or legacy ent
   assert.equal(isFamilyWidgetView('game-score'), true);
   assert.equal(activeFamilyView('game-score')?.family, 'table');
   assert.equal(resolveWidgetActiveView('game-score', { view: 'race' }), 'race');
-  assert.equal(isFamilyWidgetView('game-score', { view: 'race' }), false);
+  assert.equal(isFamilyWidgetView('game-score', { view: 'race' }), true);
+  assert.equal(activeFamilyView('game-score', { view: 'race' })?.family, 'bars');
   assert.equal(resolveWidgetActiveView('game-score', { view: 'lines' }), 'lines');
   assert.equal(isFamilyWidgetView('game-score', { view: 'lines' }), false);
+
+  assert.equal(activeFamilyView('casualties-between')?.family, 'heat-matrix', 'the view option picks the default');
+  assert.equal(activeFamilyView('casualties-between', { view: 'opponents' })?.family, 'bars');
+  assert.equal(activeFamilyView('who-spies-on-whom', { view: 'pairs' })?.family, 'bars');
+  assert.equal(activeFamilyView('who-spies-on-whom')?.family, 'heat-matrix');
 
   const tableKeys = resolveWidgetScopedOptions('game-score', { view: 'table' }).map(field => field.key);
   assert.ok(tableKeys.includes('view'));
@@ -91,7 +97,7 @@ test('playback placeholder gate uses the manifest as its single switch', () => {
     assert.equal(isPlaybackDatedView(entry.kind, opts, meta), true, `(${entry.kind}, ${entry.view ?? DEFAULT_VIEW}) plays back live`);
   }
   assert.equal(isPlaybackDatedView('research', undefined, metaOf('research')), true);
-  assert.equal(isPlaybackDatedView('casualties', undefined, metaOf('casualties')), false);
+  assert.equal(isPlaybackDatedView('map', undefined, metaOf('map')), false);
   assert.equal(isPlaybackDatedView('game-score', { view: 'table' }), true);
   assert.equal(isPlaybackDatedView('game-score', { view: 'race' }), true);
 });
@@ -215,9 +221,9 @@ test('worker projection registry loads table and bars projections lazily on dema
 
   assert.deepEqual(
     FAMILY_MANIFESTS.map(entry => entry.family),
-    ['bars', 'heat-lanes', 'heat-matrix', 'table', 'time-chart'],
+    ['bars', 'breakdown', 'card', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline'],
   );
-  for (const family of ['bars', 'heat-lanes', 'heat-matrix', 'table', 'time-chart']) {
+  for (const family of ['bars', 'breakdown', 'card', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline']) {
     assert.ok(familyLaneView(family, () => {}), `familyLaneView resolves ${family}`);
   }
 });
@@ -227,7 +233,7 @@ test('shared data-driven settings controls expose bars-behind, three row heights
     { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName', 'name'] },
     { key: 'factories', label: 'Factories', as: 'faint', offered: ['plain', 'faint'] },
   ];
-  const base: TableBase = { density: 'normal', barsBehind: 'sorted', overflow: 'tooltip', sort: { column: 'factories', direction: 'descending' } };
+  const base: TableBase = { density: 'normal', barsBehind: 'sorted', sort: { column: 'factories', direction: 'descending' } };
   const fields = [
     viewSwitchControl([{ value: 'rows', label: 'Rows' }, { value: 'bars', label: 'Bars' }], 'rows'),
     rowHeightControl('normal'),
@@ -295,7 +301,7 @@ test('scopedOptionFields and manifestViewSwitch support a second family view on 
       view: 'bars',
       label: 'Bars',
       family: 'bars',
-      options: [regionPickerControl()],
+      options: [regionPickerControl(), rowHeightControl()],
       loadSpec: async () => ({ family: 'bars', kind: 'synthetic-dual', view: 'bars', projection: { family: 'bars', kind: 'synthetic-dual', project: () => ({}) } }),
     },
   ];
@@ -308,9 +314,37 @@ test('scopedOptionFields and manifestViewSwitch support a second family view on 
   assert.equal(resolveActiveView(undefined, undefined, entries, legacy), 'table');
   assert.equal(resolveActiveView({ view: 'bars' }, undefined, entries, legacy), 'bars');
   assert.deepEqual(scopedOptionFields(undefined, 'table', entries, legacy).map(field => field.key), ['view', 'rowHeight', 'barsBehind']);
-  assert.deepEqual(scopedOptionFields(undefined, 'bars', entries, legacy).map(field => field.key), ['view', 'regions']);
+  assert.deepEqual(scopedOptionFields(undefined, 'bars', entries, legacy).map(field => field.key), ['view', 'regions', 'rowHeight']);
+  const tableFields = scopedOptionFields(undefined, 'table', entries, legacy);
+  const barsFields = scopedOptionFields(undefined, 'bars', entries, legacy);
+  const rowHeightField = tableFields.find(field => field.key === 'rowHeight')!;
+  const otherValue = rowHeightField.kind === 'choice' ? rowHeightField.choices.find(choice => choice.value !== rowHeightField.default)!.value : null;
+  assert.ok(otherValue);
+  const stored = setOption(tableFields, { view: 'table' }, 'rowHeight', otherValue)!;
+  assert.equal(resolveOptions(tableFields, stored).rowHeight, otherValue, 'the table view reads the row height it stored');
+  assert.equal(resolveOptions(barsFields, { ...stored, view: 'bars' }).rowHeight, rowHeightField.default, 'the bars view keeps its own row height');
+  assert.equal(resolveOptions(barsFields, { ...stored, view: 'bars' }).view, 'bars', 'the view switch itself is shared by the kind');
   assert.deepEqual(manifestViewSwitch(undefined, entries, legacy), {
     option: 'view',
     choices: [{ value: 'table', label: 'Table' }, { value: 'bars', label: 'Bars' }],
   });
+});
+
+test('two table views of one kind each draw their own projection, and a missing view is refused, never the first view', async () => {
+  const projection = (view: string) => ({ family: 'table' as const, kind: 'synthetic-same-family', project: () => ({ columns: [], rows: [], hour: 0, empty: view }) });
+  const shares = projection('shares');
+  const totals = projection('totals');
+  bindFamilyManifest([
+    { kind: 'synthetic-same-family', view: 'shares', family: 'table', loadSpec: async () => ({ family: 'table', kind: 'synthetic-same-family', view: 'shares', projection: shares }) },
+    { kind: 'synthetic-same-family', view: 'totals', family: 'table', loadSpec: async () => ({ family: 'table', kind: 'synthetic-same-family', view: 'totals', projection: totals }) },
+  ]);
+  const drain = async (done: () => boolean) => { for (let i = 0; i < 16 && !done(); i++) await Promise.resolve(); };
+  let woken = 0;
+  assert.equal(ensureFamilyProjection('table', 'synthetic-same-family', 'totals', () => { woken++; }), 'loading');
+  await drain(() => woken > 0);
+  assert.equal(ensureFamilyProjection('table', 'synthetic-same-family', 'totals', () => {}), totals, 'the totals view draws the totals projection');
+  assert.equal(ensureFamilyProjection('table', 'synthetic-same-family', 'shares', () => { woken++; }), 'loading', 'switching to the shares view loads its own projection');
+  await drain(() => woken > 1);
+  assert.equal(ensureFamilyProjection('table', 'synthetic-same-family', 'shares', () => {}), shares);
+  assert.equal(familyProjection('table', 'synthetic-same-family'), undefined, 'a kind with named views has no default view to fall back to');
 });

@@ -27,8 +27,9 @@ import { useHeadHour } from '../army-size/headHour';
 import type { WarContributionsReply, WarsReply } from '../../generated/dashboard';
 import { joinedAt, observationAt, validateWarContributions, validateWarsReply, warContributions } from '../wars/warsData';
 import { OPTIONS } from './definition';
-import { chosenWar, contributionItems, contributionRows, contributionStructure, formatContribution, readHourFor, shareText, sideAmount, warName } from './warContributionData';
-import type { ContributionItem, Looks, Show, SideTotal } from './warContributionData';
+import { chosenWar, contributionItems, contributionRows, contributionStructure, formatContribution, readHourFor, shareText, warName } from './warContributionData';
+import type { ContributionItem, Looks, Show } from './warContributionData';
+import type { WarMeasureSide } from '../../generated/dashboard';
 import './warContribution.css';
 import { productRequest } from '../../dashboard/request.ts';
 
@@ -123,18 +124,18 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
     if (!held) return null;
     const participation = item.row.key === 'participation';
     const format = (raw: bigint) => formatContribution(raw, participation);
-    const sideRows = (label: string, side: SideTotal): TooltipRow[] => [
-      { label, value: side.members.length ? format(side.total) : 'Not recorded', strong: true, divider: true },
-      ...(side.unknown != null && side.unknown !== 0n ? [{ label: 'Unknown casualties contribution', value: formatContribution(side.unknown, false), indent: true, tone: 'muted' as const }] : []),
+    const sideRows = (label: string, side: WarMeasureSide): TooltipRow[] => [
+      { label, value: side.members.length ? format(BigInt(side.total)) : 'Not recorded', strong: true, divider: true },
+      ...(side.partial ? [{ label: 'Unknown casualties contribution', value: 'Not attributed to a country', indent: true, tone: 'muted' as const }] : []),
     ];
     if (part) {
       const side = part.side === 'left' ? item.row.left : item.row.right;
-      const found = partAt(side, part.index);
-      if (found) {
-        const value = found.unknown ? found.member.unknown ?? 0n : found.member.value;
-        return { ...countryNameDetails({ nameFailure: looks.nameFailure?.(found.member.tag) }), title: looks.name(found.member.tag), subtitle: `${item.label} · ${dayLabel(held.hour)}`, rows: [
-          { label: found.unknown ? 'Unknown casualties contribution' : item.label, value: format(value) },
-          { label: 'Share of side', value: shareText(value, sideAmount(side)) },
+      const member = side.members[part.index];
+      if (member) {
+        return { ...countryNameDetails({ nameFailure: looks.nameFailure?.(member.tag) }), title: looks.name(member.tag), subtitle: `${item.label} · ${dayLabel(held.hour)}`, rows: [
+          { label: item.label, value: format(BigInt(member.value)) },
+          { label: 'Share of side', value: shareText(member.shareOfSide) },
+          ...(member.partial ? [{ label: 'Unknown casualties contribution', value: 'Not attributed to a country', tone: 'muted' as const }] : []),
         ] };
       }
     }
@@ -169,14 +170,4 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
       showValues={values} axis={show === 'share'} formatTick={value => `${Math.round(value * 100)}%`}
       active={active} hoursPerSecond={hoursPerSecond} tooltip={tooltip} contextItems={menu} />
   </div>;
-}
-
-function partAt(side: SideTotal, index: number) {
-  let at = 0;
-  for (const member of side.members) {
-    if (at === index) return { member, unknown: false };
-    at++;
-    if (member.unknown != null && member.unknown !== 0n) { if (at === index) return { member, unknown: true }; at++; }
-  }
-  return null;
 }

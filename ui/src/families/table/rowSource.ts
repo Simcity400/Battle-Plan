@@ -1,8 +1,13 @@
 import type { BoundFacetFilter, LogReplyRow } from '../../charts/log/logSource';
 import type { BoundHour } from '../../dashboard/regionTime';
-import type { LogCell, LogFacetCountAsk, MissingSpan } from '../../generated/dashboard';
+import type { LogCell, LogFacetCountAsk, MembershipRun, MissingSpan } from '../../generated/dashboard';
 
-export type TailProduct = 'log-tail' | 'market-ledger-tail';
+export type TailProduct =
+  | 'log-tail'
+  | 'market-ledger-tail'
+  | 'event-feed-tail'
+  | 'decisions-tail'
+  | 'event-choices-tail';
 
 export interface LogTailQuery {
   readonly product: TailProduct;
@@ -13,6 +18,7 @@ export interface LogTailQuery {
   readonly limit: number;
   readonly columns?: readonly string[];
   readonly countFacets?: readonly LogFacetCountAsk[];
+  readonly scope?: readonly MembershipRun[];
 }
 
 export interface DatedLogRow {
@@ -213,6 +219,7 @@ export function buildNavigableSlots<TRow extends DatedLogRow>(
 
 interface FrozenPicture<TRow extends DatedLogRow> {
   readonly state: FreezeState;
+  readonly liveCount: number;
   readonly headRows: readonly TRow[];
   readonly pages: Map<number, readonly TRow[]>;
   readonly refusals: Map<number, string>;
@@ -303,6 +310,7 @@ export class TailWindowController<TRow extends DatedLogRow> {
           firstOrdinal: this.#head.firstOrdinal,
           missing: this.#head.missing,
         },
+        liveCount: this.#liveCount,
         headRows: this.#head.rows,
         pages: new Map(),
         refusals: new Map(),
@@ -374,7 +382,7 @@ export class TailWindowController<TRow extends DatedLogRow> {
     return {
       identity: this.#identity,
       total,
-      liveCount: this.#liveCount,
+      liveCount: frozen ? frozen.liveCount : this.#liveCount,
       at: activeHour,
       missing,
       refused,

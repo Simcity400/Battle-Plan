@@ -14,7 +14,7 @@ export type ToLane =
   | { type: 'exact'; sub: number; hour: number; data: unknown; refused: string | null }
   | { type: 'stream'; route: number; seek: number; target: number }
   | { type: 'fail'; route: number; seek: number; command: number; reason: string }
-  | { type: 'pointer'; widget: number; surface: number; point: [number, number] | null }
+  | { type: 'pointer'; widget: number; surface: number; point: [number, number] | null; installed?: number }
   | FrameRequest;
 
 export type FromLane =

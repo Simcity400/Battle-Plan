@@ -8,24 +8,14 @@ const projections = new Map<string, FamilyProjection<any, any>>();
 const manifestByKey = new Map<string, FamilyViewEntry>();
 const pendingLoads = new Map<string, Promise<FamilyProjection<any, any> | undefined>>();
 const waiters = new Map<string, Set<() => void>>();
+const failures = new Map<string, string>();
 
 function registryKey(family: FamilyId, kind: string, view?: string): string {
   return `${family}\u0000${kind}\u0000${normalizeView(view)}`;
 }
 
 function resolveLookupKey(family: FamilyId, kind: string, view?: string): string {
-  const exact = registryKey(family, kind, view);
-  if (projections.has(exact) || manifestByKey.has(exact)) return exact;
-  if (!view || view === DEFAULT_VIEW) {
-    const prefix = `${family}\u0000${kind}\u0000`;
-    for (const key of projections.keys()) {
-      if (key.startsWith(prefix)) return key;
-    }
-    for (const key of manifestByKey.keys()) {
-      if (key.startsWith(prefix)) return key;
-    }
-  }
-  return exact;
+  return registryKey(family, kind, view);
 }
 
 export function bindFamilyManifest(entries: readonly FamilyViewEntry[]): void {
@@ -72,7 +62,7 @@ export function ensureFamilyProjection<TModel = unknown, TOptions = unknown>(
   const existing = projections.get(key);
   if (existing) return existing as FamilyProjection<TModel, TOptions>;
   const entry = manifestByKey.get(key);
-  if (!entry) return 'unknown';
+  if (!entry || failures.has(key)) return 'unknown';
   let listeners = waiters.get(key);
   if (!listeners) waiters.set(key, listeners = new Set());
   listeners.add(onReady);
@@ -81,7 +71,10 @@ export function ensureFamilyProjection<TModel = unknown, TOptions = unknown>(
       const projection = mod.projection;
       projections.set(key, projection);
       return projection;
-    }).catch(() => undefined).finally(() => {
+    }).catch((error: unknown) => {
+      failures.set(key, error instanceof Error ? error.message : String(error));
+      return undefined;
+    }).finally(() => {
       pendingLoads.delete(key);
       const callbacks = waiters.get(key);
       waiters.delete(key);
@@ -92,4 +85,8 @@ export function ensureFamilyProjection<TModel = unknown, TOptions = unknown>(
     pendingLoads.set(key, load);
   }
   return 'loading';
+}
+
+export function familyProjectionFailure(family: FamilyId, kind: string, view?: string): string | undefined {
+  return failures.get(resolveLookupKey(family, kind, view));
 }

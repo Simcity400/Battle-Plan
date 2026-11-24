@@ -47,6 +47,7 @@ export interface WidgetProps {
   onDiagnostics: (warnings: string[]) => void;
   setOption?: (key: string, value: OptionValue) => void;
   setOptions?: (values: Readonly<Record<string, OptionValue>>) => void;
+  view?: string;
 }
 
 export interface WidgetViewSwitch {

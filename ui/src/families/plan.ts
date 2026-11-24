@@ -19,6 +19,7 @@ import type {
   ArtOrigin as GeneratedArtOrigin,
   ArtProvenance as GeneratedArtProvenance,
   ArtResolution as GeneratedArtResolution,
+  CountryFlagSize,
   HourSpan,
   MissingSpan,
 } from '../generated/dashboard';
@@ -76,7 +77,6 @@ export interface BranchToHourSourceRead {
   readonly product: DeclaredProduct;
   readonly followQuery: Readonly<Record<string, unknown>> | null;
   readonly params: Readonly<Record<string, unknown>> | null;
-  readonly chunkHours?: number;
   readonly provenInterval?: (data: unknown, requested: readonly [number, number], hour: number) => readonly [number, number] | null;
   readonly buildSpanParams?: (
     base: Readonly<Record<string, unknown>>,
@@ -93,7 +93,6 @@ export interface TrailingWindowSourceRead {
   readonly windowHours: number;
   readonly followQuery: Readonly<Record<string, unknown>> | null;
   readonly params: Readonly<Record<string, unknown>> | null;
-  readonly chunkHours?: number;
   readonly provenInterval?: (data: unknown, requested: readonly [number, number], hour: number) => readonly [number, number] | null;
   readonly buildSpanParams?: (
     base: Readonly<Record<string, unknown>>,
@@ -108,11 +107,14 @@ export interface PixelBinnedSourceRead {
   readonly coverage: SourceCoverage;
   readonly family: Readonly<Record<string, unknown>>;
   readonly tags: readonly string[];
+  readonly keys?: readonly { readonly tag: string; readonly part: string }[];
+  readonly partBits?: number;
   readonly within?: ReadonlyMap<string, readonly HourSpan[]>;
   readonly marks?: boolean;
   readonly headQuery?: Readonly<Record<string, unknown>> | null;
   readonly exactProduct?: DeclaredProduct;
   readonly params?: Readonly<Record<string, unknown>> | null;
+  readonly top?: { readonly n: number; readonly least?: boolean };
 }
 
 export interface ExactHoverSourceRead {
@@ -168,11 +170,14 @@ export interface CompiledFollowSubscription {
 }
 
 export interface BoundedSlice<T> extends Iterable<T> {
-  readonly source: readonly T[];
   readonly closedLength: number;
   readonly length: number;
   readonly tail?: T;
   at(index: number): T | undefined;
+}
+
+export interface BoundedMarkCluster extends Omit<MarkCluster, 'bins'> {
+  readonly bins?: BoundedSlice<readonly [number, number]> | MarkCluster['bins'];
 }
 
 export interface BoundedSeries {
@@ -186,7 +191,7 @@ export interface BoundedSeries {
   readonly headValue?: Value;
   readonly missing: BoundedSlice<MissingSpan>;
   readonly approximate?: BoundedSlice<{ readonly firstHour: number; readonly lastHour: number }>;
-  readonly marks: BoundedSlice<MarkCluster>;
+  readonly marks: BoundedSlice<BoundedMarkCluster>;
   readonly validInterval: readonly [lo: number, hi: number];
 }
 
@@ -216,14 +221,13 @@ export interface IdentityResult {
   readonly nextChangeAt: number;
 }
 
-export type ArtFlagSize = 'panel' | 'shield' | 'normal' | 'medium' | 'small';
+export type ArtFlagSize = CountryFlagSize;
 
 export type ArtHandle =
   | {
       readonly kind: 'flag';
       readonly choice: string;
       readonly size: ArtFlagSize;
-      readonly maxEdge?: number;
     }
   | {
       readonly kind: 'sprite';
@@ -231,21 +235,22 @@ export type ArtHandle =
       readonly frame?: number;
       readonly recorded?: string;
       readonly text?: boolean;
-      readonly maxEdge?: number;
     }
   | {
       readonly kind: 'portrait';
-      readonly key: string;
-      readonly owner?: string;
-      readonly recorded?: string;
-      readonly maxEdge?: number;
+      readonly leader: string;
+      readonly hour: number;
+    }
+  | {
+      readonly kind: 'technology';
+      readonly token: string;
+      readonly databaseIndex: number | null;
     }
   | {
       readonly kind: 'path';
       readonly path: string;
       readonly frame?: number;
       readonly frames?: number;
-      readonly maxEdge?: number;
     }
   | {
       readonly kind: 'url';
@@ -395,7 +400,11 @@ export type CountryPolicy =
 
 export interface AuxProductSpec<TAux = unknown> {
   readonly product: DeclaredProduct;
-  readonly params: (track: BoundTrack, options: Readonly<Record<string, OptionValue>>) => Record<string, unknown> | null;
+  readonly params: (
+    track: BoundTrack,
+    options: Readonly<Record<string, OptionValue>>,
+    country: string | null,
+  ) => Record<string, unknown> | null;
   readonly validate: (raw: unknown) => TAux;
   readonly when?: (options: Readonly<Record<string, OptionValue>>) => boolean;
 }

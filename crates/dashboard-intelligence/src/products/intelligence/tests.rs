@@ -79,30 +79,6 @@ fn an_operative_is_placed_only_while_free_on_the_active_list_at_a_mission_or_ope
 
 
 #[test]
-fn an_operative_leaves_at_its_first_disbanded_or_killed_read_or_the_hour_after_its_last_and_one_still_serving_stays() {
-    use super::operative_content::{DISBANDED, KILLED};
-    use super::roster::{Leaving, departure, leavings};
-    use std::collections::HashMap;
-    let lives = [(1, 100, 400), (2, 100, 250), (3, 100, 400), (4, 120, 300)];
-    let steps: HashMap<u128, Vec<(i32, Option<u32>)>> = [
-        (1, vec![(100, Some(MISSION)), (300, Some(KILLED))]),
-        (2, vec![(100, Some(MISSION)), (251, None)]),
-        (3, vec![(100, Some(OPERATION))]),
-        (4, vec![(120, Some(CAPTURED)), (200, Some(DISBANDED))]),
-    ]
-    .into_iter()
-    .collect();
-    let left = leavings(&lives, &steps, 400);
-    assert_eq!(left, vec![
-        Leaving { key: 1, first: 100, last: 299, departed: 300, assignment: Some(KILLED) },
-        Leaving { key: 2, first: 100, last: 250, departed: 251, assignment: Some(MISSION) },
-        Leaving { key: 4, first: 120, last: 199, departed: 200, assignment: Some(DISBANDED) },
-    ]);
-    assert_eq!(left.iter().map(|leaving| departure(leaving.assignment)).collect::<Vec<_>>(), ["Killed", "Left (reason not recorded)", "Disbanded"]);
-    assert!(leavings(&lives, &steps, 299).iter().all(|leaving| leaving.key != 1));
-}
-
-#[test]
 fn captivity_and_cooldown_days_round_as_the_game_does_and_progress_is_never_clamped() {
     use super::operative_content::{capture_progress, cooldown_progress, native_progress};
     let epoch = game_model::calendar::HOUR_EPOCH;

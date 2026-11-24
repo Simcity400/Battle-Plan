@@ -10,13 +10,18 @@ dashboard_base::register_products! {
     FOCUS_FOCUSHOURPRODUCT => crate::products::focus::FocusHourProduct,
     FOCUS_FOCUSORDERPAGEPRODUCT => crate::products::focus::FocusOrderPageProduct,
     FOCUS_FOCUSCOMPLETIONSPRODUCT => crate::products::focus::FocusCompletionsProduct,
+    FOCUS_CARD_FOCUSCARD => crate::products::focus_card::FocusCard,
     IDEAS_IDEAHISTORY => crate::products::ideas::IdeaHistory,
     PARTY_HISTORY_PARTYHISTORY => crate::products::party_history::PartyHistory,
     FEED_EVENTFEED => crate::products::feed::EventFeed,
+    FEED_EVENTFEEDTAIL => crate::products::feed::EventFeedTail,
     FEED_EVENTCHOICES => crate::products::feed::EventChoices,
+    FEED_EVENTCHOICESTAIL => crate::products::feed::EventChoicesTail,
     FEED_DECISIONS => crate::products::feed::Decisions,
+    FEED_DECISIONSTAIL => crate::products::feed::DecisionsTail,
     FEED_EVENTFEEDSPAN => crate::products::feed::EventFeedSpan,
     POWER_LEDGER_POWERSPENDING => crate::products::power_ledger::PowerSpending,
+    POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN => crate::products::power_ledger::breakdown::PowerSpendingBreakdown,
     STABILITY_READS_STABILITYREADS => crate::products::stability::reads::StabilityReads,
 }
 

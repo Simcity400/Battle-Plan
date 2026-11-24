@@ -460,8 +460,8 @@ fn decode_texture_checked(
     display_file: &str,
 ) -> Result<content_reader_layers::textures::Texture, ArtResolution> {
     let read = |path: &[u8]| {
-        if path == winning_path {
-            stack.read_uncovered_path(path)
+        if path.eq_ignore_ascii_case(winning_path) {
+            stack.read_uncovered_path(winning_path)
         } else {
             Err(io::Error::from(io::ErrorKind::NotFound))
         }
@@ -563,7 +563,20 @@ fn resolve_sprite_in_stack(
     let frame_width = extent[0] as u32;
     let frame_height = extent[1] as u32;
     let (output_width, output_height) = scaled_size(frame_width, frame_height, variant.max_edge);
-    let rendered = catalogue::sprite_frame_png(layers, sprite, variant.decode, frame, variant.max_edge);
+    let (rendered, fallbacks) = content_reader_layers::content::observe_overlay_refusals(|| {
+        catalogue::sprite_frame_png(layers, sprite, variant.decode, frame, variant.max_edge)
+    });
+    if let Some(fallback) = fallbacks.into_iter().next() {
+        return ArtResolution::Refused {
+            reason: format!(
+                "sprite {} drew only without the visual mods its texture came from: {fallback}",
+                sprite.name
+            ),
+            construct: "sprite-render".to_owned(),
+            origin: Some(origin),
+            file: Some(display_file),
+        };
+    }
     match rendered {
         Ok(url) => {
             let asset_id = asset_id_from_url(&url);
@@ -661,14 +674,7 @@ fn resolve_texture_in_stack(
         };
     }
     let (output_width, output_height) = scaled_size(frame_width, frame_height, variant.max_edge);
-    let rendered = catalogue::texture_frame_png(
-        stack,
-        &display_file,
-        variant.decode,
-        frames,
-        frame,
-        variant.max_edge,
-    );
+    let rendered = catalogue::image_frame_png(&image, frames, frame, variant.max_edge);
     drop(image);
     match rendered {
         Ok(url) => {
@@ -1102,6 +1108,191 @@ pub fn resolve_equipment_icon(catalogue: &Catalogue, icon: &Icon, max_edge: u32)
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeIconResolution {
+    Ready {
+        icon: Icon,
+        origin: ArtOrigin,
+        file: String,
+        provenance: ArtProvenance,
+    },
+    ConfirmedMissing {
+        reason: String,
+        origin: Option<ArtOrigin>,
+        file: Option<String>,
+    },
+    Refused {
+        reason: String,
+        construct: String,
+        origin: Option<ArtOrigin>,
+        file: Option<String>,
+    },
+    Failed {
+        reason: String,
+        retryable: bool,
+    },
+}
+
+fn native_from_error(resolution: ArtResolution) -> NativeIconResolution {
+    match resolution {
+        ArtResolution::ConfirmedMissing {
+            reason,
+            origin,
+            file,
+        } => NativeIconResolution::ConfirmedMissing {
+            reason,
+            origin,
+            file,
+        },
+        ArtResolution::Refused {
+            reason,
+            construct,
+            origin,
+            file,
+        } => NativeIconResolution::Refused {
+            reason,
+            construct,
+            origin,
+            file,
+        },
+        ArtResolution::Failed { reason, retryable } => {
+            NativeIconResolution::Failed { reason, retryable }
+        }
+        ArtResolution::NoArtExpected | ArtResolution::Pending | ArtResolution::Ready { .. } => {
+            NativeIconResolution::ConfirmedMissing {
+                reason: "artwork did not resolve to a usable texture".to_owned(),
+                origin: None,
+                file: None,
+            }
+        }
+    }
+}
+
+fn resolve_native_sprite_in_stack(
+    stack: &ResolvedLayers,
+    registry: &resources::Registry,
+    name: &str,
+    decode: Decode,
+    scope_key: &ArtScopeKey,
+) -> NativeIconResolution {
+    let Some(sprite) = registry.sprite(name.as_bytes()) else {
+        return NativeIconResolution::ConfirmedMissing {
+            reason: format!("interface/*.gfx declares no sprite {name}"),
+            origin: None,
+            file: None,
+        };
+    };
+    let declared_origin = registry
+        .sprite_file(name.as_bytes())
+        .filter(|file| !file.is_empty())
+        .and_then(|file| stack.layer_index(file.as_bytes()))
+        .map(|index| ArtOrigin::from_layer(&stack.layers[index]));
+    let raw_texture = match &sprite.kind {
+        SpriteKind::Plain(plain) | SpriteKind::FrameAnimated { plain, .. } => &plain.texture,
+        other => {
+            return NativeIconResolution::Refused {
+                reason: format!("sprite {name}: {} cannot be bound as a plain icon", other.keyword()),
+                construct: other.keyword().to_owned(),
+                origin: declared_origin,
+                file: None,
+            };
+        }
+    };
+    let (winning_layer, winning_path, display_file) =
+        match resolve_texture_candidate(stack, raw_texture, declared_origin) {
+            Ok(found) => found,
+            Err(err) => return native_from_error(err),
+        };
+    let origin = ArtOrigin::from_layer(&stack.layers[winning_layer]);
+    if let Err(err) = decode_texture_checked(
+        stack,
+        raw_texture,
+        decode,
+        origin.clone(),
+        &winning_path,
+        &display_file,
+    ) {
+        return native_from_error(err);
+    }
+    let provenance = ArtProvenance::current_install(&origin, scope_key);
+    NativeIconResolution::Ready {
+        icon: Icon::Sprite(name.to_owned()),
+        origin,
+        file: display_file,
+        provenance,
+    }
+}
+
+fn resolve_native_texture_in_stack(
+    stack: &ResolvedLayers,
+    path: &str,
+    decode: Decode,
+    scope_key: &ArtScopeKey,
+) -> NativeIconResolution {
+    let (winning_layer, winning_path, display_file) =
+        match resolve_texture_candidate(stack, path.as_bytes(), None) {
+            Ok(found) => found,
+            Err(err) => return native_from_error(err),
+        };
+    let origin = ArtOrigin::from_layer(&stack.layers[winning_layer]);
+    if let Err(err) = decode_texture_checked(
+        stack,
+        path.as_bytes(),
+        decode,
+        origin.clone(),
+        &winning_path,
+        &display_file,
+    ) {
+        return native_from_error(err);
+    }
+    let provenance = ArtProvenance::current_install(&origin, scope_key);
+    NativeIconResolution::Ready {
+        icon: Icon::Path(display_file.clone()),
+        origin,
+        file: display_file,
+        provenance,
+    }
+}
+
+pub fn resolve_native_equipment_icon(
+    layers: &ResolvedLayers,
+    registry: &resources::Registry,
+    recorded_registry: Option<&resources::Registry>,
+    language: &str,
+    icon: &Icon,
+    decode: Decode,
+) -> NativeIconResolution {
+    let scope_key = art_scope_key(layers, language);
+    let stack = layers.presentation();
+    let result = match icon {
+        Icon::Sprite(name) => {
+            resolve_native_sprite_in_stack(stack, registry, name, decode, &scope_key)
+        }
+        Icon::Path(path) => resolve_native_texture_in_stack(stack, path, decode, &scope_key),
+    };
+    if !matches!(result, NativeIconResolution::Ready { .. })
+        && stack.shows_visual_mods()
+        && !is_strict()
+    {
+        let recorded = layers.recorded_only();
+        let recorded_scope = art_scope_key(&recorded, language);
+        let fallback = match icon {
+            Icon::Sprite(name) => recorded_registry
+                .map(|reg| resolve_native_sprite_in_stack(&recorded, reg, name, decode, &recorded_scope)),
+            Icon::Path(path) => Some(resolve_native_texture_in_stack(
+                &recorded,
+                path,
+                decode,
+                &recorded_scope,
+            )),
+        };
+        if let Some(ok @ NativeIconResolution::Ready { .. }) = fallback {
+            return ok;
+        }
+    }
+    result
+}
+
 pub fn resolve_portrait_entry(
     catalogue: &Catalogue,
     kind: u32,
@@ -1371,6 +1562,28 @@ mod tests {
         let missing = resolve_sprite(&cat, "GFX_ModMissing", 0, 48);
         assert!(matches!(missing, ArtResolution::ConfirmedMissing { .. }), "{missing:?}");
 
+        let native = |cat: &Catalogue, name: &str| {
+            let layers = &cat.content.layers;
+            let registry = resources::Registry::load(layers.presentation()).unwrap();
+            resolve_native_equipment_icon(
+                layers,
+                &registry,
+                None,
+                "english",
+                &crate::products::equipment_icon::Icon::Sprite(name.to_owned()),
+                Decode::default(),
+            )
+        };
+        match native(&cat, "GFX_Shared") {
+            NativeIconResolution::Ready { origin, file, .. } => {
+                assert_eq!(origin, ArtOrigin::Mod { id: "mod_synthetic".into(), name: "Synthetic Mod".into() });
+                assert_eq!(file, "gfx/shared.png");
+            }
+            other => panic!("expected the native icon from the mod override, got {other:?}"),
+        }
+        assert!(matches!(native(&cat, "GFX_BaseOnly"), NativeIconResolution::Ready { origin: ArtOrigin::BaseGame, .. }));
+        assert!(matches!(native(&cat, "GFX_ModMissing"), NativeIconResolution::ConfirmedMissing { .. }));
+
         let (unmounted_cat, _unmounted_folders) = two_layer_catalogue(
             &[
                 (
@@ -1395,6 +1608,10 @@ mod tests {
             }
             other => panic!("expected ConfirmedMissing when mod unmounted, got {other:?}"),
         }
+        match native(&unmounted_cat, "GFX_Shared") {
+            NativeIconResolution::ConfirmedMissing { reason, .. } => assert!(reason.contains("not installed"), "{reason}"),
+            other => panic!("the native icon must not fall through to base-game art, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1404,27 +1621,27 @@ mod tests {
         let (cat, [_base, _addon]) = two_layer_catalogue(
             &[
                 (
-                    "interface/general_stuff.gfx",
-                    b"spriteTypes={spriteType={name=GFX_resources_strip textureFile=gfx/interface/resources_strip.png noOfFrames=7}}",
+                    "interface/sample_panel.gfx",
+                    b"spriteTypes={spriteType={name=GFX_sample_strip textureFile=gfx/interface/sample_strip.png noOfFrames=7}}",
                 ),
-                ("gfx/interface/resources_strip.png", &base_strip),
+                ("gfx/interface/sample_strip.png", &base_strip),
             ],
             &[
                 (
-                    "interface/general_stuff.gfx",
-                    b"spriteTypes={spriteType={name=GFX_resources_strip textureFile=gfx/interface/resources_strip.png noOfFrames=8}}",
+                    "interface/sample_panel.gfx",
+                    b"spriteTypes={spriteType={name=GFX_sample_strip textureFile=gfx/interface/sample_strip.png noOfFrames=8}}",
                 ),
-                ("gfx/interface/resources_strip.png", &mod_strip),
+                ("gfx/interface/sample_strip.png", &mod_strip),
             ],
             &[],
             None,
         );
 
-        let resolved = resolve_sprite(&cat, "GFX_resources_strip", 7, 48);
+        let resolved = resolve_sprite(&cat, "GFX_sample_strip", 7, 48);
         match resolved {
             ArtResolution::Ready { origin, file, frame, url, .. } => {
                 assert_eq!(origin, ArtOrigin::Mod { id: "mod_synthetic".into(), name: "Synthetic Mod".into() });
-                assert_eq!(file, "gfx/interface/resources_strip.png");
+                assert_eq!(file, "gfx/interface/sample_strip.png");
                 assert_eq!(
                     frame,
                     ArtFrame {
@@ -1487,67 +1704,116 @@ mod tests {
 
     #[test]
     fn flags_resolve_mod_cosmetic_ideology_and_block_unmounted_vanilla_fallback() {
-        let base_sov = tga(4, 2, [0, 0, 220, 255]);
-        let base_ger = tga(4, 2, [40, 40, 40, 255]);
-        let mod_sov = tga(4, 2, [220, 40, 20, 255]);
-        let mod_chi = tga(4, 2, [20, 200, 20, 255]);
+        let base_qqa = tga(4, 2, [0, 0, 220, 255]);
+        let base_qqb = tga(4, 2, [40, 40, 40, 255]);
+        let mod_qqa = tga(4, 2, [220, 40, 20, 255]);
+        let mod_qqc = tga(4, 2, [20, 200, 20, 255]);
         let (cat, [_base, _addon]) = two_layer_catalogue(
             &[
-                ("gfx/flags/SOV_communism.tga", &base_sov),
-                ("gfx/flags/GER.tga", &base_ger),
+                ("gfx/flags/QQA_red.tga", &base_qqa),
+                ("gfx/flags/QQB.tga", &base_qqb),
             ],
             &[
-                ("gfx/flags/SOV_communism.tga", &mod_sov),
-                ("gfx/flags/CHI_AUTH_S_communism.tga", &mod_chi),
+                ("gfx/flags/QQA_red.tga", &mod_qqa),
+                ("gfx/flags/QQC_AUTH_S_red.tga", &mod_qqc),
             ],
             &[],
             None,
         );
         let cells = [[4, 2]; 3];
 
-        match resolve_flag(&cat.content.layers, "english", &[FlagSet::Normal], &cells, &["SOV_communism".into(), "SOV".into()], 64) {
+        match resolve_flag(&cat.content.layers, "english", &[FlagSet::Normal], &cells, &["QQA_red".into(), "QQA".into()], 64) {
             ArtResolution::Ready { origin, file, url, frame, .. } => {
                 assert_eq!(origin, ArtOrigin::Mod { id: "mod_synthetic".into(), name: "Synthetic Mod".into() });
-                assert_eq!(file, "gfx/flags/SOV_communism.tga");
+                assert_eq!(file, "gfx/flags/QQA_red.tga");
                 assert_eq!(frame.frame_width, 4);
                 assert_eq!(&from_url(&url).pixels[..4], &[20, 40, 220, 255]);
             }
-            other => panic!("expected mod SOV flag Ready, got {other:?}"),
+            other => panic!("expected mod QQA flag Ready, got {other:?}"),
         }
 
-        match resolve_flag(&cat.content.layers, "english", &[FlagSet::Normal], &cells, &["CHI_AUTH_S_communism".into(), "CHI".into()], 64) {
+        match resolve_flag(&cat.content.layers, "english", &[FlagSet::Normal], &cells, &["QQC_AUTH_S_red".into(), "QQC".into()], 64) {
             ArtResolution::Ready { origin, file, .. } => {
                 assert_eq!(origin, ArtOrigin::Mod { id: "mod_synthetic".into(), name: "Synthetic Mod".into() });
-                assert_eq!(file, "gfx/flags/CHI_AUTH_S_communism.tga");
+                assert_eq!(file, "gfx/flags/QQC_AUTH_S_red.tga");
             }
-            other => panic!("expected mod cosmetic CHI flag Ready, got {other:?}"),
+            other => panic!("expected mod cosmetic QQC flag Ready, got {other:?}"),
         }
 
-        match resolve_flag(&cat.content.layers, "english", &[FlagSet::Normal], &cells, &["GER".into()], 64) {
+        match resolve_flag(&cat.content.layers, "english", &[FlagSet::Normal], &cells, &["QQB".into()], 64) {
             ArtResolution::Ready { origin, file, .. } => {
                 assert_eq!(origin, ArtOrigin::BaseGame);
-                assert_eq!(file, "gfx/flags/GER.tga");
+                assert_eq!(file, "gfx/flags/QQB.tga");
             }
-            other => panic!("expected inherited base GER flag Ready, got {other:?}"),
+            other => panic!("expected inherited base QQB flag Ready, got {other:?}"),
         }
 
         let (unmounted_cat, _unmounted_folders) = two_layer_catalogue(
             &[
-                ("gfx/flags/SOV_communism.tga", &base_sov),
-                ("gfx/flags/GER.tga", &base_ger),
+                ("gfx/flags/QQA_red.tga", &base_qqa),
+                ("gfx/flags/QQB.tga", &base_qqb),
             ],
             &[],
             &[],
             Some("not installed"),
         );
 
-        match resolve_flag(&unmounted_cat.content.layers, "english", &[FlagSet::Normal], &cells, &["SOV_communism".into(), "SOV".into()], 64) {
+        match resolve_flag(&unmounted_cat.content.layers, "english", &[FlagSet::Normal], &cells, &["QQA_red".into(), "QQA".into()], 64) {
             ArtResolution::ConfirmedMissing { reason, origin, file } => {
                 assert!(reason.contains("Synthetic Mod"), "{reason}");
                 assert_eq!(origin, Some(ArtOrigin::Mod { id: "mod_synthetic".into(), name: "Synthetic Mod".into() }));
-                assert_eq!(file.as_deref(), Some("gfx/flags/SOV_communism.tga"));
+                assert_eq!(file.as_deref(), Some("gfx/flags/QQA_red.tga"));
             }
             other => panic!("expected ConfirmedMissing for unmounted mod flag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_texture_found_under_another_spelling_decodes_from_the_file_found() {
+        let (_, folder) = crate::catalogue::tests::localisation_catalogue(&[]);
+        write_entries(&folder.0, &[("gfx/Sample_Icon.png", &png_bytes(&solid(4, 2, [30, 60, 90, 255])))]);
+        let layers = ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+        let layers = ResolvedLayers::from_test_layers(layers.layers).unwrap();
+        let scope_key = art_scope_key(&layers, "english");
+        let variant = ArtRenderVariant { max_edge: 48, decode: Decode::default() };
+        match resolve_texture_in_stack(layers.presentation(), "gfx/sample_icon.png", 1, 0, variant, &scope_key) {
+            ArtResolution::Ready { url, frame, .. } => {
+                assert_eq!((frame.texture_width, frame.texture_height), (4, 2));
+                assert_eq!(&from_url(&url).pixels[..4], &[30, 60, 90, 255]);
+            }
+            other => panic!("a texture the lookup found must decode, got {other:?}"),
+        }
+        assert!(matches!(
+            resolve_native_texture_in_stack(layers.presentation(), "gfx/sample_icon.png", Decode::default(), &scope_key),
+            NativeIconResolution::Ready { .. }
+        ));
+    }
+
+    #[test]
+    fn a_visual_mod_sprite_that_cannot_draw_falls_back_whole_never_its_metadata_over_recorded_pixels() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let (_, base) = crate::catalogue::tests::localisation_catalogue(&[]);
+        let (_, visual) = crate::catalogue::tests::localisation_catalogue(&[]);
+        crate::catalogue::texture_tests::write_sprite_program(&base.0);
+        write_entries(&base.0, &[
+            ("interface/sample.gfx", b"spriteTypes={spriteType={name=GFX_sample_badge textureFile=gfx/sample_badge.png}}"),
+            ("gfx/sample_badge.png", &png_bytes(&solid(4, 4, [200, 10, 10, 255]))),
+        ]);
+        write_entries(&visual.0, &[
+            ("interface/sample.gfx", b"spriteTypes={spriteType={name=GFX_sample_badge textureFile=gfx/sample_badge.png effectFile=gfx/FX/sample_absent.lua}}"),
+            ("gfx/sample_badge.png", &png_bytes(&solid(8, 2, [10, 200, 10, 255]))),
+        ]);
+        let layers = content_reader_layers::content::fixtures::overlay_folders(&base.0, &visual.0, "Sample Art", false);
+        let sprites = content_reader_gfx::gfx::read(layers.presentation()).unwrap();
+        let sprite = sprites.find("GFX_sample_badge").unwrap().unwrap();
+        let variant = ArtRenderVariant { max_edge: 48, decode: Decode::default() };
+        match resolve_sprite_type_on_layers(&layers, "english", sprite, 0, variant) {
+            ArtResolution::Ready { url, frame, origin, .. } => {
+                let pixel: [u8; 4] = from_url(&url).pixels[..4].try_into().unwrap();
+                let shown = (frame.texture_width, frame.texture_height, pixel);
+                assert_eq!(shown, (4, 4, [200, 10, 10, 255]), "pixels and metadata both from the recorded sprite, origin {origin:?}");
+            }
+            other => panic!("the recorded sprite draws, got {other:?}"),
         }
     }
 

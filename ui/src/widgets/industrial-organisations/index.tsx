@@ -1,18 +1,18 @@
 import type { WidgetProps, WidgetRenderer } from '../../dashboard/definitions';
-import type { MioPolicySelection } from '../../dashboard/gameWindows';
+import type { IndustrialOrganisationSelection } from '../../dashboard/gameWindows';
 import GameWindowTable, { type GameWindowRow } from '../../families/table/GameWindowTable';
-import { organisationsDeclaration, type OrganisationMeta } from './organisationsProjection';
+import { organisationsDeclaration } from './organisationsProjection';
 
-const POLICIES: GameWindowRow<MioPolicySelection> = {
-  kind: 'mioPolicyChooser',
+const ORGANISATION: GameWindowRow<IndustrialOrganisationSelection> = {
+  kind: 'industrialOrganisation',
   select: (track, key, _meta, hour) => ({
-    kind: 'mioPolicyChooser', sourceId: track.source.id, revision: track.source.revision, branchId: track.branch.id, hour, organisation: key,
+    kind: 'industrialOrganisation', sourceId: track.source.id, revision: track.source.revision, branchId: track.branch.id, hour, organisation: key,
   }),
-  title: meta => (meta as OrganisationMeta | undefined)?.name ?? 'Policies',
+  label: 'Industrial organisation',
 };
 
 function IndustrialOrganisationsWidget(props: WidgetProps) {
-  return <GameWindowTable {...props} declaration={organisationsDeclaration} window={POLICIES} />;
+  return <GameWindowTable {...props} declaration={organisationsDeclaration} window={ORGANISATION} />;
 }
 
 export default { render: IndustrialOrganisationsWidget } satisfies WidgetRenderer;

@@ -1,4 +1,5 @@
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { validateCountryFacts } from '../../dashboard/countryTimeline.ts';
 import { transientError, retryDelay } from '../../dashboard/countryFacts.ts';
 import { loadProduct, loadTransientProduct } from '../../dashboard/products.ts';
@@ -14,14 +15,20 @@ import type {
   CountryGroupReply,
   CountryIdentitiesReply,
   CountryStyleReply,
+  NameRun,
+  PlaceNameRunsReply,
+  StrategicRegionsReply,
+  UnitLeadersReply,
 } from '../../generated/dashboard';
 import { busyWait } from '../../shell/busy.ts';
-import { IdentityIndex } from './index.ts';
+import { BRANCH_READS, IdentityIndex, drawnFlagKey, type BranchRead } from './index.ts';
 import {
-  flagChoiceKey,
+  identityKeyString,
   identityScopeKey,
   type CountryIdentityKey,
   type DrawnFlagEntry,
+  type EntityIdentityKey,
+  type EntityRunEntry,
   type HourInterval,
   type IdentityAsk,
   type IdentityKey,
@@ -36,6 +43,9 @@ export interface IdentityTransport {
   loadGroups(scope: IdentityScope, signal: AbortSignal, recording?: DashboardSource): Promise<CountryGroupReply>;
   loadStyles(scope: IdentityScope, hour: number, tags: readonly string[], signal: AbortSignal, recording?: DashboardSource): Promise<CountryStyleReply>;
   loadFlags(scope: IdentityScope, size: CountryFlagSize, choices: readonly CountryFlagChoice[], signal: AbortSignal, recording?: DashboardSource): Promise<CountryFlagReply>;
+  loadRegions(scope: IdentityScope, signal: AbortSignal, recording?: DashboardSource): Promise<StrategicRegionsReply>;
+  loadPlaceNameRuns(scope: IdentityScope, from: number, to: number, states: readonly number[], provinces: readonly number[], signal: AbortSignal, recording?: DashboardSource): Promise<PlaceNameRunsReply>;
+  loadLeaders(scope: IdentityScope, owner: string, hour: number, signal: AbortSignal, recording?: DashboardSource): Promise<UnitLeadersReply>;
 }
 
 export function clientIdentityTransport(client: DashboardClient): IdentityTransport {
@@ -74,6 +84,37 @@ export function clientIdentityTransport(client: DashboardClient): IdentityTransp
       signal,
       recording,
     ),
+    loadRegions: (scope, signal, recording) => loadProduct<StrategicRegionsReply>(
+      client,
+      productRequest({ sourceId: scope.sourceId, revision: scope.revision, product: 'strategic-regions', params: { branchId: scope.branchId } }),
+      signal,
+      undefined,
+      recording,
+    ),
+    loadPlaceNameRuns: (scope, from, to, states, provinces, signal, recording) => loadTransientProduct<PlaceNameRunsReply>(
+      client,
+      productRequest({ sourceId: scope.sourceId, revision: scope.revision, product: 'place-name-runs', params: {
+        branchId: scope.branchId,
+        land: false,
+        from: from as GatedHour,
+        to: to as GatedHour,
+        states: [...states],
+        provinces: [...provinces],
+      } }),
+      signal,
+      recording,
+    ),
+    loadLeaders: (scope, owner, hour, signal, recording) => loadTransientProduct<UnitLeadersReply>(
+      client,
+      productRequest({ sourceId: scope.sourceId, revision: scope.revision, product: 'unit-leaders', params: {
+        branchId: scope.branchId,
+        hour: hour as GatedHour,
+        selection: owner ? { kind: 'countries', countries: [countryFromKey(owner)] } : { kind: 'all' },
+        leaders: 'all',
+      } }),
+      signal,
+      recording,
+    ),
   };
 }
 
@@ -81,6 +122,57 @@ export const STYLE_BATCH_MAX = 256;
 export const STYLE_MAX_CONCURRENT = 2;
 export const FLAG_BATCH_MAX = 32;
 export const FLAG_MAX_CONCURRENT = 2;
+export const ENTITY_MAX_CONCURRENT = 2;
+
+function drawn(entry: DrawnFlagEntry | undefined): boolean {
+  return entry !== undefined && entry.failed === undefined;
+}
+
+const REGION_ABSENT = 'Not a strategic region of this recording';
+const LEADER_ABSENT = 'Not a leader of this country at this hour';
+const LEADER_NAME_MISSING = 'Leader name not recorded';
+const PLACE_NOT_ANSWERED = 'Place name not answered';
+
+type EntityRequest =
+  | { readonly kind: 'regions'; readonly id: string }
+  | { readonly kind: 'places'; readonly id: string; readonly from: number; readonly to: number }
+  | { readonly kind: 'leaders'; readonly id: string; readonly owner: string; readonly hour: number };
+
+interface WantedEntities {
+  readonly request: EntityRequest;
+  readonly keys: Map<string, EntityIdentityKey>;
+}
+
+interface EntityTask {
+  readonly request: EntityRequest;
+  readonly keys: ReadonlyMap<string, EntityIdentityKey>;
+  readonly controller: AbortController;
+}
+
+const PLACE_WINDOW_HOURS = 720;
+
+function entityRequestOf(key: EntityIdentityKey, at: number, bounds: HourInterval): EntityRequest | null {
+  switch (key.kind) {
+    case 'region':
+      return { kind: 'regions', id: 'regions' };
+    case 'design':
+      return null;
+    case 'state':
+    case 'province':
+    {
+      const start = Math.floor(at / PLACE_WINDOW_HOURS) * PLACE_WINDOW_HOURS;
+      return { kind: 'places', id: `places\u0000${start}`, from: Math.max(start, bounds[0]), to: Math.min(start + PLACE_WINDOW_HOURS - 1, bounds[1]) };
+    }
+    case 'leader':
+      return { kind: 'leaders', id: `leaders\u0000${key.owner}\u0000${at}`, owner: key.owner, hour: at };
+  }
+}
+
+function numericId(id: number | string): number | null {
+  const value = typeof id === 'number' ? id : Number(id);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
 
 interface DemandEntry {
   readonly asks: readonly IdentityAsk[];
@@ -90,11 +182,39 @@ interface DemandEntry {
   readonly needGroups?: boolean;
 }
 
+interface DemandWants {
+  readonly revision: number;
+  readonly facts: boolean;
+  readonly identities: boolean;
+  readonly groups: boolean;
+  readonly styles: readonly (readonly [number, string])[];
+  readonly flags: readonly (readonly [CountryFlagSize, string, CountryFlagChoice])[];
+  readonly entities: readonly (readonly [EntityRequest, string, EntityIdentityKey])[];
+}
+
+interface BranchReadState {
+  controller: AbortController | null;
+  retryTimer: (() => void) | null;
+  failures: number;
+}
+
+function idleRead(): BranchReadState {
+  return { controller: null, retryTimer: null, failures: 0 };
+}
+
 interface StyleTask {
   readonly id: number;
   readonly hour: number;
   readonly tags: readonly string[];
   readonly controller: AbortController;
+}
+
+interface FlagFailure {
+  readonly count: number;
+  readonly at: number;
+  readonly error: Failure;
+  readonly size: CountryFlagSize;
+  readonly choice: CountryFlagChoice;
 }
 
 interface FlagTask {
@@ -111,24 +231,25 @@ interface ScopeState {
   recording?: DashboardSource;
   readonly watchers: Set<() => void>;
   readonly demands: Map<object, DemandEntry>;
+  readonly wants: WeakMap<DemandEntry, DemandWants>;
 
-  factsController: AbortController | null;
-  factsRetryTimer: (() => void) | null;
-  factsFailures: number;
-
-  identitiesController: AbortController | null;
-  groupsController: AbortController | null;
+  readonly reads: Record<BranchRead, BranchReadState>;
 
   readonly styleRunning: Map<number, StyleTask>;
   readonly styleInflightKeys: Set<string>;
   readonly styleRetryAt: Map<string, { readonly count: number; readonly at: number; readonly error: Failure }>;
   styleRetryTimer: (() => void) | null;
 
-  readonly flagEntries: Map<string, DrawnFlagEntry>;
   readonly flagRunning: Map<number, FlagTask>;
   readonly flagInflightKeys: Set<string>;
-  readonly flagFailures: Map<string, { readonly count: number; readonly at: number; readonly error: Failure }>;
+  readonly flagFailures: Map<string, FlagFailure>;
+  readonly flagRequests: Map<CountryFlagSize, Map<string, CountryFlagChoice>>;
   flagRetryTimer: (() => void) | null;
+
+  readonly entityRunning: Map<string, EntityTask>;
+  readonly entityRetryAt: Map<string, { readonly count: number; readonly at: number }>;
+  readonly entityLoaded: Set<string>;
+  entityRetryTimer: (() => void) | null;
 
   nextTaskId: number;
   version: number;
@@ -174,20 +295,21 @@ export class IdentityBroker {
         recording,
         watchers: new Set(),
         demands: new Map(),
-        factsController: null,
-        factsRetryTimer: null,
-        factsFailures: 0,
-        identitiesController: null,
-        groupsController: null,
+        wants: new WeakMap(),
+        reads: { facts: idleRead(), identities: idleRead(), groups: idleRead() },
         styleRunning: new Map(),
         styleInflightKeys: new Set(),
         styleRetryAt: new Map(),
         styleRetryTimer: null,
-        flagEntries: new Map(),
         flagRunning: new Map(),
         flagInflightKeys: new Set(),
         flagFailures: new Map(),
+        flagRequests: new Map(),
         flagRetryTimer: null,
+        entityRunning: new Map(),
+        entityRetryAt: new Map(),
+        entityLoaded: new Set(),
+        entityRetryTimer: null,
         nextTaskId: 1,
         version: 0,
         snapshotCache: null,
@@ -225,7 +347,7 @@ export class IdentityBroker {
   flagFor(scope: IdentityScope, size: CountryFlagSize, choice: CountryFlagChoice): DrawnFlagEntry | undefined {
     const state = this.scopes.get(identityScopeKey(scope));
     if (!state) return undefined;
-    return state.flagEntries.get(`${size}\u0000${flagChoiceKey(choice)}`);
+    return state.index.getDrawnFlag(size, choice);
   }
 
   subscribe(scope: IdentityScope, listener: () => void, recording?: DashboardSource, branchBounds?: HourInterval): () => void {
@@ -260,23 +382,29 @@ export class IdentityBroker {
     recording?: DashboardSource,
   ): void {
     const state = this.getState(scope, recording);
-    const wanted = new Map<string, CountryFlagChoice>();
+    let requested = state.flagRequests.get(size);
+    if (!requested) state.flagRequests.set(size, requested = new Map());
+    let added = false;
     for (const choice of choices) {
-      const choiceId = flagChoiceKey(choice);
-      const key = `${size}\u0000${choiceId}`;
-      if (state.flagEntries.has(key) || state.flagInflightKeys.has(key)) continue;
-      wanted.set(key, choice);
+      if (drawn(state.index.getDrawnFlag(size, choice))) continue;
+      const key = drawnFlagKey(size, choice);
+      if (requested.has(key)) continue;
+      requested.set(key, choice);
+      added = true;
     }
-    if (wanted.size) this.pumpFlags(state, size, wanted);
+    if (added) this.reconcile(state);
   }
 
   retry(scope: IdentityScope): void {
     const state = this.scopes.get(identityScopeKey(scope));
     if (!state) return;
-    state.factsRetryTimer?.();
-    state.factsRetryTimer = null;
-    state.factsFailures = 0;
-    state.index.clearFactsFailure();
+    for (const read of BRANCH_READS) {
+      const slot = state.reads[read];
+      slot.retryTimer?.();
+      slot.retryTimer = null;
+      slot.failures = 0;
+      if (state.index.readFailed(read)) state.index.setReadFailure(read, undefined);
+    }
     state.styleRetryTimer?.();
     state.styleRetryTimer = null;
     for (const pairKey of state.styleRetryAt.keys()) {
@@ -286,8 +414,12 @@ export class IdentityBroker {
     state.styleRetryAt.clear();
     state.flagRetryTimer?.();
     state.flagRetryTimer = null;
-    for (const key of state.flagFailures.keys()) state.flagEntries.delete(key);
+    for (const failure of state.flagFailures.values()) state.index.forgetDrawnFlag(failure.size, failure.choice);
     state.flagFailures.clear();
+    state.entityRetryTimer?.();
+    state.entityRetryTimer = null;
+    state.entityRetryAt.clear();
+    state.index.clearEntityFailures();
     this.notify(state);
     this.reconcile(state);
   }
@@ -314,14 +446,13 @@ export class IdentityBroker {
   }
 
   private abortScope(state: ScopeState): void {
-    state.factsController?.abort();
-    state.factsController = null;
-    state.factsRetryTimer?.();
-    state.factsRetryTimer = null;
-    state.identitiesController?.abort();
-    state.identitiesController = null;
-    state.groupsController?.abort();
-    state.groupsController = null;
+    for (const read of BRANCH_READS) {
+      const slot = state.reads[read];
+      slot.controller?.abort();
+      slot.controller = null;
+      slot.retryTimer?.();
+      slot.retryTimer = null;
+    }
     state.styleRetryTimer?.();
     state.styleRetryTimer = null;
     for (const task of state.styleRunning.values()) task.controller.abort();
@@ -332,6 +463,10 @@ export class IdentityBroker {
     for (const task of state.flagRunning.values()) task.controller.abort();
     state.flagRunning.clear();
     state.flagInflightKeys.clear();
+    state.entityRetryTimer?.();
+    state.entityRetryTimer = null;
+    for (const task of state.entityRunning.values()) task.controller.abort();
+    state.entityRunning.clear();
   }
 
   private notify(state: ScopeState): void {
@@ -347,52 +482,35 @@ export class IdentityBroker {
     const neededStylesByHour = new Map<number, Set<string>>();
     const wantedStyleKeys = new Set<string>();
     const wantedFlagsBySize = new Map<CountryFlagSize, Map<string, CountryFlagChoice>>();
+    const wantedEntities = new Map<string, WantedEntities>();
 
     for (const demand of state.demands.values()) {
-      if (demand.needIdentities) wantIdentities = true;
-      if (demand.needGroups) wantGroups = true;
-      for (const ask of demand.asks) {
-        const at = Math.floor(ask.hour);
-        if (!Number.isFinite(at)) continue;
-        if (ask.key.kind === 'country') {
-          wantFacts = true;
-          if (ask.key.by === 'slot' || ask.key.by === 'holder') wantIdentities = true;
-          const resolved = state.index.resolve(ask.key, at);
-          if (resolved.kind === 'pending') {
-            const tag = this.tagForAsk(state, ask.key, at);
-            if (tag !== null && this.enableStyleFallback && !state.index.hasFactsAt(at)) {
-              const pairKey = `${at}\u0000${tag}`;
-              wantedStyleKeys.add(pairKey);
-              let set = neededStylesByHour.get(at);
-              if (!set) neededStylesByHour.set(at, set = new Set());
-              set.add(tag);
-            }
-          } else if (resolved.kind === 'known' && demand.needFlags && resolved.flagChoice.kind === 'known') {
-            const size: CountryFlagSize = demand.flagSize ?? 'panel';
-            const choiceId = flagChoiceKey(resolved.flagChoice.value);
-            const flagKey = `${size}\u0000${choiceId}`;
-            if (!state.flagEntries.has(flagKey) && !state.flagInflightKeys.has(flagKey)) {
-              let map = wantedFlagsBySize.get(size);
-              if (!map) wantedFlagsBySize.set(size, map = new Map());
-              map.set(flagKey, resolved.flagChoice.value);
-            }
-          }
-        } else if (ask.key.kind === 'faction') {
-          wantGroups = true;
-          wantFacts = true;
-        }
+      const wants = this.wantsOf(state, demand);
+      if (wants.facts) wantFacts = true;
+      if (wants.identities) wantIdentities = true;
+      if (wants.groups) wantGroups = true;
+      for (const [at, tag] of wants.styles) {
+        wantedStyleKeys.add(`${at}\u0000${tag}`);
+        let set = neededStylesByHour.get(at);
+        if (!set) neededStylesByHour.set(at, set = new Set());
+        set.add(tag);
+      }
+      for (const [size, flagKey, choice] of wants.flags) {
+        if (drawn(state.index.getDrawnFlag(size, choice)) || state.flagInflightKeys.has(flagKey)) continue;
+        let map = wantedFlagsBySize.get(size);
+        if (!map) wantedFlagsBySize.set(size, map = new Map());
+        map.set(flagKey, choice);
+      }
+      for (const [request, id, key] of wants.entities) {
+        let wanted = wantedEntities.get(request.id);
+        if (!wanted) wantedEntities.set(request.id, wanted = { request, keys: new Map() });
+        wanted.keys.set(id, key);
       }
     }
 
-    if (wantFacts && !state.index.hasFacts() && !state.factsController && !state.factsRetryTimer) {
-      this.startFacts(state);
-    }
-    if (wantIdentities && !state.index.hasIdentities() && !state.identitiesController) {
-      this.startIdentities(state);
-    }
-    if (wantGroups && !state.index.hasGroups() && !state.groupsController) {
-      this.startGroups(state);
-    }
+    if (wantFacts) this.ensureRead(state, 'facts');
+    if (wantIdentities) this.ensureRead(state, 'identities');
+    if (wantGroups) this.ensureRead(state, 'groups');
 
     for (const [id, task] of [...state.styleRunning]) {
       const stillWanted = task.tags.some(tag => wantedStyleKeys.has(`${task.hour}\u0000${tag}`));
@@ -407,9 +525,196 @@ export class IdentityBroker {
       this.pumpStyles(state, neededStylesByHour);
     }
 
+    for (const [size, requested] of state.flagRequests) {
+      let map = wantedFlagsBySize.get(size);
+      for (const [key, choice] of requested) {
+        if (drawn(state.index.getDrawnFlag(size, choice))) {
+          requested.delete(key);
+          continue;
+        }
+        if (state.flagInflightKeys.has(key)) continue;
+        if (!map) wantedFlagsBySize.set(size, map = new Map());
+        map.set(key, choice);
+      }
+    }
+
     for (const [size, wanted] of wantedFlagsBySize) {
       this.pumpFlags(state, size, wanted);
     }
+
+    this.pumpEntities(state, wantedEntities);
+  }
+
+  private pumpEntities(state: ScopeState, wanted: Map<string, WantedEntities>): void {
+    for (const [id, task] of [...state.entityRunning]) {
+      if (wanted.has(id) || task.request.kind === 'regions') continue;
+      task.controller.abort();
+      state.entityRunning.delete(id);
+    }
+    let settled = false;
+    for (const [id, item] of [...wanted]) {
+      if (!state.entityLoaded.has(id)) continue;
+      this.settleUnanswered(state, item.request, item.keys.values());
+      settled = true;
+      wanted.delete(id);
+    }
+    if (settled) this.notify(state);
+    const now = this.clock.now();
+    let soonestRetry = Infinity;
+    for (const [id, item] of wanted) {
+      if (state.entityRunning.size >= ENTITY_MAX_CONCURRENT) break;
+      if (state.entityRunning.has(id)) continue;
+      const failed = state.entityRetryAt.get(id);
+      if (failed && failed.at > now) {
+        soonestRetry = Math.min(soonestRetry, failed.at);
+        continue;
+      }
+      this.startEntityTask(state, item.request, item.keys);
+    }
+    if (soonestRetry < Infinity && !state.entityRetryTimer) {
+      state.entityRetryTimer = this.clock.after(Math.max(0, soonestRetry - now), () => {
+        state.entityRetryTimer = null;
+        this.reconcile(state);
+      });
+    }
+  }
+
+  private settleUnanswered(state: ScopeState, request: EntityRequest, keys: Iterable<EntityIdentityKey>): void {
+    const bounds = state.index.bounds();
+    for (const key of keys) {
+      switch (request.kind) {
+        case 'regions':
+          if (state.index.resolve(key, bounds[0]).kind === 'pending') {
+            state.index.setEntityRuns(key, [{ firstHour: bounds[0], lastHour: bounds[1], absent: true, reason: REGION_ABSENT, name: null }]);
+          }
+          break;
+        case 'places':
+          if (state.index.resolve(key, request.from).kind === 'pending') {
+            state.index.replaceEntityRuns(key, request.from, request.to, [{ firstHour: request.from, lastHour: request.to, name: null, nameReason: PLACE_NOT_ANSWERED }]);
+          }
+          break;
+        case 'leaders':
+          if (state.index.resolve(key, request.hour).kind === 'pending') {
+            state.index.addEntityRun(key, { firstHour: request.hour, lastHour: request.hour, absent: true, reason: LEADER_ABSENT, name: null });
+          }
+          break;
+      }
+    }
+  }
+
+  private loadEntityRequest(state: ScopeState, request: EntityRequest, keys: ReadonlyMap<string, EntityIdentityKey>, signal: AbortSignal): Promise<void> {
+    const index = state.index;
+    switch (request.kind) {
+      case 'regions':
+        return this.transport.loadRegions(state.scope, signal, state.recording).then(reply => {
+          const bounds = index.bounds();
+          for (const region of reply.regions) {
+            index.setEntityRuns({ kind: 'region', id: region.id }, [{
+              firstHour: bounds[0],
+              lastHour: bounds[1],
+              name: region.name,
+              ...(region.nameMissing ? { nameReason: region.nameMissing } : {}),
+              warnings: reply.warnings,
+            }]);
+          }
+        });
+      case 'places': {
+        const states: number[] = [];
+        const provinces: number[] = [];
+        for (const key of keys.values()) {
+          if (key.kind !== 'state' && key.kind !== 'province') continue;
+          const id = numericId(key.id);
+          if (id !== null) (key.kind === 'state' ? states : provinces).push(id);
+        }
+        return this.transport.loadPlaceNameRuns(state.scope, request.from, request.to, states, provinces, signal, state.recording).then(reply => {
+          const entry = (run: NameRun): EntityRunEntry => ({
+            firstHour: run.firstHour, lastHour: run.lastHour, name: run.name, ...(run.missing ? { nameReason: run.missing } : {}), warnings: reply.warnings,
+          });
+          index.replaceEntityUnknown(['state', 'province'], reply.from, reply.to, reply.unknown);
+          for (const place of reply.states) index.replaceEntityRuns({ kind: 'state', id: place.id }, reply.from, reply.to, place.runs.map(entry));
+          for (const place of reply.provinces) index.replaceEntityRuns({ kind: 'province', id: place.id }, reply.from, reply.to, place.runs.map(entry));
+        });
+      }
+      case 'leaders':
+        return this.transport.loadLeaders(state.scope, request.owner, request.hour, signal, state.recording).then(reply => {
+          const hour = request.hour;
+          const run = (named: Omit<EntityRunEntry, 'firstHour' | 'lastHour'>): EntityRunEntry => ({ firstHour: hour, lastHour: hour, ...named, warnings: reply.warnings });
+          if (reply.missing !== null) {
+            for (const key of keys.values()) index.addEntityRun(key, run({ name: null, nameReason: reply.missing }));
+            return;
+          }
+          for (const row of reply.leaders) {
+            index.addEntityRun({ kind: 'leader', owner: request.owner, id: row.reference }, run({ name: row.name, ...(row.name === null ? { nameReason: LEADER_NAME_MISSING } : {}) }));
+          }
+          for (const held of reply.withheld) {
+            index.addEntityRun({ kind: 'leader', owner: request.owner, id: held.reference }, run({ name: null, nameReason: held.reason }));
+          }
+        });
+    }
+  }
+
+  private startEntityTask(state: ScopeState, request: EntityRequest, keys: ReadonlyMap<string, EntityIdentityKey>): void {
+    const controller = new AbortController();
+    const task: EntityTask = { request, keys, controller };
+    state.entityRunning.set(request.id, task);
+    void this.loadEntityRequest(state, request, keys, controller.signal).then(
+      () => {
+        if (state.entityRunning.get(request.id) !== task || controller.signal.aborted) return;
+        state.entityRunning.delete(request.id);
+        state.entityRetryAt.delete(request.id);
+        if (request.kind === 'regions') state.entityLoaded.add(request.id);
+        this.settleUnanswered(state, request, keys.values());
+        this.notify(state);
+        this.reconcile(state);
+      },
+      error => {
+        if (state.entityRunning.get(request.id) !== task || controller.signal.aborted) return;
+        state.entityRunning.delete(request.id);
+        const failure = asFailure(error);
+        const count = (state.entityRetryAt.get(request.id)?.count ?? 0) + 1;
+        state.entityRetryAt.set(request.id, { count, at: transientError(error) ? this.clock.now() + retryDelay(count) : Infinity });
+        for (const key of keys.values()) state.index.setEntityFailure(key, failure);
+        this.notify(state);
+        this.reconcile(state);
+      },
+    );
+  }
+
+  private wantsOf(state: ScopeState, demand: DemandEntry): DemandWants {
+    const revision = state.index.resolveRevision();
+    const held = state.wants.get(demand);
+    if (held && held.revision === revision) return held;
+    let facts = false;
+    let identities = demand.needIdentities ?? false;
+    let groups = demand.needGroups ?? false;
+    const styles: [number, string][] = [];
+    const flags: [CountryFlagSize, string, CountryFlagChoice][] = [];
+    const entities: [EntityRequest, string, EntityIdentityKey][] = [];
+    const size: CountryFlagSize = demand.flagSize ?? 'panel';
+    for (const ask of demand.asks) {
+      const at = Math.floor(ask.hour);
+      if (!Number.isFinite(at)) continue;
+      if (ask.key.kind === 'country') {
+        facts = true;
+        identities = true;
+        const resolved = state.index.resolve(ask.key, at);
+        if (resolved.kind === 'pending') {
+          const tag = this.tagForAsk(state, ask.key, at);
+          if (tag !== null && this.enableStyleFallback && !state.index.hasFactsAt(at)) styles.push([at, tag]);
+        } else if (resolved.kind === 'known' && demand.needFlags && resolved.flagChoice.kind === 'known') {
+          flags.push([size, drawnFlagKey(size, resolved.flagChoice.value), resolved.flagChoice.value]);
+        }
+      } else if (ask.key.kind === 'faction') {
+        groups = true;
+        facts = true;
+      } else if (state.index.resolve(ask.key, at).kind === 'pending') {
+        const request = entityRequestOf(ask.key, at, state.index.bounds());
+        if (request) entities.push([request, identityKeyString(ask.key), ask.key]);
+      }
+    }
+    const wants: DemandWants = { revision, facts, identities, groups, styles, flags, entities };
+    state.wants.set(demand, wants);
+    return wants;
   }
 
   private tagForAsk(state: ScopeState, key: CountryIdentityKey, at: number): string | null {
@@ -420,33 +725,29 @@ export class IdentityBroker {
     return held.tag;
   }
 
-  private startFacts(state: ScopeState): void {
+  private ensureRead(state: ScopeState, read: BranchRead): void {
+    const slot = state.reads[read];
+    if (state.index.hasRead(read) || state.index.readFailed(read) || slot.controller || slot.retryTimer) return;
     const controller = new AbortController();
-    state.factsController = controller;
-    void this.transport.loadFacts(state.scope, controller.signal, state.recording).then(
-      reply => {
-        if (state.factsController !== controller || controller.signal.aborted) return;
-        state.factsController = null;
-        state.factsFailures = 0;
-        state.index.setFacts(reply, true);
-        for (const [id, task] of [...state.styleRunning]) {
-          task.controller.abort();
-          state.styleRunning.delete(id);
-          for (const tag of task.tags) state.styleInflightKeys.delete(`${task.hour}\u0000${tag}`);
-        }
+    slot.controller = controller;
+    void this.loadRead(state, read, controller.signal).then(
+      apply => {
+        if (slot.controller !== controller || controller.signal.aborted) return;
+        slot.controller = null;
+        slot.failures = 0;
+        apply();
         this.notify(state);
         this.reconcile(state);
       },
       error => {
-        if (state.factsController !== controller || controller.signal.aborted) return;
-        state.factsController = null;
-        const failure = asFailure(error);
-        state.factsFailures++;
-        state.index.setFactsFailure(failure);
+        if (slot.controller !== controller || controller.signal.aborted) return;
+        slot.controller = null;
+        slot.failures++;
+        state.index.setReadFailure(read, asFailure(error));
         if (transientError(error)) {
-          state.factsRetryTimer = this.clock.after(retryDelay(state.factsFailures), () => {
-            state.factsRetryTimer = null;
-            state.index.clearFactsFailure();
+          slot.retryTimer = this.clock.after(retryDelay(slot.failures), () => {
+            slot.retryTimer = null;
+            state.index.setReadFailure(read, undefined);
             this.reconcile(state);
           });
         }
@@ -455,44 +756,22 @@ export class IdentityBroker {
     );
   }
 
-  private startIdentities(state: ScopeState): void {
-    const controller = new AbortController();
-    state.identitiesController = controller;
-    void this.transport.loadIdentities(state.scope, controller.signal, state.recording).then(
-      reply => {
-        if (state.identitiesController !== controller || controller.signal.aborted) return;
-        state.identitiesController = null;
-        state.index.setIdentities(reply);
-        this.notify(state);
-        this.reconcile(state);
-      },
-      error => {
-        if (state.identitiesController !== controller || controller.signal.aborted) return;
-        state.identitiesController = null;
-        state.index.setIdentitiesFailure(asFailure(error));
-        this.notify(state);
-      },
-    );
-  }
-
-  private startGroups(state: ScopeState): void {
-    const controller = new AbortController();
-    state.groupsController = controller;
-    void this.transport.loadGroups(state.scope, controller.signal, state.recording).then(
-      reply => {
-        if (state.groupsController !== controller || controller.signal.aborted) return;
-        state.groupsController = null;
-        state.index.setGroups(reply);
-        this.notify(state);
-        this.reconcile(state);
-      },
-      error => {
-        if (state.groupsController !== controller || controller.signal.aborted) return;
-        state.groupsController = null;
-        state.index.setGroupsFailure(asFailure(error));
-        this.notify(state);
-      },
-    );
+  private loadRead(state: ScopeState, read: BranchRead, signal: AbortSignal): Promise<() => void> {
+    switch (read) {
+      case 'facts':
+        return this.transport.loadFacts(state.scope, signal, state.recording).then(reply => () => {
+          state.index.setFacts(reply, true);
+          for (const [id, task] of [...state.styleRunning]) {
+            task.controller.abort();
+            state.styleRunning.delete(id);
+            for (const tag of task.tags) state.styleInflightKeys.delete(`${task.hour}\u0000${tag}`);
+          }
+        });
+      case 'identities':
+        return this.transport.loadIdentities(state.scope, signal, state.recording).then(reply => () => state.index.setIdentities(reply));
+      case 'groups':
+        return this.transport.loadGroups(state.scope, signal, state.recording).then(reply => () => state.index.setGroups(reply));
+    }
   }
 
   private pumpStyles(state: ScopeState, neededByHour: Map<number, Set<string>>): void {
@@ -567,7 +846,7 @@ export class IdentityBroker {
     let soonestRetry = Infinity;
     const ready: [string, CountryFlagChoice][] = [];
     for (const [key, choice] of wanted) {
-      if (state.flagEntries.has(key) || state.flagInflightKeys.has(key)) continue;
+      if (drawn(state.index.getDrawnFlag(size, choice)) || state.flagInflightKeys.has(key)) continue;
       const failed = state.flagFailures.get(key);
       if (failed && failed.at > now) {
         soonestRetry = Math.min(soonestRetry, failed.at);
@@ -582,8 +861,8 @@ export class IdentityBroker {
     if (soonestRetry < Infinity && !state.flagRetryTimer) {
       state.flagRetryTimer = this.clock.after(Math.max(0, soonestRetry - now), () => {
         state.flagRetryTimer = null;
-        for (const [key, info] of [...state.flagFailures]) {
-          if (info.at <= this.clock.now()) state.flagEntries.delete(key);
+        for (const info of state.flagFailures.values()) {
+          if (info.at <= this.clock.now()) state.index.forgetDrawnFlag(info.size, info.choice);
         }
         this.reconcile(state);
       });
@@ -601,17 +880,18 @@ export class IdentityBroker {
         if (state.flagRunning.get(id) !== task || controller.signal.aborted) return;
         state.flagRunning.delete(id);
         const images = new Map(reply.flags.map(image => [image.flag, image]));
-        const unavailable = new Map(reply.unavailable.map(item => [item.flag, item.reason]));
+        const unavailable = new Map(reply.unavailable.map(item => [item.flag, item.resolution]));
         batch.forEach(([key, choice], index) => {
           state.flagInflightKeys.delete(key);
           state.flagFailures.delete(key);
           const image = images.get(index);
-          const reason = unavailable.get(index);
+          const resolution = unavailable.get(index);
           const entry: DrawnFlagEntry = image
             ? { url: image.png, image }
-            : { reason: reason ?? 'Flag unavailable' };
-          state.flagEntries.set(key, entry);
-          state.index.setDrawnFlag(choice, entry);
+            : resolution
+              ? { resolution }
+              : { resolution: { status: 'failed', reason: 'The flag reply left this choice out', retryable: true } };
+          state.index.setDrawnFlag(size, choice, entry);
         });
         this.notify(state);
         this.reconcile(state);
@@ -625,10 +905,8 @@ export class IdentityBroker {
         for (const [key, choice] of batch) {
           state.flagInflightKeys.delete(key);
           const count = (state.flagFailures.get(key)?.count ?? 0) + 1;
-          state.flagFailures.set(key, { count, at: retryable ? now + retryDelay(count) : Infinity, error: failure });
-          const entry: DrawnFlagEntry = { failed: failure };
-          state.flagEntries.set(key, entry);
-          state.index.setDrawnFlag(choice, entry);
+          state.flagFailures.set(key, { count, at: retryable ? now + retryDelay(count) : Infinity, error: failure, size, choice });
+          state.index.setDrawnFlag(size, choice, { failed: failure });
         }
         this.notify(state);
         this.reconcile(state);

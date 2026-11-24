@@ -1,26 +1,14 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import type { Run } from '../../charts/series';
 import { runAt } from '../../charts/series.ts';
 import type { TooltipRow } from '../../charts/tooltip';
-import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
+import { formatFixed } from '../../charts/valueAxis.ts';
 import type { FixedRun } from './types';
-import type { ChartSummary } from '../../charts/chartSummary';
-import { rawOf, summaryEnd } from '../country-measure/measureData.ts';
-import type { BreakdownLine, FormulaBreakdown, HourSpan, ModifierBreakdown, StabilityBreakdown, StabilityReadsReply } from '../../generated/dashboard';
+import type { BreakdownLine, FormulaBreakdown, ModifierBreakdown, StabilityBreakdown } from '../../generated/dashboard';
 
 const NATIONAL_SPIRIT_TYPE = 'national_spirit';
 
 
 export type Measure = 'stability' | 'warSupport';
-
-export function stabilityEnd(summary: ChartSummary | undefined, end: number, decimals: number): { value: number; raw: string } | null {
-  const value = summaryEnd(summary, end);
-  return value == null ? null : { value, raw: rawOf(value, decimals) };
-}
-
-export function percentRuns(runs: readonly FixedRun[], decimals: number): Run[] {
-  return runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour, value: fixedNumber(run.valueRaw, decimals) * 100, breakBefore: run.startsSegment }));
-}
 
 export function formatPercent(raw: string, decimals: number, signed = false): string {
   const text = formatFixed(BigInt(raw) * 100n, decimals, 1);
@@ -56,13 +44,6 @@ const TERMS: Record<Measure, readonly { term: string; label: string; lines?: str
 
 export const TOOLTIP_LINE_BUDGET = 8;
 export const linesPerMeasure = (measures: number) => Math.max(3, Math.floor(TOOLTIP_LINE_BUDGET / Math.max(1, measures)));
-
-export function zoomRange(shown: readonly [number, number] | null): [number, number] | null {
-  if (!shown) return null;
-  const [low, high] = shown;
-  const room = Math.max(1, (high - low) * 0.1);
-  return [Math.floor(low - room), Math.ceil(high + room)];
-}
 
 export function termLabel(measure: Measure, term: string): string {
   return TERMS[measure].find(item => item.term === term)?.label ?? 'Formula term name unavailable';
@@ -131,19 +112,3 @@ export function breakdownRows(breakdown: StabilityBreakdown, measure: Measure, d
   return { rows, recorded, unavailable };
 }
 
-export function validateStabilityReads(value: unknown): StabilityReadsReply {
-  const reply = value as StabilityReadsReply;
-  if (typeof reply !== 'object' || reply === null || !Array.isArray(reply.reads) || !Array.isArray(reply.warnings)
-    || !reply.reads.every((span, index) => Number.isSafeInteger(span.firstHour) && Number.isSafeInteger(span.lastHour) && span.firstHour <= span.lastHour
-      && (index === 0 || reply.reads[index - 1].lastHour < span.firstHour))) throw new Error('The stability reads reply is malformed.');
-  return reply;
-}
-
-export function readHourOf(reads: readonly HourSpan[], hour: number): number | null {
-  let low = 0, high = reads.length - 1, found = -1;
-  while (low <= high) {
-    const middle = (low + high) >> 1;
-    if (reads[middle].firstHour <= hour) { found = middle; low = middle + 1; } else high = middle - 1;
-  }
-  return found < 0 ? null : Math.min(hour, reads[found].lastHour);
-}

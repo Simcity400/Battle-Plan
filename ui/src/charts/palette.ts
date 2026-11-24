@@ -1,4 +1,4 @@
-import { contrast, isDark, oklchToRgb, parseColor, rgbToOklch, solveLightness, toHex } from '../shell/appearance/color.ts';
+import { contrast, isDark, mix, oklchToRgb, parseColor, rgbToOklch, solveLightness, toHex } from '../shell/appearance/color.ts';
 import type { Oklch, Rgb } from '../shell/appearance/color';
 import { colourDistance, NearestColours } from './paletteDistance.ts';
 
@@ -26,7 +26,21 @@ export const CHART_MEASURE_COLOURS = {
   other: '#3e3e3e',
   short: '#e5484d',
   shortInk: '#ff6b6f',
+  temperatureCold: '#4f8fcf',
+  temperatureWarm: '#e3843b',
+  weatherModifier: '#9085e9',
+  opinionNegative: '#d95926',
+  opinionPositive: '#199e70',
+  intelCoverage: '#3987e5',
 } as const;
+
+export const CONVOY_EFFICIENCY_STOPS: readonly (readonly [number, string])[] = [
+  [1, '#22364f'],
+  [0.86, '#a8790f'],
+  [0.62, '#d4661c'],
+  [0.36, '#e2464e'],
+  [0, '#ff6b74'],
+];
 
 const GOLDEN_ANGLE = 137.50776405003785;
 const LIGHTNESS_STEP = 0.7548776662466927;
@@ -288,6 +302,23 @@ export function distance(first: Rgb, second: Rgb): number {
 }
 
 export const GREY_CHROMA = 0.045;
+
+const RESERVED_STEP = 0.3;
+const RESERVED_FAR_STEP = 0.14;
+export const RESERVED_SEPARATION = 0.12;
+
+export function reservedGrey(surface: string, identities: Iterable<string> = []): string {
+  const ink = isDark(parseColor(surface) ?? { r: 0, g: 0, b: 0 }) ? '#f5f5f5' : '#111111';
+  const near = mix(surface, ink, RESERVED_STEP);
+  const nearLightness = rgbToOklch(parseColor(near)!).l;
+  for (const identity of identities) {
+    const rgb = parseColor(identity);
+    if (!rgb) continue;
+    const shown = rgbToOklch(rgb);
+    if (shown.c < GREY_CHROMA && Math.abs(shown.l - nearLightness) < RESERVED_SEPARATION) return mix(surface, ink, RESERVED_FAR_STEP);
+  }
+  return near;
+}
 
 export function nudgeApart(colors: readonly Rgb[], background: Rgb, minDistance = 12, avoid: readonly Rgb[] = []): Rgb[] {
   const darkSurface = isDark(background);

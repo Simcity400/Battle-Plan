@@ -6,14 +6,15 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import { knownValue, textValue, notApplicable, notRecorded, valueFromNullable, type Value } from '../../families/value.ts';
 import type { NavalRefitsReply, RefitLine, YardShip } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
-import { fixedText, fraction, refitProgress, shipLabel, shipStrength, shipTooltip, validateRefits } from './yardsData.ts';
+import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
+import { fixedText, fraction, refitProgress, shipLabel, shipPicture, shipPictureCell, shipStrength, shipTooltip, validateRefits } from './yardsData.ts';
+import type { ArtState } from '../../families/table/identityCell.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
 
 type RefitRow =
   | { readonly kind: 'line'; readonly key: string; readonly line: RefitLine; readonly children: readonly RefitRow[] }
-  | { readonly kind: 'ship'; readonly key: string; readonly ship: YardShip };
+  | { readonly kind: 'ship'; readonly key: string; readonly ship: YardShip; readonly picture: ArtState };
 
 const ON_LINE = 'Shown on the refit line';
 const ON_SHIP = 'Shown on each ship';
@@ -26,14 +27,16 @@ const icText = (raw: string | null, reason: string): Value<string> => raw === nu
 const [NAME, PROGRESS, STRENGTH, DOCKYARDS] = COLUMNS;
 
 const REFIT_COLUMNS: readonly DeclarativeColumnSpec<RefitRow, Record<string, never>>[] = [
-  { ...NAME!, priority: 0, text: true, hideable: false, widest: ['Early Cruiser C Klasse refit line'],
-    value: row => row.kind === 'line' ? lineName(row.line) : knownValue(shipLabel(row.ship).name) },
+  { ...NAME!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Early Cruiser C Klasse refit line'],
+    value: row => row.kind === 'line' ? lineName(row.line) : knownValue(shipLabel(row.ship).name),
+    iconSlot: true, extra: row => (row.kind === 'ship' ? shipPictureCell(row.ship, row.picture) : {}) },
   { ...PROGRESS!, priority: 1, numeric: true, format: PERCENT, widest: ['100.0%'], value: () => notApplicable(ON_LINE) },
   { ...STRENGTH!, priority: 2, numeric: true, format: PERCENT, widest: ['100.0%'], value: () => notApplicable(ON_SHIP) },
   { ...DOCKYARDS!, priority: 3, numeric: true, format: 'integer', widest: ['99'],
     value: row => row.kind === 'line'
       ? valueFromNullable(row.line.dockyards, { kind: 'notRecorded', reason: 'Refit dockyards not recorded' })
-      : notApplicable(ON_LINE) },
+      : notApplicable(ON_LINE),
+    extra: row => (row.kind === 'ship' ? { blank: true } : {}) },
 ];
 
 export const refitsProjection: TableProjection<Record<string, never>> = registerTableProjection(
@@ -43,18 +46,20 @@ export const refitsProjection: TableProjection<Record<string, never>> = register
     columns: (reply, _options) => [
       REFIT_COLUMNS[0]!,
       { ...REFIT_COLUMNS[1]!, value: (row, live) => row.kind === 'line' ? refitProgress(reply, row.line, live) : notApplicable(ON_LINE),
+        extra: row => (row.kind === 'ship' ? { blank: true } : {}),
         bar: (row, live) => row.kind === 'line' ? { fraction: fraction(refitProgress(reply, row.line, live)) } : null },
       { ...REFIT_COLUMNS[2]!, value: (row, live) => row.kind === 'ship' ? shipStrength(row.ship, live) : notApplicable(ON_SHIP),
+        extra: row => (row.kind === 'line' ? { blank: true } : {}),
         bar: (row, live) => row.kind === 'ship' ? { fraction: fraction(shipStrength(row.ship, live)) } : null },
       REFIT_COLUMNS[3]!,
     ],
-    rows: reply => {
+    rows: (reply, _live, _hour, _options, readView) => {
       if (reply.missing !== null) return { rows: [], empty: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
       const rows: RefitRow[] = reply.lines.map(line => ({
         kind: 'line',
         key: line.handle,
         line,
-        children: line.ships.map(ship => ({ kind: 'ship', key: `${line.handle}|${ship.handle}`, ship })),
+        children: line.ships.map(ship => ({ kind: 'ship', key: `${line.handle}|${ship.handle}`, ship, picture: shipPicture(ship, readView) })),
       }));
       return {
         rows,
@@ -63,7 +68,7 @@ export const refitsProjection: TableProjection<Record<string, never>> = register
             ? { empty: 'No refits at this date', emptyKind: 'empty' as const }
             : { empty: 'Refits were not fully recorded at this date', emptyKind: 'unavailable' as const }
           : {}),
-        summaryPill: reply.dockyards === null ? null : `${reply.dockyards.toLocaleString('en-US')} ${reply.dockyards === 1 ? 'dockyard' : 'dockyards'}`,
+        titleSummary: reply.dockyards === null ? null : `${reply.dockyards.toLocaleString('en-US')} ${reply.dockyards === 1 ? 'dockyard' : 'dockyards'}`,
         warnings: reply.warnings,
       };
     },
@@ -89,7 +94,8 @@ export const refitsDeclaration: TableWidgetDeclaration<Record<string, never>> = 
   label: 'Refits',
   subject: 'refits',
   emptyCampaign: 'Load a campaign to see refits.',
-  icon: 'anchor',
+  icon: 'cube',
+  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its refits.' },
   sources: ctx => {
     const params = ctx.countryTag ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) } : null;

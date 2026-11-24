@@ -10,6 +10,16 @@ export const MATRIX_LEGEND_HEIGHT = 24;
 export const MATRIX_GROUP_BAND_HEIGHT = 18;
 export const MATRIX_COL_HEADER_HEIGHT = FLAG_SLOT_HEIGHT + 16;
 export const MATRIX_PAD = 8;
+export const MATRIX_WIDE_MIN_ROW = 16;
+export const MATRIX_WIDE_MAX_ROW = 24;
+export const MATRIX_WIDE_MIN_CELL = 34;
+export const MATRIX_WIDE_COMPACT_WIDTH = 360;
+export const MATRIX_COLUMN_NAMES_MIN_HEIGHT = 180;
+export const MATRIX_WIDE_MAX_CELL = 64;
+export const MATRIX_COLUMN_NAME_HEIGHT = 50;
+export const MATRIX_COLUMN_NAME_ANGLE = (40 * Math.PI) / 180;
+export const MATRIX_MARGIN_WIDTH = 112;
+export const MATRIX_MARGIN_MIN_WIDTH = 520;
 
 export interface HeatMatrixLayout {
   readonly width: number;
@@ -22,8 +32,14 @@ export interface HeatMatrixLayout {
   readonly showNames: boolean;
   readonly showFlags: boolean;
   readonly cellSize: number;
+  readonly cellWidth: number;
+  readonly cellHeight: number;
+  readonly wide: boolean;
+  readonly columnNames: boolean;
+  readonly marginWidth: number;
   readonly gridLeft: number;
   readonly gridTop: number;
+  readonly trailingWidth: number;
   readonly totalWidth: number;
   readonly totalHeight: number;
   readonly firstRow: number;
@@ -43,7 +59,12 @@ export interface LayoutHeatMatrixInput {
   readonly columns: readonly MatrixAxisEntity[];
   readonly legend?: MatrixLegend;
   readonly widestRowName?: number;
+  readonly shape?: 'square' | 'wide';
+  readonly margin?: boolean;
+  readonly widestTrailing?: number;
 }
+
+export const MATRIX_TRAILING_GAP = 16;
 
 export function layoutHeatMatrix(input: LayoutHeatMatrixInput): HeatMatrixLayout {
   const width = Math.max(1, Math.floor(input.width));
@@ -58,7 +79,8 @@ export function layoutHeatMatrix(input: LayoutHeatMatrixInput): HeatMatrixLayout
   const rowGroupWidth = rowGroups.length > 0 ? 4 : 0;
   const showFlags = input.rows.some(item => item.flag !== undefined || item.tag !== undefined)
     || input.columns.some(item => item.flag !== undefined || item.tag !== undefined);
-  const showNames = width >= MATRIX_COMPACT_WIDTH;
+  const wide = input.shape === 'wide';
+  const showNames = width >= (wide ? MATRIX_WIDE_COMPACT_WIDTH : MATRIX_COMPACT_WIDTH);
 
   const flagPart = showFlags ? FLAG_SLOT_WIDTH + 8 : 0;
   const rawNameWidth = input.widestRowName !== undefined
@@ -68,28 +90,34 @@ export function layoutHeatMatrix(input: LayoutHeatMatrixInput): HeatMatrixLayout
     ? Math.min(MATRIX_NAME_MAX_WIDTH, Math.max(flagPart + 48, rowGroupWidth + MATRIX_PAD + flagPart + rawNameWidth + MATRIX_PAD))
     : rowGroupWidth + MATRIX_PAD + (showFlags ? FLAG_SLOT_WIDTH : 28) + MATRIX_PAD;
 
-  const headerHeight = colGroupHeight + MATRIX_COL_HEADER_HEIGHT;
+  const columnNames = wide && showNames && height >= MATRIX_COLUMN_NAMES_MIN_HEIGHT;
+  const headerHeight = colGroupHeight + MATRIX_COL_HEADER_HEIGHT + (columnNames ? MATRIX_COLUMN_NAME_HEIGHT : 0);
   const gridLeft = gutterWidth;
   const gridTop = legendHeight + headerHeight;
+  const marginWidth = input.margin && width >= MATRIX_MARGIN_MIN_WIDTH ? MATRIX_MARGIN_WIDTH : 0;
 
-  const availW = Math.max(MATRIX_MIN_CELL, width - gridLeft);
+  const trailingWidth = input.widestTrailing ? Math.ceil(input.widestTrailing) + MATRIX_TRAILING_GAP + MATRIX_PAD : 0;
+  const availW = Math.max(MATRIX_MIN_CELL, width - gridLeft - marginWidth - trailingWidth);
   const availH = Math.max(MATRIX_MIN_CELL, height - gridTop);
   const fitW = input.columns.length > 0 ? Math.floor(availW / input.columns.length) : MATRIX_MAX_CELL;
   const fitH = input.rows.length > 0 ? Math.floor(availH / input.rows.length) : MATRIX_MAX_CELL;
-  const cellSize = Math.max(MATRIX_MIN_CELL, Math.min(MATRIX_MAX_CELL, Math.min(fitW, fitH)));
+  const square = Math.max(MATRIX_MIN_CELL, Math.min(MATRIX_MAX_CELL, Math.min(fitW, fitH)));
+  const cellWidth = wide ? Math.max(MATRIX_WIDE_MIN_CELL, Math.min(MATRIX_WIDE_MAX_CELL, fitW)) : square;
+  const cellHeight = wide ? Math.max(MATRIX_WIDE_MIN_ROW, Math.min(MATRIX_WIDE_MAX_ROW, fitH)) : square;
+  const cellSize = cellHeight;
 
-  const totalWidth = Math.max(width, gridLeft + input.columns.length * cellSize);
-  const totalHeight = Math.max(height, gridTop + input.rows.length * cellSize);
+  const totalWidth = Math.max(width, gridLeft + input.columns.length * cellWidth + trailingWidth + marginWidth);
+  const totalHeight = Math.max(height, gridTop + input.rows.length * cellHeight);
 
   const scrollLeft = Math.max(0, input.scrollLeft);
   const scrollTop = Math.max(0, input.scrollTop);
-  const visibleW = Math.max(0, width - gridLeft);
+  const visibleW = Math.max(0, width - gridLeft - marginWidth);
   const visibleH = Math.max(0, height - gridTop);
 
-  const firstCol = Math.max(0, Math.floor(scrollLeft / cellSize) - 1);
-  const endCol = Math.min(input.columns.length, Math.ceil((scrollLeft + visibleW) / cellSize) + 1);
-  const firstRow = Math.max(0, Math.floor(scrollTop / cellSize) - 1);
-  const endRow = Math.min(input.rows.length, Math.ceil((scrollTop + visibleH) / cellSize) + 1);
+  const firstCol = Math.max(0, Math.floor(scrollLeft / cellWidth) - 1);
+  const endCol = Math.min(input.columns.length, Math.ceil((scrollLeft + visibleW) / cellWidth) + 1);
+  const firstRow = Math.max(0, Math.floor(scrollTop / cellHeight) - 1);
+  const endRow = Math.min(input.rows.length, Math.ceil((scrollTop + visibleH) / cellHeight) + 1);
 
   return {
     width,
@@ -102,8 +130,14 @@ export function layoutHeatMatrix(input: LayoutHeatMatrixInput): HeatMatrixLayout
     showNames,
     showFlags,
     cellSize,
+    cellWidth,
+    cellHeight,
+    wide,
+    columnNames,
+    marginWidth,
     gridLeft,
     gridTop,
+    trailingWidth,
     totalWidth,
     totalHeight,
     firstRow,
@@ -119,6 +153,7 @@ export type MatrixHit =
   | { readonly kind: 'cell'; readonly row: number; readonly column: number }
   | { readonly kind: 'row'; readonly row: number }
   | { readonly kind: 'column'; readonly column: number }
+  | { readonly kind: 'margin'; readonly row: number }
   | null;
 
 export function hitHeatMatrix(
@@ -131,20 +166,25 @@ export function hitHeatMatrix(
   colCount: number,
 ): MatrixHit {
   if (x < 0 || y < layout.legendHeight || x > layout.width || y > layout.height) return null;
+  const marginLeft = layout.width - layout.marginWidth;
+  if (layout.marginWidth > 0 && x >= marginLeft && y >= layout.gridTop) {
+    const row = Math.floor((y - layout.gridTop + scrollTop) / layout.cellHeight);
+    return row >= 0 && row < rowCount ? { kind: 'margin', row } : null;
+  }
   if (x >= layout.gridLeft && y >= layout.gridTop) {
-    const column = Math.floor((x - layout.gridLeft + scrollLeft) / layout.cellSize);
-    const row = Math.floor((y - layout.gridTop + scrollTop) / layout.cellSize);
+    const column = Math.floor((x - layout.gridLeft + scrollLeft) / layout.cellWidth);
+    const row = Math.floor((y - layout.gridTop + scrollTop) / layout.cellHeight);
     if (row >= 0 && row < rowCount && column >= 0 && column < colCount) {
       return { kind: 'cell', row, column };
     }
     return null;
   }
   if (x < layout.gridLeft && y >= layout.gridTop) {
-    const row = Math.floor((y - layout.gridTop + scrollTop) / layout.cellSize);
+    const row = Math.floor((y - layout.gridTop + scrollTop) / layout.cellHeight);
     return row >= 0 && row < rowCount ? { kind: 'row', row } : null;
   }
-  if (x >= layout.gridLeft && y >= layout.legendHeight && y < layout.gridTop) {
-    const column = Math.floor((x - layout.gridLeft + scrollLeft) / layout.cellSize);
+  if (x >= layout.gridLeft && x < marginLeft && y >= layout.legendHeight && y < layout.gridTop) {
+    const column = Math.floor((x - layout.gridLeft + scrollLeft) / layout.cellWidth);
     return column >= 0 && column < colCount ? { kind: 'column', column } : null;
   }
   return null;

@@ -1,14 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 import type { IconName } from '../../components/Icons';
 import type { MenuItem } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { useSpriteArtResolutions } from '../../dashboard/useSpriteArtwork.ts';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { perfLog } from '../../shell/perf.ts';
-import { spriteArtKey, type ArtResolution } from '../art/types.ts';
+import { useArtHandleResolutions } from '../art/react.ts';
 import type {
   AuxProductSpec,
   CountryPolicy,
@@ -24,22 +23,16 @@ import type {
   FamilyContextHit,
   FamilyHostAdapter,
   FamilyStaticSources,
+  FamilyRowWindow,
   FamilyViewportChange,
 } from './adapter.ts';
+import { DEFAULT_VIEW, viewOwnedFields } from '../manifest.ts';
 import { renderFamilyStatus } from './FamilyBodyState.tsx';
-import FamilyHost from './FamilyHost.tsx';
+import FamilyHost, { type FamilyChromeProps } from './FamilyHost.tsx';
 import { useFamilyTheme } from './theme.ts';
 import { useFamilyPlan } from './useFamilyPlan.ts';
 
-const EMPTY_SPRITES: readonly { readonly key: string; readonly frame: number }[] = [];
 const SERIES_PLOT_INSET_PX = 60;
-
-function normalizeSpriteDemand(demand: FamilyArtDemand): { readonly key: string; readonly frame: number } | null {
-  if ('kind' in demand) {
-    return demand.kind === 'sprite' ? { key: demand.key, frame: demand.frame ?? 0 } : null;
-  }
-  return { key: demand.key, frame: demand.frame };
-}
 
 export interface DeclaredProjectionExtra {
   readonly extent: readonly [number, number];
@@ -76,9 +69,13 @@ export interface DeclaredFamilyWidgetProps<
   TProjectionOptions = unknown,
   TBinding = unknown,
   TAux = unknown,
+  TSettings = unknown,
 > extends WidgetProps {
-  readonly adapter: FamilyHostAdapter<TModel, TProjectionOptions, TBinding>;
+  readonly adapter: FamilyHostAdapter<TModel, TProjectionOptions, TBinding, TSettings>;
+  readonly chrome?: ComponentType<FamilyChromeProps<TSettings>>;
+  readonly onWindowChange?: (window: FamilyRowWindow, hour: number | null) => void;
   readonly declaration: DeclaredFamilyWidgetDeclaration<TModel, TProjectionOptions, TAux>;
+  readonly view?: string;
   readonly selectedKey?: string | null;
   readonly onActivate?: (action: InstalledAction) => void;
   readonly onToggle?: (action: InstalledAction) => void;
@@ -94,9 +91,13 @@ export default function DeclaredFamilyWidget<
   TProjectionOptions = unknown,
   TBinding = unknown,
   TAux = unknown,
+  TSettings = unknown,
 >({
   adapter,
+  chrome,
+  onWindowChange,
   declaration,
+  view = DEFAULT_VIEW,
   widget,
   runtime,
   active,
@@ -111,12 +112,10 @@ export default function DeclaredFamilyWidget<
   onHoverHour: externalHoverHour,
   onArtDemands: externalArtDemands,
   extraWarnings,
-}: DeclaredFamilyWidgetProps<TModel, TProjectionOptions, TBinding, TAux>) {
+}: DeclaredFamilyWidgetProps<TModel, TProjectionOptions, TBinding, TAux, TSettings>) {
   useWidgetSkeleton(adapter.skeleton ?? 'chart');
 
   const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const [demandedSprites, setDemandedSprites] = useState<readonly { readonly key: string; readonly frame: number }[]>(EMPTY_SPRITES);
-  const demandedSigRef = useRef('');
   const lastViewportRef = useRef<FamilyViewportChange | null>(null);
 
   const handleHoverHour = useCallback((next: number | null) => {
@@ -124,38 +123,23 @@ export default function DeclaredFamilyWidget<
     externalHoverHour?.(next);
   }, [externalHoverHour]);
 
-  const handleArtDemands = useCallback((demands: readonly FamilyArtDemand[]) => {
-    externalArtDemands?.(demands);
-    const merged = new Map<string, { readonly key: string; readonly frame: number }>();
-    for (const raw of demands) {
-      const s = normalizeSpriteDemand(raw);
-      if (s) merged.set(`${s.key}#${s.frame}`, s);
-    }
-    if (!merged.size) return;
-    const list = [...merged.values()].sort((a, b) => a.key.localeCompare(b.key) || a.frame - b.frame);
-    const sig = list.map(d => `${d.key}#${d.frame}`).join(',');
-    if (sig === demandedSigRef.current) return;
-    demandedSigRef.current = sig;
-    setDemandedSprites(prev => {
-      const next = new Map(prev.map(d => [`${d.key}#${d.frame}`, d]));
-      let added = false;
-      for (const d of list) {
-        const k = `${d.key}#${d.frame}`;
-        if (!next.has(k)) {
-          next.set(k, d);
-          added = true;
-        }
-      }
-      return added ? [...next.values()] : prev;
-    });
-  }, [externalArtDemands]);
 
-  const plan = useFamilyPlan<TAux>({
+  const optionFields = useMemo(
+    () => (declaration.optionFields ? viewOwnedFields(declaration.optionFields, view) : undefined),
+    [declaration.optionFields, view],
+  );
+  const settingsPolicy = adapter.settings;
+  const captureSettings = useCallback(
+    (ctx: FamilyPlanContext<TAux>) => settingsPolicy!.resolve(declaration, ctx as FamilyPlanContext<unknown>, ctx.options),
+    [settingsPolicy, declaration],
+  );
+  const plan = useFamilyPlan<TAux, TSettings | undefined>({
+    ...(settingsPolicy ? { captureExtra: captureSettings } : {}),
     kind: declaration.kind,
     subject: declaration.subject,
     emptyCampaign: declaration.emptyCampaign,
     icon: declaration.icon,
-    optionFields: declaration.optionFields,
+    optionFields,
     countries: declaration.countries,
     aux: declaration.aux,
     sources: declaration.sources,
@@ -168,15 +152,7 @@ export default function DeclaredFamilyWidget<
 
   const { theme } = useFamilyTheme(undefined, plan.displayedCountryLooks);
 
-  const resolveSprite = useSpriteArtResolutions(runtime, plan.track, demandedSprites, active && demandedSprites.length > 0);
-  const spriteResolutions = useMemo<Readonly<Record<string, ArtResolution>> | undefined>(() => {
-    if (!demandedSprites.length) return undefined;
-    const out: Record<string, ArtResolution> = {};
-    for (const s of demandedSprites) {
-      out[spriteArtKey(s.key, s.frame)] = resolveSprite(s);
-    }
-    return out;
-  }, [demandedSprites, resolveSprite]);
+  const { resolutions: shownArtResolutions, onArtDemands: handleArtDemands } = useArtHandleResolutions(runtime, plan.track, active, externalArtDemands);
 
   const extent = useMemo<readonly [number, number]>(() => {
     const span = plan.displayedCtx?.staticSpan;
@@ -214,7 +190,22 @@ export default function DeclaredFamilyWidget<
     if (lastViewportRef.current) pushSeriesViewport(lastViewportRef.current);
   }, [pushSeriesViewport]);
 
-  const displayedCtx = plan.displayedCtx;
+  const liveSettings = useMemo(
+    () => settingsPolicy?.resolve(declaration, plan.ctx as FamilyPlanContext<unknown> | null, plan.options),
+    [settingsPolicy, declaration, plan.ctx, plan.options],
+  );
+  const settings = plan.displayedExtra ?? liveSettings;
+  const planCtx = plan.ctx;
+  const onSettings = useCallback((next: TSettings) => {
+    if (!setOption || !planCtx || !settingsPolicy?.store || liveSettings === undefined) return;
+    settingsPolicy.store(declaration, next, liveSettings, planCtx as FamilyPlanContext<unknown>, setOption);
+  }, [setOption, planCtx, settingsPolicy, liveSettings, declaration]);
+  const editableSettings = !!setOption && !!settingsPolicy?.store && (settingsPolicy.editable?.(declaration) ?? true);
+
+  const displayedCtx = useMemo(
+    () => (plan.displayedCtx && settingsPolicy ? { ...plan.displayedCtx, settings } : plan.displayedCtx),
+    [plan.displayedCtx, settingsPolicy, settings],
+  );
   const surfaceColor = theme?.surface ?? '#111111';
   const projectionOptions = useMemo(
     () => (displayedCtx ? declaration.projectionOptions(displayedCtx, { extent, surface: surfaceColor }) : ({} as TProjectionOptions)),
@@ -272,7 +263,13 @@ export default function DeclaredFamilyWidget<
     <FamilyHost
       key={branchKey}
       adapter={adapter}
+      settings={settings}
+      {...(editableSettings ? { onSettings } : {})}
+      editableSettings={editableSettings}
+      {...(chrome ? { chrome } : {})}
+      {...(onWindowChange ? { onWindowChange } : {})}
       declaration={declaration.projection}
+      view={view}
       options={projectionOptions}
       label={declaration.label}
       subject={declaration.subject}
@@ -282,12 +279,12 @@ export default function DeclaredFamilyWidget<
       active={active}
       subscriptions={plan.subscriptions}
       allowEmptyFollow={plan.allowEmptyFollow}
-      owner={plan.owner}
+      owner={view === DEFAULT_VIEW ? plan.owner : JSON.stringify([plan.owner, view])}
       staticSources={staticSources}
       tiledSeries={hasPixelBinned ? plan.tiledSeries : undefined}
       tiledRevision={hasPixelBinned ? plan.tiledRevision : 0}
       hovers={plan.hovers}
-      spriteResolutions={spriteResolutions}
+      artResolutions={shownArtResolutions}
       extent={extent}
       plan={plan.plan}
       exactReadView={displayedCtx && perfLog && !blockedState ? plan.exactReadView : undefined}

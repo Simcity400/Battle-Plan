@@ -1,11 +1,12 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseAst } from 'rolldown/parseAst';
+import { parseOptionKey, scopedOptionKey } from '../ui/src/dashboard/options.ts';
 import { DEFAULT_VIEW, normalizeView, viewKey } from '../ui/src/families/manifest.ts';
 import { widgetMetas } from '../ui/src/widgets/definitions.ts';
 import { FAMILY_MANIFESTS, FAMILY_VIEWS } from '../ui/src/widgets/familyManifest.ts';
 import { LEGACY_WIDGETS } from '../ui/src/widgets/legacyManifest.ts';
+import { walkImportGraph } from './ui-import-graph.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const errors = [];
@@ -58,6 +59,9 @@ for (const entry of FAMILY_VIEWS) {
   const key = viewKey(entry.kind, view);
   if (familyPairs.has(key)) errors.push(`duplicate FAMILY_VIEWS entry: (${entry.kind}, ${view})`);
   familyPairs.add(key);
+  if (view !== DEFAULT_VIEW && !parseOptionKey(scopedOptionKey('option', view))) {
+    errors.push(`FAMILY_VIEWS(${entry.kind}, ${view}): the view name cannot scope a stored option key`);
+  }
   let list = familyByKind.get(entry.kind);
   if (!list) familyByKind.set(entry.kind, list = []);
   list.push(entry);
@@ -99,12 +103,12 @@ for (const meta of widgetMetas) {
   if (familyEntries.length > 0 && legacyEntries.length === 0 && meta.playsBackDated !== undefined) {
     errors.push(`family kind "${meta.kind}" must not set playsBackDated in definition.ts`);
   }
-  if (familyEntries.length > 0 && legacyEntries.length > 0) {
+  if (familyEntries.length + legacyEntries.length > 1) {
     if (familyEntries.some(entry => normalizeView(entry.view) === DEFAULT_VIEW)) {
-      errors.push(`partially ported kind "${meta.kind}" cannot use default view in FAMILY_VIEWS`);
+      errors.push(`multi-view kind "${meta.kind}" cannot use default view in FAMILY_VIEWS`);
     }
     if (legacyEntries.some(entry => normalizeView(entry.view) === DEFAULT_VIEW)) {
-      errors.push(`partially ported kind "${meta.kind}" cannot use default view in LEGACY_WIDGETS`);
+      errors.push(`multi-view kind "${meta.kind}" cannot use default view in LEGACY_WIDGETS`);
     }
     const viewOptionKey = familyEntries.find(entry => entry.viewOption)?.viewOption ?? meta.viewSwitch?.option ?? 'view';
     const viewField = meta.options?.find(field => field.key === viewOptionKey);
@@ -122,38 +126,25 @@ for (const meta of widgetMetas) {
   }
 }
 
-function resolveImportPath(fromFile, specifier) {
-  const base = resolve(dirname(fromFile), specifier);
-  const candidates = [base, `${base}.ts`, `${base}.tsx`, `${base}.js`, `${base}.mjs`, resolve(base, 'index.ts'), resolve(base, 'index.tsx')];
-  return candidates.find(candidate => existsSync(candidate)) ?? null;
-}
-
 function checkWorkerSafe(entryRelPaths) {
-  const visited = new Set();
-  const stack = entryRelPaths.map(rel => resolve(root, rel));
-  while (stack.length > 0) {
-    const file = stack.pop();
-    if (!file || visited.has(file)) continue;
-    visited.add(file);
-    if (file.endsWith('.tsx') || file.endsWith('.css')) {
-      errors.push(`worker-safe manifest graph reaches UI file: ${file}`);
-      continue;
-    }
-    const source = readFileSync(file, 'utf8');
-    const ast = parseAst(source, { lang: file.endsWith('.ts') ? 'ts' : 'js' });
-    for (const node of ast.body) {
-      if (node.type !== 'ImportDeclaration' && node.type !== 'ExportNamedDeclaration' && node.type !== 'ExportAllDeclaration') continue;
-      if (node.importKind === 'type' || node.exportKind === 'type') continue;
-      const spec = node.source?.value;
-      if (!spec) continue;
-      if (node.type === 'ImportDeclaration' && node.specifiers.length > 0 && node.specifiers.every(item => item.importKind === 'type')) continue;
+  const { visited, externalImports } = walkImportGraph(entryRelPaths, root, {
+    includeTypes: false,
+    includeDynamic: false,
+    includeWorkerUrls: false,
+    shouldTraverse: file => {
+      if (file.endsWith('.tsx') || file.endsWith('.css')) {
+        errors.push(`worker-safe manifest graph reaches UI file: ${file}`);
+        return false;
+      }
+      return true;
+    },
+  });
+  for (const file of visited) {
+    const externals = externalImports.get(file);
+    if (!externals) continue;
+    for (const spec of externals) {
       if (spec === 'react' || spec.startsWith('react/') || spec === 'react-dom' || spec.startsWith('react-dom/') || spec.endsWith('.css')) {
         errors.push(`worker-safe manifest graph imports "${spec}" from ${file}`);
-        continue;
-      }
-      if (spec.startsWith('.')) {
-        const next = resolveImportPath(file, spec);
-        if (next) stack.push(next);
       }
     }
   }

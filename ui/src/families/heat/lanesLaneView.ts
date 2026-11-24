@@ -1,26 +1,28 @@
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { LaneView, Painted, PaintInput, Scene } from '../../draw/lane.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
-import { artUrlForHandle, createLaneArtProvider } from '../art/provider.ts';
+import { createLaneArtProvider } from '../art/provider.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
-import type { ArtProvider, EntityKind, FamilyTheme, IdentityProvider } from '../contract.ts';
+import type { ArtProvider, FamilyTheme, IdentityProvider } from '../contract.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
+import { projectScene, samePictures, sceneReadView, snapshotPictures, stringifyTooltipPayload } from '../scene.ts';
 import { nextLookChange } from '../looks.ts';
 import { hitHeatLanes, layoutHeatLanes, type HeatLanesLayout } from './lanesLayout.ts';
 import {
   deriveLanesAudit,
   deriveLanesMirror,
   deriveLanesTooltip,
+  laneIdentities,
   laneInspectKey,
+  lanesExtentSignature,
   parseLaneInspectKey,
   type HeatLanesModel,
 } from './lanesModel.ts';
 import { collectVisibleLaneArt, createLanesPicture, drawHeatLanes, type HeatLanesPicture } from './lanesPainter.ts';
 import { ensureHeatLanesProjection } from './lanesRegistry.ts';
-import { readViewFromHeatScene, samePictures, snapshotPictures, stringifyTooltipPayload } from './sceneReadView.ts';
 
 export interface FamilyHeatLanesBinding<TOptions = unknown> {
   readonly family: 'heat-lanes';
@@ -124,7 +126,7 @@ export function familyHeatLanesLaneView(
       if (projection === 'unknown') return Infinity;
       let soonest = nextLookChange(bound.theme?.countryLooks, hour);
       if (projection.nextChange) {
-        const readView = readViewFromHeatScene(scene, bound, hour);
+        const readView = sceneReadView(scene, bound, hour);
         soonest = Math.min(soonest, projection.nextChange(readView, bound.options));
       }
       return soonest;
@@ -238,22 +240,15 @@ export function familyHeatLanesLaneView(
       if (canReuseModel) {
         model = held.cachedModel!;
       } else {
-        const pendingIdentityDemands = new Map<string, readonly [EntityKind, string, number]>();
-        const demandedArt = new Set<string>();
-        const readView = readViewFromHeatScene(input, bound, input.hour, {
+        const projected = projectScene(input, bound, input.hour, {
           identity: held.identityProvider,
-          onIdentityDemand: (kind, key, atHour) => {
-            pendingIdentityDemands.set(`${kind}\u0000${key}\u0000${atHour}`, [kind, key, atHour]);
-          },
           art: held.artProvider,
-          onArtDemand: handle => {
-            const url = artUrlForHandle(handle, held!.identityIndex);
-            if (url) demandedArt.add(url);
-          },
-        });
-        model = projection.project(readView, bound.options);
-        held.demandedArtUrls = [...demandedArt];
-        const demandsList = [...pendingIdentityDemands.values()];
+          index: held.identityIndex,
+        }, view => projection.project(view, bound.options));
+        model = projected.model;
+        const readView = projected.view;
+        held.demandedArtUrls = projected.artUrls;
+        const demandsList = projected.identityDemands;
         if (demandsList.length) {
           const dText = JSON.stringify(demandsList);
           held.identityDemandsField = { value: demandsList, content: cachedField(held, 'identityDemands', dText, content) };
@@ -349,14 +344,7 @@ export function familyHeatLanesLaneView(
       }
       fields.meta = held.metaField;
 
-      const eSig = JSON.stringify([
-        layout.totalHeight,
-        layout.rowStride,
-        layout.plotTop,
-        layout.plotHeight,
-        model.rows.length,
-        model.hour,
-      ]);
+      const eSig = lanesExtentSignature(layout, model.rows);
       if (eSig !== held.extentSig || !held.extentField) {
         held.extentSig = eSig;
         held.extentField = {
@@ -365,7 +353,7 @@ export function familyHeatLanesLaneView(
             rowStride: layout.rowStride,
             plotTop: layout.plotTop,
             plotHeight: layout.plotHeight,
-            rows: model.rows,
+            rows: laneIdentities(model.rows),
           },
           content: content(),
         };

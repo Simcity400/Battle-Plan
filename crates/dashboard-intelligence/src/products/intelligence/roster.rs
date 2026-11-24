@@ -4,7 +4,7 @@ use super::{
     operative_content::{self, Art, CAPTURED, DISBANDED, KILLED, OPERATION, OPERATIVE_CATEGORY, OperativeContent},
     placements::ACTIVE,
 };
-use dashboard_base::{Source, products::{LoadContext, Product, at_hour::{At, AtHour, Owner, Read}}, queries::country_ids::{Names, RunLinks}};
+use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Owner, Read}}};
 use dashboard_query::identity::{Holder, Holders};
 use content_reader_country_names::country_names::CountryNames;
 use replay_data::rows::{CharacterOperativeRow, CharacterPortraitRow, OperativeMembershipRow, Recorded, TableId, tables};
@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, HashMap},
     io,
-    sync::{Arc, atomic::AtomicBool},
+    sync::Arc,
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -37,20 +37,8 @@ const TABLES: [TableId; 13] = [
 
 const AGENCY_FEATURE: u32 = 1 << 5;
 
-pub fn roster_of(key: u128) -> (u32, u8) {
-    ((key >> 8) as u32, key as u8)
-}
-
 pub fn terminal(assignment: u32) -> bool {
     matches!(assignment, DISBANDED | KILLED)
-}
-
-pub fn departure(assignment: Option<u32>) -> &'static str {
-    match assignment {
-        Some(DISBANDED) => "Disbanded",
-        Some(KILLED) => "Killed",
-        _ => "Left (reason not recorded)",
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -93,6 +81,23 @@ pub struct RosterOperative {
     #[doc = " Who holds it captive, and since when, while captured."]
     pub capturer: Option<Country>,
     pub captured_hour: Option<i32>,
+    #[doc = " Its traits in the recorded order; empty where it has none or its character was not read."]
+    pub traits: Vec<OperativeTrait>,
+    #[doc = " Why its traits are not known, when they are not."]
+    pub traits_missing: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct OperativeTrait {
+    #[doc = " The trait's script key; null where the recorded number names no trait in the content."]
+    pub token: Option<String>,
+    pub name: Option<String>,
+    #[doc = " Its icon, an index into the reply's `artwork`."]
+    pub icon: Option<u32>,
+    #[doc = " Why the name or icon is not shown, when one is not."]
+    pub missing: Option<String>,
 }
 
 #[derive(Default)]
@@ -128,6 +133,7 @@ pub struct Around<'a> {
     pub operation: &'a dyn Fn(u64) -> Option<String>,
     pub character: Option<u32>,
     pub portraits: Option<&'a [CharacterPortraitRow]>,
+    pub traits: Result<&'a [u32], String>,
 }
 
 impl RosterOperative {
@@ -165,6 +171,11 @@ impl RosterOperative {
             _ => (None, None),
         };
         let assignment = assignment.unwrap_or_default();
+        let (traits, traits_missing) = match (&around.traits, content) {
+            (Err(why), _) => (Vec::new(), Some(why.clone())),
+            (Ok(_), None) => (Vec::new(), unconfigured("The traits")),
+            (Ok(ordinals), Some(content)) => (ordinals.iter().map(|&ordinal| OperativeTrait::of(content, ordinal, artwork)).collect(), None),
+        };
         Self {
             id: row.id.to_string(),
             roster: roster.to_owned(),
@@ -193,8 +204,26 @@ impl RosterOperative {
             captured,
             capturer: captured.then(|| country(row.capturer_country)),
             captured_hour: (captured && row.captured_hour != engine_native_memory::cgame_date::NULL_RAW_HOUR).then_some(row.captured_hour),
+            traits,
+            traits_missing,
         }
     }
+}
+
+impl OperativeTrait {
+    fn of(content: &OperativeContent, ordinal: u32, artwork: &mut Artwork) -> Self {
+        let shown = content.operative_trait(ordinal);
+        let (icon, icon_missing) = match &shown.art {
+            Ok(art) => artwork.draw(content, art),
+            Err(why) => (None, Some(why.clone())),
+        };
+        let name_missing = shown.name.as_ref().err().cloned();
+        Self { token: shown.token, name: shown.name.ok(), icon, missing: name_missing.or(icon_missing) }
+    }
+}
+
+fn trait_lists(rows: &[CharacterOperativeRow]) -> HashMap<u32, &[u32]> {
+    rows.iter().filter(|row| row.resolved && row.category == OPERATIVE_CATEGORY).map(|row| (row.character, row.trait_definitions.as_slice())).collect()
 }
 
 fn characters(rows: &[CharacterOperativeRow]) -> HashMap<u64, Option<u32>> {
@@ -250,7 +279,7 @@ pub struct OperativesRosterReply {
     pub warnings: Vec<String>,
 }
 
-dashboard_base::reply_warnings!(OperativesRosterReply, OperativesDepartedReply);
+dashboard_base::reply_warnings!(OperativesRosterReply);
 
 fn validate_tags(tags: &[dashboard_base::products::Country]) -> Result<(), &'static str> {
     if tags.is_empty() {
@@ -279,7 +308,10 @@ pub fn roster(frame: &DecodedFrame, countries: &[dashboard_base::products::Count
             _ => unheld.push(tag.clone()),
         }
     }
-    let characters = frame.complete::<tables::CharacterOperatives>().map(characters).unwrap_or_default();
+    let character_rows = frame.complete::<tables::CharacterOperatives>();
+    let characters = character_rows.as_ref().ok().map(|rows| characters(rows)).unwrap_or_default();
+    let traits_of = character_rows.as_ref().ok().map(|rows| trait_lists(rows));
+    let traits_unread = missing(frame, TableId::CharacterOperatives).unwrap_or_else(|| "Operative characters are not recorded at this hour".to_owned());
     let portraits = frame.complete::<tables::CharacterPortraits>().ok();
     let operations = operation_tokens(frame);
     let content = context.as_deref().map_err(String::as_str);
@@ -311,14 +343,21 @@ pub fn roster(frame: &DecodedFrame, countries: &[dashboard_base::products::Count
     let operatives = mine
         .into_iter()
         .map(|(row, roster)| {
+            let character = characters.get(&row.id).copied().flatten();
+            let traits = match (&traits_of, character) {
+                (None, _) => Err(format!("Traits are not shown: {traits_unread}")),
+                (Some(_), None) => Err("Its character is not recorded at this hour, so its traits are unknown".to_owned()),
+                (Some(lists), Some(character)) => lists.get(&character).copied().ok_or_else(|| "Its character's traits are not recorded at this hour".to_owned()),
+            };
             let around = Around {
                 content,
                 now,
                 tag: &tag,
                 capturer_name: &capturer_name,
                 operation: &operation,
-                character: characters.get(&row.id).copied().flatten(),
+                character,
                 portraits,
+                traits,
             };
             RosterOperative::of(row, roster, &around, &mut artwork)
         })
@@ -343,7 +382,7 @@ impl AtHour for OperativesRoster {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![OperativesRosterParams::decl(), Country::decl(), RosterOperative::decl(), OperativesRosterReply::decl()]
+        vec![OperativeTrait::decl(), OperativesRosterParams::decl(), Country::decl(), RosterOperative::decl(), OperativesRosterReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -402,259 +441,5 @@ impl AtHour for OperativesRoster {
                 warnings: Vec::new(),
             },
         })
-    }
-}
-
-pub struct OperativesDeparted;
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct OperativesDepartedParams {
-    pub branch_id: String,
-    pub countries: Vec<dashboard_base::products::Country>,
-    pub hour: i32,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct DepartedOperative {
-    #[serde(flatten)]
-    pub operative: RosterOperative,
-    #[doc = " The first and last hour the census held it on the list."]
-    pub first_hour: i32,
-    pub last_hour: i32,
-    #[doc = " The first read showing it gone or disbanded or killed: an upper bound of when it left."]
-    pub departed_hour: i32,
-    pub departed_reason: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct OperativesDepartedReply {
-    #[doc = " Operatives the asked lists held in the hour's stretch that left them by the hour, newest"]
-    #[doc = " first."]
-    pub departed: Vec<DepartedOperative>,
-    #[doc = " Artwork URLs the rows name by index."]
-    pub artwork: Vec<String>,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Leaving {
-    pub key: u128,
-    pub first: i32,
-    pub last: i32,
-    pub departed: i32,
-    pub assignment: Option<u32>,
-}
-
-pub fn leavings(lives: &[(u128, i32, i32)], steps: &HashMap<u128, Vec<(i32, Option<u32>)>>, hour: i32) -> Vec<Leaving> {
-    let mut out = Vec::new();
-    for &(key, first, last) in lives {
-        let held = steps.get(&key).map(Vec::as_slice).unwrap_or_default();
-        let ended = held.iter().find(|(at, assignment)| *at <= hour && assignment.is_some_and(terminal));
-        let leaving = match ended {
-            Some(&(at, assignment)) => Leaving { key, first, last: (at - 1).max(first), departed: at, assignment },
-            None if last < hour => {
-                let assignment = held.iter().rev().find(|(at, assignment)| *at <= last && assignment.is_some()).and_then(|(_, assignment)| *assignment);
-                Leaving { key, first, last, departed: last + 1, assignment }
-            }
-            None => continue,
-        };
-        out.push(leaving);
-    }
-    out.sort_by_key(|leaving| std::cmp::Reverse((leaving.departed, leaving.key)));
-    out
-}
-
-impl Product for OperativesDeparted {
-    const KEY: &'static str = "operatives-departed";
-    const CONTENT_DEPENDENT: bool = true;
-    const INTERACTIVE: bool = true;
-    type Params = OperativesDepartedParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, hour: Read, "countries[]"];
-    type Reply = OperativesDepartedReply;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![OperativesDepartedParams::decl(), DepartedOperative::decl(), OperativesDepartedReply::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        branch(&params.branch_id)?;
-        validate_tags(&params.countries)
-    }
-
-    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
-        let stretch = *query.timeline.at(params.hour).ok_or_else(|| dashboard_core::refused("Operatives roster hour is not recorded"))?;
-        let links = dashboard_base::queries::links(source, stretch.run)?;
-        let keys: Vec<String> = params.countries.iter().map(|country| country.key().into_owned()).collect();
-        let mut slots: HashMap<u32, &str> = HashMap::new();
-        for (country, key) in params.countries.iter().zip(&keys) {
-            if let Some(Holder::Found { slot, .. }) = query.holders.at(country, params.hour).map(|run| run.holder) {
-                slots.insert(slot, key);
-            }
-        }
-        let lives = dashboard_base::queries::lifetimes(source, stretch.run, TableId::OperativeMemberships)?;
-        let roster = |key: u128, hour: i32| -> Option<&str> {
-            let (raw, kind) = roster_of(key);
-            (kind == ACTIVE).then(|| links.slot_at(raw, hour)).flatten().and_then(|slot| slots.get(&slot).copied())
-        };
-        let mine: Vec<(u128, i32, i32)> = lives
-            .iter()
-            .filter_map(|&(key, first, last)| {
-                let (first, last) = (i32::try_from(first).ok()?.max(stretch.first), i32::try_from(last).ok()?.min(params.hour));
-                (first <= last && roster(key, last).is_some()).then_some((key, first, last))
-            })
-            .collect();
-        let recording = query.replay.recording();
-        let keys: Vec<u128> = mine.iter().map(|&(key, ..)| key).collect();
-        let assignment = dashboard_declare::field(TableId::OperativeMemberships, "assignment")?;
-        let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, stretch.run, TableId::OperativeMemberships, &[assignment], replay_lanes::lanes::Keys::These(&keys), stretch.first, params.hour))?;
-        let steps: HashMap<u128, Vec<(i32, Option<u32>)>> = history
-            .keys
-            .into_iter()
-            .map(|(key, steps)| {
-                let steps = steps.into_iter().map(|step| (step.hour, match step.cells.as_deref() {
-                    Some([replay_lanes::points::Cell::Number(value), ..]) => u32::try_from(*value).ok(),
-                    _ => None,
-                })).collect();
-                (key, steps)
-            })
-            .collect();
-        let leaving = leavings(&mine, &steps, params.hour);
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let format = recording.format();
-        let asks: Vec<(i32, u128)> = leaving.iter().map(|leaving| (leaving.last, leaving.key)).collect();
-        let mut rows: HashMap<u128, OperativeMembershipRow> = HashMap::new();
-        dashboard_query::cost::storage(|| {
-            replay_lanes::lanes::at_each(recording, stretch.run, TableId::OperativeMemberships, None, &asks, &mut |_, key, row| {
-                if let Some((view, slot)) = row
-                    && let Some(row) = replay_frame::frame::cells_rows(TableId::OperativeMemberships, &view, &[(key, slot)], format)
-                        .ok()
-                        .and_then(|rows| rows.rows::<tables::OperativeMemberships>().and_then(|rows| rows.first().cloned()))
-                {
-                    rows.insert(key, row);
-                }
-                Ok(())
-            })
-        })?;
-        let content = operative_content::content(source, context);
-        let names = Names::new(&query.holders);
-        let mut artwork = Artwork::default();
-        let mut departed = Vec::new();
-        let mut unread = 0usize;
-        for leaving in leaving {
-            let Some(row) = rows.get(&leaving.key) else {
-                unread += 1;
-                continue;
-            };
-            let Some(tag) = roster(leaving.key, leaving.last) else { continue };
-            departed.push(DepartedOperative {
-                operative: departed_operative(row, tag, leaving.last, &content, &names, &links, &mut artwork),
-                first_hour: leaving.first,
-                last_hour: leaving.last,
-                departed_hour: leaving.departed,
-                departed_reason: departure(leaving.assignment).to_owned(),
-            });
-        }
-        let mut warnings = content.as_ref().map(|content| content.warnings.clone()).unwrap_or_default();
-        if unread != 0 {
-            warnings.push(format!("{unread} departed operatives are not shown: their last row was not recorded"));
-        }
-        if departed.iter().any(|operative| operative.operative.portrait.is_none()) {
-            warnings.push("Departed operatives' portraits and operations are not read at their departure.".to_owned());
-        }
-        Ok(OperativesDepartedReply { departed, artwork: artwork.urls, warnings })
-    }
-}
-
-fn departed_operative(row: &OperativeMembershipRow, roster: &str, last: i32, content: &RosterContext, names: &Names, links: &RunLinks, artwork: &mut Artwork) -> RosterOperative {
-    let tag = |raw: u32| names.tag_at(links, raw, last).map(str::to_owned);
-    let capturer_name = |_: u32| -> Result<String, String> { Err("The capturer's name is not read at a departure.".to_owned()) };
-    let operation = |_: u64| None;
-    let around = Around { content: content.as_deref().map_err(String::as_str), now: last, tag: &tag, capturer_name: &capturer_name, operation: &operation, character: None, portraits: None };
-    let mut operative = RosterOperative::of(row, roster, &around, artwork);
-    if operative.portrait.is_none() && content.is_ok() {
-        operative.portrait_missing = Some("The portrait is not read at a departure.".to_owned());
-    }
-    operative
-}
-
-pub struct OperativeTenures;
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct Tenure {
-    #[doc = " The full handle, as a decimal string."]
-    pub id: String,
-    pub roster: String,
-    #[doc = " The first and last hour the census held it on the list within the stretch."]
-    pub first_hour: i32,
-    pub last_hour: i32,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct OperativeTenuresReply {
-    #[doc = " The stretch of continuous history holding the hour asked: what the tenures cover."]
-    pub first_hour: i32,
-    pub last_hour: i32,
-    #[doc = " Every membership of the asked active lists the stretch held, by roster then handle."]
-    pub tenures: Vec<Tenure>,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(OperativeTenuresReply);
-
-impl Product for OperativeTenures {
-    const KEY: &'static str = "operative-tenures";
-    const CONTENT_DEPENDENT: bool = false;
-    const INTERACTIVE: bool = true;
-    type Params = OperativesDepartedParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, hour: Read, "countries[]"];
-    type Reply = OperativeTenuresReply;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![Tenure::decl(), OperativeTenuresReply::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        branch(&params.branch_id)?;
-        validate_tags(&params.countries)
-    }
-
-    fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
-        let stretch = *query.timeline.at(params.hour).ok_or_else(|| dashboard_core::refused("Operatives roster hour is not recorded"))?;
-        let links = dashboard_base::queries::links(source, stretch.run)?;
-        let lives = dashboard_base::queries::lifetimes(source, stretch.run, TableId::OperativeMemberships)?;
-        let mut tenures = Vec::new();
-        for &(key, first, last) in lives.iter() {
-            let (raw, kind) = roster_of(key);
-            let (Ok(first), Ok(last)) = (i32::try_from(first), i32::try_from(last)) else { continue };
-            let (first, last) = (first.max(stretch.first), last.min(stretch.last));
-            if kind != ACTIVE || first > last {
-                continue;
-            }
-            let Some(slot) = links.slot_at(raw, last) else { continue };
-            let held = params.countries.iter().find(|tag| query.holders.at(tag, last).is_some_and(|run| matches!(run.holder, Holder::Found { slot: held, .. } if held == slot)));
-            if let Some(country) = held {
-                tenures.push(Tenure { id: (key >> 40).to_string(), roster: country.key().into_owned(), first_hour: first, last_hour: last });
-            }
-        }
-        let keys: Vec<String> = params.countries.iter().map(|country| country.key().into_owned()).collect();
-        let order: HashMap<&str, usize> = keys.iter().enumerate().map(|(at, key)| (key.as_str(), at)).collect();
-        tenures.sort_by(|a, b| (order.get(a.roster.as_str()), a.first_hour, &a.id).cmp(&(order.get(b.roster.as_str()), b.first_hour, &b.id)));
-        Ok(OperativeTenuresReply { first_hour: stretch.first, last_hour: stretch.last, tenures, warnings: Vec::new() })
     }
 }

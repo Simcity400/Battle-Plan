@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { factionGroup, formatScore, scoreCountries, scoreHint, scoreParts, scoreRows, scoreTooltip, validateGameScore } from './gameScoreData.ts';
-import type { ScoreOf } from './gameScoreData';
-import type { CountryGroupReply, GameScoreRow } from '../../generated/dashboard';
+import { scoreHint, validateGameScore } from './gameScoreData.ts';
+import type { GameScoreRow } from '../../generated/dashboard';
 import type { GameScoreReply } from './gameScoreData';
 
 const known = { missing: null };
@@ -11,53 +10,12 @@ const row = (tag: string, total: boolean): GameScoreRow => ({ tag, countryId: 1,
   army: known, navy: known, air: unknown('a registered air wing has no AirWingGameScoreStats row'), industry: known, land: known });
 const REPLY: GameScoreReply = { missing: null, warnings: [], hints: { total: 'Sort by score' }, rows: [row('ENG', true), row('GER', true), row('ITA', false)],
   multipliers: [{ part: 'total', raw: '100000', missing: null }, { part: 'air', raw: null, missing: 'NAir define was not read' }] };
-const VALUES = new Map([['ENG|total', 3], ['ENG|army', 9], ['GER|total', 7], ['GER|army', 1], ['ITA|army', 1]]);
-const score: ScoreOf = (tag, part) => VALUES.get(`${tag}|${part}`);
 
-test('a top N ranks only countries whose score is known, by the chosen score as the live cells hold it', () => {
-  assert.deepEqual(scoreRows(REPLY, { all: false, tags: [], top: 5, hour: 9 }, null, 'total', score).map(item => item.tag), ['GER', 'ENG']);
-  assert.deepEqual(scoreRows(REPLY, { all: false, tags: [], top: 1, hour: 9 }, null, 'army', score).map(item => item.tag), ['ENG']);
-  assert.deepEqual(scoreRows(REPLY, { all: true, tags: [], top: null, hour: 9 }, null, 'total', score).length, 3);
-  assert.deepEqual(scoreRows(REPLY, { all: false, tags: ['ITA'], top: null, hour: 9 }, null, 'total', score).map(item => item.tag), ['ITA']);
-  assert.deepEqual(scoreRows(REPLY, { all: false, tags: [], top: null, hour: 9 }, tag => tag !== 'ITA', 'total', score).map(item => item.tag), ['ENG', 'GER']);
-  assert.deepEqual(scoreRows(REPLY, { all: false, tags: [], top: 5, hour: 9 }, null, 'total', () => undefined), [], 'scores not read yet rank no country');
-});
-
-test('all countries is a choice made: every row of the reply, with no reason to choose a country', () => {
-  const all = scoreCountries({ kind: 'all' }, [], undefined, 9);
-  assert.equal(all.reason, null);
-  assert.equal(scoreRows(REPLY, { all: true, tags: all.tags, top: all.top ?? null, hour: 9 }, null, 'total', score).length, 3);
-  assert.equal(scoreCountries({ kind: 'tags', tags: [] }, [], undefined, 9).reason, 'Choose a country in the widget settings.');
-});
-
-test('a score not recorded says why, never zero, and the multipliers follow the scores', () => {
-  assert.equal(formatScore(12.99999), '12', 'the end screen truncates to whole points');
-  const tip = scoreTooltip(REPLY, REPLY.rows[2], 'Italy', '9 Jan', 'Axis', score);
-  const total = tip.rows.find(item => item.label === 'Total score');
-  assert.deepEqual([total?.value, total?.detail, total?.tone], ['Not recorded', 'the total needs army, navy, air and the total multiplier', 'muted']);
-  assert.equal(tip.rows.find(item => item.label === 'Navy')?.value, 'Not read yet', 'a recorded score before its cell lands is not a zero');
-  const air = tip.rows.find(item => item.label === 'Air multiplier');
-  assert.deepEqual([air?.value, air?.detail], ['Not recorded', 'NAir define was not read']);
-  assert.equal(tip.rows.find(item => item.label === 'Total score multiplier')?.value, '1');
+test('game score reply validation rejects malformed cells and column hints fall back cleanly', () => {
   assert.throws(() => validateGameScore({ ...REPLY, rows: [{ ...REPLY.rows[0], army: { missing: 3 } }] }));
-});
-
-test('a column is hinted as the end screen words it where the content does, else ours; the race splits Total in proportion', () => {
   assert.equal(scoreHint(REPLY, 'total'), 'Sort by score');
   assert.match(scoreHint(REPLY, 'army')!, /army multiplier/);
   assert.equal(scoreHint(REPLY, 'country'), undefined);
-  const parts = scoreParts();
-  assert.deepEqual(parts.kind === 'measures' && [parts.proportional, parts.items.map(item => item.measure.measure)], [true, ['army', 'navy', 'air']]);
-});
-
-// quarantine: #3 re-enable in the dashboard rework; the issue names its failure
-test.skip('a country’s faction is the one its tag was a member of at the hour, by name at that hour', () => {
-  const groups = { factions: [{ id: '4', name: 'Allies', nameReason: null, recordedName: '', firstHour: 0, lastHour: 99,
-    names: [{ firstHour: 0, lastHour: 5, name: 'Old Allies', reason: null }], members: [{ tag: 'ENG', firstHour: 3, lastHour: 50 }] }] } as unknown as CountryGroupReply;
-  assert.deepEqual(factionGroup(groups, 'ENG', 4), { key: 'faction:4', label: 'Old Allies', order: 0, orderKey: 4n });
-  assert.equal(factionGroup(groups, 'ENG', 9).label, 'Allies');
-  assert.equal(factionGroup(groups, 'ENG', 60).key, 'no-faction');
-  assert.equal(factionGroup(undefined, 'ENG', 4).key, 'faction-not-recorded');
 });
 
 import { createBoundedReadView, emptyReadView } from '../../families/boundedView.ts';

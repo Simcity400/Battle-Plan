@@ -1,22 +1,18 @@
 import { LABEL_WEIGHT } from '../../charts/draw.ts';
-import type { LiveValues } from '../../charts/live';
 import { textWidth } from '../../charts/textWidth.ts';
-import { NOT_LIVE_CELL, NOT_RECORDED, repliedCells } from '../../dashboard/follow/liveCells.ts';
-import type { Picture } from '../../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
-import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '../../draw/lane.ts';
-import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
+import type { LaneView, Painted, PaintInput, Scene } from '../../draw/lane.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
-import { artUrlForHandle, createLaneArtProvider } from '../art/provider.ts';
-import { createBoundedReadView } from '../boundedView.ts';
+import { createLaneArtProvider } from '../art/provider.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
-import type { ArtDemand, ArtProvider, BoundedReadView, EntityKind, FamilyTheme, IdentityDemand, IdentityProvider } from '../contract.ts';
+import type { ArtProvider, FamilyTheme, IdentityProvider } from '../contract.ts';
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import { nextLookChange } from '../looks.ts';
+import { projectScene, samePictures, sceneReadView, snapshotPictures } from '../scene.ts';
 import { glideDurationForSpeed } from '../table/painter.ts';
-import { layoutFamilyBars, type BarsLayout } from './layout.ts';
+import { layoutFamilyBars, visibleBarsRange, type BarsLayout } from './layout.ts';
 import {
   assertBarsModelValid,
   deriveBarsAudit,
@@ -90,6 +86,9 @@ interface HeldFamilyBars {
   priorHour: number;
   glide: Map<string, BarsGlideOffset>;
   kept: Map<string, { text: string; content: string }>;
+  metaField: FieldEntry | null;
+  navField: FieldEntry | null;
+  boundsField: FieldEntry | null;
   mirrorGate: CadenceGate;
   mirrorField: FieldEntry | null;
   tipGate: CadenceGate;
@@ -105,121 +104,12 @@ interface HeldFamilyBars {
 const MIRROR_CADENCE_MS = 1000;
 const TOOLTIP_CADENCE_MS = 250;
 
-const liveAdapter = (map: LiveMap | null): LiveValues<number | bigint | string> | null => map && {
-  get: (key: string) => {
-    const value = map.get(key);
-    return typeof value === 'number' || typeof value === 'bigint' ? value : undefined;
-  },
-  raw: (key: string) => {
-    const value = map.get(key);
-    return typeof value === 'bigint' ? value : typeof value === 'number' && Number.isSafeInteger(value) ? BigInt(value) : undefined;
-  },
-  missing: (key: string) => {
-    if (!map.has(key)) return NOT_LIVE_CELL;
-    const value = map.get(key);
-    return typeof value === 'string' && value.length > 0 ? value : NOT_RECORDED;
-  },
-};
-
-function answerOf(value: LaneValue): FollowedAnswer | undefined {
-  return value.kind === 'answer' ? value.answer : undefined;
-}
-
 function cachedField(held: HeldFamilyBars, slot: string, text: string, content: () => string): string {
   const prev = held.kept.get(slot);
   if (prev && prev.text === text) return prev.content;
   const tag = content();
   held.kept.set(slot, { text, content: tag });
   return tag;
-}
-
-function samePictures(prev: readonly (readonly unknown[])[], pictures: readonly Picture<LaneValue>[]): boolean {
-  if (prev.length !== pictures.length) return false;
-  for (let i = 0; i < pictures.length; i++) {
-    const a = prev[i]!;
-    const b = pictures[i]!.parts;
-    if (a.length !== b.length) return false;
-    for (let j = 0; j < b.length; j++) if (a[j] !== b[j]) return false;
-  }
-  return true;
-}
-
-function snapshotPictures(pictures: readonly Picture<LaneValue>[]): readonly (readonly unknown[])[] {
-  return pictures.map(picture => picture.parts.slice());
-}
-
-export interface BarsReadViewProviders {
-  readonly identity?: IdentityProvider;
-  readonly onIdentityDemand?: IdentityDemand;
-  readonly art?: ArtProvider;
-  readonly onArtDemand?: ArtDemand;
-}
-
-export function barsReadViewFromScene(
-  scene: Scene,
-  binding: FamilyBarsBinding,
-  hour: number,
-  providers?: BarsReadViewProviders,
-): BoundedReadView {
-  const liveCache = new Map<string, LiveValues<number | bigint | string> | null>();
-  const resolveLive = (name: string): LiveValues<number | bigint | string> | null | undefined => {
-    if (liveCache.has(name)) return liveCache.get(name);
-    if (binding.staticPanels && Object.hasOwn(binding.staticPanels, name)) {
-      const val = repliedCells(binding.staticPanels[name]).read();
-      liveCache.set(name, val);
-      return val;
-    }
-    if (Object.hasOwn(binding.sources, name)) {
-      const subId = binding.sources[name]!;
-      const at = scene.subs.findIndex(sub => sub.id === subId);
-      const picture = at < 0 ? undefined : scene.pictures[at];
-      const head = picture?.parts[0]?.value;
-      if (head && head.kind === 'panel' && head.refused === null) {
-        const val = liveAdapter(liveValues(picture!));
-        liveCache.set(name, val);
-        return val;
-      }
-    }
-    return undefined;
-  };
-  const revisions: Record<string, number> = {};
-  for (const [name, subId] of Object.entries(binding.sources)) {
-    const at = scene.subs.findIndex(sub => sub.id === subId);
-    const rev = at < 0 ? undefined : scene.pictures[at]?.parts[0]?.version;
-    if (rev !== undefined) revisions[name] = rev;
-  }
-  return createBoundedReadView({
-    hour,
-    revisions,
-    ensureNonLive: () => {
-      const answers = new Map<string, FollowedAnswer | undefined>();
-      const panels = new Map<string, unknown>();
-      const refused = new Map<string, string>();
-      if (binding.staticAnswers) {
-        for (const [name, answer] of Object.entries(binding.staticAnswers)) answers.set(name, answer);
-      }
-      if (binding.staticPanels) {
-        for (const [name, data] of Object.entries(binding.staticPanels)) panels.set(name, data);
-      }
-      for (const [name, subId] of Object.entries(binding.sources)) {
-        const at = scene.subs.findIndex(sub => sub.id === subId);
-        const picture = at < 0 ? undefined : scene.pictures[at];
-        const head = picture?.parts[0]?.value;
-        if (!head) continue;
-        if (head.kind === 'answer') answers.set(name, answerOf(head));
-        else if (head.kind === 'panel') {
-          if (head.refused === null) panels.set(name, head.data);
-          else refused.set(name, head.refused);
-        }
-      }
-      return { panels, answers, refused };
-    },
-    resolveLive,
-    ...(providers?.identity ? { identity: providers.identity } : {}),
-    ...(providers?.onIdentityDemand ? { onIdentityDemand: providers.onIdentityDemand } : {}),
-    ...(providers?.art ? { art: providers.art } : {}),
-    ...(providers?.onArtDemand ? { onArtDemand: providers.onArtDemand } : {}),
-  });
 }
 
 function intervalOf(scene: Scene, binding: FamilyBarsBinding): readonly [number, number] {
@@ -257,7 +147,7 @@ export function familyBarsLaneView(
       let next = Infinity;
       if (proj.nextChange) {
         const index = bound.identitySnapshot ? IdentityIndex.fromSnapshot(bound.identitySnapshot) : null;
-        const readView = barsReadViewFromScene(scene, bound, hour, index ? { identity: createSnapshotIdentityProvider(index) } : undefined);
+        const readView = sceneReadView(scene, bound, hour, index ? { identity: createSnapshotIdentityProvider(index) } : undefined);
         next = Math.min(next, proj.nextChange(readView, bound.options));
       }
       const looks = bound.theme?.countryLooks;
@@ -321,6 +211,9 @@ export function familyBarsLaneView(
           priorHour: NaN,
           glide: new Map(),
           kept: new Map(),
+          metaField: null,
+          navField: null,
+          boundsField: null,
           mirrorGate,
           mirrorField: null,
           tipGate,
@@ -373,23 +266,16 @@ export function familyBarsLaneView(
       if (partsUnchanged && held.cachedModel) {
         model = held.cachedModel;
       } else {
-        const pendingIdentityDemands = new Map<string, readonly [EntityKind, string, number]>();
-        const demandedArt = new Set<string>();
-        const readView = barsReadViewFromScene(input, bound, hour, {
+        const projected = projectScene(input, bound, hour, {
           identity: held.identityProvider,
-          onIdentityDemand: (kind, key, atHour) => {
-            pendingIdentityDemands.set(`${kind}\u0000${key}\u0000${atHour}`, [kind, key, atHour]);
-          },
           art: held.artProvider,
-          onArtDemand: handle => {
-            const url = artUrlForHandle(handle, held!.identityIndex);
-            if (url) demandedArt.add(url);
-          },
-        });
-        model = proj.project(readView, bound.options);
+          index: held.identityIndex,
+        }, view => proj.project(view, bound.options));
+        model = projected.model;
+        const readView = projected.view;
         assertBarsModelValid(model, hour);
-        held.demandedArtUrls = [...demandedArt];
-        const demandsList = [...pendingIdentityDemands.values()];
+        held.demandedArtUrls = [...projected.artUrls];
+        const demandsList = projected.identityDemands;
         if (demandsList.length) {
           const dText = JSON.stringify(demandsList);
           held.identityDemandsField = { value: demandsList, content: cachedField(held, 'identityDemands', dText, content) };
@@ -403,7 +289,7 @@ export function familyBarsLaneView(
         held.prevStaticPanels = bound.staticPanels;
         held.prevStaticAnswers = bound.staticAnswers;
         held.prevThemeLooks = bound.theme.countryLooks;
-        held.validFrom = validFrom;
+        held.validFrom = Math.max(validFrom, hour);
         held.validUntil = validUntil;
         const projNext = proj.nextChange ? proj.nextChange(readView, bound.options) : Infinity;
         const lookNext = bound.theme.countryLooks ? nextLookChange(bound.theme.countryLooks, hour) : Infinity;
@@ -488,31 +374,40 @@ export function familyBarsLaneView(
       const fields: Record<string, FieldEntry> = {};
       if (held.identityDemandsField) fields.identityDemands = held.identityDemandsField;
 
-      const metaValue = {
-        form: model.form,
-        count: model.rows.length,
-        totalHeight: layout.totalHeight,
-        bodyHeight: layout.bodyHeight,
-        summaryText: model.summaryText ?? null,
-        empty: model.empty ?? null,
-        emptyDetail: model.emptyDetail ?? null,
-        emptyKind: model.emptyKind ?? 'empty',
-        notes: model.notes ?? [],
-        warnings: model.warnings ?? [],
-      };
-      fields.meta = { value: metaValue, content: cachedField(held, 'meta', JSON.stringify(metaValue), content) };
+      if (modelChanged || layoutChanged || !held.metaField || !held.navField || !held.boundsField) {
+        const metaValue = {
+          form: model.form,
+          count: model.rows.length,
+          totalHeight: layout.totalHeight,
+          bodyHeight: layout.bodyHeight,
+          rowHeight: layout.dataRowHeight,
+          bodyTop: layout.bodyTop,
+          summaryText: model.summaryText ?? null,
+          empty: model.empty ?? null,
+          emptyDetail: model.emptyDetail ?? null,
+          emptyKind: model.emptyKind ?? 'empty',
+          notes: model.notes ?? [],
+          warnings: model.warnings ?? [],
+        };
+        held.metaField = { value: metaValue, content: cachedField(held, 'meta', JSON.stringify(metaValue), content) };
+        const navItems = model.rows.flatMap((row, index) => (
+          row.kind === 'section'
+            ? []
+            : [[row.key, row.label, index, -1, '', row.kind === 'data' ? (row.meta ?? null) : null] as const]
+        ));
+        held.navField = { value: navItems, content: content() };
+        held.boundsField = { value: { tops: layout.rowTops, heights: layout.rowHeights, bodyTop: layout.bodyTop }, content: content() };
+      }
+      fields.meta = held.metaField;
+      fields.nav = held.navField;
+      fields.rowBounds = held.boundsField;
 
-      const navItems = model.rows.flatMap((row, index) => (
-        row.kind === 'section'
-          ? []
-          : [[row.key, row.label, index, -1, '', row.kind === 'data' ? (row.meta ?? null) : null] as const]
-      ));
-      fields.nav = { value: navItems, content: cachedField(held, 'nav', JSON.stringify(navItems), content) };
-
-      const mirrorKey = `${bound.window ? `${bound.window.first}:${bound.window.count}` : ''}\u0000${bound.focusedKey ?? ''}`;
+      const shown = visibleBarsRange(layout, bound.scrollTop);
+      const mirrorWindow = bound.window ?? { first: shown.first, count: Math.max(0, shown.last - shown.first) };
+      const mirrorKey = `${mirrorWindow.first}:${mirrorWindow.count}\u0000${bound.focusedKey ?? ''}`;
       if (modelChanged || layoutChanged) held.mirrorGate.invalidate();
       if (!held.mirrorField || held.mirrorGate.due(now, input.speed, mirrorKey)) {
-        const mirror = deriveBarsMirror(model, bound.window, bound.focusedKey);
+        const mirror = deriveBarsMirror(model, mirrorWindow, bound.focusedKey);
         held.mirrorField = { value: mirror, content: cachedField(held, 'mirror', JSON.stringify(mirror), content) };
         held.mirrorGate.record(now, mirrorKey);
       }
@@ -566,8 +461,11 @@ export function familyBarsLaneView(
 
       const glideSnapshot = moving ? new Map(held.glide) : undefined;
       const scrollSnapshot = bound.scrollTop;
+      const removeShown = new Set<string>();
+      if (inspectedKey) removeShown.add(inspectedKey);
+      if (bound.focusedKey) removeShown.add(bound.focusedKey);
       const hit = (point: readonly [number, number]) => {
-        const res = hitFamilyBars(layout, model, { x: point[0], y: point[1] }, scrollSnapshot, glideSnapshot, now, glideMs);
+        const res = hitFamilyBars(layout, model, { x: point[0], y: point[1] }, scrollSnapshot, glideSnapshot, now, glideMs, removeShown);
         if (res.kind === 'none' || !res.rowKey) return null;
         if (res.kind === 'add-region') return `add:${res.rowKey}`;
         if (res.kind === 'remove-region') return `remove:${res.rowKey}`;

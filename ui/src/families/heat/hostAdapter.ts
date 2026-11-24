@@ -1,11 +1,12 @@
 import { displayedHour } from '../boundedView.ts';
 import type { FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
 import type { LaneActivation } from './lanesDeclaration.ts';
+import { layoutHeatLanes } from './lanesLayout.ts';
 import type { FamilyHeatLanesBinding } from './lanesLaneView.ts';
 import {
   deriveLanesAudit,
   parseLaneInspectKey,
-  type HeatLaneRow,
+  type HeatLaneIdentity,
   type HeatLanesModel,
 } from './lanesModel.ts';
 import type { MatrixActivation } from './matrixDeclaration.ts';
@@ -22,6 +23,7 @@ interface MatrixExtentField {
   readonly totalWidth: number;
   readonly totalHeight: number;
   readonly cellSize: number;
+  readonly cellWidth?: number;
   readonly gridLeft: number;
   readonly gridTop: number;
   readonly rows: readonly MatrixAxisEntity[];
@@ -33,7 +35,7 @@ interface LanesExtentField {
   readonly rowStride: number;
   readonly plotTop: number;
   readonly plotHeight: number;
-  readonly rows: readonly HeatLaneRow[];
+  readonly rows: readonly HeatLaneIdentity[];
 }
 
 export function parseHeatMatrixHit(hitKey: string | null): ParsedFamilyHit | null {
@@ -76,6 +78,7 @@ export const heatMatrixHostAdapter: FamilyHostAdapter<HeatMatrixModel, unknown, 
       rows: ext.rows.length,
       columns: ext.columns.length,
       cellSize: ext.cellSize,
+      ...(ext.cellWidth !== undefined ? { cellWidth: ext.cellWidth } : {}),
       gridLeft: ext.gridLeft,
       gridTop: ext.gridTop,
       rowLabel: r => ext.rows[r]?.label ?? '',
@@ -112,6 +115,7 @@ export const heatMatrixHostAdapter: FamilyHostAdapter<HeatMatrixModel, unknown, 
   buildBinding: ctx => ({
     family: 'heat-matrix',
     kind: ctx.kind,
+    view: ctx.view,
     options: ctx.options,
     sources: ctx.sources,
     ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
@@ -130,6 +134,7 @@ export const heatMatrixHostAdapter: FamilyHostAdapter<HeatMatrixModel, unknown, 
 
 export const heatLanesHostAdapter: FamilyHostAdapter<HeatLanesModel, unknown, FamilyHeatLanesBinding> = {
   family: 'heat-lanes',
+  pointerMode: 'continuous',
   scroll: 'vertical',
   navigation: 'rows',
   mirror: 'table',
@@ -171,11 +176,26 @@ export const heatLanesHostAdapter: FamilyHostAdapter<HeatLanesModel, unknown, Fa
       meta: activation,
     };
   },
-  deriveAuditRows: model => deriveLanesAudit(model),
+  deriveAuditRows: (model, _hour, { viewport }) => {
+    const layout = layoutHeatLanes({
+      width: viewport.width,
+      height: viewport.height,
+      scrollTop: viewport.scrollTop,
+      firstHour: model.firstHour,
+      lastHour: model.lastHour,
+      displayedHour: model.hour,
+      rows: model.rows,
+      legend: model.legend,
+      requestedReadoutWidth: model.readoutWidth,
+      requestedRowHeight: model.rowHeight,
+    });
+    return deriveLanesAudit(model, { firstRow: layout.firstRow, endRow: layout.endRow });
+  },
   auditOrdered: true,
   buildBinding: ctx => ({
     family: 'heat-lanes',
     kind: ctx.kind,
+    view: ctx.view,
     options: ctx.options,
     sources: ctx.sources,
     ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),

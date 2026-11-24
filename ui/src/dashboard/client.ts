@@ -110,11 +110,14 @@ export interface GameWindowRegion {
   clip: readonly [number, number, number, number] | null;
   disabled: boolean;
   close: boolean;
+  passthrough?: boolean;
+  view?: string | null;
   tooltip: GameWindowTooltip | null;
   alphaMask?: GameWindowAlphaMask | null;
 }
 
 export interface GameWindowRender {
+  title?: string | null;
   pngBase64: string;
   logicalSize: readonly [number, number];
   pixelSize: readonly [number, number];

@@ -1,14 +1,15 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
-import { ellipsise } from '../../charts/labels.ts';
 import { readableColour } from '../../charts/palette.ts';
+import { ellipsise } from '../../charts/labels.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import { linearTicks } from '../../charts/valueAxis.ts';
 import {
   barCornerRadius,
+  contrastInkForFill,
   drawArtSlot,
   drawBar,
   drawFlagSlot,
-  drawLegendEntry,
+  drawLegendStrip,
   drawMissingMark,
   drawNameSlot,
   drawPartialTab,
@@ -27,7 +28,7 @@ import type { LaneArtCache } from '../art/laneCache.ts';
 import type { ArtResult } from '../art/types.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
 import { formatCompactScalar, formatValueState, notRecordedLabel } from '../valueFormat.ts';
-import { mix, parseColor } from '../../shell/appearance/color.ts';
+import { mix } from '../../shell/appearance/color.ts';
 import type { FamilyTheme } from '../contract.ts';
 import {
   BARS_PAD_X,
@@ -100,17 +101,6 @@ function paintedRowY(
   return entry.fromY + (baseY - entry.fromY) * easeOutCubic(progress);
 }
 
-function inkOnFill(fill: string): string {
-  const rgb = parseColor(fill);
-  if (!rgb) return 'rgba(255, 255, 255, 0.96)';
-  const channel = (c: number) => {
-    const s = c / 255;
-    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
-  };
-  const lum = 0.2126 * channel(rgb.r) + 0.7152 * channel(rgb.g) + 0.0722 * channel(rgb.b);
-  return lum > 0.32 ? 'rgba(17, 17, 17, 0.88)' : 'rgba(255, 255, 255, 0.96)';
-}
-
 function drawRowMedia(
   ctx: Canvas2D,
   x: number,
@@ -169,22 +159,24 @@ function drawShareSegments(
   const gap = active.length > 1 ? 1 : 0;
   const usable = Math.max(0, width - gap * Math.max(0, active.length - 1));
   let cursor = x;
+  let total = 0;
+  for (let i = 0; i < active.length; i++) total += active[i]!.share;
+  const complete = total >= 0.999;
   for (let i = 0; i < active.length; i++) {
     const seg = active[i]!;
-    const segW = i === active.length - 1 ? Math.max(0, x + width - cursor) : usable * seg.share;
+    const segW = complete && i === active.length - 1 ? Math.max(0, x + width - cursor) : usable * seg.share;
     if (segW <= 0) continue;
     if (seg.hatched) {
       drawHatchRect(ctx, cursor, y, segW, height, 0, theme);
     } else {
-      const fill = readableColour(seg.color, theme.surface);
-      ctx.fillStyle = fill;
+      ctx.fillStyle = readableColour(seg.color, theme.surface);
       ctx.fillRect(cursor, y, segW, height);
     }
     if (!seg.hatched && segW >= 34) {
       const pctText = `${Math.round(seg.share * 100)}%`;
       const fullText = seg.inlineLabel ?? `${seg.label} ${pctText}`;
       ctx.font = `600 11px ${theme.font}`;
-      ctx.fillStyle = inkOnFill(readableColour(seg.color, theme.surface));
+      ctx.fillStyle = contrastInkForFill(readableColour(seg.color, theme.surface), theme);
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       const pad = 6;
@@ -197,6 +189,7 @@ function drawShareSegments(
     }
     cursor += segW + gap;
   }
+  if (!complete && cursor < x + width) drawHatchRect(ctx, cursor, y, x + width - cursor, height, 0, theme);
   ctx.restore();
 }
 
@@ -207,14 +200,20 @@ function drawHeader(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: 
   ctx.textBaseline = 'middle';
   if (model.form === 'two-sided' && layout.twoSidedLayout === 'paired') {
     ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
-    ctx.fillStyle = theme.muted;
+    ctx.fillStyle = theme.text;
+    ctx.textAlign = 'center';
+    const leftMid = (layout.plotLeft + layout.centerX) / 2;
+    const rightMid = (layout.centerX + layout.plotRight) / 2;
     if (model.leftHeader) {
-      ctx.textAlign = 'right';
-      ctx.fillText(model.leftHeader, layout.centerX - 10, middleY);
+      ctx.fillText(ellipsise(model.leftHeader, layout.centerX - layout.plotLeft - 8, s => textWidth(ctx, s)), leftMid, middleY);
     }
     if (model.rightHeader) {
-      ctx.textAlign = 'left';
-      ctx.fillText(model.rightHeader, layout.centerX + 10, middleY);
+      ctx.fillText(ellipsise(model.rightHeader, layout.plotRight - layout.centerX - 8, s => textWidth(ctx, s)), rightMid, middleY);
+    }
+    if (layout.showReadout && model.readoutHeader) {
+      ctx.fillStyle = theme.muted;
+      ctx.textAlign = 'right';
+      ctx.fillText(model.readoutHeader, layout.readoutX + layout.readoutWidth, middleY);
     }
   } else {
     if (model.caption) {
@@ -263,21 +262,6 @@ function drawAxis(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: Fa
     ctx.fillText(text, tx, y);
   }
   ctx.restore();
-}
-
-function drawLegend(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: FamilyTheme): void {
-  if (layout.legendHeight <= 0 || !model.legend?.length) return;
-  const middleY = layout.legendTop + layout.legendHeight / 2;
-  let x = BARS_PAD_X;
-  const rightLimit = layout.width - BARS_PAD_X;
-  for (let i = 0; i < model.legend.length; i++) {
-    const entry = model.legend[i]!;
-    const room = rightLimit - x;
-    if (room < 32) break;
-    const text = entry.share ? `${entry.label} ${entry.share}` : entry.value ? `${entry.label} ${entry.value}` : entry.label;
-    const drawn = drawLegendEntry(ctx, x, middleY, text, entry.color, theme, { maxWidth: room });
-    x += drawn.width + 14;
-  }
 }
 
 export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsPaintStats {
@@ -608,6 +592,15 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           ctx.restore();
         }
       }
+      if (layout.showReadout && row.readout) {
+        ctx.save();
+        ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
+        ctx.fillStyle = theme.text;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(ellipsise(row.readout.primary, layout.readoutWidth, s => textWidth(ctx, s)), layout.readoutX + layout.readoutWidth, middleY);
+        ctx.restore();
+      }
       continue;
     }
 
@@ -718,7 +711,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           drawPartialTab(ctx, drawnEndX + BARS_VALUE_GAP + labelW + 5, middleY, theme);
         }
       } else {
-        ctx.fillStyle = inkOnFill(barColor);
+        ctx.fillStyle = contrastInkForFill(barColor, theme);
         ctx.textAlign = 'right';
         ctx.fillText(formatted.text, drawnEndX - 6, middleY);
       }
@@ -734,7 +727,16 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
   }
   ctx.restore();
 
-  if (layout.legendHeight > 0) drawLegend(ctx, model, layout, theme);
+  if (layout.legendHeight > 0 && model.legend?.length) {
+    drawLegendStrip(ctx, 0, layout.legendTop, layout.width, layout.legendHeight, {
+      entries: model.legend.map(entry => ({
+        label: entry.share ? `${entry.label} ${entry.share}` : entry.value ? `${entry.label} ${entry.value}` : entry.label,
+        color: entry.color,
+      })),
+      padX: BARS_PAD_X,
+      entryGap: 14,
+    }, theme);
+  }
 
   return { paintedRows, truncatedKeys };
 }
@@ -747,10 +749,11 @@ export function hitFamilyBars(
   glide?: ReadonlyMap<string, BarsGlideOffset>,
   now = 0,
   glideDuration = 0,
+  removeShown: ReadonlySet<string> | null = null,
 ): BarsHitResult {
   if (point.y < layout.bodyTop || point.y > layout.bodyBottom) return { kind: 'none' };
   const { first, last } = visibleBarsRange(layout, scrollTop);
-  for (let i = first; i < last; i++) {
+  for (let i = last - 1; i >= first; i--) {
     const item = model.rows[i]!;
     const baseY = layout.bodyTop + layout.rowTops[i]! - scrollTop;
     const rowH = layout.rowHeights[i]!;
@@ -758,9 +761,10 @@ export function hitFamilyBars(
     if (point.y < y || point.y >= y + rowH) continue;
     if (item.kind === 'section') return { kind: 'none' };
     if (item.kind === 'add-region') return { kind: 'add-region', rowKey: item.key };
-    if (item.removable) {
+    if (item.removable && removeShown?.has(item.key)) {
       const bx = layout.nameX + layout.nameWidth - BARS_REMOVE_BUTTON_SIZE;
-      if (point.x >= bx && point.x <= layout.nameX + layout.nameWidth) {
+      const by = Math.round(y + rowH / 2 - BARS_REMOVE_BUTTON_SIZE / 2);
+      if (point.x >= bx && point.x <= layout.nameX + layout.nameWidth && point.y >= by && point.y <= by + BARS_REMOVE_BUTTON_SIZE) {
         return { kind: 'remove-region', rowKey: item.key };
       }
     }

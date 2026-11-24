@@ -6,9 +6,11 @@ import { flagChoiceKey } from '../identity/types.ts';
 import { DomArtCache, type DomArtImage } from './domCache.ts';
 import { LaneArtCache } from './laneCache.ts';
 import { flagEntryToArt, flagImageToArt, spriteImageToArt } from './adapters.ts';
-import { artUrlForHandle, createDomArtProvider, createLaneArtProvider, flagArtHandle } from './provider.ts';
-import { spriteResolutions } from '../../dashboard/spriteArtwork.ts';
+import { artUrlForHandle, createDomArtProvider, createLaneArtProvider, flagArtHandle, laneArtDemand } from './provider.ts';
+import { fetchArtHandles, spriteResolutions } from './transport.ts';
+import type { ArtHandle } from '../plan.ts';
 import {
+  artHandleKey,
   CURRENT_INSTALL_PROVENANCE,
   NO_ART,
   PENDING_ART,
@@ -36,7 +38,7 @@ test('LaneArtCache distinguishes all six Rust ArtResolution states, wakes on loa
   let wakes = 0;
 
   const cache = new LaneArtCache<ArtBitmap>({
-    maxEntries: 2,
+    maxEntries: 3,
     contentRevision: 1,
     onSettle: () => { wakes++; },
     fetchBitmap: (url, signal) => new Promise((resolve, reject) => {
@@ -96,9 +98,9 @@ test('LaneArtCache distinguishes all six Rust ArtResolution states, wakes on loa
   cache.requestVisible([okRes, flakyRes]);
   assert.deepEqual(aborted, ['art://slow'], 'scrolled-off pending fetch is aborted');
 
-  cache.requestVisible([readyArt('art://third')]);
+  cache.requestVisible([readyArt('art://third'), readyArt('art://fourth')]);
   await flush();
-  assert.equal(cache.cachedCount, 2);
+  assert.equal(cache.cachedCount, 3);
   assert.ok(closed.includes('art://ok'), 'evicted bitmap is closed');
 
   cache.setContentRevision(2);
@@ -161,10 +163,78 @@ test('DomArtCache distinguishes pending, ready, and failed, wakes listeners, ret
   unsub();
 });
 
+test('at 1,500 assets the lane decodes a bounded few at a time and holds no more than its limit, the DOM cache keeps no failure past its limit, and a decode that lands before subscribing is seen', async () => {
+  let started = 0;
+  let inFlight = 0;
+  let mostInFlight = 0;
+  let open = 0;
+  const lane = new LaneArtCache<ArtBitmap>({
+    maxEntries: 128,
+    fetchBitmap: () => {
+      started++;
+      inFlight++;
+      mostInFlight = Math.max(mostInFlight, inFlight);
+      return new Promise(resolve => queueMicrotask(() => {
+        inFlight--;
+        open++;
+        const bitmap = fakeBitmap();
+        bitmap.close = () => { open--; };
+        resolve(bitmap);
+      }));
+    },
+  });
+  const urls = Array.from({ length: 1500 }, (_, i) => readyArt(`art://flag-${i}`));
+  lane.requestVisible(urls);
+  assert.ok(lane.pendingCount <= 6, 'decodes start a bounded few at a time');
+  for (let i = 0; i < 2000; i++) await Promise.resolve();
+  assert.ok(mostInFlight <= 6, 'never more than the concurrent bound in flight');
+  assert.equal(started, 128, 'no decode starts that the cache could not keep');
+  assert.equal(lane.cachedCount, 128);
+  assert.equal(open, 128, 'every bitmap decoded is held or closed');
+  assert.equal(lane.resolve(urls[1499]!).status, 'pending', 'art beyond the limit waits, never borrowed or dropped');
+
+  lane.requestVisible(urls.slice(1400));
+  for (let i = 0; i < 2000; i++) await Promise.resolve();
+  assert.equal(started, 228);
+  assert.equal(lane.cachedCount, 128);
+  assert.equal(open, 128, 'art scrolled away is closed to make room');
+  assert.equal(lane.resolve(urls[1499]!).status, 'ready');
+  lane.dispose();
+  assert.equal(open, 0);
+
+  const images: (DomArtImage & { fail: () => void; load: () => void })[] = [];
+  const dom = new DomArtCache<DomArtImage>({
+    maxEntries: 2048,
+    maxFailed: 2048,
+    createImage: () => {
+      const image = {
+        complete: false,
+        naturalWidth: 0,
+        naturalHeight: 0,
+        src: '',
+        onload: null as ((...args: any[]) => unknown) | null,
+        onerror: null as ((...args: any[]) => unknown) | null,
+        fail() { this.complete = true; this.onerror?.(); },
+        load() { this.complete = true; this.naturalWidth = 8; this.naturalHeight = 8; this.onload?.(); },
+      };
+      images.push(image);
+      return image;
+    },
+  });
+  for (let i = 0; i < 2050; i++) dom.resolve(readyArt(`dom://broken-${i}`));
+  for (const image of images) image.fail();
+  assert.equal(dom.failedCount, 2048, 'failures beyond the limit are evicted');
+  assert.equal(dom.cachedCount, 0, 'a failed image is not also kept as an entry');
+
+  assert.equal(dom.resolve(readyArt('dom://late')).status, 'pending');
+  images.at(-1)!.load();
+  assert.equal(dom.stateOfUrl('dom://late'), 'ready', 'a decode that settled before the subscriber arrived is seen when it subscribes');
+});
+
 test('ArtProvider plugs LaneArtCache and DomArtCache behind BoundedReadView.art() for flags and URLs', async () => {
   const index = new IdentityIndex({ sourceId: 's1', revision: 'r1', branchId: '1', content: 1 });
   const choice = { keys: ['GER_a', null, null] as [string | null, string | null, string | null], reasons: [null, null, null] as [string | null, string | null, string | null] };
-  index.setDrawnFlag(choice, { url: 'art://ger-flag' });
+  index.setDrawnFlag('panel', choice, { url: 'art://ger-flag' });
   const handle = flagArtHandle(flagChoiceKey(choice), 'panel');
 
   let wakes = 0;
@@ -255,8 +325,62 @@ test('Rust ArtResolution on CountryFlagImage and SpriteImage passes straight thr
     },
     [{ key: 'GFX_md_spirit_ok', frame: 0 }, { key: 'GFX_md_spirit_none', frame: 0 }],
   );
-  const okKey = JSON.stringify([0, 'GFX_md_spirit_ok', null, false]);
-  const missingKey = JSON.stringify([0, 'GFX_md_spirit_none', null, false]);
+  const okKey = artHandleKey({ kind: 'sprite', key: 'GFX_md_spirit_ok', frame: 0 });
+  const missingKey = artHandleKey({ kind: 'sprite', key: 'GFX_md_spirit_none', frame: 0 });
   assert.deepEqual(parsed.get(okKey), readyModRes);
   assert.deepEqual(parsed.get(missingKey), missingSpiritRes);
+});
+
+test('sprite, portrait, technology and relative-path handles are asked of their products and drawn from the answer by the lane', async () => {
+  const sprite: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0, text: true };
+  const portrait: ArtHandle = { kind: 'portrait', leader: '12', hour: 300 };
+  const path: ArtHandle = { kind: 'path', path: 'gfx/interface/icon.dds', frame: 1, frames: 2 };
+  const radar: ArtHandle = { kind: 'technology', token: 'radar', databaseIndex: 7 };
+  const unjoined: ArtHandle = { kind: 'technology', token: 'mod_tech', databaseIndex: null };
+  const absent: ArtHandle = { kind: 'technology', token: 'gone_tech', databaseIndex: 3 };
+  const asks = new Map<string, ArtHandle>();
+  const urls = new Set<string>();
+  for (const handle of [sprite, portrait, path, radar, unjoined, absent, { kind: 'url', url: 'https://art.test/a.png' } as const]) laneArtDemand(handle, null, undefined, urls, asks);
+  assert.deepEqual([...asks.values()], [sprite, portrait, path, radar, unjoined, absent]);
+  assert.deepEqual([...urls], ['https://art.test/a.png']);
+
+  const requests: { product: string; params: unknown }[] = [];
+  const ready = readyArt('art://drawn');
+  const missing = missingArt('The game generates this portrait from unrecorded inputs');
+  const answered = await fetchArtHandles(async request => {
+    requests.push({ product: request.product, params: request.params });
+    if (request.product === 'unit-leader-portraits') return { portraits: [{ reference: '12', image: null, missing: missing.reason, resolution: missing }], warnings: [] };
+    if (request.product === 'technology-artwork') {
+      return { items: [
+        { token: 'radar', name: 'Radar', description: null, baseDurationDays: 100, icon: 'http://artwork.localhost/0123456789abcdef0123456789abcdef.png' },
+        { token: 'mod_tech', name: 'Mod technology', description: null, baseDurationDays: null, icon: null },
+      ], warnings: [] };
+    }
+    return {
+      items: [{ key: 'GFX_x', frame: 0, text: true, icon: 'art://drawn', resolution: ready }],
+      textures: [{ path: 'gfx/interface/icon.dds', frame: 1, frames: 2, resolution: ready }],
+      warnings: [],
+    };
+  }, { source: { id: 's', revision: 'r' }, branch: { id: '1' } } as never, [...asks.values()], new AbortController().signal);
+  assert.deepEqual(requests.map(request => request.product).sort(), ['sprite-artwork', 'technology-artwork', 'unit-leader-portraits']);
+  assert.deepEqual(requests.find(request => request.product === 'technology-artwork')!.params,
+    { tokens: ['gone_tech', 'mod_tech', 'radar'], recorded: { gone_tech: [3], radar: [7] } }, 'one request; a definition read without a recorded index asks by token');
+  assert.deepEqual(requests.find(request => request.product === 'sprite-artwork')!.params, {
+    sprites: [{ key: 'GFX_x', frame: 0, text: true }],
+    textures: [{ path: 'gfx/interface/icon.dds', frame: 1, frames: 2 }],
+  });
+  const resolutions = Object.fromEntries(answered);
+  assert.deepEqual(resolutions[artHandleKey(portrait)], missing);
+  assert.deepEqual(resolutions[artHandleKey(path)], ready);
+  assert.equal(resolutions[artHandleKey(radar)]?.status, 'ready');
+  assert.deepEqual(resolutions[artHandleKey(unjoined)], missingArt('Art missing from the current installation'));
+  assert.deepEqual(resolutions[artHandleKey(absent)], missingArt('Technology artwork was not returned for this technology'));
+
+  const lane = createLaneArtProvider(new LaneArtCache(), { resolutions });
+  assert.equal(lane.resolve(portrait).status, 'confirmedMissing');
+  assert.equal(artUrlForHandle(path, null, resolutions), 'art://drawn');
+  const again = new Map<string, ArtHandle>();
+  laneArtDemand(path, null, resolutions, urls, again);
+  assert.equal(again.size, 0);
+  assert.ok(urls.has('art://drawn'));
 });

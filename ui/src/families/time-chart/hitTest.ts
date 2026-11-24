@@ -5,7 +5,7 @@ import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import type { TimeChartModel, TimeChartSeriesModel } from './model.ts';
 
 export type ParsedChartInspect =
-  | { readonly kind: 'marker'; readonly index: number }
+  | { readonly kind: 'marker'; readonly index: number; readonly hour?: number }
   | { readonly kind: 'label'; readonly seriesId: string }
   | { readonly kind: 'gap'; readonly index: number }
   | { readonly kind: 'fold'; readonly index: number }
@@ -16,8 +16,11 @@ export type ParsedChartInspect =
 export function parseChartInspect(key: string | null | undefined): ParsedChartInspect | null {
   if (!key) return null;
   if (key.startsWith('marker:')) {
-    const index = Number(key.slice(7));
-    return Number.isInteger(index) && index >= 0 ? { kind: 'marker', index } : null;
+    const [rawIndex, rawHour] = key.slice(7).split('@');
+    const index = Number(rawIndex);
+    const hour = rawHour === undefined ? undefined : Number(rawHour);
+    if (!Number.isInteger(index) || index < 0 || (hour !== undefined && !Number.isFinite(hour))) return null;
+    return hour === undefined ? { kind: 'marker', index } : { kind: 'marker', index, hour };
   }
   if (key.startsWith('label:')) {
     const seriesId = key.slice(6);
@@ -52,6 +55,7 @@ export function parseChartInspect(key: string | null | undefined): ParsedChartIn
 function sampleBoundedAt(
   bounded: BoundedSeries,
   hour: number,
+  scale = 1,
 ): { readonly value: number; readonly min: number; readonly max: number; readonly exact: boolean } | null {
   if (bounded.runs && bounded.runs.length > 0) {
     let lo = 0;
@@ -61,7 +65,10 @@ function sampleBoundedAt(
       const run = bounded.runs.at(mid)!;
       if (hour < run.firstHour) hi = mid - 1;
       else if (hour > run.lastHour) lo = mid + 1;
-      else return { value: run.value, min: run.value, max: run.value, exact: true };
+      else {
+        const v = run.value * scale;
+        return { value: v, min: v, max: v, exact: true };
+      }
     }
     return null;
   }
@@ -70,7 +77,7 @@ function sampleBoundedAt(
   const bucket = bounded.buckets.at(idx);
   if (!bucket || hour < bucket.firstHour || hour > bucket.lastHour) return null;
   const exact = bucket.firstHour === bucket.lastHour || bucket.minValue === bucket.maxValue;
-  return { value: bucket.lastValue, min: bucket.minValue, max: bucket.maxValue, exact };
+  return { value: bucket.lastValue * scale, min: bucket.minValue * scale, max: bucket.maxValue * scale, exact };
 }
 
 export function sampleSeriesValueAt(
@@ -80,9 +87,9 @@ export function sampleSeriesValueAt(
 ): { readonly value: number; readonly min: number; readonly max: number; readonly exact: boolean } | null {
   if (hour > until) return null;
   if (series.bounded) {
-    const sampled = sampleBoundedAt(series.bounded, hour);
+    const sampled = sampleBoundedAt(series.bounded, hour, series.valueScale ?? 1);
     if (sampled) return sampled;
-    if (series.headValue != null && Number.isFinite(series.headValue) && Math.abs(hour - until) <= series.bounded.binHours) {
+    if (series.headValue != null && Number.isFinite(series.headValue) && hour === (series.headHour ?? until)) {
       return { value: series.headValue, min: series.headValue, max: series.headValue, exact: true };
     }
   }
@@ -123,16 +130,16 @@ export function hitTestTimeChart(
   }
 
   if (layout.markerLaneHeight > 0 && py >= layout.baseY && py <= layout.axisY + 2 && px >= layout.left - 8 && px <= layout.left + layout.plotWidth + 8) {
-    let bestIdx = -1;
+    let best: (typeof layout.markers)[number] | null = null;
     let bestDist = 11;
     for (const m of layout.markers) {
       const d = Math.abs(px - m.x);
       if (d <= bestDist) {
         bestDist = d;
-        bestIdx = m.index;
+        best = m;
       }
     }
-    if (bestIdx >= 0) return `marker:${bestIdx}`;
+    if (best) return `marker:${best.index}@${best.marker.hour}`;
   }
 
   if (px < layout.left || px > layout.left + layout.plotWidth || py < layout.top - 4 || py > layout.baseY + 4) {
@@ -171,6 +178,24 @@ export function hitTestTimeChart(
       }
     }
     if (bestId) return `line:${bestId}@${clampedHour}`;
+  } else if (model.mode === 'stack' && model.stack && model.stack.hours.length > 0) {
+    let at = -1;
+    for (let i = 0; i < model.stack.hours.length; i++) {
+      if (model.stack.hours[i]! <= clampedHour) at = i;
+      else break;
+    }
+    if (at >= 0 && model.stack.bands.every(b => b.values[at] != null && Number.isFinite(b.values[at]!))) {
+      let acc = 0;
+      for (const band of model.stack.bands) {
+        const v = band.values[at]!;
+        const yBot = layout.toY(acc);
+        const yTop = layout.toY(acc + v);
+        acc += v;
+        if (py >= Math.min(yTop, yBot) && py <= Math.max(yTop, yBot)) {
+          return `line:${band.id}@${clampedHour}`;
+        }
+      }
+    }
   }
 
   return `plot:${clampedHour}`;
@@ -225,6 +250,34 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
     for (const s of model.series) {
       const flagUrl = artUrlOf(s.flag);
       const iconUrl = artUrlOf(s.icon);
+      if (s.exact && s.exact.hour === hour) {
+        if (s.exact.value === null) {
+          entries.push({
+            sortVal: -Infinity,
+            item: {
+              label: s.name,
+              missingReason: s.exact.reason ?? notRecordedLabel(),
+              swatch: s.color,
+              tone: 'muted',
+              ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
+            },
+          });
+        } else {
+          const negative = s.negRed && s.exact.value < 0;
+          entries.push({
+            sortVal: s.exact.value,
+            item: {
+              label: s.name,
+              value: formatExactFigure(s.exact.value, model),
+              swatch: negative ? '#ff6b6f' : s.color,
+              tone: negative ? 'negative' : undefined,
+              ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
+              ...(iconUrl ? { icon: iconUrl } : {}),
+            },
+          });
+        }
+        continue;
+      }
       const missingSpan = s.missingSpans?.find(sp => hour >= sp.firstHour && hour <= sp.lastHour);
       if (missingSpan) {
         entries.push({
@@ -284,9 +337,11 @@ export function deriveTimeChartTooltip(
   if (!parsed || !inspectKey) return null;
 
   if (parsed.kind === 'gap') {
-    const placed = layout.gaps[parsed.index];
+    const placed = layout.gaps.find(item => item.index === parsed.index);
     if (!placed) return null;
-    const span = `${formatDateOnly(placed.gap.firstHour)} \u2013 ${formatDateOnly(placed.gap.lastHour)}`;
+    const span = placed.ongoing
+      ? `From ${formatDateOnly(placed.gap.firstHour)}`
+      : `${formatDateOnly(placed.gap.firstHour)} \u2013 ${formatDateOnly(placed.gap.lastHour)}`;
     return {
       hour: placed.gap.firstHour,
       rowKey: inspectKey,
@@ -384,13 +439,26 @@ export function deriveTimeChartTooltip(
 
   if (parsed.kind === 'label') {
     const s = model.series.find(item => item.id === parsed.seriesId);
-    if (!s) return null;
-    const items = seriesTooltipItemsAt(model, model.hour).filter(r => r.label === s.name);
+    if (s) {
+      const items = seriesTooltipItemsAt(model, model.hour).filter(r => r.label === s.name);
+      return {
+        hour: model.hour,
+        rowKey: inspectKey,
+        payload: {
+          title: s.endLabel?.fullName ?? s.name,
+          subtitle: model.measureTitle,
+          items,
+        },
+      };
+    }
+    const band = model.mode === 'stack' ? model.stack?.bands.find(item => item.id === parsed.seriesId) : undefined;
+    if (!band) return null;
+    const items = seriesTooltipItemsAt(model, model.hour).filter(r => r.label === band.name);
     return {
       hour: model.hour,
       rowKey: inspectKey,
       payload: {
-        title: s.endLabel?.fullName ?? s.name,
+        title: band.endLabel?.fullName ?? band.name,
         subtitle: model.measureTitle,
         items,
       },
@@ -398,7 +466,13 @@ export function deriveTimeChartTooltip(
   }
 
   const hour = parsed.hour;
-  const items = seriesTooltipItemsAt(model, hour);
+  const atHour = model.hoverDetail && model.hoverDetail.hour === hour ? model.hoverDetail : null;
+  const items = atHour?.replacesSeries ? [] : seriesTooltipItemsAt(model, hour);
+  const detail = atHour ? atHour.items : null;
+  if (detail?.length) {
+    if (items.length) items.push({ ...detail[0]!, divider: true }, ...detail.slice(1));
+    else items.push(...detail);
+  }
   if (!items.length) return null;
   return {
     hour,

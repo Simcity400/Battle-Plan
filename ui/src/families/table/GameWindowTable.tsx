@@ -21,7 +21,8 @@ import type { BoundTrack } from '../../dashboard/model';
 import { TimeRegion, useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 import { DetailWindowHost } from '../host/DetailWindowHost';
 import type { AnyTableWidgetDeclaration } from './declaration.ts';
-import DeclaredTableWidget from './DeclaredTableWidget';
+import type { InstalledAction } from '../contract.ts';
+import { FamilyWidget } from '../host/registry';
 import './gameWindowTable.css';
 
 const NO_LINES: readonly string[] = [];
@@ -30,7 +31,7 @@ const WINDOW_BREAKDOWN = 'window';
 export interface GameWindowRow<S extends GameWindowSelection> {
   readonly kind: S['kind'];
   readonly select: (track: BoundTrack, key: string, meta: unknown, hour: number) => S | null;
-  readonly title: (meta: unknown) => string;
+  readonly label: string;
 }
 
 export interface GameWindowTableProps<S extends GameWindowSelection> extends WidgetProps {
@@ -51,7 +52,8 @@ export default function GameWindowTable<S extends GameWindowSelection>({ declara
   const [picked, setPicked] = useState<{ readonly scope: string; readonly key: string; readonly meta: unknown } | null>(null);
   const opened = picked?.scope === scope ? picked : null;
   const [inherited, setInherited] = useState<WindowPosition | null>(null);
-  const [shown, setShown] = useState<ShownWindow | null>(null);
+  const [shownFor, setShownFor] = useState<{ readonly key: string; readonly shown: ShownWindow } | null>(null);
+  const openedKey = useRef<string | null>(null);
   const [lines, setLines] = useState<readonly string[]>(NO_LINES);
   const onWindowDiagnostics = useCallback((next: string[]) =>
     setLines(prev => (prev.length === next.length && prev.every((line, i) => line === next[i]) ? prev : next)), []);
@@ -59,7 +61,7 @@ export default function GameWindowTable<S extends GameWindowSelection>({ declara
   const handOver = useCallback(() => {
     dispatch({ type: 'close' });
     setPicked(null);
-    setShown(null);
+    setShownFor(null);
     setInherited(null);
     setLines(NO_LINES);
   }, [dispatch]);
@@ -69,8 +71,8 @@ export default function GameWindowTable<S extends GameWindowSelection>({ declara
   }, [row.kind, slotOwner, handOver]);
   useEffect(() => close, [scope, close]);
 
-  const activate = useCallback((key: string, meta?: unknown, hour?: number) => {
-    if (!Window || !track || hour === undefined || row.select(track, key, meta, hour) === null) return;
+  const activate = useCallback(({ subject: key, meta, hour }: InstalledAction) => {
+    if (!Window || !track || row.select(track, key, meta, hour) === null) return;
     setInherited(claimGameWindowSlot(row.kind, slotOwner, handOver));
     setPicked({ scope, key, meta });
     dispatch({ type: 'open', breakdown: WINDOW_BREAKDOWN, hour, follow: drill.followsAt(hour) });
@@ -80,11 +82,18 @@ export default function GameWindowTable<S extends GameWindowSelection>({ declara
   const at = useRegionHour(runtime, drill.region, active && open);
   const shut = drill.gate.stage.stage !== 'open' && drill.gate.stage.stage !== 'unbound';
   const selection = open && track && at !== null ? row.select(track, opened.key, opened.meta, at) : null;
-  const title = opened ? row.title(opened.meta) : '';
+  openedKey.current = opened?.key ?? null;
+  const onShown = useCallback((next: ShownWindow | null) => {
+    const key = openedKey.current;
+    setShownFor(next && key !== null ? { key, shown: next } : null);
+  }, []);
+  const shown = opened && shownFor?.key === opened.key ? shownFor.shown : null;
+  const title = shown?.title ?? row.label;
 
   return <div ref={anchor} className="game-window-table">
-    <DeclaredTableWidget
+    <FamilyWidget
       {...props}
+      family="table"
       declaration={declaration}
       selectedKey={opened?.key ?? null}
       onActivate={Window ? activate : undefined}
@@ -114,7 +123,7 @@ export default function GameWindowTable<S extends GameWindowSelection>({ declara
             active={active}
             client={runtime.client}
             onDiagnostics={onWindowDiagnostics}
-            onShown={setShown}
+            onShown={onShown}
             onClose={close}
           /> : null}
       </TimeRegion>

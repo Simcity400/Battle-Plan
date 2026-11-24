@@ -35,6 +35,7 @@ fn an_idea_the_mod_cannot_draw_makes_the_recordings_own_choice_again() {
             .idea_artwork_offline("mod_spirit")
     });
     assert_eq!(first_pixel(art.0.icon.as_deref().unwrap()), RED);
+    assert_eq!(art.0.sprite.as_deref(), Some("GFX_idea_mod_picture"), "the sprite it was drawn from");
     assert_eq!(line, None, "without a selection nothing is named");
     let catalogue = crate::catalogue::catalogue(&source, &options).unwrap();
     let fresh = PoliticsContent::load(Arc::clone(&catalogue))

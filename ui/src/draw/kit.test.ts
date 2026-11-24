@@ -23,10 +23,12 @@ import {
   drawGapBand,
   drawGradientLegend,
   drawIconStrip,
+  drawLegendStrip,
   drawMissingMark,
   drawNameSlot,
   drawOutOfFigure,
   drawPartialTab,
+  drawProgressRing,
   drawRowHairline,
   drawRowHover,
   drawRowSelected,
@@ -35,10 +37,16 @@ import {
   drawSplitBar,
   drawStatusMark,
   drawStockpileSumCell,
+  drawThresholdMeter,
   drawTrackBar,
   drawTwoWayBar,
   drawWinRateCell,
   resolveKitTokens,
+  TIMELINE_LABEL_MIN_WIDTH,
+  computeTimeAxisTicks,
+  contrastInkForFill,
+  drawTimeAxis,
+  drawTimelineBar,
   winRateColor,
 } from './kit.ts';
 
@@ -90,6 +98,8 @@ function makeFakeCtx() {
       if (prev) Object.assign(this, prev);
     },
     beginPath() {},
+    closePath() {},
+    quadraticCurveTo() {},
     clip() {},
     moveTo(x: number, y: number) { ops.push({ op: 'moveTo', args: [x, y], alpha: this.globalAlpha, fillStyle: this.fillStyle, strokeStyle: this.strokeStyle }); },
     lineTo(x: number, y: number) { ops.push({ op: 'lineTo', args: [x, y], alpha: this.globalAlpha, fillStyle: this.fillStyle, strokeStyle: this.strokeStyle }); },
@@ -250,12 +260,83 @@ test('name slots report truncation, status marks use dots/rings, and date/missin
   assert.equal(tab.x, 10);
   const grad = drawGradientLegend(chromeCtx.ctx, 20, 14, '-100', '+100', ['#d95926', '#444444', '#199e70'], THEME);
   assert.ok(grad.width > 64);
+  const stripCtx = makeFakeCtx();
+  drawLegendStrip(stripCtx.ctx, 0, 0, 500, 26, {
+    gradient: { lowLabel: '0%', highLabel: '100%', stops: ['#d95926', '#199e70'] },
+    entries: [
+      { label: 'Not recorded', hatch: true },
+      { label: 'Unobserved', outlined: true },
+      { label: 'Limit', color: '#4f86f7', dash: [4, 2] },
+    ],
+    rightNote: 'As of 1 Jan 1940',
+    padX: 12,
+    hairline: true,
+  }, THEME);
+  const stripTexts = stripCtx.ops.filter(op => op.op === 'fillText').map(op => op.args[0]);
+  assert.ok(stripTexts.includes('Not recorded'));
+  assert.ok(stripTexts.includes('Unobserved'));
+  assert.ok(stripTexts.includes('Limit'));
+  assert.ok(stripTexts.includes('As of 1 Jan 1940'));
   const hoverTab = drawDateTab(chromeCtx.ctx, '1 Sep 1939', 100, 120, THEME, 'hover', { left: 10, right: 200 });
   assert.ok(hoverTab.width > 0);
   const tokens = resolveKitTokens(THEME);
   assert.equal(tokens.shortage, '#ff6b6f');
   assert.equal(tokens.dateTabBg, THEME.raised);
   assert.equal(tokens.hoverTabBg, THEME.text);
+
+  const meterCtx = makeFakeCtx();
+  drawThresholdMeter(meterCtx.ctx, 10, 18, 100, 8, 0.5, [
+    { at: 0.25, reached: true },
+    { at: 0.5, reached: true },
+    { at: 0.75, reached: false },
+    { at: 1.0, reached: false },
+  ], '#4f86f7', THEME);
+  assert.equal(meterCtx.ops.filter(op => op.op === 'moveTo').length, 3);
+  const missingMeter = makeFakeCtx();
+  drawThresholdMeter(missingMeter.ctx, 10, 18, 100, 8, null, [{ at: 0.5, reached: false }], '#4f86f7', THEME);
+  assert.equal(missingMeter.ops.filter(op => op.op === 'moveTo').length > 0, true);
+
+  const ringCtx = makeFakeCtx();
+  drawProgressRing(ringCtx.ctx, 12, 12, 6.2, 0.75, '#d0607c', THEME);
+  assert.equal(ringCtx.ops.filter(op => op.op === 'arc').length, 2);
+});
+
+test('timeline bars hide icon and name under the minimum width, mix ended items toward the surface, and the axis labels years or months', () => {
+  const bitmap = { width: 32, height: 32 } as unknown as CanvasImageSource;
+  const icon = { kind: 'ready', bitmap, width: 32, height: 32 } as const;
+  const narrow = makeFakeCtx();
+  const narrowRes = drawTimelineBar(narrow.ctx, { x: 10, y: 10, width: TIMELINE_LABEL_MIN_WIDTH - 1, height: 18, fill: '#3987e5', theme: THEME, open: true, icon, label: 'Free Trade' });
+  assert.deepEqual([narrowRes.showedIcon, narrowRes.label], [false, null]);
+
+  const wide = makeFakeCtx();
+  const wideRes = drawTimelineBar(wide.ctx, { x: 10, y: 10, width: 140, height: 18, fill: '#3987e5', theme: THEME, heldBefore: true, open: true, icon, label: 'Free Trade' });
+  assert.equal(wideRes.showedIcon, true);
+  assert.equal(wideRes.label?.text, 'Free Trade');
+  assert.ok(wide.ops.some(op => op.op === 'drawImage'));
+
+  const open = makeFakeCtx();
+  drawTimelineBar(open.ctx, { x: 0, y: 0, width: 40, height: 14, fill: '#3987e5', theme: THEME, open: true });
+  const ended = makeFakeCtx();
+  drawTimelineBar(ended.ctx, { x: 0, y: 0, width: 40, height: 14, fill: '#3987e5', theme: THEME, open: false });
+  const fillOf = (ops: ReturnType<typeof makeFakeCtx>['ops']) => ops.find(op => op.op === 'fill')?.fillStyle;
+  assert.notEqual(fillOf(open.ops), fillOf(ended.ops), 'an ended item is mixed toward the surface');
+
+  const h1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
+  const h1941 = engineHour({ year: 1941, month: 9, day: 15, hour: 1 })!;
+  const years = computeTimeAxisTicks(h1936, h1941, 600);
+  assert.deepEqual(years.map(tick => tick.label), ['1936', '1937', '1938', '1939', '1940', '1941']);
+  const h1937 = engineHour({ year: 1937, month: 1, day: 1, hour: 1 })!;
+  assert.ok(computeTimeAxisTicks(h1936, h1937, 600).some(tick => tick.label === 'Jul'), 'under two years the axis shows months');
+  const hWeek = engineHour({ year: 1936, month: 1, day: 8, hour: 1 })!;
+  const dayTicks = computeTimeAxisTicks(h1936, hWeek, 600);
+  assert.ok(dayTicks.some(tick => tick.label === '4 Jan'), 'short windows show days');
+  assert.ok(computeTimeAxisTicks(0, 167, 600, 24).length >= 2, 'non-calendar short windows still yield day ticks');
+
+  const axis = makeFakeCtx();
+  drawTimeAxis(axis.ctx, years, { plotLeft: 100, plotRight: 700, axisTop: 200, startHour: h1936, endHour: h1941, playhead: h1941, playheadLabel: '15 Sep 1941', theme: THEME });
+  const texts = axis.ops.filter(op => op.op === 'fillText').map(op => op.args[0]);
+  assert.ok(texts.includes('15 Sep 1941'));
+  assert.ok(!texts.includes('1941'), 'a year label under the playhead tab is dropped');
 });
 
 test('table cell kit primitives handle minimum bar width, win rate tinting, icon strips, actions, stockpile bars and clock summary', () => {
@@ -318,4 +399,9 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
     spanText: '1 Jan 1936 – 1 Jan 1940',
   }, THEME);
   assert.ok(clock.ops.some(op => op.op === 'fillText' && op.args[0] === '12:30:00'));
+
+  assert.equal(contrastInkForFill('#f4f6f9', THEME), 'rgba(17, 17, 17, 0.88)');
+  assert.equal(contrastInkForFill('#3987e5', THEME), 'rgba(255, 255, 255, 0.96)');
+  assert.equal(contrastInkForFill('#16181d', THEME), 'rgba(255, 255, 255, 0.96)');
+  assert.equal(contrastInkForFill('not-a-colour', THEME), THEME.text);
 });

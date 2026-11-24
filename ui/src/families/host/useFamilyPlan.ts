@@ -13,33 +13,40 @@ import { countryMatch, countryMatchChangeHours, groupUnobserved, membershipUnrec
 import { resolveWindow, type WidgetSpec } from '../../dashboard/model';
 import { resolveOptions, type OptionField, type OptionValue } from '../../dashboard/options';
 import { prepareGate, preparing } from '../../dashboard/prepare.ts';
-import { useFollowedProduct, useProduct } from '../../dashboard/products';
+import { useFollowedProduct, useFollowedProducts, useProduct } from '../../dashboard/products';
 import { asFailure, type Failure } from '../../dashboard/queryError.ts';
 import { useCountryNameAt } from '../../dashboard/reachedProduct';
 import { useGate } from '../../dashboard/regionGate';
-import { axisAt, lastRecordedHour, SPEC } from '../../dashboard/regionTime';
+import { axisAt, coverageSpan, lastRecordedHour, SPEC } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
+import { keyId, keyedTileParams, keyedTileReply, type SeriesKey } from '../../dashboard/keyedSeriesData.ts';
 import type { TileReply } from '../../dashboard/tiles/tile.ts';
-import { TileView, tileCache, unrecordedReason, type TiledLine, type TileViewport } from '../../dashboard/tiles/view.ts';
+import { TileView, tileCache, type TiledLine, type TileViewport } from '../../dashboard/tiles/view.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useRegion, useRegionCoverage, watchBoundary } from '../../dashboard/widgetTime';
 import type { CountryFlagChoice, HourSpan } from '../../generated/dashboard';
 import { perfLog } from '../../shell/perf.ts';
 import { sharedDomArtCache } from '../art/domCache.ts';
 import { createDomArtProvider } from '../art/provider.ts';
-import { createBoundedReadView, displayedHour } from '../boundedView.ts';
+import { boundedUnrecorded, createBoundedReadView, displayedHour, type UnrecordedLine } from '../boundedView.ts';
 import {
+  boundedEntries,
   buildPlaybackBoundedRequest,
   buildStaticRequest,
   compileFollowPlan,
+  composeProof,
+  currentHovers,
   FamilySourceBroker,
-  needsPlaybackBoundedRead,
+  hoverAsks,
+  type HeldHover,
   planSignature,
+  playbackIdleInterval,
   primaryStaticEntry,
   readPlanExact,
   resolvePlaybackProvenInterval,
   stabilizeCanvasDimension,
   type PlaybackBoundedSpec,
+  type StaticRequestSpec,
 } from '../broker.ts';
 import type { HolderRun } from '../holders.ts';
 import { overlapsHourRanges } from '../holders.ts';
@@ -67,6 +74,7 @@ import type {
   FamilyPlanContext,
   FamilyViewportRequest,
   IdentityProvider,
+  SourceEntry,
   SourcePlan,
 } from '../plan.ts';
 import {
@@ -113,6 +121,26 @@ function buildFilterTimeline(
   }
   return { passing, unrecorded, bounds };
 }
+
+interface BoundRead {
+  readonly entry: SourceEntry;
+  readonly anchorHour: number | null;
+  readonly span: readonly [number, number] | null;
+  readonly data: unknown;
+}
+
+interface BoundBatch {
+  readonly reads: readonly BoundRead[];
+  readonly failure: Failure | null;
+}
+
+const NO_SPECS: readonly (StaticRequestSpec | null)[] = [];
+
+function askedHour(spec: StaticRequestSpec | PlaybackBoundedSpec | null): number | null {
+  return spec && 'anchorHour' in spec ? spec.anchorHour : null;
+}
+
+const NO_ANCHORS: Readonly<Record<string, number>> = Object.freeze({});
 
 export interface StaticBundle {
   readonly hour: number;
@@ -287,8 +315,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const auxEnabled = !!auxSpec && (!auxSpec.when || auxSpec.when(options));
   const auxParams = useMemo(
-    () => (auxSpec && auxEnabled && track ? auxSpec.params(track, options) : null),
-    [auxSpec, auxEnabled, track, options],
+    () => (auxSpec && auxEnabled && track ? auxSpec.params(track, options, countryTag) : null),
+    [auxSpec, auxEnabled, track, options, countryTag],
   );
   const auxReq = useMemo(
     () => (auxSpec && auxParams && track
@@ -453,6 +481,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     flagSize: 'panel',
     branchBounds,
   });
+  const identityRevision = identityState.index?.resolveRevision() ?? -1;
   useEffect(() => {
     if (!active || !wantsLabels || !identityScope || !track || !identityState.index?.hasFacts()) return;
     const seen = new Set<string>();
@@ -476,7 +505,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       }
     }
     if (choices.length) identityBrokerFor(runtime.client).requestFlagChoices(identityScope, 'panel', choices, track.source);
-  }, [active, wantsLabels, identityScope, runtime.client, track, identityState.index, identityState.version, labelTags, firstHour, lastHour]);
+  }, [active, wantsLabels, identityScope, runtime.client, track, identityState.index, identityRevision, labelTags, firstHour, lastHour]);
 
   const builtLooks = useMemo(
     () => (wantsLabels ? buildCountryLooksFromIdentity(identityState.index, labelTags, firstHour, lastHour, identityState.flagFor, wantsColours) : NO_LOOKS),
@@ -603,7 +632,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     if (!entries.length) return '';
     return JSON.stringify(entries.map(e => {
       const r = e.read as Extract<typeof e.read, { shape: 'pixel-binned' }>;
-      return [e.name, e.source.id, e.source.revision, e.branch, r.family, r.tags, r.within ? [...r.within.entries()] : null, r.marks === true, lastHour];
+      return [e.name, e.source.id, e.source.revision, e.branch, r.family, r.tags, r.keys ?? null, r.within ? [...r.within.entries()] : null, r.marks === true, r.top ?? null, lastHour];
     }));
   }, [plan, lastHour]);
 
@@ -614,13 +643,15 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     readonly series: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
     readonly revision: number;
     readonly error: unknown;
-    readonly unrecorded: string | null;
-  }>({ key: '', series: {}, revision: 0, error: null, unrecorded: null });
+    readonly topRefused?: string | null;
+  }>({ key: '', series: {}, revision: 0, error: null });
 
   const planForTilesRef = useRef(plan);
   planForTilesRef.current = plan;
   const gateSpanRef = useRef(gate.span);
   gateSpanRef.current = gate.span;
+  const gateRecordedRef = useRef(gate.recorded);
+  gateRecordedRef.current = gate.recorded;
 
   useEffect(() => {
     const currentPlan = planForTilesRef.current;
@@ -640,19 +671,14 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       if (disposed) return;
       const nextSeries: Record<string, ReadonlyMap<string, TiledLine>> = {};
       let firstError: unknown = null;
-      let firstUnrecorded: string | null = null;
+      let topRefused: string | null = null;
       for (const [name, tv] of views) {
-        if (tv.current) {
-          nextSeries[name] = tv.current;
-          if (!firstUnrecorded) {
-            const reason = unrecordedReason(tv.current);
-            if (reason) firstUnrecorded = reason;
-          }
-        }
+        if (tv.current) nextSeries[name] = tv.current;
         if (firstError === null && tv.error !== null) firstError = tv.error;
+        topRefused ??= tv.top?.refused ?? null;
       }
       rev++;
-      const snapshot = { key: pixelBinnedKey, series: nextSeries, revision: rev, error: firstError, unrecorded: firstUnrecorded };
+      const snapshot = { key: pixelBinnedKey, series: nextSeries, revision: rev, error: firstError, topRefused };
       inFrame(() => {
         if (!disposed) setTiledState(snapshot);
       });
@@ -661,33 +687,62 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     const prepared = preparing(runtime.client);
     for (const entry of entries) {
       const read = entry.read;
-      if (!read.tags.length) continue;
+      const keyed = read.keys && read.keys.length > 0 ? read.keys : null;
+      if (!keyed && !read.tags.length && !read.top) continue;
+      const byId = keyed ? new Map<string, SeriesKey>(keyed.map(key => [keyId(key), key])) : null;
+      const laneTags = keyed ? keyed.map(keyId) : read.tags;
       const tileRequest = (binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined): ProductRequest =>
         productRequest({
           sourceId: entry.source.id,
           revision: entry.source.revision,
           product: 'series-tiles',
-          params: {
-            branchId: entry.branch,
-            family: read.family,
-            binHours,
-            index,
-            countries: tags.map(countryFromKey),
-            ...(within
-              ? { within: tags.map(tag => [countryFromKey(tag), (within[tag] ?? []).flatMap(span => gateSpanRef.current(span.firstHour, span.lastHour) ?? [])] as const) }
-              : {}),
-            ...(read.marks ? { withMarks: true } : {}),
-          },
+          params: keyed && byId
+            ? {
+                branchId: entry.branch,
+                family: read.family,
+                binHours,
+                index,
+                ...keyedTileParams(tags.map(id => byId.get(id)!), within, gateSpanRef.current),
+                ...(read.marks ? { withMarks: true } : {}),
+              }
+            : {
+                branchId: entry.branch,
+                family: read.family,
+                binHours,
+                index,
+                countries: tags.map(countryFromKey),
+                ...(within
+                  ? { within: tags.map(tag => [countryFromKey(tag), (within[tag] ?? []).flatMap(span => gateSpanRef.current(span.firstHour, span.lastHour) ?? [])] as const) }
+                  : {}),
+                ...(read.marks ? { withMarks: true } : {}),
+              },
         });
       const ask = async (binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined) => {
         const request = tileRequest(binHours, index, tags, within);
-        return validateProductReply(await runtime.client.product<TileReply>(request, new AbortController().signal), request).data;
+        const reply = validateProductReply(await runtime.client.product<TileReply>(request, new AbortController().signal), request).data;
+        return keyed && byId ? keyedTileReply(reply as Parameters<typeof keyedTileReply>[0], tags.map(id => byId.get(id)!)) : reply;
       };
       const promote = prepared ? (...asked: Parameters<typeof tileRequest>) => prepareGate(runtime.client).promote(tileRequest(...asked)) : undefined;
-      const laneKey = `${entry.source.id}|${entry.source.revision}|${entry.branch}|${JSON.stringify(read.family)}`;
+      const laneKey = `${entry.source.id}|${entry.source.revision}|${entry.branch}|${JSON.stringify(read.family)}${keyed ? '|keyed' : ''}`;
+      const readTop = read.top;
+      const top = readTop
+        ? {
+            ask: async (binHours: number, index: number, hour: number) => {
+              const gated = gateRecordedRef.current(hour);
+              if (gated === null) throw new Error('The displayed hour is outside the recording.');
+              const request = productRequest({
+                sourceId: entry.source.id,
+                revision: entry.source.revision,
+                product: 'series-tiles',
+                params: { branchId: entry.branch, family: read.family, binHours, index, top: readTop.n, ...(readTop.least ? { least: true } : {}), hour: gated, ...(read.marks ? { withMarks: true } : {}) },
+              });
+              return validateProductReply(await runtime.client.product<TileReply>(request, new AbortController().signal), request).data;
+            },
+          }
+        : undefined;
       const tv = new TileView(
         tileCache(runtime.client),
-        { key: laneKey, tags: read.tags, within: read.within, lastHour, marks: read.marks === true, ask, prepared, promote },
+        { key: laneKey, tags: laneTags, within: read.within, lastHour, marks: read.marks === true, ask, prepared, promote, ...(top ? { top } : {}) },
         publish,
       );
       views.set(entry.name, tv);
@@ -711,39 +766,38 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }, []);
 
   const hoverBrokerRef = useRef<FamilySourceBroker | null>(null);
-  const [hovers, setHovers] = useState<Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>>({});
+  const [heldHovers, setHeldHovers] = useState<Readonly<Record<string, HeldHover>>>({});
+  const asks = useMemo(() => (active && plan ? hoverAsks(plan, hoverHour) : []), [active, plan, hoverHour]);
+  const hovers = useMemo(() => currentHovers(asks, heldHovers), [asks, heldHovers]);
+  const hoverSlotsRef = useRef<ReadonlySet<string>>(new Set());
 
   useEffect(() => {
     if (!hoverBrokerRef.current) hoverBrokerRef.current = new FamilySourceBroker();
     const broker = hoverBrokerRef.current;
-    const entries = active && plan
-      ? plan.entries.filter((e): e is typeof e & { readonly read: Extract<typeof e.read, { shape: 'exact-hover' }> } => e.read.shape === 'exact-hover')
-      : [];
-    if (!entries.length || hoverHour === null || hoverHour === undefined || !Number.isFinite(hoverHour)) {
-      for (const e of entries) broker.cancelSlot(`hover:${e.name}`);
-      setHovers(prev => (Object.keys(prev).length ? {} : prev));
-      return;
-    }
-    const targetHour = Math.floor(hoverHour);
-    for (const entry of entries) {
-      const read = entry.read;
-      if (!read.params) continue;
-      const params = { ...read.params, [read.hourParam ?? 'hour']: targetHour };
-      const req = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params });
-      const key = `${entry.source.id}|${entry.source.revision}|${entry.branch}|${read.product}|${JSON.stringify(params)}`;
+    const names = new Set(asks.map(ask => ask.name));
+    for (const name of hoverSlotsRef.current) if (!names.has(name)) broker.cancelSlot(`hover:${name}`);
+    hoverSlotsRef.current = names;
+    setHeldHovers(prev => {
+      const gone = Object.keys(prev).filter(name => !names.has(name));
+      if (!gone.length) return prev;
+      const kept = { ...prev };
+      for (const name of gone) delete kept[name];
+      return kept;
+    });
+    for (const ask of asks) {
       broker.runSlot(
-        `hover:${entry.name}`,
-        key,
+        `hover:${ask.name}`,
+        ask.key,
         async signal => {
-          const reply = validateProductReply(await runtime.client.product(req, signal), req);
-          return read.validate ? read.validate(reply.data) : reply.data;
+          const reply = validateProductReply(await runtime.client.product(ask.request, signal), ask.request);
+          return ask.validate ? ask.validate(reply.data) : reply.data;
         },
         data => {
-          setHovers(prev => ({ ...prev, [entry.name]: { hour: targetHour, data } }));
+          setHeldHovers(prev => ({ ...prev, [ask.name]: { key: ask.key, hour: ask.hour, data } }));
         },
       );
     }
-  }, [active, plan, hoverHour, runtime.client]);
+  }, [asks, runtime.client]);
 
   useEffect(() => () => {
     hoverBrokerRef.current?.dispose();
@@ -751,47 +805,138 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }, []);
 
   const currentTiled = tiledState.key === pixelBinnedKey ? tiledState : null;
+  const trackOffset = track?.axisOffset ?? 0;
 
-  const playbackBounded = following && needsPlaybackBoundedRead(plan, compiledFollow.subscriptions);
+  const [tileClockHour, setTileClockHour] = useState<number>(() => Math.floor(runtime.clock.getHour()) + trackOffset);
+  const tileSeenHour = useMemo(
+    () => Math.floor(runtime.clock.getHour()) + trackOffset,
+    [currentTiled, tileClockHour, runtime.clock, trackOffset],
+  );
+  const tileHour = following ? tileSeenHour : Math.floor(pinHour ?? window?.lastHour ?? effectiveEndHour);
+  useEffect(() => {
+    const tops = [...tileViewsRef.current.values()].filter(tv => tv.isTop);
+    if (!active || !tops.length) return;
+    const now = () => (following ? Math.floor(runtime.clock.getHour()) + trackOffset : tileHour);
+    for (const tv of tops) tv.setHour(now());
+    if (!following) return;
+    const proof = (): readonly [number, number] => {
+      let lo = -Infinity;
+      let hi = Infinity;
+      for (const tv of tops) {
+        const held = tv.top;
+        lo = Math.max(lo, held ? held.from : now());
+        hi = Math.min(hi, held ? held.until : now());
+      }
+      return [lo - trackOffset, hi + 1 - trackOffset];
+    };
+    return watchBoundary(runtime.clock, proof, () => { for (const tv of tops) tv.setHour(now()); });
+  }, [active, following, tileHour, pixelBinnedKey, currentTiled?.revision, runtime.clock, trackOffset]);
+  const tileUnrecorded = useMemo(() => {
+    if (!currentTiled) return null;
+    const lines: UnrecordedLine[] = [];
+    for (const series of Object.values(currentTiled.series)) for (const line of series.values()) lines.push(line);
+    return lines.length ? boundedUnrecorded(lines, tileHour) : null;
+  }, [currentTiled, tileHour]);
+  const tileLo = tileUnrecorded?.validInterval[0];
+  const tileHi = tileUnrecorded?.validInterval[1];
+  useEffect(() => {
+    if (!following || !active || tileLo === undefined || tileHi === undefined) return;
+    const now = Math.floor(runtime.clock.getHour()) + trackOffset;
+    if (now < tileLo || now > tileHi) {
+      setTileClockHour(now);
+      return;
+    }
+    if (tileLo === -Infinity && tileHi === Infinity) return;
+    return watchBoundary(
+      runtime.clock,
+      () => [tileLo - trackOffset, tileHi + 1 - trackOffset],
+      () => { setTileClockHour(Math.floor(runtime.clock.getHour()) + trackOffset); },
+    );
+  }, [following, active, runtime.clock, trackOffset, tileLo, tileHi]);
+
+  const bounded = useMemo(
+    () => boundedEntries(plan, following, compiledFollow.subscriptions),
+    [plan, following, compiledFollow.subscriptions],
+  );
+  const singleEntry = bounded[0] ?? null;
+  const batchEntries = useMemo(() => bounded.slice(1), [bounded]);
+  const playbackBounded = following && bounded.length > 0;
   const usesStatic = !following || playbackBounded;
   const frozenGate = useMemo(
-    () => freezeGate(gate),
+    () => freezeGate(gate, track ? (hour: number) => coverageSpan(track, hour) : undefined),
     [gate.open, track, countryTag, singleCountry?.aliases, singleCountry?.historyHeld],
   );
 
-  const trackOffset = track?.axisOffset ?? 0;
   const [playbackAnchorHour, setPlaybackAnchorHour] = useState<number>(() => Math.floor(runtime.clock.getHour()) + trackOffset);
-  const playbackProvenRef = useRef<{ sig: string; interval: readonly [number, number]; anchorHour: number } | null>(null);
-  if (playbackProvenRef.current && playbackProvenRef.current.sig !== sig) {
-    playbackProvenRef.current = null;
-  }
+  const [entryAnchorState, setEntryAnchors] = useState<{ readonly sig: string; readonly anchors: Readonly<Record<string, number>> }>({ sig: '', anchors: NO_ANCHORS });
+  const entryAnchors = entryAnchorState.sig === sig ? entryAnchorState.anchors : NO_ANCHORS;
+  const firstAnchorsRef = useRef<{ sig: string; anchors: Record<string, number> }>({ sig: '', anchors: {} });
+  if (firstAnchorsRef.current.sig !== sig) firstAnchorsRef.current = { sig, anchors: {} };
+  const anchorOf = (name: string): number => entryAnchors[name] ?? (firstAnchorsRef.current.anchors[name] ??= playbackAnchorHour);
 
-  const playbackSpec = useMemo<PlaybackBoundedSpec | null>(() => {
-    if (!playbackBounded || !plan || !ctx) return null;
-    const held = playbackProvenRef.current?.sig === sig ? playbackProvenRef.current : null;
-    return buildPlaybackBoundedRequest(plan, {
-      branch: ctx.branch,
-      effectiveEndHour,
-      currentHour: playbackAnchorHour,
-      gate: frozenGate,
-      previousProven: held?.interval ?? null,
-      previousAnchorHour: held?.anchorHour ?? null,
-      countriesKnown: countriesState.known,
-    });
-  }, [playbackBounded, plan, ctx, sig, effectiveEndHour, playbackAnchorHour, frozenGate, countriesState.known]);
+  const playbackOptions = useMemo(
+    () => (ctx ? { branch: ctx.branch, effectiveEndHour, currentHour: playbackAnchorHour, gate: frozenGate, countriesKnown: countriesState.known } : null),
+    [ctx, effectiveEndHour, playbackAnchorHour, frozenGate, countriesState.known],
+  );
+  const pinnedOptions = useMemo(
+    () => (ctx ? { timeMode: widget.time.mode, branch: ctx.branch, window, pinHour, gate: frozenGate, countriesKnown: countriesState.known } : null),
+    [ctx, widget.time.mode, window, pinHour, frozenGate, countriesState.known],
+  );
 
-  const staticSpec = useMemo(() => {
+  const playbackSpec = useMemo<PlaybackBoundedSpec | null>(
+    () => (playbackBounded && playbackOptions ? buildPlaybackBoundedRequest(singleEntry, playbackOptions) : null),
+    [playbackBounded, playbackOptions, singleEntry],
+  );
+
+  const staticSpec = useMemo<StaticRequestSpec | null>(() => {
     if (!plan || !ctx) return null;
     if (following) return playbackSpec;
-    return buildStaticRequest(plan, {
-      timeMode: widget.time.mode,
-      branch: ctx.branch,
-      window,
-      pinHour,
-      gate: frozenGate,
-      countriesKnown: countriesState.known,
-    });
-  }, [following, playbackSpec, plan, ctx, widget.time.mode, window, pinHour, frozenGate, countriesState.known]);
+    return pinnedOptions ? buildStaticRequest(singleEntry, pinnedOptions) : null;
+  }, [following, playbackSpec, plan, ctx, pinnedOptions, singleEntry]);
+
+  const batchSpecs = useMemo<readonly (StaticRequestSpec | PlaybackBoundedSpec | null)[]>(() => {
+    if (!batchEntries.length) return NO_SPECS;
+    if (following) {
+      return playbackBounded && playbackOptions
+        ? batchEntries.map(entry => buildPlaybackBoundedRequest(entry, { ...playbackOptions, currentHour: anchorOf(entry.name) }))
+        : NO_SPECS;
+    }
+    return pinnedOptions ? batchEntries.map(entry => buildStaticRequest(entry, pinnedOptions)) : NO_SPECS;
+  }, [batchEntries, following, playbackBounded, playbackOptions, pinnedOptions, entryAnchors]);
+  const batchLive = useMemo(() => batchSpecs.filter((spec): spec is StaticRequestSpec => spec !== null), [batchSpecs]);
+  const batchRequests = useMemo(() => batchLive.map(spec => spec.request), [batchLive]);
+  const batchMoving = useMemo(() => [...new Set(batchLive.flatMap(spec => spec.dynamicKeys))], [batchLive]);
+  const batchProduct = useFollowedProducts<unknown>(
+    runtime.client,
+    batchRequests,
+    batchMoving,
+    active && usesStatic && batchLive.length > 0,
+    undefined,
+    track?.source,
+  );
+  const batchAskedRef = useRef(new Map<string, { readonly specs: readonly StaticRequestSpec[] }>());
+  if (usesStatic && batchLive.length) {
+    batchAskedRef.current.set(JSON.stringify(batchRequests), { specs: batchLive });
+    if (batchAskedRef.current.size > 32) batchAskedRef.current.delete(batchAskedRef.current.keys().next().value!);
+  }
+  const displayedBatch = useMemo<BoundBatch | null>(() => {
+    if (!usesStatic || !batchLive.length || !batchProduct.data || !batchProduct.requests) return null;
+    const asked = batchAskedRef.current.get(JSON.stringify(batchProduct.requests));
+    if (!asked || asked.specs.length !== batchProduct.data.length) return null;
+    try {
+      return {
+        reads: asked.specs.map((spec, index) => ({
+          entry: spec.entry,
+          anchorHour: askedHour(spec),
+          span: spec.span,
+          data: spec.validate ? spec.validate(batchProduct.data![index]) : batchProduct.data![index],
+        })),
+        failure: null,
+      };
+    } catch (error) {
+      return { reads: [], failure: asFailure(error) };
+    }
+  }, [usesStatic, batchLive.length, batchProduct.data, batchProduct.requests]);
 
   const staticValidate = useCallback((raw: unknown) => {
     return staticSpec?.validate ? staticSpec.validate(raw) : raw;
@@ -806,40 +951,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     staticValidate,
     track?.source,
   );
-
-  const activeProven = useMemo<readonly [number, number] | null>(() => {
-    if (!playbackBounded || !playbackSpec) return null;
-    if (staticProduct.data !== undefined) {
-      return resolvePlaybackProvenInterval(
-        playbackSpec.entry.read,
-        staticProduct.data,
-        playbackSpec.provenInterval,
-        playbackSpec.anchorHour,
-      );
-    }
-    return playbackSpec.provenInterval;
-  }, [playbackBounded, playbackSpec, staticProduct.data]);
-
-  if (playbackBounded && playbackSpec && activeProven) {
-    playbackProvenRef.current = { sig, interval: activeProven, anchorHour: playbackSpec.anchorHour };
-  }
-
-  useEffect(() => {
-    if (!active || !playbackBounded || !track || !activeProven) return;
-    const [lo, hi] = activeProven;
-    const nowHour = Math.floor(runtime.clock.getHour()) + trackOffset;
-    if (nowHour < lo || nowHour > hi) {
-      setPlaybackAnchorHour(prev => (prev === nowHour ? prev : nowHour));
-    }
-    return watchBoundary(
-      runtime.clock,
-      () => [lo - trackOffset, hi + 1 - trackOffset],
-      () => {
-        const next = Math.floor(runtime.clock.getHour()) + trackOffset;
-        setPlaybackAnchorHour(prev => (prev === next ? prev : next));
-      },
-    );
-  }, [active, playbackBounded, track, trackOffset, runtime.clock, activeProven?.[0], activeProven?.[1]]);
 
   const staticReqKey = useMemo(() => (staticSpec ? JSON.stringify(staticSpec.request) : null), [staticSpec]);
   const expectedStaticKey = useMemo(() => {
@@ -863,22 +974,24 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   interface FrozenPlanExtra {
     readonly plan: SourcePlan | null;
+    readonly entry: SourceEntry | null;
     readonly countryLooks: CountryLooksMap | undefined;
     readonly extra: TExtra | undefined;
   }
 
   const currentFrozenExtra = useMemo<FrozenPlanExtra>(
-    () => ({ plan, countryLooks: currentCountryLooks, extra: currentExtra }),
-    [plan, currentCountryLooks, currentExtra],
+    () => ({ plan, entry: staticSpec?.entry ?? null, countryLooks: currentCountryLooks, extra: currentExtra }),
+    [plan, staticSpec?.entry, currentCountryLooks, currentExtra],
   );
 
   const pendingStaticByMomentRef = useRef(
-    new Map<string, { readonly requestKey: string | null; readonly context: FamilyPlanContext<TAux>; readonly gate: FrozenGate; readonly span: readonly [number, number] | null; readonly extra: FrozenPlanExtra }>(),
+    new Map<string, { readonly requestKey: string | null; readonly anchorHour: number | null; readonly context: FamilyPlanContext<TAux>; readonly gate: FrozenGate; readonly span: readonly [number, number] | null; readonly extra: FrozenPlanExtra }>(),
   );
   if (usesStatic && staticSpec && ctxWithStaticSpan) {
     const key = expectedStaticKey ?? '__single__';
     pendingStaticByMomentRef.current.set(key, {
       requestKey: staticReqKey,
+      anchorHour: playbackSpec?.anchorHour ?? null,
       context: ctxWithStaticSpan,
       gate: frozenGate,
       span: staticSpec.span,
@@ -905,6 +1018,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       data: staticProduct.data,
       moment: staticProduct.moment,
       requestKey: satisfiesCurrent ? staticReqKey : (matched?.requestKey ?? staticReqKey),
+      anchorHour: satisfiesCurrent ? (playbackSpec?.anchorHour ?? null) : (matched?.anchorHour ?? null),
       satisfiesCurrent,
       requestedSpan: requested,
       context: sourceCtx,
@@ -913,55 +1027,159 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     });
     displayedStaticRef.current = next;
     return next;
-  }, [usesStatic, staticSpec, staticReqKey, staticHeld, staticProduct.data, staticProduct.moment, ctxWithStaticSpan, frozenGate, currentFrozenExtra]);
+  }, [usesStatic, staticSpec, staticReqKey, staticHeld, staticProduct.data, staticProduct.moment, ctxWithStaticSpan, frozenGate, currentFrozenExtra, playbackSpec]);
 
+  const singleRead = useMemo<BoundRead | null>(() => {
+    if (!displayedStatic) return null;
+    const entry = displayedStatic.extra.entry;
+    return entry ? { entry, anchorHour: displayedStatic.anchorHour, span: displayedStatic.span, data: displayedStatic.data } : null;
+  }, [displayedStatic]);
+
+  const boundReads = useMemo<readonly BoundRead[] | null>(() => {
+    if (!usesStatic) return null;
+    const wantSingle = staticSpec !== null;
+    const wantBatch = batchLive.length > 0;
+    if (!wantSingle && !wantBatch) return null;
+    if (wantSingle && !singleRead) return null;
+    if (wantBatch && (!displayedBatch || displayedBatch.failure)) return null;
+    return [...(wantSingle ? [singleRead!] : []), ...(wantBatch ? displayedBatch!.reads : [])];
+  }, [usesStatic, staticSpec, batchLive.length, singleRead, displayedBatch]);
+
+  const readProofs = useMemo<ReadonlyMap<string, readonly [number, number]>>(() => {
+    const proofs = new Map<string, readonly [number, number]>();
+    if (!playbackBounded || !boundReads) return proofs;
+    for (const read of boundReads) {
+      if (read.anchorHour === null) continue;
+      proofs.set(read.entry.name, resolvePlaybackProvenInterval(read.entry.read, read.data, { anchorHour: read.anchorHour, span: read.span }, effectiveEndHour));
+    }
+    return proofs;
+  }, [playbackBounded, boundReads, effectiveEndHour]);
+
+  const boundProof = useMemo<readonly [number, number] | null>(() => {
+    if (!playbackBounded || !boundReads) return null;
+    const readings: { anchorHour: number; proof: readonly [number, number] }[] = [];
+    for (const read of boundReads) {
+      const proof = readProofs.get(read.entry.name);
+      if (read.anchorHour === null || !proof) return null;
+      readings.push({ anchorHour: read.anchorHour, proof });
+    }
+    return composeProof(readings);
+  }, [playbackBounded, boundReads, readProofs]);
+  const boundAnchor = boundProof ? boundProof[0] : null;
+
+  const entryWatches = useMemo<readonly { readonly name: string; readonly single: boolean; readonly lo: number; readonly hi: number }[] | null>(() => {
+    if (!playbackBounded || !playbackOptions) return null;
+    const watches: { name: string; single: boolean; lo: number; hi: number }[] = [];
+    bounded.forEach((entry, index) => {
+      const spec = index === 0 ? playbackSpec : batchSpecs[index - 1] ?? null;
+      const asked = index === 0 ? playbackAnchorHour : anchorOf(entry.name);
+      if (spec === null) {
+        const [lo, hi] = playbackIdleInterval(entry, { ...playbackOptions, currentHour: asked });
+        watches.push({ name: entry.name, single: index === 0, lo, hi });
+        return;
+      }
+      const read = boundReads?.find(candidate => candidate.entry.name === entry.name);
+      const proof = readProofs.get(entry.name);
+      if (!read || !proof || read.anchorHour !== askedHour(spec)) return;
+      watches.push({ name: entry.name, single: index === 0, lo: proof[0], hi: proof[1] });
+    });
+    return watches;
+  }, [playbackBounded, playbackOptions, bounded, playbackSpec, batchSpecs, playbackAnchorHour, entryAnchors, boundReads, readProofs]);
+  const watchKey = entryWatches ? JSON.stringify(entryWatches.map(watch => [watch.name, watch.lo, watch.hi])) : '';
+  const entryWatchesRef = useRef(entryWatches);
+  entryWatchesRef.current = entryWatches;
+
+  useEffect(() => {
+    const watches = entryWatchesRef.current;
+    if (!active || !track || !watches || !watches.length) return;
+    const reanchor = () => {
+      const now = Math.floor(runtime.clock.getHour()) + trackOffset;
+      const moved: Record<string, number> = {};
+      let any = false;
+      for (const watch of entryWatchesRef.current ?? []) {
+        if (now >= watch.lo && now <= watch.hi) continue;
+        if (watch.single) setPlaybackAnchorHour(prev => (prev === now ? prev : now));
+        else { moved[watch.name] = now; any = true; }
+      }
+      if (any) {
+        setEntryAnchors(prev => {
+          const base = prev.sig === sig ? prev.anchors : NO_ANCHORS;
+          return { sig, anchors: { ...base, ...moved } };
+        });
+      }
+    };
+    let lo = -Infinity;
+    let hi = Infinity;
+    for (const watch of watches) {
+      lo = Math.max(lo, watch.lo);
+      hi = Math.min(hi, watch.hi);
+    }
+    const now = Math.floor(runtime.clock.getHour()) + trackOffset;
+    if (now < lo || now > hi) {
+      reanchor();
+      return;
+    }
+    if (lo === -Infinity && hi === Infinity) return;
+    return watchBoundary(runtime.clock, () => [lo - trackOffset, hi + 1 - trackOffset], reanchor);
+  }, [active, track, trackOffset, runtime.clock, watchKey, sig]);
+
+  const heldBundleRef = useRef<{ readonly sig: string; readonly bundle: StaticBundle } | null>(null);
   const staticBundle = useMemo<StaticBundle | null>(() => {
-    if (!usesStatic || !displayedStatic) return null;
-    const frozenPlan = displayedStatic.extra.plan ?? plan;
-    const entry = frozenPlan ? primaryStaticEntry(frozenPlan) : null;
-    const read = entry?.read;
-    const entryName = entry?.name ?? 'main';
-    let shownHour = playbackBounded ? Math.max(firstHour, Math.min(effectiveEndHour, playbackAnchorHour)) : (pinHour ?? effectiveEndHour);
+    const held = heldBundleRef.current?.sig === sig ? heldBundleRef.current.bundle : null;
+    if (!usesStatic) return null;
+    if (!boundReads) return held;
+    if (playbackBounded && (boundAnchor === null || !boundProof)) return held;
+    const first = boundReads[0]!;
+    const read = first.entry.read;
+    let shownHour = playbackBounded && boundAnchor !== null ? boundAnchor : (pinHour ?? Math.floor(window?.lastHour ?? effectiveEndHour));
     let shownSpan: readonly [number, number] | null = null;
     if (!playbackBounded) {
-      if (read?.shape === 'point') {
-        if (read.channel === 'panel' && !read.exactProduct && displayedStatic.moment) {
+      if (read.shape === 'point') {
+        if (read.channel === 'panel' && !read.exactProduct && displayedStatic?.moment && first === singleRead) {
           try {
             const parsed = JSON.parse(displayedStatic.moment) as number[];
             if (typeof parsed[0] === 'number') shownHour = parsed[0];
           } catch {
           }
-        } else if (typeof (displayedStatic.data as { hour?: unknown }).hour === 'number') {
-          shownHour = (displayedStatic.data as { hour: number }).hour;
+        } else if (typeof (first.data as { hour?: unknown } | null)?.hour === 'number') {
+          shownHour = (first.data as { hour: number }).hour;
         }
-      } else if (read?.shape === 'branch-to-hour' || read?.shape === 'trailing-window' || read?.shape === 'range') {
-        shownSpan = displayedStatic.span;
-        if (shownSpan) shownHour = shownSpan[1];
+      } else if (first.span) {
+        shownSpan = first.span;
+        shownHour = first.span[1];
       }
     } else {
-      shownSpan = activeProven ?? displayedStatic.span;
+      shownSpan = first.span;
     }
-    const isLivePanel = read?.shape === 'point' && read.channel === 'panel' && !read.exactProduct;
-    const live = isLivePanel
-      ? new Map([[entryName, repliedCells(displayedStatic.data).read()]])
-      : new Map();
-    const panelsMap = new Map([[entryName, displayedStatic.data]]);
-    return {
+    const panels: Record<string, unknown> = {};
+    const panelsMap = new Map<string, unknown>();
+    const live = new Map<string, ReturnType<ReturnType<typeof repliedCells>['read']>>();
+    for (const bound of boundReads) {
+      panels[bound.entry.name] = bound.data;
+      panelsMap.set(bound.entry.name, bound.data);
+      const boundShape = bound.entry.read;
+      if (boundShape.shape === 'point' && boundShape.channel === 'panel' && !boundShape.exactProduct) {
+        live.set(bound.entry.name, repliedCells(bound.data).read());
+      }
+    }
+    const bundle: StaticBundle = {
       hour: shownHour,
       span: shownSpan,
-      ...(activeProven ? { provenInterval: activeProven } : {}),
+      ...(boundProof ? { provenInterval: boundProof } : {}),
       ...(playbackBounded ? { follows: true } : {}),
-      panels: { [entryName]: displayedStatic.data },
+      panels,
       readView: createBoundedReadView({
         hour: displayedHour(shownHour),
-        ...(activeProven ? { validInterval: activeProven } : {}),
+        ...(boundProof ? { validInterval: boundProof } : {}),
         panels: panelsMap,
         live,
         identity: identityProvider,
         art: artProvider,
       }),
     };
-  }, [usesStatic, playbackBounded, displayedStatic, plan, firstHour, effectiveEndHour, playbackAnchorHour, pinHour, activeProven, identityProvider, artProvider]);
+    heldBundleRef.current = { sig, bundle };
+    return bundle;
+  }, [usesStatic, playbackBounded, boundReads, displayedStatic, singleRead, boundAnchor, boundProof, sig, effectiveEndHour, pinHour, window, identityProvider, artProvider]);
 
   const retainedStaticSpan = staticBundle?.span ?? null;
   const displayedCtx = useMemo<FamilyPlanContext<TAux> | null>(() => {
@@ -999,6 +1217,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }, [displayedCtx, displayedPlan, displayedGate, runtime.client, following, widget.time.mode, window, identityProvider, artProvider]);
 
   const loadingLabel = `Loading ${subject}…`;
+  const hasStaticBundle = staticBundle !== null;
+  const batchFailure = displayedBatch?.failure ?? batchProduct.error ?? null;
 
   const bodyStatus = useMemo<FamilyBodyStatus>(() => {
     if (!track) return { kind: 'unbound', message: emptyCampaign };
@@ -1068,19 +1288,23 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       if (currentTiled?.error) {
         return { kind: 'failed', failure: asFailure(currentTiled.error), origin: 'local', onRetry: retryTiles };
       }
-      if (currentTiled?.unrecorded) {
-        return { kind: 'not-recorded', reason: currentTiled.unrecorded };
+      if (currentTiled?.topRefused) {
+        return { kind: 'not-recorded', reason: currentTiled.topRefused };
+      }
+      if (tileUnrecorded?.reason) {
+        return { kind: 'not-recorded', reason: tileUnrecorded.reason };
       }
     }
 
     if (following) {
       if (compiledFollow.unavailable) return { kind: 'refused', reason: compiledFollow.unavailable };
       if (!playbackBounded) return { kind: 'ready' };
-      if (!staticSpec) return { kind: 'outside' };
+      if (!staticSpec && !batchLive.length) return { kind: 'outside' };
       if (staticProduct.error) {
         return { kind: 'failed', failure: staticProduct.error, origin: 'local', onRetry: staticProduct.retry };
       }
-      if (staticProduct.data === undefined) return { kind: 'loading', label: loadingLabel };
+      if (batchFailure) return { kind: 'failed', failure: batchFailure, origin: 'local', onRetry: batchProduct.retry };
+      if (!hasStaticBundle) return { kind: 'loading', label: loadingLabel };
       return { kind: 'ready' };
     }
 
@@ -1091,14 +1315,15 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       return { kind: 'ready' };
     }
     if (staticEntry && (staticEntry.read.shape === 'branch-to-hour' || staticEntry.read.shape === 'trailing-window' || staticEntry.read.shape === 'range')) {
-      if (!window || !staticSpec) return { kind: 'outside' };
+      if (!window || (!staticSpec && !batchLive.length)) return { kind: 'outside' };
     } else if (pinHour === null) {
       return { kind: 'outside' };
     }
     if (staticProduct.error) {
       return { kind: 'failed', failure: staticProduct.error, origin: 'local', onRetry: staticProduct.retry };
     }
-    if (staticProduct.data === undefined) return { kind: 'loading', label: loadingLabel };
+    if (batchFailure) return { kind: 'failed', failure: batchFailure, origin: 'local', onRetry: batchProduct.retry };
+    if (!hasStaticBundle) return { kind: 'loading', label: loadingLabel };
     return { kind: 'ready' };
   }, [
     track,
@@ -1145,7 +1370,12 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     staticProduct.data,
     pixelBinnedKey,
     currentTiled,
+    tileUnrecorded,
     retryTiles,
+    hasStaticBundle,
+    batchLive.length,
+    batchFailure,
+    batchProduct.retry,
   ]);
 
   const bannerFailure: BannerFailureInfo | null = (isSingle && singleCountry?.chosen && singleCountry.error && singleCountry.historyHeld)

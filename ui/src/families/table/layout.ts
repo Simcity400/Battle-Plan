@@ -1,14 +1,16 @@
 import { VALUE_WEIGHT } from '../../charts/draw.ts';
+import { DATE_COLUMN_WIDTH } from '../../draw/kit.ts';
 import {
   CELL_INSET,
   displayExtra,
+  ROW_MARGIN_X,
   type TableColumnLayout,
   type TableLayout,
-  type TableOverflow,
   type TableSettings,
   type TableTheme,
 } from './settings.ts';
 import { defaultWidestSamples, type ValueFormat } from '../valueFormat.ts';
+import { TWO_WAY_GAP, TWO_WAY_SLOT } from './cellPainters.ts';
 import type { TableCellKind, TableColumnSpec, TableHeaderGroup } from './model.ts';
 
 export type MeasureText = (text: string, font: string) => number;
@@ -26,14 +28,16 @@ export interface FamilyColumnLayout extends TableColumnLayout {
   readonly minWidth?: number;
   readonly maxWidth?: number;
   readonly grow?: number;
+  readonly leadInset?: number;
+  readonly trailInset?: number;
 }
 
 export interface FamilyTableLayout extends Omit<TableLayout, 'columns'> {
   readonly columns: FamilyColumnLayout[];
-  readonly moreWidth: number;
 }
 
 const SORT_ARROW_WIDTH = 16;
+const KIND_COLUMN_ART = 32;
 const DEFAULT_TEXT_MIN_WIDTH = 128;
 const DEFAULT_TEXT_MAX_WIDTH = 260;
 
@@ -101,10 +105,12 @@ export function measureFixedColumnWidths(
   theme: Pick<TableTheme, 'font' | 'fontSize'>,
   measure: MeasureText,
   initialSamples?: Readonly<Record<string, readonly string[]>>,
+  options?: { readonly hideHeader?: boolean },
 ): Record<string, number> {
   const bodyFont = fontString(theme, 13.5, VALUE_WEIGHT);
   const headFont = fontString(theme, 13, 600);
   const unitFont = fontString(theme, 11.5, 500);
+  const hideHeader = options?.hideHeader === true;
   const out: Record<string, number> = {};
   for (const column of columns) {
     const userWidth = settings.columns[column.key]?.width;
@@ -114,6 +120,10 @@ export function measureFixedColumnWidths(
     }
     if (column.cellKind === 'action') {
       out[column.key] = column.minWidth ?? 76;
+      continue;
+    }
+    if (column.cellKind === 'kind') {
+      out[column.key] = column.minWidth ?? KIND_COLUMN_ART + CELL_INSET * 2;
       continue;
     }
     if (column.cellKind === 'stockpileSum') {
@@ -129,13 +139,32 @@ export function measureFixedColumnWidths(
       continue;
     }
     if (column.cellKind === 'skill') {
-      const hw = measure(column.label, headFont) + SORT_ARROW_WIDTH + CELL_INSET * 2;
+      const hw = hideHeader ? 0 : measure(column.label, headFont) + SORT_ARROW_WIDTH + CELL_INSET * 2;
       out[column.key] = Math.max(column.minWidth ?? 64, Math.ceil(hw));
       continue;
     }
-    const labelW = measure(column.label, headFont) + (column.notRecordedReason ? 15 : 0);
-    const unitW = column.unit ? measure(column.unit, unitFont) : 0;
-    const headerWidth = Math.max(labelW, unitW) + (column.sortable === false ? 0 : SORT_ARROW_WIDTH) + CELL_INSET * 2;
+    const labelW = hideHeader ? 0 : measure(column.label, headFont) + (column.notRecordedReason ? 15 : 0);
+    const unitW = hideHeader || !column.unit ? 0 : measure(column.unit, unitFont);
+    const headerWidth = hideHeader ? 0 : Math.max(labelW, unitW) + (column.sortable === false ? 0 : SORT_ARROW_WIDTH) + CELL_INSET * 2;
+    if (column.cellKind === 'date') {
+      let widestDate = 0;
+      if (column.widest?.length) {
+        const dateFont = fontString(theme, 12.5, 500);
+        for (const sample of column.widest) widestDate = Math.max(widestDate, measure(sample, dateFont));
+      }
+      const dateW = Math.max(column.minWidth ?? DATE_COLUMN_WIDTH + CELL_INSET * 2, widestDate > 0 ? widestDate + CELL_INSET * 2 : 0, headerWidth);
+      out[column.key] = Math.ceil(column.maxWidth !== undefined ? Math.min(column.maxWidth, dateW) : dateW);
+      continue;
+    }
+    if (column.cellKind === 'status') {
+      const statusFont = fontString(theme, theme.fontSize.small, 400);
+      const statusSamples = column.widest?.length ? column.widest : ['Succeeded'];
+      let widestStatus = 0;
+      for (const sample of statusSamples) widestStatus = Math.max(widestStatus, measure(sample, statusFont));
+      const statusW = Math.max(column.minWidth ?? 88, widestStatus + 12 + CELL_INSET * 2, headerWidth);
+      out[column.key] = Math.ceil(column.maxWidth !== undefined ? Math.min(column.maxWidth, statusW) : statusW);
+      continue;
+    }
     if (column.display === 'flag') {
       out[column.key] = Math.ceil(Math.max(column.minWidth ?? 48, headerWidth));
       continue;
@@ -149,7 +178,7 @@ export function measureFixedColumnWidths(
     for (const sample of samples) {
       widest = Math.max(widest, measure(sample, bodyFont));
     }
-    const extra = column.cellKind === 'track' ? 64 : displayExtra(column);
+    const extra = column.cellKind === 'track' ? 64 : column.cellKind === 'twoWay' ? TWO_WAY_SLOT + TWO_WAY_GAP : displayExtra(column);
     const contentWidth = widest + extra + CELL_INSET * 2;
     let computed = Math.ceil(Math.max(contentWidth, headerWidth));
     if (column.minWidth !== undefined) computed = Math.max(column.minWidth, computed);
@@ -162,13 +191,26 @@ export function measureFixedColumnWidths(
   return out;
 }
 
+function withEdgeInsets(shown: readonly FamilyColumnLayout[]): FamilyColumnLayout[] {
+  const last = shown.length - 1;
+  return shown.map((col, idx) => {
+    if (idx !== 0 && idx !== last) return col;
+    const lead = idx === 0 ? ROW_MARGIN_X : 0;
+    const trail = idx === last ? ROW_MARGIN_X : 0;
+    return { ...col, width: col.width + lead + trail, ...(lead ? { leadInset: lead } : {}), ...(trail ? { trailInset: trail } : {}) };
+  });
+}
+
 export function growWeight(column: FamilyColumnLayout): number {
   if (column.grow !== undefined) return Math.max(0, column.grow);
-  if (column.display === 'flag' || column.cellKind === 'action' || column.cellKind === 'track' || column.cellKind === 'skill') return 0;
+  if (column.display === 'flag' || column.cellKind === 'action' || column.cellKind === 'track' || column.cellKind === 'skill'
+    || column.cellKind === 'kind' || column.cellKind === 'twoWay' || column.cellKind === 'date' || column.cellKind === 'status') return 0;
   return column.width;
 }
 
 function growColumns(shown: readonly FamilyColumnLayout[], spare: number): FamilyColumnLayout[] {
+  const item = shown.findIndex(col => col.cellKind === 'item' && col.grow === undefined);
+  if (item >= 0) return shown.map((col, idx) => (idx === item ? { ...col, width: col.width + spare } : col));
   let total = 0;
   for (const col of shown) total += growWeight(col);
   if (total <= 0) {
@@ -195,14 +237,12 @@ function growColumns(shown: readonly FamilyColumnLayout[], spare: number): Famil
 export function layoutFamilyTable(
   columns: readonly FamilyColumnLayout[],
   available: number,
-  overflow: TableOverflow,
   options: {
     readonly rankShown?: boolean;
     readonly rankWidth?: number;
-    readonly protectedKeys?: ReadonlySet<string>;
   } = {},
 ): FamilyTableLayout {
-  const shown = columns.filter(col => col.shown);
+  const shown = withEdgeInsets(columns.filter(col => col.shown));
   const rank = options.rankShown ? (options.rankWidth ?? 36) : 0;
   let pinnedCount = 0;
   for (let i = 0; i < shown.length; i++) {
@@ -210,54 +250,11 @@ export function layoutFamilyTable(
     else break;
   }
   if (pinnedCount === 0 && shown.length > 0) pinnedCount = 1;
-  const pinnedWidth = rank + shown.slice(0, pinnedCount).reduce((sum, col) => sum + col.width, 0);
-  const totalOf = (list: readonly FamilyColumnLayout[]) => rank + list.reduce((sum, col) => sum + col.width, 0);
-  const rawTotal = totalOf(shown);
+  const pinnedWidthOf = (list: readonly FamilyColumnLayout[]) => rank + list.slice(0, pinnedCount).reduce((sum, col) => sum + col.width, 0);
+  const rawTotal = rank + shown.reduce((sum, col) => sum + col.width, 0);
   if (rawTotal < available && shown.length > 0) {
     const expanded = growColumns(shown, available - rawTotal);
-    const nextPinnedWidth = rank + expanded.slice(0, pinnedCount).reduce((sum, col) => sum + col.width, 0);
-    return {
-      columns: expanded,
-      hidden: [],
-      totalWidth: available,
-      scrollable: false,
-      pinnedWidth: nextPinnedWidth,
-      pinnedCount,
-      moreWidth: 0,
-    };
+    return { columns: expanded, totalWidth: available, scrollable: false, pinnedWidth: pinnedWidthOf(expanded), pinnedCount };
   }
-  const scrollable = rawTotal > available && overflow === 'scroll';
-  if (overflow === 'scroll' || rawTotal <= available) {
-    return {
-      columns: shown,
-      hidden: [],
-      totalWidth: rawTotal,
-      scrollable,
-      pinnedWidth,
-      pinnedCount,
-      moreWidth: 0,
-    };
-  }
-  const protectedKeys = new Set<string>(options.protectedKeys ?? []);
-  for (let i = 0; i < pinnedCount; i++) if (shown[i]) protectedKeys.add(shown[i]!.key);
-  const hidden = new Set<string>();
-  const kept = shown.slice();
-  const candidates = shown
-    .filter(col => !protectedKeys.has(col.key))
-    .sort((a, b) => b.priority - a.priority);
-  for (const col of candidates) {
-    if (totalOf(kept) <= available) break;
-    hidden.add(col.key);
-    const next = kept.filter(item => !hidden.has(item.key));
-    kept.splice(0, kept.length, ...next);
-  }
-  return {
-    columns: kept,
-    hidden: [...hidden],
-    totalWidth: totalOf(kept),
-    scrollable: totalOf(kept) > available,
-    pinnedWidth: rank + kept.slice(0, Math.min(pinnedCount, kept.length)).reduce((sum, col) => sum + col.width, 0),
-    pinnedCount: Math.min(pinnedCount, kept.length),
-    moreWidth: 0,
-  };
+  return { columns: shown, totalWidth: rawTotal, scrollable: rawTotal > available, pinnedWidth: pinnedWidthOf(shown), pinnedCount };
 }

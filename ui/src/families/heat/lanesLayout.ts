@@ -1,4 +1,3 @@
-import { formatDateOnly } from '../valueFormat.ts';
 import type { HeatLaneCell, HeatLaneLegend, HeatLaneRow, HeatLaneRun } from './lanesModel.ts';
 
 export const LANE_NAME_WIDTH = 168;
@@ -75,9 +74,10 @@ export function layoutHeatLanes(input: LayoutHeatLanesInput): HeatLanesLayout {
   const plotTop = legendHeight + 4;
   const plotHeight = Math.max(1, height - plotTop - axisHeight);
 
+  const shared = input.rows.length > 0 ? Math.floor((plotHeight - 8 + LANE_ROW_GAP) / input.rows.length) - LANE_ROW_GAP : LANE_ROW_DEFAULT;
   const rowHeight = Math.max(
     LANE_ROW_MIN,
-    Math.min(LANE_ROW_MAX, Math.round(input.requestedRowHeight ?? LANE_ROW_DEFAULT)),
+    Math.min(LANE_ROW_MAX, Math.round(input.requestedRowHeight ?? shared)),
   );
   const rowStride = rowHeight + LANE_ROW_GAP;
   const contentHeight = input.rows.length > 0 ? input.rows.length * rowStride - LANE_ROW_GAP + 8 : 0;
@@ -187,7 +187,14 @@ export function projectLaneRunsToPixels(
   const effectiveLast = Math.max(firstHour, lastHour);
   const out: PixelLaneSpan[] = [];
 
-  for (let i = 0; i < runs.length; i++) {
+  let lo = 0;
+  let hi = runs.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (runs[mid]!.lastHour < firstHour) lo = mid + 1;
+    else hi = mid;
+  }
+  for (let i = lo; i < runs.length; i++) {
     const run = runs[i]!;
     if (run.firstHour > displayedHour) break;
     if (run.readHour !== null && run.readHour > displayedHour) continue;
@@ -230,11 +237,7 @@ export function projectLaneRunsToPixels(
           out[out.length - 2] = { ...prev, width: Math.max(0, terminalX - prev.x) };
         }
       }
-      out[out.length - 1] = {
-        ...last,
-        x: terminalX,
-        width: Math.max(1, plotLeft + plotWidth - terminalX),
-      };
+      out[out.length - 1] = { ...last, x: terminalX, width: 1 };
     }
   }
 
@@ -261,40 +264,7 @@ export function hitHeatLanes(
   if (inRowY > layout.rowHeight) return null;
   if (x >= layout.plotLeft && x <= layout.plotLeft + layout.plotWidth) {
     const hour = laneXToHour(x, layout.firstHour, layout.lastHour, layout.plotLeft, layout.plotWidth);
-    return { kind: 'lane', rowIndex, hour: Math.min(hour, layout.displayedHour) };
+    return hour > layout.displayedHour ? null : { kind: 'lane', rowIndex, hour };
   }
   return { kind: 'row', rowIndex };
-}
-
-export interface AxisTick {
-  readonly hour: number;
-  readonly x: number;
-  readonly label: string;
-}
-
-export function computeAxisTicks(
-  firstHour: number,
-  lastHour: number,
-  dayHours: number,
-  plotLeft: number,
-  plotWidth: number,
-  minSpacingPx = 88,
-): readonly AxisTick[] {
-  if (plotWidth < 40 || lastHour < firstHour) return [];
-  const maxTicks = Math.max(2, Math.floor(plotWidth / minSpacingPx));
-  const totalHours = Math.max(1, lastHour - firstHour + 1);
-  const stepDaysCandidates = [1, 2, 7, 14, 30, 60, 90, 180, 365, 730];
-  const hoursPerDay = Math.max(1, dayHours);
-  const rawStepDays = totalHours / hoursPerDay / maxTicks;
-  const stepDays = stepDaysCandidates.find(c => c >= rawStepDays) ?? Math.ceil(rawStepDays / 365) * 365;
-  const stepHours = stepDays * hoursPerDay;
-
-  const firstTick = Math.ceil(firstHour / stepHours) * stepHours;
-  const ticks: AxisTick[] = [];
-  for (let h = firstTick; h <= lastHour; h += stepHours) {
-    const x = hourToLaneX(h, firstHour, lastHour, plotLeft, plotWidth);
-    if (x < plotLeft + 24 || x > plotLeft + plotWidth - 24) continue;
-    ticks.push({ hour: h, x, label: formatDateOnly(h) });
-  }
-  return ticks;
 }

@@ -167,6 +167,12 @@ test('addendum 3: a widget of two subscriptions installs their join, or waits wh
   lane.receive('follow', message(30, [{ id: 7, hour: 20, answer: { keys: [1n], columns: 1, values: [2n] } }], false, NATIVE));
   await step(25);
   assert.deepEqual([page.view(1).h, page.view(1).through], [20, 25]);
+  mount(2, [{ id: 5, channel: 'followed' }], 'fields', 0, { dated: { h: 28, c: 28 } });
+  await step(26);
+  assert.equal(page.view(2).mode, 'reading', 'a followed widget whose static read was asked at 28 shows nothing at 26');
+  await step(29);
+  assert.equal(page.view(2).mode, 'picture', 'and installs once the clock reaches the hour that read answered');
+  assert.deepEqual([page.view(2).h, page.view(2).through], [28, 28], 'the picture claims only the hours both its static read and its followed stream prove');
 });
 
 const at: LaneView = {
@@ -314,7 +320,7 @@ test('astra 14: when the budget serves one widget a frame, stable widgets take t
 test('should-fix a: a pointer hit-tests the installed picture, never a candidate the page has not accepted', async () => {
   const view: LaneView = { paint: (input): Painted => ({ surfaces: [], fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } }, motion: false,
     hit: () => `row:${input.pictures[0]!.h}` }) };
-  const { page, lane, mount, step, hits } = rig({ view });
+  const { page, lane, mount, step, hits, presented } = rig({ view });
   mount(1, [{ id: 3, channel: 'panel' }], 'view');
   lane.bindRoute(3, ROUTE, NATIVE);
   lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: {} }]));
@@ -325,6 +331,9 @@ test('should-fix a: a pointer hit-tests the installed picture, never a candidate
   lane.pointer(1, 0, [1, 1]);
   await flush(); await flush();
   assert.deepEqual(hits, ['row:10']);
+  const offered = presented.at(-1)!.entries.at(-1)!;
+  lane.pointer(1, 0, [1, 1], offered.id);
+  assert.deepEqual(hits, ['row:10', 'row:20'], 'a pointer hit-tests the picture it names (the page names the one it installed), even before the lane hears its acknowledgement');
 });
 
 test('changed rows still in flight from before a rewind never merge onto the new stream, and an early stream waits for its seek', async () => {

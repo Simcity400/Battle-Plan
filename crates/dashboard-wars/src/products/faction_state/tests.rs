@@ -1,4 +1,4 @@
-use super::{details, history, rewards};
+use super::{country_goals, details, history, rewards};
 use dashboard_follow::live::{CellValue, Cells};
 use replay_data::rows::{
     CountryCounterInputRow, CountryLinkRow, CountryRow, FactionGoalEntryRow, FactionGoalStatusRow, FactionManpowerRow, FactionMemberRow, LexicalTokenRow, ReservedCountryNamingRow,
@@ -179,4 +179,13 @@ fn a_goals_completion_reward_is_described_for_the_factions_leader_and_said_missi
 
     let gone = rewards::rewards(&frame, FACTION, "gone_goal", &cat).unwrap_err();
     assert_eq!(dashboard_core::refusal(&gone), Some("Faction goal \"gone_goal\" is absent from recorded content"));
+}
+
+#[test]
+fn a_country_s_faction_is_the_one_listing_any_country_linked_to_its_slot() {
+    let links = [CountryLinkRow { id: 7, canonical_slot: 3 }, CountryLinkRow { id: 8, canonical_slot: 3 }, CountryLinkRow { id: 9, canonical_slot: 4 }];
+    let members = [FactionMemberRow { country: 9, faction: OTHER, ordinal: 0 }, FactionMemberRow { country: 8, faction: FACTION, ordinal: 1 }];
+    assert_eq!(country_goals::faction_of(&members, &links, 3), Some(FACTION));
+    assert_eq!(country_goals::faction_of(&members, &links, 4), Some(OTHER));
+    assert_eq!(country_goals::faction_of(&members, &links, 5), None, "a slot no member links to belongs to no faction");
 }

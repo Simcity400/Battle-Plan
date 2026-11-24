@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import type { FocusEvent, KeyboardEvent, MouseEvent } from 'react';
+import type { FocusEvent, KeyboardEvent, MouseEvent, ReactNode } from 'react';
 import WidgetState from '../components/WidgetState';
 import { hideTooltip, showTooltip } from '../charts/tooltip';
 import { useDetailWindowClose } from '../families/host/DetailWindowHost';
@@ -8,11 +8,15 @@ import { useContentRevision } from './contentRevision';
 import {
   accessibleRegions,
   fitGameWindowSize,
+  followGameWindowRender,
   gameWindowRequestKey,
-  hitTestRegion,
+  gameWindowSubjectKey,
+  hitTestClick,
+  hitTestHover,
   isActivatableClose,
   normalizeGameWindowRequest,
   normalizeScale,
+  planGameWindowRender,
   regionTooltipContent,
 } from './gameWindowLogic';
 import type { ShownWindow } from './gameWindows';
@@ -79,10 +83,12 @@ export interface GameWindowViewProps {
   onDiagnostics?: (lines: string[]) => void;
   onShown?: (shown: ShownWindow | null) => void;
   onClose?: () => void;
+  onView?: (view: string) => void;
 }
 
 interface CompletedRender {
   key: string;
+  subject: string;
   render: GameWindowRender;
   hour: number;
 }
@@ -90,6 +96,21 @@ interface CompletedRender {
 interface FailedRender {
   key: string;
   error: Error;
+}
+
+interface Flight {
+  key: string;
+  subject: string;
+  controller: AbortController;
+}
+
+function shownOf(done: CompletedRender): ShownWindow {
+  return {
+    hour: done.hour,
+    readHour: done.render.readHour,
+    title: done.render.title ?? null,
+    logicalSize: done.render.logicalSize,
+  };
 }
 
 export default function GameWindowView({
@@ -100,6 +121,7 @@ export default function GameWindowView({
   onDiagnostics,
   onShown,
   onClose,
+  onView,
 }: GameWindowViewProps) {
   const detailClose = useDetailWindowClose();
   const effectiveClose = detailClose ?? onClose;
@@ -113,6 +135,7 @@ export default function GameWindowView({
   const [hoveredClose, setHoveredClose] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
+  const flight = useRef<Flight | null>(null);
   const completedRef = useRef<CompletedRender | null>(null);
   completedRef.current = completed;
 
@@ -121,6 +144,7 @@ export default function GameWindowView({
     scale: dpr,
   });
   const requestKey = gameWindowRequestKey(normalized, contentRev);
+  const subjectKey = gameWindowSubjectKey(normalized, contentRev);
   const stableRequestRef = useRef<{ key: string; value: GameWindowRequest } | null>(null);
   if (!stableRequestRef.current || stableRequestRef.current.key !== requestKey) {
     stableRequestRef.current = { key: requestKey, value: normalized };
@@ -131,9 +155,64 @@ export default function GameWindowView({
   onDiagnosticsRef.current = onDiagnostics;
   const onShownRef = useRef(onShown);
   onShownRef.current = onShown;
+  const latest = useRef({ key: requestKey, subject: subjectKey, request: stableRequest, active, client });
+  latest.current = { key: requestKey, subject: subjectKey, request: stableRequest, active, client };
+
+  const report = useCallback((done: CompletedRender) => {
+    onDiagnosticsRef.current?.([...done.render.warnings]);
+    onShownRef.current?.(shownOf(done));
+  }, []);
+
+  const launch = useCallback((request: GameWindowRequest, key: string, subject: string) => {
+    const renderWindow = latest.current.client.renderGameWindow;
+    if (!renderWindow) return;
+    const controller = new AbortController();
+    flight.current = { key, subject, controller };
+    setLoading(true);
+    setFailed(null);
+    const next = () => {
+      const now = latest.current;
+      if (followGameWindowRender({ key, subject }, now, completedRef.current?.key ?? null)) {
+        launch(now.request, now.key, now.subject);
+      }
+    };
+    renderWindow(request, controller.signal)
+      .then(result => {
+        if (controller.signal.aborted) return;
+        flight.current = null;
+        const done: CompletedRender = { key, subject, render: result, hour: request.hour };
+        completedRef.current = done;
+        setCompleted(done);
+        setLoading(false);
+        if (latest.current.subject === subject) report(done);
+        next();
+      })
+      .catch(caught => {
+        if (controller.signal.aborted) return;
+        flight.current = null;
+        setLoading(false);
+        if (followGameWindowRender({ key, subject }, latest.current, completedRef.current?.key ?? null)) {
+          next();
+          return;
+        }
+        setFailed({ key, error: caught instanceof Error ? caught : new Error(String(caught)) });
+        onShownRef.current?.(null);
+      });
+  }, [report]);
 
   useEffect(() => {
-    if (!active) {
+    const existing = completedRef.current;
+    const plan = planGameWindowRender(
+      { key: requestKey, subject: subjectKey, active },
+      flight.current,
+      existing?.key ?? null,
+    );
+    if (plan.abort) {
+      flight.current?.controller.abort();
+      flight.current = null;
+    }
+    if (plan.step === 'idle') {
+      setLoading(false);
       hideTooltip(ownerId);
       setHoveredClose(false);
       return;
@@ -148,53 +227,29 @@ export default function GameWindowView({
       onDiagnosticsRef.current?.([]);
       return;
     }
-    const existing = completedRef.current;
-    if (existing && existing.key === requestKey) {
+    if (plan.step === 'reuse' && existing) {
       setFailed(null);
       setLoading(false);
-      onDiagnosticsRef.current?.([...existing.render.warnings]);
-      onShownRef.current?.({
-        hour: existing.hour,
-        readHour: existing.render.readHour,
-        logicalSize: existing.render.logicalSize,
-      });
+      report(existing);
       return;
     }
-    const controller = new AbortController();
+    if (plan.step === 'wait') return;
+    if (existing?.subject !== subjectKey) {
+      hideTooltip(ownerId);
+      setHoveredClose(false);
+      onShownRef.current?.(null);
+      onDiagnosticsRef.current?.([]);
+    }
+    launch(stableRequest, requestKey, subjectKey);
+  }, [active, client, requestKey, subjectKey, stableRequest, ownerId, launch, report]);
+
+  useEffect(() => () => {
+    flight.current?.controller.abort();
+    flight.current = null;
     hideTooltip(ownerId);
-    setHoveredClose(false);
-    setLoading(true);
-    setFailed(null);
-    onShownRef.current?.(null);
-    onDiagnosticsRef.current?.([]);
-    client.renderGameWindow(stableRequest, controller.signal)
-      .then(result => {
-        if (controller.signal.aborted) return;
-        setCompleted({ key: requestKey, render: result, hour: stableRequest.hour });
-        setFailed(null);
-        setLoading(false);
-        onDiagnosticsRef.current?.([...result.warnings]);
-        onShownRef.current?.({
-          hour: stableRequest.hour,
-          readHour: result.readHour,
-          logicalSize: result.logicalSize,
-        });
-      })
-      .catch(caught => {
-        if (controller.signal.aborted) return;
-        setLoading(false);
-        setFailed({
-          key: requestKey,
-          error: caught instanceof Error ? caught : new Error(String(caught)),
-        });
-        onShownRef.current?.(null);
-      });
-    return () => { controller.abort(); };
-  }, [active, client, requestKey, stableRequest, ownerId]);
+  }, [ownerId]);
 
-  useEffect(() => () => { hideTooltip(ownerId); }, [ownerId]);
-
-  const render = completed && completed.key === requestKey ? completed.render : null;
+  const render = completed && completed.subject === subjectKey ? completed.render : null;
   const error = failed && failed.key === requestKey ? failed.error : null;
   const previousLogicalSize = completed?.render.logicalSize ?? null;
   const previousHasArtLabel = Boolean(completed?.render.artLabel);
@@ -209,23 +264,25 @@ export default function GameWindowView({
     return [x, y];
   }, [render]);
 
-  const hitAt = useCallback((clientX: number, clientY: number): GameWindowRegion | null => {
+  const hitAt = useCallback((clientX: number, clientY: number): { hover: GameWindowRegion | null; click: GameWindowRegion | null } | null => {
     if (!render) return null;
     const point = logicalPoint(clientX, clientY);
     if (!point) return null;
-    return hitTestRegion(render.regions, point[0], point[1]);
+    return { hover: hitTestHover(render.regions, point[0], point[1]), click: hitTestClick(render.regions, point[0], point[1]) };
   }, [render, logicalPoint]);
 
   const handleMove = useCallback((event: MouseEvent<HTMLElement>) => {
-    const hit = hitAt(event.clientX, event.clientY);
-    setHoveredClose(Boolean(isActivatableClose(hit) && effectiveClose));
+    const hits = hitAt(event.clientX, event.clientY);
+    const hit = hits?.hover ?? null;
+    const click = hits?.click ?? null;
+    setHoveredClose(Boolean((isActivatableClose(click) && effectiveClose) || (click?.view && onView)));
     const tooltip = hit ? regionTooltipContent(hit) : null;
     if (tooltip) {
       showTooltip(ownerId, tooltip, event.clientX, event.clientY, hit?.path);
     } else {
       hideTooltip(ownerId);
     }
-  }, [hitAt, effectiveClose, ownerId]);
+  }, [hitAt, effectiveClose, onView, ownerId]);
 
   const handleLeave = useCallback(() => {
     setHoveredClose(false);
@@ -237,12 +294,15 @@ export default function GameWindowView({
   }, []);
 
   const handleClick = useCallback((event: MouseEvent<HTMLElement>) => {
-    const hit = hitAt(event.clientX, event.clientY);
+    const hit = hitAt(event.clientX, event.clientY)?.click ?? null;
     if (isActivatableClose(hit)) {
       hideTooltip(ownerId);
       effectiveClose?.();
+    } else if (hit?.view && onView) {
+      hideTooltip(ownerId);
+      onView(hit.view);
     }
-  }, [hitAt, effectiveClose, ownerId]);
+  }, [hitAt, effectiveClose, onView, ownerId]);
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape' && effectiveClose) {
@@ -272,19 +332,26 @@ export default function GameWindowView({
     [render],
   );
 
+  const shell = (body: ReactNode) => <div
+    ref={hostRef}
+    className="game-window-host"
+    tabIndex={-1}
+    onKeyDown={handleKeyDown}
+  >{body}</div>;
+
   if (error) {
-    return <WidgetState kind="error" failure={error} />;
+    return shell(<WidgetState kind="error" failure={error} />);
   }
   if (!render) {
     const heldSize = previousLogicalSize
       ? fitGameWindowSize(previousLogicalSize, viewport, { width: 48, height: previousHasArtLabel ? 116 : 88 })
       : null;
-    return <div
+    return shell(<div
       className="game-window-loading"
       style={heldSize ? { width: `${heldSize[0]}px`, height: `${heldSize[1]}px` } : undefined}
     >
       <WidgetState kind="loading" label={loading ? `Loading ${label}…` : `Preparing ${label}…`} />
-    </div>;
+    </div>);
   }
 
   const [logicalWidth, logicalHeight] = render.logicalSize;
@@ -293,7 +360,7 @@ export default function GameWindowView({
     viewport,
     { width: 48, height: render.artLabel ? 116 : 88 },
   );
-  return <div ref={hostRef} className="game-window-host" tabIndex={-1} onKeyDown={handleKeyDown}>
+  return shell(<>
     <div className="game-window-stage">
       <div
         className={`game-window-canvas${hoveredClose ? ' is-close-hover' : ''}`}
@@ -354,5 +421,5 @@ export default function GameWindowView({
       </div>
     </div>
     {render.artLabel && <div className="game-window-art-note">{render.artLabel}</div>}
-  </div>;
+  </>);
 }

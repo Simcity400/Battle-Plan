@@ -7,17 +7,28 @@ import type {
   CountryGroupReply,
   CountryIdentitiesReply,
   CountryStyleReply,
+  PlaceNameRunsReply,
+  StrategicRegionsReply,
+  UnitLeadersReply,
 } from '../../generated/dashboard';
+import { countryKey } from '../../dashboard/countryKey.ts';
+import { LaneArtCache } from '../art/laneCache.ts';
+import { artUrlForHandle, createLaneArtProvider, flagArtHandle, laneArtDemand, mergeArtDemands, requestDemandedFlags } from '../art/provider.ts';
+import { toFlagSlotState } from '../art/adapters.ts';
+import { NO_ART, artHandleKey, missingArt, refusedArt } from '../art/types.ts';
+import { RefusedError } from '../../dashboard/queryError.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
+import type { ArtHandle, DisplayedHour } from '../plan.ts';
 import { IdentityBroker, type IdentityTransport } from './broker.ts';
-import { createBrokerIdentityProvider, createSnapshotIdentityProvider } from './provider.ts';
-import { readIdentityAtHeadHour, subscribeIdentityAtHead } from './react.ts';
+import { createBrokerIdentityProvider, createSnapshotIdentityProvider, parseEntityKey } from './provider.ts';
+import { UNHELD_HEAD_HOUR, countryPickerKeys, readIdentityAtHeadHour, subscribeIdentityAtHead, type HeldHeadHour } from './react.ts';
 import {
   IdentityIndex,
   countrySlotKey,
   countryTagKey,
   designKey,
   factionKey,
+  flagChoiceKey,
   leaderKey,
   regionKey,
   stateKey,
@@ -112,6 +123,12 @@ function sampleGroups(): CountryGroupReply {
   };
 }
 
+const UNUSED_ENTITY_READS: Pick<IdentityTransport, 'loadRegions' | 'loadPlaceNameRuns' | 'loadLeaders'> = {
+  loadRegions: () => deferred<StrategicRegionsReply>().promise,
+  loadPlaceNameRuns: () => deferred<PlaceNameRunsReply>().promise,
+  loadLeaders: () => deferred<UnitLeadersReply>().promise,
+};
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -178,6 +195,7 @@ test('point style answer without interval proves only its point; interval style 
   let includeValid = false;
 
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: () => factsHold.promise,
     loadIdentities: async () => sampleIdentities(),
     loadGroups: async () => sampleGroups(),
@@ -239,6 +257,7 @@ test('picker opened at hour 100 stays pending rather than borrowing hour 300, an
   const flagHoldB = deferred<CountryFlagReply>();
 
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: () => factsHold.promise,
     loadIdentities: async () => sampleIdentities(),
     loadGroups: async () => sampleGroups(),
@@ -382,6 +401,7 @@ test('1,500 countries use one facts request, batched flags, zero requests advanc
   };
 
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: async () => { factsCalls++; return factsReply; },
     loadIdentities: async () => ({ branchId: '1', known: [], countries: [], unknown: [], warnings: [] }),
     loadGroups: async () => sampleGroups(),
@@ -446,7 +466,7 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
   assert.deepEqual(ger150.name, { status: 'ready', value: 'Later Empire' });
   assert.deepEqual(ger150.validInterval, [150, 500]);
 
-  const annexed = view.who('country', 'slot:2', 160);
+  const annexed = view.who('country', countryKey(2), 160);
   assert.equal(annexed.holder.status, 'absent');
   assert.deepEqual(annexed.validInterval, [150, 500]);
 
@@ -460,6 +480,7 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
 
   const factsHold = deferred<CountryFactsReply>();
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: () => factsHold.promise,
     loadIdentities: async () => sampleIdentities(),
     loadGroups: async () => sampleGroups(),
@@ -492,6 +513,7 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
 
 test('useIdentityAtHead does not subscribe to the frame clock or churn snapshots when scope is null or keys are empty', async () => {
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: async () => sampleFacts(),
     loadIdentities: async () => sampleIdentities(),
     loadGroups: async () => sampleGroups(),
@@ -507,7 +529,7 @@ test('useIdentityAtHead does not subscribe to the frame clock or churn snapshots
     subscribeFrame: (_cb: () => void) => { frameSubscribes++; return () => {}; },
     subscribe: (_cb: () => void) => { anchorSubscribes++; return () => {}; },
   };
-  const held = { current: { key: '', hour: null as number | null } };
+  const held: { current: HeldHeadHour } = { current: UNHELD_HEAD_HOUR };
 
   const unsubNoScope = subscribeIdentityAtHead(broker, clock, null, true, true, true, null, undefined, () => {});
   const unsubNoKeys = subscribeIdentityAtHead(broker, clock, SCOPE, true, true, false, null, undefined, () => {});
@@ -536,6 +558,230 @@ test('useIdentityAtHead does not subscribe to the frame clock or churn snapshots
   const h3 = readIdentityAtHeadHour(broker, clock, SCOPE, true, [countryTagKey('GER')], h => h, null, [0, 500], held);
   assert.equal(h3, 150, 'crossing the run boundary advances the hour');
   unsubActive();
+  broker.dispose();
+});
+
+test('1,500 keys at the head resolve once per proven interval, not per frame, and settled flags do not invalidate them', async () => {
+  const countries = Array.from({ length: 1500 }, (_, i) => `X${String(i).padStart(4, '0')}`);
+  const flags: CountryFlagChoice[] = countries.map(tag => ({ keys: [tag, null, null], reasons: [null, null, null] }));
+  const factsReply: CountryFactsReply = {
+    branchId: '1',
+    known: [[0, 1000]],
+    names: [...countries.map(tag => `Country ${tag}`), 'Renamed'],
+    reasons: [],
+    flags,
+    countries: countries.map((tag, i) => ({ tag, runs: i === 7 ? [[0, i, i, -1, i], [600, 1500, i, -1, i]] : [[0, i, i, -1, i]] })),
+    warnings: [],
+  };
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => factsReply,
+    loadIdentities: async () => ({ branchId: '1', known: [], countries: [], unknown: [], warnings: [] }),
+    loadGroups: async () => sampleGroups(),
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size, batch) => ({
+      size,
+      flags: batch.map((choice, i) => ({ flag: i, asset: `${choice.keys[0]}.tga`, key: `${choice.keys[0]}:${size}`, width: 41, height: 26, png: `flag://${choice.keys[0]}` })),
+      unavailable: [],
+      warnings: [],
+    }),
+  };
+  const broker = new IdentityBroker({ transport });
+  const keys = countries.map(countryTagKey);
+  broker.setDemand({}, SCOPE, { asks: keys.map(key => ({ key, hour: 100 })), needFlags: true, flagSize: 'panel' }, undefined, [0, 1000]);
+  for (let i = 0; i < 120; i++) await Promise.resolve();
+
+  const index = broker.indexOf(SCOPE);
+  assert.equal(broker.flagFor(SCOPE, 'panel', flags[1499]!)?.url, 'flag://X1499', 'every flag batch settled');
+  const revision = index.resolveRevision();
+  let resolved = 0;
+  const resolve = index.resolve.bind(index);
+  index.resolve = ((key, hour) => { resolved++; return resolve(key, hour); }) as typeof index.resolve;
+
+  let clockHour = 100;
+  const clock = { getHour: () => clockHour };
+  const held: { current: HeldHeadHour } = { current: UNHELD_HEAD_HOUR };
+  const read = () => readIdentityAtHeadHour(broker, clock, SCOPE, true, keys, h => h, null, [0, 1000], held);
+  assert.equal(read(), 100);
+  assert.equal(resolved, 1500, 'the first frame resolves each key once');
+  for (let frame = 0; frame < 600; frame++) {
+    clockHour = 100 + frame * 0.8;
+    assert.equal(read(), 100, 'a frame inside the proven interval keeps the held hour');
+  }
+  assert.equal(resolved, 1500, 'frames inside the proven interval resolve nothing');
+
+  broker.requestFlagChoices(SCOPE, 'small', flags, undefined);
+  for (let i = 0; i < 120; i++) await Promise.resolve();
+  assert.equal(broker.flagFor(SCOPE, 'small', flags[1499]!)?.url, 'flag://X1499');
+  assert.equal(index.resolveRevision(), revision, 'settled flag batches leave every resolve answer, and the host scan keyed on it, untouched');
+  assert.equal(read(), 100);
+  assert.equal(resolved, 1500);
+
+  clockHour = 600;
+  assert.equal(read(), 600, 'crossing the next boundary advances the hour');
+  assert.equal(resolved, 3000, 'one resolve per key at the boundary');
+  broker.dispose();
+});
+
+test('a lane flag at a size other than the default is demanded, drawn at that size and found in the next snapshot', async () => {
+  const sizes: string[] = [];
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => sampleFacts(),
+    loadIdentities: async () => sampleIdentities(),
+    loadGroups: async () => sampleGroups(),
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size, batch) => {
+      sizes.push(size);
+      return {
+        size,
+        flags: batch.map((choice, i) => ({ flag: i, asset: `${choice.keys[0]}.tga`, key: `${choice.keys[0]}:${size}`, width: 10, height: 7, png: `flag://${choice.keys[0]}/${size}` })),
+        unavailable: [],
+        warnings: [],
+      };
+    },
+  };
+  const broker = new IdentityBroker({ transport });
+  const handle = flagArtHandle(flagChoiceKey(FLAG_A), 'small');
+  const lane = new LaneArtCache({ fetchBitmap: async () => ({ width: 10, height: 7, close() {} }) as unknown as ImageBitmap });
+
+  const urls = new Set<string>();
+  const asks = new Map<string, ArtHandle>();
+  const before = IdentityIndex.fromSnapshot(broker.snapshotOf(SCOPE));
+  laneArtDemand(handle, before, undefined, urls, asks);
+  assert.deepEqual([...asks.values()], [handle], 'an undrawn flag at its own size is a demand');
+  assert.equal(createLaneArtProvider(lane, { index: before }).resolve(handle).status, 'pending');
+
+  requestDemandedFlags(broker, SCOPE, [...asks.values()]);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  assert.deepEqual(sizes, ['small'], 'the product is asked at the demanded size');
+
+  const after = IdentityIndex.fromSnapshot(structuredClone(broker.snapshotOf(SCOPE)));
+  assert.equal(artUrlForHandle(handle, after), 'flag://GER_a/small');
+  assert.equal(artUrlForHandle(flagArtHandle(flagChoiceKey(FLAG_A), 'panel'), after), null, 'another size is not borrowed');
+  urls.clear();
+  asks.clear();
+  laneArtDemand(handle, after, undefined, urls, asks);
+  assert.equal(asks.size, 0, 'a drawn flag is not asked again');
+  assert.deepEqual([...urls], ['flag://GER_a/small']);
+  broker.dispose();
+});
+
+test('the playback picker dates every shown row by the displayed hour and moves at the earliest boundary among them', async () => {
+  const facts = sampleFacts();
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => facts,
+    loadIdentities: async () => sampleIdentities(),
+    loadGroups: async () => sampleGroups(),
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size) => ({ size, flags: [], unavailable: [], warnings: [] }),
+  };
+  const broker = new IdentityBroker({ transport });
+  broker.setDemand({}, SCOPE, { asks: [{ key: countryTagKey('ALP'), hour: 0 }], needFlags: false, flagSize: 'panel' }, undefined, [0, 500]);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  let clockHour = 25;
+  const clock = { getHour: () => clockHour };
+  const held: { current: HeldHeadHour } = { current: UNHELD_HEAD_HOUR };
+  const keys = countryPickerKeys(null, 'ALP', ['ALP', 'GER']);
+  const read = () => readIdentityAtHeadHour(broker, clock, SCOPE, true, keys, h => h, null, [0, 500], held);
+  assert.equal(read(), 25);
+  clockHour = 160;
+  const at = read();
+  assert.equal(at, 160, 'a shown row renamed at 150 moves the picker although the selection did not change');
+  assert.equal(broker.resolve(SCOPE, countryTagKey('GER'), at!).kind === 'known' && (broker.resolve(SCOPE, countryTagKey('GER'), at!) as { name: { value?: string } }).name.value, 'Later Empire');
+  clockHour = 20;
+  assert.equal(read(), 20, 'a seek back is read at the displayed hour, never a later one');
+  assert.deepEqual(countryPickerKeys(null, null, ['GER']).length, 1, 'an empty selection still dates the shown rows');
+  assert.deepEqual(countryPickerKeys(3, 'ALP', []), [countrySlotKey(3)], 'a selected slot stays first, so it is the header');
+  broker.dispose();
+});
+
+test('an identity key and an art handle keep their whole identity from demand to the drawn picture', () => {
+  const index = new IdentityIndex(SCOPE, [0, 500]);
+  index.setFacts(sampleFacts(), true);
+  index.setIdentities(sampleIdentities());
+  index.setDrawnFlag('panel', FLAG_A, { url: 'flag://panel' });
+  index.setDrawnFlag('shield', FLAG_A, { url: 'flag://shield' });
+  const worker = IdentityIndex.fromSnapshot(structuredClone(index.exportSnapshot()));
+
+  const view = createBoundedReadView({ hour: 200, identity: createSnapshotIdentityProvider(worker) });
+  const selected = view.who('country', countryKey(1), 100);
+  assert.equal(worker.resolve(countrySlotKey(1), 100).kind, 'known');
+  assert.deepEqual(selected.tag, { status: 'ready', value: 'GER' });
+  assert.deepEqual(selected.name, { status: 'ready', value: 'Early Republic' });
+
+  const choice = flagChoiceKey(FLAG_A);
+  assert.equal(artUrlForHandle(flagArtHandle(choice, 'panel'), worker), 'flag://panel');
+  assert.equal(artUrlForHandle(flagArtHandle(choice, 'shield'), worker), 'flag://shield');
+
+  const plain: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0 };
+  const asText: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0, text: true };
+  const asRecorded: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0, recorded: 'GFX_y' };
+  assert.equal(artHandleKey({ kind: 'sprite', key: 'GFX_x' }), artHandleKey(plain));
+  assert.deepEqual(mergeArtDemands([], [plain, asText, asRecorded, plain]), [plain, asText, asRecorded]);
+  assert.equal(new Set([plain, asText, asRecorded].map(artHandleKey)).size, 3);
+});
+
+test('leader, state, province and region asks each start their product read and answer with its validity', async () => {
+  const calls: string[] = [];
+  const transport: IdentityTransport = {
+    loadFacts: () => deferred<CountryFactsReply>().promise,
+    loadIdentities: () => deferred<CountryIdentitiesReply>().promise,
+    loadGroups: () => deferred<CountryGroupReply>().promise,
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: () => deferred<CountryFlagReply>().promise,
+    loadRegions: async () => {
+      calls.push('regions');
+      return { regions: [{ id: 3, name: 'Coral Reach', nameMissing: null, land: false, sea: true }], warnings: [] };
+    },
+    loadPlaceNameRuns: async (_scope, from, to, states, provinces) => {
+      calls.push(`places ${from}-${to} ${states.join(',')} ${provinces.join(',')}`);
+      return {
+        from,
+        to,
+        unknown: [{ firstHour: 100, lastHour: 120, reason: 'Not in this recording: the game was paused' }],
+        states: states.map(id => ({ id, runs: [{ firstHour: from, lastHour: 199, name: `State ${id}`, missing: null }, { firstHour: 200, lastHour: to, name: `Renamed ${id}`, missing: null }] })),
+        provinces: provinces.map(id => ({ id, runs: [{ firstHour: from, lastHour: to, name: null, missing: 'Province unnamed in this map' }] })),
+        warnings: [],
+      };
+    },
+    loadLeaders: async (_scope, owner, hour) => {
+      calls.push(`leaders ${owner} ${hour}`);
+      return {
+        leaders: [{ reference: 'L1', name: 'Ada Vance', role: { owner: 'ALP', kind: 0, category: 0, rank: null, attributeNames: [null, null, null, null], maximumSkill: null }, skill: 3, components: [1, 1, 1, 0], traits: null, traitDates: [], firstSeenHour: 0, fought: 0, won: 0, lost: 0 }],
+        traits: [], withheld: [], missing: null, battlesPartialFrom: null, resultsMissing: '', warnings: [],
+      };
+    },
+  };
+  const broker = new IdentityBroker({ transport });
+  const provider = createBrokerIdentityProvider(broker, SCOPE, {}, { branchBounds: [0, 500], needFlags: false });
+  const view = createBoundedReadView({ hour: 200, identity: provider });
+  const ask = () => [
+    view.who('region', '3', 150), view.who('region', '9', 150),
+    view.who('state', '64', 150), view.who('province', '7', 150), view.who('leader', 'ALP:L1', 150), view.who('leader', 'ALP:L2', 150),
+  ];
+  assert.ok(ask().every(result => result.name.status === 'pending'));
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  ask();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.deepEqual([...calls].sort(), ['leaders ALP 150', 'places 0-500 64 7', 'regions']);
+
+  const [region, unknownRegion, state, province, leader, otherLeader] = ask();
+  assert.deepEqual(region!.name, { status: 'ready', value: 'Coral Reach' });
+  assert.deepEqual(region!.validInterval, [0, 500]);
+  assert.equal(unknownRegion!.name.status, 'absent');
+  assert.deepEqual(state!.name, { status: 'ready', value: 'State 64' });
+  assert.deepEqual(state!.validInterval, [121, 199], 'a run is valid up to its rename and never across an unknown span');
+  assert.deepEqual(view.who('state', '64', 110).name, { status: 'absent', reason: 'Not in this recording: the game was paused' });
+  assert.deepEqual(view.who('state', '64', 90).validInterval, [0, 99]);
+  assert.deepEqual(view.who('state', '64', 200).name, { status: 'ready', value: 'Renamed 64' });
+  const worker = createSnapshotIdentityProvider(IdentityIndex.fromSnapshot(structuredClone(broker.snapshotOf(SCOPE))));
+  assert.deepEqual(worker.resolve('state', '64', 110 as DisplayedHour).name, { status: 'absent', reason: 'Not in this recording: the game was paused' }, 'unknown spans cross to the worker');
+  assert.deepEqual(province!.name, { status: 'absent', reason: 'Province unnamed in this map' });
+  assert.deepEqual(leader!.name, { status: 'ready', value: 'Ada Vance' });
+  assert.equal(otherLeader!.holder.status, 'absent');
+  assert.equal(calls.length, 3, 'answers inside their validity ask nothing again');
   broker.dispose();
 });
 
@@ -579,4 +825,120 @@ test('coalesced sparse identity runs stay missing on unrecorded gaps outside kno
   assert.equal(at30.kind, 'known');
   assert.deepEqual(at30.tag, { kind: 'known', value: 'GER' });
   assert.deepEqual(at30.valid, [30, 30]);
+});
+
+test('a country the lane asks for and the snapshot lacks becomes a broker demand and returns in the next snapshot', async () => {
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => sampleFacts(),
+    loadIdentities: () => deferred<CountryIdentitiesReply>().promise,
+    loadGroups: () => deferred<CountryGroupReply>().promise,
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size, choices) => ({
+      size,
+      flags: choices.map((choice, flag) => ({ flag, asset: `${choice.keys[0]}.tga`, key: `${choice.keys[0]}:${size}`, width: 41, height: 26, png: `flag://${choice.keys[0]}` })),
+      unavailable: [],
+      warnings: [],
+    }),
+  };
+  const broker = new IdentityBroker({ transport });
+  const owner = {};
+  const laneView = (snapshot: ReturnType<IdentityBroker['snapshotOf']>, demands: [string, string, number][]) => createBoundedReadView({
+    hour: 200,
+    identity: createSnapshotIdentityProvider(IdentityIndex.fromSnapshot(structuredClone(snapshot))),
+    onIdentityDemand: (kind, key, atHour) => { demands.push([kind, key, atHour]); },
+  });
+
+  const demands: [string, string, number][] = [];
+  const first = laneView(broker.snapshotOf(SCOPE, undefined, [0, 500]), demands);
+  assert.equal(first.who('country', 'ALP', 120).name.status, 'pending');
+  assert.deepEqual(demands, [['country', 'ALP', 120]]);
+
+  broker.setDemand(owner, SCOPE, { asks: demands.map(([kind, key, hour]) => ({ key: parseEntityKey(kind as 'country', key), hour })), needFlags: true, flagSize: 'panel' }, undefined, [0, 500]);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+
+  const after: [string, string, number][] = [];
+  const second = laneView(broker.snapshotOf(SCOPE, undefined, [0, 500]), after);
+  const alp = second.who('country', 'ALP', 120);
+  assert.deepEqual(alp.name, { status: 'ready', value: 'Alpha' });
+  assert.equal(alp.flagChoice?.status, 'ready');
+  assert.equal(artUrlForHandle(flagArtHandle(alp.flagChoice!.status === 'ready' ? alp.flagChoice!.value : '', 'panel'), IdentityIndex.fromSnapshot(broker.snapshotOf(SCOPE))), 'flag://GER_a');
+  broker.dispose();
+});
+
+test('a failed branch read is not restarted by later demands: a transient failure waits for its backoff, a refusal for an explicit retry', async () => {
+  let now = 0;
+  const timers: { at: number; run: () => void }[] = [];
+  let identityReads = 0;
+  let groupReads = 0;
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => sampleFacts(),
+    loadIdentities: async () => { identityReads++; throw new RefusedError('Unsupported identity table'); },
+    loadGroups: async () => { groupReads++; throw new TypeError('connection reset'); },
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size) => ({ size, flags: [], unavailable: [], warnings: [] }),
+  };
+  const broker = new IdentityBroker({ transport, clock: { now: () => now, after: (ms, run) => { timers.push({ at: now + ms, run }); return () => {}; } } });
+  const owner = {};
+  for (let hour = 100; hour < 160; hour++) {
+    broker.setDemand(owner, SCOPE, { asks: [{ key: countryTagKey('GER'), hour }], needFlags: false, needGroups: true, flagSize: 'panel' });
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+  }
+  assert.equal(identityReads, 1, 'a refused read is asked once');
+  assert.equal(groupReads, 1, 'a transient failure waits for its backoff');
+  assert.equal(timers.length, 1);
+  now = timers[0]!.at;
+  timers[0]!.run();
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  assert.equal(groupReads, 2, 'the backoff asks again');
+  assert.equal(identityReads, 1);
+  broker.retry(SCOPE);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  assert.equal(identityReads, 2, 'an explicit retry asks a refused read again');
+  broker.dispose();
+});
+
+test('a status is carried, not rebuilt: unresolved holders, failures across the worker snapshot, retried flags and refused art', async () => {
+  const index = new IdentityIndex(SCOPE, [0, 500]);
+  index.setFacts(sampleFacts(), true);
+  index.setIdentities({ ...sampleIdentities(), countries: [{ tag: 'GER', identities: [], unresolved: [{ firstHour: 0, lastHour: 500 }] }] });
+  index.setReadFailure('groups', new RefusedError('Unsupported faction table'));
+  const worker = createSnapshotIdentityProvider(IdentityIndex.fromSnapshot(structuredClone(index.exportSnapshot())));
+  const ger = worker.resolve('country', 'GER', 100 as DisplayedHour);
+  assert.deepEqual(ger.tag, { status: 'ready', value: 'GER' });
+  assert.equal(ger.holder.status, 'absent');
+  assert.deepEqual(worker.resolve('faction', '7', 100 as DisplayedHour).name, { status: 'failed', reason: 'Unsupported faction table', retryable: false });
+
+  let now = 0;
+  const timers: { at: number; run: () => void }[] = [];
+  let flagCalls = 0;
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => sampleFacts(),
+    loadIdentities: async () => sampleIdentities(),
+    loadGroups: () => deferred<CountryGroupReply>().promise,
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size, choices) => {
+      flagCalls++;
+      if (flagCalls === 1) throw new TypeError('connection reset');
+      return { size, flags: choices.map((choice, flag) => ({ flag, asset: 'a.tga', key: 'k', width: 41, height: 26, png: `flag://${choice.keys[0]}` })), unavailable: [], warnings: [] };
+    },
+  };
+  const broker = new IdentityBroker({ transport, clock: { now: () => now, after: (ms, run) => { timers.push({ at: now + ms, run }); return () => {}; } } });
+  broker.setDemand({}, SCOPE, { asks: [{ key: countryTagKey('GER'), hour: 100 }], needFlags: true, flagSize: 'panel' });
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(flagCalls, 1);
+  assert.ok(broker.flagFor(SCOPE, 'panel', FLAG_A)?.failed);
+  assert.equal(timers.length, 1, 'a retryable flag failure schedules its retry');
+  now = timers[0]!.at;
+  timers[0]!.run();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(flagCalls, 2);
+  assert.equal(broker.flagFor(SCOPE, 'panel', FLAG_A)?.url, 'flag://GER_a');
+  broker.dispose();
+
+  assert.deepEqual(toFlagSlotState(refusedArt('Unsupported flag format')), { kind: 'refused', reason: 'Unsupported flag format' });
+  assert.deepEqual(toFlagSlotState(NO_ART), { kind: 'none' });
+  assert.deepEqual(toFlagSlotState(missingArt('No flag file'), 'GER'), { kind: 'missing', tag: 'GER' });
 });

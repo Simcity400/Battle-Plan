@@ -234,15 +234,19 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new(data: Data, hours: RangeInclusive<i32>) -> Self {
-        Self::record(data, hours, None, false)
+        Self::record(data, &[hours], None, false)
     }
 
     pub fn with_not_recorded_factories(hours: RangeInclusive<i32>) -> Self {
-        Self::record(Data::Power, hours, None, true)
+        Self::record(Data::Power, &[hours], None, true)
     }
 
     pub fn with_gap(data: Data, hours: RangeInclusive<i32>, gap: RangeInclusive<i32>) -> Self {
-        Self::record(data, hours, Some(gap), false)
+        Self::record(data, &[hours], Some(gap), false)
+    }
+
+    pub fn with_runs(data: Data, runs: &[RangeInclusive<i32>]) -> Self {
+        Self::record(data, runs, None, false)
     }
 
     pub fn campaign(data: Data) -> Self {
@@ -257,10 +261,10 @@ impl Fixture {
         fixture
     }
 
-    fn record(data: Data, hours: RangeInclusive<i32>, gap: Option<RangeInclusive<i32>>, not_recorded_factories: bool) -> Self {
-        let (first, last) = hours.into_inner();
+    fn record(data: Data, runs: &[RangeInclusive<i32>], gap: Option<RangeInclusive<i32>>, not_recorded_factories: bool) -> Self {
+        let (first, last) = (*runs[0].start(), *runs[runs.len() - 1].end());
         let campaign = CampaignRow { id: b"tiles".to_vec() };
-        let replay = Replay::from_synthetic(recorder_derive::writers(), campaign.id.clone(), session(1), branch_start(1, first), last, |frame, hour| {
+        let replay = Replay::from_synthetic_runs(recorder_derive::writers(), campaign.id.clone(), session(1), branch_start(1, first), runs, |frame, hour| {
             sample(frame, TableId::Clock, &[ClockRow { hour, ..ClockRow::default() }])?;
             sample(frame, TableId::Campaign, std::slice::from_ref(&campaign))?;
             country_rows(frame, hour, matches!(data, Data::Power))?;
@@ -305,12 +309,16 @@ impl Fixture {
                 Data::Faction => faction_rows(frame, hour),
             }
         }).unwrap();
-        assert_eq!(replay.recording().run_count(), 1);
-        let mut stretches = vec![Stretch { run: 0, first, last, join: Join::Start }];
+        assert_eq!(replay.recording().run_count() as usize, runs.len());
+        let mut stretches: Vec<Stretch> = runs
+            .iter()
+            .enumerate()
+            .map(|(run, hours)| Stretch { run: run as u32, first: *hours.start(), last: *hours.end(), join: if run == 0 { Join::Start } else { Join::Break } })
+            .collect();
         let mut unheld = Vec::new();
         if let Some(gap) = gap {
             let (gap_first, gap_last) = gap.into_inner();
-            assert!(first < gap_first && gap_first <= gap_last && gap_last < last);
+            assert!(runs.len() == 1 && first < gap_first && gap_first <= gap_last && gap_last < last);
             stretches[0].last = gap_first - 1;
             stretches.push(Stretch { run: 0, first: gap_last + 1, last, join: Join::Break });
             unheld.push(Unheld { first: gap_first, last: gap_last, reason: GAP_REASON.into() });

@@ -2,10 +2,12 @@ import { LABEL_WEIGHT, VALUE_WEIGHT } from '../charts/draw.ts';
 import {
   drawFittedLabel,
   ellipsise,
+  fitLine,
   graphemes,
   labelFitsTwoLines,
   labelLineHeight,
   type FittedLabel,
+  type FittedLine,
 } from '../charts/labels.ts';
 import { textWidth, type Canvas2D } from '../charts/textWidth.ts';
 import type { FamilyTheme } from '../families/contract';
@@ -17,12 +19,14 @@ import {
   PARTIAL_TAB_WIDTH,
 } from '../families/valueCanvas.ts';
 import {
+  formatDateOnly,
   formatDateParts,
   GAME_WINDOW_MISSING_LABEL,
   NOT_APPLICABLE_LABEL,
   notRecordedLabel,
 } from '../families/valueFormat.ts';
-import { parseColor } from '../shell/appearance/color.ts';
+import { luminance, mix, parseColor } from '../shell/appearance/color.ts';
+import { engineHour, gameDate, HOUR_EPOCH, monthNames } from '../dashboard/calendar.ts';
 import type { KitRaster, PathBuilder, PathPaint } from './path';
 
 export type Align = 'left' | 'right' | 'center';
@@ -378,9 +382,11 @@ export function drawArtSlot(
 }
 
 export type FlagSlotState =
+  | { readonly kind: 'none' }
   | { readonly kind: 'pending' }
   | { readonly kind: 'ready'; readonly bitmap: CanvasImageSource; readonly width: number; readonly height: number }
   | { readonly kind: 'missing'; readonly tag?: string }
+  | { readonly kind: 'refused'; readonly reason?: string }
   | { readonly kind: 'failed' };
 
 export interface FlagSlotResult {
@@ -404,7 +410,7 @@ export function drawFlagSlot(
   const height = options?.height ?? FLAG_SLOT_HEIGHT;
   const radius = options?.radius ?? 2;
   const alpha = options?.dimmed ? FLAG_LOSER_ALPHA : 1;
-  if (width <= 0 || height <= 0 || state.kind === 'pending') {
+  if (width <= 0 || height <= 0 || state.kind === 'pending' || state.kind === 'none') {
     return { x, y, width, height, drawn: state.kind };
   }
   if (state.kind === 'ready') {
@@ -457,7 +463,7 @@ export function drawFlagSlot(
   ctx.roundRect(x + 0.5, y + 0.5, Math.max(0, width - 1), Math.max(0, height - 1), radius);
   ctx.stroke();
   ctx.restore();
-  return { x, y, width, height, drawn: 'failed' };
+  return { x, y, width, height, drawn: state.kind };
 }
 
 export function drawNameSlot(
@@ -656,6 +662,77 @@ export function drawTrackBar(
   }
 }
 
+export interface ThresholdTick {
+  readonly at: number;
+  readonly reached: boolean;
+}
+
+export function drawThresholdMeter(
+  ctx: Canvas2D,
+  x: number,
+  middleY: number,
+  width: number,
+  height: number,
+  fraction: number | null,
+  ticks: readonly ThresholdTick[],
+  fill: string,
+  theme: FamilyTheme,
+): void {
+  if (width <= 0 || height <= 0) return;
+  const y = Math.round(middleY - height / 2);
+  if (fraction === null) {
+    drawHatchRect(ctx, x, y, width, height, barCornerRadius(height), theme);
+    return;
+  }
+  drawTrackBar(ctx, x, middleY, width, height, fraction, fill, theme);
+  if (!ticks.length) return;
+  ctx.save();
+  ctx.lineWidth = 1.2;
+  for (let i = 0; i < ticks.length; i++) {
+    const tick = ticks[i]!;
+    if (tick.at <= 0 || tick.at >= 1) continue;
+    const tx = Math.round(x + width * tick.at) + 0.5;
+    ctx.strokeStyle = theme.muted;
+    ctx.globalAlpha = tick.reached ? 0.9 : 0.55;
+    ctx.beginPath();
+    ctx.moveTo(tx, y - 3);
+    ctx.lineTo(tx, y + height + 3);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+export function drawProgressRing(
+  ctx: Canvas2D,
+  cx: number,
+  cy: number,
+  radius: number,
+  fraction: number,
+  stroke: string,
+  theme: FamilyTheme,
+  lineWidth = 2.4,
+): void {
+  if (radius <= 0) return;
+  const tokens = resolveKitTokens(theme);
+  const clamped = Math.max(0, Math.min(1, fraction));
+  ctx.save();
+  ctx.lineWidth = lineWidth;
+  ctx.strokeStyle = tokens.barTrack;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.stroke();
+  if (clamped > 0) {
+    const start = -Math.PI / 2;
+    const end = start + clamped * Math.PI * 2;
+    ctx.strokeStyle = stroke;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, start, end);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 export type StatusMarkKind = 'running' | 'waiting' | 'succeeded' | 'finished' | 'ended';
 
 export const STATUS_MARK_LABELS: Readonly<Record<StatusMarkKind, string>> = {
@@ -721,17 +798,27 @@ export function drawLegendEntry(
   options?: {
     readonly dash?: readonly number[];
     readonly hatch?: boolean;
+    readonly outlined?: boolean;
     readonly flag?: FlagSlotState;
     readonly maxWidth?: number;
     readonly muted?: boolean;
   },
 ): { readonly width: number; readonly label: FittedLabel } {
-  const swatchW = options?.dash?.length ? 14 : options?.hatch ? 10 : 12;
+  const swatchW = options?.dash?.length ? 14 : options?.hatch ? 10 : options?.outlined ? 9 : 12;
   const gap = 6;
   let cursor = x;
   ctx.save();
   if (options?.hatch) {
     drawHatchRect(ctx, cursor, Math.round(middleY - 5), swatchW, 10, 1.5, theme);
+    cursor += swatchW + gap;
+  } else if (options?.outlined) {
+    ctx.strokeStyle = theme.muted;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 2]);
+    ctx.beginPath();
+    ctx.roundRect(cursor + 0.5, Math.round(middleY - 4.5) + 0.5, 8, 8, 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
     cursor += swatchW + gap;
   } else if (options?.dash?.length) {
     ctx.strokeStyle = color;
@@ -995,6 +1082,12 @@ export function drawDateTab(
   return { x, y, width, height };
 }
 
+export function contrastInkForFill(fill: string, theme: FamilyTheme): string {
+  const rgb = parseColor(fill);
+  if (!rgb) return theme.text;
+  return luminance(rgb) > 0.32 ? 'rgba(17, 17, 17, 0.88)' : 'rgba(255, 255, 255, 0.96)';
+}
+
 export function drawChevron(
   ctx: Canvas2D,
   x: number,
@@ -1021,6 +1114,276 @@ export function drawChevron(
   }
   ctx.stroke();
   ctx.restore();
+}
+
+export const TIMELINE_NOTCH_WIDTH = 9;
+export const TIMELINE_FADE_WIDTH = 12;
+export const TIMELINE_BAR_RADIUS = 2.5;
+export const TIMELINE_LABEL_MIN_WIDTH = 22;
+
+export interface TimelineBarOptions {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly fill: string;
+  readonly theme: FamilyTheme;
+  readonly open?: boolean;
+  readonly heldBefore?: boolean;
+  readonly startBy?: boolean;
+  readonly endUnseen?: boolean;
+  readonly icon?: ArtSlotState;
+  readonly label?: string;
+}
+
+export interface TimelineBarResult {
+  readonly showedIcon: boolean;
+  readonly label: FittedLine | null;
+}
+
+function fadeFill(ctx: Canvas2D, x: number, width: number, fill: string, fadeStart: boolean, fadeEnd: boolean): CanvasGradient | string {
+  if ((!fadeStart && !fadeEnd) || width <= 2) return fill;
+  const grad = ctx.createLinearGradient(x, 0, x + width, 0);
+  const stop = Math.min(0.45, TIMELINE_FADE_WIDTH / width);
+  const clear = rgba(fill, 0, 'rgba(0,0,0,0)');
+  grad.addColorStop(0, fadeStart ? clear : fill);
+  if (fadeStart) grad.addColorStop(stop, fill);
+  if (fadeEnd) grad.addColorStop(1 - stop, fill);
+  grad.addColorStop(1, fadeEnd ? clear : fill);
+  return grad;
+}
+
+export function drawTimelineBar(ctx: Canvas2D, options: TimelineBarOptions): TimelineBarResult {
+  const { x, y, width, height, theme } = options;
+  if (width <= 0 || height <= 0) return { showedIcon: false, label: null };
+  const fill = options.open ? options.fill : mix(options.fill, theme.surface, 0.5);
+  const notch = options.heldBefore && width > TIMELINE_NOTCH_WIDTH + 4 ? TIMELINE_NOTCH_WIDTH : 0;
+  const radius = Math.min(TIMELINE_BAR_RADIUS, width / 2, height / 2);
+  const left = notch > 0 || options.startBy ? 0 : radius;
+  const right = options.open || options.endUnseen ? 0 : radius;
+  ctx.save();
+  ctx.fillStyle = fadeFill(ctx, x, width, fill, !!options.startBy && notch === 0, !!options.endUnseen);
+  ctx.beginPath();
+  ctx.roundRect(x, y, width, height, [left, right, right, left]);
+  ctx.fill();
+  if (notch > 0) {
+    const cy = y + height / 2;
+    const arm = Math.min(3.5, height * 0.22);
+    ctx.strokeStyle = contrastInkForFill(fill, theme);
+    ctx.lineWidth = 1.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x + 3 + arm * 0.8, cy - arm);
+    ctx.lineTo(x + 3, cy);
+    ctx.lineTo(x + 3 + arm * 0.8, cy + arm);
+    ctx.stroke();
+  }
+  let showedIcon = false;
+  let label: FittedLine | null = null;
+  if (width >= TIMELINE_LABEL_MIN_WIDTH) {
+    let cursor = x + (notch > 0 ? notch + 2 : 4);
+    const limit = x + width - 4;
+    if (options.icon && options.icon.kind !== 'none') {
+      const size = options.icon.kind === 'missing' ? Math.min(14, height) : height;
+      if (cursor + size <= limit) {
+        drawArtSlot(ctx, cursor, y + (height - size) / 2, size, size, options.icon, theme, { radius: 2 });
+        cursor += size + 6;
+        showedIcon = true;
+      }
+    }
+    if (options.label && limit - cursor >= 12) {
+      ctx.font = `500 11.5px ${theme.font}`;
+      const fitted = fitLine(options.label, limit - cursor, s => textWidth(ctx, s));
+      if (fitted.text) {
+        ctx.fillStyle = contrastInkForFill(fill, theme);
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(fitted.text, cursor, y + height / 2 + 0.5);
+        label = fitted;
+      }
+    }
+  }
+  ctx.restore();
+  return { showedIcon, label };
+}
+
+export interface TimeAxisTick {
+  readonly hour: number;
+  readonly label: string;
+  readonly major?: boolean;
+}
+
+export function computeTimeAxisTicks(startHour: number, endHour: number, plotWidth: number, dayHours = 24): TimeAxisTick[] {
+  if (plotWidth <= 20 || endHour <= startHour) return [];
+  const hoursPerDay = Math.max(1, dayHours);
+  const spanHours = endHour - startHour;
+  const start = gameDate(Math.floor(startHour));
+  const end = gameDate(Math.floor(endHour));
+  const ticks: TimeAxisTick[] = [];
+  if (!start || !end || spanHours <= 62 * hoursPerDay) {
+    const spanDays = Math.max(1, (spanHours + 1) / hoursPerDay);
+    const fit = Math.max(2, Math.floor(plotWidth / 64));
+    const step = [1, 2, 3, 5, 7, 14].find(candidate => Math.ceil(spanDays / candidate) <= fit) ?? 14;
+    const firstDay = Math.floor((startHour - HOUR_EPOCH) / hoursPerDay);
+    const lastDay = Math.floor((endHour - HOUR_EPOCH) / hoursPerDay);
+    for (let day = firstDay; day <= lastDay; day++) {
+      if (((day % step) + step) % step !== 0) continue;
+      const hour = HOUR_EPOCH + day * hoursPerDay;
+      if (hour <= startHour || hour > endHour) continue;
+      const parts = formatDateParts(hour);
+      const date = gameDate(hour);
+      ticks.push({ hour, label: parts?.dayMonth ?? formatDateOnly(hour), major: date ? date.day === 1 : false });
+    }
+    return ticks;
+  }
+  if (spanHours < 2 * 365 * hoursPerDay) {
+    const months = (end.year - start.year) * 12 + (end.month - start.month) + 1;
+    const fit = Math.max(2, Math.floor(plotWidth / 56));
+    const step = [1, 2, 3, 6, 12].find(candidate => Math.ceil(months / candidate) <= fit) ?? 12;
+    let year = start.year;
+    let month = start.month;
+    if (start.day > 15) {
+      month++;
+      if (month > 12) { month = 1; year++; }
+    }
+    while (year < end.year || (year === end.year && month <= end.month)) {
+      if ((month - 1) % step === 0) {
+        const rawHour = engineHour({ year, month, day: 1, hour: 1 });
+        const hour = rawHour !== null && rawHour < startHour && year === start.year && month === start.month && start.day <= 15
+          ? startHour
+          : rawHour;
+        if (hour !== null && hour >= startHour && hour <= endHour) {
+          const major = month === 1;
+          ticks.push({ hour, label: major ? String(year) : monthNames[month - 1]!.slice(0, 3), major });
+        }
+      }
+      month++;
+      if (month > 12) { month = 1; year++; }
+    }
+    return ticks;
+  }
+  const years = end.year - start.year + 1;
+  const fit = Math.max(2, Math.floor(plotWidth / 48));
+  const step = [1, 2, 5, 10, 20, 50].find(candidate => Math.ceil(years / candidate) <= fit) ?? 100;
+  for (let year = start.year; year <= end.year; year++) {
+    if (year % step !== 0) continue;
+    const rawHour = engineHour({ year, month: 1, day: 1, hour: 1 });
+    const hour = rawHour !== null && rawHour < startHour && year === start.year && start.month === 1 && start.day <= 15
+      ? startHour
+      : rawHour;
+    if (hour !== null && hour >= startHour && hour <= endHour) ticks.push({ hour, label: String(year), major: true });
+  }
+  return ticks;
+}
+
+export interface TimeAxisFrame {
+  readonly plotLeft: number;
+  readonly plotRight: number;
+  readonly startHour: number;
+  readonly endHour: number;
+}
+
+export function timeAxisX(frame: TimeAxisFrame, hour: number): number {
+  const span = Math.max(1, frame.endHour - frame.startHour);
+  return frame.plotLeft + ((hour - frame.startHour) / span) * (frame.plotRight - frame.plotLeft);
+}
+
+export function drawTimeAxisGrid(
+  ctx: Canvas2D,
+  ticks: readonly TimeAxisTick[],
+  frame: TimeAxisFrame,
+  top: number,
+  bottom: number,
+  theme: FamilyTheme,
+): void {
+  const tokens = resolveKitTokens(theme);
+  ctx.save();
+  ctx.strokeStyle = tokens.hairline;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (const tick of ticks) {
+    const x = Math.floor(timeAxisX(frame, tick.hour)) + 0.5;
+    if (x <= frame.plotLeft + 1 || x >= frame.plotRight - 1) continue;
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, bottom);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+export interface TimeAxisOptions extends TimeAxisFrame {
+  readonly axisTop: number;
+  readonly playhead: number | null;
+  readonly playheadLabel: string;
+  readonly hover?: number | null;
+  readonly hoverLabel?: string;
+  readonly playheadLineTop?: number | null;
+  readonly hairline?: 'normal' | 'strong' | 'band' | 'none';
+  readonly tickMarks?: boolean;
+  readonly tabBounds?: { readonly left: number; readonly right: number };
+  readonly tabY?: number;
+  readonly labelY?: number;
+  readonly theme: FamilyTheme;
+}
+
+export function drawTimeAxis(ctx: Canvas2D, ticks: readonly TimeAxisTick[], options: TimeAxisOptions): void {
+  const { plotLeft, plotRight, axisTop, theme } = options;
+  const tokens = resolveKitTokens(theme);
+  const hairline = options.hairline ?? 'band';
+  if (hairline !== 'none') drawRowHairline(ctx, plotLeft, plotRight, axisTop, theme, hairline);
+  const tabBounds = options.tabBounds ?? { left: plotLeft, right: plotRight };
+  const tabY = options.tabY ?? axisTop + 4;
+  const labelY = options.labelY ?? axisTop + 14;
+  const showTicks = options.tickMarks !== false;
+  ctx.save();
+  ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+  const keepOut: [number, number][] = [];
+  let px: number | null = null;
+  if (options.playhead !== null) {
+    px = timeAxisX(options, options.playhead);
+    const tabW = textWidth(ctx, options.playheadLabel) + 14;
+    const left = Math.max(tabBounds.left, Math.min(tabBounds.right - tabW, Math.round(px - tabW / 2)));
+    keepOut.push([left - 6, left + tabW + 6]);
+  }
+  let hx: number | null = null;
+  if (options.hover != null && options.hoverLabel) {
+    hx = timeAxisX(options, options.hover);
+    const tabW = textWidth(ctx, options.hoverLabel) + 14;
+    const left = Math.max(tabBounds.left, Math.min(tabBounds.right - tabW, Math.round(hx - tabW / 2)));
+    keepOut.push([left - 6, left + tabW + 6]);
+  }
+  ctx.fillStyle = theme.muted;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.strokeStyle = tokens.hairlineStrong;
+  ctx.lineWidth = 1;
+  let lastRight = -Infinity;
+  for (const tick of ticks) {
+    const x = timeAxisX(options, tick.hour);
+    const half = textWidth(ctx, tick.label) / 2;
+    if (showTicks) {
+      ctx.beginPath();
+      ctx.moveTo(Math.floor(x) + 0.5, axisTop);
+      ctx.lineTo(Math.floor(x) + 0.5, axisTop + (tick.major === false ? 3 : 4));
+      ctx.stroke();
+    }
+    if (x - half < plotLeft - 4 || x + half > plotRight + 4) continue;
+    if (keepOut.some(([l, r]) => x + half > l && x - half < r)) continue;
+    if (x - half < lastRight + 8) continue;
+    ctx.fillText(tick.label, x, labelY);
+    lastRight = x + half;
+  }
+  ctx.restore();
+  if (px !== null) {
+    if (options.playheadLineTop !== null) {
+      drawPlayheadLine(ctx, px, options.playheadLineTop ?? 0, axisTop, theme);
+    }
+    drawDateTab(ctx, options.playheadLabel, px, tabY, theme, 'playhead', tabBounds);
+  }
+  if (hx !== null && options.hoverLabel) {
+    drawDateTab(ctx, options.hoverLabel, hx, tabY, theme, 'hover', tabBounds);
+  }
 }
 
 export function winRateColor(rate: number, theme?: FamilyTheme): string {
@@ -1496,4 +1859,88 @@ export function drawGradientLegend(
   }
   ctx.restore();
   return { width: cursor - x };
+}
+
+export interface LegendStripGradient {
+  readonly lowLabel: string;
+  readonly highLabel: string;
+  readonly stops: readonly string[];
+}
+
+export interface LegendStripEntry {
+  readonly label: string;
+  readonly color?: string;
+  readonly dash?: readonly number[];
+  readonly hatch?: boolean;
+  readonly outlined?: boolean;
+  readonly flag?: FlagSlotState;
+  readonly muted?: boolean;
+}
+
+export interface LegendStripSpec {
+  readonly gradient?: LegendStripGradient;
+  readonly entries?: readonly LegendStripEntry[];
+  readonly rightNote?: string;
+  readonly padX?: number;
+  readonly entryGap?: number;
+  readonly hairline?: boolean;
+}
+
+export function drawLegendStrip(
+  ctx: Canvas2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  spec: LegendStripSpec,
+  theme: FamilyTheme,
+): void {
+  if (width <= 0 || height <= 0) return;
+  const padX = spec.padX ?? 0;
+  const entryGap = spec.entryGap ?? 12;
+  const middleY = Math.round(y + height / 2);
+  let cursor = x + padX;
+  const rightLimit = x + width - padX;
+  if (spec.gradient) {
+    const drawn = drawGradientLegend(
+      ctx,
+      cursor,
+      middleY,
+      spec.gradient.lowLabel,
+      spec.gradient.highLabel,
+      spec.gradient.stops,
+      theme,
+    );
+    cursor += drawn.width + 14;
+  }
+  if (spec.entries) {
+    for (const entry of spec.entries) {
+      const room = rightLimit - cursor;
+      if (room < 32) break;
+      const drawn = drawLegendEntry(ctx, cursor, middleY, entry.label, entry.color ?? '', theme, {
+        ...(entry.dash?.length ? { dash: entry.dash } : {}),
+        ...(entry.hatch ? { hatch: true } : {}),
+        ...(entry.outlined ? { outlined: true } : {}),
+        ...(entry.flag ? { flag: entry.flag } : {}),
+        ...(entry.muted ?? (entry.hatch || entry.outlined) ? { muted: true } : {}),
+        maxWidth: room,
+      });
+      cursor += drawn.width + entryGap;
+    }
+  }
+  if (spec.rightNote) {
+    const maxW = Math.max(0, rightLimit - cursor);
+    if (maxW >= 24) {
+      ctx.save();
+      ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+      ctx.fillStyle = theme.muted;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(ellipsise(spec.rightNote, maxW, s => textWidth(ctx, s)), rightLimit, middleY);
+      ctx.restore();
+    }
+  }
+  if (spec.hairline) {
+    drawRowHairline(ctx, x, x + width, y + height - 1, theme, 'normal');
+  }
 }

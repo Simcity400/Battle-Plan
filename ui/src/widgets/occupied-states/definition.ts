@@ -12,7 +12,7 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'garrison', label: 'Garrison', as: 'faint', tone: 'blue', offered: OFFERED.number, defaultHidden: true },
 ];
 export const DEFAULT_SORT = { column: 'resistance', direction: 'descending' } as const;
-export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: DEFAULT_SORT };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', showRank: false, sort: DEFAULT_SORT };
 export const OPTIONS: readonly OptionField[] = [
   { key: 'countryRole', section: 'options', label: 'Filter by', kind: 'choice', default: 'occupier',
     choices: [{ value: 'occupier', label: 'Occupier' }, { value: 'occupied', label: 'Occupied country' }],
