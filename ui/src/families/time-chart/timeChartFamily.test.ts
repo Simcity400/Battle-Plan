@@ -725,4 +725,49 @@ describe('time-chart picture authority', () => {
     const itaAhead = project(20, 80, null).series.find(s => s.id === 'GER')!.color;
     assert.equal(itaAhead, gerAhead, 'a country keeps its colour when another overtakes it');
   });
+  it('repaints a same-hour correction of history', () => {
+    registerTimeChart({
+      kind: 'test-correction',
+      family: 'series',
+      variant: 'line',
+      joinMode: 'join',
+      measureTitle: 'Correction',
+      project: readView => ({
+        kind: 'test-correction',
+        measureTitle: 'Correction',
+        mode: 'lines',
+        hour: readView.hour,
+        extent: [H1936, H1936 + 95],
+        yAxis: { format: 'number' },
+        series: [{ id: 'ger', key: 'GER', name: 'German Reich', color: '#e3a83b', role: 'primary', bounded: readView.series('main')?.get('GER') ?? null }],
+      }),
+    });
+    const created = mockCanvas(600, 240);
+    const view = timeChartLaneView(undefined, { createCanvas: () => ({ canvas: created.canvas, ctx: created.ctx }) });
+    const state = new Map<string, unknown>();
+    let seq = 1;
+    const hour = H1936 + 95;
+    const tiled = (rev: number, first: number, last: number) => ({
+      rev, source: 'main', tag: 'GER', head: 'h', decimals: 0, binHours: 96, from: H1936, to: H1936 + 95, width: 1,
+      buckets: [makeBucket(H1936, H1936 + 95, first, 10, 30, last, H1936 + 95)], missing: [], parts: [], marks: null,
+    });
+    const paint = (rev: number, first: number, last: number) => view.paint({
+      widget: 1,
+      subs: [],
+      pictures: [],
+      model: {
+        family: 'time-chart', kind: 'test-correction', options: {}, sources: {}, extent: [H1936, H1936 + 95], width: 600, height: 240,
+        tiledLines: [tiled(rev, first, last)], keepTiled: [rev], tiledBySource: { main: { GER: rev } },
+      } satisfies TimeChartBinding,
+      hour,
+      speed: 0,
+      binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
+      inspect: null,
+      now: 0,
+    }, state, () => `c${seq++}`);
+    paint(1, 10, 30);
+    const before = created.ops.filter(op => op === 'clearRect').length;
+    paint(2, 30, 10);
+    assert.equal(created.ops.filter(op => op === 'clearRect').length, before + 1, 'the corrected history is drawn');
+  });
 });

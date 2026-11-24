@@ -106,6 +106,31 @@ function defaultCreateCanvas(width: number, height: number): { readonly canvas: 
   return { canvas, ctx };
 }
 
+const objectIds = new WeakMap<object, number>();
+let nextObjectId = 1;
+
+function objectId(value: unknown): number {
+  if (!value || typeof value !== 'object') return 0;
+  let id = objectIds.get(value);
+  if (id === undefined) {
+    id = nextObjectId++;
+    objectIds.set(value, id);
+  }
+  return id;
+}
+
+function contentKey(binding: TimeChartBinding, revisions: Readonly<Record<string, number>>): string {
+  return JSON.stringify([
+    binding.keepTiled ?? [],
+    revisions,
+    objectId(binding.options),
+    objectId(binding.staticPanels),
+    objectId(binding.staticAnswers),
+    objectId(binding.directModel),
+    objectId(binding.identitySnapshot),
+  ]);
+}
+
 function buildReadView(
   input: PaintInput,
   binding: TimeChartBinding,
@@ -304,6 +329,7 @@ export function timeChartLaneView(
       const demandedArtUrls = new Set<string>();
 
       let model: TimeChartModel;
+      let contentSig = contentKey(binding, {});
       if (binding.directModel) {
         model = binding.directModel;
       } else {
@@ -338,6 +364,7 @@ export function timeChartLaneView(
           },
         );
         model = proj.project(readView, binding.options);
+        contentSig = contentKey(binding, readView.revisions);
       }
       if (binding.view?.x && model.view?.x !== binding.view.x) model = { ...model, view: { ...model.view, x: binding.view.x } };
 
@@ -422,6 +449,7 @@ export function timeChartLaneView(
         model.markers?.length ?? 0,
         model.gaps?.length ?? 0,
         input.inspect ?? null,
+        contentSig,
         held.artRevision,
         binding.theme?.surface ?? '',
       ]);
