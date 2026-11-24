@@ -706,6 +706,19 @@ pub fn factions_at(factions: &[FactionGroup], hour: i32) -> HashMap<String, Fact
     out
 }
 
+#[derive(Default)]
+struct Replies(HashMap<(u64, Option<dashboard_base::content::LocalisationKey>), Arc<CountryGroupReply>>);
+
+pub fn shared(source: &Source, query: &Query<'_>, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<CountryGroupReply>> {
+    let key = (query.timeline.id, context.content.as_ref().map(dashboard_base::content::localisation_key));
+    let held = source.state::<Replies>();
+    if let Some(reply) = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.get(&key) {
+        return Ok(Arc::clone(reply));
+    }
+    let reply = Arc::new(groups(source, query, &query.timeline.id.to_string(), context, cancelled)?);
+    Ok(Arc::clone(held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.entry(key).or_insert(reply)))
+}
+
 pub fn cached_groups(source: &dashboard_base::Source, run: u32) -> io::Result<std::sync::Arc<RunGroups>> {
     Runs::held(&source.state::<Runs>(), run, || run_groups(source.replay_ref().recording(), run))
 }
@@ -713,6 +726,20 @@ pub fn cached_groups(source: &dashboard_base::Source, run: u32) -> io::Result<st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_branchs_group_reply_is_built_once_and_every_request_shares_it() {
+        use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
+        let frames = (100..=110).map(|hour| source(1, hour, Some(1))).collect();
+        let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let held = Source::from_replay(dashboard_base::SourceKey { source_id: "shared-groups".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let query = dashboard_base::queries::query(&held, 1).unwrap();
+        let context = LoadContext { content: None };
+        let first = shared(&held, &query, &context, &AtomicBool::new(false)).unwrap();
+        let cancelled = AtomicBool::new(true);
+        let again = shared(&held, &query, &context, &cancelled).unwrap();
+        assert!(Arc::ptr_eq(&first, &again), "a later request reads the branch's reply already built and visits no stretch again");
+    }
 
     #[test]
     fn sparse_stretches_coalesce_group_runs_independent_of_stretch_count() {

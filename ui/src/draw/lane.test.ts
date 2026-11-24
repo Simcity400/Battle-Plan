@@ -319,7 +319,7 @@ test('astra 14: when the budget serves one widget a frame, stable widgets take t
 test('should-fix a: a pointer hit-tests the installed picture, never a candidate the page has not accepted', async () => {
   const view: LaneView = { paint: (input): Painted => ({ surfaces: [], fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } }, motion: false,
     hit: () => `row:${input.pictures[0]!.h}` }) };
-  const { page, lane, mount, step, hits } = rig({ view });
+  const { page, lane, mount, step, hits, presented } = rig({ view });
   mount(1, [{ id: 3, channel: 'panel' }], 'view');
   lane.bindRoute(3, ROUTE, NATIVE);
   lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: {} }]));
@@ -330,6 +330,9 @@ test('should-fix a: a pointer hit-tests the installed picture, never a candidate
   lane.pointer(1, 0, [1, 1]);
   await flush(); await flush();
   assert.deepEqual(hits, ['row:10']);
+  const offered = presented.at(-1)!.entries.at(-1)!;
+  lane.pointer(1, 0, [1, 1], offered.id);
+  assert.deepEqual(hits, ['row:10', 'row:20'], 'a pointer hit-tests the picture it names (the page names the one it installed), even before the lane hears its acknowledgement');
 });
 
 test('changed rows still in flight from before a rewind never merge onto the new stream, and an early stream waits for its seek', async () => {

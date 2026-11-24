@@ -1,29 +1,18 @@
-import { useCallback, useEffect, useMemo } from 'react';
-import { useChartTokens } from '../charts/useChartTokens';
-import type { OptionChoices, WidgetProps, WidgetRuntime } from './definitions';
+import { useMemo } from 'react';
+import type { OptionChoices, WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
 import { contentKey, contentSet, resolveOptions, setToken } from './options';
-import type { OptionField, OptionValue } from './options';
+import type { OptionField } from './options';
 import { useProduct } from './products';
-import { defaultCountryKey, selectedCountryKeys } from './countrySelection';
 import { useFactionColours } from './FactionColours';
-import { looksRead, useCountryLooks } from './countryLooks';
-import { useIdentityHour } from './atHead';
-import { trackHourOf } from './settledHour';
-import { useKeyTagsAt } from './useKeyTagsAt.ts';
-import { countryLineColours } from './countryLineColours.ts';
-import { useHeadProduct } from './headProduct';
-import { useGate } from './regionGate';
-import { airMode, airParams, airSideName, momentRows, validateAirChoices, validateAirSuperiority } from './airSuperiority';
-import type { AirLooks, AirModeSettings } from './airSuperiority';
+import { useCountryLooks } from './countryLooks';
+import { airMode, airParams, airSideName, validateAirChoices } from './airSuperiority';
+import type { AirModeSettings } from './airSuperiority';
 import { airChoiceToken } from './airOptions';
-import type { AirChoicesReply, AirSide, FactionGroup } from '../generated/dashboard';
+import type { AirChoicesReply, FactionGroup } from '../generated/dashboard';
 import { productRequest } from './request.ts';
 
 export { airMode, airParams, type AirModeSettings };
-
-const NO_WARNINGS: string[] = [];
-const NO_SIDES: AirSide[] = [];
 
 export function useAirChoicesReply(runtime: WidgetRuntime, widget: WidgetSpec, active: boolean) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
@@ -67,73 +56,3 @@ export function useAirChoices(widget: WidgetSpec, runtime: WidgetRuntime, fields
   }, [choices.data, looks, hour, factions.factions, factions.displayNames, options.regions, track?.source.metadata.campaignKey]);
 }
 
-export function useAirMoment(props: WidgetProps, options: Readonly<Record<string, OptionValue>>) {
-  const { widget, runtime, active, onDiagnostics } = props;
-  const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const campaign = track?.source.metadata.campaignKey ?? '';
-  const currentCountry = selectedCountryKeys(widget.countries, track)[0] ?? defaultCountryKey(track);
-  const mode = useMemo(() => airMode(options, campaign, currentCountry),
-    [options.mode, options.viewpoint, options.sides, options.regions, options.theatres, campaign, currentCountry]);
-  const needsViewpoint = mode.mode === 'viewpoint' && !mode.viewpoint;
-  const params = useMemo(() => track && !needsViewpoint ? airParams(mode) : null, [track, needsViewpoint, mode]);
-  const product = useHeadProduct(runtime, useGate(runtime, widget), 'air-superiority', params, { active, validate: validateAirSuperiority, structure: momentRows });
-  const looks = useAirLooks(props, product.data, product.at, mode, product.read === 'followed');
-  useEffect(() => {
-    const warnings = [...(product.data?.warnings ?? []), ...looks.warnings];
-    onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
-    return () => onDiagnostics(NO_WARNINGS);
-  }, [product.data, looks.warnings, onDiagnostics]);
-  return { ...product, track, mode, needsViewpoint, ...looks };
-}
-
-export function useAirLooks(props: Pick<WidgetProps, 'runtime' | 'widget' | 'active'>, data: { sides: readonly AirSide[]; viewpoint: number | null } | undefined, at: number | null,
-  mode: AirModeSettings, pushed = false) {
-  const { runtime, widget, active } = props;
-  const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const tokens = useChartTokens();
-  const sides = data?.sides ?? NO_SIDES;
-  const viewpointKey = mode.viewpoint.startsWith('country:') ? mode.viewpoint.slice(8) : null;
-  const [viewpointTag = null] = useKeyTagsAt(runtime, track, viewpointKey ? [viewpointKey] : [],
-    clockHour => pushed && track ? trackHourOf(widget, track, runtime.tracks, clockHour) ?? Number.NaN : Math.floor(at ?? track?.branch.lastHour ?? 0), pushed, active);
-  const tags = useMemo(() => [...new Set([...sides.flatMap(side => [side.tag, side.leader].flatMap(tag => tag ? [tag] : [])), ...(viewpointTag ? [viewpointTag] : [])])], [sides, viewpointTag]);
-  const identityHour = useIdentityHour(runtime.client, track, tags, runtime.clock, active && pushed,
-    clockHour => track ? trackHourOf(widget, track, runtime.tracks, clockHour) : null);
-  const read = looksRead(active && pushed, identityHour, Math.floor(at ?? track?.branch.lastHour ?? 0));
-  const hour = read.hour;
-  const names = useCountryLooks(runtime.client, track, tags, hour, active, undefined, undefined, read.exact);
-  const anchors = useMemo(() => new Map(sides.flatMap(side => side.anchor ? [[side.anchor.tag, side.anchor.hour] as const] : [])), [sides]);
-  const anchorTags = useMemo(() => [...anchors.keys()], [anchors]);
-  const anchorLooks = useCountryLooks(runtime.client, track, anchorTags, hour, active, undefined, anchors, true);
-  const factions = useFactionColours(runtime.client, track?.source);
-  const faction = useMemo(() => factionNamer(factions.factions, factions.displayNames, hour), [factions.factions, factions.displayNames, hour]);
-  const country = useCallback((tag: string) => ({ name: names.name(tag, hour), flag: names.flag(tag, hour) }), [names, hour]);
-  const sideName = useCallback((side: AirSide) => airSideName(side, tag => names.name(tag, hour), faction), [names, hour, faction]);
-  const colours = useMemo(() => {
-    const entries = new Map<string, { color: [number, number, number] }>();
-    for (const side of sides) {
-      const anchor = side.anchor ? anchorLooks.color(side.anchor.tag, side.anchor.hour) : null;
-      const tag = side.tag ?? side.leader;
-      const color = anchor ?? (tag ? names.color(tag, hour) : null);
-      if (color) entries.set(side.key, { color });
-    }
-    if (viewpointTag) { const color = names.color(viewpointTag, hour); if (color) entries.set(`country:${viewpointTag}`, { color }); }
-    return countryLineColours([...entries.keys()].sort(), entries, tokens.surface, tokens.countryColours === 'fixed');
-  }, [sides, anchorLooks, names, hour, viewpointTag, tokens.surface, tokens.countryColours]);
-  const color = useCallback((side: AirSide) => side.colourFaction ? factions.colours.get(side.colourFaction) ?? tokens.muted : colours.get(side.key) ?? tokens.muted,
-    [factions.colours, colours, tokens.muted]);
-  const looks: AirLooks = useMemo(() => {
-    const side = data?.viewpoint == null ? undefined : sides[data.viewpoint];
-    const viewpoint = side ? { name: sideName(side), color: color(side) }
-      : viewpointTag ? { name: names.name(viewpointTag, hour), tag: viewpointTag, color: colours.get(`country:${viewpointTag}`) ?? tokens.muted }
-        : viewpointKey ? { name: 'Country name unavailable', color: tokens.muted } : { name: 'No country selected', color: tokens.muted };
-    return { name: sideName, color, viewpoint, enemy: tokens.error, scale: 100_000, badBelow: 40_000, goodAbove: 60_000, mode: mode.mode };
-  }, [data?.viewpoint, sides, sideName, color, viewpointTag, viewpointKey, names, hour, colours, tokens.muted, tokens.error, mode.mode]);
-  const legend = useMemo(() => mode.mode === 'viewpoint' ? [
-    { id: 'friendly', label: `${looks.viewpoint.name} (friendly)`, color: looks.viewpoint.color },
-    { id: 'enemy', label: `Enemies of ${looks.viewpoint.name}`, color: tokens.error },
-  ] : [...sides].sort((a, b) => (a.faction == null) === (b.faction == null) ? 0 : a.faction == null ? 1 : -1).map(side => ({ id: side.key, label: sideName(side), color: color(side),
-    onColor: side.colourFaction ? (hex: string) => factions.setColour(side.colourFaction!, hex, 'campaign') : undefined })),
-  [mode.mode, looks.viewpoint, tokens.error, sides, sideName, color, factions.setColour]);
-  const warnings = useMemo(() => [...factions.warnings, ...(factions.error ? [String(factions.error)] : []), ...(names.warnings ?? [])], [factions.warnings, factions.error, names.warnings]);
-  return { tokens, looks, legend, country, faction, warnings };
-}
