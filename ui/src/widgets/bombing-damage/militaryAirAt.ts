@@ -1,6 +1,6 @@
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
-import { airCauseName } from '../../dashboard/militaryAirLedger.ts';
+import { airCauseName } from '../air-kills-losses/lossCauses.ts';
 import { countryRowPresentation, formatBarsValueField, type BarsDataRow, type BarsLegendItem, type BarsModel, type BarsReadout, type BarsSegment } from '../../families/bars/model.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';

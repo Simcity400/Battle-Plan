@@ -1,6 +1,7 @@
 import { clipToSpans, runAt } from '../charts/series.ts';
 import type { Span } from '../charts/series';
-import { airCauseName, ledgerRuns, ledgerScale, ledgerTotals } from './militaryAirLedger.ts';
+import { airCauseName } from '../widgets/air-kills-losses/lossCauses.ts';
+import { ledgerRuns, ledgerScale, ledgerTotals } from './militaryAirLedger.ts';
 import type { LedgerIndex } from './militaryAirLedger';
 import type { MilitaryAirPart } from '../generated/dashboard';
 

@@ -19,7 +19,7 @@ export const airKillsLossesPairedProjection: BarsProjection<MilitaryAirAtOptions
   project: (readView, options) => militaryAirModel(readView, options),
 }, 'paired');
 
-export const airLossCausesProjection: BarsProjection<MilitaryAirAtOptions> = registerBarsProjection({
+export const airLossCausesProjection: BarsProjection<MilitaryAirAtOptions> = registerFamilyProjection({
   kind: 'air-kills-losses',
   family: 'bars',
   nextChange: () => Infinity,
