@@ -170,6 +170,74 @@ pub(super) fn top(scored: &[(&str, &CountryGameScoreRow)], unplaced: &[&CountryG
     GameScoreTop { tags: known.into_iter().map(|(_, tag)| tag.to_owned()).collect(), missing: None }
 }
 
+fn compute_top(scores: &[CountryGameScoreRow], holders: &dashboard_query::identity::Holders, hour: i32, ask: &GameScoreTopParams) -> GameScoreTop {
+    let named = Named::new(holders, hour);
+    let unresolved = holders_unresolved(holders, hour);
+    let mut scored = Vec::with_capacity(scores.len());
+    let mut unplaced = Vec::new();
+    for score in scores {
+        match named.id(score.country) {
+            Some(tag) => scored.push((tag, score)),
+            None if unresolved => unplaced.push(score),
+            None => {}
+        }
+    }
+    top(&scored, &unplaced, ask)
+}
+
+fn same_top(held: Option<&serde_json::Value>, current: &GameScoreTop) -> bool {
+    let Some(obj) = held.and_then(serde_json::Value::as_object) else { return false };
+    let held_missing = match obj.get("missing") {
+        Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(text)) => Some(text.as_str()),
+        _ => return false,
+    };
+    if held_missing != current.missing.as_deref() {
+        return false;
+    }
+    obj.get("tags")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|tags| tags.len() == current.tags.len() && tags.iter().zip(&current.tags).all(|(a, b)| a.as_str() == Some(b.as_str())))
+}
+
+pub(super) fn advance_keeps(
+    frame: &DecodedFrame,
+    params: &GameScoreParams,
+    holders: &dashboard_query::identity::Holders,
+    edits: &dashboard_base::products::at_hour::Edits,
+    live: &dashboard_follow::live::Live,
+    held_top: Option<&serde_json::Value>,
+) -> io::Result<bool> {
+    let id = TableId::CountryGameScores;
+    if !edits.only_columns(id, dashboard_base::products::at_hour::field_mask(id, &SCORES)) { return Ok(false); }
+    let rows = frame.complete::<tables::CountryGameScores>()?;
+    let by_column = params.top.as_ref().map(|ask| dashboard_declare::field(id, &ask.by)).transpose()?;
+    let mut by_edited = false;
+    for (&key, &mask) in edits.tables.get(&id).into_iter().flatten() {
+        let Ok(i) = rows.binary_search_by_key(&(key as u32), |row| row.country) else { return Ok(false) };
+        let row = &rows[i];
+        if by_column.is_some_and(|column| mask & (1 << column) != 0) {
+            by_edited = true;
+        }
+        for (name, known) in SCORES.iter().zip([
+            (&row.total, row.total_reason), (&row.army, row.army_reason), (&row.navy, row.navy_reason),
+            (&row.air, row.air_reason), (&row.industry, row.industry_reason), (&row.land, row.land_reason),
+        ]) {
+            let column = dashboard_declare::field(id, name)?;
+            if mask & (1 << column) == 0 { continue; }
+            let shown = live.groups.iter().any(|g| g.table == id && g.columns.contains(&column) && g.keys.binary_search(&key).is_ok());
+            if shown != (matches!(known.0, Recorded::Value(_)) && known.1 == CountryGameScoreRow::KNOWN) { return Ok(false); }
+        }
+    }
+    if let Some(ask) = &params.top && by_edited {
+        let current = compute_top(rows, holders, frame.hour, ask);
+        if !same_top(held_top, &current) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 pub(super) fn name_cells(live: &Cells, tag: &str, score: &CountryGameScoreRow, columns: &[usize; 6]) {
     let shown = row(tag, score);
     for ((part, column), cell) in SCORES.iter().zip(columns).zip([&shown.total, &shown.army, &shown.navy, &shown.air, &shown.industry, &shown.land]) {
@@ -249,25 +317,8 @@ impl AtHour for GameScore {
 
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
 
-    fn advance(frame: &DecodedFrame, params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, live: &dashboard_follow::live::Live, _data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
-        let id = TableId::CountryGameScores;
-        if params.top.is_some() && (edits.tables.contains_key(&id) || edits.replaced.contains(&id)) { return Ok(false); }
-        if !edits.only_columns(id, dashboard_base::products::at_hour::field_mask(id, &SCORES)) { return Ok(false); }
-        let rows = frame.complete::<tables::CountryGameScores>()?;
-        for (&key, &mask) in edits.tables.get(&id).into_iter().flatten() {
-            let Ok(i) = rows.binary_search_by_key(&(key as u32), |row| row.country) else { return Ok(false) };
-            let row = &rows[i];
-            for (name, known) in SCORES.iter().zip([
-                (&row.total, row.total_reason), (&row.army, row.army_reason), (&row.navy, row.navy_reason),
-                (&row.air, row.air_reason), (&row.industry, row.industry_reason), (&row.land, row.land_reason),
-            ]) {
-                let column = dashboard_declare::field(id, name)?;
-                if mask & (1 << column) == 0 { continue; }
-                let shown = live.groups.iter().any(|g| g.table == id && g.columns.contains(&column) && g.keys.binary_search(&key).is_ok());
-                if shown != (matches!(known.0, Recorded::Value(_)) && known.1 == CountryGameScoreRow::KNOWN) { return Ok(false); }
-            }
-        }
-        Ok(true)
+    fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
+        advance_keeps(frame, params, at.holders, edits, live, data.get("top"))
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {

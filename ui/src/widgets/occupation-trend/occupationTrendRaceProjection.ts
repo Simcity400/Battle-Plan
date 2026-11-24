@@ -1,6 +1,6 @@
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import {
   nextSeriesRaceChange,
   projectSeriesRace,
@@ -28,7 +28,7 @@ function resolveRank(options: Readonly<Record<string, unknown>>): OccupationMeas
   return rankingMeasure(shown, ranking);
 }
 
-export const occupationTrendRaceProjection: BarsProjection<OccupationTrendRaceOptions> = registerBarsProjection({
+export const occupationTrendRaceProjection: BarsProjection<OccupationTrendRaceOptions> = registerFamilyProjection({
   kind: 'occupation-trend',
   family: 'bars',
   nextChange(readView, options) {

@@ -1,10 +1,10 @@
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsProjection } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { FamilyPlanContext } from '../../families/contract.ts';
 import { militaryAirModel, militaryAirParams, militaryAirSources, type MilitaryAirAtOptions } from './militaryAirAt.ts';
 
-export const bombingDamageProjection: BarsProjection<MilitaryAirAtOptions> = registerBarsProjection({
+export const bombingDamageProjection: BarsProjection<MilitaryAirAtOptions> = registerFamilyProjection({
   kind: 'bombing-damage',
   family: 'bars',
   nextChange: () => Infinity,

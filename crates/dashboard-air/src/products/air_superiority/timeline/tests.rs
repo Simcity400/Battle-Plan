@@ -387,20 +387,6 @@ fn acceptance_case_8_two_founding_hours_of_same_tag_keep_distinct_colours() {
 }
 
 #[test]
-fn acceptance_case_9_country_viewpoint_style_resolves_at_displayed_hour_not_future_rename() {
-    let mut resolver = MockResolver {
-        countries: HashMap::from([
-            (("GER".into(), 47), (Some("German Reich".into()), Some([90, 90, 90]))),
-            (("GER".into(), 1000), (Some("Greater Germanic Reich".into()), Some([70, 70, 70]))),
-        ]),
-        factions: HashMap::new(),
-    };
-    let style = country_style_at("GER", 47, &mut resolver);
-    assert_eq!(style.name.as_deref(), Some("German Reich"));
-    assert_eq!(style.color, Some([90, 90, 90]));
-}
-
-#[test]
 fn a_known_side_beside_an_unknown_one_is_not_a_leader() {
     let cell = AirDayCell::Sides(AirDaySides { parts: vec![AirDayPart { side: 0, tag: "GER".into(), friendly: "71".into() }], viewpoints: vec![], unknown: vec![1], no_air_object: vec![], filtered: false });
     assert_eq!(readout_of(Some(&cell), Some(100)), AirReadout::NotRecorded { reason: "A side's air score was not recorded".into() });

@@ -205,7 +205,7 @@ impl AtHour for LendLeaseBalance {
     const TITLE: &'static str = "Lend-lease balance";
     const CONTENT_DEPENDENT: bool = false;
     type Params = LendLeaseBalanceParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, holder, rank, top, countries];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, holder, rank, top, countries, "countries[]"];
     type Reply = LendLeaseBalanceReply;
     type Context = ();
 

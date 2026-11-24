@@ -1,11 +1,8 @@
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { FutureDataError, type BoundedReadView, type FamilyPlanContext, type SourceEntry, type SourcePlan } from '../../families/contract.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
 import type { ChartGap, ChartHoverDetail, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import {
@@ -36,7 +33,7 @@ export function formatFuelAmount(value: number): string {
   return rounded === 0 ? '0' : formatCompactScalar(rounded, 'integer').text;
 }
 
-export const fuelProjection: TimeChartProjection<FuelOptions> = registerTimeChart({
+export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyProjection({
   kind: 'fuel',
   family: 'time-chart',
   variant: 'rate-with-ceiling',
