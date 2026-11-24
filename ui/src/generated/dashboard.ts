@@ -4379,7 +4379,12 @@ export type DiplomaticRelationsParams = { branchId: string, countries: Array<Cou
  */
 group?: GroupSelection, };
 export type OpinionOrder = "faction" | "name";
-export type OpinionMatrixCell = { "kind": "value", opinion: number, } | { "kind": "diagonal" } | { "kind": "missing", reason: string, };
+export type OpinionCell = { "kind": "value", opinion: number, } | { "kind": "missing", reason: string, };
+export type OpinionPair = {
+/**
+ * The owner's and the target's index in `owners`.
+ */
+row: number, column: number, cell: OpinionCell, };
 export type OpinionOwner = { tag: string,
 /**
  * Its holder's raw id at the hour (the part a pair's `relation-opinions` line names it by);
@@ -4387,18 +4392,22 @@ export type OpinionOwner = { tag: string,
  */
 countryId: number | null,
 /**
- * Whether its opinions were read: a known owner's opinion with no row is exactly zero.
+ * Whether its opinions were read whole: its opinion of a shown country with no pair is exactly zero.
  */
 known: boolean,
 /**
- * Why it is not known.
+ * Why it is not known: its opinions with no pair are not recorded.
  */
 reason: string | null, readHour?: number, name?: string, nameMissing?: string, color?: [number, number, number], factionId?: string, factionName?: string, };
 export type DiplomaticRelationsReply = {
 /**
  * Why the countries to show are not known at this hour: factories, which rank a top, were not read whole or name an unresolved country, or a group's membership is not recorded. No owners then.
  */
-chosenMissing: string | null, owners: Array<OpinionOwner>, cells: Array<OpinionMatrixCell>, domain: [number, number], warnings: Array<string>, };
+chosenMissing: string | null, owners: Array<OpinionOwner>,
+/**
+ * The witnessed opinions between owners, and the pairs whose target no country holds, by row then column.
+ */
+pairs: Array<OpinionPair>, domain: [number, number], warnings: Array<string>, };
 export type DiplomaticRelationsParamsAtHour = DiplomaticRelationsParams & { hour: number };
 export type VolunteerFlowParams = { branchId: string,
 /**
@@ -4999,25 +5008,27 @@ export type IntelCoverageParams = { branchId: string, countries?: Array<CountryR
 group?: GroupSelection, };
 export type IntelCoverageMeasure = "covered" | "strength" | "strongest";
 export type IntelCoverageBasis = "controlled" | "core";
-export type IntelCoverageCell = { "kind": "present", value: bigint, covered_controlled: number, covered_core: number, controlled_strength: bigint, core_strength: bigint, max_strength: bigint, } | { "kind": "noNetwork" } | { "kind": "diagonal" } | { "kind": "missing", reason: string, };
-export type IntelNetwork = { owner: Country, target: Country, };
-export type IntelCoverageReply = {
+export type IntelPair = {
 /**
- * Every country present at the hour (a slot the identity names), by tag: a pair of them
- * without a network has none, where the summaries are known.
+ * The owner's and the target's index in `displayed`.
  */
-countries: Array<Country>,
+row: number, column: number, value: bigint, coveredControlled: number, coveredCore: number, controlledStrength: bigint, coreStrength: bigint, maxStrength: bigint, };
+export type IntelCoverageReply = { displayed: Array<Country>,
 /**
- * By owner, then target id.
+ * The witnessed networks between displayed countries, by row then column.
  */
-networks: Array<IntelNetwork>, displayed: Array<Country>, cells: Array<IntelCoverageCell>, maxValue: bigint, scale: bigint,
+pairs: Array<IntelPair>,
+/**
+ * Why a pair not in `pairs` may still have a network (the summaries were read only in part); null when the read was whole, so an unlisted pair has none.
+ */
+unlisted: string | null, maxValue: bigint, scale: bigint,
 /**
  * The summaries' read hour the rows hold (they are taken daily); it moves daily, so a widget
  * renders nothing for it.
  */
 readHour: number | null, missing: string | null,
 /**
- * Why the countries to show are not known at this hour (a group whose membership is not recorded); none are shown then.
+ * Why the countries to show are not known at this hour (a top over summaries read only in part, or a group whose membership is not recorded); none are shown then.
  */
 chosenMissing: string | null, warnings: Array<string>, };
 export type IntelCoverageParamsAtHour = IntelCoverageParams & { hour: number };
