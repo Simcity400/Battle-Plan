@@ -589,6 +589,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (model !== undefined) held.own = this.store.resolve(model);
     if (model !== undefined || ownerChanged) held.model = this.compose(held);
     this.bounded(held);
+    if (remounted && held.installed) held.installed = { ...held.installed, contents: {} };
     const keepSurfaces = !ownerChanged && !retry && !remounted && held.installed !== null
       && prev.pin === binding.pin && prev.offset === binding.offset
       && prev.surfaces.length === binding.surfaces.length

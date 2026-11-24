@@ -530,6 +530,11 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const curAdapter = cur.adapter;
     const [defW, defH] = curAdapter.defaultSize ?? [320, 200];
     const vp = viewportRef.current;
+    if (!measuredRef.current && bodyRef.current && typeof ResizeObserver === 'function') {
+      vp.width = Math.floor(bodyRef.current.clientWidth);
+      vp.height = Math.floor(bodyRef.current.clientHeight);
+      measuredRef.current = true;
+    }
     const hidden = measuredRef.current && (vp.width <= 0 || vp.height <= 0);
     const w = hidden ? 0 : Math.max(1, vp.width || defW);
     const h = hidden ? 0 : Math.max(1, vp.height || defH);
@@ -1086,8 +1091,9 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       const h = Math.floor(height);
       const dpr = currentDpr();
       const vp = viewportRef.current;
-      const newlyMeasured = observed && !measuredRef.current;
-      if (observed) measuredRef.current = true;
+      const canMeasure = observed || typeof ResizeObserver === 'function';
+      const newlyMeasured = canMeasure && !measuredRef.current;
+      if (canMeasure) measuredRef.current = true;
       if (!newlyMeasured && w === vp.width && h === vp.height && dpr === vp.dpr) return;
       vp.width = w;
       vp.height = h;
