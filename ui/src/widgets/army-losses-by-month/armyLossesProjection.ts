@@ -1,5 +1,5 @@
 import { auditRow } from '../../families/auditRow.ts';
-import { liveKey } from '../../charts/live.ts';
+import { liveKey, type LiveValues } from '../../charts/live.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
@@ -12,7 +12,7 @@ import {
   type TimeChartWidgetDeclaration,
 } from '../../families/time-chart/declaration.ts';
 import type { ChartColumnSegment, ChartLegendEntry, ChartMonthSlot, TimeChartModel } from '../../families/time-chart/model.ts';
-import type { ArmyLossesReply, ArmyLossMonthBar, LossStack, LossView } from '../../generated/dashboard';
+import type { ArmyLossesReply, ArmyLossMonthArmy, ArmyLossMonthBar, LossStack, LossView } from '../../generated/dashboard';
 
 export type LossMeasure = 'manpower' | 'equipment';
 export type LossLedger = 'combat' | 'attrition' | 'recovered' | 'enemy';
@@ -55,9 +55,116 @@ export interface ArmyLossesChartOptions {
   readonly ledger: LossLedger;
   readonly stack: LossStack;
   readonly foldUnrecorded: boolean;
+  readonly countryKey?: string;
   readonly countryName: string;
   readonly following: boolean;
   readonly extent: readonly [number, number];
+}
+
+export interface ResolvedArmyMonthRow {
+  readonly reference: string;
+  readonly name: string;
+  readonly manpower: readonly [string, string, string] | null;
+  readonly manpowerMissing?: string;
+  readonly equipmentText: string | null;
+  readonly equipmentMissing?: string;
+}
+
+export type ResolvedArmyMonthDetail =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'unavailable'; readonly reason: string }
+  | { readonly kind: 'empty' }
+  | { readonly kind: 'rows'; readonly rows: readonly ResolvedArmyMonthRow[] };
+
+function resolveMonthManpower(
+  row: ArmyLossMonthArmy,
+  live: LiveValues<number | bigint | string>,
+): { readonly values: readonly [string, string, string] | null; readonly missing?: string } {
+  if (!row.manpower) return { values: null, missing: 'Not recorded' };
+  if (!row.manpowerLiveRow) {
+    return {
+      values: [
+        formatLossRaw(BigInt(row.manpower[0]), 'manpower'),
+        formatLossRaw(BigInt(row.manpower[1]), 'manpower'),
+        formatLossRaw(BigInt(row.manpower[2]), 'manpower'),
+      ],
+    };
+  }
+  const gKey = liveKey(row.manpowerLiveRow, 'ground');
+  const aKey = liveKey(row.manpowerLiveRow, 'air');
+  const nKey = liveKey(row.manpowerLiveRow, 'navy');
+  const g = live.get(gKey);
+  const a = live.get(aKey);
+  const n = live.get(nKey);
+  if (g === undefined || a === undefined || n === undefined) {
+    const missing = g === undefined ? live.missing(gKey) : a === undefined ? live.missing(aKey) : live.missing(nKey);
+    return { values: null, missing };
+  }
+  return {
+    values: [
+      formatLossRaw(BigInt(Math.round(Number(g))), 'manpower'),
+      formatLossRaw(BigInt(Math.round(Number(a))), 'manpower'),
+      formatLossRaw(BigInt(Math.round(Number(n))), 'manpower'),
+    ],
+  };
+}
+
+function resolveMonthEquipment(
+  row: ArmyLossMonthArmy,
+  live: LiveValues<number | bigint | string>,
+): { readonly text: string | null; readonly missing?: string } {
+  if (row.selectedMissing !== null) {
+    return { text: null, missing: row.selectedMissing };
+  }
+  if (row.selectedLiveRow) {
+    const key = liveKey(row.selectedLiveRow, 'amount');
+    const liveVal = live.get(key);
+    if (liveVal === undefined) {
+      return { text: null, missing: live.missing(key) };
+    }
+    const raw = typeof liveVal === 'bigint' ? liveVal : BigInt(Math.round(Number(liveVal)));
+    return { text: formatLossRaw(raw, 'equipment') };
+  }
+  if (row.selectedTotalRaw !== null) {
+    return { text: formatLossRaw(row.selectedTotalRaw, 'equipment') };
+  }
+  return { text: null, missing: 'Not recorded' };
+}
+
+export function resolveArmyMonthDetail(
+  reply: ArmyLossesReply,
+  measure: LossMeasure,
+  ledger: LossLedger,
+  live: LiveValues<number | bigint | string>,
+): ResolvedArmyMonthDetail {
+  if (reply.absent) return { kind: 'absent' };
+  const availReason = reply.monthDetail?.missing
+    ?? reply.availability.armies
+    ?? (measure === 'manpower'
+      ? reply.availability.manpower
+      : reply.availability.months ?? (ledger === 'enemy' ? reply.availability.enemyEquipment : reply.availability.ownEquipment));
+  if (availReason) {
+    return { kind: 'unavailable', reason: availReason };
+  }
+  const detail = reply.monthDetail;
+  if (!detail || detail.armies.length === 0) {
+    return { kind: 'empty' };
+  }
+  return {
+    kind: 'rows',
+    rows: detail.armies.map(row => {
+      const mp = measure === 'manpower' ? resolveMonthManpower(row, live) : null;
+      const eq = measure === 'equipment' ? resolveMonthEquipment(row, live) : null;
+      return {
+        reference: row.army.reference,
+        name: row.army.name ?? 'Army name unavailable',
+        manpower: mp?.values ?? null,
+        ...(mp?.missing ? { manpowerMissing: mp.missing } : {}),
+        equipmentText: eq?.text ?? null,
+        ...(eq?.missing ? { equipmentMissing: eq.missing } : {}),
+      };
+    }),
+  };
 }
 
 export function validateArmyLosses(raw: unknown): ArmyLossesReply {
@@ -321,6 +428,7 @@ export const armyLossesProjection: TimeChartProjection<ArmyLossesChartOptions> =
       .map(s => auditRow(`${s.year}-${String(s.month).padStart(2, '0')}`, s.totalText));
     return {
       kind: 'army-losses-by-month',
+      ...(options.countryKey ? { subject: options.countryKey } : {}),
       measureTitle,
       mode: 'columns',
       hour,
@@ -400,6 +508,7 @@ export const armyLossesDeclaration: TimeChartWidgetDeclaration<ArmyLossesChartOp
     const resolved = resolveArmyLossesOptions(ctx.options);
     return {
       ...resolved,
+      ...(ctx.countryTag ? { countryKey: ctx.countryTag } : {}),
       countryName: ctx.countryName || ctx.countryTag || 'This country',
       following: ctx.following,
       extent,

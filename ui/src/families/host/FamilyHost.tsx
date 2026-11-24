@@ -33,6 +33,7 @@ import {
   familyInspectToken,
   lazyActionKeys,
   parseFamilyHit,
+  requestedRowWindow,
   type FamilyArtDemand,
   type FamilyContextHit,
   type FamilyGestureContext,
@@ -201,7 +202,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
   readonly extent?: readonly [number, number] | null;
   readonly plan?: SourcePlan | null;
-  readonly exactReadView?: (hour: number) => Promise<BoundedReadView | null>;
+  readonly exactReadView?: (hour: number, rowWindow: FamilyRowWindow | null) => Promise<BoundedReadView | null>;
   readonly offset: number;
   readonly pin: number | null;
   readonly bounds?: readonly [number, number] | null;
@@ -293,6 +294,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const bodyWrapRef = useRef<HTMLDivElement>(null);
   const [targets, setTargets] = useState<FamilyChromeTargets>(NO_TARGETS);
   const windowRef = useRef<FamilyRowWindow | null>(null);
+  const requestedWindowRef = useRef<FamilyRowWindow | null>(null);
   const [chromeState, setChromeState] = useState<unknown>(undefined);
   const chromeStateRef = useRef<unknown>(undefined);
   const [chromeWidth, setChromeWidth] = useState(0);
@@ -469,6 +471,15 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     if (box) focusAnchorRef.current = { x: box.left + Math.min(200, box.width / 2), y: box.top + 48 };
   }, []);
 
+  const reportWindow = useCallback(() => {
+    const requested = requestedWindowRef.current;
+    const installed = installedPictureRef.current;
+    const reported = windowRef.current;
+    if (!requested || !installed || (reported && reported.first === requested.first && reported.count === requested.count)) return;
+    windowRef.current = requested;
+    latestRef.current.onWindowChange?.(requested, installed.hour);
+  }, []);
+
   const syncMirror = useCallback((mirror: MirrorModel | null) => {
     const kind = latestRef.current.adapter.mirror ?? 'none';
     const selected = latestRef.current.selectedKey ?? null;
@@ -528,20 +539,22 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       scrollTop: physicalToLogicalTop(vp.scrollTop, scrollGeometryRef.current),
       zoomWindow: vp.zoomWindow,
     };
+    const rowWindow = requestedRowWindow(curAdapter, cur.plan, viewport, cur.settings, installedFieldsRef.current);
 
     let auditId: number | undefined;
     if (perfLog && cur.captureActive && cur.exactReadView && curAdapter.deriveAuditRows) {
-      const key = [cur.declaration, cur.options, cur.exactReadView, curAdapter.deriveAuditRows, viewport.width, viewport.height, viewport.scrollLeft, viewport.scrollTop, cur.settings, expansionRef.current, cur.theme];
+      const key = [cur.declaration, cur.options, cur.exactReadView, curAdapter.deriveAuditRows, viewport.width, viewport.height, viewport.scrollLeft, viewport.scrollTop, rowWindow?.first, rowWindow?.count, cur.settings, expansionRef.current, cur.theme];
       const prev = lastAuditRef.current;
       if (prev && prev.key.length === key.length && prev.key.every((part, i) => part === key[i])) {
         auditId = prev.id;
       } else {
         const deriveRows = curAdapter.deriveAuditRows;
+        const readExact = cur.exactReadView;
         const context = { viewport, settings: cur.settings, expanded: expansionRef.current, theme: cur.theme, fields: installedFieldsRef.current };
         const snapshot: PlanAuditSnapshot<TModel, TOptions> = {
           projection: cur.declaration,
           options: cur.options,
-          exactReadView: cur.exactReadView,
+          exactReadView: hour => readExact(hour, rowWindow),
           deriveRows: (model, hour) => deriveRows(model, hour, context),
           ...(curAdapter.auditOrdered !== undefined ? { ordered: curAdapter.auditOrdered } : {}),
         };
@@ -571,8 +584,11 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       audit: auditId !== undefined,
       auditId,
       pauseFlush: pauseFlushRef.current,
+      window: rowWindow,
     });
     if (binding === null) return;
+    requestedWindowRef.current = rowWindow;
+    reportWindow();
 
     const widthPx = `${w}px`;
     const heightPx = `${h}px`;
@@ -582,7 +598,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const dated = datedNow();
     suppliedDatedRef.current = dated ?? null;
     pipeline.bind(pipe, [mounted.surface], { surfaces: [{ width: w, height: h, dpr }], ...(dated ? { dated } : {}) }, {}, binding);
-  }, [pipeline, pipe, audit.capture, sourceIdsRef, datedNow]);
+  }, [pipeline, pipe, audit.capture, sourceIdsRef, datedNow, reportWindow]);
 
   const suppliedDatedRef = useRef<BoundDated | null>(null);
   const bindRef = useRef(bind);
@@ -896,12 +912,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       };
       PICTURE_FIELDS.set(installed, fields);
       installedPictureRef.current = installed;
-      const range = fields.range as FamilyRowWindow | undefined;
-      const shownWindow = windowRef.current;
-      if (range && (!shownWindow || shownWindow.first !== range.first || shownWindow.count !== range.count)) {
-        windowRef.current = range;
-        cur.onWindowChange?.(range, installedHour);
-      }
+      reportWindow();
       describe(installed.accessibleDescription);
 
       const extentSize = activeAdapter.getScrollExtent?.(fields);
@@ -1101,7 +1112,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       holdElement(frameRef.current, false);
       reportFamilyShownHour(reportShownRef.current, false, null);
     };
-  }, [pipeline, pipe, instanceId, tooltips, scrollMode, pointerMode, gestureContext, dispatch, publishHoverHour]);
+  }, [pipeline, pipe, instanceId, tooltips, scrollMode, pointerMode, gestureContext, dispatch, publishHoverHour, reportWindow]);
 
   useLayoutEffect(() => {
     const node = bodyRef.current;

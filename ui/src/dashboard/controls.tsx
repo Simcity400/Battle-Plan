@@ -6,7 +6,8 @@ import { formatDateTime } from './calendar';
 import { Icon } from '../components/Icons';
 import type { BoundTrack, DashboardTemplate } from './model';
 import type { PlaybackController } from './playback';
-import { countryPickerKeys, useIdentityAtHead, useIdentityScope, type CountryIdentityResult } from '../families/identity/react.ts';
+import { countryPickerKeys, pickerDating, useIdentityAtHead, useIdentityScope, type CountryIdentityResult } from '../families/identity/react.ts';
+import { identityBrokerFor } from '../families/identity/broker.ts';
 import { timelineGaps, timelineHourAt } from './timelineGaps';
 import CountryPicker from '../components/CountryPicker';
 import { useMapMuted } from '../shell/muteSetting';
@@ -46,7 +47,11 @@ export function PlaybackCountryPicker({ clock, track, selectedSlot, ...picker }:
     () => track && shownHour !== null ? { branchId: track.branch.id, hour: Math.floor(shownHour) } : null,
     [track?.branch.id, shownHour],
   );
-  return <CountryPicker {...picker} selectedTag={selectedTag} flagAt={flagAt} onShownTags={setShownTags} />;
+  const datedHour = useMemo(
+    () => pickerDating(identityBrokerFor(picker.client), clock, scope, selectedSlot, picker.selectedTag, trackHour, track?.source, branchBounds),
+    [picker.client, clock, scope, selectedSlot, picker.selectedTag, trackHour, track?.source, branchBounds],
+  );
+  return <CountryPicker {...picker} selectedTag={selectedTag} flagAt={flagAt} datedHour={datedHour} onShownTags={setShownTags} />;
 }
 
 function MapMuteButton() {
