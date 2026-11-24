@@ -22,7 +22,7 @@ export type FromLane =
   | { type: 'failure'; lane: number; reason: string }
   | { type: 'sub-failed'; lane: number; sub: number; reason: string }
   | { type: 'widget-failed'; lane: number; widget: number; reason: string }
-  | { type: 'hit'; widget: number; key: string | null }
+  | { type: 'hit'; widget: number; key: string | null; installedId?: number; owner?: string }
   | { type: 'served'; seek: number; target: number; exact: boolean; changed: number; ms: number; cancelled?: boolean; costs?: [widget: number, cost: number][] };
 
 export type FromPull = { kind: 'follow'; bytes: Uint8Array; resets: number } | { kind: 'panels'; bytes: Uint8Array } | { kind: 'failure'; reason: string };
