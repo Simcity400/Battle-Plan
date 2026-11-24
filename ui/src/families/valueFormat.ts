@@ -38,27 +38,26 @@ function smallestUnitStep(maxDecimals: number): string {
   return maxDecimals > 0 ? `0.${'0'.repeat(maxDecimals - 1)}1` : '1';
 }
 
-function formatTruncatedFixed(
-  units: bigint,
-  scale: number,
+function formatRationalCut(
+  numerator: bigint,
+  denominator: bigint,
   maxDecimals: number,
   fixed: boolean,
   signed: boolean,
   percent: boolean,
   suffix: string,
 ): string {
+  if (denominator <= 0n) {
+    throw new InvalidFamilyValueError(`formatRational: non-positive denominator (${denominator}) is not valid`);
+  }
   const pct = percent ? '%' : '';
-  if (units === 0n) {
+  if (numerator === 0n) {
     const zero = fixed && maxDecimals > 0 ? `0.${'0'.repeat(maxDecimals)}` : '0';
     return `${zero}${pct}${suffix}`;
   }
-  const negative = units < 0n;
-  const abs = negative ? -units : units;
-  const cut = scale > maxDecimals
-    ? abs / (10n ** BigInt(scale - maxDecimals))
-    : scale < maxDecimals
-      ? abs * (10n ** BigInt(maxDecimals - scale))
-      : abs;
+  const negative = numerator < 0n;
+  const abs = negative ? -numerator : numerator;
+  const cut = (abs * (10n ** BigInt(maxDecimals))) / denominator;
   const sign = negative ? '\u2212' : signed ? '+' : '';
   if (cut === 0n) {
     return `${sign}<${smallestUnitStep(maxDecimals)}${pct}${suffix}`;
@@ -68,6 +67,65 @@ function formatTruncatedFixed(
   const fracRaw = maxDecimals > 0 ? digits.slice(digits.length - maxDecimals) : '';
   const frac = fixed ? fracRaw : fracRaw.replace(/0+$/, '');
   return `${sign}${whole}${frac ? `.${frac}` : ''}${pct}${suffix}`;
+}
+
+function formatTruncatedFixed(
+  units: bigint,
+  scale: number,
+  maxDecimals: number,
+  fixed: boolean,
+  signed: boolean,
+  percent: boolean,
+  suffix: string,
+): string {
+  return formatRationalCut(units, 10n ** BigInt(scale), maxDecimals, fixed, signed, percent, suffix);
+}
+
+export interface RationalFormatOptions {
+  readonly maxDecimals?: number;
+  readonly fixedDecimals?: boolean;
+  readonly signed?: boolean;
+  readonly percent?: boolean;
+  readonly unit?: string;
+}
+
+export function formatRational(
+  numerator: bigint,
+  denominator: bigint,
+  options?: RationalFormatOptions,
+): string {
+  const suffix = options?.unit ? ` ${options.unit}` : '';
+  return formatRationalCut(
+    numerator,
+    denominator,
+    options?.maxDecimals ?? 0,
+    options?.fixedDecimals === true,
+    options?.signed === true,
+    options?.percent === true,
+    suffix,
+  );
+}
+
+export function formatShareRatio(numerator: bigint, denominator: bigint): string {
+  if (denominator <= 0n) {
+    throw new InvalidFamilyValueError(`formatShareRatio: non-positive denominator (${denominator}) is not valid`);
+  }
+  if (numerator < 0n) {
+    throw new InvalidFamilyValueError(`formatShareRatio: negative share (${numerator}/${denominator}) is not valid`);
+  }
+  if (numerator > denominator) {
+    throw new InvalidFamilyValueError(`formatShareRatio: a share above one (${numerator}/${denominator}) is not valid`);
+  }
+  if (numerator === 0n) return '0%';
+  if (numerator === denominator) return '100%';
+  if (numerator * 1000n < denominator) return '<0.1%';
+  if (numerator * 10n >= denominator) {
+    const whole = (numerator * 200n + denominator) / (denominator * 2n);
+    return `${whole > 99n ? 99n : whole}%`;
+  }
+  const tenths = (numerator * 2000n + denominator) / (denominator * 2n);
+  const clamped = tenths > 99n ? 99n : tenths < 1n ? 1n : tenths;
+  return `${clamped / 10n}.${clamped % 10n}%`;
 }
 
 function toFixedDecimal(raw: number | bigint, decimals: number): { readonly units: bigint; readonly scale: number } {
@@ -196,22 +254,8 @@ export function formatScalar(raw: Scalar, format?: ValueFormat): string {
 
 export function formatShare(share: number): string {
   assertFiniteNumber(share, 'formatShare');
-  if (share < 0) throw new InvalidFamilyValueError(`formatShare: negative share (${share}) is not valid`);
-  if (share === 0) return '0%';
-  if (share >= 1) return '100%';
-  const pct = share * 100;
-  if (pct < 0.1) return '<0.1%';
-  if (pct >= 10) return `${Math.min(99, Math.round(pct))}%`;
-  const { units, scale } = exactDecimal(pct);
-  let tenths: bigint;
-  if (scale > 1) {
-    const divisor = 10n ** BigInt(scale - 1);
-    tenths = (units + divisor / 2n) / divisor;
-  } else {
-    tenths = units * (10n ** BigInt(1 - scale));
-  }
-  const clamped = tenths > 99n ? 99n : tenths < 1n ? 1n : tenths;
-  return `${clamped / 10n}.${clamped % 10n}%`;
+  const { units, scale } = exactDecimal(share);
+  return formatShareRatio(units, 10n ** BigInt(scale));
 }
 
 export function formatProgress(fraction: number): string {
@@ -251,6 +295,34 @@ const COMPACT_TIERS = [
   { exp: 6, threshold: 10n ** 6n, suffix: 'M' },
   { exp: 3, threshold: 10n ** 3n, suffix: 'K' },
 ] as const;
+
+export function formatCompactRational(
+  numerator: bigint,
+  denominator: bigint,
+  options?: Omit<RationalFormatOptions, 'percent'>,
+): CompactScalar {
+  const exact = formatRational(numerator, denominator, options);
+  const abs = numerator < 0n ? -numerator : numerator;
+  const whole = abs / denominator;
+  if (whole < 1000n) {
+    return { text: exact, exact, compacted: false };
+  }
+  const tier = COMPACT_TIERS.find(entry => whole >= entry.threshold);
+  if (!tier) return { text: exact, exact, compacted: false };
+  const wholeInTier = whole / tier.threshold;
+  const compactDecimals = wholeInTier >= 100n ? 0 : wholeInTier >= 10n ? 1 : 2;
+  const unitSuffix = options?.unit ? ` ${options.unit}` : '';
+  const text = formatRationalCut(
+    numerator,
+    denominator * tier.threshold,
+    compactDecimals,
+    false,
+    options?.signed === true,
+    false,
+    `${tier.suffix}${unitSuffix}`,
+  );
+  return { text, exact, compacted: true };
+}
 
 export function formatCompactScalar(raw: Scalar, format?: ValueFormat): CompactScalar {
   const exact = formatScalar(raw, format);

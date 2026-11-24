@@ -155,7 +155,8 @@ pub(crate) struct Facts {
     pub warnings: Vec<String>,
 }
 
-const QUEUES_UNREAD: &str = "The construction queues were not read, so output in those hours is not counted";
+const BUILDINGS_UNREAD: &str = "The building construction queue was not read in full, so building output in those hours is not counted";
+const RAILWAYS_UNREAD: &str = "The railway construction queue was not read in full, so railway output in those hours is not counted";
 const HOURS_UNRECORDED: &str = "Output in hours that were not recorded is not counted";
 
 pub(crate) fn dated_gaps(steps: &[(i32, Option<u8>, bool)], last: i32, final_reason: u8, had_output: bool) -> Vec<(i32, SpendingGap)> {
@@ -175,24 +176,27 @@ pub(crate) fn dated_gaps(steps: &[(i32, Option<u8>, bool)], last: i32, final_rea
     out
 }
 
+pub(crate) fn unread_spans(first: i32, last: i32, mut whole: Vec<(i32, i32)>, reason: &str, out: &mut Vec<(i32, i32, String)>) {
+    whole.sort_unstable();
+    let mut cursor = first;
+    for (from, to) in whole {
+        if from > cursor {
+            out.push((cursor, from - 1, reason.to_owned()));
+        }
+        cursor = cursor.max(to.saturating_add(1));
+    }
+    if cursor <= last {
+        out.push((cursor, last, reason.to_owned()));
+    }
+}
+
 fn queue_gaps(query: &Query<'_>, out: &mut Vec<(i32, i32, String)>) -> io::Result<()> {
     let recording = query.replay.recording();
     for stretch in &query.timeline.stretches {
-        let mut read: Vec<(i32, i32)> = Vec::new();
-        for table in [TableId::BuildingConstruction, TableId::RailwayConstruction] {
+        for (table, reason) in [(TableId::BuildingConstruction, BUILDINGS_UNREAD), (TableId::RailwayConstruction, RAILWAYS_UNREAD)] {
             let statuses = dashboard_query::cost::storage(|| replay_lanes::lanes::statuses(recording, stretch.run, table, stretch.first, stretch.last))?;
-            read.extend(statuses.iter().filter(|held| replay_recording::columnar_frames::available(held.status)).map(|held| (held.first, held.last)));
-        }
-        read.sort_unstable();
-        let mut cursor = stretch.first;
-        for (first, last) in read {
-            if first > cursor {
-                out.push((cursor, first - 1, QUEUES_UNREAD.to_owned()));
-            }
-            cursor = cursor.max(last.saturating_add(1));
-        }
-        if cursor <= stretch.last {
-            out.push((cursor, stretch.last, QUEUES_UNREAD.to_owned()));
+            let whole = statuses.iter().filter(|held| replay_recording::columnar_frames::complete(held.status)).map(|held| (held.first, held.last)).collect();
+            unread_spans(stretch.first, stretch.last, whole, reason, out);
         }
     }
     Ok(())

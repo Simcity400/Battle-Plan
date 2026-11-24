@@ -22,6 +22,7 @@ import { TimeRegion, useRegion, useRegionHour } from '../../dashboard/widgetTime
 import { pageClock } from '../../dashboard/widgetClock.ts';
 import { DetailWindowHost } from '../host/DetailWindowHost';
 import type { InstalledAction } from '../contract.ts';
+import { mirrorRowSelector } from '../host/mirror.ts';
 import { FamilyWidget } from '../host/registry';
 import { gameWindowSelectionAt, openGameWindow, type OpenedGameWindow } from './gameWindowOpen.ts';
 import './gameWindowTable.css';
@@ -112,6 +113,7 @@ export default function GameWindowTable<S extends GameWindowSelection>({ window:
       day={shut ? '' : shown ? windowDayLabel(shown) : at === null ? '' : dayLabel(at)}
       placement="center"
       anchor={anchor}
+      returnFocus={opened ? mirrorRowSelector(opened.key) : undefined}
       initialPosition={inherited}
       settled={shown !== null}
       onPositionChange={(position: WindowPosition) => updateGameWindowSlotPosition(row.kind, slotOwner, position)}

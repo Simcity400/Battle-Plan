@@ -27,6 +27,7 @@ import {
   GAME_WINDOW_MISSING_LABEL,
   auditValue,
   formatBoundDate,
+  formatCompactRational,
   formatCompactScalar,
   formatDateHover,
   formatDateOnly,
@@ -34,9 +35,11 @@ import {
   formatDateValue,
   formatOutOf,
   formatProgress,
+  formatRational,
   formatRecordedPercent,
   formatScalar,
   formatShare,
+  formatShareRatio,
   formatValueState,
   notRecordedLabel,
   spokenValue,
@@ -396,6 +399,7 @@ test('fixedDecimals, formatShare, formatProgress, formatRecordedPercent, and sig
   assert.throws(() => formatShare(null as unknown as number), InvalidFamilyValueError);
   assert.throws(() => formatShare(Number.NaN), InvalidFamilyValueError);
   assert.throws(() => formatShare(-0.1), InvalidFamilyValueError);
+  assert.throws(() => formatShare(1.25), InvalidFamilyValueError);
   assert.throws(() => formatProgress(null as unknown as number), InvalidFamilyValueError);
   assert.throws(() => formatProgress(Number.NaN), InvalidFamilyValueError);
   assert.throws(() => formatRecordedPercent(Number.NaN), InvalidFamilyValueError);
@@ -447,4 +451,21 @@ test('fixedDecimals, formatShare, formatProgress, formatRecordedPercent, and sig
   assert.equal(formatScalar(11 / 5975, 'share'), '0.2%');
   assert.equal(formatScalar(0, 'share'), '0%');
   assert.deepEqual(formatValueState(knownValue(0.24), 'share'), { kind: 'known', text: '24%', spoken: '24%', audit: '24%' });
+
+  assert.equal(formatShareRatio(14_500n, 100_000n), '15%');
+  assert.equal(formatShareRatio(2_850n, 100_000n), '2.9%');
+  assert.equal(formatShareRatio(0n, 100_000n), '0%');
+  assert.equal(formatShareRatio(100_000n, 100_000n), '100%');
+  assert.equal(formatShareRatio(1n, 100_000n), '<0.1%');
+  assert.equal(formatShareRatio(99_999n, 100_000n), '99%');
+  assert.equal(formatRational(327_680_000_000_327n, 32_768n, { maxDecimals: 2 }), '10,000,000,000');
+  assert.equal(formatRational(1n, 32_768n, { maxDecimals: 2 }), '<0.01');
+  assert.deepEqual(formatCompactRational(597_999n * 32_768n + 20_000n, 32_768n, { maxDecimals: 0 }), {
+    text: '597K',
+    exact: '597,999',
+    compacted: true,
+  });
+  assert.throws(() => formatRational(1n, 0n), InvalidFamilyValueError);
+  assert.throws(() => formatShareRatio(1n, 0n), InvalidFamilyValueError);
+  assert.throws(() => formatShareRatio(-1n, 10n), InvalidFamilyValueError);
 });

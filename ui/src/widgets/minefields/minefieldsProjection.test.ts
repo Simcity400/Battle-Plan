@@ -126,3 +126,9 @@ test('hiding the only mined region is said as such, never as no minefields', () 
   assert.deepEqual(body({ kind: 'unread', reason: "Some countries' minefields were not read at this hour" }), ["Some countries' minefields were not read at this hour.", 'unavailable']);
   assert.deepEqual(body({ kind: 'none' }), ['No minefields at this date.', 'empty']);
 });
+
+test('sorted by name, the automatic rows are not headed "Most active"', () => {
+  const view = createBoundedReadView({ hour: displayedHour(350), panels: new Map([['main', REPLY]]) });
+  const label = (order: 'mines' | 'name') => minefieldsProjection.project(view, { order }).rows.find(row => row.key === '__section:auto')?.label;
+  assert.deepEqual([label('mines'), label('name')], ['Most active', 'Mined regions']);
+});
