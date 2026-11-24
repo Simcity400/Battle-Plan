@@ -56,6 +56,8 @@ const DEFAULT_TIMERS: CadenceTimers = {
 
 export class TrailingFlushScheduler {
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private dueAt = Infinity;
+  private onFlush: () => void = () => {};
   private readonly gates: readonly CadenceGate[];
   private readonly timers: CadenceTimers;
 
@@ -65,17 +67,26 @@ export class TrailingFlushScheduler {
   }
 
   sync(now: number, speed: number, onFlush: () => void): void {
-    this.cancel();
-    if (speed <= 0) return;
     let waitMs = Infinity;
-    for (const gate of this.gates) {
-      const ms = gate.remainingMs(now);
-      if (ms < waitMs) waitMs = ms;
+    if (speed > 0) {
+      for (const gate of this.gates) {
+        const ms = gate.remainingMs(now);
+        if (ms < waitMs) waitMs = ms;
+      }
     }
-    if (!Number.isFinite(waitMs)) return;
+    if (!Number.isFinite(waitMs)) {
+      this.cancel();
+      return;
+    }
+    this.onFlush = onFlush;
+    const dueAt = now + waitMs;
+    if (this.timer !== null && this.dueAt <= dueAt) return;
+    this.cancel();
+    this.dueAt = dueAt;
     this.timer = this.timers.set(() => {
       this.timer = null;
-      onFlush();
+      this.dueAt = Infinity;
+      this.onFlush();
     }, waitMs);
     (this.timer as unknown as { unref?: () => void })?.unref?.();
   }
@@ -84,6 +95,7 @@ export class TrailingFlushScheduler {
     if (this.timer !== null) {
       this.timers.clear(this.timer);
       this.timer = null;
+      this.dueAt = Infinity;
     }
   }
 }

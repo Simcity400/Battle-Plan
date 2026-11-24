@@ -190,7 +190,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
       const tag = ordered[rank]!;
       const isTail = !single && rank >= 8;
       const { name, flag } = countrySeriesIdentity(tag, options.holders, readView, hour, !single);
-      const countryColor = isTail ? 'rgba(245, 245, 245, 0.22)' : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.stability);
+      const countryColor = isTail ? CHART_MEASURE_COLOURS.tailLine : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.stability);
 
       if (options.showStability) {
         const bounded = stabMap?.get(tag) ?? null;

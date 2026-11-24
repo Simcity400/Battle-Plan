@@ -43,3 +43,27 @@ test('the scene reader serves each source by name, and only the call that ran th
   assert.deepEqual(projected.artUrls, ['asset://flag.png']);
   assert.deepEqual(projected.artAsks.map(handle => handle.kind), ['sprite']);
 });
+
+test('a projection’s identity and art reads are compared, not the snapshot: a change only to keys it never read leaves them unchanged, at one lookup per read', () => {
+  const scene = { widget: 1, subs: [], pictures: [], model: null } as unknown as Scene;
+  const ready = (value: string) => ({ status: 'ready' as const, value });
+  let lookups = 0;
+  const identityOf = (names: Record<string, string>) => ({
+    resolve: (kind: 'country', key: string, atHour: number) => {
+      lookups++;
+      return { kind, key, atHour, holder: ready(key), name: ready(names[key] ?? key), validInterval: [atHour, atHour + 5] as const, nextChangeAt: atHour + 5 };
+    },
+  });
+  const artOf = (status: 'pending' | 'noArtExpected') => ({ resolve: () => ({ status }) });
+  const projected = projectScene(scene, { sources: {} }, 120, { identity: identityOf({ GER: 'Germany' }) as never, art: artOf('noArtExpected') as never }, view => {
+    view.art({ kind: 'url', url: 'asset://flag.png' });
+    return view.who('country', 'GER', 120).name.status;
+  });
+  assert.equal(projected.boundary, 125, 'a name read at the displayed hour bounds the model at the end of its run');
+  assert.deepEqual([projected.reads.identity, projected.reads.art], [1, 1]);
+  lookups = 0;
+  assert.equal(projected.reads.unchanged({ identity: identityOf({ GER: 'Germany', ITA: 'Italy' }) as never, art: artOf('noArtExpected') as never }), true);
+  assert.equal(lookups, 1, 'one lookup per read key, whatever the snapshot holds');
+  assert.equal(projected.reads.unchanged({ identity: identityOf({ GER: 'German Reich' }) as never, art: artOf('noArtExpected') as never }), false);
+  assert.equal(projected.reads.unchanged({ identity: identityOf({ GER: 'Germany' }) as never, art: artOf('pending') as never }), false);
+});

@@ -34,6 +34,20 @@ function rendererForDeclaration(declaration: FamilyWidgetDeclaration, view: stri
   return held;
 }
 
+const viewedRenderers = new WeakMap<ComponentType<WidgetProps>, Map<string, ComponentType<WidgetProps>>>();
+
+function rendererForView(render: ComponentType<WidgetProps>, view: string): ComponentType<WidgetProps> {
+  let byView = viewedRenderers.get(render);
+  if (!byView) viewedRenderers.set(render, byView = new Map());
+  let held = byView.get(view);
+  if (!held) {
+    const Render = render;
+    held = (props: WidgetProps) => <Render {...props} view={view} />;
+    byView.set(view, held);
+  }
+  return held;
+}
+
 export function lazyWidget(kind: string, slots: readonly Slot[]): WidgetRenderer {
   const renderer: WidgetRenderer = {};
   for (const slot of slots) {
@@ -44,6 +58,7 @@ export function lazyWidget(kind: string, slots: readonly Slot[]): WidgetRenderer
       if (slot === 'countryChip' && !loaded?.countryChip) {
         return DefaultCountryChip as ComponentType<object>;
       }
+      if (slot === 'render' && loaded?.render) return rendererForView(loaded.render, view) as ComponentType<object>;
       return (loaded?.[slot] as ComponentType<object> | undefined) ?? nothing;
     };
     const byView = new Map<string, ComponentType<object>>();
