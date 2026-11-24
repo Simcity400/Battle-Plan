@@ -34,13 +34,7 @@ export {
   type DetailWindowClock,
   type DetailWindowHostProps,
 } from './DetailWindowHost.tsx';
-export {
-  familyHost,
-  registerFamilyAdapter,
-  registerFamilyHost,
-  registeredFamilyHosts,
-  type FamilyHostProps,
-} from './registry.tsx';
+export { familyHost, type FamilyHostProps } from './registry.tsx';
 export { renderFamilyBodyState, renderFamilyStatus, type FamilyBodyStateProps } from './FamilyBodyState.tsx';
 export {
   useFamilyPlan,

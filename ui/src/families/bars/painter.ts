@@ -207,14 +207,15 @@ function drawHeader(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: 
   ctx.textBaseline = 'middle';
   if (model.form === 'two-sided' && layout.twoSidedLayout === 'paired') {
     ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
-    ctx.fillStyle = theme.muted;
+    ctx.fillStyle = theme.text;
+    ctx.textAlign = 'center';
+    const leftMid = (layout.plotLeft + layout.centerX) / 2;
+    const rightMid = (layout.centerX + layout.plotRight) / 2;
     if (model.leftHeader) {
-      ctx.textAlign = 'right';
-      ctx.fillText(model.leftHeader, layout.centerX - 10, middleY);
+      ctx.fillText(ellipsise(model.leftHeader, layout.centerX - layout.plotLeft - 8, s => textWidth(ctx, s)), leftMid, middleY);
     }
     if (model.rightHeader) {
-      ctx.textAlign = 'left';
-      ctx.fillText(model.rightHeader, layout.centerX + 10, middleY);
+      ctx.fillText(ellipsise(model.rightHeader, layout.plotRight - layout.centerX - 8, s => textWidth(ctx, s)), rightMid, middleY);
     }
   } else {
     if (model.caption) {

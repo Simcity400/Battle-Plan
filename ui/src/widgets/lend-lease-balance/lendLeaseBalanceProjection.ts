@@ -35,7 +35,11 @@ export const measureOf = (option: unknown): LendLeaseMeasure => option === 'fuel
 
 function amount(text: string): { readonly field: BarsValueField; readonly numeric: number } {
   const value = BigInt(text);
-  return { field: { value: knownValue(value), format: 'fixed5Amount' }, numeric: Number(value > 0n ? value : 0n) / SCALE };
+  const hundredths = value / 1000n;
+  const field: BarsValueField = value !== 0n && hundredths === 0n
+    ? { value: knownValue(value), format: { decimals: 5 } }
+    : { value: knownValue(hundredths), format: { decimals: 2 } };
+  return { field, numeric: Number(value > 0n ? value : 0n) / SCALE };
 }
 
 const inRanges = (ranges: HourRanges | undefined, hour: number) => !!ranges?.some(([first, last]) => first <= hour && hour <= last);
@@ -117,7 +121,7 @@ export const lendLeaseBalanceProjection: BarsProjection<LendLeaseBalanceOptions>
       for (const key of wanted) if (!answered.has(key)) rows.push(missingRow(readView, key, NOT_IN_HISTORIES));
     }
     if (!rows.length) {
-      return { ...base, rows, empty: wanted ? 'No country of this group at this date.' : 'No lend-lease at this date.', emptyKind: 'empty', warnings: reply.warnings };
+      return { ...base, rows, empty: wanted ? 'No country of this group at this date.' : `No ${options.measure === 'fuel' ? 'fuel' : 'industry'} lend-lease at this date.`, emptyKind: 'empty', warnings: reply.warnings };
     }
     return { ...base, rows, warnings: reply.warnings };
   },

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertBarsModelValid, type BarsDataRow } from '../../families/bars/model.ts';
+import { assertBarsModelValid, formatBarsValueField, type BarsDataRow } from '../../families/bars/model.ts';
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
 import type { IdentityProvider } from '../../families/plan.ts';
 import type { LendLeaseBalanceReply } from '../../generated/dashboard';
@@ -43,10 +43,19 @@ test('the product\'s order is kept, received is the left side and sent the right
   assert.equal(model.rightHeader, 'Industry sent');
   const rows = model.rows as BarsDataRow[];
   assert.deepEqual(rows.map(row => row.label), ['Soviet Union', 'Ethiopia'], 'no client reordering');
-  assert.deepEqual(sides(rows[0]!), [{ kind: 'known', value: 391200000n }, { kind: 'known', value: 552700000n }]);
-  assert.deepEqual(sides(rows[1]!), [{ kind: 'known', value: 678150000n }, { kind: 'zero', value: 0n }]);
+  assert.deepEqual(sides(rows[0]!), [{ kind: 'known', value: 391200n }, { kind: 'known', value: 552700n }]);
+  assert.deepEqual(sides(rows[1]!), [{ kind: 'known', value: 678150n }, { kind: 'zero', value: 0n }]);
+  assert.deepEqual([formatBarsValueField(rows[0]!.left!.value).text, formatBarsValueField(rows[1]!.left!.value).text], ['3,912', '6,781.5']);
   assert.equal(rows[1]!.right?.numeric, 0, 'a known zero draws no bar');
   assert.equal(rows[0]!.left?.numeric, 3912);
+});
+
+test('amounts keep the game fixed-point truncation and a sub-hundredth amount is never shown as zero', () => {
+  const model = lendLeaseBalanceProjection.project(view(reply([{ slot: 3, tag: 'SOV', values: ['153413999', '0', '7', '0'] }])), TOP);
+  const row = model.rows[0] as BarsDataRow;
+  assert.equal(formatBarsValueField(row.right!.value).text, '1,534.13');
+  assert.equal(row.left?.value.value.kind, 'known');
+  assert.equal(formatBarsValueField(row.left!.value).text, '0.00007');
 });
 
 test('the fuel measure reads the fuel columns', () => {
