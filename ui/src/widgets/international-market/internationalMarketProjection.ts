@@ -16,7 +16,7 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notApplicable, notRecorded, valueFromLive, zeroValue } from '../../families/value.ts';
 import { MARKET_TABS, marketColumns, marketTableBase } from './definition.ts';
 
-const UNKNOWN_COUNTRY: ResolvedIdentity = { value: notRecorded('Unknown country'), name: 'Unknown country' };
+const UNKNOWN_COUNTRY: ResolvedIdentity = { value: notRecorded('Unknown country'), name: 'Unknown country', loading: false };
 const countryAt = (readView: BoundedReadView, tag: string | null | undefined, hour: number): ResolvedIdentity =>
   tag ? resolveIdentity(readView, 'country', tag, { atHour: hour }) : UNKNOWN_COUNTRY;
 import { contractRows, levelText, offerRows, PRICE_MISSING, quoteText, type MarketRowMeta, type MarketTab } from './marketData.ts';

@@ -1,30 +1,28 @@
 import type { IdentityProvider } from '../contract.ts';
+import { IdentityIndex } from './index.ts';
+import { createSnapshotIdentityProvider } from './provider.ts';
 
 export interface DatedLook {
   readonly from: number;
-  readonly name: string;
-  readonly colour?: string;
+  readonly name: string | null;
+  readonly colour?: readonly [number, number, number];
 }
 
+const LAST_HOUR = 2 ** 40;
+
 export function datedIdentity(runs: Readonly<Record<string, readonly DatedLook[]>>): IdentityProvider {
-  return {
-    resolve(kind, key, atHour) {
-      const list = kind === 'country' ? runs[key] ?? [] : [];
-      let at = -1;
-      for (let i = 0; i < list.length; i++) if (list[i]!.from <= atHour) at = i;
-      const look = at >= 0 ? list[at] : undefined;
-      const next = list[at + 1]?.from ?? Infinity;
-      return {
-        kind,
-        key,
-        atHour,
-        holder: { status: 'ready', value: key },
-        name: look ? { status: 'ready', value: look.name } : { status: 'absent', reason: 'Name not recorded' },
-        colour: look?.colour ? { status: 'ready', value: look.colour } : { status: 'absent', reason: 'Colour not recorded' },
-        flagChoice: { status: 'absent', reason: 'Flag not recorded' },
-        validInterval: [look?.from ?? 0, next - 1],
-        nextChangeAt: next,
-      };
-    },
-  };
+  const index = new IdentityIndex({ sourceId: 'fixture', revision: '1', branchId: '1', content: 1 });
+  for (const [tag, list] of Object.entries(runs)) {
+    list.forEach((look, at) => {
+      const next = list[at + 1]?.from;
+      index.ingestStyle({
+        tag,
+        name: look.name,
+        color: look.colour ? [look.colour[0], look.colour[1], look.colour[2]] : null,
+        valid: [look.from, next === undefined ? LAST_HOUR : next - 1],
+        flagChoice: { keys: [tag, null, null], reasons: [null, null, null] },
+      }, look.from);
+    });
+  }
+  return createSnapshotIdentityProvider(index);
 }

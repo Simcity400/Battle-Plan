@@ -35,8 +35,12 @@ export interface IdentityOptions {
 export interface ResolvedIdentity extends CellArt {
   readonly value: Value<string>;
   readonly name: string;
+  readonly loading: boolean;
   readonly color?: string;
 }
+
+export const NAME_LOADING = 'Name is loading';
+export const LOADING_NAME = 'Loading name…';
 
 export function resolveIdentity(readView: BoundedReadView, kind: EntityKind, key: string, options: IdentityOptions = {}): ResolvedIdentity {
   const atHour = options.atHour ?? readView.hour;
@@ -44,14 +48,16 @@ export function resolveIdentity(readView: BoundedReadView, kind: EntityKind, key
   if (options.boundary && atHour >= readView.hour) {
     options.boundary.next = Math.min(options.boundary.next, who.nextChangeAt);
   }
+  const loading = who.name.status === 'pending';
   const value: Value<string> = who.name.status === 'ready' && who.name.value.trim()
     ? knownValue(who.name.value)
-    : who.name.status === 'pending'
-      ? knownValue(key)
+    : loading
+      ? notRecorded(NAME_LOADING)
       : notRecorded(who.name.status === 'ready' ? 'Name not recorded' : who.name.reason);
   return {
     value,
-    name: value.kind === 'known' ? value.value : key,
+    name: value.kind === 'known' ? value.value : loading ? LOADING_NAME : key,
+    loading,
     ...(kind === 'country' ? flagArt(readView, who.flagChoice, options.flag ?? 'panel') : {}),
     ...(who.colour?.status === 'ready' ? { color: who.colour.value } : {}),
   };
@@ -63,6 +69,7 @@ export function identityCell(readView: BoundedReadView, kind: EntityKind, key: s
   return {
     value: who.value,
     iconSlot: true,
+    ...(who.loading ? { loading: true } : {}),
     ...(who.art ? { art: who.art } : {}),
     ...(who.artKey ? { artKey: who.artKey } : {}),
     ...(who.color ? { countryColor: who.color } : {}),

@@ -15,7 +15,7 @@ import {
   type HourRanges,
   type TableWidgetDeclaration,
 } from '../../families/table/declaration.ts';
-import { identityCell, newIdentityBoundary, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import { identityCell, LOADING_NAME, newIdentityBoundary, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { encodeTableSettings, OFFERED, TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
@@ -110,7 +110,7 @@ const scoreboardIncCache = new WeakMap<ScoreboardProjectionOptions, ScoreboardIn
 
 const countryColourOf = (cell: TableCell): { readonly countryColor?: string } => (cell.countryColor ? { countryColor: cell.countryColor } : {});
 
-const nameOf = (cell: TableCell, tag: string): string => (cell.value.kind === 'known' ? String(cell.value.value) : tag);
+const nameOf = (cell: TableCell, tag: string): string => (cell.value.kind === 'known' ? String(cell.value.value) : cell.loading ? LOADING_NAME : tag);
 
 function identityStamp(readView: BoundedReadView, entries: readonly { readonly displayTag: string }[], hour: number): string {
   return entries.map(entry => {

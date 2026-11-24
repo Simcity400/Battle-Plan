@@ -449,7 +449,7 @@ export function drawFamilyTable(
   const computeLook = (item: Extract<FlatTableRow, { kind: 'data' }>, column: FamilyColumnLayout) => {
     const cell = item.row.cells[column.key];
     const paintModel = resolveCellPaintModel(cell, column, maxima);
-    const formatted = formatValueState(paintModel.value, paintModel.format, cell?.missingFigure ? { figure: cell.missingFigure } : undefined);
+    const formatted = formatValueState(paintModel.value, paintModel.format, cell?.loading ? { loading: true } : cell?.missingFigure ? { figure: cell.missingFigure } : undefined);
     const span = Math.max(1, barSpanOf(column) * dpr);
     const pixels = paintModel.bar.fraction === null ? -1 : Math.round(paintModel.bar.fraction * span);
     const fraction = paintModel.bar.fraction === null ? null : pixels / span;

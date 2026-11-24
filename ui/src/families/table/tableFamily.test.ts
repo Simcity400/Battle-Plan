@@ -414,7 +414,17 @@ test('occupied-states, game-score (with faction groups), and division-template (
     live: gsLive,
     ...(identity ? { identity } : {}),
   }), gsIncOptions);
-  assert.deepEqual(gsAt(60).rows.map(row => row.name), ['GER', 'ENG'], 'a name still loading reads as the tag');
+  const waiting = gsAt(60, datedIdentity({ GER: [{ from: 0, name: 'Germany' }] }));
+  const loadingEng = waiting.rows.find(row => row.key === 'ENG')!;
+  assert.notEqual(loadingEng.name, 'ENG', 'a name still loading is never the tag as if it were the name');
+  assert.deepEqual(loadingEng.cells.country!.value, notRecorded('Name is loading'), 'a name still loading is a missing state that says it is loading');
+  assert.equal(loadingEng.cells.country!.loading, true);
+  const waitingFlat = resolveTableRows(waiting, tableSettingsOf(undefined, gameScoreColumns(undefined), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }));
+  const waitingCol = buildColumnLayouts(gameScoreColumns(undefined), tableSettingsOf(undefined, gameScoreColumns(undefined), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } })).find(col => col.key === 'country')!;
+  const waitingPaint = resolveCellPaintModel(loadingEng.cells.country, waitingCol, new Map());
+  assert.equal(waitingPaint.loading, true, 'the painted cell knows the name is loading');
+  assert.match(deriveTableMirror(waitingFlat, waiting.columns, false).rows.find(row => row.key === 'ENG')!.cells.find(cell => cell.column === 'country')!.spoken, /^Loading/, 'the mirror says loading, never not recorded');
+  assert.deepEqual(waiting.rows.find(row => row.key === 'GER')!.cells.country!.value, knownValue('Germany'));
   const named = gsAt(61, datedIdentity({ GER: [{ from: 0, name: 'Germany' }], ENG: [{ from: 0, name: 'United Kingdom' }] }));
   assert.deepEqual(named.rows.map(row => row.name), ['Germany', 'United Kingdom'], 'names that arrive with no live change rebuild the rows');
 
@@ -605,6 +615,16 @@ test('occupied-states projection names countries at the hour, filter ranges, unr
   assert.equal(tip.rows.find(r => r.label === 'Assigned manpower')?.valueState?.text, '0', 'known assigned with no live cell reads 0');
   assert.equal(tip.rows.find(r => r.label === 'Garrison strength')?.valueState?.text, '87.5%');
   assert.equal(tip.rows.find(r => r.label === 'Occupied country')?.valueState?.text, 'Poland');
+  const waitingNames = (names: Parameters<typeof datedIdentity>[0]) => occupiedStatesProjection.project(
+    createBoundedReadView({ hour: 15, identity: datedIdentity(names), panels: new Map([['main', reply]]), live: new Map([['main', live]]) }),
+    { filter, role: 'occupier', lawAs: 'dot', filterAll: false },
+  );
+  const beforeNames = waitingNames({ GER: [{ from: 0, name: 'Germany' }] });
+  const beforeTip = deriveTableTooltip(resolveTableRows(beforeNames, settings), '1', beforeNames.columns)!;
+  assert.deepEqual(beforeTip.rows.find(r => r.label === 'Occupied country')?.valueState, { kind: 'missing', reason: 'Name is loading' }, 'the occupied country still loading says so, never the tag');
+  const afterNames = waitingNames({ GER: [{ from: 0, name: 'Germany' }], POL: [{ from: 0, name: 'Poland' }] });
+  const afterTip = deriveTableTooltip(resolveTableRows(afterNames, settings), '1', afterNames.columns)!;
+  assert.equal(afterTip.rows.find(r => r.label === 'Occupied country')?.valueState?.text, 'Poland', 'once names arrive the tooltip names the occupied country');
 
   assert.equal(run(25).empty, 'Occupied states unavailable for these countries.');
   assert.equal(run(35).empty, 'Membership not recorded');

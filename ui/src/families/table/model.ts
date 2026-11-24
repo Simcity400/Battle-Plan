@@ -24,7 +24,7 @@ import {
 } from '../value.ts';
 import { canonicalAuditData } from '../audit.ts';
 import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
-import { formatDateHover, spokenValue, valueStateProps, type DateBoundKind, type ValueFormat } from '../valueFormat.ts';
+import { formatDateHover, formatValueState, spokenValue, valueStateProps, type DateBoundKind, type ValueFormat } from '../valueFormat.ts';
 import { treeColumnOf, type FamilyColumnLayout } from './layout.ts';
 import { artHoverText } from '../art/adapters.ts';
 import { unavailableArt, type ArtResult } from '../art/types.ts';
@@ -123,6 +123,7 @@ export interface TableCell {
   readonly unitSuffix?: string;
   readonly unitArt?: ArtResult;
   readonly missingFigure?: string;
+  readonly loading?: boolean;
   readonly boundedDate?: DateBoundKind;
   readonly splitBar?: readonly TableCellSplitSegment[];
   readonly secondaryValue?: Value;
@@ -826,6 +827,7 @@ export interface CellPaintModel {
   readonly countryColor: string | null;
   readonly art: ArtResult | null;
   readonly iconSlot: boolean;
+  readonly loading?: true;
 }
 
 const scaledColumn = (column: Pick<FamilyColumnLayout, 'display' | 'tone' | 'barEligible' | 'cellKind'>): boolean =>
@@ -961,6 +963,7 @@ export function resolveCellPaintModel(
     countryColor,
     art: resolved.art ?? null,
     iconSlot: cell?.iconSlot === true,
+    ...(cell?.loading ? { loading: true as const } : {}),
   };
 }
 
@@ -1132,7 +1135,7 @@ export function deriveTableMirror(
       cells: columns.map(col => {
         const cell = item.row.cells[col.key];
         const resolved = cell ? resolveCellAtHour(cell) : { value: notRecorded('Not recorded') };
-        return { column: col.key, spoken: spokenValue(resolved.value, cell?.format ?? col.format) };
+        return { column: col.key, spoken: cell?.loading ? formatValueState(resolved.value, cell.format ?? col.format, { loading: true }).spoken : spokenValue(resolved.value, cell?.format ?? col.format) };
       }),
     };
   });
@@ -1625,6 +1628,7 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
     let countryArt: ArtResult | undefined;
     let countryArtKey: string | undefined;
     let countryColor: string | undefined;
+    let countryLoading = false;
     let bar: TableCellBar | null | undefined;
     let sortValue: Value | undefined;
 
@@ -1646,6 +1650,7 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
         } else {
           const who = resolveIdentity(readView, 'country', tag, { atHour: cellLookHour ?? hour, boundary });
           cellValue = who.value;
+          countryLoading = who.loading;
           countryArt = who.art;
           countryArtKey = who.artKey;
           countryColor = who.color;
@@ -1688,6 +1693,7 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
         ...(iconSlot ? { iconSlot: true } : {}),
         ...(countryTag ? { country: countryTag } : {}),
         ...(countryColor ? { countryColor } : {}),
+        ...(countryLoading ? { loading: true } : {}),
         ...(col.status ? { status: col.status(row, options) } : {}),
         ...(col.cellTone ? { tone: col.cellTone(row, options) } : {}),
         ...(bar !== undefined ? { bar } : {}),
