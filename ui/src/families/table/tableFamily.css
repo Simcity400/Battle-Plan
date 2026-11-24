@@ -154,6 +154,12 @@
 .tf-extent { position: relative; }
 .tf-canvas { position: sticky; top: 0; left: 0; display: block; }
 
+.tf-title-summary {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 .tf-empty-body {
   position: absolute;
   inset: 0;

@@ -17,6 +17,7 @@ export {
   type FamilyPointerHit,
 } from './pointer.ts';
 export {
+  adjustScrollForPrependedRows,
   computeScrollGeometry,
   logicalToPhysicalTop,
   MAX_PHYSICAL_EXTENT_PX,

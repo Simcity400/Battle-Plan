@@ -15,8 +15,10 @@ import type { FamilySources, FamilySourceSubscription, MirrorModel } from '../co
 import {
   attachAuditWatch,
   bindFamilyPointer,
+  computeScrollGeometry,
   handleFamilyKeyDown,
   mountFamilyCanvas,
+  physicalToLogicalTop,
   renderFamilyBodyState,
   reportFamilyShownHour,
   scrollRangeIntoView,
@@ -31,11 +33,13 @@ import {
   type FamilyNavTuple,
   type FamilyTooltipField,
   type MountedFamilyCanvas,
+  type ScrollGeometry,
 } from '../host/index.ts';
 import type { CountryLooksMap } from '../looks.ts';
 import type { FamilyTableBinding } from './laneView.ts';
 import { buildColumnLayouts, layoutFamilyTable } from './layout.ts';
 import { deriveTableAudit, resolveTableRows, type CountryColorSource, type TableColumnSpec, type TableProjection } from './model.ts';
+import type { RowWindow } from './rowSource.ts';
 import { ROW_HEIGHT, updateTableSettings, type TableSettings } from './settings.ts';
 import { columnWidthVar, DISPLAY_LABELS, FamilyTableHeader, type TableHeaderColumn } from './TableHeader.tsx';
 import './tableFamily.css';
@@ -110,6 +114,9 @@ export interface FamilyTableHostProps<TOptions> {
   readonly onActivate?: (key: string, meta?: unknown, hour?: number) => void;
   readonly contextMenuItems?: (key: string | null, name: string | null, hour: number) => MenuItem[];
   readonly headerSlot?: HTMLElement | null;
+  readonly headerless?: boolean;
+  readonly detailSlot?: ReactNode;
+  readonly onWindowChange?: (window: RowWindow, acknowledgedHour: number | null) => void;
   readonly onDiagnostics?: (warnings: string[]) => void;
   readonly extraWarnings?: readonly string[];
   readonly blockedState?: ReactNode;
@@ -130,6 +137,7 @@ interface TableMetaState {
   warnings: readonly string[];
   hasTree: boolean;
   unsorted: boolean;
+  headerless: boolean;
   rankShown: boolean;
   rankWidth: number;
   columns: readonly TableColumnSpec[];
@@ -170,6 +178,9 @@ export default function FamilyTableHost<TOptions>({
   onActivate,
   contextMenuItems,
   headerSlot = null,
+  headerless = false,
+  detailSlot = null,
+  onWindowChange,
   onDiagnostics,
   extraWarnings,
   blockedState = null,
@@ -222,8 +233,10 @@ export default function FamilyTableHost<TOptions>({
   const measuredWidthsRef = useRef<Readonly<Record<string, number>>>({});
   const lastMirrorKeyRef = useRef('');
   const lastExtentRef = useRef({ height: -1, width: -1, count: -1 });
+  const scrollGeometryRef = useRef<ScrollGeometry>(computeScrollGeometry(0, 0));
   const navRef = useRef<readonly FamilyNavTuple[]>([]);
   const lastHourRef = useRef(staticSources?.hour ?? 0);
+  const lastWindowNotifiedRef = useRef('');
   const typeaheadRef = useRef<{ query: string; until: number }>({ query: '', until: 0 });
   const viewWindowRef = useRef({ first: 0, count: 24 });
 
@@ -239,6 +252,7 @@ export default function FamilyTableHost<TOptions>({
     warnings: [],
     hasTree: false,
     unsorted: false,
+    headerless,
     rankShown: false,
     rankWidth: 0,
     columns: initialColumns,
@@ -321,6 +335,7 @@ export default function FamilyTableHost<TOptions>({
     exactSources,
     selectedKey,
     onActivate,
+    onWindowChange,
     contextMenuItems,
     viewportHeight,
     rowHeight,
@@ -340,6 +355,7 @@ export default function FamilyTableHost<TOptions>({
     exactSources,
     selectedKey,
     onActivate,
+    onWindowChange,
     contextMenuItems,
     viewportHeight,
     rowHeight,

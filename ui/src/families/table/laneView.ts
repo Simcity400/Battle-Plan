@@ -291,22 +291,32 @@ function sameColumnSpecs(a: readonly TableColumnSpec[] | null, b: readonly Table
   return true;
 }
 
+function navLabelOf(item: FlatTableRow): string | null {
+  if (item.kind === 'data') return item.name;
+  if (item.kind === 'gap') return `${item.label}. ${item.reason}`;
+  if (item.kind === 'refused') return item.reason;
+  return null;
+}
+
 function sameNavItems(prev: readonly NavTuple[] | null, rows: readonly FlatTableRow[]): boolean {
   if (!prev) return false;
   let pos = 0;
   for (let i = 0; i < rows.length; i++) {
     const item = rows[i]!;
-    if (item.kind !== 'data') continue;
+    const name = navLabelOf(item);
+    if (name === null) continue;
     const old = prev[pos++];
     if (!old) return false;
-    const treeState = item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1;
+    const treeState = item.kind === 'data' && item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1;
+    const parent = item.kind === 'data' ? (item.parent ?? '') : '';
+    const meta = item.kind === 'data' ? (item.row.meta ?? null) : null;
     if (
       old[0] !== item.key
-      || old[1] !== item.name
+      || old[1] !== name
       || old[2] !== i
       || old[3] !== treeState
-      || old[4] !== (item.parent ?? '')
-      || old[5] !== (item.row.meta ?? null)
+      || old[4] !== parent
+      || old[5] !== meta
     ) return false;
   }
   return pos === prev.length;
@@ -362,6 +372,7 @@ function metaSignature(model: TableModel, hasTree: boolean, rankShown: boolean, 
     model.warnings ?? [],
     hasTree,
     model.unsorted === true,
+    model.headerless === true,
     rankShown,
     rankWidth,
     model.columns.map(c => [c.key, c.label, c.priority, c.as, c.offered, c.text ? 1 : 0, c.hideable === false ? 0 : 1, c.sortable === false ? 0 : 1, c.numeric ? 1 : 0, c.hint ?? '']),
@@ -537,8 +548,8 @@ export function familyTableLaneView(
         const rowIndex = new Map<string, number>();
         for (let i = 0; i < flatRows.length; i++) {
           const item = flatRows[i]!;
-          if (item.kind === 'group-header') hasGroups = true;
-          else rowIndex.set(item.key, i);
+          if (item.kind !== 'data') hasGroups = true;
+          if (item.kind === 'data' || item.kind === 'gap' || item.kind === 'refused') rowIndex.set(item.key, i);
         }
         let nextBoundary = Math.min(
           nextLookChange(optionsLooks(bound.options), input.hour),
@@ -734,6 +745,7 @@ export function familyTableLaneView(
               warnings: model.warnings ?? [],
               hasTree,
               unsorted: model.unsorted === true,
+              headerless: model.headerless === true,
               rankShown,
               rankWidth,
               columns: model.columns,
@@ -749,8 +761,12 @@ export function familyTableLaneView(
           const navItems: NavTuple[] = [];
           for (let i = 0; i < flatRows.length; i++) {
             const item = flatRows[i]!;
+            const name = navLabelOf(item);
+            if (name === null) continue;
             if (item.kind === 'data') {
-              navItems.push([item.key, item.name, i, item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1, item.parent ?? '', item.row.meta ?? null]);
+              navItems.push([item.key, name, i, item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1, item.parent ?? '', item.row.meta ?? null]);
+            } else {
+              navItems.push([item.key, name, i, -1, '', null]);
             }
           }
           held.navItems = navItems;
@@ -759,12 +775,13 @@ export function familyTableLaneView(
       }
       fields.nav = held.navField!;
 
+      const totalCount = model.totalRows ?? flatRows.length;
       const focusedIndex = focusedKey ? (held.cachedRowIndex.get(focusedKey) ?? -1) : -1;
       const inspectedPresent = inspectedKey ? held.cachedRowIndex.has(inspectedKey) : false;
-      const tSig = `${flatRows.length}:${focusedIndex}:${inspectedPresent ? 1 : 0}`;
+      const tSig = `${totalCount}:${focusedIndex}:${inspectedPresent ? 1 : 0}`;
       if (tSig !== held.tableSig || !held.tableField) {
         held.tableSig = tSig;
-        held.tableField = { value: { count: flatRows.length, focusedIndex, inspectedPresent }, content: content() };
+        held.tableField = { value: { count: totalCount, focusedIndex, inspectedPresent }, content: content() };
       }
       fields.table = held.tableField;
 
@@ -873,7 +890,8 @@ export function familyTableLaneView(
         return at.toggle ? `toggle:${at.rowKey}` : `row:${at.rowKey}`;
       };
 
-      const handledPicture = model.rows.length > 0 || model.empty !== undefined;
+      const handledPicture = model.rows.length > 0 || (model.gaps?.length ?? 0) > 0 || model.empty !== undefined
+        || flatRows.some(item => item.kind === 'gap' || item.kind === 'refused');
       return {
         ...(handledPicture ? { mode: 'picture' as const } : {}),
         ...(Number.isFinite(held.cachedModelNextAt) ? { nextChangeAt: held.cachedModelNextAt } : {}),

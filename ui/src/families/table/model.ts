@@ -1,5 +1,6 @@
 import type { LiveValues } from '../../charts/live';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
+import { formatDate } from '../../dashboard/calendar.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { AuditRow } from '../../draw/notifications';
 import type { FamilyProjection, FamilySources, MirrorModel, MirrorRow } from '../contract.ts';
@@ -22,7 +23,9 @@ import {
 import { canonicalAuditData } from '../audit.ts';
 import { spokenValue, valueStateProps, type ValueFormat } from '../valueFormat.ts';
 import type { FamilyColumnLayout } from './layout.ts';
+import type { MissingSpan } from '../../generated/dashboard';
 import { lookAt, type CountryLook, type CountryLooksMap } from '../looks.ts';
+import { buildNavigableSlots, type DatedLogRow, type RowWindow, type TableRowSource } from './rowSource.ts';
 import { measuresColumn, type TableColumnDefaults, type TableSettings, type TableSortDirection } from './settings.ts';
 
 export interface TableColumnSpec extends TableColumnDefaults {
@@ -78,6 +81,8 @@ export interface TableRow {
   readonly key: string;
   readonly name: string;
   readonly cells: Readonly<Record<string, TableCell>>;
+  readonly rowHour?: number;
+  readonly live?: boolean;
   readonly revealAt?: number;
   readonly group?: TableGroupSpec;
   readonly children?: readonly TableRow[];
@@ -101,6 +106,11 @@ export interface TableModel {
   readonly emptyDetail?: string;
   readonly emptyKind?: 'empty' | 'unavailable';
   readonly unsorted?: boolean;
+  readonly headerless?: boolean;
+  readonly dateGrouped?: boolean;
+  readonly gaps?: readonly MissingSpan[];
+  readonly totalRows?: number;
+  readonly windowOffset?: number;
   readonly rank?: boolean;
   readonly rankMarkers?: boolean;
   readonly warnings?: readonly string[];
@@ -116,6 +126,26 @@ export type FlatTableRow =
       readonly count: number;
     }
   | {
+      readonly kind: 'gap';
+      readonly key: string;
+      readonly readAt: number;
+      readonly firstHour: number;
+      readonly lastHour: number;
+      readonly reason: string;
+      readonly label: string;
+    }
+  | {
+      readonly kind: 'refused';
+      readonly key: string;
+      readonly readAt: number;
+      readonly reason: string;
+    }
+  | {
+      readonly kind: 'loading';
+      readonly key: string;
+      readonly readAt: number;
+    }
+  | {
       readonly kind: 'data';
       readonly key: string;
       readonly name: string;
@@ -126,6 +156,9 @@ export type FlatTableRow =
       readonly isTreeGroup: boolean;
       readonly isOpen: boolean;
       readonly childCount: number;
+      readonly showDate?: boolean;
+      readonly isDayEnd?: boolean;
+      readonly isLiveEnd?: boolean;
     };
 
 export type TableProjection<TOptions = unknown> = FamilyProjection<TableModel, TOptions> & {
@@ -208,6 +241,177 @@ function compareGroups(a: TableGroupSpec, b: TableGroupSpec): number {
   return aKey < bKey ? -1 : aKey > bKey ? 1 : compareTie(a.label, a.key, b.label, b.key);
 }
 
+const dayOf = (hour: number): number => Math.floor(hour / 24);
+
+function formatGapLabel(firstHour: number, lastHour: number): string {
+  const first = formatDate(firstHour);
+  const last = formatDate(lastHour);
+  return first === last ? `Not recorded on ${first}` : `Not recorded ${first} – ${last}`;
+}
+
+function annotateLogBoundaries(rows: FlatTableRow[], dateGrouped: boolean, figureSorted: boolean): FlatTableRow[] {
+  let lastLiveIndex = -1;
+  for (let i = 0; i < rows.length; i++) {
+    const item = rows[i]!;
+    if (item.kind === 'data' && item.level === 1 && item.row.live) lastLiveIndex = i;
+  }
+  const hasHistoryAfterLive = lastLiveIndex >= 0 && rows.slice(lastLiveIndex + 1).some(item => item.kind !== 'data' || !item.row.live);
+  if (!dateGrouped && !hasHistoryAfterLive) return rows;
+
+  const groupDates = dateGrouped && !figureSorted;
+  const out = rows.slice();
+  let previousDay: number | null = null;
+  let lastTopDataOfDay = -1;
+  for (let i = 0; i < out.length; i++) {
+    const item = out[i]!;
+    if (item.kind !== 'data') {
+      if (groupDates && lastTopDataOfDay >= 0) {
+        const prev = out[lastTopDataOfDay]! as Extract<FlatTableRow, { kind: 'data' }>;
+        out[lastTopDataOfDay] = { ...prev, isDayEnd: true };
+        lastTopDataOfDay = -1;
+        previousDay = null;
+      }
+      continue;
+    }
+    if (item.level > 1) continue;
+    const isLiveEnd = hasHistoryAfterLive && i === lastLiveIndex;
+    if (!dateGrouped) {
+      if (isLiveEnd) out[i] = { ...item, isLiveEnd: true };
+      continue;
+    }
+    if (figureSorted || item.row.rowHour === undefined) {
+      out[i] = { ...item, showDate: true, ...(isLiveEnd ? { isLiveEnd: true } : {}) };
+      continue;
+    }
+    const day = dayOf(item.row.rowHour);
+    const sameDay = previousDay === day;
+    if (!sameDay && lastTopDataOfDay >= 0) {
+      const prev = out[lastTopDataOfDay]! as Extract<FlatTableRow, { kind: 'data' }>;
+      out[lastTopDataOfDay] = { ...prev, isDayEnd: true };
+    }
+    out[i] = { ...item, showDate: !sameDay, ...(isLiveEnd ? { isLiveEnd: true } : {}) };
+    previousDay = day;
+    lastTopDataOfDay = i;
+  }
+  if (groupDates && lastTopDataOfDay >= 0) {
+    const prev = out[lastTopDataOfDay]! as Extract<FlatTableRow, { kind: 'data' }>;
+    out[lastTopDataOfDay] = { ...prev, isDayEnd: true };
+  }
+  return out;
+}
+
+function interleaveGaps(rows: FlatTableRow[], gaps: readonly MissingSpan[] | undefined, readAt: number): FlatTableRow[] {
+  if (!gaps || !gaps.length) return rows;
+  const active = gaps
+    .filter(span => span.firstHour <= readAt)
+    .map(span => ({ firstHour: span.firstHour, lastHour: Math.min(span.lastHour, readAt), reason: span.reason }))
+    .sort((a, b) => b.lastHour - a.lastHour || b.firstHour - a.firstHour);
+  if (!active.length) return rows;
+  const makeGap = (span: { firstHour: number; lastHour: number; reason: string }): FlatTableRow => ({
+    kind: 'gap',
+    key: `gap:${span.firstHour}:${span.lastHour}:${span.reason}`,
+    readAt,
+    firstHour: span.firstHour,
+    lastHour: span.lastHour,
+    reason: span.reason,
+    label: formatGapLabel(span.firstHour, span.lastHour),
+  });
+  if (!rows.length) return active.map(makeGap);
+
+  const out: FlatTableRow[] = [];
+  let gapIndex = 0;
+  for (const item of rows) {
+    if (item.kind === 'data' && item.level === 1 && !item.row.live && item.row.rowHour !== undefined) {
+      while (gapIndex < active.length && active[gapIndex]!.lastHour >= item.row.rowHour) {
+        out.push(makeGap(active[gapIndex++]!));
+      }
+    }
+    out.push(item);
+  }
+  while (gapIndex < active.length) out.push(makeGap(active[gapIndex++]!));
+  return out;
+}
+
+export function resolveWindowedRows<TRow extends DatedLogRow>(
+  source: TableRowSource<TRow>,
+  hour: number,
+  window: RowWindow,
+  mapRow: (row: TRow, ordinal: number) => TableRow,
+  options?: {
+    readonly dateGrouped?: boolean;
+    readonly figureSorted?: boolean;
+    readonly expanded?: Readonly<Record<string, boolean>>;
+    readonly firstColumnKey?: string;
+    readonly previousRowHour?: number;
+  },
+): FlatTableRow[] {
+  const rawSlots = source.sliceAt(hour, window.first, window.count);
+  const slots = buildNavigableSlots(hour, rawSlots, source.missing, source.total, options?.previousRowHour);
+  const flat: FlatTableRow[] = [];
+  const visitChildren = (children: readonly TableRow[], level: number, parent: string) => {
+    for (const child of children) {
+      validateRowCells(child);
+      const nested = child.children;
+      const isTreeGroup = nested !== undefined;
+      const isOpen = isTreeGroup ? (options?.expanded?.[child.key] ?? child.initiallyOpen ?? false) : false;
+      flat.push({
+        kind: 'data',
+        key: child.key,
+        name: rowNameAtHour(child, options?.firstColumnKey, hour),
+        row: child,
+        rank: 0,
+        level,
+        parent,
+        isTreeGroup,
+        isOpen,
+        childCount: nested?.length ?? 0,
+      });
+      if (isTreeGroup && isOpen && nested.length) visitChildren(nested, level + 1, child.key);
+    }
+  };
+  for (const slot of slots) {
+    if (slot.kind === 'gap') {
+      flat.push({
+        kind: 'gap',
+        key: slot.key,
+        readAt: slot.readAt,
+        firstHour: slot.firstHour,
+        lastHour: slot.lastHour,
+        reason: slot.reason,
+        label: formatGapLabel(slot.firstHour, slot.lastHour),
+      });
+      continue;
+    }
+    if (slot.kind === 'refused') {
+      flat.push({ kind: 'refused', key: `refused:${slot.ordinal}:${slot.readAt}`, readAt: slot.readAt, reason: slot.reason });
+      continue;
+    }
+    if (slot.kind === 'loading') {
+      flat.push({ kind: 'loading', key: `loading:${slot.ordinal}:${slot.readAt}`, readAt: slot.readAt });
+      continue;
+    }
+    const row = mapRow(slot.row, slot.ordinal);
+    validateRowCells(row);
+    const children = row.children;
+    const isTreeGroup = children !== undefined;
+    const isOpen = isTreeGroup ? (options?.expanded?.[row.key] ?? row.initiallyOpen ?? false) : false;
+    flat.push({
+      kind: 'data',
+      key: row.key,
+      name: rowNameAtHour(row, options?.firstColumnKey, hour),
+      row: row.rowHour === undefined ? { ...row, rowHour: slot.row.hour } : row,
+      rank: slot.ordinal + 1,
+      level: 1,
+      parent: null,
+      isTreeGroup,
+      isOpen,
+      childCount: children?.length ?? 0,
+    });
+    if (isTreeGroup && isOpen && children.length) visitChildren(children, 2, row.key);
+  }
+  return annotateLogBoundaries(flat, options?.dateGrouped === true, options?.figureSorted === true);
+}
+
 export function resolveTableRows(
   model: TableModel,
   settings: TableSettings,
@@ -218,6 +422,7 @@ export function resolveTableRows(
   const unsorted = model.unsorted === true;
   const sortColumn = settings.sort.column;
   const direction = settings.sort.direction;
+  const figureSorted = !unsorted && sortColumn !== 'date';
   const hasGroups = model.rows.some(row => row.group !== undefined);
   const flat: FlatTableRow[] = [];
 
@@ -282,7 +487,8 @@ export function resolveTableRows(
     }
   };
   visit(model.rows, 1, null);
-  return flat;
+  const withGaps = figureSorted ? flat : interleaveGaps(flat, model.gaps, hour);
+  return annotateLogBoundaries(withGaps, model.dateGrouped === true, figureSorted);
 }
 
 export function nextTableChange(model: TableModel, hour: number): number {
@@ -424,7 +630,7 @@ export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
   const hiddenKeys = input.hiddenKeys ?? EMPTY_HIDDEN;
   const rankShown = input.rankShown === true;
   const maxima = input.maxima ?? computeColumnMaxima(flatRows, visibleColumns, hour);
-  const hasData = flatRows.some(item => item.kind === 'data');
+  const hasRows = flatRows.some(item => item.kind === 'data' || item.kind === 'gap' || item.kind === 'refused');
   const out: AuditRow[] = [
     {
       row: '__table__',
@@ -448,15 +654,15 @@ export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
         notes: model.notes ?? [],
         warnings: model.warnings ?? [],
         rankShown,
-        totalRows: flatRows.length,
+        totalRows: model.totalRows ?? flatRows.length,
         refused: model.refused ?? null,
-        empty: hasData ? null : (model.empty ?? null),
-        emptyKind: hasData ? null : (model.emptyKind ?? 'empty'),
-        emptyDetail: hasData ? null : (model.emptyDetail ?? null),
+        empty: hasRows ? null : (model.empty ?? null),
+        emptyKind: hasRows ? null : (model.emptyKind ?? 'empty'),
+        emptyDetail: hasRows ? null : (model.emptyDetail ?? null),
       }),
     },
   ];
-  if (!hasData) return out;
+  if (!hasRows) return out;
   const first = window ? Math.max(0, Math.min(window.first, flatRows.length)) : 0;
   const end = window ? Math.min(flatRows.length, first + window.count) : flatRows.length;
   for (let i = first; i < end; i++) {
@@ -466,6 +672,30 @@ export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
         row: item.key,
         key: `${item.key}:group`,
         value: canonicalAuditData({ kind: 'group-header', label: item.label, count: item.count }),
+      });
+      continue;
+    }
+    if (item.kind === 'gap') {
+      out.push({
+        row: item.key,
+        key: `${item.key}:gap`,
+        value: canonicalAuditData({ kind: 'gap', readAt: item.readAt, firstHour: item.firstHour, lastHour: item.lastHour, reason: item.reason }),
+      });
+      continue;
+    }
+    if (item.kind === 'refused') {
+      out.push({
+        row: item.key,
+        key: `${item.key}:refused`,
+        value: canonicalAuditData({ kind: 'refused', readAt: item.readAt, reason: item.reason }),
+      });
+      continue;
+    }
+    if (item.kind === 'loading') {
+      out.push({
+        row: item.key,
+        key: `${item.key}:loading`,
+        value: canonicalAuditData({ kind: 'loading', readAt: item.readAt }),
       });
       continue;
     }
@@ -513,7 +743,7 @@ export function deriveTableMirror(
   if (focusedKey) {
     const focusAt = focusedIndex !== undefined
       ? focusedIndex
-      : flatRows.findIndex(item => item.kind === 'data' && item.key === focusedKey);
+      : flatRows.findIndex(item => (item.kind === 'data' || item.kind === 'gap' || item.kind === 'refused') && item.key === focusedKey);
     if (focusAt >= 0 && focusAt < flatRows.length && (focusAt < first || focusAt >= end)) {
       if (focusAt < first) indices.unshift(focusAt);
       else indices.push(focusAt);
@@ -528,6 +758,31 @@ export function deriveTableMirror(
         rowIndex: index,
         groupHeader: true,
         cells: [{ column: columns[0]?.key ?? 'group', spoken: item.label }],
+      };
+    }
+    if (item.kind === 'gap') {
+      return {
+        key: item.key,
+        name: `${item.label}. ${item.reason}`,
+        rowIndex: index,
+        cells: [{ column: columns[0]?.key ?? 'gap', spoken: `${item.label}. ${item.reason}` }],
+      };
+    }
+    if (item.kind === 'refused') {
+      return {
+        key: item.key,
+        name: item.reason,
+        rowIndex: index,
+        cells: [{ column: columns[0]?.key ?? 'refused', spoken: item.reason }],
+      };
+    }
+    if (item.kind === 'loading') {
+      return {
+        key: item.key,
+        name: 'Loading…',
+        rowIndex: index,
+        groupHeader: true,
+        cells: [{ column: columns[0]?.key ?? 'loading', spoken: 'Loading…' }],
       };
     }
     return {
@@ -609,8 +864,15 @@ export function deriveTableTooltip(
   hiddenKeys: ReadonlySet<string>,
   hour: number,
 ): TooltipContent | null {
-  const found = flatRows.find(item => item.kind === 'data' && item.key === itemKey);
-  if (!found || found.kind !== 'data') return null;
+  const found = flatRows.find(item => (item.kind === 'data' || item.kind === 'gap' || item.kind === 'refused') && item.key === itemKey);
+  if (!found) return null;
+  if (found.kind === 'gap') {
+    return { title: found.label, rows: [], detail: found.reason };
+  }
+  if (found.kind === 'refused') {
+    return { title: 'Unavailable', rows: [], detail: found.reason };
+  }
+  if (found.kind !== 'data') return null;
   return deriveRowTooltip(found, allColumns, hiddenKeys, hour);
 }
 

@@ -264,7 +264,7 @@ export function drawFamilyTable(
     }
   }
   const moving = glideDuration > 0 && glide.size > 0;
-  const hasGroupHeaders = input.hasGroupHeaders ?? rows.some(item => item.kind === 'group-header');
+  const hasGroupHeaders = input.hasGroupHeaders ?? rows.some(item => item.kind !== 'data');
   const frameKey = picture && !moving && !layout.scrollable && !hasGroupHeaders
     ? JSON.stringify([
         width,
@@ -311,6 +311,7 @@ export function drawFamilyTable(
     }
 
     const cell = item.row.cells[column.key];
+    if (column.key === 'date' && item.showDate === false) return;
     if (cell?.iconSlot && showsIcon(column.display)) {
       const icon = iconUrl ? icons?.get(iconUrl) : undefined;
       const iconHeight = Math.min(14, rowHeight - 8);
@@ -635,6 +636,33 @@ export function drawFamilyTable(
           }
           continue;
         }
+        if (item.kind === 'gap' || item.kind === 'refused' || item.kind === 'loading') {
+          if (colIndex === 0 && !pinned) {
+            const fullW = Math.max(width, layout.totalWidth);
+            const inspected = inspectedKey === item.key;
+            const selected = selectedKey === item.key;
+            paintRowGround(ctx, theme, 0, y, fullW, rowHeight, false, inspected, selected, true);
+            const middle = y + rowHeight / 2;
+            const smallFont = fontOf(theme, theme.fontSize.small, LABEL_WEIGHT);
+            ctx.font = smallFont;
+            ctx.fillStyle = theme.muted;
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            let textLeft = CELL_INSET;
+            if (item.kind === 'gap') {
+              drawHatchRect(ctx, textLeft, Math.round(middle - 5), 10, 10, 2, theme);
+              textLeft += 16;
+              ctx.fillText(fit(`${item.label} · ${item.reason}`, smallFont, Math.max(1, fullW - textLeft - CELL_INSET)), textLeft, middle);
+            } else if (item.kind === 'refused') {
+              drawHatchRect(ctx, textLeft, Math.round(middle - 5), 10, 10, 2, theme);
+              textLeft += 16;
+              ctx.fillText(fit(item.reason, smallFont, Math.max(1, fullW - textLeft - CELL_INSET)), textLeft, middle);
+            } else {
+              ctx.fillText(fit('Loading…', smallFont, Math.max(1, fullW - textLeft - CELL_INSET)), textLeft, middle);
+            }
+          }
+          continue;
+        }
         const mark = rowMarkState(item.key, inspectedKey, selectedKey, focusedKey);
         const look = computeLook(item, column, slotWidth);
         if (drawn && !pinned) {
@@ -642,7 +670,8 @@ export function drawFamilyTable(
           picture!.rowKeys[index] = item.key;
           picture!.rowMarks[index] = mark;
         }
-        paintRowGround(ctx, theme, x, y, column.width, rowHeight, index % 2 === 1, inspectedKey === item.key, selectedKey === item.key, true);
+        const drawDivider = !(colIndex === 0 && column.key === 'date' && item.showDate !== undefined && !item.isDayEnd && !item.isLiveEnd);
+        paintRowGround(ctx, theme, x, y, column.width, rowHeight, index % 2 === 1, inspectedKey === item.key, selectedKey === item.key, drawDivider);
         drawSingleCell(item, column, colIndex, x, y, slotWidth, look.fraction, look.fill, look.icon, look.formatted, look.missingName);
         if (!pinned) paintedCells++;
       }
@@ -687,8 +716,15 @@ export function drawFamilyTable(
   for (let vi = 0; vi < visibleIndices.length; vi++) {
     const index = visibleIndices[vi]!;
     const item = rows[index]!;
-    if (item.kind !== 'data') continue;
-    paintRowEdges(ctx, theme, 0, rowY(item, index), rowWidth, rowHeight, inspectedKey === item.key, selectedKey === item.key, focusedKey === item.key);
+    if (item.kind === 'group-header' || item.kind === 'loading') continue;
+    const y = rowY(item, index);
+    if (item.kind === 'data' && (item.isLiveEnd || item.isDayEnd)) {
+      ctx.globalAlpha = item.isLiveEnd ? 1 : 0.85;
+      ctx.fillStyle = theme.line;
+      ctx.fillRect(0, y + rowHeight - 1, rowWidth, 1);
+      ctx.globalAlpha = 1;
+    }
+    paintRowEdges(ctx, theme, 0, y, rowWidth, rowHeight, inspectedKey === item.key, selectedKey === item.key, focusedKey === item.key);
   }
 
   ctx.restore();
@@ -722,7 +758,8 @@ export function hitFamilyTable(
     const index = Math.floor((point.y + scrollTop) / rowHeight);
     item = rows[index];
   }
-  if (!item || item.kind !== 'data') return { kind: 'empty' };
+  if (!item || item.kind === 'group-header' || item.kind === 'loading') return { kind: 'empty' };
+  if (item.kind === 'gap' || item.kind === 'refused') return { kind: 'row', rowKey: item.key };
   const rank = rankShown ? rankWidth : 0;
   const firstWidth = layout.columns[0]?.width ?? 0;
   const pinned = layout.scrollable && point.x < rank + firstWidth;

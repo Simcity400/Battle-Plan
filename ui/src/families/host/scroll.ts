@@ -37,6 +37,18 @@ export function logicalToPhysicalTop(logicalTop: number, geometry: ScrollGeometr
   return ratio * maxPhysical;
 }
 
+export function adjustScrollForPrependedRows(
+  physicalScrollTop: number,
+  prependedRows: number,
+  rowHeight: number,
+  previousGeometry: ScrollGeometry,
+  nextGeometry: ScrollGeometry,
+): number {
+  if (physicalScrollTop <= 0 || prependedRows <= 0 || rowHeight <= 0) return physicalScrollTop;
+  const previousLogical = physicalToLogicalTop(physicalScrollTop, previousGeometry);
+  return logicalToPhysicalTop(previousLogical + prependedRows * rowHeight, nextGeometry);
+}
+
 export function scrollRangeIntoView(
   node: HTMLElement | null,
   viewport: { scrollTop: number; height: number },
