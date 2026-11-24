@@ -613,7 +613,7 @@ test('S5: an unclosed parked open-followed entry keeps advancing with shared con
   closed.p.publish(110, { playing: true, step: 24 });
   closed.p.offer({
     lane: 0, serial: 2,
-    closed: [1],
+    closed: [[1, -Infinity, Infinity]],
     confirmed: [[9, 'followed', 160, 0, 0]],
     entries: [],
   });
