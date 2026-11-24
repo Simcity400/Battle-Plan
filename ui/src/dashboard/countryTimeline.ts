@@ -101,16 +101,6 @@ export function timelineFailure(client: DashboardClient, source: FactSource): Fa
   return entry?.content === (source.content ?? null) ? entry.error : undefined;
 }
 
-export function retryTimelines(client: DashboardClient, sourceId: string): void {
-  const entries = held.get(client);
-  if (!entries) return;
-  for (const [key, entry] of entries) {
-    if ((JSON.parse(key) as string[])[0] === sourceId && entry.error) {
-      setEntry(client, entries, key, { ...entry, error: undefined, askAt: undefined });
-    }
-  }
-}
-
 function spanAt(known: readonly (readonly number[])[], hour: number): readonly number[] | undefined {
   let low = 0, high = known.length;
   while (low < high) { const middle = (low + high) >> 1; if (known[middle][1] < hour) low = middle + 1; else high = middle; }

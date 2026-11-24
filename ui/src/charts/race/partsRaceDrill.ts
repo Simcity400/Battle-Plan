@@ -3,7 +3,7 @@ import { CLOSED, pinnedBreakdown, reduceDrill, type PinnedSpec } from '../drill/
 import type { DrillAction, DrillState } from '../drill/drillState';
 import { shownRuns } from './lines.ts';
 import type { Run, Span } from '../series';
-import { partsRaceAt, partsRaceNumbers, partsRaceSegmentAt, validatePartsRaceReply } from '../../dashboard/partsRace.ts';
+import { partsRaceAt, partsRaceSegmentAt, validatePartsRaceReply } from '../../dashboard/partsRace.ts';
 import type { PartsRaceModel, PartsRaceReply, PartsRaceSeries } from '../../dashboard/partsRace';
 import { validCountryIdentityHistories } from '../../dashboard/countryIdentity.ts';
 import type { CountryIdentityRun } from '../../generated/dashboard';
@@ -21,8 +21,6 @@ export function validateNativePartsRaceReply(value: unknown): NativePartsRaceRep
   if (!validCountryIdentityHistories(reply.series)) throw new Error('The parts race identity history is malformed.');
   return reply as NativePartsRaceReply;
 }
-
-export const nativePartsRaceNumbers = (reply: NativePartsRaceReply): NativePartsRaceReply => ({ ...partsRaceNumbers(reply), series: reply.series });
 
 export function partsRaceDrillData(model: PartsRaceModel, histories: NativePartsRaceReply['series'],
   tooltip: CountryPartsData['tooltip']): CountryPartsData {

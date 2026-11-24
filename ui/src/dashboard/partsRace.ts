@@ -20,9 +20,6 @@ export interface PartsRaceReply {
   parts: { key: string; name: string | null; unresolved: boolean }[];
   series: PartsRaceSeries[]; warnings: string[];
 }
-export function partsRaceNumbers(reply: PartsRaceReply): PartsRaceReply {
-  return { ...reply, warnings: [], parts: reply.parts.map(part => ({ key: part.key, name: null, unresolved: false })) };
-}
 
 const count = (value: unknown) => value === null || (int(value) && value >= 0);
 

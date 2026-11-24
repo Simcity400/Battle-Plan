@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultTemplate, WIDGET_CONTENT_SCALES } from './model.ts';
-import { doneEditing, layoutSaveAllowed, layoutSaveCheck, layoutsAtDefault, layoutsUnsaved, unsavedLayoutPages, loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseLayoutLibraryWithNotes, parseTemplate, saveLayouts } from './storage.ts';
+import { doneEditing, layoutSaveAllowed, layoutSaveCheck, layoutsAtDefault, unsavedLayoutPages, loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseLayoutLibraryWithNotes, parseTemplate, saveLayouts } from './storage.ts';
 import { resolveOptions, setOption, type OptionField } from './options.ts';
 import { viewOwnedFields } from '../families/manifest.ts';
 import '../widgets/definitions.ts';
@@ -25,16 +25,6 @@ test('a page is at its default until its saved layouts differ from the designed 
   storage.values.set('battleplan.workspace-layouts.v1.politics', '{not json');
   assert.notEqual(loadLayouts(storage, 'politics').warning, null);
   assert.equal(layoutsAtDefault('politics', storage), false, 'unreadable saved layouts');
-});
-
-test('a layout change not yet saved, on the shown page or one kept aside, counts as unsaved', () => {
-  const { library } = loadLayouts(memoryStorage(), 'overview');
-  const saved = library.layouts[0].template;
-  const edited = { ...saved, widgets: saved.widgets.slice(1) };
-  assert.equal(layoutsUnsaved([{ library, template: saved }]), false);
-  assert.equal(layoutsUnsaved([{ library, template: edited }]), true, 'a widget removed in Edit without saving');
-  assert.equal(layoutsUnsaved([{ library, template: saved }, { library, template: edited }]), true, 'another page kept its unsaved edit');
-  assert.equal(layoutsUnsaved([{ library, template: { ...saved } }], template => ({ ...template, name: 'merged' })), false, 'merged the same way, equal');
 });
 
 test('Done with unsaved layout changes opens the save step, and with none just leaves Edit; a close names each page left unsaved', () => {

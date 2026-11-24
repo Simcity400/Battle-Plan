@@ -11,7 +11,6 @@ import { forgetReplySizes } from './replySizes.ts';
 import { tileCache } from './tiles/view.ts';
 import { contentRevision, useContentRevision } from './contentRevision.ts';
 import { validateCountryGroupReply } from './groupsReply.ts';
-import { pageJoin } from './pageJoins.ts';
 import { CONTENT_PRODUCTS } from '../generated/dashboard.ts';
 import { useHeldFailure, useHeldFailures } from './heldFailures.ts';
 import { useViewRead, type Holds } from './viewRead.ts';
@@ -74,32 +73,8 @@ function untilAborted<V>(promise: Promise<V>, signal: AbortSignal): Promise<V> {
   });
 }
 
-function pagedKind(request: ProductRequest): string | null {
-  if (request.product === 'resource-balance' || request.product === 'trade-flows') return request.product;
-  if (request.product !== 'series-summary') return null;
-  const kind = (request.params as { family?: { kind?: unknown } } | null)?.family?.kind;
-  return typeof kind === 'string' ? kind : null;
-}
-
 export async function loadProduct<T>(client: DashboardClient, request: ProductRequest, signal: AbortSignal, validate?: (data: unknown) => T, source?: DashboardSource, restart = false, publish?: (data: T) => void, pending?: () => void, hours = false): Promise<T> {
-  const kind = pagedKind(request);
-  if (kind === null) return loadPage(client, request, signal, validate, source, restart, publish, pending, hours);
-  const join = pageJoin(kind);
-  const page = (data: unknown) => { validatedData(data, validate); return data; };
-  const pages: unknown[] = [];
-  const joined = () => validatedData(pages.length === 1 ? pages[0] : join!(pages), validate);
-  let asked = request;
-  for (;;) {
-    const at = pages.length;
-    const tell = publish && ((data: unknown) => { if (signal.aborted) return; pages[at] = data; pages.length = at + 1; publish(joined()); });
-    const data = await loadPage<unknown>(client, asked, signal, page, source, restart, tell, pending, hours);
-    pages[at] = data; pages.length = at + 1;
-    const cursor = data !== null && typeof data === 'object' ? (data as { cursor?: unknown }).cursor : undefined;
-    if (typeof cursor !== 'string') return joined();
-    if (!join) throw new Error('This reply arrives in pages that this view cannot join.');
-    if (cursor === (asked.params as { cursor?: unknown } | null)?.cursor) throw new Error('The paged reply named the page it answered as its next.');
-    asked = { ...request, params: { ...(request.params as object), cursor } };
-  }
+  return loadPage(client, request, signal, validate, source, restart, publish, pending, hours);
 }
 
 async function loadPage<T>(client: DashboardClient, request: ProductRequest, signal: AbortSignal, validate?: (data: unknown) => T, _source?: DashboardSource, _restart = false, publish?: (data: T) => void, _pending?: () => void, hours = false): Promise<T> {
@@ -131,8 +106,7 @@ async function loadPage<T>(client: DashboardClient, request: ProductRequest, sig
   });
 }
 
-export function peekProduct<T>(client: DashboardClient, request: ProductRequest, key: string, validate?: (data: unknown) => T): T | undefined {
-  if (pagedKind(request) !== null) return undefined;
+export function peekProduct<T>(client: DashboardClient, _request: ProductRequest, key: string, validate?: (data: unknown) => T): T | undefined {
   const reply = cache(client).peek(key) ?? cache(client, true).peek(key);
   if (!reply) return undefined;
   let byValidator = peeked.get(reply);

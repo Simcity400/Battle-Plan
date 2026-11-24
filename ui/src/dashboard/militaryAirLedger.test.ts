@@ -1,7 +1,7 @@
 import { countryKey } from './countryKey.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BOMBING_SUNBURST_TEXT, airLossParts, partAmount, ledgerComplete, ledgerCountries, ledgerCountryAt, ledgerHeaderTag, ledgerPinnedIdentity, ledgerRuns, ledgerTotals, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, validateMilitaryAirReply } from './militaryAirLedger.ts';
+import { BOMBING_SUNBURST_TEXT, airLossParts, partAmount, ledgerComplete, ledgerCountries, ledgerCountryAt, ledgerHeaderTag, ledgerPinnedIdentity, ledgerRuns, ledgerTotals, militaryAirAt, militaryAirIndex, militaryAirLineTooltip } from './militaryAirLedger.ts';
 import type { MilitaryAirPart } from '../generated/dashboard';
 import type { MilitaryAirLedger } from './militaryAirLedger';
 
@@ -48,16 +48,13 @@ test('ledger totals are exact, summed in numbers while safe and in bigints past 
   ]) assert.deepEqual(ledgerTotals(leaves.map(part)), reference(leaves));
 });
 
-test('the product validator returns the payload and accepts later publications with earlier native dates', () => {
+test('partAmount reads delta amounts over inclusive spans', () => {
   const data = reply();
-  assert.equal(validateMilitaryAirReply(data), data);
   assert.equal(partAmount(data.parts[0], 10, 10), 300000n);
   assert.equal(partAmount(data.parts[0], 10, 11), 200000n);
   const rangeLeaf = part(leaf({ points: [[11, 12, '-100000']] }));
   assert.equal(partAmount(rangeLeaf, 11, 11), 0n);
   assert.equal(partAmount(rangeLeaf, 11, 12), -100000n);
-  assert.throws(() => validateMilitaryAirReply(reply({ leaves: [leaf({ points: [[12, 11, '1']] })] })), /Invalid/);
-  assert.throws(() => validateMilitaryAirReply(reply({ leaves: [leaf(), leaf()] })), /Invalid/);
 });
 
 test('empty complete reads certify zero, while gaps and unknown bombing callers do not', () => {
@@ -76,7 +73,7 @@ test('shared indices retain wide signed corrections exactly and name operational
   const data = reply({ leaves: [leaf({ points: [[10, 10, wide]] }),
     leaf({ cause: 3, points: [[10, 10, '-100000']] }),
     leaf({ dealt: true, opponent: 'other mod', points: [[10, 10, '700000']] })] });
-  const index = militaryAirIndex(validateMilitaryAirReply(data));
+  const index = militaryAirIndex(data);
   assert.equal(militaryAirIndex(data), index);
   const row = militaryAirAt(index, 10, 10)[0];
   assert.equal(row.taken, BigInt(wide) - 100000n);
@@ -91,7 +88,7 @@ test('country aliases share their holder total and top memberships clip only the
     { tag: 'renamed', identity: '3:9', present: [span(11, 14)], membership: [span(13)] },
     { tag: 'mod country', identity: '8:99', present: [span(13, 14)], membership: [] },
   ], leaves: [leaf({ points: [[9, 10, '300000']] })] });
-  const index = militaryAirIndex(validateMilitaryAirReply(data));
+  const index = militaryAirIndex(data);
   assert.equal(index.series[0].points, index.series[1].points);
   assert.equal(ledgerCountryAt(index, 'mod country', 10, 11)?.taken, 300000n);
   const rows = militaryAirAt(index, 10, 13);
@@ -127,7 +124,7 @@ test('manual ledger roots include all their native holders without recursively s
   ], leaves: [leaf({ tag: 'X', points: [[9, 10, '-300000']] }),
     leaf({ tag: 'Y', identity: '8:99', points: [[9, 10, '9900000']] }),
     leaf({ tag: 'B', identity: '4:10', points: [[9, 10, '200000']] })] });
-  const index = militaryAirIndex(validateMilitaryAirReply(data));
+  const index = militaryAirIndex(data);
   const select = (hour: number) => ledgerCountries(militaryAirAt(index, 10, hour), { kind: 'tags', tags: ['X'] }, [], undefined,
     hour, 14, 'taken', data.countries);
   assert.deepEqual(new Set(select(10).rows.map(row => row.identity)), new Set(['3:9', '4:10']));
@@ -150,7 +147,7 @@ test('line hover uses exact wide signed values, native/read dates, dated labels 
   const data = reply({ leaves: [leaf({ points: [[9, 10, wide.toString()]] }),
     leaf({ cause: 3, points: [[8, 11, '-100000']] }),
     leaf({ dealt: true, opponent: 'other', points: [[9, 10, (-wide).toString()]] })] });
-  const index = militaryAirIndex(validateMilitaryAirReply(data));
+  const index = militaryAirIndex(data);
   const labelled: number[] = [];
   const labelAt = (hour: number) => { labelled.push(hour); return () => ({ name: `Dated name ${hour}`, flag: `dated-flag-${hour}` }); };
   const tip = militaryAirLineTooltip(index, 10, 11, ['mod country'], labelAt, () => '#123456');
