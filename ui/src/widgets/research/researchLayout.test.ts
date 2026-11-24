@@ -118,13 +118,17 @@ test('resumed research with earlier progress claims no start and no time taken',
   ]);
 });
 
-test('folder colours follow the content order of the folders a history shows, repeating past the palette', () => {
+test('folder colours follow the content order of the folders a history shows, generating distinct colours past the palette', () => {
   const reply = { folders: [{ key: 'inf', name: 'Infantry' }, { key: 'air', name: 'Air' }, { key: 'nav', name: null }, { key: 'unused', name: 'Unused' }],
     technologyFolders: [{ token: 't3', folder: 'nav' }, { token: 't1', folder: 'air' }, { token: 't2', folder: 'inf' }, { token: 't4', folder: null }] };
   const looks = researchFolderLooks(reply, ['t3', 't1', 't2', 't4'], ['red', 'blue']);
-  assert.deepEqual(researchFolderList(looks).map(look => [look.key, look.name, look.colour]),
-    [['inf', 'Infantry', 'red'], ['air', 'Air', 'blue'], ['nav', 'Folder name unavailable', 'red']]);
-  assert.equal(looks.get('t3')?.colour, 'red');
+  const list = researchFolderList(looks);
+  assert.deepEqual(list.slice(0, 2).map(look => [look.key, look.name, look.colour]),
+    [['inf', 'Infantry', 'red'], ['air', 'Air', 'blue']]);
+  assert.equal(list[2].key, 'nav');
+  assert.equal(list[2].name, 'Folder name unavailable');
+  assert.match(list[2].colour, /^#[0-9a-f]{6}$/);
+  assert.equal(looks.get('t3')?.colour, list[2].colour);
   assert.equal(looks.has('t4'), false, 'a technology in no shown folder has no look');
   assert.equal(researchDateRange(day(90), day(92)), '1–3 Apr 1944');
   assert.equal(researchDateRange(day(90), day(90)), '1 Apr 1944');
