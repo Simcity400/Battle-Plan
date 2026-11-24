@@ -563,7 +563,20 @@ fn resolve_sprite_in_stack(
     let frame_width = extent[0] as u32;
     let frame_height = extent[1] as u32;
     let (output_width, output_height) = scaled_size(frame_width, frame_height, variant.max_edge);
-    let rendered = catalogue::sprite_frame_png(layers, sprite, variant.decode, frame, variant.max_edge);
+    let (rendered, fallbacks) = content_reader_layers::content::observe_overlay_refusals(|| {
+        catalogue::sprite_frame_png(layers, sprite, variant.decode, frame, variant.max_edge)
+    });
+    if let Some(fallback) = fallbacks.into_iter().next() {
+        return ArtResolution::Refused {
+            reason: format!(
+                "sprite {} drew only without the visual mods its texture came from: {fallback}",
+                sprite.name
+            ),
+            construct: "sprite-render".to_owned(),
+            origin: Some(origin),
+            file: Some(display_file),
+        };
+    }
     match rendered {
         Ok(url) => {
             let asset_id = asset_id_from_url(&url);
@@ -661,14 +674,7 @@ fn resolve_texture_in_stack(
         };
     }
     let (output_width, output_height) = scaled_size(frame_width, frame_height, variant.max_edge);
-    let rendered = catalogue::texture_frame_png(
-        stack,
-        &display_file,
-        variant.decode,
-        frames,
-        frame,
-        variant.max_edge,
-    );
+    let rendered = catalogue::image_frame_png(&image, frames, frame, variant.max_edge);
     drop(image);
     match rendered {
         Ok(url) => {
@@ -1781,6 +1787,33 @@ mod tests {
             resolve_native_texture_in_stack(layers.presentation(), "gfx/sample_icon.png", Decode::default(), &scope_key),
             NativeIconResolution::Ready { .. }
         ));
+    }
+
+    #[test]
+    fn a_visual_mod_sprite_that_cannot_draw_falls_back_whole_never_its_metadata_over_recorded_pixels() {
+        let (_, base) = crate::catalogue::tests::localisation_catalogue(&[]);
+        let (_, visual) = crate::catalogue::tests::localisation_catalogue(&[]);
+        crate::catalogue::texture_tests::write_sprite_program(&base.0);
+        write_entries(&base.0, &[
+            ("interface/sample.gfx", b"spriteTypes={spriteType={name=GFX_sample_badge textureFile=gfx/sample_badge.png}}"),
+            ("gfx/sample_badge.png", &png_bytes(&solid(4, 4, [200, 10, 10, 255]))),
+        ]);
+        write_entries(&visual.0, &[
+            ("interface/sample.gfx", b"spriteTypes={spriteType={name=GFX_sample_badge textureFile=gfx/sample_badge.png effectFile=gfx/FX/sample_absent.lua}}"),
+            ("gfx/sample_badge.png", &png_bytes(&solid(8, 2, [10, 200, 10, 255]))),
+        ]);
+        let layers = content_reader_layers::content::fixtures::overlay_folders(&base.0, &visual.0, "Sample Art", false);
+        let sprites = content_reader_gfx::gfx::read(layers.presentation()).unwrap();
+        let sprite = sprites.find("GFX_sample_badge").unwrap().unwrap();
+        let variant = ArtRenderVariant { max_edge: 48, decode: Decode::default() };
+        match resolve_sprite_type_on_layers(&layers, "english", sprite, 0, variant) {
+            ArtResolution::Ready { url, frame, origin, .. } => {
+                let pixel: [u8; 4] = from_url(&url).pixels[..4].try_into().unwrap();
+                let shown = (frame.texture_width, frame.texture_height, pixel);
+                assert_eq!(shown, (4, 4, [200, 10, 10, 255]), "pixels and metadata both from the recorded sprite, origin {origin:?}");
+            }
+            other => panic!("the recorded sprite draws, got {other:?}"),
+        }
     }
 
     #[test]
