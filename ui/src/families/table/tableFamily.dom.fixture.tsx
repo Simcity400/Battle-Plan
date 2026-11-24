@@ -21,6 +21,7 @@ import FamilyHost from '../host/FamilyHost.tsx';
 import { DetailWindowHost } from '../host/DetailWindowHost.tsx';
 import { mirrorRowSelector } from '../host/mirror.ts';
 import { createLaneView } from '../laneRuntime.ts';
+import type { IdentitySnapshot } from '../identity/types.ts';
 import { tableHostAdapter } from './hostAdapter.ts';
 import TableChrome from './TableChrome.tsx';
 import '../../styles.css';
@@ -178,7 +179,33 @@ const SUBSCRIPTIONS = [
   { name: 'casualties', source, branch: '1', offset: 0, query: { product: 'series-state', params: { branchId: '1', col: 'casualties' } }, channel: 'followed' as const },
 ];
 
+const IDENTITY_SNAPSHOT: IdentitySnapshot = {
+  scope: { sourceId: 'dom-test', revision: 'r1', branchId: '1', content: 1 },
+  branchBounds: [0, 2000],
+  facts: {
+    branchId: '1',
+    known: [[0, 2000]],
+    names: ['Germany', 'France', 'Italy', 'United Kingdom'],
+    reasons: [],
+    flags: [
+      { keys: ['GER', null, null], reasons: [null, null, null] },
+      { keys: ['FRA', null, null], reasons: [null, null, null] },
+      { keys: ['ITA', null, null], reasons: [null, null, null] },
+      { keys: ['ENG', null, null], reasons: [null, null, null] },
+    ],
+    countries: [
+      { tag: 'GER', runs: [[0, 0, 0x444444, -1, 0]] },
+      { tag: 'FRA', runs: [[0, 1, 0x3366aa, -1, 1]] },
+      { tag: 'ITA', runs: [[0, 2, 0x338844, -1, 2]] },
+      { tag: 'ENG', runs: [[0, 3, 0xcc4444, -1, 3]] },
+    ],
+    warnings: [],
+  },
+  factsFinal: true,
+};
+
 let commits = 0;
+let tooltipCommits = 0;
 let activated: string[] = [];
 let hostNode: HTMLDivElement | null = null;
 let subIds: Record<string, number> = {};
@@ -291,12 +318,15 @@ window.tableFamilyDom = {
             active
             settings={SETTINGS}
             subscriptions={SUBSCRIPTIONS}
+            identitySnapshot={IDENTITY_SNAPSHOT}
             offset={0}
             pin={null}
             bounds={[0, 2000]}
             onActivate={action => { activated.push(action.subject); }}
             contextMenuItems={hit => [{ label: `Jump to date (${hit.key ?? 'empty'}@${hit.hour})`, run: () => {} }]}
           />
+        </Profiler>
+        <Profiler id="table-tooltip" onRender={() => { tooltipCommits++; }}>
           <TooltipLayer />
         </Profiler>
       </FollowedWidgetKey.Provider>,
@@ -617,6 +647,7 @@ window.tableFamilyDom = {
     const stopFeed = clock.onPublish((_prev, next) => feed(next.hour));
     try {
       commits = 0;
+      tooltipCommits = 0;
       totalInstallReads = 0;
       installs = 0;
       feed(startHour + 1);
@@ -624,7 +655,35 @@ window.tableFamilyDom = {
       clock.setPlaying(true);
       const advanced = await until(() => (pipeline.view(pipeId)?.h ?? 0) >= startHour + 6 && installs >= 3, 2000);
       if (!advanced) throw new Error(`Playback with overflowing tooltip did not advance (h=${pipeline.view(pipeId)?.h}, installs=${installs})`);
-      return { tipOverflowed: true, commits, installReads: totalInstallReads, installs };
+      const hostCommits = commits;
+      const playInstalls = installs;
+      stopFeed();
+      clock.setPlaying(false);
+      await until(() => !clock.getSnapshot().playing, 500);
+      const settledHour = Math.floor(clock.getSnapshot().hour) + 1;
+      const casVal = BigInt(settledHour);
+      const casVal2 = BigInt(settledHour * 2);
+      clock.seek(settledHour);
+      seek = clock.getSnapshot().seekSequence;
+      sendHour(settledHour, [20n, 90n, 80n, -1n], [casVal, casVal2, 3n, 4n], true);
+      await until(() => pipeline.view(pipeId)?.h === settledHour && !pipeline.view(pipeId)?.dim && !!tooltipStore.get()?.content.spoken, 2000);
+      await nextPoll();
+      await nextPoll();
+      tooltipCommits = 0;
+      totalInstallReads = 0;
+      installs = 0;
+      for (let i = 0; i < 4; i++) {
+        sendHour(settledHour, [20n, 90n, 80n, -1n], [casVal, casVal2, 3n, 4n]);
+        await nextPoll();
+      }
+      return {
+        tipOverflowed: true,
+        commits: hostCommits,
+        installs: playInstalls,
+        unchangedInstalls: installs,
+        unchangedTooltipCommits: tooltipCommits,
+        unchangedInstallReads: totalInstallReads,
+      };
     } finally {
       stopFeed();
       clock.setPlaying(false);
