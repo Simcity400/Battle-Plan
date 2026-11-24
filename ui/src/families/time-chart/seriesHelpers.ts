@@ -8,7 +8,7 @@ import { FutureDataError, type BoundedReadView, type BoundedSeries, type FamilyP
 import { holderTagAt, type HolderRun, type HourRanges } from '../holders.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
-import type { ChartArtSlot, ChartGap, ChartMarker, ChartMissingSpan } from './model.ts';
+import type { ChartArtSlot, ChartEndLabel, ChartGap, ChartMarker, ChartMissingSpan, ChartStackBand, ChartStackModel } from './model.ts';
 
 export function seriesHeadValue(
   bounded: BoundedSeries | null | undefined,
@@ -74,14 +74,22 @@ export function exactHoverReadings(
 ): readonly (ExactReading | undefined)[] | null {
   let hover;
   try {
-    hover = readView.hover<readonly ExactState[]>(name);
+    hover = readView.hover<readonly ExactState[] | { readonly states?: readonly ExactState[]; readonly decimals?: number }>(name);
   } catch (error) {
     if (error instanceof FutureDataError) return null;
     throw error;
   }
-  if (!hover || !Array.isArray(hover.data)) return null;
-  const divisor = 10 ** decimals;
-  return hover.data.map(state => {
+  if (!hover || !hover.data) return null;
+  const data = hover.data;
+  const list: readonly ExactState[] | null = Array.isArray(data)
+    ? data
+    : 'states' in data && Array.isArray(data.states)
+      ? data.states
+      : null;
+  if (!list) return null;
+  const usedDecimals = !Array.isArray(data) && 'decimals' in data && typeof data.decimals === 'number' ? data.decimals : decimals;
+  const divisor = 10 ** usedDecimals;
+  return list.map(state => {
     if (!state) return undefined;
     if (!state.run) return { hour: hover.hour, value: null, reason: state.missing ?? 'Not recorded' };
     return { hour: hover.hour, value: (Number(state.run.valueRaw) / divisor) * scale };
@@ -298,4 +306,165 @@ export function rankedOrder(readView: BoundedReadView, tags: readonly string[], 
   }
   for (const tag of tags) if (!seen.has(tag)) order.push(tag);
   return order;
+}
+
+export interface BoundedStackBandInput {
+  readonly id: string;
+  readonly key: string;
+  readonly name: string;
+  readonly color: string;
+  readonly opacity?: number;
+  readonly bounded?: BoundedSeries | null;
+  readonly parts?: readonly BoundedSeries[];
+  readonly valueScale?: number;
+  readonly headValue?: number | null;
+  readonly endLabel?: ChartEndLabel | null;
+  readonly flag?: ChartArtSlot;
+}
+
+export interface BoundedStackOptions {
+  readonly missingMode?: 'all-required' | 'zero-absent';
+}
+
+function inMissing(series: BoundedSeries, hour: number): boolean {
+  for (const span of series.missing) {
+    if (hour >= span.firstHour && hour <= span.lastHour) return true;
+  }
+  return false;
+}
+
+function sampleOneBounded(series: BoundedSeries, hour: number, scale: number): { readonly value: number | null; readonly missing: boolean } {
+  if (inMissing(series, hour)) return { value: null, missing: true };
+  if (series.runs && series.runs.length > 0) {
+    let lo = 0;
+    let hi = series.runs.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >>> 1;
+      const run = series.runs.at(mid)!;
+      if (hour < run.firstHour) hi = mid - 1;
+      else if (hour > run.lastHour) lo = mid + 1;
+      else return { value: Number.isFinite(run.value) ? run.value * scale : null, missing: false };
+    }
+    return { value: null, missing: false };
+  }
+  const idx = Math.floor((hour - series.from) / series.binHours);
+  if (idx < 0 || idx >= series.buckets.length) return { value: null, missing: false };
+  const b = series.buckets.at(idx);
+  if (!b || b.hasBreak || hour < b.firstHour || hour > b.lastHour) return { value: null, missing: false };
+  const raw = hour === b.lastHour ? b.lastValue : b.firstValue;
+  return { value: Number.isFinite(raw) ? raw * scale : null, missing: false };
+}
+
+function collectSeriesHours(series: BoundedSeries, until: number, target: Set<number>): void {
+  if (series.runs && series.runs.length > 0) {
+    let prevLast = -Infinity;
+    for (const run of series.runs) {
+      if (run.firstHour > until) break;
+      if (prevLast !== -Infinity && (run.breakBefore || run.firstHour > prevLast + 1)) {
+        const gapHour = Math.min(until, prevLast + 1);
+        if (gapHour < run.firstHour) target.add(gapHour);
+      }
+      target.add(run.firstHour);
+      const end = Math.min(until, run.lastHour);
+      if (end > run.firstHour) target.add(end);
+      prevLast = end;
+    }
+  } else {
+    let prevLast = -Infinity;
+    for (const b of series.buckets) {
+      if (!b || b.firstHour > until) continue;
+      if (prevLast !== -Infinity && (b.firstBreak || b.firstHour > prevLast + Math.max(1, series.binHours))) {
+        const gapHour = Math.min(until, prevLast + 1);
+        if (gapHour < b.firstHour) target.add(gapHour);
+      }
+      if (b.hasBreak) {
+        target.add(b.firstHour);
+      } else {
+        target.add(b.firstHour);
+        const end = Math.min(until, b.lastHour);
+        if (end > b.firstHour) target.add(end);
+      }
+      prevLast = Math.min(until, b.lastHour);
+    }
+  }
+  for (const span of series.missing) {
+    if (span.firstHour <= until) target.add(span.firstHour);
+  }
+}
+
+export function buildBoundedStack(
+  inputs: readonly BoundedStackBandInput[],
+  hour: number,
+  options?: BoundedStackOptions,
+): ChartStackModel {
+  const mode = options?.missingMode ?? 'all-required';
+  const hourSet = new Set<number>();
+  const sources = inputs.map(input => {
+    const list: BoundedSeries[] = [];
+    if (input.parts && input.parts.length > 0) list.push(...input.parts);
+    else if (input.bounded) list.push(input.bounded);
+    for (const s of list) collectSeriesHours(s, hour, hourSet);
+    return list;
+  });
+  if (inputs.some(input => input.headValue !== undefined && input.headValue !== null) || hourSet.size > 0) {
+    hourSet.add(hour);
+  }
+  const hours = [...hourSet].filter(h => h <= hour).sort((a, b) => a - b);
+  const valuesByBand: (number | null)[][] = inputs.map(() => new Array<number | null>(hours.length).fill(null));
+
+  for (let i = 0; i < hours.length; i++) {
+    const h = hours[i]!;
+    const row = new Array<number | null>(inputs.length).fill(null);
+    let anyMissing = false;
+    let anyPresent = false;
+    for (let b = 0; b < inputs.length; b++) {
+      const input = inputs[b]!;
+      if (h === hour && input.headValue !== undefined) {
+        if (input.headValue !== null && Number.isFinite(input.headValue)) {
+          row[b] = input.headValue;
+          anyPresent = true;
+        } else {
+          anyMissing = true;
+        }
+        continue;
+      }
+      const scale = input.valueScale ?? 1;
+      const list = sources[b]!;
+      let picked: number | null = null;
+      let missing = false;
+      for (const s of list) {
+        const res = sampleOneBounded(s, h, scale);
+        if (res.value !== null) {
+          picked = res.value;
+          break;
+        }
+        if (res.missing) missing = true;
+      }
+      if (picked !== null) {
+        row[b] = picked;
+        anyPresent = true;
+      } else if (missing) {
+        anyMissing = true;
+      }
+    }
+    if (!anyPresent || anyMissing) continue;
+    if (mode === 'all-required') {
+      if (row.some(v => v === null)) continue;
+      for (let b = 0; b < inputs.length; b++) valuesByBand[b]![i] = row[b]!;
+    } else {
+      for (let b = 0; b < inputs.length; b++) valuesByBand[b]![i] = row[b] ?? 0;
+    }
+  }
+
+  const bands: ChartStackBand[] = inputs.map((input, idx) => ({
+    id: input.id,
+    key: input.key,
+    name: input.name,
+    color: input.color,
+    ...(input.opacity !== undefined ? { opacity: input.opacity } : {}),
+    values: valuesByBand[idx]!,
+    ...(input.endLabel !== undefined ? { endLabel: input.endLabel } : {}),
+    ...(input.flag ? { flag: input.flag } : {}),
+  }));
+  return { hours, bands };
 }

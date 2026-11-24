@@ -2,6 +2,7 @@ import type { LiveValues } from '../../charts/live';
 import { canvasMeasureText, type Canvas2D, type MeasureText } from '../../charts/textWidth.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
+import { followedRow, keyId } from '../../dashboard/keyedSeriesData.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import type { LaneView, Painted, PaintInput } from '../../draw/lane.ts';
 import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
@@ -203,7 +204,13 @@ function buildReadView(
         let headPoint: WitnessedPoint | null = null;
         let headValue = undefined;
         if (headAnswer && headCfg) {
-          const tagIdx = rowIndexOf(headCfg.tags).get(tag) ?? -1;
+          let tagIdx = -1;
+          if (headCfg.keys && headCfg.partBits !== undefined) {
+            const matched = headCfg.keys.find(key => keyId(key) === tag);
+            if (matched) tagIdx = followedRow(headAnswer, matched, headCfg.partBits);
+          } else {
+            tagIdx = rowIndexOf(headCfg.tags).get(tag) ?? -1;
+          }
           if (tagIdx >= 0) {
             const val = rowAmount(headAnswer, tagIdx, headCfg.decimals ?? line.decimals);
             if (val !== undefined && val !== null && Number.isFinite(val)) {
@@ -452,7 +459,7 @@ export function timeChartLaneView(
         ]),
         model.columns?.months.length ?? 0,
         model.columns?.foldUnrecorded ?? true,
-        model.stack?.hours.length ?? 0,
+        model.stack ? [model.stack.hours.length, model.stack.hours.at(-1) ?? null, model.stack.bands.map(b => [b.id, b.endLabel?.value ?? null])] : 0,
         model.markers?.length ?? 0,
         model.gaps?.length ?? 0,
         input.inspect ?? null,
