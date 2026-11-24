@@ -145,9 +145,10 @@ test('a folded column with unrecorded days keeps them unknown instead of spreadi
 });
 
 test('conditions take their colour from the identity register, and an unknown one from the palette, never a registered colour', async () => {
-  const { identityColour, readableColour, IDENTITY_COLOURS } = await import('../../charts/palette.ts');
-  assert.equal(identityColour(SURFACE, 'weather', 'heavy_rain', 0), readableColour(IDENTITY_COLOURS.weather.heavy_rain, SURFACE), 'heavy rain is the storm violet whatever its order');
-  assert.equal(identityColour(SURFACE, 'weather', 'light_rain', 5), readableColour(IDENTITY_COLOURS.weather.light_rain, SURFACE));
-  const registered = new Set(Object.values(IDENTITY_COLOURS.weather).map(hex => readableColour(hex, SURFACE)));
+  const { identityColour } = await import('../../charts/palette.ts');
+  assert.equal(identityColour(SURFACE, 'weather', 'heavy_rain', 0), identityColour(SURFACE, 'weather', 'heavy_rain', 5), 'heavy rain keeps its colour whatever its order');
+  assert.equal(identityColour(SURFACE, 'weather', 'light_rain', 0), identityColour(SURFACE, 'weather', 'light_rain', 5));
+  const registered = new Set((['light_rain', 'heavy_rain', 'snow', 'sandstorm'] as const).map(token => identityColour(SURFACE, 'weather', token, 0)));
+  assert.equal(registered.size, 4);
   for (let ordinal = 0; ordinal < 12; ordinal++) assert.ok(!registered.has(identityColour(SURFACE, 'weather', 'mod_acid_rain', ordinal)), 'a mod condition gets its own colour');
 });

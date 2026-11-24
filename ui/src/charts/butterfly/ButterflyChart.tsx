@@ -31,7 +31,6 @@ export interface ButterflyItem extends ButterflyValue {
   segment: string;
   leftParts?: readonly ButterflyPart[]; rightParts?: readonly ButterflyPart[];
 }
-export type { ButterflyPartHit } from './layout';
 export interface ButterflyProps<T extends ButterflyItem> {
   label: string; items: readonly T[];
   slots?: number;
