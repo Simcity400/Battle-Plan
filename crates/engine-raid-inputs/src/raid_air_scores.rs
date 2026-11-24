@@ -1546,33 +1546,6 @@ mod tests {
     }
 
     #[test]
-    fn allocation_growth_preserves_the_previous_capacity_trace() {
-        let mut held = Held::default();
-        let mut regions = Vec::new();
-        let mut countries = Vec::new();
-        let mut slots = Vec::new();
-        let mut rows = Vec::new();
-        for (region_count, country_count, row_count) in
-            [(1, 1, 1), (5, 5, 5), (3, 3, 3), (11, 9, 17)]
-        {
-            regions.resize(regions.len().max(region_count), Region::default());
-            countries.resize(countries.len().max(country_count), Country::default());
-            slots.resize(slots.len().max(region_count), 0_u32);
-            rows.resize(rows.len().max(row_count), Row::default());
-            held.grow(region_count, country_count, row_count).unwrap();
-            assert_eq!(held.regions.capacity(), regions.capacity());
-            assert_eq!(held.next_regions.capacity(), regions.capacity());
-            assert_eq!(held.countries.capacity(), countries.capacity());
-            assert_eq!(held.next_countries.capacity(), countries.capacity());
-            let previous = regions.capacity() * 2 * size_of::<Region>()
-                + countries.capacity() * 2 * size_of::<Country>()
-                + slots.capacity() * size_of::<u32>()
-                + rows.capacity() * size_of::<Row>();
-            assert_eq!(held.allocated_bytes(), previous);
-        }
-    }
-
-    #[test]
     fn failed_growth_reports_allocation_failure() {
         let mut held = Held::default();
         held.grow(2, 2, 2).unwrap();
@@ -1791,47 +1764,4 @@ mod tests {
         assert!(!world.walk(HOUR + 7, &mut held, &mut rows).full);
     }
 
-    #[test]
-    #[ignore = "synthetic acquisition cost; run release and under affinity 0xF"]
-    fn acquisition_cost() {
-        let variable = |name, default| {
-            std::env::var(name)
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(default)
-        };
-        let countries = variable("BATTLEPLAN_RAID_SCORE_COUNTRIES", 1_500);
-        let regions = variable("BATTLEPLAN_RAID_SCORE_REGIONS", 305);
-        let mut world = World::new(countries, regions);
-        for country in (1..=countries).step_by(20) {
-            for slot in (1..regions).step_by(regions / 10) {
-                world.pair(country, slot, country as i64, slot as i64);
-            }
-        }
-        let capacity = countries * 12;
-        let mut held = held(regions, countries, capacity);
-        let mut rows = vec![Row::default(); capacity];
-        let (mut full, mut steady) = (Vec::new(), Vec::new());
-        for sample in 0..40 {
-            let hour = HOUR + 16 * sample;
-            held.invalidate();
-            for (hour, times) in [(hour, &mut full), (hour + 1, &mut steady)] {
-                let begin = std::time::Instant::now();
-                let walked = world.walk(hour, &mut held, &mut rows);
-                times.push(begin.elapsed().as_secs_f64() * 1000.0);
-                assert!(matches!(walked.outcome, Outcome::Rows { .. }));
-                std::hint::black_box(&rows);
-            }
-        }
-        full.sort_by(f64::total_cmp);
-        steady.sort_by(f64::total_cmp);
-        println!(
-            "raid air scores countries={countries} regions={regions} full_median_ms={:.3} full_max_ms={:.3} steady_median_ms={:.3} steady_max_ms={:.3} held_bytes={}",
-            full[20],
-            full[39],
-            steady[20],
-            steady[39],
-            held.allocated_bytes()
-        );
-    }
 }

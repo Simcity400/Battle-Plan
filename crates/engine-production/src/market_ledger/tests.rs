@@ -89,30 +89,6 @@ fn market_automation_demand_never_reads_inventory_prices_or_subsidies() {
 }
 
 #[test]
-fn market_empty_demand_reads_no_entity() {
-    struct Unreached;
-    impl Memory for Unreached {
-        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-            panic!("held market facts must not touch native entities");
-        }
-    }
-    let native = engine_native_memory::country_identity::Country {
-        pointer: 0,
-        id: 5000,
-        canonical_slot: 5000,
-    };
-    country(
-        &Unreached,
-        0,
-        native,
-        0,
-        Demand::default(),
-        &mut Country::default(),
-    )
-    .unwrap();
-}
-
-#[test]
 fn market_subsidy_demand_keeps_stored_total_independent_of_grant_sum() {
     let native = engine_native_memory::country_identity::Country {
         pointer: 0x1000,

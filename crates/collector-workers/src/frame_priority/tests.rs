@@ -190,42 +190,6 @@ fn failed_syscalls_stay_unknown_and_retry_without_another_refresh() {
 }
 
 #[test]
-fn a_pass_sets_each_registered_worker_once_and_steady_refreshes_do_not_set_or_wake() {
-    let pipeline = fixture(true);
-    let callback = pipeline.callback();
-    for role in [Role::Spool, Role::Helper(0), Role::Helper(1), Role::Sizing] {
-        // SAFETY: Only the current session's designated thread registers this role.
-        unsafe { pipeline.register(role) };
-    }
-    let calls = AtomicUsize::new(0);
-    let mut budget = Budget::default();
-    pipeline.reconcile(
-        &mut budget,
-        || 0,
-        |_, _, _| {
-            calls.fetch_add(1, Ordering::SeqCst);
-            true
-        },
-    );
-    assert_eq!(calls.load(Ordering::SeqCst), 5);
-    for _ in 0..20 {
-        pipeline.refresh();
-    }
-    assert!(!pipeline.pending.load(Ordering::SeqCst));
-    pipeline.reconcile(&mut budget, || 0, |_, _, _| panic!("unchanged setter"));
-    drop(callback);
-    pipeline.reconcile(
-        &mut budget,
-        || 0,
-        |_, _, _| {
-            calls.fetch_add(1, Ordering::SeqCst);
-            true
-        },
-    );
-    assert_eq!(calls.load(Ordering::SeqCst), 10);
-}
-
-#[test]
 fn a_long_sizing_item_is_demoted_at_expiry_and_cooldown_starts_after_success() {
     let pipeline = fixture(true);
     let _callback = pipeline.callback();

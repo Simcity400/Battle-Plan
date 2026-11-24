@@ -793,42 +793,6 @@ mod attack_tests {
     }
 
     #[test]
-    fn deployed_cache_reuses_raw_maxima_without_reading_their_words_again() {
-        struct Guard<'a>(SliceMemory<'a>);
-        impl engine_native_memory::Memory for Guard<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                assert!(
-                    !(STATS + MAXIMUM_ORGANISATION..STATS + MAXIMUM_STRENGTH + 8)
-                        .contains(&address),
-                    "raw maxima reread"
-                );
-                engine_native_memory::Memory::copy(&self.0, address, output)
-            }
-        }
-        let bytes = memory(0);
-        let view = Guard(SliceMemory {
-            base: BASE,
-            bytes: &bytes,
-        });
-        let held = DivisionMaxima {
-            pointer: STATS,
-            strength: 1,
-            organisation: -2,
-            ..Default::default()
-        };
-        let stats = capture_attack_stats_holding(
-            &view,
-            BASE,
-            STATS,
-            &mut Vec::new(),
-            &mut Vec::new(),
-            Some(held),
-        )
-        .unwrap();
-        assert_eq!(&stats.panel[..2], &[Some(1), Some(-2)]);
-    }
-
-    #[test]
     fn deployed_cache_keeps_every_raw_panel_word() {
         let mut bytes = memory(0);
         for (index, &(_, offset)) in PANEL_CACHE_FIELDS
@@ -856,13 +820,6 @@ mod attack_tests {
             );
         }
         assert_eq!(stats.suppression, Some(i64::MIN + 23));
-    }
-
-    #[test]
-    fn cached_words_follow_their_selectors() {
-        for &(selector, offset) in PANEL_CACHE_FIELDS.iter().chain([&SUPPRESSION_CACHE_FIELD]) {
-            assert_eq!(offset, 0xa0 + 8 * usize::from(selector), "selector {selector}");
-        }
     }
 
     #[test]

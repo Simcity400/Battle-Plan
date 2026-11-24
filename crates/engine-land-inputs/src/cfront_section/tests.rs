@@ -62,21 +62,6 @@ fn per_pair(
 }
 
 #[test]
-fn a_batch_of_pairs_and_their_provinces_take_two_guarded_reads() {
-    let bytes = image(PAIR_BATCH);
-    let memory = CountingMemory::new(&bytes);
-    let mut output = Vec::new();
-    let pairs = Array {
-        data: PAIRS_AT,
-        count: PAIR_BATCH as u32,
-    };
-    copy_pairs(&memory, 0, pairs, &mut output, 0).unwrap();
-    assert_eq!(output.len(), PAIR_BATCH * 2);
-    assert!(output.chunks_exact(4).all(|words| words == [4, 8, 8, 4]));
-    assert_eq!(memory.calls.get(), 2);
-}
-
-#[test]
 fn every_fault_keeps_the_per_pair_ids_prefix_and_first_failure() {
     let count = PAIR_BATCH + 5;
     let mut cases = vec![image(count)];

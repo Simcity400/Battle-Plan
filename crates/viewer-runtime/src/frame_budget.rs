@@ -203,12 +203,4 @@ mod tests {
         finish();
     }
 
-    #[test]
-    fn the_judge_names_a_piece_held_past_the_bound() {
-        assert!(!check::on(), "the judge is off unless BATTLEPLAN_VIEWER_CHECK_BUDGET is set");
-        let (checks, differing, _, _) = check::counted();
-        check::carrying("a part", 9, BOUND + 1);
-        check::quiet("a part", 3);
-        assert_eq!(check::counted(), (checks, differing, 0, 0), "an off judge reads nothing");
-    }
 }

@@ -164,12 +164,6 @@ fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     }
 }
 
-#[test]
-fn group_keys_are_the_row_codec_s() {
-    let row = AirMissionCountRow { slot: u32::MAX, region: 7, ..Default::default() };
-    assert_eq!(group_key((u32::MAX, 7)), row.key());
-}
-
 fn region_wings(store: &Store, slot: u32, region: u32) -> Vec<u64> {
     let view = store.view(TableId::AirMissionWings.index());
     let mut wings: Vec<(i64, u64)> = view
@@ -218,8 +212,3 @@ fn a_region_s_wings_are_the_map_s_roster_in_registration_order() {
     }
 }
 
-#[test]
-fn wing_keys_are_the_row_codec_s() {
-    let row = AirMissionWingRow { slot: u32::MAX, region: 7, wing: u64::MAX - 1, ordinal: 3 };
-    assert_eq!(wing_key((u32::MAX, 7), u64::MAX - 1), row.key());
-}

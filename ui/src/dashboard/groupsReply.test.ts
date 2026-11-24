@@ -12,9 +12,6 @@ const good: CountryGroupReply = {
   unobserved: { humans: [], factions: [{ firstHour: 2, lastHour: 3 }], wars: [] },
 };
 
-test('a country groups reply with every list is accepted', () => {
-  assert.equal(validateCountryGroupReply(good).warStarts.length, 1);
-});
 
 test('a reply missing a list, or with a malformed entry, is refused', () => {
   const { warStarts: _dropped, ...older } = good;

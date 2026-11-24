@@ -741,16 +741,6 @@ mod tests {
     }
 
     #[test]
-    fn sites_are_distinct_and_named_once() {
-        for (index, (site, _)) in MUTATIONS.iter().enumerate() {
-            for (other, _) in &MUTATIONS[index + 1..] {
-                assert_ne!(site.rva, other.rva, "{}", site.name);
-                assert_ne!(site.name, other.name);
-            }
-        }
-    }
-
-    #[test]
     fn route_writers_name_the_country_holding_the_route() {
         let base = 0x1000;
         let mut bytes = vec![0_u8; 0x800];

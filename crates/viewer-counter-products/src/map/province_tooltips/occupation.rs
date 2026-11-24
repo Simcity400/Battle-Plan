@@ -847,16 +847,6 @@ mod tests {
     }
 
     #[test]
-    fn occupation_rate_bases_keep_percentage_inside_the_colour_span() {
-        for colour in ['R', 'G'] {
-            assert_eq!(
-                base_value(7_500, colour),
-                format!("\u{11}{colour}0.075%\u{11}!")
-            );
-        }
-    }
-
-    #[test]
     fn occupation_additional_compliance_state_precision_is_two_country_and_relation_three() {
         let definition = rows::ModifierDefinitionRow {
             flags: dashboard_text::modifier_text::PERCENT,

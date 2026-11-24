@@ -419,53 +419,6 @@ fn hourly_losses_read_failure_never_becomes_zero() {
 }
 
 #[test]
-#[ignore = "print-only hourly casualty bench after live-count presize; lead runs through build slot"]
-fn land_casualty_hourly_timing() {
-    let _globals = super::test_globals();
-    let provinces: usize = std::env::var("BATTLEPLAN_LAND_PROVINCES").or_else(|_| std::env::var("HOI4_LAND_PROVINCES"))
-        .map(|value| value.parse().unwrap())
-        .unwrap_or(20_000);
-    let fraction: usize = std::env::var("BATTLEPLAN_LAND_BATTLE_PERCENT").or_else(|_| std::env::var("HOI4_LAND_BATTLE_PERCENT"))
-        .map(|value| value.parse().unwrap())
-        .unwrap_or(1);
-    let variants: usize = std::env::var("BATTLEPLAN_LAND_LOSS_VARIANTS").or_else(|_| std::env::var("HOI4_LAND_LOSS_VARIANTS"))
-        .map(|value| value.parse().unwrap())
-        .unwrap_or(12);
-    let count = provinces.checked_mul(fraction).unwrap() / 100;
-    let worlds = (0..count).map(|_| World::new(variants)).collect::<Vec<_>>();
-    let naval = [engine_native::cnaval_combat::VTABLE_RVA.0 as u64];
-    let registry = Registry::new(&worlds, &naval);
-    let mut capacity = Capacities::default();
-    capacity.presize(&registry, 0).unwrap();
-    let mut captured = Captured::with_capacities(&capacity);
-    read(&mut captured, &worlds);
-    assert!(captured.losses_complete());
-    let bytes = captured.allocated_bytes();
-    const SAMPLES: usize = 201;
-    let mut times = Vec::with_capacity(SAMPLES);
-    for _ in 0..SAMPLES {
-        let start = std::time::Instant::now();
-        read(&mut captured, std::hint::black_box(&worlds));
-        let elapsed = start.elapsed().as_nanos();
-        assert!(captured.losses_complete());
-        assert_eq!(captured.allocated_bytes(), bytes);
-        times.push(elapsed);
-    }
-    times.sort_unstable();
-    println!(
-        "LAND_CASUALTY_HOURLY provinces={provinces} combats={count} sides_per_combat=2 variants_per_side={variants} samples={SAMPLES} p50_ns_per_game_hour={} p95_ns_per_game_hour={} max_ns_per_game_hour={} budget_ns_per_game_hour=100000 budget_ms_per_game_hour=0.1 arena_bytes={bytes} profile={} scope=synthetic_steady_presized_loss_and_progress_read_excludes_parent_census_and_spool",
-        times[SAMPLES / 2],
-        times[(SAMPLES - 1) * 95 / 100],
-        times[SAMPLES - 1],
-        if cfg!(debug_assertions) {
-            "debug"
-        } else {
-            "optimized"
-        }
-    );
-}
-
-#[test]
 fn combat_log_complete_observer_uses_the_loss_census_and_preserves_signed_counters() {
     let _globals = super::test_globals();
     let mut world = World::new(3);

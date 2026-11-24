@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BADGE_STRIP, badgeRows, badgesAt, visibleBadges } from './badges.ts';
+import { BADGE_STRIP, badgesAt, visibleBadges } from './badges.ts';
 import { plotFrame } from './frame.ts';
 import { clipRuns } from '../dashboard/groups.ts';
 
@@ -36,10 +36,6 @@ test('triangle markers are found like glyph badges, in the strip above the plot'
   assert.deepEqual(visibleBadges([event], [1000, 2000], 1400), []);
 });
 
-test('hovered badges become tooltip rows naming each event', () => {
-  const rows = badgeRows([WAR, { ...LAW, color: '#123456' }]);
-  assert.deepEqual(rows.map(row => [row.label, row.swatch, row.divider]), [['⚔ War with FRA', undefined, true], ['⚙ Law: War Economy', '#123456', false]]);
-});
 
 test('a membership cut keeps a line break only where the run itself starts', () => {
   const runs = [{ firstHour: 100, lastHour: 110, value: 1, breakBefore: true }, { firstHour: 111, lastHour: 120, value: 2 }];

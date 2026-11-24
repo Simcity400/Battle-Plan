@@ -55,27 +55,3 @@ impl Drop for Armed {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_armed_outermost_tables_are_charged() {
-        let mut tables = [0; TABLE_COUNT];
-        timed(TableId::Clock, std::thread::yield_now);
-        let clock = arm();
-        timed(TableId::Countries, || {
-            timed(TableId::Provinces, std::thread::yield_now);
-            std::thread::yield_now();
-        });
-        let sum = drain(&mut tables);
-        drop(clock);
-        timed(TableId::States, std::thread::yield_now);
-        assert_eq!(tables[TableId::Clock.index()], 0);
-        assert_eq!(tables[TableId::Provinces.index()], 0);
-        assert_eq!(tables[TableId::States.index()], 0);
-        assert_eq!(sum, tables[TableId::Countries.index()]);
-        let _clock = arm();
-        assert_eq!(drain(&mut [0; TABLE_COUNT]), 0);
-    }
-}

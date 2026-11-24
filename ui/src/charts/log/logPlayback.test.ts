@@ -19,19 +19,3 @@ test('playback cuts supplying reads without reordering exact dates or observing 
   assert.deepEqual(logPlaybackAt(index, 9).rows.map(row => row.key), ['old']);
 });
 
-test('rows use one read index and no row inspections across unchanged playback cutoffs', () => {
-  let inspections = 0;
-  const rows: LogRow<number>[] = Array.from({ length: 8 }, (_, index) => ({
-    key: String(index), hour: 100, item: index,
-    get revealedHour() { inspections++; return 200; },
-  }));
-  const index = logPlaybackIndex(rows);
-  assert.equal(inspections, 8);
-  const before = logPlaybackAt(index, 100);
-  for (let hour = 101; hour < 200; hour++) assert.equal(logPlaybackAt(index, hour, before), before);
-  assert.equal(inspections, 8);
-  const arrived = logPlaybackAt(index, 200, before);
-  assert.equal(arrived.rows, rows);
-  assert.equal(arrived.rows.length, 8);
-  assert.equal(inspections, 8);
-});

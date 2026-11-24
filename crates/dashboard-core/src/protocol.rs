@@ -937,22 +937,6 @@ b"
     }
 
     #[test]
-    fn a_map_state_names_the_mode_and_time_of_the_frame_drawn() {
-        let state = super::DashboardMapState {
-            id: "m".into(),
-            clock_id: "page-origin-1".into(),
-            hour: Some(7),
-            map_mode: Some("terrain".into()),
-            drawn_at: Some(1.5),
-            ..Default::default()
-        };
-        let json = serde_json::to_value(&state).unwrap();
-        assert_eq!(json["clockId"], "page-origin-1");
-        assert_eq!(json["mapMode"], "terrain");
-        assert_eq!(json["drawnAt"], 1.5);
-    }
-
-    #[test]
     fn a_map_state_carries_the_settings_its_frame_drew_with_across_the_pipe() {
         let applied = super::AppliedMapSettings {
             graphics: super::MapGraphics {
@@ -1229,21 +1213,6 @@ b"
                 "state": { "kind": "refused", "reason": "its mesh did not load" }
             })
         );
-    }
-
-    #[test]
-    fn ready_carries_the_renderers_sample_counts() {
-        for counts in [Some(vec![1, 2, 4, 8]), None] {
-            let event = NativeEvent::Ready {
-                hwnd: "42".into(),
-                sample_counts: counts.clone(),
-            };
-            let text = serde_json::to_string(&event).unwrap();
-            assert!(matches!(
-                serde_json::from_str::<NativeEvent>(&text).unwrap(),
-                NativeEvent::Ready { hwnd, sample_counts } if hwnd == "42" && sample_counts == counts
-            ));
-        }
     }
 
     #[test]

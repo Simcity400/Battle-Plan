@@ -614,7 +614,6 @@ pub fn walk_country_memo_timed<M: Memory>(
     )
 }
 
-
 fn walk_country_buffers<M: Memory>(
     memo: &mut Memo,
     memory: &M,
@@ -2032,9 +2031,6 @@ fn pointer_pages(
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(all(test, windows, target_env = "msvc", target_arch = "x86_64"))]
-mod bench;
 
 #[cfg(all(test, feature = "alloc-fault-injection"))]
 #[global_allocator]

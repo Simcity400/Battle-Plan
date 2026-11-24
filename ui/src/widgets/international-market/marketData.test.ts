@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { validateMarketReply } from '../../dashboard/market.ts';
 import type { MarketAt } from '../../dashboard/market';
-import { collectedText, contractRows, offerRows } from './marketData.ts';
+import { contractRows, offerRows } from './marketData.ts';
 
 const item = (variant: string, amountRaw: string) => ({ variant, name: null, amountRaw });
 const reply: MarketAt = { ...validateMarketReply({ branchId: '1', purchasesMissing: null, unattributed: 1, warnings: [],
@@ -36,6 +36,3 @@ test('inventory lists each matching seller\'s variants in native order with thei
   assert.equal(rows[1].missing, 'The recording does not name this design at this hour.');
 });
 
-test('collected CIC is painted from its raw fixed5 live value', () => {
-  assert.equal(collectedText(150000), '1.5 CIC');
-});

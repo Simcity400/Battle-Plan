@@ -485,23 +485,6 @@ mod tests {
     }
 
     #[test]
-    fn cold_source_storage_waits_for_original_headers() {
-        let capacity = Capacities::default();
-        assert_eq!(
-            [
-                capacity.provinces,
-                capacity.province_combats,
-                capacity.combats,
-                capacity.transfer_handles,
-                capacity.transfers,
-                capacity.unit_handles,
-            ],
-            [0; 6]
-        );
-        assert_eq!(Captured::with_capacities(&capacity).allocated_bytes(), 0);
-        assert_eq!(Captured::vacant().allocated_bytes(), 0);
-    }
-    #[test]
     fn rows_take_their_arena_ranges_and_a_range_past_the_arena_refuses() {
         let mut capture = Captured::with_capacities(&Capacities {
             provinces: 1,

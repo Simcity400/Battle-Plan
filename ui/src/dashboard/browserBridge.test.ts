@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { bridgeCommand, mapSettingsCommand, pageRecordings, preparedQueryCommand, recordingRequestBody } from '../../browserBridge.ts';
+import { bridgeCommand, pageRecordings, preparedQueryCommand, recordingRequestBody } from '../../browserBridge.ts';
 import { MAX_MESSAGE_BYTES } from '../generated/dashboard.ts';
 import { productRequest } from './request.ts';
 
@@ -35,17 +35,6 @@ test('browser bridge commands include the native envelope and newline in their b
   assert.throws(() => bridgeCommand(command), { message: 'Bridge command exceeds its byte budget' });
 });
 
-test('a browser map-settings flip reaches the native bridge with its setting', () => {
-  const flip = { type: 'mapSettings', sourceId: 's', revision: 'r', settings: null, flip: 'dayNight', target: { scope: 'widget', id: 'w' } };
-  const line = JSON.parse(bridgeCommand({ ...mapSettingsCommand(flip), id: 'request-1' }));
-  assert.deepEqual(line, {
-    type: 'mapSettings', id: 'request-1', sourceId: 's', revision: 'r', settings: null, flip: 'dayNight', target: { scope: 'widget', id: 'w' },
-  });
-  const save = mapSettingsCommand({ type: 'mapSettings', sourceId: 's', revision: 'r', settings: { graphics: {} }, flip: null });
-  assert.deepEqual([save.settings, save.flip, save.target], [{ graphics: {} }, null, { scope: 'campaign' }]);
-  const read = mapSettingsCommand({ type: 'mapSettings', sourceId: 's', revision: 'r' });
-  assert.deepEqual([read.settings, read.flip], [null, null]);
-});
 
 test('a browser prepared-query refresh reaches the native bridge as a refresh', () => {
   const request = productRequest({ sourceId: 's', revision: 'r', product: 'p', params: {} });

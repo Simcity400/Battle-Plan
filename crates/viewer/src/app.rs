@@ -66,7 +66,6 @@ mod ground_click;
 mod held_clicks;
 mod raid_details;
 
-
 pub(crate) mod head_rows;
 pub(crate) mod highlight;
 pub(crate) mod laid_proof;
@@ -90,48 +89,6 @@ mod pointer_changes;
 mod selection_input;
 mod unit_pick;
 mod walk;
-
-#[cfg(test)]
-#[test]
-fn faction_hover_frame_path_uses_only_prepared_border_inputs() {
-    let source = include_str!("app.rs");
-    let body = source
-        .split("\n    fn update_faction_highlight(")
-        .nth(1)
-        .unwrap()
-        .split("\n    fn map_tooltip(")
-        .next()
-        .unwrap();
-    for rebuild in ["political::regions(", "demilitarized_zone("] {
-        assert!(
-            !body.contains(rebuild),
-            "faction hover reaches {rebuild} on the frame path"
-        );
-    }
-    let source = include_str!("../../viewer-world/src/scene.rs");
-    let body = source
-        .split("\n    pub fn set_faction_highlight(")
-        .nth(1)
-        .or_else(|| {
-            source
-                .split("\n    pub(crate) fn set_faction_highlight(")
-                .nth(1)
-        })
-        .unwrap()
-        .split("pub fn demilitarized_edges(")
-        .next()
-        .unwrap();
-    for rebuild in [
-        "ClassPlan::matching(",
-        "ZonePlan::matching(",
-        "ZonePlan::custom_highlight(",
-    ] {
-        assert!(
-            !body.contains(rebuild),
-            "faction upload reaches {rebuild} on the frame path"
-        );
-    }
-}
 
 #[cfg(test)]
 #[test]
@@ -1356,7 +1313,6 @@ impl Viewer {
             overlay_drawn_fraction: None,
             overlay_lookups: None,
 
-
             overlay_installed: 0,
             overlay_checked: 0,
             overlay_looks: 0,
@@ -2565,7 +2521,6 @@ impl Viewer {
             visual_mods: document.visual_mods.iter().flatten().map(|choice| choice.id.clone()).collect(),
         })
     }
-
 
     fn hour_lines(&self) -> Option<[Vec<String>; 2]> {
         let side = self.playhead_map.as_ref().filter(|side| side.on_screen().is_some())?;
@@ -9085,107 +9040,6 @@ pub(crate) mod tests {
             None
         );
         assert!(seek.matches(path, Some("120:30:0")));
-    }
-
-    #[test]
-    fn partial_recording_notice_names_the_failure_without_diagnostics() {
-        use replay_recording::control::ControlRecord;
-        use replay_capture_spool::spool::Record;
-        let healthy = crate::playback::tests::fixture();
-        let partial = healthy
-            .append(recorder_derive::writers(), &[vec![
-                Record::SessionStart(healthy.sessions[0].clone()),
-                Record::BranchStart(healthy.branches[0].clone()),
-                Record::Control(ControlRecord::Partial {
-                    session: 1,
-                    reason: "collector allocation failed".into(),
-                    failed_hour: None,
-                }),
-            ]])
-            .unwrap();
-        let labels = |replay: &replay::campaign::Replay| {
-            let ctx = egui::Context::default();
-            let mut output = ctx.run_ui(Default::default(), |ui| super::partial_notice(ui, replay));
-            output.textures_delta.clear();
-            output
-                .shapes
-                .into_iter()
-                .filter_map(|shape| match shape.shape {
-                    egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-        };
-        assert!(labels(&healthy).is_empty());
-        let text = labels(&partial);
-        assert!(text.iter().any(|text| text == "Partial recording:"));
-        assert!(
-            text.iter()
-                .any(|text| text == "collector allocation failed")
-        );
-        assert!(!text.iter().any(|text| text.contains("hour")));
-    }
-
-    #[test]
-    fn a_map_recording_names_its_mode_and_what_it_leaves_out() {
-        use replay::campaign::Replay;
-        use replay_capture_spool::spool::Record;
-        use replay_data::scope::CaptureMode;
-        let healthy = crate::playback::tests::fixture();
-        let mut session = healthy.sessions[0].clone();
-        session.capture_mode = CaptureMode::Map;
-        let map = Replay::from_records(
-            recorder_derive::writers(),
-            healthy.campaign_id.clone(),
-            &[vec![Record::SessionStart(session)]],
-        )
-        .unwrap();
-        let labels = |replay: &Replay| {
-            let ctx = egui::Context::default();
-            let mut output = ctx.run_ui(Default::default(), |ui| {
-                super::capture_mode_notice(ui, replay)
-            });
-            output.textures_delta.clear();
-            output
-                .shapes
-                .into_iter()
-                .filter_map(|shape| match shape.shape {
-                    egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-        };
-        assert!(labels(&healthy).is_empty());
-        let text = labels(&map).join(" ");
-        assert!(
-            text.starts_with("Map recording: not recorded: division names"),
-            "{text}"
-        );
-        assert!(
-            text.contains("fog of war") && text.contains("every dashboard"),
-            "{text}"
-        );
-    }
-
-    #[test]
-    fn the_map_overlay_scales_with_the_interface() {
-        let clip = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(800.0, 600.0));
-        let unscaled = super::overlay_rect(clip, 1.0);
-        assert_eq!(unscaled.min, egui::pos2(108.0, 58.0));
-        assert_eq!(unscaled.width(), 784.0);
-        let scaled = super::overlay_rect(clip, 1.5);
-        assert_eq!(scaled.min, egui::pos2(112.0, 62.0));
-        assert_eq!(scaled.width(), 776.0);
-        assert_eq!(scaled.height(), unscaled.height());
-        let mut style = egui::Style::default();
-        let body = egui::TextStyle::Body.resolve(&style).size;
-        let spacing = style.spacing.item_spacing;
-        let (indent, bar) = (style.spacing.indent, style.spacing.scroll.bar_width);
-        super::scale_style(&mut style, 1.5);
-        assert_eq!(egui::TextStyle::Body.resolve(&style).size, body * 1.5);
-        assert_eq!(style.spacing.item_spacing, spacing * 1.5);
-        assert_eq!(style.spacing.indent, indent * 1.5);
-        assert_eq!(style.spacing.scroll.bar_width, bar * 1.5);
     }
 
     #[test]

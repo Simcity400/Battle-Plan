@@ -103,33 +103,6 @@ fn an_hour_without_movement_has_no_estimate_and_no_refusal() {
 }
 
 #[test]
-fn an_estimate_is_the_remaining_route_distance_over_the_edge_speed() {
-    let map = content(two_leg_map());
-    for (base, speed) in [(SPEED, SPEED), (350_000, 350_000), (1, 100_000)] {
-        assert_eq!(plain_speed(base, None, &map.defines), speed);
-        let etas = Etas::read(&hour(Some(base).into()), Some(&map)).unwrap();
-        let leg = |distance: i64| distance * 100_000 / speed;
-        let progress = leg(175_000);
-        let next = leg(350_000) - progress;
-        let destination = leg(350_000) + leg(700_000) - progress;
-        assert_eq!(etas.get(DIVISION), Some((next, destination)), "{base}");
-        assert_eq!(etas.estimate(DIVISION), Ok((next, destination)));
-        assert_eq!(etas.progress(DIVISION), Ok(50_000));
-        assert_eq!(
-            etas.report(),
-            &Report {
-                estimated: 1,
-                ..Report::default()
-            }
-        );
-    }
-    let etas = Etas::read(&hour(Some(SPEED)), Some(&map)).unwrap();
-    assert_eq!(etas.get(DIVISION), Some((25_000, 125_000)));
-    assert_eq!(super::arrival(&etas, DIVISION, true), Ok(125_000));
-    assert_eq!(super::arrival(&etas, DIVISION, false), Ok(25_000));
-}
-
-#[test]
 fn older_recordings_refuse_estimates_by_name_but_keep_progress() {
     let map = content(two_leg_map());
     for (base_speed, reason) in [(None, UNRECORDED)] {

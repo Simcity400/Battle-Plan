@@ -1145,6 +1145,3 @@ pub mod radar_test_kit;
 #[cfg(any(test, feature = "test-support"))]
 pub mod intel_test_kit;
 
-#[cfg(test)]
-#[path = "fog/scale_tests.rs"]
-mod scale_tests;

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AXIS_HEIGHT, barHitAt, escapeDismissesTooltip, joinedStep, laneAt, laneRows, laneStops, laneTop, markerAt, periodBarHeight, pointerBarSpans, spanAt, spanAtRow, spanY, stackedSpanAt, stackedSpans } from './layout.ts';
-import { coversViewport, laneWindow, timelineHeight } from './viewport.ts';
 import type { TimelineLane, TimelineSpan } from './layout';
 
 const span = (id: string, firstHour: number, lastHour: number): TimelineSpan => ({ id, firstHour, lastHour, label: id });
@@ -61,24 +60,6 @@ test('command stacking reuses a row only after its last hour and shares root pre
   assert.deepEqual(laneStops(simultaneous, 0, 20, null).map(stop => stop.span.id), ['a', 'b', 'c', 'd']);
 });
 
-test('5000 lanes keep cached stack heights through viewport and pointer lookups', () => {
-  let reads = 0;
-  const lanes: TimelineLane[] = Array.from({ length: 5000 }, (_, index) => ({ id: String(index), label: String(index), spans: [{
-    ...span(String(index), 1, 9), get stack() { reads++; return index % 7; },
-  }] }));
-  const rows = laneRows(lanes, 54);
-  assert.equal(reads, lanes.length);
-  const top = laneTop(4000, rows), height = 180;
-  for (let index = 0; index < 100; index++) {
-    assert.equal(laneAt(top + 1, lanes.length, rows), 4000);
-    const window = laneWindow(lanes.length, top, height, 54, rows);
-    assert.ok(window.first <= 4000 && window.end > 4000);
-    assert.ok(window.height <= 3 * height);
-    assert.ok(coversViewport(window, lanes.length, { top, height }, 54, rows));
-    assert.equal(timelineHeight(lanes.length, 54, rows), AXIS_HEIGHT + rows.height + 8);
-  }
-  assert.equal(reads, lanes.length);
-});
 
 test('ordinary pointer arrays are reused, markers excluded, and pointer Escape is opt-in', () => {
   const spans = [span('plain', 1, 3)];

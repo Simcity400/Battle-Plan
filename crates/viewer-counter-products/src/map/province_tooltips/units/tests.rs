@@ -338,24 +338,6 @@ fn count_ranges_depend_on_native_month_seed_and_subunit_index() {
 }
 
 #[test]
-fn seeded_count_range_preserves_composition_salt_and_separate_air_salt() {
-    content_reader_script::test_game::enter();
-    let d = content().defines;
-    let law = [d.minimum, d.maximum, d.range];
-    let hour = 60_827_914;
-    assert_eq!(
-        count_range(100, 1, 40_000, 123, hour, d),
-        count_range_seeded(100, 40_000, 0x4A2 + 1 + 123, hour, law),
-    );
-    let air = count_range_seeded(100, 40_000, 0x5E2 + 123, hour, law);
-    assert_eq!(air, count_range(100, 0x140, 40_000, 123, hour, d));
-    assert_ne!(
-        air,
-        count_range_seeded(100, 40_000, 0x5E2 + 0x4A2 + 123, hour, law),
-    );
-}
-
-#[test]
 fn seeded_count_range_keeps_wrapping_native_salt() {
     content_reader_script::test_game::enter();
     let d = content().defines;

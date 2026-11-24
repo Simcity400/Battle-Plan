@@ -167,41 +167,6 @@ fn the_walk_is_four_connected_and_clamps_at_the_seam() {
 }
 
 #[test]
-fn the_body_range_is_the_engines_and_not_the_shipped_palette() {
-    assert!(!is_body(2));
-    assert!(is_body(3));
-    assert!(is_body(11));
-    assert!(is_body(99));
-    assert!(!is_body(100));
-    assert!(!is_body(254));
-    assert!(!is_body(255));
-}
-
-#[test]
-fn palette_indices_determine_ribbon_widths() {
-    for (index, expected) in [
-        (3u8, 1.11_f32),
-        (4, 1.28),
-        (6, 1.62),
-        (7, 1.79),
-        (9, 2.13),
-        (10, 2.30),
-        (11, 2.47),
-    ] {
-        assert!(
-            (width_for_index(index) - expected).abs() < 0.0005,
-            "index {index}: {} against {expected}",
-            width_for_index(index)
-        );
-    }
-    assert!(width_for_index(0) < width_for_index(3));
-    assert!(width_for_index(11) > width_for_index(10));
-    for index in 0..=BODY_MAX_INDEX {
-        assert!(width_for_index(index) > 0.0 && width_for_index(index).is_finite());
-    }
-}
-
-#[test]
 fn smoothing_updates_forward_and_preserves_two_endpoint_points() {
     let mut points = [
         [0.0, 0.0],

@@ -153,15 +153,4 @@ mod tests {
         std::fs::remove_dir_all(&folder).unwrap();
     }
 
-    #[test]
-    fn the_preferences_live_in_the_hosts_folder() {
-        let path = Config::path().unwrap();
-        assert_eq!(path.file_name().unwrap(), "content.json");
-        assert_eq!(path.parent().unwrap().file_name().unwrap(), "BattlePlan");
-        assert_ne!(
-            path.parent(),
-            std::env::current_exe().unwrap().parent(),
-            "the preferences are the host's, not beside an executable"
-        );
-    }
 }

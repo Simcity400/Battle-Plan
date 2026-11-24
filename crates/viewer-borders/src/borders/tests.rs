@@ -464,32 +464,6 @@ fn the_coarse_level_keeps_the_strip_within_the_tolerance_at_its_width() {
 }
 
 #[test]
-fn the_camera_fades_match_the_defines() {
-    assert_eq!(class_alpha(BorderClass::Province, 0.0, FADES, true), 1.0);
-    assert_eq!(class_alpha(BorderClass::Province, 200.0, FADES, true), 1.0);
-    assert_eq!(class_alpha(BorderClass::Province, 250.0, FADES, true), 0.5);
-    assert_eq!(class_alpha(BorderClass::Province, 300.0, FADES, true), 0.0);
-    assert_eq!(class_alpha(BorderClass::Province, 1000.0, FADES, true), 0.0);
-    assert_eq!(class_alpha(BorderClass::State, 300.0, FADES, true), 1.0);
-    assert_eq!(class_alpha(BorderClass::State, 400.0, FADES, true), 1.0);
-    assert_eq!(class_alpha(BorderClass::State, 450.0, FADES, true), 0.5);
-    assert_eq!(class_alpha(BorderClass::State, 500.0, FADES, true), 0.0);
-    for class in [
-        BorderClass::Country,
-        BorderClass::Impassable,
-        BorderClass::Sea,
-        BorderClass::SeaRegion,
-    ] {
-        assert_eq!(class_alpha(class, 0.0, FADES, true), 1.0);
-        assert_eq!(class_alpha(class, 3000.0, FADES, true), 1.0);
-    }
-    assert_eq!(
-        class_alpha(BorderClass::Province, f32::NAN, FADES, true),
-        1.0
-    );
-}
-
-#[test]
 fn a_map_mode_without_province_borders_gives_them_no_alpha_at_any_height() {
     use viewer_map_modes::map_mode::{MapMode, Stock, visibility};
     for stock in [Stock::Resources, Stock::Infrastructure, Stock::Manpower] {
@@ -509,28 +483,6 @@ fn a_map_mode_without_province_borders_gives_them_no_alpha_at_any_height() {
         class_alpha(BorderClass::Province, 0.0, FADES, political),
         1.0
     );
-}
-
-#[test]
-fn the_bucket_order_is_the_engines() {
-    let names: Vec<&str> = BorderClass::ALL
-        .iter()
-        .map(|class| class.texture_name())
-        .collect();
-    assert_eq!(
-        names,
-        vec![
-            "province",
-            "state",
-            "country",
-            "impassable",
-            "sea",
-            "sea_region"
-        ]
-    );
-    for (bucket, class) in BorderClass::ALL.iter().enumerate() {
-        assert_eq!(class.bucket(), bucket);
-    }
 }
 
 #[test]

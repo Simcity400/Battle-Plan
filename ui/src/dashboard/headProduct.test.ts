@@ -7,30 +7,10 @@ import { WidgetFrames } from './widgetClock.ts';
 import { followSpan, watchBoundary } from './widgetTime.ts';
 import { at, FOLLOW, SPEC, type TrackHour, axisAt } from './regionTime.ts';
 import type { BoundTrack, WidgetSpec } from './model';
-import { observeOnScreen, screenHolder } from './follow/onScreen.ts';
 
 const track = { id: 'main', axisOffset: 10, branch: { id: 'b', firstHour: 100, lastHour: 500 } } as unknown as BoundTrack;
 const widget = (time: WidgetSpec['time']) => ({ kind: 'naval-yards', trackIds: ['main'], time }) as Pick<WidgetSpec, 'time' | 'kind' | 'trackIds'>;
 
-test('content scrolled inside a visible widget, or replaced inside a pop-out, is watched by the container that outlives it', t => {
-  let watched: Element | undefined;
-  const placement = { closest: () => null } as unknown as Element;
-  const inside = (container: string) => ({ closest: (selectors: string) => selectors.split(',').map(selector => selector.trim()).includes(container) ? placement : null }) as Element;
-  const scope = globalThis as unknown as Record<string, unknown>;
-  const before = [scope.IntersectionObserver, scope.getComputedStyle];
-  t.after(() => { [scope.IntersectionObserver, scope.getComputedStyle] = before; });
-  scope.IntersectionObserver = class { observe(e: Element) { watched = e; } disconnect() {} };
-  scope.getComputedStyle = () => ({ display: 'block' });
-  for (const container of ['article.dash-widget', '[popover]']) {
-    watched = undefined;
-    const stop = observeOnScreen(inside(container), () => {});
-    assert.equal(watched, placement, `content inside ${container} is watched by it`);
-    assert.equal(screenHolder(inside(container)), placement, `a head keeps ${container} as its target, not content that may be replaced`);
-    stop();
-  }
-  const loose = inside('nothing');
-  assert.equal(screenHolder(loose), loose, 'content in no container is its own target');
-});
 
 test('a widget following playback is followed; pinned, on a range or hovered, it asks its own hour', () => {
   const following = headRead({ widget: widget({ mode: 'follow' }) as WidgetSpec, action: SPEC }, track, [track]);

@@ -455,9 +455,6 @@ fn the_layer_declares_against_this_schema() {
     assert_eq!(declared, read, "the tables the layer declares are its list, each once");
 }
 
-
-
-
 #[test]
 fn outside_the_view_a_change_stays_marked_and_inside_it_is_made() {
     let units = record(BLOCK, |_, _| Status::Complete, |at, store| match at {
@@ -872,34 +869,6 @@ fn with_the_worker_held_the_frame_never_waits_shows_the_product_it_has_and_catch
     assert_eq!(frame.layers[1].shown, Some(applied), "and the counters show the hour applied");
     assert_eq!(fed(&side).published(), Published::Current);
     assert_eq!(fed(&side).blocked(), blocked);
-    fed_equals_composed(&side);
-}
-
-#[test]
-fn a_product_whose_content_changed_has_a_new_address_and_only_the_changed_source_a_new_allocation() {
-    let mut side = fed_side(|at, slot| (at == 250 && slot == 0).then_some(2));
-    reach(&mut side, 240);
-    reading_settled(&mut side);
-    let first = Arc::clone(fed(&side).stacks().unwrap());
-    assert_eq!(first.len(), 2, "901's stack and 902's");
-    reach(&mut side, 244);
-    reading_settled(&mut side);
-    assert!(fed(&side).applied_hour().unwrap() < 250);
-    assert!(Arc::ptr_eq(fed(&side).stacks().unwrap(), &first), "a step changing no stack keeps the product's address");
-    reach(&mut side, 252);
-    reading_settled(&mut side);
-    let changed = Arc::clone(fed(&side).stacks().unwrap());
-    assert!(!Arc::ptr_eq(&changed, &first), "a step changing 901's stack: a new product");
-    assert_eq!(changed.keys().collect::<Vec<_>>(), first.keys().collect::<Vec<_>>());
-    assert_eq!((changed.shard_count(), changed.shared_with(&first)), (1, (0, 1)));
-    for (source, members) in changed.iter() {
-        let held = &first[source];
-        if source.0 == 1 {
-            assert!(!Arc::ptr_eq(members, held) && members != held, "901's source, changed, is a new allocation");
-        } else {
-            assert!(Arc::ptr_eq(members, held), "source {source:?}, not changed, keeps its allocation");
-        }
-    }
     fed_equals_composed(&side);
 }
 

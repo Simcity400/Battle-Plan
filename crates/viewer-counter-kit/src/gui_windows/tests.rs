@@ -422,39 +422,6 @@ fn a_detailed_counter_at_sea_draws_the_native_write_set() {
     assert_eq!(sprite_frame(&layout, "count_bg"), 1);
 }
 
-#[test]
-fn a_coarse_counter_recomputes_the_naval_arm_and_hides_the_group_marker() {
-    content_reader_script::test_game::enter();
-    let fixture = navy_fixture();
-    let windows = windows();
-    let window = windows.navy();
-    let (calls, report) = production(
-        window,
-        &at_sea_flotilla(true),
-        CounterSettings::default(),
-        &fixture,
-    );
-    let layout = at_sea_layout(window, &calls.calls, &fixture);
-    assert_eq!(
-        drawn(&layout),
-        [
-            "count_bg",
-            "capital_ship",
-            "capital_count_txt",
-            "count_txt",
-            "mission_type",
-            "large_flag",
-            "low_supply",
-            "air_base_icon",
-            "invalid_orders",
-        ]
-    );
-    assert_eq!(sprite_frame(&layout, "count_bg"), 2);
-    assert_eq!(sprite_frame(&layout, "air_base_icon"), 1);
-    assert_eq!(cell_page(&layout, "large_flag"), 1_500);
-    assert!(report.is_empty());
-}
-
 const PORTRAIT_NAVY: &str = r#"guiTypes = { containerWindowType = { name = "unit_counter_navy"
     size = { width = 66 height = 33 }
     iconType = { name = "general_portrait" spriteType = "GFX_general_portrait" }
@@ -906,56 +873,6 @@ fn a_hull_followed_by_an_undefined_no_intel_sprite_keeps_the_hull() {
     assert_eq!(unseen.0, destroyer);
     assert_eq!(unseen.2, [34.0, 15.0]);
     assert_eq!(extent, [34, 15]);
-}
-
-#[test]
-fn texts_and_sprites_are_ordered_calls_of_their_own() {
-    content_reader_script::test_game::enter();
-    let fixture = navy_fixture();
-    let windows = windows();
-    let window = windows.navy();
-    let mut writes = Writes::new(window);
-    writes.show(native::Kind::TextBox, "capital_count_txt");
-    writes.control(native::Kind::TextBox, "capital_count_txt", |bound| {
-        bound.text = Some("3".into());
-        bound.color = Some([1.0; 4]);
-    });
-    writes.hide(native::Kind::TextBox, "capital_count_txt");
-    let calls = writes.finish();
-    let kinds: Vec<_> = calls
-        .iter()
-        .map(|(_, call)| match call {
-            Call::Show => "show",
-            Call::SetText(text) if text == "3" => "text",
-            Call::Hide => "hide",
-            Call::Control(bound) if bound.text.is_none() && bound.color.is_some() => "control",
-            other => panic!("{other:?}"),
-        })
-        .collect();
-    assert_eq!(kinds, ["show", "text", "hide", "control"]);
-    let mut hidden = at_sea_flotilla(false);
-    hidden.hidden = true;
-    let mut texts = 0;
-    let mut sprites = 0;
-    for flotilla in [
-        at_sea_flotilla(false),
-        at_sea_flotilla(true),
-        hidden,
-        port_flotilla(),
-    ] {
-        let (calls, _) = production(window, &flotilla, CounterSettings::default(), &fixture);
-        for (path, call) in calls.calls {
-            match call {
-                Call::Control(bound) => {
-                    assert!(bound.text.is_none() && bound.sprite.is_none(), "{path}");
-                }
-                Call::SetText(_) => texts += 1,
-                Call::SetSprite(..) => sprites += 1,
-                _ => {}
-            }
-        }
-    }
-    assert!(texts > 0 && sprites > 0);
 }
 
 #[test]

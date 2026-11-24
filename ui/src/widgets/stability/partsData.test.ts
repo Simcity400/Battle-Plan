@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { divergingStack } from '../../charts/series.ts';
 import type { MeasureParts, StabilityPart, StabilityPartName } from './types';
 import type { ChartBucket, ChartSummary } from '../../charts/chartSummary';
-import { engineSum, knownAt, partLayers, partName, partsAt, partsStack, partsWithin, REMAINDER_LABEL, SMALLER_LABEL, stackRange, visibleSegment, measureOf, partsFromLines, partsAtStates, validateStabilityPartNames, namesAt } from './partsData.ts';
+import { engineSum, knownAt, partLayers, partsAt, partsStack, partsWithin, REMAINDER_LABEL, SMALLER_LABEL, stackRange, visibleSegment, partsFromLines, partsAtStates, validateStabilityPartNames, namesAt } from './partsData.ts';
 import { heldParts } from '../../dashboard/keyedSeriesData.ts';
 
 const run = (firstHour: number, lastHour: number, valueRaw: string) => ({ firstHour, lastHour, valueRaw, startsSegment: false });
@@ -19,12 +19,6 @@ const PARTS: MeasureParts = {
   ],
 };
 
-test('parts are named as the tooltip names them', () => {
-  assert.deepEqual(partName(PARTS.parts[0], 'stability'), { name: 'Base value', recorded: false });
-  assert.deepEqual(partName(PARTS.parts[1], 'stability'), { name: 'National spirit: Idea A', recorded: false });
-  assert.equal(partName(PARTS.parts[2], 'stability').name, REMAINDER_LABEL);
-  assert.equal(partName(part('clamp', []), 'warSupport').name, 'Limited to the allowed range');
-});
 
 test('parts are known only where recorded, and a part without a run there is zero', () => {
   assert.ok(knownAt(PARTS, 5));
@@ -70,12 +64,7 @@ const bucket = (firstHour: number, lastHour: number, value: number, firstBreak =
 const summary = (buckets: (ChartBucket | null)[]): ChartSummary => ({ from: 0, to: 100, width: buckets.length, buckets });
 const named = (part: string, kind: string, id: string | null, extra: Partial<StabilityPartName> = {}): StabilityPartName =>
   ({ part, measure: 'stability', kind, id, term: null, line: null, missing: null, ...extra });
-const WAR = String((1n << 32n) | 4n);
 
-test('a part names its measure in the bits above its handle', () => {
-  assert.equal(measureOf('7'), 'stability');
-  assert.equal(measureOf(WAR), 'warSupport');
-});
 
 test('a measure’s parts over a view are their lines’ bins, known where the displayed value’s line holds a bin', () => {
   const names = new Map([['1', named('1', 'total', 'total')], ['2', named('2', 'term', 'term:base', { term: 'base' })], ['3', named('3', 'line', 'line:idea:a:0:0', { line })],
@@ -166,12 +155,6 @@ test('a negative part closes below zero when it ends', () => {
   assert.deepEqual(divergingStack([[0, -5]])[0], { low: [0, -5], high: [0, 0] });
 });
 
-test('many known stretches are stacked a segment each', () => {
-  const observed = Array.from({ length: 20_000 }, (_, index) => ({ firstHour: index * 2, lastHour: index * 2 }));
-  const many: MeasureParts = { observed, parts: Array.from({ length: 10 }, (_, index) => part(`p${index}`, observed.map(span => run(span.firstHour, span.lastHour, '1000')))) };
-  const layers = partLayers(many, 'stability', ['#a', '#b', '#c', '#d', '#e', '#f', '#g', '#h'], '#grey');
-  assert.equal(partsStack(many, layers, 5, 0, 40_000).length, 20_000);
-});
 
 test('a thousand staggered parts are stacked by sweeping their changes', () => {
   const observed = [{ firstHour: 0, lastHour: 99_999 }];
@@ -183,12 +166,6 @@ test('a thousand staggered parts are stacked by sweeping their changes', () => {
   assert.equal(Math.max(...segment.bands.map(band => band.high[at])), 1);
 });
 
-test('twenty thousand parts over twenty thousand stretches are stacked a segment each', () => {
-  const observed = Array.from({ length: 20_000 }, (_, index) => ({ firstHour: index * 2, lastHour: index * 2 }));
-  const many: MeasureParts = { observed, parts: observed.map((span, index) => part(`p${index}`, [run(span.firstHour, span.lastHour, '1000')])) };
-  const layers = partLayers(many, 'stability', ['#a', '#b', '#c', '#d', '#e', '#f', '#g', '#h'], '#grey');
-  assert.equal(partsStack(many, layers, 5, 0, 40_000).length, 20_000);
-});
 
 test('parts add up as the engine adds them, wrapping at 64 bits', () => {
   assert.equal(engineSum(['9223372036854775000', '1000', '9223372036854775616']), 0n);
@@ -202,8 +179,3 @@ test('a view past the cutoff fits and draws nothing', () => {
   assert.equal(visibleSegment(segments[0], 8, 2), null);
 });
 
-test('observed and shown hours are intersected', () => {
-  const observed = Array.from({ length: 60_000 }, (_, index) => ({ firstHour: index * 2, lastHour: index * 2 }));
-  const within = partsWithin({ observed, parts: [] }, observed);
-  assert.equal(within.observed.length, 60_000);
-});

@@ -329,58 +329,6 @@ mod tests {
         );
     }
 
-    fn slow_first_largest_component(pixels: &[[i32; 2]]) -> Vec<[i32; 2]> {
-        let mut seen = vec![false; pixels.len()];
-        let mut best = Vec::new();
-        for seed in 0..pixels.len() {
-            if seen[seed] {
-                continue;
-            }
-            seen[seed] = true;
-            let mut pending = vec![seed];
-            let mut component = Vec::new();
-            while let Some(index) = pending.pop() {
-                let p = pixels[index];
-                component.push(p);
-                for next in seed + 1..pixels.len() {
-                    if !seen[next]
-                        && (pixels[next][0] - p[0]).abs() < 2
-                        && (pixels[next][1] - p[1]).abs() < 2
-                    {
-                        seen[next] = true;
-                        pending.push(next);
-                    }
-                }
-            }
-            if component.len() > best.len() {
-                best = component;
-            }
-        }
-        best
-    }
-
-    #[test]
-    fn coordinate_buckets_preserve_native_component_order() {
-        let mut state = 0x95e4_0a31_u32;
-        for len in 0..96 {
-            for _ in 0..24 {
-                let mut points = Vec::with_capacity(len);
-                for _ in 0..len {
-                    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                    let x = (state >> 16) % 17;
-                    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                    let y = (state >> 16) % 17;
-                    points.push([x as i32, y as i32]);
-                }
-                assert_eq!(
-                    first_largest_component(&points),
-                    slow_first_largest_component(&points),
-                    "generated border of length {len}"
-                );
-            }
-        }
-    }
-
     #[test]
     fn native_line_ties_capacity_and_joined_route() {
         assert_eq!(

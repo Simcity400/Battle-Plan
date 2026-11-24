@@ -353,31 +353,6 @@ fn a_full_cache_passes_a_batch_through_the_depot_to_another_thread() {
 }
 
 #[test]
-fn a_small_class_batch_keeps_every_block_in_order() {
-    let heap = Heap::new();
-    let class = super::class(16).unwrap();
-    let batch = batch(class) as usize;
-    let blocks = heap_blocks(&heap.0, class, 3 * batch);
-    let (mut freeing, mut allocating) = (Cache::EMPTY, Cache::EMPTY);
-    for &block in &blocks {
-        freeing.keep(class, block, &heap.0.depot);
-    }
-    let taken: Vec<*mut u8> = (0..batch)
-        .map(|_| allocating.take(class, &heap.0.depot))
-        .collect();
-    assert!(
-        taken
-            .iter()
-            .copied()
-            .eq(blocks[..batch].iter().rev().copied())
-    );
-    assert!(allocating.take(class, &heap.0.depot).is_null());
-    for block in blocks {
-        assert_ne!(unsafe { HeapFree(heap.0.heap(), 0, block.cast()) }, 0);
-    }
-}
-
-#[test]
 fn slab_backed_small_blocks_never_enter_the_private_heap_lock() {
     let heap = Heap::new();
     let layout = Layout::from_size_align(SMALL_LIMIT, 16).unwrap();

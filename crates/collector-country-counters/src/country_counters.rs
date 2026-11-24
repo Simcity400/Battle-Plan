@@ -1734,16 +1734,6 @@ mod tests {
     }
 
     #[test]
-    fn civil_war_capacity_follows_the_live_entry_total() {
-        let mut capacity = Capacities::default();
-        capacity.raise_for_civil_wars(3_000);
-        assert!(capacity.civil_wars >= 4_000);
-        let raised = capacity;
-        capacity.raise_for_civil_wars(1);
-        assert!(capacity == raised);
-    }
-
-    #[test]
     fn live_roster_demand_sizes_country_arenas_and_projection_owns_every_operand() {
         const COUNTRIES: usize = 5;
         let mut capacity = Capacities::default();

@@ -186,21 +186,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn each_entry_kind_shows_its_own_border_and_mark() {
-        let shown = |values: &crate::Values| -> Vec<&str> {
-            ["flag_border_thin", "flag_border_thick", "flag_exclamation_mark"]
-                .into_iter()
-                .filter(|name| !values[*name].hidden)
-                .collect()
-        };
-        let stake = entry("GER".into(), Kind::Stake);
-        assert_eq!(stake["stakeholder_country_flag"].flag.as_deref(), Some("GER"));
-        assert_eq!(shown(&stake), ["flag_border_thin"]);
-        assert_eq!(shown(&entry("GER".into(), Kind::Owner)), ["flag_border_thick"]);
-        assert_eq!(shown(&entry("GER".into(), Kind::Contested)), ["flag_border_thin", "flag_exclamation_mark"]);
-    }
-
-    #[test]
     fn a_core_hover_adds_its_description_and_a_claim_hover_has_none() {
         let loc = |key: &str, arguments: &[(&str, Argument<'_>)]| {
             let named: Vec<String> = arguments

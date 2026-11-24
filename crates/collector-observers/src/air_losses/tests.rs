@@ -518,67 +518,6 @@ fn gathered_and_serial_operands_publish_identical_rows() {
     assert_eq!(LEDGER.refusals.load(Ordering::Relaxed), 1);
     assert_eq!(active(), 0);
 }
-#[test]
-#[ignore = "release per-call detour cost; run with --release --ignored --nocapture --test-threads=1"]
-fn hook_cost_air_losses() {
-    const COUNTRIES: usize = 1500;
-    let _owner = ObservationOwner::new();
-    let mut world = World::new(COUNTRIES);
-    setup(&world);
-    LEDGER.prepare(8 * COUNTRIES);
-    unsafe { boundary(clock(49)) };
-    assert_eq!(unsafe { drain(&mut Vec::new()) }, Ok(0));
-    let hooked = crate::test_support::per_call_ns(COUNTRIES, || {
-        for country in 1..=COUNTRIES {
-            world.owner(country as u32);
-            world.invoke(0, 1);
-        }
-    });
-    unsafe { boundary(clock(50)) };
-    let mut rows = Vec::with_capacity(capacity());
-    assert_eq!(unsafe { drain(&mut rows) }, Ok(8 * COUNTRIES));
-    assert_eq!(LEDGER.refusals.load(Ordering::Relaxed), 0);
-    let native = crate::test_support::per_call_ns(COUNTRIES, || {
-        for _ in 1..=COUNTRIES {
-            std::hint::black_box(unsafe {
-                native_write(
-                    world.pointer(World::AIR),
-                    world.pointer(World::WING),
-                    1,
-                    0,
-                    world.pointer(World::REGION),
-                    0,
-                    1,
-                )
-            });
-        }
-    });
-    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
-    let (base, game) = (world.base(), world.pointer(World::GAME));
-    let reads = crate::test_support::per_call_ns(COUNTRIES, || {
-        for country in 1..=COUNTRIES {
-            world.owner(country as u32);
-            let family =
-                native::selected_family(&memory, base, world.pointer(World::WING), 0).unwrap();
-            let snapshot = native::before(
-                &memory,
-                base,
-                game,
-                world.pointer(World::AIR),
-                23,
-                0,
-                1,
-                family,
-            )
-            .unwrap();
-            std::hint::black_box(native::after(&memory, base, game, &snapshot).unwrap());
-        }
-    });
-    println!(
-        "hook_cost air_losses own loss: detour {:.1} ns/call (hooked {hooked:.1}, native {native:.1}; native reads {reads:.1})",
-        hooked - native
-    );
-}
 core::arch::global_asm!(
     ".text", ".globl air_loss_unwind_caller", ".seh_proc air_loss_unwind_caller",
     "air_loss_unwind_caller:", "sub rsp, 0x48", ".seh_stackalloc 0x48", ".seh_endprologue",

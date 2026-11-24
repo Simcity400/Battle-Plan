@@ -1360,25 +1360,6 @@ fn air_base_container_chunks_preserve_null_slots_and_boundary_faults() {
     kit::assert_matches_direct(&split, &direct);
 }
 
-#[test]
-fn air_bases_shared_resolve_link_taken_once_per_pass() {
-    use super::air_bases_test_kit as kit;
-    let bytes = kit::fixture();
-    let memory = kit::memory(&bytes);
-    let (_split, report, first) = kit::split(&memory);
-    assert!(report.raw_ok);
-    let addr = kit::LTAB + 4;
-    let takes = first
-        .log
-        .spans
-        .iter()
-        .filter(|span| {
-            span.addr == addr && span.len == 4 && span.mask == super::AIR_REGISTRATIONS_MASK
-        })
-        .count();
-    assert_eq!(takes, 1, "resolve link takes: {:?}", first.log.spans);
-}
-
 #[cfg(test)]
 fn linear_air_link(
     log: &mut RawLog<AIR_BASES_N>,

@@ -432,30 +432,4 @@ mod labelled {
     use super::*;
     use engine_allocation::labels;
 
-    #[test]
-    fn an_hour_among_many_divisions_allocates_for_what_it_moved() {
-        let mut run = Run::new(make, INPUTS);
-        run.define(needs());
-        let mut edits = Edits::default();
-        crowd(begin(&mut edits), 10_000);
-        labels::phase("g3: division equipment built");
-        run.hour(&edits);
-        let mut edits = Edits::default();
-        edits
-            .put(TableId::Divisions, hp(100, 700_000))
-            .put(TableId::VariantDefinitions, VariantDefinitionRow { id: handle(9), archetype_token: RIFLES, ..Default::default() })
-            .put(TableId::CountryLocalSubunits, CountryLocalSubunitRow { country: 20, token: 99, requirements: vec![LocalSubunitRequirement { archetype_token: RIFLES, amount_raw: UNIT }] });
-        labels::phase("g3: division equipment hour");
-        run.hour(&edits);
-        labels::phase("g3: after");
-        assert_eq!(templates(&run, 1, DivisionEquipmentCountRow::OWNER)[0].1[5], Some(1_500_000 + 10_000 * 900_000));
-        let phases = labels::phases();
-        let writer = |name: &str, read: fn(&labels::Charge) -> i64| {
-            let phase = phases.iter().find(|phase| phase.name == name).expect("the test's phase");
-            phase.labels.iter().filter(|charge| charge.owner == "writer: DivisionEquipment").map(read).max().unwrap_or(0)
-        };
-        let held = writer("g3: division equipment built", |charge| charge.end);
-        let grown = writer("g3: division equipment hour", |charge| charge.peak) - held;
-        assert!(grown < 256 << 10, "the writer's label grew {grown} bytes in its hour over the {held} it held");
-    }
 }

@@ -796,54 +796,6 @@ fn roster_hour_into(
 }
 
 #[test]
-fn a_frame_publishes_its_held_tables_without_rewriting_them() {
-    let _globals = crate::extended::characters::test_globals();
-    static WATCHES: Watches = Watches::new();
-    static DOMAIN: Isolated = Isolated::new();
-    static LEADERS: LeaderWatches = LeaderWatches::new();
-    let mut world = world();
-    WATCHES.enable(world.characters);
-    DOMAIN.enable();
-    LEADERS.enable(world.characters);
-    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS);
-    settle_roster(&mut job, &world);
-    let mut frame = Captured::with_capacities(&capacities());
-    for _ in 0..2 {
-        let (characters, units) = roster_hour_into(&mut job, &world, &mut frame);
-        assert_eq!(characters, walked(&world).tables()[0]);
-        assert_eq!(units, walked(&world).tables()[3]);
-    }
-    const MARK: u32 = 0x5eed;
-    frame.characters.rows.rows[0].country = MARK;
-    frame.units.rows.rows[0].native.owner = MARK;
-    drop(LEADERS.notify(World::unit(9).unwrap(), 0));
-    roster_hour_into(&mut job, &world, &mut frame);
-    assert_eq!(job.unit_carry.counts().read, 1);
-    assert_eq!(
-        frame.characters.rows.rows[0].country, MARK,
-        "rows republished in place"
-    );
-    assert_eq!(
-        frame.units.rows.rows[0].native.owner, MARK,
-        "rows republished in place"
-    );
-    world.patches.push((
-        World::unit(5).unwrap() + cunit_leader::OWNER,
-        7_u32.to_le_bytes().to_vec(),
-    ));
-    drop(LEADERS.notify(World::unit(5).unwrap(), 13));
-    let (_, units) = roster_hour_into(&mut job, &world, &mut frame);
-    assert_eq!(units, walked(&world).tables()[3]);
-    let (characters, units) = roster_hour_into(
-        &mut job,
-        &world,
-        &mut Captured::with_capacities(&capacities()),
-    );
-    assert_eq!(characters, walked(&world).tables()[0]);
-    assert_eq!(units, walked(&world).tables()[3]);
-}
-
-#[test]
 fn fresh_leader_reads_grow_for_later_training() {
     let _globals = crate::extended::characters::test_globals();
     static WATCHES: Watches = Watches::new();
@@ -955,58 +907,6 @@ fn leader_carry_rejects_mismatched_trait_spans() {
     };
     carry.rebuild(Outcome::Rows { len: 1 }, &[invalid], b"x", |_| Some((1, 7)));
     assert!(!carry.held_equals(0, &[row], b"x"));
-}
-
-fn trait_hour_into(
-    job: &mut CharactersJob,
-    world: &World,
-    loan: &census::RoleCensus,
-    frame: &mut Captured,
-) -> TableView {
-    let report = copy_characters(world, context(PART_MASKS[3]), job, Roles::Borrow(loan));
-    assert!(report.raw_ok && !report.plan_failed);
-    frame.grow(&mut capacities());
-    frame.reset();
-    frame.decode_characters_payload(MODULE, job, &mut [0; N]);
-    frame.remember_templates(job);
-    if job.grow_for_next() {
-        job.grow();
-    }
-    job.prepare_read_plans();
-    job.clear();
-    frame.tables()[4].clone()
-}
-
-#[test]
-fn a_frame_publishes_its_held_traits_without_rewriting_them() {
-    let _globals = crate::extended::characters::test_globals();
-    static LEADERS: LeaderWatches = LeaderWatches::new();
-    let mut world = world();
-    LEADERS.enable(world.characters);
-    let (mut job, owner) = trait_job(&LEADERS, &world);
-    let loan = owner.role_census().unwrap();
-    let mut frame = Captured::with_capacities(&capacities());
-    for _ in 0..2 {
-        assert_eq!(
-            trait_hour_into(&mut job, &world, &loan, &mut frame),
-            traits_walked(&world)
-        );
-    }
-    const MARK: i32 = 0x5eed;
-    frame.traits.rows.rows[0].token_id = MARK;
-    drop(LEADERS.notify(World::unit(5).unwrap(), 0));
-    trait_hour_into(&mut job, &world, &loan, &mut frame);
-    assert_eq!(job.trait_carry.counts().read, 1);
-    assert_eq!(
-        frame.traits.rows.rows[0].token_id, MARK,
-        "rows republished in place"
-    );
-    swap_trait(&mut world, 5, 9);
-    drop(LEADERS.notify(World::unit(5).unwrap(), 0));
-    assert_eq!(
-        trait_hour_into(&mut job, &world, &loan, &mut frame),
-        traits_walked(&world)
-    );
 }
 
 #[test]

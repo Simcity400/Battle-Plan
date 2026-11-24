@@ -181,7 +181,6 @@ pub fn record_menu_refusals(counts: &[u64; engine_air_history::menu_history::REF
     }
 }
 
-
 pub struct Hooks {
     hooks: Vec<Hook>,
 }
@@ -278,36 +277,4 @@ mod tests {
         assert_ne!(watches.site(1).unwrap().0, before.0);
     }
 
-    #[test]
-    #[ignore = "release per-call detour cost; run with --release --ignored --nocapture --test-threads=1"]
-    fn hook_cost_history_changes() {
-        const RECEIVERS: usize = 1500;
-        unsafe extern "system" fn native(air: usize, region: i32) -> usize {
-            air.wrapping_add(region as usize)
-        }
-        let receivers: Vec<u64> = vec![0; RECEIVERS * 0x40];
-        let air = |index: usize| receivers.as_ptr() as usize + index * 0x200;
-        WATCHES.offer(RECEIVERS);
-        WATCHES.registry.boundary(false);
-        WATCHES.registry.set_enabled(true);
-        for index in 0..RECEIVERS {
-            assert!(WATCHES.registry.sequence(air(index)).is_some());
-        }
-        ORIGINAL[0].store(native as *const () as usize, Ordering::Release);
-        let hooked = crate::test_support::per_call_ns(RECEIVERS, || {
-            for index in 0..RECEIVERS {
-                std::hint::black_box(unsafe { region_history(air(index), 7) });
-            }
-        });
-        let plain = crate::test_support::per_call_ns(RECEIVERS, || {
-            for index in 0..RECEIVERS {
-                std::hint::black_box(unsafe { native(air(index), 7) });
-            }
-        });
-        WATCHES.registry.set_enabled(false);
-        println!(
-            "hook_cost history_changes registered receiver: detour {:.1} ns/call (hooked {hooked:.1}, native {plain:.1})",
-            hooked - plain
-        );
-    }
 }

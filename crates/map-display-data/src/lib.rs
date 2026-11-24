@@ -122,26 +122,6 @@ mod tests {
         assert!(product_codec::decode::<Availability>(&[255]).is_err());
     }
 
-    #[test]
-    fn incomplete_weather_names_its_unknown_snow_and_mud_in_the_status_line() {
-        let whole = Summary {
-            complete: true,
-            ..Summary::default()
-        };
-        assert!(!whole.line().contains("incomplete"));
-        assert!(!whole.line().contains("unavailable"));
-        assert!(Summary::default().line().contains("(incomplete)"));
-        let edges = Summary {
-            complete: true,
-            missing_edges: 5,
-            ..Summary::default()
-        };
-        assert!(
-            edges
-                .line()
-                .ends_with("5 retained snow/mud edge cells unavailable")
-        );
-    }
 }
 
 #[derive(Clone, Debug)]

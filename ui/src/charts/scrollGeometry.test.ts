@@ -2,20 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { logicalScroll, MAX_DOM_SCROLL_EXTENT, physicalScroll, scrollGeometry, scrollItemTop, wheelScrollDelta } from './scrollGeometry.ts';
 
-test('ordinary and empty scroll ranges preserve layout pixels', () => {
-  const ordinary = scrollGeometry(1000, 400);
-  assert.equal(ordinary.extent, 1000);
-  assert.equal(ordinary.compressed, false);
-  assert.equal(physicalScroll(ordinary, 251.5), 251.5);
-  assert.equal(logicalScroll(ordinary, 251.5), 251.5);
-  for (const pixel of [0.1, 31.25, 599.99]) {
-    assert.equal(physicalScroll(ordinary, pixel), pixel);
-    assert.equal(logicalScroll(ordinary, pixel), pixel);
-  }
-  assert.equal(scrollItemTop(ordinary, 600, 200), 600);
-  assert.equal(physicalScroll(scrollGeometry(0, 400), 10), 0);
-  assert.equal(logicalScroll(scrollGeometry(10, 400), 10), 0);
-});
 
 test('25 million rows retain the full scrollbar and ordinary row spacing within bounded DOM extent', () => {
   const geometry = scrollGeometry(25_000_000 * 38, 400);

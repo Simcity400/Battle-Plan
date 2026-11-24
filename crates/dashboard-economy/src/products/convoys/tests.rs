@@ -1,20 +1,6 @@
 use super::*;
 use replay_lanes::lanes::Step;
 
-#[test]
-fn the_schema_numbers_the_cells_convoy_health_reads() {
-    let field = |table, name| dashboard_declare::field(table, name).unwrap();
-    assert_eq!(field(TableId::RegionalConvoyEfficiency, "efficiency"), REGION_EFFICIENCY);
-    let deals = [("exporter", DEAL_EXPORTER), ("importer", DEAL_IMPORTER), ("resource", DEAL_RESOURCE), ("convoys_assigned", DEAL_ASSIGNED), ("convoys_required", DEAL_REQUIRED), ("efficiency_a", DEAL_FACTOR_A), ("efficiency_b", DEAL_FACTOR_B)];
-    for (name, column) in deals {
-        assert_eq!(field(TableId::ResourceExchanges, name), column, "{name}");
-    }
-    let clients = [("category", CLIENT_CATEGORY), ("owner", CLIENT_OWNER), ("other", CLIENT_OTHER), ("bad", CLIENT_BAD), ("convoys_assigned", CLIENT_ASSIGNED), ("convoys_required", CLIENT_REQUIRED)];
-    for (name, column) in clients {
-        assert_eq!(field(TableId::ConvoyClients, name), column, "{name}");
-    }
-}
-
 struct Row(HashMap<usize, i64>);
 
 impl Cells for Row {

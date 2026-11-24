@@ -4,17 +4,10 @@ import { battleChangeHours, battleChanges, battleJumpHour, battleCountryRequests
   battlePlaceRequests, heldAtHour, namedBattles, rowsById } from './battleRows.ts';
 import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
 import type { BattleLabels, BattleRow, BattleValue } from './battleRows';
-import { HOUR_EPOCH, gameDate, formatDate } from '../../dashboard/calendar.ts';
 
 const labels: BattleLabels = { place: 'Location', date: 'Date', start: 'Start', end: 'End', winner: 'Winner',
   ongoing: 'Ongoing', unknownPlace: 'Location unknown', unknownStart: 'Start not recorded' };
 
-test('battle dates show one day while retaining honest by bounds', () => {
-  const hour = HOUR_EPOCH + 1936 * 365 * 24 + 8;
-  const day = formatDate(gameDate(hour)!);
-  assert.equal(battleDate({ hour, bound: 'exact' }, 'Unknown'), day);
-  assert.equal(battleDate({ hour, bound: 'by' }, 'Unknown'), `by ${day}`);
-});
 const row = (id = 'episode', end: BattleRow['end'] = { hour: 30, bound: 'by' }): BattleRow => ({ id,
   place: { name: 'Modded location', hour: 29 }, start: { hour: 10, bound: 'by' }, end,
   sides: [

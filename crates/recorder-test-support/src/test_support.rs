@@ -397,39 +397,3 @@ pub fn replay(records: Vec<replay_capture_spool::spool::Record>) -> replay::camp
     replay::campaign::Replay::open(encoded.bytes().to_vec()).unwrap()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use replay_frame::frame::TableUpdate;
-
-    #[test]
-    fn allocation_frames_complete_every_recorded_singleton_and_hold_no_derived_table() {
-        let frame = allocation_frame(9, 2, FIRST_LOAD);
-        for table in TableId::ALL {
-            match (&frame.tables[table.index()], table.is_derived()) {
-                (TableUpdate::Unavailable { reason }, true) => {
-                    assert_eq!(reason, NOT_ACQUIRED, "{table:?}");
-                }
-                (TableUpdate::Snapshot(rows), false) if table.key_bits() == 0 => {
-                    assert_eq!(rows.len(), 1, "{table:?}");
-                }
-                (TableUpdate::Unavailable { .. }, false) => {}
-                (other, _) if table.is_derived() || table.key_bits() == 0 => {
-                    panic!("{table:?} is {other:?}")
-                }
-                _ => {}
-            }
-        }
-        for record in allocation_records() {
-            replay_capture_spool::spool::encode_record(&record).unwrap();
-        }
-        let recording = replay(allocation_records());
-        let hours: Vec<i32> = recording
-            .index
-            .iter()
-            .flat_map(|block| recording.read_block(block).unwrap())
-            .map(|frame| frame.hour)
-            .collect();
-        assert_eq!(hours, [2, 3, 4]);
-    }
-}

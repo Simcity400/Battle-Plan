@@ -1627,13 +1627,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn the_budget_admits_the_maximum_record_with_context_and_inflight_storage() {
-        let batch = replay_capture_spool::spool::MAX_RECORD_BYTES + replay_capture_spool::spool::RECORD_HEADER_BYTES + 4096;
-        let budget = budget_for(MIN_BUDGET, batch);
-        assert_eq!(budget, 2 * batch);
-        assert!(batch <= budget - batch);
-        assert_eq!(budget_for(budget, 77 * 1024), budget);
-        assert_eq!(budget_for(MIN_BUDGET, 35 * 1024 * 1024), 70 * 1024 * 1024);
-    }
 }

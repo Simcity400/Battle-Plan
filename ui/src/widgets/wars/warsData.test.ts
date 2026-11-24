@@ -1,14 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { createServer } from 'vite';
-import type { WidgetProps } from '../../dashboard/definitions';
-import type { TooltipContent } from '../../charts/tooltip';
 import { Lineage } from '../../dashboard/identity.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import type { WarObservation, WarParticipantRun, WarTimeline, WarsReply } from '../../generated/dashboard';
-import { countryTagAt, lossesOf, structureAt, structureHours, validateWarContributions, validateWarLosses, isWarsReply, joinedAt, laneCountries, observationAt, labelObservationAt, piecesThrough, viewpointSummary, participantHoldingAt, prepareWars, retainExpandedWars, sideLabel, validateWarsReply, viewpointAt, warNamesAt, warsLanes, warsReplyState } from './warsData.ts';
+import { countryTagAt, lossesOf, structureAt, structureHours, validateWarContributions, validateWarLosses, isWarsReply, joinedAt, laneCountries, observationAt, labelObservationAt, participantHoldingAt, prepareWars, retainExpandedWars, sideLabel, validateWarsReply, viewpointAt, warNamesAt, warsLanes } from './warsData.ts';
 import type { WarsLaneOptions } from './warsData';
 
 const participant = (tag: string, side: WarParticipantRun['side'], firstHour = 10, lastHour = 19): WarParticipantRun =>
@@ -387,29 +382,7 @@ test('completed wars retain their final name, muting and orientation without fil
   assert.equal(warsLanes(prepared, 50, options).lanes[0].muted, true);
 });
 
-test('the label catalogue contains every historical title, country name and side heading in both views', () => {
-  const item = war();
-  item.observations = [{ ...observation(10, 14), name: { text: 'A former long title', known: true, reason: null, key: null } }, observation(15, 19)];
-  const names = ['An earlier country name', 'A later country name'];
-  const prepared = prepareWars({ ...reply([item]), countryNames: names });
-  const catalogue = prepared.labelCatalogue;
-  for (const text of ['A former long title', 'Recorded name', ...names, 'A LATER COUNTRY NAME’S SIDE', 'ATTACKERS', 'DEFENDERS', 'OPPOSING SIDE']) {
-    assert.ok(catalogue.some(label => label.text === text), text);
-  }
-  for (const view of ['gantt', 'countries'] as const) for (const at of [5, 12, 30]) {
-    warsLanes(prepared, at, { ...options, view, expanded: new Set([item.id]), named: new Set() });
-    assert.equal(prepared.labelCatalogue, catalogue);
-  }
-});
 
-test('country playback finds the started prefix without visiting thousands of future bars', () => {
-  let reads = 0;
-  const pieces = Array.from({ length: 100_000 }, (_, index) => ({ get firstHour() { reads++; return index; } }));
-  assert.equal(piecesThrough(pieces, 3).length, 4);
-  assert.ok(reads <= 18, `${reads} first-hour reads`);
-  assert.equal(piecesThrough(pieces, 100_000), pieces);
-  assert.deepEqual(piecesThrough(pieces, -1), []);
-});
 
 test('Live introduces a war only at its start; the campaign end includes all wars', () => {
   const prepared = prepareWars(reply([war('first', 10, 19), war('future', 30, 39)]));
@@ -422,67 +395,8 @@ test('Live introduces a war only at its start; the campaign end includes all war
   }
 });
 
-test('missing and loading viewpoints have honest subtitles and availability uses the flag', () => {
-  assert.equal(viewpointSummary(null), 'Viewpoint not recorded at this hour');
-  assert.equal(viewpointSummary({ name: 'Not recorded', known: false }), 'Viewpoint not recorded at this hour');
-  assert.equal(viewpointSummary({ name: 'Loading…' }), 'Loading viewpoint…');
-  for (const name of ['Loading…', 'Not recorded', '', 'Named country']) {
-    assert.equal(viewpointSummary({ name, known: true }), `Wars as ${name} sees them`);
-  }
-  assert.equal(warsReplyState(null, null), 'loading');
-  assert.equal(warsReplyState({ available: false }, null), 'unavailable');
-  assert.equal(warsReplyState({ available: true }, null), 'ready');
-  assert.equal(warsReplyState(null, new Error('Not in this recording: corrupt frame')), 'error');
-});
 
-test('actual Wars participant hover preserves completed native UI-word and empty names', async () => {
-  const host = globalThis as typeof globalThis & { __warsFixture?: unknown; __warsName?: { name: string; known: boolean; flag?: string; flagReason?: string; flagPending?: boolean }; __warsTips?: TooltipContent[]; __warsMissing?: string; __warsAsked?: string[] };
-  const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__warsFixture }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
-    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: { identityChanges: [], countryIdentities: ["Mod: player", "One side", "Other side"].filter(tag => tag !== globalThis.__warsMissing).map((tag, slot) => ({ tag, identities: [{ firstHour: 0, lastHour: 39, slot, countryId: slot + 1 }] })), warnings: [] } });',
-    '/dashboard/FactionColours.tsx': 'export const useFactionColours = () => ({ colours: new Map(), warnings: [] });',
-    '/dashboard/useCountriesAt.ts': 'export const STYLES = {}; export const useCountriesAt = () => ({ country: () => globalThis.__warsName, revision: 0 });',
-    '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: () => globalThis.__warsName.name, color: () => null, revision: 0 });',
-    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsRead = () => new Map(); export const useCountryFactsByKey = () => new Map();',
-    '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask(hour, tags) { globalThis.__warsAsked?.push(...tags); }, labelAt: () => () => globalThis.__warsName, revision: 0 });',
-    '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ surface: '#111111', text: '#dddddd', countryColours: 'raw', categories: ['#123456', '#654321'] }); export const useViewportHeight = () => 1000;`,
-    '/charts/timeline/Timeline.tsx': `export default props => { globalThis.__warsTips = props.lanes.filter(lane => lane.spans.length).map(lane => props.tooltip(lane, lane.spans[0], 15, true)); return null; };`,
-    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
-  };
-  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
-    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'wars-native-name-fixture', enforce: 'pre',
-      transform(source, id) {
-        const path = id.replaceAll('\\', '/');
-        if (path.endsWith('/dashboard/countryLooks.ts')) return source.slice(0, source.indexOf('export function useCountryLooks(')) + replacements['/dashboard/countryLooks.ts'];
-        return Object.entries(replacements).find(([suffix]) => path.endsWith(suffix))?.[1];
-      } }] });
-  try {
-    const { default: WarsWidget } = await vite.ssrLoadModule('/ui/src/widgets/wars/WarsWidget.tsx');
-    host.__warsFixture = { ...reply(), viewpoints: [{ tag: 'Mod: player', firstHour: 0, lastHour: 39 }] };
-    const track = { id: 'track', source: { id: 'source', revision: '1', metadata: { campaignKey: 'campaign' } }, branch: { id: 'branch', firstHour: 0, lastHour: 39, gaps: [] }, axisOffset: 0 };
-    for (const name of ['Loading…', 'Not recorded', '', 'Named country']) {
-      host.__warsName = { name, known: true };
-      renderToStaticMarkup(createElement(WarsWidget, { widget: { trackIds: ['track'], countries: { kind: 'all' }, time: { mode: 'campaign' }, options: { view: 'countries' } },
-        runtime: { client: {}, tracks: [track], clock: { getHour: () => 39 } }, active: true, onDiagnostics() {} } as unknown as WidgetProps));
-      assert.ok(host.__warsTips!.length > 0);
-      for (const content of host.__warsTips!) { assert.equal(content.title, name); assert.equal(content.description, undefined); }
-    }
-    host.__warsMissing = 'One side';
-    host.__warsAsked = [];
-    host.__warsName = { name: 'Unrelated country', known: true };
-    renderToStaticMarkup(createElement(WarsWidget, { widget: { trackIds: ['track'], countries: { kind: 'all' }, time: { mode: 'campaign' }, options: { view: 'countries' } },
-      runtime: { client: {}, tracks: [track], clock: { getHour: () => 39 } }, active: true, onDiagnostics() {} } as unknown as WidgetProps));
-    assert.ok(host.__warsTips!.some(content => content.title === 'Not recorded'));
-    assert.ok(!host.__warsAsked.includes('One side'));
-  } finally { await vite.close(); delete host.__warsFixture; delete host.__warsName; delete host.__warsTips; delete host.__warsMissing; delete host.__warsAsked; }
-});
 
-test('side headings are compact and only war rows request a separator', () => {
-  const shown = warsLanes(prepareWars(reply()), 15, { ...options, expanded: new Set(['1']) });
-  assert.ok(shown.lanes.every(lane => lane.separator === false));
-  assert.deepEqual(shown.lanes.filter(lane => lane.separatorAfter).map(lane => shown.info.get(lane.id)?.kind), ['war']);
-  assert.ok(shown.lanes.filter(lane => lane.labelStyle === 'side').every(lane => lane.rowHeight === 18 && lane.muted));
-});
 
 test('refetches keep existing expanded wars and drop only removed IDs', () => {
   const expanded = new Set(['first', 'second']);

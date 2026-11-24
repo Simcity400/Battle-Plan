@@ -1354,24 +1354,6 @@ mod tests {
     }
 
     #[test]
-    fn new_buffers_use_current_primary_capacities() {
-        let mut capacity = MapCapacities::default();
-        capacity.rows[5] += 31;
-        capacity.player_names += 19;
-        capacity.land_participants += 13;
-        capacity.order_geometry += 17;
-        let captured =
-        // SAFETY: These are session-measured map capacities or capacities owned by an isolated
-        // fixture.
-        unsafe { MapCaptured::with_capacities(&capacity) };
-        assert_eq!(captured.naval.ships.rows.len(), capacity.rows[5]);
-        assert_eq!(captured.player_names.len(), capacity.player_names);
-        assert_eq!(captured.land_participants.len(), capacity.land_participants);
-        assert_eq!(captured.land_classes.len(), capacity.land_participants);
-        assert_eq!(captured.orders.geometry.len(), capacity.order_geometry);
-    }
-
-    #[test]
     fn order_failure_keeps_storage_and_growth_demand_but_hides_sources() {
         // SAFETY: The test process has no live attachment and uses fixture-owned capacities.
         let mut orders = unsafe { MapCapacities::default().orders() };

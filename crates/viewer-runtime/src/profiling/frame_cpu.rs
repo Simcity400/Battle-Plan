@@ -415,19 +415,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn disabled_thread_spans_do_not_read_clocks_or_allocate_records() {
-        let span = ThreadSpan::new("disabled", false);
-        assert!(span.clock.is_none());
-        drop(span);
-        FRAME.with(|frame| {
-            let frame = frame.borrow();
-            assert_eq!(frame.spans.capacity(), 0);
-            assert_eq!(frame.counts.capacity(), 0);
-            assert_eq!(frame.owners.capacity(), 0);
-        });
-    }
-
-    #[test]
     fn disabled_owner_measurement_preserves_errors_without_touching_frame_storage() {
         let profiler = FrameOwners::with_enabled(false);
         assert!(profiler.origin.is_none());

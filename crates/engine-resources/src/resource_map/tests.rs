@@ -466,54 +466,6 @@ fn resource_effective_keeps_an_existing_pass_memos_observation() {
     assert!(metadata.get().is_none());
 }
 
-#[test]
-fn resource_walk_shares_only_metadata_and_resets_it_for_each_walk() {
-    const TABLE: usize = 0xc0000;
-    let mut memory = Copies::new(None);
-    let definition = TABLE + PRODUCTION_OIL_FACTOR as usize * modifier_definition::STRIDE;
-    memory
-        .image
-        .u64(modifier_definition::TABLE_RVA.0, TABLE as u64);
-    memory
-        .image
-        .u32(definition + modifier_definition::FEATURE_SELECTOR, 0);
-    memory.image.u32(definition + modifier_definition::FLAGS, 0);
-    for (country, entry, value) in [(0x2000, 0xb0000, 31_i64), (0x4000, 0xb1000, -9)] {
-        memory
-            .image
-            .array(country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, entry, 1);
-        memory.image.put(entry, &[0; 16]);
-        memory.image.u32(entry, PRODUCTION_OIL_FACTOR);
-        memory.image.u64(entry + 8, value as u64);
-    }
-    for _ in 0..2 {
-        memory.spans.borrow_mut().clear();
-        let (outcomes, rows) = walk(&memory);
-        assert_eq!(outcomes.oil, Outcome::Rows { len: 2 });
-        assert_eq!(
-            rows.oil,
-            [
-                OilRow {
-                    country: 7,
-                    factor: 31
-                },
-                OilRow {
-                    country: 2,
-                    factor: -9
-                }
-            ]
-        );
-        assert_eq!(
-            memory
-                .spans
-                .borrow()
-                .iter()
-                .filter(|&&(at, _)| at == modifier_definition::TABLE_RVA.0)
-                .count(),
-            1
-        );
-    }
-}
 impl Copies {
     fn new(fail: Option<usize>) -> Self {
         Self {

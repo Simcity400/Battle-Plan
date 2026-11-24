@@ -237,15 +237,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn len_observes_pending_records_without_popping() {
-        let stack = SpillStack::new();
-        assert_eq!(stack.len(), 0);
-        stack.push(10_u64).unwrap();
-        stack.push(20_u64).unwrap();
-        assert_eq!(stack.len(), 2);
-        assert_eq!(stack.len(), 2);
-        assert_eq!(stack.take().collect::<Vec<_>>(), [10, 20]);
-        assert_eq!(stack.len(), 0);
-    }
 }

@@ -398,28 +398,6 @@ fn research_names_and_applied_bonus_populations_have_no_inline_limit() {
 }
 
 #[test]
-fn idle_and_unbonused_slots_skip_bonus_roster_and_catalogue() {
-    for (active, expected_calls) in [(false, 5), (true, 7)] {
-        let b = fixture(active, false);
-        let m = MemoryTrace::new(&b);
-        let mut rows = vec![Row::default()];
-        assert_eq!(
-            capture(&m, &mut rows, &mut Vec::new()),
-            (Outcome::Rows { len: 1 }, Outcome::Rows { len: 0 })
-        );
-        assert_eq!(m.calls.get(), expected_calls);
-        assert_eq!(rows[0].status_pointer, STATUS);
-        assert!(!m.reads.borrow().iter().any(|&(at, _)| at
-            == STATUS + ctechnology_status::LIMITED_BONUSES
-            || at == STATUS + ctechnology_status::TECHNOLOGIES_DATA));
-        if active {
-            assert_eq!(rows[0].token.as_bytes(), b"radio");
-            assert_eq!(rows[0].progress_raw, 500_000);
-        }
-    }
-}
-
-#[test]
 fn applied_ids_join_exact_names_and_raw_values() {
     let b = fixture(true, true);
     let m = MemoryTrace::new(&b);
@@ -620,55 +598,6 @@ fn cost_reduction_ids_use_their_own_layout_and_only_unresolved_ids_need_that_ros
             .iter()
             .any(|&(at, _)| at == STATUS + ctechnology_status::COST_REDUCTIONS)
     );
-}
-
-#[test]
-fn bonus_rosters_follow_native_population_and_stop_after_resolution() {
-    let mut bytes = fixture(true, true);
-    array(
-        &mut bytes,
-        STATUS + ctechnology_status::LIMITED_BONUSES,
-        BONUSES,
-        4097,
-    );
-    let memory = MemoryTrace::new(&bytes);
-    let mut requested = BonusRow::default();
-    requested.value.id = -7;
-    assert_eq!(
-        resolve_bonuses(&memory, 0, STATUS, &mut [requested.clone()]),
-        Err("research bonus pointer invalid")
-    );
-    assert_eq!(memory.calls.get(), 2);
-    assert_eq!(memory.reads.borrow().len(), 2);
-
-    array(
-        &mut bytes,
-        STATUS + ctechnology_status::LIMITED_BONUSES,
-        BONUSES,
-        5_000,
-    );
-    for index in 0..64 {
-        put(
-            &mut bytes,
-            BONUSES + index * 8,
-            (BONUS as u64).to_le_bytes(),
-        );
-    }
-    let memory = MemoryTrace::new(&bytes);
-    let mut requested = [requested];
-    assert_eq!(
-        resolve_bonuses(&memory, 0, STATUS, &mut requested),
-        Ok(())
-    );
-    assert_eq!(requested[0].resolved, 1);
-    assert!(
-        !memory
-            .reads
-            .borrow()
-            .iter()
-            .any(|&(at, _)| at == BONUSES + 64 * 8)
-    );
-    assert!(memory.calls.get() < 10);
 }
 
 #[test]

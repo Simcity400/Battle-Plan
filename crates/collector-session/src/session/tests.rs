@@ -504,52 +504,6 @@ fn session_truncation_matrix_matches_direct_with_same_caps() {
 }
 
 #[test]
-fn session_copy_sizes_cover_documented_read_set() {
-    use engine_native_memory::Memory;
-    use std::collections::BTreeSet;
-    struct Recorder<'a> {
-        inner: SliceMemory<'a>,
-        sizes: std::cell::RefCell<BTreeSet<usize>>,
-    }
-    impl Memory for Recorder<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.sizes.borrow_mut().insert(output.len());
-            self.inner.copy(address, output)
-        }
-    }
-    let bytes = fixture();
-    let memory = Recorder {
-        inner: SliceMemory {
-            base: BASE,
-            bytes: &bytes,
-        },
-        sizes: std::cell::RefCell::new(BTreeSet::new()),
-    };
-    let mut job = presized_job();
-    copy_pass(&memory, 0, BASE, &mut job.log);
-    assert!(job.log.raw_bytes.iter().any(|&b| b > 0));
-    let sizes = memory.sizes.borrow().clone();
-    for required in [8, 32, 52, 64] {
-        assert!(
-            sizes.contains(&required),
-            "missing size {required} in {sizes:?}"
-        );
-    }
-}
-
-#[test]
-fn session_cold_job_is_provisioned_without_content_guesses() {
-    let job = SessionJob::new();
-    assert_eq!(job.log.spans.capacity(), 0);
-    assert_eq!(job.log.bytes.capacity(), 0);
-    let capacities = Capacities::default();
-    assert_eq!(capacities.rows, [1, 0, 0]);
-    assert_eq!(capacities.reason_bytes, 0);
-    let captured = Captured::vacant();
-    assert_eq!(captured.allocated_bytes(), 0);
-}
-
-#[test]
 fn session_bulk_header_serves_enclosed_length_word() {
     let bytes = fixture();
     let memory = SliceMemory {

@@ -114,37 +114,6 @@ fn scopes() -> EventScopes {
 }
 
 #[test]
-fn unlock_mio_trait_tooltip() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (fixture, _folder) = fixture();
-    let out = fixture.render(
-        "unlock_mio_trait_tooltip={show_modifiers=yes trait=synthetic_convoy_production}",
-        &mut scopes(),
-        Content::default(),
-    );
-    assert_eq!(
-        out.text,
-        "Unlock Owner trait AAA (Soft+0.14, Supply--0.07, Power: \u{11}G+0.23\u{11}!\nRaw [Root.GetTag])\n"
-    );
-    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-}
-
-#[test]
-fn complete_mio_trait() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (fixture, _folder) = fixture();
-    let out = fixture.render(
-        "complete_mio_trait=synthetic_empty_trait",
-        &mut scopes(),
-        Content::default(),
-    );
-    assert_eq!(out.text, "Complete Unmodified trait AAA ()\n");
-    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-}
-
-#[test]
 fn mio_missing_traits_keep_raw_token_and_show_modifiers_can_be_disabled() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");

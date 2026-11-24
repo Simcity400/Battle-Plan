@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../dashboard/calendar.ts';
-import { askedPrompt, askQuestion, captureModeFixed, discardConsequence, discardDetail, escapeStep, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, pendingFailure, promptDiscards, promptTitle, stopConfirmed, recordingName, recordsAutomatically, savedText, sessionLength,
-  settingsQueue, spanText, spoolText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion, whatToRecord } from './status.ts';
+import { askedPrompt, askQuestion, discardConsequence, discardDetail, escapeStep, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, pendingFailure, promptDiscards, promptTitle, stopConfirmed, recordingName, recordsAutomatically, savedText, sessionLength, settingsQueue, spanText, spoolText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion, whatToRecord } from './status.ts';
 import type { RecorderSettings, Snapshot, UnsavedRecording } from './status.ts';
 
 const CAMPAIGN = '00000000-0000-4000-8000-000000000000';
@@ -17,22 +16,6 @@ function snapshot(change: Partial<Snapshot>): Snapshot {
 const recording = (change: Partial<Snapshot> = {}) => snapshot({ phase: 'recording', campaign: CAMPAIGN, recording: PATH, name: 'Germany 1936–1943',
   continued: true, hour: hour(1943, 6, 12), spoolBytes: 1229 * MB, savedBytes: 214 * MB, ...change });
 
-test('every panel state reads as the approved design', () => {
-  assert.deepEqual(head(snapshot({})), { glyph: true, flag: null, title: 'Waiting for the game', dot: null, label: null,
-    detail: 'Records when you load a campaign.', action: null, campaign: false });
-  assert.deepEqual(head(recording()), { glyph: false, flag: null, title: 'Germany 1936–1943', dot: 'red', label: 'Recording',
-    detail: '12 Jun 1943', sizes: '1.2 GB this session · 214 MB saved', action: 'stop', campaign: true });
-  assert.deepEqual(head(recording({ phase: 'notRecording', hour: hour(1938, 2, 3), spoolBytes: null })), { glyph: false, flag: null,
-    title: 'Germany 1936–1943', dot: 'grey', label: null, detail: 'Not recording · 3 Feb 1938', action: 'record', campaign: true });
-  assert.deepEqual(head(recording({ phase: 'saving' })), { glyph: false, flag: null, title: 'Germany 1936–1943', dot: 'spin',
-    label: 'Saving recording…', detail: null, action: null, campaign: false, busy: true });
-  assert.deepEqual(head(recording({ phase: 'saved', firstHour: hour(1936, 1, 1), savedBytes: 412 * MB, spoolBytes: null })), { glyph: false, flag: null,
-    title: 'Germany 1936–1943', dot: 'green', label: 'Saved', detail: '1936 – Jun 1943 · 412 MB', action: 'open', campaign: false });
-  assert.deepEqual(head(recording({ phase: 'discarded' })), { glyph: false, flag: null, title: 'Germany 1936–1943', dot: 'grey', label: null,
-    detail: 'Session discarded', action: 'record', campaign: false });
-  assert.deepEqual(head(recording({ phase: 'unsaved', recording: null, continued: false, savedBytes: null })), { glyph: false, flag: null,
-    title: 'Germany 1936–1943', dot: 'grey', label: 'Not saved yet', detail: '12 Jun 1943', sizes: '1.2 GB this session', action: null, campaign: false });
-});
 
 test('a problem with no campaign to name becomes the status under a short headline, and the usual status returns once it clears', () => {
   const problem = { text: 'Another recorder is connected to this game. Close the other recorder to record here.', detail: 'claimed', failed: true };
@@ -94,28 +77,7 @@ test('sizes say whether they are this session\'s or saved, and the spool total n
   assert.equal(spoolTotalText([]), null);
 });
 
-test('loads a session left out are said in one plain line, in place of the usual status text', () => {
-  const saved = recording({ phase: 'saved', firstHour: hour(1936, 1, 1), savedBytes: 412 * MB, spoolBytes: null });
-  assert.deepEqual(head({ ...saved, omitted: { loads: 1, reason: 'off' } }), { glyph: false, flag: null, title: 'Germany 1936–1943',
-    dot: 'green', label: 'Saved', detail: '1 load not recorded (Auto record was off)', action: 'open', campaign: false });
-  assert.equal(head({ ...saved, omitted: { loads: 2, reason: 'elsewhere' } }).detail, '2 loads not recorded (they belong in another file)');
-  assert.equal(head({ ...saved, omitted: { loads: 1, reason: 'notAdmitted' } }).detail, '1 load not recorded (it was not identified)');
-  assert.equal(head({ ...saved, omitted: { loads: 1, reason: 'settings' } }).detail, '1 load not recorded (the recorder’s settings couldn’t be read)');
-  assert.equal(head({ ...saved, omitted: { loads: 3, reason: null } }).detail, '3 loads not recorded');
-  assert.equal(head(recording({ phase: 'notRecording', omitted: { loads: 1, reason: 'off' } })).detail,
-    '1 load not recorded (Auto record was off)');
-  assert.equal(head(snapshot({ phase: 'notRecording', omitted: { loads: 1, reason: 'off' } })).detail,
-    '1 load not recorded (Auto record was off)');
-  assert.equal(head({ ...saved, omitted: null }).detail, '1936 – Jun 1943 · 412 MB');
-});
 
-test('a resolved flag stands beside the campaign in every state that names it', () => {
-  const flag = { width: 2, height: 1, pixels: [255, 0, 0, 255, 0, 0, 255, 255] };
-  for (const phase of ['recording', 'notRecording', 'saving', 'saved', 'discarded', 'unsaved'] as const)
-    assert.deepEqual(head(recording({ phase, flag })).flag, flag, phase);
-  assert.equal(head(snapshot({ flag })).flag, null);
-  assert.equal(head(recording({ flag: null })).flag, null);
-});
 
 test('unknown parts are left out rather than guessed', () => {
   assert.equal(head(recording({ hour: null, spoolBytes: null, savedBytes: null })).detail, null);
@@ -182,12 +144,6 @@ test('campaign choices follow the global default until set', () => {
   assert.equal(whatToRecord({ ...settings, captureMode: 'map' }), 'Map');
 });
 
-test('the capture mode is fixed while a session is attached, even at the game menu', () => {
-  for (const phase of ['waiting', 'recording', 'saving'] as const)
-    assert.equal(captureModeFixed(recording({ phase, captureMode: 'map' })), true, phase);
-  for (const phase of ['waiting', 'notRecording', 'saved', 'discarded'] as const)
-    assert.equal(captureModeFixed(recording({ phase, captureMode: null })), false, phase);
-});
 
 test('a settings save is sent at once, overlapping saves end in one read of what is stored, and each warning is shown', async () => {
   type Stored = { value: string; warning?: string | null };

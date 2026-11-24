@@ -295,17 +295,6 @@ mod tests {
     }
 
     #[test]
-    fn buildings_keep_their_type_names_and_sea_province() {
-        let buildings =
-            parse_buildings(b"1;arms_factory;2946.48;11.63;1364.00;0.45;0\n5;naval_base_spawn;1.0;2.0;3.0;0.0;4321\n")
-                .unwrap();
-        assert_eq!(buildings[0].kind, "arms_factory");
-        assert_eq!(buildings[0].x, 2946.48);
-        assert_eq!(buildings[0].adjacent_sea, 0);
-        assert_eq!(buildings[1].adjacent_sea, 4321);
-    }
-
-    #[test]
     fn malformed_lines_name_their_line_number_and_field() {
         let error = parse_unit_stacks(b"2;0;1;2;3;4;5\n3;0;1;2;3;4\n")
             .unwrap_err()

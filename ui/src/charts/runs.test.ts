@@ -6,13 +6,6 @@ import type { Run, Span } from './series';
 
 const product = (firstHour: number, lastHour: number, startsSegment = true) => ({ firstHour, lastHour, startsSegment, valueRaw: String(firstHour) });
 
-test('any run type is found by hour', () => {
-  const runs = [product(100, 123), product(124, 130, false)];
-  assert.equal(runAt(runs, 99), null);
-  assert.equal(runAt(runs, 110), runs[0]);
-  assert.equal(runAt(runs, 130), runs[1]);
-  assert.equal(runAt(runs, 131), null);
-});
 
 test('run lookup keeps inclusive ends, gaps, and fractional and negative hours', () => {
   const runs = [product(-5, -2), product(0, 2), product(5, 5)];

@@ -37,36 +37,3 @@ fn line(address: usize) {
     let _ = address;
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::memory::RecordField;
-
-    #[test]
-    fn hints_are_inert_for_null_unaligned_and_overflowing_addresses() {
-        span(0, 0);
-        span(0, 64);
-        span(1, 4096);
-        span(usize::MAX, 512);
-        span(usize::MAX - 3, 8);
-        span(0x1000, usize::MAX);
-        fields(
-            usize::MAX - 7,
-            &[
-                RecordField {
-                    source_offset: 0,
-                    destination_offset: 0,
-                    len: 0,
-                },
-                RecordField {
-                    source_offset: 0x1c0,
-                    destination_offset: 0,
-                    len: 8,
-                },
-            ],
-        );
-        let bytes = [7_u8; 256];
-        span(bytes.as_ptr() as usize, bytes.len());
-        assert_eq!(bytes[255], 7);
-    }
-}

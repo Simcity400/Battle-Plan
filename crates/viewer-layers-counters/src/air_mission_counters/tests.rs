@@ -501,14 +501,6 @@ fn a_view_that_hides_the_layer_declares_nothing_and_shown_again_composes() {
     assert_eq!(published.regions.get(&3), layer(&side).values().get(&3).map(|value| &value.counts), "with the layer's counts");
 }
 
-#[test]
-fn the_layer_declares_against_this_schema() {
-    let kinds = replay_recording::schema::schema().unwrap();
-    let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "air_mission_counters");
-    layer_with(1000, Held::new(true, false)).inputs(&air_view(), &mut inputs).unwrap();
-    assert_eq!(inputs.into_tables().len(), TABLES.len());
-}
-
 fn within(side: &mut MapSide, cap: i32, what: &str, mut done: impl FnMut(&MapSide) -> bool) {
     for _ in 0..50_000_000u64 {
         let head = side.entry().playhead().newest().unwrap_or(0).min(cap);

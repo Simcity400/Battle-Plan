@@ -1890,9 +1890,5 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "politics_bench.rs"]
-mod bench;
-
-#[cfg(test)]
 #[path = "politics_encoding_tests.rs"]
 mod encoding_tests;

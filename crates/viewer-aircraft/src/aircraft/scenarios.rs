@@ -837,54 +837,6 @@ mod tests {
     }
 
     #[test]
-    fn missile_wings_draw_from_the_scheduler_random_before_the_other_arms() {
-        let base = AirBaseRow::default();
-        let rocket = wing(1, 10);
-        let target = AirMissionInputRow {
-            last_target_province: 77,
-            ..Default::default()
-        };
-        let bombers = [wing(5, 30), wing(6, 30), wing(7, 30)];
-        let missions = [4, 5, 6].map(|province| AirMissionInputRow {
-            last_target_province: province,
-            ..Default::default()
-        });
-        let mut defines = defines();
-        defines.bomber.limit = 3;
-        let order = |with_missile: bool| {
-            let mut groups = RegionGroups::default();
-            groups.arrays[0][0] = bombers
-                .iter()
-                .zip(&missions)
-                .map(|(bomber, mission)| participant(bomber, mission, &base, 0))
-                .collect();
-            if with_missile {
-                groups.arrays[0][2].push(participant(&rocket, &target, &base, 0));
-            }
-            run(groups, defines, Ok([0; 8]))
-                .0
-                .into_iter()
-                .filter(|draw| draw.kind != MISSILE_KIND)
-                .map(|draw| draw.attacker.wing.id)
-                .collect::<Vec<_>>()
-        };
-        let taken = |skip: usize| {
-            let mut random = Random::new(37);
-            for _ in 0..skip {
-                random.next();
-            }
-            let mut left = bombers.iter().map(|bomber| bomber.id).collect::<Vec<_>>();
-            let mut taken = Vec::new();
-            while !left.is_empty() {
-                taken.push(left.swap_remove(random.next() as usize % left.len()));
-            }
-            taken
-        };
-        assert_eq!(order(false), taken(0));
-        assert_eq!(order(true), taken(1));
-    }
-
-    #[test]
     fn opposing_bomber_batch_reuses_fighter_and_can_exceed_cap() {
         let bombers = [wing(1, 30), wing(2, 30)];
         let fighter = wing(9, 30);

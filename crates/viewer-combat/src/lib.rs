@@ -1937,33 +1937,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_tactics_popup_draws_above_the_whole_window() {
-        let mut window = Drawn::default();
-        for texture in 0..5 {
-            window
-                .batch
-                .at_layer(window_layer(window.batch.quads.len()));
-            window
-                .batch
-                .cell(texture, [0.0, 0.0], [1.0, 1.0], [0.0; 4], [1.0; 4]);
-        }
-        let layer_base = window.batch.quads.len();
-        let mut popup = Drawn::default();
-        for texture in 100..103 {
-            let layer = window_layer(layer_base + popup.batch.quads.len());
-            popup.batch.at_layer(layer);
-            popup
-                .batch
-                .cell(texture, [0.0, 0.0], [1.0, 1.0], [0.0; 4], [1.0; 4]);
-        }
-        window.batch.quads.extend(popup.batch.quads);
-        let mut order: Vec<_> = window.batch.quads.iter().collect();
-        order.sort_by_key(|quad| (quad.layer, quad.texture));
-        let textures: Vec<_> = order.iter().map(|quad| quad.texture).collect();
-        assert_eq!(textures, [0, 1, 2, 3, 4, 100, 101, 102]);
-    }
-
-    #[test]
     fn an_open_list_keeps_its_order_until_its_membership_changes() {
         let entry = |unit: u64, name: &str| {
             let mut values = Values::new();

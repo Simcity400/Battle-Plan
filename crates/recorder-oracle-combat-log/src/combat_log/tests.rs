@@ -454,62 +454,6 @@ fn serialized_definitions_cannot_be_qualified_as_omitted_group_members() {
     assert!(report.differences.is_empty());
 }
 
-#[test]
-#[ignore]
-fn division_census_from_text_save() {
-    let path = std::env::var_os("BATTLEPLAN_CENSUS_SAVE").or_else(|| std::env::var_os("HOI4_CENSUS_SAVE")).expect("set BATTLEPLAN_CENSUS_SAVE");
-    let bytes = std::fs::read(&path).unwrap();
-    let saved = content_reader_save::parse(&bytes).unwrap();
-    let mut memberships: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
-    let mut army_memberships: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
-    let mut groups = [0; 2];
-    for group in saved
-        .naval_history
-        .theatre_countries
-        .iter()
-        .flat_map(|countries| countries.values())
-        .flat_map(|country| &country.land)
-        .flat_map(|theatre| &theatre.definitions)
-    {
-        groups[usize::from(group.is_army_group)] += 1;
-        for &member in &group.members {
-            if saved.divisions.contains_key(&member) {
-                memberships.entry(member).or_default().insert(group.id);
-                if !group.is_army_group {
-                    army_memberships.entry(member).or_default().insert(group.id);
-                }
-            }
-        }
-    }
-    println!(
-        "save={path:?} countries={} divisions={} armies={} army_groups={}",
-        saved.countries.len(),
-        saved.divisions.len(),
-        groups[0],
-        groups[1],
-    );
-    for (label, memberships) in [
-        ("all groups", &memberships),
-        ("armies only", &army_memberships),
-    ] {
-        let duplicates: Vec<_> = memberships
-            .iter()
-            .filter(|(_, groups)| groups.len() > 1)
-            .collect();
-        println!(
-            "{label}: duplicate divisions={} {duplicates:?}",
-            duplicates.len()
-        );
-    }
-    for (tag, (grouped, ungrouped, _)) in saved_division_counts(&saved, &BTreeSet::new()).unwrap() {
-        println!(
-            "{}: grouped={grouped} ungrouped={ungrouped} total={}",
-            String::from_utf8_lossy(tag),
-            u64::from(grouped) + u64::from(ungrouped),
-        );
-    }
-}
-
 fn frame(rows: Vec<CombatLogEquipmentRow>, read: &[u32]) -> DecodedFrame {
     let reads: Vec<SliceReadRow> = read
         .iter()

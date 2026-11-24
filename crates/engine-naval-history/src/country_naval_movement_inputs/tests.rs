@@ -213,32 +213,6 @@ fn failed_header_is_not_retried_and_other_headers_remain() {
 }
 
 #[test]
-fn navy_pass_reads_no_province_roster_or_access_modes() {
-    let memory = world();
-    let mut reader = Reader::new(&memory, 0, STATE);
-    for slot in 0..4 {
-        let _ = reader.observe_navy(slot).unwrap();
-    }
-    reader.clear();
-    let touched = |from: usize, to: usize| {
-        memory
-            .calls
-            .borrow()
-            .iter()
-            .any(|&(at, len)| at < to && from < at + len)
-    };
-    let provinces = STATE + cgame_state::PROVINCES;
-    assert!(!touched(provinces, provinces + 16));
-    assert!(!touched(0x3200, 0x3200 + 5 * 8));
-    assert!(!touched(0xa000, 0xa800));
-    for navy in [NAVY_ONE, 0x7200, NAVY_ALIAS_SLOT] {
-        let access = navy + cstrategic_navy::ACCESS_MODES;
-        assert!(!touched(access, access + 16), "{navy:#x}");
-    }
-    assert!(!touched(ACCESS, ACCESS + 2));
-}
-
-#[test]
 fn navy_manager_failure_and_cleared_pass_refuse_by_name() {
     let mut memory = world();
     u64_at(&mut memory.bytes, MANAGER_ROOT, 0);

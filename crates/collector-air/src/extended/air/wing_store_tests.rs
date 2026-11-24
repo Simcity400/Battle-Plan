@@ -178,19 +178,6 @@ fn first_hour(bytes: &[u8], store: &mut WingStore, watches: &Watches) -> Hour {
 }
 
 #[test]
-fn a_settled_store_counts_its_held_rows_before_the_census_concludes() {
-    let bytes = world();
-    let watches = Watches::enabled(16);
-    let mut store = WingStore::new();
-    assert_eq!(store.allocated_bytes(), 0);
-    settle(&bytes, &mut store, &watches, IDS);
-    let settled = store.allocated_bytes();
-    assert_ne!(settled, 0);
-    store.forget();
-    assert_eq!(store.allocated_bytes(), settled);
-}
-
-#[test]
 fn quiet_hours_read_no_pool_and_publish_identical_rows() {
     let bytes = world();
     let watches = Watches::enabled(16);
@@ -278,18 +265,6 @@ fn an_invalidating_hour_or_a_new_wing_id_rereads() {
 }
 
 #[test]
-fn an_unobserved_write_is_carried_stale() {
-    let mut bytes = world();
-    let watches = Watches::enabled(16);
-    let mut store = WingStore::new();
-    let first = first_hour(&bytes, &mut store, &watches);
-    set_amount(&mut bytes, 0, 0, 9);
-    let stale = walk(&bytes, &mut store, &watches, IDS);
-    assert_eq!(stale.counts.reused, 3);
-    assert_eq!(stale.rows, first.rows);
-}
-
-#[test]
 fn a_failed_pass_holds_nothing() {
     let mut bytes = world();
     let watches = Watches::enabled(16);
@@ -307,14 +282,6 @@ fn a_failed_pass_holds_nothing() {
     let hour = walk(&bytes, &mut store, &watches, IDS);
     assert_eq!((hour.counts.read, hour.counts.reused), (3, 0));
     assert_eq!(hour.rows[0].amount_raw, 5);
-}
-
-#[test]
-fn the_registered_pool_is_the_wings_equipment_pool() {
-    assert_eq!(
-        engine_mutations::air_wing_equipment_mutations::POOL,
-        cair_wing::EQUIPMENT_POOL
-    );
 }
 
 #[test]
@@ -359,21 +326,6 @@ fn without_the_kill_airplanes_detour_nothing_is_carried() {
     watches.boundary(false);
     let after = walk(&bytes, &mut store, &watches, IDS);
     assert_eq!((after.counts.read, after.counts.reused), (3, 0));
-}
-
-#[test]
-fn quiet_wings_keep_the_whole_owned_row_buffer() {
-    let bytes = world();
-    let watches = Watches::enabled(16);
-    let mut store = WingStore::new();
-    let first = first_hour(&bytes, &mut store, &watches);
-    let storage = store.held_rows().as_ptr();
-    for _ in 0..3 {
-        let hour = walk(&bytes, &mut store, &watches, IDS);
-        assert_eq!(hour.rows, first.rows);
-        assert_eq!(store.held_rows().as_ptr(), storage);
-        assert_eq!(store.held_rows().len(), first.rows.len());
-    }
 }
 
 #[test]

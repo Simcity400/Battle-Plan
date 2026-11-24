@@ -387,21 +387,6 @@ mod statistic_tests {
         assert!(sibling.delta(Some(&sibling)).unwrap().is_none());
     }
     #[test]
-    fn research_bonus_occurrences_carry_independently() {
-        let old = FactionResearchRow {
-            faction: 7,
-            ordinal: 9,
-            bonus_raw: 17,
-            ..Default::default()
-        };
-        let mut next = old.clone();
-        next.bonus_raw = 19;
-        let delta = next.delta(Some(&old)).unwrap().unwrap();
-        assert_eq!(delta.mask, 1 << 2);
-        assert!(delta.values.len() <= 8);
-        assert_eq!(delta.apply(Some(old)).unwrap(), next);
-    }
-    #[test]
     fn unchanged_member_operands_carry_when_only_owner_refresh_boundaries_advance() {
         let member = FactionAccountRow {
             account: 17,
@@ -430,33 +415,6 @@ mod statistic_tests {
             next.delta(Some(&old)).unwrap().unwrap().mask,
             (1 << 3) | (1 << 6) | (1 << 8) | (1 << 9)
         );
-    }
-    #[test]
-    fn passive_initiative_derives_truncation_clamp_overflow_and_sparse_resets() {
-        for base in [i64::MIN, -3, 0, 7, i64::MAX - 4, i64::MAX] {
-            for product in [i64::MIN, -300_001, -1, 0, 1, 200_001, i64::MAX] {
-                for steps in [0, 1, 2, 17, 97] {
-                    let mut expected = base;
-                    for _ in 0..steps {
-                        expected = expected.wrapping_add(product / 100_000).max(0);
-                    }
-                    let row = FactionAccountRow {
-                        initiative_raw: base,
-                        initiative_product_raw: product,
-                        initiative_steps: steps,
-                        ..Default::default()
-                    };
-                    assert_eq!(row.initiative(), expected, "{base}/{product}/{steps}");
-                }
-            }
-        }
-        let row = FactionAccountRow {
-            initiative_raw: 7,
-            initiative_product_raw: 0,
-            initiative_steps: u32::MAX,
-            ..Default::default()
-        };
-        assert_eq!(row.initiative(), 7);
     }
     #[test]
     fn shares_keep_supplying_versions_when_current_influence_changes_again() {

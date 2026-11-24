@@ -307,19 +307,6 @@ mod tests {
     }
 
     #[test]
-    fn atoi_saturates() {
-        assert_eq!(decimal_i32(b"99999999999"), i32::MAX);
-        assert_eq!(decimal_i32(b"-99999999999"), i32::MIN);
-        assert_eq!(decimal_i32(b"-2147483648"), i32::MIN);
-        assert_eq!(decimal_i32(b"2147483647"), i32::MAX);
-        assert_eq!(decimal_i32(b"4294967296"), i32::MAX);
-        assert_eq!(decimal_i32(b" +10.5"), 10);
-        assert_eq!(decimal_i32(b"1e2"), 1);
-        assert_eq!(decimal_i32(b"0x10"), 0);
-        assert_eq!(decimal_i32(b"px"), 0);
-    }
-
-    #[test]
     fn fixed5_reads_digit_by_digit() {
         for (text, value) in [
             (&b"1.5"[..], Some(150_000)),

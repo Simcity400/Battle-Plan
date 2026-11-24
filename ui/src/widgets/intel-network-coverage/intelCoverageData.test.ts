@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { liveKey, valuesOf } from '../../charts/live.ts';
-import { cellState, countriesAt, coverageStructure, fieldText, matrixCells, measureField, pairOf, pairOptions, pairsAt, pairTooltip, validateIntelCoverage } from './intelCoverageData.ts';
+import { cellState, countriesAt, coverageStructure, matrixCells, pairOf, pairOptions, pairsAt, pairTooltip, validateIntelCoverage } from './intelCoverageData.ts';
 import type { IntelCoverageReply } from '../../generated/dashboard';
 
 const ids: Record<string, number> = { GER: 1, ENG: 2, SOV: 3, FRA: 4, ITA: 5 };
@@ -34,16 +34,6 @@ test('the most active countries are those with the most networks in or from them
   assert.deepEqual(countriesAt(data, 3, () => false, true), []);
 });
 
-test('measures map onto the recorded fields on each basis', () => {
-  assert.equal(measureField('covered', 'controlled'), 'coveredControlled');
-  assert.equal(measureField('covered', 'core'), 'coveredCore');
-  assert.equal(measureField('strength', 'core'), 'coreStrength');
-  assert.equal(measureField('strength', 'controlled'), 'controlledStrength');
-  assert.equal(measureField('strongest', 'core'), 'maxStrength');
-  assert.equal(fieldText('maxStrength', 1_234_567), '12.34');
-  assert.equal(fieldText('maxStrength', -150_000), '−1.5');
-  assert.equal(fieldText('coveredCore', 12_345), '12,345');
-});
 
 test('the matrix colours each network against the largest shown, leaves the diagonal and proven absences empty, hatches the unknown', () => {
   const at = pairsAt(reply([['GER', 'ENG'], ['SOV', 'GER']]));

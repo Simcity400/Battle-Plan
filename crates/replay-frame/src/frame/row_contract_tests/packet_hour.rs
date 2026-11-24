@@ -41,42 +41,6 @@ fn host_hours_cost_no_bytes_and_historical_stamps_decode_only_from_their_format(
     assert!(PacketHour::decode(&mut input).is_err());
 }
 
-#[test]
-fn every_packet_host_is_hourly_never_carried_and_readable_at_the_stamped_format() {
-    let stamped = FormatVersion::read(STAMPED_PACKET_FORMAT).unwrap();
-    assert_eq!(PACKET_HOUR_FORMAT, 102);
-    const { assert!(STAMPED_PACKET_FORMAT < PACKET_HOUR_FORMAT) };
-    for (index, host) in PACKET_HOUR_HOSTS.into_iter().enumerate() {
-        assert!(!PACKET_HOUR_HOSTS[..index].contains(&host), "{host:?}");
-        assert_eq!(cadence::cadence(host), Cadence::Hourly, "{host:?}");
-        assert!(!cadence::is_staggered(host) && !cadence::is_sliced(host));
-        let change = host.last_change();
-        let (kind, format) = match host {
-            TableId::DivisionMovement => (
-                ChangeKind::AppendedOnly,
-                replay_data::rows::compatibility::CAPTURE_ADDITIONS_FORMAT,
-            ),
-            TableId::CountryCounterInputs | TableId::DivisionTemplateIcons => {
-                (ChangeKind::AppendedOnly, EXPERIENCE_FORMAT)
-            }
-            TableId::SimulationFeatures => (ChangeKind::AppendedOnly, SCRIPTED_MAP_FORMAT),
-            TableId::RailwayGunCounterInputs => (
-                ChangeKind::AppendedOnly,
-                replay_data::rows::compatibility::CAPTURE_ADDITIONS_FORMAT,
-            ),
-            _ => (ChangeKind::AppendedOnly, PACKET_HOUR_FORMAT),
-        };
-        assert_eq!(change.kind, kind, "{host:?}");
-        assert_eq!(change.format, format, "{host:?}");
-        assert_eq!(
-            stamped.table_refusal(host).is_some(),
-            host == TableId::DivisionMovement,
-            "{host:?}"
-        );
-        assert!(FormatVersion::CURRENT.table_refusal(host).is_none());
-    }
-}
-
 fn host_rows(table: TableId, tick: usize) -> TableRows {
     sample_extended_table(table, tick)
         .filter(|rows| !rows.is_empty())

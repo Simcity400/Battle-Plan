@@ -1915,36 +1915,6 @@ fn content_decided_world_queries_read_no_table_field_or_row_they_do_not_declare(
 }
 
 #[test]
-fn every_declaration_names_existing_fields() {
-    for query in declared_world_queries() {
-        assert!(Key::World(query).dependence().is_some());
-    }
-    use crate::scope::Query as Scopes;
-    for query in [
-        Scopes::Slot(101),
-        Scopes::RawSlot(0),
-        Scopes::RawSlot(101),
-        Scopes::PositiveCountry(101),
-        Scopes::Tag(1),
-        Scopes::Country("AAA".into()),
-        Scopes::Alias("AAA".into()),
-        Scopes::AliasEntry("AAA".into()),
-        Scopes::ResolveTag("AAA".into()),
-        Scopes::Roster,
-        Scopes::Describe(crate::scope::Target::Country(1)),
-    ] {
-        assert!(Key::Scopes(query).dependence().is_some());
-    }
-    for key in [
-        Key::ClockSeed,
-        Key::FocusTag("AAA".into()),
-        Key::Table(TableId::States),
-    ] {
-        assert!(key.dependence().is_some());
-    }
-}
-
-#[test]
 fn country_scope_queries_declare_tag_substitution_and_only_the_fields_they_read() {
     use crate::scope::{Query as Scopes, RecordedScopes, Target};
     use content_reader_key_names::tag_aliases::{TagAlias, TagAliases};

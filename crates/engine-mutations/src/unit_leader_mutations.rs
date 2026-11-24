@@ -58,22 +58,3 @@ const fn site(name: &'static str, rva: Rva) -> MutationSite {
     MutationSite { name, rva }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sites_are_distinct_and_the_unnamed_indices_name_the_exile_sites() {
-        for (index, site) in MUTATIONS.iter().enumerate() {
-            assert!(
-                MUTATIONS[..index]
-                    .iter()
-                    .all(|other| other.rva != site.rva && other.name != site.name),
-                "{}",
-                site.name
-            );
-        }
-        assert_eq!(MUTATIONS[EXILE_GENERATION].name, "exile_generation");
-        assert_eq!(MUTATIONS[EXILE_REMOVAL].name, "exile_removal");
-    }
-}

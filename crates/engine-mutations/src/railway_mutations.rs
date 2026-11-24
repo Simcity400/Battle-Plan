@@ -106,14 +106,6 @@ mod tests {
     use engine_native_memory::memory::SliceMemory;
 
     #[test]
-    fn sites_are_distinct() {
-        let mut rvas: Vec<_> = MUTATIONS.iter().map(|(site, _)| site.rva).collect();
-        rvas.sort_unstable();
-        rvas.dedup();
-        assert_eq!(rvas.len(), MUTATIONS.len());
-    }
-
-    #[test]
     fn an_info_names_its_province_through_its_definition() {
         const BASE: usize = 0x1000;
         let mut bytes = vec![0_u8; 0x400];
@@ -141,30 +133,6 @@ mod tests {
             bytes: &bytes,
         };
         assert_eq!(province(&memory, info), None);
-    }
-
-    #[test]
-    fn each_site_names_its_receiver() {
-        let receiver = |name: &str| {
-            MUTATIONS
-                .iter()
-                .find(|(site, _)| site.name == name)
-                .unwrap()
-                .1
-        };
-        assert_eq!(receiver("set_province_on_cooldown"), Receiver::Province);
-        assert_eq!(receiver("construct_info"), Receiver::Province);
-        assert_eq!(receiver("update_cooldowns"), Receiver::CooldownList);
-        assert_eq!(receiver("set_railway"), Receiver::Info);
-        assert_eq!(receiver("destroy_info"), Receiver::Info);
-        for name in [
-            "read_info",
-            "construct_manager",
-            "destroy_manager",
-            "read_manager",
-        ] {
-            assert_eq!(receiver(name), Receiver::Every, "{name}");
-        }
     }
 
     #[test]

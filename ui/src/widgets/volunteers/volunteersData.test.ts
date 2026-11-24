@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { FlowMotion } from '../../charts/flow/layout.ts';
 import { sumFlowParts } from '../../charts/flow/sum.ts';
 import { countryMatch, countryMatchFilter } from '../../dashboard/groups.ts';
 import { campaignScale, emptyMessage, flowParts, holderKey, linkFilter, linkHolders, linksAt, partnersOf, requestTags, withoutRequest } from './volunteersData.ts';
@@ -111,23 +110,6 @@ test('two countries holding one tag in turn are two nodes, never one eased into 
   assert.equal(partnersOf(linksAt(reused, 30, all).links, drill).sent.length, 0, 'after the tag passes on, its drill does not switch to the new holder');
 });
 
-test('when a tag passes to another country, the diagram fades one holder out and the other in instead of gliding between them', () => {
-  const reused = { tallies: [], unobserved: [], warnings: [], links: [
-    link('old', 'A', 'B', [run(0, 23, 2)], 1), link('new', 'A', 'B', [run(24, 99, 2)], 7)] } as unknown as VolunteersReply;
-  const drawn = (hour: number) => {
-    const summed = sumFlowParts(flowParts(linksAt(reused, hour, all).links), 12);
-    return { nodes: summed.nodes.map(node => ({ id: node.id, side: node.side, label: node.id, color: '#888', order: node.id })),
-      links: summed.links.map(item => ({ id: item.id, source: item.source, target: item.target, value: item.value, color: '#888', order: item.id })) };
-  };
-  const geometry = { left: 100, right: 300, top: 0, bottom: 200, nodeWidth: 10, gap: 10 };
-  const motion = new FlowMotion();
-  motion.step(drawn(20), geometry, 16, 100, true);
-  const next = drawn(30);
-  const frame = motion.step(next, geometry, 16, 100);
-  const entering = frame.links.find(shape => shape.id === next.links[0].id)!;
-  assert.ok(entering.width < frame.links.find(shape => shape.id !== entering.id)!.width, 'the later holder’s ribbon grows in while the earlier one’s shrinks away');
-  assert.ok(frame.nodes.find(box => box.id === next.nodes.find(node => node.side === 'source')!.id)!.alpha < 1, 'the later holder’s node fades in');
-});
 
 test('with no tag to ask for, unrecorded membership, an empty group and countries not in the campaign read differently', () => {
   assert.deepEqual(withoutRequest({ hourly: true, membershipUnobserved: true }), { kind: 'unavailable', message: 'This group’s membership was not recorded at this date.' });

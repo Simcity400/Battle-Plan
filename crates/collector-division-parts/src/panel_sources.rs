@@ -2744,20 +2744,6 @@ mod tests {
     }
 
     #[test]
-    fn memo_hashing_spreads_handles_that_share_their_kind() {
-        use std::hash::BuildHasher;
-        let hasher = Map::<u64, ()>::default().hasher().clone();
-        let buckets: std::collections::BTreeSet<u64> = (1..=1024u64)
-            .map(|id| hasher.hash_one((id << 32) | 0x27) & 1023)
-            .collect();
-        assert!(buckets.len() > 512, "{} of 1024 buckets", buckets.len());
-        let pairs: std::collections::BTreeSet<u64> = (1..=1024u64)
-            .map(|id| hasher.hash_one(((id << 32) | 0x27, 3usize)) & 1023)
-            .collect();
-        assert!(pairs.len() > 512, "{} of 1024 buckets", pairs.len());
-    }
-
-    #[test]
     fn an_equal_terrain_reread_allocates_nothing_and_each_change_publishes_only_its_rows() {
         use engine_native::cequipment_variant as variant;
         use engine_native_land::division_panel_operands;

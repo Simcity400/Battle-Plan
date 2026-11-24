@@ -489,20 +489,6 @@ pub(crate) mod scale_support {
         w
     }
 
-    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
-    pub(crate) fn resource_arena(
-        countries: usize,
-        resources: u32,
-    ) -> (engine_native::crelation::status::bench::Arena, usize) {
-        use engine_native::crelation::status::bench::{Arena, countries as census};
-        let object = ccountry::RESOURCES + 8;
-        let pools = 9 * ((resources as usize + 1) * VALUE_STRIDE + 16);
-        let per_country = 12 + object + 16 + 0x800 + 16 + pools;
-        let mut arena = Arena::new(0x10_0000 + (countries + 1) * per_country);
-        let (game_state, objects) = census(&mut arena, countries, object);
-        populate(&mut arena, &objects, resources);
-        (arena, game_state)
-    }
 }
 
 #[cfg(test)]
@@ -815,55 +801,6 @@ mod tests {
         }
     }
 
-    #[test]
-    #[ignore = "synthetic acquisition cost; release, affinity 0xF"]
-    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
-    fn acquisition_cost() {
-        use super::scale_support::{descriptors, resource_arena};
-        use engine_native_memory::memory::{CountedMemory, LiveMemory, ReadCounts};
-        let countries = std::env::var("BATTLEPLAN_RESOURCE_COST_COUNTRIES").or_else(|_| std::env::var("HOI4_RESOURCE_COST_COUNTRIES"))
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(5_000_usize);
-        let resources = 7;
-        let (arena, state) = resource_arena(countries, resources);
-        let base = arena.base();
-        let descriptors = descriptors(resources);
-        let memory = CountedMemory::new(unsafe { LiveMemory::new() });
-        let mut rows = vec![super::Row::default(); countries * resources as usize];
-        for (label, gathered) in [("serial", false), ("batched", true)] {
-            let mut samples = Vec::new();
-            let mut reads = ReadCounts::ZERO;
-            for _ in 0..40 {
-                ReadCounts::take_current();
-                let start = std::time::Instant::now();
-                let walk = if gathered {
-                    super::walk(&memory, base, state, &descriptors, &mut rows)
-                } else {
-                    super::baseline::walk_buffer(
-                        &memory,
-                        base,
-                        state,
-                        &descriptors,
-                        engine_native_memory::walk::Buffer::Growing(&mut rows),
-                    )
-                };
-                samples.push(start.elapsed().as_nanos() as f64);
-                reads = ReadCounts::take_current();
-                assert_eq!(walk, Outcome::Rows { len: rows.len() });
-                std::hint::black_box(&rows);
-            }
-            samples.sort_by(f64::total_cmp);
-            println!(
-                "country_resources {label} countries={countries} median_ns_per_country={:.1} copy_calls={} scattered_calls={} record_calls={} spans={}",
-                samples[20] / countries as f64,
-                reads.copy_calls,
-                reads.scattered_calls,
-                reads.record_calls,
-                reads.spans
-            );
-        }
-    }
     use super::*;
 
     #[test]

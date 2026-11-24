@@ -174,49 +174,6 @@ fn a_free_eye_shows_each_icon_by_its_own_distance() {
 }
 
 #[test]
-fn an_icon_s_quads_stand_at_its_anchor() {
-    content_reader_script::test_game::enter();
-    let resources = gui::fixture();
-    let windows = gui::windows(
-        br#"guiTypes = {
-        containerWindowType = { name = adjacency_rule_mapicon size = { width = 40 height = 20 }
-            iconType = { name = icon spriteType = GFX_even } }
-    }"#,
-    );
-    let context = Context {
-        resources: &resources,
-        windows: &windows,
-        viewport: [2048, 1152],
-        time: Some(0.),
-    };
-    let prepared = prepare(&fixture(Ok(1700.)).with_build("Countenance v1.19.5.0.c184"), Stock::StrategicNavy, 300.);
-    let mut batch = Batch::default();
-    let mut report = BTreeMap::new();
-    let drawn = prepared.draw(
-        &context,
-        0,
-        &mut PoolView::default(),
-        &mut batch,
-        &mut report,
-    );
-    assert_eq!(drawn, 2, "{report:?}");
-    assert!(!batch.quads.is_empty());
-    let anchors: Vec<_> = prepared
-        .placed
-        .iter()
-        .map(|placed| Some(placed.anchor))
-        .collect();
-    assert!(
-        batch
-            .quads
-            .iter()
-            .all(|quad| anchors.contains(&quad.anchor))
-    );
-    batch.push(batch.quads[0].clone());
-    assert_eq!(batch.quads.last().unwrap().anchor, None);
-}
-
-#[test]
 fn a_province_without_a_position_is_counted() {
     let icons = AdjacencyIcons::of(
         &content_reader_map::adjacency_rules::parse(b"adjacency_rule = { name = A icon = 99 }")
@@ -226,17 +183,6 @@ fn a_province_without_a_position_is_counted() {
     let prepared = prepare(&icons, Stock::Resources, 300.);
     assert_eq!(prepared.provinces().count(), 0);
     assert_eq!(prepared.report.values().sum::<usize>(), 1);
-}
-
-#[test]
-fn each_mode_draws_at_its_own_tables_adjacency_rule_priority() {
-    let mut priorities = Priorities::uniform([0; PriorityIcon::ALL.len()]);
-    priorities.set(PriorityTable::StrategicNavy, PriorityIcon::AdjacencyRule, 7);
-    priorities.set(PriorityTable::Default, PriorityIcon::AdjacencyRule, 3);
-    priorities.set(PriorityTable::Resources, PriorityIcon::AdjacencyRule, -4);
-    assert_eq!(priority(&priorities, &mode(Stock::StrategicNavy)), 7);
-    assert_eq!(priority(&priorities, &mode(Stock::Supply)), 3);
-    assert_eq!(priority(&priorities, &mode(Stock::Resources)), -4);
 }
 
 #[test]

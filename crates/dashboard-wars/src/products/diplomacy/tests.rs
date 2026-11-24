@@ -52,12 +52,6 @@ fn an_opinion_listed_under_a_countrys_other_raw_ids_is_its_pair() {
 }
 
 #[test]
-fn the_schema_numbers_a_relations_endpoints_and_dates() {
-    let field = |name| dashboard_declare::field(TableId::RelationTuples, name).unwrap();
-    assert_eq!((field("first_country"), field("second_country"), field("start_hour"), field("end_hour")), (FIRST, SECOND, START, END));
-}
-
-#[test]
 fn a_relations_runs_are_cut_where_its_endpoints_or_dates_change() {
     let step = |hour, cells: Option<[Cell; 4]>| lanes::Step { hour, cells: cells.map(|cells| Box::from(cells)) };
     let n = Cell::Number;

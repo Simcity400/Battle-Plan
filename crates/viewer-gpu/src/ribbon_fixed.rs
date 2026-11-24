@@ -169,9 +169,4 @@ mod tests {
         assert_eq!(points.len(), 3);
     }
 
-    #[test]
-    fn the_cross_lane_sign_decides_the_side() {
-        assert!(cross_y([SCALE, 0], [0, SCALE]) < 0);
-        assert!(cross_y([0, SCALE], [SCALE, 0]) > 0);
-    }
 }

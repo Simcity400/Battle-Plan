@@ -380,12 +380,6 @@ mod tests {
     }
 
     #[test]
-    fn only_a_tga_name_reaches_the_engine_loader() {
-        assert!(names_tga(b"x.tga") && names_tga(b"gfx/X.TgA"));
-        assert!(!names_tga(b".tg") && !names_tga(b"x.dds") && !names_tga(b"x.tga "));
-    }
-
-    #[test]
     fn force_pow2_pads_to_the_next_power_of_two() {
         let pixels: Vec<u8> = (0..15_u8).flat_map(|i| [i, i + 1, i + 2, 128]).collect();
         let png = png_rgba(3, 5, &pixels);

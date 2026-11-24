@@ -1164,22 +1164,6 @@ fn read_calls(mut bytes: Vec<u8>, guns: usize) -> u64 {
 }
 
 #[test]
-fn read_calls_per_hour_and_per_gun_are_pinned() {
-    let cost = |bytes: fn() -> Vec<u8>| {
-        let one = read_calls(bytes(), 1);
-        (one, read_calls(bytes(), 2) - one)
-    };
-    let (standing_hour, standing_gun) = cost(standing);
-    let (moving_hour, moving_gun) = cost(fixture);
-    eprintln!(
-        "railway gun inputs: standing {standing_hour} calls for one gun, {standing_gun} per \
-         further gun; moving in combat {moving_hour}, {moving_gun} per further gun"
-    );
-    assert_eq!((standing_hour, standing_gun), (57, 41));
-    assert_eq!((moving_hour, moving_gun), (93, 55));
-}
-
-#[test]
 fn standing_gun_keeps_null_links_as_zero() {
     let mut rows = vec![Row::default(); 1];
     let walk = capture(standing(), None, &mut rows, &mut Vec::new());

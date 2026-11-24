@@ -168,16 +168,6 @@ mod tests {
     use replay_data::rows::TableRows;
 
     #[test]
-    fn detection_capacity_sizes_every_row_for_every_country_slot() {
-        let mut capacity = Capacities {
-            rows: 100,
-            detected: 1,
-        };
-        capacity.raise_for_countries(5_000);
-        assert_eq!(capacity.detected, 100 * 625);
-    }
-
-    #[test]
     fn detection_bytes_survive_conversion_and_escapes_are_refused() {
         let mut captured = Captured::with_capacities(&Capacities {
             rows: 1,

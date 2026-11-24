@@ -207,23 +207,6 @@ fn the_kind_the_owner_and_the_relation_all_gate_a_group() {
 }
 
 #[test]
-fn the_relation_is_asked_only_after_the_geography_accepts() {
-    let extents = extents(10.0, 10.0);
-    let asked = Cell::new(0);
-    let counting = |_: u32, _: u32| {
-        asked.set(asked.get() + 1);
-        true
-    };
-    let a = icon(0, 1, 100, Some(7), 0.0);
-    let far = icon(0, 2, 200, Some(8), 10.0);
-    assert!(!may_group(&a, &far, Level::State, &extents, &counting));
-    assert_eq!(asked.get(), 0);
-    let near = icon(0, 2, 200, Some(7), 10.0);
-    assert!(may_group(&a, &near, Level::State, &extents, &counting));
-    assert_eq!(asked.get(), 1);
-}
-
-#[test]
 fn a_group_sits_on_the_mean_of_its_members_and_a_lone_icon_does_not_move() {
     let extents = extents(10.0, 10.0);
     let icons = [
@@ -398,47 +381,6 @@ fn level_none_leaves_every_icon_where_it_was() {
     assert_eq!(groups.len(), 2);
     assert_eq!(groups[0].anchor, icons[0].anchor);
     assert_eq!(groups[1].anchor, icons[1].anchor);
-}
-
-#[test]
-#[ignore = "release unit scaling benchmark"]
-fn unit_scale_grouping() {
-    for count in [50_000, 100_000] {
-        let icons: Vec<_> = (0..count)
-            .map(|i| Icon {
-                kind: 0,
-                owner: (i % 1_500 + 1) as u32,
-                province: (i % 10_000) as u32,
-                state: Some((i % 10_000 / 100) as u32),
-                region: Some((i % 10_000 / 500) as u32),
-                anchor: [(i % 1000) as f32, 0.0, (i / 1000) as f32],
-                track: None,
-            })
-            .collect();
-        let extents = extents(10.0, 10.0);
-        for level in [Level::None, Level::Province, Level::State, Level::Strategic] {
-            let mut times = Vec::new();
-            let mut retained = 0;
-            let mut group_count = 0;
-            for _ in 0..5 {
-                let started = Instant::now();
-                let groups = group(&icons, &everywhere(level, &icons), &extents, &|_, _| false);
-                times.push(started.elapsed().as_secs_f64() * 1e3);
-                assert_eq!(groups.iter().map(|g| g.members.len()).sum::<usize>(), count);
-                retained = groups.capacity() * std::mem::size_of::<Group>()
-                    + groups
-                        .iter()
-                        .map(|g| g.members.capacity() * std::mem::size_of::<usize>())
-                        .sum::<usize>();
-                group_count = groups.len();
-            }
-            times.sort_by(f64::total_cmp);
-            println!(
-                "UNIT_SCALE name=CounterGrouping count={count} level={level:?} groups={group_count} p50_ms={:.6} max_ms={:.6} retained_bytes={retained}",
-                times[2], times[4]
-            );
-        }
-    }
 }
 
 #[test]

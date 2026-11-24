@@ -613,60 +613,6 @@ fn exhausted_health_skips_source_reads_but_positive_health_reads_source() {
 }
 
 #[test]
-#[ignore = "synthetic guarded-read scale measurement; run release with --nocapture"]
-fn building_damage_5000_country_scale() {
-    use engine_native_memory::memory::{CountedMemory, ReadCounts};
-    use std::time::Instant;
-    const WINGS: usize = 0x10000;
-    const STRIDE: usize = 0xa00;
-    let mut bytes = fixture(false);
-    bytes.resize(WINGS + 5000 * STRIDE, 0);
-    for index in 0..5000 {
-        let wing = WINGS + index * STRIDE;
-        u64_at(&mut bytes, wing, BASE + engine_native_parts::cair_wing_layout::VTABLE_RVA.0);
-        u32_at(&mut bytes, wing + cair_wing::ID, index as u32 + 1);
-        u32_at(
-            &mut bytes,
-            wing + cair_wing::COUNTRY_OVERRIDE,
-            index as u32 + 1,
-        );
-    }
-    ReadCounts::take_current();
-    let started = Instant::now();
-    for index in 0..5000 {
-        u64_at(&mut bytes, SOURCE + SOURCE_WING, WINGS + index * STRIDE);
-        let memory = CountedMemory::new(SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        });
-        let result = snapshot(
-            &memory,
-            BASE,
-            GAME,
-            BUILDING,
-            SOURCE,
-            BASE + CALLERS[0].0.0,
-            12345,
-        )
-        .unwrap();
-        assert_eq!(
-            attribution(&memory, BASE, &result).unwrap().attacker,
-            Some(index as u32 + 1)
-        );
-        assert_eq!(applied_damage(&memory, BASE, &result), Ok(0));
-    }
-    let elapsed = started.elapsed();
-    let counts = ReadCounts::take_current();
-    println!(
-        "building damage: 5000 countries, 5000 complete pre/post event reads, native fixture {} bytes, snapshot {} bytes, elapsed {:?}, requests {:?}; synthetic memory only, no live game cost",
-        bytes.len(),
-        std::mem::size_of::<Snapshot>(),
-        elapsed,
-        counts
-    );
-}
-
-#[test]
 fn post_attribution_uses_controller_at_return_and_noop_skips_location() {
     let mut bytes = fixture(false);
     let memory = SliceMemory {

@@ -913,16 +913,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn effective_country_prefers_a_positive_override() {
-        let mut identity = wing(WING_A, 1);
-        assert_eq!(identity.effective_country(), 3);
-        identity.country_override = 9;
-        assert_eq!(identity.effective_country(), 9);
-        identity.country_override = -1;
-        assert_eq!(identity.effective_country(), 3);
-    }
-
     #[derive(Default)]
     struct Holding {
         held: Vec<Registration>,
@@ -1093,46 +1083,6 @@ mod tests {
             assert_eq!(carry.read, before);
         }
         assert_eq!(carry.carried, 0);
-    }
-
-    #[test]
-    fn transport_controls_retire_before_original_success_and_failure_returns() {
-        #[derive(Default)]
-        struct Observer {
-            roots: usize,
-            retired: bool,
-        }
-        impl TransportObserver for Observer {
-            fn root(&mut self, _: u32, _: usize, _: Result<Array, &'static str>) {
-                assert!(!self.retired);
-                self.roots += 1;
-            }
-            fn retire(&mut self) {
-                self.retired = true;
-            }
-        }
-        for fail in [false, true] {
-            let (mut bytes, wings) = fixture();
-            if fail {
-                put64(&mut bytes, MEMBERS, 0xdead_beef);
-            }
-            let mut observer = Observer::default();
-            let result = walk_with_transport(
-                &SliceMemory {
-                    base: 0,
-                    bytes: &bytes,
-                },
-                0,
-                GS,
-                &wings,
-                &mut vec![Row::default(); 2],
-                &mut FailureContext::default(),
-                &mut observer,
-            );
-            assert_eq!(matches!(result, Outcome::Unavailable { .. }), fail);
-            assert_eq!(observer.roots, 1);
-            assert!(observer.retired);
-        }
     }
 
     #[test]

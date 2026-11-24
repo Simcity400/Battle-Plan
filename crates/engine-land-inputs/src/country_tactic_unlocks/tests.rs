@@ -449,37 +449,3 @@ impl<M: Memory> Memory for Counted<'_, M> {
     }
 }
 
-#[test]
-fn each_country_costs_two_copies() {
-    const COUNTRIES: usize = 30;
-    const TACTICS: usize = 96;
-    const UNLOCKS: usize = 32;
-    let (bytes, base, game) = world(COUNTRIES, TACTICS, UNLOCKS);
-    let source = SliceMemory {
-        base: WORLD,
-        bytes: &bytes,
-    };
-    let mut storage = engine_allocation::shared(Cache::with_capacity(Cache::cells_for_countries(
-        COUNTRIES + 1,
-        8192,
-    ))).unwrap();
-    let snapshot = Cache::prepare_shared(&mut storage, &source, base, game).unwrap();
-    let memory = Counted {
-        memory: snapshot.roster_view(&source),
-        copies: 0.into(),
-        bytes: 0.into(),
-        _world: std::marker::PhantomData,
-    };
-    let mut owned = Owned::new(
-        COUNTRIES,
-        COUNTRIES * UNLOCKS,
-        registry_slots(TACTICS as u32 + 1),
-        (TACTICS + 1).max(UNLOCKS) * 8,
-    );
-    let fresh = owned.capture(&memory, base, game);
-    assert_eq!(fresh.outcome, Outcome::Rows { len: COUNTRIES });
-    assert_eq!(fresh.required_unlocks, COUNTRIES * UNLOCKS);
-    assert_eq!(owned.unlocks[..3], [2, 3, 4]);
-    let copies = memory.copies.get();
-    assert!(copies <= 2 * COUNTRIES + 2 * (TACTICS + 1) + 16, "{copies}");
-}

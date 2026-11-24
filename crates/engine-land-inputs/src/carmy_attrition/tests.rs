@@ -351,3 +351,4 @@ fn attrition_memo_shares_keyed_reads_and_failures_between_divisions() {
     assert_eq!(run(&mut memo), direct);
     assert_eq!(reads(), 2 * direct_reads, "a cleared memo reads again");
 }
+

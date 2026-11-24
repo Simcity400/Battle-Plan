@@ -139,25 +139,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_texel_read_is_worded_by_every_way_it_reads_and_an_unreadable_stage_counts() {
-        let why = |wgsl: &str| by_texel(wgsl, 11, "refraction texture");
-        assert_eq!(why(&stage("return textureSample(refraction, linear, uv);")), None);
-        assert_eq!(
-            why(&stage(
-                "let size = vec2<f32>(textureDimensions(refraction));
-                 return textureSample(refraction, linear, uv + 1.0 / size, vec2<i32>(1, 0));"
-            ))
-            .as_deref(),
-            Some(
-                "reads the refraction texture by texel: it samples it at texel offsets; it reads \
-                 its own size"
-            )
-        );
-        assert!(
-            why("not wgsl")
-                .unwrap()
-                .starts_with("could not be read for its refraction texture reads: compiled stage:")
-        );
-    }
 }

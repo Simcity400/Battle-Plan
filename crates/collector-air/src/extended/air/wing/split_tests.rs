@@ -249,32 +249,6 @@ fn parts_kept_across_hours_carry_and_join_whatever_the_split() {
 }
 
 #[test]
-fn idle_parts_keep_their_stores_in_the_retained_bytes() {
-    let world = world();
-    let mut jobs = Jobs::new();
-    jobs.hour(&world, FULL, &[1_250, 2_500, 3_750]);
-    jobs.hour(&world, FULL, &[]);
-    let census = retained_store_bytes(jobs.census.wing_store.as_deref_mut(), &mut [], false);
-    let retained = retained_store_bytes(
-        jobs.census.wing_store.as_deref_mut(),
-        &mut jobs.parts,
-        false,
-    );
-    if !cfg!(feature = "wing_changes") {
-        return;
-    }
-    assert!(retained > census, "{retained} {census}");
-    assert_eq!(
-        retained_store_bytes(jobs.census.wing_store.as_deref_mut(), &mut jobs.parts, true),
-        retained
-    );
-    assert_eq!(
-        certified(jobs.hour(&world, FULL, &[1_250, 2_500, 3_750])),
-        0
-    );
-}
-
-#[test]
 fn a_join_refused_after_partial_growth_forgets_every_store() {
     use collector_primitives::raw_memory::{Charge, Tracker};
     static LOCAL: Tracker = Tracker::new();

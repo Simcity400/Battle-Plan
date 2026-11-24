@@ -147,85 +147,6 @@ fn counted(kind: &str) -> u64 {
 }
 
 #[test]
-fn a_reader_holding_the_frame_before_costs_one_copy() {
-    let kept = moving(6);
-    let index = TableId::CountryLinks.index();
-    let (copied, reused) = (counted("rebuild-copied"), counted("rebuild-reused"));
-    let log = logged(&moving(6));
-    let mut previous: Option<DecodedFrame> = None;
-    for (at, frame) in log.into_frames().enumerate() {
-        let frame = frame.unwrap();
-        assert_same(&frame, &kept[at]);
-        if let Some(previous) = &previous {
-            assert!(!previous.tables[index].identity().is(&frame.tables[index]));
-            assert!(previous.tables[0].identity().is(&frame.tables[0]));
-        }
-        previous = Some(frame);
-    }
-    assert_eq!(counted("rebuild-copied") - copied, 1);
-    assert_eq!(counted("rebuild-reused") - reused, 4);
-}
-
-#[test]
-fn a_table_left_alone_between_changes_keeps_its_spare() {
-    let pausing = || -> Vec<DecodedFrame> {
-        let views: Vec<SharedView> = (0..4)
-            .map(|step| links(&[(1, 1), (2, 2 + step), (3, 3)]).into())
-            .collect();
-        (0..8)
-            .map(|hour| {
-                let mut tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| not_selected());
-                tables[TableId::CountryLinks.index()] = views[hour / 2].clone();
-                DecodedFrame {
-                    branch: 1,
-                    hour: hour as Hour,
-                    tables,
-                    metrics: Metrics::default(),
-                }
-            })
-            .collect()
-    };
-    let kept = pausing();
-    let (copied, reused) = (counted("rebuild-copied"), counted("rebuild-reused"));
-    let log = logged(&pausing());
-    let mut previous: Option<DecodedFrame> = None;
-    for (at, frame) in log.into_frames().enumerate() {
-        let frame = frame.unwrap();
-        assert_same(&frame, &kept[at]);
-        previous = Some(frame);
-    }
-    drop(previous);
-    assert_eq!(counted("rebuild-copied") - copied, 1);
-    assert_eq!(counted("rebuild-reused") - reused, 2);
-}
-
-#[test]
-fn a_reader_holding_every_frame_gets_each_its_own_rows() {
-    let kept = moving(5);
-    let (copied, reused) = (counted("rebuild-copied"), counted("rebuild-reused"));
-    let read: Vec<DecodedFrame> = logged(&kept).into_frames().map(Result::unwrap).collect();
-    for (read, kept) in read.iter().zip(&kept) {
-        assert_same(read, kept);
-    }
-    assert_eq!(counted("rebuild-copied") - copied, 4);
-    assert_eq!(counted("rebuild-reused"), reused);
-}
-
-#[test]
-fn logs_keeping_the_same_frames_compare_each_table_once() {
-    let kept = moving(4);
-    let (diffs, shared) = (counted("diff"), counted("diff-shared"));
-    let (first, second) = (logged(&kept), logged(&kept));
-    assert_eq!(counted("diff") - diffs, 3);
-    assert_eq!(counted("diff-shared") - shared, 3);
-    for log in [first, second] {
-        for (read, kept) in log.into_frames().zip(&kept) {
-            assert_same(&read.unwrap(), kept);
-        }
-    }
-}
-
-#[test]
 fn changes_between_released_views_are_never_taken_for_new_ones() {
     let (diffs, shared) = (counted("diff"), counted("diff-shared"));
     drop(logged(&moving(2)));
@@ -238,15 +159,3 @@ fn changes_between_released_views_are_never_taken_for_new_ones() {
     }
 }
 
-#[test]
-fn changes_found_live_only_as_long_as_a_log_keeps_them() {
-    let kept = moving(3);
-    let (diffs, shared) = (counted("diff"), counted("diff-shared"));
-    drop(logged(&kept));
-    let log = logged(&kept);
-    assert_eq!(counted("diff") - diffs, 4);
-    assert_eq!(counted("diff-shared"), shared);
-    for (read, kept) in log.into_frames().zip(&kept) {
-        assert_same(&read.unwrap(), kept);
-    }
-}

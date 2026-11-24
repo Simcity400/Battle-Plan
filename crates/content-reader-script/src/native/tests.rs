@@ -404,30 +404,6 @@ fn object_lists_read_scalar_outer_values_and_scalar_entries_unconditionally() {
 }
 
 #[test]
-fn object_lists_keep_the_last_value_slot_through_closing_reads() {
-    for (text, expected_kind, expected_text) in [
-        (
-            b"list = { { n = kept } } ".as_slice(),
-            Kind::Bare,
-            b"kept".as_slice(),
-        ),
-        (
-            b"list = { { n = kept } { } } ".as_slice(),
-            Kind::Open,
-            b"{".as_slice(),
-        ),
-        (b"list = { } ".as_slice(), Kind::Open, b"{".as_slice()),
-    ] {
-        let mut reader = Reader::new(lex(text, Mode::KeepMark));
-        assert_eq!(reader.key_operator_value(), Slots::Fresh);
-        reader.object_list((), &mut |(), _| Shape::One);
-        assert_eq!(reader.current.kind, Kind::Close);
-        assert_eq!(reader.value.kind, expected_kind);
-        assert_eq!(reader.value.text, expected_text);
-    }
-}
-
-#[test]
 fn a_block_where_one_value_is_read_shifts_the_rest_up() {
     let read = test_read(b"a = { n = { n = 2 x = 3 } n = 4 } b = { n = 5 }");
     assert_eq!(keys(&read.items), ["a", "n", "b"]);

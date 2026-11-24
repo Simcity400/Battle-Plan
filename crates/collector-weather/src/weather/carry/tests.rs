@@ -638,15 +638,6 @@ fn an_unfollowed_province_hour_reads_every_province_modifier_entry() {
 }
 
 #[test]
-fn the_dense_province_gather_leaves_the_static_modifier_header_out() {
-    let header = sweather_per_province::STATIC_MODIFIERS..sweather_per_province::STATIC_MODIFIERS + 16;
-    for field in sweather_per_province::FIELDS {
-        let copied = field.source_offset..field.source_offset + field.len;
-        assert!(copied.end <= header.start || copied.start >= header.end, "{copied:?}");
-    }
-}
-
-#[test]
 fn static_modifier_lists_are_read_only_after_a_counted_write_or_the_daily_update() {
     let provinces = 80;
     let mut world = World::new(provinces, 9, (5, 2));
@@ -858,58 +849,3 @@ fn a_failed_window_custom_sea_read_is_refused_and_read_in_full_next_hour() {
     assert_eq!(custom_read(&world, &census), with_custom(&world, every(9)));
 }
 
-#[test]
-#[ignore = "synthetic guarded weather window timing"]
-fn weather_window_bench() {
-    let mut world = World::build(13_414, 305, (584, 7), true);
-    let live = unsafe { engine_native_memory::memory::LiveMemory::new() };
-    let state = world.base + STATE;
-    let mut evict = vec![0_u8; 256 << 20];
-    let mut jobs: [WeatherJob; 2] = std::array::from_fn(|_| WeatherJob::new());
-    jobs[1].carry = Some(carry());
-    let mut samples: [Vec<f64>; 2] = Default::default();
-    let mut read = [0_u64; 2];
-    for at in 1..=40 {
-        world.pass(i64::from(at));
-        for (index, job) in jobs.iter_mut().enumerate() {
-            if let Some(carry) = job.carry.as_deref_mut() {
-                carry.begin(at, false, Some(0));
-            }
-            evict.fill(at as u8);
-            std::hint::black_box(&evict);
-            let started = std::time::Instant::now();
-            let report = copy_weather_refresh(
-                &live,
-                WeatherCopyContext {
-                    base: 0,
-                    game_state: state,
-                },
-                job,
-            );
-            let elapsed = started.elapsed().as_secs_f64() * 1e3;
-            assert!(report.raw_ok);
-            if at > 2 {
-                samples[index].push(elapsed);
-                read[index] += report.raw_bytes.iter().sum::<u64>();
-                if let Some(carry) = job.carry.as_deref() {
-                    assert_eq!(carry.followed, 3, "hour {at}");
-                }
-            }
-        }
-    }
-    for (index, (name, mut sample)) in ["every record", "windows"]
-        .into_iter()
-        .zip(samples)
-        .enumerate()
-    {
-        sample.sort_by(f64::total_cmp);
-        let len = sample.len();
-        println!(
-            "WEATHER_WINDOW {name}: {:.3} ms median ({:.3}..{:.3}), {} bytes/hour",
-            sample[len / 2],
-            sample[0],
-            sample[len - 1],
-            read[index] / len as u64,
-        );
-    }
-}

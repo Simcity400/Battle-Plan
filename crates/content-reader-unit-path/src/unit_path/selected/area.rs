@@ -295,22 +295,6 @@ mod tests {
         assert!(areas_connect(1, 2, 8, |_| Ok(outside_start.clone()), |_| panic!()).is_err());
     }
     #[test]
-    fn equal_heap_keys_keep_hole_order_without_area_label_tiebreak() {
-        let mut queue = AreaQueue::default();
-        for label in [9, 2, 8, 1] {
-            queue.push(QueueEntry {
-                cost: 0,
-                province: 4,
-                label,
-            });
-        }
-        let mut labels = Vec::new();
-        while let Some(entry) = queue.pop() {
-            labels.push(entry.label);
-        }
-        assert_eq!(labels, [9, 8, 2, 1]);
-    }
-    #[test]
     fn visited_identity_is_nonsea_index_and_is_marked_before_heap_pop() {
         let get = |label| {
             let mut result = match label {

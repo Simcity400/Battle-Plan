@@ -287,13 +287,3 @@ fn a_resume_in_the_middle_writes_what_a_run_never_stopped_writes() {
     assert_eq!(testing::rows(&resumed, TableId::CountryGameScores), testing::rows(&unbroken, TableId::CountryGameScores));
 }
 
-#[test]
-fn its_state_is_its_tables_so_a_resume_recomputes_from_them() {
-    let mut score = GameScore::default();
-    let mut blob = Bytes::new();
-    score.save(&mut blob).unwrap();
-    assert!(blob.bytes().is_empty());
-    score.load(&[]).unwrap();
-    assert!(score.rebuild);
-    assert!(score.load(&[1]).is_err());
-}

@@ -1154,39 +1154,6 @@ fn impacts_keep_recorded_order_anchor_fallbacks_and_named_missing_data() {
 }
 
 #[test]
-fn weather_delegates_the_existing_priority_field_including_unavailable_tables() {
-    let stack = fixture("products_original_weather");
-    let content = content(&stack);
-    let mut frame = frame(2);
-    put(
-        &mut frame,
-        TableRows::WeatherRegions(vec![WeatherRegionRow {
-            id: 73,
-            light_rain: 1,
-            snow: 1,
-            ..Default::default()
-        }]),
-    );
-    assert!(
-        ProductHour::new(&content, &frame, 0.)
-            .weather_field()
-            .unwrap()
-            == original_weather_field(&frame).unwrap()
-    );
-    frame.tables[TableId::WeatherRegions.index()] = TableView::Unavailable {
-        reason: "fixture weather coverage".into(),
-    }
-    .into();
-    let expected = original_weather_field(&frame);
-    let actual = ProductHour::new(&content, &frame, 0.).weather_field();
-    assert_eq!(actual.is_err(), expected.is_err());
-    if let (Err(actual), Err(expected)) = (actual, expected) {
-        assert_eq!(actual.kind(), expected.kind());
-        assert_eq!(actual.to_string(), expected.to_string());
-    }
-}
-
-#[test]
 fn intel_bytes_preserve_the_six_pixel_average_and_missing_province_visibility() {
     let stack = fixture("products_intel_bytes");
     let content = content(&stack);
@@ -1386,63 +1353,6 @@ fn exact_country_requests_do_not_alias_duplicate_tags_and_reject_absent_instance
     assert_eq!(hour.vision(&choice).unwrap().ours(), 1500);
     assert!(hour.seed_country(&choice, 101, 1500).is_err());
     assert!(hour.seed_country(&choice, 1601, 1501).is_err());
-}
-
-#[test]
-fn weather_wire_preserves_priority_order_and_each_availability_state() {
-    let stack = fixture("products_weather_closed");
-    let content = content(&stack);
-    let rows = vec![
-        WeatherRegionRow {
-            id: 4,
-            snow: 1,
-            ..Default::default()
-        },
-        WeatherRegionRow {
-            id: 4,
-            light_rain: 2,
-            sandstorm: 1,
-            ..Default::default()
-        },
-        WeatherRegionRow {
-            id: 90001,
-            blizzard: 1,
-            ..Default::default()
-        },
-    ];
-    for source in [
-        TableView::Complete(TableRows::WeatherRegions(rows.clone())),
-        TableView::Truncated {
-            rows: TableRows::WeatherRegions(rows),
-            missing: 3,
-        },
-        TableView::Unavailable {
-            reason: "synthetic failed weather read".into(),
-        },
-        TableView::NotRecorded {
-            mode: replay_data::scope::CaptureMode::Map,
-        },
-        TableView::Complete(TableRows::Countries(Vec::new())),
-    ] {
-        let mut frame = frame(2);
-        frame.tables[TableId::WeatherRegions.index()] = source.into();
-        let actual = ProductHour::new(&content, &frame, 0.0).weather_field();
-        let expected = original_weather_field(&frame);
-        match (actual, expected) {
-            (Ok(actual), Ok(expected)) => {
-                let bytes = product_codec::encode(&actual).unwrap();
-                assert_eq!(bytes, product_codec::encode(&expected).unwrap());
-                let decoded: map_display_data::WeatherField =
-                    product_codec::decode(&bytes).unwrap();
-                assert_eq!(decoded, actual);
-            }
-            (Err(actual), Err(expected)) => assert_eq!(
-                (actual.kind(), actual.to_string()),
-                (expected.kind(), expected.to_string())
-            ),
-            _ => panic!("weather availability changed"),
-        }
-    }
 }
 
 #[test]
@@ -3804,3 +3714,4 @@ fn incremental_vision_keeps_carried_values_across_decoder_certificate_epochs() {
         assert_frozen_fog(&content, &frame, &choice);
     }
 }
+

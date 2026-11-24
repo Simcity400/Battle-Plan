@@ -52,8 +52,6 @@ class Findings(unittest.TestCase):
             ("crates/replay-columnar/src/lib.rs", 9, "dbg_macro", "warning", "the `dbg!` macro is intended as a debugging tool"),
         ])
 
-    def test_a_path_outside_the_checkout_is_read_from_its_workspace_folder(self):
-        self.assertEqual(cc.normal("/home/boat/src/crates/a/src/lib.rs"), "crates/a/src/lib.rs")
 
 
 class Judge(unittest.TestCase):

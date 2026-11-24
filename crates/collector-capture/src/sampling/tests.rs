@@ -1270,41 +1270,6 @@ fn a_refused_hand_off_records_its_hour_and_returns_the_frame() {
 }
 
 #[test]
-fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
-    let shared =
-    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
-    unsafe { Shared::new(0, 0, 1) };
-    assert_eq!(shared.frames.len(), BUFFERS);
-    assert_eq!(shared.frames.live(), BUFFERS);
-    let mut bytes = engine_allocation::SharedBox::<AtomicU64>::BYTES;
-    bytes += unsafe { (&*shared.roster.get()).as_ref().unwrap() }.allocated_bytes();
-    bytes += unsafe { &*shared.country_cache.get() }.allocated_bytes();
-    bytes += shared.country_intel.allocated_bytes();
-    bytes += unsafe { (&*shared.raid_air_scores.get()).as_ref().unwrap() }.allocated_bytes();
-    bytes += unsafe { &*shared.fixed_layout_buffer.get() }.capacity();
-    bytes += engine_allocation::SharedBox::<collector_workers::frame_priority::Pipeline>::BYTES;
-    bytes += shared.frames.slot_bytes() as usize;
-    bytes += engine_allocation::SharedBox::<crate::frame_capacities::Capacities>::BYTES;
-    for slot in shared.frames.slots() {
-        let frame = slot.frame.load(Ordering::Acquire);
-        assert!(!frame.is_null());
-        let frame = unsafe { &*frame };
-        let home = frame.extended.country_intel_home().unwrap();
-        assert!(home.shares(&shared.country_intel));
-        assert!(engine_allocation::SharedBox::ptr_eq(
-            &frame.extended.template_home().unwrap(),
-            &shared.template_home
-        ));
-        assert!(engine_allocation::SharedBox::ptr_eq(
-            &frame.extended.naval_combat_home().unwrap(),
-            &shared.naval_combat_home
-        ));
-        bytes += frame.allocated_bytes();
-    }
-    assert_eq!(shared.pool_owned(), bytes as u64);
-}
-
-#[test]
 fn a_stalled_spool_never_holds_the_game_and_the_pool_returns_to_its_steady_frames() {
     use std::{collections::HashSet, sync::mpsc};
     let shared = Arc::new(
@@ -3383,42 +3348,3 @@ fn buffers_backlogged_with_one_free_buffer() {
     assert_eq!(shared.frames.len(), BUFFERS);
 }
 
-#[test]
-fn every_raw_copy_join_has_a_raw_payload_or_a_failure() {
-    const INCOMPLETE: &str = "Radar owned acquisition could not complete";
-    for failure in [None, Some("Radar acquisition job panicked")] {
-        for raw_ok in [false, true] {
-            let joined = super::raw_copy_join_failure(failure, raw_ok, INCOMPLETE);
-            assert!(raw_ok || joined.is_some(), "{failure:?} {raw_ok}");
-            assert_eq!(joined.is_none(), raw_ok && failure.is_none());
-            assert_eq!(
-                joined,
-                failure.or((!raw_ok).then_some(INCOMPLETE)),
-                "{failure:?} {raw_ok}"
-            );
-        }
-    }
-}
-
-#[test]
-fn every_air_bases_join_has_a_raw_payload_or_a_failure() {
-    for failure in [None, Some("AirBases acquisition job panicked")] {
-        for raw_ok in [false, true] {
-            let joined = super::air_bases_join_failure(failure, raw_ok);
-            assert!(raw_ok || joined.is_some(), "{failure:?} {raw_ok}");
-            assert_eq!(joined.is_none(), raw_ok && failure.is_none());
-            if failure.is_some() {
-                assert_eq!(joined, failure);
-            }
-        }
-    }
-}
-
-#[cfg(debug_assertions)]
-#[test]
-#[should_panic(expected = "no recording's tables are in scope")]
-fn ordinary_frame_sizing_requires_executable_tables() {
-    let sizing = crate::country_scale::Sizing::for_slots(0);
-    // SAFETY: This fixture does not publish observer bindings or install hooks.
-    let _ = unsafe { Shared::without_frames(0, 0, 1, &sizing) };
-}

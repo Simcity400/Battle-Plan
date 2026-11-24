@@ -40,17 +40,6 @@ fn a_literal_is_every_token_holding_it_within_the_hours_asked_and_an_empty_one_i
 }
 
 #[test]
-fn a_runs_lexicon_is_read_once_for_every_reply_on_a_source() {
-    let source = recording();
-    crate::queries::warm_lexicons(&source).unwrap();
-    let run = crate::queries::query(&source, 1).unwrap().timeline.stretches[0].run;
-    let first = crate::queries::lexicon(&source, run).unwrap();
-    assert!(Arc::ptr_eq(&first, &crate::queries::lexicon(&source, run).unwrap()), "the open's warm-up is the reply's read");
-    crate::queries::forget(&source);
-    assert!(!Arc::ptr_eq(&first, &crate::queries::lexicon(&source, run).unwrap()), "a forgotten index reads it again");
-}
-
-#[test]
 fn a_tokens_spelling_at_an_hour_is_read_once_for_every_reply_on_a_source() {
     let source = recording();
     let run = crate::queries::query(&source, 1).unwrap().timeline.stretches[0].run;

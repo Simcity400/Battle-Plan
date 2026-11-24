@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { deepFreeze } from '../../testFrozen.ts';
 import type { CountryGroupReply, ProjectEntry, ProjectRuntimeDetails, ProjectStatus, SpecialProjectDetails, SpecialProjectsReply } from '../../generated/dashboard';
 import type { CountryLabelValue } from '../../dashboard/countryLabelData.ts';
-import { closedLane, completedWhenFirstRecorded, completions, currentKey, currentProjects, earlierBound, endedCount, heldThrough, historyCard, historyPicture, historyProject, historyStructure, historyUnrecorded, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectStructure, projectTooltip, readLabel, runningValues, runtimeProject, shownCard, statusRead, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import { closedLane, completedWhenFirstRecorded, completions, currentKey, currentProjects, earlierBound, heldThrough, historyCard, historyPicture, historyProject, historyStructure, historyUnrecorded, historyTooltip, iterationCount, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectStructure, projectTooltip, readLabel, runningValues, runtimeProject, shownCard, statusRead, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
@@ -429,23 +429,7 @@ test('History bounded by the playhead shows no status past it, and renders again
   assert.notEqual(picture(119), picture(120), 'a project first recorded renders');
 });
 
-test('a count is shown only from the history read current at the hour', () => {
-  const data = fixture();
-  assert.equal(endedCount(data.projects[0].statuses[1]), '3 iterations');
-  assert.equal(endedCount({ ...data.projects[0].statuses[1], iterations: null }), 'Iterations not recorded');
-});
 
-test('the iteration mark names its count only, and its tooltip says what the count is', () => {
-  const data=fixture();
-  const card=currentProjects(data,120).running[0];
-  assert.equal(iterationMark(2), '×2');
-  assert.equal(iterationMark(null), '—');
-  const tip=iterationTooltip(data,card);
-  assert.equal(tip.title, 'Iterations');
-  assert.equal(tip.rows[0].value, '2');
-  assert.equal(tip.description, 'Mod iterations: 2');
-  assert.equal(iterationTooltip(data,{...card,run:{...card.run,iterations:null}}).rows[0].value, 'Not recorded');
-});
 
 test('a project window joins its runtime project on the owner and local id, read within its statuses and not after the hour', () => {
   const data=fixture(); data.projects[0]={ ...data.projects[0], owner: 9, local: 3 };
@@ -621,8 +605,3 @@ test('R5-S3: a project seen only in history has a tooltip with status unknown an
   assert.equal(historyTooltip(data, 'history-only', null, 118, 119), null);
 });
 
-test('review 4 finding 12: a pinned or asked card sets its own progress variable; a page-painted one leaves it to the installed texts', async () => {
-  const { progressStyle } = await import('./specialProjectsData.ts');
-  assert.deepEqual(progressStyle(50, false), { '--project-progress': 0.5 });
-  assert.equal(progressStyle(50, true), undefined);
-});

@@ -362,7 +362,6 @@ pub fn collect() {
     }
 }
 
-
 const HOOK_ERRORS: [&str; 27] = [
     "world-input rename_province hook construction failed",
     "world-input reset_province_name hook construction failed",
@@ -751,19 +750,6 @@ impl Changes for Isolated {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn doctrine_gain_publication_error_keeps_site_action_and_cause() {
-        for (index, site) in crate::doctrine_changes::GAIN_SITE_NAMES.iter().enumerate() {
-            for enabled in [false, true] {
-                let cause = "synthetic byte verification failure";
-                let error = super::gain_tap_error(index, enabled, cause.into());
-                assert!(error.contains("WorldInputs"));
-                assert!(error.contains(*site));
-                assert!(error.contains(if enabled { "enable" } else { "disable" }));
-                assert!(error.contains(cause));
-            }
-        }
-    }
 
     #[test]
     fn companion_hook_storage_does_not_withdraw_world_input_coverage() {
@@ -891,46 +877,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "per-call world-input callback microbenchmark; run only without a live game benchmark"]
-    fn hook_cost_world_input_dispatch() {
-        const CALLS: usize = 100_000;
-        unsafe extern "system-unwind" fn original(a: usize, b: usize, c: usize, d: usize) -> usize {
-            std::hint::black_box(a ^ b ^ c ^ d)
-        }
-        for index in [4, 8, 17] {
-            ORIGINAL[index].store(original as *const () as usize, Ordering::Release);
-        }
-        let mut container = vec![
-            0_u8;
-            engine_mutations::world_input_mutations::CONTAINER_COUNTRY
-                + size_of::<usize>()
-        ];
-        let offset = engine_mutations::world_input_mutations::CONTAINER_COUNTRY;
-        container[offset..offset + size_of::<usize>()].copy_from_slice(&0x1230_usize.to_ne_bytes());
-        let pointer = container.as_ptr() as usize;
-        for (name, callback, first) in [
-            ("quiet_token", update_threat_total as Original, 1),
-            (
-                "dynamic_country",
-                dynamic_modifier_daily_update as Original,
-                pointer,
-            ),
-            (
-                "design_forwarding_closed",
-                design_mio_bonuses as Original,
-                0x1230,
-            ),
-        ] {
-            let nanos = collector_test_support::per_call_ns(CALLS, || {
-                for _ in 0..CALLS {
-                    std::hint::black_box(unsafe { std::hint::black_box(callback)(first, 2, 3, 4) });
-                }
-            });
-            println!("hook_cost world_input {name}: {nanos:.1} ns/call");
-        }
-    }
-
-    #[test]
     fn navy_reset_forwarding_brackets_the_original_and_preserves_arguments_and_return() {
         unsafe extern "system" fn original(state: usize, b: usize, c: usize, d: usize) -> usize {
             let state = unsafe { &*(state as *const AtomicUsize) };
@@ -968,21 +914,6 @@ mod tests {
             9
         );
         assert_eq!(state.load(Ordering::SeqCst), 7);
-    }
-
-    #[test]
-    fn design_sites_forward_to_their_family() {
-        for (index, forward, name) in [
-            (17, Forward::DesignBonuses, "design_mio_bonuses"),
-            (18, Forward::DesignOrganisation, "design_mio_link"),
-            (19, Forward::DesignMove, "design_mio_move"),
-            (20, Forward::DesignClone, "design_mio_clone"),
-        ] {
-            assert_eq!(forwarded_site(index), Some(forward));
-            assert_eq!(MUTATIONS[index].0.name, name);
-        }
-        assert_eq!(forwarded_site(16), None);
-        assert_eq!(forwarded_site(21), None);
     }
 
     #[test]

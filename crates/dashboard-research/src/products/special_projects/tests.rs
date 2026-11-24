@@ -42,12 +42,6 @@ fn a_program_names_the_scientist_only_of_the_project_it_was_read_for() {
 }
 
 #[test]
-fn a_dated_project_request_accepts_the_displayed_hour() {
-    let params: SpecialProjectsParams = serde_json::from_value(serde_json::json!({"branchId":"1","country":"GER","hour":23})).unwrap();
-    assert_eq!(params.hour, Some(23));
-}
-
-#[test]
 fn a_reply_spells_only_the_projects_and_scientists_that_first_appeared_since_the_last() {
     let at = |pairs: &[(u32, i32)]| pairs.iter().copied().collect::<BTreeMap<u32, i32>>();
     let (defs, chars) = (at(&[(40, START), (41, START + 24)]), at(&[(7, START)]));

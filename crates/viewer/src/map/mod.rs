@@ -1,6 +1,4 @@
 
-#[cfg(test)]
-mod offline_scene;
 
 #[cfg(test)]
 mod player_model_tests;

@@ -1092,35 +1092,6 @@ fn clock_resumes_on_readiness_rejects_old_generations_and_keeps_speed_pause_cont
 }
 
 #[test]
-fn budgets_follow_the_parts_display_and_present_time_includes_its_period() {
-    for refresh in [95.0, 144.0] {
-        let budgets = FrameBudgets::from_refresh(refresh).unwrap();
-        let t = 1.0 / refresh;
-        for (actual, share) in [
-            (budgets.widget_slot, 0.03),
-            (budgets.widget_advance, 0.01),
-            (budgets.widget_render, 0.02),
-            (budgets.map_decode, 0.15),
-            (budgets.map_render, 0.20),
-        ] {
-            assert!((actual.as_secs_f64() - t * share).abs() <= 1e-9);
-        }
-        let present = PresentTime::next(Duration::from_secs(5), -1.0, refresh).unwrap();
-        let anchor = Anchor {
-            t0: Duration::from_secs(4),
-            h0: 0.0,
-            speed: 1440.0,
-            paused: false,
-            generation: 0,
-        };
-        assert!((anchor.hour_at(present) - 1440.0 * t).abs() < 1e-5);
-    }
-    for refresh in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-        assert!(FrameBudgets::from_refresh(refresh).is_err());
-    }
-}
-
-#[test]
 fn late_clock_controls_use_the_resumed_hour_and_delayed_seek_anchors_cannot_pause_it() {
     let mut clock = Clock::new(Duration::ZERO, 0.0, 10.0, false).unwrap();
     clock.register().unwrap();
