@@ -1,4 +1,5 @@
 import type { LogRow } from '../../charts/log/logData';
+import { formatScalar } from '../../families/valueFormat.ts';
 import { beforeBreak, breakAfter, dayOf, daysBetween, daysText, edgesAt, lastEdge, occurrenceItem } from '../event-feed/scriptOccurrences.ts';
 import type { RecordingBreak } from '../event-feed/scriptOccurrences';
 import type { EventFeedItem, EventFeedKind, ScriptEdge, ScriptOccurrence } from '../../generated/dashboard';
@@ -65,6 +66,8 @@ export function decisionAt(row: LogRow<DecisionCard | null>, hour: number, break
   const hasLifecycle = (state: ScriptEdge['row']['decisionState']) => state !== undefined && state.kind !== 'notApplicable';
   const latestState = edges.filter(edge => hasLifecycle(edge.row.decisionState)).at(-1)?.row.decisionState ?? null;
   const state = (end && hasLifecycle(end.row.decisionState) ? end.row.decisionState : null) ?? latestState;
+  const selected = edges.some(edge => edge.row.kind === 'decisionSelected');
+  if (!end && !timer && !selected && state?.kind === 'available') return null;
   let failedAt: number | null = null;
   let unsupportedState: number | null = null;
   let failureMissing: string | null = null;
@@ -113,7 +116,7 @@ export function lifecycleLine(at: DecisionAt): string {
     case 'active': {
       if (!at.timer) return started ?? 'Running';
       const left = daysLeft(at);
-      return `${at.timer.days.toLocaleString()}-day timer${left === null ? '' : ` · ${daysText(left)} left`}`;
+      return `${formatScalar(at.timer.days, 'integer')}-day timer${left === null ? '' : ` · ${daysText(left)} left`}`;
     }
     case 'taken': return started ?? 'Taken';
     case 'completed': return `${at.end ? (started ? `${started} → completed ${dayOf(at.end.row.hour)}` : `Completed ${dayOf(at.end.row.hour)}`) : (started ? `${started} → completed` : 'Completed')}${missing}`;

@@ -252,3 +252,21 @@ test('a recorded 0.04 a day is drawn as under one tenth and read exactly with it
   assert.equal(node.audit, '0.04 per day');
   assert.equal(findFlowTooltip(model, 'node:left:2')?.items?.[0]?.value, '0.04 per day');
 });
+
+test('a witnessed zero delivery keeps its partner but its ribbon, which paints nothing, takes no hit', () => {
+  const zero: CountryFlowReply = {
+    ...base,
+    endpoints: [endpoint(1, 'USA'), endpoint(2, 'HOL'), endpoint(6, 'ENG')],
+    subject: 0,
+    incoming: side([link(1, 0, [[0, 0]])], '0'),
+    outgoing: side([link(0, 2, [[0, 40]])], amount(40)),
+    largest: amount(40),
+    largestLink: amount(40),
+  };
+  const model = projectCountryFlow(view(zero), TEXT);
+  assert.equal(model.left[0]!.figure, '0', 'the witnessed zero stays on the partner node');
+  const layout = layoutFlow(model, 846, 360);
+  const box = layout.ribbons.find(item => item.ribbon.from === 'left:2')!;
+  const x = (box.x0 + box.x1) / 2;
+  for (let y = layout.bodyTop; y < layout.height; y++) assert.notEqual(hitFlow(layout, x, y), 'ribbon:left:2>centre:1');
+});
