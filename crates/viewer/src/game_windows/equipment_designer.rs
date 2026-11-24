@@ -463,7 +463,6 @@ pub fn build_stat_columns(
 ) -> StatColumns {
     let fixed1 = |raw: i64| format_fixed5(raw, 1);
     let fixed2 = |raw: i64| format_fixed5(raw, 2);
-    let fixed0 = |raw: i64| format_fixed5(raw, 0);
     let pct1 = |raw: i64| format_percent_fixed5(raw, 1);
     let km = |raw: i64| format!("{} km", format_fixed5(raw, 0));
     let kmh = |raw: i64| format!("{} km/h", format_fixed5(raw, 1));
