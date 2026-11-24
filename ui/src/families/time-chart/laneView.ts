@@ -7,7 +7,7 @@ import type { LaneView, Painted, PaintInput } from '../../draw/lane.ts';
 import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
 import { artUrlForHandle, createLaneArtProvider } from '../art/provider.ts';
-import { PENDING_ART, type ArtResolution } from '../art/types.ts';
+import { PENDING_ART, spriteArtKey, type ArtResolution } from '../art/types.ts';
 import { BoundedSeriesCursor, createBoundedReadView, type WitnessedPoint } from '../boundedView.ts';
 import type { ArtDemand, ArtHandle, ArtProvider, BoundedSeries, EntityKind, IdentityDemand, IdentityProvider } from '../contract.ts';
 import { IdentityIndex } from '../identity/index.ts';
@@ -60,7 +60,7 @@ function hydrateTiledLine(raw: SerializedTiledLine): TiledLine {
 }
 
 export function spriteHandleKey(handle: ArtHandle): string {
-  if (handle.kind === 'sprite') return `${handle.key}#${handle.frame ?? 0}`;
+  if (handle.kind === 'sprite') return spriteArtKey(handle.key, handle.frame ?? 0);
   if (handle.kind === 'portrait') return `portrait:${handle.key}`;
   if (handle.kind === 'flag') return `flag:${handle.choice}:${handle.size}`;
   if (handle.kind === 'path') return `path:${handle.path}#${handle.frame ?? 0}`;
@@ -339,6 +339,7 @@ export function timeChartLaneView(
         );
         model = proj.project(readView, binding.options);
       }
+      if (binding.view?.x && model.view?.x !== binding.view.x) model = { ...model, view: { ...model.view, x: binding.view.x } };
 
       const fields: Record<string, { value: unknown; content: string }> = {};
       if (pendingIdentityDemands.size > 0) {
@@ -365,7 +366,7 @@ export function timeChartLaneView(
           empty: model.empty.message,
           emptyDetail: model.empty.detail ?? null,
           emptyKind: model.empty.kind ?? 'empty',
-          note: model.note ?? null,
+          notes: model.note ? [model.note] : [],
           warnings: model.warnings ?? [],
         };
         const metaText = JSON.stringify(metaPayload);
@@ -448,7 +449,7 @@ export function timeChartLaneView(
         empty: null,
         emptyDetail: null,
         emptyKind: 'empty' as const,
-        note: model.note ?? null,
+        notes: model.note ? [model.note] : [],
         warnings: model.warnings ?? [],
         transform: {
           xFrom: layout.xDomain[0],
