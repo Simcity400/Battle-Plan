@@ -15,7 +15,7 @@ import {
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
 import type { ChartGap, ChartMarker, ChartStackBand, TimeChartModel } from '../../families/time-chart/model.ts';
 import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
-import { formatRecordedPercent, formatShare } from '../../families/valueFormat.ts';
+import { formatRecordedPercent, formatScaledPercent, formatShare } from '../../families/valueFormat.ts';
 import type { WorldTensionReply, WorldTensionStackReply } from '../../generated/dashboard';
 
 export interface WorldTensionChartOptions {
@@ -55,27 +55,13 @@ export function validateWorldTensionHover(raw: unknown): WorldTensionReply {
   return reply;
 }
 
-function scaleDecimals(scale: number): number | null {
-  if (!Number.isInteger(scale) || scale <= 0) return null;
-  let d = 0;
-  let v = scale;
-  while (v > 1 && v % 10 === 0) {
-    v /= 10;
-    d++;
-  }
-  return v === 1 ? d : null;
-}
-
 function formatEndPct(value: number, mode: 'share' | 'recorded'): string {
   return mode === 'share' && value >= 0 && value <= 100 ? formatShare(value / 100) : formatRecordedPercent(value);
 }
 
 function formatRawPct(raw: string, scale: number, signed = true): string | null {
-  if (!/^-?\d+$/.test(raw) || scale <= 0) return null;
-  const decimals = scaleDecimals(scale);
-  if (decimals !== null) return formatRecordedPercent(BigInt(raw), { decimals, signed });
-  const n = Number(raw);
-  return Number.isFinite(n) ? formatRecordedPercent(n / scale, { signed }) : null;
+  if (!/^-?\d+$/.test(raw) || !Number.isSafeInteger(scale) || scale <= 0) return null;
+  return formatScaledPercent(BigInt(raw), BigInt(scale), { signed });
 }
 
 function contributorLabel(

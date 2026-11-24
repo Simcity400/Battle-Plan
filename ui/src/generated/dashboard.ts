@@ -4352,7 +4352,15 @@ hints: { [key in string]?: string },
  */
 missing: string | null, top?: GameScoreTop, warnings: Array<string>, };
 export type GameScoreParamsAtHour = GameScoreParams & { hour: number };
-export type NuclearArsenalParams = { branchId: string, top?: number, };
+export type NuclearArsenalParams = { branchId: string, top?: number,
+/**
+ * The countries whose stockpiles are the rows; never with a top or a group.
+ */
+countries: Array<CountryRef>,
+/**
+ * The group whose members at the hour are the rows; never with countries or a top.
+ */
+group?: GroupSelection, };
 export type NukeType = { ordinal: number,
 /**
  * Its lexical token's spelling; null when the game names no token for it.
@@ -4373,6 +4381,10 @@ value: number,
 ready: number, };
 export type NukeCountry = { tag: string, countryId: number,
 /**
+ * The recorded slot holding the country at the hour.
+ */
+slot: number | null,
+/**
  * The top bar's stockpile: every type's count added with signed 32-bit wrapping.
  */
 total: number, counts: Array<NukeCount>, };
@@ -4382,7 +4394,7 @@ export type NuclearArsenalReply = {
  */
 types: Array<NukeType>,
 /**
- * Every country a tag holds with a stockpile row, greatest total first, ties by tag.
+ * Every country a tag holds with a stockpile row (or each chosen country, a recorded zero where it holds none), greatest total first, ties by tag.
  */
 countries: Array<NukeCountry>,
 /**
@@ -5204,9 +5216,17 @@ export type EspionageOperationsReply = {
  */
 operations: Array<OperationUnderWay>, missing: string | null, warnings: Array<string>, };
 export type EspionageOperationsParamsAtHour = EspionageOperationsParams & { hour: number };
-export type OccupationReserveParams = { branchId: string, countries: Array<CountryRef>, top?: number, };
+export type OccupationReserveParams = { branchId: string, countries: Array<CountryRef>, top?: number,
+/**
+ * The group whose members at the hour are the rows; never with countries or a top.
+ */
+group?: GroupSelection, };
 export type ReserveEntry = { ordinal: number, source: Country, amount: number, };
 export type ReserveHolder = { country: Country,
+/**
+ * The recorded slot holding the country at the hour.
+ */
+slot: number | null,
 /**
  * Its occupation status was read: no entry is a recorded zero.
  */
@@ -7196,10 +7216,10 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "naval-supremacy": { "branchId": "leaf", "country": "any", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "top": "leaf", "window": "leaf" },
   "navy-at": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "grouping": "leaf", "hour": "leaf", "measure": "leaf", "ownership": "leaf", "top": "leaf" },
   "next-elections": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
-  "nuclear-arsenal": { "branchId": "leaf", "hour": "leaf", "top": "leaf" },
+  "nuclear-arsenal": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "top": "leaf" },
   "occupation-at": { "branchId": "leaf", "collaboration": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
   "occupation-reserve-history": { "branchId": "leaf", "holder": "leaf", "hour": "leaf" },
-  "occupation-reserve-manpower": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "top": "leaf" },
+  "occupation-reserve-manpower": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "top": "leaf" },
   "occupied-states": { "branchId": "leaf", "hour": "leaf" },
   "operative-matrix": { "branchId": "leaf", "countries": "node", "countries[]": "any", "form": "leaf", "hour": "leaf", "top": "leaf" },
   "operatives-roster": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },

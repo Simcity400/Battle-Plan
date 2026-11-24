@@ -9,7 +9,8 @@ use dashboard_base::{
     queries::country_ids::Names,
 };
 use dashboard_intelligence::products::intelligence::{Country, IDENTITY, Tags, branch, missing};
-use dashboard_query::{coverage::population, identity::Holder};
+use dashboard_query::{coverage::population, identity::Holder, series::ranked::GroupSelection};
+use dashboard_world::products::group_members::GroupsAt;
 use replay_columnar::manifest::Status;
 use replay_data::rows::{CountryOccupationReserveManpowerRow, TableId, tables};
 use replay_frame::frame::{DecodedFrame, Keys};
@@ -47,6 +48,10 @@ pub struct OccupationReserveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<u32>,
+    #[doc = " The group whose members at the hour are the rows; never with countries or a top."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -63,6 +68,8 @@ pub struct ReserveEntry {
 #[serde(rename_all = "camelCase")]
 pub struct ReserveHolder {
     pub country: Country,
+    #[doc = " The recorded slot holding the country at the hour."]
+    pub slot: Option<u32>,
     #[doc = " Its occupation status was read: no entry is a recorded zero."]
     pub admitted: bool,
     #[doc = " Sum of its positive entries at this hour."]
@@ -96,12 +103,12 @@ pub fn holders(
 ) -> Vec<ReserveHolder> {
     let mut held: BTreeMap<u32, ReserveHolder> = admitted
         .iter()
-        .map(|&raw| (raw, ReserveHolder { country: country(raw), admitted: true, total: 0, entries: Vec::new() }))
+        .map(|&raw| (raw, ReserveHolder { country: country(raw), slot: None, admitted: true, total: 0, entries: Vec::new() }))
         .collect();
     let mut sorted: Vec<&CountryOccupationReserveManpowerRow> = entries.iter().collect();
     sorted.sort_by_key(|entry| (entry.country, entry.ordinal));
     for entry in sorted {
-        let holder = held.entry(entry.country).or_insert_with(|| ReserveHolder { country: country(entry.country), admitted: false, total: 0, entries: Vec::new() });
+        let holder = held.entry(entry.country).or_insert_with(|| ReserveHolder { country: country(entry.country), slot: None, admitted: false, total: 0, entries: Vec::new() });
         if entry.amount > 0 {
             holder.total += i64::from(entry.amount);
         }
@@ -116,9 +123,22 @@ pub fn holders(
 fn select_holders(
     all: Vec<ReserveHolder>,
     params: &OccupationReserveParams,
-    at: &At<'_, ()>,
+    at: &At<'_, GroupsAt>,
     hour: i32,
 ) -> Result<(Vec<ReserveHolder>, u32), String> {
+    let slots: HashMap<u32, u32> = at
+        .holders
+        .tags
+        .values()
+        .flatten()
+        .filter(|run| run.first <= hour && hour <= run.last)
+        .filter_map(|run| match run.holder {
+            Holder::Found { slot, id } => Some((id, slot)),
+            Holder::Unresolved => None,
+        })
+        .collect();
+    let all: Vec<ReserveHolder> = all.into_iter().map(|holder| ReserveHolder { slot: slots.get(&holder.country.id).copied(), ..holder }).collect();
+    let chosen = at.context.chosen_slots(params.group.as_ref(), &params.countries, at.holders, hour).map_err(|error| error.to_string())??;
     let unnamed = all.iter().filter(|holder| holder.country.tag.is_none() && (holder.admitted || !holder.entries.is_empty())).count() as u32;
     let unresolved = at.holders.unknown.iter().any(|&(first, last, _)| first <= hour && hour <= last)
         || at.holders.tags.values().flatten().any(|run| run.first <= hour && hour <= run.last && run.holder == Holder::Unresolved);
@@ -134,18 +154,8 @@ fn select_holders(
             unplaced.push(holder.total);
         }
     }
-    if !params.countries.is_empty() {
-        let mut allowed_ids: BTreeSet<u32> = BTreeSet::new();
-        let mut allowed_tags: BTreeSet<String> = BTreeSet::new();
-        for country in &params.countries {
-            if let Some(run) = at.holders.at(country, hour)
-                && let Holder::Found { id, .. } = run.holder
-            {
-                allowed_ids.insert(id);
-            }
-            allowed_tags.insert(at.holders.name(country, hour));
-        }
-        named.retain(|holder| allowed_ids.contains(&holder.country.id) || holder.country.tag.as_ref().is_some_and(|tag| allowed_tags.contains(tag)));
+    if let Some(chosen) = chosen {
+        named.retain(|holder| holder.slot.is_some_and(|slot| chosen.contains(&slot)));
         if !named.iter().any(|holder| !holder.entries.is_empty()) {
             return Ok((Vec::new(), unnamed));
         }
@@ -179,9 +189,9 @@ impl AtHour for OccupationReserve {
     const TITLE: &'static str = "Occupation reserve";
     const CONTENT_DEPENDENT: bool = false;
     type Params = OccupationReserveParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, "countries[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, group, "countries[]"];
     type Reply = OccupationReserveReply;
-    type Context = ();
+    type Context = GroupsAt;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
@@ -193,13 +203,20 @@ impl AtHour for OccupationReserve {
         if params.top.is_some_and(|top| top == 0 || !params.countries.is_empty()) {
             return Err("Invalid country selection");
         }
+        if params.group.is_some() && (params.top.is_some() || !params.countries.is_empty()) {
+            return Err("A selection names a group, a top or countries, one of them");
+        }
         for country in &params.countries {
             validate_country(country)?;
         }
         Ok(())
     }
 
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
+
+    fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        at.context.valid_through(params.group.as_ref(), at.hour)
+    }
 
     fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<dashboard_base::products::at_hour::Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
         match table {
@@ -215,7 +232,11 @@ impl AtHour for OccupationReserve {
     }
 
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(())
+        Ok(GroupsAt::default())
+    }
+
+    fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -649,6 +670,58 @@ mod tests {
         let at20 = ReserveHistory::load(&src, &ReserveHistoryParams { branch_id: "1".into(), holder: 9001, hour: 20 }, &ctx, &AtomicBool::new(false)).unwrap();
         assert_eq!(at20.hour, 20);
         assert_eq!(at20.next_change, None);
+    }
+
+    #[test]
+    fn a_group_chooses_its_holders_at_the_hour_by_recorded_slot() {
+        use dashboard_base::span::HourSpan;
+        use dashboard_follow::live::Cells;
+        use dashboard_query::{
+            identity::{HolderRun, Holders},
+            series::ranked::{GroupKind, GroupMembership},
+        };
+        use dashboard_world::products::groups::{CountryGroupReply, FactionGroup, MembershipRun, UnobservedHours};
+        let run = |tag: &str, first_hour, last_hour| MembershipRun { tag: tag.into(), first_hour, last_hour };
+        let groups = GroupsAt::new(
+            Arc::new(CountryGroupReply {
+                branch_id: "1".into(),
+                humans: Vec::new(),
+                factions: vec![FactionGroup {
+                    id: "42".into(),
+                    name: None,
+                    name_reason: None,
+                    names: Vec::new(),
+                    recorded_name: String::new(),
+                    first_hour: 0,
+                    last_hour: 100,
+                    members: vec![run("T1", 0, 100), run("T2", 50, 100)],
+                    leaders: Vec::new(),
+                    incomplete: vec![HourSpan { first_hour: 70, last_hour: 80 }],
+                }],
+                wars: Vec::new(),
+                war_starts: Vec::new(),
+                capitulations: Vec::new(),
+                identity_changes: Vec::new(),
+                country_identities: Vec::new(),
+                unobserved: UnobservedHours::default(),
+                warnings: Vec::new(),
+            }),
+            0,
+        );
+        let held = |slot: u32, id: u32| vec![HolderRun { first: 0, last: 100, holder: Holder::Found { slot, id }, starts_segment: true }];
+        let tagged = Holders::new([("T1".to_owned(), held(5, 1)), ("T2".to_owned(), held(6, 2)), ("T3".to_owned(), held(7, 3))].into_iter().collect(), Vec::new());
+        let faction = GroupSelection { kind: GroupKind::Faction, id: Some("42".into()), tag: None, membership: GroupMembership::Hour };
+        let params = OccupationReserveParams { branch_id: "1".into(), countries: Vec::new(), top: None, group: Some(faction) };
+        let built = holders(&[1, 2, 3], &[entry(1, 0, 9, 300), entry(2, 0, 9, 100), entry(3, 0, 9, 900)], None, named);
+        let live = Cells::default();
+        let cancelled = AtomicBool::new(false);
+        let chosen = |hour: i32| {
+            let at = At { owner: None, holders: &tagged, hour, context: &groups, cancelled: &cancelled, live: &live };
+            select_holders(built.clone(), &params, &at, hour).map(|(rows, _)| rows.iter().map(|holder| (holder.country.id, holder.slot)).collect::<Vec<_>>())
+        };
+        assert_eq!(chosen(10), Ok(vec![(1, Some(5))]), "T2 joins at 50; T3 is no member");
+        assert_eq!(chosen(60), Ok(vec![(1, Some(5)), (2, Some(6))]));
+        assert_eq!(chosen(75), Err("Membership of this group is not recorded at this hour".to_owned()), "unknown membership is refused, never guessed");
     }
 
     #[test]

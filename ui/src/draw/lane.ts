@@ -622,8 +622,13 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       ...change.dated !== undefined ? { dated: change.dated } : {},
     };
     const held = this.widgets.get(widget);
-    if (held) this.supplied(held, resolved);
-    else this.earlySupply.set(widget, { ...this.earlySupply.get(widget), ...resolved });
+    if (held) { this.supplied(held, resolved); return; }
+    const early = this.earlySupply.get(widget);
+    const next: Resolved = { ...early };
+    if (resolved.statics !== undefined) { next.statics = resolved.statics; next.stamp = change.stamp; }
+    if (resolved.identity !== undefined) next.identity = resolved.identity;
+    if (resolved.dated !== undefined && (resolved.statics !== undefined || change.stamp === early?.stamp)) next.dated = resolved.dated;
+    this.earlySupply.set(widget, next);
   }
 
   private closeOpen(widget: Widget) {
