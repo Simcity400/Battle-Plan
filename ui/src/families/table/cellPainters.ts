@@ -316,9 +316,9 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     ctx.save();
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    const figure = (text: string | null, slotRight: number, font: string, color: string) => {
+    const figure = (text: string | null, slotRight: number, font: string, color: string, drawMissing: boolean) => {
       if (text === null) {
-        if (!sp.ai) drawMissingMark(ctx, slotRight - slot + 8, middle, slot - 8, theme, { align: 'right' });
+        if (drawMissing) drawMissingMark(ctx, slotRight - slot + 8, middle, slot - 8, theme, { align: 'right' });
         return;
       }
       ctx.font = font;
@@ -332,12 +332,13 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       ctx.fillText(glyph, at, middle);
       ctx.textAlign = 'right';
     };
-    figure(sp.produced, left + slot - 14, figureFont, theme.text);
+    const isZero = (text: string | null) => text === '0' || text === '0.0';
+    figure(sp.produced, left + slot - 14, figureFont, isZero(sp.produced) ? theme.muted : theme.text, true);
     if (!sp.ai) {
       operator('−', left + slot - 4);
-      figure(sp.need, left + slot * 2 - 14, figureFont, theme.text);
+      figure(sp.need, left + slot * 2 - 14, figureFont, isZero(sp.need) ? theme.muted : theme.text, true);
       operator('=', left + slot * 2 - 4);
-      figure(sp.balance, right, balanceFont, sp.short ? tokens.shortage : theme.text);
+      figure(sp.balance, right, balanceFont, sp.short ? tokens.shortage : (isZero(sp.balance) ? theme.muted : theme.text), true);
     }
     ctx.restore();
     return;

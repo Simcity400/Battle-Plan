@@ -115,7 +115,7 @@ export function buildColumnLayouts(
   return ordered;
 }
 
-const OPERATOR_SLOT = 14;
+const OPERATOR_SLOT = 16;
 const HEADER_HATCH = 16;
 const SHORT_OVER_GAP = 8;
 

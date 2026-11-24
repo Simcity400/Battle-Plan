@@ -25,7 +25,7 @@ const RATE_CUT = 100n * 100_000n;
 const UNIT = 100_000;
 
 const PICTURE: TableColumnSpec = { key: 'picture', label: 'Picture', as: 'plain', cellKind: 'kind', offered: OFFERED.text, priority: 0, sortable: false, hideable: false, pinned: true };
-const NAME: TableColumnSpec = { key: 'equipment', label: 'Equipment', as: 'plain', cellKind: 'item', offered: OFFERED.text, priority: 0, text: true, hideable: false, sortable: false, pinned: true, widest: ['Support Equipment'], grow: 1 };
+const NAME: TableColumnSpec = { key: 'equipment', label: 'Equipment', as: 'plain', cellKind: 'item', offered: OFFERED.text, priority: 0, text: true, hideable: false, sortable: false, pinned: true, minWidth: 92, grow: 1 };
 const NET: TableColumnSpec = { key: 'net', label: 'Short or over', as: 'plain', cellKind: 'stockpileNet', offered: OFFERED.number, priority: 1, sortable: false, hideable: false, headerGroup: { kind: 'shortOver' }, minWidth: 76, grow: 1 };
 
 function sumColumn(ai: string | null): TableColumnSpec {
@@ -85,7 +85,8 @@ function stockpileCell(row: StockTypeRow, ai: string | null): TableCellStockpile
 
 function shareNote(row: StockTypeRow): string | null {
   if (row.share === null) return null;
-  const text = formatShare(Math.abs(row.share));
+  const abs = Math.abs(row.share);
+  const text = abs <= 1 ? formatShare(abs) : formatScalar(abs * 100, { decimals: 0, maxDecimals: 0, percent: true });
   return row.share < 0 ? `${text} short of need` : `${text} over need`;
 }
 
@@ -128,7 +129,7 @@ function variantRow(readView: BoundedReadView, parent: string, variant: StockVar
 
 function typeRow(readView: BoundedReadView, row: StockTypeRow, art: ReadonlyMap<string, StockpileArtworkReply['entries'][number]>, ai: string | null): TableRow {
   const name = row.name ?? unresolvedTypeName(row.key);
-  const picture = art.get(`type:${row.key}`);
+  const picture = art.get(`type:${row.key.toLowerCase()}`);
   const note = shareNote(row);
   return {
     key: row.key,
@@ -147,7 +148,7 @@ function typeRow(readView: BoundedReadView, row: StockTypeRow, art: ReadonlyMap<
 
 function artIndex(readView: BoundedReadView): ReadonlyMap<string, StockpileArtworkReply['entries'][number]> {
   const reply = readView.panel<StockpileArtworkReply>('art');
-  return new Map(reply?.entries.map(entry => [entry.key, entry]) ?? []);
+  return new Map(reply?.entries.map(entry => [entry.key.toLowerCase(), entry]) ?? []);
 }
 
 function project(readView: BoundedReadView, options: StockpileProjectionOptions): TableModel {
@@ -173,7 +174,7 @@ function project(readView: BoundedReadView, options: StockpileProjectionOptions)
 
 export const stockpileProjection: TableProjection<StockpileProjectionOptions> = registerFamilyProjection<TableProjection<StockpileProjectionOptions>>({ kind: 'equipment-stockpile', family: 'table', project }, 'bars');
 
-function validateTypes(raw: unknown): StockpileTypesReply {
+export function validateStockpileTypes(raw: unknown): StockpileTypesReply {
   const reply = raw as Partial<StockpileTypesReply> | null;
   if (!reply || typeof reply.hour !== 'number' || typeof reply.validUntil !== 'number' || !Array.isArray(reply.rows) || !Array.isArray(reply.warnings)) {
     throw new Error('Invalid equipment stockpile reply');
@@ -206,7 +207,7 @@ function sources(ctx: FamilyPlanContext): SourcePlan {
             const reply = data as StockpileTypesReply;
             return reply.hour <= at && at <= reply.validUntil ? [reply.hour, reply.validUntil] : [at, at];
           },
-          validate: validateTypes,
+          validate: validateStockpileTypes,
         },
       },
       {
@@ -217,8 +218,9 @@ function sources(ctx: FamilyPlanContext): SourcePlan {
           channel: 'panel',
           coverage: { mode: 'keyed', keys: [tag] },
           product: 'stockpile-artwork',
-          followQuery: { panel: 'stockpile-artwork', ...params, variants: [] },
+          followQuery: null,
           params: { ...params, variants: [] },
+          hourParam: 'hour',
           validate: validateStockpileArtwork,
         },
       },

@@ -246,7 +246,7 @@ export function FamilyTableHeader({
           >
             {canDrag && GRIP_DOTS}
             {renderLabel(item, active, end, index)}
-          </button> : <span className="tf-th-static" title={title}>{renderLabel(item, false, end, index)}</span>}
+          </button> : <span className={`tf-th-static${item.headerGroup ? ' tf-th-static-fill' : ''}`} title={title}>{renderLabel(item, false, end, index)}</span>}
           {editableColumns && <span
             className="tf-resize"
             title="Drag to resize. Double-click to fit."

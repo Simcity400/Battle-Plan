@@ -1,12 +1,5 @@
 import { contentKey, setToken } from './options.ts';
 
-
-export interface ChoiceSource {
-  lines: (token: string) => number;
-  name: (token: string) => string;
-  noun: string;
-}
-
 export const campaignToken = (campaignKey: string, token: string) => `${campaignKey}:${token}`;
 
 export const subjectToken = (campaignKey: string, handle: string) => setToken(campaignToken(campaignKey, handle));

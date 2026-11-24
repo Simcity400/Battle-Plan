@@ -24,13 +24,6 @@ export function readDatedCountry(token: unknown, campaign: string, branch: strin
   } catch { return null; }
 }
 
-export function chosenDatedCountry(token: unknown, campaign: string, branch: string, countries: CountrySelection, tag: string | undefined,
-  firstHour: number, lastHour: number, origin: number): DatedCountrySelection | null {
-  if (typeof token === 'string' && token) return readDatedCountry(token, campaign, branch, countries);
-  if (!tag || !Number.isSafeInteger(origin) || origin < firstHour || origin > lastHour) return null;
-  return { campaign, branch, tag, originOffset: origin - firstHour };
-}
-
 export function datedCountrySpans(histories: readonly CountryIdentityHistory[], selection: DatedCountrySelection,
   firstHour: number, lastHour: number, membership?: ReadonlyMap<string, readonly Span[]> | null): ReadonlyMap<string, readonly Span[]> | null {
   const originHour = firstHour + selection.originOffset;
