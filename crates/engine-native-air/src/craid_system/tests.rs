@@ -725,3 +725,46 @@ fn raid_completion_fields_record_presence_and_withhold_independently_on_failure(
     }
 }
 
+
+#[test]
+fn an_unreadable_optional_raid_field_is_withheld_alone_and_the_instance_and_its_other_fields_stay() {
+    use engine_native_memory::cgame_date;
+    struct Refusing<'a> {
+        bytes: &'a [u8],
+        refused: std::ops::Range<usize>,
+    }
+    impl Memory for Refusing<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            if address < self.refused.end && address.saturating_add(destination.len()) > self.refused.start {
+                return false;
+            }
+            SliceMemory { base: 0, bytes: self.bytes }.copy(address, destination)
+        }
+    }
+    let mut bytes = fixture();
+    put(&mut bytes, INSTANCE + craid_instance::PHASE, &craid_instance::PHASE_ENDED.to_le_bytes());
+    put(&mut bytes, INSTANCE + craid_instance::OUTCOME, &craid_instance::OUTCOME_SUCCESS.to_le_bytes());
+    put(&mut bytes, INSTANCE + craid_instance::END_DATE, &(cgame_date::VTABLE_RVA.0 as u64).to_le_bytes());
+    put(&mut bytes, INSTANCE + craid_instance::END_HOUR, &42_000_i32.to_le_bytes());
+    put(&mut bytes, INSTANCE + craid_instance::END_PERSISTENT_VTABLE, &(cgame_date::PERSISTENT_VTABLE_RVA.0 as u64).to_le_bytes());
+    put(&mut bytes, INSTANCE + craid_instance::END_PRESENT, &[1]);
+    put(&mut bytes, INSTANCE + craid_instance::COMPLETION_COUNTRY, &3_i32.to_le_bytes());
+    let read = |refused: std::ops::Range<usize>| {
+        let mut parents = vec![ccountry_raid_status::Row::default(); 2];
+        let mut children = vec![craid_instance::Row::default(); 1];
+        let walk = run(&Refusing { bytes: &bytes, refused }, &mut parents, &mut children, &mut vec![0; 8], &mut vec![0; 8]);
+        (walk.instances, children.remove(0))
+    };
+    let country = INSTANCE + craid_instance::COMPLETION_COUNTRY;
+    let (instances, row) = read(country..country + 4);
+    assert_eq!(instances, Outcome::Rows { len: 1 }, "one unreadable optional field never withholds the instances table");
+    assert_eq!((row.phase, row.outcome, row.end_hour, row.end_hour_refusal), (craid_instance::PHASE_ENDED, craid_instance::OUTCOME_SUCCESS, Some(Some(42_000)), None));
+    assert_eq!((row.completion_country, row.completion_country_refusal), (None, Some(craid_instance::COMPLETION_COUNTRY_UNREADABLE)));
+    let end = INSTANCE + craid_instance::END_DATE;
+    let (instances, row) = read(end..INSTANCE + craid_instance::END_PRESENT + 1);
+    assert_eq!(instances, Outcome::Rows { len: 1 });
+    assert_eq!((row.end_hour, row.end_hour_refusal), (None, Some(craid_instance::END_DATE_UNREADABLE)));
+    assert_eq!((row.completion_country, row.completion_country_refusal), (Some(Some(3)), None));
+    let (instances, _) = read(INSTANCE + craid_instance::PHASE..INSTANCE + craid_instance::PHASE + 4);
+    assert!(matches!(instances, Outcome::Unavailable { .. }), "an unreadable required field still refuses: {instances:?}");
+}
