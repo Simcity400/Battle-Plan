@@ -236,15 +236,15 @@ pub(super) struct Member {
 }
 
 pub(super) struct Model {
-    replays: Vec<Arc<Replay>>,
+    pub replays: Vec<Arc<Replay>>,
     variants: BTreeMap<u64, Member>,
     logistics: TypeTokens,
-    types: Vec<StockType>,
-    groups: Vec<Group>,
-    lines: Vec<Vec<Lines>>,
+    pub types: Vec<StockType>,
+    pub groups: Vec<Group>,
+    pub lines: Vec<Vec<Lines>>,
     first: i32,
-    last: i32,
-    warnings: Vec<String>,
+    pub last: i32,
+    pub warnings: Vec<String>,
 }
 
 impl Model {
@@ -582,7 +582,7 @@ struct Kept {
     models: HashMap<String, Arc<Model>>,
 }
 
-fn model(source: &Source, query: &Query<'_>, tags: &[Country], included: &[String], load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<Model>> {
+pub(super) fn model(source: &Source, query: &Query<'_>, tags: &[Country], included: &[String], load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<Model>> {
     let content = Content::load(source, load)?;
     let binding = content.catalogue.as_ref().map_or(0, |catalogue| Arc::as_ptr(catalogue) as usize);
     let key = serde_json::to_string(&(query.timeline.id, query.timeline.last, tags, included, binding)).map_err(io::Error::other)?;

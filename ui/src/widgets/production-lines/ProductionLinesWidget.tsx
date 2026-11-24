@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { Segmented } from '../../components/Segmented';
+import { Select } from '../../components/Select';
 import WidgetState from '../../components/WidgetState';
 import { formatFixed } from '../../charts/valueAxis.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
@@ -48,7 +48,7 @@ function LineBreakdown({ runtime, trackId, opened, group, onGroup, active }: {
   const amount = (raw: string, decimals: number, unit: string) => `${formatFixed(raw, decimals, decimals)} ${unit}`;
   return (
     <div className="production-breakdown">
-      <Segmented label="Production factor" value={group} onChange={onGroup} options={data.groups.map(choice => ({ value: choice.id, label: choice.label }))} />
+      <Select label="Production factor" value={group} onChange={onGroup} options={data.groups.map(choice => ({ value: choice.id, label: choice.label }))} />
       {shown === null ? (
         <WidgetState kind="unavailable" message="This line's production factors were not recorded at this date." />
       ) : (

@@ -12,7 +12,7 @@ import {
   drawTimeAxis,
   resolveKitTokens,
 } from '../../draw/kit.ts';
-import { rgbaColor } from '../../shell/appearance/color.ts';
+import { parseColor, rgbaRgb } from '../../shell/appearance/color.ts';
 import { toArtSlotState, toFlagSlotState } from '../art/adapters.ts';
 import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { FamilyTheme } from '../contract.ts';
@@ -579,6 +579,9 @@ export function drawTimeChart(
 
       if (s.area && subpaths.length > 0) {
         const baselineY = layout.toY(Math.max(layout.yDomain[0], 0));
+        const areaRgb = parseColor(s.color);
+        const topStop = areaRgb ? rgbaRgb(areaRgb, 0.26 * opacity) : '';
+        const botStop = areaRgb ? rgbaRgb(areaRgb, 0.02 * opacity) : s.color;
         for (const pts of subpaths) {
           if (pts.length < 2) continue;
           ctx.save();
@@ -590,10 +593,9 @@ export function drawTimeChart(
           ctx.lineTo(pts[0]![0], baselineY);
           ctx.closePath();
           const grad = ctx.createLinearGradient(0, layout.top, 0, baselineY);
-          const topStop = rgbaColor(s.color, 0.26 * opacity, '');
           if (topStop) {
             grad.addColorStop(0, topStop);
-            grad.addColorStop(1, rgbaColor(s.color, 0.02 * opacity, s.color));
+            grad.addColorStop(1, botStop);
             ctx.globalAlpha = 1;
           } else {
             grad.addColorStop(0, s.color);
