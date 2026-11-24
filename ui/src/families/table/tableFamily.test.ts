@@ -866,7 +866,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
   assert.throws(() => store.require(undefined), /Not auditable/);
   assert.throws(() => store.require(999), /Not auditable/);
 
-  assert.deepEqual(effectiveCountryUnobserved({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), []);
+  assert.deepEqual(effectiveCountryUnobserved({ kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), []);
   assert.deepEqual(effectiveCountryUnobserved({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), [[10, 20]]);
 
   const gate = new CadenceGate(20);
@@ -1079,7 +1079,6 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
     'M4: membership ever refuses when unobserved gaps make campaign membership incomplete',
   );
   assert.equal(selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), null);
-  assert.equal(selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), null);
 
   const ctxA = { tag: 'A', role: 'occupier', settings: 'sA', looks: 'lA' };
   const ctxB = { tag: 'B', role: 'occupied', settings: 'sB', looks: 'lB' };

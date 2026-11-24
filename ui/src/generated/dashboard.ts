@@ -1232,9 +1232,8 @@ export type CivilWar = { id: string, firstHour: number, lastHour: number,
 atWar: Array<HourSpan>, sides: Array<CivilWarSide>, outcome: CivilWarOutcome | null, };
 export type FactionLinesParams = { branchId: string, kind: string, measure: string, from: number, to: number, width: number,
 /**
- * Whose membership a faction sums: `hour` (each member over its own membership; the default), `end` (the
- * members at the view's last hour, over the whole view) or `ever` (anyone a member within the view, over the
- * whole view).
+ * Whose membership a faction sums: `hour` (each member over its own membership; the default) or `ever`
+ * (anyone a member within the view, over the whole view).
  */
 membership: string | null,
 /**
