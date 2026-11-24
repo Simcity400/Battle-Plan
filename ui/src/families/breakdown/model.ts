@@ -1,15 +1,15 @@
 import { colour } from '../../charts/palette.ts';
-import type { TooltipContent } from '../../charts/tooltip.ts';
 import { tintColour } from '../../shell/appearance/color.ts';
 import type { BoundedReadView, FamilyTheme } from '../contract.ts';
 import type { ArtResult } from '../plan.ts';
-import { buildTooltipContent, type TooltipListItem } from '../host/tooltips.ts';
+import type { FamilyTooltipPayload, TooltipListItem } from '../host/tooltips.ts';
 import { formatScalar, formatShare } from '../valueFormat.ts';
 import type { BreakdownViewMode } from './options.ts';
 
 export interface BreakdownPart {
   readonly key: string;
   readonly name: string;
+  readonly nameMissing?: string;
   readonly ordinal: number;
   readonly value: number | null;
   readonly text: string;
@@ -172,9 +172,9 @@ export function buildBreakdownTooltip(
   level: ResolvedBreakdownLevel,
   targetKey: string,
   theme: FamilyTheme,
-): TooltipContent | null {
+): FamilyTooltipPayload | null {
   if (targetKey === PARTIAL_KEY) {
-    return buildTooltipContent({
+    return ({
       title: 'Partial',
       hour: model.hour,
       items: [{ label: level.total.verb, value: withUnit(level.total.text, level.total.unit), strong: true }],
@@ -184,7 +184,7 @@ export function buildBreakdownTooltip(
   if (targetKey === COMPARISON_KEY) {
     const comparison = model.comparison;
     if (!comparison) return null;
-    return buildTooltipContent({
+    return ({
       title: comparison.label,
       hour: model.hour,
       items: [{ label: comparison.label, value: comparison.value, strong: true }],
@@ -205,6 +205,7 @@ export function buildBreakdownTooltip(
     if (!level.total.atLeast && parent && part.parentShare != null) items.push({ label: `Share of ${parent.name}`, value: formatShare(part.parentShare) });
     if (part.count !== undefined && part.count > 0) items.push({ label: part.countLabel ?? 'Count', value: formatScalar(part.count, 'integer') });
   }
+  if (part.nameMissing) items.push({ label: 'Name', missingReason: part.nameMissing });
   if (part.partial && part.partialReason) items.push({ label: 'Coverage', value: part.partialReason, tone: 'muted' });
   if (part.detailRows) items.push(...part.detailRows);
   const children = part.notRecorded ? [] : part.children ?? [];
@@ -217,7 +218,7 @@ export function buildBreakdownTooltip(
   if (children.length > TOOLTIP_PARTS) items.push({ label: `${children.length - TOOLTIP_PARTS} more in the list`, tone: 'muted', indent: true });
   const subtitle = part.subtitle ?? parent?.name;
   const note = [part.note, level.total.atLeast ? level.total.reason : undefined].filter((entry): entry is string => Boolean(entry && entry.trim())).join(' ');
-  return buildTooltipContent({
+  return ({
     title: part.name,
     hour: model.hour,
     ...(subtitle ? { subtitle } : {}),

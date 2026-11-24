@@ -1,18 +1,18 @@
-import type { WidgetProps, WidgetRenderer } from '../../dashboard/definitions';
+import type { FamilyViewProps, FamilyViewRenderer } from '../../dashboard/definitions';
 import type { IndustrialOrganisationSelection } from '../../dashboard/gameWindows';
 import GameWindowTable, { type GameWindowRow } from '../../families/table/GameWindowTable';
-import { organisationsDeclaration } from './organisationsProjection';
+import { rowSource } from '../../families/table/rowSelection.ts';
 
 const ORGANISATION: GameWindowRow<IndustrialOrganisationSelection> = {
   kind: 'industrialOrganisation',
   select: (track, key, _meta, hour) => ({
-    kind: 'industrialOrganisation', sourceId: track.source.id, revision: track.source.revision, branchId: track.branch.id, hour, organisation: key,
+    kind: 'industrialOrganisation', ...rowSource(track, hour), organisation: key,
   }),
   label: 'Industrial organisation',
 };
 
-function IndustrialOrganisationsWidget(props: WidgetProps) {
-  return <GameWindowTable {...props} declaration={organisationsDeclaration} window={ORGANISATION} />;
+function IndustrialOrganisationsWidget(props: FamilyViewProps) {
+  return <GameWindowTable {...props} window={ORGANISATION} />;
 }
 
-export default { render: IndustrialOrganisationsWidget } satisfies WidgetRenderer;
+export default { render: IndustrialOrganisationsWidget } satisfies FamilyViewRenderer;

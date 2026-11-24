@@ -19,9 +19,9 @@ test('every installed widget registers its body and all declared lazy slots', ()
   for (const meta of widgetMetas) {
     const slots = manifestSlotsForKind(meta.kind);
     assert.ok(slots.includes('render'), `${meta.kind} must mount its body`);
-    const entry = ['index.ts', 'index.tsx'].map(name => new URL(`./${meta.kind}/${name}`, import.meta.url)).find(existsSync);
+    const entry = ['index.ts', 'index.tsx', 'family.tsx'].map(name => new URL(`./${meta.kind}/${name}`, import.meta.url)).find(existsSync);
     if (!entry && familyViewsForKind(meta.kind).length && !Object.hasOwn(FAMILY_VIEW_UI, meta.kind)) continue;
-    assert.ok(entry, `${meta.kind} must provide an index.ts or index.tsx entry`);
+    assert.ok(entry, `${meta.kind} must provide an index.ts, index.tsx or family.tsx entry`);
     const source = readFileSync(entry, 'utf8');
     for (const slot of ['countryChip'] as const) {
       if (new RegExp(`\\b${slot}\\s*[:,]`).test(source)) assert.ok(slots.includes(slot), `${meta.kind} must retain ${slot}`);
@@ -70,6 +70,17 @@ test('every widget module loads with its registered lazy body and the catalogue 
       assert.deepEqual([drawn?.family, drawn?.kind], [spec.declaration.family, spec.declaration.kind], named);
       assert.equal(drawn?.projection, spec.declaration.projection, named);
     }
+    const { LEGACY_WIDGETS: legacy } = await vite.ssrLoadModule('/ui/src/widgets/legacyManifest.ts');
+    const { OPTION_CHOICES: kindChoices } = await vite.ssrLoadModule('/ui/src/widgets/manifest.ts');
+    const choiceHooks = new Map<string, Set<unknown>>();
+    for (const entry of [...views as readonly FamilyViewEntry[], ...legacy as readonly { kind: string; view?: string }[]]) {
+      const hooks = choiceHooks.get(entry.kind) ?? new Set<unknown>();
+      const kindHook = Object.hasOwn(kindChoices, entry.kind) ? await kindChoices[entry.kind]() : undefined;
+      hooks.add(kindHook ?? (await load(entry.kind, entry.view)).useOptionChoices);
+      choiceHooks.set(entry.kind, hooks);
+    }
+    const lost = [...choiceHooks].filter(([, hooks]) => hooks.size > 1).map(([kind]) => kind);
+    assert.deepEqual(lost, [], 'every view of a kind loads the recording’s option choices, whichever view loads first');
   } finally { await vite.close(); }
 });
 

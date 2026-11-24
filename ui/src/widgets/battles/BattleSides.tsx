@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
-import { battleFlagCount } from './battleRows';
+import { battleFlagCount, battlePartial, markPartial } from './battleRows';
 import type { BattleCountryLabel, BattleRow, BattleSideSummary } from './battleRows';
 import type { BattleSide } from '../../generated/dashboard';
 
@@ -62,10 +62,10 @@ export default function BattleSides({ row, country, summary, compact }: {
   const fullCount = useRef<HTMLSpanElement>(null);
   const compactCount = useRef<HTMLSpanElement>(null);
   const formatSide = (side: BattleSide, isCompact: boolean) => {
-    if (summary.formatSide) return summary.formatSide(side, isCompact);
+    if (summary.formatSide) return markPartial(summary.formatSide(side, isCompact), side.counts.some(battlePartial));
     const count = side.counts.find(value => value.label === summary.countLabel)
       ?? { label: summary.countLabel, value: null, unknown: summary.unknown };
-    return summary.formatCount(count, isCompact);
+    return markPartial(summary.formatCount(count, isCompact), battlePartial(count));
   };
   const fullText = row.sides.map(side => formatSide(side, false)).join(` ${summary.separator} `);
   const compactText = row.sides.map(side => formatSide(side, true)).join(` ${summary.separator} `);

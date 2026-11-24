@@ -6,11 +6,12 @@ use crate::products::army::ArmyAttribution;
 use dashboard_query::identity::Holder;
 use dashboard_text::division_history;
 use content_reader_localisation::localisation::Argument;
-use replay_data::rows::{DivisionHistoryRow, DivisionStatusRow, SharedDivisionHistoryRow, TableId, tables};
+use replay_data::rows::{CountryLinkRow, CountryRow, DivisionHistoryRow, DivisionLandInputsRow, DivisionRow, DivisionStatusRow, SharedDivisionHistoryRow, TableId, mask, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use content_reader_military::unit_medals::{Medal, Medals};
 use dashboard_base::products::artwork::sprites::SpriteFrame;
+use dashboard_world::products::styles::BranchLooks;
 use std::{cmp::Ordering, collections::{BTreeMap, HashSet}, io};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -120,6 +121,21 @@ pub enum DecoratedRank {
     Medals,
     Experience,
     CasualtiesTaken,
+    #[doc = " The division's name at the hour."]
+    DivisionName,
+    #[doc = " The name of the division's country at the hour, as the game shows it."]
+    CountryName,
+}
+
+impl DecoratedRank {
+    fn named(self) -> bool {
+        matches!(self, Self::DivisionName | Self::CountryName)
+    }
+}
+
+pub struct DecoratedContext {
+    content: Content,
+    looks: Result<BranchLooks, String>,
 }
 
 const RANKS: [DecoratedRank; 3] = [DecoratedRank::Medals, DecoratedRank::Experience, DecoratedRank::CasualtiesTaken];
@@ -270,13 +286,17 @@ impl AtHour for DecoratedDivisions {
     const TITLE: &'static str = "Most decorated divisions";
     const CONTENT_DEPENDENT: bool = true;
     type Params = DecoratedDivisionsParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", by, descending, count];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", "countries[].firstHour": Start, "countries[].lastHour": End, by, descending, count];
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Reply = DecoratedDivisionsReply;
-    type Context = Content;
+    type Context = DecoratedContext;
 
     fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
-        filter_valid_through(params.countries.as_deref(), at.hour)
+        let filter = filter_valid_through(params.countries.as_deref(), at.hour);
+        match (&at.context.looks, params.by) {
+            (Ok(looks), DecoratedRank::CountryName) => filter.min(looks.next_change(at.hour).saturating_sub(1)),
+            _ => filter,
+        }
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -298,8 +318,32 @@ impl AtHour for DecoratedDivisions {
         TABLES.to_vec()
     }
 
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        let fields = match table {
+            TableId::Countries => mask::<CountryRow>(&["canonical_slot", "tag"]),
+            TableId::CountryLinks => mask::<CountryLinkRow>(&["canonical_slot"]),
+            TableId::Divisions => mask::<DivisionRow>(&["roster_owner", "expeditionary_owner", "template", "reveal_skip"]),
+            TableId::DivisionStatus => mask::<DivisionStatusRow>(&["experience", "career_counter", "name", "naming", "country_ordinal"]),
+            TableId::DivisionLandInputs => mask::<DivisionLandInputsRow>(&["manpower"]),
+            _ => return None,
+        };
+        Some((0..64).filter(|column| fields & 1 << column != 0).collect())
+    }
+
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(Content::load(source, load))
+        Ok(DecoratedContext { content: Content::load(source, load), looks: Err("Country names need the campaign's branch".into()) })
+    }
+
+    fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        let looks = if params.by == DecoratedRank::CountryName {
+            let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
+            dashboard_base::queries::query(source, branch)
+                .and_then(|query| BranchLooks::load(source, &query.timeline, load, &mut Vec::new()))
+                .map_err(|why| format!("Country names unavailable: {why}"))
+        } else {
+            Err("Country names are read only to rank by them".into())
+        };
+        Ok(DecoratedContext { content: Content::load(source, load), looks })
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -565,12 +609,14 @@ fn careers(frame: &DecodedFrame, slots: Option<&[u32]>, at: &At<'_, Content>, re
     Ok(reply)
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct Measures {
     pub id: u64,
     pub medals: Option<i32>,
     pub experience: Option<i64>,
     pub casualties_taken: Option<i32>,
+    #[doc = " The name the rank orders by, when it orders by a name: folded, then as shown."]
+    pub name: Option<(String, String)>,
 }
 
 impl Measures {
@@ -579,7 +625,26 @@ impl Measures {
             DecoratedRank::Medals => self.medals.map(i64::from),
             DecoratedRank::Experience => self.experience,
             DecoratedRank::CasualtiesTaken => self.casualties_taken.map(i64::from),
+            DecoratedRank::DivisionName | DecoratedRank::CountryName => None,
         }
+    }
+
+    fn known(&self, by: DecoratedRank) -> bool {
+        if by.named() { self.name.is_some() } else { self.of(by).is_some() }
+    }
+}
+
+pub(super) fn name_key(name: &str) -> (String, String) {
+    (name.to_lowercase(), name.to_owned())
+}
+
+fn names_missing_last(a: Option<&(String, String)>, b: Option<&(String, String)>, descending: bool) -> Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) if descending => b.cmp(a),
+        (Some(a), Some(b)) => a.cmp(b),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
     }
 }
 
@@ -594,19 +659,39 @@ fn missing_last(a: Option<i64>, b: Option<i64>, descending: bool) -> Ordering {
 }
 
 fn rank_order(a: &Measures, b: &Measures, by: DecoratedRank, descending: bool) -> Ordering {
-    missing_last(a.of(by), b.of(by), descending)
+    let first = if by.named() { names_missing_last(a.name.as_ref(), b.name.as_ref(), descending) } else { missing_last(a.of(by), b.of(by), descending) };
+    first
         .then_with(|| RANKS.iter().filter(|&&other| other != by).map(|&other| missing_last(a.of(other), b.of(other), true)).find(|order| order.is_ne()).unwrap_or(Ordering::Equal))
         .then(a.id.cmp(&b.id))
 }
 
-pub(super) fn first_in_order(mut measured: Vec<Measures>, by: DecoratedRank, descending: bool, count: usize) -> Vec<Measures> {
+pub(super) fn ranked(mut measured: Vec<Measures>, by: DecoratedRank, descending: bool, count: usize) -> (Vec<Measures>, bool) {
     let order = |a: &Measures, b: &Measures| rank_order(a, b, by, descending);
+    let mut next = None;
     if count < measured.len() {
         measured.select_nth_unstable_by(count, order);
+        next = Some(measured[count].clone());
         measured.truncate(count);
     }
     measured.sort_unstable_by(order);
-    measured
+    let unproven = measured.windows(2).any(|pair| decided_by_unread(&pair[0], &pair[1], by))
+        || measured.last().zip(next.as_ref()).is_some_and(|(last, next)| decided_by_unread(last, next, by));
+    (measured, unproven)
+}
+
+fn decided_by_unread(a: &Measures, b: &Measures, by: DecoratedRank) -> bool {
+    let tied = if by.named() { a.name.is_some() && a.name == b.name } else { a.of(by).is_some() && a.of(by) == b.of(by) };
+    if !tied {
+        return false;
+    }
+    for &other in RANKS.iter().filter(|&&other| other != by) {
+        match (a.of(other), b.of(other)) {
+            (Some(x), Some(y)) if x == y => {}
+            (Some(_), Some(_)) => return false,
+            _ => return true,
+        }
+    }
+    false
 }
 
 pub(super) fn filter_valid_through(countries: Option<&[CountryHours]>, hour: i32) -> i32 {
@@ -624,6 +709,8 @@ fn rank_word(by: DecoratedRank) -> &'static str {
         DecoratedRank::Medals => "medals",
         DecoratedRank::Experience => "experience",
         DecoratedRank::CasualtiesTaken => "casualties taken",
+        DecoratedRank::DivisionName => "names",
+        DecoratedRank::CountryName => "country names",
     }
 }
 
@@ -631,7 +718,15 @@ fn summary_medals(history: &[SharedDivisionHistoryRow]) -> Option<i32> {
     history.first().filter(|row| row.list == DivisionHistoryRow::SUMMARY && row.available != 0).map(|row| row.amount)
 }
 
-fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_, Content>, refusals: &mut Refusals) -> io::Result<DecoratedDivisionsReply> {
+fn rank_name(by: DecoratedRank, content: &Content, looks: &Result<BranchLooks, String>, status: Option<&DivisionStatusRow>, tag: Option<&str>, hour: i32) -> Option<(String, String)> {
+    match by {
+        DecoratedRank::DivisionName => content.division_name(status).ok().map(|name| name_key(&name)),
+        DecoratedRank::CountryName => looks.as_ref().ok().zip(tag).and_then(|(looks, tag)| looks.at(tag, hour).name).map(|name| name_key(&name)),
+        _ => None,
+    }
+}
+
+fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_, DecoratedContext>, refusals: &mut Refusals) -> io::Result<DecoratedDivisionsReply> {
     let mut reply = DecoratedDivisionsReply { divisions: Vec::new(), medals: Vec::new(), templates: Vec::new(), partial: None, missing: None, warnings: Vec::new() };
     let divisions = match frame.complete::<tables::Divisions>() {
         Ok(rows) => rows,
@@ -640,8 +735,13 @@ fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_
             return Ok(reply);
         }
     };
-    let content = at.context;
-    let countries = Countries::read(frame)?.named(at.holders, at.hour);
+    dashboard_base::products::at_hour::count_rows(|| divisions.len() as u64);
+    let content = &at.context.content;
+    let (countries, links_missing) = Countries::witnessed(frame);
+    let countries = countries.named(at.holders, at.hour);
+    if let Some(why) = links_missing {
+        refusals.note(format!("Division countries unavailable: {why}"));
+    }
     let passing = params.countries.as_ref().map(|spans| spans.iter().filter(|span| span.first_hour <= at.hour && at.hour <= span.last_hour).map(|span| span.tag.as_str()).collect::<HashSet<&str>>());
     let history = frame.complete::<tables::DivisionHistory>().unwrap_or(&[]);
     let mut measured = Vec::new();
@@ -650,8 +750,9 @@ fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_
         if seen.is_multiple_of(4096) {
             dashboard_text::metadata::check_cancel(at.cancelled)?;
         }
+        let tag = (passing.is_some() || params.by == DecoratedRank::CountryName).then(|| countries.tag(attributed(division, ArmyAttribution::Owner))).flatten();
         if let Some(passing) = &passing {
-            match countries.tag(attributed(division, ArmyAttribution::Owner)) {
+            match &tag {
                 Some(tag) if passing.contains(tag.as_str()) => {}
                 Some(_) => continue,
                 None => {
@@ -666,9 +767,14 @@ fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_
             medals: summary_medals(history_of(history, division.id)),
             experience: status.zip(manpower_of(frame, division.id)).and_then(|(status, manpower)| status.normalized_experience(manpower)),
             casualties_taken: status.and_then(DivisionStatusRow::casualties_taken),
+            name: rank_name(params.by, content, &at.context.looks, status, tag.as_deref(), at.hour),
         };
-        unmeasured += usize::from(measures.of(params.by).is_none());
+        unmeasured += usize::from(!measures.known(params.by));
         measured.push(measures);
+    }
+    if passing.is_some() && measured.is_empty() && unplaced > 0 {
+        reply.missing = Some(format!("{unplaced} divisions' countries were not recorded at this hour, so which belong to the chosen countries is not known"));
+        return Ok(reply);
     }
     let mut partial = Vec::new();
     if unmeasured > 0 {
@@ -677,8 +783,11 @@ fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_
     if unplaced > 0 {
         partial.push(format!("{unplaced} divisions' countries were not recorded at this hour; they are left out"));
     }
+    let (first, unproven) = ranked(measured, params.by, params.descending, usize::try_from(params.count).unwrap_or(usize::MAX));
+    if unproven {
+        partial.push(format!("Divisions with equal {} are ordered by a measure not read for some of them", rank_word(params.by)));
+    }
     reply.partial = (!partial.is_empty()).then(|| partial.join(". "));
-    let first = first_in_order(measured, params.by, params.descending, usize::try_from(params.count).unwrap_or(usize::MAX));
     let mut facts = Facts { frame, content, medals: MedalIndex::default(), levels: Levels::read(content) };
     content.group_notes(refusals);
     let mut templates = BTreeMap::<u64, ()>::new();

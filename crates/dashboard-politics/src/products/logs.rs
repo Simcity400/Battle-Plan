@@ -1,6 +1,6 @@
 
 pub use dashboard_base::products::log_page::{
-    LogCaches, LogCell, LogFacetCountAsk, LogFacetTotal, LogPageParams, LogPageReply, LogPageRow, LogTailParams, LogTailReply, dated_tail_panel, missing, page, page_with, quiet_tail_missing, tail,
+    LogCaches, LogCell, LogFacetCountAsk, LogPageParams, LogPageReply, LogPageRow, LogTailParams, LogTailReply, dated_tail_panel, missing, page, page_with, quiet_tail_missing, tail,
     tail_with,
 };
 
@@ -36,10 +36,6 @@ pub struct LogCountsParams {
     #[doc = " 1 to 5, or whole six-hour buckets."]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
     pub bin_hours: i64,
-    #[doc = " The countries a row must name, each tag over the hours it counts, for a log whose rows a"]
-    #[doc = " scope reads (the feed's); every row when none."]
-    #[serde(default)]
-    pub scope: Option<Vec<dashboard_world::products::groups::MembershipRun>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -169,7 +165,7 @@ fn load_tail_at(query: &Query<'_>, caches: Option<&LogCaches>, params: &LogTailP
     };
     let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty() || !filter.membership.is_empty());
     let offset = params.offset.as_deref().unwrap_or("0").parse::<u64>().map_err(|_| invalid("Invalid offset"))?;
-    let (page, rows, facet_totals, missing) = tail_with(query, &params.log, &params.facets, params.from, hour, offset, params.limit, &params.count_facets, caches, |paged, tag| LogPageRow {
+    let (page, rows, counts, missing) = tail_with(query, &params.log, &params.facets, params.from, hour, offset, params.limit, &params.count_facets, caches, |paged, tag| LogPageRow {
         hour: paged.row.hour,
         key: paged.row.key.to_string(),
         ordinal: paged.ordinal.to_string(),
@@ -187,7 +183,7 @@ fn load_tail_at(query: &Query<'_>, caches: Option<&LogCaches>, params: &LogTailP
         offset: page.offset.to_string(),
         total: page.total.to_string(),
         rows,
-        facet_totals,
+        counts,
         missing,
         warnings: Vec::new(),
     })
@@ -229,7 +225,7 @@ impl Product for LogTail {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![LogFacetCountAsk::decl(), LogFacetTotal::decl(), LogTailParams::decl(), LogTailReply::decl()]
+        vec![LogFacetCountAsk::decl(), dashboard_base::products::occurrences::OccurrenceCount::decl(), LogTailParams::decl(), LogTailReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -296,8 +292,6 @@ impl Product for LogCounts {
         from: Start,
         to: End,
         binHours,
-        "scope[].firstHour": Start,
-        "scope[].lastHour": End,
         "facets[].countries[]",
         "facets[].values[]",
         "facets[].membership[].country",
@@ -326,14 +320,8 @@ impl Product for LogCounts {
         if from > to {
             return Err(invalid("Invalid span"));
         }
-        let (counts, groups) = match &params.scope {
-            None => {
-                let selection = reader.select(&params.facets, query.timeline.first, to)?;
-                (reader.counts_with(&selection.patterns, selection.groups.len(), from, to, params.bin_hours, selection.overlap)?, selection.groups)
-            }
-            Some(_) if log.name != super::feed::LOG => return Err(invalid(format!("The {} log cannot be kept to a country scope", log.name))),
-            Some(runs) => (vec![super::feed::scope::counts(source, &query, &params.facets, runs, from, to, params.bin_hours)?], vec![None]),
-        };
+        let selection = reader.select(&params.facets, query.timeline.first, to)?;
+        let (counts, groups) = (reader.counts_with(&selection.patterns, selection.groups.len(), from, to, params.bin_hours, selection.overlap)?, selection.groups);
         Ok(LogCountsReply {
             branch_id: params.branch_id.clone(),
             log: params.log.clone(),

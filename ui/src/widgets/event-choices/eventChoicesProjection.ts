@@ -8,6 +8,7 @@ import {
   logCountryCell,
   logDateCell,
   logStatusCell,
+  occurrenceSelection,
   pagedTailEntry,
   projectPagedSlots,
   urlArtHandle,
@@ -18,10 +19,9 @@ import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/r
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
-import type { EventFeedKind, EventFeedSpanReply, MembershipRun, ScriptOccurrence, ScriptPageRow } from '../../generated/dashboard';
-import { kindsRequest, validateSpan } from '../event-feed/eventFeedData.ts';
+import type { ScriptEventKind, ScriptOccurrence, ScriptPageRow } from '../../generated/dashboard';
 import { reasonsOf } from '../event-feed/scriptedGaps.ts';
-import { cardFacets, daysBetween, recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
+import { daysBetween, recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
 import {
   awaitingText,
   choiceAt,
@@ -37,29 +37,32 @@ import { AWAITING, EVENT_CHOICES_COLUMNS, EVENT_KINDS } from './definition.ts';
 import type { EventDetailSubject } from './EventDetailWindow.tsx';
 
 export interface EventChoicesProjectionOptions {
-  readonly openers: readonly EventFeedKind[];
+  readonly events: readonly ScriptEventKind[];
   readonly awaiting: boolean;
   readonly artwork: boolean;
   readonly breaks: readonly RecordingBreak[];
-  readonly filter: {
-    readonly passing: Readonly<Record<string, readonly (readonly [number, number])[]>> | null;
-  };
 }
 
 const HEAD_LIMIT = 256;
-const CONTINUING: readonly EventFeedKind[] = ['eventOptionSelected'];
 const nonBlank = (value: string | null | undefined): string | null => (value && value.trim().length > 0 ? value : null);
+
+interface ChoicePageInfo {
+  readonly open: boolean;
+  readonly live: boolean;
+  readonly notRecorded: boolean;
+}
 
 function buildChoiceRow(
   readView: BoundedReadView,
   at: ChoiceAt,
+  page: ChoicePageInfo,
   artwork: boolean,
   boundary: ReturnType<typeof newIdentityBoundary>,
 ): TableRow {
   const { card } = at;
   const firstRow = card.first.row;
   const nameHour = firstRow.nameHour;
-  const open = isOpen(at);
+  const open = page.open;
   const reasons = reasonsOf(card.item);
   const lines = optionLines(at);
   const chosenLine = lines.find(line => line.chosen) ?? null;
@@ -90,10 +93,13 @@ function buildChoiceRow(
         inlinePrefix: chosenLine.letter,
       };
     } else {
-      choiceCell = { value: notRecorded('Choice not recorded') };
+      choiceCell = { value: notRecorded('Choice not recorded'), missingFigure: 'Choice' };
     }
   } else {
-    choiceCell = { value: notRecorded(at.pause ? 'Choice not recorded (recording paused)' : 'Choice not recorded') };
+    choiceCell = {
+      value: notRecorded(at.pause || page.notRecorded ? 'Choice not recorded (recording paused)' : 'Choice not recorded'),
+      missingFigure: 'Choice',
+    };
   }
 
   const rawTitle = nonBlank(card.item?.name);
@@ -114,7 +120,7 @@ function buildChoiceRow(
     chosenOrdinal: at.choice?.option ?? null,
     awaiting: open,
     chosenHour: at.choice?.row.hour ?? null,
-    noChoiceReason: at.choice ? null : noChoiceText(at),
+    noChoiceReason: at.choice ? null : (page.notRecorded ? 'No choice recorded' : noChoiceText(at)),
   };
 
   const tooltipExtra = (): TooltipExtraRow[] => {
@@ -133,7 +139,7 @@ function buildChoiceRow(
     key: card.occurrence.id,
     name: safeChoiceText,
     rowHour: firstRow.hour,
-    live: open,
+    live: page.live,
     cells: {
       date: logDateCell(firstRow.hour),
       kind: artwork
@@ -165,7 +171,7 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
   family: 'table',
   project(readView, options): TableModel {
     const hour = readView.hour;
-    if (!options.openers.length) {
+    if (!options.events.length) {
       return {
         columns: EVENT_CHOICES_COLUMNS,
         rows: [],
@@ -187,9 +193,6 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
     if (source.refused !== null) {
       return { columns: EVENT_CHOICES_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, refused: source.refused };
     }
-    const countryFn = options.filter.passing
-      ? (tag: string, atHour: number) => !!options.filter.passing![tag]?.some(([first, last]) => first <= atHour && atHour <= last)
-      : null;
     const boundary = newIdentityBoundary();
     let nextAwaitingChange = Infinity;
     const { slots, rows, windowOffset, totalRows } = projectPagedSlots(
@@ -209,31 +212,25 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
           { key: rawRow.key, id: occ.id, hour: card?.first.row.hour ?? rawRow.hour, revealedHour: card?.first.row.readHour ?? rawRow.hour, by: false, item: card },
           hour,
           options.breaks,
-          options.awaiting,
-          countryFn,
         );
         if (!resolved) return null;
-        if (isOpen(resolved.item)) {
+        const open = rawRow.status != null ? rawRow.status === 'awaiting' : isOpen(resolved.item);
+        const live = typeof rawRow.live === 'boolean' ? rawRow.live : open;
+        const page: ChoicePageInfo = { open, live, notRecorded: rawRow.status === 'notRecorded' };
+        if (open) {
           const startHour = resolved.item.card.first.row.hour;
           const elapsed = Math.max(0, daysBetween(startHour, hour));
           const nextDay = startHour + (elapsed + 1) * 24;
           if (nextDay > hour && nextDay < nextAwaitingChange) nextAwaitingChange = nextDay;
         }
-        return buildChoiceRow(readView, resolved.item, options.artwork, boundary);
+        return buildChoiceRow(readView, resolved.item, page, options.artwork, boundary);
       },
     );
 
-    const liveRows: TableRow[] = [];
-    const restSlots: typeof slots = [];
-    for (const slot of slots) {
-      if (slot.kind === 'data' && slot.row.live) liveRows.push(slot.row);
-      else restSlots.push(slot);
-    }
-    const orderedSlots = [...liveRows.map(row => ({ kind: 'data' as const, row })), ...restSlots];
-    const orderedRows = [...liveRows, ...rows.filter(r => !r.live)];
-    const titleSummary = !options.awaiting && source.total > 0
-      ? `${formatScalar(source.total, 'integer')} ${source.total === 1 ? 'event' : 'events'}`
-      : null;
+    const awaitingCount = source.facetTotals?.get('awaiting') ?? source.total;
+    const titleSummary = options.awaiting
+      ? (awaitingCount > 0 ? `${formatScalar(awaitingCount, 'integer')} awaiting` : null)
+      : (source.total > 0 ? `${formatScalar(source.total, 'integer')} ${source.total === 1 ? 'event' : 'events'}` : null);
     const rawHead = source.rawHead as { readonly warnings?: readonly string[]; readonly unavailable?: readonly { readonly label: string; readonly reason: string }[] } | undefined;
     const warnings = [
       ...(rawHead?.warnings ?? []),
@@ -242,8 +239,8 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
 
     return {
       columns: EVENT_CHOICES_COLUMNS,
-      rows: orderedRows,
-      slots: orderedSlots,
+      rows,
+      slots,
       hour,
       hideHeader: true,
       unsorted: true,
@@ -255,12 +252,12 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
       titleSummary,
       ...(source.missing.length > 0 && titleSummary ? { titleSummaryPartial: 'Count from recorded hours' } : {}),
       ...(warnings.length ? { warnings } : {}),
-      ...(orderedSlots.length === 0 ? { empty: 'No recorded events match these settings.' } : {}),
+      ...(slots.length === 0 ? { empty: 'No recorded events match these settings.' } : {}),
     };
   },
 });
 
-export const eventChoicesDeclaration: TableWidgetDeclaration<EventChoicesProjectionOptions, EventFeedSpanReply> = {
+export const eventChoicesDeclaration: TableWidgetDeclaration<EventChoicesProjectionOptions> = {
   family: 'table',
   kind: 'event-choices',
   label: 'Event choices',
@@ -268,34 +265,20 @@ export const eventChoicesDeclaration: TableWidgetDeclaration<EventChoicesProject
   emptyCampaign: 'Load a campaign to see event choices.',
   icon: 'ballot',
   countries: { mode: 'filter', labels: true },
-  aux: {
-    product: 'event-feed-span',
-    params: track => kindsRequest(track).params as Record<string, unknown>,
-    validate: validateSpan,
-  },
   columns: EVENT_CHOICES_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx): SourcePlan {
-    const openers = EVENT_KINDS.filter(kind => ctx.options[kind.value] !== false).map(kind => kind.kind);
-    if (!openers.length) {
+    const events = EVENT_KINDS.filter(kind => ctx.options[kind.value] !== false).map(kind => kind.event);
+    if (!events.length) {
       return { owner: `${ctx.track.source.id}:${ctx.branch.id}:event-choices:empty`, entries: [], allowEmptyFollow: true };
     }
-    const kinds = ctx.aux?.kinds;
-    if (!kinds) return { owner: `${ctx.track.source.id}:${ctx.branch.id}:event-choices:loading`, entries: [] };
     const win = !ctx.following ? resolveWindow(ctx.widget, ctx.track, [ctx.track], ctx.branch.lastHour) : null;
     const rawFrom = ctx.widget.time.mode === 'range' && win ? Math.max(Math.floor(win.firstHour), ctx.branch.firstHour) : null;
     const boundFrom = rawFrom !== null ? ctx.gateSpan(rawFrom, ctx.branch.lastHour)?.firstHour ?? null : null;
-    const scopeRuns: MembershipRun[] | undefined = ctx.countries.filter.passing
-      ? Object.entries(ctx.countries.filter.passing).flatMap(([tag, ranges]) =>
-          ranges.flatMap(([first, last]) => {
-            const bound = ctx.gateSpan(first, last);
-            return bound ? [{ tag, firstHour: bound.firstHour, lastHour: bound.lastHour }] : [];
-          }),
-        )
-      : undefined;
-    const facets = cardFacets(kinds, openers, CONTINUING);
+    const awaiting = ctx.options[AWAITING.value] === true;
+    const selection = occurrenceSelection(ctx);
     return {
-      owner: `${ctx.track.source.id}:${ctx.branch.id}:event-choices:${openers.join(',')}:${scopeRuns ? scopeRuns.length : 'all'}`,
+      owner: `${ctx.track.source.id}:${ctx.branch.id}:event-choices:${events.join(',')}:${awaiting}:${selection ? JSON.stringify(selection) : 'all'}`,
       entries: [
         pagedTailEntry(
           'main',
@@ -305,10 +288,13 @@ export const eventChoicesDeclaration: TableWidgetDeclaration<EventChoicesProject
           {
             product: 'event-choices-tail',
             branchId: ctx.branch.id,
-            facets,
             from: boundFrom,
             limit: HEAD_LIMIT,
-            ...(scopeRuns ? { scope: scopeRuns } : {}),
+            ask: {
+              ...(events.length === EVENT_KINDS.length ? {} : { events }),
+              ...(awaiting ? { statuses: ['awaiting'] } : {}),
+              ...selection,
+            },
           },
           ctx.following,
           DEFAULT_TAIL_PAGE_SIZE,
@@ -318,13 +304,7 @@ export const eventChoicesDeclaration: TableWidgetDeclaration<EventChoicesProject
   },
   projection: eventChoicesProjection,
   projectionOptions(ctx): EventChoicesProjectionOptions {
-    const openers = EVENT_KINDS.filter(kind => ctx.options[kind.value] !== false).map(kind => kind.kind);
-    return {
-      openers,
-      awaiting: ctx.options[AWAITING.value] === true,
-      artwork: ctx.options.artwork !== false,
-      breaks: recordingBreaks(ctx.branch),
-      filter: { passing: ctx.countries.filter.passing },
-    };
+    const events = EVENT_KINDS.filter(kind => ctx.options[kind.value] !== false).map(kind => kind.event);
+    return { events, awaiting: ctx.options[AWAITING.value] === true, artwork: ctx.options.artwork !== false, breaks: recordingBreaks(ctx.branch) };
   },
 };

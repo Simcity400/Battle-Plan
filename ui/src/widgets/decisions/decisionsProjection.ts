@@ -10,6 +10,7 @@ import {
   logCountryCell,
   logDateCell,
   logStatusCell,
+  occurrenceSelection,
   pagedTailEntry,
   projectPagedSlots,
   urlArtHandle,
@@ -20,32 +21,26 @@ import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/r
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
-import type { EventFeedSpanReply, MembershipRun, ScriptCurrency, ScriptOccurrence, ScriptPageRow } from '../../generated/dashboard';
-import { kindsRequest, validateSpan } from '../event-feed/eventFeedData.ts';
+import type { ScriptCurrency, ScriptOccurrence, ScriptPageRow, ScriptStatus } from '../../generated/dashboard';
 import { plainScripted, reasonsOf } from '../event-feed/scriptedGaps.ts';
-import { cardFacets, recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
+import { recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
 import type { DecisionDetailSubject } from './DecisionDetailWindow.tsx';
 import {
-  CONTINUING,
   daysLeft,
   decisionAt,
   decisionCard,
   decisionName,
   lifecycleLine,
-  OPENERS,
   STATUS_CHOICES,
   statusLabel,
   type DecisionAt,
+  type StatusChoice,
 } from './decisionsData.ts';
 import { DECISIONS_COLUMNS } from './definition.ts';
 
 export interface DecisionsProjectionOptions {
-  readonly statuses: readonly string[];
   readonly artwork: boolean;
   readonly breaks: readonly RecordingBreak[];
-  readonly filter: {
-    readonly passing: Readonly<Record<string, readonly (readonly [number, number])[]>> | null;
-  };
 }
 
 const HEAD_LIMIT = 256;
@@ -126,8 +121,11 @@ function decisionCostInfo(
 }
 
 function decisionTimerCell(at: DecisionAt): { readonly cell: TableCell; readonly nextChangeAt: number } {
-  if (at.status !== 'active' || !at.timer) {
+  if (at.status !== 'active') {
     return { cell: { value: notApplicable('No active timer'), blank: true }, nextChangeAt: Infinity };
+  }
+  if (!at.timer) {
+    return { cell: { value: notRecorded('Decision duration was not recorded'), missingFigure: 'Duration' }, nextChangeAt: Infinity };
   }
   const left = daysLeft(at);
   const totalDays = Math.max(1, at.timer.days);
@@ -155,6 +153,7 @@ function decisionTimerCell(at: DecisionAt): { readonly cell: TableCell; readonly
 function buildDecisionRow(
   readView: BoundedReadView,
   at: DecisionAt,
+  live: boolean,
   artwork: boolean,
   boundary: ReturnType<typeof newIdentityBoundary>,
 ): { readonly row: TableRow; readonly nextChangeAt: number } {
@@ -254,7 +253,7 @@ function buildDecisionRow(
       key: card.occurrence.id,
       name: safeName,
       rowHour: firstRow.hour,
-      live: at.status === 'active',
+      live,
       muted,
       cells: {
         date: logDateCell(firstRow.hour),
@@ -285,6 +284,20 @@ function buildDecisionRow(
   };
 }
 
+const RECORDED_STATUS: Readonly<Record<ScriptStatus, DecisionAt['status'] | null>> = {
+  active: 'active', taken: 'taken', completed: 'completed', failed: 'failed', cancelled: 'cancelled', timedOut: 'timedOut', removed: 'removed',
+  unsupported: 'unsupported', notRecorded: 'unknown', awaiting: null, chosen: null, available: null,
+};
+
+const ASKED_STATUSES: Readonly<Record<StatusChoice, readonly ScriptStatus[]>> = {
+  active: ['active', 'notRecorded'],
+  completed: ['taken', 'completed'],
+  failed: ['failed', 'unsupported'],
+  cancelled: ['cancelled'],
+  timedOut: ['timedOut'],
+  removed: ['removed'],
+};
+
 export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = registerFamilyProjection({
   kind: 'decisions',
   family: 'table',
@@ -301,10 +314,6 @@ export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = 
     if (source.refused !== null) {
       return { columns: DECISIONS_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, refused: source.refused };
     }
-    const statuses = new Set(options.statuses);
-    const countryFn = options.filter.passing
-      ? (tag: string, atHour: number) => !!options.filter.passing![tag]?.some(([first, last]) => first <= atHour && atHour <= last)
-      : null;
     const boundary = newIdentityBoundary();
     let nextTimerChange = Infinity;
     const { slots, rows, windowOffset, totalRows } = projectPagedSlots(
@@ -325,38 +334,22 @@ export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = 
           { key: rawRow.key, id: occ.id, hour: first?.hour ?? rawRow.hour, revealedHour: first?.readHour ?? rawRow.hour, by: false, item: card },
           hour,
           options.breaks,
-          statuses,
-          countryFn,
         );
         if (!resolved) return null;
-        const built = buildDecisionRow(readView, resolved.item, options.artwork, boundary);
+        const recorded = rawRow.status ? RECORDED_STATUS[rawRow.status] : null;
+        const effective = recorded ? { ...resolved.item, status: recorded } : resolved.item;
+        const live = typeof rawRow.live === 'boolean' ? rawRow.live : effective.status === 'active';
+        const built = buildDecisionRow(readView, effective, live, options.artwork, boundary);
         if (built.nextChangeAt > hour && built.nextChangeAt < nextTimerChange) nextTimerChange = built.nextChangeAt;
         return built.row;
       },
     );
 
-    const liveRows: TableRow[] = [];
-    const restSlots: typeof slots = [];
-    for (const slot of slots) {
-      if (slot.kind === 'data' && slot.row.live) liveRows.push(slot.row);
-      else restSlots.push(slot);
-    }
-    const orderedSlots = [...liveRows.map(row => ({ kind: 'data' as const, row })), ...restSlots];
-    const orderedRows = [...liveRows, ...rows.filter(r => !r.live)];
     const rawHead = source.rawHead as {
-      readonly activeCount?: string | number | null;
       readonly warnings?: readonly string[];
       readonly unavailable?: readonly { readonly label: string; readonly reason: string }[];
     } | undefined;
-    const productActive = rawHead?.activeCount != null && Number.isFinite(Number(rawHead.activeCount))
-      ? Number(rawHead.activeCount)
-      : null;
-    const wholePopulationVisible = windowOffset === 0
-      && source.total <= HEAD_LIMIT
-      && (!readView.rowWindow || readView.rowWindow.count >= source.total);
-    const runningCount = statuses.has('active')
-      ? (productActive ?? (wholePopulationVisible ? liveRows.length : null))
-      : null;
+    const runningCount = source.facetTotals?.get('running') ?? null;
     const titleSummary = runningCount !== null && runningCount > 0 ? `${formatScalar(runningCount, 'integer')} running` : null;
     const warnings = [
       ...(rawHead?.warnings ?? []),
@@ -365,8 +358,8 @@ export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = 
 
     return {
       columns: DECISIONS_COLUMNS,
-      rows: orderedRows,
-      slots: orderedSlots,
+      rows,
+      slots,
       hour,
       hideHeader: true,
       unsorted: true,
@@ -378,12 +371,12 @@ export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = 
       titleSummary,
       ...(source.missing.length > 0 && titleSummary ? { titleSummaryPartial: 'Count from recorded hours' } : {}),
       ...(warnings.length ? { warnings } : {}),
-      ...(orderedSlots.length === 0 ? { empty: 'No recorded decisions match these settings.' } : {}),
+      ...(slots.length === 0 ? { empty: 'No recorded decisions match these settings.' } : {}),
     };
   },
 });
 
-export const decisionsDeclaration: TableWidgetDeclaration<DecisionsProjectionOptions, EventFeedSpanReply> = {
+export const decisionsDeclaration: TableWidgetDeclaration<DecisionsProjectionOptions> = {
   family: 'table',
   kind: 'decisions',
   label: 'Decisions',
@@ -391,30 +384,17 @@ export const decisionsDeclaration: TableWidgetDeclaration<DecisionsProjectionOpt
   emptyCampaign: 'Load a campaign to see decisions.',
   icon: 'ballot',
   countries: { mode: 'filter', labels: true },
-  aux: {
-    product: 'event-feed-span',
-    params: track => kindsRequest(track).params as Record<string, unknown>,
-    validate: validateSpan,
-  },
   columns: DECISIONS_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx): SourcePlan {
-    const kinds = ctx.aux?.kinds;
-    if (!kinds) return { owner: `${ctx.track.source.id}:${ctx.branch.id}:decisions:loading`, entries: [] };
     const win = !ctx.following ? resolveWindow(ctx.widget, ctx.track, [ctx.track], ctx.branch.lastHour) : null;
     const rawFrom = ctx.widget.time.mode === 'range' && win ? Math.max(Math.floor(win.firstHour), ctx.branch.firstHour) : null;
     const boundFrom = rawFrom !== null ? ctx.gateSpan(rawFrom, ctx.branch.lastHour)?.firstHour ?? null : null;
-    const scopeRuns: MembershipRun[] | undefined = ctx.countries.filter.passing
-      ? Object.entries(ctx.countries.filter.passing).flatMap(([tag, ranges]) =>
-          ranges.flatMap(([first, last]) => {
-            const bound = ctx.gateSpan(first, last);
-            return bound ? [{ tag, firstHour: bound.firstHour, lastHour: bound.lastHour }] : [];
-          }),
-        )
-      : undefined;
-    const facets = cardFacets(kinds, OPENERS, CONTINUING);
+    const chosen = STATUS_CHOICES.filter(status => ctx.options[status.value] !== false).map(status => status.value);
+    const statuses = chosen.length === STATUS_CHOICES.length ? null : chosen.flatMap(choice => ASKED_STATUSES[choice]);
+    const selection = occurrenceSelection(ctx);
     return {
-      owner: `${ctx.track.source.id}:${ctx.branch.id}:decisions:${scopeRuns ? scopeRuns.length : 'all'}`,
+      owner: `${ctx.track.source.id}:${ctx.branch.id}:decisions:${statuses ? statuses.join(',') : 'every'}:${selection ? JSON.stringify(selection) : 'all'}`,
       entries: [
         pagedTailEntry(
           'main',
@@ -424,10 +404,9 @@ export const decisionsDeclaration: TableWidgetDeclaration<DecisionsProjectionOpt
           {
             product: 'decisions-tail',
             branchId: ctx.branch.id,
-            facets,
             from: boundFrom,
             limit: HEAD_LIMIT,
-            ...(scopeRuns ? { scope: scopeRuns } : {}),
+            ask: { ...(statuses ? { statuses } : {}), ...selection },
           },
           ctx.following,
           DEFAULT_TAIL_PAGE_SIZE,
@@ -437,12 +416,6 @@ export const decisionsDeclaration: TableWidgetDeclaration<DecisionsProjectionOpt
   },
   projection: decisionsProjection,
   projectionOptions(ctx): DecisionsProjectionOptions {
-    const statuses = STATUS_CHOICES.filter(status => ctx.options[status.value] !== false).map(status => status.value);
-    return {
-      statuses,
-      artwork: ctx.options.artwork !== false,
-      breaks: recordingBreaks(ctx.branch),
-      filter: { passing: ctx.countries.filter.passing },
-    };
+    return { artwork: ctx.options.artwork !== false, breaks: recordingBreaks(ctx.branch) };
   },
 };

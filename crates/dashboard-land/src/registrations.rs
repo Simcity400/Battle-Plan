@@ -1,6 +1,7 @@
 dashboard_base::register_products! {
     DOCTRINES_DOCTRINES => crate::products::doctrines::Doctrines,
     ARMY_ARMYSIZE => crate::products::army::ArmySize,
+    ARMY_ARMYBREAKDOWN => crate::products::army::ArmyBreakdown,
     LEADERS_LEADERPORTRAITS => crate::products::leaders::LeaderPortraits,
     LEADER_NAME_RUNS_LEADERNAMERUNS => crate::products::leader_name_runs::LeaderNameRuns,
     LEADERS_CAREER_LEADERCAREER => crate::products::leaders::career::LeaderCareer,

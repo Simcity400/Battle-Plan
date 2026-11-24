@@ -1,7 +1,6 @@
 import type { FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
 import type { FamilyTimelineBinding, TimelineExtentField } from './laneView.ts';
-import { deriveTimelineAudit, type TimelineModel } from './model.ts';
-import { decodeTimelineHit } from './painter.ts';
+import { decodeTimelineHit, deriveTimelineAudit, type TimelineModel } from './model.ts';
 
 export function parseTimelineHit(token: string | null): ParsedFamilyHit | null {
   const hit = decodeTimelineHit(token);
@@ -35,5 +34,5 @@ export const timelineHostAdapter: FamilyHostAdapter<TimelineModel, unknown, Fami
   },
   deriveAuditRows: model => deriveTimelineAudit(model),
   auditOrdered: true,
-  buildBinding: ctx => ({ expanded: ctx.expanded }),
+  buildBinding: ctx => ({ expanded: ctx.expanded, ...(ctx.hovers && Object.keys(ctx.hovers).length ? { hovers: ctx.hovers } : {}) }),
 };

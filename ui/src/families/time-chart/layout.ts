@@ -1,7 +1,7 @@
 import { ellipsise, layoutEndLabels } from '../../charts/labels.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { MeasureText } from '../../charts/textWidth.ts';
-import { exactDecimal, linearTicks } from '../../charts/valueAxis.ts';
+import { exactDecimal, linearTicks, logTicks, thinLogTicks } from '../../charts/valueAxis.ts';
 import { monthNames } from '../../dashboard/calendar.ts';
 import { computeTimeAxisTicks, type TimeAxisTick } from '../../draw/kit.ts';
 import type { BoundedSeries } from '../plan.ts';
@@ -20,38 +20,32 @@ function shortMonth(month: number): string {
   return monthNames[month - 1]!.slice(0, 3);
 }
 
-function axisDecimalPlaces(ticks: readonly number[] | undefined, cap: number): number | null {
-  if (!ticks || ticks.length === 0) return null;
-  let max = 0;
-  for (const tick of ticks) {
-    if (!Number.isFinite(tick)) continue;
-    const scale = exactDecimal(tick).scale;
-    if (scale > max) max = scale;
+const AXIS_MAX_DECIMALS = 12;
+
+function axisDecimalPlaces(ticks: readonly number[] | undefined, value: number, cap: number): number {
+  let places = 0;
+  for (const tick of ticks?.length ? ticks : [value]) {
+    if (Number.isFinite(tick)) places = Math.max(places, exactDecimal(tick).scale);
   }
-  return Math.min(cap, max);
+  return Math.min(ticks?.length ? AXIS_MAX_DECIMALS : cap, places);
 }
 
 export function formatChartAxisValue(value: number, format: ChartValueFormat, ticks?: readonly number[]): string {
   if (!Number.isFinite(value)) return '';
-  if (format === 'percent') {
-    const places = axisDecimalPlaces(ticks, 2) ?? Math.min(2, exactDecimal(value).scale);
+  if (format === 'percent' || format === 'share' || format === 'signedPercent') {
+    const places = axisDecimalPlaces(ticks, value, 2);
     return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0, percent: true });
   }
   if (format === 'signed1') {
-    if (Math.abs(value) < 1e-9) return '0';
-    const places = axisDecimalPlaces(ticks, 1) ?? Math.min(1, exactDecimal(value).scale);
+    const places = axisDecimalPlaces(ticks, value, 1);
     return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0, signed: true });
   }
   if (format === 'compact') {
     if (value === 0) return '0';
     return formatCompactScalar(Math.round(value), 'integer').text;
   }
-  if (format === 'power') {
-    if (Math.abs(value) >= 1e4) return formatCompactScalar(Math.round(value), 'integer').text;
-    const places = axisDecimalPlaces(ticks, 2) ?? 0;
-    return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0 });
-  }
-  const places = axisDecimalPlaces(ticks, 2) ?? 0;
+  const places = axisDecimalPlaces(ticks, value, 2);
+  if (format === 'power' && Math.abs(value) >= 1e4) return formatCompactScalar(Math.round(value), 'integer').text;
   return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0 });
 }
 
@@ -85,11 +79,11 @@ export interface PlacedMarker {
   readonly size: number;
 }
 
-export interface PlacedAxisTick {
-  readonly hour: number;
-  readonly x: number;
-  readonly label: string | null;
-  readonly major: boolean;
+export function hoverTimeChartLayout(base: TimeChartLayout, hoveredSeriesId: string | null): TimeChartLayout {
+  const endLabels = hoveredSeriesId === null
+    ? base.endLabels
+    : base.endLabels.map(label => (label.id === TOTAL_LABEL || label.seriesId === hoveredSeriesId ? label : { ...label, faded: true }));
+  return endLabels === base.endLabels ? base : { ...base, endLabels };
 }
 
 export interface PlacedColumnItem {
@@ -130,12 +124,13 @@ export interface TimeChartLayout {
   readonly axisY: number;
   readonly xDomain: readonly [number, number];
   readonly yDomain: readonly [number, number];
+  readonly logShown: boolean;
+  readonly logRefused: boolean;
   readonly yTicks: readonly number[];
   readonly playheadX: number;
   readonly dateTabText: string;
   readonly dateTabX: number;
   readonly dateTabWidth: number;
-  readonly axisTicks: readonly PlacedAxisTick[];
   readonly rawAxisTicks: readonly TimeAxisTick[];
   readonly endLabels: readonly PlacedEndLabel[];
   readonly markers: readonly PlacedMarker[];
@@ -147,6 +142,7 @@ export interface TimeChartLayout {
   readonly fromX: (px: number) => number;
 }
 
+const TOTAL_LABEL = '__total__';
 const END_LABEL_HEIGHT = 15;
 const END_LABEL_GAP = 2;
 const END_LABEL_MAX_NAME_PX = 150;
@@ -360,8 +356,6 @@ export function layoutTimeChart(
   height: number,
   fontFamily: string,
   measure: MeasureText,
-  hoverHour?: number | null,
-  hoveredSeriesId?: string | null,
 ): TimeChartLayout {
   const narrow = width <= 490;
   const small = narrow || height <= 200;
@@ -425,15 +419,21 @@ export function layoutTimeChart(
 
   let yLo: number;
   let yHi: number;
+  const fullPercent = !model.view?.y && !model.yAxis.fixed && (model.yAxis.format === 'percent' || model.yAxis.format === 'share') && model.yAxis.fixed !== null;
+  const logAsked = model.yAxis.log === true && !model.view?.y && !model.yAxis.fixed;
+  const logShown = logAsked && dataMin > 0 && dataMax >= dataMin;
   if (model.view?.y) {
     yLo = model.view.y[0];
     yHi = model.view.y[1];
   } else if (model.yAxis.fixed) {
     yLo = model.yAxis.fixed[0];
     yHi = model.yAxis.fixed[1];
-  } else if (model.yAxis.format === 'percent' && model.yAxis.fixed !== null) {
+  } else if (fullPercent) {
     yLo = 0;
     yHi = 100;
+  } else if (logShown) {
+    yLo = model.yAxis.min != null && model.yAxis.min > 0 ? model.yAxis.min : dataMin;
+    yHi = model.yAxis.max != null && model.yAxis.max > yLo ? model.yAxis.max : Math.max(dataMax * 1.08, yLo * 10);
   } else if (dataMin <= dataMax) {
     const autoLo = model.yAxis.min != null ? model.yAxis.min : Math.min(0, dataMin);
     const padTop = Math.max(Math.abs(dataMax - Math.min(0, autoLo)) * 0.08, 1e-6);
@@ -446,9 +446,12 @@ export function layoutTimeChart(
     yHi = model.yAxis.max ?? 1;
   }
   const yDomain: readonly [number, number] = [yLo, yHi];
+  const decadeHeight = Math.max(1, height - 44) / Math.max(1e-9, Math.log10(yHi) - Math.log10(yLo));
   const yTicks = model.yAxis.ticks
     ? [...model.yAxis.ticks]
-    : model.yAxis.fixed
+    : logShown
+      ? thinLogTicks(logTicks(yLo, yHi), value => Math.log10(value) * decadeHeight, 18)
+      : model.yAxis.fixed || fullPercent
       ? linearTicks(yLo, yHi, small ? 2 : 4)
       : linearTicks(yLo, yHi, small ? 3 : 5);
 
@@ -512,7 +515,7 @@ export function layoutTimeChart(
         seriesId: s.id,
         anchorVal: end.value,
         color: isNegative ? CHART_MEASURE_COLOURS.shortInk : s.color,
-        faded: hoveredSeriesId != null && hoveredSeriesId !== s.id,
+        faded: false,
         flag: s.endLabel.flag,
         icon: s.endLabel.icon,
         name: nameText,
@@ -570,7 +573,7 @@ export function layoutTimeChart(
           seriesId: band.id,
           anchorVal: mid,
           color: band.color,
-          faded: hoveredSeriesId != null && hoveredSeriesId !== band.id,
+          faded: false,
           colorBar: band.color,
           flag: band.endLabel.flag,
           name: nameText,
@@ -588,8 +591,8 @@ export function layoutTimeChart(
         const valW = measure(el.value, labelValueFont);
         const fixedWidth = artW + valW;
         rawEndLabels.push({
-          id: '__total__',
-          seriesId: '__total__',
+          id: TOTAL_LABEL,
+          seriesId: TOTAL_LABEL,
           anchorVal: tv,
           color: model.stack.total.color ?? CHART_MEASURE_COLOURS.lightInk,
           faded: false,
@@ -620,7 +623,7 @@ export function layoutTimeChart(
   const toX = (h: number) => left + ((h - xDomain[0]) / (xDomain[1] - xDomain[0])) * plotWidth;
   const fromX = (px: number) => xDomain[0] + ((px - left) / plotWidth) * (xDomain[1] - xDomain[0]);
   const toY = (v: number) => {
-    if (model.yAxis.log && yDomain[0] > 0 && yDomain[1] > yDomain[0] && v > 0) {
+    if (logShown && v > 0) {
       const l0 = Math.log10(yDomain[0]);
       const l1 = Math.log10(yDomain[1]);
       return top + (1 - (Math.log10(v) - l0) / (l1 - l0)) * plotHeight;
@@ -716,38 +719,7 @@ export function layoutTimeChart(
   const dateTabWidth = Math.ceil(measure(dateTabText, tabFont) + 14);
   const dateTabX = Math.max(left + dateTabWidth / 2, Math.min(playheadX, width - 6 - dateTabWidth / 2));
 
-  const keepOut: [number, number][] = [[dateTabX, dateTabWidth / 2 + 14]];
-  if (hoverHour != null && hoverHour >= xDomain[0] && hoverHour <= model.hour) {
-    const hx = toX(hoverHour);
-    const hTabW = Math.ceil(measure(formatDateOnly(hoverHour), tabFont) + 14);
-    keepOut.push([Math.max(left + hTabW / 2, Math.min(hx, width - 6 - hTabW / 2)), hTabW / 2 + 14]);
-  }
-
-  const axisTicks: PlacedAxisTick[] = [];
-  const rawAxisTicks: TimeAxisTick[] = model.mode !== 'columns'
-    ? computeTimeAxisTicks(xDomain[0], xDomain[1], plotWidth)
-    : [];
-  if (model.mode !== 'columns') {
-    let shownFirst = false;
-    let lastLabelRight = -1e9;
-    for (const tick of rawAxisTicks) {
-      const x = toX(tick.hour);
-      let label: string | null = tick.label || null;
-      if (label) {
-        const lw = measure(label, smallFont);
-        const hiddenByTab = keepOut.some(([kx, kr]) => Math.abs(x - kx) < kr);
-        const hiddenBySmall = small && shownFirst;
-        const hiddenByOverlap = x - lw / 2 < lastLabelRight + 8;
-        if (hiddenByTab || hiddenBySmall || hiddenByOverlap) {
-          label = null;
-        } else {
-          shownFirst = true;
-          lastLabelRight = x + lw / 2;
-        }
-      }
-      axisTicks.push({ hour: tick.hour, x, label, major: tick.major ?? true });
-    }
-  }
+  const rawAxisTicks: TimeAxisTick[] = model.mode !== 'columns' ? computeTimeAxisTicks(xDomain[0], xDomain[1], plotWidth) : [];
 
   return {
     width,
@@ -764,12 +736,13 @@ export function layoutTimeChart(
     axisY,
     xDomain,
     yDomain,
+    logShown,
+    logRefused: logAsked && !logShown,
     yTicks,
     playheadX,
     dateTabText,
     dateTabX,
     dateTabWidth,
-    axisTicks,
     rawAxisTicks,
     endLabels,
     markers: placedMarkers,

@@ -29,6 +29,7 @@ test('review 5 finding 18: a picture matches its exact read in displayed order, 
   const exact = new Map([['A:v', '1'], ['B:v', '2']]);
   assert.equal(pictureError('table', shown, { values: exact }), null, 'unordered reads compare by key');
   assert.match(pictureError('table', shown, { values: exact, ordered: true }) ?? '', /order/, 'a table compares in the order it shows');
+  assert.match(pictureError('heat-matrix', [...shown, { row: 'A', key: 'A:v', value: '1' }], { values: exact, ordered: false }) ?? '', /twice/, 'R3-S12: an unordered comparison refuses a painted key shown twice, even with its right value');
   const live = panelAuditRows('wargoals', { goals: [], justifications: [] }, new Map([['J1\u0000points', 5]]));
   assert.equal(pictureError('page', live, { values: new Map(live.map(row => [row.key, row.value])) }), null, 'live cells keep their identity');
   const owned = panelAuditRows('wargoals', { goals: [{ handle: 1, actor: 'GER', recipient: 'POL', name: 'Conquer', available: true, expires: null }], justifications: [] }, null);
@@ -93,6 +94,28 @@ test('beginAudit clears any unfinished pictureAudit and cached exactReads before
   const next = await recorder.auditPicturesBatch(10);
   assert.equal(next.done, true);
   assert.deepEqual(next.results.map(r => r.widget), ['new-widget'], 'stale pictureAudit from the abandoned window did not leak');
+  await capturePictures(false);
+  await capturePicturesBatch(100);
+});
+
+test('R4-S6: each audited picture hands its own installed fields to the exact reader', async () => {
+  const { capturePictures, capturePicturesBatch, recordPicture } = await import('../dashboard/pulled.ts');
+  const recorder = Object.create(PerfRecorder.prototype) as PerfRecorder;
+  Object.assign(recorder as unknown as Record<string, unknown>, {
+    readers: new Map(), exactReads: new Map(), auditGen: 0, lines: [],
+    buffered: { count: 0, bytes: 0, from: Infinity, to: -Infinity }, lost: { count: 0, bytes: 0, from: Infinity, to: -Infinity },
+    sending: 0, stopped: false, push: () => {}, flush: async () => {},
+  });
+  const seen: unknown[] = [];
+  recorder.reader(1, 0, async (_hour, _auditId, fields) => { seen.push(fields?.range); return { values: new Map([['A:v', '1']]) }; });
+  await recorder.beginAudit();
+  const sample = (at: number, fields: Readonly<Record<string, unknown>>) => ({ t: 'picture', at, widget: 'w', surface: 'table', placement: 1, owner: 0, renderer: 'page', head: at, hour: at, offset: 0, since: at, through: at,
+    eligibleHour: at, entry: at, parts: [], face: '', drawMs: 0, mode: 'picture', dim: false, reset: 0, binding: 0, inspect: null, tooltip: false, auditId: 3, fields, rows: [{ row: 'A', key: 'A:v', value: '1' }] }) as never;
+  recordPicture(sample(1, { range: { first: 0, count: 4 } }));
+  recordPicture(sample(2, { range: { first: 0, count: 2 } }));
+  const results = await recorder.auditPictures();
+  assert.deepEqual(results.map(result => result.error), [null, null]);
+  assert.deepEqual(seen, [{ first: 0, count: 4 }, { first: 0, count: 2 }], 'the earlier sample keeps its own range when a later one with the same audit id installs');
   await capturePictures(false);
   await capturePicturesBatch(100);
 });

@@ -7,11 +7,13 @@ dashboard_base::register_products! {
     CONSTRUCTION_BREAKDOWN_CONSTRUCTIONBREAKDOWN => crate::products::construction::breakdown::ConstructionBreakdown,
     STOCKPILE_EQUIPMENTSTOCKPILECATALOGUE => crate::products::stockpile::EquipmentStockpileCatalogue,
     STOCKPILE_EQUIPMENTSTOCKPILECHART => crate::products::stockpile::EquipmentStockpileChart,
+    STOCKPILE_EQUIPMENTSTOCKPILELINES => crate::products::stockpile::EquipmentStockpileLines,
     EQUIPMENT_LOSSES_EQUIPMENTLOSSES => crate::products::equipment_losses::EquipmentLosses,
     EQUIPMENT_PRODUCED_EQUIPMENTPRODUCED => crate::products::equipment_produced::EquipmentProduced,
     EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDTYPES => crate::products::equipment_produced::EquipmentProducedTypes,
     EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDCOUNTRY => crate::products::equipment_produced::EquipmentProducedCountry,
     EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDAT => crate::products::equipment_produced::EquipmentProducedAt,
+    EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDRACE => crate::products::equipment_produced::EquipmentProducedRace,
 }
 
 dashboard_base::register_hourly_products! {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildNavigableSlots, TailWindowController, validateTailReply, type DatedLogRow, type TailReply } from './rowSource.ts';
+import { PayloadSender } from '../../dashboard/follow/payloads.ts';
+import { buildNavigableSlots, buildRowSourceFromHead, SnapshotPager, validateGenericTailReply, validateTailReply, type DatedLogRow, type SnapshotPage, type SnapshotPages, type TailReply } from './rowSource.ts';
 
 interface Row extends DatedLogRow {
   readonly label: string;
@@ -27,7 +28,7 @@ test('validateTailReply rejects malformed replies and rows after the supplied di
       { key: '2', hour: 120, cells: [{ kind: 'number', value: '11' }] },
       { key: '1', hour: 100, cells: [{ kind: 'number', value: '20' }] },
     ],
-    facetTotals: [{ key: 'contracts', total: '1' }],
+    counts: [{ key: 'contracts', total: '1' }],
     missing: [{ firstHour: 105, lastHour: 110, reason: 'gap' }],
   };
   const ok = validateTailReply(raw, 120);
@@ -39,82 +40,73 @@ test('validateTailReply rejects malformed replies and rows after the supplied di
   assert.throws(() => validateTailReply({ ...raw, total: '-1' }, 120), /malformed/);
 });
 
-test('sliceAt tags every slot with its readAt hour and never returns rows for a different or future hour', () => {
-  const controller = new TailWindowController<Row>('q1', 2);
-  controller.applyHead(120, makeReply([
-    { key: 'a', hour: 120, label: 'newest' },
-    { key: 'b', hour: 110, label: 'older' },
-  ], 4));
+const rawReply = (rows: readonly DatedLogRow[], total: number, extra: Record<string, unknown> = {}) => ({
+  total: String(total), offset: '0', baseOrdinal: '0', firstOrdinal: '0', rows, missing: [], counts: [], ...extra,
+});
+const page = (hour: number, offset: number, limit: number, rows: readonly DatedLogRow[], total: number, counts: { key: string; total: string }[] = []): SnapshotPage => {
+  const raw = rawReply(rows, total, { offset: String(offset), counts });
+  return { hour, offset, limit, raw, reply: validateGenericTailReply(raw, hour) };
+};
 
-  const snap = controller.snapshot();
-  const atDisplayed = snap.sliceAt(120, 0, 3);
-  assert.deepEqual(atDisplayed.map(slot => [slot.kind, slot.readAt]), [
-    ['data', 120],
-    ['data', 120],
-    ['loading', 120],
-  ]);
+test('a scrolled log is one snapshot: total, chips and rows come from the pages of one hour, never mixed with a later live head', () => {
+  const head = rawReply([{ key: 'new', hour: 101 }, { key: 'r0', hour: 100 }, { key: 'r1', hour: 99 }], 7);
+  const pages: SnapshotPages = {
+    0: page(100, 0, 4, [{ key: 'r0', hour: 100 }, { key: 'r1', hour: 99 }, { key: 'r2', hour: 98 }, { key: 'r3', hour: 97 }], 6, [{ key: 'running', total: '2' }]),
+    4: { hour: 100, offset: 4, limit: 4, refused: 'Market events block damaged' },
+  };
+  const scrolled = buildRowSourceFromHead('q', head, undefined, 101, pages)!;
+  assert.equal(scrolled.at, 100, 'the source carries its snapshot hour');
+  assert.equal(scrolled.total, 6, 'the total is the snapshot’s, not the live head’s');
+  assert.equal(scrolled.facetTotals?.get('running'), 2);
+  assert.deepEqual(scrolled.sliceAt(101, 0, 7).map(slot => (slot.kind === 'data' ? slot.row.key : slot.kind)), ['r0', 'r1', 'r2', 'r3', 'refused', 'refused'], 'every ordinal is the snapshot’s own row, and a refused page is refused');
 
-  const atOtherHour = snap.sliceAt(119, 0, 2);
-  assert.deepEqual(atOtherHour.map(slot => [slot.kind, slot.readAt]), [
-    ['loading', 119],
-    ['loading', 119],
-  ]);
+  const seekBack = rawReply([{ key: 'r5', hour: 90 }], 3);
+  const before = buildRowSourceFromHead('q', seekBack, undefined, 90, pages)!;
+  assert.equal(before.at, 90, 'a snapshot from after the displayed hour is not shown');
+  assert.equal(before.total, 3);
+  assert.deepEqual(before.sliceAt(90, 0, 3).map(slot => (slot.kind === 'data' ? slot.row.key : slot.kind)), ['r5', 'loading', 'loading'], 'the head at the displayed hour, the rest loading until the window is asked again');
 
-  assert.throws(() => controller.applyHead(115, makeReply([{ key: 'future', hour: 116, label: 'bad' }], 1)), /exceeds acknowledged hour 115/);
+  const refused = buildRowSourceFromHead('q', undefined, 'Log table withheld for this recording', 160)!;
+  assert.equal(refused.refused, 'Log table withheld for this recording');
+  assert.deepEqual(refused.sliceAt(160, 0, 3), [{ kind: 'refused', ordinal: 0, readAt: 160, reason: 'Log table withheld for this recording' }]);
 });
 
-test('scrolling freezes at the acknowledged hour, refuses pages distinctly from gaps, and releases on backward seek, top return, or ADR 1401 forceFull', () => {
-  const controller = new TailWindowController<Row>('q1', 2);
-  controller.applyHead(200, makeReply([
-    { key: 'r0', hour: 200, label: '0' },
-    { key: 'r1', hour: 190, label: '1' },
-  ], 6));
+test('the pager freezes one hour, asks it again after a seek before it, keeps pages only around the window, and an unchanged page keeps its object', () => {
+  const pager = new SnapshotPager(4, 4);
+  const answer = (ask: { offset: number; limit: number; hour: number }) => pager.answer(ask, makeReply([{ key: `p${ask.offset}`, hour: ask.hour, label: '' }], 100), {});
+  assert.deepEqual(pager.window({ first: 0, count: 3 }, 100), { fetch: [], cancel: [] }, 'inside the head nothing is asked');
+  assert.deepEqual(pager.window({ first: 1, count: 3 }, 100), { fetch: [], cancel: [] }, 'nor anywhere inside it');
+  const first = pager.window({ first: 5, count: 6 }, 100);
+  assert.deepEqual(first.fetch, [{ offset: 4, limit: 4, hour: 100 }, { offset: 8, limit: 4, hour: 100 }], 'pages on a grid from ordinal 0, at the frozen hour');
+  assert.equal(answer(first.fetch[0]!), true);
+  const held = pager.pages();
+  assert.deepEqual(pager.window({ first: 5, count: 6 }, 150), { fetch: [], cancel: [] }, 'playing on keeps the frozen snapshot');
+  assert.equal(pager.pages(), held, 'an unchanged window publishes the same pages object');
+  const back = pager.window({ first: 5, count: 6 }, 90);
+  assert.deepEqual([back.cancel, back.fetch.map(ask => [ask.offset, ask.hour])], [[8], [[4, 90], [8, 90]]], 'a seek before the frozen hour drops the snapshot and asks the window again at the displayed hour');
+  assert.equal(answer(first.fetch[1]!), false, 'a page asked at the dropped hour is not installed');
+  assert.deepEqual(Object.keys(pager.pages()), [], 'nothing from after the displayed hour is published');
+  for (const ask of back.fetch) answer(ask);
+  const kept = pager.pages()[8];
+  const far = pager.window({ first: 12, count: 2 }, 90);
+  assert.deepEqual(far.fetch.map(ask => ask.offset), [12]);
+  answer(far.fetch[0]!);
+  assert.deepEqual(Object.keys(pager.pages()).map(Number), [8, 12], 'pages beyond one either side of the window are evicted');
+  assert.equal(pager.pages()[8], kept, 'a kept page keeps its object, so its revision');
+  pager.window({ first: 0, count: 2 }, 90);
+  assert.deepEqual(Object.keys(pager.pages()), [], 'back at the head the snapshot is released');
+});
 
-  const plan = controller.setWindow({ first: 2, count: 4 });
-  assert.equal(controller.frozen?.hour, 200);
-  assert.deepEqual(plan.fetch, [
-    { offset: 2, limit: 2, hour: 200 },
-    { offset: 4, limit: 2, hour: 200 },
-  ]);
-
-  assert.equal(controller.applyPage(200, 2, [
-    { key: 'r2', hour: 180, label: '2' },
-    { key: 'r3', hour: 170, label: '3' },
-  ]), true);
-  assert.equal(controller.refusePage(200, 4, 'Market events block damaged'), true);
-
-  controller.applyHead(250, makeReply([
-    { key: 'r_new', hour: 250, label: 'new' },
-    { key: 'r0', hour: 200, label: '0' },
-  ], 7));
-  assert.equal(controller.frozen?.hour, 200, 'forward playback does not disturb the frozen window');
-
-  const slots = controller.snapshot().sliceAt(200, 2, 4);
-  assert.deepEqual(slots.map(slot => slot.kind), ['data', 'data', 'refused', 'refused']);
-  assert.equal(slots[2]!.kind === 'refused' ? slots[2]!.reason : null, 'Market events block damaged');
-  assert.equal(slots[2]!.readAt, 200);
-
-  const cancelled = controller.applyHead(260, makeReply([
-    { key: 'r_ff', hour: 260, label: 'ff' },
-    { key: 'r_new', hour: 250, label: 'new' },
-  ], 8), 0, { forceFull: true });
-  assert.equal(controller.frozen, null, 'ADR 1401 forceFull releases the freeze');
-  assert.deepEqual(cancelled, []);
-
-  controller.setWindow({ first: 2, count: 2 });
-  assert.equal(controller.snapshot().frozen?.hour, 260);
-  assert.equal(controller.applyPage(200, 2, [{ key: 'stale', hour: 180, label: 'stale' }]), false);
-
-  const backCancelled = controller.applyHead(150, makeReply([{ key: 'r_back', hour: 150, label: 'back' }], 1));
-  assert.equal(controller.frozen, null, 'backward seek past frozen hour releases freeze');
-  assert.deepEqual(backCancelled, [2]);
-
-  controller.refuseHead(160, 'Log table withheld for this recording');
-  const refusedSnap = controller.snapshot();
-  assert.equal(refusedSnap.refused, 'Log table withheld for this recording');
-  assert.deepEqual(refusedSnap.sliceAt(160, 0, 3), [
-    { kind: 'refused', ordinal: 0, readAt: 160, reason: 'Log table withheld for this recording' },
-  ]);
+test('each snapshot page crosses to the worker once, however many pages the scroll gathers', () => {
+  const crossed: unknown[] = [];
+  const sender = new PayloadSender(message => { for (const [, value] of message.put ?? []) crossed.push(value); });
+  const p0 = page(100, 0, 4, [{ key: 'a', hour: 100 }], 9);
+  const p4 = page(100, 4, 4, [{ key: 'b', hour: 99 }], 9);
+  const p8 = page(100, 8, 4, [{ key: 'c', hour: 98 }], 9);
+  sender.acquire({ pagedRows: { main: { 0: p0 } } });
+  sender.acquire({ pagedRows: { main: { 0: p0, 4: p4 } } });
+  sender.acquire({ pagedRows: { main: { 0: p0, 4: p4, 8: p8 } } });
+  assert.deepEqual(crossed, [p0, p4, p8], 'one page per message, never the pages gathered so far');
 });
 
 test('buildNavigableSlots interleaves recording gaps in newest-first order and keeps them when total is zero', () => {
@@ -148,4 +140,16 @@ test('buildNavigableSlots interleaves recording gaps in newest-first order and k
     'c',
     '100-110@3',
   ]);
+
+  const live = [
+    { kind: 'data' as const, ordinal: 0, readAt: 150, row: { key: 'running', hour: 90, label: 'running' } },
+    { kind: 'data' as const, ordinal: 1, readAt: 150, row: { key: 'a', hour: 145, label: 'a' } },
+  ];
+  const placed = buildNavigableSlots(150, live, [{ ...gaps[0]!, before: '2' }, { ...gaps[1]!, before: '2' }], 2);
+  assert.deepEqual(placed.map(slot => slot.kind === 'data' ? slot.row.key : slot.kind === 'gap' ? `${slot.firstHour}-${slot.lastHour}@${slot.beforeOrdinal}` : slot.kind), [
+    'running',
+    'a',
+    '130-140@2',
+    '100-110@2',
+  ], 'a gap the product placed stays at its ordinal, never among the live rows by hour');
 });

@@ -59,7 +59,7 @@ function row(readView: BoundedReadView, part: BreakdownPart, decimals: number, t
     name: part.name,
     cells: {
       ...(top ? { picture: picture(readView, part) } : {}),
-      item: { value: knownValue(part.name) },
+      item: part.nameMissing ? { value: notRecorded(part.nameMissing), missingFigure: part.name } : { value: knownValue(part.name) },
       spent: { value: amountOf(part, part.name), format },
       share: top
         ? { value: part.share === null ? notRecorded(part.reason ?? 'No share where the whole is a lower bound') : part.share === 0 ? zeroValue(0) : knownValue(part.share) }
@@ -81,6 +81,7 @@ function summary(reply: PowerSpendingBreakdownReply, currency: SpendCurrency): {
   const reasons = [
     ...(total.state !== 'known' && total.reason ? [total.reason] : []),
     ...(reply.gainedReason ? [reply.gainedReason] : reply.gainedRaw === null ? ['Gains were not recorded'] : []),
+    ...(currency === 'Command' && reply.lostAtCapReason && reply.lostAtCapReason !== reply.gainedReason ? [reply.lostAtCapReason] : []),
   ];
   return { text: parts.join(' · '), partial: reasons.length ? reasons.join('; ') : null };
 }

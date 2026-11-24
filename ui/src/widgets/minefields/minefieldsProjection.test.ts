@@ -33,6 +33,8 @@ const REPLY: MinefieldsReply = {
     { region: 5, owners: [], unknownOwners: 2, pinned: false, missing: null },
   ],
   unknown: [],
+  empty: null,
+  activeUnlisted: { ids: [], missing: null },
   scale: 100000,
   warnings: [],
 };
@@ -113,4 +115,21 @@ test('an owner without a recorded colour keeps one colour whichever place its am
     return row.segments!.find(segment => segment.key === 'ENG')!.color;
   };
   assert.equal(colourOf(['ENG', 'GER'], [900000, 500000]), colourOf(['GER', 'ENG'], [900000, 500000]));
+});
+
+test('hiding the only mined region is said as such, never as no minefields', () => {
+  const body = (empty: MinefieldsReply['empty']) => {
+    const view = createBoundedReadView({ hour: displayedHour(350), panels: new Map([['main', { ...REPLY, regions: [], empty }]]) });
+    const model = minefieldsProjection.project(view, { order: 'mines' });
+    return [model.empty, model.emptyKind];
+  };
+  assert.deepEqual(body({ kind: 'filtered', hidden: 1, outside: 0 }), ['The only mined region at this date is removed from this chart.', 'empty']);
+  assert.deepEqual(body({ kind: 'unread', reason: "Some countries' minefields were not read at this hour" }), ["Some countries' minefields were not read at this hour.", 'unavailable']);
+  assert.deepEqual(body({ kind: 'none' }), ['No minefields at this date.', 'empty']);
+});
+
+test('sorted by name, the automatic rows are not headed "Most active"', () => {
+  const view = createBoundedReadView({ hour: displayedHour(350), panels: new Map([['main', REPLY]]) });
+  const label = (order: 'mines' | 'name') => minefieldsProjection.project(view, { order }).rows.find(row => row.key === '__section:auto')?.label;
+  assert.deepEqual([label('mines'), label('name')], ['Most active', 'Mined regions']);
 });

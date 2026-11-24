@@ -1,8 +1,7 @@
-import type { LaneView } from '../../draw/lane.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
-import { createLaneView, type LaneBinding, type LaneFamily, type LaneRuntimeOptions } from '../laneRuntime.ts';
+import type { LaneBinding, LaneFamily } from '../laneRuntime.ts';
 import { parseRegionHitKey, REGION_ADD_KEY, regionHitKey, type RegionRowsField } from '../regions/regionRows.ts';
-import { hitHeatLanes, LANE_PAD, layoutHeatLanes, type HeatLanesLayout } from './lanesLayout.ts';
+import { hitHeatLanes, LANE_PAD, lanesWindow, layoutHeatLanes, type HeatLanesLayout } from './lanesLayout.ts';
 import {
   deriveLanesAudit,
   deriveLanesMirror,
@@ -43,25 +42,35 @@ function regionRows(model: HeatLanesModel, layout: HeatLanesLayout): RegionRowsF
       picked: row.pinned === true,
       top: layout.plotTop + layout.rowTops[index]!,
       height: layout.rowHeight,
-      ...(row.readout?.kind === 'value'
-        ? { activity: { ...(typeof row.readout.swatch === 'string' && row.readout.swatch !== 'hollow' ? { color: row.readout.swatch } : {}), text: [row.readout.primary, row.readout.secondary].filter(Boolean).join(' ') } }
-        : {}),
+      active: row.pinned !== true || row.readout?.kind === 'value',
     }])),
     add: layout.addTop === null ? null : { top: layout.plotTop + layout.addTop, height: layout.rowHeight },
     nameLeft: LANE_PAD,
+    nameRight: layout.plotLeft,
+    ...(model.regions.active ? { active: model.regions.active } : {}),
   };
 }
 
-const heatLanesLane: LaneFamily<FamilyHeatLanesBinding, HeatLanesModel, HeatLanesLayout> = {
+const windows = new WeakMap<HeatLanesLayout, { readonly scrollTop: number; readonly layout: HeatLanesLayout }>();
+
+function shown(frame: { readonly model: HeatLanesModel; readonly layout: HeatLanesLayout; readonly binding: { readonly scrollTop: number } }): HeatLanesLayout {
+  const held = windows.get(frame.layout);
+  if (held && held.scrollTop === frame.binding.scrollTop) return held.layout;
+  const layout = { ...frame.layout, ...lanesWindow(frame.layout, frame.model.rows.length, frame.binding.scrollTop) };
+  windows.set(frame.layout, { scrollTop: frame.binding.scrollTop, layout });
+  return layout;
+}
+
+export const heatLanesLane: LaneFamily<FamilyHeatLanesBinding, HeatLanesModel, HeatLanesLayout> = {
   family: 'heat-lanes',
   boundary: () => Infinity,
   redraw: () => Infinity,
   status: model => (model.refused !== undefined ? { refused: model.refused } : 'scene'),
-  view: ['scrollTop'],
-  layout: (model, binding, surface) => layoutHeatLanes({
+  view: [],
+  layout: (model, _binding, surface) => layoutHeatLanes({
     width: surface.width,
     height: surface.height,
-    scrollTop: binding.scrollTop,
+    scrollTop: 0,
     firstHour: model.firstHour,
     lastHour: model.lastHour,
     displayedHour: model.hour,
@@ -75,7 +84,7 @@ const heatLanesLane: LaneFamily<FamilyHeatLanesBinding, HeatLanesModel, HeatLane
     const hovered = hoveredOf(frame.model, frame.inspect);
     drawHeatLanes(ctx, {
       model: frame.model,
-      layout: frame.layout,
+      layout: shown(frame),
       theme: frame.theme,
       scrollTop: frame.binding.scrollTop,
       hoveredRow: hovered.rowIndex,
@@ -103,12 +112,12 @@ const heatLanesLane: LaneFamily<FamilyHeatLanesBinding, HeatLanesModel, HeatLane
     if (focus) {
       const row = model.rows.findIndex(item => item.id === key);
       const payload = row >= 0 ? deriveLanesTooltip(model, row, model.hour) : null;
-      return payload ? { hour: model.hour, rowKey: key, payload } : null;
+      return payload ? { rowKey: key, payload } : null;
     }
     const hovered = inspectedLane(key);
     if (!hovered) return null;
     const payload = deriveLanesTooltip(model, hovered.rowIndex, hovered.hour);
-    return payload ? { hour: hovered.hour ?? model.hour, rowKey: laneInspectKey(hovered.rowIndex, hovered.hour), payload } : null;
+    return payload ? { ...(hovered.hour !== null ? { hour: hovered.hour } : {}), rowKey: laneInspectKey(hovered.rowIndex, hovered.hour), payload } : null;
   },
   structure({ model, layout }) {
     const regions = regionRows(model, layout);
@@ -127,11 +136,13 @@ const heatLanesLane: LaneFamily<FamilyHeatLanesBinding, HeatLanesModel, HeatLane
       nav,
     };
   },
-  mirror: frame => deriveLanesMirror(frame.model, frame.layout.firstRow, frame.layout.endRow),
-  audit: frame => deriveLanesAudit(frame.model, { firstRow: frame.layout.firstRow, endRow: frame.layout.endRow }),
-  visibleArt: frame => collectVisibleLaneArt(frame.model, frame.layout, frame.index),
+  mirror: frame => {
+    const window = shown(frame);
+    return deriveLanesMirror(frame.model, window.firstRow, window.endRow);
+  },
+  audit: frame => {
+    const window = shown(frame);
+    return deriveLanesAudit(frame.model, { firstRow: window.firstRow, endRow: window.endRow });
+  },
+  visibleArt: frame => collectVisibleLaneArt(frame.model, shown(frame), frame.index),
 };
-
-export function familyHeatLanesLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
-  return createLaneView(heatLanesLane, wake, options);
-}

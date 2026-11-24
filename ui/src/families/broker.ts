@@ -1,3 +1,4 @@
+import { countryFromKey } from '../dashboard/countryKey.ts';
 import type { DashboardClient, DashboardSource, ProductRequest } from '../dashboard/client';
 import { canonical } from '../dashboard/follow/canonical.ts';
 import type { Channel } from '../dashboard/follow/facts';
@@ -7,7 +8,7 @@ import type { FollowRefusal } from '../dashboard/regionGate';
 import type { BoundWindow, GatedHour } from '../dashboard/regionTime';
 import { forwardRequest, productRequest } from '../dashboard/request.ts';
 import { createBoundedReadView, displayedHour } from './boundedView.ts';
-import { buildRowSourceFromHead, DEFAULT_TAIL_PAGE_SIZE, validateGenericTailReply, type DatedLogRow, type LogTailQuery, type PageFetchAsk, type RowWindow, type TableRowSource } from './table/rowSource.ts';
+import { buildRowSourceFromHead, DEFAULT_TAIL_PAGE_SIZE, pageOffsets, validateGenericTailReply, type DatedLogRow, type LogTailQuery, type PageFetchAsk, type RowWindow, type SnapshotPage, type TableRowSource } from './table/rowSource.ts';
 import type {
   ArtProvider,
   BoundedReadView,
@@ -74,7 +75,7 @@ function readSignature(read: SourceTimeShape): unknown {
     case 'trailing-window':
       return ['trailing-window', read.coverage, read.product, read.windowHours, read.followQuery, read.params, read.dynamicKeys ?? []];
     case 'pixel-binned':
-      return ['pixel-binned', read.coverage, read.family, read.tags, read.keys ?? null, read.partBits ?? 0, read.within ? [...read.within.entries()] : null, read.marks === true, read.headQuery ?? null, read.exactProduct ?? '', read.params ?? null, read.top ?? null];
+      return ['pixel-binned', read.coverage, read.family, read.tags, read.keys ?? null, read.partBits ?? 0, read.within ? [...read.within.entries()] : null, read.headQuery ?? null, read.exactProduct ?? '', read.params ?? null, read.top ?? null];
     case 'exact-hover':
       return ['exact-hover', read.product, read.hourParam ?? 'hour', read.params];
     case 'paged-rows':
@@ -209,7 +210,7 @@ export function primaryExactEntry(plan: SourcePlan): SourceEntry | null {
   return plan.entries[0] ?? null;
 }
 
-function producePointParams(
+export function producePointParams(
   read: Extract<SourceTimeShape, { shape: 'point' }>,
   hour: GatedHour,
   mode: 'static' | 'exact',
@@ -222,7 +223,7 @@ function producePointParams(
   return { ...read.params, [read.hourParam ?? 'hour']: hour };
 }
 
-function produceSpanParams(
+export function produceSpanParams(
   base: Readonly<Record<string, unknown>> | null,
   span: BoundWindow,
   builder?: (base: Readonly<Record<string, unknown>>, span: BoundWindow) => Readonly<Record<string, unknown>> | null,
@@ -250,14 +251,14 @@ function tailQueryParams(
   return {
     branchId: query.branchId,
     ...(query.log !== undefined ? { log: query.log } : {}),
-    facets: query.facets,
+    ...(query.facets !== undefined ? { facets: query.facets } : {}),
     from: query.from,
     hour,
     offset: String(Math.max(0, Math.floor(offset))),
     limit: Math.max(1, Math.floor(limit)),
     ...(query.columns !== undefined ? { columns: query.columns } : {}),
     ...(query.countFacets && query.countFacets.length ? { countFacets: query.countFacets } : {}),
-    ...(query.scope !== undefined ? { scope: query.scope } : {}),
+    ...query.ask,
   };
 }
 
@@ -273,17 +274,6 @@ export function buildTailPageRequest(
     product: entry.read.tailQuery.product,
     params,
   });
-}
-
-export function tailPageOffsets(window: RowWindow, headLimit: number, pageSize: number): readonly number[] {
-  const first = Math.max(0, Math.floor(window.first));
-  const end = first + Math.max(0, Math.floor(window.count));
-  if (end <= headLimit) return [];
-  const startPage = Math.floor((Math.max(first, headLimit) - headLimit) / pageSize);
-  const endPage = Math.floor((end - 1 - headLimit) / pageSize);
-  const offsets: number[] = [];
-  for (let page = startPage; page <= endPage; page++) offsets.push(headLimit + page * pageSize);
-  return offsets;
 }
 
 export function buildStaticRequest(
@@ -575,6 +565,7 @@ export interface ExactReadOptions {
   readonly identity?: IdentityProvider;
   readonly art?: ArtProvider;
   readonly rowWindow?: RowWindow | null;
+  readonly snapshotHour?: (name: string) => number | null;
 }
 
 interface ExactPart {
@@ -671,6 +662,20 @@ async function readEntryExact(
   }
 
   if (read.shape === 'paged-rows') {
+    const identity = `${entry.source.id}|${entry.branch}|${entry.name}`;
+    const headLimit = Math.max(1, read.tailQuery.limit);
+    const window = options.rowWindow;
+    if (window && window.count > 0 && window.first + window.count > headLimit) {
+      const at = Math.min(recorded, options.snapshotHour?.(entry.name) ?? recorded);
+      const pageSize = Math.max(1, read.pageSize ?? DEFAULT_TAIL_PAGE_SIZE);
+      const validate = read.validate ?? validateGenericTailReply;
+      const asks = pageOffsets(window, pageSize).map(offset => ({ offset, limit: pageSize, hour: at }));
+      const raws = await Promise.all(asks.map(ask => fetchRaw(buildTailPageRequest(entry, ask)!)));
+      const pages: Record<number, SnapshotPage> = {};
+      asks.forEach((ask, i) => { pages[ask.offset] = { ...ask, raw: raws[i], reply: validate(raws[i], at) }; });
+      const rowSource = buildRowSourceFromHead(identity, undefined, undefined, recorded, pages);
+      return { name: entry.name, hour: recorded, panel: raws[0], ...(rowSource ? { rows: rowSource } : {}) };
+    }
     const params = tailQueryParams(read.tailQuery, recorded, 0, read.tailQuery.limit);
     const request = productRequest({
       sourceId: entry.source.id,
@@ -678,25 +683,8 @@ async function readEntryExact(
       product: read.tailQuery.product,
       params,
     });
-    const headLimit = Math.max(1, read.tailQuery.limit);
-    const pageSize = Math.max(1, read.pageSize ?? DEFAULT_TAIL_PAGE_SIZE);
-    const offsets = options.rowWindow ? tailPageOffsets(options.rowWindow, headLimit, pageSize) : [];
-    const [raw, ...pages] = await Promise.all([
-      fetchRaw(request),
-      ...offsets.map(offset => fetchRaw(buildTailPageRequest(entry, { offset, limit: pageSize, hour: recorded })!)),
-    ]);
-    const validate = read.validate ?? validateGenericTailReply;
-    const snapshot = offsets.length
-      ? {
-          identity: `${entry.source.id}|${entry.branch}|${entry.name}`,
-          frozenHour: recorded as number,
-          headLimit,
-          pageSize,
-          pages: Object.fromEntries(offsets.map((offset, i) => [offset, validate(pages[i], recorded).rows])),
-          refusals: {},
-        }
-      : undefined;
-    const rowSource = buildRowSourceFromHead(`${entry.source.id}|${entry.branch}|${entry.name}`, raw, undefined, recorded, snapshot);
+    const raw = await fetchRaw(request);
+    const rowSource = buildRowSourceFromHead(identity, raw, undefined, recorded);
     return { name: entry.name, hour: recorded, panel: raw, ...(rowSource ? { rows: rowSource } : {}) };
   }
 
@@ -759,14 +747,20 @@ export interface HeldHover {
   readonly data: unknown;
 }
 
-export function hoverAsks(plan: SourcePlan, hoverHour: number | null | undefined): readonly HoverAsk[] {
+export function hoverAsks(
+  plan: SourcePlan,
+  hoverHour: number | null | undefined,
+  displayed: (entry: string) => readonly string[] | undefined = () => undefined,
+): readonly HoverAsk[] {
   if (hoverHour === null || hoverHour === undefined || !Number.isFinite(hoverHour)) return NO_HOVER_ASKS;
   const hour = Math.floor(hoverHour);
   const asks: HoverAsk[] = [];
   for (const entry of plan.entries) {
     const read = entry.read;
     if (read.shape !== 'exact-hover' || !read.params) continue;
-    const reads = (read.params as { reads?: unknown }).reads;
+    const shown = read.readsOf === undefined ? null : displayed(read.readsOf);
+    if (shown !== null && !shown?.length) continue;
+    const reads = shown ? shown.map(key => ({ country: countryFromKey(key) })) : (read.params as { reads?: unknown }).reads;
     const params = Array.isArray(reads)
       ? { ...read.params, reads: reads.map(asked => ({ ...(asked as Record<string, unknown>), [read.hourParam ?? 'hour']: hour })) }
       : { ...read.params, [read.hourParam ?? 'hour']: hour };

@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS, identityColour, readableColour } from '../../charts/palette.ts';
+import { CHART_MEASURE_COLOURS, identityColour } from '../../charts/palette.ts';
 import { contentKey } from '../../dashboard/options.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
@@ -12,11 +12,11 @@ import {
   type HeatLanesProjection,
 } from '../../families/heat/lanesModel.ts';
 import { LANE_READOUT_MAX_WIDTH } from '../../families/heat/lanesLayout.ts';
-import { regionLabel, signedRampColour } from '../../families/heat/scale.ts';
+import { readableOn, regionLabel, signedRampColour } from '../../families/heat/scale.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
 import { regionLanes } from '../../families/regions/regionRows.ts';
-import { formatDateOnly, formatDateParts, formatScalar } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatDateParts, formatRational } from '../../families/valueFormat.ts';
 import type {
   RegionalWeatherColumn,
   RegionalWeatherColumnRegion,
@@ -40,14 +40,14 @@ export function weatherShow(options: Readonly<Record<string, unknown>>): Weather
   return options.show === 'temperature' || options.show === 'modifiers' ? options.show : 'conditions';
 }
 
-export function temperatureText(raw: number | bigint): string {
-  const fixed = typeof raw === 'bigint' ? raw : BigInt(Math.trunc(raw));
-  return formatScalar(fixed, { decimals: 5, maxDecimals: 1, fixedDecimals: true, unit: '°C' });
+const WEATHER_SCALE = 100_000n;
+
+export function temperatureText(sum: bigint, days = 1n): string {
+  return formatRational(sum, days * WEATHER_SCALE, { maxDecimals: 1, fixedDecimals: true, unit: '°C' });
 }
 
-export function modifierText(raw: number | bigint): string {
-  const fixed = typeof raw === 'bigint' ? raw : BigInt(Math.trunc(raw));
-  return formatScalar(fixed, { decimals: 5, percent: true, signed: true });
+export function modifierText(sum: bigint, days = 1n): string {
+  return formatRational(sum * 100n, days * WEATHER_SCALE, { maxDecimals: 5, percent: true, signed: true });
 }
 
 interface Palette {
@@ -64,9 +64,9 @@ function palette(reply: RegionalWeatherReply, surface: string): Palette {
   return {
     flag,
     track: surfaceMix(surface, 0.04),
-    cold: readableColour(CHART_MEASURE_COLOURS.temperatureCold, surface),
-    warm: readableColour(CHART_MEASURE_COLOURS.temperatureWarm, surface),
-    ramp: readableColour(CHART_MEASURE_COLOURS.weatherModifier, surface),
+    cold: readableOn(CHART_MEASURE_COLOURS.temperatureCold, surface),
+    warm: readableOn(CHART_MEASURE_COLOURS.temperatureWarm, surface),
+    ramp: readableOn(CHART_MEASURE_COLOURS.weatherModifier, surface),
   };
 }
 
@@ -127,14 +127,14 @@ function valueCell(
     return { key: 'missing', cell: { kind: 'missing', reason }, items: [], missing: reason };
   }
   const mean = Number(stats[1]) / days;
-  const meanFixed = BigInt(stats[1]) / BigInt(days);
   const [low, high] = reply.extrema ? [Number(reply.extrema[0]), Number(reply.extrema[1])] : [mean, mean];
   const color = show === 'temperature'
     ? signedRampColour(mean, low, high, colours.track, colours.cold, colours.warm)
     : signedRampColour(mean, -Math.max(Math.abs(low), Math.abs(high)), Math.max(Math.abs(low), Math.abs(high)), colours.track, colours.ramp, colours.ramp);
   const text = show === 'temperature' ? temperatureText : modifierText;
   const label = show === 'temperature' ? 'Temperature' : reply.modifiers.find(item => item.id === modifier)?.name ?? 'Modifier';
-  const value = days > 1 ? `${text(meanFixed)} (${text(BigInt(stats[0]))} to ${text(BigInt(stats[2]))})` : text(meanFixed);
+  const meanText = text(BigInt(stats[1]), BigInt(days));
+  const value = days > 1 ? `${meanText} (${text(BigInt(stats[0]))} to ${text(BigInt(stats[2]))})` : meanText;
   return { key: `v:${color}`, cell: { kind: 'solid', color }, items: [{ label, value, swatch: color }] };
 }
 
@@ -286,7 +286,7 @@ export const weatherDeclaration: HeatLanesWidgetDeclaration<WeatherProjectionOpt
   label: 'Weather by region',
   subject: 'weather',
   emptyCampaign: 'Load a campaign to see weather.',
-  icon: 'sun',
+  icon: 'cloud',
   countries: { mode: 'none' },
   sources: (ctx, view): SourcePlan => {
     const show = weatherShow(ctx.options);

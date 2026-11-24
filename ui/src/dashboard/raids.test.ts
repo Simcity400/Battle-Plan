@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { eventsThrough, raidAt, raidChangeHours, raidPreparationAt, raidPreparationText, raidStatus, raidTally, recordedSpans, validateRaidLog } from './raids.ts';
-import { phaseRun, syntheticEpisode, syntheticRaidLog } from './raids.fixtures.ts';
+import { eventsThrough, raidAt, raidChangeHours, raidPreparationAt, raidPreparationText, raidStatus, raidTally, recordedSpans, unattributedAt, validateRaidLog } from './raids.ts';
+import { observedEnd, phaseRun, syntheticEpisode, syntheticRaidLog } from './raids.fixtures.ts';
 import { countryKey } from './countryKey.ts';
 
 const episodes = [
@@ -12,6 +12,7 @@ const episodes = [
   syntheticEpisode('5', 52, 'PRC', 54, 58, false),
 ];
 const SPAN = { firstHour: 0, lastHour: 200 };
+const CODES = syntheticRaidLog([]);
 const at = (tally: ReturnType<typeof raidTally>, tag: string, hour: number) => {
   const run = tally.series.find(item => item.tag === tag)?.runs.find(item => item.firstHour <= hour && hour <= item.lastHour);
   return run ? [run.launched, run.succeeded] : null;
@@ -23,7 +24,7 @@ test('a tally counts each raider over time: launches as they happen, wins as the
   assert.deepEqual(raidTally(episodes, SPAN, [], [], null).series, [], 'no country chosen, none counted');
   assert.deepEqual([at(tally, 'ENG', 19), at(tally, 'ENG', 20), at(tally, 'ENG', 30), at(tally, 'ENG', 45)], [[0, 0], [1, 0], [1, 1], [2, 1]]);
   assert.deepEqual([at(tally, 'PRC', 26), at(tally, 'PRC', 58), at(tally, 'PRC', 60)], [[1, 0], [2, 0], [2, 1]]);
-  assert.equal(tally.unattributed, 1);
+  assert.deepEqual([unattributedAt(tally, 54), unattributedAt(tally, 55)], [0, 1], 'the unnamed raider is unattributed from its launch');
   assert.deepEqual(tally.hours, [20, 25, 30, 45, 54, 60]);
 });
 
@@ -46,7 +47,7 @@ test('a chosen slot counts its country under every tag it held, and never anothe
     syntheticEpisode('1', 10, 'ENG', 20, 30, true, { raiderSlot: 3 }),
     syntheticEpisode('2', 50, 'PRC', 54, null, false, { raiderSlot: 3 }),
     syntheticEpisode('3', 40, 'ENG', 45, null, false, { raiderSlot: 5 }),
-    syntheticEpisode('4', 1, 'GER', null, 5, true, { raiderSlot: 3, endedRaider: 'GER', succeededHour: 20 }),
+    syntheticEpisode('4', 1, 'GER', null, 5, true, { raiderSlot: 3, succeededHour: 20 }),
   ];
   const tally = raidTally(raids, SPAN, [], [slot, 'ENG'], null);
   assert.deepEqual([at(tally, slot, 19), at(tally, slot, 20), at(tally, slot, 100), at(tally, 'ENG', 100)], [[0, 0], [1, 1], [2, 2], [1, 0]],
@@ -54,21 +55,47 @@ test('a chosen slot counts its country under every tag it held, and never anothe
 });
 
 test('a chosen slot keeps its raid when no tag names it, and a tag tally never borrows the opening tag', () => {
-  const untagged = syntheticEpisode('9', 10, 'GER', 20, 30, true, { raiderSlot: 3, launchedRaider: null, endedRaider: null });
+  const untagged = syntheticEpisode('9', 10, 'GER', 20, 30, true, { raiderSlot: 3, launchedRaider: null, ends: [observedEnd(30, null)] });
   const slot = countryKey(3);
   assert.deepEqual(at(raidTally([untagged], SPAN, [], [slot], null), slot, 100), [1, 1], 'the selected slot counts first');
   const byTag = raidTally([untagged], SPAN, [], ['GER'], null);
-  assert.deepEqual([at(byTag, 'GER', 100), byTag.unattributed], [[0, 0], 1], 'no tag at the launch or the end is unattributed');
+  assert.deepEqual([at(byTag, 'GER', 100), unattributedAt(byTag, 100)], [[0, 0], 1], 'no tag at the launch or the end is unattributed');
+});
+
+test('a raid is unattributed only while no tag is known for an event it counts: an end tag read later attributes it from that hour', () => {
+  const late = syntheticEpisode('9', 10, null, null, 10, true, { ends: [observedEnd(10, null), { hour: 20, endedHour: 5, exact: true, source: 'nativeEndDate', raider: 'GER' }] });
+  const tally = raidTally([late], SPAN, [], ['GER'], null);
+  assert.deepEqual([unattributedAt(tally, 9), unattributedAt(tally, 10), unattributedAt(tally, 19), unattributedAt(tally, 20)], [0, 1, 1, 0]);
+  assert.deepEqual([at(tally, 'GER', 19), at(tally, 'GER', 20)], [[0, 0], [0, 1]]);
+});
+
+test('a success counts for the end tag known at each hour: a native end date read later moves it, from the hour it was read', () => {
+  const raid = syntheticEpisode('5', 10, 'DDR', null, 10, true, { ends: [observedEnd(10, 'DDR'), { hour: 20, endedHour: 5, exact: true, source: 'nativeEndDate', raider: 'GER' }] });
+  const tally = raidTally([raid], SPAN, [], ['GER', 'DDR'], null);
+  assert.deepEqual([at(tally, 'DDR', 15), at(tally, 'GER', 15), at(tally, 'DDR', 25), at(tally, 'GER', 25)], [[0, 1], [0, 0], [0, 0], [0, 1]]);
+});
+
+test('a raid at an hour shows only what was read by then: its type, icon, place, state, membership and end', () => {
+  const raid = syntheticEpisode('6', 10, 'ENG', null, 30, true, { memberHour: 11, raidTypeHour: 12, iconHour: 13, placeHour: 14, stateHour: 15,
+    ends: [observedEnd(30, 'ENG'), { hour: 40, endedHour: 25, exact: true, source: 'nativeEndDate', raider: 'ENG' }] });
+  assert.equal(raidAt(CODES, raid, 10), null, 'not among the asked countries before a read names one');
+  const at11 = raidAt(CODES, raid, 11)!;
+  assert.deepEqual([at11.episode.raidType, at11.episode.icon, at11.episode.iconMissing, at11.episode.state], [null, null, "The raid's type is not recorded", null]);
+  const at12 = raidAt(CODES, raid, 12)!.episode;
+  assert.deepEqual([at12.raidType, at12.icon, at12.iconMissing], ['mod/sky_raid', null, "The raid's target is not recorded in full"]);
+  assert.deepEqual([raidAt(CODES, raid, 13)!.episode.icon, raidAt(CODES, raid, 13)!.episode.province, raidAt(CODES, raid, 14)!.episode.state, raidAt(CODES, raid, 15)!.episode.state],
+    ['GFX_mod_raid_target', null, null, 7]);
+  assert.deepEqual([raidAt(CODES, raid, 29)!.end, raidAt(CODES, raid, 35)!.since, raidAt(CODES, raid, 45)!.since], [null, 30, 25]);
 });
 
 test('a merged raid credits each tally event to the raider tag held at that event hour', () => {
-  const renamed = syntheticEpisode('7', 10, 'GER', 20, 30, true, { launchedRaider: 'DDR', endedRaider: 'DDR' });
+  const renamed = syntheticEpisode('7', 10, 'GER', 20, 30, true, { launchedRaider: 'DDR', ends: [observedEnd(30, 'DDR')] });
   const tally = raidTally([renamed], SPAN, [], ['GER', 'DDR'], null);
   assert.deepEqual([at(tally, 'GER', 100), at(tally, 'DDR', 100)], [[0, 0], [1, 1]]);
 });
 
 test('a success is counted from the read that first saw it, never at an earlier native end date', () => {
-  const late = syntheticEpisode('8', 1, 'ENG', null, 5, true, { endedSource: 'nativeEndDate', succeededHour: 20 });
+  const late = syntheticEpisode('8', 1, 'ENG', null, 5, true, { ends: [{ hour: 20, endedHour: 5, exact: true, source: 'nativeEndDate', raider: 'ENG' }], succeededHour: 20 });
   const tally = raidTally([late], SPAN, [], ['ENG'], null);
   assert.deepEqual([at(tally, 'ENG', 10), at(tally, 'ENG', 20)], [[0, 0], [0, 1]]);
 });
@@ -84,13 +111,13 @@ test('a top keeps each country for the spans it is among the leaders, ties in ta
 
 test('a raid at an hour shows its phase run, dated from where that phase began, and its last one after its row is gone', () => {
   const raid = syntheticEpisode('9', 10, 'ENG', 20, 30, true, { runs: [phaseRun(10, 14, 2), phaseRun(17, 19, 2), phaseRun(20, 29, 4), phaseRun(30, 40, 5, 3)] });
-  assert.equal(raidAt(raid, 9), null);
-  assert.deepEqual([raidAt(raid, 18)!.since, raidAt(raid, 18)!.current?.firstHour], [10, 17], 'joined back over the gap');
-  assert.equal(raidAt(raid, 15)!.current, null);
+  assert.equal(raidAt(CODES, raid, 9), null);
+  assert.deepEqual([raidAt(CODES, raid, 18)!.since, raidAt(CODES, raid, 18)!.current?.firstHour], [10, 17], 'joined back over the gap');
+  assert.equal(raidAt(CODES, raid, 15)!.current, null);
   const data = syntheticRaidLog([raid]);
-  assert.equal(raidStatus(data, raidAt(raid, 15)!), 'Last known: Phase 2');
-  assert.equal(raidStatus(data, raidAt(raid, 35)!), 'Phase 5 · Outcome 3');
-  assert.equal(raidStatus(data, raidAt(raid, 50)!), 'Last known: Phase 5 · Outcome 3');
+  assert.equal(raidStatus(data, raidAt(CODES, raid, 15)!), 'Last known: Phase 2');
+  assert.equal(raidStatus(data, raidAt(CODES, raid, 35)!), 'Phase 5 · Outcome 3');
+  assert.equal(raidStatus(data, raidAt(CODES, raid, 50)!), 'Last known: Phase 5 · Outcome 3');
   assert.deepEqual(raidChangeHours([raid]), [10, 15, 17, 20, 20, 30, 30, 41]);
   assert.equal(eventsThrough(raidChangeHours([raid]), 20), 5);
 });
@@ -99,9 +126,9 @@ test('preparation hours are read only at an hour of their runs, and shown only w
   const raid = syntheticEpisode('9', 10, 'ENG', 20, null, false, { preparation: [[10, 14, 3, 2], [17, 19, 40, 0]] });
   assert.deepEqual([raidPreparationAt(raid, 12), raidPreparationAt(raid, 15), raidPreparationAt(raid, 18)], [7, null, 40]);
   const data = syntheticRaidLog([raid]);
-  assert.equal(raidPreparationText(data, raidAt(raid, 12)!, 12), '7 h prepared');
-  assert.equal(raidPreparationText(data, raidAt(raid, 15)!, 15), 'Preparation not known');
-  assert.equal(raidPreparationText(data, raidAt(raid, 25)!, 25), null);
+  assert.equal(raidPreparationText(data, raidAt(CODES, raid, 12)!, 12), '7 h prepared');
+  assert.equal(raidPreparationText(data, raidAt(CODES, raid, 15)!, 15), 'Preparation not known');
+  assert.equal(raidPreparationText(data, raidAt(CODES, raid, 25)!, 25), null);
 });
 
 
@@ -128,9 +155,9 @@ test('vanished raids report unrecorded outcomes rather than canceled, and unsupp
     outcomeMissing: 'Unsupported raid outcome (99)',
   });
   const data = syntheticRaidLog([vanished, unsupported]);
-  const vanishedAt = raidAt(vanished, 35)!;
+  const vanishedAt = raidAt(CODES, vanished, 35)!;
   assert.equal(vanishedAt.since, 30);
   assert.equal(vanishedAt.sinceExact, true);
   assert.equal(raidStatus(data, vanishedAt), 'Last known: Phase 4 · raid outcome was not recorded');
-  assert.equal(raidStatus(data, raidAt(unsupported, 35)!), 'Phase 5 · Unsupported outcome (99)');
+  assert.equal(raidStatus(data, raidAt(CODES, unsupported, 35)!), 'Phase 5 · Unsupported outcome (99)');
 });

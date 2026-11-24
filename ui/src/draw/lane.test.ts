@@ -13,7 +13,7 @@ import { splitForLanes } from '../dashboard/follow/split.ts';
 import { componentReading } from '../dashboard/follow/useFollowed.ts';
 import { installedEntry } from '../dashboard/follow/store.ts';
 import type { Pipeline } from '../dashboard/follow/pipeline';
-import { PayloadSender } from '../dashboard/follow/payloads.ts';
+import { PayloadSender, PayloadStore } from '../dashboard/follow/payloads.ts';
 import { boundDated } from '../families/host/dated.ts';
 
 interface Fake extends Bitmap { content: string; closed: boolean }
@@ -222,6 +222,55 @@ test('R3-S2: a finite static proof is never left open to a later confirmation, o
   panel.lane.receive('panels', panels([{ id: 0, hour: 30, kind: 'completed' }]));
   await panel.step(30, { playing: false });
   assert.equal(panel.page.view(1).through, 28, 'nor does a panel confirmation');
+});
+
+test('R4-S6: an open picture closes when a finite static bound is supplied later, on the followed or the panel channel', async () => {
+  const followed = rig();
+  followed.mount(1, [{ id: 5, channel: 'followed' }]);
+  followed.lane.bindRoute(5, ROUTE, NATIVE);
+  followed.lane.receive('follow', message(28, [{ id: 5, hour: 28, answer: rows([1n], [1n]) }], false, NATIVE));
+  await followed.step(28, { playing: false });
+  assert.deepEqual([followed.page.view(1).mode, followed.page.view(1).through], ['picture', 28], 'an open followed picture confirmed at 28');
+  followed.lane.supply(1, { dated: { h: 28, c: 28 } });
+  await followed.step(28, { playing: false });
+  followed.lane.receive('follow', message(30, [], false, NATIVE));
+  await followed.step(30, { playing: false });
+  assert.equal(followed.page.view(1).through, 28, 'a route confirmation of 30 does not extend it once the static read proves only 28');
+  assert.equal(followed.page.view(1).dim, true);
+
+  const panel = rig();
+  panel.mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  panel.lane.bindRoute(3, ROUTE, NATIVE);
+  panel.lane.receive('panels', panels([{ id: 3, hour: 28, kind: 'data', stepped: true, data: { shape: 'A' } }, { id: 0, hour: 28, kind: 'completed' }]));
+  await panel.step(28, { playing: false });
+  assert.deepEqual([panel.page.view(1).mode, panel.page.view(1).through], ['picture', 28]);
+  panel.lane.supply(1, { dated: { h: 28, c: 28 } });
+  await panel.step(28, { playing: false });
+  panel.lane.receive('panels', panels([{ id: 0, hour: 30, kind: 'completed' }]));
+  await panel.step(30, { playing: false });
+  assert.equal(panel.page.view(1).through, 28, 'nor does a panel confirmation');
+});
+
+test('R5-S4: paused on an open picture first confirmed at 30, a finite proof [28, 28] invalidates it, on the followed or the panel channel', async () => {
+  const followed = rig();
+  followed.mount(1, [{ id: 5, channel: 'followed' }]);
+  followed.lane.bindRoute(5, ROUTE, NATIVE);
+  followed.lane.receive('follow', message(30, [{ id: 5, hour: 30, answer: rows([1n], [1n]) }], false, NATIVE));
+  await followed.step(30, { playing: false });
+  assert.deepEqual([followed.page.view(1).mode, followed.page.view(1).h, followed.page.view(1).through], ['picture', 30, 30], 'an open followed picture first and confirmed at 30');
+  followed.lane.supply(1, { dated: { h: 28, c: 28 } });
+  await followed.step(30, { playing: false });
+  assert.notEqual(followed.page.view(1).mode, 'picture', 'its hours and its proof do not meet: the page shows no current picture at 30');
+
+  const panel = rig();
+  panel.mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  panel.lane.bindRoute(3, ROUTE, NATIVE);
+  panel.lane.receive('panels', panels([{ id: 3, hour: 30, kind: 'data', stepped: true, data: { shape: 'A' } }, { id: 0, hour: 30, kind: 'completed' }]));
+  await panel.step(30, { playing: false });
+  assert.deepEqual([panel.page.view(1).mode, panel.page.view(1).h], ['picture', 30]);
+  panel.lane.supply(1, { dated: { h: 28, c: 28 } });
+  await panel.step(30, { playing: false });
+  assert.notEqual(panel.page.view(1).mode, 'picture', 'nor on the panel channel');
 });
 
 const at: LaneView = {
@@ -3403,6 +3452,20 @@ test('payloads are taken in on every message, not at paint: two binds between pa
   sender.release(second);
 });
 
+test('a keyed container holding a scalar crosses whole, so 0, 1, null and an empty panel decode apart, and object entries still cross one by one', () => {
+  const store = new PayloadStore();
+  let crossed = 0;
+  const sender = new PayloadSender(message => { crossed += message.put?.length ?? 0; store.apply(structuredClone(message)); });
+  const decoded = (staticPanels: object) => (store.resolve(structuredClone(sender.acquire({ staticPanels }).wire)) as { staticPanels: unknown }).staticPanels;
+  assert.deepEqual([{ main: 0 }, { main: 1 }, { main: null }, {}].map(decoded), [{ main: 0 }, { main: 1 }, { main: null }, {}]);
+  const a = { rows: [1] };
+  const b = { rows: [2] };
+  decoded({ main: a, other: b });
+  const before = crossed;
+  assert.deepEqual(decoded({ main: a, other: { rows: [3] } }), { main: a, other: { rows: [3] } });
+  assert.equal(crossed - before, 1, 'only the changed entry crosses');
+});
+
 test('a date-only supply for a stamp the lane does not hold is dropped, and a new owner clears the previous owner’s statics', async () => {
   const seen: { panels: unknown; dated: unknown }[] = [];
   const watch: LaneView = { paint: input => {
@@ -3422,4 +3485,55 @@ test('a date-only supply for a stamp the lane does not hold is dropped, and a ne
   lane.bind(1, { generation: 3, owner: 'b', surfaces: [], offset: 0, pin: null, dated: { h: 0, c: 100 } });
   await step(26, { playing: false });
   assert.equal(seen.at(-1)?.panels, null, 'the previous owner’s panels are gone');
+});
+
+test('R5-S6, R2-S12: before mount, a statics replacement takes its own stamp, undefined on a clear, and a date for another stamp is dropped', async () => {
+  const seen = new Map<number, { panels: unknown; dated: unknown }>();
+  const watch: LaneView = { paint: input => {
+    seen.set(input.widget, { panels: (input.model as { staticPanels?: unknown } | undefined)?.staticPanels ?? null, dated: input.binding.dated ?? null });
+    return { surfaces: [], fields: {}, motion: false };
+  } };
+  const { lane, mount, step } = rig({ watch });
+  lane.supply(1, { stamp: 5, statics: { staticPanels: { main: { at: 10 } } }, dated: { h: 10, c: 20 } });
+  lane.supply(1, { statics: null });
+  mount(1, [], 'watch', 0, { dated: { h: 0, c: 30 } });
+  lane.bind(1, { generation: 2, surfaces: [], offset: 0, pin: null, dated: { h: 0, c: 30 } }, { family: 'f', kind: 'k' });
+  lane.supply(1, { dated: { h: 0, c: 100 } });
+  await step(50, { playing: false });
+  assert.deepEqual(seen.get(1), { panels: null, dated: { h: 0, c: 100 } }, 'R5-S6: after a clear, an unstamped date extension applies');
+
+  lane.supply(2, { stamp: 5, statics: { staticPanels: { main: { at: 10 } } }, dated: { h: 10, c: 20 } });
+  lane.supply(2, { stamp: 4, dated: { h: 0, c: 100 } });
+  mount(2, [], 'watch', 0, { dated: { h: 10, c: 20 } });
+  lane.bind(2, { generation: 2, surfaces: [], offset: 0, pin: null, dated: { h: 10, c: 20 } }, { family: 'f', kind: 'k' });
+  lane.supply(2, { stamp: 5, dated: { h: 10, c: 30 } });
+  await step(25, { playing: false });
+  assert.deepEqual(seen.get(2), { panels: { main: { at: 10 } }, dated: { h: 10, c: 30 } }, 'R2-S12: the buffered panels keep their own stamp, so their own dates still apply');
+});
+
+test('a view that is waiting presents nothing and is not painted again until it wakes the widget; a family switch disposes the outgoing view', async () => {
+  let paints = 0, ready = false;
+  const unmounted: string[] = [];
+  const states: Map<string, unknown>[] = [];
+  const others: Map<string, unknown>[] = [];
+  const loading: LaneView = {
+    paint: (_input, state): Painted => { paints++; states.push(state); return ready ? { surfaces: [], fields: { at: { value: 1, content: 'one' } }, motion: false } : { surfaces: [], fields: {}, motion: false, waiting: true }; },
+    unmount: () => { unmounted.push('loading'); },
+  };
+  const other: LaneView = { paint: (_input, state) => { others.push(state); return { surfaces: [], fields: {}, motion: false }; } };
+  const { page, lane, mount, step } = rig({ loading, other });
+  mount(1, [], 'loading', 0, { dated: { h: 0, c: 100 } });
+  for (let hour = 10; hour < 15; hour++) await step(hour, { playing: false });
+  assert.equal(paints, 1, 'one paint while the view waits, not one per frame');
+  assert.notEqual(page.view(1).mode, 'picture');
+  ready = true;
+  lane.touch(1);
+  await step(15, { playing: false });
+  assert.equal(paints, 2, 'its own wake paints it again');
+  lane.mount(1, [], 'other');
+  lane.bind(1, { generation: 2, surfaces: [], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+  await step(16, { playing: false });
+  assert.deepEqual(unmounted, ['loading'], 'the outgoing view is disposed');
+  assert.ok(others.length > 0, 'the new view paints');
+  assert.ok(others.every(state => !states.includes(state)), 'the new view starts with its own state');
 });

@@ -13,6 +13,7 @@ import {
   notRecorded,
   partialValue,
   valueFromLive,
+  answerRowIndex,
   valueFromNamedAnswer,
   valueFromNullable,
   valueFromRawBigInt,
@@ -26,6 +27,7 @@ import {
   GAME_WINDOW_MISSING_LABEL,
   auditValue,
   formatBoundDate,
+  formatCompactRational,
   formatCompactScalar,
   formatDateHover,
   formatDateOnly,
@@ -33,14 +35,18 @@ import {
   formatDateValue,
   formatOutOf,
   formatProgress,
+  formatRational,
   formatRecordedPercent,
   formatScalar,
   formatShare,
+  formatShareRatio,
   formatValueState,
   notRecordedLabel,
   spokenValue,
+  valueStateProps,
   type ValueFormat,
 } from './valueFormat.ts';
+import * as valueFormat from './valueFormat.ts';
 import { engineHour } from '../dashboard/calendar.ts';
 
 const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
@@ -98,6 +104,23 @@ test('wire and exact adapters map every wire state and nullable meaning into the
   assert.deepEqual(valueFromNamedAnswer(rows, 'FRA'), { kind: 'notRecorded', reason: 'Missing in source' });
   assert.deepEqual(valueFromNamedAnswer(rows, 'JAP'), { kind: 'known', value: big });
   assert.deepEqual(valueFromNamedAnswer(rows, 'USA'), { kind: 'notRecorded', reason: 'Not in the answer' });
+
+  const nextHour = answer({
+    keys: [1n, 2n, 3n, 4n, 5n, 6n],
+    columns: 1,
+    names: ['GER', 'ENG', 'FRA', 'SOV', 'ITA', 'JAP'],
+    values: [43n, 1n, 0n, 0n, 0n, big],
+    states: [CELL.value, CELL.value, CELL.value, CELL.unrecorded, CELL.noRow, CELL.value],
+    reasons: [null, 'A reason that moves every text offset', null, null, 'Not held', null],
+  });
+  assert.equal(nextHour.kind === 'rows' && rows.kind === 'rows' && answerRowIndex(nextHour) === answerRowIndex(rows), true,
+    'the next hour\'s answer with the same names reuses the row index: none is rebuilt');
+  assert.deepEqual(valueFromNamedAnswer(nextHour, 'GER'), { kind: 'known', value: 43 });
+  const renamed = answer({ keys: [1n, 2n], columns: 1, names: ['GER', 'ITA'], values: [1n, 2n], states: [CELL.value, CELL.value], reasons: [null, null] });
+  const sameSize = answer({ keys: [1n, 2n], columns: 1, names: ['GER', 'ENG'], values: [1n, 2n], states: [CELL.value, CELL.value], reasons: [null, null] });
+  assert.equal(renamed.kind === 'rows' && sameSize.kind === 'rows' && answerRowIndex(renamed) !== answerRowIndex(sameSize), true, 'different names build their own index');
+  assert.deepEqual(valueFromNamedAnswer(sameSize, 'ENG'), { kind: 'known', value: 2 });
+  assert.deepEqual(valueFromNamedAnswer(renamed, 'ENG'), { kind: 'notRecorded', reason: 'Not in the answer' });
 
   const refused = answer({ notRecorded: 'Table not recorded' });
   assert.deepEqual(valueFromNamedAnswer(refused, 'GER'), { kind: 'notRecorded', reason: 'Table not recorded' });
@@ -169,7 +192,6 @@ test('formatting and spoken forms render zero as 0, never None or dash, and carr
   assert.equal(spokenValue(partialValue(15, 'Gaps'), 'integer'), '15, partial: Gaps');
   const partialAtLeast = formatValueState(partialValue(15, 'Gaps', { atLeast: true }), 'integer');
   assert.equal(partialAtLeast.kind, 'partial');
-  assert.equal(partialAtLeast.atLeast, true);
   assert.equal(partialAtLeast.spoken, '15, partial: Gaps');
 
   assert.equal(auditValue(zeroValue(0), 'integer'), JSON.stringify(['zero', ['int', '0']]));
@@ -184,7 +206,7 @@ test('formatting and spoken forms render zero as 0, never None or dash, and carr
 test('bigint formatting preserves exact precision beyond 2^53 in clockSeconds, decimal1, percent2, and maxDecimals', () => {
   const big = (1n << 60n) + 7n;
   assert.equal(spokenValue(knownValue(big), 'decimal1'), '1,152,921,504,606,846,983');
-  assert.equal(spokenValue(knownValue(big), 'percent2'), '1,152,921,504,606,846,983.00%');
+  assert.equal(spokenValue(knownValue(big), 'percent2'), '1,152,921,504,606,846,983%');
   assert.equal(spokenValue(knownValue(big), { decimals: 0, maxDecimals: 2 }), '1,152,921,504,606,846,983');
   const bigSeconds = 3600n * 100000000000000000n + 61n;
   assert.equal(spokenValue(knownValue(bigSeconds), 'clockSeconds'), '100000000000000000:01:01');
@@ -378,6 +400,7 @@ test('fixedDecimals, formatShare, formatProgress, formatRecordedPercent, and sig
   assert.throws(() => formatShare(null as unknown as number), InvalidFamilyValueError);
   assert.throws(() => formatShare(Number.NaN), InvalidFamilyValueError);
   assert.throws(() => formatShare(-0.1), InvalidFamilyValueError);
+  assert.throws(() => formatShare(1.25), InvalidFamilyValueError);
   assert.throws(() => formatProgress(null as unknown as number), InvalidFamilyValueError);
   assert.throws(() => formatProgress(Number.NaN), InvalidFamilyValueError);
   assert.throws(() => formatRecordedPercent(Number.NaN), InvalidFamilyValueError);
@@ -413,6 +436,7 @@ test('fixedDecimals, formatShare, formatProgress, formatRecordedPercent, and sig
   assert.equal(formatProgress(0.996), '99%');
   assert.equal(formatProgress(0.999999999), '99%');
   assert.equal(formatProgress(1), '100%');
+  assert.equal(formatProgress(1.25), '125%', 'a recorded ratio above one is printed as recorded');
   assert.equal(formatScalar(99.6, 'progress'), '99%');
   assert.equal(formatScalar(100, 'progress'), '100%');
 
@@ -421,12 +445,70 @@ test('fixedDecimals, formatShare, formatProgress, formatRecordedPercent, and sig
   assert.equal(formatRecordedPercent(75.3), '75.3%');
   assert.equal(formatRecordedPercent(75.25), '75.25%');
   assert.equal(formatRecordedPercent(0.14 * 100), '14%');
-  assert.equal(formatRecordedPercent(0.29 * 100), '29%');
+  assert.equal(formatRecordedPercent(0.29 * 100), '28.99999%');
   assert.equal(formatRecordedPercent(-5.2), '−5.2%');
   assert.equal(formatRecordedPercent(15.5, { signed: true }), '+15.5%');
   assert.equal(formatRecordedPercent(-10.2, { signed: true }), '−10.2%');
   assert.equal(formatRecordedPercent(0, { signed: true }), '0%');
   assert.equal(formatScalar(11 / 5975, 'share'), '0.2%');
   assert.equal(formatScalar(0, 'share'), '0%');
-  assert.deepEqual(formatValueState(knownValue(0.24), 'share'), { kind: 'known', text: '24%', spoken: '24%', audit: '24%' });
+  assert.deepEqual(formatValueState(knownValue(0.24), 'share'), { kind: 'known', text: '24%', exact: '24%', spoken: '24%', audit: '24%' });
+
+  assert.equal(formatShareRatio(14_500n, 100_000n), '15%');
+  assert.equal(formatShareRatio(2_850n, 100_000n), '2.9%');
+  assert.equal(formatShareRatio(0n, 100_000n), '0%');
+  assert.equal(formatShareRatio(100_000n, 100_000n), '100%');
+  assert.equal(formatShareRatio(1n, 100_000n), '<0.1%');
+  assert.equal(formatShareRatio(99_999n, 100_000n), '99%');
+  assert.equal(formatRational(327_680_000_000_327n, 32_768n, { maxDecimals: 2 }), '10,000,000,000');
+  assert.equal(formatRational(1n, 32_768n, { maxDecimals: 2 }), '<0.01');
+  assert.deepEqual(formatCompactRational(597_999n * 32_768n + 20_000n, 32_768n, { maxDecimals: 0 }), {
+    text: '597K',
+    exact: '597,999',
+    compacted: true,
+  });
+  assert.throws(() => formatRational(1n, 0n), InvalidFamilyValueError);
+  assert.throws(() => formatShareRatio(1n, 0n), InvalidFamilyValueError);
+  assert.throws(() => formatShareRatio(-1n, 10n), InvalidFamilyValueError);
+});
+
+test('R2-K3: the tooltip and the audit carry the recorded figure, not the one shortened for the screen', () => {
+  const tradeFlow: ValueFormat = { decimals: 2, maxDecimals: 1, signed: true };
+  assert.equal(formatScalar(16n, tradeFlow), '+0.1');
+  assert.deepEqual(valueStateProps(knownValue(16n), tradeFlow), { kind: 'known', text: '+0.16' });
+  assert.deepEqual(valueStateProps(knownValue(32n), tradeFlow), { kind: 'known', text: '+0.32' });
+  const shown = formatValueState(knownValue(16n), tradeFlow);
+  assert.equal(shown.kind === 'known' ? shown.text : null, '+0.1');
+  assert.equal(shown.audit, '+0.16');
+  const compact = formatCompactScalar(123_456n, { decimals: 2, maxDecimals: 0 });
+  assert.deepEqual(compact, { text: '1.23K', exact: '1,234.56', compacted: true });
+  assert.equal(formatCompactScalar(1234.6, 'integer').exact, '1,234.6');
+  assert.equal(formatCompactScalar(7_136, 'integer').exact, '7,136');
+  const partial = formatValueState(partialValue(16n, 'One market not read'), tradeFlow);
+  assert.equal(partial.kind === 'partial' ? partial.text : null, '+0.1');
+  assert.equal(partial.audit, '+0.16, partial: One market not read');
+});
+
+test('R2-K4: a number is cut from its own round-trip spelling, never rounded to 15 digits first', () => {
+  assert.equal(formatScalar(Number.MAX_SAFE_INTEGER), '9,007,199,254,740,991');
+  assert.equal(formatScalar(0.09999999999999998, { decimals: 0, maxDecimals: 1 }), '<0.1');
+  assert.equal(formatScalar(0.09999999999999998, 'decimal1'), '<0.1');
+  assert.equal(formatScalar(2.55, { decimals: 0, maxDecimals: 1 }), '2.5');
+  assert.equal(formatScalar(1.005, { decimals: 0, maxDecimals: 2 }), '1');
+  assert.equal(formatScalar(1e-7, { decimals: 0, maxDecimals: 7, fixedDecimals: true }), '0.0000001');
+  assert.equal(formatScalar(1e21), '1,000,000,000,000,000,000,000');
+  assert.equal(formatRecordedPercent(0.09999999999999998), '0.09999%');
+  assert.equal(formatShare(0.0009999999999999998), '<0.1%');
+});
+
+test('R2-K14, R2-K15: the clock is reached only through the guarded entry, and progress truncates its own decimal', () => {
+  assert.equal('formatClockSeconds' in valueFormat, false);
+  assert.throws(() => formatScalar(null as unknown as number, 'clockSeconds'), InvalidFamilyValueError);
+  assert.throws(() => formatScalar(Number.NaN, 'clockSeconds'), InvalidFamilyValueError);
+  assert.equal(formatScalar(3_661, 'clockSeconds'), '1:01:01');
+  assert.equal(formatScalar(3_661.9, 'clockSeconds'), '1:01:01');
+  assert.equal(formatProgress(0.009999999999999), '0%');
+  assert.equal(formatProgress(0.57), '57%');
+  assert.equal(formatProgress(0.29), '29%');
+  assert.equal(formatProgress(0.999999999999999), '99%');
 });

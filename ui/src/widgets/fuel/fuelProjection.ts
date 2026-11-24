@@ -1,23 +1,28 @@
-import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { FutureDataError, type BoundedReadView, type FamilyPlanContext, type SourceEntry, type SourcePlan } from '../../families/contract.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
+import { lineChartSettings } from '../../families/time-chart/settings.ts';
 import type { ChartGap, ChartHoverDetail, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import {
   branchGapsOf,
   cardItems,
   missingSpansOf,
-  seriesHeadValue,
   withinMapOf,
+  auditReading,
+  headReading,
+  headValueOf,
+  type HeadReading,
+  type KnownHeadReading,
 } from '../../families/time-chart/seriesHelpers.ts';
-import { formatCompactScalar, formatDateOnly } from '../../families/valueFormat.ts';
+import { formatCompactRational, formatCompactScalar, formatDateOnly } from '../../families/valueFormat.ts';
 import type { CountryFuelReply } from '../../generated/dashboard';
 import { fuelDecimals, fuelTooltips, validateCountryFuel } from './fuelData.ts';
 
 export const FUEL_SCALE = 1 / 32_768;
+const FUEL_RATIONAL_SCALE = { denominator: 32_768n } as const;
 const CEILING_DASH = [5, 4] as const;
 
 export interface FuelOptions {
@@ -25,13 +30,20 @@ export interface FuelOptions {
   readonly capacity: boolean;
   readonly area: boolean;
   readonly digits: number;
+  readonly windowHours?: number | null;
   readonly extent: readonly [number, number];
   readonly gaps: readonly ChartGap[];
 }
 
 export function formatFuelAmount(value: number): string {
-  const rounded = Math.round(value);
-  return rounded === 0 ? '0' : formatCompactScalar(rounded, 'integer').text;
+  return formatCompactScalar(value, 'integer').text;
+}
+
+function formatFuelReading(reading: KnownHeadReading, digits: number): string {
+  if (reading.raw !== undefined && reading.denominator !== undefined) {
+    return formatCompactRational(reading.raw, reading.denominator, { maxDecimals: digits, fixedDecimals: true }).text;
+  }
+  return formatFuelAmount(reading.value);
 }
 
 export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyProjection({
@@ -44,7 +56,10 @@ export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyPr
     const hour = readView.hour;
     const tag = options.tag;
     const fuel = tag ? readView.series('fuel')?.get(tag) ?? null : null;
-    const fuelHead = tag ? seriesHeadValue(fuel, readView.answer('fuel'), 0, 0, FUEL_SCALE) : null;
+    const readings: [string, HeadReading | null][] = [];
+    const fuelReading = tag ? headReading(readView, 'fuel', { tag }, 0, FUEL_RATIONAL_SCALE) : null;
+    if (tag) readings.push(['fuel', fuelReading]);
+    const fuelHead = headValueOf(fuelReading);
     const icon = { art: readView.art(measureArtHandle('fuel')), label: 'Fuel' };
     const series: TimeChartSeriesModel[] = [{
       id: 'fuel',
@@ -61,11 +76,13 @@ export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyPr
       icon,
       missingSpans: missingSpansOf(fuel),
       rank: 0,
-      endLabel: fuelHead === null ? null : { icon, name: 'Fuel', fullName: 'Fuel', value: formatFuelAmount(fuelHead) },
+      endLabel: !fuelReading || !('value' in fuelReading) ? null : { icon, name: 'Fuel', fullName: 'Fuel', value: formatFuelReading(fuelReading, options.digits) },
     }];
     if (options.capacity) {
       const capacity = tag ? readView.series('capacity')?.get(tag) ?? null : null;
-      const capacityHead = tag ? seriesHeadValue(capacity, readView.answer('capacity'), 0, 0, FUEL_SCALE) : null;
+      const capacityReading = tag ? headReading(readView, 'capacity', { tag }, 0, FUEL_RATIONAL_SCALE) : null;
+      if (tag) readings.push(['capacity', capacityReading]);
+      const capacityHead = headValueOf(capacityReading);
       series.push({
         id: 'capacity',
         key: 'capacity',
@@ -82,9 +99,9 @@ export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyPr
         headHour: hour,
         missingSpans: missingSpansOf(capacity),
         rank: 1,
-        endLabel: capacityHead === null
+        endLabel: !capacityReading || !('value' in capacityReading)
           ? null
-          : { name: 'Capacity', fullName: 'Fuel capacity', value: formatFuelAmount(capacityHead), valueMuted: true },
+          : { name: 'Capacity', fullName: 'Fuel capacity', value: formatFuelReading(capacityReading, options.digits), valueMuted: true },
       });
     }
     return {
@@ -93,13 +110,12 @@ export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyPr
       mode: 'lines',
       hour,
       extent: options.extent,
+      ...(options.windowHours ? { view: { x: [Math.max(options.extent[0], hour - options.windowHours), hour] as const } } : {}),
       yAxis: { format: 'compact' },
       series,
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
       hoverDetail: fuelHoverDetail(readView, options.digits),
-      auditRows: series.flatMap(s => (s.headValue === null || s.headValue === undefined
-        ? []
-        : [auditRow(s.id, formatFuelAmount(s.headValue))])),
+      auditRows: readings.map(([row, reading]) => auditReading(row, reading, known => formatFuelReading(known, options.digits))),
     };
   },
 });
@@ -185,6 +201,7 @@ export const fuelDeclaration: TimeChartWidgetDeclaration<FuelOptions> = {
       capacity: ctx.options.capacity !== false,
       area: ctx.options.areaFill !== false,
       digits: fuelDecimals(ctx.options),
+      windowHours: lineChartSettings(ctx.options).windowHours,
       extent,
       gaps: branchGapsOf(ctx.branch),
     };

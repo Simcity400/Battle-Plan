@@ -1,5 +1,4 @@
-import type { LaneView } from '../../draw/lane.ts';
-import { createLaneView, type LaneBinding, type LaneFamily, type LaneRuntimeOptions } from '../laneRuntime.ts';
+import type { LaneBinding, LaneFamily } from '../laneRuntime.ts';
 import { layoutCards, type CardLayout } from './layout.ts';
 import { assertCardModelValid, cardRowHours, cardRowName, deriveCardAudit, deriveCardMirror, deriveCardTooltip, type CardModel, type CardRow } from './model.ts';
 import { drawCards, hitCards, visibleCardIcons } from './painter.ts';
@@ -19,7 +18,7 @@ function navName(row: Exclude<CardRow, { readonly kind: 'section' }>): string {
 
 const inspectedRow = (inspect: string | null): string | null => (inspect?.startsWith('row:') ? inspect.slice(4) : null);
 
-const cardLane: LaneFamily<FamilyCardBinding, CardModel, CardLayout> = {
+export const cardLane: LaneFamily<FamilyCardBinding, CardModel, CardLayout> = {
   family: 'card',
   boundary(model, hour) {
     assertCardModelValid(model, hour);
@@ -49,7 +48,7 @@ const cardLane: LaneFamily<FamilyCardBinding, CardModel, CardLayout> = {
   tooltip(frame, key, focus) {
     const rowKey = focus ? key : inspectedRow(key);
     const payload = rowKey ? deriveCardTooltip(frame.model, rowKey) : null;
-    return payload && rowKey ? { hour: frame.model.hour, rowKey, payload } : null;
+    return payload && rowKey ? { rowKey, payload } : null;
   },
   structure({ model, layout }) {
     return {
@@ -72,7 +71,3 @@ const cardLane: LaneFamily<FamilyCardBinding, CardModel, CardLayout> = {
   audit: frame => deriveCardAudit(frame.model),
   visibleArt: frame => visibleCardIcons(frame.model, frame.layout, frame.binding.scrollTop),
 };
-
-export function familyCardLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
-  return createLaneView(cardLane, wake, options);
-}

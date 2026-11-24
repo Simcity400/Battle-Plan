@@ -1,5 +1,4 @@
-import type { LaneView } from '../../draw/lane.ts';
-import { createLaneView, type LaneBinding, type LaneFamily, type LaneRuntimeOptions } from '../laneRuntime.ts';
+import type { LaneBinding, LaneFamily } from '../laneRuntime.ts';
 import { deriveFlowAudit, deriveFlowMirror, deriveFlowNav, findFlowTooltip, type FlowModel } from './model.ts';
 import { drawFlow, hitFlow, layoutFlow, type FlowLayout } from './painter.ts';
 
@@ -12,7 +11,7 @@ export interface FamilyFlowBinding<TOptions = unknown> extends LaneBinding<TOpti
 
 const inspectedItem = (inspect: string | null): string | null => (inspect?.startsWith('node:') || inspect?.startsWith('ribbon:') ? inspect : null);
 
-const flowLane: LaneFamily<FamilyFlowBinding, FlowModel, FlowLayout> = {
+export const flowLane: LaneFamily<FamilyFlowBinding, FlowModel, FlowLayout> = {
   family: 'flow',
   boundary: () => Infinity,
   redraw: () => Infinity,
@@ -34,7 +33,7 @@ const flowLane: LaneFamily<FamilyFlowBinding, FlowModel, FlowLayout> = {
   tooltip(frame, key, focus) {
     const item = focus ? key : inspectedItem(key);
     const payload = item ? findFlowTooltip(frame.model, item) : null;
-    return payload && item ? { hour: frame.model.hour, rowKey: item, payload } : null;
+    return payload && item ? { rowKey: item, payload } : null;
   },
   structure({ model, layout }) {
     return {
@@ -54,7 +53,3 @@ const flowLane: LaneFamily<FamilyFlowBinding, FlowModel, FlowLayout> = {
   audit: frame => deriveFlowAudit(frame.model),
   visibleArt: () => [],
 };
-
-export function familyFlowLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
-  return createLaneView(flowLane, wake, options);
-}

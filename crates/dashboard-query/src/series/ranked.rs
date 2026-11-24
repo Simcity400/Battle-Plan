@@ -56,6 +56,8 @@ pub struct SeriesRankMeasure {
 #[serde(rename_all = "camelCase")]
 pub struct SeriesRankRow {
     pub country: Country,
+    #[doc = " The recorded slot holding the country at the hour; none where its holder is not resolved."]
+    pub slot: Option<u32>,
     #[doc = " One reading per measure of the reply, in the reply's order, each with its own missing reason."]
     pub readings: Vec<SeriesState>,
 }
@@ -163,6 +165,16 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
         },
         (None, false) => (countries, None, None),
     };
+    let mut held_slots = std::collections::HashSet::new();
+    let asked: Vec<(Country, Option<u32>)> = asked
+        .into_iter()
+        .map(|country| {
+            let slot = line.query.holders.slot_at(&country, hour);
+            (country, slot)
+        })
+        .filter(|(_, slot)| slot.is_none_or(|slot| held_slots.insert(slot)))
+        .collect();
+    let (asked, slots): (Vec<Country>, Vec<Option<u32>>) = asked.into_iter().unzip();
     let reads: Vec<SeriesRead> = asked.iter().map(|country| SeriesRead { country: country.clone(), hour, part: None }).collect();
     let mut columns = vec![line.states(&reads, None)?];
     for detail in details {
@@ -197,7 +209,7 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
     measures.extend(details.iter().map(|detail| SeriesRankMeasure { name: detail.measure_name().to_owned(), decimals: detail.decimals() }));
     let mut cells: Vec<std::vec::IntoIter<SeriesState>> = columns.into_iter().map(Vec::into_iter).collect();
     let mut readings: Vec<Vec<SeriesState>> = (0..asked.len()).map(|_| cells.iter_mut().map(|column| column.next().expect("one reading per asked country")).collect()).collect();
-    let rows = order.into_iter().map(|at| SeriesRankRow { country: asked[at].clone(), readings: std::mem::take(&mut readings[at]) }).collect();
+    let rows = order.into_iter().map(|at| SeriesRankRow { country: asked[at].clone(), slot: slots[at], readings: std::mem::take(&mut readings[at]) }).collect();
     Ok(SeriesRankReply { branch_id: branch_id.to_owned(), hour, measures, rows, refused, from, until })
 }
 

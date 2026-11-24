@@ -1,7 +1,9 @@
+import { canvasMeasureText } from '../../charts/textWidth.ts';
+import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { FamilyAuditRow } from '../auditRow.ts';
-import type { LaneView, Surface } from '../../draw/lane.ts';
+import type { Surface } from '../../draw/lane.ts';
 import type { FamilyTheme } from '../contract.ts';
-import { createLaneView, type LaneBinding, type LaneFamily, type LaneFrame, type LaneRuntimeOptions, type LaneStep } from '../laneRuntime.ts';
+import type { LaneBinding, LaneFamily, LaneFrame, LaneStep } from '../laneRuntime.ts';
 import { buildColumnLayouts, computeRowLayout, layoutFamilyTable, measureFixedColumnWidths, tableRowWindow, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
 import {
   computeColumnMaxima,
@@ -10,6 +12,7 @@ import {
   deriveTableTooltip,
   keepsProductOrder,
   nextTableChange,
+  resolveCellAtHour,
   resolveTableRows,
   resolveTableRowsIncremental,
   tableRank,
@@ -19,9 +22,9 @@ import {
   type TableModel,
   type TableRow,
 } from './model.ts';
-import { collectVisibleCellIcons, createTablePicture, drawFamilyTable, glideDurationForSpeed, hitFamilyTable, rankHoldForSpeed, type FamilyTablePicture } from './painter.ts';
-import { combinedPaneGeometry, combinedPaneRows, drawPaneFrame, hitPanes, paneGeometry, paneOfRow, panesHeight, paneScroll, paneTitleText, resolvePanes, visiblePaneRange, type ResolvedPane } from './panes.ts';
-import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, type GlideOffset, type RankMarker, type TableSettings } from './settings.ts';
+import { createTablePicture, drawFamilyTable, drawPaneFrame, glideDurationForSpeed, hitFamilyTable, hitPanes, rankHoldForSpeed, type FamilyTablePicture } from './painter.ts';
+import { combinedPaneGeometry, combinedPaneRows, paneGeometry, paneOfRow, panesHeight, paneScroll, paneTitleText, resolvePanes, visiblePaneRange, type ResolvedPane } from './panes.ts';
+import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, showsIcon, type GlideOffset, type RankMarker, type TableSettings } from './settings.ts';
 
 export interface FamilyTableBinding<TOptions = unknown> extends LaneBinding<TOptions> {
   readonly family: 'table';
@@ -69,6 +72,9 @@ interface TableShape {
   readonly rowAuditCache: WeakMap<TableRow, { readonly sig: string; readonly rows: readonly FamilyAuditRow[] }>;
   readonly sortSig: string;
   readonly orderKeys: readonly string[];
+}
+
+interface TableMotion {
   readonly markers: ReadonlyMap<string, RankMarker>;
   readonly glide: ReadonlyMap<string, GlideOffset>;
 }
@@ -84,25 +90,6 @@ interface TableLayout {
 }
 
 type TableFrame = LaneFrame<FamilyTableBinding, TableModel, TableLayout>;
-
-const measures = new WeakMap<OffscreenCanvasRenderingContext2D, Map<string, number>>();
-
-function measurer(ctx: OffscreenCanvasRenderingContext2D): (text: string, font: string) => number {
-  let cache = measures.get(ctx);
-  if (!cache) measures.set(ctx, cache = new Map());
-  const held = cache;
-  return (text, font) => {
-    const key = `${font}\u0000${text}`;
-    let width = held.get(key);
-    if (width === undefined) {
-      if (held.size > 8192) held.clear();
-      ctx.font = font;
-      width = ctx.measureText(text).width;
-      held.set(key, width);
-    }
-    return width;
-  };
-}
 
 const pictures = new WeakMap<OffscreenCanvasRenderingContext2D, { width: number; height: number; art: number; list: FamilyTablePicture[] }>();
 
@@ -204,7 +191,7 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
   const widthKey = `${widthConfigOf(model.columns, settings, theme, model.hideHeader === true)}${sampleSignature(samples)}`;
   const fixedWidths = prev && prev.widthKey === widthKey
     ? prev.fixedWidths
-    : measureFixedColumnWidths(baseCols, settings, theme, measurer(measure), samples, { hideHeader: model.hideHeader === true });
+    : measureFixedColumnWidths(baseCols, settings, theme, canvasMeasureText(measure), samples, { hideHeader: model.hideHeader === true });
   const allLayouts = buildColumnLayouts(model.columns, settings, fixedWidths);
   const columns = layoutFamilyTable(allLayouts, Math.max(1, layoutWidth), { rankShown, rankWidth });
   const rowHeight = rowHeightMode === 'media' ? MEDIA_ROW_HEIGHT[settings.density] : ROW_HEIGHT[settings.density];
@@ -221,25 +208,6 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
       : updateColumnMaximaIncremental(prev.maxima, prev.flatRows, prev.rowIndex, flatRows, rowIndex, columns.columns, model.changedKeys, prev.model.hour, model.hour))
     : computeColumnMaxima(flatRows, columns.columns, model.hour);
   const dataKeys = flatRows.filter(item => item.kind === 'data').map(item => item.key);
-  const forward = prev !== null && step.speed > 0 && model.hour > prev.model.hour && prev.sortSig === sortSig;
-  const markers = rankMarkersOn && forward
-    ? rankMarkers(prev.orderKeys, dataKeys, step.now, new Map(prev.markers), rankHoldForSpeed(step.speed))
-    : new Map<string, RankMarker>();
-  const glideMs = glideDurationForSpeed(step.speed, binding.reducedMotion === true);
-  const glide = new Map<string, GlideOffset>();
-  if (prev && forward && glideMs > 0 && !panes && !prev.panes) {
-    const oldIndex = new Map<string, number>();
-    prev.flatRows.forEach((item, index) => { if (item.kind === 'data') oldIndex.set(item.key, index); });
-    flatRows.forEach((item, index) => {
-      if (item.kind !== 'data') return;
-      const before = oldIndex.get(item.key);
-      if (before !== undefined && before !== index) glide.set(item.key, { from: (before - index) * rowHeight, to: 0, started: step.now });
-      else {
-        const existing = prev.glide.get(item.key);
-        if (existing && step.now - existing.started < glideMs) glide.set(item.key, existing);
-      }
-    });
-  }
   const shape: TableShape = {
     model, options: binding.options, settings, expanded, width, theme,
     flatRows, rowIndex, hasGroups, incremental: inc !== null,
@@ -248,7 +216,7 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
     widthKey, fixedWidths, allLayouts, columns, rowHeightMode, rowHeight, rowGeom,
     windowOffset, totalCount, totalHeight, maxima, maximaCols,
     rowAuditCache: inc && prev ? prev.rowAuditCache : new WeakMap(),
-    sortSig, orderKeys: dataKeys, markers, glide,
+    sortSig, orderKeys: dataKeys,
   };
   shapes.set(model, shape);
   return shape;
@@ -268,9 +236,47 @@ function layoutTable(model: TableModel, binding: FamilyTableBinding, surface: Su
   return { shape, localScrollTop, rowWindow, tops, heights, focusedIndex, height: surface.height };
 }
 
+const NO_MOTION: TableMotion = { markers: new Map(), glide: new Map() };
+const motions = new WeakMap<TableShape, { readonly continuity: number; readonly motion: TableMotion }>();
+
+function motionOf(frame: TableFrame): TableMotion {
+  const shape = frame.layout.shape;
+  const held = motions.get(shape);
+  if (held && held.continuity === frame.continuity) return held.motion;
+  const motion = transition(shape, frame);
+  motions.set(shape, { continuity: frame.continuity, motion });
+  return motion;
+}
+
+function transition(shape: TableShape, frame: TableFrame): TableMotion {
+  const prev = frame.before?.layout.shape;
+  if (!prev || prev.sortSig !== shape.sortSig || shape.model.hour <= prev.model.hour) return NO_MOTION;
+  const prior = motions.get(prev)?.motion ?? NO_MOTION;
+  const started = frame.changedAt;
+  const markers = shape.rankMarkersOn
+    ? rankMarkers(prev.orderKeys, shape.orderKeys, started, prior.markers, rankHoldForSpeed(frame.speed))
+    : new Map<string, RankMarker>();
+  const glideMs = glideDurationForSpeed(frame.speed, frame.binding.reducedMotion === true);
+  const glide = new Map<string, GlideOffset>();
+  if (glideMs > 0 && !shape.panes && !prev.panes) {
+    const oldIndex = new Map<string, number>();
+    prev.flatRows.forEach((item, index) => { if (item.kind === 'data') oldIndex.set(item.key, index); });
+    shape.flatRows.forEach((item, index) => {
+      if (item.kind !== 'data') return;
+      const before = oldIndex.get(item.key);
+      if (before !== undefined && before !== index) glide.set(item.key, { from: (before - index) * shape.rowHeight, to: 0, started });
+      else {
+        const existing = prior.glide.get(item.key);
+        if (existing && started - existing.started < glideMs) glide.set(item.key, existing);
+      }
+    });
+  }
+  return { markers, glide };
+}
+
 function liveGlide(frame: TableFrame): { readonly duration: number; readonly glide: ReadonlyMap<string, GlideOffset> } {
   const duration = glideDurationForSpeed(frame.speed, frame.binding.reducedMotion === true);
-  const all = frame.layout.shape.glide;
+  const all = motionOf(frame).glide;
   if (duration === 0 || all.size === 0) return { duration, glide: new Map() };
   const live = new Map<string, GlideOffset>();
   for (const [key, g] of all) if (frame.now - g.started < duration) live.set(key, g);
@@ -279,7 +285,7 @@ function liveGlide(frame: TableFrame): { readonly duration: number; readonly gli
 
 function liveMarkers(frame: TableFrame): Map<string, RankMarker> {
   const live = new Map<string, RankMarker>();
-  for (const [key, m] of frame.layout.shape.markers) if (m.until > frame.now) live.set(key, m);
+  for (const [key, m] of motionOf(frame).markers) if (m.until > frame.now) live.set(key, m);
   return live;
 }
 
@@ -304,7 +310,7 @@ function visibleRange(layout: TableLayout, gliding: boolean): readonly [number, 
 
 const inspectedRow = (inspect: string | null): string | null => (inspect?.startsWith('row:') ? inspect.slice(4) : null);
 
-const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> = {
+export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> = {
   family: 'table',
   boundary: nextTableChange,
   redraw: () => Infinity,
@@ -410,7 +416,7 @@ const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> = {
     const rowKey = focus ? key : inspectedRow(key);
     if (!rowKey) return null;
     const content = deriveTableTooltip(frame.layout.shape.flatRows, rowKey, frame.model.columns, frame.model.hour);
-    return content ? { hour: frame.model.hour, rowKey, content } : null;
+    return content ? { rowKey, content } : null;
   },
   structure({ model, layout, binding }) {
     const shape = layout.shape;
@@ -478,16 +484,50 @@ const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> = {
     const { layout, binding, model } = frame;
     const shape = layout.shape;
     if (shape.panes) {
-      return shape.panes.flatMap(pane => {
+      return collectArtUrls(shape.panes.flatMap(pane => {
         const [first, last] = visiblePaneRange(pane.geom, pane.rows.length, binding.scrollTop, layout.height);
-        return collectVisibleCellIcons(pane.rows, shape.columns.columns, model.hour, first, last);
-      });
+        return visibleCellArtItems(pane.rows, shape.columns.columns, model.hour, first, last);
+      }));
     }
     const [first, last] = visibleRange(layout, liveGlide(frame).glide.size > 0);
-    return collectVisibleCellIcons(shape.flatRows, shape.columns.columns, model.hour, first, last);
+    return collectArtUrls(visibleCellArtItems(shape.flatRows, shape.columns.columns, model.hour, first, last));
   },
 };
 
-export function familyTableLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
-  return createLaneView(tableLane, wake, options);
+function visibleCellArtItems(
+  rows: readonly FlatTableRow[],
+  columns: readonly Pick<FamilyColumnLayout, 'key' | 'display' | 'skillIcon'>[],
+  hour: number,
+  first: number,
+  last: number,
+): ArtUrlInput[] {
+  const items: ArtUrlInput[] = [];
+  const start = Math.max(0, first);
+  const end = Math.min(rows.length, last);
+  for (let c = 0; c < columns.length; c++) {
+    const col = columns[c]!;
+    if (col.skillIcon) items.push(col.skillIcon);
+  }
+  for (let i = start; i < end; i++) {
+    const item = rows[i]!;
+    if (item.kind !== 'data') continue;
+    for (let c = 0; c < columns.length; c++) {
+      const col = columns[c]!;
+      const cell = item.row.cells[col.key];
+      if (!cell) continue;
+      if (cell.flags) {
+        for (const fl of cell.flags) if (fl.icon) items.push(fl.icon);
+      }
+      if (cell.icons) {
+        for (const ic of cell.icons) if (ic.url) items.push(ic.url);
+      }
+      if (cell.icon) items.push(cell.icon);
+      if (cell.unitIcon) items.push(cell.unitIcon);
+      if (cell.iconSlot && showsIcon(col.display)) {
+        const resolved = resolveCellAtHour(cell, hour);
+        if (resolved.icon) items.push(resolved.icon);
+      }
+    }
+  }
+  return items;
 }

@@ -1,15 +1,13 @@
 import { canvasMeasureText } from '../../charts/textWidth.ts';
-import type { LaneView } from '../../draw/lane.ts';
-import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
+import { collectArtUrls } from '../art/provider.ts';
 import type { MirrorModel } from '../contract.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
-import { createLaneView, type LaneBinding, type LaneFamily, type LaneRuntimeOptions } from '../laneRuntime.ts';
+import type { LaneBinding, LaneFamily } from '../laneRuntime.ts';
 import type { BreakdownViewOptions } from './declaration.ts';
 import {
   buildBreakdownTooltip,
   breakdownLevel,
   type BreakdownModel,
-  type BreakdownPart,
   type ResolvedBreakdownLevel,
 } from './model.ts';
 import { hitTestBreakdown, layoutBreakdown, type BreakdownLayout } from './layout.ts';
@@ -31,17 +29,21 @@ interface BreakdownFrameLayout {
   readonly mirror: MirrorModel;
 }
 
-function walkBreakdownArt(parts: readonly BreakdownPart[], out: ArtUrlInput[]): ArtUrlInput[] {
-  for (const part of parts) {
-    out.push(part.flagArt);
-    if (part.children) walkBreakdownArt(part.children, out);
+const drawnArt = new WeakMap<BreakdownFrameLayout, readonly string[]>();
+
+function drawnArtOf(frame: BreakdownFrameLayout): readonly string[] {
+  let urls = drawnArt.get(frame);
+  if (!urls) {
+    const { layout } = frame;
+    urls = layout.view === 'parts' ? collectArtUrls(layout.rows.filter(row => row.depth === 0).map(row => row.part.flagArt)) : [];
+    drawnArt.set(frame, urls);
   }
-  return out;
+  return urls;
 }
 
 const inspectedRow = (inspect: string | null): string | null => (inspect?.startsWith('row:') ? inspect.slice(4) : null);
 
-const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, BreakdownFrameLayout> = {
+export const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, BreakdownFrameLayout> = {
   family: 'breakdown',
   boundary: () => Infinity,
   redraw: () => Infinity,
@@ -81,7 +83,7 @@ const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, Breakdow
   tooltip(frame, key, focus) {
     const rowKey = focus ? key : inspectedRow(key);
     const tip = rowKey ? buildBreakdownTooltip(frame.model, frame.layout.level, rowKey, frame.theme) : null;
-    return tip && rowKey ? { hour: frame.model.hour, rowKey, content: tip } : null;
+    return tip && rowKey ? { rowKey, payload: tip } : null;
   },
   structure({ binding, model, layout }) {
     return {
@@ -98,9 +100,5 @@ const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, Breakdow
   },
   mirror: frame => frame.layout.mirror,
   audit: frame => deriveBreakdownAudit(frame.model, frame.layout.layout),
-  visibleArt: frame => collectArtUrls(walkBreakdownArt(frame.model.parts, [])),
+  visibleArt: frame => drawnArtOf(frame.layout),
 };
-
-export function familyBreakdownLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
-  return createLaneView(breakdownLane, wake, options);
-}
