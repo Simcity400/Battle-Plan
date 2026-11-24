@@ -6,7 +6,7 @@ use replay_data::rows::TableId;
 use replay_data::{codec::invalid, identity::Identity, identity::SessionStart};
 use replay_frame::branches::BranchTracker;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, btree_map},
     fs::{self, File, OpenOptions},
     io,
     os::windows::fs::OpenOptionsExt,
@@ -130,15 +130,16 @@ impl PreparedCampaigns {
                     *maximum = (*maximum).max(prior);
                 }
             }
-            let key = id.to_ascii_lowercase();
-            if entries.contains_key(&key) {
-                entries.insert(
-                    key,
-                    Err("the replay folder holds more than one recording of this campaign".into()),
-                );
-                continue;
+            match entries.entry(id.to_ascii_lowercase()) {
+                btree_map::Entry::Occupied(mut entry) => {
+                    entry.insert(Err(
+                        "the replay folder holds more than one recording of this campaign".into(),
+                    ));
+                }
+                btree_map::Entry::Vacant(entry) => {
+                    entry.insert(prepared);
+                }
             }
-            entries.insert(key, prepared);
         }
         Ok(Self {
             directory: directory.into(),

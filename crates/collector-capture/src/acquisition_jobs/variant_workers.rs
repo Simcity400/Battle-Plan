@@ -316,6 +316,10 @@ impl Dispatch {
             };
             let mut local_first = None;
             let mut local_second = None;
+            #[expect(
+                clippy::result_large_err,
+                reason = "refused work comes back by value to run on this thread without allocating"
+            )]
             let submit_one = |work: Work| -> Result<Ticket, Work> {
                 let role = work.role();
                 let mut request = Some(Job::VariantPart(Request { base, part: work }));

@@ -225,7 +225,10 @@ pub(crate) unsafe fn next_seq() -> u64 {
 
 const PAYLOADS_PER_FRAME: usize = 19 + CHARACTER_PARTS;
 
-#[allow(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "retired payloads sit inline in one reused list so retiring never allocates per payload"
+)]
 enum RetiredPayload {
     Relations(RelationsJob),
     Characters(CharactersJob),
@@ -1440,7 +1443,7 @@ fn process_job(
         stage("air_bases", None);
         let mut decode_ticks = [0; 3];
         let context = AirBasesMemoContext {
-            owner: shared as *const Shared as usize,
+            owner: std::ptr::from_ref::<Shared>(shared) as usize,
             base: shared.base,
             seq: job.seq,
             hour: job.hour,

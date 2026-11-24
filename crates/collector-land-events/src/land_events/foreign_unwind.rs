@@ -58,7 +58,7 @@ unsafe extern "system-unwind" fn invoke(argument: usize) {
 }
 fn registered(address: usize) -> bool {
     let mut image = 0;
-    !unsafe { RtlLookupFunctionEntry(address as u64, &mut image, ptr::null_mut()) }.is_null()
+    !unsafe { RtlLookupFunctionEntry(address as u64, &raw mut image, ptr::null_mut()) }.is_null()
 }
 
 #[test]

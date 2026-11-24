@@ -377,7 +377,7 @@ pub unsafe fn start(
     let chunk = format::Chunk::new(CHUNK_RECORDS)
         .map_err(|e| format!("worker_sampler record buffer: {e}"))?;
     let mut frequency = 0;
-    if unsafe { QueryPerformanceFrequency(&mut frequency) } == 0 || frequency <= 0 {
+    if unsafe { QueryPerformanceFrequency(&raw mut frequency) } == 0 || frequency <= 0 {
         return Err("worker_sampler QueryPerformanceFrequency failed".into());
     }
     COUNTERS.qpc_hz.store(frequency as u64, Ordering::Relaxed);
@@ -483,7 +483,7 @@ impl Target {
             return None;
         }
         let mut cycles = 0;
-        if unsafe { QueryThreadCycleTime(handle.0, &mut cycles) } == 0 {
+        if unsafe { QueryThreadCycleTime(handle.0, &raw mut cycles) } == 0 {
             return None;
         }
         let registered = worker_sampler_state::registered_job(id);
@@ -543,13 +543,13 @@ fn capture_window(target: &Target, scratch: &mut Scratch) -> bool {
     let game = target.role() == GAME_ROLE;
     scratch.context.0.ContextFlags = CONTEXT_CONTROL_AMD64;
     unsafe {
-        QueryPerformanceCounter(&mut scratch.stamp);
+        QueryPerformanceCounter(&raw mut scratch.stamp);
     }
     if unsafe { SuspendThread(handle) } == u32::MAX {
         return false;
     }
     scratch.suspended = true;
-    let mut ok = unsafe { GetThreadContext(handle, &mut scratch.context.0) } != 0;
+    let mut ok = unsafe { GetThreadContext(handle, &raw mut scratch.context.0) } != 0;
     if ok {
         scratch.job = if game {
             GAME_JOB.load(Ordering::Acquire)
@@ -562,7 +562,7 @@ fn capture_window(target: &Target, scratch: &mut Scratch) -> bool {
         ok = false;
     }
     unsafe {
-        QueryPerformanceCounter(&mut scratch.end);
+        QueryPerformanceCounter(&raw mut scratch.end);
     }
     ok && scratch.context.0.Rip != 0
 }
@@ -573,9 +573,9 @@ fn resume_held(handle: HANDLE, retries: &AtomicU64) -> bool {
     resume_until_released(
         retries,
         || unsafe { ResumeThread(handle) },
-        || unsafe { NtWaitForSingleObject(handle, 0, &timeout) },
+        || unsafe { NtWaitForSingleObject(handle, 0, &raw const timeout) },
         || unsafe {
-            NtDelayExecution(0, &retry_delay);
+            NtDelayExecution(0, &raw const retry_delay);
         },
     )
 }
@@ -599,7 +599,7 @@ fn resume_until_released(
 fn qpc() -> u64 {
     let mut value = 0;
     unsafe {
-        QueryPerformanceCounter(&mut value);
+        QueryPerformanceCounter(&raw mut value);
     }
     value.max(0) as u64
 }
@@ -641,7 +641,7 @@ impl Timer {
         if let Some(handle) = &self.handle {
             let units = (u128::from(remaining) * 10_000_000).div_ceil(u128::from(hz));
             let due = -(units.clamp(1, i64::MAX as u128) as i64);
-            if unsafe { SetWaitableTimer(handle.0, &due, 0, None, ptr::null(), 0) } != 0 {
+            if unsafe { SetWaitableTimer(handle.0, &raw const due, 0, None, ptr::null(), 0) } != 0 {
                 loop {
                     let result = unsafe { WaitForSingleObject(handle.0, 50) };
                     if result == 0 || stop.load(Ordering::Acquire) {
@@ -697,7 +697,7 @@ fn discover(targets: &mut Vec<Target>, ids: &[u32]) {
 }
 fn sample(target: &mut Target, scratch: &mut Scratch) -> Option<format::Record> {
     let mut cycles = 0;
-    if unsafe { QueryThreadCycleTime(target.handle.0, &mut cycles) } == 0 {
+    if unsafe { QueryThreadCycleTime(target.handle.0, &raw mut cycles) } == 0 {
         COUNTERS.capture_failed.fetch_add(1, Ordering::Relaxed);
         return None;
     }

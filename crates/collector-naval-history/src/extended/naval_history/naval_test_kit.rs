@@ -290,7 +290,7 @@ fn collect(memory: &impl Memory, capacity: &Capacities) -> Split {
         oob_members_outcome: captured.group_members.outcome,
         oob_members: captured.group_members.rows.clone(),
         oob_children_outcome: captured.group_children.outcome,
-        oob_children: captured.group_children.rows.clone(),
+        oob_children: captured.group_children.rows,
     }
 }
 

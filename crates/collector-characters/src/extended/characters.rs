@@ -845,7 +845,7 @@ impl TemplateCache {
                 rows.iter()
                     .filter(|row| row.template != 0 && character_ranges_valid(row, bytes)),
             );
-            present.sort_unstable_by_key(|row| (row.id, *row as *const ccharacter::Row as usize));
+            present.sort_unstable_by_key(|row| (row.id, std::ptr::from_ref::<ccharacter::Row>(*row) as usize));
             let Some(file_bytes) = present
                 .iter()
                 .try_fold(0usize, |sum, row| sum.checked_add(row.template_file_len))
@@ -1254,7 +1254,10 @@ impl Family<'_> {
         self.advisors.append_tooltips(memory, 0, self.advisors.len);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one character visit reads its view with the trait, template and carried caches separately"
+    )]
     fn visit<M: Memory>(
         &mut self,
         memory: &M,

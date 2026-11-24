@@ -1866,7 +1866,6 @@ mod tests {
         decode: std::time::Duration,
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn histories_hour(
         world: &World,
         regions: &[u64],

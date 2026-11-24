@@ -168,7 +168,7 @@ impl RawBytes {
             let mut observations = observations.borrow_mut();
             if observations.active {
                 let start =
-                    (value as *const T).cast::<u8>() as usize - self.storage.as_ptr() as usize;
+                    std::ptr::from_ref::<T>(value).cast::<u8>() as usize - self.storage.as_ptr() as usize;
                 let len = std::mem::size_of_val(value);
                 observations.observe(start, &self.storage[start..start + len]);
             }

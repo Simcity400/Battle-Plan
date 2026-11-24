@@ -840,10 +840,6 @@ impl Store {
         let token = Token::Native(fact.token);
         self.script_token(memory, base, generation, hour, fact, token)
     }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The refusal reason travels beside the usual occurrence operands."
-    )]
     fn script_text(
         &mut self,
         memory: &impl Memory,
@@ -861,10 +857,6 @@ impl Store {
         }
         result
     }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The token source is separate from the fact's native descriptor."
-    )]
     fn script_token(
         &mut self,
         memory: &impl Memory,

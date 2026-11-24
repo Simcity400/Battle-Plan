@@ -51,7 +51,10 @@ impl ReferenceReads {
         engine_allocation::reserve_map(&mut self.states, divisions.saturating_mul(2))?;
         engine_allocation::reserve_map(&mut self.variant_indices, divisions)
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the reference capture takes the store, seed, selection and block beside the read operands"
+    )]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -285,7 +288,10 @@ impl ReferenceReads {
         self.complete &= read.ready;
         self.membership_indices.insert(seed.division, index);
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the reference state capture names its store, id, pointer and country beside the read operands"
+    )]
     fn capture_state(
         &mut self,
         memory: &impl Memory,

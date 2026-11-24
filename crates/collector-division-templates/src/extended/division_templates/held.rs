@@ -823,7 +823,10 @@ impl Store {
     }
 
     #[cfg(test)]
-    #[allow(clippy::type_complexity)]
+    #[expect(
+        clippy::type_complexity,
+        reason = "the layout and settings are returned together as recorded values"
+    )]
     pub fn values(
         &self,
         row: &native::IconRow,

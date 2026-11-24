@@ -69,7 +69,7 @@ fn proven_hours_extend_the_anchor_and_anything_else_starts_a_new_one() {
     )
     .unwrap();
     assert_eq!(
-        (pass.anchor, pass.hours.clone()),
+        (pass.anchor, pass.hours),
         (100, vec![Some(9), None])
     );
     let third = states(&[1, 11, 20, 31, 41]);

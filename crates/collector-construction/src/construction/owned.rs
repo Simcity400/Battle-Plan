@@ -751,7 +751,10 @@ fn copy_construction_target(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the occupation walk raises four separate demand counters"
+)]
 fn copy_occupation_walk(
     log: &mut RawLog<10>,
     memory: &impl Memory,
@@ -962,7 +965,10 @@ fn copy_pdx_visit(
     Some(live)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the occupation entries raise four separate demand counters"
+)]
 fn copy_occupation_entries(
     log: &mut RawLog<10>,
     memory: &impl Memory,

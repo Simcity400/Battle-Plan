@@ -61,7 +61,10 @@ impl Request {
         self.links.restore(links);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the country rows, links, appearance and naming store are separate outputs of one take"
+    )]
     pub(crate) fn take_with_naming(
         countries: &engine_allocation::SharedBox<Cache>,
         base: usize,

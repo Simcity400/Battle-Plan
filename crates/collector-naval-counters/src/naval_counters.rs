@@ -69,7 +69,7 @@ pub fn phase_data() -> impl serde::Serialize {
     let held = |index: usize| WORLD_HOLDS[index].load(std::sync::atomic::Ordering::Relaxed);
     let mut frequency = 0;
     let hz = unsafe {
-        windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
+        windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&raw mut frequency)
     } != 0;
     let ns = |ticks: u64| {
         (hz && frequency > 0)
@@ -598,7 +598,10 @@ impl Captured {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the capture takes the modifier guard, holds and deferral beside the read operands"
+    )]
     fn capture_impl(
         &mut self,
         memory: &impl Memory,

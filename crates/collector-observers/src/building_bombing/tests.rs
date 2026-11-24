@@ -68,7 +68,7 @@ impl World {
             base: 0,
             observation: Box::new(UnsafeCell::new(Observation::default())),
         };
-        world.base = (&*world.root as *const u64 as usize) - cgame_state::SINGLETON_RVA.0;
+        world.base = (&raw const *world.root as usize) - cgame_state::SINGLETON_RVA.0;
         *world.root = world.at(GAME) as u64;
         let (object, offset, id, scope) = if province_scope {
             (
@@ -200,7 +200,7 @@ fn setup(capacity: usize, base: usize) {
     }
     let mut frequency = 0;
     unsafe {
-        windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency);
+        windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&raw mut frequency);
     }
     FREQUENCY.store(frequency as u64, Ordering::Relaxed);
 }
@@ -394,7 +394,7 @@ fn building_damage_relocation_moves_exactly_the_five_byte_home_space_store() {
 fn assembly_wrapper_has_real_unwind_metadata_for_native_call_stack() {
     let pc = building_damage_native_call as *const () as u64;
     let mut base = 0;
-    let entry = unsafe { RtlLookupFunctionEntry(pc, &mut base, std::ptr::null_mut()) };
+    let entry = unsafe { RtlLookupFunctionEntry(pc, &raw mut base, std::ptr::null_mut()) };
     assert!(!entry.is_null());
     assert!(unsafe { (*entry).BeginAddress as u64 + base } <= pc);
     assert!(pc < unsafe { (*entry).EndAddress as u64 + base });
@@ -415,9 +415,9 @@ fn assembly_wrapper_has_real_unwind_metadata_for_native_call_stack() {
             base,
             pc,
             entry,
-            &mut context,
-            &mut handler,
-            &mut establisher,
+            &raw mut context,
+            &raw mut handler,
+            &raw mut establisher,
             std::ptr::null_mut(),
         );
     }
@@ -429,14 +429,14 @@ fn assembly_wrapper_has_real_unwind_metadata_for_native_call_stack() {
     );
     let synthetic = unsafe {
         std::slice::from_raw_parts(
-            building_damage_unwind_test_native as *const () as *const u8,
+            (building_damage_unwind_test_native as *const ()).cast::<u8>(),
             16,
         )
     };
     assert_eq!(&synthetic[..5], &[0x48, 0x89, 0x5c, 0x24, 0x20]);
 
     let pc = building_damage_unwind_test_body as *const () as u64;
-    let entry = unsafe { RtlLookupFunctionEntry(pc, &mut base, std::ptr::null_mut()) };
+    let entry = unsafe { RtlLookupFunctionEntry(pc, &raw mut base, std::ptr::null_mut()) };
     assert!(!entry.is_null());
     let mut stack = [0_u64; 64];
     stack[0x30 / 8] = 0xf015;
@@ -455,9 +455,9 @@ fn assembly_wrapper_has_real_unwind_metadata_for_native_call_stack() {
             base,
             pc,
             entry,
-            &mut context,
-            &mut handler,
-            &mut establisher,
+            &raw mut context,
+            &raw mut handler,
+            &raw mut establisher,
             std::ptr::null_mut(),
         );
     }
@@ -471,7 +471,7 @@ fn assembly_wrapper_has_real_unwind_metadata_for_native_call_stack() {
         (0xf001, 0xf002, 0xf003, 0xf015)
     );
     let pc = context.Rip;
-    let entry = unsafe { RtlLookupFunctionEntry(pc, &mut base, std::ptr::null_mut()) };
+    let entry = unsafe { RtlLookupFunctionEntry(pc, &raw mut base, std::ptr::null_mut()) };
     assert!(!entry.is_null());
     unsafe {
         let _ = RtlVirtualUnwind(
@@ -479,9 +479,9 @@ fn assembly_wrapper_has_real_unwind_metadata_for_native_call_stack() {
             base,
             pc,
             entry,
-            &mut context,
-            &mut handler,
-            &mut establisher,
+            &raw mut context,
+            &raw mut handler,
+            &raw mut establisher,
             std::ptr::null_mut(),
         );
     }

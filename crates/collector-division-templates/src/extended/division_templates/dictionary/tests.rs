@@ -133,7 +133,7 @@ fn unread_names_are_read_again_and_failures_refuse_the_dictionary() {
         &roster,
     );
     assert!(matches!(failed.outcome, Outcome::Unavailable { .. }) && failed.rows.is_empty());
-    let mut unknown = roster.clone();
+    let mut unknown = roster;
     unknown.0[0].unit_type_failure = Some("subunit category unreadable");
     let unknown = hour(
         &SliceMemory {
