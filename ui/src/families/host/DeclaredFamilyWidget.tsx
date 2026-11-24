@@ -254,7 +254,10 @@ export default function DeclaredFamilyWidget<
   }, [chooser, regionChoice, storeRegions]);
   const regionsEditable = !!regionField && !!setOption;
   const emptyAction = regionsEditable
-    ? <button type="button" className="button small" onClick={event => onRegions({ op: 'open', ...anchorBelow(event.currentTarget), rows: [] })}>Add region</button>
+    ? <>
+      <button type="button" className="button small" onClick={event => onRegions({ op: 'open', ...anchorBelow(event.currentTarget), rows: [] })}>Add region</button>
+      {!isAutomatic(regionChoice) && <button type="button" className="button small quiet" onClick={() => storeRegions(AUTOMATIC_REGIONS)}>Reset to automatic</button>}
+    </>
     : undefined;
   const regionChooser = regionsEditable
     ? <Popover menu={chooser} className="region-chooser-popover" aria-label="Add region">

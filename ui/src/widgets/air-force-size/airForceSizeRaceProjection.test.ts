@@ -30,12 +30,12 @@ const BASE_OPTS: AirForceSizeRaceOptions = {
   measure: 'planes',
   ownership: 'roster',
   split: true,
-  candidates: [],
   holders: null,
   membership: null,
   unobserved: [],
   top: 10,
   all: false,
+  group: false,
 };
 
 test('air-force-size race builds split aircraft-type segments from air-force-at and withholds unreconciled parts', () => {
@@ -97,7 +97,6 @@ test('air-force-size race under default Top handles unpopulated panel and preser
     ...BASE_OPTS,
     split: false,
     top: null,
-    candidates: ['GER', 'ENG'],
   });
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.deepEqual(rows.map(r => [r.key, r.value?.value.kind]), [['GER', 'known'], ['ENG', 'notRecorded']]);

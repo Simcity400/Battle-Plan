@@ -138,8 +138,8 @@ export const measuresColumn = (column: Pick<TableColumnLayout, 'display' | 'tone
 export const showsIcon = (display: TableDisplay): boolean =>
   display === 'flagName' || display === 'flag' || display === 'icon';
 
-export const endAligned = (column: Pick<TableColumnLayout, 'numeric' | 'display'>): boolean =>
-  !!column.numeric;
+export const endAligned = (column: Pick<TableColumnLayout, 'numeric' | 'display'> & { readonly cellKind?: string }): boolean =>
+  !!column.numeric && column.cellKind !== 'icons';
 
 export function scrollBounds(layout: TableLayout, viewport: number, scrollLeft: number): { max: number; left: number } {
   const max = Math.max(0, layout.totalWidth - viewport);

@@ -333,6 +333,9 @@ fn a_rank_reply_keeps_every_asked_country_reads_every_measure_and_holds_only_whe
     let grouped = |resolve: ranked::Resolve<'_>| -> ranked::SeriesRankReply { serde_json::from_value(answer_grouped(&query, ranked::PRODUCT, &group, resolve).unwrap().unwrap()).unwrap() };
     let known = grouped(&members(None));
     assert_eq!(tags(&known), ["ITA", "GER"], "a group's members at the hour are ranked by the product");
+    assert_eq!(known.rows.iter().map(|row| row.slot).collect::<Vec<_>>(), [Some(8), Some(7)], "each row names the recorded slot holding it at the hour");
+    let once = rank(serde_json::json!({ "countries": ["GER", 7, "ITA"], "hour": T2 + 1 }));
+    assert_eq!((tags(&once), once.rows.iter().map(|row| row.slot).collect::<Vec<_>>()), (vec!["ITA".to_owned(), "GER".to_owned()], vec![Some(8), Some(7)]), "a holder asked by tag and by slot is one row");
     assert_eq!((known.from, known.until), (T2 + 1, T2 + 2), "the reply holds only while the membership does");
     let unknown = grouped(&members(Some("Membership of this group is not recorded at this hour")));
     assert_eq!((unknown.rows.len(), unknown.refused.as_deref()), (0, Some("Membership of this group is not recorded at this hour")), "unknown membership is refused, never a union");

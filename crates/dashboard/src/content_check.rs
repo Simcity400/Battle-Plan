@@ -435,7 +435,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         feed::EventFeedTail::KEY
         | feed::EventChoicesTail::KEY
         | feed::DecisionsTail::KEY
-        | feed::EventFeedSpan::KEY => {
+        | feed::EventFeedActivity::KEY => {
             let catalogue = content.catalogue()?;
             catalogue.scripted_content()?.effects()?;
             take(catalogue, "event feed text", findings);

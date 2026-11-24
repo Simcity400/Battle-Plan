@@ -117,7 +117,7 @@ export default function AirLossDrill({ index, runtime, track, tag, identity, cou
         if (at < from || at > (afterPlayhead ? end : Math.min(reach.current(), end))) return null;
         const current = ledgerCountryAt(index, tag, from, at, identity);
         if (!current) return null;
-        return militaryAirTooltip(current, from, 'airLosses', formatDateTime(at));
+        return militaryAirTooltip(current, from, 'airLosses', formatDateTime(at), index.reply);
       }} />
     <p className="chart-line-key">Areas show positive amounts; correction rows and totals retain their signs. {AIR_LEDGER_NOTE} {row?.complete ? '' : LEDGER_GAP_NOTE}</p>
     {menu.menu}

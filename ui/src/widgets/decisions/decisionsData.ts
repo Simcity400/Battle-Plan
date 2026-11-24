@@ -1,6 +1,6 @@
 import type { LogRow } from '../../charts/log/logData';
 import { formatScalar } from '../../families/valueFormat.ts';
-import { beforeBreak, breakAfter, dayOf, daysBetween, daysText, edgesAt, lastEdge, occurrenceItem, occurrenceMatches } from '../event-feed/scriptOccurrences.ts';
+import { beforeBreak, breakAfter, dayOf, daysBetween, daysText, edgesAt, lastEdge, occurrenceItem } from '../event-feed/scriptOccurrences.ts';
 import type { RecordingBreak } from '../event-feed/scriptOccurrences';
 import type { EventFeedItem, EventFeedKind, ScriptEdge, ScriptOccurrence } from '../../generated/dashboard';
 
@@ -17,8 +17,6 @@ export const STATUS_CHOICES = [
   { value: 'removed', label: 'Removed' },
 ] as const;
 export type StatusChoice = typeof STATUS_CHOICES[number]['value'];
-export const statusChoice = (status: DecisionStatus): StatusChoice =>
-  status === 'unknown' ? 'active' : status === 'taken' ? 'completed' : status === 'unsupported' ? 'failed' : status;
 
 const STARTS: readonly EventFeedKind[] = ['decisionSelected', 'decisionActivated'];
 const ENDS: readonly EventFeedKind[] = ['decisionCompleted', 'decisionCancelled', 'decisionTimedOut', 'decisionRemoved'];
@@ -49,9 +47,6 @@ export interface DecisionAt {
   pause: RecordingBreak | null;
 }
 
-export const OPENERS: readonly EventFeedKind[] = ['decisionSelected', 'decisionActivated'];
-export const CONTINUING: readonly EventFeedKind[] = ['decisionActivated', 'decisionDurationChanged', 'decisionRemovalEffect', 'decisionCancellationEffect',
-  'decisionCompletionEffect', 'decisionTimeoutEffect', 'decisionCompleted', 'decisionCancelled', 'decisionTimedOut', 'decisionRemoved'];
 
 export function decisionCard(occurrence: ScriptOccurrence | null): DecisionCard | null {
   if (!occurrence) return null;
@@ -59,10 +54,9 @@ export function decisionCard(occurrence: ScriptOccurrence | null): DecisionCard 
   return { occurrence, item: occurrenceItem(occurrence), country, target: target !== country ? target : null };
 }
 
-export function decisionAt(row: LogRow<DecisionCard | null>, hour: number, breaks: readonly RecordingBreak[], statuses: ReadonlySet<string>,
-  country: ((tag: string, hour: number) => boolean) | null): LogRow<DecisionAt> | null {
+export function decisionAt(row: LogRow<DecisionCard | null>, hour: number, breaks: readonly RecordingBreak[]): LogRow<DecisionAt> | null {
   const card = row.item;
-  if (!card || (row.revealedHour ?? row.hour) > hour || (country && !occurrenceMatches(card.occurrence, country))) return null;
+  if (!card || (row.revealedHour ?? row.hour) > hour) return null;
   const edges = edgesAt(card.occurrence.edges, hour);
   const start = card.occurrence.opened && STARTS.includes(edges[0]?.row.kind) ? edges[0] : null;
   const latest = lastEdge(edges, [...ENDS, 'decisionActivated']);
@@ -97,7 +91,6 @@ export function decisionAt(row: LogRow<DecisionCard | null>, hour: number, break
     pause = breakAfter(breaks, edges.at(-1)!.row.readHour, hour);
     if (pause) status = 'unknown';
   }
-  if (!statuses.has(statusChoice(status))) return null;
   return { ...row, item: { card, hour, edges, status, start, end, failedAt, unsupportedState, failureMissing, timer, pause } };
 }
 
