@@ -8,7 +8,6 @@ import { registerTimeChart, type TimeChartProjection, type TimeChartWidgetDeclar
 import { formatChartAxisValue } from './layout.ts';
 import type { ChartGap, ChartValueFormat, TimeChartSeriesModel } from './model.ts';
 import {
-  answerRowOf,
   assignCountrySeriesColours,
   branchGapsOf,
   countrySeriesIdentity,
@@ -21,6 +20,7 @@ import {
   seriesHeadAt,
   withinMapOf,
 } from './seriesHelpers.ts';
+import { answerRowOf } from '../sceneTiles.ts';
 
 export interface CountryLinesMeasure {
   readonly kind: string;
