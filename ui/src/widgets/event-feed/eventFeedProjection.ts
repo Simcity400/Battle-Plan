@@ -79,6 +79,12 @@ function eventItemAndSubtext(
         missingReason: reasons.nameMissing ?? 'Event presentation was not recorded',
         detail: { value: knownValue('Option chosen') },
       };
+    case 'eventWindowPresented':
+      return {
+        primary: named,
+        secondary: event.window?.presented?.shown === false ? 'Window (hidden)' : 'Window',
+        missingReason: reasons.nameMissing ?? 'Event presentation was not recorded',
+      };
     case 'decisionSelected':
       return { primary: named ?? 'Decision selected', secondary: named ? 'Decision' : undefined, missingReason: reasons.nameMissing };
     case 'decisionActivated':
@@ -157,8 +163,8 @@ function eventItemAndSubtext(
     case 'nuclearStrike': {
       const targetState = stateLabel(event.strike?.state);
       const losses: string[] = [];
-      if (event.strike?.manpowerLost != null) losses.push(`${formatScalar(Math.round(event.strike.manpowerLost), 'integer')} casualties`);
-      if (event.strike?.buildingLevels != null) losses.push(`${event.strike.buildingLevels.toFixed(1)} building levels`);
+      if (event.strike?.manpowerLost != null) losses.push(`${formatScalar(event.strike.manpowerLost, 'integer')} casualties`);
+      if (event.strike?.buildingLevels != null) losses.push(`${formatScalar(event.strike.buildingLevels, 'decimal1')} building levels`);
       return {
         primary: 'Nuclear strike',
         secondary: targetState,

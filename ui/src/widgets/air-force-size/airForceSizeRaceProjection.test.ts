@@ -78,13 +78,15 @@ test('air-force-size race under default Top handles unpopulated panel and preser
     hour: displayedHour(300),
     panels: new Map([['main', {
       branchId: '1',
-      measure: 'rosterPlanes',
-      decimals: 0,
-      states: [
-        { country: 'GER', hour: 300, run: { firstHour: 300, lastHour: 300, value: 1200, valueRaw: '1200' }, missing: null },
-        { country: 'ENG', hour: 300, run: null, missing: 'Air planes not recorded at this hour' },
+      hour: 300,
+      from: 300,
+      until: 300,
+      refused: 'Air planes not recorded at this hour',
+      measures: [{ name: 'rosterPlanes', decimals: 0 }],
+      rows: [
+        { country: 'GER', readings: [{ country: 'GER', hour: 300, run: { firstHour: 300, lastHour: 300, value: 1200, valueRaw: '1200' }, missing: null }] },
+        { country: 'ENG', readings: [{ country: 'ENG', hour: 300, run: null, missing: 'Air planes not recorded at this hour' }] },
       ],
-      warnings: [],
     }]]),
     identity: fakeIdentity({
       GER: { name: 'German Reich', color: '#6b7280' },

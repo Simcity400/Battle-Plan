@@ -301,10 +301,11 @@ fn world_tension_stack_computes_exact_shares_folds_other_and_clips_future() {
     let tension = vec![(10, 19, 25_000), (20, 29, 100_000), (30, 39, 100_000)];
     let sum = vec![(10, 19, 2_500_000), (20, 29, 12_000_000), (30, 39, 20_000_000)];
     let mut slots = BTreeMap::new();
-    slots.insert(1, vec![(10, 19, 1_500_000), (20, 29, 6_000_000), (30, 39, 10_000_000)]);
-    slots.insert(2, vec![(10, 19, 1_000_000), (20, 29, 4_000_000), (30, 39, 6_000_000)]);
-    slots.insert(3, vec![(20, 29, 2_000_000), (30, 39, 4_000_000)]);
-    let input = StackInput { tension: &tension, sum: &sum, slots: &slots, missing: &[] };
+    slots.insert(1, vec![(10, 19, Some(1_500_000)), (20, 29, Some(6_000_000)), (30, 39, Some(10_000_000))]);
+    slots.insert(2, vec![(10, 19, Some(1_000_000)), (20, 29, Some(4_000_000)), (30, 39, Some(6_000_000))]);
+    slots.insert(3, vec![(20, 29, Some(2_000_000)), (30, 39, Some(4_000_000))]);
+    let complete = [(10, 39)];
+    let input = StackInput { tension: &tension, sum: &sum, slots: &slots, aggregates_complete: &complete, missing: &[] };
     let tag_of = |slot: u32, _: i32| match slot {
         1 => Some(("GER".to_owned(), false)),
         2 => Some(("JAP".to_owned(), false)),
@@ -333,4 +334,67 @@ fn world_tension_stack_computes_exact_shares_folds_other_and_clips_future() {
     assert_eq!(rec_bands[0].end_value, Some(60.0));
     assert_eq!(rec_bands[1].end_value, Some(40.0));
     assert_eq!(rec_other.unwrap().end_value, Some(20.0));
+}
+
+#[test]
+fn world_tension_stack_preserves_negative_contributions_independent_coverage_and_gap_end_labels() {
+    use dashboard_query::series::MissingSpan;
+    use std::collections::BTreeMap;
+    use world_tension_stack::{StackInput, TensionValueMode, compute_stack};
+
+    let tension = vec![(10, 19, 6_500)];
+    let sum = vec![(10, 19, 650_000)];
+    let mut slots = BTreeMap::new();
+    slots.insert(1, vec![(10, 19, Some(400_000)), (20, 29, Some(400_000))]);
+    slots.insert(2, vec![(10, 19, Some(300_000)), (20, 29, None)]);
+    slots.insert(7, vec![(10, 19, Some(-50_000))]);
+    let complete = [(10, 19)];
+    let missing = [MissingSpan { first_hour: 30, last_hour: 35, reason: "gap".into() }];
+    let input = StackInput { tension: &tension, sum: &sum, slots: &slots, aggregates_complete: &complete, missing: &missing };
+    let tag_of = |slot: u32, _: i32| match slot {
+        1 => Some(("GER".to_owned(), false)),
+        2 => Some(("JAP".to_owned(), false)),
+        7 => Some(("ITA".to_owned(), false)),
+        _ => None,
+    };
+
+    let (_, _, _, total, bands, other, _) = compute_stack(&input, 10, 19, 5, TensionValueMode::Recorded, None, 200, tag_of);
+    assert_eq!(total, [Some(6.5)]);
+    assert_eq!(bands.len(), 3);
+    assert_eq!(bands[0].end_value, Some(4.0));
+    assert_eq!(bands[1].end_value, Some(3.0));
+    assert_eq!(bands[2].end_value, Some(-0.5));
+    assert_eq!(bands[2].end_raw.as_deref(), Some("-50000"));
+    assert!(other.is_none());
+
+    let (_, _, _, total2, bands2, other2, _) = compute_stack(&input, 10, 19, 2, TensionValueMode::Recorded, None, 200, tag_of);
+    assert_eq!(total2, [Some(6.5)]);
+    assert_eq!(bands2.len(), 2);
+    let other2 = other2.unwrap();
+    assert_eq!(other2.count, 1);
+    assert_eq!(other2.end_value, Some(-0.5));
+
+    let (_, _, _, share_total, share_bands, share_other, _) = compute_stack(&input, 10, 19, 2, TensionValueMode::Share, None, 200, tag_of);
+    assert_eq!(share_total, [Some(6.5)]);
+    assert!((share_bands[0].end_value.unwrap() - 4.0).abs() < 1e-9);
+    assert!((share_bands[1].end_value.unwrap() - 3.0).abs() < 1e-9);
+    assert!((share_other.unwrap().end_value.unwrap() - (-0.5)).abs() < 1e-9);
+
+    let (end_at_25, capped_at_25, _, rec_total_25, rec_bands_25, _, _) =
+        compute_stack(&input, 10, 25, 5, TensionValueMode::Recorded, None, 200, tag_of);
+    assert_eq!(end_at_25, Some(25));
+    assert_eq!(capped_at_25, None);
+    assert_eq!(rec_total_25.last().copied().flatten(), None);
+    assert_eq!(rec_bands_25[0].end_value, Some(4.0));
+    assert_eq!(rec_bands_25[1].end_value, None);
+    assert_eq!(rec_bands_25[1].end_raw, None);
+    assert_eq!(rec_bands_25[2].end_value, None);
+
+    let (end_gap, capped_gap, _, gap_total, gap_bands, gap_other, _) =
+        compute_stack(&input, 10, 32, 2, TensionValueMode::Recorded, None, 200, tag_of);
+    assert_eq!(end_gap, None);
+    assert_eq!(capped_gap, None);
+    assert_eq!(gap_total.last().copied().flatten(), None);
+    assert!(gap_bands.iter().all(|b| b.end_value.is_none() && b.end_raw.is_none()));
+    assert_eq!(gap_other.unwrap().end_value, None);
 }

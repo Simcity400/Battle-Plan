@@ -25,6 +25,7 @@ export interface FamilyViewUiLoader {
 export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'active-research': { load: () => import('./active-research') },
   'agency-comparison': { load: () => import('./agency-comparison') },
+  'air-kills-losses': { load: () => import('./air-kills-losses/family.tsx') },
   'air-superiority-region': { load: () => import('./air-superiority-region') },
   'apm-graph': { load: () => import('./apm-graph') },
   'apm-table': { load: () => import('./apm-table') },

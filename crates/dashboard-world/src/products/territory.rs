@@ -1,6 +1,6 @@
 
 use dashboard_base::products::LoadContext;
-use dashboard_base::{Source, catalogue::{self, Catalogue}, products::at_hour::{At, AtHour}};
+use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{at_hour::{At, AtHour}, breakdown::{self, Amount, Breakdown, Leaf, Node, Unrecorded}}};
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::identity::{Holder, Holders};
 use replay_data::rows::{Recorded, TableId, TerritoryRegionTotalRow, TerritoryTotalRow, tables};
@@ -105,7 +105,7 @@ pub struct TerritoryShareReply {
     pub warnings: Vec<String>,
 }
 
-dashboard_base::reply_warnings!(TerritoryShareReply, TerritoryBreakdownReply);
+dashboard_base::reply_warnings!(TerritoryShareReply);
 
 pub fn share(rows: &[TerritoryTotalRow], tags: &HashMap<u32, (&str, u32)>, at: usize, live: &Cells) -> TerritoryShareReply {
     let (mut entries, mut unnamed, mut world) = (Vec::new(), Vec::new(), None);
@@ -200,6 +200,9 @@ pub const BREAKDOWN_MEASURES: [(&str, usize); 4] = [("states", 3), ("provinces",
 pub const RULES: [&str; 2] = ["controlled", "owned"];
 const RULE_COLUMNS: usize = 5;
 const STATES: usize = 3;
+const STATE_DECIMALS: u8 = 2;
+const REGION_UNKNOWN: &str = "~region";
+const NOT_HELD: &str = "~unheld";
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -210,42 +213,25 @@ pub struct TerritoryBreakdownParams {
     pub measure: String,
     #[doc = " `controlled` or `owned`."]
     pub rule: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct TerritoryRegion {
-    pub id: u32,
-    pub name: Option<String>,
-    #[doc = " Why it has no name."]
-    pub missing: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct TerritoryRegionRow {
-    pub key: String,
-    pub tag: Option<String>,
-    pub slot: Option<u32>,
-    pub region: Option<u32>,
+    #[doc = " The countries whose territory is shown, by tag or `slot:N`; every country when none."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TerritoryBreakdownReply {
-    pub measure: String,
-    pub rule: String,
-    pub regions: Vec<TerritoryRegion>,
-    pub rows: Vec<TerritoryRegionRow>,
-    #[doc = " Why the rows are not known at this hour."]
-    pub missing: Option<String>,
-    #[doc = " Why area by region is not known: the recording's facts hold no province areas."]
-    pub area_reason: Option<String>,
+    pub hour: i32,
+    #[doc = " Countries (key: the tag held at the hour, or `slot:N` for a slot no tag names, or `~unheld` for"]
+    #[doc = " land no country holds), each split by strategic region (`~region` where the region is not"]
+    #[doc = " recorded). States are counted to two decimals: a state split between holders counts by its share."]
+    pub breakdown: Breakdown,
     pub warnings: Vec<String>,
 }
+
+dashboard_base::reply_warnings!(TerritoryBreakdownReply);
 
 #[derive(Default)]
 struct HeldAreas(Option<Result<Arc<Vec<i64>>, String>>);
@@ -274,7 +260,7 @@ pub struct BreakdownContent {
 
 #[derive(Default)]
 struct RegionNames {
-    names: Vec<TerritoryRegion>,
+    names: HashMap<u32, Result<String, String>>,
     warnings: Vec<String>,
 }
 
@@ -289,16 +275,11 @@ impl RegionNames {
             } else {
                 Err(format!("localisation {} is missing; region title is unavailable", region.name_key))
             };
-            let (name, missing) = match name {
-                Ok(name) => (Some(name), None),
-                Err(reason) => (None, Some(reason)),
-            };
-            out.names.push(TerritoryRegion { id: region.id, name, missing });
+            out.names.insert(region.id, name);
             for &province in &region.provinces {
                 claims.entry(province).or_default().insert(region.id);
             }
         }
-        out.names.sort_unstable_by_key(|region| region.id);
         let ambiguous = claims.values().filter(|regions| regions.len() > 1).count();
         if ambiguous != 0 {
             out.warnings.push(format!("{ambiguous} provinces belong to conflicting strategic regions; their region is not attributable"));
@@ -317,25 +298,85 @@ fn breakdown_column(params: &TerritoryBreakdownParams) -> Option<usize> {
     Some(rule * RULE_COLUMNS + measure)
 }
 
-pub fn breakdown(rows: &[TerritoryRegionTotalRow], tags: &HashMap<u32, (&str, u32)>, column: usize, live: &Cells) -> Vec<TerritoryRegionRow> {
-    rows.iter()
-        .map(|row| {
-            let key = TerritoryRegionTotalRow::key_of(row.holder, row.region);
-            let id = key.to_string();
-            let source = |column: usize| Cell { table: TableId::TerritoryRegionTotals, column, key };
-            live.value(&id, "value", source(column), 1.0);
-            if column % RULE_COLUMNS == STATES {
-                live.value(&id, "denominator", source(column + 1), 1.0);
-            }
-            let slot = (row.holder != TerritoryRegionTotalRow::NO_COUNTRY).then_some(row.holder);
-            TerritoryRegionRow {
-                key: id,
-                tag: slot.and_then(|slot| tags.get(&slot)).map(|&(tag, _)| tag.to_owned()),
-                slot,
-                region: (row.region != TerritoryRegionTotalRow::NO_REGION).then_some(row.region),
-            }
-        })
-        .collect()
+fn region_cell(row: &TerritoryRegionTotalRow, column: usize) -> Recorded<i64> {
+    match column {
+        0 => row.controlled_provinces,
+        1 => row.controlled_victory_points,
+        2 => row.controlled_area,
+        3 => row.controlled_states,
+        4 => row.controlled_states_denominator,
+        5 => row.owned_provinces,
+        6 => row.owned_victory_points,
+        7 => row.owned_area,
+        8 => row.owned_states,
+        _ => row.owned_states_denominator,
+    }
+}
+
+fn amount(row: &TerritoryRegionTotalRow, column: usize) -> Amount {
+    let value = region_cell(row, column);
+    if column % RULE_COLUMNS != STATES {
+        return match value {
+            Recorded::Value(value) => Amount::Known(i128::from(value)),
+            Recorded::NotRecorded => Amount::NotRecorded("Territory was not recorded here at this hour".into()),
+        };
+    }
+    match (value, region_cell(row, column + 1)) {
+        (Recorded::Value(value), Recorded::Value(denominator)) if denominator > 0 => {
+            let scale = 10_i128.pow(u32::from(STATE_DECIMALS));
+            let (value, denominator) = (i128::from(value) * scale, i128::from(denominator));
+            Amount::Known((2 * value + denominator) / (2 * denominator))
+        }
+        _ => Amount::NotRecorded("States were not recorded here at this hour".into()),
+    }
+}
+
+fn territory_breakdown(
+    rows: &[TerritoryRegionTotalRow],
+    tags: &HashMap<u32, (&str, u32)>,
+    params: &TerritoryBreakdownParams,
+    regions: Option<&RegionNames>,
+) -> Breakdown {
+    let column = breakdown_column(params).expect("validated measure and rule");
+    let decimals = if column % RULE_COLUMNS == STATES { STATE_DECIMALS } else { 0 };
+    let wanted: Option<BTreeSet<&str>> = params.tags.as_ref().map(|tags| tags.iter().map(String::as_str).collect());
+    let mut leaves = Vec::new();
+    for row in rows {
+        let held = (row.holder != TerritoryRegionTotalRow::NO_COUNTRY).then_some(row.holder);
+        let tag = held.and_then(|slot| tags.get(&slot)).map(|&(tag, _)| tag);
+        let key = match (held, tag) {
+            (Some(_), Some(tag)) => tag.to_owned(),
+            (Some(slot), None) => format!("slot:{slot}"),
+            (None, _) => NOT_HELD.to_owned(),
+        };
+        if let Some(wanted) = &wanted
+            && !wanted.contains(key.as_str())
+        {
+            continue;
+        }
+        let country = match held {
+            Some(slot) if tag.is_some() => Node::new(key, tag.unwrap_or_default(), slot),
+            Some(slot) => Node::new(key, "Country not named at this hour", slot).other(),
+            None => Node::new(key, "Held by no country", u32::MAX).other(),
+        };
+        let region = match (row.region != TerritoryRegionTotalRow::NO_REGION).then_some(row.region) {
+            Some(id) => match regions.and_then(|regions| regions.names.get(&id)) {
+                Some(Ok(name)) => Node::new(id.to_string(), name.clone(), id),
+                _ => Node::new(id.to_string(), format!("Region {id}"), id),
+            },
+            None => Node::new(REGION_UNKNOWN, "Region not recorded", u32::MAX).other(),
+        };
+        let amount = amount(row, column);
+        if amount == Amount::Known(0) {
+            continue;
+        }
+        leaves.push(Leaf { path: vec![country, region], amount, count: None, last: None });
+    }
+    breakdown::breakdown(decimals, &leaves, &Unrecorded::default())
+}
+
+fn not_recorded(reason: String) -> Breakdown {
+    breakdown::breakdown(0, &[Leaf { path: Vec::new(), amount: Amount::NotRecorded(reason), count: None, last: None }], &Unrecorded::default())
 }
 
 impl AtHour for TerritoryBreakdown {
@@ -344,13 +385,13 @@ impl AtHour for TerritoryBreakdown {
     const CONTENT_DEPENDENT: bool = true;
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = TerritoryBreakdownParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, measure, rule];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, measure, rule, tags];
     type Reply = TerritoryBreakdownReply;
     type Context = Arc<BreakdownContent>;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![TerritoryBreakdownParams::decl(), TerritoryRegion::decl(), TerritoryRegionRow::decl(), TerritoryBreakdownReply::decl()]
+        vec![TerritoryBreakdownParams::decl(), TerritoryBreakdownReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -374,24 +415,17 @@ impl AtHour for TerritoryBreakdown {
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let column = breakdown_column(params).ok_or_else(|| dashboard_core::invalid("Unknown territory breakdown measure or rule"))?;
-        let (regions, warnings) = match &at.context.regions {
-            Ok(regions) => (regions.names.clone(), regions.warnings.clone()),
-            Err(reason) => (Vec::new(), vec![format!("Strategic region names are unavailable: {reason}")]),
+        let (regions, mut warnings) = match &at.context.regions {
+            Ok(regions) => (Some(regions), regions.warnings.clone()),
+            Err(reason) => (None, vec![format!("Strategic region names are unavailable: {reason}")]),
         };
-        let (rows, missing) = match frame.complete::<tables::TerritoryRegionTotals>() {
-            Ok(rows) => (breakdown(rows, &slot_tags(at.holders, frame.hour), column, at.live), None),
-            Err(error) => (Vec::new(), Some(format!("Territory by strategic region is not known at this hour: {error}"))),
+        let breakdown = match (&at.context.area_reason, frame.complete::<tables::TerritoryRegionTotals>()) {
+            (Some(reason), _) => not_recorded(reason.clone()),
+            (None, Err(error)) => not_recorded(format!("Territory by strategic region is not known at this hour: {error}")),
+            (None, Ok(rows)) => territory_breakdown(rows, &slot_tags(at.holders, frame.hour), params, regions),
         };
-        let reply = TerritoryBreakdownReply {
-            measure: params.measure.clone(),
-            rule: params.rule.clone(),
-            regions,
-            rows,
-            missing,
-            area_reason: at.context.area_reason.clone(),
-            warnings,
-        };
+        warnings.dedup();
+        let reply = TerritoryBreakdownReply { hour: frame.hour, breakdown, warnings };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }
@@ -428,41 +462,46 @@ mod tests {
     }
 
     #[test]
-    fn breakdown_rows_carry_no_amount_and_name_each_as_a_live_cell() {
+    fn the_breakdown_is_countries_by_region_at_the_hour_with_land_no_one_holds_named() {
+        use dashboard_base::products::breakdown::BreakdownState;
         const NO_COUNTRY: u32 = TerritoryRegionTotalRow::NO_COUNTRY;
         const NO_REGION: u32 = TerritoryRegionTotalRow::NO_REGION;
-        let tags: HashMap<u32, (&str, u32)> = [(1, ("GER", 10))].into();
-        let held = |holder: u32, region: u32| TerritoryRegionTotalRow {
+        let tags: HashMap<u32, (&str, u32)> = [(1, ("AAA", 10)), (3, ("CCC", 30))].into();
+        let held = |holder: u32, region: u32, states: Recorded<i64>, of: i64| TerritoryRegionTotalRow {
             holder,
             region,
-            owned_provinces: Recorded::Value(4),
-            owned_states: Recorded::Value(7),
-            owned_states_denominator: Recorded::Value(3),
+            controlled_states: states,
+            controlled_states_denominator: Recorded::Value(of),
+            controlled_provinces: Recorded::Value(of),
             ..TerritoryRegionTotalRow::default()
         };
-        let rows = [held(1, 7), held(2, 7), held(NO_COUNTRY, NO_REGION)];
-        let owned = TerritoryBreakdownParams { branch_id: "1".into(), measure: "states".into(), rule: "owned".into() };
-        let cells = Cells::default();
-        let out = breakdown(&rows, &tags, breakdown_column(&owned).unwrap(), &cells);
-        let shown: Vec<(Option<&str>, Option<u32>, Option<u32>)> = out.iter().map(|row| (row.tag.as_deref(), row.slot, row.region)).collect();
-        assert_eq!(shown, [(Some("GER"), Some(1), Some(7)), (None, Some(2), Some(7)), (None, None, None)], "a slot no tag names, and land no country holds in no region");
-        for row in &out {
-            let mut fields: Vec<String> = serde_json::to_value(row).unwrap().as_object().unwrap().keys().cloned().collect();
-            fields.sort_unstable();
-            assert_eq!(fields, ["key", "region", "slot", "tag"], "no amount is in the rows");
-        }
-        let live = cells.finish();
-        let json = live.json(&[]);
-        let keys: Vec<String> = rows.iter().map(|row| TerritoryRegionTotalRow::key_of(row.holder, row.region).to_string()).collect();
-        assert_eq!(json["rows"], serde_json::json!(keys));
-        let kinds: Vec<&str> = json["kinds"].as_array().unwrap().iter().map(|kind| kind["id"].as_str().unwrap()).collect();
-        assert_eq!(kinds, ["value", "denominator"]);
-        assert_eq!(live.groups.len(), 1, "one followed query of every row");
-        assert_eq!((live.groups[0].table, live.groups[0].columns.as_slice()), (TableId::TerritoryRegionTotals, &[8, 9][..]), "owned states over their denominator");
-        let controlled = TerritoryBreakdownParams { measure: "provinces".into(), rule: "controlled".into(), ..owned.clone() };
-        let cells = Cells::default();
-        breakdown(&rows, &tags, breakdown_column(&controlled).unwrap(), &cells);
-        assert_eq!(cells.finish().groups[0].columns, [0], "a whole measure is one cell");
-        assert!(breakdown_column(&TerritoryBreakdownParams { rule: "occupied".into(), ..owned }).is_none(), "the breakdown's rules are controlled and owned");
+        let rows = [
+            held(1, 7, Recorded::Value(7), 3),
+            held(1, 8, Recorded::Value(2), 1),
+            held(2, 7, Recorded::Value(1), 1),
+            held(3, 8, Recorded::Value(0), 1),
+            held(NO_COUNTRY, NO_REGION, Recorded::Value(1), 2),
+        ];
+        let regions = RegionNames { names: [(7, Ok("Northern Sea".to_owned())), (8, Err("missing".to_owned()))].into(), warnings: Vec::new() };
+        let params = TerritoryBreakdownParams { branch_id: "1".into(), measure: "states".into(), rule: "controlled".into(), tags: None };
+        let out = territory_breakdown(&rows, &tags, &params, Some(&regions));
+        assert_eq!(out.decimals, 2, "states split between holders count by their share");
+        let keys: Vec<&str> = out.parts.iter().map(|part| part.key.as_str()).collect();
+        assert_eq!(keys, ["AAA", "slot:2", NOT_HELD], "the largest first, a country holding none has no part, then other");
+        assert_eq!(out.parts[0].raw.as_deref(), Some("433"), "7/3 + 2 states");
+        let children: Vec<(&str, &str)> = out.parts[0].children.iter().map(|part| (part.key.as_str(), part.name.as_str())).collect();
+        assert_eq!(children, [("7", "Northern Sea"), ("8", "Region 8")], "a region without a name is named by its id, never a guess");
+        assert!(out.parts[1].other && out.parts[2].other);
+        assert_eq!(out.parts[2].children[0].key, REGION_UNKNOWN);
+        assert_eq!(out.total.raw.as_deref(), Some("583"));
+        let chosen = TerritoryBreakdownParams { tags: Some(vec!["AAA".into()]), ..params.clone() };
+        assert_eq!(territory_breakdown(&rows, &tags, &chosen, Some(&regions)).parts.len(), 1, "a chosen set shows only its countries");
+        let unread = [held(1, 7, Recorded::NotRecorded, 3), held(3, 8, Recorded::Value(2), 1)];
+        let partly = territory_breakdown(&unread, &tags, &params, None);
+        assert_eq!(partly.total.state, BreakdownState::AtLeast, "a region not recorded is never zero");
+        assert_eq!(partly.parts.last().map(|part| part.state), Some(BreakdownState::NotRecorded));
+        let provinces = TerritoryBreakdownParams { measure: "provinces".into(), ..params };
+        assert_eq!(territory_breakdown(&rows, &tags, &provinces, None).decimals, 0);
+        assert!(breakdown_column(&TerritoryBreakdownParams { rule: "occupied".into(), ..provinces }).is_none(), "the breakdown's rules are controlled and owned");
     }
 }

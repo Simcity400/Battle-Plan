@@ -19,9 +19,9 @@ import { NO_ART, artHandleKey, productArt, refusedArt } from '../art/types.ts';
 import { RefusedError } from '../../dashboard/queryError.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { ArtHandle, DisplayedHour } from '../plan.ts';
-import { IdentityBroker, type IdentityTransport } from './broker.ts';
+import { FLAG_BATCH_MAX, IdentityBroker, MAX_ENTITY_WINDOWS, type IdentityTransport } from './broker.ts';
 import { createBrokerIdentityProvider, createSnapshotIdentityProvider, parseEntityKey } from './provider.ts';
-import { UNHELD_HEAD_HOUR, countryPickerKeys, readIdentityAtHeadHour, subscribeIdentityAtHead, type HeldHeadHour } from './react.ts';
+import { UNHELD_HEAD_HOUR, countryPickerKeys, pickerDating, readIdentityAtHeadHour, subscribeIdentityAtHead, type HeldHeadHour } from './react.ts';
 import {
   IdentityIndex,
   countrySlotKey,
@@ -31,6 +31,7 @@ import {
   flagChoiceKey,
   leaderKey,
   regionKey,
+  identityKeyString,
   stateKey,
   type IdentityScope,
 } from './index.ts';
@@ -975,4 +976,122 @@ test('a status is carried, not rebuilt: unresolved holders, failures across the 
   assert.deepEqual(toFlagSlotState(refusedArt('Unsupported flag format')), { kind: 'refused', reason: 'Unsupported flag format' });
   assert.deepEqual(toFlagSlotState(NO_ART), { kind: 'none' });
   assert.deepEqual(toFlagSlotState(productArt({ status: 'confirmedMissing', reason: 'No flag file' }), 'GER'), { kind: 'missing', tag: 'GER' });
+});
+
+test('an entity failure belongs to its window and a retryable one is asked again after its backoff', async () => {
+  let now = 0;
+  const timers: { at: number; run: () => void }[] = [];
+  const clock = { now: () => now, after: (ms: number, run: () => void) => { const timer = { at: now + ms, run }; timers.push(timer); return () => { timers.splice(timers.indexOf(timer), 1); }; } };
+  const asked: string[] = [];
+  let failNext = true;
+  const transport = {
+    loadPlaceNameRuns: async (_scope: unknown, from: number, to: number, states: readonly number[]) => {
+      asked.push(`${from}-${to}`);
+      if (from === 0 && failNext) {
+        failNext = false;
+        throw new TypeError('network dropped');
+      }
+      return { from, to, unknown: [], states: states.map(id => ({ id, runs: [{ firstHour: from, lastHour: to, name: `State ${id}`, missing: null, presence: 'present' }] })), provinces: [], warnings: [] };
+    },
+  } as unknown as IdentityTransport;
+  const broker = new IdentityBroker({ transport, clock });
+  const owner = {};
+  broker.setDemand(owner, SCOPE, { asks: [{ key: stateKey(7), hour: 10 }, { key: stateKey(7), hour: 800 }] }, undefined, [0, 2000]);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(broker.resolve(SCOPE, stateKey(7), 10).kind, 'failed');
+  assert.equal(broker.resolve(SCOPE, stateKey(7), 800).kind, 'known', 'a failure in one window never answers another');
+  assert.ok(timers.length > 0, 'the failed window stays scheduled through its backoff');
+  now = timers[0]!.at;
+  timers.shift()!.run();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.deepEqual(asked.filter(span => span === '0-719').length, 2);
+  const shown = broker.resolve(SCOPE, stateKey(7), 10);
+  assert.equal(shown.kind === 'known' && shown.name.kind === 'known' ? shown.name.value : null, 'State 7');
+  broker.dispose();
+});
+
+test('1,500 flags drain from what is still outstanding, not a rescan per batch, and an entity settlement leaves the country revision alone', async () => {
+  const countries = Array.from({ length: 1500 }, (_, i) => `X${String(i).padStart(4, '0')}`);
+  const factsReply: CountryFactsReply = {
+    branchId: '1', known: [[0, 1000]], names: countries.map(tag => `Country ${tag}`), reasons: [],
+    flags: countries.map(tag => ({ keys: [tag, null, null], reasons: [null, null, null] })),
+    countries: countries.map((tag, i) => ({ tag, runs: [[0, i, 0, -1, i]] })), warnings: [],
+  };
+  let flagCalls = 0;
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => factsReply,
+    loadIdentities: async () => ({ branchId: '1', known: [], countries: [], unknown: [], warnings: [] }),
+    loadGroups: async () => sampleGroups(),
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size, batch) => {
+      flagCalls++;
+      return { size, flags: batch.map((choice, i) => ({ flag: i, asset: `gfx/flags/${choice.keys[0]}.tga`, key: `${choice.keys[0]}:${size}`, width: 41, height: 26, png: `flag://${choice.keys[0]}` })), unavailable: [], warnings: [] };
+    },
+  };
+  const broker = new IdentityBroker({ transport });
+  const index = broker.indexOf(SCOPE);
+  let lookups = 0;
+  const lookup = index.getDrawnFlag.bind(index);
+  index.getDrawnFlag = (size, choice) => { lookups++; return lookup(size, choice); };
+  broker.setDemand({}, SCOPE, { asks: countries.map(tag => ({ key: countryTagKey(tag), hour: 100 })), needFlags: true, flagSize: 'panel' });
+  for (let i = 0; i < 400; i++) await Promise.resolve();
+  assert.equal(flagCalls, Math.ceil(1500 / FLAG_BATCH_MAX));
+  assert.ok(lookups <= 3 * 1500, `drawn-flag lookups grow with the flags, not flags x batches (${lookups})`);
+  const countryRevision = index.countryRevision();
+  index.replaceEntityRuns(stateKey(7), 0, 719, [{ firstHour: 0, lastHour: 719, name: 'State 7' }]);
+  assert.equal(index.countryRevision(), countryRevision, 'a place settling does not ask the host to rescan country flags');
+  broker.dispose();
+});
+
+test('visiting 40 windows keeps at most the window bound of names, the demanded window stays answered, and a revisit reads again', async () => {
+  const asked: number[] = [];
+  const transport = {
+    loadPlaceNameRuns: async (_scope: unknown, from: number, to: number, states: readonly number[]) => {
+      asked.push(from);
+      return { from, to, unknown: [], states: states.map(id => ({ id, runs: [{ firstHour: from, lastHour: to, name: `State ${id} at ${from}`, missing: null, presence: 'present' }] })), provinces: [], warnings: [] };
+    },
+  } as unknown as IdentityTransport;
+  const broker = new IdentityBroker({ transport });
+  const owner = {};
+  for (let window = 0; window < 40; window++) {
+    broker.setDemand(owner, SCOPE, { asks: [{ key: stateKey(7), hour: window * 720 + 5 }] }, undefined, [0, 40 * 720]);
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  }
+  const held = broker.snapshotOf(SCOPE).entities?.[identityKeyString(stateKey(7))] ?? [];
+  assert.ok(held.length <= MAX_ENTITY_WINDOWS, `names held for ${held.length} windows`);
+  const last = broker.resolve(SCOPE, stateKey(7), 39 * 720 + 5);
+  assert.equal(last.kind === 'known' && last.name.kind === 'known' ? last.name.value : null, `State 7 at ${39 * 720}`, 'the demanded window is pinned');
+  assert.equal(broker.resolve(SCOPE, stateKey(7), 5).kind, 'pending', 'an evicted window is not answered from memory');
+  broker.setDemand(owner, SCOPE, { asks: [{ key: stateKey(7), hour: 5 }] }, undefined, [0, 40 * 720]);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(asked.filter(from => from === 0).length, 2, 'a revisited window is read again');
+  broker.dispose();
+});
+
+test('the picker dates the rows that decide what it shows in the same render: a newly visible row and a search candidate that renames into a match', async () => {
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => sampleFacts(),
+    loadIdentities: async () => sampleIdentities(),
+    loadGroups: async () => sampleGroups(),
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size) => ({ size, flags: [], unavailable: [], warnings: [] }),
+  };
+  const broker = new IdentityBroker({ transport });
+  broker.setDemand({}, SCOPE, { asks: [{ key: countryTagKey('ALP'), hour: 0 }], needFlags: false, flagSize: 'panel' }, undefined, [0, 500]);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  let clockHour = 25;
+  const dating = pickerDating(broker, { getHour: () => clockHour }, SCOPE, null, 'ALP', h => h, null, [0, 500]);
+  assert.equal(dating(['ALP']), 25);
+  clockHour = 160;
+  const held = dating(['ALP']);
+  assert.equal(dating(['ALP', 'GER']), 160, 'a row scrolled into view is dated at the displayed hour before it is painted, not at the hour held for the rows before it');
+  assert.ok(held === 25 || held === 160);
+  clockHour = 170;
+  const searchTags = ['ALP', 'GER'];
+  const at = dating(searchTags)!;
+  const ger = broker.resolve(SCOPE, countryTagKey('GER'), at);
+  assert.equal(ger.kind === 'known' && ger.name.kind === 'known' ? ger.name.value : null, 'Later Empire', 'while searching every candidate dates the hour, so one renamed into a match is found');
+  broker.dispose();
 });

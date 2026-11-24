@@ -26,7 +26,7 @@ import {
   notRecordedLabel,
 } from '../families/valueFormat.ts';
 import { CHART_MEASURE_COLOURS } from '../charts/palette.ts';
-import { luminance, mix, parseColor, rgbaColor } from '../shell/appearance/color.ts';
+import { contrast, mix, mixRgb, parseColor, parseColorAlpha, rgbaColor } from '../shell/appearance/color.ts';
 import { engineHour, gameDate, HOUR_EPOCH, monthNames } from '../dashboard/calendar.ts';
 import type { KitRaster, PathBuilder, PathPaint } from './path';
 
@@ -1110,10 +1110,19 @@ export function drawDateTab(
   return { x, y, width, height };
 }
 
+const DARK_FILL_INK = 'rgba(17, 17, 17, 0.88)';
+const LIGHT_FILL_INK = 'rgba(255, 255, 255, 0.96)';
+const DARK_FILL_INK_RGB = { r: 17, g: 17, b: 17 };
+const LIGHT_FILL_INK_RGB = { r: 255, g: 255, b: 255 };
+
 export function contrastInkForFill(fill: string, theme: FamilyTheme): string {
-  const rgb = parseColor(fill);
-  if (!rgb) return theme.text;
-  return luminance(rgb) > 0.32 ? 'rgba(17, 17, 17, 0.88)' : 'rgba(255, 255, 255, 0.96)';
+  const parsed = parseColorAlpha(fill);
+  if (!parsed) return theme.text;
+  const surface = parsed.alpha < 1 ? parseColor(theme.surface) : null;
+  const bg = surface && parsed.alpha < 1 ? mixRgb(surface, parsed.rgb, parsed.alpha) : parsed.rgb;
+  return contrast(bg, DARK_FILL_INK_RGB) >= contrast(bg, LIGHT_FILL_INK_RGB)
+    ? DARK_FILL_INK
+    : LIGHT_FILL_INK;
 }
 
 export function drawChevron(
@@ -1310,9 +1319,11 @@ export interface TimeAxisFrame {
   readonly plotRight: number;
   readonly startHour: number;
   readonly endHour: number;
+  readonly toX?: (hour: number) => number;
 }
 
 export function timeAxisX(frame: TimeAxisFrame, hour: number): number {
+  if (frame.toX) return frame.toX(hour);
   const span = Math.max(1, frame.endHour - frame.startHour);
   return frame.plotLeft + ((hour - frame.startHour) / span) * (frame.plotRight - frame.plotLeft);
 }

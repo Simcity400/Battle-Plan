@@ -363,7 +363,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         economy::fuel::awards::CountryFuelAwardHistory::KEY | economy::fuel::demand::CountryFuelDemandHistory::KEY => {
             Ok("No content dependency: receipts and rates are recorded amounts.".into())
         }
-        production::ProductionLines::KEY | production::ProductionLinesAt::KEY | production::ProductionLineBreakdown::KEY => {
+        production::ProductionLinesAt::KEY | production::ProductionLineBreakdown::KEY => {
             Ok("Variant and organisation names and icons, and modifier source labels, need the recorded variant, country, organisation and modifier operands; unavailable offline.".into())
         }
         production::ProductionLicences::KEY | production::IndustrialOrganisations::KEY | production::EquipmentDesigns::KEY => {

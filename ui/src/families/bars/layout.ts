@@ -415,3 +415,12 @@ export function visibleBarsRange(
   while (last < count && layout.rowTops[last]! < bottomEdge) last++;
   return { first, last: Math.min(count, last + overscan) };
 }
+
+export function barsAuditWindow(layout: BarsLayout, scrollTop: number): { readonly first: number; readonly count: number } {
+  const { first, last } = visibleBarsRange(layout, scrollTop, 0);
+  return { first, count: last - first };
+}
+
+export function barsScrollHeight(layout: BarsLayout): number {
+  return layout.totalHeight + layout.height - layout.bodyHeight;
+}

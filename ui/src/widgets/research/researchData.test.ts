@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ResearchEntry, ResearchReply, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsAt } from './types';
-import { researchArt, researchArtwork, researchArtworkTokens, researchAt, researchEntryAt, researchFolderAt, researchFolderLooks, researchLatestProgress,
+import { researchArt, researchArtwork, researchArtworkTokens, researchAt, researchEntryAt, researchFolderAt, researchFolderLooks,
   researchProgressAt, researchRateAt, researchReadName, researchRecordedTemplates, researchStateAt, validateResearchBreakdown, validateResearchReply, validateResearchSlots,
   withBreakdown, withSlotReads } from './researchData.ts';
 
@@ -56,7 +56,6 @@ test('the slots at an hour join their slot and assignment; an hour without a rea
   assert.equal(shown.details?.remainingDays, 9);
   assert.equal(researchStateAt(slot, 31), null, 'past its last hour a state is not carried');
   assert.equal(researchEntryAt(slot, shown, 30)?.token, 'radar');
-  assert.deepEqual(researchLatestProgress(slot, shown, 30), { fraction: 0.25, hour: 24 });
   assert.equal(researchProgressAt(slot, 10, 24), 0.25);
   assert.equal(researchProgressAt(slot, 0, 24), null, 'never another assignment\'s progress');
   assert.deepEqual(withSlotReads(researchAt(data.history, 30), { ...now, slots: [], missing: 'No research read covers this hour' })[0].states, []);

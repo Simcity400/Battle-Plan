@@ -40,6 +40,5 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'special-projects', view: 'history', label: 'History', playsBackDated: true, load: () => import('./special-projects') },
   { kind: 'territory', view: 'lines', label: 'Lines', load: () => import('./territory') },
   { kind: 'territory', view: 'share', label: 'Share', load: () => import('./territory') },
-  { kind: 'territory-breakdown', load: () => import('./territory-breakdown') },
   { kind: 'wars', load: () => import('./wars') },
 ];

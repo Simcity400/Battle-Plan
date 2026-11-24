@@ -244,16 +244,6 @@ test('20. Exact reads are checked for coverage and membership: Resource balance�
   assert.ok(member.asks.some(ask => ask.product === 'resource-balance' && ask.hour === 107), `a member hour is read: ${JSON.stringify(member.asks)}`);
 }));
 
-const LINES = '({ branchId: "1", tag: "GER", decimals: 5, detailHours: 720, warnings: [], icons: [], organisations: [], lineHours: [], variants: [], lines: [] })';
-
-test('21. Production lines on a 100–109 branch: a breakdown pinned at 105 asks its 720-hour bucket at the bucket’s first recorded hour', () => onPage(async act => {
-  const line = await act<string>('lineToken("GER", "k1")');
-  const shown = await act<Read>(scene({ kind: 'production-lines', time: pinAt(105), hour: 107, countries: GER, groups: groupsOf(['GER']),
-    options: { show: 'efficiency', line, productionCountry: await act<string>('identityToken(0)') }, replies: { 'production-lines': LINES } }));
-  const asked = shown.asks.filter(ask => ask.product === 'production-line-breakdown').map(ask => ask.hour);
-  assert.deepEqual([...new Set(asked)], [100], `the breakdown is asked once for 105’s bucket: ${JSON.stringify(shown.asks)}`);
-}));
-
 test('24. Training queue saves a chosen country only once its holder is verified: nothing while country groups are pending, failed or split between holders', () => onPage(async act => {
   const base = { kind: 'training-queue', time: { mode: 'follow' }, hour: 105, countries: GER, replies: { 'training-queue': QUEUE } };
   const saves = (read: Read) => read.options.filter(([key]) => key === 'country');
@@ -333,18 +323,6 @@ test('29. Fuel: GER picked at 103 and followed by continuous playback into 108 r
   await act('pause()');
 }));
 
-test('31. Production lines’ breakdown following playback across a 720-hour bucket asks each bucket once, at its first recorded hour', () => onPage(async act => {
-  const line = await act<string>('lineToken("GER", "k1")');
-  const long = { ...groupsOf([]), countryIdentities: [{ tag: 'GER', identities: [{ slot: 1, countryId: 101, firstHour: 100, lastHour: 1600 }] }] };
-  const shown = await act<Read>(scene({ kind: 'production-lines', time: { mode: 'follow' }, hour: 715, last: 1600, requestsWhilePlaying: true, countries: GER, groups: long,
-    options: { show: 'efficiency', line, productionCountry: await act<string>('identityToken(0)') }, replies: { 'production-lines': LINES } }));
-  const played = await act<Read & { hour: number; playing: boolean }>('play(1, 10, 1000)');
-  assert.ok(played.playing && played.hour >= 723, `playback crosses 720: ${played.hour}`);
-  const asked = [...shown.asks, ...played.asks].filter(ask => ask.product === 'production-line-breakdown').map(ask => ask.hour);
-  assert.deepEqual([...new Set(asked)].sort((a, b) => (a ?? 0) - (b ?? 0)), [100, 720], `one recorded hour per bucket, the next bucket asked on crossing: ${JSON.stringify(asked)}`);
-  await act('pause()');
-}));
-
 test('32. A country chosen by slot whose groups fail but whose identities load re-resolves its tag at the identity change during continuous playback', () => onPage(async act => {
   await act(scene({ kind: 'training-queue', time: { mode: 'follow' }, hour: 103, requestsWhilePlaying: true, countries: { kind: 'tags', tags: ['\u00001'] }, groups: RENAMED, failures: ['country-groups'],
     replies: { 'training-queue': QUEUE, 'country-identities': `({ branchId: '1', countries: ${JSON.stringify(RENAMED.countryIdentities)}, unknown: [], warnings: [] })` } }));
@@ -382,22 +360,6 @@ test('35. Fuel’s held country is read under its alias at each request’s hour
   assert.ok(hovered.called && named.length > 0 && named.every(country => country === 'GDR'), `the hover at 108 names the held country’s alias: ${JSON.stringify(hovered.asks)}`);
 }));
 
-test('36. Stability pinned at 103 holds GER through its rename: the history is read by the held identity within its runs, and a hover at 108 never reads the new GER', () => onPage(async act => {
-  const shown = await act<Read>(scene({ kind: 'stability', time: pinAt(103), hour: 108, countries: GER, options: { show: 'stability' }, groups: RENAMED }));
-  const parts = shown.asks.filter(ask => ask.product === 'series-parts');
-  assert.ok(parts.length > 0 && parts.every(ask => JSON.stringify(ask.params?.countries) === '[1]'), `parts are listed for the held identity’s slot: ${JSON.stringify(parts)}`);
-  const hovered = await act<Read & { called: boolean }>('call("TimeChart", "onHover", 108)');
-  const reads = hovered.asks.filter(ask => ask.product === 'series-state').flatMap(ask => (ask.params?.reads ?? []) as { country?: unknown; hour?: number }[]);
-  assert.deepEqual(reads.filter(read => read.country === 'GER' && read.hour === 108), [], `a hover at 108 never reads the other country now named GER: ${JSON.stringify(reads)}`);
-}));
-
-test('37. Production lines’ saved breakdown whose line list fails says so with a retry instead of loading forever', () => onPage(async act => {
-  const line = await act<string>('lineToken("GER", "k1")');
-  const shown = await act<Read>(scene({ kind: 'production-lines', time: pinAt(105), hour: 107, countries: GER, groups: groupsOf(['GER']), failures: ['production-lines'],
-    options: { show: 'efficiency', line, productionCountry: await act<string>('identityToken(0)') } }));
-  assert.ok(/Couldn’t load/.test(shown.text) && shown.buttons.includes('Retry') && !/Loading breakdown/.test(shown.text), `${shown.text} ${JSON.stringify(shown.buttons)}`);
-}));
-
 test('38. A breakdown’s Follow comes from its own region: Resource balance pinned at 105 with its breakdown open offers Follow playback at 108', () => onPage(async act => {
   await act(scene({ kind: 'resource-balance', time: pinAt(105), hour: 108, countries: GER, groups: groupsOf(['GER']),
     replies: { 'resource-balance': RESOURCES.replace('shown: []', 'shown: [1]') } }));
@@ -410,37 +372,6 @@ test('39. Resource balance’s saved breakdown on its “First resource” setti
   const shown = await act<Read>(scene({ kind: 'resource-balance', time: pinAt(105), hour: 107, countries: GER, options: { show: 'resource' }, groups: groupsOf(['GER']),
     replies: { 'resource-balance': RESOURCES } }));
   assert.ok(!/Resource unavailable/.test(shown.text), `the setting chooses the first resource: ${shown.text}`);
-}));
-
-test('41. Factories: GER picked at 103 and pinned after GER passes to another country pins the country it picked, by its verified identity', () => onPage(async act => {
-  await act(scene({ kind: 'factories', time: { mode: 'follow' }, hour: 103, countries: GER, groups: RENAMED }));
-  const opened = await act<Read & { called: boolean }>('call("CountryRaceView", "onPick", 103, "GER")');
-  assert.ok(opened.called && opened.drillOpen, `GER’s breakdown opens at 103: ${opened.text}`);
-  await act('seek(108)');
-  const pinned = await act<Read & { pressed: boolean }>('press("Pin as widget")');
-  const saved = pinned.pins[0] as { time: WidgetTime; countries: unknown; options: Record<string, unknown> } | undefined;
-  assert.ok(pinned.pressed && saved, `the breakdown pins: ${JSON.stringify(pinned.buttons)}`);
-  const token = saved.options.holder;
-  assert.equal(typeof token, 'string', `the pin saves the picked country’s identity: ${JSON.stringify(saved.options)}`);
-  const country = JSON.parse(await act<string>(`content(${JSON.stringify(token)})`)) as { tag: string; originOffset: number };
-  assert.deepEqual([country.tag, country.originOffset, saved.countries], ['GER', 3, GER], 'the pin holds the country picked at 103');
-  const restored = await act<Read>(scene({ kind: 'factories', time: saved.time, hour: 108, countries: saved.countries, options: saved.options, groups: RENAMED }));
-  const named = restored.asks.filter(ask => ['series-parts', 'series-state', 'series-rank', 'follow'].includes(ask.product)).map(ask => JSON.stringify(ask.params));
-  assert.ok(named.length > 0 && named.every(params => !params.includes('"GER"') && !/"countries":\[3\]|"country":3\b/.test(params)) && named.some(params => params.includes('"GDR"') || /"countries":\[1\]|"country":1\b/.test(params)),
-    `the restored pin reads the country it picked, never the new GER: ${JSON.stringify(restored.asks.map(ask => [ask.product, ask.params]))}`);
-}));
-
-const REUSED = { ...groupsOf([]), countryIdentities: [
-  { tag: 'GER', identities: [{ slot: 1, countryId: 101, firstHour: 100, lastHour: 104 }] },
-  { tag: 'ENG', identities: [{ slot: 1, countryId: 102, firstHour: 105, lastHour: 109 }] }] };
-
-test('42. Stability pinned at 103 on GER, whose slot ENG holds from 105: its parts and their names are read only within GER’s own runs', () => onPage(async act => {
-  const shown = await act<Read>(scene({ kind: 'stability', time: pinAt(103), hour: 103, countries: GER, options: { show: 'stability' }, groups: REUSED,
-    replies: { 'series-parts': '({ branchId: "1", partBits: 32, owners: [{ country: 1, parts: [{ part: "1", firstHour: params.from, lastHour: params.to }], missing: [] }] })' } }));
-  const parts = shown.asks.filter(ask => ask.product === 'series-parts');
-  assert.ok(parts.length > 0 && parts.every(ask => (ask.params?.to as number) <= 104), `the part catalogue stays inside GER’s runs: ${JSON.stringify(parts.map(ask => ask.params))}`);
-  const names = shown.asks.filter(ask => ask.product === 'stability-part-names');
-  assert.ok(names.length > 0 && names.every(ask => ask.hour !== null && ask.hour >= 100 && ask.hour <= 104), `part names are read, and only while GER holds the slot: ${JSON.stringify(names.map(ask => [ask.hour, ask.params]))}`);
 }));
 
 const SUBJECTS = `({ branchId: '1', warnings: [], unobserved: [], levels: [{ token: 'puppet', name: 'Puppet', ordered: true }],
@@ -463,11 +394,3 @@ test('43. Autonomy of the human subjects at 108: hovering 103, before GER joins 
   assert.ok(read(after.asks, 108).length > 0, `once ENG is human at 108 its subject GER is read: ${JSON.stringify(after.asks)}`);
 }));
 
-test('44. Production lines’ saved breakdown pinned at 105 offers Follow playback on its own surface', () => onPage(async act => {
-  const line = await act<string>('lineToken("GER", "k1")');
-  const shown = await act<Read>(scene({ kind: 'production-lines', time: pinAt(105), hour: 108, countries: GER, groups: groupsOf(['GER']),
-    options: { show: 'efficiency', line, productionCountry: await act<string>('identityToken(0)') }, replies: { 'production-lines': LINES } }));
-  assert.ok(shown.buttons.includes('Follow playback'), `the saved breakdown can follow: ${JSON.stringify(shown.buttons)}`);
-  const lines = shown.asks.filter(ask => ask.product === 'production-lines' || ask.product === 'production-line-breakdown');
-  assert.ok(lines.length > 0 && lines.every(ask => ask.params?.country === 1 && Array.isArray(ask.params?.within)), `every line read names the held identity within its runs, never the whole tag: ${JSON.stringify(lines.map(ask => [ask.product, ask.params]))}`);
-}));

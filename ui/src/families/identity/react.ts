@@ -335,6 +335,29 @@ export function readIdentityAtHeadHour(
   return hour;
 }
 
+export function pickerDating(
+  broker: ReturnType<typeof identityBrokerFor>,
+  clock: Pick<PlaybackController, 'getHour'>,
+  scope: IdentityScope | null,
+  selectedSlot: number | null,
+  selectedTag: string | null | undefined,
+  trackHour: (clockHour: number) => number | null,
+  recording: DashboardSource | null | undefined,
+  bounds: HourInterval | undefined,
+): (tags: readonly string[]) => number | null {
+  const held: { current: HeldHeadHour } = { current: UNHELD_HEAD_HOUR };
+  let text: string | null = null;
+  let keys: readonly IdentityKey[] = [];
+  return tags => {
+    const next = tags.join('\u0001');
+    if (next !== text) {
+      text = next;
+      keys = countryPickerKeys(selectedSlot, selectedTag, tags);
+    }
+    return readIdentityAtHeadHour(broker, clock, scope, true, keys, trackHour, recording, bounds, held);
+  };
+}
+
 export function useIdentityAtHead(
   client: DashboardClient,
   recording: DashboardSource | null | undefined,
