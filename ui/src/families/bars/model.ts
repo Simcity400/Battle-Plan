@@ -1,7 +1,7 @@
+import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import { flagArtHandle } from '../art/provider.ts';
 import { failedArt, missingArt, PENDING_ART, type ArtResult } from '../art/types.ts';
 import { canonicalAuditValue } from '../audit.ts';
-import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyActionPayload, FamilyTooltipPayload, TooltipListItem } from '../host/tooltips.ts';
 import { assertValue, hasMeasuredValue, type Value } from '../value.ts';
@@ -132,8 +132,7 @@ export interface BarsDataRow {
   readonly media?: BarsRowMedia;
   readonly color?: string;
   readonly muted?: boolean;
-  readonly removable?: boolean;
-  readonly reorderable?: boolean;
+  readonly region?: number;
   readonly group?: 'picked' | 'auto';
   readonly value?: BarsValueField;
   readonly numeric?: number | null;
@@ -468,7 +467,8 @@ export function deriveBarsAudit(
 ): FamilyAuditRow[] {
   const rows: FamilyAuditRow[] = [];
   if (model.empty !== undefined && model.rows.length === 0) {
-    rows.push(auditCell('empty', model.emptyKind ?? 'empty', model.empty));
+    const key = model.emptyKind ?? 'empty';
+    rows.push(auditRow(key, model.empty));
     return rows;
   }
   const first = options?.window ? Math.max(0, options.window.first) : 0;

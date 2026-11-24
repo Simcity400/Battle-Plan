@@ -28,49 +28,6 @@ export function validCountryIdentityHistories(value: unknown): value is CountryI
 type IdentityHistory = { tag: string; identities: readonly CountryIdentityRun[] };
 type KeyRun = Span & { key: string };
 
-export function overlayCountryIdentities(rough: readonly CountryIdentityHistory[], exact: readonly CountryIdentityHistory[]): CountryIdentityHistory[] {
-  if (!validCountryIdentityHistories(rough) || !validCountryIdentityHistories(exact)) throw new Error('The recorded country identity history is malformed.');
-  const byTag = new Map(exact.map(history => [history.tag, history.identities]));
-  const bySlot = new Map<number, CountryIdentityRun[]>();
-  for (const history of exact) for (const run of history.identities) {
-    const spans = bySlot.get(run.slot);
-    if (spans) spans.push(run); else bySlot.set(run.slot, [run]);
-  }
-  const result = new Map<string, CountryIdentityRun[]>();
-  for (const history of rough) {
-    const retained: CountryIdentityRun[] = [];
-    for (const run of history.identities) {
-      const patches = [...(byTag.get(history.tag) ?? []), ...(bySlot.get(run.slot) ?? [])]
-        .filter(patch => patch.firstHour <= run.lastHour && patch.lastHour >= run.firstHour)
-        .sort((a, b) => a.firstHour - b.firstHour);
-      let first = run.firstHour;
-      for (const patch of patches) {
-        if (first < patch.firstHour) retained.push({ ...run, firstHour: first, lastHour: patch.firstHour - 1 });
-        first = Math.max(first, patch.lastHour + 1);
-        if (first > run.lastHour) break;
-      }
-      if (first <= run.lastHour) retained.push({ ...run, firstHour: first });
-    }
-    result.set(history.tag, retained);
-  }
-  for (const history of exact) if (!result.has(history.tag)) result.set(history.tag, []);
-  for (const [tag, retained] of result) {
-    const patches = byTag.get(tag) ?? [];
-    const runs: CountryIdentityRun[] = [];
-    let left = 0, right = 0;
-    while (left < retained.length || right < patches.length) {
-      const next = right === patches.length || left < retained.length && retained[left].firstHour < patches[right].firstHour
-        ? retained[left++] : patches[right++];
-      const previous = runs.at(-1);
-      if (previous && previous.lastHour + 1 === next.firstHour && previous.slot === next.slot && previous.countryId === next.countryId)
-        previous.lastHour = next.lastHour;
-      else runs.push({ ...next });
-    }
-    result.set(tag, runs);
-  }
-  return [...result].map(([tag, identities]) => ({ tag, identities }));
-}
-
 export class CountryIdentityIndex {
   readonly changeHours: ReadonlyArray<number>;
   private readonly byTag = new Map<string, KeyRun[]>();

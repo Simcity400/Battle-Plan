@@ -10,11 +10,16 @@ import { resolveHeadSpan } from './declaration.ts';
 import { tableHostAdapter } from './hostAdapter.ts';
 import { familyTableLaneView, liveAdapter } from './laneView.ts';
 import { registerTableProjection } from './registry.ts';
-import type { ApmReply, CampaignClockReply, DivisionTemplatesReply, ScoreboardColumn, ScoreboardReply } from '../../generated/dashboard';
+import type { ApmReply, CampaignClockReply, DivisionTemplatesReply, EventFeedPageRow, MarketLedgerTailReply, ScoreboardColumn, ScoreboardReply, ScriptPageRow } from '../../generated/dashboard';
 import { pictureError } from '../../shell/perf.ts';
 import { CLOCK_COLUMNS, CLOCK_TABLE_BASE, campaignClockProjection } from '../../widgets/campaign-clock/clockProjection.ts';
+import { decisionsProjection } from '../../widgets/decisions/decisionsProjection.ts';
 import { divisionTemplateColumns, divisionTemplateProjection } from '../../widgets/division-template/divisionTemplateProjection.ts';
+import { eventChoicesProjection } from '../../widgets/event-choices/eventChoicesProjection.ts';
+import { eventFeedProjection } from '../../widgets/event-feed/eventFeedProjection.ts';
 import { gameScoreColumns, gameScoreProjection } from '../../widgets/game-score/gameScoreProjection.ts';
+import { marketLedgerProjection } from '../../widgets/market-ledger/marketLedgerProjection.ts';
+import { buildRowSourceFromHead, validateGenericTailReply } from './rowSource.ts';
 import { COLUMNS as OCCUPIED_DEFAULTS, TABLE_BASE as OCCUPIED_BASE } from '../../widgets/occupied-states/definition.ts';
 import { occupiedStatesProjection } from '../../widgets/occupied-states/occupiedProjection.ts';
 import { apmTableColumns, apmTableProjection } from '../../widgets/player-apm/apmProjection.ts';
@@ -2409,4 +2414,228 @@ test('the table host adapter stores and resolves table settings through its decl
   assert.equal(rankOf({ ...round, showRank: false }), null, 'ranks hidden on the canvas are absent from the exact audit too');
   assert.notEqual(rankOf({ ...round, showRank: true }), null, 'and present when shown');
   assert.deepEqual(tableHostAdapter.parseHit!('toggle:GER'), { key: 'GER', toggle: true, inspectToken: 'row:GER' }, 'hovering a tree chevron inspects its row, so the row tooltip shows');
+});
+
+test('batch 1 log projections: market-ledger contract grouping, decisions running-first, event-choices awaiting-first and detail meta, and event-feed missing dated faction name', () => {
+  const marketReply: MarketLedgerTailReply = {
+    branchId: '1',
+    baseOrdinal: '0',
+    firstOrdinal: '0',
+    offset: '0',
+    total: '2',
+    rows: [
+      {
+        key: '0000000000000012',
+        hour: 108,
+        startedHour: 100,
+        endedHour: null,
+        status: 'active',
+        seller: 'GER',
+        sellerNotRecorded: false,
+        buyer: 'FRA',
+        buyerNotRecorded: false,
+        items: [{
+          variant: '6',
+          name: 'Infantry Equipment I',
+          nameMissing: null,
+          icon: null,
+          deliveredRaw: '25000000',
+          contractedRaw: '50000000',
+          deliveryUnavailable: null,
+        }],
+        paidRaw: '4800000',
+        paidNotRecorded: false,
+        agreedPriceRaw: '9600000',
+        events: [
+          { key: '3', hour: 108, kind: 'payment', variant: null, equipment: null, equipmentMissing: null, amountRaw: '4800000', amountNotRecorded: false, reason: null },
+          { key: '2', hour: 105, kind: 'delivery', variant: '6', equipment: 'Infantry Equipment I', equipmentMissing: null, amountRaw: '25000000', amountNotRecorded: false, reason: null },
+        ],
+      },
+      {
+        key: '0000000000000099',
+        hour: 102,
+        startedHour: 100,
+        endedHour: 102,
+        status: 'ended',
+        seller: null,
+        sellerNotRecorded: true,
+        buyer: 'FRA',
+        buyerNotRecorded: false,
+        items: [{
+          variant: '7',
+          name: null,
+          nameMissing: 'Design not named',
+          icon: null,
+          deliveredRaw: null,
+          contractedRaw: null,
+          deliveryUnavailable: 'Delivery amount unavailable: purchase manifest not acquired before removal',
+        }],
+        paidRaw: null,
+        paidNotRecorded: false,
+        agreedPriceRaw: null,
+        events: [],
+      },
+    ],
+    missing: [],
+    warnings: [],
+  };
+  const marketValidated = validateGenericTailReply(marketReply, 110);
+  assert.equal(marketValidated.total, 2);
+  const marketSource = buildRowSourceFromHead('mkt', marketReply, undefined, 110)!;
+  const marketModel = marketLedgerProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', marketSource]]) }), {
+    perspective: 'FRA',
+    showRequests: true,
+    showEnded: true,
+    selectionEmpty: null,
+  });
+  assert.equal(marketModel.rows.length, 2);
+  assert.equal(marketModel.rows[0]!.cells.status.statusKind, 'running');
+  assert.equal(marketModel.rows[0]!.cells.delivered.value.kind, 'known');
+  assert.equal(marketModel.rows[0]!.cells.delivered.value.kind === 'known' ? marketModel.rows[0]!.cells.delivered.value.value : null, '250 / 500');
+  assert.equal(marketModel.rows[0]!.cells.paid.value.kind === 'known' ? marketModel.rows[0]!.cells.paid.value.value : null, '\u221248');
+  assert.equal(marketModel.rows[0]!.children?.length, 2, 'deliveries and payments remain separate child rows');
+  assert.equal(marketModel.rows[0]!.children?.[0]!.cells.delivered.value.kind, 'notApplicable', 'payment child row never fabricates delivery count');
+  assert.equal(marketModel.rows[0]!.children?.[1]!.cells.paid.value.kind, 'notApplicable', 'delivery child row never pairs payment');
+  assert.equal(marketModel.rows[1]!.cells.delivered.value.kind, 'notRecorded', 'unavailable delivery stays notRecorded');
+  assert.equal(marketModel.rows[1]!.cells.item.value.kind, 'notRecorded', 'unnamed design stays notRecorded');
+
+  const decRows: ScriptPageRow[] = [
+    {
+      key: 'd-done',
+      hour: 108,
+      ordinal: '0',
+      cells: [],
+      occurrence: {
+        id: 'd-done',
+        opened: true,
+        edges: [{
+          row: { id: 'd-done-1', hour: 108, readHour: 108, nameHour: 108, exact: true, category: 'politics', kind: 'decisionSelected', tags: ['GER'], participants: ['GER', null], item: { token: 'dec_one', name: 'War Bonds', description: null, icon: null }, amount: null },
+          costs: [{ currency: 'politicalPower', amount: '-50000' }],
+          lifecycle: null,
+          days: null,
+          option: null,
+        }],
+      },
+    },
+    {
+      key: 'd-run',
+      hour: 104,
+      ordinal: '1',
+      cells: [],
+      occurrence: {
+        id: 'd-run',
+        opened: true,
+        edges: [{
+          row: { id: 'd-run-1', hour: 104, readHour: 104, nameHour: 104, exact: true, category: 'politics', kind: 'decisionSelected', tags: ['GER'], participants: ['GER', null], item: { token: 'dec_two', name: 'Mobilize', description: null, icon: null }, amount: null },
+          costs: null,
+          lifecycle: null,
+          days: 10,
+          option: null,
+        }],
+      },
+    },
+  ];
+  const decSource = buildRowSourceFromHead('dec', { baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '2', rows: decRows, missing: [] }, undefined, 110)!;
+  const decModel = decisionsProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', decSource]]) }), {
+    statuses: ['active', 'taken', 'completed', 'failed', 'cancelled', 'timedOut', 'removed', 'unsupported', 'unknown'],
+    artwork: true,
+    breaks: [],
+    filter: { passing: null },
+  });
+  assert.equal(decModel.rows.length, 2);
+  assert.equal(decModel.rows[0]!.key, 'd-run', 'running decision pins above completed decision');
+  assert.equal(decModel.rows[0]!.live, true);
+  assert.equal(decModel.rows[0]!.cells.cost.value.kind, 'notRecorded');
+  assert.equal(decModel.rows[1]!.key, 'd-done');
+  assert.equal(decModel.rows[1]!.cells.cost.value.kind, 'known');
+
+  const choiceRows: ScriptPageRow[] = [
+    {
+      key: 'ev-chosen',
+      hour: 109,
+      ordinal: '0',
+      cells: [],
+      occurrence: {
+        id: 'ev-chosen',
+        opened: true,
+        edges: [
+          {
+            row: { id: 'ev-c-1', hour: 107, readHour: 107, nameHour: 107, exact: true, category: 'politics', kind: 'scriptEventFired', tags: ['GER'], participants: [null, 'GER'], item: { token: 'ev.1', name: 'Rhineland', description: 'Text', icon: null, options: [{ ordinal: 0, name: 'Proceed' }] }, amount: null },
+            costs: null,
+            lifecycle: null,
+            days: null,
+            option: null,
+          },
+          {
+            row: { id: 'ev-c-2', hour: 109, readHour: 109, nameHour: 109, exact: true, category: 'politics', kind: 'eventOptionSelected', tags: ['GER'], participants: ['GER', null], item: null, amount: null },
+            costs: null,
+            lifecycle: null,
+            days: null,
+            option: 0,
+          },
+        ],
+      },
+    },
+    {
+      key: 'ev-open',
+      hour: 105,
+      ordinal: '1',
+      cells: [],
+      occurrence: {
+        id: 'ev-open',
+        opened: true,
+        edges: [{
+          row: { id: 'ev-o-1', hour: 105, readHour: 105, nameHour: 105, exact: true, category: 'politics', kind: 'newsEventFired', tags: ['FRA'], participants: [null, 'FRA'], item: { token: 'news.2', name: 'Crisis', description: null, icon: null }, amount: null },
+          costs: null,
+          lifecycle: null,
+          days: null,
+          option: null,
+        }],
+      },
+    },
+  ];
+  const choiceSource = buildRowSourceFromHead('evc', { baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '2', rows: choiceRows, missing: [] }, undefined, 110)!;
+  const choiceModel = eventChoicesProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', choiceSource]]) }), {
+    openers: ['scriptEventFired', 'newsEventFired'],
+    awaiting: false,
+    artwork: true,
+    breaks: [],
+    filter: { passing: null },
+  });
+  assert.equal(choiceModel.rows.length, 2);
+  assert.equal(choiceModel.rows[0]!.key, 'ev-open', 'awaiting event pins first');
+  assert.equal(choiceModel.rows[0]!.cells.choice.statusKind, 'waiting');
+  assert.equal(choiceModel.rows[0]!.cells.action.actionLabel, 'View');
+  assert.equal(choiceModel.rows[1]!.cells.choice.inlinePrefix, 'A');
+  assert.ok(choiceModel.rows[1]!.meta, 'chosen event carries detail window subject');
+
+  const feedRows: EventFeedPageRow[] = [
+    {
+      key: 'f-1',
+      hour: 106,
+      ordinal: '0',
+      cells: [],
+      row: {
+        id: 'f-1',
+        hour: 106,
+        readHour: 106,
+        nameHour: 106,
+        exact: false,
+        category: 'diplomacy',
+        kind: 'factionJoined',
+        tags: ['GER'],
+        item: { token: 'faction:1', name: null, nameMissing: 'Faction name not recorded at this hour', description: null, icon: null },
+        amount: null,
+      },
+    },
+  ];
+  const feedSource = buildRowSourceFromHead('feed', { baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '1', rows: feedRows, missing: [] }, undefined, 110)!;
+  const feedModel = eventFeedProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', feedSource]]) }), {
+    categories: ['diplomacy'],
+    artwork: true,
+    from: null,
+    filter: { passing: null },
+  });
+  assert.equal(feedModel.rows.length, 1);
+  assert.equal(feedModel.rows[0]!.cells.detail.value.kind, 'notRecorded', 'missing dated faction name stays notRecorded rather than guessing');
 });

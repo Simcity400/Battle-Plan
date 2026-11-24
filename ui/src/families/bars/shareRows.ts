@@ -1,16 +1,17 @@
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
+import { REGION_ADD_KEY, type RegionRowRef, type RegionRowsField } from '../regions/regionRows.ts';
 import type { Value } from '../value.ts';
 import type { ValueFormat } from '../valueFormat.ts';
-import type { BarsDataRow, BarsModel, BarsRow, BarsSegment } from './model.ts';
+import type { BarsDataRow, BarsLegendItem, BarsModel, BarsRow, BarsRowMedia, BarsSegment } from './model.ts';
 
 export interface ShareRowEntry {
   readonly key: string;
   readonly subject?: string;
   readonly label: string;
   readonly labelMissing?: boolean;
+  readonly media?: BarsRowMedia;
   readonly group?: 'picked' | 'auto';
-  readonly removable?: boolean;
-  readonly reorderable?: boolean;
+  readonly region?: number;
   readonly segments: readonly BarsSegment[];
   readonly countText?: string;
   readonly missing?: Value;
@@ -28,6 +29,7 @@ export interface ShareRowsInput {
   readonly automaticHeading?: string;
   readonly addRegionLabel?: string | null;
   readonly summaryText?: string;
+  readonly legend?: readonly BarsLegendItem[];
   readonly empty?: string;
   readonly emptyDetail?: string;
   readonly emptyKind?: 'empty' | 'unavailable';
@@ -43,9 +45,9 @@ function toShareDataRow(entry: ShareRowEntry, group?: 'picked' | 'auto'): BarsDa
     subject: entry.subject ?? entry.key,
     label: entry.label,
     labelMissing: entry.labelMissing,
+    ...(entry.media ? { media: entry.media } : {}),
     group: entry.group ?? group,
-    removable: entry.removable,
-    reorderable: entry.reorderable,
+    ...(entry.region !== undefined ? { region: entry.region } : {}),
     segments: entry.segments,
     ...(entry.missing ? { value: { value: entry.missing, format: entry.format } } : {}),
     ...(entry.countText !== undefined ? { readout: { primary: entry.countText } } : {}),
@@ -69,7 +71,7 @@ export function buildShareRowsModel(input: ShareRowsInput): BarsModel {
     for (const entry of input.rows) rows.push(toShareDataRow(entry));
   }
   if (rows.length > 0 && input.addRegionLabel) {
-    rows.push({ kind: 'add-region', key: '__add-region', label: input.addRegionLabel });
+    rows.push({ kind: 'add-region', key: REGION_ADD_KEY, label: input.addRegionLabel });
   }
   return {
     form: 'share',
@@ -77,6 +79,7 @@ export function buildShareRowsModel(input: ShareRowsInput): BarsModel {
     rows,
     showAxis: false,
     ...(input.summaryText !== undefined ? { summaryText: input.summaryText } : {}),
+    ...(input.legend?.length ? { legend: input.legend } : {}),
     ...(input.empty !== undefined ? { empty: input.empty } : {}),
     ...(input.emptyDetail !== undefined ? { emptyDetail: input.emptyDetail } : {}),
     ...(input.emptyKind !== undefined ? { emptyKind: input.emptyKind } : {}),
@@ -84,4 +87,26 @@ export function buildShareRowsModel(input: ShareRowsInput): BarsModel {
     ...(input.warnings ? { warnings: input.warnings } : {}),
     ...(input.nextChangeAt !== undefined ? { nextChangeAt: input.nextChangeAt } : {}),
   };
+}
+
+export function barsRegionRows(model: BarsModel, layout: { readonly bodyTop: number; readonly rowTops: readonly number[]; readonly rowHeights: readonly number[]; readonly nameX: number }): RegionRowsField | null {
+  const rows: RegionRowRef[] = [];
+  let add: RegionRowsField['add'] = null;
+  model.rows.forEach((row, index) => {
+    const top = layout.bodyTop + layout.rowTops[index]!;
+    const height = layout.rowHeights[index]!;
+    if (row.kind === 'add-region') add = { top, height };
+    if (row.kind !== 'data' || row.region === undefined) return;
+    const lead = row.segments?.reduce<BarsSegment | null>((best, segment) => (segment.share > (best?.share ?? 0) ? segment : best), null);
+    rows.push({
+      key: row.key,
+      id: row.region,
+      label: row.label,
+      picked: row.group === 'picked',
+      top,
+      height,
+      ...(lead ? { activity: { color: lead.color, text: `${Math.round(lead.share * 100)}% ${lead.label}` } } : {}),
+    });
+  });
+  return rows.length || add ? { rows, add, nameLeft: layout.nameX } : null;
 }

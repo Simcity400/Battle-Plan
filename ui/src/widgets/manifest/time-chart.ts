@@ -128,6 +128,19 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'occupation-trend',
+    view: 'lines',
+    label: 'Lines',
+    family: 'time-chart',
+    viewOption: 'view',
+    loadSpec: timeChartSpec(
+      'occupation-trend',
+      'lines',
+      () => import('../occupation-trend/occupationLinesProjection.ts'),
+      mod => ({ projection: mod.occupationLinesProjection, declaration: mod.occupationLinesDeclaration }),
+    ),
+  },
+  {
     kind: 'political-power',
     view: DEFAULT_VIEW,
     family: 'time-chart',
@@ -147,6 +160,17 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       DEFAULT_VIEW,
       () => import('../ruling-party/rulingPartyProjection.ts'),
       mod => ({ projection: mod.rulingPartyProjection, declaration: mod.rulingPartyDeclaration }),
+    ),
+  },
+  {
+    kind: 'balance-of-power',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'balance-of-power',
+      DEFAULT_VIEW,
+      () => import('../balance-of-power/balanceOfPowerProjection.ts'),
+      mod => ({ projection: mod.balanceOfPowerProjection, declaration: mod.balanceOfPowerDeclaration }),
     ),
   },
   {

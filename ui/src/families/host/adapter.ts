@@ -17,6 +17,7 @@ import type { OptionValue } from '../../dashboard/options';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { FamilyPlanContext } from '../plan.ts';
 import { normalizeView } from '../manifest.ts';
+import type { PagedRowsSnapshot } from '../table/rowSource.ts';
 import type { FamilyNavTuple } from './keyboard.ts';
 import { parseDefaultRowHit } from './pointer.ts';
 
@@ -156,6 +157,7 @@ export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
+  readonly pagedRows?: Readonly<Record<string, PagedRowsSnapshot>>;
   readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
