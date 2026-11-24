@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CELL, parseFollowed } from '../dashboard/follow/message.ts';
+import { CELL } from '../dashboard/follow/message.ts';
+import { parseFollowed } from '../test-support/followMessage.ts';
 import { message, type Spec } from '../dashboard/follow/messages.fixture.ts';
 import {
   InvalidFamilyValueError,

@@ -1,5 +1,4 @@
 import { countryIdentityKey } from './countryIdentity.ts';
-import { formatDateTime } from './calendar.ts';
 import type { PeaceDeal, PeaceDealsReply, PeaceTransferGraph, PeaceTransferredState } from '../generated/dashboard';
 
 export const NAME_COUNTRY = '{COUNTRY}';

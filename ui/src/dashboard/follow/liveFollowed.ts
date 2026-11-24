@@ -1,11 +1,5 @@
-import { useMemo, useRef } from 'react';
-import type { RefObject } from 'react';
-import type { Live, LiveValues } from '../../charts/live';
-import { useFollow } from './useFollow.ts';
-import type { Followed } from './useFollow';
-import { CELL, cellNumber, cellState, cellValue, rowReason } from './message.ts';
-import type { FollowedAnswer } from './message';
-import type { FollowEntry, FollowQuery, FollowStore } from './store';
+import type { Live } from '../../charts/live';
+import type { FollowEntry } from './store';
 
 export function liveFollowed<T>(entry: FollowEntry, read: (entry: FollowEntry) => T): Live<T> {
   let made: { version: number; value: T } | null = null;
@@ -17,8 +11,4 @@ export function liveFollowed<T>(entry: FollowEntry, read: (entry: FollowEntry) =
     subscribe: changed => entry.subscribe(changed),
   };
 }
-
-const NO_PAINT = () => {};
-
-const noStructure = () => '';
 

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message.ts';
+import { CELL, parseAnswer } from '../../dashboard/follow/message.ts';
+import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
 import { NOT_LIVE_CELL, NOT_RECORDED, repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey, valuesOf } from '../../charts/live.ts';

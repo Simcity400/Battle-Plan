@@ -23,7 +23,7 @@ import { forgetProducts } from './products';
 import { productionLineToken } from '../widgets/production-lines/productionData';
 import { datedPanel } from './follow/messages.fixture.ts';
 import { packet, splitForLanes } from './follow/split.ts';
-import { pipelineOf } from './follow/pipeline.ts';
+import { pipelineFor } from './follow/pipeline.ts';
 import { pageClock } from './widgetClock.ts';
 
 class OnScreen {
@@ -53,8 +53,7 @@ const panelFollows = new Map<number, { panel: string; params: Record<string, unk
 const pushed = new Map<number, number>();
 const landed = () => {
   if (!pushed.size || clock.getSnapshot().playing) return true;
-  const pipeline = pipelineOf(pageClock(clock));
-  if (!pipeline) return false;
+  const pipeline = pipelineFor(pageClock(clock), client as never, () => { throw new Error('missing pipeline'); });
   const views = [...pipeline.page.widgets.keys()].flatMap(widget => { const view = pipeline.view(widget); return view?.fields ? [view] : []; });
   return [...pushed].every(([id, hour]) => views.some(view => (`model:${id}` in view.fields! || `refused:${id}` in view.fields!)
     && (view.through ?? -Infinity) >= Math.min(hour, view.target)));

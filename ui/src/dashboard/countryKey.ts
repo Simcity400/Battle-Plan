@@ -1,4 +1,4 @@
-import type { CountryMetadata, CountryRef } from '../generated/dashboard';
+import type { CountryRef } from '../generated/dashboard';
 
 export const SLOT_MARK = '\u0000';
 

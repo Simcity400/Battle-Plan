@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { changeWindow, contentVersion, Facts, joinComponents, samePicture, type FollowMessage, type PanelRecord, type Picture } from './facts.ts';
+import { changeWindow, Facts, joinComponents, samePicture, type FollowMessage, type PanelRecord, type Picture } from './facts.ts';
 
 type V = unknown;
 const R = 9;
@@ -40,13 +40,13 @@ test('WAITING closes the latest fact; COMPLETED does not cross it; STANDS reopen
   assert.equal(f.select(1, 33)!.c, 33);
 });
 
-test('a later record at the same hour replaces the earlier one, with a new content version', () => {
+test('a later record at the same hour replaces the earlier one', () => {
   const f = facts([1, 'panel']);
   f.panels(R, 0, [data(1, 10)]);
-  const before = contentVersion(f.select(1, 10)!);
+  const before = f.select(1, 10)!;
   f.panels(R, 0, [data(1, 10, { value: 'corrected' })]);
   assert.equal(f.select(1, 10)!.value, 'corrected');
-  assert.notEqual(contentVersion(f.select(1, 10)!), before);
+  assert.equal(samePicture(f.select(1, 10)!, before), false);
 });
 
 test('a per-id limit limits only its own reading', () => {

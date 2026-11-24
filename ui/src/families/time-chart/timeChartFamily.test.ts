@@ -24,7 +24,7 @@ import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.
 import { formatChartAxisValue, layoutTimeChart } from './layout.ts';
 import type { ChartMonthSlot, TimeChartModel } from './model.ts';
 import { buildLineSubpaths } from './painter.ts';
-import { parseFollowed } from '../../dashboard/follow/message.ts';
+import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import { seriesHeadValue, buildBoundedStack } from './seriesHelpers.ts';
 import { sampleSeriesValueAt } from './hitTest.ts';

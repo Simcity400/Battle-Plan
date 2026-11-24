@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CELL, parseFollowed, type FollowedRows } from '../../dashboard/follow/message.ts';
+import { CELL, type FollowedRows } from '../../dashboard/follow/message.ts';
+import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import { assertBarsModelValid, deriveBarsAudit, formatBarsValueField, type BarsDataRow } from '../../families/bars/model.ts';
 import { createBoundedReadView, displayedHour, FutureDataError } from '../../families/boundedView.ts';

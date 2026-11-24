@@ -2,7 +2,7 @@ import { laneDispatch } from '../../draw/laneDispatch.ts';
 import { fieldsView } from '../../draw/views/fields.ts';
 import { drawnViews } from '../../draw/views/drawn.ts';
 import { PlaybackController } from '../playback.ts';
-import { Pipeline, pipelineFor, subscribePipeline, type LaneWorker, type PipelineHost } from './pipeline.ts';
+import { Pipeline, pipelineFor, subscribeClockPipeline, type LaneWorker, type PipelineHost } from './pipeline.ts';
 import { packet, resetStamps, splitForLanes } from './split.ts';
 import type { DashboardClient, DashboardSource } from '../client';
 import type { FromLane, FromPull, ToLane } from '../../draw/laneMessages';
@@ -244,7 +244,7 @@ export function managedInProcess({ lanes = 1, views = () => undefined, follow, f
     };
   };
   let current = pipelineFor(clock, client, makeHost);
-  const stopSync = subscribePipeline(clock, client, () => {
+  const stopSync = subscribeClockPipeline(clock, () => {
     current = pipelineFor(clock, client, makeHost);
     notify('restart');
   });

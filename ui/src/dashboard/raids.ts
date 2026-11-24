@@ -6,7 +6,7 @@ import { useProduct } from './products.ts';
 import { contentTitle } from './contentTitles.ts';
 import { drawableIcon } from './artwork.ts';
 import { compareTags } from './tagOrder.ts';
-import { isOrderedSpans, runAt } from '../charts/series.ts';
+import { isOrderedSpans } from '../charts/series.ts';
 import type { Span } from '../charts/series';
 import type { RaidEpisode, RaidLogReply, RaidPhaseRun, RaidPreparationRun, RaidTypeInfo, RaidVictimAt, RaidVictimSource } from '../generated/dashboard';
 import { productRequest } from './request.ts';

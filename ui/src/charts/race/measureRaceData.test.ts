@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { followedRace, followedRowTags, formatRaw, liveRace, raceLookTags, stateEntries, validateRankedLines, validateRankReply } from './measureRaceData.ts';
-import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
+import { CELL } from '../../dashboard/follow/message.ts';
+import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import type { SeriesState } from '../../generated/dashboard';
 

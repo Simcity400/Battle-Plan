@@ -6,7 +6,7 @@ import type { CountryFlagChoice, CountryFlagImage, CountryFlagReply, CountryFlag
 import type { DashboardClient, DashboardSource } from './client';
 import { isFailedFact, nameKey, retryDelay, transientError } from './countryFacts.ts';
 import type { NameAt } from './countryFacts';
-import { askableAt, askTimeline, flagIn, heldTimeline, timelineFailure, retryTimelines, watchTimeline } from './countryTimeline.ts';
+import { askableAt, askTimeline, flagIn, heldTimeline, timelineFailure, watchTimeline } from './countryTimeline.ts';
 import { useContentRevision } from './contentRevision.ts';
 import { inFrame } from './frameUpdates.ts';
 import type { BoundTrack } from './model';

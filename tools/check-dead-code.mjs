@@ -73,10 +73,12 @@ export function classifyUiFile(relPath) {
 export function discoverHtmlEntryPoints(root) {
   const uiDir = resolve(root, 'ui');
   if (!existsSync(uiDir)) return [];
-  return readdirSync(uiDir, { withFileTypes: true })
+  const entries = readdirSync(uiDir, { withFileTypes: true })
     .filter(entry => entry.isFile() && entry.name.endsWith('.html'))
     .map(entry => `ui/${entry.name}`)
     .sort();
+  if (existsSync(resolve(uiDir, 'vite.config.ts'))) entries.push('ui/vite.config.ts');
+  return entries;
 }
 
 export function checkUiModules(root) {
@@ -99,9 +101,11 @@ export function checkUiModules(root) {
   });
 
   const liveProd = new Set();
+  const externalProdImporters = new Set();
   for (const file of prodWalk.visited) {
     const rel = relPosix(root, file);
     if (roleByRel.has(rel)) liveProd.add(rel);
+    else if (SCRIPT_EXTENSIONS.has(extname(rel).toLowerCase())) externalProdImporters.add(rel);
   }
 
   const deadProduction = [];
@@ -154,6 +158,7 @@ export function checkUiModules(root) {
   return {
     entryPoints,
     liveProd,
+    externalProdImporters,
     deadProduction,
     deadTests,
     deadFixturesAndSupport,
@@ -1061,6 +1066,13 @@ export function checkUnusedExports(root, uiResult, ratchetData = null) {
   };
   for (const info of infoByFile.values()) {
     for (const [targetRel, names] of info.directImports) {
+      for (const name of names) markDemand(targetRel, name);
+    }
+  }
+  for (const extRel of uiResult.externalProdImporters ?? []) {
+    const extInfo = analyzeScriptExportsAndImports(root, extRel);
+    if (!extInfo) continue;
+    for (const [targetRel, names] of extInfo.directImports) {
       for (const name of names) markDemand(targetRel, name);
     }
   }

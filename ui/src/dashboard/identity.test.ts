@@ -1,19 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Lineage, countryMembership, joinTagChanges } from './identity.ts';
+import { Lineage, joinTagChanges } from './identity.ts';
 
 const run = (tag: string, firstHour: number, lastHour: number) => ({ tag, firstHour, lastHour });
 
-test('membership follows countries across renames, with related-country changes split too', () => {
+test('related-country changes split runs at the rename hour', () => {
   const lineage = new Lineage([{ hour: 200, from: 'AAA', to: 'BBB' }, { hour: 150, from: 'OWNER', to: 'NEW OWNER' }]);
-  const member = lineage.countryAt('AAA', 100);
-  const membership = countryMembership([run('AAA', 100, 199), run('BBB', 200, 300), run('AAA', 250, 300)], lineage);
-  assert.deepEqual(membership.get(member), [run('AAA', 100, 199), run('BBB', 200, 300)]);
-  assert.deepEqual(membership.get(lineage.countryAt('AAA', 250)), [run('AAA', 250, 300)]);
   const related = joinTagChanges([{ ...run('AAA', 100, 199), owner: 'OWNER' }], lineage, item => [item.owner]);
   assert.deepEqual(related[0].map(item => [item.firstHour, item.lastHour]), [[100, 149], [150, 199]]);
-  const many = countryMembership(Array.from({ length: 5000 }, (_, index) => run(`mod ${index}`, 100, 300)), lineage);
-  assert.equal(many.size, 5000);
 });
 
 test('a tag names one country until it is renamed; a later holder of the tag is another country', () => {

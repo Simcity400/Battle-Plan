@@ -1,7 +1,5 @@
 import { useMemo, useRef } from 'react';
-import type { CountryFlagSize } from '../generated/dashboard';
 import type { DashboardClient } from './client';
-import { isFailedFact } from './countryFacts.ts';
 import { CountryLabelIndex } from './countryLabelData.ts';
 import type { NameAt } from './countryFacts';
 import { useCountryNamesAt } from './countryNamesAt.ts';

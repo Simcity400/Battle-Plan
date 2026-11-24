@@ -1,18 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { liveKey, valuesOf } from '../charts/live.ts';
-import { airPercent, airState, airTooltip, cellView, momentViews, orderedRegions, sideOrder, validateAirSuperiority } from './airSuperiority.ts';
-import type { AirLooks } from './airSuperiority';
+import { airPercent, validateAirSuperiority } from './airSuperiority.ts';
 import type { AirSide, AirSuperiorityReply } from '../generated/dashboard';
 
 const side = (key: string, faction: string | null, leader: string | null): AirSide =>
   ({ key, faction, colourFaction: null, factions: faction ? [faction] : [], tag: faction ? null : leader, leader, coBelligerents: 0, anchor: null });
 const SIDES = [side('f:7', '7', 'ENG'), side('c:GER', null, 'GER'), side('c:USA', null, 'USA')];
-const looks: AirLooks = { name: s => s.leader ?? s.key, color: s => `#${s.key.length}00`, viewpoint: { name: 'England', tag: 'ENG', color: '#111' }, enemy: '#f00',
-  scale: 100_000, badBelow: 40_000, goodAbove: 60_000, mode: 'sides' };
-const values = (entries: Record<string, number>) => valuesOf(new Map(Object.entries(entries).map(([key, value]) => {
-  const [row, column] = key.split('.'); return [liveKey(row, column), value] as const;
-})), 'No live row has this key');
 
 const reply: AirSuperiorityReply = {
   missing: null, sides: SIDES, legend: [0, 1], viewpoint: null, scale: 100_000, badBelow: 40_000, goodAbove: 60_000, warnings: [],
@@ -26,44 +19,9 @@ const reply: AirSuperiorityReply = {
   ],
 };
 
-test('a region\'s shares are its sides\' friendly scores read from the live cells, a zero part left out and factions first', () => {
-  const order = sideOrder(SIDES);
-  const view = cellView(reply.regions[0].cell, SIDES, values({ 'GER@10.friendly': 300, 'ENG@10.friendly': 100 }), looks, order, 3);
-  assert.equal(view.state, 'known');
-  assert.deepEqual(view.parts.map(part => [part.id, part.score, part.share]), [['f:7', 100, 0.25], ['c:GER', 300, 0.75]]);
-  assert.equal(airPercent(100, view.total), '25%');
-  const zero = cellView(reply.regions[0].cell, SIDES, values({ 'GER@10.friendly': 0, 'ENG@10.friendly': 100 }), looks, order, 3);
-  assert.deepEqual(zero.parts.map(part => part.id), ['f:7']);
-  const missing = cellView(reply.regions[0].cell, SIDES, values({ 'ENG@10.friendly': 100 }), looks, order, 3);
-  assert.equal(missing.state, 'unknown', 'a part without a followed value is unknown, never zero');
-  assert.equal(missing.reason, 'No live row has this key');
-});
-
-test('a viewpoint\'s state is the game\'s strict thresholds over friendly against enemy', () => {
-  const cell = { kind: 'view' as const, side: 0, leader: 'ENG', live: 'ENG@10' };
-  const viewpoint = { ...looks, mode: 'viewpoint' as const };
-  const at = (friendly: number, enemy: number) => airState(cellView(cell, SIDES, values({ 'ENG@10.friendly': friendly, 'ENG@10.enemy': enemy }), viewpoint, sideOrder(SIDES), null));
-  assert.equal(at(61, 39), 'Air superiority');
-  assert.equal(at(60, 40), 'Contested');
-  assert.equal(at(39, 61), 'Enemy superiority');
-  assert.equal(at(0, 0), 'No air activity');
-  const zero = cellView({ ...cell, live: null }, SIDES, values({}), viewpoint, sideOrder(SIDES), null);
-  assert.equal(zero.state, 'inactive', 'a known zero has no row and reads as no activity');
-  const tooltip = airTooltip({ name: 'North Sea' }, cellView(cell, SIDES, values({ 'ENG@10.friendly': 75, 'ENG@10.enemy': 25 }), viewpoint, sideOrder(SIDES), 2), true,
-    tag => ({ name: `Country ${tag}` }), false, id => `Faction ${id}`);
-  assert.ok(tooltip.rows.some(row => row.label === 'State' && row.value === 'Air superiority'));
-  assert.ok(tooltip.rows.some(row => row.label === 'Air wings assigned to the region' && row.value === '2'));
-});
-
-test('regions are ordered by contest, activity or name, and those outside the theatres are not shown', () => {
-  const rows = momentViews(reply, values({ 'GER@10.friendly': 300, 'ENG@10.friendly': 100, 'ENG@11.friendly': 50, 'GER@11.friendly': 60, '10.wings': 4 }), looks);
-  assert.equal(rows.find(row => row.region.id === 10)?.view.wings, 4);
-  assert.equal(rows.find(row => row.region.id === 11)?.view.wings, 0, 'a complete wings table without the row: none');
-  assert.deepEqual(orderedRegions(rows, 'contested').map(row => row.region.id), [11, 10]);
-  assert.deepEqual(orderedRegions(rows, 'active').map(row => row.region.id), [10, 11]);
-  assert.deepEqual(orderedRegions(rows, 'name').map(row => row.region.id), [11, 10]);
-  const named = momentViews(reply, values({}), looks, [{ id: 13, name: 'Arctic' }]);
-  assert.ok(named.some(row => row.region.id === 13 && !row.active), 'a chosen region not in the reply reads as the fallback');
+test('airPercent formats positive totals and shows a dash for zero total', () => {
+  assert.equal(airPercent(100, 400), '25%');
+  assert.equal(airPercent(0, 0), '—');
 });
 
 test('a reply naming a side it does not hold is refused', () => {

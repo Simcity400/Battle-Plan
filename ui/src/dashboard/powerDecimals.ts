@@ -1,4 +1,4 @@
-import { formatAmount, formatFixed } from '../charts/valueAxis.ts';
+import { formatAmount } from '../charts/valueAxis.ts';
 import type { OptionField, OptionValue } from './options';
 
 export const POWER_DECIMALS_OPTION: OptionField = { key: 'decimals', section: 'options', label: 'Decimals',

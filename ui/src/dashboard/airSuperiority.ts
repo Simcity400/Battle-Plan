@@ -1,14 +1,9 @@
-import { countryNameDetails } from '../charts/tooltip.ts';
-import type { TooltipContent } from '../charts/tooltip';
-import type { CountryLabel } from './countryFlagsAt';
 import { formatAmount, rescale } from '../charts/valueAxis.ts';
-import { liveKey } from '../charts/live.ts';
-import type { LiveValues } from '../charts/live';
 import { airChoiceKey } from './airOptions.ts';
 import { countryFromKey } from './countryKey.ts';
 import { contentKey, contentSet, type OptionValue } from './options.ts';
 import { int, object } from './validation.ts';
-import type { AirCell, AirChoicesReply, AirRegion, AirSide, AirSuperiorityReply } from '../generated/dashboard';
+import type { AirChoicesReply, AirSide, AirSuperiorityReply } from '../generated/dashboard';
 
 export function airMode(options: Readonly<Record<string, OptionValue>>, campaign: string, currentCountry: string | null) {
   const mode = options.mode === 'viewpoint' ? 'viewpoint' as const : 'sides' as const;
@@ -37,17 +32,6 @@ export function airSideName(side: AirSide, country: (tag: string) => string, fac
   const name = tag ? country(tag) : 'Coalition (name not recorded)';
   return side.key.startsWith('w:') && side.coBelligerents > 0 ? `${name} and allies` : name;
 }
-
-const NOT_FOLLOWED = 'Not followed';
-
-const AIR_MISSING_REASONS: Readonly<Record<string, string>> = {
-  'side-not-present': 'Side not present at this hour.',
-  'score-not-recorded': 'Scores were not recorded at this hour.',
-  'scores-unavailable': 'Scores were not recorded at this hour.',
-  'sides-not-recorded': 'Side membership was not recorded.',
-  'identity-not-recorded': 'Countries unavailable.',
-  'theatres-not-recorded': 'Air groups unavailable.',
-};
 
 const text = (item: unknown): item is string => typeof item === 'string';
 const optionalText = (item: unknown) => item === null || text(item);
