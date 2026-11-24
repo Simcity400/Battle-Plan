@@ -431,7 +431,7 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         self.present_kept_regions(context, plan, initialize, update, unchanged, false, notes)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "one presented frame's inputs, with what the update reads")]
+    #[expect(clippy::too_many_arguments, reason = "one presented frame's inputs, with what the update reads")]
     pub fn present_recorded<V: PartialEq + Send + Sync + 'static>(
         &mut self,
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
@@ -445,7 +445,7 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         self.present_recorded_with_build(context, plan, None, initialize, update, value, regions, notes)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "one presented frame's inputs, with its verified build and update key")]
+    #[expect(clippy::too_many_arguments, reason = "one presented frame's inputs, with its verified build and update key")]
     pub fn present_recorded_for_build<V: PartialEq + Send + Sync + 'static>(
         &mut self,
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
@@ -460,7 +460,7 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         self.present_recorded_with_build(context, plan, Some(build), initialize, update, value, regions, notes)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "one presented frame's inputs, with optional build verification")]
+    #[expect(clippy::too_many_arguments, reason = "one presented frame's inputs, with optional build verification")]
     fn present_recorded_with_build<V: PartialEq + Send + Sync + 'static>(
         &mut self,
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
@@ -517,7 +517,7 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         self.records.clear();
     }
 
-    #[allow(clippy::too_many_arguments, reason = "one presented frame's inputs, with the caller's keep test")]
+    #[expect(clippy::too_many_arguments, reason = "one presented frame's inputs, with the caller's keep test")]
     fn present_kept_regions(
         &mut self,
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
@@ -531,7 +531,7 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         self.present_kept_regions_with_build(context, plan, None, initialize, update, unchanged, regions, notes)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "one presented frame's inputs, with the caller's keep test and build")]
+    #[expect(clippy::too_many_arguments, reason = "one presented frame's inputs, with the caller's keep test and build")]
     fn present_kept_regions_with_build(
         &mut self,
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
@@ -721,7 +721,7 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
             .filter_map(|window| window.drawn.as_ref().map(|drawn| (drawn, window.generation)))
     }
 
-    #[allow(clippy::type_complexity, reason = "the windows shown and the store their quads are painted from")]
+    #[expect(clippy::type_complexity, reason = "the windows shown and the store their quads are painted from")]
     pub fn painted(
         &mut self,
     ) -> (Vec<(&Drawn<K>, u64)>, &mut Painted<K, Option<viewer_gpu::icon_tracks::IconAnchor>>) {
@@ -734,7 +734,7 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         (drawn, &mut self.painted)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "one presented frame's inputs, the windows kept and what it shows")]
+    #[expect(clippy::too_many_arguments, reason = "one presented frame's inputs, the windows kept and what it shows")]
     fn present_windows(
         &mut self,
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
@@ -1264,7 +1264,7 @@ impl<K, S> Default for Painted<K, S> {
 }
 
 impl<K: Copy + Eq + std::hash::Hash, S: PartialEq> Painted<K, S> {
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "one window's painting: what it is, where it stands and how it is drawn"
     )]

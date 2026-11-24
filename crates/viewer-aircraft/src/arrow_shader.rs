@@ -105,7 +105,7 @@ impl Arrow {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the device, the effect and technique, and the pass's formats, samples and mode")]
     fn build(
         device: &wgpu::Device,
         effect: &Arc<Effect>,

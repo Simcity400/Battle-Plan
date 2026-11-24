@@ -144,7 +144,7 @@ fn memory() -> Option<Memory> {
         let ok = unsafe {
             GetProcessMemoryInfo(
                 windows_sys::Win32::System::Threading::GetCurrentProcess(),
-                (&mut counters as *mut Counters).cast(),
+                (&raw mut counters).cast(),
                 std::mem::size_of::<Counters>() as u32,
             )
         };
@@ -211,7 +211,7 @@ fn process_cycles() -> Option<u64> {
             ) -> i32;
         }
         let mut cycles = 0;
-        (unsafe { QueryProcessCycleTime(GetCurrentProcess(), &mut cycles) } != 0).then_some(cycles)
+        (unsafe { QueryProcessCycleTime(GetCurrentProcess(), &raw mut cycles) } != 0).then_some(cycles)
     }
     #[cfg(not(windows))]
     None
@@ -289,7 +289,7 @@ fn precise_wait(left: Duration) {
             }
             let due = -((left.as_nanos() / 100).min(i64::MAX as u128) as i64);
             unsafe {
-                if SetWaitableTimer(timer, &due, 0, std::ptr::null_mut(), std::ptr::null_mut(), 0) == 0 {
+                if SetWaitableTimer(timer, &raw const due, 0, std::ptr::null_mut(), std::ptr::null_mut(), 0) == 0 {
                     return false;
                 }
                 WaitForSingleObject(timer, INFINITE);
@@ -529,6 +529,7 @@ fn window_state(
     Ok((state, crate::renderer_host::WindowSurface::new(surface)))
 }
 
+#[expect(clippy::await_holding_lock, reason = "block_on polls this future to completion on this thread, and wgpu's native adapter and device futures resolve without another thread taking the lock, which must span device creation")]
 fn render_state() -> io::Result<eframe::egui_wgpu::RenderState> {
     pollster::block_on(async {
         let lifecycle = shader_pipeline::gpu::device_lifecycle();
@@ -556,7 +557,7 @@ fn render_state() -> io::Result<eframe::egui_wgpu::RenderState> {
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "one run's inputs, as the harness parsed them")]
+#[expect(clippy::too_many_arguments, reason = "one run's inputs, as the harness parsed them")]
 pub(crate) fn measure(
     config: Config,
     mut options: Options,

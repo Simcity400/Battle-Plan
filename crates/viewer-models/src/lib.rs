@@ -407,7 +407,7 @@ impl ModelLibrary {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the layers, the decoder and descriptors, the names, and the warnings, spans and labels it records")]
     fn load_with_spans(
         layers: &ResolvedLayers,
         session: &ResolvedLayers,
@@ -879,7 +879,7 @@ impl ModelLibrary {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the layers and descriptors, the part's name, placement and parent, and the composition it fills")]
     fn compose(
         &mut self,
         layers: &ResolvedLayers,
@@ -1978,7 +1978,7 @@ mod clock_record_tests {
                         .field
                         .clocks
                         .values()
-                        .map(|clock| clock as *const _ as usize)
+                        .map(|clock| std::ptr::from_ref(clock) as usize)
                         .collect::<Vec<_>>()
                 };
                 let before = addresses();
@@ -1987,7 +1987,7 @@ mod clock_record_tests {
                     .field
                     .clocks
                     .values()
-                    .map(|clock| clock as *const _ as usize)
+                    .map(|clock| std::ptr::from_ref(clock) as usize)
                     .collect();
                 assert_eq!(before, after, "unchanged clocks keep their map storage");
                 assert!(Arc::ptr_eq(
@@ -3638,7 +3638,7 @@ pub fn animate_players(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the players and rigs, the field it poses, the time and filter, and the events and players it records")]
 fn animate_players_native(
     players: &mut BTreeMap<(usize, u32, u32), entity_animation::Player>,
     rigs: &[Arc<Rig>],

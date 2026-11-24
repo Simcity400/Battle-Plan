@@ -448,7 +448,7 @@ pub fn unit_shown(phase: i32, outcome: i32, progress: f32) -> bool {
         || (phase == ENDED && progress < f32::from_bits(0x3f7f_be77) && outcome != CANCELLED)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the arrow inputs, defines and world, the raid's rows and kinds, the geometry, and the held list")]
 fn place_unit(
     inputs: &ArrowInputs<'_>,
     defines: &RaidGraphicsDefines,

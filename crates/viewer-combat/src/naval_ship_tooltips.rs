@@ -187,7 +187,7 @@ fn group_hovers(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the slots and side, the ship, variant and country rows, and the text resources")]
 fn group_tooltip(
     slots: &[u32],
     side: u8,

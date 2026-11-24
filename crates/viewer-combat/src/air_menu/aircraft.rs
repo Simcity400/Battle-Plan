@@ -324,7 +324,6 @@ fn read(
             Ok(100_000)
         } else {
             replay_derive::aircraft_count::empty_menu_efficiency(frame, ours, region)
-                .map_err(|e| e.to_string())
         }
     };
     let enemies = || {

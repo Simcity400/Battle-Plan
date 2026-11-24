@@ -36,7 +36,7 @@ pub(super) struct Made {
 }
 
 impl Made {
-    #[allow(clippy::too_many_arguments, reason = "one value per input a walk reads")]
+    #[expect(clippy::too_many_arguments, reason = "one value per input a walk reads")]
     pub(super) fn new(
         revision: u64,
         frame: &ModelFrame<'_>,
@@ -1188,7 +1188,7 @@ impl Kept {
         if live { &mut self.live_area } else { &mut self.still_area }
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the group's part, its place and its runs")]
+    #[expect(clippy::too_many_arguments, reason = "the group's part, its place and its runs")]
     fn make_group(
         &mut self,
         key: usize,
@@ -1350,7 +1350,7 @@ impl Kept {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the walk, its inputs and what it was made from")]
+    #[expect(clippy::too_many_arguments, reason = "the walk, its inputs and what it was made from")]
     pub(super) fn finish<'p>(
         &mut self,
         arena: &shader_pipeline::gpu::Arena,
@@ -2066,7 +2066,7 @@ impl Kept {
         viewer_scene_base::actor_check::checked(what, self.instances.len() as u64);
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the walk, its layout and what it was made from")]
+    #[expect(clippy::too_many_arguments, reason = "the walk, its layout and what it was made from")]
     fn take(
         &mut self,
         bytes: Vec<u8>,
@@ -2269,7 +2269,6 @@ fn bases(
         .collect()
 }
 
-#[allow(clippy::too_many_arguments, reason = "the draw, its group and the buffers they sit in")]
 fn bind_group(
     arena: &shader_pipeline::gpu::Arena,
     buffer: &wgpu::Buffer,

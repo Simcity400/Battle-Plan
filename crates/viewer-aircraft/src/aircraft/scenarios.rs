@@ -507,7 +507,7 @@ pub(super) struct Generated<'a> {
     pub launches: Vec<LaunchRequest<'a>>,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "one region's groups, defines and history, plus the random state, caps and diagnostics it advances")]
 pub(super) fn generate<'a>(
     region: u32,
     groups: RegionGroups<'a>,

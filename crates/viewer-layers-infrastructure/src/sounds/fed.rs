@@ -11,6 +11,7 @@ use std::{
 };
 use viewer_audio::battle::{self, Battles};
 
+#[expect(clippy::large_enum_variant, reason = "frames are the channel's traffic and move whole into the worker; boxing them would allocate for every frame")]
 enum Job {
     Reset { epoch: u64, model: Box<Sounds>, mirrors: Box<Mirrors> },
     Frame { epoch: u64, stamp: Option<Hour>, steps: Vec<Arc<Step>>, declared: Option<Option<Columns>> },

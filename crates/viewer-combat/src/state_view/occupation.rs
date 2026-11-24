@@ -14,7 +14,7 @@ use viewer_foundation::templates::{counter_custom_icon, custom_icon_index};
 const CONTAINER: &str = "resistance_container";
 const LAW_AND_TEMPLATE: [&str; 3] = ["select_law_icon", "template_garrison", "template_need_text"];
 
-#[allow(clippy::too_many_arguments, reason = "the window's read inputs, each from another owner")]
+#[expect(clippy::too_many_arguments, reason = "the window's read inputs, each from another owner")]
 pub(super) fn bind(
     content: &Content,
     frame: &DecodedFrame,

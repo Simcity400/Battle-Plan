@@ -4833,7 +4833,7 @@ fn a_counter_flag_follows_the_cosmetic_and_exact_original_tag() {
             .unwrap()
             .contains("cosmetic tag is not UTF-8")
     );
-    let mut unknown = countries.clone();
+    let mut unknown = countries;
     unknown
         .groups
         .insert(2, Err("ruling group is not UTF-8".into()));

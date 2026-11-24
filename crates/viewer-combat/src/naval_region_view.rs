@@ -126,7 +126,6 @@ fn access(frame: &DecodedFrame, vision: &Vision, root: &Element, out: &mut Bindi
     }
 }
 
-#[allow(clippy::too_many_arguments, reason = "the window's read inputs, each from another owner")]
 pub(super) fn bind(
     content: &Content,
     frame: &DecodedFrame,

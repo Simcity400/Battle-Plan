@@ -252,7 +252,7 @@ pub struct Cache {
     source: Option<TooltipSources>,
 }
 impl Cache {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the content, reads, frame and vision the tooltip is built from, plus its wake")]
     pub fn request(
         &mut self,
         content: &Arc<counter_content::Content>,
@@ -408,7 +408,7 @@ fn line(out: &mut Tooltip, name: &str, indent: usize, value: Result<String, Stri
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the content, reads, frame and vision the tooltip is built from")]
 fn build(
     content: &counter_content::Content,
     reads: viewer_unit_reads::movement_reads::ReadOperands<'_>,
