@@ -14,7 +14,7 @@ import { mergeArtDemands, needsArtResolution, requestDemandedFlags, type ArtReso
 import { SpriteCaches, artCacheScope, fetchArtHandles } from './transport.ts';
 import { PENDING_ART, artHandleKey, failedArt, type ArtResolution, type ArtResult } from './types.ts';
 
-const NO_HANDLES: readonly ArtHandle[] = [];
+export const MAX_DEMANDED_ART = 512;
 const caches = new PerClient<SpriteCaches>();
 
 function cachesOf(client: DashboardClient): SpriteCaches {
@@ -37,6 +37,7 @@ export function useArtResolutions(
   const held = cachesOf(runtime.client);
   const resolutions = held.resolutions(scope);
   const failures = held.failures(scope);
+  const settled = held.version(scope);
   const [landed, setLanded] = useState(0);
   const asked = handles.filter(handle => {
     const id = artHandleKey(handle);
@@ -63,7 +64,7 @@ export function useArtResolutions(
         setLanded(count => count + 1);
       });
     });
-    if (held.resolutions(scope) !== resolutions) setLanded(count => count + 1);
+    if (held.version(scope) !== settled) setLanded(count => count + 1);
     return () => { stop(); release(); };
   }, [held, scope]);
 
@@ -81,6 +82,8 @@ export function useArtResolutions(
   }, [resolutions, failures, landed]);
 }
 
+const NO_DEMAND: readonly ArtHandle[] = [];
+
 export function useArtHandleResolutions(
   runtime: WidgetRuntime,
   track: BoundTrack | undefined,
@@ -90,19 +93,34 @@ export function useArtHandleResolutions(
   readonly resolutions: ArtResolutions | undefined;
   readonly onArtDemands: (handles: readonly ArtHandle[]) => void;
 } {
-  const [demanded, setDemanded] = useState<readonly ArtHandle[]>(NO_HANDLES);
   const scope = useIdentityScope(runtime.client, track?.source, track?.branch.id, active && !!track);
+  const artScope = useContentRevision(runtime.client);
+  const demandScope = track ? artCacheScope(track, artScope) : '';
+  const [demand, setDemand] = useState<{ readonly scope: string; readonly handles: readonly ArtHandle[] }>({ scope: '', handles: [] });
+  const demanded = demand.scope === demandScope ? demand.handles : NO_DEMAND;
   const onArtDemands = useCallback((handles: readonly ArtHandle[]) => {
     forward?.(handles);
     if (scope) requestDemandedFlags(identityBrokerFor(runtime.client), scope, handles, track?.source);
-    setDemanded(held => mergeArtDemands(held, handles.filter(needsArtResolution)));
-  }, [forward, scope, runtime.client, track?.source]);
+    setDemand(held => {
+      const merged = mergeArtDemands(held.scope === demandScope ? held.handles : NO_DEMAND, handles.filter(needsArtResolution));
+      const bounded = merged.length > MAX_DEMANDED_ART ? merged.slice(merged.length - MAX_DEMANDED_ART) : merged;
+      return held.scope === demandScope && bounded === held.handles ? held : { scope: demandScope, handles: bounded };
+    });
+  }, [forward, scope, runtime.client, track?.source, demandScope]);
   const resolve = useArtResolutions(runtime, track, demanded, active && demanded.length > 0);
+  const shown = useRef<Record<string, ArtResolution> | undefined>(undefined);
   const resolutions = useMemo(() => {
-    if (!demanded.length) return undefined;
+    if (!demanded.length) return shown.current = undefined;
+    const before = shown.current;
+    let changed = !before || Object.keys(before).length !== demanded.length;
     const out: Record<string, ArtResolution> = {};
-    for (const handle of demanded) out[artHandleKey(handle)] = resolve(handle);
-    return out;
+    for (const handle of demanded) {
+      const id = artHandleKey(handle);
+      const art = resolve(handle);
+      out[id] = art;
+      if (!changed && before![id] !== art) changed = true;
+    }
+    return shown.current = changed ? out : before;
   }, [demanded, resolve]);
   return { resolutions, onArtDemands };
 }

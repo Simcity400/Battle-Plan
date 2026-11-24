@@ -189,14 +189,14 @@ test('at 1,500 assets the lane decodes a bounded few at a time and holds no more
     },
   });
   const urls = Array.from({ length: 1500 }, (_, i) => readyArt(`art://flag-${i}`));
-  lane.requestVisible(urls);
+  lane.requestVisible([], urls);
   assert.ok(lane.pendingCount <= 6, 'decodes start a bounded few at a time');
   for (let i = 0; i < 2000; i++) await Promise.resolve();
   assert.ok(mostInFlight <= 6, 'never more than the concurrent bound in flight');
   assert.equal(started, 128, 'no decode starts that the cache could not keep');
   assert.equal(lane.cachedCount, 128);
   assert.equal(open, 128, 'every bitmap decoded is held or closed');
-  assert.equal(lane.resolve(urls[1499]!).status, 'pending', 'art beyond the limit waits, never borrowed or dropped');
+  assert.equal(lane.resolve(urls[1499]!).status, 'pending', 'offscreen art beyond the limit waits, never borrowed or dropped');
 
   lane.requestVisible(urls.slice(1400));
   for (let i = 0; i < 2000; i++) await Promise.resolve();
@@ -546,4 +546,32 @@ test('portrait calls are bounded and settle one by one; a retryable failure is r
   assert.equal(attempts, 2, 'the failed handle is asked again once its backoff ends');
   assert.equal(caches.resolutions('scope').get(artHandleKey(flaky))?.status, 'ready');
   assert.equal(caches.failures('scope').size, 0);
+});
+
+test('the lane pins and fetches every visible bitmap past its budget; offscreen demand stays inside the budget; a paused lane fetches and wakes nothing', async () => {
+  const fetched: string[] = [];
+  let settled = 0;
+  const cache = new LaneArtCache({
+    maxEntries: 128,
+    maxConcurrent: 6,
+    onSettle: () => { settled++; },
+    fetchBitmap: async url => { fetched.push(url); await Promise.resolve(); return fakeBitmap(); },
+  });
+  const flush = async () => { for (let i = 0; i < 400; i++) await Promise.resolve(); };
+  const visible = Array.from({ length: 200 }, (_, at) => `art://flag-${at}`);
+  for (let round = 0; round < 3; round++) { cache.requestVisible(visible); await flush(); }
+  assert.equal(visible.filter(url => cache.stateOfUrl(url) === 'ready').length, 200, 'the 129th and later visible images load without a scroll');
+  const afterVisible = { fetched: fetched.length, settled };
+  for (let paint = 0; paint < 30; paint++) { cache.requestVisible(visible); await flush(); }
+  assert.deepEqual({ fetched: fetched.length, settled }, afterVisible, 'once the visible set is resident a paused lane asks and wakes nothing');
+
+  const offscreen = Array.from({ length: 1_500 }, (_, at) => `art://row-${at}`);
+  const few = visible.slice(0, 10);
+  for (let paint = 0; paint < 20; paint++) { cache.requestVisible(few, offscreen); await flush(); }
+  const offscreenFetches = fetched.filter(url => url.startsWith('art://row-')).length;
+  assert.ok(offscreenFetches <= 128, `offscreen demand never exceeds the budget (${offscreenFetches})`);
+  const before = fetched.length;
+  for (let paint = 0; paint < 20; paint++) { cache.requestVisible(few, offscreen); await flush(); }
+  assert.equal(fetched.length, before, 'a demanded bitmap is never evicted to admit another, so repeated paints fetch nothing');
+  assert.ok(cache.cachedCount <= 138);
 });
