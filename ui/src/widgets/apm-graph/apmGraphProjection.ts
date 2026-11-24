@@ -2,7 +2,6 @@ import { auditRow } from '../../families/auditRow.ts';
 import { categoricalPalette, CHART_MEASURE_COLOURS, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
-import { TRAILING_HOURS } from '../../dashboard/model.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
@@ -209,14 +208,15 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
     for (const row of rows) {
       seen.add(row.id);
       const obsHour = Number.isFinite(row.hour) && row.hour > 0 ? Math.min(row.hour, hour) : hour;
+      const atDisplayedHour = row.hour === hour;
       entries.push({
         id: row.id,
         name: row.name,
         tag: row.tag,
         obsHour,
-        headValue: row.summary.apm,
-        summary: row.summary,
-        gaps: row.summary.gaps,
+        headValue: atDisplayedHour ? row.summary.apm : null,
+        summary: atDisplayedHour ? row.summary : null,
+        gaps: atDisplayedHour ? row.summary.gaps : false,
         bounded: tiled?.get(row.id) ?? null,
       });
     }
@@ -414,13 +414,14 @@ export const apmGraphDeclaration: TimeChartWidgetDeclaration<ApmGraphOptions, Ap
           branch: ctx.branch.id,
           offset: ctx.track.axisOffset,
           read: {
-            shape: 'trailing-window',
+            shape: 'point',
+            channel: 'followed',
             coverage: ctx.countries.all ? { mode: 'population', form: 'all' } : { mode: 'keyed', keys: ctx.countries.tags },
             product: 'player-apm',
-            windowHours: TRAILING_HOURS,
-            followQuery: apmHeadQuery(headParams, ctx.branch, TRAILING_HOURS),
-            params: { ...headParams, registry: false, buckets: 1 },
-            dynamicKeys: ['firstHour', 'lastHour', 'buckets'],
+            hourParam: 'hour',
+            followQuery: apmHeadQuery(headParams, ctx.branch, 1),
+            params: { ...headParams, registry: false, firstHour: null, lastHour: null, buckets: 1 },
+            dynamicKeys: ['hour'],
             validate: validateApm,
           },
         },
