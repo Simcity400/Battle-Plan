@@ -2,6 +2,7 @@ import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { ellipsise } from '../../charts/labels.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import {
+  contrastInkForFill,
   drawBar,
   drawFlagSlot,
   drawGradientLegend,
@@ -15,7 +16,7 @@ import {
   FLAG_SLOT_WIDTH,
   resolveKitTokens,
 } from '../../draw/kit.ts';
-import { mix, parseColor, readableText } from '../../shell/appearance/color.ts';
+import { mix } from '../../shell/appearance/color.ts';
 import { toFlagSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { artUrlForHandle } from '../art/provider.ts';
@@ -369,8 +370,7 @@ export function drawHeatMatrix(
         ctx.roundRect(cx, cy, innerW, innerH, radius);
         ctx.fill();
         if (item.text) {
-          const rgb = parseColor(fill);
-          drawCellText(ctx, item.text, cx, cy, innerW, innerH, rgb ? readableText(rgb) : theme.text, theme);
+          drawCellText(ctx, item.text, cx, cy, innerW, innerH, contrastInkForFill(fill, theme), theme);
         }
       }
 

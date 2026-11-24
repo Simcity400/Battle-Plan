@@ -19,7 +19,6 @@ use ts_rs::TS;
 
 pub use replay_derive::air_superiority::{assignment, compose};
 pub mod index;
-mod ranking;
 pub mod timeline;
 
 #[cfg(test)]

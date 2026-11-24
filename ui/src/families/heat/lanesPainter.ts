@@ -2,8 +2,9 @@ import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { ellipsise } from '../../charts/labels.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import {
+  computeTimeAxisTicks,
+  contrastInkForFill,
   drawCrosshairLine,
-  drawDateTab,
   drawFlagSlot,
   drawGapBand,
   drawGradientLegend,
@@ -15,11 +16,12 @@ import {
   drawRowHairline,
   drawRowHover,
   drawRowSelected,
+  drawTimeAxis,
   FLAG_SLOT_HEIGHT,
   FLAG_SLOT_WIDTH,
   resolveKitTokens,
 } from '../../draw/kit.ts';
-import { mix, parseColor, readableText } from '../../shell/appearance/color.ts';
+import { mix } from '../../shell/appearance/color.ts';
 import { toFlagSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { artUrlForHandle } from '../art/provider.ts';
@@ -28,7 +30,6 @@ import type { IdentityIndex } from '../identity/index.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import {
-  computeAxisTicks,
   hourToLaneX,
   LANE_PAD,
   LANE_ROW_GAP,
@@ -271,8 +272,7 @@ function drawInRunLabel(
     ctx.restore();
     return;
   }
-  const rgb = parseColor(bgColor);
-  ctx.fillStyle = explicitTextColor ?? (rgb ? readableText(rgb) : theme.text);
+  ctx.fillStyle = explicitTextColor ?? contrastInkForFill(bgColor, theme);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, x + 8, y + height / 2 + 0.5);
@@ -461,38 +461,26 @@ export function drawHeatLanes(
   ctx.restore();
 
   drawRowHairline(ctx, 0, layout.width, bodyBottom, theme, 'normal');
-  const ticks = computeAxisTicks(
-    layout.firstHour,
-    layout.lastHour,
-    model.dayHours,
-    layout.plotLeft,
-    layout.plotWidth,
-  );
-  ctx.save();
-  ctx.font = `${LABEL_WEIGHT} 10.5px ${theme.font}`;
-  ctx.fillStyle = theme.muted;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const axisMidY = bodyBottom + layout.axisHeight / 2;
-  const tabX = model.playhead !== null && model.playhead >= layout.firstHour && model.playhead <= layout.lastHour
-    ? hourToLaneX(model.playhead, layout.firstHour, layout.lastHour, layout.plotLeft, layout.plotWidth)
-    : null;
-  const tabHalf = tabX === null ? 0 : textWidth(ctx, formatDateOnly(model.playhead!)) / 2 + 14;
-  for (const tick of ticks) {
-    if (tabX !== null && Math.abs(tick.x - tabX) < tabHalf + textWidth(ctx, tick.label) / 2) continue;
-    ctx.fillText(tick.label, tick.x, axisMidY);
-  }
-  ctx.restore();
-
-  const tabBounds = { left: layout.plotLeft, right: layout.plotLeft + layout.plotWidth };
-  if (model.playhead !== null && model.playhead >= layout.firstHour && model.playhead <= layout.lastHour) {
-    const px = hourToLaneX(model.playhead, layout.firstHour, layout.lastHour, layout.plotLeft, layout.plotWidth);
-    drawDateTab(ctx, formatDateOnly(model.playhead), px, bodyBottom + 1, theme, 'playhead', tabBounds);
-  }
-  if (hoveredHour !== null && hoveredHour >= layout.firstHour && hoveredHour <= layout.displayedHour) {
-    const hx = hourToLaneX(hoveredHour, layout.firstHour, layout.lastHour, layout.plotLeft, layout.plotWidth);
-    drawDateTab(ctx, formatDateOnly(hoveredHour), hx, bodyBottom + 1, theme, 'hover', tabBounds);
-  }
+  const ticks = computeTimeAxisTicks(layout.firstHour, layout.lastHour, layout.plotWidth, model.dayHours);
+  const playheadInRange = model.playhead !== null && model.playhead >= layout.firstHour && model.playhead <= layout.lastHour;
+  const hoverInRange = hoveredHour !== null && hoveredHour >= layout.firstHour && hoveredHour <= layout.displayedHour;
+  drawTimeAxis(ctx, ticks, {
+    plotLeft: layout.plotLeft,
+    plotRight: layout.plotLeft + layout.plotWidth,
+    startHour: layout.firstHour,
+    endHour: layout.lastHour,
+    axisTop: bodyBottom,
+    labelY: bodyBottom + layout.axisHeight / 2,
+    tabY: bodyBottom + 1,
+    playhead: playheadInRange ? model.playhead : null,
+    playheadLabel: playheadInRange ? formatDateOnly(model.playhead!) : '',
+    hover: hoverInRange ? hoveredHour : null,
+    hoverLabel: hoverInRange ? formatDateOnly(hoveredHour!) : undefined,
+    playheadLineTop: null,
+    hairline: 'none',
+    tickMarks: false,
+    theme,
+  });
 
   ctx.restore();
   return { drew: true };

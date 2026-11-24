@@ -5,7 +5,7 @@ import { TOP_COUNTRIES } from '../../charts/race/options.ts';
 import { tableFamilyOptions, type TableBase } from '../../families/table/settings.ts';
 
 export const DEFAULT_SORT = { column: '', direction: 'descending' } as const;
-export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: { column: 'factories', direction: 'descending' } };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', showRank: false, sort: { column: 'factories', direction: 'descending' } };
 export const OPTIONS: readonly OptionField[] = [
   { key: 'columns', section: 'options', label: 'Columns', kind: 'content-set', default: '',
     automatic: 'Default columns', hint: 'Columns appear in the order you choose.' },
