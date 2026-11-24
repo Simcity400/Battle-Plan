@@ -10,7 +10,7 @@ const row = (reference: string, owner: string | null, skill: number | null, coun
 });
 const reply = (leaders: LeaderRow[], partialFrom: number | null = null): UnitLeadersReply => ({
   leaders, traits: [{ token: 'organizer', name: 'Organizer', icon: null, missing: null }],
-  withheld: [{ reference: '9', owner: 'ITA', kind: 2, name: null, reason: 'not decided' }], missing: null, battlesPartialFrom: partialFrom, resultsMissing: '', warnings: [],
+  withheld: [{ reference: '9', owner: 'ITA', kind: 2, name: null, reason: 'not decided' }], missing: null, battlesPartialFrom: partialFrom, resultsMissing: '', skillIcons: { land: [], navy: [] }, warnings: [],
 });
 
 test('leaderboard rows keep the kind and countries asked, with unresolved battles and a win rate among decided ones', () => {

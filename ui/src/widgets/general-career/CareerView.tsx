@@ -11,10 +11,10 @@ import { useViewportHeight } from '../../charts/useChartTokens';
 import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { WidgetProps } from '../../dashboard/definitions';
+import type { WidgetBase } from '../../dashboard/model';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { useGate } from '../../dashboard/regionGate';
 import { useAtHead } from '../../dashboard/atHead';
-import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
@@ -24,7 +24,6 @@ import { LeaderIdentity, leaderIdentityProps, leaderPortraitProps } from '../gen
 import { useLeaderPortraits } from '../generals/portraits';
 import type { PortraitAt } from '../generals/portraits';
 import { experienceFactorText, experienceText } from '../generals/experience';
-import { OPTIONS } from './definition';
 import { LiveText } from './LiveText';
 import '../generals/generals.css';
 import type { LeaderCareerReply } from '../../generated/dashboard';
@@ -35,8 +34,8 @@ import { productRequest } from '../../dashboard/request.ts';
 const NO_PORTRAIT: readonly PortraitAt[] = [];
 const BRANCH_WIDE = { outside: false };
 
-export default function CareerView({ reference, onPick, caption, widget, runtime, active, onDiagnostics, time = SPEC }: WidgetProps & {
-  reference: string; onPick?: (hour: number) => void; caption?: ReactNode; time?: RegionAction;
+export default function CareerView({ reference, onPick, caption, widget, runtime, active, onDiagnostics, grow, time = SPEC }: Omit<WidgetProps, 'widget'> & {
+  widget: WidgetBase; grow: boolean; reference: string; onPick?: (hour: number) => void; caption?: ReactNode; time?: RegionAction;
 }) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
@@ -54,8 +53,6 @@ export default function CareerView({ reference, onPick, caption, widget, runtime
   const shownAt = head.outside ? after ? track?.branch.lastHour ?? null : null : head.at ?? regionAt;
   const hour = shownAt ?? first - 1;
   const shown = useShownHour();
-  const options = resolveOptions(OPTIONS, widget.options);
-  const grow = options.growWithPlayback === true;
   const [hoveredHour, setHoveredHour] = useState<number | null>(null);
   const portraitAt = useMemo<readonly PortraitAt[]>(() => data?.portraitHour != null ? [{ reference, hour: data.portraitHour }] : NO_PORTRAIT, [data?.portraitHour, reference]);
   const portraits = useLeaderPortraits(runtime, track, portraitAt, 118, active);

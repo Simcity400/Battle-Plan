@@ -21,7 +21,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'fuel-branches', load: () => import('./fuel-branches') },
   { kind: 'game-score', view: 'lines', label: 'Lines over time', playsBackDated: true, load: () => import('./game-score') },
   { kind: 'general-career', load: () => import('./general-career') },
-  { kind: 'generals', load: () => import('./generals') },
   { kind: 'land-battles', load: () => import('./land-battles') },
   { kind: 'map', load: () => import('./map') },
   { kind: 'military-factory-spending', view: 'circle', label: 'Breakdown', load: () => import('./military-factory-spending') },

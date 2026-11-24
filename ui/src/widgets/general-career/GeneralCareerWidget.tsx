@@ -19,7 +19,7 @@ export default function GeneralCareerWidget(props: WidgetProps) {
   if (!options.leader) return <TopGeneralCareer {...props} />;
   const reference = subjectHandle(track.source.metadata.campaignKey, String(options.leader));
   if (reference === null) return <WidgetState kind="unavailable" message="The saved general is from another campaign. Choose one in widget settings." />;
-  return <CareerView {...props} reference={reference} />;
+  return <CareerView {...props} grow={options.growWithPlayback === true} reference={reference} />;
 }
 
 function TopGeneralCareer(props: WidgetProps) {
@@ -46,7 +46,7 @@ function TopGeneralCareer(props: WidgetProps) {
     if (landed.reason) return <WidgetState kind="unavailable" message={landed.reason} />;
     if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
     if (!head.data || readCountries === undefined) return <WidgetState kind="loading" label="Loading leaders…" />;
-    if (top) return <CareerView {...props} reference={top.key} caption={dashboard ? nameDetail ?? `Following ${country.name}’s top general.` : 'Following the top general of these countries.'} />;
+    if (top) return <CareerView {...props} grow={resolveOptions(OPTIONS, widget.options).growWithPlayback === true} reference={top.key} caption={dashboard ? nameDetail ?? `Following ${country.name}’s top general.` : 'Following the top general of these countries.'} />;
     if (head.data.missing) return <WidgetState kind="unavailable" message="Leaders weren’t recorded at this time." detail={nameDetail ?? head.data.missing} />;
     if (rows.length) return <WidgetState kind="unavailable" message="Generals’ skills weren’t recorded at this time." detail={nameDetail} />;
     const withheld = withheldLeaders(head.data, readCountries, 'land');
