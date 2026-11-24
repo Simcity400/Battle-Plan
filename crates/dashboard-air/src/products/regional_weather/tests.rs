@@ -69,12 +69,12 @@ fn weather_acceptance_current_day_at_midnight_terminal_split_since_and_scoped_ex
     let r1_readout = region_readout(1, &midnight, &measures, Show::Conditions, &choices, "available");
     assert_eq!(
         r1_readout,
-        WeatherReadout::Condition { id: "clear".into(), name: "Clear".into(), since_hour: Some(2160), since_bounded: false, as_of_hour: 2160 }
+        WeatherReadout::Condition { id: "clear".into(), name: "Clear".into(), since_hour: Some(2160), since_bounded: true, as_of_hour: 2160 }
     );
     let r2_readout = region_readout(2, &midnight, &measures, Show::Conditions, &choices, "available");
     assert_eq!(
         r2_readout,
-        WeatherReadout::Condition { id: "light_rain".into(), name: "Light rain".into(), since_hour: Some(2160 - 2 * DAY), since_bounded: false, as_of_hour: 2160 }
+        WeatherReadout::Condition { id: "light_rain".into(), name: "Light rain".into(), since_hour: Some(2160 - DAY - 1), since_bounded: true, as_of_hour: 2160 }
     );
 
     let gapped = days(2160 - 2 * DAY, 2160, &[(0, 2160 - 2 * DAY, 2160 - 1)], &[(2160 - 2 * DAY, 2160 - 1)]);

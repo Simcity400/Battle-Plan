@@ -3,12 +3,12 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import {
   displayedHour,
   FutureDataError,
-  type ArtHandle,
   type BoundedReadView,
   type FamilyPlanContext,
   type SourcePlan,
 } from '../../families/contract.ts';
-import type { HolderRun } from '../../families/holders.ts';
+import type { HolderRun, HourRanges } from '../../families/holders.ts';
+import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
 import {
   registerTimeChart,
   type TimeChartProjection,
@@ -28,9 +28,13 @@ import type { StabilityBreakdownReply } from '../../generated/dashboard';
 import {
   assignCountrySeriesColours,
   branchGapsOf,
+  cardItems,
   countrySeriesIdentity,
+  memberAt,
   missingSpansOf,
-  seriesHeadValue,
+  rankEntry,
+  rankedOrder,
+  seriesHeadAt,
   withinMapOf,
 } from '../../families/time-chart/seriesHelpers.ts';
 import { STABILITY_OPTIONS } from './definition.ts';
@@ -53,6 +57,7 @@ export interface StabilityRawMarker {
 export interface StabilityOptions {
   readonly tags: readonly string[];
   readonly holders?: Readonly<Record<string, readonly HolderRun[]>> | null;
+  readonly membership?: Readonly<Record<string, HourRanges>> | null;
   readonly extent: readonly [number, number];
   readonly gaps: readonly ChartGap[];
   readonly surface: string;
@@ -62,9 +67,6 @@ export interface StabilityOptions {
   readonly rawMarkers: readonly StabilityRawMarker[];
 }
 
-const STABILITY_ICON_HANDLE: ArtHandle = { kind: 'sprite', key: 'GFX_stability_icon', frame: 0 };
-const WAR_SUPPORT_ICON_HANDLE: ArtHandle = { kind: 'sprite', key: 'GFX_war_support_icon', frame: 0 };
-const WAR_ALERT_ICON_HANDLE: ArtHandle = { kind: 'sprite', key: 'GFX_global_alert_icons_no_backgrounds', frame: 12 };
 
 function formatPct(value: number): string {
   const rounded = Math.round(value * 10) / 10;
@@ -105,14 +107,9 @@ function breakdownDetail(readView: BoundedReadView, measures: readonly { readonl
   const perMeasure = linesPerMeasure(measures.length);
   for (const measure of measures) {
     const { rows } = breakdownRows(reply.breakdown, measure.key, BREAKDOWN_DECIMALS, measure.label, perMeasure);
-    rows.forEach((row, index) => items.push({
-      label: row.label,
-      ...(row.value !== undefined ? { value: row.value } : {}),
-      ...(row.tone ? { tone: row.tone } : {}),
-      ...(row.strong ? { strong: true } : {}),
-      ...(index === 0 && items.length > 0 ? { divider: true } : {}),
-      ...(index > 0 && !row.strong ? { indent: true } : {}),
-    }));
+    const mapped = cardItems(rows, true);
+    if (items.length > 0 && mapped[0]) mapped[0] = { ...mapped[0], divider: true };
+    items.push(...mapped);
   }
   return { hour: hover.hour, items };
 }
@@ -152,7 +149,7 @@ function markerDays(raw: readonly StabilityRawMarker[]): readonly MarkerDay[] {
 
 export const stabilityProjection: TimeChartProjection<StabilityOptions> = registerTimeChart({
   kind: 'stability',
-  family: 'series',
+  family: 'time-chart',
   variant: 'line',
   joinMode: 'step',
   measureTitle: 'Stability & War support',
@@ -162,32 +159,30 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
     const single = tags.length === 1;
     const stabMap = options.showStability ? readView.series('stability') : undefined;
     const warMap = options.showWarSupport ? readView.series('warSupport') : undefined;
-    const stabAnswer = options.showStability ? readView.answer('stability') : undefined;
-    const warAnswer = options.showWarSupport ? readView.answer('warSupport') : undefined;
 
+    const rowOf = new Map(tags.map((tag, row) => [tag, row]));
     const stabByTag = new Map<string, number | null>();
     const warByTag = new Map<string, number | null>();
     for (let i = 0; i < tags.length; i++) {
       const tag = tags[i]!;
-      if (options.showStability) stabByTag.set(tag, seriesHeadValue(stabMap?.get(tag), stabAnswer, i, 5, 100));
-      if (options.showWarSupport) warByTag.set(tag, seriesHeadValue(warMap?.get(tag), warAnswer, i, 5, 100));
+      const member = memberAt(options.membership, tag, hour);
+      if (options.showStability) stabByTag.set(tag, member ? seriesHeadAt(readView, 'stability', tag, i, 5, 100) : null);
+      if (options.showWarSupport) warByTag.set(tag, member ? seriesHeadAt(readView, 'warSupport', tag, i, 5, 100) : null);
     }
 
-    const ordered = [...tags].sort((a, b) => {
-      const va = stabByTag.get(a) ?? warByTag.get(a) ?? -Infinity;
-      const vb = stabByTag.get(b) ?? warByTag.get(b) ?? -Infinity;
-      return vb - va;
-    });
+    const present = tags.filter(tag => memberAt(options.membership, tag, hour));
+    const presentSet = new Set(present);
+    const ordered = [...rankedOrder(readView, present), ...tags.filter(tag => !presentSet.has(tag))];
 
     const colourMap = single
       ? new Map<string, string>()
-      : assignCountrySeriesColours(ordered, options.holders, readView, hour, options.surface);
+      : assignCountrySeriesColours(ordered, options.holders, readView, hour, options.surface, undefined, tag => rowOf.get(tag) ?? 0);
 
     const stabIcon: ChartArtSlot | undefined = single && options.showStability
-      ? { art: readView.art(STABILITY_ICON_HANDLE), label: 'Stability' }
+      ? { art: readView.art(measureArtHandle('stability')), label: 'Stability' }
       : undefined;
     const warIcon: ChartArtSlot | undefined = single && options.showWarSupport
-      ? { art: readView.art(WAR_SUPPORT_ICON_HANDLE), label: 'War support' }
+      ? { art: readView.art(measureArtHandle('warSupport')), label: 'War support' }
       : undefined;
 
     const series: TimeChartSeriesModel[] = [];
@@ -266,7 +261,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
         if (day.hour > hour) break;
         if (day.hour < options.extent[0]) continue;
         const iconSlot = (m: StabilityRawMarker): ChartArtSlot | undefined => {
-          if (m.warAlert) return { art: readView.art(WAR_ALERT_ICON_HANDLE), label: 'War' };
+          if (m.warAlert) return { art: readView.art(measureArtHandle('warAlert')), label: 'War' };
           if (m.sprite) return { art: readView.art({ kind: 'sprite', key: m.sprite, frame: 0 }), label: m.title };
           return undefined;
         };
@@ -314,7 +309,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
 });
 
 export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> = {
-  family: 'series',
+  family: 'time-chart',
   kind: 'stability',
   label: 'Stability & War support',
   subject: 'stability and war support',
@@ -384,8 +379,10 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
         },
       });
     }
+    const rank = rankEntry(ctx, { kind: 'country-stability', measure: showStab ? 'stability' : 'warSupport' }, tags);
+    if (rank && (showStab || showWar)) entries.push(rank);
     return {
-      owner: `stability:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${showStab ? 1 : 0}:${showWar ? 1 : 0}`,
+      owner: `stability:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${showStab ? 1 : 0}:${showWar ? 1 : 0}:${ctx.following ? 1 : 0}`,
       entries,
     };
   },
@@ -394,6 +391,7 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
     return {
       tags: ctx.countries.tags,
       holders: ctx.countries.holders,
+      membership: ctx.countries.membership,
       extent,
       gaps: branchGapsOf(ctx.branch),
       surface,

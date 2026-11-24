@@ -780,7 +780,7 @@ test('grid and points keyboard navigation and family host adapters cover all fou
   assert.deepEqual(parseBarsHit('right:GER'), { key: 'GER', subject: 'GER', kind: 'right-row', toggle: false, inspectToken: 'right:GER' });
   assert.deepEqual(parseBarsHit('remove:reg1'), { key: 'reg1', subject: 'reg1', kind: 'remove-region', toggle: true, inspectToken: 'remove:reg1' });
   assert.deepEqual(parseHeatMatrixHit('cell:2:5'), { key: '2:5', subject: '2:5', toggle: false, inspectToken: 'cell:2:5' });
-  assert.equal(parseHeatLanesHit('lane:0@144')?.hour, 144);
+  assert.equal(parseHeatLanesHit('lane:#0@144')?.hour, 144);
   assert.equal(parseTimeChartHit('line:GER@512')?.hour, 512);
   assert.equal(parseTimeChartHit('line:GER@512')?.subject, 'GER');
   assert.equal(barsHostAdapter.family, 'bars');
@@ -790,7 +790,7 @@ test('grid and points keyboard navigation and family host adapters cover all fou
 
   let zoomWindow: readonly [number, number] | null = null;
   const gCtx = {
-    fields: { meta: { plotRect: { left: 50, top: 10, width: 400, height: 200 } } },
+    fields: { meta: { plotRect: { left: 50, top: 10, width: 400, height: 200 }, transform: { xFrom: 0, xTo: 1000, axisFrom: 0, axisTo: 1000 } } },
     viewport: { width: 500, height: 240, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null as readonly [number, number] | null },
     extent: [0, 1000] as readonly [number, number],
     setZoomWindow: (next: readonly [number, number] | null) => { zoomWindow = next; },
