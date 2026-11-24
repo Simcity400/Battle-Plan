@@ -330,7 +330,7 @@ function shapeFields(shape: TableShape, layout: TableLayout, width: number): Rea
       summaryPartial: model.titleSummaryPartial ?? null,
       hideHeader: model.hideHeader === true,
       rowHeightMode: shape.rowHeightMode,
-      notes: model.notes ?? [],
+      notes: [],
       warnings: model.warnings ?? [],
       hasTree: shape.hasTree,
       unsorted: keepsProductOrder(model),
@@ -342,6 +342,8 @@ function shapeFields(shape: TableShape, layout: TableLayout, width: number): Rea
       ? [[item.key, item.name, i, item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1, item.parent ?? '', item.row.meta ?? null, layout.tops(i), layout.heights(i)] as const]
       : [])),
   };
+  const description = [model.titleSummary, model.titleSummaryPartial].filter((part): part is string => Boolean(part)).join('. ');
+  if (description) fields.accessibleDescription = description;
   if (panes && paneGeom) {
     fields.panes = {
       width: paneGeom.width,

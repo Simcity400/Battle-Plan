@@ -115,8 +115,8 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
     rows,
     unsorted: true,
     titleSummary: `Per day · + imports into ${subject.label}, − exports from it`,
-    ...(notes.length ? { notes } : {}),
-    warnings: reply.warnings,
+    ...(notes.length ? { titleSummaryPartial: notes.join(' ') } : {}),
+    warnings: notes.length ? [...reply.warnings, ...notes] : reply.warnings,
   };
 }
 

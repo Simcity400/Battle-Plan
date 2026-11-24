@@ -133,10 +133,13 @@ export function followedTitle(field: OptionField | undefined, title: string, bas
 }
 
 export function choiceVariants(field: OptionField | undefined, name: (choice: { value: string; label: string }) => string,
-  values?: readonly string[]): WidgetPreset[] {
+  values?: readonly string[], category?: (choice: { value: string; label: string }) => string | undefined): WidgetPreset[] {
   if (field?.kind !== 'choice') return [];
   return field.choices.filter(choice => values ? values.includes(choice.value) : choice.value !== field.default)
-    .map(choice => ({ key: `${field.key}=${choice.value}`, initial: { title: name(choice), options: { [field.key]: choice.value } } }));
+    .map(choice => {
+      const group = category?.(choice);
+      return { key: `${field.key}=${choice.value}`, initial: { title: name(choice), options: { [field.key]: choice.value } }, ...(group ? { category: group } : {}) };
+    });
 }
 
 export function sectionFields(fields: readonly OptionField[] = [], section: OptionSection, resolved: Readonly<Record<string, OptionValue>>,

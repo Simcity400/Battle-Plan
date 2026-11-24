@@ -3009,3 +3009,107 @@ test('cold table art and flag slots waiting behind the fetch concurrency limit p
   assert.ok(texts.includes('MIS'), 'a confirmed-missing flag slot paints the country tag');
   artCache.dispose();
 });
+
+test('table partial and withheld notices live in the header summary marker, never a body note row, while mirror description and audit retain them', () => {
+  const partialProj = declareTableProjection<{ count: number; detail: string }, { id: string }, Record<string, never>>({
+    kind: 'test-header-partial-marker',
+    columns: [
+      { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true, path: 'id' },
+    ],
+    rows: reply => ({
+      rows: [{ id: 'Row1' }],
+      titleSummary: `${reply.count} not shown`,
+      titleSummaryPartial: `${reply.count} leaders of these countries can’t be shown; Details lists why.\n${reply.detail}`,
+      warnings: [reply.detail],
+    }),
+    rowKey: r => r.id,
+    rowName: r => r.id,
+  });
+  registerFamilyProjection(partialProj);
+  const prevOffscreen = globalThis.OffscreenCanvas;
+  class FakeOffscreenCanvas {
+    width: number;
+    height: number;
+    constructor(w: number, h: number) { this.width = w; this.height = h; }
+    getContext() { return { ...instrumentedContext().ctx, setTransform() {} }; }
+  }
+  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
+  try {
+    const laneView = createLaneView(tableLane, () => {});
+    const laneState = new Map<string, unknown>();
+    const transport = new LaneTransport();
+    let seq = 1;
+    const painted = laneView.paint({
+      widget: 1,
+      subs: [],
+      pictures: [],
+      model: transport.carry({
+        family: 'table', theme: TEST_THEME,
+        kind: 'test-header-partial-marker',
+        options: NO_OPTIONS,
+        settings: tableSettingsOf(undefined, [{ key: 'name', label: 'Name', as: 'plain', offered: ['plain'] }], { density: 'normal', sort: { column: 'name', direction: 'ascending' } }),
+        sources: NO_SOURCES,
+        staticPanels: { main: { count: 3, detail: 'Leader A: condition undecided' } },
+        width: 320,
+        height: 200,
+        scrollLeft: 0,
+        scrollTop: 0,
+        audit: true,
+      }),
+      hour: 10,
+      seek: 0, speed: 0,
+      binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
+      inspect: null,
+      now: 100,
+    }, laneState, () => `c${seq++}`);
+    assert.equal(painted.mode, 'picture');
+    const meta = painted.fields.meta!.value as { summaryText: string | null; summaryPartial: string | null; notes: readonly string[]; warnings: readonly string[] };
+    assert.deepEqual(meta.notes, [], 'tables never emit a body note row');
+    assert.equal(meta.summaryText, '3 not shown', 'the header marker carries the compact count');
+    assert.equal(meta.summaryPartial, '3 leaders of these countries can’t be shown; Details lists why.\nLeader A: condition undecided', 'the header marker carries the full sentence and per-leader reasons');
+    assert.deepEqual(meta.warnings, ['Leader A: condition undecided'], 'Details still lists the per-leader reasons');
+    const nav = painted.fields.nav!.value as readonly (readonly unknown[])[];
+    assert.equal(nav[0]![6], 0, 'the first row sits at y = 0 directly under the column headers');
+    const desc = painted.fields.accessibleDescription?.value;
+    assert.equal(typeof desc, 'string', 'accessible description is published for the partial summary');
+    assert.ok((desc as string).includes('3 not shown') && (desc as string).includes('Leader A: condition undecided'));
+    const audit = painted.fields.audit!.value as readonly { key: string; value?: string }[];
+    const metaAudit = audit.find(row => row.key === '__table__/meta')?.value ?? '';
+    assert.ok(metaAudit.includes('3 not shown') && metaAudit.includes('Leader A: condition undecided'), 'audit records the header marker and reasons');
+  } finally {
+    (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
+  }
+
+  const occPartial = occupiedStatesProjection.project(
+    createBoundedReadView({
+      hour: 50,
+      panels: new Map([['main', {
+        hour: 50,
+        complete: false,
+        missing: null,
+        strengthMissing: 'Not recorded',
+        garrisonRedRaw: null,
+        laws: [],
+        states: [{
+          state: 1,
+          name: 'Alsace',
+          nameMissing: null,
+          owner: 'FRA',
+          occupier: 'GER',
+          occupied: 'FRA',
+          law: null,
+          lawMissing: 'Not recorded',
+          garrisonRequiredSign: null,
+          assignedKnown: false,
+          garrisonMissing: 'Not recorded',
+          garrisonAlert: false,
+        }],
+        warnings: [],
+      }]]),
+    }),
+    { filter: { passing: null, unrecorded: [], bounds: [] }, role: 'occupier', lawAs: 'dot', filterAll: true },
+  );
+  assert.equal(occPartial.titleSummary, 'Partial');
+  assert.equal(occPartial.titleSummaryPartial, 'Some occupied states are missing.');
+  assert.equal('notes' in occPartial, false);
+});

@@ -186,8 +186,14 @@ export const generalsProjection: TableProjection<GeneralsOptions> = declareTable
         : { rows, empty: 'No leaders for these countries at this time.', emptyKind: 'empty', warnings: reply.warnings };
     }
     const count = new Set(withheld.map(row => row.reference)).size;
-    return { rows, ...(state ? { notes: [`${count} ${count === 1 ? 'leader' : 'leaders'} of these countries can’t be shown; Details lists why.`] } : {}),
-      warnings: state ? [...reply.warnings, state.detail] : reply.warnings };
+    return {
+      rows,
+      ...(state ? {
+        titleSummary: `${count} not shown`,
+        titleSummaryPartial: `${count} ${count === 1 ? 'leader' : 'leaders'} of these countries can’t be shown; Details lists why.\n${state.detail}`,
+      } : {}),
+      warnings: state ? [...reply.warnings, state.detail] : reply.warnings,
+    };
   },
   rowKey: row => row.leader.key,
   rowName: row => row.name.kind === 'known' ? row.name.value : row.leader.name,

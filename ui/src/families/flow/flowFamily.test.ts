@@ -154,6 +154,9 @@ test('a partial reply never says there is none: emptiness needs both sides prove
   assert.equal(group.emptyKind, 'unavailable');
   const table = projectTradeTable(view({ ...base, endpoints: [endpoint(1, 'USA')], subject: 0, incoming: side([], null, unproven) }));
   assert.equal(table.emptyKind, 'unavailable');
+  const partialTable = projectTradeTable(view({ ...centred, incoming: side(centred.incoming.links, null, unproven), table: [{ partner: 1, cells: ['8', '0'], net: '8' }] }));
+  assert.equal(partialTable.titleSummaryPartial, unproven, 'trade table carries partial side reason in the header summary marker');
+  assert.equal('notes' in partialTable, false);
   const matrix = projectTradeMatrix(view({ ...base, senders: side([], null, unproven), receivers: side([], null, unproven) }));
   assert.equal(matrix.emptyKind, 'unavailable');
   const none = projectCountryFlow(view({ ...base, endpoints: [endpoint(1, 'USA')], subject: 0 }), TEXT);

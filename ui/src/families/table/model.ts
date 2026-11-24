@@ -234,7 +234,6 @@ export interface TableModel {
   readonly totalRow?: TableRow;
   readonly panes?: readonly TablePane[];
   readonly warnings?: readonly string[];
-  readonly notes?: readonly string[];
   readonly titleSummary?: string | null;
   readonly titleSummaryPartial?: string | null;
   readonly windowOffset?: number;
@@ -1004,7 +1003,6 @@ export function deriveTableAudit(input: TableAuditInput): FamilyAuditRow[] {
     auditCell('__table__', 'meta', canonicalAuditData({
         titleSummary: model.titleSummary ?? null,
         titleSummaryPartial: model.titleSummaryPartial ?? null,
-        notes: model.notes ?? [],
         warnings: model.warnings ?? [],
         rankShown,
         totalRows: flatRows.length,
@@ -1334,7 +1332,6 @@ export interface DeclarativeTableSpec<TReply, TRow, TOptions = unknown> {
     readonly empty?: string;
     readonly emptyDetail?: string;
     readonly emptyKind?: 'empty' | 'unavailable';
-    readonly notes?: readonly string[];
     readonly warnings?: readonly string[];
     readonly titleSummary?: string | null;
     readonly titleSummaryPartial?: string | null;
@@ -1572,7 +1569,6 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
         ...(extracted.empty !== undefined ? { empty: extracted.empty } : {}),
         ...(extracted.emptyDetail !== undefined ? { emptyDetail: extracted.emptyDetail } : {}),
         ...(extracted.emptyKind !== undefined ? { emptyKind: extracted.emptyKind } : {}),
-        ...(extracted.notes ? { notes: extracted.notes } : {}),
         ...(extracted.warnings ? { warnings: extracted.warnings } : {}),
         ...(extracted.titleSummary !== undefined ? { titleSummary: extracted.titleSummary } : {}),
         ...(extracted.titleSummaryPartial !== undefined ? { titleSummaryPartial: extracted.titleSummaryPartial } : {}),

@@ -1304,8 +1304,24 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     emptyAction: typeof emptyAction === 'function' ? emptyAction(openRegionsAt) : emptyAction,
   });
 
-  const summary = meta.mode === 'picture' && !meta.empty && meta.summaryText
-    ? <span className="fh-summary">{meta.summaryText}{meta.summaryPartial ? <span className="fh-summary-hatch" role="img" aria-label={meta.summaryPartial} title={meta.summaryPartial} /> : null}</span>
+  const summaryText = meta.summaryText ?? (meta.summaryPartial ? 'Partial' : null);
+  const summaryNote = meta.mode === 'picture' && !meta.empty && summaryText
+    ? (meta.summaryPartial ? `${summaryText}. ${meta.summaryPartial}` : summaryText)
+    : null;
+  const summary = meta.mode === 'picture' && !meta.empty && summaryText
+    ? meta.summaryPartial
+      ? (
+          <span
+            className="fh-summary fh-summary-partial"
+            tabIndex={0}
+            data-tooltip={meta.summaryPartial}
+            aria-label={summaryNote!}
+          >
+            {summaryText}
+            <span className="fh-summary-hatch" aria-hidden="true" />
+          </span>
+        )
+      : <span className="fh-summary">{summaryText}</span>
     : null;
   const rowsFocus = (adapter.mirrorFocus ?? 'body') === 'rows';
   const bodyRole = mirrorKind === 'listbox' ? 'listbox' : adapter.navigation === 'grid' ? 'grid' : 'region';
@@ -1353,6 +1369,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
           role={adapter.tree ? 'treegrid' : undefined}
           {...(rowsFocus ? { tabIndex: -1, onFocus: onRowFocus, onBlur: onRowBlur, onKeyDown } : {})}
         >
+          {summaryNote ? <caption>{summaryNote}</caption> : null}
           <thead ref={mirrorHeadRef} />
           <tbody ref={mirrorBodyRef} />
         </table>
