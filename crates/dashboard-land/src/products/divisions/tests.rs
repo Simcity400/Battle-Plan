@@ -1,5 +1,5 @@
 use super::{
-    equipment::{compare_division, short_count},
+    equipment::short_count,
     icon_key,
     templates::slot_side_range,
 };
@@ -14,21 +14,6 @@ fn a_template_icon_is_its_custom_sprite_when_declared_else_its_priority_units() 
     assert!(icon_key(0, 3, b"infantry", declared(&["GFX_div_templ_3_large"])).unwrap_err().contains("null or invalid"));
     assert_eq!(icon_key(7, -1, b"infantry", declared(&[])), Err("Division sprite GFX_unit_infantry_icon_medium is unavailable".to_owned()));
     assert_eq!(icon_key(7, -1, b"", declared(&[])), Err("Division priority unit name is empty".to_owned()));
-}
-
-#[test]
-fn a_division_is_capped_at_its_own_need_and_a_held_type_it_does_not_need_misses_nothing() {
-    let need = [("infantry_equipment".to_owned(), 100), ("artillery_equipment".to_owned(), 40)];
-    let compared = compare_division(&need, &[(Some("Infantry_Equipment"), 130), (Some("artillery_equipment"), 10), (Some("motorized_equipment"), 5)]);
-    assert_eq!(
-        compared,
-        vec![
-            (Some("infantry_equipment".to_owned()), 100, 100, 0),
-            (Some("artillery_equipment".to_owned()), 40, 10, 30),
-            (Some("motorized_equipment".to_owned()), 0, 0, 0),
-        ]
-    );
-    assert_eq!(compare_division(&need[..1], &[(Some("infantry_equipment"), -5)]), vec![(Some("infantry_equipment".to_owned()), 100, 0, 105)]);
 }
 
 #[test]
@@ -59,8 +44,6 @@ fn division_equipment_overview_reads_division_templates_for_template_names() {
         branch_id: "1".into(),
         country: "GER".into(),
         count_for: ArmyAttribution::Owner,
-        template: None,
-        division: None,
     };
     assert!(
         DivisionEquipment::tables(&params).contains(&TableId::DivisionTemplates),

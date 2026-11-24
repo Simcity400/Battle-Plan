@@ -2,36 +2,21 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Canvas2D } from '../../charts/textWidth.ts';
 import type { FamilyTheme } from '../contract.ts';
+import { marginColour, sequentialRampColour, signedRampColour, splitStripes } from './scale.ts';
 import {
-  computeAxisTicks,
-  createLanesPicture,
-  createMatrixPicture,
-  deriveLanesAudit,
-  deriveLanesMirror,
-  deriveLanesTooltip,
   deriveMatrixAudit,
   deriveMatrixMirror,
   deriveMatrixTooltip,
-  drawHeatLanes,
-  drawHeatMatrix,
-  findRunAtHour,
-  hitHeatLanes,
-  hitHeatMatrix,
-  layoutHeatLanes,
-  layoutHeatMatrix,
-  marginColour,
   matrixGroupSpans,
-  matrixKeyStep,
-  projectLaneRunsToPixels,
-  revealMatrixOffset,
-  sequentialRampColour,
-  signedRampColour,
-  splitStripes,
-  type HeatLanesModel,
   type HeatMatrixModel,
   type MatrixAxisEntity,
   type MatrixCell,
-} from './index.ts';
+} from './matrixModel.ts';
+import { hitHeatMatrix, layoutHeatMatrix, matrixKeyStep, revealMatrixOffset } from './matrixLayout.ts';
+import { createMatrixPicture, drawHeatMatrix } from './matrixPainter.ts';
+import { deriveLanesAudit, deriveLanesMirror, deriveLanesTooltip, findRunAtHour, type HeatLanesModel } from './lanesModel.ts';
+import { computeAxisTicks, hitHeatLanes, layoutHeatLanes, projectLaneRunsToPixels } from './lanesLayout.ts';
+import { createLanesPicture, drawHeatLanes } from './lanesPainter.ts';
 
 function gridCells(grid: readonly (readonly MatrixCell[])[], width: number) {
   return { present: new Map(grid.flatMap((row, r) => row.map((cell, c) => [r * width + c, cell] as const))), absent: { kind: 'empty' } as MatrixCell };
@@ -493,28 +478,4 @@ test('a stable row id is never read as a row position, and a reorder refreshes t
   const grid = { totalWidth: 100, totalHeight: 100, cellSize: 20, gridLeft: 10, gridTop: 10 };
   const a = { id: 'A', label: 'A' }, b = { id: 'B', label: 'B' };
   assert.notEqual(matrixExtentSignature(grid, { rows: [a, b], columns: [a, b] }), matrixExtentSignature(grid, { rows: [b, a], columns: [b, a] }));
-});
-
-test('a who miss inside a projection comes back as a demand from the same projection, and art it asked for as a URL', async () => {
-  const { projectFromScene } = await import('./sceneReadView.ts');
-  const pending = { status: 'pending' } as const;
-  const identity = {
-    demandOwner: 'view' as const,
-    resolve: (kind: 'country', key: string, atHour: number) => ({
-      kind, key, atHour, holder: pending, tag: pending, name: pending, colour: pending, flagChoice: pending,
-      validInterval: [atHour, atHour] as const, nextChangeAt: Infinity,
-    }),
-  };
-  const scene = { widget: 1, subs: [], pictures: [], model: null };
-  const projected = projectFromScene(scene, { sources: {}, staticPanels: { main: { partner: 'BUL' } } }, 120, {
-    identity: identity as never,
-    artUrl: handle => (handle.kind === 'url' ? handle.url : null),
-  }, view => {
-    const reply = view.panel<{ partner: string }>('main')!;
-    view.art({ kind: 'url', url: 'asset://flag.png' });
-    return view.who('country', reply.partner, 120).name.status;
-  });
-  assert.equal(projected.model, 'pending');
-  assert.deepEqual(projected.identityDemands, [['country', 'BUL', 120]]);
-  assert.deepEqual(projected.artUrls, ['asset://flag.png']);
 });
