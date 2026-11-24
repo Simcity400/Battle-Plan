@@ -37,9 +37,9 @@ export function logDateColumn(overrides?: Partial<TableColumnSpec>): TableColumn
     hideable: false,
     sortable: false,
     text: true,
-    minWidth: 54,
-    maxWidth: 64,
-    widest: ['30 Sep'],
+    minWidth: 64,
+    maxWidth: 74,
+    widest: ['30 Aug'],
     ...overrides,
   };
 }

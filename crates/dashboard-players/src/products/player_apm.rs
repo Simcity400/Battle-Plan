@@ -52,6 +52,17 @@ pub struct ApmMembership {
     pub last_hour: i32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct ApmPlayerRun {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub tag: String,
+    pub name: Option<String>,
+    pub name_missing: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +71,7 @@ pub struct ApmPlayer {
     pub name: Option<String>,
     pub name_missing: Option<String>,
     pub tags: Vec<String>,
+    pub runs: Vec<ApmPlayerRun>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -523,6 +535,7 @@ impl Product for PlayerApm {
             ApmParams::decl(),
             ApmReply::decl(),
             ApmGroup::decl(),
+            ApmPlayerRun::decl(),
             ApmPlayer::decl(),
             ApmValue::decl(),
             ApmBucket::decl(),
@@ -551,7 +564,7 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
         warnings: Vec::new(),
     };
     if params.registry {
-        let mut players: BTreeMap<String, ((u64, u64), Option<String>, Option<String>, BTreeSet<String>)> = BTreeMap::new();
+        let mut players: BTreeMap<String, ((u64, u64), Option<String>, Option<String>, BTreeSet<String>, Vec<ApmPlayerRun>)> = BTreeMap::new();
         for timeline in &index.timelines {
             for (&actor, history) in &timeline.actors {
                 let tags: Vec<_> = history.iter().filter_map(|actor| tag(&actor.tag)).collect();
@@ -576,15 +589,43 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
                     }
                 }
                 entry.3.extend(tags.into_iter().map(str::to_owned));
+                let departed = timeline.departures.get(&actor).copied().unwrap_or(u64::MAX);
+                for (version, observation) in history.iter().enumerate() {
+                    let Some(tag_str) = tag(&observation.tag) else {
+                        continue;
+                    };
+                    let end = history
+                        .get(version + 1)
+                        .map_or(departed, |next| next.at_qpc)
+                        .min(departed);
+                    let Some(measured) = timeline.measure(timeline.hours.0, timeline.hours.1, observation.at_qpc, end) else {
+                        continue;
+                    };
+                    let (name, name_missing) = match player_name(observation) {
+                        Ok(name) => (Some(name), None),
+                        Err(reason) => (None, Some(reason)),
+                    };
+                    entry.4.push(ApmPlayerRun {
+                        first_hour: measured.first_hour,
+                        last_hour: measured.last_hour,
+                        tag: tag_str.to_owned(),
+                        name,
+                        name_missing,
+                    });
+                }
             }
         }
         reply.players = players
             .into_iter()
-            .map(|(id, (_, name, name_missing, tags))| ApmPlayer {
-                id,
-                name,
-                name_missing,
-                tags: tags.into_iter().collect(),
+            .map(|(id, (_, name, name_missing, tags, mut runs))| {
+                runs.sort_by_key(|run| (run.first_hour, run.last_hour));
+                ApmPlayer {
+                    id,
+                    name,
+                    name_missing,
+                    tags: tags.into_iter().collect(),
+                    runs,
+                }
             })
             .collect();
         check_reply_budget(&reply)?;
