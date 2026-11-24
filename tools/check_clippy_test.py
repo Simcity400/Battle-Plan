@@ -40,16 +40,31 @@ warning: call to `std::mem::drop` with a value that does not implement `Drop`. D
     --> crates/replay-columnar/src/writer/tests.rs:1341:9
      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#drop_non_drop
 
+warning: type does not implement `std::fmt::Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+  --> crates/replay-columnar/src/lib.rs:15:1
+   |
+   = note: requested on the command line with `-W missing-debug-implementations`
+
+warning: type does not implement `std::fmt::Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+  --> crates/replay-columnar/src/lib.rs:71:1
+
+warning: unreachable `pub` item
+ --> crates/replay-columnar/src/lib.rs:80:1
+
 warning: `replay-columnar` (lib test) generated 6 warnings (5 duplicates)
 """
 
 
 class Findings(unittest.TestCase):
     def test_clippy_diagnostics_are_read_once_each_at_their_primary_line(self):
-        self.assertEqual(cc.findings(OUTPUT.splitlines()), [
+        self.assertEqual(cc.findings(OUTPUT.splitlines(), {"missing_debug_implementations"}), [
             ("crates/replay-columnar/src/writer/tests.rs", 1341, "drop_non_drop", "warning",
              "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes"),
             ("crates/replay-columnar/src/lib.rs", 9, "dbg_macro", "warning", "the `dbg!` macro is intended as a debugging tool"),
+            ("crates/replay-columnar/src/lib.rs", 15, "missing_debug_implementations", "warning",
+             "type does not implement `std::fmt::Debug`; consider adding `#[derive(Debug)]` or a manual implementation"),
+            ("crates/replay-columnar/src/lib.rs", 71, "missing_debug_implementations", "warning",
+             "type does not implement `std::fmt::Debug`; consider adding `#[derive(Debug)]` or a manual implementation"),
         ])
 
 

@@ -1,4 +1,5 @@
-"""Refuse Clippy findings on the lines a change writes (Python 3.11+).
+"""Refuse Clippy findings, and findings of the rustc lints [workspace.lints.rust] turns on, on the
+lines a change writes (Python 3.11+).
 
 usage: python tools/check-clippy.py --against REF [--head REV] [--input FILE]
        python tools/check-clippy.py --against REF [--head REV] -- COMMAND...
@@ -15,22 +16,37 @@ import argparse
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADER = re.compile(r"^(warning|error)(?:\[\w+\])?: (.*)$")
 LOCATION = re.compile(r"^\s*--> (.+?):(\d+):(\d+)\s*$")
 LINT = re.compile(r"rust-clippy/[^#\s]*#([a-z0-9_]+)")
+RUSTC_LINT = re.compile(r"requested on the command line with `-[WD] ([a-z0-9_-]+)`|`#\[(?:warn|deny)\(([a-z0-9_]+)\)\]`")
+RUSTC_MESSAGES = {
+    "missing_debug_implementations": re.compile(r"does not implement `(?:std::fmt::|core::fmt::)?Debug`"),
+    "unreachable_pub": re.compile(r"^unreachable `pub` "),
+    "unsafe_op_in_unsafe_fn": re.compile(r"is unsafe and requires unsafe block"),
+}
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
-def findings(lines):
-    """[(path, line, lint, level, message)] for each Clippy diagnostic in Cargo's output, once
-    each however many targets reported it."""
+def workspace_rust_lints():
+    """The rustc lints Cargo.toml's [workspace.lints.rust] turns on, which the gate judges like Clippy's."""
+    lints = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8")).get("workspace", {}).get("lints", {}).get("rust", {})
+    return {name.replace("-", "_") for name, level in lints.items() if (level if isinstance(level, str) else level.get("level")) in ("warn", "deny")}
+
+
+def findings(lines, rust_lints=frozenset()):
+    """[(path, line, lint, level, message)] for each Clippy diagnostic in Cargo's output, and each
+    diagnostic of a rustc lint in `rust_lints`, once each however many targets reported it."""
     found, current = [], None
 
     def close():
+        if current and current["lint"] is None:
+            current["lint"] = next((name for name, message in RUSTC_MESSAGES.items() if name in rust_lints and message.search(current["message"])), None)
         if current and current["lint"] and current["path"]:
             found.append((current["path"], current["line"], current["lint"], current["level"], current["message"]))
 
@@ -46,6 +62,8 @@ def findings(lines):
             current["line"] = int(location.group(2))
         elif current["lint"] is None and (lint := LINT.search(line)):
             current["lint"] = lint.group(1)
+        elif current["lint"] is None and (lint := RUSTC_LINT.search(line)) and (name := (lint.group(1) or lint.group(2)).replace("-", "_")) in rust_lints:
+            current["lint"] = name
     close()
     return list(dict.fromkeys(found))
 
@@ -113,9 +131,10 @@ def main():
         lines = Path(args.input).read_text(encoding="utf-8", errors="replace").splitlines()
     else:
         lines = sys.stdin.read().splitlines()
-    new, existing = judge(findings(lines), written(base.stdout.strip(), args.head))
+    rust_lints = workspace_rust_lints()
+    new, existing = judge(findings(lines, rust_lints), written(base.stdout.strip(), args.head))
     for path, line, lint, level, message in new:
-        print(f"{path}:{line}: clippy::{lint} ({level}): {message}")
+        print(f"{path}:{line}: {'' if lint in rust_lints else 'clippy::'}{lint} ({level}): {message}")
     print(f"Clippy: {len(new)} finding(s) on changed lines, {existing} elsewhere left as they are")
     if exit_code:
         print(f"The command exited {exit_code}" + (": Boat itself failed, run it again" if exit_code == 75 else ""))
