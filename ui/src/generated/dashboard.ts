@@ -442,6 +442,19 @@ export type TilePart = { firstHour: number, lastHour: number, slot: number, coun
  */
 segmentFirstHour: number, };
 export type TileMarks = { before: string, bins: Array<[number, number]>, };
+export type TileRanking = {
+/**
+ * The hour the top was ranked at.
+ */
+hour: number,
+/**
+ * The hours over which the same countries are the top; ask again outside them.
+ */
+from: number, until: number,
+/**
+ * Why the top is not ranked at this hour; no lines then.
+ */
+refused: string | null, };
 export type TileLine = { country: CountryRef,
 /**
  * The part's key, for a sub-keyed series.
@@ -479,7 +492,11 @@ hourBytes: number, lines: Array<TileLine>,
 /**
  * The bins, base64.
  */
-bins: string, };
+bins: string,
+/**
+ * Asked for a top: who it is at the asked hour, and for how long.
+ */
+ranking?: TileRanking, };
 export type NavigationKey = "ArrowLeft" | "ArrowRight" | "Home" | "End";
 export type SeriesRead = { country: CountryRef, hour: number,
 /**
