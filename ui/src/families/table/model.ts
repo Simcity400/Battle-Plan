@@ -127,6 +127,7 @@ export interface TableCell {
   readonly icon?: string;
   readonly iconSlot?: boolean;
   readonly iconPending?: boolean;
+  readonly iconArt?: string;
   readonly artShape?: 'wide' | 'square' | 'portrait' | 'equipment' | 'counter';
   readonly artName?: string;
   readonly flags?: readonly TableCellFlag[];
@@ -1108,10 +1109,25 @@ export function deriveTableAudit(input: TableAuditInput): FamilyAuditRow[] {
           ...(model.dateGrouped ? { showDate: item.showDate !== false, isDayEnd: item.isDayEnd === true, isLiveEnd: item.isLiveEnd === true } : {}),
         })),
     ];
+    let handled = false;
     for (const col of visibleColumns) {
-      rowOut.push(auditCell(item.key, col.key, canonicalAuditData(resolveCellPaintModel(item.row.cells[col.key], col, hour, maxima, countryColors))));
+      const cell = item.row.cells[col.key];
+      const painted = resolveCellPaintModel(cell, col, hour, maxima, countryColors);
+      if (cell?.iconArt === undefined) {
+        rowOut.push(auditCell(item.key, col.key, canonicalAuditData(painted)));
+        continue;
+      }
+      handled = true;
+      const { icon: _arrived, iconPending: _arriving, ...shown } = painted;
+      rowOut.push(auditCell(item.key, col.key, canonicalAuditData({ ...shown, iconArt: cell.iconArt })));
     }
-    rowOut.push(auditCell(item.key, '_tooltip', canonicalAuditData(deriveRowTooltip(item, model.columns, hour))));
+    const tooltip = deriveRowTooltip(item, model.columns, hour);
+    if (handled) {
+      const { countryFlag: _arrivedFlag, ...shown } = tooltip;
+      rowOut.push(auditCell(item.key, '_tooltip', canonicalAuditData(shown)));
+    } else {
+      rowOut.push(auditCell(item.key, '_tooltip', canonicalAuditData(tooltip)));
+    }
     if (rowAuditCache && model.rowTimeBoundaries === false) {
       rowAuditCache.set(item.row, { sig: rowSig, rows: rowOut });
     }

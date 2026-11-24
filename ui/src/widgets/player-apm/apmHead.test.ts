@@ -177,7 +177,8 @@ test('apm-table resolves country at row observation hour including hour 0, gives
 
   const followOpts = { ...opts, staticSpan: null };
   assert.equal(apmTableProjection.nextChange?.(emptyReadView(5), followOpts), 10, 'trailing window enters gap at 10');
-  assert.equal(apmTableProjection.nextChange?.(emptyReadView(15), followOpts), 188, 'trailing window leaves gap [10,20] at 20 + 168 = 188');
+  assert.equal(apmTableProjection.nextChange?.(emptyReadView(15), followOpts), 50, 'a country name that changes at 50 bounds the model first');
+  assert.equal(apmTableProjection.nextChange?.(emptyReadView(55), followOpts), 188, 'trailing window leaves gap [10,20] at 20 + 168 = 188');
   assert.equal(apmTableProjection.project(createBoundedReadView({ hour: 180, panels: new Map([['main', reply]]) }), followOpts).emptyKind, 'unavailable', 'trailing [13,180] overlaps [10,20]');
   assert.equal(apmTableProjection.project(createBoundedReadView({ hour: 188, panels: new Map([['main', reply]]) }), followOpts).empty, undefined, 'trailing [21,188] is past [10,20]');
 });

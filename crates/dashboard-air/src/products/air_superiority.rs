@@ -223,6 +223,8 @@ pub struct AirSuperiorityReply {
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub viewpoint_country_style: Option<AirCountryStyle>,
     pub regions: Vec<AirRegion>,
+    #[doc = " Why a region not listed may still hold scores or wings: a read that lists regions was not whole at the hour."]
+    pub unlisted: Option<String>,
     #[doc = " The comparison of a region no country scores in."]
     pub fallback: AirCell,
     pub scale: i32,
@@ -728,6 +730,7 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
         viewpoint: None,
         viewpoint_country_style: None,
         regions: Vec::new(),
+        unlisted: None,
         fallback: AirCell::Reason { reason: "scores-unavailable".into() },
         scale: SCALE,
         bad_below: BAD_BELOW,
@@ -765,8 +768,9 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
         }
         _ => None,
     };
-    let wings_rows = frame.complete::<tables::AirRegionWings>();
-    let wings: Option<BTreeMap<u32, i64>> = wings_rows.as_ref().ok().map(|rows| rows.iter().map(|row| (row.region, row.wings)).collect());
+    let wings_whole = dashboard_query::coverage::population::<tables::AirRegionWings>(frame, &replay_frame::frame::Keys::All).err();
+    let wings: Option<BTreeMap<u32, i64>> = dashboard_text::metadata::recorded_rows::<tables::AirRegionWings>(frame).ok().map(|rows| rows.iter().map(|row| (row.region, row.wings)).collect());
+    let unlisted = dashboard_query::coverage::population::<tables::RaidAirScores>(frame, &replay_frame::frame::Keys::All).err().or_else(|| wings_whole.clone());
     let pinned: Vec<u32> = {
         let mut seen = HashSet::new();
         params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect()
@@ -823,13 +827,13 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
             }
         }
         let (name, name_missing) = region_name(&context.names, region);
-        let wings_kind = match wings.as_ref().map(|wings| wings.get(&region)) {
-            Some(Some(_)) => {
+        let wings_kind = match dashboard_query::coverage::witnessed::<tables::AirRegionWings>(frame, u128::from(region)) {
+            dashboard_query::coverage::Witness::Row(_) => {
                 live.value(&region.to_string(), "wings", Cell { table: TableId::AirRegionWings, column: wings_column, key: u128::from(region) }, 1.0);
                 AirWings::Live
             }
-            Some(None) => AirWings::None,
-            None => AirWings::Unknown,
+            dashboard_query::coverage::Witness::Absent => AirWings::None,
+            dashboard_query::coverage::Witness::NotRecorded(_) => AirWings::Unknown,
         };
         let mut shown_cell = shown(cell, region, &dictionary, live, columns, enemy, ordered);
         if let (Some(ranks), AirCell::Sides(sides_cell)) = (&ranks, &mut shown_cell) {
@@ -856,8 +860,8 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
     ordered_regions.sort_by_key(|(region, ..)| pin_rank.get(&region.id).copied().unwrap_or(usize::MAX));
     let regions: Vec<AirRegion> = ordered_regions.into_iter().map(|(region, ..)| region).collect();
     let fallback = shown(fallback, 0, &dictionary, live, columns, enemy, false);
-    if let Err(error) = &wings_rows {
-        warnings.push(format!("Air wings by region are not known at this hour: {error}"));
+    if let Some(error) = &wings_whole {
+        warnings.push(format!("Air wings by region are not all known at this hour: {error}"));
     }
     let viewpoint_index = viewpoint_side.map(|position| dictionary.index(position));
     let legend = match params.mode.unwrap_or_default() {
@@ -881,6 +885,7 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
         viewpoint: viewpoint_index,
         viewpoint_country_style,
         regions,
+        unlisted,
         fallback,
         scale: SCALE,
         bad_below: BAD_BELOW,

@@ -82,6 +82,8 @@ test('widget metadata preserves world controls and content-choice title policies
     const { definition: army } = await vite.ssrLoadModule('/ui/src/widgets/army-size/definition.ts');
     const { measureChoices } = await vite.ssrLoadModule('/ui/src/widgets/army-size/armySizeData.ts');
     const optionFields = await vite.ssrLoadModule('/ui/src/dashboard/settings/OptionFields.tsx');
+    const { scopedOptionKey } = await vite.ssrLoadModule('/ui/src/dashboard/options.ts');
+    const raceMeasure = scopedOptionKey('measure', 'race');
     let available = { measures: ['divisions', 'battalions'], unknownMeasures: [] as string[] };
     const useOptionChoices = () => ({ measure: measureChoices(available) });
     registerWidgets([{ ...army, useOptionChoices }]);
@@ -99,16 +101,16 @@ test('widget metadata preserves world controls and content-choice title policies
     };
     const armyWidget = createWidget(army.kind, 'main', 'army');
     for (const title of ['Army size', 'My army', 'Number of divisions']) {
-      const markup = settingsFor({ ...armyWidget, title, options: { measure: 'divisions' } });
+      const markup = settingsFor({ ...armyWidget, title, options: { [raceMeasure]: 'divisions' } });
       assert.match(markup, /<span class="menu-item-label">Battalions<\/span>/);
       const next = chooseMeasure('battalions');
       assert.equal(next.widget.title, title);
-      assert.equal(next.widget.options?.measure, 'battalions');
+      assert.equal(next.widget.options?.[raceMeasure], 'battalions');
       assert.equal(next.view, true);
     }
     available = { measures: ['divisions'], unknownMeasures: [] };
     const saveCount = saves.length;
-    const missingMeasure = settingsFor({ ...armyWidget, options: { measure: 'battalions' } });
+    const missingMeasure = settingsFor({ ...armyWidget, options: { [raceMeasure]: 'battalions' } });
     assert.match(missingMeasure, />Saved choice unavailable</);
     assert.match(missingMeasure, /Key: battalions/);
     assert.doesNotMatch(missingMeasure, />battalions \(not in this campaign\)</);

@@ -326,17 +326,34 @@ test('timeline bars hide icon and name under the minimum width, mix ended items 
   const years = computeTimeAxisTicks(h1936, h1941, 600);
   assert.deepEqual(years.map(tick => tick.label), ['1936', '1937', '1938', '1939', '1940', '1941']);
   const h1937 = engineHour({ year: 1937, month: 1, day: 1, hour: 1 })!;
-  assert.ok(computeTimeAxisTicks(h1936, h1937, 600).some(tick => tick.label === 'Jul'), 'under two years the axis shows months');
+  const underTwoYears = computeTimeAxisTicks(h1936, h1937, 600);
+  assert.deepEqual(
+    underTwoYears.filter(tick => tick.label).map(tick => tick.label),
+    ['1936', 'Apr', 'Jul', 'Oct', '1937'],
+    'under two years labels Jan with year and Apr/Jul/Oct as quarters',
+  );
+  assert.equal(underTwoYears.length, 13, 'under two years emits 3px ticks for every month');
+  const hMar37 = engineHour({ year: 1937, month: 3, day: 1, hour: 1 })!;
+  const hDec37 = engineHour({ year: 1937, month: 12, day: 20, hour: 1 })!;
+  const noJanTicks = computeTimeAxisTicks(hMar37, hDec37, 600);
+  assert.deepEqual(
+    noJanTicks.filter(tick => tick.label).map(tick => tick.label),
+    ['Apr 1937', 'Jul', 'Oct'],
+    'without a January in view the first labelled month carries its year',
+  );
   const hWeek = engineHour({ year: 1936, month: 1, day: 8, hour: 1 })!;
   const dayTicks = computeTimeAxisTicks(h1936, hWeek, 600);
   assert.ok(dayTicks.some(tick => tick.label === '4 Jan'), 'short windows show days');
   assert.ok(computeTimeAxisTicks(0, 167, 600, 24).length >= 2, 'non-calendar short windows still yield day ticks');
+  const hugeNonCalendar = computeTimeAxisTicks(0, 43_800_000, 600, 24);
+  assert.ok(hugeNonCalendar.length >= 2 && hugeNonCalendar.length <= 20, 'K10: huge non-calendar span stays bounded');
 
   const axis = makeFakeCtx();
   drawTimeAxis(axis.ctx, years, { plotLeft: 100, plotRight: 700, axisTop: 200, startHour: h1936, endHour: h1941, playhead: h1941, playheadLabel: '15 Sep 1941', theme: THEME });
   const texts = axis.ops.filter(op => op.op === 'fillText').map(op => op.args[0]);
   assert.ok(texts.includes('15 Sep 1941'));
   assert.ok(!texts.includes('1941'), 'a year label under the playhead tab is dropped');
+  assert.ok(axis.ops.some(op => op.op === 'lineTo' && op.args[1] === 205), 'major January ticks are 5px tall');
 });
 
 test('table cell kit primitives handle minimum bar width, win rate tinting, icon strips, actions, stockpile bars and clock summary', () => {
@@ -402,7 +419,8 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
   assert.ok(clock.ops.some(op => op.op === 'fillText' && op.args[0] === '12:30:00'));
 
   assert.equal(contrastInkForFill('#f4f6f9', THEME), 'rgba(17, 17, 17, 0.88)');
-  assert.equal(contrastInkForFill('#3987e5', THEME), 'rgba(255, 255, 255, 0.96)');
+  assert.equal(contrastInkForFill('#888888', THEME), 'rgba(17, 17, 17, 0.88)');
+  assert.equal(contrastInkForFill('#1e4fa3', THEME), 'rgba(255, 255, 255, 0.96)');
   assert.equal(contrastInkForFill('#16181d', THEME), 'rgba(255, 255, 255, 0.96)');
   assert.equal(contrastInkForFill('not-a-colour', THEME), THEME.text);
 });

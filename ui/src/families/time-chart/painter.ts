@@ -9,6 +9,7 @@ import {
   drawLegendStrip,
   drawPlayheadLine,
   drawSeriesMissingStrip,
+  drawTimeAxis,
   resolveKitTokens,
 } from '../../draw/kit.ts';
 import { rgbaColor } from '../../shell/appearance/color.ts';
@@ -243,7 +244,7 @@ export function drawTimeChart(
     ctx.fillStyle = theme.muted;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    ctx.fillText(formatChartAxisValue(v, model.yAxis.format), layout.left - 8, y);
+    ctx.fillText(formatChartAxisValue(v, model.yAxis.format, layout.yTicks), layout.left - 8, y);
     ctx.restore();
   }
 
@@ -559,10 +560,10 @@ export function drawTimeChart(
           ctx.lineTo(pts[0]![0], baselineY);
           ctx.closePath();
           const grad = ctx.createLinearGradient(0, layout.top, 0, baselineY);
-          const topStop = rgbaColor(s.color, Number((0.26 * opacity).toFixed(3)), '');
+          const topStop = rgbaColor(s.color, 0.26 * opacity, '');
           if (topStop) {
             grad.addColorStop(0, topStop);
-            grad.addColorStop(1, rgbaColor(s.color, Number((0.02 * opacity).toFixed(3)), s.color));
+            grad.addColorStop(1, rgbaColor(s.color, 0.02 * opacity, s.color));
             ctx.globalAlpha = 1;
           } else {
             grad.addColorStop(0, s.color);
@@ -766,6 +767,8 @@ export function drawTimeChart(
     drawSeriesMissingStrip(ctx, g.x0, layout.axisY - 2, g.x1 - g.x0, theme.hatch, theme, 5);
   }
 
+  const hoverInPlot = hoverHour != null && model.mode !== 'columns' && hoverHour >= layout.xDomain[0] && hoverHour <= model.hour;
+
   if (model.mode === 'columns') {
     for (const col of layout.columns) {
       const cx = col.x + col.width / 2;
@@ -795,46 +798,41 @@ export function drawTimeChart(
         ctx.restore();
       }
     }
+    drawDateTab(ctx, layout.dateTabText, layout.dateTabX, layout.axisY + 3, theme, 'playhead', {
+      left: layout.left,
+      right: layout.width - 6,
+    });
   } else {
-    for (const tick of layout.axisTicks) {
-      ctx.save();
-      ctx.strokeStyle = tokens.zeroLine;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(tick.x + 0.5, layout.axisY);
-      ctx.lineTo(tick.x + 0.5, layout.axisY + (tick.major ? 5 : 3));
-      ctx.stroke();
-      if (tick.label) {
-        ctx.font = smallFont;
-        ctx.fillStyle = tick.major ? textSecondary : theme.muted;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'top';
-        ctx.fillText(tick.label, tick.x, layout.axisY + 6);
+    if (hoverInPlot) {
+      const xh = layout.toX(hoverHour);
+      drawCrosshairLine(ctx, xh, layout.top - 2, layout.axisY, theme);
+      if (model.mode === 'stack' && model.stack?.total && model.stack.hours.length > 0) {
+        let at = -1;
+        for (let i = 0; i < model.stack.hours.length; i++) {
+          if (model.stack.hours[i]! <= hoverHour) at = i;
+          else break;
+        }
+        const tv = at >= 0 ? model.stack.total.values[at] : null;
+        if (tv != null && Number.isFinite(tv)) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(xh, layout.toY(tv), 3.4, 0, Math.PI * 2);
+          ctx.fillStyle = model.stack.total.color ?? theme.text;
+          ctx.fill();
+          ctx.strokeStyle = theme.surface;
+          ctx.lineWidth = 1.8;
+          ctx.stroke();
+          ctx.restore();
+        }
       }
-      ctx.restore();
-    }
-  }
-
-  drawDateTab(ctx, layout.dateTabText, layout.dateTabX, layout.axisY + 3, theme, 'playhead', {
-    left: layout.left,
-    right: layout.width - 6,
-  });
-
-  if (hoverHour != null && model.mode !== 'columns' && hoverHour >= layout.xDomain[0] && hoverHour <= model.hour) {
-    const xh = layout.toX(hoverHour);
-    drawCrosshairLine(ctx, xh, layout.top - 2, layout.axisY, theme);
-    if (model.mode === 'stack' && model.stack?.total && model.stack.hours.length > 0) {
-      let at = -1;
-      for (let i = 0; i < model.stack.hours.length; i++) {
-        if (model.stack.hours[i]! <= hoverHour) at = i;
-        else break;
-      }
-      const tv = at >= 0 ? model.stack.total.values[at] : null;
-      if (tv != null && Number.isFinite(tv)) {
+      for (const s of model.series) {
+        const sampled = sampleSeriesValueAt(s, hoverHour, model.hour);
+        if (!sampled) continue;
+        const dotColor = s.negRed && sampled.value < 0 ? tokens.shortage : s.color;
         ctx.save();
         ctx.beginPath();
-        ctx.arc(xh, layout.toY(tv), 3.4, 0, Math.PI * 2);
-        ctx.fillStyle = model.stack.total.color ?? theme.text;
+        ctx.arc(xh, layout.toY(sampled.value), 3.4, 0, Math.PI * 2);
+        ctx.fillStyle = dotColor;
         ctx.fill();
         ctx.strokeStyle = theme.surface;
         ctx.lineWidth = 1.8;
@@ -842,23 +840,25 @@ export function drawTimeChart(
         ctx.restore();
       }
     }
-    for (const s of model.series) {
-      const sampled = sampleSeriesValueAt(s, hoverHour, model.hour);
-      if (!sampled) continue;
-      const dotColor = s.negRed && sampled.value < 0 ? tokens.shortage : s.color;
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(xh, layout.toY(sampled.value), 3.4, 0, Math.PI * 2);
-      ctx.fillStyle = dotColor;
-      ctx.fill();
-      ctx.strokeStyle = theme.surface;
-      ctx.lineWidth = 1.8;
-      ctx.stroke();
-      ctx.restore();
-    }
-    drawDateTab(ctx, formatDateOnly(hoverHour), xh, layout.axisY + 3, theme, 'hover', {
-      left: layout.left,
-      right: layout.width - 6,
+    drawTimeAxis(ctx, layout.rawAxisTicks, {
+      plotLeft: layout.left,
+      plotRight: layout.left + layout.plotWidth,
+      startHour: layout.xDomain[0],
+      endHour: layout.xDomain[1],
+      toX: layout.toX,
+      axisTop: layout.axisY,
+      playhead: model.hour,
+      playheadLabel: layout.dateTabText,
+      hover: hoverInPlot ? hoverHour : null,
+      hoverLabel: hoverInPlot ? formatDateOnly(hoverHour) : undefined,
+      playheadLineTop: null,
+      hairline: 'none',
+      tickColor: tokens.zeroLine,
+      firstLabelOnly: layout.small,
+      tabBounds: { left: layout.left, right: layout.width - 6 },
+      tabY: layout.axisY + 3,
+      labelY: layout.axisY + 12,
+      theme,
     });
   }
 }

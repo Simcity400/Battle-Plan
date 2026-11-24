@@ -4,7 +4,7 @@ import { validateFactionDetails } from '../../dashboard/factionDetails.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, textValue, notApplicable, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import type { CountryFactionGoalsReply, FactionDetailReply, FactionGoalDefinition } from '../../generated/dashboard';
@@ -91,7 +91,7 @@ const GOAL_COLUMNS: readonly DeclarativeColumnSpec<GoalRow, FactionGoalsOptions>
   { ...STATE!, priority: 2, text: true, widest: ['In progress'], tone: 'blue', status: () => 'dot', cellTone: row => STATE_TONE[row.state], cellKind: 'status', extra: row => ({ statusKind: STATE_MARK[row.state] }), value: row => knownValue(row.stateText) },
 ];
 
-export const factionGoalsProjection: TableProjection<FactionGoalsOptions> = registerTableProjection(
+export const factionGoalsProjection: TableProjection<FactionGoalsOptions> = registerFamilyProjection(
   declareTableProjection<CountryFactionGoalsReply, GoalRow, FactionGoalsOptions>({
     kind: 'faction-goals',
     validate: validateCountryFactionGoals,

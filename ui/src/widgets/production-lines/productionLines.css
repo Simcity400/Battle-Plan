@@ -1,34 +1,6 @@
-.production-lines { height: 100%; min-height: 0; overflow: auto; }
-.production-caption { margin: 0; padding: var(--space-1) var(--space-3) 0; color: var(--muted); font-size: var(--type-xs); min-height: 1.2em; }
-.production-history { padding: var(--space-1) 0 var(--space-2); }
-
-.production-table { --production-head: 26px; --production-row: 46px; position: relative; font-size: var(--type-sm); }
-.production-head, .production-row { display: grid; grid-template-columns: var(--production-columns); align-items: center; gap: var(--space-3); padding: 0 var(--space-3); }
-.production-head { position: sticky; top: 0; z-index: 1; height: var(--production-head); background: var(--surface); color: var(--muted); font-size: var(--type-xs); text-transform: uppercase; letter-spacing: .04em; }
-.production-row { position: absolute; top: 0; left: 0; right: 0; height: var(--production-row); border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent); outline: none; }
-.production-row:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-line); }
-.production-row > [tabindex]:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 2px; }
-.production-row small { color: var(--muted); font-size: var(--type-xs); }
-.production-equipment { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
-.production-equipment > span { display: flex; flex-direction: column; min-width: 0; }
-.production-equipment b { overflow: hidden; font-weight: 500; white-space: nowrap; text-overflow: ellipsis; }
-.production-equipment small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.production-art { flex: none; width: 72px; height: 30px; object-fit: contain; }
-.production-organisation { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
-.production-organisation img, .production-organisation .art-fallback { flex: none; width: 22px; height: 22px; object-fit: contain; }
-.production-organisation small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.production-organisation-trigger { display: flex; align-items: center; gap: var(--space-2); min-width: 0; max-width: 100%; text-align: left; }
-.production-cell { display: flex; flex-direction: column; min-width: 0; }
-.production-number { font-variant-numeric: tabular-nums; }
-.production-lines .is-number { text-align: right; }
-.production-lines .is-muted { color: var(--muted); }
-.production-meter { position: relative; display: block; height: 5px; margin-top: 4px; border-radius: 3px; background: color-mix(in srgb, var(--text) 10%, transparent); }
-.production-meter > i { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width var(--row-glide, 450ms); }
-.production-meter > em { position: absolute; top: -1px; bottom: -1px; width: 2px; margin-left: -1px; background: var(--text); opacity: .55; transition: left var(--row-glide, 450ms); }
-.production-meter.is-empty { background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--text) 10%, transparent) 0 4px, transparent 4px 8px); }
-.production-factor { border: 0; padding: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
-.production-factor:hover { text-decoration: underline; }
-.production-factor:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.production-drill { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
-.production-drill-chart { height: 280px; min-height: 180px; }
-.production-live { min-height: 0; }
+.production-breakdown { display: flex; flex-direction: column; gap: var(--space-2); min-height: 0; font-size: var(--type-sm); }
+.production-breakdown ul { margin: 0; padding: 0; list-style: none; }
+.production-breakdown li { display: flex; justify-content: space-between; gap: var(--space-3); padding: 2px 0; font-variant-numeric: tabular-nums; }
+.production-breakdown li.is-muted { color: var(--muted); }
+.production-breakdown-total { margin: 0; font-weight: 600; }
+.production-breakdown-note { margin: 0; color: var(--muted); font-size: var(--type-xs); }

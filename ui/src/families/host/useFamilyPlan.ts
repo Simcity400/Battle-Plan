@@ -39,6 +39,7 @@ import {
   planSignature,
   readPlanExact,
   stabilizeCanvasDimension,
+  tailPageOffsets,
 } from '../broker.ts';
 import type { HolderRun } from '../holders.ts';
 import { overlapsHourRanges } from '../holders.ts';
@@ -197,7 +198,7 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly onSeriesViewport: (viewport: TileViewport) => void;
   readonly retryTiles: () => void;
   readonly hovers: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
-  readonly exactReadView: ((hour: number) => Promise<BoundedReadView | null>) | undefined;
+  readonly exactReadView: ((hour: number, rowWindow: FamilyRowWindow | null) => Promise<BoundedReadView | null>) | undefined;
   readonly bodyStatus: FamilyBodyStatus;
   readonly bannerFailure: BannerFailureInfo | null;
   readonly nameFailureDetail: string | undefined;
@@ -287,6 +288,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const singleCountry = isSingle ? gate.country! : null;
   const countryTag = isSingle && gate.open ? singleCountry!.tag : null;
+  const countrySubject = isSingle && gate.open ? singleCountry!.history?.key ?? null : null;
   const countryLabel = useCountryNameAt(
     runtime.client,
     isSingle ? track : undefined,
@@ -315,8 +317,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const auxEnabled = !!auxSpec && (!auxSpec.when || auxSpec.when(options));
   const auxParams = useMemo(
-    () => (auxSpec && auxEnabled && track ? auxSpec.params(track, options, countryTag) : null),
-    [auxSpec, auxEnabled, track, options, countryTag],
+    () => (auxSpec && auxEnabled && track ? auxSpec.params(track, options, countryTag, countrySubject) : null),
+    [auxSpec, auxEnabled, track, options, countryTag, countrySubject],
   );
   const auxReq = useMemo(
     () => (auxSpec && auxParams && track
@@ -482,7 +484,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     flagSize: 'panel',
     branchBounds,
   });
-  const identityRevision = identityState.index?.resolveRevision() ?? -1;
+  const countryRevision = identityState.index?.countryRevision() ?? -1;
   useEffect(() => {
     if (!active || !wantsLabels || !identityScope || !track || !identityState.index?.hasFacts()) return;
     const seen = new Set<string>();
@@ -506,7 +508,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       }
     }
     if (choices.length) identityBrokerFor(runtime.client).requestFlagChoices(identityScope, 'panel', choices, track.source);
-  }, [active, wantsLabels, identityScope, runtime.client, track, identityState.index, identityRevision, labelTags, firstHour, lastHour]);
+  }, [active, wantsLabels, identityScope, runtime.client, track, identityState.index, countryRevision, labelTags, firstHour, lastHour]);
 
   const builtLooks = useMemo(
     () => (wantsLabels ? buildCountryLooksFromIdentity(identityState.index, labelTags, firstHour, lastHour, identityState.flagFor, wantsColours) : NO_LOOKS),
@@ -590,12 +592,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       following,
       aux: auxResult.data,
       countryTag,
+      countrySubject,
       countryName,
       countries: countriesState,
       gateSpan: gate.span,
       staticSpan: null,
     };
-  }, [track, lastRecorded, widget, options, following, auxResult.data, countryTag, countryName, countriesState, gate.span]);
+  }, [track, lastRecorded, widget, options, following, auxResult.data, countryTag, countrySubject, countryName, countriesState, gate.span]);
 
   const inputsReady = !!ctx
     && (!isSingle || (gate.open && countryTag !== null))
@@ -905,10 +908,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         changed = true;
       }
       const frozenHour = state.frozenHour;
-      const startPage = Math.max(0, Math.floor((Math.max(first, headLimit) - headLimit) / pageSize));
-      const endPage = Math.floor((end - 1 - headLimit) / pageSize);
-      const wanted = new Set<number>();
-      for (let p = startPage; p <= endPage; p++) wanted.add(headLimit + p * pageSize);
+      const wanted = new Set(tailPageOffsets({ first, count }, headLimit, pageSize));
 
       for (const offset of [...state.inFlight]) {
         if (!wanted.has(offset)) {
@@ -1140,7 +1140,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     const frozenFollowing = following;
     const frozenWindow = window;
     const g = displayedGate;
-    return (wantedHour: number) => readPlanExact(frozenPlan, wantedHour, {
+    return (wantedHour: number, rowWindow: FamilyRowWindow | null) => readPlanExact(frozenPlan, wantedHour, {
       client: frozenClient,
       following: frozenFollowing,
       timeMode: frozenTimeMode,
@@ -1151,6 +1151,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       exactOnce: (key, load) => perfLog!.exactOnce(key, load),
       identity: identityProvider,
       art: artProvider,
+      rowWindow,
     });
   }, [displayedCtx, displayedPlan, displayedGate, runtime.client, following, widget.time.mode, window, identityProvider, artProvider]);
 
