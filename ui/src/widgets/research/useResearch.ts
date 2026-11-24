@@ -12,6 +12,7 @@ import type { ResearchHistoryReply } from '../../generated/dashboard';
 import type { ResearchData } from './types';
 import { validateResearchHistory, validateResearchReply } from './researchData';
 import { productRequest } from '../../dashboard/request.ts';
+import { widgetViewOptions } from '../manifest.ts';
 
 function researchTarget(widget: WidgetBase, runtime: WidgetRuntime) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -26,7 +27,7 @@ export function useResearchReply(widget: WidgetBase, runtime: WidgetRuntime, act
 }
 
 export function useResearchChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
-  const gate = useGate(runtime, widget, SPEC, true, { country: { stored: widget.options?.country } });
+  const gate = useGate(runtime, widget, SPEC, true, { country: { stored: widgetViewOptions(widget.kind, widget.options).country } });
   const subject = gate.open ? gate.country?.history?.key ?? null : null;
   const track = gate.track;
   const hour = gate.hour;
