@@ -8,7 +8,7 @@ import { drawableIcon } from './artwork.ts';
 import { compareTags } from './tagOrder.ts';
 import { isOrderedSpans, runAt } from '../charts/series.ts';
 import type { Span } from '../charts/series';
-import type { RaidEpisode, RaidLogReply, RaidPhaseRun, RaidPreparationRun, RaidTypeInfo } from '../generated/dashboard';
+import type { RaidEpisode, RaidLogReply, RaidPhaseRun, RaidPreparationRun, RaidTypeInfo, RaidVictimSource } from '../generated/dashboard';
 import { productRequest } from './request.ts';
 import { gatedRead, readData } from './gatedRead.ts';
 
@@ -18,25 +18,32 @@ const object = (value: unknown): value is Record<string, unknown> => typeof valu
 const integer = (value: unknown) => Number.isSafeInteger(value);
 const maybe = (value: unknown, test: (value: unknown) => boolean) => value === null || test(value);
 const text = (value: unknown) => typeof value === 'string';
+const victimSource = (value: unknown) => value === 'fixedTarget' || value === 'controllerAtFirstEndedRead' || value === 'lastObservedController';
 const preparationRuns = (runs: unknown): runs is RaidPreparationRun[] => Array.isArray(runs) && runs.every((run, index) =>
   Array.isArray(run) && run.length === 4 && run.every(integer) && run[0] <= run[1] && (index === 0 || runs[index - 1][1] < run[0]));
 
 export function validateRaidLog(value: unknown): RaidLogReply {
   const ok = object(value) && Array.isArray(value.episodes) && Array.isArray(value.missing) && Array.isArray(value.warnings)
     && maybe(value.available, item => typeof item === 'boolean') && maybe(value.unavailable, text)
-    && [value.phasePreparing, value.phaseEnded, value.outcomeNone].every(integer)
+    && [value.phasePreparing, value.phaseEnded, value.outcomeNone, value.outcomeFailure, value.outcomeLimitedSuccess, value.outcomeSuccess, value.outcomeCriticalSuccess, value.outcomeCanceled].every(integer)
     && Array.isArray(value.types) && value.types.every(type => object(type) && text(type.token) && maybe(type.name, text) && maybe(type.missing, text))
     && Array.isArray(value.artwork) && value.artwork.every(art => object(art) && text(art.key) && maybe(art.image, text) && maybe(art.missing, text))
     && value.warnings.every(text) && value.missing.every(span => object(span) && integer(span.firstHour) && integer(span.lastHour) && text(span.reason))
-    && value.episodes.every(item => object(item) && text(item.id) && integer(item.firstHour) && integer(item.lastHour) && (item.firstHour as number) <= (item.lastHour as number)
+    && value.episodes.every(item => object(item) && text(item.id) && integer(item.firstHour) && typeof item.firstHourExact === 'boolean' && integer(item.lastHour) && (item.firstHour as number) <= (item.lastHour as number)
       && maybe(item.raider, text) && maybe(item.victim, text) && (item.victim === null) !== (item.victimMissing === null)
+      && maybe(item.victimSource, victimSource) && (item.victim !== null || item.victimSource === null)
       && maybe(item.raidType, text) && maybe(item.raidTypeName, text) && maybe(item.icon, text) && maybe(item.iconMissing, text)
       && maybe(item.province, integer) && maybe(item.state, integer)
-      && maybe(item.phase, integer) && maybe(item.phaseName, text) && maybe(item.outcome, integer) && maybe(item.outcomeName, text)
-      && isOrderedSpans(item.runs) && (item.runs as unknown[]).every(run => object(run) && integer(run.phase) && integer(run.outcome) && maybe(run.phaseName, text) && maybe(run.outcomeName, text))
+      && maybe(item.phase, integer) && maybe(item.phaseName, text) && maybe(item.outcome, integer) && maybe(item.outcomeName, text) && maybe(item.outcomeMissing, text)
+      && isOrderedSpans(item.runs) && (item.runs as unknown[]).every(run => object(run) && typeof run.firstExact === 'boolean' && maybe(run.afterHour, integer) && integer(run.phase) && integer(run.outcome) && maybe(run.phaseName, text) && maybe(run.outcomeName, text))
       && preparationRuns(item.preparation)
-      && maybe(item.launchedHour, integer) && typeof item.launched === 'boolean' && maybe(item.endedHour, integer) && typeof item.succeeded === 'boolean'
-      && (item.launchedHour === null || item.launched) && (!item.succeeded || item.endedHour !== null));
+      && maybe(item.launchedHour, integer) && typeof item.launchedExact === 'boolean' && typeof item.launched === 'boolean'
+      && maybe(item.endedHour, integer) && typeof item.endedExact === 'boolean'
+      && maybe(item.disappearedHour, integer) && typeof item.disappearedExact === 'boolean'
+      && typeof item.succeeded === 'boolean'
+      && (item.launchedHour === null || item.launched) && (!item.launchedExact || item.launchedHour !== null)
+      && (!item.endedExact || item.endedHour !== null) && (!item.disappearedExact || item.disappearedHour !== null)
+      && (!item.succeeded || item.endedHour !== null));
   if (!ok) throw new Error('The raid log reply is malformed.');
   const reply = value as unknown as RaidLogReply;
   return { ...reply, artwork: reply.artwork.map(art => ({ ...art, image: drawableIcon(art.image) })) };
@@ -81,7 +88,16 @@ export function raidIcon(data: Pick<RaidLogReply, 'artwork'>, episode: RaidEpiso
   return episode.icon === null ? null : data.artwork.find(art => art.key === episode.icon)?.image ?? null;
 }
 
-export interface RaidAt { episode: RaidEpisode; latest: RaidPhaseRun; current: RaidPhaseRun | null; since: number; hour: number }
+export interface RaidAt {
+  episode: RaidEpisode;
+  latest: RaidPhaseRun;
+  current: RaidPhaseRun | null;
+  since: number;
+  sinceExact: boolean;
+  afterHour: number | null;
+  disappeared: boolean;
+  hour: number;
+}
 
 export function raidAt(episode: RaidEpisode, hour: number): RaidAt | null {
   const runs = episode.runs;
@@ -94,12 +110,26 @@ export function raidAt(episode: RaidEpisode, hour: number): RaidAt | null {
   const latest = runs[index];
   let first = index;
   while (first > 0 && runs[first - 1].phase === latest.phase && runs[first - 1].outcome === latest.outcome) first--;
-  return { episode, latest, current: latest.lastHour >= hour ? latest : null, since: runs[first].firstHour, hour };
+  const current = latest.lastHour >= hour ? latest : null;
+  const disappeared = current === null && episode.disappearedHour !== null && hour >= episode.disappearedHour;
+  return {
+    episode,
+    latest,
+    current,
+    since: disappeared ? episode.disappearedHour! : runs[first].firstHour,
+    sinceExact: disappeared ? episode.disappearedExact : runs[first].firstExact,
+    afterHour: disappeared ? episode.lastHour : runs[first].afterHour,
+    disappeared,
+    hour,
+  };
 }
 
 export function raidChangeHours(episodes: readonly RaidEpisode[]): number[] {
   const hours: number[] = [];
-  for (const episode of episodes) for (const run of episode.runs) hours.push(run.firstHour, run.lastHour + 1);
+  for (const episode of episodes) {
+    for (const run of episode.runs) hours.push(run.firstHour, run.lastHour + 1);
+    if (episode.disappearedHour !== null) hours.push(episode.disappearedHour);
+  }
   return hours.sort((a, b) => a - b);
 }
 
@@ -113,12 +143,25 @@ export function raidPreparationAt(episode: RaidEpisode, hour: number): number | 
   return found && at <= found[1] ? found[2] + (at - found[0]) * found[3] : null;
 }
 
-export function raidStatus(data: Pick<RaidLogReply, 'phaseEnded' | 'outcomeNone'>, at: RaidAt): string {
+export function raidStatus(data: Pick<RaidLogReply, 'phaseEnded' | 'outcomeNone' | 'outcomeCanceled'>, at: RaidAt): string {
   const value = at.current ?? at.latest;
-  const phase = value.phaseName ?? 'Unknown phase';
-  const outcome = value.phase === data.phaseEnded && value.outcome !== data.outcomeNone ? value.outcomeName ?? 'Unknown outcome' : null;
+  const phase = value.phaseName ?? (value.phase < 0 || value.phase > data.phaseEnded ? `Unsupported phase (${value.phase})` : `Phase ${value.phase} (name unavailable)`);
+  if (at.disappeared) return `Last known: ${phase} · ${at.episode.outcomeMissing ?? 'raid outcome was not recorded'}`;
+  let outcome: string | null = null;
+  if (value.phase === data.phaseEnded) {
+    if (value.outcome === data.outcomeNone) outcome = at.episode.outcomeMissing ?? 'raid outcome was not recorded';
+    else if (value.outcome < data.outcomeNone || value.outcome > data.outcomeCanceled) outcome = value.outcomeName ?? `Unsupported outcome (${value.outcome})`;
+    else outcome = value.outcomeName ?? `Outcome ${value.outcome} (name unavailable)`;
+  }
   const status = outcome === null ? phase : `${phase} · ${outcome}`;
   return at.current ? status : `Last known: ${status}`;
+}
+
+export function raidVictimLabel(source: RaidVictimSource | null): string {
+  if (source === 'fixedTarget') return 'Fixed target country';
+  if (source === 'controllerAtFirstEndedRead') return 'Target controller at first ended read';
+  if (source === 'lastObservedController') return 'Last observed controller';
+  return 'Target country';
 }
 
 export const raidPreparing = (data: Pick<RaidLogReply, 'phasePreparing'>, at: RaidAt) => (at.current ?? at.latest).phase === data.phasePreparing;

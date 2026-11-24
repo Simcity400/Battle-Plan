@@ -1,5 +1,5 @@
 use super::Tooltip;
-use engine_native_air::craid_instance::{outcome_key, phase_key};
+use engine_native_air::craid_instance::{known_outcome_key, known_phase_key};
 use content_reader_localisation::localisation::Argument as Arg;
 use content_reader_localisation::localisation::Localisation;
 use viewer_foundation::tooltip_text::localise;
@@ -43,7 +43,11 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
                         ("RAID_DESC", Arg::Text(&input.description?)),
                         (
                             "OUTCOME_TYPE",
-                            Arg::Text(&plain(outcome_key(input.outcome))?),
+                            Arg::Text(&plain(
+                                known_outcome_key(input.outcome).ok_or_else(|| {
+                                    format!("unsupported raid outcome ({})", input.outcome)
+                                })?,
+                            )?),
                         ),
                     ],
                 )
@@ -126,7 +130,10 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
         2,
         RAID_INST_PROGRESS_DESC,
         input.progress.and_then(|progress| {
-            let phase = plain(phase_key(input.phase))?;
+            let phase = plain(
+                known_phase_key(input.phase)
+                    .ok_or_else(|| format!("unsupported raid phase ({})", input.phase))?,
+            )?;
             match progress {
                 Some(value) => localise(
                     loc,

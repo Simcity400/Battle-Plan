@@ -74,7 +74,7 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
   const labels = useCallback((row: LogRow<RaidAt>): { raider: ReturnType<CountryLabel>; victim: ReturnType<CountryLabel> } => {
     const at = labelAt(row.hour);
     return { raider: row.item.episode.raider === null ? { name: 'Raider not known' } : at(row.item.episode.raider),
-      victim: row.item.episode.victim === null ? { name: 'Controller not known' } : at(row.item.episode.victim) };
+      victim: row.item.episode.victim === null ? { name: row.item.episode.victimMissing ?? 'Target country not known' } : at(row.item.episode.victim) };
   }, [labelAt]);
   const lastHour = track?.branch.lastHour;
   const gate = useCampaignGate(runtime, widget, active);

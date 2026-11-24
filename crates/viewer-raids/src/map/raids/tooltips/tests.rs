@@ -283,3 +283,28 @@ fn assembling_diagnostics_survive_unknown_final_gate_and_prepared_gate_stays_unk
         assert!(!out.title.contains("tooltip_launch_button_disabled"));
     }
 }
+
+#[test]
+fn unsupported_phase_and_outcome_codes_are_refused_with_raw_values() {
+    let mut ended = raid_input(5);
+    ended.outcome = 99;
+    let out = raid(&loc(), ended, false);
+    assert!(
+        out.refused
+            .contains_key("tooltip_raid_result: unsupported raid outcome (99)"),
+        "expected unsupported outcome refusal, got {:?}",
+        out.refused
+    );
+    assert!(!out.title.contains("RAID_INST_OUTCOME_NONE"));
+
+    let mut active = raid_input(42);
+    active.ended = false;
+    let out = raid(&loc(), active, false);
+    assert!(
+        out.refused
+            .contains_key("raid_inst_progress_desc: unsupported raid phase (42)"),
+        "expected unsupported phase refusal, got {:?}",
+        out.refused
+    );
+    assert!(!out.title.contains("RAID_INST_PHASE_NONE"));
+}

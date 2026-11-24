@@ -25,6 +25,8 @@ pub const PHASE_PREPARED: i32 = 3;
 pub const PHASE_IN_PROGRESS: i32 = 4;
 pub const PHASE_ENDED: i32 = 5;
 pub const OUTCOME_NONE: i32 = 0;
+pub const OUTCOME_FAILURE: i32 = 1;
+pub const OUTCOME_LIMITED_SUCCESS: i32 = 2;
 pub const OUTCOME_SUCCESS: i32 = 3;
 pub const OUTCOME_CRITICAL_SUCCESS: i32 = 4;
 pub const OUTCOME_CANCELED: i32 = 5;
@@ -38,10 +40,17 @@ pub const PHASE_KEYS: [&str; 6] = [
     "RAID_INST_PHASE_ENDED",
 ];
 
-pub const fn phase_key(phase: i32) -> &'static str {
+pub const fn known_phase_key(phase: i32) -> Option<&'static str> {
     match phase {
-        0..=PHASE_ENDED => PHASE_KEYS[phase as usize],
-        _ => PHASE_KEYS[0],
+        0..=PHASE_ENDED => Some(PHASE_KEYS[phase as usize]),
+        _ => None,
+    }
+}
+
+pub const fn phase_key(phase: i32) -> &'static str {
+    match known_phase_key(phase) {
+        Some(key) => key,
+        None => PHASE_KEYS[0],
     }
 }
 
@@ -54,10 +63,17 @@ pub const OUTCOME_KEYS: [&str; 6] = [
     "RAID_INST_OUTCOME_CANCELED",
 ];
 
-pub const fn outcome_key(outcome: i32) -> &'static str {
+pub const fn known_outcome_key(outcome: i32) -> Option<&'static str> {
     match outcome {
-        OUTCOME_NONE..=OUTCOME_CANCELED => OUTCOME_KEYS[outcome as usize],
-        _ => OUTCOME_KEYS[0],
+        OUTCOME_NONE..=OUTCOME_CANCELED => Some(OUTCOME_KEYS[outcome as usize]),
+        _ => None,
+    }
+}
+
+pub const fn outcome_key(outcome: i32) -> &'static str {
+    match known_outcome_key(outcome) {
+        Some(key) => key,
+        None => OUTCOME_KEYS[0],
     }
 }
 

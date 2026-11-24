@@ -55,3 +55,52 @@ test('every raid’s target is asked, past the 4,096 the log once stopped at', (
   assert.equal(asked.states.length, 5_000);
   assert.ok(asked.states.some(state => state.stateId === 1), 'the oldest raid’s target too');
 });
+
+test('exact phase dates omit by, bounded dates keep by, overlapping unread intervals never order by time, and victim labels match provenance', () => {
+  const exactRaid = syntheticEpisode('20', 10, 'ENG', 20, 30, true, {
+    firstHourExact: true,
+    endedExact: true,
+    victimSource: 'fixedTarget',
+    runs: [
+      { ...phaseRun(10, 19, 2), firstExact: true, afterHour: 9 },
+      { ...phaseRun(20, 29, 4), firstExact: true, afterHour: 19 },
+      { ...phaseRun(30, 40, 5, 3), firstExact: true, afterHour: 29 },
+    ],
+  });
+  const boundedLater = syntheticEpisode('10', 100, 'ENG', null, 120, false, {
+    firstHourExact: false,
+    endedExact: false,
+    victimSource: 'controllerAtFirstEndedRead',
+    runs: [
+      { ...phaseRun(100, 100, 2), firstExact: false, afterHour: null },
+      { ...phaseRun(120, 125, 5, 5), firstExact: false, afterHour: 100 },
+    ],
+  });
+  const boundedEarlier = syntheticEpisode('15', 100, 'ENG', null, 115, false, {
+    firstHourExact: false,
+    endedExact: false,
+    victimSource: 'lastObservedController',
+    runs: [
+      { ...phaseRun(100, 100, 2), firstExact: false, afterHour: null },
+      { ...phaseRun(115, 125, 5, 2), firstExact: false, afterHour: 100 },
+    ],
+  });
+  const data = syntheticRaidLog([exactRaid, boundedLater, boundedEarlier]);
+  const rows = raidLogRows(data, 125, [], all, null);
+  assert.deepEqual(
+    rows.map(row => [row.id, row.hour, row.by]),
+    [['10', 120, true], ['15', 115, true], ['20', 30, false]],
+  );
+  const reversedInput = syntheticRaidLog([exactRaid, boundedEarlier, boundedLater]);
+  assert.deepEqual(
+    raidLogRows(reversedInput, 125, [], all, null).map(row => row.id),
+    ['10', '15', '20'],
+    'overlapping unread intervals cluster together and tie-break by id rather than guessed time order',
+  );
+  const fixedTip = raidTooltip(data, raidAt(exactRaid, 35)!, 'England', 'Germany', 'Kent', 35);
+  assert.equal(fixedTip.rows[1].label, 'Fixed target country');
+  assert.equal(fixedTip.rows.find(row => row.label === 'First seen')?.label, 'First seen');
+  const endedTip = raidTooltip(data, raidAt(boundedLater, 125)!, 'England', 'Germany', 'Kent', 125);
+  assert.equal(endedTip.rows[1].label, 'Target controller at first ended read');
+  assert.equal(endedTip.rows.find(row => row.label === 'First seen by')?.label, 'First seen by');
+});
