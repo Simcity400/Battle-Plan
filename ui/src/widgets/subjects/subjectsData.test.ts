@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply, SubjectLevel, SubjectReply } from '../../generated/dashboard';
+import { rankedCounts } from '../../dashboard/groupCounts.ts';
 import { changeHours, laneCountries, levelColours, levelName, overlordTagAt, overlordViews, subjectLanes, subjectTagAt, validateSubjectReply } from './subjectsData.ts';
 import { Lineage } from '../../dashboard/identity.ts';
 import type { LaneOptions } from './subjectsData';
@@ -31,7 +32,9 @@ const reply: SubjectReply = {
 
 const names: Record<string, string> = { D01: 'Free Republic', 'MY TAG': 'Modded Realm', 'A:B': 'Colon Land', ENG: 'United Kingdom', CAN: 'Canada' };
 const text = { country: (tag: string) => ({ name: names[tag] ?? tag }), day: (hour: number) => `day ${hour}` };
-const options: LaneOptions = { order: 'first', subjects: 'since', ended: true, countries: null };
+const counted = (hour: number, groups: readonly [string, number][], missing: string | null = null) => rankedCounts({ branchId: '1', of: 'overlords', hour, nextChange: null, missing, warnings: [],
+  groups: groups.map(([key, count]) => ({ key, count, missing: null })) });
+const options: LaneOptions = { order: 'first', subjects: 'since', ended: true, countries: null, counts: null };
 const byToken = new Map(levels.map(level => [level.token, level]));
 const holder = (tag: string, slot: number, firstHour = 0, lastHour = 500, countryId = slot) => ({ tag, identities: [{ slot, countryId, firstHour, lastHour }] });
 const identities = countryIdentityIndex(['D01', 'MY TAG', 'A:B', 'ENG', 'CAN'].map((tag, slot) => holder(tag, slot)));
@@ -114,7 +117,7 @@ test('level colours follow the content order, never a level name, and fold past 
 test('each overlord heads its subjects, dated as the game dates them, coloured by level', () => {
   const views = overlordViews(reply);
   const colours = levelColours(levels, ['c0', 'c1', 'c2', 'c3'], 'other');
-  const { lanes, info } = subjectLanes(views, byToken, colours, 160, options, text, reply.unobserved);
+  const { lanes, info } = subjectLanes(views, byToken, colours, 160, { ...options, counts: counted(160, [['D01', 2], ['ENG', 1]]) }, text, reply.unobserved);
   assert.deepEqual(lanes.map(lane => [lane.identity?.label, lane.label]), [
     ['United Kingdom', '1 subject'], ['Canada', 'Puppet · Since day 10'],
     ['Free Republic', '2 subjects'], ['Modded Realm', 'Puppet · Since day 50'], ['Colon Land', 'Level not recorded · Since day 120'],
@@ -132,7 +135,9 @@ test('each overlord heads its subjects, dated as the game dates them, coloured b
 test('ended and unrecorded stretches are said honestly, and can be hidden or narrowed', () => {
   const views = overlordViews(reply, new Lineage([]), identities);
   const colours = levelColours(levels, ['c0', 'c1', 'c2', 'c3'], 'other');
-  const at = (hour: number, extra: Partial<LaneOptions> = {}) => subjectLanes(views, byToken, colours, hour, { ...options, ...extra }, text, reply.unobserved)
+  const counts = new Map([[220, counted(220, [['D01', 1], ['ENG', 1]])], [260, counted(260, [['D01', 2], ['ENG', 1]])],
+    [305, counted(305, [], 'Subject relations were not read at this hour')], [320, counted(320, [['D01', 1], ['ENG', 1]])]]);
+  const at = (hour: number, extra: Partial<LaneOptions> = {}) => subjectLanes(views, byToken, colours, hour, { ...options, counts: counts.get(hour) ?? null, ...extra }, text, reply.unobserved)
     .lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
   assert.ok(at(220).includes('Modded Realm: Ended day 200'));
   assert.ok(at(260).includes('Modded Realm: Autonomy level name unavailable · Since day 250'));
@@ -142,6 +147,7 @@ test('ended and unrecorded stretches are said honestly, and can be hidden or nar
   assert.ok(!at(320, { ended: false }).some(label => label.startsWith('Modded Realm')));
   assert.deepEqual(at(320, { countries: new Set(['CAN']), countryIds: identities.selected(['CAN']) }), ['United Kingdom: 1 subject', 'Canada: Puppet · Since day 10']);
   assert.deepEqual(at(320, { order: 'name', subjects: 'name' }).filter(label => !label.includes('·')).slice(0, 1), ['Free Republic: 1 subject']);
+  assert.deepEqual(at(260, { order: 'subjects' }).filter(label => !label.includes('·')), ['Free Republic: 2 subjects', 'United Kingdom: 1 subject'], 'the product ranks the overlords');
 });
 
 test('an unrecorded hour is a gap in the overlord band, not a drop in its subjects', () => {
@@ -187,7 +193,7 @@ test('a change of tag of a subject or its overlord keeps one lane and one overlo
   assert.equal(overlordTagAt(views[0], 120), 'D01');
   assert.equal(overlordTagAt(views[0], 280), 'D02');
   const colours = levelColours(levels, ['c0', 'c1'], 'other');
-  const labels = subjectLanes(views, byToken, colours, 280, options, text, []).lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
+  const labels = subjectLanes(views, byToken, colours, 280, { ...options, counts: counted(280, [['D02', 2]]) }, text, []).lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
   assert.deepEqual(labels, ['D02: 2 subjects', 'BBB: Puppet · Since day 50', 'CCC: Autonomy level name unavailable · Since day 70']);
   assert.equal(overlordViews(renamed).length, 2);
 });
@@ -270,7 +276,7 @@ test('manual OLD never admits a replacement O tree when no tag-change event was 
   ] };
   const views = overlordViews(data, new Lineage([]), identities);
   assert.deepEqual(views.map(view => view.key), ['[1,10]', '[1,20]']);
-  const selected = { ...options, countries: new Set(['OLD']), countryIds: identities.selected(['OLD']) };
+  const selected = { ...options, countries: new Set(['OLD']), countryIds: identities.selected(['OLD']), counts: counted(19, [['O', 1]]) };
   assert.deepEqual(subjectLanes(views, byToken, new Map(), 19, { ...selected, ended: false }, text, []).lanes, []);
   const former = subjectLanes(views, byToken, new Map(), 19, selected, text, []);
   assert.equal(former.lanes.length, 2);
@@ -293,7 +299,7 @@ test('native replacement of either relation endpoint splits the tree or lane and
     assert.equal(lanes.length, 2, field);
     assert.deepEqual(lanes.map(view => view.runs.map(run => [run.firstHour, run.lastHour])), [[[0, 9]], [[10, 19]]], field);
     assert.deepEqual(lanes[1].runs[0].steps, [step(10, 11, 'autonomy_puppet'), step(12, 19, 'autonomy_mod_march')], field);
-    const layout = subjectLanes(views, byToken, new Map(), 19, { ...options, ended: false }, text, []);
+    const layout = subjectLanes(views, byToken, new Map(), 19, { ...options, ended: false, counts: counted(19, [[field === 'overlord' ? 'X' : 'KEPT', 1]]) }, text, []);
     assert.equal(layout.lanes.length, 2, field);
     assert.equal(layout.lanes[0].label, '1 subject', field);
   }

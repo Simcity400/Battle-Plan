@@ -639,6 +639,7 @@ test('lane view skips projection on next(), caches unchanged sources across serv
       ...scene,
       model: audit ? { ...model, audit: true } : model,
       hour: 10,
+      seek: 0,
       speed,
       binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
@@ -702,6 +703,7 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
         pictures: [],
         model: makeModel(rows, focusedKey, extra),
         hour: 10,
+        seek: 0,
         speed,
         binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
         inspect,
@@ -963,7 +965,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
         scrollTop: 0,
       },
       hour: 10,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: 100,
@@ -1165,7 +1167,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
         scrollTop: 0,
       },
       hour: 10,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: 100,
@@ -1192,6 +1194,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
         scrollTop: 0,
       },
       hour: 10,
+      seek: 0,
       speed: 24,
       binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
@@ -1234,6 +1237,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
         auditId: 42,
       },
       hour: 10,
+      seek: 0,
       speed: 24,
       binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
@@ -1503,7 +1507,8 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
   assert.equal(extraRow.value, undefined, 'F8: tooltip row keeps typed ValueState instead of flattened string');
   assert.equal(extraRow.valueState?.kind, 'partial');
   assert.equal(extraRow.valueState?.atLeast, true, 'F8: tooltip row preserves atLeast on partial values');
-  assert.ok(tooltipText(tipAtLeast).includes('at least 1, partial: Missing corps'), 'F8: tooltipText speaks via valueStateText including atLeast');
+  assert.ok(tooltipText(tipAtLeast).includes('1, partial: Missing corps'), 'F8: tooltipText speaks via valueStateText without at least wording');
+  assert.ok(!tooltipText(tipAtLeast).includes('at least'), 'F8: tooltipText omits at least wording');
 
   const auditA = deriveTableAudit({ model: mAtLeast, flatRows: resolveTableRows(mAtLeast, settings), visibleColumns: layouts });
   const auditB = deriveTableAudit({ model: mPlainPartial, flatRows: resolveTableRows(mPlainPartial, settings), visibleColumns: layouts });
@@ -1705,7 +1710,7 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
       pictures: [],
       model: { family: 'table' as const, kind: 'test-rank-marker-timer', options: {}, settings: rmSettings, sources: {}, staticPanels: { main: { rows: list } }, width: 320, height: 180, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
       hour,
-      speed: 24,
+      seek: 0, speed: 24,
       binding: { generation: 1, surfaces: [{ width: 320, height: 180, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: clockNow,
@@ -1813,7 +1818,7 @@ test('an incremental table paint after a seek back, a same-hour correction and a
         pictures: [],
         model: { family: 'table' as const, kind: 'test-fresh-equals-incremental', options: {}, settings, sources: {}, staticPanels: { main: { rows } }, width: 360, height: 200, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
         hour,
-        speed: 24,
+        seek: 0, speed: 24,
         binding: { generation: 1, surfaces: [{ width: 360, height: 200, dpr: 1 }], offset: 0, pin: null },
         inspect: null,
         now: 5000,
@@ -1897,7 +1902,7 @@ test('an incremental table paint after a seek back, a same-hour correction and a
         pictures: [],
         model: { family: 'table' as const, kind: 'test-panes-fresh', options: {}, settings, sources: {}, staticPanels: { main: { sides } }, width: 700, height: 240, scrollLeft, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
         hour,
-        speed: 24,
+        seek: 0, speed: 24,
         binding: { generation: 1, surfaces: [{ width: 700, height: 240, dpr: 1 }], offset: 0, pin: null },
         inspect: null,
         now: 5000,
@@ -2023,7 +2028,7 @@ test('cell kinds for converted tables: an item column takes the spare width, two
     const paint = () => view.paint({
       widget: 1, subs: [], pictures: [],
       model: { family: 'table' as const, kind: 'test-names-arrive', options: {}, settings, sources: {}, staticPanels: { main: { at: seq } }, width: 120, height: 80, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
-      hour: 1, speed: 0, binding: { generation: 1, surfaces: [{ width: 120, height: 80, dpr: 1 }], offset: 0, pin: null }, inspect: null, now: 1,
+      hour: 1, seek: 0, speed: 0, binding: { generation: 1, surfaces: [{ width: 120, height: 80, dpr: 1 }], offset: 0, pin: null }, inspect: null, now: 1,
     }, state, () => `c${seq++}`);
     const widthOf = (painted: ReturnType<typeof paint>) => (painted.fields.widths?.value as { widths: Record<string, number> }).widths.name!;
     const before = widthOf(paint());
@@ -2033,6 +2038,23 @@ test('cell kinds for converted tables: an item column takes the spare width, two
   } finally {
     (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
   }
+
+  const withAction: TableColumnSpec[] = [
+    kinds[0]!,
+    { key: 'name', label: 'Organisation', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item' },
+    { key: 'size', label: 'Size', as: 'plain', offered: ['plain'], priority: 1, numeric: true },
+    { key: 'spare', label: '', as: 'plain', offered: ['plain'], priority: 2 },
+    { key: 'view', label: '', as: 'plain', offered: ['plain'], priority: 3, cellKind: 'action', sortable: false },
+  ];
+  const named = 'Army Ordnance Department';
+  const tipRows = resolveTableRows({ hour: 1, columns: withAction, rows: [{
+    key: 'org', name: named, tooltipAction: 'Open its organisation window',
+    cells: { pic: { value: knownValue(named), iconSlot: true }, name: { value: knownValue(named) }, size: { value: zeroValue(0) }, spare: { value: knownValue('stray') }, view: { value: knownValue('View'), actionLabel: 'View' } },
+  }] }, tableSettingsOf(undefined, withAction, { density: 'normal', sort: { column: 'size', direction: 'descending' } }));
+  const tip = deriveTableTooltip(tipRows, 'org', withAction, 1)!;
+  assert.equal(tip.title, named, 'the name column, not the picture before it, is the title');
+  assert.deepEqual(tip.rows.map(row => row.label), ['Size'], 'no unlabelled row, no repeated name, no action word');
+  assert.equal(tip.note, 'Open its organisation window', 'an action column contributes only its hint');
 });
 
 test('tree rows align whether or not they can open: a level with openable rows gives every row of that level the chevron lane, children start under their parent\'s name', () => {
@@ -2350,7 +2372,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
           reducedMotion: true,
         },
         hour,
-        speed: 24,
+        seek: 0, speed: 24,
         binding: { generation: 1, surfaces: [{ width: 640, height: 360, dpr: 1 }], offset: 0, pin: null },
         inspect: null,
         now: 5000,

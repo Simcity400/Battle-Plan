@@ -3,7 +3,6 @@ import type { IconName } from '../../components/Icons';
 import { validateProductReply, type ProductRequest } from '../../dashboard/client.ts';
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
-import { useSlotTagsState } from '../../dashboard/countrySlots.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
@@ -40,6 +39,7 @@ import {
   planSignature,
   readPlanExact,
   stabilizeCanvasDimension,
+  tailPageOffsets,
 } from '../broker.ts';
 import type { HolderRun } from '../holders.ts';
 import { overlapsHourRanges } from '../holders.ts';
@@ -50,6 +50,7 @@ import {
   flagChoiceKey,
   useIdentities,
   useIdentityScope,
+  useSlotIndex,
   type IdentityAsk,
   type IdentitySnapshot,
 } from '../identity/react.ts';
@@ -197,7 +198,7 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly onSeriesViewport: (viewport: TileViewport) => void;
   readonly retryTiles: () => void;
   readonly hovers: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
-  readonly exactReadView: ((hour: number) => Promise<BoundedReadView | null>) | undefined;
+  readonly exactReadView: ((hour: number, rowWindow: FamilyRowWindow | null) => Promise<BoundedReadView | null>) | undefined;
   readonly bodyStatus: FamilyBodyStatus;
   readonly bannerFailure: BannerFailureInfo | null;
   readonly nameFailureDetail: string | undefined;
@@ -386,27 +387,33 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     || anySlot
     || (widget.countries.kind !== 'all' && resolvedMulti?.top == null)
   );
-  const slotState = useSlotTagsState(runtime.client, track, active && needsSlots);
+  const identityScope = useIdentityScope(runtime.client, track?.source, track?.branch.id, active && !!track);
+  const branchBounds = useMemo(
+    () => (track ? [track.branch.firstHour, track.branch.lastHour] as const : undefined),
+    [track?.branch.firstHour, track?.branch.lastHour],
+  );
+  const slotState = useSlotIndex(runtime.client, track?.source, identityScope, active && needsSlots, branchBounds);
   const slots = slotState.slots;
+  const slotRevision = slotState.revision;
 
   const effectiveMulti = useMemo(() => {
     if (!resolvedMulti) return null;
     if (typeof singleSlotId !== 'number') return resolvedMulti;
-    const runs = slots?.tagRuns(singleSlotId) ?? [];
+    const runs = [...(slots?.tagRuns(singleSlotId) ?? [])];
     return {
       ...resolvedMulti,
       tags: [...new Set(runs.map(run => run.tag))],
       membership: new Map([['', runs]]),
       known: (from: number, to?: number) => !!slots && resolvedMulti.known(from, to),
     };
-  }, [resolvedMulti, singleSlotId, slots]);
+  }, [resolvedMulti, singleSlotId, slots, slotRevision]);
 
   const holders = useMemo<Readonly<Record<string, readonly HolderRun[]>> | null>(() => {
     if (!isMulti || !effectiveMulti || effectiveMulti.top != null || !slots) return null;
     const out: Record<string, readonly HolderRun[]> = {};
     for (const key of effectiveMulti.tags) out[key] = slots.runsForKey(key);
     return out;
-  }, [isMulti, effectiveMulti, slots]);
+  }, [isMulti, effectiveMulti, slots, slotRevision]);
 
   const unobserved = useMemo(
     () => effectiveCountryUnobserved(widget.countries, effectiveMulti?.unobserved),
@@ -461,11 +468,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }, []);
 
   const wantsIdentity = wantsLabels || laneDemands.length > 0;
-  const identityScope = useIdentityScope(runtime.client, track?.source, track?.branch.id, active && !!track);
-  const branchBounds = useMemo(
-    () => (track ? [track.branch.firstHour, track.branch.lastHour] as const : undefined),
-    [track?.branch.firstHour, track?.branch.lastHour],
-  );
   const labelAskHour = pinHour ?? moment;
   const labelAsks = useMemo<readonly IdentityAsk[]>(() => {
     const asks: IdentityAsk[] = [];
@@ -482,7 +484,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     flagSize: 'panel',
     branchBounds,
   });
-  const identityRevision = identityState.index?.resolveRevision() ?? -1;
+  const countryRevision = identityState.index?.countryRevision() ?? -1;
   useEffect(() => {
     if (!active || !wantsLabels || !identityScope || !track || !identityState.index?.hasFacts()) return;
     const seen = new Set<string>();
@@ -506,7 +508,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       }
     }
     if (choices.length) identityBrokerFor(runtime.client).requestFlagChoices(identityScope, 'panel', choices, track.source);
-  }, [active, wantsLabels, identityScope, runtime.client, track, identityState.index, identityRevision, labelTags, firstHour, lastHour]);
+  }, [active, wantsLabels, identityScope, runtime.client, track, identityState.index, countryRevision, labelTags, firstHour, lastHour]);
 
   const builtLooks = useMemo(
     () => (wantsLabels ? buildCountryLooksFromIdentity(identityState.index, labelTags, firstHour, lastHour, identityState.flagFor, wantsColours) : NO_LOOKS),
@@ -906,10 +908,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         changed = true;
       }
       const frozenHour = state.frozenHour;
-      const startPage = Math.max(0, Math.floor((Math.max(first, headLimit) - headLimit) / pageSize));
-      const endPage = Math.floor((end - 1 - headLimit) / pageSize);
-      const wanted = new Set<number>();
-      for (let p = startPage; p <= endPage; p++) wanted.add(headLimit + p * pageSize);
+      const wanted = new Set(tailPageOffsets({ first, count }, headLimit, pageSize));
 
       for (const offset of [...state.inFlight]) {
         if (!wanted.has(offset)) {
@@ -1141,7 +1140,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     const frozenFollowing = following;
     const frozenWindow = window;
     const g = displayedGate;
-    return (wantedHour: number) => readPlanExact(frozenPlan, wantedHour, {
+    return (wantedHour: number, rowWindow: FamilyRowWindow | null) => readPlanExact(frozenPlan, wantedHour, {
       client: frozenClient,
       following: frozenFollowing,
       timeMode: frozenTimeMode,
@@ -1152,6 +1151,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       exactOnce: (key, load) => perfLog!.exactOnce(key, load),
       identity: identityProvider,
       art: artProvider,
+      rowWindow,
     });
   }, [displayedCtx, displayedPlan, displayedGate, runtime.client, following, widget.time.mode, window, identityProvider, artProvider]);
 
@@ -1203,8 +1203,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     }
 
     if (isMulti) {
-      if (needsSlots && slotState.error && !slots) {
-        return { kind: 'failed', failure: slotState.error, origin: 'local', onRetry: slotState.retry };
+      if (needsSlots && slotState.failure && !slots) {
+        return { kind: 'failed', failure: slotState.failure, origin: 'local', onRetry: slotState.retry };
       }
       if ((needsGroups && !groups.data) || (needsSlots && !slots)) {
         return { kind: 'loading', label: loadingLabel };
@@ -1279,7 +1279,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     countriesState,
     isMulti,
     needsSlots,
-    slotState.error,
+    slotState.failure,
     slotState.retry,
     slots,
     effectiveMulti,
