@@ -1,18 +1,16 @@
 import { linearTicks } from '../../charts/valueAxis.ts';
-import { FLAG_SLOT_HEIGHT, FLAG_SLOT_WIDTH } from '../../draw/kit.ts';
+import { FLAG_SLOT_HEIGHT, FLAG_SLOT_WIDTH, ROW_SECTION_HEIGHT } from '../../draw/kit.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { BarsDataRow, BarsForm, BarsModel, BarsTwoSidedLayout } from './model.ts';
 
 export const BARS_PAD_X = 12;
 export const BARS_PAD_TOP = 6;
 export const BARS_PAD_BOTTOM = 6;
-export const BARS_SECTION_HEIGHT = 20;
 export const BARS_HEADER_HEIGHT = 22;
 export const BARS_AXIS_HEIGHT = 20;
 export const BARS_LEGEND_ROW_HEIGHT = 22;
 export const BARS_VALUE_GAP = 6;
 export const BARS_SPLIT_CENTER_GAP = 36;
-export const BARS_REMOVE_BUTTON_SIZE = 22;
 export const BARS_GRIP_WIDTH = 10;
 
 export interface BarsLayout {
@@ -153,7 +151,7 @@ export function layoutFamilyBars(
   for (let i = 0; i < model.rows.length; i++) {
     const row = model.rows[i]!;
     rowTops.push(cursorY);
-    const rh = row.kind === 'section' ? BARS_SECTION_HEIGHT : dataRowHeight;
+    const rh = row.kind === 'section' ? ROW_SECTION_HEIGHT : dataRowHeight;
     rowHeights.push(rh);
     cursorY += rh;
   }

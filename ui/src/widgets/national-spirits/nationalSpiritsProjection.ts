@@ -1,81 +1,67 @@
-import { startUnseen } from '../../charts/timeline/runState.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
+import { holdingLabel, holdingSince, ideaHistoryProof, ideaNameMissing, lookOf, validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
 import type { CardWidgetDeclaration } from '../../families/card/declaration.ts';
 import { cardMediaFromIcon, type CardItemRow, type CardModel, type CardProjection } from '../../families/card/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notRecorded } from '../../families/value.ts';
-import { formatDateHover, formatDateOnly } from '../../families/valueFormat.ts';
+import { formatDateHover } from '../../families/valueFormat.ts';
 import type { IdeaHistoryReply } from '../../generated/dashboard';
-import { activeAt, spirits } from './spiritsData.ts';
 
-export interface NationalSpiritsOptions {
-  readonly branchFirst: number;
-}
+export type NationalSpiritsOptions = Record<string, never>;
 
 const COLUMNS = { art: { width: 18, height: 18 }, figure: 150, figureAlign: 'right' } as const;
 const NO_ICON = 'The spirit has no icon in the current installation';
-const replyLists = new WeakMap<IdeaHistoryReply, ReturnType<typeof spirits>>();
-
-function listOf(reply: IdeaHistoryReply): ReturnType<typeof spirits> {
-  let list = replyLists.get(reply);
-  if (!list) replyLists.set(reply, list = spirits(reply));
-  return list;
-}
-
-function nextBoundary(reply: IdeaHistoryReply, hour: number): number {
-  let next = Infinity;
-  for (const span of reply.spans) {
-    if (span.firstHour > hour && span.firstHour < next) next = span.firstHour;
-    if (span.lastHour + 1 > hour && span.lastHour + 1 < next) next = span.lastHour + 1;
-  }
-  for (const span of reply.unobserved) {
-    if (span.firstHour > hour && span.firstHour < next) next = span.firstHour;
-    if (span.lastHour + 1 > hour && span.lastHour + 1 < next) next = span.lastHour + 1;
-  }
-  return next;
-}
+const NATIONAL_SPIRIT = 'national_spirit';
+const UNCLASSIFIED = 'The idea is in no category the content defines';
 
 export const nationalSpiritsProjection: CardProjection<NationalSpiritsOptions> = registerFamilyProjection({
   family: 'card' as const,
   kind: 'national-spirits',
   nextChange(readView) {
-    const reply = readView.panel<IdeaHistoryReply>('main');
-    return reply ? nextBoundary(reply, readView.hour) : Infinity;
+    return readView.panel<IdeaHistoryReply>('main')?.nextChange ?? Infinity;
   },
-  project(readView, options): CardModel {
+  project(readView): CardModel {
     const hour = readView.hour;
     const reply = readView.panel<IdeaHistoryReply>('main');
     if (!reply) return { hour, rows: [], columns: COLUMNS, rowHeight: 26 };
     const warnings = reply.warnings.length ? { warnings: reply.warnings } : {};
-    if (reply.unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour)) {
-      return { hour, rows: [], columns: COLUMNS, rowHeight: 26, empty: 'National spirits were not recorded at this date.', emptyKind: 'unavailable', ...warnings };
+    const nextChangeAt = reply.nextChange ?? Infinity;
+    if (reply.unrecorded) {
+      return { hour, rows: [], columns: COLUMNS, rowHeight: 26, empty: 'National spirits were not recorded at this date.', emptyKind: 'unavailable', ...warnings, nextChangeAt };
     }
-    const rows: CardItemRow[] = activeAt(listOf(reply), hour).map(spirit => {
-      const span = spirit.spans.find(item => item.firstHour <= hour && hour <= item.lastHour)!;
-      const before = startUnseen(span.firstHour, options.branchFirst, reply.unobserved);
-      const since = before ? `Held before ${formatDateOnly(span.firstHour)}` : `Since ${formatDateOnly(span.firstHour)}`;
-      const title = spirit.nameMissing ? notRecorded(spirit.nameMissing) : knownValue(spirit.name);
-      const shown = spirit.nameMissing ? 'Name not recorded' : spirit.name;
-      return {
+    const spiritCategories = new Set(reply.categories.filter(category => category.kind === NATIONAL_SPIRIT).map(category => category.token));
+    const rows: CardItemRow[] = [];
+    for (const at of reply.held) {
+      const holding = reply.holdings[at]!;
+      const look = lookOf(reply, holding);
+      const category = look.info.category;
+      if (category !== null && !spiritCategories.has(category)) continue;
+      const unclassified = category === null ? look.info.unknown ?? UNCLASSIFIED : null;
+      const nameMissing = ideaNameMissing(look.artwork, look.info);
+      const name = holdingLabel(look, holding);
+      const since = holdingSince(holding);
+      const icon = look.artwork.icon ?? undefined;
+      const shown = nameMissing ? 'Name not recorded' : name;
+      rows.push({
         kind: 'item',
-        key: spirit.token,
-        art: cardMediaFromIcon(readView, spirit.icon, NO_ICON, spirit.nameMissing ? undefined : spirit.name),
-        title,
-        figure: { value: knownValue(since), figure: 'Since', muted: true },
+        key: holding.token,
+        art: cardMediaFromIcon(readView, icon, NO_ICON, nameMissing ? undefined : name),
+        title: nameMissing ? notRecorded(nameMissing) : knownValue(name),
+        figure: { value: knownValue(`${since.label} ${since.value}`), figure: 'Since', muted: true },
         tooltip: {
           title: shown,
           fullText: shown,
-          subtitle: 'National spirit',
+          subtitle: unclassified ? 'Category not recorded' : 'National spirit',
           hour,
           items: [
-            { label: before ? 'Held before' : 'Since', value: formatDateHover(span.firstHour) },
-            ...(spirit.nameMissing ? [{ label: 'Name', missingReason: spirit.nameMissing }] : []),
-            ...(spirit.icon ? [] : [{ label: 'Art', missingReason: `${NO_ICON}; art missing from the current installation` }]),
+            { label: since.label, value: formatDateHover(holding.firstHour) },
+            ...(unclassified ? [{ label: 'Category', missingReason: unclassified }] : []),
+            ...(nameMissing ? [{ label: 'Name', missingReason: nameMissing }] : []),
+            ...(icon ? [] : [{ label: 'Art', missingReason: `${NO_ICON}; art missing from the current installation` }]),
           ],
         },
-      };
-    });
+      });
+    }
     return {
       hour,
       rows,
@@ -83,7 +69,7 @@ export const nationalSpiritsProjection: CardProjection<NationalSpiritsOptions> =
       rowHeight: 26,
       ...(rows.length === 0 ? { empty: 'No national spirits at this date.' } : {}),
       ...warnings,
-      nextChangeAt: nextBoundary(reply, hour),
+      nextChangeAt,
     };
   },
 }) as CardProjection<NationalSpiritsOptions>;
@@ -112,12 +98,14 @@ export const nationalSpiritsDeclaration: CardWidgetDeclaration<NationalSpiritsOp
             product: 'idea-history',
             followQuery: null,
             params: { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) },
-            buildSpanParams: base => base,
+            buildSpanParams: (base, span) => ({ ...base, hour: span.lastHour }),
+            provenInterval: ideaHistoryProof,
+            dynamicKeys: ['hour'],
             validate: validateIdeaHistoryReply,
           },
         }]
       : [],
   }),
   projection: nationalSpiritsProjection,
-  projectionOptions: ctx => ({ branchFirst: ctx.branch.firstHour }),
+  projectionOptions: () => ({}),
 };

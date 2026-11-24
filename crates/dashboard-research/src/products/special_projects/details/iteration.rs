@@ -277,6 +277,7 @@ impl AtHour for SpecialProjectIterationAt {
     const KEY: &'static str = "special-project-iteration";
     const TITLE: &'static str = "Special project iteration";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads project coverage spans and custody history and stamps at.hour into reply");
     type Params = SpecialProjectIterationParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, owner, project, ordinal, read: Read];
     type Reply = SpecialProjectIteration;

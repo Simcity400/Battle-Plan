@@ -1,8 +1,6 @@
 dashboard_base::register_products! {
     DOCTRINES_DOCTRINES => crate::products::doctrines::Doctrines,
     ARMY_ARMYSIZE => crate::products::army::ArmySize,
-    FORCES_AIRFORCESIZE => crate::products::forces::AirForceSize,
-    FORCES_NAVYSIZE => crate::products::forces::NavySize,
     LEADERS_LEADERPORTRAITS => crate::products::leaders::LeaderPortraits,
     LEADER_NAME_RUNS_LEADERNAMERUNS => crate::products::leader_name_runs::LeaderNameRuns,
     LEADERS_CAREER_LEADERCAREER => crate::products::leaders::career::LeaderCareer,
@@ -27,10 +25,12 @@ dashboard_base::register_hourly_products! {
     DIVISIONS_TEMPLATES_DIVISIONTEMPLATES => crate::products::divisions::templates::DivisionTemplates,
     DIVISIONS_CAREERS_DIVISIONCAREERS => crate::products::divisions::careers::DivisionCareers,
     DIVISIONS_CAREERS_DIVISIONRECORD => crate::products::divisions::careers::DivisionRecord,
+    DIVISIONS_CAREERS_DECORATEDDIVISIONS => crate::products::divisions::careers::DecoratedDivisions,
     DIVISIONS_EQUIPMENT_DIVISIONEQUIPMENT => crate::products::divisions::equipment::DivisionEquipment,
     ARMY_LOSSES_ARMYLOSSES => crate::products::army_losses::ArmyLosses,
     FORCES_AIRFORCEAT => crate::products::forces::AirForceAt,
     FORCES_NAVYAT => crate::products::forces::NavyAt,
+    ARMY_ARMYAT => crate::products::army::ArmyAt,
 }
 
 use dashboard_base::{Source, products::at_hour::exact_panel};
@@ -43,3 +43,4 @@ type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, St
 pub const EXACT_DOCTRINEMASTERY: ExactPanel = exact_panel::<crate::products::doctrine_mastery::DoctrineMastery>;
 pub const EXACT_AIRFORCEAT: ExactPanel = exact_panel::<crate::products::forces::AirForceAt>;
 pub const EXACT_NAVYAT: ExactPanel = exact_panel::<crate::products::forces::NavyAt>;
+pub const EXACT_ARMYAT: ExactPanel = exact_panel::<crate::products::army::ArmyAt>;

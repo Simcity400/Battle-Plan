@@ -64,6 +64,7 @@ impl AtHour for TechnologyEffectsAt {
     const KEY: &'static str = "technology-effects";
     const TITLE: &'static str = "Technology effects";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("stamps at.hour into TechnologyEffects.hour");
     type Params = TechnologyEffectsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, token, databaseIndex];
     type Reply = TechnologyEffects;

@@ -79,6 +79,7 @@ impl AtHour for WarContributions {
     const KEY: &'static str = "war-contributions";
     const TITLE: &'static str = "War contributions";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("stamps at.hour into WarContributionsReply.hour");
     type Params = WarContributionsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, viewpoint];
     type Reply = WarContributionsReply;

@@ -1,7 +1,7 @@
 
 use dashboard_base::products::Country;
 use dashboard_base::{products::{LoadContext, at_hour::{At, AtHour}}, queries::country_ids::Names};
-use dashboard_world::products::{place_names, sea_regions::{self, Choice, SeaContent}};
+use dashboard_world::products::{place_names, sea_regions::{self, SeaContent}};
 use dashboard_base::{Source, catalogue::Refusals};
 use dashboard_follow::live::Source as LiveSource;
 use replay_data::rows::{NavalRegionalMineRow, TableId, tables};
@@ -34,6 +34,10 @@ pub struct MinedRegion {
     pub region: u32,
     pub owners: Vec<MineOwner>,
     pub unknown_owners: u32,
+    #[doc = " One of the user's regions."]
+    pub pinned: bool,
+    #[doc = " Why a chosen region's mines are not known at the hour."]
+    pub missing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -91,7 +95,7 @@ fn fold<'a>(rows: &[NavalRegionalMineRow], name: impl Fn(u32) -> Option<&'a str>
     let mut mined = Vec::with_capacity(regions.len());
     for (_, region, owners) in regions {
         cells.extend(owners.iter().map(|&(_, tag, raw)| (region, tag.to_owned(), u128::from(raw) << 33 | 1 << 32 | u128::from(region))));
-        mined.push(MinedRegion { region, owners: owners.into_iter().map(|(_, tag, _)| MineOwner { tag: tag.to_owned() }).collect(), unknown_owners: unknown_at(region) });
+        mined.push(MinedRegion { region, owners: owners.into_iter().map(|(_, tag, _)| MineOwner { tag: tag.to_owned() }).collect(), unknown_owners: unknown_at(region), pinned: false, missing: None });
     }
     let unknown = sea
         .iter()
@@ -135,10 +139,14 @@ pub struct MinefieldsParams {
     #[doc = " The owners shown; every owner when none."]
     #[serde(default)]
     pub countries: Option<Vec<Country>>,
-    #[doc = " The sea regions shown; every mined region when none."]
+    #[doc = " The user's sea regions, shown first in this order whether mined or not."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub regions: Option<Vec<u32>>,
+    pub pinned_regions: Option<Vec<u32>>,
+    #[doc = " Mined regions the user removed from the automatic set."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub hidden_regions: Option<Vec<u32>>,
     #[doc = " Region ordering; defaults to most mines."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
@@ -151,8 +159,6 @@ pub struct MinefieldsParams {
 pub struct MinefieldsReply {
     pub regions: Vec<MinedRegion>,
     pub unknown: Vec<UnknownRegion>,
-    #[doc = " Every sea region the content names and every region mined, for the region setting."]
-    pub choices: Vec<Choice>,
     pub scale: i32,
     pub warnings: Vec<String>,
 }
@@ -180,12 +186,41 @@ fn links(frame: &DecodedFrame) -> HashMap<u32, u32> {
     frame.complete::<tables::CountryLinks>().map(|rows| rows.iter().map(|row| (row.id, row.canonical_slot)).collect()).unwrap_or_default()
 }
 
+fn choose(fold: &mut Fold, pinned: &[u32], hidden: &[u32], lost: bool) -> HashMap<u32, usize> {
+    let mut rank: HashMap<u32, usize> = HashMap::with_capacity(pinned.len());
+    for &id in pinned {
+        let next = rank.len();
+        rank.entry(id).or_insert(next);
+    }
+    let hidden: BTreeSet<u32> = hidden.iter().copied().filter(|id| !rank.contains_key(id)).collect();
+    fold.mined.retain(|region| !hidden.contains(&region.region));
+    fold.cells.retain(|(region, ..)| !hidden.contains(region));
+    fold.unknown.retain(|region| !hidden.contains(&region.region));
+    for region in &mut fold.mined {
+        region.pinned = rank.contains_key(&region.region);
+    }
+    for unknown in &fold.unknown {
+        if rank.contains_key(&unknown.region) && !fold.mined.iter().any(|region| region.region == unknown.region) {
+            fold.mined.push(MinedRegion { region: unknown.region, owners: Vec::new(), unknown_owners: unknown.unknown_owners, pinned: true, missing: None });
+        }
+    }
+    fold.unknown.retain(|region| !rank.contains_key(&region.region));
+    for &id in pinned {
+        if !fold.mined.iter().any(|region| region.region == id) {
+            let missing = lost.then(|| "Some countries' minefields were not read at this hour".to_owned());
+            fold.mined.push(MinedRegion { region: id, owners: Vec::new(), unknown_owners: 0, pinned: true, missing });
+        }
+    }
+    rank
+}
+
 impl AtHour for Minefields {
     const KEY: &'static str = "minefields";
     const TITLE: &'static str = "Minefields";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = MinefieldsParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", regions, "regions[]", order];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", pinnedRegions, "pinnedRegions[]", hiddenRegions, "hiddenRegions[]", order];
     type Reply = MinefieldsReply;
     type Context = Context;
 
@@ -198,7 +233,7 @@ impl AtHour for Minefields {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![MinefieldOrder::decl(), MinefieldsParams::decl(), MineOwner::decl(), MinedRegion::decl(), UnknownRegion::decl(), Choice::decl(), MinefieldsReply::decl()]
+        vec![MinefieldOrder::decl(), MinefieldsParams::decl(), MineOwner::decl(), MinedRegion::decl(), UnknownRegion::decl(), MinefieldsReply::decl()]
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -221,16 +256,7 @@ impl AtHour for Minefields {
         let wanted: Option<BTreeSet<&str>> = params.countries.as_ref().map(|countries| countries.iter().filter_map(|country| at.holders.tag_at(country, frame.hour)).collect());
         let sea = at.context.sea.sea.clone().unwrap_or_default();
         let mut fold = fold(rows, |raw| tag_of(&links, &names, raw, frame.hour), |tag| wanted.as_ref().is_none_or(|wanted| wanted.contains(tag)), lost, &sea);
-        if let Some(wanted_regions) = params.regions.as_ref().filter(|regions| !regions.is_empty()) {
-            let keep: BTreeSet<u32> = wanted_regions.iter().copied().collect();
-            fold.mined.retain(|region| keep.contains(&region.region));
-            fold.cells.retain(|(region, ..)| keep.contains(region));
-            for unknown in fold.unknown.drain(..) {
-                if keep.contains(&unknown.region) {
-                    fold.mined.push(MinedRegion { region: unknown.region, owners: Vec::new(), unknown_owners: unknown.unknown_owners });
-                }
-            }
-        }
+        let pinned = choose(&mut fold, params.pinned_regions.as_deref().unwrap_or_default(), params.hidden_regions.as_deref().unwrap_or_default(), lost);
         register_live(&fold, at.live)?;
         let mut notes = Refusals::default();
         let choices = sea_regions::choices(&at.context.places, &at.context.sea, fold.mined.iter().map(|region| region.region), &mut notes);
@@ -242,13 +268,14 @@ impl AtHour for Minefields {
                 an.to_lowercase().cmp(&bn.to_lowercase()).then_with(|| an.cmp(bn)).then_with(|| a.region.cmp(&b.region))
             });
         }
+        fold.mined.sort_by_key(|region| pinned.get(&region.region).copied().unwrap_or(usize::MAX));
         let mut warnings = at.context.places.warnings();
         warnings.extend(at.context.sea.notes.iter().cloned());
         warnings.extend(notes.lines("sea region names"));
         if lost {
             warnings.push("Some countries' minefields were not read at this hour".into());
         }
-        let reply = MinefieldsReply { regions: fold.mined, unknown: fold.unknown, choices, scale: SCALE, warnings };
+        let reply = MinefieldsReply { regions: fold.mined, unknown: fold.unknown, scale: SCALE, warnings };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }

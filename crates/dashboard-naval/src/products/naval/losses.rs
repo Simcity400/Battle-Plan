@@ -309,7 +309,16 @@ impl Product for NavalLosses {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![NavalLossesParams::decl(), ForceSizeReply::decl(), NavalAttribution::decl(), NavalKind::decl(), NavalPeriod::decl()]
+        vec![
+            NavalLossesParams::decl(),
+            ForceSizeReply::decl(),
+            ForceRun::decl(),
+            ForceSeries::decl(),
+            ForcePart::decl(),
+            NavalAttribution::decl(),
+            NavalKind::decl(),
+            NavalPeriod::decl(),
+        ]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

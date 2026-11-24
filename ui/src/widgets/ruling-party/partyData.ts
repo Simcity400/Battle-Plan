@@ -1,6 +1,5 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { EventBadge } from '../../charts/badges';
-import { formatFixed } from '../../charts/valueAxis.ts';
 import { GREY_CHROMA } from '../../charts/palette.ts';
 import { oklchToRgb, parseColor, rgbToOklch, toHex } from '../../shell/appearance/color.ts';
 import type { HourSpan, LeaderRun, PartyHistoryReply } from '../../generated/dashboard';
@@ -65,10 +64,6 @@ export function rulingFirst(list: readonly Band[], ruling: string | null): Band[
 }
 
 export const bandKeys = (list: readonly Band[]): SeriesKey[] => list.flatMap(band => band.keys);
-
-export const formatPopularity = (raw: string, decimals: number) => `${formatFixed(raw, decimals, 1)}%`;
-
-export const formatShare = (value: number) => `${value.toFixed(1)}%`;
 
 export function rulingAt(reply: PartyHistoryReply, hour: number): string | null {
   return reply.ruling.find(run => run.firstHour <= hour && hour <= run.lastHour)?.token ?? null;

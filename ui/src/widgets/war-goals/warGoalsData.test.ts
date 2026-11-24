@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { validateWargoalsReply } from './warGoalsData.ts';
 const fixture = () => ({ branchId: '1', tag: 'MOD', standings: [{ actor: 'MOD', recipient: 'TWO', standing: 'sameFaction' as string | null }, { actor: 'MOD', recipient: 'THREE', standing: null as string | null }], goals: [{ handle: '18446744073709551615', name: 'Custom goal', actor: 'MOD', recipient: 'TWO', available: true, expires: 100, states: [1, 2, 1], liberate: ['THREE', 'TWO'], puppets: ['FOUR'], state: 'ready', granted: 90 as number | null, grantedMissing: null as string | null }],
-  removed: [{ handle: '5', name: 'Conquer', recipient: 'TWO', granted: null, grantedMissing: 'Held when the branch began', removed: 95, removedExact: true, reasonMissing: 'War goal removal reason was not recorded' }],
+  removed: [{ handle: '5', name: 'Conquer', recipient: 'TWO', seen: 94, granted: null, grantedMissing: 'Held when the branch began', removed: 95, removedExact: true, reasonMissing: 'War goal removal reason was not recorded' }],
   justifications: [{ id: '4294967300', ordinal: 4, name: 'Custom goal', actor: 'MOD', recipient: 'TWO', states: [3, 1], total: '9000000', daily: '100000', payUpfront: true, start: 50, completion: 120, paused: false }], stateNames: [{ id: 1, name: 'Custom state', known: true }], warnings: ['War-goal name refused (1)'] });
 test('war-goal replies preserve repeated targets, full handles and justification operands', () => {
   const value = fixture(); assert.equal(validateWargoalsReply(value), value);

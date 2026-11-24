@@ -88,7 +88,7 @@ dashboard_base::reply_warnings!(ForceAtReply);
 
 pub type ForceContext = (Option<Arc<Catalogue>>, Vec<String>);
 
-fn load_context(source: &Source, load: &LoadContext, what: &str) -> ForceContext {
+pub(crate) fn load_context(source: &Source, load: &LoadContext, what: &str) -> ForceContext {
     let mut warnings = Vec::new();
     let content = Content::read(source, load, what, &mut warnings);
     (content.catalogue, warnings)
@@ -109,21 +109,21 @@ fn slot_tags(holders: &Holders, hour: i32) -> HashMap<u32, &str> {
     out
 }
 
-fn recorded_value(recorded: Recorded<i64>) -> Option<i64> {
+pub(crate) fn recorded_value(recorded: Recorded<i64>) -> Option<i64> {
     match recorded {
         Recorded::Value(value) => Some(value),
         Recorded::NotRecorded => None,
     }
 }
 
-fn frame_rows<'a, T: replay_data::rows::TableSchema>(frame: &'a DecodedFrame) -> Option<&'a [T::Row]> {
+pub(crate) fn frame_rows<'a, T: replay_data::rows::TableSchema>(frame: &'a DecodedFrame) -> Option<&'a [T::Row]> {
     match &*frame.tables[T::ID.index()] {
         TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.rows::<T>(),
         TableView::Unavailable { .. } | TableView::NotRecorded { .. } => None,
     }
 }
 
-fn frame_literals(frame: &DecodedFrame) -> HashMap<u32, String> {
+pub(crate) fn frame_literals(frame: &DecodedFrame) -> HashMap<u32, String> {
     frame_rows::<tables::LexicalTokens>(frame)
         .into_iter()
         .flatten()
@@ -140,16 +140,16 @@ fn frame_variant_tokens(frame: &DecodedFrame) -> HashMap<u64, String> {
         .collect()
 }
 
-struct SelectedRow {
-    slot: Option<u32>,
-    country: Country,
-    tag: String,
-    total: Option<i64>,
-    reference_total: Option<Option<i64>>,
-    missing: Option<String>,
+pub(crate) struct SelectedRow {
+    pub(crate) slot: Option<u32>,
+    pub(crate) country: Country,
+    pub(crate) tag: String,
+    pub(crate) total: Option<i64>,
+    pub(crate) reference_total: Option<Option<i64>>,
+    pub(crate) missing: Option<String>,
 }
 
-fn select_population<R>(
+pub(crate) fn select_population<R>(
     rows: &[R],
     slot_of: impl Fn(&R) -> u32,
     total_of: impl Fn(&R) -> Option<i64>,
@@ -217,7 +217,7 @@ fn select_population<R>(
     Ok(held)
 }
 
-fn select_explicit<T: replay_data::rows::TableSchema>(
+pub(crate) fn select_explicit<T: replay_data::rows::TableSchema>(
     frame: &DecodedFrame,
     countries: &[Country],
     total_of: impl Fn(&T::Row) -> Option<i64>,
@@ -419,7 +419,7 @@ fn name_navy_classes(frame: &DecodedFrame, parts: &BTreeSet<u128>, content: &Con
     Named::group(resolved)
 }
 
-fn attach_parts(selected: Vec<SelectedRow>, named: Named, by_slot: &HashMap<u32, Vec<(u128, Option<i64>)>>, parts_error: Option<String>) -> (Vec<ForcePart>, Vec<ForceAtRow>, Vec<String>) {
+pub(crate) fn attach_parts(selected: Vec<SelectedRow>, named: Named, by_slot: &HashMap<u32, Vec<(u128, Option<i64>)>>, parts_error: Option<String>) -> (Vec<ForcePart>, Vec<ForceAtRow>, Vec<String>) {
     let groups = named.parts.len();
     let mut warnings = Vec::new();
     let unresolved = named.parts.iter().filter(|part| part.unresolved).count();
@@ -471,7 +471,7 @@ impl AtHour for AirForceAt {
     const KEY: &'static str = "air-force-at";
     const TITLE: &'static str = "Air force size";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = AirForceAtParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, measure, ownership, "countries[]"];
     type Reply = ForceAtReply;
@@ -479,7 +479,7 @@ impl AtHour for AirForceAt {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![AirForceAtParams::decl(), ForceAtRow::decl(), ForceAtReply::decl()]
+        vec![AirForceAtParams::decl(), ForceAtRow::decl(), ForceAtReply::decl(), AirForceMeasure::decl(), AirForceOwnership::decl(), ForcePart::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -616,7 +616,7 @@ impl AtHour for NavyAt {
     const KEY: &'static str = "navy-at";
     const TITLE: &'static str = "Navy size";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = NavyAtParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, ownership, grouping, measure, "countries[]"];
     type Reply = ForceAtReply;
@@ -624,7 +624,7 @@ impl AtHour for NavyAt {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![NavyAtParams::decl(), ForceAtRow::decl(), ForceAtReply::decl()]
+        vec![NavyAtParams::decl(), ForceAtRow::decl(), ForceAtReply::decl(), NavyMeasure::decl(), NavyOwnership::decl(), NavyGrouping::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

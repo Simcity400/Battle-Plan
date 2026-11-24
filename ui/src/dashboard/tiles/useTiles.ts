@@ -1,8 +1,6 @@
 import { countryFromKey } from '../countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Live } from '../../charts/live.ts';
-import { mapLive } from '../../charts/live.ts';
-import type { ChartSummary } from '../../charts/chartSummary';
 import type { DashboardClient, DashboardSource, ProductRequest } from '../client';
 import type { HourSpan } from '../../generated/dashboard';
 import type { TileReply } from './tile.ts';
@@ -75,8 +73,4 @@ export function useTiles(client: DashboardClient, series: TileSeries | null, act
   const current = state?.key === key ? state : undefined;
   const unrecorded = useMemo(() => unrecordedReason(current?.lines ?? null), [current?.lines]);
   return { onView, lines: current?.lines ?? null, read, subscribe, live: newestLines, head, error: current?.error ?? null, retry, unrecorded };
-}
-
-export function liveSummaries(lines: Live<ReadonlyMap<string, TiledLine> | null>): Live<ReadonlyMap<string, ChartSummary> | null> {
-  return mapLive(lines, held => held && new Map([...held].map(([tag, line]) => [tag, line.summary])));
 }
