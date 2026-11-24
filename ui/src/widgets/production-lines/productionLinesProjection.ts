@@ -15,7 +15,7 @@ import {
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
-import { formatDateOnly } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatRecordedPercent } from '../../families/valueFormat.ts';
 import type { ProductionLinesAtReply } from '../../generated/dashboard';
 import { PRODUCTION_LINES_BASE, PRODUCTION_LINES_COLUMNS } from './definition.ts';
 import {
@@ -133,7 +133,7 @@ export const productionLinesProjection: TableProjection<ProductionLinesProjectio
           sortValue: active === null ? notRecorded('Not recorded') : knownValue(active),
         },
         efficiency: {
-          value: effPct === null ? notRecorded('Efficiency not recorded') : knownValue(`${effPct}%`),
+          value: effPct === null ? notRecorded('Efficiency not recorded') : knownValue(formatRecordedPercent(effPct)),
           sortValue: effPct === null ? notRecorded('Efficiency not recorded') : knownValue(effPct),
           bar: effFrac === null ? null : { fraction: effFrac === 0 ? zeroValue(0) : knownValue(effFrac) },
         },
@@ -167,7 +167,7 @@ export const productionLinesProjection: TableProjection<ProductionLinesProjectio
         { label: 'Factories requested', value: requested === null ? notRecorded('Requested factories not recorded') : knownValue(requested), format: 'integer' },
         {
           label: 'Efficiency',
-          value: effPct !== null ? knownValue(`${effPct}%`) : notRecorded('Efficiency not recorded'),
+          value: effPct !== null ? knownValue(formatRecordedPercent(effPct)) : notRecorded('Efficiency not recorded'),
         },
         {
           label: 'Output per week',

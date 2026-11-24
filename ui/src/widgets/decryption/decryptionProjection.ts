@@ -9,6 +9,7 @@ import type {
   MeterSection,
 } from '../../families/meter/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
+import { formatProgress } from '../../families/valueFormat.ts';
 import type { CipherPair } from '../../generated/dashboard';
 import { pairKey, percentOf, progressLabel, workingStatus } from './decryptionData.ts';
 import {
@@ -71,10 +72,10 @@ export const decryptionProjection: MeterProjection<DecryptionFilterOptions> = re
             color: owner.colour,
             height: 8,
           },
-          figure: percent === null ? undefined : `${percent}%`,
+          figure: percent === null ? undefined : formatProgress(percent / 100),
           figureMissing: percent === null,
           spoken: `${owner.name} decrypting ${target.name}, ${progressLabel(percent)}, ${workingStatus(pair)}`,
-          audit: `${owner.tag}>${target.tag}|${percent === null ? 'not-recorded' : `${percent}%`}`,
+          audit: `${owner.tag}>${target.tag}|${percent === null ? 'not-recorded' : formatProgress(percent / 100)}`,
           tooltip: {
             title,
             hour: readView.hour,
