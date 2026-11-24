@@ -114,10 +114,10 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
     const picked = pickedKey(target.key);
     if (picked !== null) {
       const tip = frame.model.pickList ? pickTooltip(frame.model.pickList, picked, frame.model.hour) : null;
-      return tip ? { hour: frame.model.hour, rowKey: target.key, payload: tip } : null;
+      return tip ? { rowKey: target.key, payload: tip } : null;
     }
     const payload = deriveBarsTooltip(frame.model, target.key, target.side);
-    return payload ? { hour: frame.model.hour, rowKey: target.key, payload } : null;
+    return payload ? { rowKey: target.key, payload } : null;
   },
   structure({ model, layout }) {
     const regions = barsRegionRows(model, layout);

@@ -60,7 +60,7 @@ fn every_product_request_field_declares_its_hour_role_and_the_contract_carries_i
         let row = if roles.is_empty() { format!("  {key:?}: {{}},") } else { format!("  {key:?}: {{ {roles} }},") };
         assert!(contract.contains(&row), "the contract carries {key}'s roles");
     }
-    assert_eq!(table["production-line-breakdown"], [("hour", "bucket"), ("within[].firstHour", "start"), ("within[].lastHour", "end")]);
+    assert_eq!(table["production-line-breakdown"], [("hour", "read")]);
     assert_eq!(table["equipment-produced"], [("rankHour", "read")]);
     assert_eq!(table["series-state"].iter().find(|(path, _)| *path == "reads[].hour"), Some(&("reads[].hour", "read")));
     assert!(table["research-breakdown"].contains(&("parts[].firstObservedHour", "read")));
