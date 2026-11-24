@@ -2,36 +2,21 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Canvas2D } from '../../charts/textWidth.ts';
 import type { FamilyTheme } from '../contract.ts';
+import { marginColour, sequentialRampColour, signedRampColour, splitStripes } from './scale.ts';
 import {
-  computeAxisTicks,
-  createLanesPicture,
-  createMatrixPicture,
-  deriveLanesAudit,
-  deriveLanesMirror,
-  deriveLanesTooltip,
   deriveMatrixAudit,
   deriveMatrixMirror,
   deriveMatrixTooltip,
-  drawHeatLanes,
-  drawHeatMatrix,
-  findRunAtHour,
-  hitHeatLanes,
-  hitHeatMatrix,
-  layoutHeatLanes,
-  layoutHeatMatrix,
-  marginColour,
   matrixGroupSpans,
-  matrixKeyStep,
-  projectLaneRunsToPixels,
-  revealMatrixOffset,
-  sequentialRampColour,
-  signedRampColour,
-  splitStripes,
-  type HeatLanesModel,
   type HeatMatrixModel,
   type MatrixAxisEntity,
   type MatrixCell,
-} from './index.ts';
+} from './matrixModel.ts';
+import { hitHeatMatrix, layoutHeatMatrix, matrixKeyStep, revealMatrixOffset } from './matrixLayout.ts';
+import { createMatrixPicture, drawHeatMatrix } from './matrixPainter.ts';
+import { deriveLanesAudit, deriveLanesMirror, deriveLanesTooltip, findRunAtHour, type HeatLanesModel } from './lanesModel.ts';
+import { computeAxisTicks, hitHeatLanes, layoutHeatLanes, projectLaneRunsToPixels } from './lanesLayout.ts';
+import { createLanesPicture, drawHeatLanes } from './lanesPainter.ts';
 
 function gridCells(grid: readonly (readonly MatrixCell[])[], width: number) {
   return { present: new Map(grid.flatMap((row, r) => row.map((cell, c) => [r * width + c, cell] as const))), absent: { kind: 'empty' } as MatrixCell };
