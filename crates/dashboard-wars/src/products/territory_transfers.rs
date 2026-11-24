@@ -62,8 +62,7 @@ pub struct TerritoryTransfersReply {
 
 dashboard_base::reply_warnings!(TerritoryTransfersReply);
 
-const VP_NOT_RECORDED: &str = "Victory points of a transferred state are not recorded";
-const VP_NOT_YET_READ: &str = "Victory points of a transferred state are read after this date";
+const VP_NOT_RECORDED: &str = "Victory points of a transferred state are not recorded by this date";
 const PARTIAL: &str = "Settlements or ownership were not recorded for part of the campaign before this date: only the transfers observed are counted";
 
 fn deal_hour(deal: &PeaceDeal) -> i32 {
@@ -148,9 +147,8 @@ impl TransfersIndex {
         let mut countries: BTreeMap<String, Tally> = BTreeMap::new();
         for item in counted {
             let worth = match item.worth {
-                Worth::NotRecorded => Err(VP_NOT_RECORDED),
-                Worth::Read { hour, .. } if hour > through => Err(VP_NOT_YET_READ),
-                Worth::Read { points, .. } => Ok(points),
+                Worth::Read { hour, points } if hour <= through => Ok(points),
+                _ => Err(VP_NOT_RECORDED),
             };
             for (country, sign) in [(&item.to, 1i128), (&item.from, -1)] {
                 let row = countries.entry(identity(country)).or_insert_with(|| Tally { tag: String::new(), hour: i32::MIN, gained: 0, lost: 0, victory_points: Ok(0) });

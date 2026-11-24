@@ -87,71 +87,35 @@ fn params(mode: AirMode, viewpoint: Option<&str>, country: bool, sides: Option<&
     }
 }
 
-fn bounds(world: &[Vec<RaidAirScoreRow>], viewpoint: bool) -> HashMap<u32, u128> {
-    let mut out: HashMap<u32, u128> = HashMap::new();
-    for row in world.iter().flatten() {
-        *out.entry(row.region).or_default() += row.friendly.max(0) as u128 + if viewpoint { row.enemy.max(0) as u128 } else { 0 };
-    }
-    out
-}
-
 const REGIONS: [u32; 4] = [1, 2, 3, 4];
 
 #[test]
-fn regions_rank_by_their_sum_of_composed_days_as_main_ranks_them() {
+fn the_automatic_set_is_the_regions_most_active_at_the_asked_hour_not_over_the_window() {
     let world = world();
     let index = index();
     let holders = holders();
     let held = Held(world.clone());
     let cancelled = AtomicBool::new(false);
-    for (last, expected) in [(LAST, [2, 4, 1, 3]), (LAST - 18, [2, 1, 3, 4])] {
-        let days = reads(&world, last);
+    let at = |through: usize, read: i32, last: i32, complete: bool, theatres: Option<&[Option<Result<HashSet<u32>, ()>>]>| {
+        let mut days = reads(&world[..=through], read);
+        if let Some(Some(day)) = days.last_mut() {
+            day.complete = complete;
+        }
         let params = AirTimelineParams { last_hour: last, ..params(AirMode::Sides, None, false, None) };
-        let timeline = Days { index: &index, holders: &holders, days: &days, rows: &held, params: &params, theatres: None };
-        let counted = if last.rem_euclid(DAY) == DAY - 1 { DAYS } else { DAYS - 1 };
-        let totals = timeline.totals(&REGIONS, counted, &cancelled).unwrap();
-        assert_eq!(totals[..3], [1000, 1500, 10], "ENG's big day, GER's small ones, ENG's ten under FRA's member scores");
-        let bounds = bounds(&world, false);
-        for top in 0..=REGIONS.len() {
-            let ranked = timeline.rank(&REGIONS, Some(&bounds), counted, Some(top), &cancelled).unwrap();
-            assert_eq!(ranked, expected[..top], "the {top} most active through hour {last}");
-            assert_eq!(timeline.rank(&REGIONS, None, counted, Some(top), &cancelled).unwrap(), ranked, "the bound only saves composing");
-        }
-        assert_eq!(timeline.rank(&[4, 1], None, counted, None, &cancelled).unwrap(), expected.iter().copied().filter(|region| [4, 1].contains(region)).collect::<Vec<_>>(), "chosen regions are ranked too");
-    }
-}
-
-#[test]
-fn every_composition_is_within_every_owners_summed_scores() {
-    let world = world();
-    let index = index();
-    let holders = holders();
-    let held = Held(world.clone());
-    let days = reads(&world, LAST);
-    let cancelled = AtomicBool::new(false);
-    let theatres: Vec<Option<Result<HashSet<u32>, ()>>> = (0..DAYS).map(|day| Some(Ok(if day < 6 { [1, 2, 3].into() } else { [4].into() }))).collect();
-    let cases = [
-        params(AirMode::Sides, None, false, None),
-        params(AirMode::Sides, None, false, Some(&["c:GER"])),
-        params(AirMode::Viewpoint, Some("f:7"), false, None),
-        params(AirMode::Viewpoint, Some("FRA"), true, None),
-        params(AirMode::Viewpoint, Some("GER"), true, None),
-    ];
-    for params in &cases {
-        for theatres in [None, Some(theatres.as_slice())] {
-            let timeline = Days { index: &index, holders: &holders, days: &days, rows: &held, params, theatres };
-            let bounds = bounds(&world, params.mode == Some(AirMode::Viewpoint));
-            let totals = timeline.totals(&REGIONS, DAYS, &cancelled).unwrap();
-            for (region, total) in REGIONS.iter().zip(totals) {
-                assert!(total <= bounds[region], "region {region}: {total} over its bound {} ({params:?}, theatres {})", bounds[region], theatres.is_some());
-            }
-            let all = timeline.rank(&REGIONS, None, DAYS, Some(2), &cancelled).unwrap();
-            assert_eq!(timeline.rank(&REGIONS, Some(&bounds), DAYS, Some(2), &cancelled).unwrap(), all, "{params:?}");
-        }
-    }
-    let params = params(AirMode::Sides, None, false, None);
-    let timeline = Days { index: &index, holders: &holders, days: &days, rows: &held, params: &params, theatres: Some(&theatres) };
-    assert_eq!(timeline.totals(&REGIONS, DAYS, &cancelled).unwrap(), [1000, 900, 10, 1100], "a day counts only where its theatres hold the region");
+        let timeline = Days { index: &index, holders: &holders, days: &days, rows: &held, params: &params, theatres };
+        timeline.rank_at(&REGIONS, &cancelled).unwrap()
+    };
+    let end = |day: i32| day * DAY + DAY - 1;
+    assert_eq!(at(11, LAST, LAST, true, None).regions, [4], "GER's small days and ENG's big day are yesterday's: only USA scores at the hour");
+    assert_eq!(at(9, end(9), end(9), true, None).regions, [2]);
+    assert_eq!(at(3, end(3), end(3), true, None).regions, [1, 2], "most active first; FRA's scores under ENG's side add nothing");
+    let partial = at(11, LAST, LAST, false, None);
+    assert_eq!((partial.regions.len(), partial.missing.as_deref()), (0, Some(READ_IN_PART)), "a part read ranks nothing");
+    let gap = at(11, LAST - 3, LAST, true, None);
+    assert_eq!(gap.missing.as_deref(), Some(NOT_RECORDED), "the day's last reading is not the asked hour's");
+    let theatres: Vec<Option<Result<HashSet<u32>, ()>>> = (0..DAYS).map(|_| Some(Ok([1, 2, 3].into()))).collect();
+    let outside = at(11, LAST, LAST, true, Some(&theatres));
+    assert_eq!((outside.regions.len(), outside.outside), (0, 1), "the region active at the hour lies outside the chosen theatres");
 }
 
 #[test]

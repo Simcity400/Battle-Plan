@@ -79,6 +79,11 @@ impl<'a> Countries<'a> {
         Ok(Self { links: frame.complete::<tables::CountryLinks>()?, tags: HashMap::new() })
     }
 
+    pub fn witnessed(frame: &'a DecodedFrame) -> (Self, Option<String>) {
+        let links = dashboard_query::coverage::witnessed_rows::<tables::CountryLinks>(frame);
+        (Self { links: links.rows, tags: HashMap::new() }, links.missing)
+    }
+
     pub fn named(mut self, holders: &Holders, hour: i32) -> Self {
         for (tag, runs) in &holders.tags {
             let at = runs.partition_point(|run| run.last < hour);

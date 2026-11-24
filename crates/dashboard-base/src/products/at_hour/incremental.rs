@@ -462,12 +462,12 @@ where P::Context: Sync, P::Params: Sync {
             let cells = Cells::default();
             let at = At { owner, holders: &holders, context: &*context, cancelled, hour, live: &cells };
             let expired = hour > state.reply_through;
-            if !state.rebuild && !identity_changed && selected.iter().all(|table| matches!(state.frame.tables[table.index()].held(), TableView::Complete(_))) {
+            if !state.rebuild && !identity_changed {
                 let changed = !edits.tables.is_empty() || !edits.replaced.is_empty();
                 if !changed && !expired && !P::clock_dependent(&state.plans, &context) {
                     return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
                 }
-                if state.data.is_ok() && !expired {
+                if state.data.is_ok() && !expired && selected.iter().all(|table| matches!(state.frame.tables[table.index()].held(), TableView::Complete(_))) {
                     let kept = state.data.clone();
                     if P::advance(&state.frame, &params, &at, &edits, &state.live, &mut Held(&mut state.data))? {
                         state.reply = None;

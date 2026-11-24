@@ -88,7 +88,7 @@ fn a_transfer_counts_once_published_and_its_victory_points_once_read_with_nothin
     assert_eq!((taker.gained, taker.lost, taker.net), (2, 0, Some(2)));
     assert_eq!((giver.gained, giver.lost, giver.net), (0, 2, Some(-2)));
     assert_eq!(giver.tag, "SPR", "the giver keeps its own tag at its read");
-    assert_eq!((taker.net_victory_points.as_deref(), taker.victory_points_missing.as_deref()), (None, Some(VP_NOT_YET_READ)), "one state's points read at 120");
+    assert_eq!((taker.net_victory_points.as_deref(), taker.victory_points_missing.as_deref()), (None, Some(VP_NOT_RECORDED)), "one state's points read at 120, not disclosed at 110");
     assert_eq!(published.next_change, Some(120));
     assert_eq!(published.countries.first().map(|row| row.tag.as_str()), Some("SPA"), "largest net gain first");
 

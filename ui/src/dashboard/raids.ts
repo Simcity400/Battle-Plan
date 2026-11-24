@@ -44,7 +44,7 @@ export function validateRaidLog(value: unknown): RaidLogReply {
       && maybe(item.victim, text) && (item.victim === null) !== (item.victimMissing === null)
       && maybe(item.victimSource, victimSource) && (item.victim !== null || item.victimSource === null)
       && victimObservations(item.victims)
-      && maybe(item.raidTypeHour, integer) && maybe(item.placeHour, integer) && maybe(item.raidType, text) && maybe(item.raidTypeName, text) && maybe(item.icon, text) && maybe(item.iconMissing, text)
+      && maybe(item.raidTypeHour, integer) && maybe(item.iconHour, integer) && maybe(item.placeHour, integer) && maybe(item.stateHour, integer) && maybe(item.memberHour, integer) && maybe(item.raidType, text) && maybe(item.raidTypeName, text) && maybe(item.icon, text) && maybe(item.iconMissing, text)
       && maybe(item.province, integer) && maybe(item.state, integer)
       && maybe(item.phase, integer) && maybe(item.phaseName, text) && maybe(item.outcome, integer) && maybe(item.outcomeName, text) && maybe(item.outcomeMissing, text)
       && isOrderedSpans(item.runs) && (item.runs as unknown[]).every(run => object(run) && typeof run.firstExact === 'boolean' && maybe(run.afterHour, integer) && maybe(run.raider, text) && integer(run.phase) && integer(run.outcome) && maybe(run.phaseName, text) && maybe(run.outcomeName, text))
@@ -111,7 +111,7 @@ export function raidOutcomeMissing(codes: RaidOutcomeCodes, ended: boolean, disa
 }
 
 export function raidEpisodeAt(codes: RaidOutcomeCodes, episode: RaidEpisode, hour: number): RaidEpisode | null {
-  if (episode.firstHour > hour) return null;
+  if (episode.firstHour > hour || (episode.memberHour !== null && episode.memberHour > hour)) return null;
   const runs = episode.runs.filter(run => run.firstHour <= hour).map(run => run.lastHour > hour ? { ...run, lastHour: hour } : run);
   const latest = runs[runs.length - 1];
   if (!latest) return null;
@@ -121,7 +121,9 @@ export function raidEpisodeAt(codes: RaidOutcomeCodes, episode: RaidEpisode, hou
   const victims: RaidVictimAt[] = held.length ? held : [{ hour: episode.firstHour, tag: null, missing: "The raid's target is not recorded", source: null }];
   const summary = victims[victims.length - 1];
   const typed = episode.raidTypeHour !== null && episode.raidTypeHour <= hour;
+  const iconed = typed && episode.iconHour !== null && episode.iconHour <= hour;
   const placed = episode.placeHour === null || episode.placeHour <= hour;
+  const stated = episode.stateHour !== null && episode.stateHour <= hour;
   const launched = episode.launchedHour === null || episode.launchedHour <= hour;
   const ends = episode.ends.filter(end => end.hour <= hour);
   const disappeared = episode.disappearedHour !== null && episode.disappearedHour <= hour;
@@ -130,8 +132,10 @@ export function raidEpisodeAt(codes: RaidOutcomeCodes, episode: RaidEpisode, hou
     ...episode, runs, preparation, victims, lastHour: latest.lastHour,
     victim: summary.tag, victimMissing: summary.missing, victimSource: summary.source,
     raidTypeHour: typed ? episode.raidTypeHour : null, raidType: typed ? episode.raidType : null, raidTypeName: typed ? episode.raidTypeName : null,
-    icon: typed ? episode.icon : null, iconMissing: typed ? episode.iconMissing : "The raid's type is not recorded",
-    placeHour: placed ? episode.placeHour : null, province: placed ? episode.province : null, state: placed ? episode.state : null,
+    iconHour: iconed ? episode.iconHour : null, icon: iconed ? episode.icon : null,
+    iconMissing: iconed ? episode.iconMissing : typed ? "The raid's target is not recorded in full" : "The raid's type is not recorded",
+    placeHour: placed ? episode.placeHour : null, province: placed ? episode.province : null,
+    stateHour: stated ? episode.stateHour : null, state: stated ? episode.state : null,
     launched: launched && episode.launched, launchedHour: launched ? episode.launchedHour : null, launchedExact: launched && episode.launchedExact,
     launchedRaider: launched ? episode.launchedRaider : null,
     ends, succeededHour: episode.succeededHour !== null && episode.succeededHour <= hour ? episode.succeededHour : null,
@@ -193,7 +197,7 @@ export function raidChangeHours(episodes: readonly RaidEpisode[]): number[] {
       if (episode.runs.every(run => run.firstHour !== hour && run.lastHour + 1 !== hour)) hours.push(hour);
     }
     if (episode.disappearedHour !== null) hours.push(episode.disappearedHour);
-    for (const hour of [episode.raidTypeHour, episode.placeHour, ...episode.ends.map(end => end.hour)]) {
+    for (const hour of [episode.memberHour, episode.raidTypeHour, episode.iconHour, episode.placeHour, episode.stateHour, ...episode.ends.map(end => end.hour)]) {
       if (hour !== null && hour !== episode.firstHour && episode.runs.every(run => run.firstHour !== hour && run.lastHour + 1 !== hour)) hours.push(hour);
     }
   }
@@ -257,9 +261,10 @@ export function raidPlaceId(episode: RaidEpisode): string {
 }
 
 export type RaidMetric = 'both' | 'launched' | 'succeeded';
-export interface RaidTallyRun { firstHour: number; lastHour: number; readHour: number; launched: number; succeeded: number }
+export interface RaidTallyRun { firstHour: number; lastHour: number; readHour: number; launched: number; succeeded: number; partial: string | null }
+export const RAID_GAP_REASON = 'Raids during an unrecorded stretch before this date are not counted.';
 export interface RaidTallySeries { tag: string; runs: RaidTallyRun[]; segments: Span[]; membership: Span[] | null; identities?: undefined }
-export interface RaidTally { series: RaidTallySeries[]; hours: number[]; unattributed: number }
+export interface RaidTally { series: RaidTallySeries[]; hours: number[]; unattributed: [hour: number, count: number][] }
 
 export function recordedSpans(span: Span, missing: readonly Span[]): Span[] {
   const out: Span[] = [];
@@ -284,20 +289,22 @@ export function raidTally(episodes: readonly RaidEpisode[], span: Span, missing:
     list.push([hour, kind, delta]);
     events.set(key, list);
   };
-  let unattributed = 0;
+  const unnamed: [number, 1 | -1][] = [];
   for (const episode of episodes) {
     const slot = episode.raiderSlot === null ? null : countryKey(episode.raiderSlot);
     const owner = (tag: string | null) => slot !== null && chosenKeys.has(slot) ? slot : tag;
-    let missingRaider = false;
+    let launchUnnamed: number | null = null;
+    const success: [number, boolean][] = [];
     if (episode.launchedHour !== null) {
       const key = owner(episode.launchedRaider);
-      if (key === null) missingRaider = true; else count(key, episode.launchedHour, 0, 1);
+      if (key === null) launchUnnamed = episode.launchedHour; else count(key, episode.launchedHour, 0, 1);
     }
     if (episode.succeededHour !== null) {
       const succeeded = episode.succeededHour;
       const known = episode.ends.filter(end => end.hour <= succeeded);
       let held = owner(known[known.length - 1]?.raider ?? null);
       if (held !== null) count(held, succeeded, 1, 1);
+      success.push([succeeded, held === null]);
       for (const end of episode.ends) {
         if (end.hour <= succeeded) continue;
         const key = owner(end.raider);
@@ -305,10 +312,17 @@ export function raidTally(episodes: readonly RaidEpisode[], span: Span, missing:
         if (held !== null) count(held, end.hour, 1, -1);
         if (key !== null) count(key, end.hour, 1, 1);
         held = key;
+        success.push([end.hour, held === null]);
       }
-      if (held === null) missingRaider = true;
     }
-    if (missingRaider) unattributed++;
+    const hours = [...new Set([...launchUnnamed === null ? [] : [launchUnnamed], ...success.map(([hour]) => hour)])].sort((a, b) => a - b);
+    let shown = false, missing = false, next = 0;
+    for (const hour of hours) {
+      while (next < success.length && success[next][0] <= hour) missing = success[next++][1];
+      const now = missing || (launchUnnamed !== null && launchUnnamed <= hour);
+      if (now !== shown) unnamed.push([hour, now ? 1 : -1]);
+      shown = now;
+    }
   }
   for (const list of events.values()) list.sort((a, b) => a[0] - b[0]);
   const hours = [...new Set([...events.values()].flatMap(list => list.map(([hour]) => hour)))].sort((a, b) => a - b);
@@ -317,24 +331,41 @@ export function raidTally(episodes: readonly RaidEpisode[], span: Span, missing:
   const tags = top ? [...membership!.keys()] : [...new Set(chosen)];
   const series = tags.sort(compareTags).map(tag => ({ tag, runs: tallyRuns(events.get(tag) ?? [], segments), segments,
     membership: membership ? membership.get(tag) ?? [] : null }));
-  return { series, hours, unattributed };
+  return { series, hours, unattributed: steps(unnamed) };
+}
+
+function steps(changes: [number, 1 | -1][]): [number, number][] {
+  const out: [number, number][] = [];
+  let held = 0;
+  for (const [hour, delta] of changes.sort((a, b) => a[0] - b[0])) {
+    held += delta;
+    if (out.length && out[out.length - 1][0] === hour) out[out.length - 1][1] = held; else out.push([hour, held]);
+  }
+  return out;
+}
+
+export function unattributedAt(tally: Pick<RaidTally, 'unattributed'>, hour: number): number {
+  let lo = 0, hi = tally.unattributed.length;
+  while (lo < hi) { const mid = (lo + hi) >>> 1; if (tally.unattributed[mid][0] <= hour) lo = mid + 1; else hi = mid; }
+  return lo === 0 ? 0 : tally.unattributed[lo - 1][1];
 }
 
 function tallyRuns(events: readonly TallyEvent[], segments: readonly Span[]): RaidTallyRun[] {
   const runs: RaidTallyRun[] = [];
   let launched = 0, succeeded = 0, next = 0;
-  for (const segment of segments) {
+  segments.forEach((segment, index) => {
+    const partial = index > 0 ? RAID_GAP_REASON : null;
     let first = segment.firstHour;
     const take = (through: number) => { while (next < events.length && events[next][0] <= through) { if (events[next][1] === 0) launched += events[next][2]; else succeeded += events[next][2]; next++; } };
     take(first);
     while (first <= segment.lastHour) {
       const change = next < events.length ? events[next][0] : Infinity;
       const last = Math.min(segment.lastHour, change - 1);
-      runs.push({ firstHour: first, lastHour: last, readHour: first, launched, succeeded });
+      runs.push({ firstHour: first, lastHour: last, readHour: first, launched, succeeded, partial });
       first = last + 1;
       take(first);
     }
-  }
+  });
   return runs;
 }
 

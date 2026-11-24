@@ -263,9 +263,9 @@ fn non_merging_factions_keep_unchanged_region_sides_and_filtered_ranking() {
     let rows = Rows(vec![score(1, 10, 500, 100), score(3, 10, 200, 600), score(3, 11, 400, 0)]);
     let filter = timeline::AirTimelineParams { branch_id: "1".into(), first_hour: 24, last_hour: 50, sides: Some(vec!["f:10".into()]), ..Default::default() };
     let ranked = timeline::Days { index: &index, holders: &holders, days: &days, rows: &rows, params: &filter, theatres: None }
-        .rank(&[10, 11], None, 1, None, &AtomicBool::new(false))
+        .rank_at(&[10, 11], &AtomicBool::new(false))
         .unwrap();
-    assert_eq!(ranked, [11, 10]);
+    assert_eq!(ranked.regions, [11, 10]);
 }
 
 #[test]
@@ -298,7 +298,7 @@ fn ordered_air_superiority_ranks_regions_and_registers_live_totals() {
     named.order = Some(AirRegionOrder::Name);
     let (named_reply, _) = moment_of(&frame(contested_scores, true), &named);
     let named_ids: Vec<u32> = named_reply.regions.iter().map(|region| region.id).collect();
-    assert_eq!(named_ids, [10, 11, 12], "name ordering retains inactive regions");
+    assert_eq!(named_ids, [10, 11], "a Name sort orders the active regions; it never adds an idle one");
 }
 
 #[test]
@@ -342,7 +342,7 @@ fn an_empty_comparison_says_whether_the_widget_left_every_active_region_out_the_
     assert_eq!((none.regions.len(), none.empty), (0, Some(NoRegions::None)));
     let (shown, _) = moment_of(&frame(scores(), true), &automatic);
     assert_eq!(shown.empty, None, "a listed region: nothing to explain");
-    let mut theatres = automatic.clone();
+    let mut theatres = automatic;
     theatres.theatres = Some(vec!["5".into()]);
     let mut elsewhere = frame(vec![score(1, 10, 500, 0)], true);
     *elsewhere.tables[TableId::AirTheatres.index()] = TableView::Complete(TableRows::AirTheatres(vec![AirTheatreRow { id: 5, owner: 1, ordinal: 0, name: Vec::new() }]));
@@ -351,4 +351,13 @@ fn an_empty_comparison_says_whether_the_widget_left_every_active_region_out_the_
     *elsewhere.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(vec![AirWingRow { id: 900, owner: 1, mission_region: Some(12), ..Default::default() }]));
     let (outside, _) = moment_of(&elsewhere, &theatres);
     assert_eq!((outside.regions.len(), outside.empty), (0, Some(NoRegions::Filtered { hidden: 0, outside: 1 })), "the only active region lies outside the chosen theatres");
+}
+
+#[test]
+fn a_reply_holds_until_the_sides_change_so_a_quiet_hour_rebuilds_nothing() {
+    let context = AirContext { names: names(), index: Ok(Arc::new(index::build(groups(100), 0, 100))), resolver: None, resolver_warnings: Vec::new() };
+    let last = context.index.as_ref().unwrap().epoch(50).unwrap().last;
+    assert_eq!(valid_through(&context, 50), last, "the sides are assigned once per stretch of unchanged groups: nothing else the reply shows moves with the clock");
+    let unknown = AirContext { index: Err("no index".into()), ..context };
+    assert_eq!(valid_through(&unknown, 50), 50, "without the sides, the reply proves only its own hour");
 }

@@ -98,7 +98,7 @@ fn missing_details_sets_na_and_not_recorded_tooltips() {
             request_hour: 100,
             read_hour: 100,
             owner_tag: Some("SYN".to_owned()),
-            token: "SYN_synthetic_works_organisation".to_owned(),
+            token: Ok("SYN_synthetic_works_organisation".to_owned()),
             custom_name: "Synthetic Works".to_owned(),
             recorded_icon: String::new(),
             details: RecordedDetails::Unavailable("table omitted in older format".to_owned()),
@@ -117,7 +117,11 @@ fn missing_details_sets_na_and_not_recorded_tooltips() {
     };
 
     let mut tooltips = BTreeMap::new();
-    configure_detail_main(root, &localisation, &mut instance, &mut tooltips, &prepared);
+    let frame = empty_frame();
+    let scripted = unread_scripted_text();
+    let failures = RefCell::new(Vec::new());
+    let loc = Loc::new(&localisation, &frame, &scripted, &prepared.data, &failures);
+    configure_detail_main(root, &loc, &mut instance, &mut tooltips, &prepared);
 
     let size_el = find_direct(root, "top_left_window/size_icon_window/size").unwrap();
     assert_eq!(
@@ -160,6 +164,225 @@ fn missing_mio_window_template_is_refused_by_name() {
     assert!(reason.contains(DETAIL_WINDOW_NAME), "{reason}");
 }
 
+fn empty_frame() -> DecodedFrame {
+    DecodedFrame {
+        branch: 1,
+        hour: 0,
+        metrics: replay_frame::frame::Metrics::default(),
+        tables: std::array::from_fn(|_| {
+            replay_frame::frame::TableView::Unavailable {
+                reason: "not in this test".into(),
+            }
+            .into()
+        }),
+    }
+}
+
+fn unread_scripted_text() -> Result<Arc<ScriptedContent>, String> {
+    Err("not read in this test".to_owned())
+}
+
+fn spelled_tokens() -> Vec<LexicalTokenRow> {
+    [(10, "synthetic_policy"), (20, "synthetic_first"), (30, "synthetic_third")]
+        .into_iter()
+        .map(|(token, literal)| LexicalTokenRow {
+            token,
+            literal: literal.as_bytes().to_vec(),
+        })
+        .collect()
+}
+
+#[test]
+fn unspelled_tokens_keep_their_identity_and_queue_position() {
+    let rows = spelled_tokens();
+    let lexical: Result<&[LexicalTokenRow], String> = Ok(&rows);
+    let mut row = IndustrialOrganisationDetailsRow {
+        unlocked: vec![20, 99],
+        queued: vec![20, 77, 30],
+        allowed_policies: vec![10, 88],
+        ..Default::default()
+    };
+    row.state.policy = 55;
+    let details = extract_details(&row, &lexical);
+    assert!(matches!(details.policy, Some(Spelled::Unspelled { token: 55, .. })));
+    assert_eq!(details.queued.len(), 3);
+    assert_eq!(details.queued[0], Spelled::Text("synthetic_first".to_owned()));
+    assert!(matches!(details.queued[1], Spelled::Unspelled { token: 77, .. }));
+    assert_eq!(details.queued[2], Spelled::Text("synthetic_third".to_owned()));
+    assert!(matches!(details.allowed_policies[1], Spelled::Unspelled { token: 88, .. }));
+
+    row.state.policy = UNSELECTED_POLICY;
+    assert_eq!(extract_details(&row, &lexical).policy, None);
+
+    let unread: Result<&[LexicalTokenRow], String> = Err("truncated".to_owned());
+    let details = extract_details(&row, &unread);
+    assert!(
+        matches!(&details.queued[0], Spelled::Unspelled { token: 20, reason } if reason.contains("truncated"))
+    );
+}
+
+#[test]
+fn a_trait_is_locked_only_when_every_unlocked_and_queued_token_is_named() {
+    let rows = spelled_tokens();
+    let lexical: Result<&[LexicalTokenRow], String> = Ok(&rows);
+    let details = |unlocked: Vec<u32>, queued: Vec<u32>| {
+        let row = IndustrialOrganisationDetailsRow {
+            unlocked,
+            queued,
+            ..Default::default()
+        };
+        RecordedDetails::Available(Box::new(extract_details(&row, &lexical)))
+    };
+    assert_eq!(trait_status(&details(vec![20], vec![30]), "synthetic_first"), TraitStatus::Unlocked);
+    assert_eq!(trait_status(&details(vec![20], vec![30]), "synthetic_third"), TraitStatus::Queued(1));
+    assert_eq!(trait_status(&details(vec![20], vec![30]), "synthetic_other"), TraitStatus::Locked);
+    assert!(matches!(
+        trait_status(&details(vec![20, 99], vec![]), "synthetic_other"),
+        TraitStatus::Unknown(reason) if reason.contains("99")
+    ));
+    assert!(matches!(
+        trait_status(&details(vec![], vec![77, 30]), "synthetic_other"),
+        TraitStatus::Unknown(reason) if reason.contains("77")
+    ));
+    assert_eq!(trait_status(&details(vec![20, 99], vec![]), "synthetic_first"), TraitStatus::Unlocked);
+    assert!(matches!(
+        trait_status(&RecordedDetails::Unavailable("not read".to_owned()), "synthetic_first"),
+        TraitStatus::Unknown(reason) if reason.contains("not read")
+    ));
+}
+
+#[test]
+fn history_lists_follow_each_entrys_recorded_design_date() {
+    let entry = |variant_id, units, design| HistoryEntry {
+        variant_id,
+        name: Ok(format!("design {variant_id}")),
+        archetype: String::new(),
+        units,
+        design,
+    };
+    let entries = vec![
+        entry(1, 0, DesignDate::Designed(100)),
+        entry(2, 40, DesignDate::Absent),
+        entry(3, 5, DesignDate::Designed(200)),
+    ];
+    let [designed, produced] = history_lists(&entries);
+    assert_eq!(designed, HistoryList::Entries(vec![&entries[0], &entries[2]]));
+    assert_eq!(produced, HistoryList::Entries(vec![&entries[1]]));
+
+    let older = vec![
+        entry(1, 0, DesignDate::NotRecorded),
+        entry(2, 40, DesignDate::NotRecorded),
+    ];
+    let [designed, produced] = history_lists(&older);
+    assert!(matches!(designed, HistoryList::Missing(reason) if reason.contains("design dates")));
+    assert!(matches!(produced, HistoryList::Missing(_)));
+}
+
+#[test]
+fn history_reads_only_its_organisation_and_names_a_missing_design() {
+    let rows: Vec<IndustrialOrganisationHistoryRow> = [(1, 10), (2, 20), (2, 21), (3, 30)]
+        .into_iter()
+        .map(|(organisation, variant)| IndustrialOrganisationHistoryRow {
+            organisation,
+            variant,
+            units: 1,
+            design_hour: Recorded::Value(None),
+        })
+        .collect();
+    let variants: Result<&[VariantDefinitionRow], String> = Ok(&[]);
+    let lexical: Result<&[LexicalTokenRow], String> = Ok(&[]);
+    let history = extract_history(&rows, 2, &variants, &lexical);
+    assert_eq!(
+        history.iter().map(|entry| entry.variant_id).collect::<Vec<_>>(),
+        vec![20, 21]
+    );
+    assert!(matches!(&history[0].name, Err(reason) if reason.contains("VariantDefinitions")));
+}
+
+#[test]
+fn text_the_shared_resolver_cannot_expand_shows_its_key_and_says_why() {
+    let localisation: Localisation = [(
+        "SYNTHETIC_SCOPED".to_owned(),
+        "Owner [From.GetTag]".to_owned(),
+    )]
+    .into_iter()
+    .collect();
+    let frame = empty_frame();
+    let scripted = unread_scripted_text();
+    let failures = RefCell::new(Vec::new());
+    let data = unread_organisation("synthetic_works_organisation");
+    let loc = Loc::new(&localisation, &frame, &scripted, &data, &failures);
+    assert_eq!(loc.get("SYNTHETIC_SCOPED"), "SYNTHETIC_SCOPED");
+    assert_eq!(loc.get("SYNTHETIC_ABSENT"), "SYNTHETIC_ABSENT");
+    let failures = failures.borrow();
+    assert!(
+        failures
+            .iter()
+            .any(|line| line.contains("SYNTHETIC_SCOPED") && line.contains("not read in this test")),
+        "{failures:?}"
+    );
+    assert!(failures.iter().any(|line| line.contains("SYNTHETIC_ABSENT")), "{failures:?}");
+}
+
+#[test]
+fn bonuses_for_different_equipment_targets_are_never_summed_together() {
+    content_reader_script::test_game::enter();
+    let layers = synthetic_layers(&[(
+        "common/military_industrial_organization/organizations/00_synthetic.txt",
+        br#"
+            synthetic_works_organisation = {
+                trait = {
+                    token = synthetic_everything
+                    position = { x = 0 y = 0 }
+                    equipment_bonus = { soft_attack = 0.1 }
+                }
+                trait = {
+                    token = synthetic_armour_only
+                    position = { x = 1 y = 0 }
+                    limit_to_equipment_type = { synthetic_armour }
+                    equipment_bonus = { soft_attack = 0.1 }
+                }
+                trait = {
+                    token = synthetic_also_everything
+                    position = { x = 2 y = 0 }
+                    equipment_bonus = { soft_attack = 0.05 }
+                }
+            }
+        "#,
+    )]);
+    let catalog = mio_traits::read(&layers).unwrap();
+    let tree = catalog.tree("synthetic_works_organisation").unwrap().unwrap();
+    let row = IndustrialOrganisationDetailsRow::default();
+    let lexical: Result<&[LexicalTokenRow], String> = Ok(&[]);
+    let mut details = extract_details(&row, &lexical);
+    details.unlocked = ["synthetic_everything", "synthetic_armour_only", "synthetic_also_everything"]
+        .map(|token| Spelled::Text(token.to_owned()))
+        .to_vec();
+    let soft_attack = |value| Bonus { name: "soft_attack".to_owned(), value };
+    let policy = Policy {
+        token: b"synthetic_policy".to_vec(),
+        name: Vec::new(),
+        icon: Vec::new(),
+        visible: Vec::new(),
+        available: Vec::new(),
+        groups: vec![
+            (b"synthetic_group_a".to_vec(), vec![soft_attack(10_000)]),
+            (b"synthetic_group_b".to_vec(), vec![soft_attack(10_000)]),
+        ],
+        organisation_modifiers: Default::default(),
+    };
+    let totals = aggregate_bonuses(&details, &tree, Some(&policy));
+    assert_eq!(
+        totals,
+        vec![
+            (BonusTarget::Organisation, vec![soft_attack(15_000)]),
+            (BonusTarget::Equipment(vec![b"synthetic_armour".to_vec()]), vec![soft_attack(10_000)]),
+            (BonusTarget::Group(b"synthetic_group_a".to_vec()), vec![soft_attack(10_000)]),
+            (BonusTarget::Group(b"synthetic_group_b".to_vec()), vec![soft_attack(10_000)]),
+        ]
+    );
+}
+
 fn cache_key(layers: &ResolvedLayers, window: &str) -> WindowCacheKey {
     WindowCacheKey {
         source_id: "src".to_owned(),
@@ -180,7 +403,7 @@ fn unread_organisation(token: &str) -> OrganisationViewData {
         request_hour: 0,
         read_hour: 0,
         owner_tag: None,
-        token: token.to_owned(),
+        token: Ok(token.to_owned()),
         custom_name: String::new(),
         recorded_icon: String::new(),
         details: RecordedDetails::Unavailable("not recorded".to_owned()),
@@ -200,6 +423,7 @@ fn refusal(layers: &ResolvedLayers, token: &str, sub_view: SubView) -> String {
         layers,
         cache_key(layers, sub_view.window_name()),
         unread_organisation(token),
+        (&empty_frame(), &unread_scripted_text()),
         sub_view,
         1.0,
         &BTreeMap::new(),

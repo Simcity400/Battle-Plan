@@ -7,7 +7,7 @@ export interface PayloadsMessage {
   readonly drop?: readonly number[];
 }
 
-const KEYED: Readonly<Record<string, number>> = { staticPanels: 1, staticAnswers: 1, hovers: 1, pagedRows: 1, tiledBySource: 2 };
+const KEYED: Readonly<Record<string, number>> = { staticPanels: 1, staticAnswers: 1, hovers: 1, pagedRows: 2, tiledBySource: 2 };
 
 const revisions = new WeakMap<object, number>();
 let nextRevision = 1;
@@ -60,7 +60,7 @@ export class PayloadSender {
       return id;
     };
     const refer = (value: object, depth: number): Revision => {
-      if (depth === 0 || !isRecord(value)) return leaf(value);
+      if (depth === 0 || !isRecord(value) || Object.values(value).some(inner => !inner || typeof inner !== 'object')) return leaf(value);
       const out: Record<string, Revision> = {};
       for (const [key, inner] of Object.entries(value)) if (inner && typeof inner === 'object') out[key] = refer(inner, depth - 1);
       return out;

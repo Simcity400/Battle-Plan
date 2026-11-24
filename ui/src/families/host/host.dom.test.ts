@@ -73,12 +73,15 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     assert.equal(statics.staticsSupplied, statics.rounds, 'each new panel set is one statics supply');
     assert.equal(statics.commits, statics.rounds, 'and costs one React commit, the one that passed the panels');
 
+    const span = await act<{ hoursAdvanced: number; answers: number; binds: number; mode: string }>('testSpanEndOnly()');
+    assert.ok(span.hoursAdvanced > 0 && span.answers >= 5, `playing a followed span read brings new answers (${span.answers} over ${span.hoursAdvanced} hours; ${span.mode})`);
+    assert.equal(span.binds, 0, `${span.answers} new answers that only extend the span's end bind nothing (${span.binds} binds)`);
+
     const tuple = await act<{
       blockedMeasured: boolean;
       blockedShown: boolean;
       description: string | null;
       clearedDescription: boolean;
-      dateOnly: boolean;
       activatedId: number | null;
       activatedHour: number | null;
       viewId: number | null;
@@ -88,8 +91,7 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     assert.equal(tuple.blockedShown, true, 'the blocked state shows inside the frame');
     assert.equal(tuple.description, 'Four countries ranked by factories', 'the installed description is what the body is described by');
     assert.equal(tuple.clearedDescription, true, 'the description goes when the picture goes');
-    assert.equal(tuple.dateOnly, true, 'a date-only install happened without an install notification');
-    assert.equal(tuple.activatedId, tuple.viewId, 'Enter after a date-only install carries the picture Page shows now');
+    assert.equal(tuple.activatedId, tuple.viewId, 'Enter after forty played hours carries the picture Page shows now');
     assert.equal(tuple.activatedHour, tuple.viewHour, 'and its hour');
 
     const f12 = await act<{

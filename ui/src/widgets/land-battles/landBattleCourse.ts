@@ -4,8 +4,8 @@ import { dayLabel } from '../../charts/draw.ts';
 import { formatAmount, formatFixed } from '../../charts/valueAxis.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
 import type { Run } from '../../charts/series';
-import { battleDate, battleValueText } from '../battles/battleRows.ts';
-import type { BattleCountryLabel, BattleSide } from '../battles/battleRows';
+import { battleDate, battlePartial, battleValueRow, battleValueText, markPartial } from '../battles/battleRows.ts';
+import type { BattleCountryLabel, BattleSide, BattleValue } from '../battles/battleRows';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { landManpowerSides } from './landBattlesData.ts';
 import type { LandBattleRow } from './landBattlesData';
@@ -151,7 +151,7 @@ export function courseEquipment(course: LandCourse, at: number): { hour: number;
 export const wholeEquipment = (raw: bigint) => formatFixed(raw, 5, 0);
 export const exactEquipment = (raw: bigint) => formatAmount(raw, 5, 5);
 
-export function lengthText(hours: number, _atLeast: boolean, long: boolean): string {
+export function lengthText(hours: number, long: boolean): string {
   const days = Math.floor(hours / 24), rest = hours % 24;
   const unit = (count: number, one: string, many: string) => `${usNumber.format(count)} ${count === 1 ? one : many}`;
   return days === 0 ? unit(hours, 'hour', 'hours')
@@ -177,8 +177,10 @@ export function lossNote(row: LandBattleRow): string | undefined {
   return `${row.lossRead.terminal ? 'Final losses' : 'Losses so far'}, read ${formatDateTime(row.lossRead.hour)}`;
 }
 
-export const peakText = (peak: { value: number; hour: number } | null, _atLeast = false) =>
+export const peakText = (peak: { value: number; hour: number } | null) =>
   peak === null ? 'Not recorded' : `${usNumber.format(peak.value)}, ${dayLabel(peak.hour)}`;
+export const peakValue = (row: LandBattleRow): BattleValue => row.peakUnknown ? { label: 'Peak size', value: null, unknown: 'Roster not recorded' }
+  : { label: 'Peak size', value: row.peak.value, atLeast: row.start?.bound === 'by' || row.end !== null && 'unknown' in row.end };
 
 const SIDES = ['Attackers', 'Defenders'] as const;
 const placeName = (row: LandBattleRow, pending: boolean) => row.place.name ?? (row.provinceId === null ? 'Province not recorded' : pending ? 'Loading…' : 'Unnamed province');
@@ -196,20 +198,19 @@ export function battleTooltip(row: LandBattleRow, looks: readonly SideLook[], te
   if (terrain) rows.push({ label: 'Terrain', value: terrain });
   rows.push({ label: 'Started', value: battleDate(row.start, 'Not recorded') });
   rows.push({ label: 'Ended', value: battleDate(row.end, 'Ongoing') });
-  if (row.length.value !== null) rows.push({ label: 'Length', value: lengthText(row.length.value, row.length.atLeast === true, true) });
-  rows.push({ label: 'Most divisions at once', value: row.peakUnknown ? 'Roster not recorded'
-    : peakText(row.peak, row.start?.bound === 'by' || row.end !== null && 'unknown' in row.end) });
+  if (row.length.value !== null) rows.push(battleValueRow('Length', row.length, lengthText(row.length.value, true)));
+  rows.push(battleValueRow('Most divisions at once', peakValue(row), row.peakUnknown ? 'Roster not recorded' : peakText(row.peak)));
   row.sides.forEach((side, index) => {
     rows.push({ label: SIDES[index], strong: true, divider: true, swatch: colours[index] });
     for (const part of looks[index].countries) rows.push({ label: part.name, countryFlag: part, indent: true });
     if (side.countriesUnknown) rows.push({ label: 'Countries not recorded', indent: true, tone: 'muted' });
     if (row.sidePeaks) rows.push({ label: 'Most divisions at once', value: peakText(row.sidePeaks[index]), indent: true });
     const count = side.counts[0];
-    rows.push({ label: 'Divisions at the last read', value: count ? battleValueText(count) : 'Not recorded', indent: true });
+    rows.push(count ? battleValueRow('Divisions at the last read', count, battleValueText(count), { indent: true }) : { label: 'Divisions at the last read', value: 'Not recorded', indent: true });
     for (const value of side.losses) {
       const raw = value.label === 'Equipment lost' ? row.lossRead?.equipmentRaw?.[index] : null;
-      rows.push({ label: value.label, value: raw != null ? wholeEquipment(BigInt(raw)) : battleValueText(value), indent: true,
-        ...(value.value === null && raw == null ? { tone: 'muted' as const } : {}) });
+      rows.push(battleValueRow(value.label, value, raw != null ? wholeEquipment(BigInt(raw)) : battleValueText(value), {
+        indent: true, ...(value.value === null && raw == null ? { tone: 'muted' as const } : {}) }));
     }
     if (!side.losses.length) rows.push({ label: 'Losses', value: 'Not recorded', indent: true, tone: 'muted' });
   });
@@ -229,12 +230,12 @@ export const sameKnownSides = (a: LandBattleRow, b: LandBattleRow) => {
 export function subLine(row: LandBattleRow): string | null {
   const hours = row.length.value;
   if (hours === null || row.end === null && hours < 24) return null;
-  return `${hours < 24 ? hours : `d${Math.floor(hours / 24)}`}${row.length.atLeast === true ? '+' : ''}`;
+  return markPartial(`${hours < 24 ? hours : `d${Math.floor(hours / 24)}`}`, battlePartial(row.length));
 }
 
 export function subText(row: LandBattleRow, terrain: string | null) {
   return [terrain, row.end !== null || row.length.value !== null && row.length.value >= 24
-    ? row.length.value === null ? null : lengthText(row.length.value, row.length.atLeast === true, false) : null].filter(Boolean).join(' · ');
+    ? row.length.value === null ? null : markPartial(lengthText(row.length.value, false), battlePartial(row.length)) : null].filter(Boolean).join(' · ');
 }
 
 interface BattleParts { values: readonly HTMLElement[]; bars: readonly HTMLElement[]; sub: HTMLElement | null;

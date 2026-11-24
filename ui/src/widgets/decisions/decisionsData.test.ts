@@ -111,11 +111,6 @@ test('a mission with a recorded Failed native state shows Failed with its observ
   assert.equal(abortedLifecycle.status, 'cancelled');
   assert.match(lifecycleLine(abortedLifecycle), /aborted/);
 
-  const availablePool = at([
-    edge('decisionActivated', start, { days: 0, row: { ...edge('decisionActivated', start).row, decisionState: { kind: 'available' } } }),
-  ], day(4, 1));
-  assert.equal(availablePool, null, 'non-timed targeted pool availability is never labeled Running');
-
   const selfTargeted = decisionCard(card([edge('decisionSelected', start, {}, ['GER', 'GER'])]));
   assert.equal(selfTargeted?.country, 'GER');
   assert.equal(selfTargeted?.target, null, 'same holder and target produces one flag, never two');

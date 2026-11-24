@@ -76,14 +76,32 @@ test('each amount, price and level belongs to its own variant: reordered levels 
   assert.deepEqual(extra.filter(entry => entry.lookupKey).map(entry => entry.lookupKey), ['5', '6']);
 });
 
-test('a row opens its own detail at the clicked hour: an inventory click marks its own equipment, a contract lists each equipment with its own price and level', () => {
-  const offer = marketDetail(raw, 'offer:44:6');
+test('a row opens its own detail from its full recorded key: an inventory click marks its own equipment, a contract lists each equipment with its own price and level', () => {
+  const offer = marketDetail(raw, { section: 'offers', row: '44', variant: '6' });
   assert.equal(offer.missing, null);
   const listed = offer.sections.find(section => section.title === 'Listed inventory')!.lines;
   assert.deepEqual(listed.map(line => [line.label, line.marked]), [['Rifle', false], ['Equipment name unavailable', true]], 'two equipment rows of one seller open different details');
   assert.match(listed[1]!.value, /High/);
-  const request = marketDetail(raw, 'contract:true:54').sections.find(section => section.title === 'Equipment')!.lines;
+  const request = marketDetail(raw, { section: 'contracts', row: '4', variant: null }).sections.find(section => section.title === 'Equipment')!.lines;
   assert.match(request[0]!.value, /High/, 'the level of its own variant, though another variant is listed first');
-  assert.equal(marketDetail(raw, 'contract:false:99').missing, 'This request or contract is not on the market at this date.');
-  assert.equal(marketDetail({ ...raw, offers: null }, 'offer:44:5').missing, 'Market inventory was not recorded at this date.');
+  assert.equal(marketDetail(raw, { section: 'contracts', row: '99', variant: null }).missing, 'This request or contract is not on the market at this date.');
+  assert.equal(marketDetail({ ...raw, offers: null }, { section: 'offers', row: '44', variant: '5' }).missing, 'Market inventory was not recorded at this date.');
+  const twin = { ...raw, contracts: [...raw.contracts, { key: '5', id: '54', seller: 'GER', buyer: 'ENG', request: true, speed: 9, equipment: [item('5', '1')], prices: [], levels: [], subsidies: [], purchase: false }] };
+  const seller = (row: string) => marketDetail(twin, { section: 'contracts', row, variant: null }).sections[0]!.lines.find(line => line.label === 'Seller')!.value;
+  assert.deepEqual([seller('4'), seller('5')], ['ITA', 'GER'], 'two requests that differ only in the seller open their own terms');
+  const unnamed = marketDetail(raw, { section: 'offers', row: '45', variant: '5' });
+  assert.equal(unnamed.missing, null, 'an offer whose seller has no country at the hour still opens from its raw seller');
+  assert.equal(unnamed.sections[0]!.lines.length, 1);
+});
+
+test('a contract of several equipment labels each variant\'s agreed price with its missing state, and an empty contract is not several equipment', () => {
+  const view = createBoundedReadView({ hour: 7, panels: new Map([['main', raw]]) });
+  const contracts = internationalMarketProjection.project(view, { view: 'contracts', filterAll: true, filter: { passing: null, unrecorded: [], bounds: [] } });
+  const several = contracts.rows.find(row => row.key === '1')!;
+  const extra = (typeof several.tooltipExtra === 'function' ? several.tooltipExtra() : several.tooltipExtra) ?? [];
+  for (const entry of extra.filter(line => line.lookupKey)) assert.match(JSON.stringify(entry.value), /Agreed price not recorded/, `variant ${entry.lookupKey}`);
+  const lines = marketDetail(raw, { section: 'contracts', row: '1', variant: null }).sections.find(section => section.title === 'Equipment')!.lines;
+  assert.deepEqual(lines.map(line => /Agreed price not recorded/.test(line.value)), [true, true]);
+  const empty = contracts.rows.find(row => row.key === '3')!.cells.price!.value;
+  assert.ok(empty.kind === 'notApplicable' && !/Several/.test(empty.reason), `an empty contract's price: ${JSON.stringify(empty)}`);
 });
