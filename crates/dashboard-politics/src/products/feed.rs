@@ -11,7 +11,7 @@ mod text;
 mod tests;
 
 pub use cards::{
-    Decisions, DecisionsTail, EventChoices, EventChoicesTail, ScriptOccurrenceTailReply,
+    DecisionsTail, EventChoicesTail, ScriptOccurrenceTailReply,
     decisions_dated_panel, event_choices_dated_panel,
 };
 pub use decision_state::{
@@ -263,25 +263,6 @@ pub struct EventFeedUnavailable {
     pub count: Option<u32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct FeedPageParams {
-    pub branch_id: String,
-    #[serde(default)]
-    pub facets: Vec<FacetFilter>,
-    #[doc = " The timeline's first hour when none."]
-    pub from: Option<f64>,
-    pub to: f64,
-    #[doc = " The ordinal the page starts at, counted from the timeline's first hour."]
-    pub cursor: Option<String>,
-    pub page_size: u32,
-    #[doc = " The countries a row must name (actor, target or an ally joining with it), each tag over the"]
-    #[doc = " hours it counts; every row when none. Ordinals and totals count the rows it keeps."]
-    #[serde(default)]
-    pub scope: Option<Vec<dashboard_world::products::groups::MembershipRun>>,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -298,25 +279,6 @@ pub struct EventFeedPageRow {
     pub cells: Vec<logs::LogCell>,
     pub row: Option<EventFeedRow>,
 }
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct EventFeedPage {
-    pub branch_id: String,
-    pub log: String,
-    pub columns: Vec<String>,
-    pub first_ordinal: String,
-    pub total: String,
-    pub cursor: Option<String>,
-    pub rows: Vec<EventFeedPageRow>,
-    pub missing: Vec<MissingSpan>,
-    #[doc = " What the page's rows could not show, each reason once with its count."]
-    pub unavailable: Vec<EventFeedUnavailable>,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(EventFeedPage);
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -422,10 +384,6 @@ pub(crate) fn content_from(resolved: &Result<Arc<Catalogue>, String>, notices: &
     }
 }
 
-fn content(source: &Source, context: &LoadContext, notices: &mut Notices) -> Option<Arc<Catalogue>> {
-    content_from(&resolve_content(source, context), notices)
-}
-
 fn content_refusals(presenter: &Presenter<'_>, notices: &mut Notices) -> io::Result<()> {
     if let Some(catalogue) = presenter.catalogue() {
         for (reason, count) in catalogue.refusal_entries() {
@@ -443,29 +401,6 @@ pub(crate) struct Paged {
     pub ordinal: u64,
     pub own: u64,
     pub tag: Option<dashboard_base::products::Country>,
-}
-
-pub(crate) fn page(source: &Source, query: &Query<'_>, params: &FeedPageParams) -> io::Result<(log::Page, Vec<Paged>, Vec<MissingSpan>)> {
-    if let Some(runs) = &params.scope {
-        return scope::page(source, query, params, runs);
-    }
-    let asked = logs::LogPageParams {
-        branch_id: params.branch_id.clone(),
-        log: LOG.to_owned(),
-        facets: params.facets.clone(),
-        from: params.from,
-        to: params.to,
-        cursor: params.cursor.clone(),
-        page_size: params.page_size,
-        columns: None,
-    };
-    let columns = Columns::new()?;
-    let (page, rows, missing) = logs::page(query, &asked, |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.cloned()))?;
-    let rows = rows
-        .into_iter()
-        .map(|(row, ordinal, own, tag)| Ok(Paged { event: columns.read(&row)?, hour: row.hour, key: row.key, ordinal, own, tag }))
-        .collect::<io::Result<_>>()?;
-    Ok((page, rows, missing))
 }
 
 pub(crate) fn tail_rows(
@@ -629,95 +564,6 @@ fn derived(event: &FeedEvent, kind: EventFeedKind, id: String, names: &Names, no
     }
 }
 
-pub struct EventFeed;
-
-impl Product for EventFeed {
-    const KEY: &'static str = "event-feed";
-    const CONTENT_DEPENDENT: bool = true;
-    const REPLAYS: bool = true;
-    type Params = FeedPageParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
-        branchId,
-        facets,
-        from: Start,
-        to: End,
-        cursor,
-        pageSize,
-        "scope[].firstHour": Start,
-        "scope[].lastHour": End,
-        "facets[].countries[]",
-        "facets[].values[]",
-        "facets[].membership[].country",
-        "facets[].membership[].firstHour": Start,
-        "facets[].membership[].lastHour": End,
-        "facets[].unobserved[].firstHour": Start,
-        "facets[].unobserved[].lastHour": End
-    ];
-    type Reply = EventFeedPage;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![
-            FeedPageParams::decl(),
-            EventFeedCategory::decl(),
-            EventFeedKind::decl(),
-            EventFeedOption::decl(),
-            EventFeedItem::decl(),
-            EventFeedCause::decl(),
-            DecisionLifecycleState::decl(),
-            EventFeedRow::decl(),
-            EventFeedStrike::decl(),
-            EventFeedUnavailable::decl(),
-            EventFeedPageRow::decl(),
-            EventFeedPage::decl(),
-        ]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        branch(&params.branch_id)
-    }
-
-    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| invalid("Invalid branch"))?)?;
-        let (page, rows, missing) = page(source, &query, params)?;
-        let names = Names::new(&query.holders);
-        let mut notices = Notices::default();
-        let presenter = Presenter::new(&query, content(source, context, &mut notices), kept_naming(source));
-        let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
-        let events: Vec<&FeedEvent> = rows.iter().map(|paged| &paged.event).collect();
-        let presented = present_all(&query, &events, &names, &presenter, &mut notices, cancelled)?;
-        let out: Vec<EventFeedPageRow> = rows
-            .into_iter()
-            .zip(presented)
-            .map(|(paged, row)| EventFeedPageRow {
-                hour: paged.hour,
-                key: paged.key.to_string(),
-                ordinal: paged.ordinal.to_string(),
-                country: paged.tag,
-                own_ordinal: tagged.then(|| paged.own.to_string()),
-                cells: Vec::new(),
-                row,
-            })
-            .collect();
-        content_refusals(&presenter, &mut notices)?;
-        let reply = EventFeedPage {
-            branch_id: params.branch_id.clone(),
-            log: LOG.to_owned(),
-            columns: Vec::new(),
-            first_ordinal: page.first.to_string(),
-            total: page.total().to_string(),
-            cursor: page.cursor().map(|cursor| cursor.to_string()),
-            rows: out,
-            missing,
-            unavailable: notices.into_list(),
-            warnings: Vec::new(),
-        };
-        dashboard_base::products::check_reply_budget(&reply)?;
-        Ok(reply)
-    }
-}
-
 fn load_event_feed_tail_at(
     scope_index: &scope::ScopeIndex,
     query: &Query<'_>,
@@ -781,7 +627,20 @@ impl Product for EventFeedTail {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![FeedTailParams::decl(), EventFeedTailReply::decl()]
+        vec![
+            FeedTailParams::decl(),
+            EventFeedCategory::decl(),
+            EventFeedKind::decl(),
+            EventFeedOption::decl(),
+            EventFeedItem::decl(),
+            EventFeedCause::decl(),
+            DecisionLifecycleState::decl(),
+            EventFeedRow::decl(),
+            EventFeedStrike::decl(),
+            EventFeedUnavailable::decl(),
+            EventFeedPageRow::decl(),
+            EventFeedTailReply::decl(),
+        ]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

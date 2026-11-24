@@ -1,20 +1,69 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { LOG_OPTIONS } from '../../charts/log/logOptions.ts';
-import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
-import { KINDS } from '../../dashboard/marketLedger.ts';
+import { columnsControl } from '../../families/settingsControls.ts';
+import {
+  LOG_TABLE_BASE,
+  logCountryColumn,
+  logDateColumn,
+  logItemColumn,
+  logKindColumn,
+  logStatusColumn,
+} from '../../families/table/logHelpers.ts';
+import type { TableColumnSpec } from '../../families/table/model.ts';
+import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 
-export const DETAILS = { id: 'contract', label: 'Contract' };
+export const MARKET_LEDGER_COLUMNS: readonly TableColumnSpec[] = [
+  logDateColumn({ minWidth: 92, maxWidth: 98 }),
+  logKindColumn({ minWidth: 34, maxWidth: 42 }),
+  logCountryColumn(),
+  logItemColumn({ label: 'Equipment', minWidth: 180 }),
+  {
+    key: 'delivered',
+    label: 'Delivered',
+    as: 'plain',
+    offered: OFFERED.text,
+    priority: 1,
+    sortable: false,
+    numeric: true,
+    minWidth: 112,
+    widest: ['999 / 999 units'],
+  },
+  {
+    key: 'paid',
+    label: 'Paid',
+    unit: 'CIC',
+    as: 'plain',
+    offered: OFFERED.text,
+    priority: 2,
+    sortable: false,
+    numeric: true,
+    minWidth: 108,
+    widest: ['−9,999.9 CIC'],
+  },
+  logStatusColumn({ minWidth: 136, widest: ['Contract started'] }),
+];
 
 export const OPTIONS: readonly OptionField[] = [
-  ...KINDS.map((kind): OptionField => ({ key: kind.key, section: 'options', label: kind.label, kind: 'toggle', default: true })),
-  ...LOG_OPTIONS, DRILL_OPTION,
+  { key: 'showRequests', section: 'options', label: 'Include open requests', kind: 'toggle', default: true },
+  { key: 'showEnded', section: 'options', label: 'Include ended contracts', kind: 'toggle', default: true },
+  columnsControl(MARKET_LEDGER_COLUMNS, LOG_TABLE_BASE, { key: TABLE_SETTINGS_KEY }),
 ];
 
 export const definition = {
-  kind: 'market-ledger', version: 1, title: 'Market ledger', icon: 'history', category: 'Economy',
-  description: 'Every market contract event for a country: deals, deliveries and payments.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
-  minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true },
-  defaultCountries: { kind: 'selected' }, options: OPTIONS,
+  kind: 'market-ledger',
+  version: 2,
+  title: 'Market ledger',
+  icon: 'history',
+  category: 'Economy',
+  description: 'One row per market contract with delivered units and CIC paid, expanding to dated deliveries and payments.',
+  timeModes: ['campaign', 'follow', 'pin', 'range'],
+  defaultTime: 'follow',
+  scope: 'history',
+  data: true,
+  history: true,
+  minSize: { w: 4, h: 6 },
+  defaultSize: { w: 6, h: 12 },
+  countries: { max: Number.MAX_SAFE_INTEGER, all: true },
+  defaultCountries: { kind: 'selected' },
+  options: OPTIONS,
 } as const satisfies WidgetMeta;

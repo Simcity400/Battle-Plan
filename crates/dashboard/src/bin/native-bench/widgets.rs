@@ -150,7 +150,7 @@ pub fn page(source: &Source, load: &LoadContext, identity: &Identity, tag: &str)
         product("production-lines-at", owner)?,
         product("territory-share", json!({ "branchId": branch, "measure": "ownedStates" }))?,
         rank(identity, "army-size", "army-size", json!({ "measure": "strength", "countFor": "owner" }))?,
-        rank(identity, "air-force-size", "air-force-size", json!({ "measure": "planes", "ownership": "roster" }))?,
+        rank(identity, "air-force-totals", "series-state", json!({ "family": { "kind": "air-force-totals", "measure": "rosterPlanes" } }))?,
         rank(identity, "casualty-totals", "series-state", json!({ "family": { "kind": "casualty-totals", "measure": "dealtAndTaken" } }))?,
         rank(identity, "country-factories", "series-state", json!({ "family": { "kind": "country-factories", "measure": "free7" } }))?,
         rank(identity, "production-country-totals", "series-state", json!({ "family": { "kind": "production-country-totals", "measure": "spent" } }))?,
