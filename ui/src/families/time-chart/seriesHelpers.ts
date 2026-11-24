@@ -1,16 +1,18 @@
 import { CHART_MEASURE_COLOURS, colour, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
-import { CELL, cellState, cellValue, rowName, rowReason } from '../../dashboard/follow/message.ts';
+import { CELL, cellState, cellValue, rowReason } from '../../dashboard/follow/message.ts';
 import { followedRow, keyId } from '../../dashboard/keyedSeriesData.ts';
 import { answerRowOf } from '../sceneTiles.ts';
 import { flagChoiceArt } from '../art/provider.ts';
+import { unavailableArt } from '../art/types.ts';
+import { rankProvenInterval, validateRankReply } from '../../charts/race/measureRaceData.ts';
 import { FutureDataError, type BoundedReadView, type BoundedSeries, type FamilyPlanContext, type SourceEntry } from '../contract.ts';
 import { holderRunAt, type HolderRun, type HourRanges } from '../holders.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import type { ChartArtSlot, ChartEndLabel, ChartGap, ChartIdentityRun, ChartMarker, ChartMarkerItem, ChartMissingSpan, ChartSeriesLook, ChartStackBand, ChartStackModel } from './model.ts';
-import type { PowerSpendMarker, PowerSpendMarkersParams, PowerSpendMarkersReply } from '../../generated/dashboard';
+import type { PowerSpendMarker, PowerSpendMarkersParams, PowerSpendMarkersReply, SeriesRankReply } from '../../generated/dashboard';
 import { formatCompactRational, formatCompactScalar, formatDateOnly, formatRational, formatScalar } from '../valueFormat.ts';
 
 export interface RationalScale {
@@ -485,75 +487,82 @@ export function cardItems(rows: readonly CardRow[], heading: boolean): TooltipLi
   }));
 }
 
-interface StatesReply {
-  readonly states?: readonly { readonly country: string | number; readonly run: { readonly valueRaw: string } | null; readonly missing: string | null }[];
-}
-
 export function rankEntry(
-  ctx: Pick<FamilyPlanContext, 'track' | 'branch' | 'following'>,
+  ctx: Pick<FamilyPlanContext, 'track' | 'branch'>,
   family: Readonly<Record<string, unknown>>,
-  chosen: readonly string[] | number,
+  tags: readonly string[],
   name = 'rank',
 ): SourceEntry | null {
-  const top = typeof chosen === 'number';
-  const tags = top ? [] : chosen;
-  const limit = top ? chosen : tags.length;
-  if (limit < 2) return null;
-  const coverage = { mode: 'population', form: 'top', limit } as const;
-  const base = { branchId: ctx.branch.id, family, top: limit };
-  const reads = (hour?: number) => top ? {} : { reads: tags.map(tag => ({ country: countryFromKey(tag), ...(hour === undefined ? {} : { hour }) })) };
-  const common = { name, source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset };
-  if (ctx.following) {
-    return {
-      ...common,
-      read: {
-        shape: 'point',
-        channel: 'followed',
-        coverage,
-        product: 'series-state',
-        followQuery: { product: 'series-state', params: { ...base, ...reads() } },
-        params: null,
-      },
-    };
-  }
+  if (tags.length < 2) return null;
   return {
-    ...common,
+    name,
+    source: ctx.track.source,
+    branch: ctx.branch.id,
+    offset: ctx.track.axisOffset,
     read: {
       shape: 'point',
-      channel: 'panel',
-      coverage,
-      product: 'series-state',
-      exactProduct: 'series-state',
+      channel: 'followed',
+      coverage: { mode: 'keyed', keys: tags },
+      product: 'series-rank',
+      exactProduct: 'series-rank',
       followQuery: null,
-      params: base,
-      buildExactParams: (params, hour) => ({ ...params, ...(top ? { hour } : reads(hour)) }),
+      params: { branchId: ctx.branch.id, family, countries: tags.map(countryFromKey) },
+      buildExactParams: (params, hour) => ({ ...params, hour }),
+      dynamicKeys: ['hour'],
+      provenInterval: rankProvenInterval,
+      validate: validateRankReply,
     },
   };
 }
 
-export function rankedOrder(readView: BoundedReadView, tags: readonly string[], name = 'rank'): readonly string[] {
-  const ranked: string[] = [];
-  const answer = readView.answer(name);
-  if (answer && answer.kind !== 'notRecorded') {
-    for (let row = 0; row < answer.rows; row++) {
-      const key = rowName(answer, row);
-      if (key) ranked.push(key);
-    }
-  } else {
-    for (const state of readView.panel<StatesReply>(name)?.states ?? []) ranked.push(countryKey(state.country));
-  }
-  if (ranked.length === 0) return tags;
+export interface RankedOrder {
+  readonly order: readonly string[];
+  readonly warnings: readonly string[];
+  readonly unnamed: ReadonlyMap<string, string>;
+}
+
+const NO_UNNAMED: ReadonlyMap<string, string> = new Map();
+
+export function rankedOrder(readView: BoundedReadView, tags: readonly string[], name = 'rank'): RankedOrder {
+  const reply = readView.panel<SeriesRankReply>(name);
+  if (!reply) return { order: tags, warnings: [], unnamed: NO_UNNAMED };
   const selected = new Set(tags);
   const seen = new Set<string>();
   const order: string[] = [];
-  for (const key of ranked) {
-    if (selected.has(key) && !seen.has(key)) {
-      seen.add(key);
-      order.push(key);
-    }
+  const unnamed = new Map<string, string>();
+  for (const row of reply.rows) {
+    const key = countryKey(row.country);
+    if (!selected.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    order.push(key);
+    if (row.unnamed) unnamed.set(key, row.unnamed);
   }
   for (const tag of tags) if (!seen.has(tag)) order.push(tag);
-  return order;
+  return { order, warnings: reply.refused === null ? [] : [`Not in rank order: ${reply.refused}`], unnamed };
+}
+
+export const UNNAMED_COUNTRY = 'Country not recorded';
+
+export function unnamedLooks(
+  looks: ReadonlyMap<string, CountrySeriesLook>,
+  unnamed: ReadonlyMap<string, string>,
+  hour: number,
+): ReadonlyMap<string, CountrySeriesLook> {
+  if (unnamed.size === 0) return looks;
+  const out = new Map(looks);
+  for (const [tag, reason] of unnamed) {
+    const look = looks.get(tag);
+    if (!look) continue;
+    const flag: ChartArtSlot | undefined = look.flag ? { art: unavailableArt(reason), tag } : undefined;
+    const atHour = (run: ChartIdentityRun) => run.firstHour <= hour && hour <= run.lastHour;
+    out.set(tag, {
+      ...look,
+      name: UNNAMED_COUNTRY,
+      ...(flag ? { flag } : {}),
+      identities: look.identities.map(run => (atHour(run) ? { ...run, name: UNNAMED_COUNTRY, ...(flag ? { flag } : {}) } : run)),
+    });
+  }
+  return out;
 }
 
 export interface StackPart {

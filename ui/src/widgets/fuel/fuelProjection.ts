@@ -75,7 +75,6 @@ export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyPr
       headHour: hour,
       icon,
       missingSpans: missingSpansOf(fuel),
-      rank: 0,
       endLabel: !fuelReading || !('value' in fuelReading) ? null : { icon, name: 'Fuel', fullName: 'Fuel', value: formatFuelReading(fuelReading, options.digits) },
     }];
     if (options.capacity) {
@@ -98,7 +97,6 @@ export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyPr
         headValue: capacityHead,
         headHour: hour,
         missingSpans: missingSpansOf(capacity),
-        rank: 1,
         endLabel: !capacityReading || !('value' in capacityReading)
           ? null
           : { name: 'Capacity', fullName: 'Fuel capacity', value: formatFuelReading(capacityReading, options.digits), valueMuted: true },
