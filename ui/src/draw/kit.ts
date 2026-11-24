@@ -828,12 +828,14 @@ export function drawLegendEntry(
     readonly dash?: readonly number[];
     readonly hatch?: boolean;
     readonly outlined?: boolean;
+    readonly swatch?: 'line' | 'square';
     readonly flag?: FlagSlotState;
     readonly maxWidth?: number;
     readonly muted?: boolean;
   },
 ): { readonly width: number; readonly label: FittedLabel } {
-  const swatchW = options?.dash?.length ? 14 : options?.hatch ? 10 : options?.outlined ? 9 : 12;
+  const isSquare = options?.swatch === 'square' && !options?.hatch && !options?.outlined && !options?.dash?.length;
+  const swatchW = options?.dash?.length ? 14 : options?.hatch ? 10 : options?.outlined || isSquare ? 9 : 12;
   const gap = 6;
   let cursor = x;
   ctx.save();
@@ -858,6 +860,12 @@ export function drawLegendEntry(
     ctx.lineTo(cursor + swatchW, middleY);
     ctx.stroke();
     ctx.setLineDash([]);
+    cursor += swatchW + gap;
+  } else if (color && isSquare) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.roundRect(cursor, Math.round(middleY - 4.5), swatchW, 9, 2);
+    ctx.fill();
     cursor += swatchW + gap;
   } else if (color) {
     ctx.fillStyle = color;
@@ -1931,6 +1939,7 @@ export interface LegendStripEntry {
   readonly dash?: readonly number[];
   readonly hatch?: boolean;
   readonly outlined?: boolean;
+  readonly swatch?: 'line' | 'square';
   readonly flag?: FlagSlotState;
   readonly muted?: boolean;
 }
@@ -1979,6 +1988,7 @@ export function drawLegendStrip(
         ...(entry.dash?.length ? { dash: entry.dash } : {}),
         ...(entry.hatch ? { hatch: true } : {}),
         ...(entry.outlined ? { outlined: true } : {}),
+        ...(entry.swatch ? { swatch: entry.swatch } : {}),
         ...(entry.flag ? { flag: entry.flag } : {}),
         ...(entry.muted ?? (entry.hatch || entry.outlined) ? { muted: true } : {}),
         maxWidth: room,
