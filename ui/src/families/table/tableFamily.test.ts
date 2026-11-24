@@ -3073,8 +3073,8 @@ test('table partial and withheld notices live in the header summary marker, neve
     const desc = painted.fields.accessibleDescription?.value;
     assert.equal(typeof desc, 'string', 'accessible description is published for the partial summary');
     assert.ok((desc as string).includes('3 not shown') && (desc as string).includes('Leader A: condition undecided'));
-    const audit = painted.fields.audit!.value as readonly { key: string; value?: string }[];
-    const metaAudit = audit.find(row => row.key === '__table__/meta')?.value ?? '';
+    const audit = painted.fields.audit!.value as { id: number; rows: readonly { key: string; value?: string }[] };
+    const metaAudit = audit.rows.find(row => row.key === '__table__:meta')?.value ?? '';
     assert.ok(metaAudit.includes('3 not shown') && metaAudit.includes('Leader A: condition undecided'), 'audit records the header marker and reasons');
   } finally {
     (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
