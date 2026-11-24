@@ -13,7 +13,7 @@ export interface NationalSpiritsOptions {
   readonly branchFirst: number;
 }
 
-const COLUMNS = { art: { width: 22, height: 22 }, figure: 150, figureAlign: 'right' } as const;
+const COLUMNS = { art: { width: 18, height: 18 }, figure: 150, figureAlign: 'right' } as const;
 const NO_ICON = 'The spirit has no icon in the current installation';
 const replyLists = new WeakMap<IdeaHistoryReply, ReturnType<typeof spirits>>();
 
@@ -46,10 +46,10 @@ export const nationalSpiritsProjection: CardProjection<NationalSpiritsOptions> =
   project(readView, options): CardModel {
     const hour = readView.hour;
     const reply = readView.panel<IdeaHistoryReply>('main');
-    if (!reply) return { hour, rows: [], columns: COLUMNS, rowHeight: 32 };
+    if (!reply) return { hour, rows: [], columns: COLUMNS, rowHeight: 26 };
     const warnings = reply.warnings.length ? { warnings: reply.warnings } : {};
     if (reply.unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour)) {
-      return { hour, rows: [], columns: COLUMNS, rowHeight: 32, empty: 'National spirits were not recorded at this date.', emptyKind: 'unavailable', ...warnings };
+      return { hour, rows: [], columns: COLUMNS, rowHeight: 26, empty: 'National spirits were not recorded at this date.', emptyKind: 'unavailable', ...warnings };
     }
     const rows: CardItemRow[] = activeAt(listOf(reply), hour).map(spirit => {
       const span = spirit.spans.find(item => item.firstHour <= hour && hour <= item.lastHour)!;
@@ -80,7 +80,7 @@ export const nationalSpiritsProjection: CardProjection<NationalSpiritsOptions> =
       hour,
       rows,
       columns: COLUMNS,
-      rowHeight: 32,
+      rowHeight: 26,
       ...(rows.length === 0 ? { empty: 'No national spirits at this date.' } : {}),
       ...warnings,
       nextChangeAt: nextBoundary(reply, hour),

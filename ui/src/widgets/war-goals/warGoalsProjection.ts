@@ -96,7 +96,7 @@ export const warGoalsProjection: CardProjection<WarGoalsOptions> = registerFamil
   kind: 'war-goals',
   project(readView, options): CardModel {
     const hour = readView.hour;
-    const columns = { flag: true, place: true, titleWidth: 200, titleWeight: 600, meter: 56, figure: 170, state: 120 };
+    const columns = { flag: true, place: true, titleWidth: 152, titleWeight: 600, meter: 56, figure: 151, state: 107 };
     const raw = readView.panel<unknown>('main');
     if (raw === undefined) return { hour, rows: [], columns, rowHeight: 36 };
     const reply = validateWargoalsReply(raw);

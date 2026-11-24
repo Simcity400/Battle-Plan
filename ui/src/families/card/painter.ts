@@ -22,6 +22,7 @@ import { formatValueState } from '../valueFormat.ts';
 import {
   CARD_FADE,
   CARD_FLAG_HEIGHT,
+  CARD_FLAG_INSET,
   CARD_FLAG_WIDTH,
   CARD_HERO_HEIGHT,
   CARD_PAD_X,
@@ -97,6 +98,8 @@ function drawHero(ctx: Canvas2D, row: CardHeroRow, top: number, layout: CardLayo
   const x = CARD_PAD_X;
   const w = layout.width - CARD_PAD_X * 2;
   const h = CARD_HERO_HEIGHT - 12;
+  const titleY = top + 23;
+  const stateY = top + 45;
   ctx.save();
   ctx.fillStyle = tokens.raised;
   ctx.strokeStyle = tokens.hairlineStrong;
@@ -109,7 +112,7 @@ function drawHero(ctx: Canvas2D, row: CardHeroRow, top: number, layout: CardLayo
   const inner = x + 14;
   const artW = 54;
   const artH = 48;
-  const artMid = top + 14 + artH / 2;
+  const artMid = top + 12 + artH / 2;
   drawMedia(ctx, row.art, inner, artMid, artW, artH, theme, artCache);
   const textX = inner + artW + 14;
   let figureW = 0;
@@ -117,18 +120,17 @@ function drawHero(ctx: Canvas2D, row: CardHeroRow, top: number, layout: CardLayo
     const formatted = formatValueState(row.figure.value);
     const figureRight = x + w - 14;
     if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
-      figureW = drawMissingMark(ctx, figureRight - 150, artMid - 8, 150, theme, { align: 'right', figure: row.figure.caption }).width;
+      figureW = drawMissingMark(ctx, figureRight - 150, top + 30, 150, theme, { align: 'right', figure: row.figure.caption }).width;
     } else {
-      figureW = line(ctx, formatted.text, figureRight - 120, artMid - 8, 120, `600 22px ${theme.font}`, theme.text, 'right');
-      figureW = Math.max(figureW, line(ctx, row.figure.caption, figureRight - 120, artMid + 14, 120, `400 11px ${theme.font}`, theme.muted, 'right'));
+      figureW = line(ctx, formatted.text, figureRight - 120, top + 26, 120, `600 22px ${theme.font}`, theme.text, 'right');
+      figureW = Math.max(figureW, line(ctx, row.figure.caption, figureRight - 120, top + 46, 120, `400 11px ${theme.font}`, theme.muted, 'right'));
     }
   }
   const textW = Math.max(0, x + w - 14 - (figureW ? figureW + 16 : 0) - textX);
-  line(ctx, cardTitleText(row.title), textX, artMid - 9, textW, `600 15px ${theme.font}`, row.title.kind === 'notRecorded' ? theme.muted : theme.text);
-  const stateY = artMid + 13;
+  line(ctx, cardTitleText(row.title), textX, titleY, textW, `600 15px ${theme.font}`, row.title.kind === 'notRecorded' ? theme.muted : theme.text);
   const mark = drawStatusMark(ctx, textX, stateY, row.state.mark, theme, { label: row.state.label, maxWidth: textW });
   if (row.detail) line(ctx, row.detail, textX + mark.width + 8, stateY, Math.max(0, textW - mark.width - 8), `400 ${theme.fontSize.small}px ${theme.font}`, theme.muted);
-  if (row.meter) drawMeter(ctx, row.meter, inner, top + h - 18, w - 28, 6, theme);
+  if (row.meter) drawMeter(ctx, row.meter, x + 11, top + 69, w - 22, 6, theme);
 }
 
 function drawItem(ctx: Canvas2D, model: CardModel, row: CardItemRow, top: number, height: number, layout: CardLayout, theme: FamilyTheme, artCache?: LaneArtCache): void {
@@ -137,7 +139,7 @@ function drawItem(ctx: Canvas2D, model: CardModel, row: CardItemRow, top: number
   ctx.save();
   if (row.muted) ctx.globalAlpha = MUTED_ROW_ALPHA;
   if (columns.date && row.date) drawDateColumn(ctx, layout.dateX, top, height, row.date.hour, theme);
-  if (columns.flag && row.flag) drawMedia(ctx, row.flag, layout.flagX, middleY, CARD_FLAG_WIDTH, CARD_FLAG_HEIGHT, theme, artCache);
+  if (columns.flag && row.flag) drawMedia(ctx, row.flag, layout.flagX + CARD_FLAG_INSET, middleY, CARD_FLAG_WIDTH, CARD_FLAG_HEIGHT, theme, artCache);
   if (columns.art && row.art) drawMedia(ctx, row.art, layout.artX, middleY, columns.art.width, columns.art.height, theme, artCache);
   const subtitle = layout.compact && row.place ? (row.subtitle ? `${row.subtitle} · ${row.place}` : row.place) : row.subtitle;
   const titleFont = `${columns.titleWeight ?? 500} 13px ${theme.font}`;
