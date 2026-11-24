@@ -35,6 +35,7 @@ pub fn dated_panel_of(source: &Source, load: &LoadContext, asked: &Value) -> Opt
         "politics-state" => dashboard_politics::registrations::EXACT_POLITICSSTATE(source, load, asked),
         "air-force-at" => dashboard_land::registrations::EXACT_AIRFORCEAT(source, load, asked),
         "navy-at" => dashboard_land::registrations::EXACT_NAVYAT(source, load, asked),
+        "army-at" => dashboard_land::registrations::EXACT_ARMYAT(source, load, asked),
         "log-tail" => dashboard_politics::products::logs::dated_panel(source, load, asked),
         "market-ledger-tail" => dashboard_economy::products::economy::market::ledger::dated_panel(source, load, asked),
         "event-feed-tail" => dashboard_politics::products::feed::event_feed_dated_panel(source, load, asked),

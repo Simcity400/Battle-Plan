@@ -1199,34 +1199,6 @@ export type FactoryGroupsReply = { groups: Array<FactoryGroupNames>,
  * Why no group can be named: the content is not configured or cannot be read.
  */
 missing: string | null, warnings: Array<string>, };
-export type AirForceParams = { branchId: string, countries: Array<CountryRef>, top: number | null, measure: AirForceMeasure, ownership: AirForceOwnership,
-/**
- * None is the window manifest; a window's runs name it by its index.
- */
-window?: number, };
-export type ForceSizeReply = { branchId: string, windows: Array<ArmySpan>, window: number | null, interval: ArmySpan | null, parts: Array<ForcePart>, series: Array<ForceSeries>, warnings: Array<string>, };
-export type AirForceMeasure = "planes" | "wings";
-export type AirForceOwnership = "roster" | "effective";
-export type ForcePart = { key: string, name: string | null, unresolved: boolean, };
-export type ForceRun = { firstHour: number, lastHour: number, startsSegment: boolean,
-/**
- * Null where the total is not recorded.
- */
-total: number | null,
-/**
- * Parallel to the reply's parts; every one null where the hour's rows do not split the total.
- */
-values: Array<number | null>,
-/**
- * The navy's maximum hull HP (fixed5) for the strength measure, null for ships or where not
- * recorded; absent for the air force.
- */
-referenceTotal?: number | null, };
-export type ForceSeries = { country: CountryRef, identities: Array<ArmyIdentityRun>, runs: Array<ForceRun>, segments: Array<ArmySpan>, membership: Array<ArmySpan> | null, };
-export type NavyParams = { branchId: string, countries: Array<CountryRef>, top: number | null, ownership: NavyOwnership, grouping: NavyGrouping, measure: NavyMeasure, window?: number, };
-export type NavyMeasure = "ships" | "strength";
-export type NavyOwnership = "roster" | "logical";
-export type NavyGrouping = "class" | "type";
 export type BranchParams = { branchId: string, };
 export type SubjectLevel = {
 /**
@@ -2739,6 +2711,23 @@ export type NavalLossesParams = { branchId: string, countries: Array<CountryRef>
  * None is the window manifest; a window's runs name it by its index.
  */
 window?: number, };
+export type ForceSizeReply = { branchId: string, windows: Array<ArmySpan>, window: number | null, interval: ArmySpan | null, parts: Array<ForcePart>, series: Array<ForceSeries>, warnings: Array<string>, };
+export type ForceRun = { firstHour: number, lastHour: number, startsSegment: boolean,
+/**
+ * Null where the total is not recorded.
+ */
+total: number | null,
+/**
+ * Parallel to the reply's parts; every one null where the hour's rows do not split the total.
+ */
+values: Array<number | null>,
+/**
+ * The navy's maximum hull HP (fixed5) for the strength measure, null for ships or where not
+ * recorded; absent for the air force.
+ */
+referenceTotal?: number | null, };
+export type ForceSeries = { country: CountryRef, identities: Array<ArmyIdentityRun>, runs: Array<ForceRun>, segments: Array<ArmySpan>, membership: Array<ArmySpan> | null, };
+export type ForcePart = { key: string, name: string | null, unresolved: boolean, };
 export type NavalAttribution = "lost" | "sunkBy";
 export type NavalKind = "ships" | "convoys" | "both";
 export type NavalPeriod = "running" | "month";
@@ -4753,27 +4742,34 @@ export type EspionageOperationsReply = {
  */
 operations: Array<OperationUnderWay>, missing: string | null, warnings: Array<string>, };
 export type EspionageOperationsParamsAtHour = EspionageOperationsParams & { hour: number };
-export type OccupationReserveParams = { branchId: string, };
-export type ReserveEntry = { ordinal: number, source: Country, };
+export type OccupationReserveParams = { branchId: string, countries: Array<CountryRef>, top?: number, };
+export type ReserveEntry = { ordinal: number, source: Country, amount: number, };
 export type ReserveHolder = { country: Country,
 /**
  * Its occupation status was read: no entry is a recorded zero.
  */
 admitted: boolean,
 /**
+ * Sum of its positive entries at this hour.
+ */
+total: number,
+/**
  * Its entries in list order.
  */
 entries: Array<ReserveEntry>, };
 export type OccupationReserveReply = {
 /**
- * By country id: the race ranks them by their entries' live amounts.
+ * Ranked descending by positive reserve total, then tag.
  */
 holders: Array<ReserveHolder>,
 /**
- * The reserve's read hour the rows hold; it moves with the reads, so a widget renders nothing
- * for it.
+ * The reserve's read hour the rows hold.
  */
-readHour: number | null, missing: string | null, warnings: Array<string>, };
+readHour: number | null,
+/**
+ * Holders whose recording named no tag at this hour.
+ */
+unnamed: number, missing: string | null, warnings: Array<string>, };
 export type OccupationReserveParamsAtHour = OccupationReserveParams & { hour: number };
 export type IntelCoverageParams = { branchId: string, countries?: Array<CountryRef>, top?: number, touching?: boolean, measure?: IntelCoverageMeasure, basis?: IntelCoverageBasis, };
 export type IntelCoverageMeasure = "covered" | "strength" | "strongest";
@@ -6209,9 +6205,16 @@ export type ArmyLossesAvailability = { armies: string | null, manpower: string |
 export type ArmyLossesParamsAtHour = ArmyLossesParams & { hour: number };
 export type AirForceAtParams = { branchId: string, countries: Array<CountryRef>, top?: number, measure: AirForceMeasure, ownership: AirForceOwnership, };
 export type ForceAtReply = { parts: Array<ForcePart>, rows: Array<ForceAtRow>, missing: string | null, warnings: Array<string>, };
+export type AirForceMeasure = "planes" | "wings";
+export type AirForceOwnership = "roster" | "effective";
 export type AirForceAtParamsAtHour = AirForceAtParams & { hour: number };
 export type NavyAtParams = { branchId: string, countries: Array<CountryRef>, top?: number, ownership: NavyOwnership, grouping: NavyGrouping, measure: NavyMeasure, };
+export type NavyMeasure = "ships" | "strength";
+export type NavyOwnership = "roster" | "logical";
+export type NavyGrouping = "class" | "type";
 export type NavyAtParamsAtHour = NavyAtParams & { hour: number };
+export type ArmyAtParams = { branchId: string, countries: Array<CountryRef>, top?: number, countFor: ArmyAttribution, };
+export type ArmyAtParamsAtHour = ArmyAtParams & { hour: number };
 /** The native command byte budget, including its envelope. */
 export const MAX_MESSAGE_BYTES = 33554432;
 /** Data requests outstanding at once; one past it is refused for want of room. */
@@ -6224,9 +6227,9 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "technology-artwork", "country-flags", "doctrines", "aircraft-catalogue", "sprite-artwork", "army-size", "country-facts", "country-styles", "country-groups", "land-owners", "military-air-ledger", "military-air-at", "politics-state-history", "factory-groups", "air-force-size", "navy-size", "subjects", "diplomatic-pacts", "espionage-types", "raid-log", "production-lines", "production-line-breakdown", "place-names", "place-name-runs", "strategic-regions", "naval-supremacy", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "regional-weather", "focus-card", "idea-history", "party-history", "casualty-breakdown", "peace-deals", "territory-transfers", "convoy-health", "production-spending", "construction-log-manifest", "construction-log", "construction-breakdown", "division-log", "division-log-manifest", "land-battle-course", "land-battle-terrain", "naval-battle-details", "ships-sunk-manifest", "ships-sunk", "research", "research-breakdown", "event-feed", "event-feed-tail", "event-choices", "event-choices-tail", "decisions", "decisions-tail", "event-feed-span", "market-ledger", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "equipment-stockpile-catalogue", "equipment-stockpile-chart", "faction-state", "wars", "war-losses", "special-projects", "air-superiority-choices", "combat-log-history", "equipment-losses", "air-statistics-regions", "scoreboard-columns", "equipment-produced", "equipment-produced-types", "equipment-produced-country", "equipment-produced-at", "power-spending-breakdown", "air-superiority-timeline", "espionage-type-tokens", "template-roster", "air-statistics", "politics-state", "territory-breakdown", "game-score", "nuclear-arsenal", "autonomy-levels", "training-queue", "trade-flow", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "fuel-branches", "resource-balance", "production-lines-at", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "division-equipment", "research-slots", "air-missions", "occupied-states", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "army-losses", "air-force-at", "navy-at"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "technology-artwork", "country-flags", "doctrines", "aircraft-catalogue", "sprite-artwork", "army-size", "country-facts", "country-styles", "country-groups", "land-owners", "military-air-ledger", "military-air-at", "politics-state-history", "factory-groups", "subjects", "diplomatic-pacts", "espionage-types", "raid-log", "production-lines", "production-line-breakdown", "place-names", "place-name-runs", "strategic-regions", "naval-supremacy", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "regional-weather", "focus-card", "idea-history", "party-history", "casualty-breakdown", "peace-deals", "territory-transfers", "convoy-health", "production-spending", "construction-log-manifest", "construction-log", "construction-breakdown", "division-log", "division-log-manifest", "land-battle-course", "land-battle-terrain", "naval-battle-details", "ships-sunk-manifest", "ships-sunk", "research", "research-breakdown", "event-feed", "event-feed-tail", "event-choices", "event-choices-tail", "decisions", "decisions-tail", "event-feed-span", "market-ledger", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "equipment-stockpile-catalogue", "equipment-stockpile-chart", "faction-state", "wars", "war-losses", "special-projects", "air-superiority-choices", "combat-log-history", "equipment-losses", "air-statistics-regions", "scoreboard-columns", "equipment-produced", "equipment-produced-types", "equipment-produced-country", "equipment-produced-at", "power-spending-breakdown", "air-superiority-timeline", "espionage-type-tokens", "template-roster", "air-statistics", "politics-state", "territory-breakdown", "game-score", "nuclear-arsenal", "autonomy-levels", "training-queue", "trade-flow", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "fuel-branches", "resource-balance", "production-lines-at", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "division-equipment", "research-slots", "air-missions", "occupied-states", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "army-losses", "air-force-at", "navy-at", "army-at"] as const;
 /** Products served separately from whole-branch history reads. */
-export const INTERACTIVE_PRODUCTS = ["campaign-clock", "player-apm", "technology-artwork", "country-flags", "doctrines", "sprite-artwork", "country-styles", "log-tail", "world-tension-stack", "espionage-operation", "espionage-ended", "espionage-types", "production-line-breakdown", "place-names", "place-name-runs", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "occupation-reserve-history", "land-battle-terrain", "naval-losses-at", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "war-losses", "combat-log-history", "scoreboard", "equipment-produced-at", "template-roster", "air-statistics", "politics-state", "next-elections", "territory-share", "territory-breakdown", "faction-rosters", "game-score", "nuclear-arsenal", "world-tension", "factory-parts", "autonomy-levels", "training-queue", "diplomatic-relations", "volunteer-flow", "trade-flow", "casualty-matrix", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "espionage-operations", "occupation-reserve-manpower", "intel-network-coverage", "fuel-branches", "resource-balance", "lend-lease-balance", "production-lines-at", "production-licences", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "division-equipment", "research-slots", "air-missions", "occupied-states", "occupation-at", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "equipment-loss-head", "army-losses", "air-force-at", "navy-at"] as const;
+export const INTERACTIVE_PRODUCTS = ["campaign-clock", "player-apm", "technology-artwork", "country-flags", "doctrines", "sprite-artwork", "country-styles", "log-tail", "world-tension-stack", "espionage-operation", "espionage-ended", "espionage-types", "production-line-breakdown", "place-names", "place-name-runs", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "occupation-reserve-history", "land-battle-terrain", "naval-losses-at", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "war-losses", "combat-log-history", "scoreboard", "equipment-produced-at", "template-roster", "air-statistics", "politics-state", "next-elections", "territory-share", "territory-breakdown", "faction-rosters", "game-score", "nuclear-arsenal", "world-tension", "factory-parts", "autonomy-levels", "training-queue", "diplomatic-relations", "volunteer-flow", "trade-flow", "casualty-matrix", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "espionage-operations", "occupation-reserve-manpower", "intel-network-coverage", "fuel-branches", "resource-balance", "lend-lease-balance", "production-lines-at", "production-licences", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "division-equipment", "research-slots", "air-missions", "occupied-states", "occupation-at", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "equipment-loss-head", "army-losses", "air-force-at", "navy-at", "army-at"] as const;
 /** Pages that replay recorded tables to their rows' hours: served apart, so no other request waits behind them. */
 export const REPLAY_PRODUCTS = ["event-feed", "event-feed-tail", "event-choices", "event-choices-tail", "decisions", "decisions-tail"] as const;
 export type HourRole = "read" | "start" | "end" | "bucket";
@@ -6234,7 +6237,6 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "agency-comparison": { "hour": "read" },
   "air-aces": { "hour": "read" },
   "air-force-at": { "hour": "read" },
-  "air-force-size": {},
   "air-missions": { "hour": "read" },
   "air-statistics": { "hour": "read" },
   "air-statistics-regions": {},
@@ -6242,6 +6244,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "air-superiority-choices": {},
   "air-superiority-timeline": { "firstHour": "start", "lastHour": "end", "rankFrom": "start" },
   "aircraft-catalogue": {},
+  "army-at": { "hour": "read" },
   "army-losses": { "hour": "read" },
   "army-size": {},
   "autonomy-levels": { "hour": "read" },
@@ -6345,7 +6348,6 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "naval-repairs": { "hour": "read" },
   "naval-supremacy": { "firstHour": "start", "lastHour": "end" },
   "navy-at": { "hour": "read" },
-  "navy-size": {},
   "next-elections": { "hour": "read" },
   "nuclear-arsenal": { "hour": "read" },
   "occupation-at": { "hour": "read" },
@@ -6419,7 +6421,6 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "agency-comparison": { "branchId": "leaf", "hour": "leaf", "includeUncreated": "leaf", "top": "node", "top.by": "leaf", "top.count": "leaf" },
   "air-aces": { "branchId": "leaf", "hour": "leaf" },
   "air-force-at": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "measure": "leaf", "ownership": "leaf", "top": "leaf" },
-  "air-force-size": { "branchId": "leaf", "countries": "node", "countries[]": "any", "measure": "leaf", "ownership": "leaf", "top": "leaf", "window": "leaf" },
   "air-missions": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "air-statistics": { "branchId": "leaf", "channel": "leaf", "country": "any", "hour": "leaf" },
   "air-statistics-regions": { "branchId": "leaf", "country": "any" },
@@ -6427,6 +6428,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "air-superiority-choices": { "branchId": "leaf" },
   "air-superiority-timeline": { "branchId": "leaf", "every": "leaf", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "mode": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "rankFrom": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "top": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
   "aircraft-catalogue": { "count": "leaf", "first": "leaf", "origin": "node", "origin.mod": "leaf", "query": "leaf" },
+  "army-at": { "branchId": "leaf", "countFor": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "top": "leaf" },
   "army-losses": { "branchId": "leaf", "country": "any", "hour": "leaf", "limit": "leaf", "stack": "leaf", "view": "node", "view.kind": "leaf", "view.ledgers": "node", "view.ledgers[]": "leaf", "view.month": "leaf" },
   "army-size": { "branchId": "leaf", "byType": "leaf", "countFor": "leaf", "countries": "node", "countries[]": "any", "measure": "leaf", "top": "leaf", "window": "leaf" },
   "autonomy-levels": { "branchId": "leaf", "hour": "leaf" },
@@ -6530,12 +6532,11 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "naval-repairs": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "naval-supremacy": { "branchId": "leaf", "country": "any", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "top": "leaf", "window": "leaf" },
   "navy-at": { "branchId": "leaf", "countries": "node", "countries[]": "any", "grouping": "leaf", "hour": "leaf", "measure": "leaf", "ownership": "leaf", "top": "leaf" },
-  "navy-size": { "branchId": "leaf", "countries": "node", "countries[]": "any", "grouping": "leaf", "measure": "leaf", "ownership": "leaf", "top": "leaf", "window": "leaf" },
   "next-elections": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
   "nuclear-arsenal": { "branchId": "leaf", "hour": "leaf", "top": "leaf" },
   "occupation-at": { "branchId": "leaf", "collaboration": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
   "occupation-reserve-history": { "branchId": "leaf", "holder": "leaf" },
-  "occupation-reserve-manpower": { "branchId": "leaf", "hour": "leaf" },
+  "occupation-reserve-manpower": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "top": "leaf" },
   "occupied-states": { "branchId": "leaf", "hour": "leaf" },
   "operative-matrix": { "branchId": "leaf", "countries": "node", "countries[]": "any", "form": "leaf", "hour": "leaf", "top": "leaf" },
   "operatives-roster": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
@@ -6604,7 +6605,6 @@ export type RequestParams<E, B> = {
   "agency-comparison": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "air-aces": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "air-force-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "air-force-size": {};
   "air-missions": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "air-statistics": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "air-statistics-regions": {};
@@ -6612,6 +6612,7 @@ export type RequestParams<E, B> = {
   "air-superiority-choices": {};
   "air-superiority-timeline": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null; readonly "rankFrom"?: B | null };
   "aircraft-catalogue": {};
+  "army-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "army-losses": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "army-size": {};
   "autonomy-levels": { readonly [key: string]: unknown; readonly "hour"?: E | null };
@@ -6715,7 +6716,6 @@ export type RequestParams<E, B> = {
   "naval-repairs": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "naval-supremacy": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
   "navy-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "navy-size": {};
   "next-elections": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "nuclear-arsenal": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "occupation-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { countryValueAt, countryValueEntries, countryValueLines, countryValueMix,
+import { countryValueAt, countryValueEntries, countryValueMix,
   countryValuePartsReply, countryValuesModel, countryValueSegmentAt, rankCountryValues,
   validCountryValues } from './countryValues.ts';
 import type { CountryValuesReply } from './countryValues';
@@ -65,19 +65,11 @@ test('hourly read dating survives compressed equal reads; unknown and absent nev
   assert.deepEqual(rankCountryValues(countryValuesModel(tied), ['a', 'A'], 1, 2).map(entry => entry.tag), ['A', 'a']);
 });
 
-test('lines and mix retain gaps, identities, exact fractions and member/range boundaries', () => {
+test('mix retains gaps, identities, and member/range boundaries', () => {
   const model = countryValuesModel(REPLY);
-  assert.deepEqual(countryValueLines(model, 'tag with spaces', null, { firstHour: 1, lastHour: 8 }), [
-    { firstHour: 1, lastHour: 2, value: 10, breakBefore: true },
-    { firstHour: 6, lastHour: 7, value: 12, breakBefore: true },
-    { firstHour: 8, lastHour: 8, value: 12, breakBefore: true },
-  ]);
   const mix = countryValueMix(model, 'tag with spaces', [{ firstHour: 6, lastHour: 8 }], { firstHour: 7, lastHour: 8 });
   assert.deepEqual(mix, [[{ firstHour: 7, lastHour: 7, value: 7 }, { firstHour: 8, lastHour: 8, value: 7, breakBefore: true }],
     [{ firstHour: 8, lastHour: 8, value: 5, breakBefore: true }]]);
-  const fractions = structuredClone(REPLY);
-  fractions.series[1].runs[0][1] = 0.00001;
-  assert.equal(countryValueLines(countryValuesModel(fractions), 'a', null, { firstHour: 2, lastHour: 4 })[0].value, 0.00001);
 });
 
 test('split races hatch unknown attribution while preserving the independently exact total', () => {
@@ -101,9 +93,6 @@ test('compact hourly totals and separate composition preserve exact reads, group
   const model = countryValuesModel(reply);
   assert.deepEqual(countryValueAt(model, 'country', 5)?.values, [2]);
   assert.equal(countryValueAt(model, 'country', 5)?.readHour, 5);
-  assert.deepEqual(countryValueLines(model, 'country', null, { firstHour: 1, lastHour: 5 }), [
-    { firstHour: 1, lastHour: 3, value: 2, breakBefore: true }, { firstHour: 4, lastHour: 5, value: 2, breakBefore: true },
-  ]);
   assert.equal(validCountryValues({ ...reply, series: [{ ...reply.series[0], runs: [[1, 2, 0]] }] }), false);
   assert.equal(validCountryValues({ ...reply, series: [{ ...reply.series[0], mix: [{ firstHour: 1, lastHour: 6, values: [2] }] }] }), false);
 });
@@ -120,7 +109,6 @@ test('a missing separate group read keeps the exact total and hatches its unknow
   assert.deepEqual(at.values, [null]);
   assert.deepEqual(countryValueEntries(model, [{ tag: 'country', at: { ...at, total: 4 } }], true, String)[0].parts,
     [{ id: '', value: 0, hatched: 4 }]);
-  assert.equal(countryValueLines(model, 'country', null, { firstHour: 1, lastHour: 3 })[0].lastHour, 3);
 });
 
 test('the parts race shape joins boundaries without filling gaps or expanding hours', () => {

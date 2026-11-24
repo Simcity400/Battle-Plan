@@ -161,10 +161,6 @@ export function countryValueRuns(model: CountryValuesModel, tag: string, part?: 
   return runs;
 }
 
-export function countryValueLines(model: CountryValuesModel, tag: string, membership: readonly Span[] | null, range: Span): Run[] {
-  return shownRuns(countryValueRuns(model, tag), membership, range);
-}
-
 export function countryValueMix(model: CountryValuesModel, tag: string, membership: readonly Span[] | null, range: Span): Run[][] {
   return model.reply.types.map((_, index) => shownRuns(countryValueRuns(model, tag, index), membership, range));
 }
