@@ -61,6 +61,7 @@ pub fn typescript_contract() -> String {
         dashboard_query::series::SeriesEventPage::decl(),
         dashboard_query::tile::TilePart::decl(),
         dashboard_query::tile::TileMarks::decl(),
+        dashboard_query::tile::TileRanking::decl(),
         dashboard_query::tile::TileLine::decl(),
         dashboard_query::tile::SeriesTileReply::decl(),
         dashboard_query::series::NavigationKey::decl(),
