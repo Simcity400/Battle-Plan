@@ -742,3 +742,5 @@ fn a_narrow_range_counts_only_its_own_raids_and_raids_are_available_only_once_on
     let chosen = load_with(&[records(1, frames)], RaidLogParams { branch_id: "1".into(), from: None, to: None, countries: vec![Country::Slot(1)], catalogue: false });
     assert_eq!(chosen.episodes.len(), 1, "R4-S13: a raid by a chosen slot is kept though no tag names its raider");
 }
+
+mod tail;

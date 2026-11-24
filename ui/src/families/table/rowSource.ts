@@ -5,6 +5,7 @@ import type { LogCell, LogFacetCountAsk, MissingSpan } from '../../generated/das
 export type TailProduct =
   | 'log-tail'
   | 'market-ledger-tail'
+  | 'raid-log-tail'
   | 'event-feed-tail'
   | 'decisions-tail'
   | 'event-choices-tail';
