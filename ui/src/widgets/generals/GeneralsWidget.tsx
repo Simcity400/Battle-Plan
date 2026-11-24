@@ -19,7 +19,7 @@ import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { resolveOptions } from '../../dashboard/options';
-import { GeneralCareerForReference } from '../general-career/GeneralCareerView';
+import CareerView from '../general-career/CareerView';
 import { DEFAULT_SORT, OPTIONS } from './definition';
 import { attributeCells, attributesHeader } from './Attributes.tsx';
 import { LeaderIdentity, leaderIdentityProps, leaderPortraitProps, SkillStars } from './LeaderIdentity.tsx';
@@ -148,7 +148,7 @@ export default function GeneralsWidget(props: WidgetProps) {
       const kept = history ? drillControl.time(history) : time;
       if (currentOwner.current === owner && kept) runtime.addWidgetBelow(widget.id, pinnedCareer(widget, drill.breakdown!, track, kept));
     } : undefined} main={<div ref={head.root} className="generals-main">{body()}</div>}>
-    {drill.breakdown && <GeneralCareerForReference {...props} time={drillRegion.action}
+    {drill.breakdown && <CareerView {...props} time={drillRegion.action}
       reference={drill.breakdown} onPick={h => {
         if (currentOwner.current === owner) dispatch({ type: 'pick', hour: h });
       }} />}

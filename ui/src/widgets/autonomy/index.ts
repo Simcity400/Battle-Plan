@@ -1,4 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import AutonomyView from './AutonomyView';
+import AutonomyWidget from './AutonomyWidget';
 
-export default { render: AutonomyView } satisfies WidgetRenderer;
+export default { render: AutonomyWidget } satisfies WidgetRenderer;

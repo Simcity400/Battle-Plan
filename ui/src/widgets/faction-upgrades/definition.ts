@@ -6,6 +6,7 @@ export const OPTIONS: readonly OptionField[] = [
   FACTION_OPTION,
   { key: 'endedProgrammes', section: 'options', label: 'Ended programmes', kind: 'choice', default: 'shown',
     choices: [{ value: 'shown', label: 'Shown' }, { value: 'hidden', label: 'Hidden' }] },
+  { key: 'grow', section: 'axes', label: 'Grow with playback', kind: 'toggle', default: false },
 ];
 
 export const definition = {

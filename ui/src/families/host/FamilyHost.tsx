@@ -47,6 +47,7 @@ import {
   handleFamilyPointsKeyDown,
   type FamilyNavTuple,
 } from './keyboard.ts';
+import { NO_EXPANSION, toggleExpansion, type FamilyExpansion } from './expansion.ts';
 import { syncListboxMirror, syncTableMirror, type ListboxMirrorItem } from './mirror.ts';
 import { bindFamilyPointer } from './pointer.ts';
 import { computeScrollGeometry, physicalToLogicalTop, scrollRangeIntoView, type ScrollGeometry } from './scroll.ts';
@@ -253,6 +254,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const installedFieldsRef = useRef<Readonly<Record<string, unknown>>>(EMPTY_FIELDS);
   const navRef = useRef<readonly FamilyNavTuple[]>(EMPTY_NAV);
   const typeaheadRef = useRef({ query: '', until: 0 });
+  const expansionRef = useRef<FamilyExpansion>(NO_EXPANSION);
 
   const lastMirrorKeyRef = useRef('');
   const lastMirrorObjRef = useRef<MirrorModel | null>(null);
@@ -458,6 +460,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       identitySnapshot: cur.identitySnapshot,
       selectedKey: cur.selectedKey,
       focusedKey: focusInsideRef.current ? focusedKeyRef.current : null,
+      expanded: expansionRef.current,
       audit: auditId !== undefined,
       auditId,
       pauseFlush: pauseFlushRef.current,
@@ -505,8 +508,14 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const dispatchAction = useCallback((action: InstalledAction) => {
     const cur = latestRef.current;
     if (action.toggle && cur.onToggle) cur.onToggle(action);
-    else cur.onActivate?.(action);
-  }, []);
+    else if (action.toggle) {
+      const toggled = toggleExpansion(expansionRef.current, navRef.current, action.subject);
+      if (!toggled) return;
+      expansionRef.current = toggled.next;
+      announce(`${toggled.label} ${toggled.open ? 'expanded' : 'collapsed'}.`);
+      bindRef.current();
+    } else cur.onActivate?.(action);
+  }, [announce]);
 
   const actionFor = useCallback((installed: InstalledPicture, hit: ParsedFamilyHit, toggle: boolean): InstalledAction | null => {
     const refine = latestRef.current.adapter.resolveHitAction;
@@ -557,8 +566,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const entry = navRef.current.find(item => item[0] === key);
     if (!entry) return;
     focusedKeyRef.current = key;
-    const stride = Math.max(1, latestRef.current.adapter.getRowStride?.(installedFieldsRef.current) ?? DEFAULT_ROW_STRIDE);
-    scrollRangeIntoView(bodyRef.current, viewportRef.current, entry[2] * stride, stride, scrollGeometryRef.current);
+    const curAdapter = latestRef.current.adapter;
+    const range = curAdapter.getRowRange?.(installedFieldsRef.current, key);
+    const stride = Math.max(1, curAdapter.getRowStride?.(installedFieldsRef.current) ?? DEFAULT_ROW_STRIDE);
+    scrollRangeIntoView(bodyRef.current, viewportRef.current, range ? range[0] : entry[2] * stride, range ? range[1] : stride, scrollGeometryRef.current);
     bindRef.current();
   }, []);
 
@@ -584,6 +595,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     installedPictureRef.current = null;
     installedFieldsRef.current = EMPTY_FIELDS;
     navRef.current = EMPTY_NAV;
+    expansionRef.current = NO_EXPANSION;
     focusedKeyRef.current = null;
     inspectedKeyRef.current = null;
     inspectedHitRef.current = null;

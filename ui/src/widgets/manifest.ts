@@ -23,18 +23,14 @@ export interface FamilyViewUiLoader {
 
 export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'apm-table': { load: () => import('./apm-table') },
-  'autonomy': { load: () => import('./autonomy') },
   'diplomatic-pacts': { load: () => import('./diplomatic-pacts') },
   'division-template': { load: () => import('./division-template') },
-  'faction-upgrades': { load: () => import('./faction-upgrades') },
   'factions': { load: () => import('./factions') },
   'game-score': { load: () => import('./game-score') },
-  'general-career': { load: () => import('./general-career') },
   'idea-timeline': { load: () => import('./idea-timeline') },
   'occupied-states': { load: () => import('./occupied-states') },
   'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },
   'scoreboard': { load: () => import('./scoreboard') },
-  'wars': { load: () => import('./wars') },
 };
 
 const familyByKind = new Map<string, FamilyViewEntry[]>();

@@ -156,6 +156,7 @@ export interface FamilyBindingContext<TOptions> {
   readonly identitySnapshot: IdentitySnapshot | null;
   readonly selectedKey: string | null;
   readonly focusedKey: string | null;
+  readonly expanded: Readonly<Record<string, boolean>>;
   readonly audit: boolean;
   readonly auditId: number | undefined;
   readonly pauseFlush: number;
@@ -202,6 +203,7 @@ export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBindin
   readonly resolveHitAction?: (hit: ParsedFamilyHit, installed: InstalledPicture, fields: Readonly<Record<string, unknown>>) => InstalledAction | null;
   readonly getScrollExtent?: (fields: Readonly<Record<string, unknown>>) => FamilyScrollExtent | null;
   readonly getRowStride?: (fields: Readonly<Record<string, unknown>>) => number;
+  readonly getRowRange?: (fields: Readonly<Record<string, unknown>>, key: string) => readonly [top: number, height: number] | null;
   readonly getPageStep?: (fields: Readonly<Record<string, unknown>>, viewport: FamilyViewportState) => number;
   readonly getGridMetrics?: (fields: Readonly<Record<string, unknown>>) => FamilyGridMetrics | null;
   readonly parseGridKey?: (key: string | null) => { readonly row: number; readonly column: number } | null;

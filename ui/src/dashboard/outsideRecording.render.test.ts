@@ -118,23 +118,26 @@ test('two humans recorded through 109, counted at this hour: at 110 Diplomatic r
   } finally { delete host.__stub; await close(); }
 });
 
-test('a named leader at 99 before its branch 100–109: current details are outside the recording and never report Leader details unavailable', async () => {
+test('a named leader growing with playback, at 99 before its branch 100–109: the career is kept, current details are outside the recording, and no cursor or later event is drawn', async () => {
   const { load, close } = await mount({ '/dashboard/headProduct.ts': wrapped('useHeadProduct'), '/dashboard/products.ts': wrapped('useProduct'),
     '/widgets/generals/portraits.ts': wrapped('useLeaderPortraits'), '/charts/useChartTokens.ts': TOKENS,
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
-    '/families/timeline/useTimelineIdentity.ts': 'export const useTimelineIdentity = () => ({ snapshot: null, onDemands() {} });',
-    '/families/timeline/FamilyTimelineHost.tsx': 'export default props => props.blockedState ?? null;' });
+    '/charts/timeline/Timeline.tsx': 'export default props => { globalThis.__timeline = props; return null; };' });
+  const drawn = globalThis as typeof globalThis & { __timeline?: { playhead: number | null; labelHour?: number; lanes: { spans: unknown[] }[] } };
   try {
-    const { GeneralCareerForReference } = await load<{ GeneralCareerForReference: ComponentType<Record<string, unknown>> }>('/ui/src/widgets/general-career/GeneralCareerView.tsx');
+    const { default: CareerView } = await load<{ default: ComponentType<Record<string, unknown>> }>('/ui/src/widgets/general-career/CareerView.tsx');
     const role = { owner: 'GER', kind: 1, category: 0, rank: 'Field Marshal', attributeNames: ['A', 'D', 'P', 'L'], maximumSkill: 9 };
     const career = { reference: '1', name: 'Leader 1', portraitHour: null, runs: [{ firstHour: 100, lastHour: 109, role, skill: 3, components: [1, 1, 1, 1] }],
       traitGains: [[104, 0, 1]], traits: [{ token: 'a', name: 'A', icon: null, missing: null }], commands: [{ firstHour: 102, lastHour: 108, formation: '7', kind: 'army', name: null }],
       battles: [], observed: [[100, 109]], battlesPartialFrom: null, resultsMissing: '', missing: null, warnings: [] };
     host.__stub = { useHeadProduct: gated, useProduct: (_client: never, request: { product: string } | null) => request?.product === 'unit-leader-career' ? { data: career, retry() {} } : undefined,
       useLeaderPortraits: () => ({ at: () => undefined, warnings: [] }) };
-    const html = markup(createElement(GeneralCareerForReference, { reference: '1', widget: { id: 'career', kind: 'general-career', trackIds: ['main'], countries: { kind: 'all' },
-      time: { mode: 'follow' }, options: { leader: '1' } }, runtime: { tracks: [track(100, 109)], client: {}, clock: clockAt({ firstHour: 0, lastHour: 200 }, 99) },
+    const html = markup(createElement(CareerView, { reference: '1', widget: { id: 'career', kind: 'general-career', trackIds: ['main'], countries: { kind: 'all' },
+      time: { mode: 'follow' }, options: { leader: '1', growWithPlayback: true } }, runtime: { tracks: [track(100, 109)], client: {}, clock: clockAt({ firstHour: 0, lastHour: 200 }, 99) },
       active: true, onDiagnostics() {} }));
+    const timeline = drawn.__timeline!;
     assert.ok(html.includes(OUTSIDE) && !html.includes('Leader details unavailable'), `current details are outside the recording: ${html}`);
-  } finally { delete host.__stub; await close(); }
+    assert.ok(timeline.playhead === null && timeline.labelHour === undefined, `no cursor is drawn at an hour the recording does not hold: ${timeline.playhead}`);
+    assert.deepEqual(timeline.lanes.flatMap(lane => lane.spans), [], 'growing with playback at 99, nothing after 99 is drawn');
+  } finally { delete host.__stub; delete drawn.__timeline; await close(); }
 });

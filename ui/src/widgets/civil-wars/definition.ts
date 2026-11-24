@@ -4,6 +4,7 @@ import type { OptionField } from '../../dashboard/options';
 export const OPTIONS: readonly OptionField[] = [
   { key: 'ended', section: 'options', label: 'Ended civil wars', kind: 'choice', default: 'shown',
     choices: [{ value: 'shown', label: 'Shown' }, { value: 'hidden', label: 'Hidden' }] },
+  { key: 'grow', section: 'axes', label: 'Grow with playback', kind: 'toggle', default: false },
 ];
 
 export const definition = {
