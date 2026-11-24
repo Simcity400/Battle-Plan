@@ -59,6 +59,7 @@ test('territoryRaceProjection renders default Top selection with unpopulated pan
   assert.equal(emptyModel.scaleUnit, 'States');
 
   const reply: SeriesRankReply = {
+    branchId: '1',
     hour: 300,
     from: 1,
     until: 400,
