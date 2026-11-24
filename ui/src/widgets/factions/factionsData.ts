@@ -101,13 +101,6 @@ export function tagAt(view: FactionView, member: MemberView, hour: number): stri
   return view.identities.aliasesAt(new Set([member.key]), hour)[0] ?? null;
 }
 
-export function membersHeld(view: FactionView, hour: number): string[] {
-  return view.members.flatMap(member => {
-    const tag = tagAt(view, member, hour);
-    return tag !== null && member.runs.some(run => run.firstHour <= hour && hour <= run.lastHour) ? [tag] : [];
-  });
-}
-
 export function leaderAt(leaders: readonly MembershipRun[], hour: number): string | null {
   return leaders.find(run => run.firstHour <= hour && hour <= run.lastHour)?.tag ?? null;
 }
@@ -173,14 +166,22 @@ export interface LaneInfo { faction: FactionView; member: MemberView | null }
 
 export const laneId = (faction: string, member: string | null) => JSON.stringify(member == null ? ['faction', faction] : ['member', faction, member]);
 
+function heldThrough(runs: readonly HourRange[], gaps: readonly HourRange[], hour: number): HourRange[] {
+  const known = runs.filter(run => run.firstHour <= hour).map(run => ({ firstHour: run.firstHour, lastHour: Math.min(run.lastHour, hour) }));
+  const seen = gaps.filter(gap => gap.firstHour <= hour).map(gap => ({ firstHour: gap.firstHour, lastHour: Math.min(gap.lastHour, hour) }));
+  return bridgeGaps(known, seen).map(({ firstHour, lastHour }) => ({ firstHour, lastHour }));
+}
+
 export function factionLanes(views: readonly FactionView[], hour: number, options: LaneOptions, text: FactionText,
   unobserved: readonly HourSpan[], branchFirstHour: number): { lanes: TimelineLane[]; info: Map<string, LaneInfo> } {
   const lanes: TimelineLane[] = [];
+  const lifetimes = new Map(views.map(view => [view, heldThrough(view.existence, unobserved, hour)]));
+  const lifetime = (view: FactionView) => lifetimes.get(view)!;
   const info = new Map<string, LaneInfo>();
   const chosen = options.countryIds ?? (options.countries === null ? null : new Set<string>());
   const involves = (view: FactionView) => { for (const [key, since] of view.countryIds) if (since <= hour && chosen!.has(key)) return true; return false; };
   const shown = views.filter(view => firstHour(view.existence) <= hour
-    && (options.ended || runState(view.lifetime, hour, unobserved).kind !== 'ended')
+    && (options.ended || runState(lifetime(view), hour, unobserved).kind !== 'ended')
     && (!chosen || involves(view)));
   const counts = new Map(shown.map(view => [view, membersAt(view, hour) ?? -1]));
   const count = (view: FactionView) => counts.get(view)!;
@@ -190,13 +191,13 @@ export function factionLanes(views: readonly FactionView[], hour: number, option
       : (a, b) => firstHour(a.existence) - firstHour(b.existence) || compareIds(a.id, b.id));
   for (const view of shown) {
     const name = names?.get(view) ?? factionLabel(view, hour);
-    const exists = runState(view.lifetime, hour, unobserved).kind === 'held';
+    const exists = runState(lifetime(view), hour, unobserved).kind === 'held';
     const leader = leaderAt(view.leaders, hour);
     const recordedCount = count(view);
     const members = recordedCount < 0 ? null : recordedCount;
     const state = exists
       ? members == null ? 'Members not recorded' : `${members} ${members === 1 ? 'member' : 'members'}`
-      : describeRun(view.lifetime, hour, factionWords(text.day), unobserved, branchFirstHour) ?? '';
+      : describeRun(lifetime(view), hour, factionWords(text.day), unobserved, branchFirstHour) ?? '';
     const headingId = laneId(view.id, null);
     info.set(headingId, { faction: view, member: null });
     lanes.push({
@@ -208,8 +209,9 @@ export function factionLanes(views: readonly FactionView[], hour: number, option
       })),
     });
     const memberUnobserved = view.unknown;
+    const stretches = new Map(view.members.map(member => [member, heldThrough(member.runs, memberUnobserved, hour)]));
     const shownMembers = view.members.filter(member => firstHour(member.runs) <= hour
-      && (options.ended || runState(member.stretches, hour, memberUnobserved).kind !== 'ended'));
+      && (options.ended || runState(stretches.get(member)!, hour, memberUnobserved).kind !== 'ended'));
     const tags = new Map(shownMembers.map(member => [member, tagAt(view, member, hour)]));
     const tagOf = (member: MemberView) => tags.get(member) ?? null;
     const leading = (member: MemberView) => leader !== null && leader === tagOf(member) ? 0 : 1;
@@ -220,8 +222,8 @@ export function factionLanes(views: readonly FactionView[], hour: number, option
     for (const member of shownMembers) {
       const tag = tagOf(member);
       const country = countryAt(tag);
-      const now = describeRun(member.stretches, hour, memberWords(text.day), memberUnobserved, branchFirstHour) ?? '';
-      const ended = runState(member.stretches, hour, memberUnobserved).kind === 'ended';
+      const now = describeRun(stretches.get(member)!, hour, memberWords(text.day), memberUnobserved, branchFirstHour) ?? '';
+      const ended = runState(stretches.get(member)!, hour, memberUnobserved).kind === 'ended';
       const spans: TimelineSpan[] = member.runs.flatMap(run => leadershipParts(run, view.leaders).map(part => ({
         id: `${part.firstHour}`, firstHour: part.firstHour, lastHour: part.lastHour, label: country.name,
         color: view.color, ...(part.leader ? { glyph: LEADER_GLYPH } : {}),

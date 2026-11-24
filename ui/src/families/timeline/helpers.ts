@@ -1,7 +1,8 @@
 import type { HourSpan } from '../../generated/dashboard';
 import { flagArtHandle } from '../art/provider.ts';
 import type { ArtHandle, BoundedReadView, DisplayedHour } from '../contract.ts';
-import type { TimelineLane, TimelineModel } from './model.ts';
+import { formatDateOnly } from '../valueFormat.ts';
+import type { TimelineLane, TimelineModel, TimelineSpan } from './model.ts';
 
 export function urlArtHandle(url: string | null | undefined): ArtHandle | null {
   return url ? { kind: 'url', url } : null;
@@ -87,4 +88,25 @@ export function timelineModel(parts: TimelineModelParts): TimelineModel {
     warnings: parts.warnings ?? [],
     nextChangeAt: parts.nextChangeAt ?? Infinity,
   };
+}
+
+export function boundedRuns<T extends HourSpan>(runs: readonly T[], hour: number): T[] {
+  const out: T[] = [];
+  for (const run of runs) {
+    if (run.firstHour > hour) continue;
+    out.push(run.lastHour > hour ? { ...run, lastHour: hour } : run);
+  }
+  return out;
+}
+
+export function untilItem(span: TimelineSpan, unobserved: readonly HourSpan[], hour: number, words: { readonly held: string; readonly until: string }): { readonly label: string; readonly value: string } {
+  if (span.open) return { label: words.until, value: words.held };
+  if (!span.endUnseen) return { label: words.until, value: formatDateOnly(span.lastHour) };
+  const gap = unobserved.find(item => item.firstHour <= span.lastHour + 1 && span.lastHour + 1 <= item.lastHour);
+  if (!gap || gap.lastHour >= hour) return { label: 'Last seen', value: formatDateOnly(span.lastHour) };
+  return { label: 'Ended by', value: formatDateOnly(gap.lastHour + 1) };
+}
+
+export function wholeBranchProof(_data: unknown, requested: readonly [number, number]): readonly [number, number] {
+  return [requested[0], Number.MAX_SAFE_INTEGER];
 }
