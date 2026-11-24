@@ -13,7 +13,7 @@ import type { ArtDemand, ArtHandle, ArtProvider, BoundedReadView, EntityKind, Id
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
-import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths, type FamilyColumnLayout, type FamilyTableLayout } from './layout.ts';
+import { buildColumnLayouts, computeRowLayout, layoutFamilyTable, measureFixedColumnWidths, tableRowWindow, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
 import { nextLookChange, type CountryLooksMap } from '../looks.ts';
 import {
   computeColumnMaxima,
@@ -24,6 +24,7 @@ import {
   nextTableChange,
   resolveTableRows,
   resolveTableRowsIncremental,
+  tableRank,
   updateColumnMaximaIncremental,
   type FlatTableRow,
   type TableColumnSpec,
@@ -32,14 +33,12 @@ import {
 } from './model.ts';
 import {
   collectVisibleCellIcons,
-  computeRowLayout,
   createTablePicture,
   drawFamilyTable,
   glideDurationForSpeed,
   hitFamilyTable,
   rankHoldForSpeed,
   type FamilyTablePicture,
-  type RowLayoutGeometry,
 } from './painter.ts';
 import { ensureTableProjection } from './registry.ts';
 import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, type GlideOffset, type RankMarker, type TableSettings, type TableTheme } from './settings.ts';
@@ -61,12 +60,10 @@ export interface FamilyTableBinding<TOptions = unknown> {
   readonly theme?: TableTheme;
   readonly identitySnapshot?: IdentitySnapshot | null;
   readonly artResolutions?: ArtResolutions;
-  readonly rankWidth?: number;
   readonly selectedKey?: string | null;
   readonly focusedKey?: string | null;
   readonly expanded?: Readonly<Record<string, boolean>>;
   readonly reducedMotion?: boolean;
-  readonly window?: { readonly first: number; readonly count: number };
   readonly audit?: boolean;
   readonly auditId?: number;
   readonly pauseFlush?: number;
@@ -87,7 +84,7 @@ interface PhaseTally {
   auditMs: number;
 }
 
-type NavTuple = readonly [string, string, number, number, string, unknown];
+type NavTuple = readonly [string, string, number, number, string, unknown, number, number];
 
 interface HeldFamilyTable {
   canvas: OffscreenCanvas;
@@ -171,6 +168,8 @@ interface HeldFamilyTable {
 
   auditId: number;
   auditWindowKey: string;
+  rangeKey: string;
+  rangeField: FieldEntry | null;
   auditField: FieldEntry | null;
   phases: PhaseTally;
   phasesField: FieldEntry | null;
@@ -323,7 +322,7 @@ function sameColumnSpecs(a: readonly TableColumnSpec[] | null, b: readonly Table
   return true;
 }
 
-function sameNavItems(prev: readonly NavTuple[] | null, rows: readonly FlatTableRow[]): boolean {
+function sameNavItems(prev: readonly NavTuple[] | null, rows: readonly FlatTableRow[], top: (index: number) => number, height: (index: number) => number): boolean {
   if (!prev) return false;
   let pos = 0;
   for (let i = 0; i < rows.length; i++) {
@@ -339,6 +338,8 @@ function sameNavItems(prev: readonly NavTuple[] | null, rows: readonly FlatTable
       || old[3] !== treeState
       || old[4] !== (item.parent ?? '')
       || old[5] !== (item.row.meta ?? null)
+      || old[6] !== top(i)
+      || old[7] !== height(i)
     ) return false;
   }
   return pos === prev.length;
@@ -576,6 +577,8 @@ export function familyTableLaneView(
           rowAuditCache: new WeakMap(),
           auditId: -1,
           auditWindowKey: '',
+          rangeKey: '',
+          rangeField: null,
           auditField: null,
           phases: { serves: 0, projMs: 0, layoutMs: 0, paintMs: 0, fieldsMs: 0, auditMs: 0 },
           phasesField: null,
@@ -730,9 +733,7 @@ export function familyTableLaneView(
       }
 
       if (modelChanged) held.sampleSig = textSampleSignature(model.columns, flatRows);
-      const rankShown = model.rank === true && model.populationPartial === undefined && (bound.settings.showRank === true || model.defaultRankShown === true);
-      const rankMarkersOn = rankShown && model.rankMarkers === true;
-      const rankWidth = rankShown ? (bound.rankWidth ?? (rankMarkersOn ? 64 : 36)) : 0;
+      const { shown: rankShown, markers: rankMarkersOn, width: rankWidth } = tableRank(model, bound.settings);
       const layoutSame = held.cachedLayout !== null
         && sameColumnSpecs(held.layoutCols, model.columns)
         && held.layoutSettings === bound.settings
@@ -806,6 +807,9 @@ export function familyTableLaneView(
         }
       }
       const totalHeight = rowGeom ? rowGeom.totalHeight : flatRows.length * rowHeight;
+      const rowWindow = tableRowWindow(flatRows.length, rowGeom, rowHeight, bound.scrollTop, bound.height);
+      const rowTop = (index: number) => (rowGeom ? rowGeom.tops[index]! : index * rowHeight);
+      const rowSpan = (index: number) => (rowGeom ? rowGeom.heights[index]! : rowHeight);
       if (modelChanged) {
         const forwardStep = input.speed > 0 && Number.isFinite(held.priorHour) && model.hour > held.priorHour;
         const jumped = !Number.isFinite(held.priorHour) || model.hour < held.priorHour || (model.hour !== held.priorHour && !forwardStep);
@@ -1008,12 +1012,12 @@ export function familyTableLaneView(
       const navUrgent = !held.navField || input.speed === 0 || focusedKey !== null || hasTree || (modelChanged && !incrementalUsed) || (held.navItems !== null && held.navItems.length !== flatRows.length && !held.cachedHasGroupHeaders);
       if (modelChanged) held.navGate.invalidate();
       if (navUrgent || held.navGate.due(now, input.speed, `${flatRows.length}:${focusedKey ?? ''}`)) {
-        if (!held.navField || !sameNavItems(held.navItems, flatRows)) {
+        if (!held.navField || !sameNavItems(held.navItems, flatRows, rowTop, rowSpan)) {
           const navItems: NavTuple[] = [];
           for (let i = 0; i < flatRows.length; i++) {
             const item = flatRows[i]!;
             if (item.kind === 'data') {
-              navItems.push([item.key, item.name, i, item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1, item.parent ?? '', item.row.meta ?? null]);
+              navItems.push([item.key, item.name, i, item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1, item.parent ?? '', item.row.meta ?? null, rowTop(i), rowSpan(i)]);
             }
           }
           held.navItems = navItems;
@@ -1031,12 +1035,18 @@ export function familyTableLaneView(
         held.tableField = { value: { count: flatRows.length, totalHeight, focusedIndex, inspectedPresent }, content: content() };
       }
       fields.table = held.tableField;
+      const rangeKey = `${rowWindow.first}:${rowWindow.count}`;
+      if (rangeKey !== held.rangeKey || !held.rangeField) {
+        held.rangeKey = rangeKey;
+        held.rangeField = { value: rowWindow, content: content() };
+      }
+      fields.range = held.rangeField;
 
-      const mirrorKey = `${bound.window ? `${bound.window.first}:${bound.window.count}` : ''}\u0000${focusedKey ?? ''}`;
+      const mirrorKey = `${rangeKey}\u0000${focusedKey ?? ''}`;
       if (modelChanged || layoutChanged) held.mirrorGate.invalidate();
       if (!held.mirrorField || held.mirrorGate.due(now, input.speed, mirrorKey)) {
         const visibleSpecs = layout.columns.map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
-        const mirror = deriveTableMirror(flatRows, visibleSpecs, model.hour, rankShown, bound.window, focusedKey, focusedIndex);
+        const mirror = deriveTableMirror(flatRows, visibleSpecs, model.hour, rankShown, rowWindow, focusedKey, focusedIndex);
         const mirrorText = JSON.stringify(mirror);
         held.mirrorField = { value: mirror, content: cachedField(held, 'mirror', mirrorText, content) };
         held.mirrorGate.record(now, mirrorKey);
@@ -1090,7 +1100,7 @@ export function familyTableLaneView(
 
       if (bound.audit) {
         const nextAuditId = bound.auditId ?? -1;
-        const winKey = bound.window ? `${bound.window.first}:${bound.window.count}` : '';
+        const winKey = rangeKey;
         if (modelChanged || layoutChanged || !held.auditField || held.auditId !== nextAuditId || held.auditWindowKey !== winKey) {
           const auditRows = deriveTableAudit({
             model,
@@ -1098,7 +1108,7 @@ export function familyTableLaneView(
             visibleColumns: layout.columns,
             rankShown,
             maxima,
-            window: bound.window,
+            window: rowWindow,
             countryColors: bound.theme,
             rowAuditCache: held.rowAuditCache,
           });

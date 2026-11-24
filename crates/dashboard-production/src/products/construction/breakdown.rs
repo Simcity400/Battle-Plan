@@ -134,7 +134,7 @@ pub(super) fn at_hour(reply: &ConstructionSpendingReply, from: i32, hour: i32) -
         let next = types.len() as u32;
         let ordinal = *types.entry(leaf.building).or_insert(next);
         let kind = Node::new(format!("type:{}", leaf.building.map_or_else(|| "none".to_owned(), |id| id.to_string())), type_name(reply, leaf.building), ordinal);
-        leaves.push(Leaf { path: vec![purpose, kind], amount, count: None });
+        leaves.push(Leaf { path: vec![purpose, kind], amount, count: None, last: None });
     }
     let mut unrecorded = Unrecorded::default();
     for span in &reply.missing {

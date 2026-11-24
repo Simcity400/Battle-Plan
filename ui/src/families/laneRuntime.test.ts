@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { BoundedReadView } from './contract.ts';
+import type { BoundedReadView, FamilyProjection } from './contract.ts';
 import { createLaneView, type LaneBinding, type LaneFamily } from './laneRuntime.ts';
 import { assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas, LANE_THEME as THEME } from './laneRuntime.fixture.ts';
 import { bindFamilyManifest, registerFamilyProjection } from './registry.ts';
@@ -16,7 +16,7 @@ type Binding = LaneBinding<Options> & { readonly family: 'test-lane' };
 const counts = { project: 0, nextChange: 0, layout: 0, paint: 0, tooltip: 0, mirror: 0 };
 const reset = () => { for (const key of Object.keys(counts) as (keyof typeof counts)[]) counts[key] = 0; };
 
-registerFamilyProjection<Model, Options>({
+registerFamilyProjection<FamilyProjection<Model, Options>>({
   kind: 'fixture',
   family: 'test-lane',
   project(view: BoundedReadView, options: Options): Model {

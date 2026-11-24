@@ -58,6 +58,7 @@ impl Product for PowerSpendingBreakdown {
         vec![
             PowerSpendingBreakdownParams::decl(),
             PowerSpendingBreakdownReply::decl(),
+            SpendCurrency::decl(),
             Breakdown::decl(),
             BreakdownTotal::decl(),
             BreakdownPart::decl(),
@@ -170,11 +171,11 @@ pub(super) fn at_hour(reply: &PowerSpendingReply, hour: i32) -> PowerSpendingBre
         let unknown = if entry.charge.is_none() { entry.payments.max(1) } else { entry.unknown };
         if let Some(charge) = entry.charge {
             let amount = if entry.uncovered { Amount::Partial(charge, "Some payments may be missing.".into()) } else { Amount::Known(charge) };
-            leaves.push(Leaf { path: path.clone(), amount, count });
+            leaves.push(Leaf { path: path.clone(), amount, count, last: Some(entry.read) });
         }
         if unknown > 0 {
             let reason = format!("The cost of {} was not recorded.", plural(unknown, "payment"));
-            leaves.push(Leaf { path, amount: Amount::NotRecorded(reason), count: entry.charge.is_none().then_some(count).flatten() });
+            leaves.push(Leaf { path, amount: Amount::NotRecorded(reason), count: entry.charge.is_none().then_some(count).flatten(), last: Some(entry.read) });
         }
     }
     for leaf in &mut leaves {

@@ -67,3 +67,15 @@ test('a chosen country that is not present is drawn last as not recorded', () =>
   assert.deepEqual(rows.map(row => row.subject), ['GER', 'ENG', 'ITA']);
   assert.equal(rows[2]!.left?.value.value.kind, 'notRecorded');
 });
+
+test('the paired view stacks destroyed (solid) over own losses (outline) and reads destroyed / lost and the ratio', () => {
+  const paired = { ...AIR, leftHeader: 'Own losses', rightHeader: 'Destroyed', paired: { solid: 'Destroyed (solid)', outline: 'Own losses (outline)' } };
+  const drawn = model(reply({}), paired);
+  assertBarsModelValid(drawn, 500);
+  assert.equal(drawn.twoSidedLayout, 'stacked-pair');
+  assert.deepEqual(drawn.legend?.map(item => item.label), ['Destroyed (solid)', 'Own losses (outline)']);
+  const rows = drawn.rows as BarsDataRow[];
+  assert.deepEqual(rows.map(row => row.readout?.primary), ['4.45K / 2.47K · 1.80', '1.44K / 2.08K · 0.69']);
+  const partial = model(reply({ rows: [{ tag: 'GER', identity: '7:1', segmentFirstHour: 0, dealt: aircraft(319), taken: aircraft(1000), complete: false }] }), paired).rows as BarsDataRow[];
+  assert.equal(partial[0]!.readout?.primary, '≥319 / ≥1K', 'figures that may miss events are at least, and carry no ratio');
+});

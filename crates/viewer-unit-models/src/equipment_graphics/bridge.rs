@@ -314,7 +314,8 @@ impl<'a> Prepared<'a> {
         let [features] = features else {
             return Err("SimulationFeatures must have one complete row".into());
         };
-        let module_categories = enabled_module_categories(features.dlc_mask);
+        let module_categories = content_reader_key_names::equipment::category_families()?
+            .modular_categories(features.dlc_mask);
         let tokens = TokenNames::new(frame).map_err(|error| error.to_string())?;
         Self::from_rows(
             content,
@@ -691,20 +692,6 @@ fn join_available(
     Ok(result)
 }
 
-fn enabled_module_categories(dlc_mask: u32) -> u64 {
-    let mut categories = 0;
-    if dlc_mask & 0x10 != 0 {
-        categories |= 0x80_0040_01c0;
-    }
-    if dlc_mask & 0x80 != 0 {
-        categories |= 0x4;
-    }
-    if dlc_mask & 0x100 != 0 {
-        categories |= 0x1d_0026_fc00;
-    }
-    categories
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -750,18 +737,6 @@ mod tests {
                 links: BTreeMap::from([(1, 1), (10, 1)]),
             }),
         }
-    }
-
-    #[test]
-    fn saved_feature_bits_map_to_equipment_categories_not_identical_bits() {
-        assert_eq!(enabled_module_categories(0), 0);
-        assert_eq!(enabled_module_categories(0x10), 0x80_0040_01c0);
-        assert_eq!(enabled_module_categories(0x80), 0x4);
-        assert_eq!(enabled_module_categories(0x100), 0x1d_0026_fc00);
-        assert_eq!(
-            enabled_module_categories(0x190),
-            0x80_0040_01c0 | 0x4 | 0x1d_0026_fc00
-        );
     }
 
     #[test]
