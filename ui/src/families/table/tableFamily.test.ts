@@ -32,8 +32,9 @@ import { capturePictures, capturePicturesBatch } from '../../dashboard/pulled.ts
 import { isFamilyAuditing, subscribeFamilyAuditing } from '../audit.ts';
 import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue, zeroValue } from '../value.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
-import { computeColumnMaxima, declareTableProjection, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
-import { computeRowLayout, createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
+import { computeColumnMaxima, declareTableProjection, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type FlatTableRow, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
+import { createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
+import { computeRowLayout, TABLE_WINDOW_OVERSCAN, tableRowWindow } from './layout.ts';
 import { NOT_NAMED } from '../../widgets/occupied-states/occupiedStatesData.ts';
 
 const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
@@ -2052,6 +2053,11 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
   );
 
   const geom = computeRowLayout(flatExpanded, 'normal', 'standard');
+  const queue = Array.from({ length: 120 }, (_, i) => ({ kind: 'data', key: `q${i}`, level: i % 4 === 0 ? 1 : 2, isLiveEnd: false }) as unknown as FlatTableRow);
+  const queueGeom = computeRowLayout(queue, 'comfortable', 'standard');
+  const deep = tableRowWindow(queue.length, queueGeom, ROW_HEIGHT.comfortable, queueGeom.tops[100]!, 200);
+  assert.equal(deep.first + TABLE_WINDOW_OVERSCAN, 100, 'deep in an expanded queue the published window starts at the row under the scroll position, not at scrollTop / 44');
+  assert.ok(queueGeom.tops[deep.first + deep.count - TABLE_WINDOW_OVERSCAN - 1]! < queueGeom.tops[100]! + 200, 'and ends at the last row the viewport shows');
   const gapTop = geom.tops[5]!;
   assert.deepEqual(hitFamilyTable(grown, flatExpanded, { x: 40, y: gapTop + 10 }, 36, 0, 0, false, 0, undefined, undefined, undefined, geom), { kind: 'row', rowKey: 'gap:1' });
   const gapTip = deriveTableTooltip(flatExpanded, 'gap:1', logColumns, DAY3 + 12);
@@ -2317,7 +2323,5 @@ test('the table host adapter stores and resolves table settings through its decl
   assert.equal(policy.editable!(declaration), true);
   assert.equal(policy.editable!({ ...declaration, settings: { kind: 'fixed', base: declaration.settings.base } }), false);
 
-  assert.equal(tableHostAdapter.rowGeometry!(round, { meta: { rowHeightMode: 'standard' } })!.rowHeight, ROW_HEIGHT.compact);
-  assert.ok(tableHostAdapter.rowGeometry!(round, { meta: { rowHeightMode: 'media' } })!.rowHeight > ROW_HEIGHT.compact, 'media rows are taller');
-  assert.deepEqual(tableHostAdapter.getScrollExtent!({ widths: { widths: {}, totalWidth: 640 }, table: { count: 10 } }, { rowHeight: 28, overscan: 4 }), { width: 640, height: 280 });
+  assert.deepEqual(tableHostAdapter.getScrollExtent!({ widths: { widths: {}, totalWidth: 640 }, table: { count: 10, totalHeight: 280 } }), { width: 640, height: 280 });
 });

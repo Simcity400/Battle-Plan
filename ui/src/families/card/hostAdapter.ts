@@ -34,8 +34,6 @@ export const cardHostAdapter: FamilyHostAdapter<CardModel, unknown, FamilyCardBi
     const meta = fields.meta as { readonly totalHeight?: number } | undefined;
     return meta?.totalHeight !== undefined ? { height: meta.totalHeight } : null;
   },
-  getRowStride: () => 36,
-  getPageStep: (_fields, viewport) => Math.max(1, Math.floor(viewport.height / 36)),
   deriveAuditRows: model => deriveCardAudit(model),
   auditOrdered: true,
   buildBinding: ctx => {
