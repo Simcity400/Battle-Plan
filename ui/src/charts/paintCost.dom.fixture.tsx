@@ -21,7 +21,7 @@ import { measureWith } from '../shell/perf.ts';
 import { PlaybackController } from '../dashboard/playback';
 import { WidgetFrames } from '../dashboard/widgetClock';
 import type { PerfRecorder } from '../shell/perf.ts';
-import { canvasElement } from './surface';
+import { canvasElement } from '../test-support/canvasElement';
 import '../styles.css';
 
 const native = window.requestAnimationFrame.bind(window);

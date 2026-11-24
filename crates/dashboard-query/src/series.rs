@@ -2215,11 +2215,8 @@ impl<'q, 'a> Line<'q, 'a> {
         for gap in &self.query.timeline.unheld {
             edges.extend([i64::from(gap.first), i64::from(gap.last) + 1]);
         }
-        for (first, last, _) in &self.query.holders.unknown {
-            edges.extend([i64::from(*first), i64::from(*last) + 1]);
-        }
-        for run in self.query.holders.runs(country) {
-            edges.extend([i64::from(run.first), i64::from(run.last) + 1]);
+        for (first, last) in self.query.holders.naming_spans(country) {
+            edges.extend([i64::from(first), i64::from(last) + 1]);
         }
         for stretch in &self.query.timeline.stretches {
             edges.extend([i64::from(stretch.first), i64::from(stretch.last) + 1]);

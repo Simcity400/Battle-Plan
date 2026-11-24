@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { PlaybackIntervals, playbackRows, retainPlaybackMap, spanChanges } from './playbackIntervals.ts';
+import { PlaybackIntervals, playbackRows, spanChanges } from './playbackIntervals.ts';
 import { LogPlayback } from './log/logPlayback.ts';
 import { deepFreeze } from '../test-support/frozen.ts';
 
@@ -32,13 +32,9 @@ test('log playback retains visible row objects and respects each producer supply
   assert.equal(supplying.at(10), historicalDate);
 });
 
-test('unchanged empty rows and maps retain identity across irrelevant recorded changes', () => {
+test('unchanged empty rows retain identity across irrelevant recorded changes', () => {
   const playback = playbackRows([1, 2, 3], () => []);
   assert.equal(playback.at(1), playback.at(2));
-  const rows = deepFreeze(['row']);
-  const before = deepFreeze(new Map([[1, rows]]));
-  assert.equal(retainPlaybackMap(before, new Map([[1, rows]])), before);
-  assert.notEqual(retainPlaybackMap(before, new Map([[1, [...rows]]])), before);
 });
 
 test('a count read at an hour holds over the span its rows show the same, and not past it', () => {

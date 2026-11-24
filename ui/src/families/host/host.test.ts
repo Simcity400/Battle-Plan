@@ -22,7 +22,7 @@ import { pagedTailEntry } from '../table/logHelpers.ts';
 import { DEFAULT_TAIL_PAGE_SIZE } from '../table/rowSource.ts';
 import { ROW_HEIGHT, tableSettingsOf } from '../table/settings.ts';
 import type { TableModel } from '../table/model.ts';
-import { createBoundAuditReader, createPlanAuditVerifier, type BoundAuditEntry } from './auditBinding.ts';
+import { createBoundAuditReader, createPlanAuditVerifier, type BoundAuditEntry, type PlanAuditSnapshot } from './auditBinding.ts';
 import { boundDated } from './dated.ts';
 import { NO_EXPANSION, toggleExpansion } from './expansion.ts';
 import {
@@ -287,6 +287,21 @@ test('F6: bound audit reader verifies an earlier snapshot with the verifier capt
   }, undefined);
   assert.equal(pictureError('bars', shown, await exactOf(shown)), null, 'two rows with the same cell names compare cell by cell and a correct picture passes');
   await assert.rejects(exactOf([auditRow('GER', '3'), auditRow('GER', '4')]), /Audit key GER repeats/, 'a repeated audit key is refused, never collapsed');
+  const ranged = new AuditSnapshotStore<BoundAuditEntry<PlanAuditSnapshot<readonly string[], Record<string, never>>>>(16);
+  const rangedId = ranged.create({ verify: createPlanAuditVerifier<readonly string[], Record<string, never>>(), snapshot: {
+    projection: { family: 'table', kind: 'synthetic-audit', project: () => ['GER', 'FRA', 'ITA', 'ENG'] },
+    options: {},
+    exactReadView: async () => createBoundedReadView({ hour: 5, panels: new Map() }),
+    deriveRows: (rows, _hour, fields) => {
+      const range = fields?.range as { first: number; count: number } | undefined;
+      return rows.slice(range?.first ?? 0, (range?.first ?? 0) + (range?.count ?? rows.length)).map(key => auditRow(key, key));
+    },
+  } });
+  const sampled = createBoundAuditReader(ranged);
+  const full = await sampled(5, rangedId, { range: { first: 0, count: 4 } });
+  const shorter = await sampled(5, rangedId, { range: { first: 0, count: 2 } });
+  assert.deepEqual([...full!.values.keys()], ['GER', 'FRA', 'ITA', 'ENG'], 'R4-S6: a full viewport sample is checked against its own installed range');
+  assert.deepEqual([...shorter!.values.keys()], ['GER', 'FRA'], 'R4-S6: a later, shorter sample under the same audit id is checked against its own range, and the earlier one is not changed by it');
 });
 
 test('F8 & F9: listbox mirror uses stable key-based IDs, invalidates on prefix change, and honors explicit selected state', () => {
@@ -905,10 +920,11 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
   const pending: ((key: string | null, meta?: PointerHitMeta) => void)[] = [];
   const fakePipeline = {
     pointer(_pipe: number, _slot: number, _pt: unknown, cb?: (key: string | null, meta?: PointerHitMeta) => void) { if (cb) pending.push(cb); },
-    inspect() {},
+    inspect(_pipe: number, token: string | null) { inspected.push(token); },
     view() { return null; },
   } as unknown as Pipeline;
-  const reply = (key: string | null, id: number, owner = 'owner-A') => pending.shift()!(key, { installedId: id, owner });
+  const inspected: (string | null)[] = [];
+  const reply = (key: string | null, id: number, owner = 'owner-A', at = 0) => pending.splice(at, 1)[0]!(key, { installedId: id, owner });
   const activations: InstalledAction[] = [];
   const menus: (string | null)[] = [];
   const inspectedKeyRef = { current: null as string | null };
@@ -993,6 +1009,22 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
   installed = picture(13, ['ENG'], 'owner-C');
   reply('row:ENG', 12, 'owner-B');
   assert.equal(activations.length, 2, 'an owner change before the release hit arrives refuses it');
+
+  body.dispatch('pointermove', { isTrusted: true, clientX: 24, clientY: 10 });
+  reply('row:GER', 13, 'owner-C');
+  assert.equal(inspectedKeyRef.current, 'GER');
+  body.dispatch('pointerdown', { button: 0, clientX: 24, clientY: 10, pointerId: 7 });
+  installed = picture(14, ['FRA', 'GER'], 'owner-C');
+  body.dispatch('pointermove', { isTrusted: true, clientX: 25, clientY: 10 });
+  reply('row:FRA', 14, 'owner-C', 1);
+  assert.equal(inspectedKeyRef.current, 'FRA', 'FRA moved under the pointer and is the hover of picture 14');
+  inspected.length = 0;
+  reply('row:GER', 13, 'owner-C');
+  assert.equal(inspectedKeyRef.current, 'FRA', 'R4-S7: the late press reply keeps GER for click matching but does not publish it as the hover');
+  assert.deepEqual(inspected, [], 'R4-S7: and does not inspect GER in the lane');
+  body.dispatch('pointerup', { button: 0, clientX: 25, clientY: 10, pointerId: 7 });
+  reply('row:FRA', 14, 'owner-C');
+  assert.equal(activations.length, 2, 'press on GER and release on FRA is still not a click');
 
   stop();
   tooltips.dispose();

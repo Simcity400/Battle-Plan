@@ -437,6 +437,7 @@ test('fixedDecimals, formatShare, formatProgress, formatRecordedPercent, and sig
   assert.equal(formatProgress(0.996), '99%');
   assert.equal(formatProgress(0.999999999), '99%');
   assert.equal(formatProgress(1), '100%');
+  assert.equal(formatProgress(1.25), '125%', 'a recorded ratio above one is printed as recorded');
   assert.equal(formatScalar(99.6, 'progress'), '99%');
   assert.equal(formatScalar(100, 'progress'), '100%');
 

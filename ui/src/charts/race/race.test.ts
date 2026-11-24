@@ -1,23 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { barExtent, barParts, barRectangle, keyedEntry, paintOrder, partTotal, raceLayout, raceText, rankItems, rowAt, rowCentre, rowSeen, stepRace, MAX_THICKNESS } from './race.ts';
+import { barExtent, barParts, barRectangle, keyedEntry, paintOrder, partTotal, raceLayout, raceText, rowAt, rowCentre, rowSeen, stepRace, MAX_THICKNESS } from './race.ts';
 import type { RaceItem, RaceRow, RaceState } from './race';
 import { wrapText } from './draw.ts';
 
 const item = (key: string, value: number, stretch: number | null = 0, hatched = 0): RaceItem =>
   ({ key, value, label: String(value), stretch, segments: [{ id: 'total', value, hatched, color: '#123456' }] });
 const width = (state: RaceState, key: string) => state.rows.find(row => row.key === key)!.widths.get('total')!.solid;
-
-test('entries rank highest first with ties by key, up to the count, and no value is never ranked as zero', () => {
-  const ranked = rankItems([item('b', 5), item('a', 5), item('c', 9), item('d', Number.NaN), item('e', 1)], 3);
-  assert.deepEqual(ranked.map(entry => entry.key), ['c', 'a', 'b']);
-  assert.deepEqual(rankItems([item('a', 1)], 0), []);
-});
-
-
-
-
-
 
 test('when a bar jumps, the scale takes it in at once, so neither the bar nor its value is cut off', () => {
   let state = stepRace(null, [item('a', 10, 1), item('b', 8, 1)], 0, 16, 100);

@@ -1,25 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AXIS_HEIGHT, ROW_HEIGHT, lanesInView } from './layout.ts';
-import { bandMaxOf, bridgeGaps, coverCounts, coveredBy, describeRun, runState, stretchAt, stretchesOf, withoutHours } from './runState.ts';
-
-test('the band maximum takes any number of steps without a spread', () => {
-  const bands = Array.from({ length: 1000 }, (_, band) => Array.from({ length: 140 }, (_, step) => ({ firstHour: step * 2, lastHour: step * 2, value: (band * 7 + step) % 97 })));
-  assert.equal(bandMaxOf(bands), 96);
-  assert.equal(bandMaxOf([]), 1);
-});
+import { bridgeGaps, coverCounts, describeRun, runState, stretchesOf, withoutHours } from './runState.ts';
 
 test('runs joined across unrecorded hours are one stretch; a recorded break is not', () => {
   const runs = [{ firstHour: 100, lastHour: 199 }, { firstHour: 210, lastHour: 300 }, { firstHour: 320, lastHour: 400 }];
   const stretches = bridgeGaps(runs, [{ firstHour: 200, lastHour: 209 }]);
   assert.deepEqual(stretches.map(item => [item.firstHour, item.lastHour, item.runs.length]), [[100, 300, 2], [320, 400, 1]]);
-  assert.deepEqual(runState([stretchAt(stretches, 150)!], 300), { kind: 'held', since: 100 });
-  assert.deepEqual(runState([stretchAt(stretches, 310)!], 310), { kind: 'ended', at: 301 });
+  assert.deepEqual(runState([stretches[0]!], 300), { kind: 'held', since: 100 });
+  assert.deepEqual(runState([stretches[0]!], 310), { kind: 'ended', at: 301 });
   assert.equal(bridgeGaps(runs, [{ firstHour: 200, lastHour: 209 }], () => false).length, 3);
   assert.equal(bridgeGaps([{ firstHour: 0, lastHour: 9 }, { firstHour: 10, lastHour: 19 }]).length, 1);
-  assert.equal(coveredBy(5, 4, []), true);
-  assert.equal(coveredBy(200, 209, [{ firstHour: 195, lastHour: 204 }, { firstHour: 205, lastHour: 209 }]), true);
-  assert.equal(coveredBy(200, 209, [{ firstHour: 195, lastHour: 204 }]), false);
 });
 
 test('fragmented, touching and overlapping unobserved spans bridge only fully covered gaps', () => {

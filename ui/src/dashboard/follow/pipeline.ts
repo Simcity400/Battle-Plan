@@ -235,7 +235,7 @@ export class Pipeline {
         eligibleHour: shown.installed && view.mode === 'picture' ? clock(Math.min(view.target, shown.installed.c)) : null,
         ...shown.installed ? { entry: shown.installed.id, parts: Object.values(shown.content),
           face: Object.entries(shown.content).filter(([part]) => part !== 'hour').map(([part, id]) => `${part}=${id}`).join('|') } : {},
-        drawMs: shown.installed?.ms ?? 0, ...rows ? { rows } : {}, ...auditId !== undefined ? { auditId } : {}, ...auditMissing ? { auditMissing: true } : {},
+        drawMs: shown.installed?.ms ?? 0, ...rows ? { rows } : {}, ...auditId !== undefined && view.fields ? { auditId, fields: view.fields } : {}, ...auditMissing ? { auditMissing: true } : {},
         mode: view.mode, ...view.reason !== undefined ? { reason: view.reason } : {}, dim: view.dim, reset: shown.installed?.gen.reset ?? 0, binding: shown.installed?.binding ?? shown.binding,
         inspect: shown.inspect, tooltip: view.tooltip !== null });
       }
