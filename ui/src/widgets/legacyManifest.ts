@@ -2,7 +2,6 @@ import type { LegacyWidgetEntry } from '../families/manifest.ts';
 
 export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'aces', load: () => import('./aces') },
-  { kind: 'active-research', playsBackDated: true, load: () => import('./active-research') },
   { kind: 'air-force-size', load: () => import('./air-force-size') },
   { kind: 'air-kills-losses', slots: ['render', 'countryChip'], load: () => import('./air-kills-losses') },
   { kind: 'air-statistics', load: () => import('./air-statistics') },
@@ -24,14 +23,12 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'construction-spending', load: () => import('./construction-spending') },
   { kind: 'convoy-health', load: () => import('./convoy-health') },
   { kind: 'decisions', load: () => import('./decisions') },
-  { kind: 'decryption', load: () => import('./decryption') },
   { kind: 'diplomatic-pacts', load: () => import('./diplomatic-pacts') },
   { kind: 'diplomatic-relations', load: () => import('./diplomatic-relations') },
   { kind: 'division-equipment', load: () => import('./division-equipment') },
   { kind: 'division-log', load: () => import('./division-log') },
   { kind: 'division-service-record', load: () => import('./division-service-record') },
   { kind: 'dockyard-spending', load: () => import('./dockyard-spending') },
-  { kind: 'doctrine-mastery', playsBackDated: true, load: () => import('./doctrine-mastery') },
   { kind: 'equipment-losses', slots: ['render', 'countryChip'], load: () => import('./equipment-losses') },
   { kind: 'equipment-produced', slots: ['render', 'countryChip'], load: () => import('./equipment-produced') },
   { kind: 'equipment-stockpile', slots: ['render', 'countryChip'], load: () => import('./equipment-stockpile') },

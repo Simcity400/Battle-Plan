@@ -1,6 +1,4 @@
 import { formatAmount, formatRate } from '../../charts/valueAxis.ts';
-import { liveKey } from '../../charts/live.ts';
-import type { LiveValues } from '../../charts/live';
 import type { MeterMark } from '../../charts/meter/ProgressMeter';
 import type { SpriteFrame } from '../../dashboard/spriteArtwork';
 import type { DescribedReward, DoctrineMasteryReply, DoctrineRewardsReply, MasteryChoice, MasteryFolder, MasteryReward, MasteryTrack } from '../../generated/dashboard';
@@ -44,12 +42,6 @@ export const choiceName = (item: MasteryChoice | null, none: string) => item ===
 export const trackKey = (folder: MasteryFolder, item: MasteryTrack) => `${folder.ordinal}|${item.ordinal}`;
 
 export interface TrackNumbers { mastery: bigint | null; bank: bigint | null; daily: bigint | null; effective: bigint | null; missing: string }
-export function trackNumbers(values: LiveValues<number>, key: string): TrackNumbers {
-  const read = (column: string) => { const value = values.get(liveKey(key, column)); return value === undefined ? null : BigInt(Math.round(value)); };
-  const mastery = read('mastery');
-  return { mastery, bank: read('bank'), daily: read('daily'), effective: read('effective'), missing: mastery === null ? values.missing(liveKey(key, 'mastery')) || 'Not recorded' : '' };
-}
-
 export function unlockMastery(item: MasteryTrack): (bigint | null)[] {
   let sum: bigint | null = 0n;
   return item.rewards.map(next => sum = sum === null || next.threshold === null ? null : sum + BigInt(next.threshold));
@@ -70,11 +62,6 @@ export const rewardUnlocked = (item: MasteryTrack, ordinal: number) => ordinal <
 
 export const unlockedRewards = (item: MasteryTrack) => item.rewards.filter((_, ordinal) => rewardUnlocked(item, ordinal));
 
-export function requirementMet(item: MasteryTrack, ordinal: number, mastery: bigint | null): boolean | null {
-  const needed = unlockMastery(item)[ordinal];
-  return needed == null || mastery === null ? null : mastery >= needed;
-}
-
 export function trackMarks(item: MasteryTrack, labels: boolean): MeterMark[] {
   const scale = trackScale(item);
   if (scale === null) return [];
@@ -87,25 +74,6 @@ export const masteryText = (raw: string | bigint) => formatAmount(raw, 5, 2);
 export const rateText = (raw: string | bigint) => formatRate(String(raw), 5);
 export const dailyText = (raw: bigint | null) => raw === null ? '' : `${raw < 0n ? '' : '+'}${rateText(raw)} a day`;
 
-export function trackTexts(numbers: TrackNumbers): { mastery: string; daily: string; bank: string } {
-  return { mastery: numbers.mastery === null ? numbers.missing : masteryText(numbers.mastery), daily: dailyText(numbers.effective),
-    bank: numbers.bank === null || numbers.bank === 0n ? '' : masteryText(numbers.bank) };
-}
-
 export const activeTracks = (folders: readonly MasteryFolder[]) => folders.reduce((sum, folder) => sum + folder.tracks.filter(item => item.sub !== null).length, 0);
 
 export const doctrineSprite = (key: string | null | undefined): SpriteFrame | null => key ? { key, frame: 0 } : null;
-
-export const doctrineIcons = (reply: DoctrineMasteryReply | undefined): (string | null)[] => (reply?.folders ?? []).flatMap(folder =>
-  [folder.icon, folder.grand?.icon ?? null, ...folder.tracks.map(item => item.sub?.icon ?? null)]);
-
-export function masteryStructure(reply: DoctrineMasteryReply): string {
-  const choice = (item: MasteryFolder['grand']) => item && [item.id, item.name, item.icon];
-  return JSON.stringify([reply.warnings, reply.folders.map(folder => [folder.ordinal, folder.id, folder.name, folder.icon, choice(folder.grand), folder.completed.map(choice),
-    folder.tracks.map(item => [item.ordinal, item.name, choice(item.sub), item.rewards.map(r => [r.id, r.name, r.threshold]), item.unlocked])])]);
-}
-
-export function rewardDescription(reply: DoctrineRewardsReply | undefined, item: MasteryTrack, index: number): string | null {
-  if (!reply || reply.sub !== (item.sub?.id ?? null)) return null;
-  return reply.rewards[index]?.description ?? null;
-}

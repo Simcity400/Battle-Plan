@@ -276,11 +276,14 @@ export function familyHeatMatrixLaneView(
       }
 
       let widestRowName = 0;
+      let widestTrailing = 0;
       if (bound.theme) {
         held.ctx.font = `500 ${bound.theme.fontSize.small}px ${bound.theme.font}`;
         const sampleLimit = Math.min(model.rows.length, 60);
         for (let i = 0; i < sampleLimit; i++) {
-          widestRowName = Math.max(widestRowName, held.ctx.measureText(model.rows[i]!.label).width);
+          const row = model.rows[i]!;
+          widestRowName = Math.max(widestRowName, held.ctx.measureText(row.label).width);
+          if (row.trailing) widestTrailing = Math.max(widestTrailing, held.ctx.measureText(row.trailing).width);
         }
       }
 
@@ -293,6 +296,7 @@ export function familyHeatMatrixLaneView(
         columns: model.columns,
         legend: model.legend,
         widestRowName: widestRowName > 0 ? widestRowName : undefined,
+        widestTrailing: widestTrailing > 0 ? widestTrailing : undefined,
       });
       held.cachedLayout = layout;
 
@@ -329,6 +333,7 @@ export function familyHeatMatrixLaneView(
         model.empty ?? null,
         model.emptyDetail ?? null,
         model.emptyKind ?? 'empty',
+        model.summaryText ?? null,
         model.notes ?? [],
         model.warnings ?? [],
       ]);
@@ -339,6 +344,7 @@ export function familyHeatMatrixLaneView(
             empty: model.empty ?? null,
             emptyDetail: model.emptyDetail ?? null,
             emptyKind: model.emptyKind ?? 'empty',
+            summaryText: model.summaryText ?? null,
             notes: model.notes ?? [],
             warnings: model.warnings ?? [],
           },

@@ -14,8 +14,6 @@
 .intel-head button[aria-pressed="true"] { color: var(--text); font-weight: 600; }
 .intel-number { text-align: right; font-variant-numeric: tabular-nums; }
 .intel-section-title { margin: 0; padding: var(--space-2) var(--space-4) var(--space-1); font-size: var(--type-xs); font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-.decryption .intel-row { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 0.9fr); }
-.decryption .progress-meter { height: var(--space-3); }
 .agency-comparison .intel-row, .agency-comparison .intel-head { grid-template-columns: minmax(0, 1.4fr) repeat(4, minmax(0, 0.7fr)); }
 .operatives-roster .intel-row { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr) calc(var(--space-6) * 2); }
 .espionage-log .intel-row { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) calc(var(--space-6) * 2.5); }
