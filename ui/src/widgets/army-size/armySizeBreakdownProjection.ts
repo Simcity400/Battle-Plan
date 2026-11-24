@@ -121,6 +121,7 @@ function assignGroupColours(keys: readonly string[], surface: string): ReadonlyM
 
 function buildBattalionHoverDetail(
   readView: BoundedReadView,
+  subject: string,
   breakdown: ArmyBreakdownReply,
   colours: ReadonlyMap<string, string>,
 ): ChartHoverDetail | null {
@@ -140,7 +141,12 @@ function buildBattalionHoverDetail(
       items: [{ label: 'Battalions', missingReason: reply.missing || notRecordedLabel(), tone: 'muted' }],
     };
   }
-  const row = reply.rows[0];
+  const expected = countryFromKey(subject);
+  const row = reply.rows.find(candidate => (
+    typeof expected === 'number'
+      ? candidate.slot === expected || candidate.country === expected
+      : candidate.country === expected
+  ));
   if (!row) {
     const miss = missingAtHour(breakdown, Math.floor(hour));
     return {
@@ -269,7 +275,7 @@ function projectBattalionsStack(readView: BoundedReadView, options: ArmySizeBrea
   ];
 
   const colours = assignGroupColours(bandSpecs.map(spec => spec.key), options.surface);
-  const hoverDetail = buildBattalionHoverDetail(readView, reply, colours);
+  const hoverDetail = buildBattalionHoverDetail(readView, options.subject!, reply, colours);
   const headRun = runAtHour(reply.runs, floorHour);
   const headMix = mixAtHour(reply.mix, floorHour);
   const headMissing = missingAtHour(reply, floorHour);

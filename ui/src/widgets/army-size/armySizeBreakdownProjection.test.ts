@@ -113,6 +113,7 @@ test('army-size breakdown projects stacked unit groups, distinct unresolved keys
     ],
     rows: [{
       country: 7,
+      slot: 7,
       tag: 'AAA',
       total: 3,
       values: [2, 1],
@@ -175,7 +176,7 @@ test('army-size breakdown projects stacked unit groups, distinct unresolved keys
 
   const partialHover: ForceAtReply = {
     parts: [],
-    rows: [{ country: 7, tag: 'ZZZ', total: 8, values: [], missing: null, partsMissing: 'Battalion unit groups were not recorded at these hours' }],
+    rows: [{ country: 7, slot: 7, tag: 'ZZZ', total: 8, values: [], missing: null, partsMissing: 'Battalion unit groups were not recorded at these hours' }],
     missing: null,
     warnings: [],
   };
