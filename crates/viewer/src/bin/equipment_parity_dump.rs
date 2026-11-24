@@ -123,31 +123,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("plane", "Ju 87", "small_plane_cas_airframe_1"),
         ("upgrade", "Sdkfz 222", "armored_car_equipment_1"),
     ];
-    for def in defs {
-        if link_slot(links, def.creator_link) != Some(ger_slot) {
-            continue;
-        }
-        let name = String::from_utf8_lossy(content_reader_parser::parser::c_string(
-            &def.display_name,
-        ))
-        .into_owned();
-        let suffix = String::from_utf8_lossy(content_reader_parser::parser::c_string(
-            &def.variant_name,
-        ))
-        .into_owned();
-        let eq = spell(def.equipment_token);
-        for (kind, needle_name, needle_eq) in wanted {
-            if !targets.iter().any(|(k, _, _)| *k == kind)
-                && (name.contains(needle_name) || eq == needle_eq)
-            {
-                println!(
-                    "matched {kind}: id={} eq={eq} name={name:?} suffix={suffix:?} append={} icon={:?}",
-                    def.id,
-                    def.append_variant_name,
-                    String::from_utf8_lossy(content_reader_parser::parser::c_string(&def.icon))
-                );
-                targets.push((kind, def.id, format!("{name} {suffix}")));
-            }
+    let ger_defs: Vec<_> = defs
+        .iter()
+        .filter(|def| link_slot(links, def.creator_link) == Some(ger_slot))
+        .collect();
+    for (kind, needle_name, needle_eq) in wanted {
+        let matched = ger_defs
+            .iter()
+            .find(|def| {
+                let name = String::from_utf8_lossy(content_reader_parser::parser::c_string(
+                    &def.display_name,
+                ));
+                name.contains(needle_name)
+            })
+            .or_else(|| {
+                ger_defs
+                    .iter()
+                    .find(|def| spell(def.equipment_token) == needle_eq)
+            })
+            .or_else(|| {
+                (kind == "upgrade")
+                    .then(|| {
+                        ger_defs.iter().find(|def| {
+                            let eq = spell(def.equipment_token);
+                            eq.contains("armored_car") || eq.contains("mechanized") || eq.contains("motorized")
+                        })
+                    })
+                    .flatten()
+            });
+        if let Some(def) = matched {
+            let name = String::from_utf8_lossy(content_reader_parser::parser::c_string(
+                &def.display_name,
+            ))
+            .into_owned();
+            let suffix = String::from_utf8_lossy(content_reader_parser::parser::c_string(
+                &def.variant_name,
+            ))
+            .into_owned();
+            let eq = spell(def.equipment_token);
+            println!(
+                "matched {kind}: id={} eq={eq} name={name:?} suffix={suffix:?} append={} icon={:?}",
+                def.id,
+                def.append_variant_name,
+                String::from_utf8_lossy(content_reader_parser::parser::c_string(&def.icon))
+            );
+            targets.push((kind, def.id, format!("{name} {suffix}")));
         }
     }
 

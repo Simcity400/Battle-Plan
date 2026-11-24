@@ -22,6 +22,7 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use viewer_native_gui::{
     native_gui::{self, Assets, Layout, Resources, lifecycle::Instance},
+    native_text::ICON,
     native_windows::NativeWindows,
 };
 
@@ -179,7 +180,7 @@ struct EquipmentDesignData {
     stats: Option<[Option<i64>; 10]>,
     manpower: Option<i32>,
     build_cost: Option<i64>,
-    build_resources: Vec<(u32, i64)>,
+    build_resources: Vec<(String, i64)>,
 }
 
 pub fn classify_designer(
@@ -219,18 +220,21 @@ pub fn resolve_fitted_module_sprite(
     module_gfx: &str,
     has_sprite: impl Fn(&str) -> bool,
 ) -> String {
-    let direct = format!("GFX_EMI_{module_key}");
-    if has_sprite(&direct) {
-        return direct;
+    for prefix in ["GFX_EMI_", "GFX_SMI_"] {
+        let direct = format!("{prefix}{module_key}");
+        if has_sprite(&direct) {
+            return direct;
+        }
     }
     if !module_gfx.is_empty() {
-        let custom = if module_gfx.starts_with("GFX_") {
-            module_gfx.to_owned()
-        } else {
-            format!("GFX_EMI_{module_gfx}")
-        };
-        if has_sprite(&custom) {
-            return custom;
+        if module_gfx.starts_with("GFX_") && has_sprite(module_gfx) {
+            return module_gfx.to_owned();
+        }
+        for prefix in ["GFX_EMI_", "GFX_SMI_"] {
+            let custom = format!("{prefix}{module_gfx}");
+            if has_sprite(&custom) {
+                return custom;
+            }
         }
     }
     "GFX_EMI_unknown".to_owned()
@@ -300,10 +304,6 @@ pub fn build_stat_columns(
 ) -> StatColumns {
     match kind {
         DesignerKind::Ship => {
-            let (speed, speed_detail) =
-                recorded_stat(stats, VariantStatsRow::MAXIMUM_SPEED, |raw| {
-                    format!("{} kn", format_fixed5(raw, 1))
-                });
             let (reliability, reliability_detail) =
                 recorded_stat(stats, VariantStatsRow::RELIABILITY, |raw| {
                     format_percent_fixed5(raw, 1)
@@ -314,12 +314,7 @@ pub fn build_stat_columns(
                 });
             StatColumns {
                 base: vec![
-                    StatLine {
-                        label_key: "STAT_NAVY_MAXIMUM_SPEED",
-                        fallback_label: "Max Speed:",
-                        value: speed,
-                        detail: speed_detail,
-                    },
+                    unrecorded_stat("STAT_NAVY_MAXIMUM_SPEED", "Max Speed:"),
                     unrecorded_stat("STAT_NAVY_RANGE", "Max Range:"),
                     unrecorded_stat("STAT_COMMON_MAX_ORG", "Organization:"),
                     unrecorded_stat("STAT_COMMON_MAX_STRENGTH", "HP:"),
@@ -739,7 +734,7 @@ pub fn render(
         .map(|rows| slice_by_variant(rows, variant_id, |row| row.variant))
         .unwrap_or(&[]);
 
-    let data = extract_design_data(
+    let mut data = extract_design_data(
         kind,
         &tag,
         &equipment_key,
@@ -754,6 +749,12 @@ pub fn render(
         lexical,
         frame.complete::<tables::IndustrialOrganisations>().ok(),
     );
+    if let Some(group_key) = data.naming_group.as_deref()
+        && let Some(loc_key) = resolve_ship_naming_group_loc_key(layers, group_key)
+    {
+        data.naming_group = Some(loc_key);
+    }
+    let enabler_bases = resolve_equipment_enabler_bases(layers, &equipment_key, &archetype_key);
 
     let window_name = kind.window_name();
     let cache_key = WindowCacheKey {
@@ -796,7 +797,7 @@ pub fn render(
             add_sprite(&mut extra, "GFX_EMSI_empty");
             add_sprite(&mut extra, "GFX_EMI_unknown");
 
-            if let Some(icon) = resolve_equipment_icon(&data, registry) {
+            if let Some(icon) = resolve_equipment_icon(&data, &enabler_bases, registry) {
                 add_sprite(&mut extra, &icon);
                 visuals.icon_sprite = Some(icon);
             }
@@ -1070,11 +1071,10 @@ fn extract_design_data(
             upgrade_levels.insert(key.to_ascii_lowercase(), row.level);
         }
     }
-    let upgrades: Vec<(String, u8)> = equipment
-        .upgrades
-        .iter()
-        .map(|raw| {
-            let key = String::from_utf8_lossy(raw).into_owned();
+    let inherited_upgrades = collect_equipment_upgrades(equipment, equipment_db);
+    let upgrades: Vec<(String, u8)> = inherited_upgrades
+        .into_iter()
+        .map(|key| {
             let level = upgrade_levels
                 .get(&key.to_ascii_lowercase())
                 .copied()
@@ -1092,7 +1092,10 @@ fn extract_design_data(
                 .build_resources
                 .iter()
                 .filter(|entry| entry.value > 0)
-                .map(|entry| (entry.index, entry.value))
+                .filter_map(|entry| {
+                    let token = spell(lexical, entry.index)?;
+                    Some((token, entry.value))
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -1143,7 +1146,104 @@ fn merge_assets(target: &mut Assets, added: Assets) {
     target.textures.extend(added.textures);
 }
 
-fn resolve_equipment_icon(data: &EquipmentDesignData, registry: &Registry) -> Option<String> {
+fn collect_equipment_upgrades(equipment: &Equipment, database: &Database) -> Vec<String> {
+    if !equipment.upgrades.is_empty() {
+        return equipment
+            .upgrades
+            .iter()
+            .map(|raw| String::from_utf8_lossy(raw).into_owned())
+            .collect();
+    }
+    let mut current = equipment;
+    let mut visited = Vec::new();
+    loop {
+        if !current.upgrades.is_empty() {
+            return current
+                .upgrades
+                .iter()
+                .map(|raw| String::from_utf8_lossy(raw).into_owned())
+                .collect();
+        }
+        let parent = &database.equipment[current.parent];
+        if !std::ptr::eq(parent, current) && !visited.contains(&current.parent) {
+            visited.push(current.parent);
+            current = parent;
+            continue;
+        }
+        if let Some(arch_idx) = current.archetype {
+            let arch = &database.equipment[arch_idx];
+            if !std::ptr::eq(arch, current) && !visited.contains(&arch_idx) {
+                visited.push(arch_idx);
+                current = arch;
+                continue;
+            }
+        }
+        break;
+    }
+    Vec::new()
+}
+
+fn resolve_equipment_enabler_bases(
+    layers: &ResolvedLayers,
+    equipment_key: &str,
+    archetype_key: &str,
+) -> Vec<String> {
+    let Ok(enablers) =
+        content_reader_military::technology::read_enablers(layers, |_| Err(String::new()))
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for key in [equipment_key, archetype_key] {
+        if let Ok(Some(enabler)) = enablers.single(key) {
+            if !out.contains(&enabler.id) {
+                out.push(enabler.id.clone());
+            }
+            if let Ok(Some(parent)) = &enabler.parent
+                && !out.contains(parent)
+            {
+                out.push(parent.clone());
+            }
+        }
+    }
+    out
+}
+
+fn resolve_ship_naming_group_loc_key(layers: &ResolvedLayers, group_key: &str) -> Option<String> {
+    let files = layers
+        .directory_files("common/units/names_ships", ".txt")
+        .ok()?;
+    for path in files {
+        let Ok(bytes) = layers.read_file(&path) else {
+            continue;
+        };
+        let Ok(doc) = content_reader_parser::parser::parse(&bytes) else {
+            continue;
+        };
+        for item in &doc.items {
+            if item.keyword_is(group_key)
+                && let Some(fields) = item.value.items()
+            {
+                for field in fields {
+                    if field.keyword_is("name")
+                        && let Some(raw) = field.value.read_string()
+                        && let Ok(text) = std::str::from_utf8(raw)
+                        && !text.is_empty()
+                    {
+                        return Some(text.to_owned());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn resolve_equipment_icon(
+    data: &EquipmentDesignData,
+    enabler_bases: &[String],
+    registry: &Registry,
+) -> Option<String> {
     let mut candidates = Vec::new();
     if let Some(override_icon) = &data.icon_override {
         candidates.push(override_icon.clone());
@@ -1153,6 +1253,12 @@ fn resolve_equipment_icon(data: &EquipmentDesignData, registry: &Registry) -> Op
         candidates.push(format!("GFX_{tag}_{}_medium", data.equipment_key));
     }
     candidates.push(format!("GFX_{}_medium", data.equipment_key));
+    for base in enabler_bases {
+        if !tag.is_empty() {
+            candidates.push(format!("GFX_{tag}_{base}_medium"));
+        }
+        candidates.push(format!("GFX_{base}_medium"));
+    }
     if !tag.is_empty() {
         candidates.push(format!("GFX_{tag}_{}_medium", data.archetype_key));
     }
@@ -1214,94 +1320,98 @@ fn resolve_display_name(data: &EquipmentDesignData, localisation: &Localisation)
     }
 }
 
-fn resolve_tank_role(data: &EquipmentDesignData, localisation: &Localisation) -> String {
+fn resolve_tank_role_and_frame(data: &EquipmentDesignData, localisation: &Localisation) -> (String, i32) {
     let key = data.equipment_key.to_ascii_lowercase();
-    let loc_key = if key.contains("amphibious") {
-        "amphibious_armor"
+    let (loc_key, frame) = if key.contains("flame") {
+        ("tank_designer_flame", 10)
+    } else if key.contains("amphibious") {
+        ("amphibious_armor", 6)
     } else if key.contains("super_heavy") {
-        "super_heavy_armor"
+        ("super_heavy_armor", 8)
     } else if key.contains("modern") {
-        "modern_armor"
+        ("modern_armor", 9)
     } else if key.contains("heavy") {
         if key.contains("_aa") {
-            "heavy_sp_anti_air_brigade"
+            ("heavy_sp_anti_air_brigade", 3)
         } else if key.contains("_artillery") {
-            "heavy_sp_artillery_brigade"
+            ("heavy_sp_artillery_brigade", 2)
         } else if key.contains("_destroyer") {
-            "heavy_tank_destroyer_brigade"
+            ("heavy_tank_destroyer_brigade", 1)
         } else {
-            "heavy_armor"
+            ("heavy_armor", 8)
         }
     } else if key.contains("medium") {
         if key.contains("_aa") {
-            "medium_sp_anti_air_brigade"
+            ("medium_sp_anti_air_brigade", 3)
         } else if key.contains("_artillery") {
-            "medium_sp_artillery_brigade"
+            ("medium_sp_artillery_brigade", 2)
         } else if key.contains("_destroyer") {
-            "medium_tank_destroyer_brigade"
+            ("medium_tank_destroyer_brigade", 1)
         } else {
-            "medium_armor"
+            ("medium_armor", 9)
         }
     } else if key.contains("_aa") {
-        "light_sp_anti_air_brigade"
+        ("light_sp_anti_air_brigade", 3)
     } else if key.contains("_artillery") {
-        "light_sp_artillery_brigade"
+        ("light_sp_artillery_brigade", 2)
     } else if key.contains("_destroyer") {
-        "light_tank_destroyer_brigade"
+        ("light_tank_destroyer_brigade", 1)
     } else {
-        "light_armor"
+        ("light_armor", 7)
     };
-    loc_or(localisation, loc_key)
+    (loc_or(localisation, loc_key), frame)
 }
 
 fn resolve_plane_role(data: &EquipmentDesignData, localisation: &Localisation) -> String {
     let key = data.equipment_key.to_ascii_lowercase();
     let loc_key = if key.contains("cas") {
-        "cas"
+        "plane_designer_cas"
     } else if key.contains("naval_bomber") || key.contains("nav_bomber") {
-        "naval_bomber"
+        "plane_designer_naval_bomber"
     } else if key.contains("maritime_patrol") {
-        "maritime_patrol_plane"
+        "plane_designer_maritime_patrol_plane"
     } else if key.contains("scout") {
-        "scout_plane"
+        "plane_designer_scout_plane"
     } else if key.contains("tac_bomber") || key.contains("tactical") {
-        "tactical_bomber"
+        "plane_designer_tactical_bomber"
     } else if key.contains("strat_bomber") || key.contains("strategic") {
-        "strategic_bomber"
+        "plane_designer_strategic_bomber"
     } else if key.contains("heavy_fighter") || key.contains("medium_plane_fighter") {
-        "heavy_fighter"
+        "plane_designer_heavy_fighter"
     } else if data.category_mask & (1 << 11) != 0 {
-        "cas"
+        "plane_designer_cas"
     } else if data.category_mask & (1 << 12) != 0 {
-        "naval_bomber"
+        "plane_designer_naval_bomber"
     } else if data.category_mask & (1 << 13) != 0 {
-        "tactical_bomber"
+        "plane_designer_tactical_bomber"
     } else if data.category_mask & (1 << 15) != 0 {
-        "strategic_bomber"
+        "plane_designer_strategic_bomber"
     } else {
-        "fighter"
+        "plane_designer_fighter"
     };
     loc_or(localisation, loc_key)
 }
 
 fn format_resources_text(
-    build_resources: &[(u32, i64)],
+    build_resources: &[(String, i64)],
     resource_db: &ResourceDatabase,
 ) -> String {
     let mut out = String::new();
     let numbered = resource_db.numbered();
-    for &(index, raw_amount) in build_resources {
-        let amount = (raw_amount as f64 / FIXED5_SCALE).round() as i64;
+    for (token, raw_amount) in build_resources {
+        let amount = (*raw_amount as f64 / FIXED5_SCALE).round() as i64;
         if amount <= 0 {
             continue;
         }
-        if let Some(resource) = numbered.get(index as usize)
+        if let Some(resource) = numbered
+            .iter()
+            .find(|entry| entry.token.eq_ignore_ascii_case(token))
             && let Some(frame) = resource.icon_frame
         {
             if !out.is_empty() {
                 out.push(' ');
             }
-            out.push_str(&format!("{amount} £resources_strip|{frame}"));
+            out.push_str(&format!("{amount} {ICON}resources_strip|{frame}"));
         }
     }
     out
@@ -1313,25 +1423,35 @@ fn format_production_cost(kind: DesignerKind, build_cost: Option<i64>) -> String
     };
     match kind {
         DesignerKind::Ship => {
-            format!("Production Cost: £navprod_cost£ {}", format_fixed5(cost, 0))
+            format!(
+                "Production Cost: {ICON}navprod_cost{ICON} {}",
+                format_fixed5(cost, 0)
+            )
         }
         DesignerKind::Tank | DesignerKind::Plane | DesignerKind::Upgrade(_) => {
-            format!("Production Cost: £production_cost {}", format_fixed5(cost, 2))
+            format!(
+                "Production Cost: {ICON}production_cost {}",
+                format_fixed5(cost, 2)
+            )
         }
     }
+}
+
+fn element_name(element: &Element) -> &str {
+    std::str::from_utf8(element.name_bytes()).unwrap_or("")
 }
 
 fn find_child<'a>(parent: &'a Element, segment: &str) -> Option<&'a Element> {
     if let Some(found) = parent
         .children
         .iter()
-        .find(|child| child.spelling.eq_ignore_ascii_case(segment))
+        .find(|child| child.is_named(segment.as_bytes()))
     {
         return Some(found);
     }
     if let Fields::DropDown(dd) = &parent.fields {
         if let Some(expand) = dd.expand_button.as_deref()
-            && expand.spelling.eq_ignore_ascii_case(segment)
+            && expand.is_named(segment.as_bytes())
         {
             return Some(expand);
         }
@@ -1339,7 +1459,7 @@ fn find_child<'a>(parent: &'a Element, segment: &str) -> Option<&'a Element> {
             .inner
             .children
             .iter()
-            .find(|child| child.spelling.eq_ignore_ascii_case(segment))
+            .find(|child| child.is_named(segment.as_bytes()))
         {
             return Some(found);
         }
@@ -1530,21 +1650,12 @@ fn configure_main_window(
                     "blueprint_type_name",
                     loc_for_tag(localisation, &data.tag, &data.equipment_key),
                 );
-                set_text_by_name(
-                    instance,
-                    root,
-                    "dropdown_tank_roles/role_text",
-                    resolve_tank_role(data, localisation),
-                );
+                let (role_text, role_frame) = resolve_tank_role_and_frame(data, localisation);
+                set_text_by_name(instance, root, "dropdown_tank_roles/role_text", role_text);
                 if let Some(role_icon) = find_direct(root, "dropdown_tank_roles/tank_role_icon")
                     && let Ok(bound) = instance.control(root, role_icon)
                 {
-                    let frame = if data.role_icon_index > 0 {
-                        data.role_icon_index
-                    } else {
-                        1
-                    };
-                    bound.frame = Some(frame);
+                    bound.frame = Some(role_frame);
                 }
                 disable_by_name(instance, root, "dropdown_tank_roles/expand_button");
 
@@ -1702,7 +1813,7 @@ fn compose_sub_windows(
             && let Some(preview_el) = find_direct(root, "equipment_modules/equipment_preview")
         {
             if let Some(holder) = container_holder(main_layout, &preview_el.path) {
-                let bp_layout = layout_window(bp_root, resources, viewport, |instance| {
+                let bp_layout = layout_window(bp_root, resources, holder.content, |instance| {
                     configure_blueprint(bp_root, instance, &data.fitted_modules);
                 })?;
                 plan.sub_windows.push(ComposedSubWindow {
@@ -1766,7 +1877,7 @@ fn compose_sub_windows(
             && let Some(host_el) = find_direct(root, "active_equipment_view")
         {
             if let Some(holder) = container_holder(main_layout, &host_el.path) {
-                let sub_layout = layout_window(sub_root, resources, viewport, |instance| {
+                let sub_layout = layout_window(sub_root, resources, holder.content, |instance| {
                     configure_upgrade_view(sub_root, localisation, instance, data, icon_sprite);
                 })?;
                 plan.sub_windows.push(ComposedSubWindow {
@@ -1822,7 +1933,7 @@ fn configure_blueprint(
         if slot_container.kind != Kind::Container {
             continue;
         }
-        let slot_name = slot_container.spelling.as_str();
+        let slot_name = element_name(slot_container);
         let fitted = fitted_modules.get(slot_name);
         let mut matched_specific = false;
         if let Some(fitted) = fitted {
@@ -1830,7 +1941,7 @@ fn configure_blueprint(
                 if child.kind != Kind::Container {
                     continue;
                 }
-                let child_name = child.spelling.as_str();
+                let child_name = element_name(child);
                 if child_name.ends_with("@highlight") {
                     continue;
                 }
@@ -1849,7 +1960,7 @@ fn configure_blueprint(
             if child.kind != Kind::Container {
                 continue;
             }
-            let child_name = child.spelling.as_str();
+            let child_name = element_name(child);
             let keep = if child_name.ends_with("@highlight") {
                 false
             } else if let Some(fitted) = fitted {
@@ -1895,7 +2006,7 @@ fn compose_module_slots(
         let Fields::PositionType(pos) = &child.fields else {
             continue;
         };
-        let name = child.spelling.as_str();
+        let name = element_name(child);
         if let Some(suffix) = name.strip_prefix("pos_fixed_module_slot_window_")
             && let Ok(index) = suffix.parse::<usize>()
         {
@@ -2079,29 +2190,30 @@ fn configure_upgrade_view(
         if child.kind != Kind::Container {
             continue;
         }
-        let name_lower = child.spelling.as_str().to_ascii_lowercase();
+        let child_name = element_name(child);
+        let name_lower = child_name.to_ascii_lowercase();
         if let Some((upgrade_key, level)) = upgrade_map.get(&name_lower) {
             set_text_by_name(
                 instance,
                 sub_root,
-                &format!("{}/label", child.spelling.as_str()),
+                &format!("{child_name}/label"),
                 loc_or(localisation, upgrade_key),
             );
             set_text_by_name(
                 instance,
                 sub_root,
-                &format!("{}/level", child.spelling.as_str()),
+                &format!("{child_name}/level"),
                 level.to_string(),
             );
             disable_by_name(
                 instance,
                 sub_root,
-                &format!("{}/decrease_level", child.spelling.as_str()),
+                &format!("{child_name}/decrease_level"),
             );
             disable_by_name(
                 instance,
                 sub_root,
-                &format!("{}/increase_level", child.spelling.as_str()),
+                &format!("{child_name}/increase_level"),
             );
         } else {
             let _ = instance.hide(sub_root, child);
@@ -2193,7 +2305,7 @@ fn compose_stat_grid(
             .unwrap_or_else(|| line.fallback_label.to_owned());
         let is_missing = line.value.is_none();
         let shown_label = if is_missing && slot_width <= 170 {
-            shorten_label(&full_label, 12)
+            shorten_label(&full_label, 10)
         } else {
             full_label.clone()
         };
@@ -2261,6 +2373,6 @@ fn shorten_label(label: &str, max_chars: usize) -> String {
     if trimmed.chars().count() <= max_chars {
         return trimmed.to_owned();
     }
-    let prefix: String = trimmed.chars().take(max_chars.saturating_sub(1)).collect();
-    format!("{}…", prefix.trim_end_matches([' ', ':']))
+    let prefix: String = trimmed.chars().take(max_chars.saturating_sub(2)).collect();
+    format!("{}..", prefix.trim_end_matches([' ', ':']))
 }
