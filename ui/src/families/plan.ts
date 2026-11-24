@@ -173,6 +173,10 @@ export interface BoundedSlice<T> extends Iterable<T> {
   at(index: number): T | undefined;
 }
 
+export interface BoundedMarkCluster extends Omit<MarkCluster, 'bins'> {
+  readonly bins?: BoundedSlice<readonly [number, number]> | MarkCluster['bins'];
+}
+
 export interface BoundedSeries {
   readonly tag: string;
   readonly decimals: number;
@@ -184,7 +188,7 @@ export interface BoundedSeries {
   readonly headValue?: Value;
   readonly missing: BoundedSlice<MissingSpan>;
   readonly approximate?: BoundedSlice<{ readonly firstHour: number; readonly lastHour: number }>;
-  readonly marks: BoundedSlice<MarkCluster>;
+  readonly marks: BoundedSlice<BoundedMarkCluster>;
   readonly validInterval: readonly [lo: number, hi: number];
 }
 
