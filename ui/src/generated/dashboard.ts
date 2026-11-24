@@ -5615,9 +5615,9 @@ experienceRaw: string | null,
  */
 level: number | null, levelName: string | null,
 /**
- * The game's career kill counter.
+ * The game's count of the men this division has lost (its panel's Casualties taken); excludes men lost at destruction and in paradrop disruption.
  */
-kills: number | null, };
+casualtiesTaken: number | null, };
 export type CareerAward = {
 /**
  * Index into the reply's medals.
