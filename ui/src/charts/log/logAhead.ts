@@ -117,9 +117,3 @@ export function logHeldRange(offsets: readonly number[], full: readonly number[]
   return [Math.max(0, start - overscan), Math.min(count, end + overscan)];
 }
 
-export function widenOverHidden(offsets: readonly number[], start: number, end: number): [number, number] {
-  const count = offsets.length - 1;
-  while (start > 0 && offsets[start - 1] === offsets[start]) start--;
-  while (end < count && offsets[end] === offsets[end + 1]) end++;
-  return [start, end];
-}

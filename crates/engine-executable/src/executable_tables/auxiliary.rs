@@ -86,7 +86,21 @@ const AIR_DETECTION_LABEL: Anchor = Anchor {
         fnv: 0x1e6518e38c26892d,
     },
 };
-const TEXT_ANCHORS: [Anchor; 10] = [
+const INVALID_CATEGORY_ERROR: Anchor = Anchor {
+    what: "the invalid category error",
+    text: Hashed {
+        length: 27,
+        fnv: 0x9f4f7efcd0c2b930,
+    },
+};
+const VARIANT_ICON_CHECK: Anchor = Anchor {
+    what: "the variant icon offset check",
+    text: Hashed {
+        length: 59,
+        fnv: 0xece57ceda286b113,
+    },
+};
+const TEXT_ANCHORS: [Anchor; 12] = [
     CATEGORY_ERROR,
     STAT_DUPLICATE_ERROR,
     STAT_MODIFIER_LABEL,
@@ -97,6 +111,22 @@ const TEXT_ANCHORS: [Anchor; 10] = [
     SELECTOR_TARGET_PREFIX,
     AIR_CHANNEL_LABEL,
     AIR_DETECTION_LABEL,
+    INVALID_CATEGORY_ERROR,
+    VARIANT_ICON_CHECK,
+];
+const FAMILY_WORDS: [Hashed; 3] = [
+    Hashed {
+        length: 4,
+        fnv: 0x0460_dcad_9060_ad5c,
+    },
+    Hashed {
+        length: 3,
+        fnv: 0xe701_bb19_0528_8437,
+    },
+    Hashed {
+        length: 5,
+        fnv: 0xe604_6cff_7f76_9a5f,
+    },
 ];
 const FRONT_CONTROL_TYPE: Anchor = Anchor {
     what: "the front control strategy type",
@@ -135,6 +165,7 @@ const AIR_GRAPH_CHANNELS: &str = "air graph channels";
 const AIR_GRAPH_COLORS: &str = "air graph colours";
 const AIR_GRAPH_SCALE: &str = "air graph scale";
 const AIR_DETECTION_PREFIX: &str = "air detection override prefix";
+pub const CATEGORY_FAMILIES: &str = "equipment category families";
 
 pub const AIR_GRAPH_DISPLAYS: usize = 24;
 const BIG_ALLOCATION: u64 = 0x1000;
@@ -156,6 +187,38 @@ const EQUIPMENT_MISSION_DIGEST: &str =
     "d0df74fd31ef9b8b87ef863817e8b61d81c8f6cbd34916d47bc3660ae07e03d5";
 const AIR_GRAPH_CHANNEL_DIGEST: &str =
     "7b8067e808557893a7d9fb1f9dc08f20c2e27fc06e93bf99a35839f567cadb94";
+const CATEGORY_FAMILIES_DIGEST: &str =
+    "9f9c7e69bf462bce2353642be236522424b7427691b1dba409d8a621b9aa3c63";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CategoryFamilies {
+    pub land: u64,
+    pub air: u64,
+    pub naval: u64,
+    pub ship_designer: u64,
+    pub tank_designer: u64,
+    pub plane_designer: u64,
+}
+
+impl CategoryFamilies {
+    fn rows(&self) -> [(&'static str, u64); 6] {
+        [
+            ("land", self.land),
+            ("air", self.air),
+            ("naval", self.naval),
+            ("ship_designer", self.ship_designer),
+            ("tank_designer", self.tank_designer),
+            ("plane_designer", self.plane_designer),
+        ]
+    }
+
+    fn text(&self) -> String {
+        self.rows()
+            .iter()
+            .map(|(name, mask)| format!("{name}\t{mask}\n"))
+            .collect()
+    }
+}
 
 #[derive(Debug)]
 pub struct AuxiliaryTables {
@@ -173,6 +236,7 @@ pub struct AuxiliaryTables {
     pub air_graph_colors: Verified<[[f32; 4]; AIR_GRAPH_DISPLAYS]>,
     pub air_graph_scale: Verified<f32>,
     pub air_detection_override_prefix: Verified<&'static str>,
+    pub category_families: Verified<CategoryFamilies>,
 }
 
 impl AuxiliaryTables {
@@ -205,12 +269,13 @@ impl AuxiliaryTables {
             self.air_graph_colors.as_ref().err(),
             self.air_graph_scale.as_ref().err(),
             self.air_detection_override_prefix.as_ref().err(),
+            self.category_families.as_ref().err(),
         ]
         .into_iter()
         .flatten()
     }
 
-    fn canonical(&self) -> [(&'static str, Result<String, ()>); 14] {
+    fn canonical(&self) -> [(&'static str, Result<String, ()>); 15] {
         fn text<T>(part: &Verified<T>, render: impl FnOnce(&T) -> String) -> Result<String, ()> {
             part.as_ref().map(render).map_err(|_| ())
         }
@@ -280,6 +345,10 @@ impl AuxiliaryTables {
                     (*prefix).to_owned()
                 }),
             ),
+            (
+                CATEGORY_FAMILIES,
+                text(&self.category_families, CategoryFamilies::text),
+            ),
         ]
     }
 
@@ -336,8 +405,117 @@ impl AuxiliaryTables {
             air_detection_override_prefix: part(AIR_DETECTION_PREFIX, || {
                 air_detection_prefix(image, &anchors)
             }),
+            category_families: part(CATEGORY_FAMILIES, || {
+                category_families(image, &anchors, keywords)
+            }),
         })
     }
+}
+
+fn category_families(
+    image: &PeImage,
+    anchors: &Anchors,
+    keywords: &KeywordTables,
+) -> io::Result<CategoryFamilies> {
+    let gate = image.function(first_call(image, anchors.function(VARIANT_ICON_CHECK)?)?)?;
+    let designers: Vec<u64> = code(image, gate)?
+        .iter()
+        .filter(|i| {
+            matches!(i.mnemonic(), Mnemonic::Mov | Mnemonic::Or)
+                && i.op0_kind() == OpKind::Register
+                && i.op0_register().size() == 8
+                && i.op0_register() != Register::RSP
+                && is_immediate(i, 1)
+        })
+        .map(|i| i.immediate(1))
+        .filter(|&mask| mask != 0)
+        .collect();
+    let mut cases = Vec::new();
+    for extent in anchors.functions(INVALID_CATEGORY_ERROR)? {
+        cases.extend(family_cases(&code(image, extent)?));
+    }
+    let families = FAMILY_WORDS.map(|word| {
+        let masks: BTreeSet<u64> = cases
+            .iter()
+            .filter(|&&(token, _)| {
+                keywords
+                    .names
+                    .iter()
+                    .any(|&(id, name)| id == token && word.matches(name.as_bytes()))
+            })
+            .map(|&(_, mask)| mask)
+            .collect();
+        sole(masks, "category family mask of one family word")
+    });
+    let [land, air, naval] = families;
+    let (land, air, naval) = (land?, air?, naval?);
+    let designer = |family: u64| {
+        sole(
+            designers.iter().copied().filter(|&mask| mask & family == mask),
+            "designer category mask inside one family",
+        )
+    };
+    let found = CategoryFamilies {
+        land,
+        air,
+        naval,
+        tank_designer: designer(land)?,
+        plane_designer: designer(air)?,
+        ship_designer: designer(naval)?,
+    };
+    if designers.len() != 3 || land & air != 0 || land & naval != 0 || air & naval != 0 {
+        return Err(invalid(
+            "the category families overlap or the designer gate holds other masks",
+        ));
+    }
+    verify_digest(
+        CATEGORY_FAMILIES,
+        found.text().as_bytes(),
+        CATEGORY_FAMILIES_DIGEST,
+    )?;
+    Ok(found)
+}
+
+fn family_cases(code: &[Instruction]) -> Vec<(u32, u64)> {
+    let mut found = Vec::new();
+    for (at, start) in code.iter().enumerate() {
+        if start.mnemonic() != Mnemonic::Sub
+            || start.op0_kind() != OpKind::Register
+            || start.op0_register().size() != 4
+            || !is_immediate(start, 1)
+        {
+            continue;
+        }
+        let register = start.op0_register();
+        let mut value = start.immediate(1) as u32;
+        let mut pending = Some(value);
+        for i in &code[at + 1..] {
+            let on_register = i.op0_kind() == OpKind::Register
+                && i.op0_register() == register
+                && is_immediate(i, 1);
+            match i.mnemonic() {
+                Mnemonic::Je => {
+                    let Some(token) = pending.take() else { break };
+                    let target = i.near_branch_target();
+                    match code.iter().find(|load| load.ip() == target) {
+                        Some(load) if load.code() == Code::Mov_r64_imm64 => {
+                            found.push((token, load.immediate64()));
+                        }
+                        _ => break,
+                    }
+                }
+                Mnemonic::Sub if on_register => {
+                    value = value.wrapping_add(i.immediate(1) as u32);
+                    pending = Some(value);
+                }
+                Mnemonic::Cmp if on_register => {
+                    pending = Some(value.wrapping_add(i.immediate(1) as u32));
+                }
+                _ => break,
+            }
+        }
+    }
+    found
 }
 
 fn part<T>(name: &'static str, decode: impl FnOnce() -> io::Result<T>) -> Verified<T> {

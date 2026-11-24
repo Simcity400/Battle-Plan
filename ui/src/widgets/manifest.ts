@@ -45,6 +45,7 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'decisions': { load: () => import('./decisions') },
   'division-template': { load: () => import('./division-template') },
   'doctrine-mastery': { load: () => import('./doctrine-mastery') },
+  'general-career': { load: () => import('./general-career/family.ts'), views: ['dossier'] },
   'equipment-designs': { load: () => import('./equipment-designs') },
   'equipment-produced': { load: () => import('./equipment-produced/family.tsx') },
   'event-choices': { load: () => import('./event-choices') },

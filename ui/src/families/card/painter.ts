@@ -9,7 +9,9 @@ import {
   drawRowHover,
   drawRowSelected,
   drawScrollFade,
+  drawShareBar,
   drawStatusMark,
+  drawThresholdMeter,
   drawTrackBar,
   resolveKitTokens,
 } from '../../draw/kit.ts';
@@ -22,13 +24,17 @@ import {
   CARD_FADE,
   CARD_FLAG_HEIGHT,
   CARD_FLAG_WIDTH,
+  CARD_GAP,
+  CARD_GUTTER,
   CARD_HERO_HEIGHT,
+  CARD_METER_FIGURE,
+  CARD_METER_NAME,
   CARD_PAD_X,
   cardRowAt,
   visibleCardRows,
   type CardLayout,
 } from './layout.ts';
-import { cardTitleText, type CardHeroRow, type CardItemRow, type CardMeter, type CardModel, type CardSectionRow } from './model.ts';
+import { cardTitleText, type CardFigure, type CardHeroRow, type CardItemRow, type CardListRow, type CardMeter, type CardMeterRow, type CardModel, type CardSectionRow } from './model.ts';
 
 export interface DrawCardsInput {
   readonly model: CardModel;
@@ -54,7 +60,7 @@ function line(ctx: Canvas2D, text: string, x: number, y: number, width: number, 
   return textWidth(ctx, shown);
 }
 
-function meterFraction(meter: CardMeter): number | null {
+function meterFraction(meter: Pick<CardMeter, 'fraction'>): number | null {
   const v = meter.fraction;
   return v.kind === 'known' || v.kind === 'partial' ? Number(v.value) : v.kind === 'zero' ? 0 : null;
 }
@@ -66,6 +72,69 @@ function drawMeter(ctx: Canvas2D, meter: CardMeter, x: number, middleY: number, 
     return;
   }
   drawTrackBar(ctx, x, middleY, width, height, fraction, theme.accent, theme);
+}
+
+function drawFigure(ctx: Canvas2D, figure: CardFigure, x: number, middleY: number, width: number, align: 'left' | 'right', theme: FamilyTheme): void {
+  const formatted = formatValueState(figure.value);
+  if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
+    drawMissingMark(ctx, x, middleY, width, theme, { figure: figure.figure, align });
+  } else {
+    line(ctx, formatted.text, x, middleY, width, `400 ${figure.muted ? 11 : 12}px ${theme.font}`, figure.muted ? theme.muted : theme.text, align);
+  }
+}
+
+function drawGutter(ctx: Canvas2D, label: string | undefined, middleY: number, theme: FamilyTheme): number {
+  if (label) line(ctx, label, CARD_PAD_X, middleY, CARD_GUTTER, `400 12px ${theme.font}`, theme.muted);
+  return CARD_PAD_X + CARD_GUTTER + 12;
+}
+
+function drawMeterRow(ctx: Canvas2D, row: CardMeterRow, top: number, height: number, width: number, theme: FamilyTheme): void {
+  const middleY = top + height / 2;
+  let x = drawGutter(ctx, row.label, middleY, theme);
+  let right = width - CARD_PAD_X;
+  if (row.figure) {
+    drawFigure(ctx, row.figure, right - CARD_METER_FIGURE, middleY, CARD_METER_FIGURE, 'right', theme);
+    right -= CARD_METER_FIGURE + CARD_GAP;
+  }
+  if (row.name) {
+    const nameWidth = Math.min(CARD_METER_NAME, Math.round((right - x) * 0.4));
+    line(ctx, row.name, x, middleY, nameWidth, `400 12.5px ${theme.font}`, theme.text);
+    x += nameWidth + 10;
+  }
+  const barWidth = Math.max(0, right - x);
+  if (row.bar.kind === 'share') {
+    const segments = row.bar.segments.map(s => ({ share: s.share, color: s.tone === 'positive' ? theme.green : theme.red, label: s.label, shortLabel: s.shortLabel, labelAlign: s.labelAlign }));
+    drawShareBar(ctx, x, Math.round(middleY - 7), barWidth, 14, segments, theme, 3);
+    return;
+  }
+  drawThresholdMeter(ctx, x, middleY, barWidth, 6, meterFraction(row.bar), row.bar.ticks ?? [], theme.accent, theme);
+}
+
+function drawListRow(ctx: Canvas2D, row: CardListRow, top: number, height: number, width: number, theme: FamilyTheme): void {
+  const middleY = top + height / 2;
+  const x = drawGutter(ctx, row.label, middleY, theme);
+  const room = Math.max(0, width - CARD_PAD_X - x);
+  if (row.missing !== undefined) {
+    drawMissingMark(ctx, x, middleY, room, theme, { figure: row.label ?? row.name });
+    return;
+  }
+  if (!row.items.length) {
+    line(ctx, row.none, x, middleY, room, `400 12.5px ${theme.font}`, theme.muted);
+    return;
+  }
+  ctx.font = `400 12.5px ${theme.font}`;
+  const shown = fitItems(row.items, room, text => textWidth(ctx, text));
+  line(ctx, shown, x, middleY, room, `400 12.5px ${theme.font}`, theme.text);
+}
+
+function fitItems(items: readonly string[], room: number, measure: (text: string) => number): string {
+  const all = items.join(', ');
+  if (measure(all) <= room) return all;
+  for (let n = items.length - 1; n >= 1; n--) {
+    const text = `${items.slice(0, n).join(', ')} +${items.length - n} more`;
+    if (measure(text) <= room) return text;
+  }
+  return all;
 }
 
 function drawSection(ctx: Canvas2D, row: CardSectionRow, top: number, height: number, width: number, theme: FamilyTheme): void {
@@ -130,7 +199,9 @@ function drawItem(ctx: Canvas2D, model: CardModel, row: CardItemRow, top: number
   const titleColor = row.title.kind === 'notRecorded' ? theme.muted : theme.text;
   if (subtitle) {
     line(ctx, cardTitleText(row.title), titleX, middleY - 7, titleWidth, titleFont, titleColor);
-    line(ctx, subtitle, titleX, middleY + 9, titleWidth, `400 11px ${theme.font}`, theme.muted);
+    const flagShift = row.subtitleFlag ? CARD_FLAG_WIDTH * 0.8 + 6 : 0;
+    if (row.subtitleFlag) drawMediaSlot(ctx, titleX, middleY + 9, CARD_FLAG_WIDTH * 0.8, CARD_FLAG_HEIGHT * 0.8, row.subtitleFlag, theme, { artCache, radius: 2 });
+    line(ctx, subtitle, titleX + flagShift, middleY + 9, titleWidth - flagShift, `400 11px ${theme.font}`, theme.muted);
   } else {
     line(ctx, cardTitleText(row.title), titleX, middleY, titleWidth, titleFont, titleColor);
   }
@@ -148,14 +219,7 @@ function drawItem(ctx: Canvas2D, model: CardModel, row: CardItemRow, top: number
       figureX += meterW + 10;
       figureW = Math.max(0, figureW - meterW - 10);
     }
-    if (row.figure) {
-      const formatted = formatValueState(row.figure.value);
-      if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
-        drawMissingMark(ctx, figureX, middleY, figureW, theme, { figure: row.figure.figure, align: columns.figureAlign ?? 'left' });
-      } else {
-        line(ctx, formatted.text, figureX, middleY, figureW, `400 ${row.figure.muted ? 11 : 12}px ${theme.font}`, row.figure.muted ? theme.muted : theme.text, columns.figureAlign ?? 'left');
-      }
-    }
+    if (row.figure) drawFigure(ctx, row.figure, figureX, middleY, figureW, columns.figureAlign ?? 'left', theme);
   }
   if (row.state && layout.stateWidth > 0) drawStatusMark(ctx, layout.stateX, middleY, row.state.mark, theme, { label: row.state.label, maxWidth: layout.stateWidth });
   ctx.restore();
@@ -181,6 +245,13 @@ export function drawCards(ctx: Canvas2D, input: DrawCardsInput): void {
   function paintRow(i: number, row: CardModel['rows'][number], top: number, height: number): void {
     if (row.kind === 'section') {
       drawSection(ctx, row, top, height, width, theme);
+      return;
+    }
+    if (row.kind === 'meter' || row.kind === 'list') {
+      if (inspectedKey === row.key) drawRowHover(ctx, 0, top, width, height, theme);
+      if (row.kind === 'meter') drawMeterRow(ctx, row, top, height, width, theme);
+      else drawListRow(ctx, row, top, height, width, theme);
+      if (focusedKey === row.key) drawRowFocusRing(ctx, 0, top, width, height, theme);
       return;
     }
     if (row.kind === 'hero') {
@@ -209,9 +280,9 @@ export function visibleCardIcons(model: CardModel, layout: CardLayout, scrollTop
   const items: ArtUrlInput[] = [];
   for (const i of visibleCardRows(layout, scrollTop)) {
     const row = model.rows[i]!;
-    if (row.kind === 'section') continue;
+    if (row.kind === 'section' || row.kind === 'meter' || row.kind === 'list') continue;
     items.push(row.art);
-    if (row.kind === 'item') items.push(row.flag);
+    if (row.kind === 'item') items.push(row.flag, row.subtitleFlag);
   }
   return collectArtUrls(items);
 }
