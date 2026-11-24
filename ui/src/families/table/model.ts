@@ -366,7 +366,7 @@ export function resolveTableRows(
   const unsorted = model.unsorted === true;
   const sortColumn = settings.sort.column;
   const direction = settings.sort.direction;
-  const hasGroups = model.rows.some(row => row.group !== undefined);
+  const hasGroups = model.rows.some(row => row.group !== undefined && (row.revealAt === undefined || row.revealAt <= hour));
   const flat: FlatTableRow[] = [];
 
   if (hasGroups) {
