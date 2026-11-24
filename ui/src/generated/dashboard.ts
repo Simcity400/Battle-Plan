@@ -2327,6 +2327,41 @@ export type PeaceCapturedTransfer = { derived: boolean, hour: number, state: num
  */
 giver: number | null, from: string | null, fromCountry: PeaceTransferCountry | null, toCountry: PeaceTransferCountry | null, automatic: boolean, };
 export type PeaceCapturedSubject = { derived: boolean, overlord: number, subject: number, overlordTag: string | null, subjectTag: string | null, };
+export type TerritoryTransfersParams = { branchId: string,
+/**
+ * Transfers known by this hour are counted; nothing after it is read into the reply.
+ */
+through: number, };
+export type TerritoryTransfersReply = { branchId: string, through: number,
+/**
+ * State transfers known by `through`, a state transferred twice counted twice.
+ */
+transfers: number,
+/**
+ * Largest net gain first.
+ */
+countries: Array<TerritoryCountry>,
+/**
+ * The first hour after `through` at which this reply would differ; null when none.
+ */
+nextChange: number | null,
+/**
+ * Hours up to `through` whose settlements or ownership were not recorded.
+ */
+unobserved: Array<HourSpan>, warnings: Array<string>, };
+export type TerritoryCountry = {
+/**
+ * The country's identity, stable across tag changes.
+ */
+key: string,
+/**
+ * Its tag at `hour`, its latest transfer's read.
+ */
+tag: string, hour: number, gained: number, lost: number, net: number,
+/**
+ * Exact signed sum; null when a counted state's victory points are not known by `through`.
+ */
+netVictoryPoints: string | null, victoryPointsMissing: string | null, };
 export type ConvoyHealthParams = { branchId: string, view: ConvoyView,
 /**
  * The one country shown.
@@ -6301,7 +6336,7 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "technology-artwork", "country-flags", "doctrines", "aircraft-catalogue", "sprite-artwork", "army-size", "country-facts", "country-styles", "country-groups", "land-owners", "military-air-ledger", "politics-state-history", "factory-groups", "air-force-size", "navy-size", "subjects", "diplomatic-pacts", "operatives-departed", "espionage-types", "intel-details", "raid-log", "production-lines", "production-line-breakdown", "equipment-designs", "place-names", "strategic-regions", "naval-supremacy", "unit-leader-portraits", "unit-leader-career", "unit-leader-choices", "regional-weather", "idea-history", "party-history", "casualty-breakdown", "casualty-labels", "peace-deals", "convoy-health", "trade-flows", "production-spending", "construction-log-manifest", "construction-log", "construction-spending", "division-log", "division-log-manifest", "land-battle-course", "land-battle-terrain", "naval-battle-details", "ships-sunk-manifest", "ships-sunk", "research", "research-breakdown", "event-feed", "event-choices", "decisions", "event-feed-span", "lend-lease-history", "market-ledger", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "equipment-stockpile-catalogue", "equipment-stockpile-chart", "faction-state", "wars", "war-losses", "special-projects", "air-superiority-choices", "combat-log-history", "equipment-losses", "air-statistics-regions", "scoreboard-columns", "equipment-produced", "equipment-produced-types", "equipment-produced-country", "equipment-produced-at", "power-spending", "air-superiority-timeline", "air-superiority-ranking", "espionage-type-tokens", "template-roster", "air-statistics", "politics-state", "country-people", "territory-breakdown", "game-score", "nuclear-arsenal", "training-queue", "wargoals", "decryption", "operative-placements", "agency-comparison", "operatives-roster", "fuel-branches", "resource-balance", "production-lines-at", "production-licences", "industrial-organisations", "doctrine-mastery", "doctrine-rewards", "minefields", "minefield-reports", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "air-ace-portraits", "regional-weather-provinces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "division-equipment", "research-slots", "air-missions", "air-mission-wings", "occupied-states", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "army-losses", "power-day", "faction-goal-rewards"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "technology-artwork", "country-flags", "doctrines", "aircraft-catalogue", "sprite-artwork", "army-size", "country-facts", "country-styles", "country-groups", "land-owners", "military-air-ledger", "politics-state-history", "factory-groups", "air-force-size", "navy-size", "subjects", "diplomatic-pacts", "operatives-departed", "espionage-types", "intel-details", "raid-log", "production-lines", "production-line-breakdown", "equipment-designs", "place-names", "strategic-regions", "naval-supremacy", "unit-leader-portraits", "unit-leader-career", "unit-leader-choices", "regional-weather", "idea-history", "party-history", "casualty-breakdown", "casualty-labels", "peace-deals", "territory-transfers", "convoy-health", "trade-flows", "production-spending", "construction-log-manifest", "construction-log", "construction-spending", "division-log", "division-log-manifest", "land-battle-course", "land-battle-terrain", "naval-battle-details", "ships-sunk-manifest", "ships-sunk", "research", "research-breakdown", "event-feed", "event-choices", "decisions", "event-feed-span", "lend-lease-history", "market-ledger", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "equipment-stockpile-catalogue", "equipment-stockpile-chart", "faction-state", "wars", "war-losses", "special-projects", "air-superiority-choices", "combat-log-history", "equipment-losses", "air-statistics-regions", "scoreboard-columns", "equipment-produced", "equipment-produced-types", "equipment-produced-country", "equipment-produced-at", "power-spending", "air-superiority-timeline", "air-superiority-ranking", "espionage-type-tokens", "template-roster", "air-statistics", "politics-state", "country-people", "territory-breakdown", "game-score", "nuclear-arsenal", "training-queue", "wargoals", "decryption", "operative-placements", "agency-comparison", "operatives-roster", "fuel-branches", "resource-balance", "production-lines-at", "production-licences", "industrial-organisations", "doctrine-mastery", "doctrine-rewards", "minefields", "minefield-reports", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "air-ace-portraits", "regional-weather-provinces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "division-equipment", "research-slots", "air-missions", "air-mission-wings", "occupied-states", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "army-losses", "power-day", "faction-goal-rewards"] as const;
 /** Products served separately from whole-branch history reads. */
 export const INTERACTIVE_PRODUCTS = ["campaign-clock", "player-apm", "focus-artwork", "technology-artwork", "country-flags", "doctrines", "sprite-artwork", "country-styles", "log-tail", "operatives-departed", "operative-tenures", "espionage-operation", "espionage-ended", "espionage-types", "intel-details", "production-line-breakdown", "place-names", "unit-leader-portraits", "unit-leader-career", "unit-leader-choices", "occupation-reserve-history", "land-battle-terrain", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "war-losses", "combat-log-history", "scoreboard", "equipment-produced-at", "template-roster", "air-statistics", "politics-state", "country-people", "territory-share", "territory-breakdown", "faction-rosters", "game-score", "nuclear-arsenal", "world-tension", "factory-parts", "country-experience", "training-queue", "diplomatic-relations", "wargoals", "decryption", "operative-placements", "agency-comparison", "operatives-roster", "espionage-operations", "occupation-reserve-manpower", "intel-network-coverage", "fuel-branches", "resource-balance", "lend-lease-balance", "production-lines-at", "production-licences", "industrial-organisations", "doctrine-mastery", "doctrine-rewards", "minefields", "minefield-reports", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "air-ace-portraits", "regional-weather-provinces", "focus-unavailable", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "division-equipment", "research-slots", "air-missions", "air-mission-wings", "occupied-states", "occupation-at", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "equipment-loss-head", "army-losses", "power-day", "faction-goal-rewards"] as const;
 /** Pages that replay recorded tables to their rows' hours: served apart, so no other request waits behind them. */
@@ -6487,6 +6522,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "template-roster": { "hour": "read" },
   "territory-breakdown": { "hour": "read" },
   "territory-share": { "hour": "read" },
+  "territory-transfers": {},
   "threat-events": {},
   "trade-flows": { "from": "start", "to": "end" },
   "training-queue": { "hour": "read" },
@@ -6683,6 +6719,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "template-roster": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "territory-breakdown": { "branchId": "leaf", "hour": "leaf", "measure": "leaf", "rule": "leaf" },
   "territory-share": { "branchId": "leaf", "hour": "leaf", "measure": "leaf" },
+  "territory-transfers": { "branchId": "leaf", "through": "leaf" },
   "threat-events": { "branchId": "leaf" },
   "trade-flows": { "branchId": "leaf", "countries": "node", "countries[]": "any", "from": "leaf", "to": "leaf", "window": "leaf" },
   "training-queue": { "branchId": "leaf", "country": "any", "hour": "leaf" },
@@ -6879,6 +6916,7 @@ export type RequestParams<E, B> = {
   "template-roster": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "territory-breakdown": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "territory-share": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "territory-transfers": {};
   "threat-events": {};
   "trade-flows": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
   "training-queue": { readonly [key: string]: unknown; readonly "hour"?: E | null };
