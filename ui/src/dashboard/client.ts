@@ -98,6 +98,12 @@ export interface GameWindowTooltip {
   detail: string | null;
 }
 
+export interface GameWindowAlphaMask {
+  readonly width: number;
+  readonly height: number;
+  readonly bitsBase64: string;
+}
+
 export interface GameWindowRegion {
   path: string;
   rect: readonly [number, number, number, number];
@@ -105,6 +111,7 @@ export interface GameWindowRegion {
   disabled: boolean;
   close: boolean;
   tooltip: GameWindowTooltip | null;
+  alphaMask?: GameWindowAlphaMask | null;
 }
 
 export interface GameWindowRender {

@@ -135,13 +135,14 @@ fn cache_key(
         user_dir: PathBuf::from(user_dir),
         visual_revision: visual_revision.into(),
         language: language.into(),
+        force_pow2_textures: false,
         window: window.into(),
     }
 }
 
 #[test]
 fn cache_keys_vary_each_field_independently_and_evict_cleanly() {
-    let mut cache: WindowCache<u32> = WindowCache::new(8);
+    let mut cache: WindowCache<u32> = WindowCache::new(9);
     let base = cache_key("src-a", "rev-1", "game-1", "user-1", "vmod-1", "english", "ship");
     let diff_source = cache_key("src-b", "rev-1", "game-1", "user-1", "vmod-1", "english", "ship");
     let diff_rev = cache_key("src-a", "rev-2", "game-1", "user-1", "vmod-1", "english", "ship");
@@ -150,6 +151,8 @@ fn cache_keys_vary_each_field_independently_and_evict_cleanly() {
     let diff_visual = cache_key("src-a", "rev-1", "game-1", "user-1", "vmod-2", "english", "ship");
     let diff_lang = cache_key("src-a", "rev-1", "game-1", "user-1", "vmod-1", "german", "ship");
     let diff_window = cache_key("src-a", "rev-1", "game-1", "user-1", "vmod-1", "english", "tank");
+    let mut diff_pow2 = base.clone();
+    diff_pow2.force_pow2_textures = true;
 
     for (idx, key) in [
         &base,
@@ -160,13 +163,14 @@ fn cache_keys_vary_each_field_independently_and_evict_cleanly() {
         &diff_visual,
         &diff_lang,
         &diff_window,
+        &diff_pow2,
     ]
     .into_iter()
     .enumerate()
     {
         cache.insert(key.clone(), idx as u32 + 1);
     }
-    assert_eq!(cache.len(), 8);
+    assert_eq!(cache.len(), 9);
     assert_eq!(cache.get_mut(&base).copied(), Some(1));
     assert_eq!(cache.get_mut(&diff_source).copied(), Some(2));
     assert_eq!(cache.get_mut(&diff_rev).copied(), Some(3));
@@ -175,13 +179,16 @@ fn cache_keys_vary_each_field_independently_and_evict_cleanly() {
     assert_eq!(cache.get_mut(&diff_visual).copied(), Some(6));
     assert_eq!(cache.get_mut(&diff_lang).copied(), Some(7));
     assert_eq!(cache.get_mut(&diff_window).copied(), Some(8));
+    assert_eq!(cache.get_mut(&diff_pow2).copied(), Some(9));
 
-    cache.evict_source("src-a");
+    let evicted = cache.evict_source("src-a");
+    assert_eq!(evicted.len(), 8);
     assert_eq!(cache.len(), 1);
     assert_eq!(cache.get_mut(&diff_source).copied(), Some(2));
     assert!(cache.get_mut(&base).is_none());
 
-    cache.clear();
+    let cleared = cache.clear();
+    assert_eq!(cleared.len(), 1);
     assert!(cache.is_empty());
 }
 
@@ -220,6 +227,13 @@ fn regions_map_nested_backgrounds_disabled_fallback_close_and_skip_passthrough()
                     alwaystransparent = yes
                     pdx_tooltip = "GHOST_TIP"
                 }
+                buttonType = {
+                    name = "ghost_close"
+                    position = { x = 60 y = 30 }
+                    spriteType = "GFX_even"
+                    alwaystransparent = yes
+                    pdx_tooltip = "CLOSE_TIP"
+                }
             }
         }"#,
         [400, 300],
@@ -251,10 +265,10 @@ fn regions_map_nested_backgrounds_disabled_fallback_close_and_skip_passthrough()
     let regions = regions_from_layout(
         &[root],
         &layout.regions,
-        [0, 0],
+        [0.0, 0.0],
         &resources,
         &localisation,
-        &["close_button"],
+        &["close_button", "ghost_close"],
         &BTreeMap::new(),
     );
     let close = regions.iter().find(|region| region.close).unwrap();
@@ -279,6 +293,67 @@ fn regions_map_nested_backgrounds_disabled_fallback_close_and_skip_passthrough()
         !regions.iter().any(|region| region.path.ends_with("ghost_icon")),
         "alwaystransparent regions must not steal hits"
     );
+    assert!(
+        !regions.iter().any(|region| region.path.ends_with("ghost_close")),
+        "alwaystransparent close buttons must not become clickable"
+    );
+
+    let alpha_gui = native::read_at(
+        br#"guiTypes = {
+            containerWindowType = {
+                name = "alpha_panel"
+                position = { x = 0 y = 0 }
+                size = { width = 20 height = 10 }
+                buttonType = {
+                    name = "close_button"
+                    position = { x = 0 y = 0 }
+                    spriteType = "GFX_alpha_hole"
+                    pdx_tooltip = "CLOSE_TIP"
+                }
+            }
+        }"#,
+        [400, 300],
+    );
+    let alpha_root = alpha_gui.template("alpha_panel").unwrap();
+    let mut alpha_resources = gui_fixture::fixture();
+    let mut alpha_info = alpha_resources.sprite(b"GFX_even").unwrap();
+    alpha_info.texture = [4, 2];
+    alpha_info.hit = Hit::Alpha;
+    alpha_resources
+        .sprites
+        .insert("GFX_alpha_hole", alpha_info);
+    alpha_resources.alpha.insert(
+        "GFX_alpha_hole",
+        native_gui::AlphaMask {
+            width: 4,
+            transparent: Arc::from([1, 0, 0, 1, 0, 1, 1, 0]),
+        },
+    );
+    let mut alpha_instance = Instance::construct(alpha_root, [400, 300], &alpha_resources).unwrap();
+    alpha_instance.gui_show(alpha_root, alpha_root).unwrap();
+    alpha_instance
+        .tick(alpha_root, &alpha_resources, SETTLE_TICK)
+        .unwrap();
+    alpha_instance
+        .tick(alpha_root, &alpha_resources, STEADY_TICK)
+        .unwrap();
+    let alpha_layout = alpha_instance
+        .layout_with_regions(alpha_root, &alpha_resources, None, true)
+        .unwrap()
+        .unwrap();
+    let alpha_regions = regions_from_layout(
+        &[alpha_root],
+        &alpha_layout.regions,
+        [0.0, 0.0],
+        &alpha_resources,
+        &localisation,
+        &["close_button"],
+        &BTreeMap::new(),
+    );
+    let alpha_close = alpha_regions.iter().find(|region| region.close).unwrap();
+    let mask = alpha_close.alpha_mask.as_ref().unwrap();
+    assert_eq!([mask.width, mask.height], [4, 2]);
+    assert_eq!(mask.bits_base64, encode_base64(&[0b1001_0110]));
 
     let icons = RegistryIcons {
         resources: &resources,
@@ -685,9 +760,9 @@ fn service_renders_straight_alpha_translucent_edges_and_trims_transparent_border
     let batch = plate_batch(effect, 24.0, 16.0);
 
     let output = render_batch_offscreen(&gpu, &mut pass, &batch, [24, 16], [10, 10], 1.0).unwrap();
-    assert_eq!(output.logical_size, [20, 12]);
+    assert_eq!(output.logical_size, [20.0, 12.0]);
     assert_eq!(output.pixel_size, [20, 12]);
-    assert_eq!(output.origin, [12, 12]);
+    assert_eq!(output.origin, [12.0, 12.0]);
 
     assert_eq!(&output.png[..8], b"\x89PNG\r\n\x1a\n");
     let decoder = png::Decoder::new(std::io::Cursor::new(&output.png));
@@ -723,9 +798,134 @@ fn service_renders_straight_alpha_translucent_edges_and_trims_transparent_border
 
     let output_15 =
         render_batch_offscreen(&gpu, &mut pass, &batch, [24, 16], [10, 10], 1.5).unwrap();
-    assert_eq!(output_15.logical_size, [20, 12]);
+    assert_eq!(output_15.logical_size, [20.0, 12.0]);
     assert_eq!(output_15.pixel_size, [30, 18]);
-    assert_eq!(output_15.origin, [12, 12]);
+    assert_eq!(output_15.origin, [12.0, 12.0]);
+}
+
+#[test]
+fn trim_transparent_edges_crops_exact_device_pixels_at_fractional_dpr() {
+    let width = 12usize;
+    let height = 9usize;
+    let mut rgba = vec![0u8; width * height * 4];
+    for y in 1..8 {
+        for x in 2..11 {
+            let idx = (y * width + x) * 4;
+            rgba[idx..idx + 4].copy_from_slice(&[200, 100, 50, 255]);
+        }
+    }
+    let (cropped, logical, pixels, origin) =
+        trim_transparent_edges(rgba, [width as u32, height as u32], [10, 20], 1.5).unwrap();
+    assert_eq!(pixels, [9, 7]);
+    assert!((logical[0] - 6.0).abs() < 1e-4);
+    assert!((logical[1] - (7.0 / 1.5)).abs() < 1e-4);
+    assert!((origin[0] - (10.0 + 2.0 / 1.5)).abs() < 1e-4);
+    assert!((origin[1] - (20.0 + 1.0 / 1.5)).abs() < 1e-4);
+    for px in cropped.chunks_exact(4) {
+        assert_eq!(px[3], 255);
+    }
+
+    let mut rgba2 = vec![0u8; 10 * 6 * 4];
+    for y in 1..5 {
+        for x in 1..9 {
+            let idx = (y * 10 + x) * 4;
+            rgba2[idx..idx + 4].copy_from_slice(&[10, 20, 30, 255]);
+        }
+    }
+    let (_, logical2, pixels2, origin2) =
+        trim_transparent_edges(rgba2, [10, 6], [4, 8], 2.0).unwrap();
+    assert_eq!(pixels2, [8, 4]);
+    assert_eq!(logical2, [4.0, 2.0]);
+    assert_eq!(origin2, [4.5, 8.5]);
+}
+
+#[test]
+fn stale_generation_cancels_without_evicting_newer_cache_entry() {
+    let fixture = SyntheticModFixture::create(SYNTHETIC_BUTTON_SHADER);
+    let service = Service::default();
+    let stale_gen = service.capture_generation("mod-src");
+    service.evict_source("mod-src");
+    let fresh_gen = service.capture_generation("mod-src");
+    assert_ne!(stale_gen, fresh_gen);
+
+    let key = fixture.key("mod_only_panel");
+    let shared = Arc::new(SharedInterface::load(&fixture.layers, DEFAULT_VIEWPORT, Some("english")).unwrap());
+    {
+        let mut cache = service.cache.lock().unwrap();
+        cache
+            .interfaces
+            .insert(key.interface_key(), Arc::clone(&shared));
+    }
+
+    let cancel = AtomicBool::new(false);
+    let err = service
+        .render_composed_from_layers_at(
+            key.clone(),
+            &fixture.layers,
+            "mod_only_panel",
+            1.0,
+            Some(0),
+            true,
+            &["close_button"],
+            &BTreeMap::new(),
+            Vec::new(),
+            Some(stale_gen),
+            &cancel,
+            |_| Ok((Assets::default(), ())),
+            |_, _, _, _, _, _, _| {},
+            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(err, GameWindowError::Cancelled);
+    assert_eq!(service.capture_generation("mod-src"), fresh_gen);
+    let cache = service.cache.lock().unwrap();
+    assert!(cache.interfaces.contains_key(&key.interface_key()));
+}
+
+#[test]
+fn production_effect_compilation_and_gui_binding_renders_mod_window() {
+    let fixture = SyntheticModFixture::create(SYNTHETIC_BUTTON_SHADER);
+    let (_guard, device, queue) = gpu::device();
+    let gpu = GpuContext::from_device(device, queue);
+    let shared = SharedInterface::load(&fixture.layers, DEFAULT_VIEWPORT, Some("english")).unwrap();
+    let mut cached = CachedWindow::load(
+        &gpu,
+        &fixture.layers,
+        &shared,
+        "mod_only_panel",
+        &Assets::default(),
+        Decode::default(),
+    )
+    .unwrap();
+    let root = cached.guis.template(b"mod_only_panel").unwrap();
+    let assets = cached.gui_assets(DEFAULT_VIEWPORT.map(|v| v as i32));
+    let layout = layout_window(
+        root,
+        &assets,
+        DEFAULT_VIEWPORT.map(|v| v as i32),
+        |_| {},
+    )
+    .unwrap();
+    let CachedWindow {
+        guis,
+        gui,
+        localisation,
+        pass,
+        ..
+    } = &mut cached;
+    let draw_assets = WindowGuiAssets {
+        gui,
+        guis,
+        localisation,
+        physical_viewport: Some(DEFAULT_VIEWPORT.map(|v| v as i32)),
+    };
+    let output = render_layout_offscreen(&gpu, pass, &layout, &draw_assets, 1.0).unwrap();
+    assert_eq!(output.pixel_size, [20, 12]);
+    assert_eq!(output.logical_size, [20.0, 12.0]);
+    assert_eq!(output.origin, [12.0, 12.0]);
+    let center = ((6 * 20 + 10) * 4) as usize;
+    assert_eq!(&output.rgba[center..center + 4], &[220, 110, 40, 255]);
 }
 
 #[test]

@@ -28,16 +28,16 @@
   max-width: 100%;
 }
 
+.game-window-canvas.is-close-hover {
+  cursor: pointer;
+}
+
 .game-window-image {
   display: block;
   max-width: 100%;
   height: auto;
   user-select: none;
   image-rendering: auto;
-}
-
-.game-window-image.is-close-hover {
-  cursor: pointer;
 }
 
 .game-window-regions {
@@ -52,12 +52,7 @@
   padding: 0;
   border: 0;
   background: transparent;
-  pointer-events: auto;
-}
-
-.game-window-region-focus.is-close {
-  cursor: pointer;
-  z-index: 1;
+  pointer-events: none;
 }
 
 .game-window-region-focus:focus-visible {

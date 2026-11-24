@@ -106,3 +106,31 @@ test('hit-tests top-most matching region, respects clips, and blocks disabled cl
   assert.equal(focusable[1].closeable, false);
   assert.equal(focusable[2].closeable, true);
 });
+
+test('hit-testing respects alpha masks so transparent pixels pass through to regions behind', () => {
+  const maskBits = Buffer.from([0b0000_0110]).toString('base64');
+  const regions: GameWindowRegion[] = [
+    {
+      path: 'win/behind',
+      rect: [0, 0, 10, 10],
+      clip: null,
+      disabled: false,
+      close: false,
+      tooltip: { title: 'Behind', body: null, detail: null },
+    },
+    {
+      path: 'win/alpha_front',
+      rect: [2, 2, 2, 2],
+      clip: null,
+      disabled: false,
+      close: true,
+      tooltip: { title: 'Front', body: null, detail: null },
+      alphaMask: { width: 2, height: 2, bitsBase64: maskBits },
+    },
+  ];
+
+  assert.equal(hitTestRegion(regions, 2.5, 2.5)?.path, 'win/behind');
+  assert.equal(hitTestRegion(regions, 3.5, 2.5)?.path, 'win/alpha_front');
+  assert.equal(hitTestRegion(regions, 2.5, 3.5)?.path, 'win/alpha_front');
+  assert.equal(hitTestRegion(regions, 3.5, 3.5)?.path, 'win/behind');
+});

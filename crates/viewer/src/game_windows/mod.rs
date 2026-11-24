@@ -107,6 +107,14 @@ pub struct GameWindowTooltip {
     pub detail: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegionAlphaMask {
+    pub width: u32,
+    pub height: u32,
+    pub bits_base64: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameWindowRegion {
@@ -116,13 +124,15 @@ pub struct GameWindowRegion {
     pub disabled: bool,
     pub close: bool,
     pub tooltip: Option<GameWindowTooltip>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alpha_mask: Option<RegionAlphaMask>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameWindowRender {
     pub png_base64: String,
-    pub logical_size: [u32; 2],
+    pub logical_size: [f32; 2],
     pub pixel_size: [u32; 2],
     pub scale: f32,
     pub read_hour: Option<i32>,
@@ -140,6 +150,7 @@ pub struct InterfaceCacheKey {
     pub user_dir: PathBuf,
     pub visual_revision: String,
     pub language: String,
+    pub force_pow2_textures: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -150,6 +161,7 @@ pub struct WindowCacheKey {
     pub user_dir: PathBuf,
     pub visual_revision: String,
     pub language: String,
+    pub force_pow2_textures: bool,
     pub window: String,
 }
 
@@ -162,6 +174,7 @@ impl WindowCacheKey {
             user_dir: self.user_dir.clone(),
             visual_revision: self.visual_revision.clone(),
             language: self.language.clone(),
+            force_pow2_textures: self.force_pow2_textures,
         }
     }
 }
@@ -189,31 +202,49 @@ impl<V> WindowCache<V> {
         self.entries.get_mut(key)
     }
 
-    pub fn insert(&mut self, key: WindowCacheKey, value: V) {
-        if self.entries.contains_key(&key) {
-            self.entries.insert(key.clone(), value);
+    pub fn insert(&mut self, key: WindowCacheKey, value: V) -> Vec<V> {
+        let mut evicted = Vec::new();
+        if let Some(previous) = self.entries.insert(key.clone(), value) {
+            evicted.push(previous);
             self.touch(&key);
-            return;
+            return evicted;
         }
-        while self.entries.len() >= self.capacity {
+        while self.entries.len() > self.capacity {
             if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
+                if let Some(removed) = self.entries.remove(&oldest) {
+                    evicted.push(removed);
+                }
             } else {
                 break;
             }
         }
-        self.order.push_back(key.clone());
-        self.entries.insert(key, value);
+        self.order.push_back(key);
+        evicted
     }
 
-    pub fn evict_source(&mut self, source_id: &str) {
-        self.entries.retain(|key, _| key.source_id != source_id);
+    pub fn remove(&mut self, key: &WindowCacheKey) -> Option<V> {
+        if let Some(position) = self.order.iter().position(|existing| existing == key) {
+            self.order.remove(position);
+        }
+        self.entries.remove(key)
+    }
+
+    pub fn evict_source(&mut self, source_id: &str) -> Vec<V> {
+        let keys: Vec<WindowCacheKey> = self
+            .entries
+            .keys()
+            .filter(|key| key.source_id == source_id)
+            .cloned()
+            .collect();
         self.order.retain(|key| key.source_id != source_id);
+        keys.into_iter()
+            .filter_map(|key| self.entries.remove(&key))
+            .collect()
     }
 
-    pub fn clear(&mut self) {
-        self.entries.clear();
+    pub fn clear(&mut self) -> Vec<V> {
         self.order.clear();
+        self.entries.drain().map(|(_, value)| value).collect()
     }
 
     pub fn len(&self) -> usize {
@@ -236,7 +267,6 @@ pub struct GpuContext {
     device: wgpu::Device,
     queue: wgpu::Queue,
     arena: shader_pipeline::gpu::Arena,
-    decode: Decode,
 }
 
 impl GpuContext {
@@ -246,7 +276,6 @@ impl GpuContext {
         let adapter =
             select_adapter(&adapters, None).map_err(|error| GameWindowError::failed(error.to_string()))?;
         let descriptor = device_descriptor(&adapter);
-        let decode = Decode::default();
         let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).map_err(
             |error| {
                 GameWindowError::failed(format!(
@@ -259,18 +288,15 @@ impl GpuContext {
             device,
             queue,
             arena,
-            decode,
         })
     }
 
     pub fn from_device(device: wgpu::Device, queue: wgpu::Queue) -> Self {
-        let decode = Decode::default();
         let arena = shader_pipeline::gpu::Arena::new(&device);
         Self {
             device,
             queue,
             arena,
-            decode,
         }
     }
 
@@ -285,10 +311,6 @@ impl GpuContext {
     pub fn arena(&self) -> &shader_pipeline::gpu::Arena {
         &self.arena
     }
-
-    pub fn decode(&self) -> Decode {
-        self.decode
-    }
 }
 
 pub struct SharedInterface {
@@ -297,6 +319,9 @@ pub struct SharedInterface {
     pub language: String,
     pub registry: Arc<resources::Registry>,
     pub recorded_registry: Option<Arc<resources::Registry>>,
+    icon_content: std::sync::OnceLock<
+        Result<Arc<dashboard_base::products::equipment_icon::IconContent>, String>,
+    >,
 }
 
 impl SharedInterface {
@@ -305,10 +330,13 @@ impl SharedInterface {
         viewport: [u32; 2],
         requested_language: Option<&str>,
     ) -> Result<Self, GameWindowError> {
+        let art_layers = layers.presentation();
         let guis = Arc::new(
-            native::read_layers_at(layers, viewport.map(|value| value as i32)).map_err(|error| {
-                GameWindowError::failed(format!("Could not load interface definitions: {error}"))
-            })?,
+            native::read_layers_at(art_layers, viewport.map(|value| value as i32)).map_err(
+                |error| {
+                    GameWindowError::failed(format!("Could not load interface definitions: {error}"))
+                },
+            )?,
         );
         let selected = match requested_language {
             Some(lang) if !lang.is_empty() => lang.strip_prefix("l_").unwrap_or(lang).to_owned(),
@@ -324,10 +352,10 @@ impl SharedInterface {
         } else {
             localisation.language.clone()
         };
-        let registry = Arc::new(resources::Registry::load(layers).map_err(|error| {
+        let registry = Arc::new(resources::Registry::load(art_layers).map_err(|error| {
             GameWindowError::failed(format!("Could not load interface sprite registry: {error}"))
         })?);
-        let recorded_registry = layers
+        let recorded_registry = art_layers
             .without_overlays()
             .and_then(|recorded| resources::Registry::load(&recorded).ok())
             .map(Arc::new);
@@ -337,7 +365,28 @@ impl SharedInterface {
             language,
             registry,
             recorded_registry,
+            icon_content: std::sync::OnceLock::new(),
         })
+    }
+
+    pub fn icon_content(
+        &self,
+        recorded_layers: &ResolvedLayers,
+        units: &Arc<content_reader_key_names::equipment::Database>,
+        scripted: &Result<dashboard_text::scripted_text::ScriptedContent, String>,
+    ) -> Result<Arc<dashboard_base::products::equipment_icon::IconContent>, String> {
+        self.icon_content
+            .get_or_init(|| {
+                dashboard_base::products::equipment_icon::IconContent::native(
+                    Arc::new(recorded_layers.clone()),
+                    Arc::clone(units),
+                    scripted,
+                    self.registry.as_ref(),
+                )
+                .map(Arc::new)
+                .map_err(|error| error.to_string())
+            })
+            .clone()
     }
 }
 
@@ -462,8 +511,10 @@ impl CachedWindow {
         shared: &SharedInterface,
         window_name: &str,
         extra_assets: &Assets,
+        decode: Decode,
     ) -> Result<Self, GameWindowError> {
         let mut warnings = Vec::new();
+        let art_layers = layers.presentation();
         let guis = Arc::clone(&shared.guis);
         let Some(root) = guis.template(window_name.as_bytes()) else {
             return Err(GameWindowError::refused(missing_window_refusal(window_name)));
@@ -474,7 +525,7 @@ impl CachedWindow {
             Arc::clone(&shared.registry),
             font_language.as_bytes(),
             [1, 1],
-            gpu.decode(),
+            decode,
         );
         if let Some(recorded_registry) = &shared.recorded_registry {
             gui = gui.with_recorded_registry(Arc::clone(recorded_registry));
@@ -490,7 +541,7 @@ impl CachedWindow {
             .textures
             .extend(extra_assets.textures.iter().cloned());
         let mut images = Vec::new();
-        gui.load(layers, &assets, &mut images).map_err(|error| {
+        gui.load(art_layers, &assets, &mut images).map_err(|error| {
             GameWindowError::failed(format!("Could not load assets for '{window_name}': {error}"))
         })?;
         if let Some(note) = gui.uncovered_note(window_name) {
@@ -530,9 +581,10 @@ impl CachedWindow {
         layers: &ResolvedLayers,
         extra: &Assets,
     ) -> Result<(), GameWindowError> {
+        let art_layers = layers.presentation();
         let before = self.images.len();
         self.gui
-            .load(layers, extra, &mut self.images)
+            .load(art_layers, extra, &mut self.images)
             .map_err(|error| {
                 GameWindowError::failed(format!("Could not load extra window assets: {error}"))
             })?;
@@ -572,9 +624,9 @@ impl CachedWindow {
 pub struct OffscreenOutput {
     pub rgba: Vec<u8>,
     pub png: Vec<u8>,
-    pub logical_size: [u32; 2],
+    pub logical_size: [f32; 2],
     pub pixel_size: [u32; 2],
-    pub origin: [i32; 2],
+    pub origin: [f32; 2],
 }
 
 pub fn normalize_scale(scale: f32) -> f32 {
@@ -668,11 +720,10 @@ fn unpremultiply_rgba(rgba: &mut [u8]) {
 
 fn trim_transparent_edges(
     rgba: Vec<u8>,
-    logical_size: [u32; 2],
     pixel_size: [u32; 2],
     origin: [i32; 2],
     scale: f32,
-) -> Result<(Vec<u8>, [u32; 2], [u32; 2], [i32; 2]), GameWindowError> {
+) -> Result<(Vec<u8>, [f32; 2], [u32; 2], [f32; 2]), GameWindowError> {
     let width = pixel_size[0] as usize;
     let height = pixel_size[1] as usize;
     let mut min_x = width;
@@ -697,37 +748,25 @@ fn trim_transparent_edges(
             "Game window produced no visible pixels (missing artwork or refused shader).",
         ));
     }
-    let trim_left_log = (min_x as f32 / scale).floor() as i32;
-    let trim_top_log = (min_y as f32 / scale).floor() as i32;
-    let trim_right_log = ((max_x + 1) as f32 / scale)
-        .ceil()
-        .min(logical_size[0] as f32) as i32;
-    let trim_bottom_log = ((max_y + 1) as f32 / scale)
-        .ceil()
-        .min(logical_size[1] as f32) as i32;
-    let crop_x0 = ((trim_left_log as f32 * scale).round() as usize).min(min_x);
-    let crop_y0 = ((trim_top_log as f32 * scale).round() as usize).min(min_y);
-    let crop_x1 = ((trim_right_log as f32 * scale).round() as usize)
-        .max(max_x + 1)
-        .min(width);
-    let crop_y1 = ((trim_bottom_log as f32 * scale).round() as usize)
-        .max(max_y + 1)
-        .min(height);
+    let crop_x0 = min_x;
+    let crop_y0 = min_y;
+    let crop_x1 = max_x + 1;
+    let crop_y1 = max_y + 1;
+    let new_w = crop_x1 - crop_x0;
+    let new_h = crop_y1 - crop_y0;
+    let new_logical = [new_w as f32 / scale, new_h as f32 / scale];
+    let new_origin = [
+        origin[0] as f32 + crop_x0 as f32 / scale,
+        origin[1] as f32 + crop_y0 as f32 / scale,
+    ];
     if crop_x0 == 0 && crop_y0 == 0 && crop_x1 == width && crop_y1 == height {
-        return Ok((rgba, logical_size, pixel_size, origin));
+        return Ok((rgba, new_logical, pixel_size, new_origin));
     }
-    let new_w = (crop_x1 - crop_x0).max(1);
-    let new_h = (crop_y1 - crop_y0).max(1);
     let mut cropped = Vec::with_capacity(new_w * new_h * 4);
     for y in crop_y0..crop_y1 {
         let start = (y * width + crop_x0) * 4;
         cropped.extend_from_slice(&rgba[start..start + new_w * 4]);
     }
-    let new_logical = [
-        (trim_right_log - trim_left_log).max(1) as u32,
-        (trim_bottom_log - trim_top_log).max(1) as u32,
-    ];
-    let new_origin = [origin[0] + trim_left_log, origin[1] + trim_top_log];
     Ok((cropped, new_logical, [new_w as u32, new_h as u32], new_origin))
 }
 
@@ -735,6 +774,7 @@ pub struct ComposedSubWindow {
     pub before_part: usize,
     pub parts: Vec<native_gui::Part>,
     pub regions: Vec<Region>,
+    pub diagnostics: Vec<native_gui::Diagnostic>,
     pub root_window: String,
     pub path_prefix: String,
     pub close_paths: Vec<String>,
@@ -795,12 +835,16 @@ pub fn merge_composed_layout(main_layout: &Layout, sub_windows: &[ComposedSubWin
             parts.push(part.clone());
         }
     }
+    let mut diagnostics = main_layout.diagnostics.clone();
+    for sub in sub_windows {
+        diagnostics.extend(sub.diagnostics.iter().cloned());
+    }
     Layout {
         size: main_layout.size,
         parts,
         holders: Vec::new(),
         regions: Vec::new(),
-        diagnostics: main_layout.diagnostics.clone(),
+        diagnostics,
         pointed: None,
         hovered: None,
         target: None,
@@ -947,7 +991,7 @@ pub(crate) fn render_batch_offscreen(
     })?;
     unpremultiply_rgba(&mut rgba);
     let (rgba, logical_size, pixel_size, origin) =
-        trim_transparent_edges(rgba, logical_size, pixel_size, origin, scale)?;
+        trim_transparent_edges(rgba, pixel_size, origin, scale)?;
     let png = encode_png(pixel_size[0], pixel_size[1], &rgba)?;
     Ok(OffscreenOutput {
         rgba,
@@ -1045,10 +1089,50 @@ fn element_always_transparent(element: &Element) -> bool {
             .is_some_and(|text| text.always_transparent)
 }
 
+fn region_alpha_mask(
+    hit: &native_gui::HitGeometry,
+    rect: [f32; 4],
+) -> Option<Option<RegionAlphaMask>> {
+    if hit.form != Hit::Alpha {
+        return Some(None);
+    }
+    let width = rect[2].ceil().max(1.0) as u32;
+    let height = rect[3].ceil().max(1.0) as u32;
+    let total = (width as usize).checked_mul(height as usize)?;
+    let mut bits = vec![0u8; total.div_ceil(8)];
+    let mut any_opaque = false;
+    let mut any_transparent = false;
+    for py in 0..height {
+        let y = rect[1] + py as f32 + 0.5;
+        for px in 0..width {
+            let x = rect[0] + px as f32 + 0.5;
+            let opaque = hit.contains([x, y]);
+            if opaque {
+                any_opaque = true;
+                let idx = (py * width + px) as usize;
+                bits[idx >> 3] |= 1 << (idx & 7);
+            } else {
+                any_transparent = true;
+            }
+        }
+    }
+    if !any_opaque {
+        return None;
+    }
+    if !any_transparent {
+        return Some(None);
+    }
+    Some(Some(RegionAlphaMask {
+        width,
+        height,
+        bits_base64: encode_base64(&bits),
+    }))
+}
+
 pub fn regions_from_layout(
     roots: &[&Element],
     regions: &[Region],
-    origin: [i32; 2],
+    origin: [f32; 2],
     resources: &dyn Resources,
     localisation: &Localisation,
     close_paths: &[&str],
@@ -1058,35 +1142,42 @@ pub fn regions_from_layout(
     let mut out = Vec::new();
     for region in regions {
         let [rx, ry, width, height] = region.rect;
-        let x0 = rx - origin[0] as f32;
-        let y0 = ry - origin[1] as f32;
+        let x0 = rx - origin[0];
+        let y0 = ry - origin[1];
         if width <= 0.0 || height <= 0.0 {
             continue;
         }
-        let close = close_paths.iter().any(|candidate| {
-            region.path == *candidate
-                || region.path.ends_with(&format!(".{candidate}"))
-                || region.path.ends_with(&format!("/{candidate}"))
-        });
         let has_override = overrides.contains_key(&region.path);
         let element = roots
             .iter()
             .find_map(|root| element_by_path(root, &region.path));
-        if !close && !has_override {
-            if region
-                .hit
-                .as_ref()
-                .is_some_and(|geometry| geometry.form == Hit::Through)
-            {
-                continue;
-            }
-            if element.is_some_and(element_always_transparent) {
-                continue;
-            }
+        let through = region
+            .hit
+            .as_ref()
+            .is_some_and(|geometry| geometry.form == Hit::Through)
+            || element.is_some_and(element_always_transparent);
+        if through && !has_override {
+            continue;
         }
+        let close = !through
+            && close_paths.iter().any(|candidate| {
+                region.path == *candidate
+                    || region.path.ends_with(&format!(".{candidate}"))
+                    || region.path.ends_with(&format!("/{candidate}"))
+            });
+        let alpha_mask = if !through
+            && let Some(hit) = region.hit.as_ref()
+        {
+            match region_alpha_mask(hit, region.rect) {
+                Some(mask) => mask,
+                None => continue,
+            }
+        } else {
+            None
+        };
         let clip = region.clip.map(|[left, top, right, bottom]| {
-            let cx = left as f32 - origin[0] as f32;
-            let cy = top as f32 - origin[1] as f32;
+            let cx = left as f32 - origin[0];
+            let cy = top as f32 - origin[1];
             [
                 cx,
                 cy,
@@ -1136,6 +1227,7 @@ pub fn regions_from_layout(
                 disabled: region.disabled,
                 close,
                 tooltip,
+                alpha_mask,
             });
         }
     }
@@ -1150,6 +1242,7 @@ pub fn layout_window(
 ) -> Result<Layout, GameWindowError> {
     let mut instance = Instance::construct(root, viewport, resources)
         .map_err(GameWindowError::failed)?;
+    instance.set_size_cornered_buttons(true);
     instance
         .gui_show(root, root)
         .map_err(|refusal| GameWindowError::failed(refusal.to_string()))?;
@@ -1249,22 +1342,40 @@ impl Service {
     }
 
     pub fn evict_source(&self, source_id: &str) {
-        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        *cache
-            .source_generations
-            .entry(source_id.to_owned())
-            .or_default() += 1;
-        cache
-            .interfaces
-            .retain(|key, _| key.source_id != source_id);
-        cache.windows.evict_source(source_id);
+        let (dropped_interfaces, dropped_windows) = {
+            let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            *cache
+                .source_generations
+                .entry(source_id.to_owned())
+                .or_default() += 1;
+            let keys: Vec<InterfaceCacheKey> = cache
+                .interfaces
+                .keys()
+                .filter(|key| key.source_id == source_id)
+                .cloned()
+                .collect();
+            let interfaces: Vec<Arc<SharedInterface>> = keys
+                .into_iter()
+                .filter_map(|key| cache.interfaces.remove(&key))
+                .collect();
+            let windows = cache.windows.evict_source(source_id);
+            (interfaces, windows)
+        };
+        drop(dropped_windows);
+        drop(dropped_interfaces);
     }
 
     pub fn clear_cache(&self) {
-        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        cache.global_generation += 1;
-        cache.interfaces.clear();
-        cache.windows.clear();
+        let (dropped_interfaces, dropped_windows) = {
+            let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            cache.global_generation += 1;
+            let interfaces: Vec<Arc<SharedInterface>> =
+                cache.interfaces.drain().map(|(_, value)| value).collect();
+            let windows = cache.windows.clear();
+            (interfaces, windows)
+        };
+        drop(dropped_windows);
+        drop(dropped_interfaces);
     }
 
     pub fn cache_len(&self) -> usize {
@@ -1273,6 +1384,10 @@ impl Service {
             .unwrap_or_else(|e| e.into_inner())
             .windows
             .len()
+    }
+
+    pub fn capture_generation(&self, source_id: &str) -> (u64, u64) {
+        self.generations(source_id)
     }
 
     fn generations(&self, source_id: &str) -> (u64, u64) {
@@ -1289,6 +1404,68 @@ impl Service {
 
     fn is_fresh(&self, source_id: &str, expected: (u64, u64)) -> bool {
         self.generations(source_id) == expected
+    }
+
+    fn load_and_cache_window(
+        &self,
+        key: &WindowCacheKey,
+        layers: &ResolvedLayers,
+        shared: &SharedInterface,
+        window_name: &str,
+        extra_assets: &Assets,
+        expected_gen: (u64, u64),
+        cancel: &AtomicBool,
+    ) -> Result<Arc<Mutex<CachedWindow>>, GameWindowError> {
+        let decode = Decode {
+            force_pow2_textures: key.force_pow2_textures,
+        };
+        let loaded = {
+            let mut gpu_guard = self.gpu.lock().unwrap_or_else(|e| e.into_inner());
+            if gpu_guard.is_none() {
+                *gpu_guard = Some(GpuContext::initialize()?);
+            }
+            let gpu = gpu_guard.as_ref().expect("gpu initialized");
+            CachedWindow::load(gpu, layers, shared, window_name, extra_assets, decode)?
+        };
+        if cancel.load(Ordering::SeqCst) {
+            return Err(GameWindowError::Cancelled);
+        }
+        let wrapped = Arc::new(Mutex::new(loaded));
+        let evicted = {
+            let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            let current_gen = (
+                cache
+                    .source_generations
+                    .get(&key.source_id)
+                    .copied()
+                    .unwrap_or(0),
+                cache.global_generation,
+            );
+            if current_gen == expected_gen {
+                cache.windows.insert(key.clone(), Arc::clone(&wrapped))
+            } else {
+                return Err(GameWindowError::Cancelled);
+            }
+        };
+        drop(evicted);
+        Ok(wrapped)
+    }
+
+    fn discard_poisoned_window(
+        &self,
+        key: &WindowCacheKey,
+        poisoned: &Arc<Mutex<CachedWindow>>,
+    ) {
+        let removed = {
+            let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            let same = cache
+                .windows
+                .entries
+                .get(key)
+                .is_some_and(|existing| Arc::ptr_eq(existing, poisoned));
+            if same { cache.windows.remove(key) } else { None }
+        };
+        drop(removed);
     }
 
     #[allow(
@@ -1322,8 +1499,8 @@ impl Service {
             tooltip_overrides,
             extra_warnings,
             cancel,
-            move |_, _, _| Ok((extra, ())),
-            move |root, _, localisation, instance, _, _| configure(root, localisation, instance),
+            move |_| Ok((extra, ())),
+            move |root, _, _, localisation, instance, _, _| configure(root, localisation, instance),
             |_, _, _, _, _, _| Ok(ComposedPlan::default()),
         )
     }
@@ -1344,14 +1521,65 @@ impl Service {
         tooltip_overrides: &BTreeMap<String, GameWindowTooltip>,
         extra_warnings: Vec<String>,
         cancel: &AtomicBool,
-        prepare_assets: impl FnOnce(
-            &native::Guis,
-            &resources::Registry,
-            &Localisation,
-        ) -> Result<(Assets, S), GameWindowError>,
+        prepare_assets: impl FnOnce(&SharedInterface) -> Result<(Assets, S), GameWindowError>,
         configure_main: impl FnOnce(
             &Element,
             &native::Guis,
+            &dyn Resources,
+            &Localisation,
+            &mut Instance,
+            &mut BTreeMap<String, GameWindowTooltip>,
+            &S,
+        ),
+        compose: impl FnOnce(
+            &Layout,
+            &Element,
+            &native::Guis,
+            &dyn Resources,
+            &Localisation,
+            &S,
+        ) -> Result<ComposedPlan, GameWindowError>,
+    ) -> Result<GameWindowRender, GameWindowError> {
+        self.render_composed_from_layers_at(
+            key,
+            layers,
+            window_name,
+            scale,
+            read_hour,
+            art_from_current_install,
+            close_paths,
+            tooltip_overrides,
+            extra_warnings,
+            None,
+            cancel,
+            prepare_assets,
+            configure_main,
+            compose,
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the window cache key, layers, admission generation, and per-render callbacks are independent inputs"
+    )]
+    pub fn render_composed_from_layers_at<S>(
+        &self,
+        key: WindowCacheKey,
+        layers: &ResolvedLayers,
+        window_name: &str,
+        scale: f32,
+        read_hour: Option<i32>,
+        art_from_current_install: bool,
+        close_paths: &[&str],
+        tooltip_overrides: &BTreeMap<String, GameWindowTooltip>,
+        extra_warnings: Vec<String>,
+        admitted_gen: Option<(u64, u64)>,
+        cancel: &AtomicBool,
+        prepare_assets: impl FnOnce(&SharedInterface) -> Result<(Assets, S), GameWindowError>,
+        configure_main: impl FnOnce(
+            &Element,
+            &native::Guis,
+            &dyn Resources,
             &Localisation,
             &mut Instance,
             &mut BTreeMap<String, GameWindowTooltip>,
@@ -1372,7 +1600,7 @@ impl Service {
         let interface_key = key.interface_key();
         let (expected_gen, cached_interface, cached_window) = {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-            let gens = (
+            let current_gen = (
                 cache
                     .source_generations
                     .get(&key.source_id)
@@ -1380,9 +1608,14 @@ impl Service {
                     .unwrap_or(0),
                 cache.global_generation,
             );
+            if let Some(expected) = admitted_gen
+                && expected != current_gen
+            {
+                return Err(GameWindowError::Cancelled);
+            }
             let iface = cache.interfaces.get(&interface_key).map(Arc::clone);
             let win = cache.windows.get_mut(&key).map(|entry| Arc::clone(entry));
-            (gens, iface, win)
+            (admitted_gen.unwrap_or(current_gen), iface, win)
         };
 
         let shared = match cached_interface {
@@ -1393,20 +1626,24 @@ impl Service {
                 if cancel.load(Ordering::SeqCst) {
                     return Err(GameWindowError::Cancelled);
                 }
-                let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-                let current_gen = (
-                    cache
-                        .source_generations
-                        .get(&key.source_id)
-                        .copied()
-                        .unwrap_or(0),
-                    cache.global_generation,
-                );
-                if current_gen == expected_gen {
+                let replaced = {
+                    let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+                    let current_gen = (
+                        cache
+                            .source_generations
+                            .get(&key.source_id)
+                            .copied()
+                            .unwrap_or(0),
+                        cache.global_generation,
+                    );
+                    if current_gen != expected_gen {
+                        return Err(GameWindowError::Cancelled);
+                    }
                     cache
                         .interfaces
-                        .insert(interface_key, Arc::clone(&loaded));
-                }
+                        .insert(interface_key, Arc::clone(&loaded))
+                };
+                drop(replaced);
                 loaded
             }
         };
@@ -1415,44 +1652,22 @@ impl Service {
             return Err(GameWindowError::refused(missing_window_refusal(window_name)));
         }
 
-        let (extra_assets, state) = prepare_assets(
-            shared.guis.as_ref(),
-            shared.registry.as_ref(),
-            shared.localisation.as_ref(),
-        )?;
+        let (extra_assets, state) = prepare_assets(shared.as_ref())?;
         if cancel.load(Ordering::SeqCst) {
             return Err(GameWindowError::Cancelled);
         }
 
         let window_entry = match cached_window {
             Some(existing) => existing,
-            None => {
-                let loaded = {
-                    let mut gpu_guard = self.gpu.lock().unwrap_or_else(|e| e.into_inner());
-                    if gpu_guard.is_none() {
-                        *gpu_guard = Some(GpuContext::initialize()?);
-                    }
-                    let gpu = gpu_guard.as_ref().expect("gpu initialized");
-                    CachedWindow::load(gpu, layers, &shared, window_name, &extra_assets)?
-                };
-                if cancel.load(Ordering::SeqCst) {
-                    return Err(GameWindowError::Cancelled);
-                }
-                let wrapped = Arc::new(Mutex::new(loaded));
-                let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-                let current_gen = (
-                    cache
-                        .source_generations
-                        .get(&key.source_id)
-                        .copied()
-                        .unwrap_or(0),
-                    cache.global_generation,
-                );
-                if current_gen == expected_gen {
-                    cache.windows.insert(key.clone(), Arc::clone(&wrapped));
-                }
-                wrapped
-            }
+            None => self.load_and_cache_window(
+                &key,
+                layers,
+                &shared,
+                window_name,
+                &extra_assets,
+                expected_gen,
+                cancel,
+            )?,
         };
 
         let scale = normalize_scale(scale);
@@ -1462,7 +1677,32 @@ impl Service {
         ];
 
         let (output, regions, warnings) = {
-            let mut cached = window_entry.lock().unwrap_or_else(|e| e.into_inner());
+            let reloaded_entry: Option<Arc<Mutex<CachedWindow>>>;
+            let mut cached = match window_entry.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    drop(poisoned);
+                    self.discard_poisoned_window(&key, &window_entry);
+                    reloaded_entry = Some(self.load_and_cache_window(
+                        &key,
+                        layers,
+                        &shared,
+                        window_name,
+                        &extra_assets,
+                        expected_gen,
+                        cancel,
+                    )?);
+                    reloaded_entry
+                        .as_ref()
+                        .expect("reloaded window entry")
+                        .lock()
+                        .map_err(|_| {
+                            GameWindowError::failed(
+                                "Game window renderer state became poisoned after reload.",
+                            )
+                        })?
+                }
+            };
             if !extra_assets.sprites.is_empty()
                 || !extra_assets.fonts.is_empty()
                 || !extra_assets.textures.is_empty()
@@ -1488,6 +1728,7 @@ impl Service {
                 &assets,
             )
             .map_err(GameWindowError::failed)?;
+            instance.set_size_cornered_buttons(true);
             instance
                 .gui_show(root, root)
                 .map_err(|refusal| GameWindowError::failed(refusal.to_string()))?;
@@ -1495,6 +1736,7 @@ impl Service {
             configure_main(
                 root,
                 cached.guis.as_ref(),
+                &assets,
                 cached.localisation.as_ref(),
                 &mut instance,
                 &mut main_tooltips,
@@ -1591,11 +1833,11 @@ impl Service {
                 regions.extend(sub_regions);
             }
             for mut region in plan.extra_regions {
-                region.rect[0] -= output.origin[0] as f32;
-                region.rect[1] -= output.origin[1] as f32;
+                region.rect[0] -= output.origin[0];
+                region.rect[1] -= output.origin[1];
                 if let Some(clip) = &mut region.clip {
-                    clip[0] -= output.origin[0] as f32;
-                    clip[1] -= output.origin[1] as f32;
+                    clip[0] -= output.origin[0];
+                    clip[1] -= output.origin[1];
                 }
                 regions.push(region);
             }
@@ -1608,6 +1850,14 @@ impl Service {
                     diagnostic.path, diagnostic.detail
                 ));
             }
+            for sub in &plan.sub_windows {
+                for diagnostic in &sub.diagnostics {
+                    warnings.push(format!(
+                        "{} ({}): {}",
+                        sub.root_window, diagnostic.path, diagnostic.detail
+                    ));
+                }
+            }
             (output, regions, warnings)
         };
 
@@ -1615,7 +1865,7 @@ impl Service {
             return Err(GameWindowError::Cancelled);
         }
         if !self.is_fresh(&key.source_id, expected_gen) {
-            self.evict_source(&key.source_id);
+            return Err(GameWindowError::Cancelled);
         }
 
         Ok(GameWindowRender {
@@ -1643,6 +1893,7 @@ impl Service {
         if cancel.load(Ordering::SeqCst) {
             return Err(GameWindowError::Cancelled);
         }
+        let admitted_gen = self.capture_generation(&request.source_id);
         let resolve = config.resolve_options().map_err(|error| {
             GameWindowError::refused(format!(
                 "Could not open game or user content folders: {error}"
@@ -1654,6 +1905,15 @@ impl Service {
         let mut layers = content.layers.clone();
         let mut visual_revision = String::new();
         let mut visual_warnings = Vec::new();
+        let decode = match content_reader_settings::settings::read_keys(&resolve.user_dir) {
+            Ok(keys) => keys.texture_decode(),
+            Err(error) => {
+                visual_warnings.push(format!(
+                    "settings.txt is unavailable ({error}); using default texture decode settings."
+                ));
+                Decode::default()
+            }
+        };
         if !visual_mods.is_empty() {
             let recorded: Vec<_> = source
                 .replay_ref()
@@ -1682,15 +1942,21 @@ impl Service {
             visual_revision = plan.revision;
             visual_warnings.extend(plan.warnings);
         }
+        if !self.is_fresh(&request.source_id, admitted_gen) {
+            return Err(GameWindowError::Cancelled);
+        }
         let language = dashboard_base::content::recorded_language(source.replay_ref());
         match request.kind.as_str() {
             "equipmentDesigner" => equipment_designer::render(
                 self,
                 source,
+                &content,
                 &layers,
                 &resolve,
                 &visual_revision,
                 &language,
+                decode,
+                admitted_gen,
                 visual_warnings,
                 request,
                 cancel,

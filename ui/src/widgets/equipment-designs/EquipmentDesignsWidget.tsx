@@ -118,9 +118,11 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
   ] }], viewport), [viewport]);
   const menu = useCallback((row: DesignRow) => track ? [row.firstSeen, row.seenObsolete].flatMap(seen => seen ? [jumpItem(runtime, track.id, seen.hour)] : []) : [], [runtime, track]);
   const open = (row: DesignRow) => {
-    if (hour === null) return;
+    const liveWindow = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+    const openHour = liveWindow ? Math.floor(liveWindow.lastHour) : hour;
+    if (openHour === null) return;
     setPicked({ owner, row });
-    dispatch({ type: 'open', breakdown: SHEET.id, hour, follow: drillControl.followsAt(hour) });
+    dispatch({ type: 'open', breakdown: SHEET.id, hour: openHour, follow: drillControl.followsAt(openHour) });
   };
   const closeDrill = useCallback(() => {
     dispatch({ type: 'close' });

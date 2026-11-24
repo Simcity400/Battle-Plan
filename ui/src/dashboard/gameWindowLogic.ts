@@ -51,6 +51,41 @@ function inRect(rect: readonly [number, number, number, number], x: number, y: n
   return width > 0 && height > 0 && x >= left && x < left + width && y >= top && y < top + height;
 }
 
+const decodedMasks = new WeakMap<GameWindowRegion, Uint8Array>();
+
+function decodeBase64(encoded: string): Uint8Array {
+  if (typeof globalThis.atob === 'function') {
+    const raw = globalThis.atob(encoded);
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) {
+      bytes[i] = raw.charCodeAt(i);
+    }
+    return bytes;
+  }
+  const BufferCtor = (globalThis as { Buffer?: { from(input: string, encoding: string): Uint8Array } }).Buffer;
+  if (BufferCtor) {
+    return Uint8Array.from(BufferCtor.from(encoded, 'base64'));
+  }
+  return new Uint8Array(0);
+}
+
+function alphaHit(region: GameWindowRegion, x: number, y: number): boolean {
+  const mask = region.alphaMask;
+  if (!mask || mask.width <= 0 || mask.height <= 0) return true;
+  const px = Math.floor(x - region.rect[0]);
+  const py = Math.floor(y - region.rect[1]);
+  if (px < 0 || py < 0 || px >= mask.width || py >= mask.height) return false;
+  let bytes = decodedMasks.get(region);
+  if (!bytes) {
+    bytes = decodeBase64(mask.bitsBase64);
+    decodedMasks.set(region, bytes);
+  }
+  const bitIndex = py * mask.width + px;
+  const byteIndex = bitIndex >> 3;
+  if (byteIndex >= bytes.length) return false;
+  return ((bytes[byteIndex] >> (bitIndex & 7)) & 1) !== 0;
+}
+
 export function isActivatableClose(region: GameWindowRegion | null): boolean {
   return Boolean(region && region.close && !region.disabled);
 }
@@ -65,6 +100,7 @@ export function hitTestRegion(
     if (!region.close && !region.tooltip) continue;
     if (!inRect(region.rect, x, y)) continue;
     if (region.clip && !inRect(region.clip, x, y)) continue;
+    if (!alphaHit(region, x, y)) continue;
     return region;
   }
   return null;

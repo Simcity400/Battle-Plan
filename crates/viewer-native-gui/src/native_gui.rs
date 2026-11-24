@@ -513,6 +513,7 @@ impl Site {
 pub struct Bindings {
     bound: HashMap<Site, Bound>,
     pub regions: bool,
+    pub size_cornered_buttons: bool,
     pub time: f32,
     pub pointer: Option<Pointer>,
     pub viewport: Option<[i32; 2]>,
@@ -2906,7 +2907,10 @@ impl<'a> Walk<'a> {
             let drawn = [sprite, FALLBACK_SPRITE]
                 .into_iter()
                 .find_map(|name| self.info_ref(path, name));
-            let button_sized = (button.size[0] > 0 && button.size[1] > 0).then_some(button.size);
+            let button_sized = (self.bindings.size_cornered_buttons
+                && button.size[0] > 0
+                && button.size[1] > 0)
+                .then_some(button.size);
             if let Some(info) = &drawn
                 && matches!(info.kind, SpriteKind::Text { .. })
             {
@@ -3924,7 +3928,8 @@ impl Walk<'_> {
             },
             None => info,
         };
-        if element.kind != Kind::Checkbox
+        if self.bindings.size_cornered_buttons
+            && element.kind != Kind::Checkbox
             && let Some(button) = button
             && button.size[0] > 0
             && button.size[1] > 0
