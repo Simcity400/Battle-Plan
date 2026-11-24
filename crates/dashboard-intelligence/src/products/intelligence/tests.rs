@@ -196,7 +196,8 @@ mod espionage {
 }
 
 mod agencies {
-    use super::super::agencies::upgrades;
+    use super::super::Country;
+    use super::super::agencies::{Agency, AgencyRank, AgencyTop, ranked, upgrades};
     use replay_data::rows::AgencyUpgradeLevelRow;
     use std::collections::HashMap;
 
@@ -222,5 +223,30 @@ mod agencies {
         assert_eq!(upgrades(&gap.iter().collect::<Vec<_>>(), &tokens, None).nonnegative_level_sum, None);
         let read = upgrades(&[&level(0, 1, 0)], &HashMap::new(), None);
         assert_eq!(read.items[0].branch, None);
+    }
+
+    fn agency(id: u32, defense: i64, active: i32) -> Agency {
+        Agency {
+            country: Country { id, tag: Some(format!("T{id}")) },
+            created: true,
+            name: None,
+            name_missing: None,
+            defense_raw: defense.to_string(),
+            defense_text: None,
+            defense_value: None,
+            active_count: active,
+            maximum: active,
+            upgrades: None,
+        }
+    }
+
+    #[test]
+    fn the_top_agencies_are_ranked_by_the_asked_measure_ties_by_country_and_none_asked_keeps_every_agency() {
+        let all = vec![agency(3, 500_000, 2), agency(1, 900_000, 1), agency(2, 500_000, 7), agency(4, 100_000, 7)];
+        let ids = |list: Vec<Agency>| list.iter().map(|agency| agency.country.id).collect::<Vec<_>>();
+        assert_eq!(ids(ranked(all.clone(), None)), vec![3, 1, 2, 4], "no top: as read");
+        assert_eq!(ids(ranked(all.clone(), Some(AgencyTop { count: 3, by: AgencyRank::Defense }))), vec![1, 2, 3], "equal defence: lower country id first");
+        assert_eq!(ids(ranked(all.clone(), Some(AgencyTop { count: 2, by: AgencyRank::Active }))), vec![2, 4]);
+        assert_eq!(ids(ranked(all, Some(AgencyTop { count: 9, by: AgencyRank::Maximum }))).len(), 4, "a count above the population keeps everyone");
     }
 }

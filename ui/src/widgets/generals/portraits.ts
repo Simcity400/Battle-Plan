@@ -14,13 +14,13 @@ export function validatePortraits(input: unknown): UnitLeaderPortraitsReply {
   return input as UnitLeaderPortraitsReply;
 }
 
-export const PORTRAITS_PER_REQUEST = 4;
+export const PORTRAITS_PER_REQUEST = 64;
 
 const specs = new Map<number, FactSpec<PortraitFact>>();
 export function portraitSpec(edge: number): FactSpec<PortraitFact> {
   let spec = specs.get(edge);
   if (!spec) {
-    spec = { identity: `unit-leader-portraits:${edge}`, product: 'unit-leader-portraits', perRequest: PORTRAITS_PER_REQUEST, requestOrder: 'wanted',
+    spec = { identity: `unit-leader-portraits:${edge}`, product: 'unit-leader-portraits', perRequest: PORTRAITS_PER_REQUEST, requestOrder: 'wanted', shared: true,
       params: (branchId, hour, references) => ({ branchId, hour, references, edge }),
       extract: data => {
         const reply = validatePortraits(data);
