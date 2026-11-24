@@ -4,8 +4,7 @@ mod naming;
 #[cfg(test)]
 mod tests;
 
-use dashboard_base::products::{Country, validate_country};
-use dashboard_base::products::{LoadContext, Product, check_reply_budget};
+use dashboard_base::products::Country;
 use super::{politics::{Holding, holdings}, ideas::{IdeaInfo, effect_keys, recorded_definitions}};
 use dashboard_world::products::equipment_names::EquipmentIcon;
 use dashboard_base::products::idea_format::{self, LocalisedText, ModifierFormat};
@@ -254,52 +253,6 @@ pub struct PowerSpendingReply {
 }
 
 dashboard_base::reply_warnings!(PowerSpendingReply);
-
-pub struct PowerSpending;
-
-impl Product for PowerSpending {
-    const KEY: &'static str = "power-spending";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = PowerSpendingParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, currency, from: Start, to: End];
-    type Reply = PowerSpendingReply;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![
-            PowerSpendingParams::decl(),
-            PowerSpendingReply::decl(),
-            SpendCurrency::decl(),
-            SpendItem::decl(),
-            SpendKind::decl(),
-            SpendCategory::decl(),
-            SpendPayment::decl(),
-            SpendDay::decl(),
-            SpendGain::decl(),
-            SpendCoverage::decl(),
-            SpendBalanceRun::decl(),
-            SpendReconciliation::decl(),
-            SpendIdeaTooltips::decl(),
-        ]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map_err(|_| "Invalid power spending branch")?;
-        validate_country(&params.country)?;
-        if params.from > params.to {
-            return Err("A power spending span ends before it starts");
-        }
-        Ok(())
-    }
-
-    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid power spending branch"))?)?;
-        let naming = naming::context(source, context)?;
-        let reply = spending(source, &query, params, &naming, cancelled)?;
-        check_reply_budget(&reply)?;
-        Ok(reply)
-    }
-}
 
 pub(super) fn recurring(row: &PowerItemRow) -> bool {
     row.kind != PowerItemRow::CHANGE || matches!(row.cause, PowerCause::DailyGain | PowerCause::AbilityUpkeep)
