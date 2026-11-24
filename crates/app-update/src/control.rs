@@ -65,10 +65,18 @@ pub(crate) struct Server {
 }
 
 // SAFETY: the stop event is a kernel handle, usable from any thread, and lives as long as the
-// server (it is never closed).
+// server: it is closed only when the server is dropped.
 unsafe impl Send for Server {}
 // SAFETY: as above; every other field is synchronised.
 unsafe impl Sync for Server {}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        // SAFETY: the server owns the stop event, and nothing waits on it once the last owner,
+        // including the serving thread, has let go.
+        unsafe { CloseHandle(self.stop) };
+    }
+}
 
 static SERVED: OnceLock<Arc<Server>> = OnceLock::new();
 

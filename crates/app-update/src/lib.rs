@@ -11,7 +11,8 @@ pub use channel::Channel;
 
 use serde::Serialize;
 use std::{
-    sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, PoisonError},
+    panic::AssertUnwindSafe,
+    sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, PoisonError, atomic::AtomicU64},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager};
@@ -178,6 +179,7 @@ pub struct UpdateState {
     pub install_blocked: Option<String>,
     pub channel_warning: Option<String>,
     pub downgrade: bool,
+    pub revision: u64,
 }
 
 struct Inner {
@@ -186,21 +188,42 @@ struct Inner {
     package: Option<Arc<Vec<u8>>>,
     busy: bool,
     checking: bool,
-    revision: u64,
 }
 
 struct Slot<'a> {
     updates: &'a Updates,
     action: Action,
+    held: bool,
+}
+
+impl Slot<'_> {
+    fn release(&mut self, change: impl FnOnce(&mut Inner)) -> UpdateState {
+        let state = {
+            let mut inner = self.updates.lock();
+            inner.busy = false;
+            inner.checking = false;
+            change(&mut inner);
+            self.held = false;
+            Updates::snapshot(&mut inner)
+        };
+        self.updates.wake.notify_all();
+        state
+    }
+
+    fn finish(mut self, change: impl FnOnce(&mut Inner)) -> UpdateState {
+        let state = self.release(change);
+        self.updates.emit(state.clone());
+        state
+    }
 }
 
 impl Drop for Slot<'_> {
     fn drop(&mut self) {
-        if !std::thread::panicking() {
+        if !self.held || !std::thread::panicking() {
             return;
         }
         let action = self.action;
-        self.updates.finish(|inner| {
+        let state = self.release(|inner| {
             inner.state.download_percent = None;
             if action != Action::Check || inner.update.is_none() {
                 inner.state.status = Status::Error;
@@ -215,6 +238,10 @@ impl Drop for Slot<'_> {
                 .into(),
             );
         });
+        let updates = self.updates;
+        if std::panic::catch_unwind(AssertUnwindSafe(|| updates.emit(state))).is_err() {
+            eprintln!("The window couldn’t be told that the update stopped unexpectedly.");
+        }
     }
 }
 
@@ -227,7 +254,7 @@ pub struct Updates {
     current: semver::Version,
     load_channel: LoadChannel,
     publish: Publish,
-    sent: Mutex<u64>,
+    sent: AtomicU64,
     inner: Mutex<Inner>,
     wake: Condvar,
 }
@@ -326,6 +353,7 @@ pub fn init(app: &AppHandle, role: Role, host: Arc<dyn Host>) -> std::io::Result
         install_blocked: None,
         channel_warning: None,
         downgrade: false,
+        revision: 0,
     };
     let control_error = control::serve(role, Arc::clone(&host))
         .err()
@@ -372,14 +400,13 @@ impl Updates {
             current: semver::Version::parse(VERSION).expect("Cargo versions are semver"),
             load_channel,
             publish,
-            sent: Mutex::new(0),
+            sent: AtomicU64::new(0),
             inner: Mutex::new(Inner {
                 state,
                 update: None,
                 package: None,
                 busy: false,
                 checking: false,
-                revision: 0,
             }),
             wake: Condvar::new(),
         }
@@ -389,15 +416,13 @@ impl Updates {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn snapshot(inner: &mut Inner) -> (u64, UpdateState) {
-        inner.revision += 1;
-        (inner.revision, inner.state.clone())
+    fn snapshot(inner: &mut Inner) -> UpdateState {
+        inner.state.revision += 1;
+        inner.state.clone()
     }
 
-    fn emit(&self, (revision, state): (u64, UpdateState)) {
-        let mut sent = self.sent.lock().unwrap_or_else(PoisonError::into_inner);
-        if revision > *sent {
-            *sent = revision;
+    fn emit(&self, state: UpdateState) {
+        if self.sent.fetch_max(state.revision, std::sync::atomic::Ordering::AcqRel) < state.revision {
             (self.publish)(state);
         }
     }
@@ -433,7 +458,7 @@ impl Updates {
             }
             (found, Self::snapshot(&mut inner))
         };
-        let found = found.map(|found| (found, Slot { updates: self, action }));
+        let found = found.map(|found| (found, Slot { updates: self, action, held: true }));
         self.emit(snapshot);
         found
     }
@@ -451,17 +476,6 @@ impl Updates {
         Ok(())
     }
 
-    fn finish(&self, change: impl FnOnce(&mut Inner)) -> UpdateState {
-        let state = self.change(|inner| {
-            inner.busy = false;
-            inner.checking = false;
-            change(inner);
-            inner.state.clone()
-        });
-        self.wake.notify_all();
-        state
-    }
-
     pub fn state(&self) -> UpdateState {
         self.lock().state.clone()
     }
@@ -473,13 +487,11 @@ impl Updates {
             let asked = self
                 .check_now
                 .swap(false, std::sync::atomic::Ordering::AcqRel);
-            if now >= next_check || asked {
+            let due = now >= next_check || asked;
+            if due {
                 next_check = now + CHECK_EVERY;
-                let _ = tauri::async_runtime::block_on(self.check());
             }
-            if self.lock().package.is_some() {
-                self.refresh_blocked();
-            }
+            self.scheduled(due);
             let until = next_check.saturating_duration_since(Instant::now());
             let inner = self.lock();
             if self.check_now.load(std::sync::atomic::Ordering::Acquire) {
@@ -497,6 +509,22 @@ impl Updates {
         }
     }
 
+    fn scheduled(&self, due: bool) {
+        let contained = |what: &str, work: &dyn Fn()| {
+            if std::panic::catch_unwind(AssertUnwindSafe(work)).is_err() {
+                eprintln!("The automatic {what} stopped unexpectedly, and runs again at its next turn.");
+            }
+        };
+        if due {
+            contained("update check", &|| {
+                let _ = tauri::async_runtime::block_on(self.check());
+            });
+        }
+        if self.lock().package.is_some() {
+            contained("install-block refresh", &|| self.refresh_blocked());
+        }
+    }
+
     fn refresh_blocked(&self) {
         let blocked = self.blocked();
         let changed = {
@@ -511,7 +539,7 @@ impl Updates {
     }
 
     pub async fn check(&self) -> Result<UpdateState, String> {
-        let ((saved, channel), _slot) = self.start(Action::Check, |inner| {
+        let ((saved, channel), slot) = self.start(Action::Check, |inner| {
             let saved = (self.load_channel)();
             let channel = match &saved {
                 Ok(saved) => saved.unwrap_or(inner.state.build.channel()),
@@ -541,7 +569,7 @@ impl Updates {
                     )
                 }),
         };
-        let state = self.finish(|inner| {
+        let state = slot.finish(|inner| {
             if inner.state.channel != channel {
                 return;
             }
@@ -629,7 +657,7 @@ impl Updates {
     }
 
     pub async fn download(self: &Arc<Self>) -> Result<UpdateState, String> {
-        let (update, _slot) = self.start(Action::Download, |inner| {
+        let (update, slot) = self.start(Action::Download, |inner| {
             self.reconcile_channel(inner)?;
             let update = inner
                 .update
@@ -660,7 +688,7 @@ impl Updates {
             None => Err("the update client didn’t start".to_owned()),
         };
         let blocked = result.as_ref().ok().and_then(|_| self.blocked());
-        let state = self.finish(|inner| {
+        let state = slot.finish(|inner| {
             inner.state.download_percent = None;
             match result {
                 Ok(package) => {
@@ -686,7 +714,7 @@ impl Updates {
     }
 
     pub fn install(&self) -> Result<(), String> {
-        let ((package, version), _slot) = self.start(Action::Install, |inner| {
+        let ((package, version), slot) = self.start(Action::Install, |inner| {
             self.reconcile_channel(inner)?;
             let found = inner
                 .package
@@ -698,7 +726,7 @@ impl Updates {
             Ok(found)
         })?;
         if let Some(reason) = self.blocked() {
-            self.finish(|inner| {
+            slot.finish(|inner| {
                 inner.state.install_blocked = Some(reason.clone())
             });
             return Err(reason);
@@ -707,7 +735,7 @@ impl Updates {
         let launch: Launch = Box::new(move || install::launch(&version, &package, arguments));
         let result = self.host.install(launch);
         if let Err(error) = &result {
-            self.finish(|inner| {
+            slot.finish(|inner| {
                 inner.state.status = Status::Error;
                 inner.state.error_context = Some(Action::Install);
                 inner.state.message = Some(error.clone());
@@ -740,7 +768,14 @@ impl Updates {
 #[cfg(test)]
 mod tests {
     use super::{Action, Arc, Build, Channel, Host, Launch, Mutex, Role, Status, UpdateState, Updates, VERSION};
-    use std::{panic::AssertUnwindSafe, sync::mpsc};
+    use std::{
+        panic::AssertUnwindSafe,
+        sync::{
+            OnceLock, Weak,
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        },
+    };
 
     const RECORDING: &str = "BattlePlan Recorder is recording.";
 
@@ -771,24 +806,17 @@ mod tests {
         }
     }
 
-    enum First {
-        Hold(mpsc::Sender<()>, mpsc::Receiver<()>),
-        Panic,
+    fn first(call: impl FnOnce() + Send + 'static) -> impl Fn(UpdateState) + Send + Sync + 'static {
+        let call = Mutex::new(Some(call));
+        move |_| {
+            let call = call.lock().unwrap().take();
+            if let Some(call) = call {
+                call();
+            }
+        }
     }
 
-    fn updates(host: Arc<App>, first: Option<First>) -> Updates {
-        let first = Mutex::new(first);
-        let publish = Box::new(move |_: UpdateState| {
-            let first = first.lock().unwrap().take();
-            match first {
-                Some(First::Hold(entered, go)) => {
-                    entered.send(()).unwrap();
-                    go.recv().unwrap();
-                }
-                Some(First::Panic) => panic!("the window went away mid-update"),
-                None => {}
-            }
-        });
+    fn updates(host: Arc<App>, publish: impl Fn(UpdateState) + Send + Sync + 'static) -> Updates {
         let state = UpdateState {
             enabled: true,
             status: Status::Idle,
@@ -806,24 +834,28 @@ mod tests {
             install_blocked: None,
             channel_warning: None,
             downgrade: false,
+            revision: 0,
         };
-        Updates::new(Role::Dashboard, host, None, None, state, || Ok(Some(Channel::Stable)), publish)
+        Updates::new(Role::Dashboard, host, None, None, state, || Ok(Some(Channel::Stable)), Box::new(publish))
     }
 
     #[test]
     fn a_channel_chosen_during_a_background_check_is_kept_and_the_old_feeds_answer_is_dropped() {
         let (entered, checking) = mpsc::channel();
-        let (go, held) = mpsc::channel();
-        let updates = updates(Arc::default(), Some(First::Hold(entered, held)));
+        let (go, held) = mpsc::channel::<()>();
+        let updates = updates(
+            Arc::default(),
+            first(move || {
+                entered.send(()).unwrap();
+                held.recv().unwrap();
+            }),
+        );
         std::thread::scope(|scope| {
             let check = scope.spawn(|| tauri::async_runtime::block_on(updates.check()));
             checking.recv().unwrap();
-            let chosen = scope.spawn(|| updates.set_channel(Channel::Nightly));
-            while !chosen.is_finished() && updates.state().channel != Channel::Nightly {
-                std::thread::yield_now();
-            }
+            let chosen = updates.set_channel(Channel::Nightly);
             go.send(()).unwrap();
-            assert!(chosen.join().unwrap().is_ok(), "a background check doesn’t refuse a channel change");
+            assert!(chosen.is_ok(), "a background check doesn’t refuse a channel change");
             let _ = check.join().unwrap();
         });
         let state = updates.state();
@@ -832,9 +864,26 @@ mod tests {
     }
 
     #[test]
+    fn an_older_state_published_after_a_newer_one_isnt_delivered() {
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let updates = updates(Arc::default(), {
+            let delivered = Arc::clone(&delivered);
+            move |state: UpdateState| delivered.lock().unwrap().push(state.revision)
+        });
+        let (older, newer) = {
+            let mut inner = updates.lock();
+            (Updates::snapshot(&mut inner), Updates::snapshot(&mut inner))
+        };
+        let revision = newer.revision;
+        updates.emit(newer);
+        updates.emit(older);
+        assert_eq!(*delivered.lock().unwrap(), [revision]);
+    }
+
+    #[test]
     fn an_install_block_read_while_the_download_was_dropped_isnt_written_back() {
         let host = Arc::new(App::default());
-        let updates = Arc::new(updates(Arc::clone(&host), None));
+        let updates = Arc::new(updates(Arc::clone(&host), |_| {}));
         {
             let mut inner = updates.lock();
             inner.package = Some(Arc::new(vec![0]));
@@ -852,13 +901,37 @@ mod tests {
     }
 
     #[test]
-    fn a_check_that_panics_frees_the_updater_and_says_it_stopped() {
-        let updates = updates(Arc::default(), Some(First::Panic));
-        let panicked = std::panic::catch_unwind(AssertUnwindSafe(|| tauri::async_runtime::block_on(updates.check())));
-        assert!(panicked.is_err());
+    fn a_scheduled_check_whose_window_panics_says_it_stopped_and_install_blocks_are_still_refreshed() {
+        let updates = updates(Arc::default(), |_| panic!("the window went away mid-update"));
+        {
+            let mut inner = updates.lock();
+            inner.package = Some(Arc::new(vec![0]));
+            inner.state.downloaded_version = Some("9.0.0".into());
+        }
+        updates.scheduled(true);
         let state = updates.state();
         assert_eq!((state.status, state.error_context), (Status::Error, Some(Action::Check)), "the check is shown as stopped, not still checking");
+        assert_eq!(state.install_blocked.as_deref(), Some(RECORDING), "polling carries on after the panic");
         let inner = updates.lock();
         assert!(!inner.busy && !inner.checking, "a later check, download or install isn’t refused or left waiting");
+    }
+
+    #[test]
+    fn a_window_that_panics_on_a_checks_answer_doesnt_free_a_slot_taken_since() {
+        let taken = Arc::new(OnceLock::<Weak<Updates>>::new());
+        let publishes = AtomicUsize::new(0);
+        let updates = Arc::new(updates(Arc::default(), {
+            let taken = Arc::clone(&taken);
+            move |_| {
+                if publishes.fetch_add(1, Ordering::SeqCst) == 1 {
+                    taken.get().unwrap().upgrade().unwrap().lock().busy = true;
+                    panic!("the window went away mid-update");
+                }
+            }
+        }));
+        taken.set(Arc::downgrade(&updates)).unwrap();
+        let panicked = std::panic::catch_unwind(AssertUnwindSafe(|| tauri::async_runtime::block_on(updates.check())));
+        assert!(panicked.is_err());
+        assert!(updates.lock().busy, "the action that took the freed slot keeps it");
     }
 }
