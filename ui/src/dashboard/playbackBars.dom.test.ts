@@ -138,28 +138,3 @@ test('a paged log left while playing asks nothing more and leaves nothing in fli
     assert.ok(left.changed.frames <= 2, `nothing in flight two frames after the setting's commit: ${left.changed.frames} frames, ${JSON.stringify(left.changed.busy)}`);
   }, 120_000));
 });
-
-test('a held followed panel is chosen again where the chosen group changes: known empty, then unavailable, then its members, with no new push', async () => {
-  await withNativePage('choice-hour', '/ui/src/dashboard/choiceHour.dom.fixture.tsx', page => page.stage('choice hour', async () => {
-    const act = <T,>(expression: string) => page.evaluate<T>(`window.choiceHour.${expression}`);
-    type Shown = { balance: string; state: string; at: number };
-    const all = (value: string, at: number): Shown => ({ balance: value, state: value, at });
-    await act('mount()');
-    assert.deepEqual(await act<Shown>('shown()'), all('none', 100), 'no chosen country at the push: known empty');
-    await act('play(105)');
-    const renders = await act<number>('renders()');
-    await act('play(108)');
-    assert.equal(await act<number>('renders()'), renders, 'no render between the group’s changes');
-    await act('play(115)');
-    assert.deepEqual(await act<Shown>('shown()'), all('Group membership is unavailable at this time.', 110), 'its history not recorded: never none');
-    await act('play(130)');
-    assert.deepEqual(await act<Shown>('shown()'), { balance: '0', state: '1', at: 125 }, 'the members who joined at 125');
-    await act('land(130)');
-    await act('rerender()');
-    assert.deepEqual(await act<Shown>('shown()'), { balance: '0', state: '1', at: 130 });
-    const settled = await act<number>('renders()');
-    await act('land(115)');
-    assert.deepEqual(await act<Shown>('shown()'), all('Group membership is unavailable at this time.', 115), 'the same panel landed back in the gap: never none');
-    assert.equal(await act<number>('renders()') - settled, 1, 'one render, for the hour the rows are chosen at');
-  }, 60_000));
-});

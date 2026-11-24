@@ -19,7 +19,7 @@ const EVERY_HOUR: Interval = [-Infinity, Infinity];
 const NO_ENTRIES: readonly SourceEntry[] = [];
 
 function boundedReadable(read: SourceTimeShape): boolean {
-  return read.shape === 'point' || read.shape === 'range' || read.shape === 'branch-to-hour' || read.shape === 'trailing-window';
+  return read.shape === 'point' || read.shape === 'range' || read.shape === 'branch-to-hour' || read.shape === 'trailing-window' || read.shape === 'paged-rows';
 }
 
 export function unitEntries(

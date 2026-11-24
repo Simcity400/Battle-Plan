@@ -102,7 +102,7 @@ test('a family\'s own page is asked without the log it fixes, as its strict para
   assert.equal(generic.product, 'log-page');
   assert.equal(generic.params.log, 'market-events');
   const scope = [{ tag: 'GER', ...gatedWindow(100, 110) }];
-  assert.deepEqual(logPageRequest({ ...span, product: 'event-feed', scope }, 0, 500).params.scope, scope, 'a country scope is asked with the page');
+  assert.deepEqual(logPageRequest({ ...span, product: 'event-feed-tail', scope }, 0, 500).params.scope, scope, 'a country scope is asked with the page');
   assert.equal('scope' in generic.params, false, 'no scope asks every row');
 });
 

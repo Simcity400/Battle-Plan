@@ -189,6 +189,7 @@ fn missing_mio_window_template_is_refused_by_name() {
         data,
         SubView::Traits,
         1.0,
+        &BTreeMap::new(),
         None,
         &cancel,
     )

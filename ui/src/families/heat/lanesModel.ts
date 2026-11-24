@@ -69,6 +69,7 @@ export interface HeatLaneRow {
   readonly flag?: ArtHandle | null;
   readonly flagPending?: boolean;
   readonly pinned?: boolean;
+  readonly region?: number;
   readonly runs: readonly HeatLaneRun[];
   readonly readout?: HeatLaneReadout;
   readonly meta?: unknown;
@@ -94,6 +95,12 @@ export interface HeatLaneLegend {
   readonly rightNote?: string;
 }
 
+export interface HeatLaneRegions {
+  readonly pickedHeading: string;
+  readonly automaticHeading: string;
+  readonly addLabel: string;
+}
+
 export interface HeatLaneGap {
   readonly firstHour: number;
   readonly lastHour: number;
@@ -109,6 +116,7 @@ export interface HeatLanesModel {
   readonly gaps?: readonly HeatLaneGap[];
   readonly legend?: HeatLaneLegend;
   readonly rows: readonly HeatLaneRow[];
+  readonly regions?: HeatLaneRegions;
   readonly readoutWidth?: number;
   readonly rowHeight?: number;
   readonly inspect?: (rowIndex: number, hour: number) => FamilyTooltipPayload | null;
@@ -224,21 +232,38 @@ export function deriveLanesTooltip(
   return run ? laneCellTooltip(row.label, at, run.cell) : { title: row.label, hour: at, missingReason: 'Not recorded at this hour' };
 }
 
+function cellAuditText(cell: HeatLaneCell): string {
+  if (cell.kind === 'missing') return `Not recorded (${cell.reason})`;
+  if (cell.kind === 'gap') return `Gap (${cell.reason ?? 'Recording gap'})`;
+  if (cell.kind === 'clear') return cell.label ?? 'Clear';
+  if (cell.kind === 'solid') return cell.label ? `${cell.label} ${cell.color}` : cell.color;
+  return cell.parts.map(part => `${part.label} ${part.text ?? formatShare(part.share)} ${part.color}`).join(', ');
+}
+
+function laneAuditText(row: HeatLaneRow, hour: number): string {
+  const out: string[] = [];
+  for (const run of row.runs) {
+    if (run.firstHour > hour) break;
+    if (run.readHour !== null && run.readHour > hour) continue;
+    out.push(`${run.firstHour}-${Math.min(run.lastHour, hour)} ${cellAuditText(run.cell)}`);
+  }
+  return out.join('; ');
+}
+
 export function deriveLanesAudit(
   model: HeatLanesModel,
-  window?: { readonly firstRow: number; readonly endRow: number },
+  window: { readonly firstRow: number; readonly endRow: number },
 ): readonly AuditRow[] {
-  const first = window ? Math.max(0, window.firstRow) : 0;
-  const end = window ? Math.min(model.rows.length, window.endRow) : model.rows.length;
+  const first = Math.max(0, window.firstRow);
+  const end = Math.min(model.rows.length, window.endRow);
   const out: AuditRow[] = [];
   for (let i = first; i < end; i++) {
     const row = model.rows[i]!;
-    out.push({
-      key: row.id,
-      row: row.label,
-      value: row.audit ?? readoutAuditText(row.readout),
-    });
+    out.push({ key: `${row.id}:readout`, row: row.id, value: row.audit ?? readoutAuditText(row.readout) });
+    out.push({ key: `${row.id}:lane`, row: row.id, value: laneAuditText(row, model.hour) });
   }
+  const gaps = (model.gaps ?? []).filter(gap => gap.firstHour <= model.hour).map(gap => `${gap.firstHour}-${Math.min(gap.lastHour, model.hour)}`);
+  if (gaps.length) out.push({ key: 'gaps', row: 'gaps', value: gaps.join('; ') });
   return out;
 }
 

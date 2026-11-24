@@ -22,7 +22,7 @@ export type WidgetStateProps = (
   | { kind: 'not-recorded'; reason?: string; span?: { firstHour: number; lastHour: number }; pinned?: boolean; onChangeTime?: () => void }
   | { kind: 'nothing-chosen'; prompt?: string; actionLabel?: string; onChoose?: () => void }
   | { kind: 'no-members'; scope?: keyof typeof NO_MEMBERS; message?: string; onChoose?: () => void }
-  | { kind: 'empty'; message?: string; detail?: ReactNode; icon?: IconName; partial?: boolean }
+  | { kind: 'empty'; message?: string; detail?: ReactNode; icon?: IconName; partial?: boolean; action?: ReactNode }
   | { kind: 'error'; what?: string; failure?: Failure; onRetry?: () => void }
   | { kind: 'unavailable'; message?: string; detail?: ReactNode; reason?: string; cause?: NotInRecordingCause; technical?: string }
 ) & { scale?: WidgetStateScale };
@@ -149,7 +149,7 @@ export default function WidgetState(props: WidgetStateProps) {
       const secondLine = props.partial
         ? (props.detail ? <>Some hours in this period weren’t recorded. {props.detail}</> : 'Some hours in this period weren’t recorded.')
         : props.detail;
-      return <StateBox scale={scale} state="empty" icon={props.icon} title={title} secondLine={secondLine} />;
+      return <StateBox scale={scale} state="empty" icon={props.icon} title={title} secondLine={secondLine} actions={props.action} />;
     }
     case 'error': {
       const classified = classifyFailure(props.failure);

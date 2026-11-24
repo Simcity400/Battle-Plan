@@ -8,7 +8,8 @@ import { airChoiceKey } from './airOptions.ts';
 import { countryFromKey } from './countryKey.ts';
 import { contentKey, contentSet, type OptionValue } from './options.ts';
 import { int, object } from './validation.ts';
-import type { AirCell, AirChoicesReply, AirRegion, AirSide, AirSuperiorityReply } from '../generated/dashboard';
+import { readRegionChoice, regionParams } from '../families/regions/regionChoice.ts';
+import type { AirCell, AirChoicesReply, AirSide, AirSuperiorityReply } from '../generated/dashboard';
 
 export function airMode(options: Readonly<Record<string, OptionValue>>, campaign: string, currentCountry: string | null) {
   const mode = options.mode === 'viewpoint' ? 'viewpoint' as const : 'sides' as const;
@@ -16,7 +17,7 @@ export function airMode(options: Readonly<Record<string, OptionValue>>, campaign
   const viewpoint = mode !== 'viewpoint' ? '' : chosen ? contentKey(chosen).startsWith('country:') ? contentKey(chosen) : airChoiceKey(campaign, chosen) ?? ''
     : currentCountry ? `country:${currentCountry}` : '';
   return { mode, viewpoint, sides: contentSet(options.sides).flatMap(value => airChoiceKey(campaign, value) ?? []),
-    regions: contentSet(options.regions).map(value => Number(contentKey(value).slice(2))).filter(Number.isInteger),
+    regions: readRegionChoice(options.regions),
     theatres: contentSet(options.theatres).flatMap(value => airChoiceKey(campaign, value) ?? []) };
 }
 export type AirModeSettings = ReturnType<typeof airMode>;
@@ -24,7 +25,7 @@ export type AirModeSettings = ReturnType<typeof airMode>;
 export function airParams(mode: AirModeSettings) {
   return { mode: mode.mode, ...(mode.viewpoint ? { viewpoint: mode.viewpoint.startsWith('country:') ? countryFromKey(mode.viewpoint.slice(8)) : mode.viewpoint,
     ...(mode.viewpoint.startsWith('country:') ? { viewpointCountry: true } : {}) } : {}),
-    ...(mode.sides.length ? { sides: mode.sides } : {}), ...(mode.regions.length ? { regions: mode.regions } : {}),
+    ...(mode.sides.length ? { sides: mode.sides } : {}), ...regionParams(mode.regions),
     ...(mode.theatres.length ? { theatres: mode.theatres } : {}) };
 }
 
@@ -39,7 +40,6 @@ export interface AirLooks {
   name(side: AirSide): string; color(side: AirSide): string; viewpoint: AirViewpoint; enemy: string;
   scale: number; badBelow: number; goodAbove: number; mode: 'sides' | 'viewpoint';
 }
-export interface AirRegionView { region: { id: number; name: string }; view: AirView; active: boolean }
 export const FILTERED_NOTE = 'No selected side has a score (others may)';
 
 export function airPercent(score: number, total: number): string { return total > 0 ? `${Math.round(score * 100 / total)}%` : '—'; }
@@ -106,35 +106,6 @@ export function cellView(cell: AirCell | null, sides: readonly AirSide[], values
     state: unknown.length || unread ? 'unknown' : total ? 'known' : looks.mode === 'viewpoint' && noAirObject.length ? 'no-air-object' : cell.filtered ? 'filtered' : 'inactive' };
 }
 
-export function momentViews(reply: AirSuperiorityReply, values: LiveValues<number>, looks: AirLooks, choices?: readonly { id: number; name: string }[]): AirRegionView[] {
-  const order = sideOrder(reply.sides);
-  const wingsOf = (region: AirRegion) => region.wings === 'none' ? 0 : region.wings === 'unknown' ? null : values.get(liveKey(String(region.id), 'wings')) ?? null;
-  const rows: AirRegionView[] = reply.regions.map(region => {
-    const view = cellView(region.cell, reply.sides, values, looks, order, wingsOf(region));
-    return { region: { id: region.id, name: regionLabel(region) }, view, active: region.active || view.total > 0 || (view.wings ?? 0) > 0 };
-  });
-  if (choices) {
-    const present = new Set(reply.regions.map(region => region.id));
-    for (const region of choices) if (!present.has(region.id)) rows.push({ region, active: false, view: cellView(reply.fallback, reply.sides, values, looks, order, 0) });
-  }
-  return rows;
-}
-
-export const regionLabel = (region: Pick<AirRegion, 'id' | 'name'>) => region.name ?? `Region ${region.id}`;
-
-export function orderedRegions(rows: readonly AirRegionView[], order: 'name' | 'active' | 'contested'): AirRegionView[] {
-  const lead = (view: AirView) => {
-    if (view.state !== 'known' || view.total <= 0) return Infinity;
-    let first = 0, second = 0;
-    for (const part of view.parts) { if (part.share > first) { second = first; first = part.share; } else if (part.share > second) second = part.share; }
-    return first - second;
-  };
-  return rows.filter(row => row.view.reason !== 'outside-theatres' && (order === 'name' || row.active || row.view.total > 0 || (row.view.wings ?? 0) > 0)).sort((a, b) => {
-    if (order === 'name') return a.region.name.localeCompare(b.region.name) || a.region.id - b.region.id;
-    if (order === 'contested') { const difference = lead(a.view) - lead(b.view); if (difference) return difference; }
-    return a.view.total === b.view.total ? a.region.id - b.region.id : a.view.total > b.view.total ? -1 : 1;
-  });
-}
 
 export function airState(view: AirView): string {
   if (view.state === 'filtered') return view.reason === 'outside-theatres' ? 'Outside selected air theatres' : FILTERED_NOTE;
@@ -217,7 +188,7 @@ export function validateAirSuperiority(value: unknown): AirSuperiorityReply {
   const sides = value.sides.length;
   if (!(value.viewpoint === null || natural(value.viewpoint) && value.viewpoint < sides) || !validCell(value.fallback, sides)) return invalid();
   for (const region of value.regions) {
-    if (!object(region) || !natural(region.id) || !optionalText(region.name) || !optionalText(region.nameMissing) || typeof region.active !== 'boolean'
+    if (!object(region) || !natural(region.id) || !optionalText(region.name) || !optionalText(region.nameMissing) || typeof region.active !== 'boolean' || typeof region.pinned !== 'boolean'
       || !['live', 'none', 'unknown'].includes(region.wings as string) || !validCell(region.cell, sides)) return invalid();
   }
   return value as AirSuperiorityReply;
@@ -225,7 +196,7 @@ export function validateAirSuperiority(value: unknown): AirSuperiorityReply {
 
 export function validateAirChoices(value: unknown): AirChoicesReply {
   const choice = (item: unknown) => object(item) && text(item.id) && text(item.name);
-  if (!object(value) || !Array.isArray(value.regions) || !value.regions.every(choice) || !Array.isArray(value.theatres) || !value.theatres.every(choice)
+  if (!object(value) || !Array.isArray(value.theatres) || !value.theatres.every(choice)
     || !Array.isArray(value.sides) || !value.sides.every(validSide) || !optionalText(value.theatresMissing) || !Array.isArray(value.countries)
     || !value.countries.every(text) || !Array.isArray(value.warnings) || !value.warnings.every(text)) throw new Error('Invalid air-superiority-choices reply');
   return value as AirChoicesReply;

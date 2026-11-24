@@ -112,6 +112,8 @@ const heatMatrixLane: LaneFamily<FamilyHeatMatrixBinding, HeatMatrixModel, HeatM
         cellWidth: layout.cellWidth,
         gridLeft: layout.gridLeft,
         gridTop: layout.gridTop,
+        marginWidth: layout.marginWidth,
+        margin: model.margin ? model.margin.header : null,
         rows: model.rows,
         columns: model.columns,
       },
