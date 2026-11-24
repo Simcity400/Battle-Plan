@@ -99,6 +99,7 @@ export interface PlacedEndLabel {
   readonly fullName: string;
   readonly value: string;
   readonly valueColor?: string;
+  readonly valueMuted?: boolean;
   readonly hasLeader: boolean;
 }
 
@@ -177,13 +178,14 @@ const END_LABEL_MAX_NAME_PX = 150;
 const FOLD_SLOT_WIDTH = 46;
 const MARKER_MIN_ICON_GAP = 21;
 
-function boundedExtent(bounded: BoundedSeries, xDomain: readonly [number, number]): readonly [number, number] | null {
+function boundedExtent(bounded: BoundedSeries, xDomain: readonly [number, number], scale = 1): readonly [number, number] | null {
   let low = Infinity;
   let high = -Infinity;
   const include = (v: number) => {
-    if (!Number.isFinite(v)) return;
-    if (v < low) low = v;
-    if (v > high) high = v;
+    const scaled = v * scale;
+    if (!Number.isFinite(scaled)) return;
+    if (scaled < low) low = scaled;
+    if (scaled > high) high = scaled;
   };
   if (bounded.runs && bounded.runs.length > 0) {
     for (const run of bounded.runs) {
@@ -210,7 +212,7 @@ function seriesExtent(
   until: number,
 ): readonly [number, number] | null {
   if (series.bounded) {
-    const ext = boundedExtent(series.bounded, xDomain);
+    const ext = boundedExtent(series.bounded, xDomain, series.valueScale ?? 1);
     if (ext) {
       if (series.headValue != null && Number.isFinite(series.headValue)) {
         return [Math.min(ext[0], series.headValue), Math.max(ext[1], series.headValue)];
@@ -243,14 +245,15 @@ function seriesEndPoint(
   if (series.headValue != null && Number.isFinite(series.headValue)) {
     return { hour: Math.min(series.headHour ?? until, until), value: series.headValue };
   }
+  const scale = series.valueScale ?? 1;
   if (series.bounded) {
     if (series.bounded.runs && series.bounded.runs.length > 0) {
       const last = series.bounded.runs.at(series.bounded.runs.length - 1);
-      if (last && Number.isFinite(last.value)) return { hour: last.lastHour, value: last.value };
+      if (last && Number.isFinite(last.value)) return { hour: last.lastHour, value: last.value * scale };
     }
     for (let i = series.bounded.buckets.length - 1; i >= 0; i--) {
       const b = series.bounded.buckets.at(i);
-      if (b && Number.isFinite(b.lastValue)) return { hour: b.lastHour, value: b.lastValue };
+      if (b && Number.isFinite(b.lastValue)) return { hour: b.lastHour, value: b.lastValue * scale };
     }
   }
   if (series.points?.length) {
@@ -419,7 +422,7 @@ export function layoutTimeChart(
   } else if (model.yAxis.fixed) {
     yLo = model.yAxis.fixed[0];
     yHi = model.yAxis.fixed[1];
-  } else if (model.yAxis.format === 'percent') {
+  } else if (model.yAxis.format === 'percent' && model.yAxis.fixed !== null) {
     yLo = 0;
     yHi = 100;
   } else if (dataMin <= dataMax) {
@@ -436,7 +439,7 @@ export function layoutTimeChart(
   const yDomain: readonly [number, number] = [yLo, yHi];
   const yTicks = model.yAxis.ticks
     ? [...model.yAxis.ticks]
-    : model.yAxis.format === 'percent'
+    : model.yAxis.format === 'percent' && yLo === 0 && yHi === 100
       ? (small ? [0, 50, 100] : [0, 25, 50, 75, 100])
       : niceChartTicks(yLo, yHi, small ? 2 : 4);
 
@@ -467,6 +470,7 @@ export function layoutTimeChart(
     fullName: string;
     value: string;
     valueColor?: string;
+    valueMuted?: boolean;
     estWidth: number;
   }[] = [];
 
@@ -493,13 +497,14 @@ export function layoutTimeChart(
         seriesId: s.id,
         anchorVal: end.value,
         color: isNegative ? '#ff6b6f' : s.color,
-        faded: (hoveredSeriesId != null && hoveredSeriesId !== s.id) || (s.opacity !== undefined && s.opacity < 1),
+        faded: hoveredSeriesId != null && hoveredSeriesId !== s.id,
         flag: s.endLabel.flag,
         icon: s.endLabel.icon,
         name: nameText,
         fullName: s.endLabel.fullName ?? s.name,
         value: s.endLabel.value,
         valueColor: isNegative ? '#ff6b6f' : s.endLabel.valueColor,
+        valueMuted: s.endLabel.valueMuted,
         estWidth,
       });
     }
@@ -614,6 +619,7 @@ export function layoutTimeChart(
         fullName: l.fullName,
         value: l.value,
         valueColor: l.valueColor,
+        valueMuted: l.valueMuted,
         hasLeader: Math.abs(ly - anchorY) > 2,
       });
     }

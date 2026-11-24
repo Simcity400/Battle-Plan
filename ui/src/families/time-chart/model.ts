@@ -31,6 +31,7 @@ export interface ChartEndLabel {
   readonly value: string;
   readonly exactValue?: string;
   readonly valueColor?: string;
+  readonly valueMuted?: boolean;
 }
 
 export interface ChartInlinePoint {
@@ -51,6 +52,7 @@ export interface TimeChartSeriesModel {
   readonly area?: boolean;
   readonly negRed?: boolean;
   readonly bounded?: BoundedSeries | null;
+  readonly valueScale?: number;
   readonly points?: readonly ChartInlinePoint[];
   readonly headValue?: number | null;
   readonly headHour?: number | null;

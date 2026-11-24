@@ -37,14 +37,18 @@ function serializeTiledLine(source: string, line: TiledLine): { readonly rev: nu
   return entry;
 }
 
-export interface DeclaredTimeChartWidgetProps<TProjectionOptions, TAux> extends WidgetProps {
-  readonly declaration: TimeChartWidgetDeclaration<TProjectionOptions, TAux>;
+export interface DeclaredTimeChartWidgetProps<TProjectionOptions, TAux, TExtra = unknown> extends WidgetProps {
+  readonly declaration: TimeChartWidgetDeclaration<TProjectionOptions, TAux, TExtra>;
+  readonly extraOptions?: TExtra;
+  readonly extraBindingKey?: string;
   readonly onActivate?: (inspectKey: string) => void;
   readonly extraWarnings?: readonly string[];
 }
 
-export default function DeclaredTimeChartWidget<TProjectionOptions, TAux>({
+export default function DeclaredTimeChartWidget<TProjectionOptions, TAux, TExtra = unknown>({
   declaration,
+  extraOptions,
+  extraBindingKey,
   widget,
   runtime,
   active,
@@ -52,7 +56,7 @@ export default function DeclaredTimeChartWidget<TProjectionOptions, TAux>({
   setOption,
   onActivate,
   extraWarnings,
-}: DeclaredTimeChartWidgetProps<TProjectionOptions, TAux>) {
+}: DeclaredTimeChartWidgetProps<TProjectionOptions, TAux, TExtra>) {
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const [demandedSprites, setDemandedSprites] = useState<readonly { readonly key: string; readonly frame: number }[]>([]);
   const demandedSigRef = useRef('');
@@ -139,8 +143,9 @@ export default function DeclaredTimeChartWidget<TProjectionOptions, TAux>({
     return declaration.projectionOptions(plan.displayedCtx, {
       extent,
       surface: theme?.surface ?? '#111111',
+      ...(extraOptions !== undefined ? { extra: extraOptions } : {}),
     });
-  }, [plan.displayedCtx, declaration, extent, theme?.surface]);
+  }, [plan.displayedCtx, declaration, extent, theme?.surface, extraOptions]);
 
   const buildBinding = useCallback((width: number, height: number, sourceIds: Readonly<Record<string, number>>): TimeChartBinding<TProjectionOptions> | null => {
     if (!plan.track || projectionOptions === null) return null;
@@ -216,7 +221,7 @@ export default function DeclaredTimeChartWidget<TProjectionOptions, TAux>({
       pin={plan.pin}
       bounds={plan.bounds}
       buildBinding={buildBinding}
-      bindingVersion={`${plan.tiledRevision}:${spritesSig}:${hoversSig}:${theme?.surface ?? ''}:${plan.identitySnapshot ? 1 : 0}:${Object.keys(plan.identitySnapshot?.drawnFlags ?? {}).length}`}
+      bindingVersion={`${plan.tiledRevision}:${spritesSig}:${hoversSig}:${theme?.surface ?? ''}:${plan.identitySnapshot ? 1 : 0}:${Object.keys(plan.identitySnapshot?.drawnFlags ?? {}).length}:${extraBindingKey ?? ''}`}
       blockedState={blockedState}
       extraWarnings={combinedWarnings}
       onViewportWidth={onViewportWidth}
