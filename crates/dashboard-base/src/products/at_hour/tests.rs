@@ -86,8 +86,6 @@ impl AtHour for Power {
 
     fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.expect("the adapter resolved the holder");
-        assert_eq!(*frame.tables[TableId::Countries.index()].keys(), Keys::These(vec![u128::from(owner.id)]), "a keyed read names the rows it chose on every path");
-        assert_eq!(*frame.tables[TableId::CountryLinks.index()].keys(), Keys::All);
         let links = frame.complete::<tables::CountryLinks>()?;
         let power = column(TableId::Countries, "political_power_raw");
         let coal = u128::from(owner.id) << 32 | 1;
@@ -668,6 +666,22 @@ fn incremental_reads_include_cells_outside_the_staged_joins() {
         let again = (other.exact().unwrap().advance)(hour, hour == FIRST, &token, None);
         assert!(Arc::ptr_eq(&again.value, &value));
         assert_eq!(again.rows, 0);
+    }
+}
+
+#[test]
+fn a_keyed_read_names_the_rows_it_chose() {
+    let (source, _) = recording();
+    let pool = placed::Pool::of(&source).unwrap();
+    let mut count = 0;
+    let run = pool.pages.run_of(0).unwrap();
+    let mode = incremental::capture_mode(&pool.pages).unwrap();
+    let reads = [Read::these(TableId::Countries, [9001, 9002]), Read::all(TableId::CountryLinks)];
+    for hour in [FIRST, ITA_LEAVES] {
+        let mut input = incremental::Input { pool: &pool, run, hour, mode, count: &mut count, step: None, placed: None };
+        let frame = input.frame(&reads, |_| None, 1).unwrap();
+        assert_eq!(*frame.tables[TableId::Countries.index()].keys(), Keys::These(vec![9001, 9002]), "hour {hour}");
+        assert_eq!(*frame.tables[TableId::CountryLinks.index()].keys(), Keys::All, "hour {hour}");
     }
 }
 
