@@ -109,7 +109,7 @@ export function mergeSupremacy(windows: ReadonlyMap<number, NavalSupremacyReply>
     for (const region of reply.regions) {
       let into = regions.get(region.id);
       if (!into) {
-        into = { id: region.id, name: region.name, pinned: region.pinned, runs: [] };
+        into = { id: region.id, name: region.name, pinned: region.pinned, ownShips: region.ownShips, enemyShips: region.enemyShips, runs: [] };
         regions.set(region.id, into);
       }
       for (const run of region.runs) {
