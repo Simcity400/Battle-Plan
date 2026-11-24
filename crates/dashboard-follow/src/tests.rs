@@ -816,6 +816,15 @@ fn the_requests_a_widget_sends_parse_into_its_query() {
         Query::Cells { table, columns: asked, rows } => assert_eq!((table, asked, rows), (TableId::MarketEvents.index(), columns, Rows::Appended)),
         _ => panic!("a log's appended rows"),
     }
+    let naval_top = serde_json::json!({ "product": "naval-losses", "params": { "branchId": "1", "countries": [], "top": 10, "attribution": "lost", "kind": "both", "period": "running" } });
+    assert!(crate::parse(&naval_top, &nobody()).is_ok(), "running naval-losses top must parse");
+    let naval_chosen = serde_json::json!({ "product": "naval-losses", "params": { "branchId": "1", "countries": ["GER", "JAP"], "top": null, "attribution": "sunkBy", "kind": "ships", "period": "running" } });
+    assert!(crate::parse(&naval_chosen, &nobody()).is_ok(), "running naval-losses chosen countries must parse");
+    let naval_month = serde_json::json!({ "product": "naval-losses", "params": { "branchId": "1", "countries": [], "top": 10, "attribution": "lost", "kind": "both", "period": "month" } });
+    assert_eq!(
+        crate::parse(&naval_month, &nobody()).err().unwrap().to_string(),
+        "Monthly naval losses are not followed at the head"
+    );
 }
 
 #[test]
@@ -1709,4 +1718,83 @@ fn review_8_one_session_token_binds_every_page_command_and_every_packet() {
     harness.seek(0);
     let played = harness.play(48);
     assert!(!played.is_empty() && played.iter().all(|played| played.stats.session == 4), "each step names the session its subscriptions were registered in");
+}
+
+#[test]
+fn naval_losses_evaluates_running_totals_and_refuses_when_sentinel_unknown() {
+    use replay_data::rows::NavalLossTotalRow as Row;
+    let table = TableId::NavalLossTotals.index();
+    let naval_kinds = vec![Kind::I64, Kind::I64, Kind::OptionalI32, Kind::U8, Kind::OptionalI32];
+    let mut kinds = vec![vec![Kind::I32]; table + 1];
+    kinds[table] = naval_kinds;
+    let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
+    store.attach(Encoder::new(&kinds, Writing { cap: 256, ..Writing::at(3) }).unwrap());
+    let mut memory = Memory::default();
+    store.begin_run(0);
+    let ger = Key::Holder.of(1, 9001);
+    let ita = Key::Holder.of(2, 9002);
+    let run_key = |kind: u8| {
+        u128::from(Row::RUN) << 48
+            | u128::from(Row::RUN) << 16
+            | u128::from(Row::LOST) << 8
+            | u128::from(kind)
+    };
+    let row_key = |owner: u128, attribution: u8, kind: u8| {
+        owner << 16 | u128::from(attribution) << 8 | u128::from(kind)
+    };
+    for hour in 0..4 {
+        store.begin_hour(hour, &[]).unwrap();
+        store.status(table, Status::Complete, true, Some(hour), true).unwrap();
+        let mut changes = store.table(table).unwrap();
+        if hour == 0 {
+            for (slot, (key, total, counted_from, known)) in [
+                (run_key(Row::SHIPS), 0i64, Some(1i32), 0u8),
+                (run_key(Row::CONVOYS), 0i64, Some(1i32), 0u8),
+                (row_key(ger, Row::LOST, Row::SHIPS), 3, None, 0),
+                (row_key(ger, Row::LOST, Row::CONVOYS), 5, None, 0),
+                (row_key(ita, Row::LOST, Row::SHIPS), 2, None, 0),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                changes.insert_at(slot as u32, key).unwrap();
+                changes.write(slot as u32, 0, Cell::I64(total)).unwrap();
+                changes.write(slot as u32, 2, Cell::OptionalI32(counted_from)).unwrap();
+                changes.write(slot as u32, 3, Cell::U8(known)).unwrap();
+            }
+        } else if hour == 2 {
+            changes.write(0, 3, Cell::U8(1)).unwrap();
+            changes.write(1, 3, Cell::U8(1)).unwrap();
+        }
+        store.end_hour(&mut memory).unwrap();
+    }
+    store.end_block();
+    let pages = Arc::new(Recording { bytes: memory.bytes, runs: vec![Run { blocks: memory.pages }], kinds });
+    let mut holders = Holders::default();
+    let held = |slot, id| vec![HolderRun { first: 0, last: 3, holder: Holder::Found { slot, id }, starts_segment: true }];
+    holders.tags.insert("GER".into(), held(1, 9001));
+    holders.tags.insert("ITA".into(), held(2, 9002));
+    holders.tags.insert("JAP".into(), held(3, 9003));
+    let timeline = Stretches { id: 1, first: 0, last: 3, stretches: vec![Stretch { run: 0, first: 0, last: 3, join: Join::Start }], unheld: Vec::new() };
+    let identity = Identity { holders: Arc::new(holders), timeline: Arc::new(timeline) };
+    let top_q = crate::parse(
+        &serde_json::json!({ "product": "naval-losses", "params": { "branchId": "1", "countries": [], "top": 10, "attribution": "lost", "kind": "both", "period": "running" } }),
+        &identity,
+    )
+    .unwrap();
+    let chosen_q = crate::parse(
+        &serde_json::json!({ "product": "naval-losses", "params": { "branchId": "1", "countries": ["GER", "JAP"], "top": null, "attribution": "lost", "kind": "ships", "period": "running" } }),
+        &identity,
+    )
+    .unwrap();
+    let mut lane = Lane::new(table, &top_q.declared(), false);
+    lane.seek(pages.as_ref(), 0, 1).unwrap();
+    assert!(answer_at(&top_q, &lane).not_recorded.is_some(), "unknown sentinel must report not recorded");
+    lane.seek(pages.as_ref(), 0, 2).unwrap();
+    let top_ans = answer_at(&top_q, &lane);
+    let top_rows: Vec<(i64, &str)> = (0..top_ans.keys.len()).map(|i| (top_ans.values[i], top_ans.name(i).unwrap())).collect();
+    assert_eq!(top_rows, vec![(8, "GER"), (2, "ITA")], "sums ships + convoys and excludes zero-loss JAP");
+    let chosen_ans = answer_at(&chosen_q, &lane);
+    let chosen_rows: Vec<(i64, &str)> = (0..chosen_ans.keys.len()).map(|i| (chosen_ans.values[i], chosen_ans.name(i).unwrap())).collect();
+    assert_eq!(chosen_rows, vec![(3, "GER"), (0, "JAP")], "chosen ships returns 0 for JAP when sentinel is known");
 }

@@ -13,7 +13,7 @@ use replay_columnar::{
     store::{TableState, Value},
     summary::{Cells, Computed, Source},
 };
-use replay_data::{Hour, rows::TableId};
+use replay_data::{Hour, rows::{NavalLossTotalRow, TableId}};
 use std::{cmp::Ordering, collections::{HashMap, HashSet}, io};
 
 pub(crate) trait Find {
@@ -349,6 +349,86 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                     ranked.iter().for_each(|&(_, key, slot)| row(table, key, slot));
                 }
                 Rows::Appended | Rows::Listed => {}
+            }
+        }
+        Query::Series { countries: names, mode: SeriesMode::NavalLosses { attribution, kinds, top }, .. } => {
+            let hour = head(lane);
+            for &kind in *kinds {
+                let run_key = u128::from(NavalLossTotalRow::RUN) << 48
+                    | u128::from(NavalLossTotalRow::RUN) << 16
+                    | u128::from(NavalLossTotalRow::LOST) << 8
+                    | u128::from(kind);
+                let Some(slot) = find.slot(run_key) else {
+                    answer::not_recorded("Naval losses are not known at this hour", out);
+                    return;
+                };
+                let known = match cells.value(3, slot) {
+                    Value::Number(bits) => bits as i64 != 0,
+                    _ => false,
+                };
+                let counted_from = match cells.value(2, slot) {
+                    Value::Number(bits) => i32::try_from(bits as i64).ok(),
+                    _ => None,
+                };
+                if !known || counted_from.is_none_or(|from| from > hour) {
+                    answer::not_recorded("Naval losses are not known at this hour", out);
+                    return;
+                }
+            }
+            table.clear(1, false);
+            let sum_for = |owner: u128| -> i64 {
+                kinds.iter().fold(0i64, |sum, &kind| {
+                    let key = owner << 16 | u128::from(*attribution) << 8 | u128::from(kind);
+                    let count = find
+                        .slot(key)
+                        .and_then(|slot| match cells.value(0, slot) {
+                            Value::Number(bits) => Some(bits as i64),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    sum.saturating_add(count)
+                })
+            };
+            match top {
+                Some(n) => {
+                    ranked.clear();
+                    for (at, tag) in tags.rows.iter().enumerate() {
+                        let TagRow::Key(owner) = tag else { continue };
+                        let total = sum_for(*owner);
+                        if total > 0 {
+                            ranked.push((total, *owner, at as u32));
+                        }
+                    }
+                    let by_tag = |a: &(i64, u128, u32), b: &(i64, u128, u32)| {
+                        b.0.cmp(&a.0).then_with(|| names[a.2 as usize].key().cmp(&names[b.2 as usize].key()))
+                    };
+                    if ranked.len() > *n {
+                        ranked.select_nth_unstable_by(*n - 1, by_tag);
+                        ranked.truncate(*n);
+                    }
+                    ranked.sort_unstable_by(by_tag);
+                    for &(value, owner, at) in ranked.iter() {
+                        table.row(owner);
+                        table.cell(value, State::Value);
+                        table.name(&names[at as usize].key());
+                    }
+                }
+                None => {
+                    for (at, tag) in tags.rows.iter().enumerate() {
+                        match tag {
+                            TagRow::Absent(reason) => {
+                                table.row(0);
+                                table.name(&names[at].key());
+                                table.absent(reason);
+                            }
+                            TagRow::Key(owner) => {
+                                table.row(*owner);
+                                table.cell(sum_for(*owner), State::Value);
+                                table.name(&names[at].key());
+                            }
+                        }
+                    }
+                }
             }
         }
         Query::Series { series, countries: names, mode: SeriesMode::Parts { top }, .. } => {

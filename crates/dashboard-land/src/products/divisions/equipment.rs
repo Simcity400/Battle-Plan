@@ -14,12 +14,13 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-const OVERVIEW: [TableId; 10] = [
+const OVERVIEW: [TableId; 11] = [
     TableId::Countries,
     TableId::CountryLinks,
     TableId::CountryAppearance,
     TableId::LexicalTokens,
     TableId::VariantDefinitions,
+    TableId::DivisionTemplates,
     TableId::DivisionTemplateIcons,
     TableId::DivisionEquipmentCounts,
     TableId::DivisionEquipmentByType,
@@ -268,7 +269,11 @@ impl AtHour for DivisionEquipment {
             1 if params.template.is_none() && params.division.is_none() => {
                 let templates = held.complete::<tables::DivisionEquipmentByTemplate>().map(|rows| rows.iter().map(|row| u128::from(row.template)).collect::<Vec<_>>()).unwrap_or_default();
                 let designs = held.complete::<tables::DivisionEquipmentByDesign>().map(|rows| rows.iter().filter_map(|row| row.variant).map(|id| u128::from(design_handle(id))).collect::<Vec<_>>()).unwrap_or_default();
-                vec![Read::these(TableId::DivisionTemplateIcons, templates), Read::these(TableId::VariantDefinitions, designs)]
+                vec![
+                    Read::these(TableId::DivisionTemplates, templates.clone()),
+                    Read::these(TableId::DivisionTemplateIcons, templates),
+                    Read::these(TableId::VariantDefinitions, designs),
+                ]
             }
             _ => Vec::new(),
         }
