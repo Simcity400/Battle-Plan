@@ -21,7 +21,23 @@ import {
   zeroValue,
 } from './value.ts';
 import { canonicalAuditData } from './audit.ts';
-import { auditValue, formatScalar, formatValueState, spokenValue, type ValueFormat } from './valueFormat.ts';
+import {
+  GAME_WINDOW_MISSING_LABEL,
+  auditValue,
+  formatBoundDate,
+  formatCompactScalar,
+  formatDateHover,
+  formatDateOnly,
+  formatDateParts,
+  formatDateValue,
+  formatOutOf,
+  formatScalar,
+  formatValueState,
+  notRecordedLabel,
+  spokenValue,
+  type ValueFormat,
+} from './valueFormat.ts';
+import { engineHour } from '../dashboard/calendar.ts';
 
 const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
 
@@ -247,3 +263,69 @@ test('M1: every value format avoids exponent notation for 1e21, 1e-7, and MAX_SA
   assert.equal(formatScalar(Number.MAX_SAFE_INTEGER + 2, { decimals: 2 }), '90,071,992,547,409.92');
   assert.equal(formatScalar(1e21, 'clockSeconds'), '277777777777777777:46:40');
 });
+
+test('dates omit hours on screen, carry exact hours on hover, and format bounded and missing dates', () => {
+  const hour = engineHour({ year: 1941, month: 9, day: 14, hour: 8 })!;
+  assert.equal(formatDateOnly(hour), '14 Sep 1941');
+  assert.equal(formatDateOnly(hour).includes(':'), false);
+  assert.equal(formatDateHover(hour), '14 Sep 1941 · 08:00');
+  assert.deepEqual(formatDateParts(hour), {
+    dayMonth: '14 Sep',
+    year: '1941',
+    full: '14 Sep 1941',
+    hover: '14 Sep 1941 · 08:00',
+  });
+  const bound = formatBoundDate(hour, 'by', 'First observed after recording started.');
+  assert.equal(bound.display, '14 Sep 1941');
+  assert.equal(bound.hover, 'By 14 Sep 1941 · 08:00');
+  assert.equal(bound.reason, 'First observed after recording started.');
+
+  const missingDate = formatDateValue(notRecorded('Date was absent from the log.'));
+  assert.equal(missingDate.kind, 'notRecorded');
+  assert.equal(missingDate.label, 'Date not recorded');
+
+  const knownDate = formatDateValue(knownValue(hour), { bound: { kind: 'since', reason: 'Observed since gap end.' } });
+  assert.equal(knownDate.kind, 'known');
+  assert.equal(knownDate.text, '14 Sep 1941');
+  assert.equal(knownDate.hover, 'Since 14 Sep 1941 · 08:00');
+});
+
+test('missing-value vocabulary, compact K/M formatting, and N / max preserve exact figures and missing caps', () => {
+  assert.equal(notRecordedLabel(), 'Not recorded');
+  assert.equal(notRecordedLabel('Manpower'), 'Manpower not recorded');
+  assert.equal(GAME_WINDOW_MISSING_LABEL, 'n/a');
+
+  const namedMissing = formatValueState(notRecorded('Sensor offline'), undefined, { figure: 'Fuel' });
+  assert.equal(namedMissing.kind, 'notRecorded');
+  assert.equal(namedMissing.label, 'Fuel not recorded');
+
+  const windowMissing = formatValueState(notRecorded('Not read in this build'), undefined, { gameWindow: true });
+  assert.equal(windowMissing.kind, 'notRecorded');
+  assert.equal(windowMissing.label, 'n/a');
+  assert.equal(windowMissing.gameWindow, true);
+
+  const compact = formatCompactScalar(1_250_000, 'integer');
+  assert.deepEqual(compact, { text: '1.25M', exact: '1,250,000', compacted: true });
+  const small = formatCompactScalar(850, 'integer');
+  assert.deepEqual(small, { text: '850', exact: '850', compacted: false });
+
+  const compactState = formatValueState(knownValue(45_600), 'integer', { compact: true });
+  assert.equal(compactState.kind, 'known');
+  assert.equal(compactState.text, '45.6K');
+  assert.equal(compactState.exact, '45,600');
+  assert.equal(compactState.spoken, '45,600');
+
+  const ratio = formatOutOf(knownValue(12), knownValue(15), 'integer');
+  assert.equal(ratio.kind, 'known');
+  assert.equal(ratio.text, '12 / 15');
+
+  const missingCap = formatOutOf(knownValue(12), notRecorded('Cap not recorded'), 'integer');
+  assert.equal(missingCap.kind, 'partial');
+  assert.equal(missingCap.text, '12');
+  assert.match(missingCap.partialReason!, /Cap not recorded/);
+
+  const missingVal = formatOutOf(notRecorded('Count missing'), knownValue(15), 'integer');
+  assert.equal(missingVal.kind, 'notRecorded');
+  assert.equal(missingVal.missingReason, 'Count missing');
+});
+
