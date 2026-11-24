@@ -1736,29 +1736,45 @@ export type FocusCardArt = { token: string, name: string | null, nameMissing: st
 export type FocusCardCompleted = { art: FocusCardArt, completedByHour: number | null, dateMissing: string | null, };
 export type FocusCardCurrent = { art: FocusCardArt, continuous: boolean, paused: boolean, totalDays: number | null, elapsedDays: number | null, permyriad: number | null, daysLeft: number | null, progressMissing: string | null, };
 export type FocusCardReply = { hour: number, validThrough: number, missing: FocusMissing | null, current: FocusCardCurrent | null, completed: Array<FocusCardCompleted>, undated: number, warnings: Array<string>, };
+export type IdeaHistoryParams = { branchId: string, country: CountryRef,
+/**
+ * The hour answered: nothing recorded after it is read into the reply.
+ */
+hour: number, };
 export type IdeaHistoryReply = { branchId: string, tag: string,
 /**
  * The country the request named, which a reply is matched to: a slot follows its country through any tag.
  */
-asked: CountryRef, spans: Array<IdeaSpan>, ideas: Array<IdeaInfo>, artwork: Array<Artwork>,
+asked: CountryRef,
 /**
- * Each recorded holder of an advisor idea with that character's own name and portrait.
+ * The hour answered, never after the branch's last hour.
  */
-holders: Array<HolderArtwork>,
+hour: number,
+/**
+ * The first hour after `hour` at which anything in this reply changes, other than held
+ * holdings and an unread stretch running on; null when nothing does.
+ */
+nextChange: number | null,
+/**
+ * Why the country's ideas are not known at `hour`; null when they were read then.
+ */
+unrecorded: string | null,
+/**
+ * Every holding begun by `hour`, by first hour. A holding continues across hours not read.
+ */
+holdings: Array<IdeaHolding>,
+/**
+ * The holdings held at `hour`, in display order: the earliest begun first, then by name.
+ */
+held: Array<number>, looks: Array<IdeaLook>,
 /**
  * Every category in content order, so widgets list mod categories too.
  */
 categories: Array<CategoryInfo>,
 /**
- * Hours the country's ideas were not read: a span ending or starting next to one is a gap,
- * not a change.
+ * Hours through `hour` the country's ideas were not read.
  */
 unobserved: Array<HourSpan>,
-/**
- * Hours the country's recorded identity starts: its first hour read, after an hour not read,
- * or as another holder. The ideas held then are that identity's initial state, not changes.
- */
-identityStarts: Array<number>,
 /**
  * How the game shows each modifier the effects above use; a key missing here is shown as
  * authored, unformatted.
@@ -1769,7 +1785,23 @@ modifiers: Array<ModifierFormat>,
  * `YES` / `NO`.
  */
 texts: Array<LocalisedText>, warnings: Array<string>, };
-export type IdeaSpan = { token: string, firstHour: number, lastHour: number, slot: string | null, character: IdeaCharacter | null, };
+export type IdeaHolding = { token: string, firstHour: number,
+/**
+ * The last hour it is known held, never after the reply's hour. Hours not read inside it are
+ * in `unobserved`.
+ */
+lastHour: number, start: HoldingStart, end: HoldingEnd, slot: string | null, character: IdeaCharacter | null,
+/**
+ * Its presentation in `looks`, as named and classified when it was first observed.
+ */
+look: number, };
+export type HoldingStart = "seen" | "heldBefore" | "firstObserved";
+export type HoldingEnd = { "kind": "held" } | { "kind": "ended" } | { "kind": "endedBy", hour: number, } | { "kind": "lastSeen" };
+export type IdeaLook = { info: IdeaInfo,
+/**
+ * The idea's name and icon; for an advisor, its holder's.
+ */
+artwork: Artwork, };
 export type IdeaCharacter = {
 /**
  * The recorded character id.
@@ -1816,15 +1848,6 @@ known: boolean,
  * Why content cannot say whether it defines the trait; None when it can.
  */
 unknown: string | null, name: string | null, lines: Array<EffectLine>, targeted: Array<EffectGroup>, equipment: Array<EffectGroup>, tooltips: Array<string>, };
-export type HolderArtwork = { token: string,
-/**
- * The recorded character id, as on the span.
- */
-character: number,
-/**
- * The script token and saved name, as on the span.
- */
-characterToken: string, name: string, artwork: Artwork, };
 export type ModifierFormat = { key: string,
 /**
  * The engine's key index: the game lists an idea's lines in this order.
@@ -6316,7 +6339,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "game-score": { "hour": "read" },
   "head:campaign-clock": { "firstHour": "start", "lastHour": "end" },
   "head:player-apm": { "firstHour": "start", "lastHour": "end", "membership[].firstHour": "start", "membership[].lastHour": "end" },
-  "idea-history": {},
+  "idea-history": { "hour": "read" },
   "industrial-organisations": { "hour": "read" },
   "intel-network-coverage": { "hour": "read" },
   "land-battle-course": {},
@@ -6500,7 +6523,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "game-score": { "branchId": "leaf", "hour": "leaf", "top": "node", "top.by": "leaf", "top.count": "leaf" },
   "head:campaign-clock": { "branchId": "leaf", "firstHour": "leaf", "lastHour": "leaf" },
   "head:player-apm": { "branchId": "leaf", "firstHour": "leaf", "group": "leaf", "lastHour": "leaf", "membership": "node", "membership[]": "node", "membership[].firstHour": "leaf", "membership[].lastHour": "leaf", "membership[].tag": "leaf", "players": "node", "players[]": "leaf", "tags": "node", "tags[]": "leaf", "windowHours": "leaf" },
-  "idea-history": { "branchId": "leaf", "country": "any" },
+  "idea-history": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "industrial-organisations": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "intel-network-coverage": { "basis": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "measure": "leaf", "top": "leaf", "touching": "leaf" },
   "land-battle-course": { "branchId": "leaf", "id": "leaf" },
@@ -6684,7 +6707,7 @@ export type RequestParams<E, B> = {
   "game-score": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "head:campaign-clock": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
   "head:player-apm": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
-  "idea-history": {};
+  "idea-history": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "industrial-organisations": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "intel-network-coverage": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "land-battle-course": {};
