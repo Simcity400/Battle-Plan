@@ -12,7 +12,7 @@ import { registerFamilyProjection } from '../registry.ts';
 import { timelineModel } from './helpers.ts';
 import type { PaintInput } from '../../draw/lane.ts';
 import type { FamilyTheme } from '../contract.ts';
-import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
+import { assertFreshPaint, assertQuietFrames, LANE_THEME, LaneTransport } from '../laneRuntime.fixture.ts';
 import { visibleLanes, type TimelineLane, type TimelineModel, type TimelineProjection } from './model.ts';
 import { decodeTimelineHit, drawTimeline, encodeTimelineHit, hitTimeline } from './painter.ts';
 
@@ -175,8 +175,8 @@ test('a hover over an unchanged model neither re-projects nor re-places, and pai
     const opsFor = (count: number) => {
       const view = familyTimelineLaneView(() => {});
       const state = new Map<string, unknown>();
-      const binding: FamilyTimelineBinding<{ readonly n: number }> = { family: 'timeline', kind: `test-timeline-${count}`, options: { n: count }, sources: {},
-        width: 600, height: 240, scrollTop: 0, theme, identitySnapshot: null, selectedKey: null, focusedKey: null, expanded: {}, pauseFlush: 0 };
+      const binding = new LaneTransport().carry<FamilyTimelineBinding<{ readonly n: number }>>({ family: 'timeline', kind: `test-timeline-${count}`, options: { n: count }, sources: {},
+        width: 600, height: 240, scrollTop: 0, theme, identitySnapshot: null, selectedKey: null, focusedKey: null, expanded: {}, pauseFlush: 0 });
       const input = (inspect: string | null): PaintInput => ({ widget: 1, subs: [], pictures: [], hour: FIRST + 6000, seek: 0, speed: 0, now: 0, inspect,
         binding: { surfaces: [{ width: 600, height: 240, dpr: 1 }] } as unknown as PaintInput['binding'], model: binding });
       let seq = 0;

@@ -2,7 +2,6 @@ import type { LegacyWidgetEntry } from '../families/manifest.ts';
 
 export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'air-kills-losses', view: 'lines', label: 'Lines', slots: ['render', 'countryChip'], load: () => import('./air-kills-losses') },
-  { kind: 'air-statistics', load: () => import('./air-statistics') },
   { kind: 'army-size', view: 'breakdown', label: 'Army breakdown', slots: ['render', 'countryChip'], load: () => import('./army-size') },
   { kind: 'autonomy', view: 'lines', label: 'Lines', load: () => import('./autonomy') },
   { kind: 'bombing-damage-breakdown', slots: ['render', 'countryChip'], load: () => import('./bombing-damage-breakdown') },
@@ -18,7 +17,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'espionage-log', load: () => import('./espionage-log') },
   { kind: 'faction-pooled-strength', load: () => import('./faction-pooled-strength') },
   { kind: 'faction-strength', load: () => import('./faction-strength') },
-  { kind: 'faction-upgrades', load: () => import('./faction-upgrades') },
   { kind: 'factories', view: 'mix', label: 'Mix', slots: ['render', 'countryChip'], load: () => import('./factories') },
   { kind: 'fuel-branches', load: () => import('./fuel-branches') },
   { kind: 'game-score', view: 'lines', label: 'Lines over time', playsBackDated: true, load: () => import('./game-score') },

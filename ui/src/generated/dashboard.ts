@@ -571,7 +571,8 @@ export type CampaignClockReply = { available: boolean, recordedSeconds: number |
 export type ApmParams = { branchId: string, group: ApmGroup, registry: boolean, hour: number | null, firstHour: number | null, lastHour: number | null, tags: Array<string> | null, membership: Array<ApmMembership> | null, players: Array<string>, buckets: number, };
 export type ApmReply = { available: boolean, players: Array<ApmPlayer>, series: Array<ApmSeries>, warnings: Array<string>, };
 export type ApmGroup = "country" | "player";
-export type ApmPlayer = { id: string, name: string | null, nameMissing: string | null, tags: Array<string>, };
+export type ApmPlayerRun = { firstHour: number, lastHour: number, tag: string, name: string | null, nameMissing: string | null, };
+export type ApmPlayer = { id: string, name: string | null, nameMissing: string | null, tags: Array<string>, runs: Array<ApmPlayerRun>, };
 export type ApmValue = { apm: number | null, confirmedApm: number | null, orders: string | null, pausedOrders: string | null, unpausedMinutes: number | null, complete: boolean,
 /**
  * Part of the period no capture observed; orders and minutes both leave it out.
@@ -1215,7 +1216,7 @@ export type TensionValueMode = "share" | "recorded";
 export type WorldTensionStackParams = { branchId: string, firstHour: number, lastHour: number, layers: number, values: TensionValueMode, countries: Array<string> | null, width: number | null, };
 export type TensionStackBand = { slot: number, tag: string | null, remembered: boolean, values: Array<number | null>, minValues: Array<number | null>, maxValues: Array<number | null>, endValue: number | null, endRaw: string | null, };
 export type TensionStackOther = { count: number, values: Array<number | null>, endValue: number | null, };
-export type TensionStackEvent = { hour: number, tag: string | null, remembered: boolean, reason: string, addedRaw: string, firstRead: number, lastRead: number | null, };
+export type TensionStackEvent = { hour: number, slot: number | null, secondCountry: number, place: number, tag: string | null, remembered: boolean, reason: string, addedRaw: string, firstRead: number, lastRead: number | null, };
 export type WorldTensionStackReply = { branchId: string, tensionScale: number, contributionScale: number, ceilingRaw: string, endHour: number | null, cappedEndTension: number | null, downsampled: boolean, hours: Array<number>, total: Array<number | null>, bands: Array<TensionStackBand>, other: TensionStackOther | null, events: Array<TensionStackEvent>, missing: Array<MissingSpan>, nextChangeHour: number | null, warnings: Array<string>, };
 export type FactoryGroupsParams = { branchId: string, };
 export type FactoryGroupBuilding = {
@@ -1607,7 +1608,11 @@ export type NavalSupremacyReply = { firstHour: number, lastHour: number,
 /**
  * Day 0 starts at this hour (a multiple of `dayHours`); day `n` covers the `n`th day after.
  */
-firstDayHour: number, dayHours: number, days: number, unknown: Array<UnknownDays>, gaps: Array<HourSpan>, viewerName?: string, viewerNameMissing?: string, viewerColor?: [number, number, number], viewerColorMissing?: string, legend: Array<SupremacyLegendItem>, regions: Array<SupremacyRegion>, scale: number, warnings: Array<string>, };
+firstDayHour: number, dayHours: number, days: number, unknown: Array<UnknownDays>, gaps: Array<HourSpan>, viewerName?: string, viewerNameMissing?: string, viewerColor?: [number, number, number], viewerColorMissing?: string, legend: Array<SupremacyLegendItem>, regions: Array<SupremacyRegion>,
+/**
+ * Why the most active regions are not a proven rank: a day of the view, or a region's score on one, is not recorded. A top then lists only the pinned regions.
+ */
+rankMissing: string | null, scale: number, warnings: Array<string>, };
 export type LeaderPortraitsParams = { branchId: string, hour: number, references: Array<string>, edge: number, };
 export type LeaderPortrait = { reference: string, image: string | null, missing: string | null, resolution: ArtResolution, };
 export type LeaderPortraitsReply = { portraits: Array<LeaderPortrait>, warnings: Array<string>, };
@@ -2199,15 +2204,19 @@ export type ConvoyHealthReply = { branchId: string, view: ConvoyView, tag: strin
  */
 scale: number,
 /**
- * Hours each table the view reads was read and available (regional efficiency; resource
- * deals, convoy clients), in the hours asked: outside them a row not shown is not recorded,
- * not absent; an hour read but refused holds no rows and is not known.
+ * Hours each table the view reads was read whole (regional efficiency; resource deals,
+ * convoy clients), in the hours asked: outside them a row not shown is not recorded, not
+ * absent, though a row shown there was witnessed.
  */
 known: Array<Array<HourSpan>>,
 /**
  * Hours no country held the tag: nothing is known of it there. Recording gaps are `gaps`.
  */
-unheld: Array<HourSpan>, gaps: Array<HourSpan>, regions: Array<ConvoyRegion>, deals: Array<ConvoyDeal>, leases: Array<ConvoyLease>, resources: Array<ConvoyResource>, warnings: Array<string>, };
+unheld: Array<HourSpan>, gaps: Array<HourSpan>, regions: Array<ConvoyRegion>,
+/**
+ * Why the most strained regions are not a proven rank: an hour of the view, or of a region, is not recorded. A top then lists only the pinned regions.
+ */
+rankMissing: string | null, deals: Array<ConvoyDeal>, leases: Array<ConvoyLease>, resources: Array<ConvoyResource>, warnings: Array<string>, };
 export type ConvoyView = "regions" | "trade";
 export type ConvoyCellState = { "kind": "efficiency", value: bigint, } | { "kind": "noTraffic" } | { "kind": "notRecorded", reason: string, };
 export type ConvoyCellRun = { firstHour: number, lastHour: number, state: ConvoyCellState, };
@@ -3725,6 +3734,10 @@ parentShare: number | null, count: bigint | null,
  */
 last: number | null,
 /**
+ * Its picture, where the product names one.
+ */
+art: SpriteFrame | null,
+/**
  * In display order. Their known amounts add up to this part's: an amount given to this part
  * itself and to none of them is the last known child, `other`.
  */
@@ -3839,7 +3852,19 @@ export type AirStatisticsParams = { branchId: string, country: CountryRef,
 /**
  * Pair index in recorded schema order, not the interface's button order.
  */
-channel: number, };
+channel: number,
+/**
+ * Only these regions; every region the holder has statistics in when empty.
+ */
+regions: Array<number>,
+/**
+ * Only regions of these air theatres at the hour; refused with the reason while membership is not known.
+ */
+theatres: Array<string>,
+/**
+ * The most active regions (ours plus the enemy's), when no region is chosen.
+ */
+top?: number, };
 export type AirStatisticsReply = {
 /**
  * The hour of the read the rows hold; none when not known.
@@ -4283,7 +4308,11 @@ known: boolean,
  * Why it is not known.
  */
 reason: string | null, readHour?: number, name?: string, nameMissing?: string, color?: [number, number, number], factionId?: string, factionName?: string, };
-export type DiplomaticRelationsReply = { owners: Array<OpinionOwner>, cells: Array<OpinionMatrixCell>, domain: [number, number], warnings: Array<string>, };
+export type DiplomaticRelationsReply = {
+/**
+ * Why the asked top countries are not known: factories, which rank them, were not read whole, or a row names an unresolved country. No owners then.
+ */
+topMissing: string | null, owners: Array<OpinionOwner>, cells: Array<OpinionMatrixCell>, domain: [number, number], warnings: Array<string>, };
 export type DiplomaticRelationsParamsAtHour = DiplomaticRelationsParams & { hour: number };
 export type VolunteerFlowParams = { branchId: string,
 /**
@@ -6668,7 +6697,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "air-aces": { "branchId": "leaf", "hour": "leaf" },
   "air-force-at": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "measure": "leaf", "ownership": "leaf", "top": "leaf" },
   "air-missions": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "air-statistics": { "branchId": "leaf", "channel": "leaf", "country": "any", "hour": "leaf" },
+  "air-statistics": { "branchId": "leaf", "channel": "leaf", "country": "any", "hour": "leaf", "regions": "node", "regions[]": "leaf", "theatres": "node", "theatres[]": "leaf", "top": "leaf" },
   "air-statistics-regions": { "branchId": "leaf", "country": "any" },
   "air-superiority": { "branchId": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "hour": "leaf", "mode": "leaf", "order": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
   "air-superiority-choices": { "branchId": "leaf" },

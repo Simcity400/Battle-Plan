@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import type { Picture } from '../dashboard/follow/facts.ts';
+import { PayloadSender, PayloadStore } from '../dashboard/follow/payloads.ts';
 import type { LaneView, Painted, Sub, Value } from '../draw/lane.ts';
 import type { FamilyTheme } from './contract.ts';
 
@@ -112,6 +113,25 @@ export function installRecordingCanvas(): { readonly canvases: RecordedCanvas[];
   return { canvases, restore: () => { (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas = previous; } };
 }
 
+export class LaneTransport {
+  readonly sent = { payloads: 0 };
+  private readonly store = new PayloadStore();
+  private readonly sender = new PayloadSender(message => {
+    this.sent.payloads += message.put?.length ?? 0;
+    this.store.apply(structuredClone(message));
+  });
+  private readonly held = new Map<string, ReadonlySet<number>>();
+
+  carry<T>(binding: T, placement = 'placement'): T {
+    const encoded = this.sender.acquire(binding);
+    const decoded = this.store.resolve(structuredClone(encoded.wire)) as T;
+    const was = this.held.get(placement);
+    this.held.set(placement, encoded.ids);
+    if (was) this.sender.release(was);
+    return decoded;
+  }
+}
+
 export interface LaneStep {
   readonly label: string;
   readonly binding: unknown;
@@ -130,22 +150,36 @@ export interface LaneStep {
 export interface LaneDriver {
   paint(step: LaneStep): Painted;
   picture(): readonly string[];
+  model(): unknown;
   readonly state: Map<string, unknown>;
+  readonly transport: LaneTransport;
 }
 
-export function driveLane(view: LaneView, canvases: RecordedCanvas[], surface = { width: 320, height: 200, dpr: 1 }): LaneDriver {
+export function driveLane(view: LaneView, canvases: RecordedCanvas[], surface = { width: 320, height: 200, dpr: 1 }, transport = new LaneTransport(), placement = 'placement'): LaneDriver {
   const state = new Map<string, unknown>();
   let seq = 0;
   let canvas: RecordedCanvas | null = null;
+  let from: unknown;
+  let to: unknown;
+  const model = (binding: unknown) => {
+    if (to === undefined || from !== binding) {
+      from = binding;
+      to = transport.carry(binding, placement);
+    }
+    return to;
+  };
   return {
     state,
+    transport,
+    model: () => to,
     paint(step) {
       const before = canvases.length;
       const painted = view.paint({
         widget: 1,
         subs: step.subs ?? [],
         pictures: step.pictures ?? [],
-        model: step.binding,
+        model: model(step.binding),
+        ...(step.owner !== undefined ? { owner: step.owner } : {}),
         hour: step.hour,
         seek: step.seek ?? 0,
         speed: step.speed ?? 0,
@@ -210,7 +244,7 @@ export function assertQuietFrames(makeView: () => LaneView, step: LaneStep, hour
     const boundary = first.nextChangeAt ?? Infinity;
     const drawn = recording.canvases.reduce((sum, canvas) => sum + canvas.frames.length, 0);
     const contents = (painted: Painted) => [painted.surfaces.map(surface => surface?.content ?? null), Object.fromEntries(Object.entries(painted.fields).map(([name, entry]) => [name, entry.content]))];
-    const scene = { widget: 1, subs: step.subs ?? [], pictures: step.pictures ?? [], model: step.binding };
+    const scene = { widget: 1, subs: step.subs ?? [], pictures: step.pictures ?? [], model: lane.model() };
     const last = Math.min(boundary - 1, step.hour + hours);
     for (let hour = step.hour; hour <= last; hour++) {
       if (view.next) assert.equal(view.next(scene, hour, lane.state), boundary, `${step.label}: next() at hour ${hour} answers the proven boundary`);

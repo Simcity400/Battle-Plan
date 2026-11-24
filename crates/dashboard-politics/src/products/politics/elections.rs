@@ -67,7 +67,7 @@ impl AtHour for NextElections {
     const KEY: &'static str = "next-elections";
     const TITLE: &'static str = "Next elections";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     const REPLY_NAMES_NO_HOUR: bool = true;
     type Params = NextElectionsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]"];
@@ -112,6 +112,10 @@ impl AtHour for NextElections {
 
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
         Ok(())
+    }
+
+    fn valid_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        at.holders.next_change(frame.hour).map_or(i32::MAX, |change| change - 1)
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {

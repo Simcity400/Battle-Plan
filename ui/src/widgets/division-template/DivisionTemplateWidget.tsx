@@ -108,6 +108,7 @@ export default function DivisionTemplateWidget(props: WidgetProps) {
           template: opened.template,
           designer: opened.designer,
         }}
+        generation={drillAt}
         active={active}
         client={runtime.client}
         onDiagnostics={onWindowDiagnostics}

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
-import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
+import { assertFreshPaint, assertQuietFrames, LaneTransport } from '../laneRuntime.fixture.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import { ROW_HEIGHT, tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
@@ -651,9 +651,12 @@ test('lane view skips projection on next(), caches unchanged sources across serv
     const state = new Map<string, unknown>();
     let seq = 1;
     const content = () => `c${seq++}`;
+    const transport = new LaneTransport();
+    const plain = transport.carry(model);
+    const audited = transport.carry({ ...model, audit: true });
     const mkInput = (now: number, speed: number, audit = false) => ({
       ...scene,
-      model: audit ? { ...model, audit: true } : model,
+      model: audit ? audited : plain,
       hour: 10,
       seek: 0,
       speed,
@@ -1818,13 +1821,14 @@ test('an incremental table paint after a seek back, a same-hour correction and a
     const lane = () => {
       const view = familyTableLaneView(() => {});
       const state = new Map<string, unknown>();
+      const transport = new LaneTransport();
       let seq = 1;
       const before = contexts.length;
       const paint = (rows: Row[], hour: number, settings: TableSettings) => view.paint({
         widget: 1,
         subs: [],
         pictures: [],
-        model: { family: 'table' as const, kind: 'test-fresh-equals-incremental', options: FRESH_OPTIONS, settings, sources: FRESH_SOURCES, staticPanels: { main: { rows } }, width: 360, height: 200, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
+        model: transport.carry({ family: 'table' as const, kind: 'test-fresh-equals-incremental', options: FRESH_OPTIONS, settings, sources: FRESH_SOURCES, staticPanels: { main: { rows } }, width: 360, height: 200, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true }),
         hour,
         seek: 0, speed: 24,
         binding: { generation: 1, surfaces: [{ width: 360, height: 200, dpr: 1 }], offset: 0, pin: null },
@@ -2172,6 +2176,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
     dateGrouped: true,
     rows: [],
     slots: [
+      { kind: 'data', row: mkLogRow('live0', DAY3 + 8, 50, { live: true, title: 'First live same day', statusKind: 'running', statusLabel: 'Running' }) },
       { kind: 'data', row: mkLogRow('live1', DAY3 + 5, 50, { live: true, title: 'Stop the Strikes', inlineSubtext: 'Mission', statusKind: 'running', statusLabel: 'Running', children: [childRow] }) },
       { kind: 'data', row: mkLogRow('h1', DAY2 + 10, 25, { title: 'Event \uFFFC choice', inlinePrefix: 'A', statusKind: 'succeeded', statusLabel: 'Succeeded' }) },
       { kind: 'data', row: mkLogRow('h2', DAY2 + 4, 15, { title: 'Same day exact', statusKind: 'finished', statusLabel: 'Finished' }) },
@@ -2189,7 +2194,8 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
       ? [item.kind, item.key, item.level, item.showDate !== false, item.isDayEnd === true, item.isLiveEnd === true]
       : [item.kind, item.key])),
     [
-      ['data', 'live1', 1, true, false, false],
+      ['data', 'live0', 1, true, false, false],
+      ['data', 'live1', 1, false, false, false],
       ['data', 'c1', 2, true, false, true],
       ['data', 'h1', 1, true, false, false],
       ['data', 'h2', 1, false, false, false],
@@ -2199,7 +2205,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
       ['refused', 'ref:1'],
       ['loading', 'load:1'],
     ],
-    'live block band sits after its last open child, same-day exact repeats hide date while bounded dates stay visible, and gap/refused/loading slots preserve order',
+    'same-day live rows suppress repeat date, live block band sits after its last open child, same-day exact repeats hide date while bounded dates stay visible, and gap/refused/loading slots preserve order',
   );
 
   const geom = computeRowLayout(flatExpanded, 'normal', 'standard');
@@ -2208,7 +2214,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
   const deep = tableRowWindow(queue.length, queueGeom, ROW_HEIGHT.comfortable, queueGeom.tops[100]!, 200);
   assert.equal(deep.first + TABLE_WINDOW_OVERSCAN, 100, 'deep in an expanded queue the published window starts at the row under the scroll position, not at scrollTop / 44');
   assert.ok(queueGeom.tops[deep.first + deep.count - TABLE_WINDOW_OVERSCAN - 1]! < queueGeom.tops[100]! + 200, 'and ends at the last row the viewport shows');
-  const gapTop = geom.tops[5]!;
+  const gapTop = geom.tops[6]!;
   assert.deepEqual(hitFamilyTable(grown, flatExpanded, { x: 40, y: gapTop + 10 }, 36, 0, 0, false, 0, undefined, undefined, undefined, geom), { kind: 'row', rowKey: 'gap:1' });
   const gapTip = deriveTableTooltip(flatExpanded, 'gap:1', logColumns, DAY3 + 12);
   assert.equal(gapTip?.title, 'Not recorded');
@@ -2700,6 +2706,7 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
   const feedSource = buildRowSourceFromHead('feed', { baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '1', rows: feedRows, missing: [] }, undefined, 110)!;
   const feedModel = eventFeedProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', feedSource]]) }), {
     categories: ['diplomacy'],
+    excludedKinds: [],
     artwork: true,
     from: null,
     filter: { passing: null },

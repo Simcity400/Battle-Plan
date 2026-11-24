@@ -294,8 +294,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       || reply.bands.some(b => b.values.some(v => v !== null && v < 0))
       || (reply.other?.values.some(v => v !== null && v < 0) ?? false);
     const endHour = reply.endHour;
-    const labelHour = endHour ?? hour;
-    const bandInfos = reply.bands.map(band => contributorLabel(readView, band.tag, band.remembered, labelHour));
+    const bandInfos = reply.bands.map(band => contributorLabel(readView, band.tag, band.remembered, hour));
     const bandColors = resolveBandColors(bandInfos.map(info => info.color), options.surface);
     const orderedBands: ChartStackBand[] = [];
     for (let i = 0; i < reply.bands.length; i++) {
@@ -309,7 +308,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       const validEnd = endVal != null && Number.isFinite(endVal) && (options.values === 'share' ? endVal > 0 : endVal !== 0);
       orderedBands.push({
         id: `slot:${band.slot}`,
-        key: band.tag ?? `slot:${band.slot}`,
+        key: `slot:${band.slot}`,
         name: info.fullName,
         color,
         opacity: 0.84,
@@ -364,7 +363,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       : [
           ...(lastTotal !== null ? [auditRow('__total__', formatRecordedPercent(lastTotal))] : []),
           ...reply.bands.flatMap(band => (band.endValue != null && Number.isFinite(band.endValue) && (options.values === 'share' ? band.endValue > 0 : band.endValue !== 0)
-            ? [auditRow(band.tag ?? `slot:${band.slot}`, formatEndPct(band.endValue, options.values))]
+            ? [auditRow(`slot:${band.slot}`, formatEndPct(band.endValue, options.values))]
             : [])),
           ...(reply.other && reply.other.endValue != null && Number.isFinite(reply.other.endValue) && (options.values === 'share' ? reply.other.endValue > 0 : reply.other.endValue !== 0)
             ? [auditRow('other', formatEndPct(reply.other.endValue, options.values))]

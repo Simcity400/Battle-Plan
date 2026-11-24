@@ -277,7 +277,7 @@ impl AtHour for MarketLendLease {
     const KEY: &'static str = "market-lendlease";
     const TITLE: &'static str = "Market and lend-lease";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = MarketLendLeaseParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, only, leaseSide, "countries[]"];
     type Reply = MarketLendLeaseReply;
@@ -372,6 +372,10 @@ impl AtHour for MarketLendLease {
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
         names::context(source, load)
+    }
+
+    fn valid_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        at.holders.next_change(frame.hour).map_or(i32::MAX, |change| change - 1)
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {

@@ -541,6 +541,17 @@ test('planSignature compares plans without invoking closures, and FamilySourceBr
   assert.deepEqual(currentHovers(hoverAsks(hoverPlan({ countries: ['GER'] }), 41), heldA), {}, 'a hover answered for another hour is not shown');
   assert.deepEqual(currentHovers(hoverAsks(hoverPlan({ countries: ['GER'] }), null), heldA), {});
 
+  const displayedPlan: SourcePlan = {
+    owner: 'hover:top',
+    entries: [{ name: 'hover', source: src2, branch: '1', offset: 0, read: { shape: 'exact-hover', product: 'series-state', params: { branchId: '1', family: { kind: 'k', measure: 'm' } }, readsOf: 'main' } }],
+  };
+  const shown = (name: string) => (name === 'main' ? ['GER', '\u00007'] : undefined);
+  const displayed = hoverAsks(displayedPlan, 40, shown);
+  assert.deepEqual((displayed[0]!.request.params as { reads: unknown }).reads, [{ country: 'GER', hour: 40 }, { country: 7, hour: 40 }],
+    'a ranked chart’s hover asks for the lines it displays at the hovered hour, not the top there');
+  assert.equal(hoverAsks(displayedPlan, 40, () => undefined).length, 0, 'nothing displayed, nothing asked');
+  assert.notEqual(hoverAsks(displayedPlan, 40, () => ['SOV'])[0]!.key, displayed[0]!.key, 'other displayed lines are another ask');
+
   let abortOnDispose = false;
   broker.request('k3', signal => new Promise(() => { signal.addEventListener('abort', () => { abortOnDispose = true; }); }));
   broker.dispose();

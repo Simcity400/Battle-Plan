@@ -94,6 +94,7 @@ const paths = {
   lock: <><rect x="5" y="11" width="14" height="9.5" rx="2" /><path d="M8 11V7.5a4 4 0 0 1 8 0V11" /></>,
   person: <><circle cx="12" cy="8" r="3.5" /><path d="M5 20c.8-3.8 3.6-6 7-6s6.2 2.2 7 6" /></>,
   cube: <><path d="M12 3 20 7.5v9L12 21l-8-4.5v-9L12 3Z" /><path d="M4 7.5 12 12l8-4.5M12 12v9" /></>,
+  filter: <path d="M4 5h16l-6.5 7.5V19l-3 1.5v-8Z" />,
 } satisfies Record<IconName, ReactNode>;
 
 export function Icon({ name, ...props }: SVGProps<SVGSVGElement> & { name: IconName }) {

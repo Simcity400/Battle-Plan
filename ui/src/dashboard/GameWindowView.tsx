@@ -8,7 +8,9 @@ import { useContentRevision } from './contentRevision';
 import {
   accessibleRegions,
   fitGameWindowSize,
+  acceptRender,
   followGameWindowRender,
+  frameShown,
   gameWindowRequestKey,
   gameWindowSubjectKey,
   hitTestClick,
@@ -80,6 +82,7 @@ function useDevicePixelRatio(): number {
 export interface GameWindowViewProps {
   client: DashboardClient;
   request: Omit<GameWindowRequest, 'scale'>;
+  generation: number;
   active: boolean;
   label: string;
   onDiagnostics?: (lines: string[]) => void;
@@ -91,6 +94,7 @@ export interface GameWindowViewProps {
 interface CompletedRender {
   key: string;
   subject: string;
+  generation: number;
   render: GameWindowRender;
   hour: number;
 }
@@ -103,6 +107,7 @@ interface FailedRender {
 interface Flight {
   key: string;
   subject: string;
+  generation: number;
   controller: AbortController;
 }
 
@@ -118,6 +123,7 @@ function shownOf(done: CompletedRender): ShownWindow {
 export default function GameWindowView({
   client,
   request,
+  generation,
   active,
   label,
   onDiagnostics,
@@ -161,64 +167,61 @@ export default function GameWindowView({
   onDiagnosticsRef.current = onDiagnostics;
   const onShownRef = useRef(onShown);
   onShownRef.current = onShown;
-  const latest = useRef({ key: requestKey, subject: subjectKey, request: stableRequest, active, client });
-  latest.current = { key: requestKey, subject: subjectKey, request: stableRequest, active, client };
+  const latest = useRef({ key: requestKey, subject: subjectKey, generation, request: stableRequest, active, client });
+  latest.current = { key: requestKey, subject: subjectKey, generation, request: stableRequest, active, client };
 
   const report = useCallback((done: CompletedRender) => {
     onDiagnosticsRef.current?.([...done.render.warnings]);
     onShownRef.current?.(shownOf(done));
   }, []);
 
-  const launch = useCallback((request: GameWindowRequest, key: string, subject: string) => {
+  const launch = useCallback((request: GameWindowRequest, key: string, subject: string, generation: number) => {
     const renderWindow = latest.current.client.renderGameWindow;
     if (!renderWindow) return;
     const controller = new AbortController();
-    flight.current = { key, subject, controller };
+    const settled = { key, subject, generation };
+    flight.current = { ...settled, controller };
     setLoading(true);
-    setFailed(null);
     const next = () => {
       const now = latest.current;
-      if (followGameWindowRender({ key, subject }, now, completedRef.current?.key ?? null)) {
-        launch(now.request, now.key, now.subject);
-      }
+      if (followGameWindowRender(settled, now, completedRef.current)) launch(now.request, now.key, now.subject, now.generation);
+      else setLoading(false);
     };
     renderWindow(request, controller.signal)
       .then(result => {
         if (controller.signal.aborted) return;
         flight.current = null;
-        const done: CompletedRender = { key, subject, render: result, hour: request.hour };
-        completedRef.current = done;
-        setCompleted(done);
-        setLoading(false);
-        if (latest.current.subject === subject) report(done);
+        if (acceptRender(settled, latest.current)) {
+          const done: CompletedRender = { ...settled, render: result, hour: request.hour };
+          completedRef.current = done;
+          setCompleted(done);
+          setFailed(null);
+          report(done);
+        }
         next();
       })
       .catch(caught => {
         if (controller.signal.aborted) return;
         flight.current = null;
-        setLoading(false);
-        if (followGameWindowRender({ key, subject }, latest.current, completedRef.current?.key ?? null)) {
-          next();
-          return;
+        if (acceptRender(settled, latest.current) && !followGameWindowRender(settled, latest.current, completedRef.current)) {
+          setFailed({ key, error: caught instanceof Error ? caught : new Error(String(caught)) });
+          onShownRef.current?.(null);
         }
-        setFailed({ key, error: caught instanceof Error ? caught : new Error(String(caught)) });
-        onShownRef.current?.(null);
+        next();
       });
   }, [report]);
 
   useEffect(() => {
     const existing = completedRef.current;
-    const plan = planGameWindowRender(
-      { key: requestKey, subject: subjectKey, active },
-      flight.current,
-      existing?.key ?? null,
-    );
-    if (plan.abort) {
-      flight.current?.controller.abort();
-      flight.current = null;
+    const want = { key: requestKey, subject: subjectKey, generation, active };
+    const step = planGameWindowRender(want, flight.current, existing);
+    if (existing && !frameShown(existing, want)) {
+      hideTooltip(ownerId);
+      setHoveredClose(false);
+      onShownRef.current?.(null);
+      onDiagnosticsRef.current?.([]);
     }
-    if (plan.step === 'idle') {
-      setLoading(false);
+    if (step === 'idle') {
       hideTooltip(ownerId);
       setHoveredClose(false);
       return;
@@ -233,21 +236,14 @@ export default function GameWindowView({
       onDiagnosticsRef.current?.([]);
       return;
     }
-    if (plan.step === 'reuse' && existing) {
+    if (step === 'reuse' && existing) {
       setFailed(null);
-      setLoading(false);
       report(existing);
       return;
     }
-    if (plan.step === 'wait') return;
-    if (existing?.subject !== subjectKey) {
-      hideTooltip(ownerId);
-      setHoveredClose(false);
-      onShownRef.current?.(null);
-      onDiagnosticsRef.current?.([]);
-    }
-    launch(stableRequest, requestKey, subjectKey);
-  }, [active, client, requestKey, subjectKey, stableRequest, ownerId, launch, report]);
+    if (step === 'wait') return;
+    launch(stableRequest, requestKey, subjectKey, generation);
+  }, [active, client, requestKey, subjectKey, generation, stableRequest, ownerId, launch, report]);
 
   useEffect(() => () => {
     flight.current?.controller.abort();
@@ -255,7 +251,7 @@ export default function GameWindowView({
     hideTooltip(ownerId);
   }, [ownerId]);
 
-  const render = completed && completed.subject === subjectKey ? completed.render : null;
+  const render = completed && frameShown(completed, { key: requestKey, subject: subjectKey, generation, active }) ? completed.render : null;
   const error = failed && failed.key === requestKey ? failed.error : null;
   const previousLogicalSize = completed?.render.logicalSize ?? null;
   const previousHasArtLabel = Boolean(completed?.render.artLabel);
