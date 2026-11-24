@@ -19,7 +19,7 @@ export interface MissingNameProps {
   className?: string;
 }
 
-export function ValueState({ kind, text, unit, reason, narrow = false, atLeast = false, className = '' }: ValueStateProps) {
+export function ValueState({ kind, text, unit, reason, narrow = false, className = '' }: ValueStateProps) {
   const extra = className ? ` ${className}` : '';
   switch (kind) {
     case 'known':
@@ -44,7 +44,7 @@ export function ValueState({ kind, text, unit, reason, narrow = false, atLeast =
         data-tooltip={reason || 'Not applicable'} aria-label={spoken}>—</span>;
     }
     case 'partial': {
-      const spoken = valueStateText({ kind, text, unit, reason, atLeast });
+      const spoken = valueStateText({ kind, text, unit, reason });
       const tooltip = reason ? `Partial: ${reason}` : 'Partial';
       return <span className={`val-state val-partial${narrow ? ' is-compact' : ''}${extra}`} data-value-state="partial"
         data-tooltip={tooltip} aria-label={spoken}>

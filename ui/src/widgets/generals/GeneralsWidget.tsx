@@ -26,8 +26,9 @@ import { LeaderIdentity, leaderIdentityProps, leaderPortraitProps, SkillStars } 
 import { useLeaderPortraits } from './portraits';
 import type { PortraitAt } from './portraits';
 import { attributeNames, leaderKey as rowKey, leaderRequestSelection, leaderRows, leaderSkill as skillValue, leaderTooltip, leadersStructure, pinnedCareer,
-  recordedSince, validateLeaders, withheldLeaderState, withheldLeaders } from './generalsData';
+  BATTLE_COUNTS_PARTIAL, recordedSince, validateLeaders, withheldLeaderState, withheldLeaders } from './generalsData';
 import type { LeaderRow } from './generalsData';
+import { ValueState } from '../../components/ValueState';
 import './generals.css';
 import type { LeaderKinds } from '../../generated/dashboard';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
@@ -39,7 +40,7 @@ const unresolvedValue = (row: LeaderRow) => row.unresolved;
 const winRateValue = (row: LeaderRow) => row.winRate;
 
 const partialCount = (row: LeaderRow, count: number) => row.foughtPartial
-  ? <span data-tooltip="Battle counts are incomplete: some battles were not recorded.">{count}</span> : count;
+  ? <ValueState kind="partial" text={String(count)} reason={BATTLE_COUNTS_PARTIAL} narrow /> : count;
 
 export default function GeneralsWidget(props: WidgetProps) {
   const { widget, runtime, active, onDiagnostics, setOption } = props;
