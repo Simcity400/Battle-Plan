@@ -4,6 +4,7 @@ import {
   buildStaticRequest,
   FamilySourceBroker,
   playbackIdleInterval,
+  readsWithoutFollow,
   resolvePlaybackProvenInterval,
   type BrokerSlotHandle,
   type PlaybackBoundedOptions,
@@ -16,11 +17,6 @@ export type Interval = readonly [lo: number, hi: number];
 
 const EVERY_HOUR: Interval = [-Infinity, Infinity];
 const NO_ENTRIES: readonly SourceEntry[] = [];
-
-function readsWithoutFollow(read: SourceTimeShape): boolean {
-  if (read.shape === 'range') return true;
-  return (read.shape === 'branch-to-hour' || read.shape === 'trailing-window' || read.shape === 'point') && read.followQuery === null;
-}
 
 function boundedReadable(read: SourceTimeShape): boolean {
   return read.shape === 'point' || read.shape === 'range' || read.shape === 'branch-to-hour' || read.shape === 'trailing-window';

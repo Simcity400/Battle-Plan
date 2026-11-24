@@ -1,6 +1,6 @@
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
-import { formatDateOnly } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { identityCell, newIdentityBoundary } from '../../families/table/identityCell.ts';
@@ -60,7 +60,7 @@ function manpowerCell(available: Value, cap: Value, top: number): TableCell {
     value: available,
     format: 'integer',
     bar: top > 0 && known > 0 ? { fraction: knownValue(known / top) } : null,
-    ...(total !== undefined ? { secondaryValue: knownValue(Math.trunc(total).toLocaleString('en-US')) } : {}),
+    ...(total !== undefined ? { secondaryValue: knownValue(formatScalar(total, 'integer')) } : {}),
   };
 }
 

@@ -1,9 +1,9 @@
 import { contrastInkForFill } from '../../draw/kit.ts';
 import { shadeColour, tintColour } from '../../shell/appearance/color.ts';
 import type { FamilyTheme } from '../contract.ts';
+import { formatShare } from '../valueFormat.ts';
 import type { BreakdownViewMode } from './options.ts';
 import {
-  formatShare,
   partColour,
   resolveExpandedMap,
   resolveRingOpenKey,

@@ -7,6 +7,7 @@ import type { TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExt
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, zeroValue, type Value } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { Agency, AgencyComparisonReply, Upgrades } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 
@@ -119,7 +120,7 @@ export const agencyProjection: TableProjection<AgencyProjectionOptions> = regist
           defense: defenseCell(agency),
           operatives: {
             value: agency.activeCount === 0 ? zeroValue(0) : knownValue(agency.activeCount),
-            secondaryValue: knownValue(agency.maximum.toLocaleString('en-US')),
+            secondaryValue: knownValue(formatScalar(agency.maximum, 'integer')),
           },
           view: { value: options.canOpen && meta ? knownValue('View') : notApplicable('The agency window is not available yet') },
         },
