@@ -11,7 +11,7 @@ import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import { knownValue, notRecorded } from '../value.ts';
 import { formatDateOnly } from '../valueFormat.ts';
-import { commandPowerProjection } from '../../widgets/command-power/commandPowerProjection.ts';
+import { commandPowerDeclaration, commandPowerProjection } from '../../widgets/command-power/commandPowerProjection.ts';
 import { stabilityProjection } from '../../widgets/stability/stabilityProjection.ts';
 import { experienceProjection } from '../../widgets/experience/experienceProjection.ts';
 import { fuelProjection } from '../../widgets/fuel/fuelProjection.ts';
@@ -29,7 +29,7 @@ import { parseFollowed } from '../../dashboard/follow/message.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import { buildBoundedStack, headReading, headValueOf } from './seriesHelpers.ts';
 import { sampleSeriesValueAt } from './hitTest.ts';
-import { politicalPowerProjection } from '../../widgets/political-power/politicalPowerProjection.ts';
+import { politicalPowerDeclaration, politicalPowerProjection } from '../../widgets/political-power/politicalPowerProjection.ts';
 import { navyLinesProjection } from '../../widgets/navy-size/navyLinesProjection.ts';
 import { armyLinesProjection } from '../../widgets/army-size/armyLinesProjection.ts';
 import { supplyHealthProjection } from '../../widgets/supply-health/supplyHealthProjection.ts';
@@ -530,7 +530,6 @@ describe('time-chart laneView integration', () => {
       gaps: [],
       surface: '#111111',
       showCeiling: true,
-      showSpendTicks: true,
     });
     assert.equal(model.series.length, 2);
     assert.equal(model.series[0]!.step, false);
@@ -547,6 +546,41 @@ describe('time-chart laneView integration', () => {
     const maxLabel = minLayout.endLabels.find(l => l.seriesId === 'GER:ceiling');
     assert.equal(cpLabel?.name, null, 'at min size icon-bearing line hides its name');
     assert.equal(maxLabel?.name, 'Maximum', 'at min size ceiling keeps Maximum word');
+  });
+
+  it('marks each spending at its own hour from the dated spending evidence, says an interval and count where it has no date, and reads nothing when the markers are off', () => {
+    const until = H1936 + 200;
+    const spend = (hour: number, title: string, extra: Record<string, unknown> = {}) => ({ hour, dated: true, since: null, read: hour, payments: 1, unknown: 0, chargeRaw: '5000000', title, category: 'Decisions', ...extra });
+    const reply = {
+      hour: until,
+      nextChange: until + 30,
+      decimals: 5,
+      markers: [
+        spend(H1936 + 20, 'Mobilise'),
+        spend(H1936 + 20, 'Hire advisor', { chargeRaw: '7550000' }),
+        spend(H1936 + 90, 'Law change', { payments: 3, since: H1936 + 40, chargeRaw: '15000000' }),
+        spend(H1936 + 120, 'Unknown', { dated: false, chargeRaw: null, unknown: 1 }),
+      ],
+      unrecorded: [{ firstHour: H1936, lastHour: H1936, reason: 'Spending was not counted at the run start' }],
+      warnings: [],
+    };
+    const model = politicalPowerProjection.project(createBoundedReadView({ hour: until, panels: new Map([['spending', reply]]) }),
+      { tags: ['GER'], extent: [H1936, until], gaps: [], surface: '#111111' });
+    assert.deepEqual(model.markers?.map(marker => [marker.hour, marker.items?.map(item => `${item.title}: ${item.detail}`)]), [
+      [H1936 + 20, ['Mobilise: −50', 'Hire advisor: −75.5']],
+      [H1936 + 90, [`Law change: −150 · 3 payments from ${formatDateOnly(H1936 + 40)} to ${formatDateOnly(H1936 + 90)}`]],
+      [H1936 + 120, [`Unknown: Cost not recorded · Paid by ${formatDateOnly(H1936 + 120)}`]],
+    ], 'one marker per hour a payment was made, never one at a bin’s closing hour');
+    assert.equal(model.warnings?.length, 1, 'an hour whose spending was not recorded is said');
+
+    const ctx = (spendTicks: boolean) => ({
+      track: { source: { id: 's', revision: '1' }, axisOffset: 0 }, branch: { id: '1' }, following: false,
+      countries: { tags: ['GER'], membership: null }, options: { spendTicks },
+    }) as unknown as Parameters<typeof politicalPowerDeclaration.sources>[0];
+    const VIEW = { width: 800, height: 300 } as Parameters<typeof politicalPowerDeclaration.sources>[1];
+    assert.ok(politicalPowerDeclaration.sources(ctx(true), VIEW).entries.some(entry => entry.name === 'spending'));
+    assert.ok(!politicalPowerDeclaration.sources(ctx(false), VIEW).entries.some(entry => entry.name === 'spending'), 'markers off: not asked, so not drawn');
+    assert.ok(!commandPowerDeclaration.sources(ctx(false), VIEW).entries.some(entry => entry.name === 'spending'));
   });
 
   it('projects stability with valueScale 100 step lines, 0-100% axis, and future-clamped markers', () => {
@@ -1547,7 +1581,7 @@ describe('stacked bounded series, supply health, and ruling party', () => {
         hour: hoverAt,
         data: { decimals: 5, states: [{ country: 'GER', hour: hoverAt, run: { valueRaw: '999999999999999999' }, missing: null }] },
       }]]),
-    }), { tags: ['GER'], extent: [base, base + 95], gaps: [], surface: '#111111', showCeiling: true, showSpendTicks: false });
+    }), { tags: ['GER'], extent: [base, base + 95], gaps: [], surface: '#111111', showCeiling: true });
     assert.equal(cpModel.series[0]!.endLabel?.value, '9.99T');
     assert.equal(cpModel.series[1]!.endLabel?.value, '22');
     const cpHover = deriveTimeChartTooltip(cpModel, layoutTimeChart(cpModel, 600, 260, FONT, measure), `plot:${hoverAt}`);

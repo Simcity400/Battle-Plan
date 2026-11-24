@@ -422,6 +422,7 @@ export const airSuperiorityRegionProjection: BarsProjection<AirSuperiorityProjec
       automaticHeading: airAutomaticHeading(subject, options.order),
       addRegionLabel: ADD_REGION_LABEL,
       ...(empty ?? {}),
+      active: reply.activeUnlisted,
       warnings: reply.warnings,
     });
   },

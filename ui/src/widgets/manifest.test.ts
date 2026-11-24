@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { WidgetMeta } from '../dashboard/definitions';
 import { parseStoredOptions, resolveOptions, setOption, type OptionField, type OptionValue, type WidgetOptions } from '../dashboard/options.ts';
 import { addRegion, moveRegion, readRegionChoice, regionParams, removeRegion, writeRegionChoice } from '../families/regions/regionChoice.ts';
-import { keyboardMove, regionDropAt, type RegionRowsField } from '../families/regions/regionRows.ts';
+import { keyboardMove, regionChooserGroups, regionDropAt, type RegionRowsField } from '../families/regions/regionRows.ts';
 import {
   DEFAULT_VIEW,
   declaredViewChoices,
@@ -360,7 +360,7 @@ test('shared data-driven settings controls expose bars-behind, three row heights
   const stored = setOption(fields, undefined, 'regions', writeRegionChoice(choice));
   assert.equal(resolveOptions(fields, stored!).regions, writeRegionChoice(choice));
 
-  const row = (id: number, picked: boolean, top: number) => ({ key: `r${id}`, id, label: `R${id}`, picked, top, height: 26 });
+  const row = (id: number, picked: boolean, top: number) => ({ key: `r${id}`, id, label: `R${id}`, picked, top, height: 26, active: !picked });
   const shown: RegionRowsField = { rows: [row(4, true, 20), row(12, true, 50), row(7, false, 100), row(9, false, 130)], add: { top: 160, height: 26 }, nameLeft: 8 };
   assert.deepEqual(regionDropAt(shown, shown.rows[1]!, 22), { to: 0, lineY: 20 }, 'a pick dragged above the first pick leads');
   assert.deepEqual(regionDropAt(shown, shown.rows[2]!, 55), { to: 1, lineY: 50 }, 'an automatic row dragged among the picks becomes a pick');
@@ -368,6 +368,23 @@ test('shared data-driven settings controls expose bars-behind, three row heights
   assert.deepEqual(keyboardMove(shown.rows[0]!, 1, choice), { picks: [12, 4], hidden: [30] });
   assert.equal(keyboardMove(shown.rows[0]!, -1, choice), null);
   assert.deepEqual(keyboardMove(shown.rows[2]!, -1, choice), { picks: [4, 12, 7], hidden: [30] }, 'Alt+Up on an automatic row picks it');
+
+  const list = { kind: 'ready' as const, regions: [
+    { id: 7, label: 'Baltic Sea', nameMissing: false, sea: true },
+    { id: 30, label: 'North Sea', nameMissing: false, sea: true },
+    { id: 31, label: 'Skagerrak', nameMissing: false, sea: true },
+    { id: 4, label: 'Western Germany', nameMissing: false, sea: false },
+  ] };
+  const inChart = [{ id: 4, label: 'Western Germany', active: false }, { id: 7, label: 'Baltic Sea', active: true }];
+  const groups = regionChooserGroups(list, inChart, { ids: [30, 31], missing: null }, false, '');
+  assert.deepEqual(groups.map(group => [group.title, group.rows.map(item => [item.label, item.inChart])]), [
+    ['Active now', [['Baltic Sea', true], ['North Sea', false], ['Skagerrak', false]]],
+    ['Land regions', [['Western Germany', true]]],
+    ['Sea regions', [['Baltic Sea', true], ['North Sea', false], ['Skagerrak', false]]],
+  ], 'Active now lists what the product says is active at the hour, also past the top or removed; a row in the chart is marked, not given its readout');
+  const unknown = regionChooserGroups(list, inChart, { ids: [], missing: 'Air scores were read only in part at this hour' }, true, '');
+  assert.deepEqual([unknown[0]!.title, unknown[0]!.note], ['Active now', 'Air scores were read only in part at this hour'], 'activity not known at the hour is said, not shown as none');
+  assert.equal(regionChooserGroups(list, inChart, null, true, '')[0]!.title, 'Active in this chart', 'without the product answer the group names only what the chart holds');
 
   const tblDefaults = tableDefaults(cols, base);
   assert.equal(tblDefaults.density, 'normal');
