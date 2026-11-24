@@ -1026,9 +1026,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       if (!gate.open) {
         const s = gate.stage;
         if (s.stage === 'outside') {
-          return s.outside.kind === 'not-recorded'
-            ? { kind: 'not-recorded', reason: s.outside.message, detail: s.outside.detail }
-            : { kind: 'outside', outside: s.outside };
+          return { kind: 'outside', outside: s.outside };
         }
         if (s.stage === 'choose') return { kind: 'choose', message: policy.choose ?? `Choose a country to see its ${subject}.` };
         if (s.stage === 'holders') return { kind: 'holders', tag: singleCountry?.chosen ?? null, holders: s.holders, pick: s.pick };
@@ -1040,18 +1038,16 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         return { kind: 'loading', label: loadingLabel };
       }
     } else if (coverage.outside) {
-      return coverage.outsideKind === 'not-recorded'
-        ? { kind: 'not-recorded', reason: coverage.outsideMessage ?? 'Not recorded at this time.', detail: coverage.outsideDetail }
-        : {
-            kind: 'outside',
-            outside: {
-              kind: coverage.outsideKind,
-              message: coverage.outsideMessage ?? 'This time is outside the recording.',
-              detail: coverage.outsideDetail,
-              span: coverage.outsideSpan,
-              pinned: coverage.outsidePinned,
-            },
-          };
+      return {
+        kind: 'outside',
+        outside: {
+          kind: coverage.outsideKind,
+          message: coverage.outsideMessage ?? (coverage.outsideKind === 'not-recorded' ? 'Not recorded at this time.' : 'This time is outside the recording.'),
+          detail: coverage.outsideDetail,
+          span: coverage.outsideSpan,
+          pinned: coverage.outsidePinned,
+        },
+      };
     }
 
     if (compiledFollow.refused) return { kind: 'refused', reason: compiledFollow.refused, technical: compiledFollow.refused };
