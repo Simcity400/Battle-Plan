@@ -126,6 +126,7 @@ const OWN: &[Registered] = &[
     dashboard_wars::registrations::TERRITORY_TRANSFERS_TERRITORYTRANSFERS,
     dashboard_economy::registrations::CONVOYS_CONVOYHEALTH,
     dashboard_production::registrations::PRODUCTION_SPENDING_PRODUCTIONSPENDING,
+    dashboard_production::registrations::PRODUCTION_SPENDING_MONTHS_PRODUCTIONSPENDINGMONTHS,
     dashboard_wars::registrations::OCCUPATION_RESERVE_RESERVEHISTORY,
     dashboard_production::registrations::CONSTRUCTION_LOG_CONSTRUCTIONLOGMANIFEST,
     dashboard_production::registrations::CONSTRUCTION_LOG_CONSTRUCTIONLOG,

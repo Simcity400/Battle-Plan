@@ -9,6 +9,7 @@ import type { MeterModel, MeterProjection, MeterRow } from '../../families/meter
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BoundedReadView, DeclaredCountryFilter, FamilyPlanContext } from '../../families/plan.ts';
 import type { ArtResult } from '../../families/contract.ts';
+import { formatProgress } from '../../families/valueFormat.ts';
 import type { AutonomyLevelsReply, AutonomySubject, SubjectLevel } from '../../generated/dashboard';
 
 export interface AutonomyLevelsOptions {
@@ -66,7 +67,7 @@ export function levelTitle(levels: readonly SubjectLevel[], token: string | null
 }
 
 export function percentText(milli: number): string {
-  return `${Math.round(milli / 1000)}%`;
+  return formatProgress(milli / 100_000);
 }
 
 function row(readView: BoundedReadView, reply: AutonomyLevelsReply, item: AutonomySubject, surface: string): MeterRow {

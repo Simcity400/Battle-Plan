@@ -38,13 +38,14 @@ from functools import cache
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
-RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-colour-literal", "family-locale-string", "family-measure-text-loop")
+RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-colour-literal", "family-locale-string", "family-measure-text-loop", "family-hand-percent")
 RULE_HINTS = {
     "local-contrast-ink": "use contrastInkForFill from ui/src/draw/kit.ts",
     "local-tick-engine": "use computeTimeAxisTicks from ui/src/draw/kit.ts or linearTicks from ui/src/charts/valueAxis.ts",
     "family-colour-literal": "use ui/src/charts/palette.ts, ui/src/shell/appearance/color.ts, or resolveKitTokens in ui/src/draw/kit.ts",
     "family-locale-string": "use formatScalar, formatCompactScalar, or formatValueState from ui/src/families/valueFormat.ts",
     "family-measure-text-loop": "use textWidth or measureCanvasText from ui/src/charts/textWidth.ts, or fitLabelWidth / fitLabel from ui/src/charts/labels.ts",
+    "family-hand-percent": "use formatShare, formatProgress, or formatRecordedPercent from ui/src/families/valueFormat.ts",
 }
 JS_TEST = re.compile(r"\.test\.(?:ts|tsx|mts|js|mjs|cjs)$")
 TS_FIXTURE = re.compile(r"\.fixture\.tsx?$")
@@ -60,6 +61,9 @@ LOCAL_TICK_ENGINE = re.compile(
 FAMILY_COLOUR_LITERAL = re.compile(r"""['"`]#[0-9a-fA-F]{3,8}(?=['"`])|\b(?:rgba?|hsla?)\s*\(""")
 FAMILY_LOCALE_STRING = re.compile(
     r"""\.toLocaleString\s*\(|from\s+['"][^'"]*charts/numberFormat(?:\.ts)?['"]|\bnew\s+Intl\.NumberFormat\s*\("""
+)
+FAMILY_HAND_PERCENT = re.compile(
+    r"""\$\{[^}\n]*(?:\bMath\.(?:round|floor|trunc|ceil)\s*\(|\.toFixed\s*\()[^}\n]*\}\s*%|(?:\bMath\.(?:round|floor|trunc|ceil)\s*\(|\.toFixed\s*\()[^;\n]*\+\s*['"`]%"""
 )
 TS_LOOP_HEAD = re.compile(r"\b(?:for|while)\s*\(|\bdo\s*\{|\.(?:forEach|map|reduce|flatMap|filter|some|every)\s*\(")
 TS_MEASURE_TEXT = re.compile(r"\.measureText\s*\(")
@@ -654,6 +658,9 @@ def family_ts_matches(name, text):
         locale_lines = [line_of(text, m.start()) for m in FAMILY_LOCALE_STRING.finditer(code)]
         if locale_lines:
             found["family-locale-string"] = locale_lines
+        percent_lines = [line_of(text, m.start()) for m in FAMILY_HAND_PERCENT.finditer(code)]
+        if percent_lines:
+            found["family-hand-percent"] = percent_lines
     if ".measureText" in code:
         loops = ts_loop_spans(code)
         measure_lines = [line_of(text, m.start()) for m in TS_MEASURE_TEXT.finditer(code) if within(loops, m.start())]

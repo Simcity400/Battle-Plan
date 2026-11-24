@@ -4,7 +4,7 @@ import { cardMediaFromIcon, type CardItemRow, type CardModel, type CardProjectio
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notRecorded, type Value } from '../../families/value.ts';
-import { formatDateHover } from '../../families/valueFormat.ts';
+import { formatDateHover, formatRecordedPercent } from '../../families/valueFormat.ts';
 import type { ProjectPresentation, ProjectRecord, SpecialProjectsReply } from '../../generated/dashboard';
 import { validateSpecialProjectsReply } from './specialProjectsData.ts';
 
@@ -59,7 +59,7 @@ export const specialProjectsProjection: CardProjection<Record<string, never>> = 
           key: `running:${project.id}`,
           subject: project.id,
           ...base(readView, reply, info, extraOf(run.state)),
-          meter: { fraction, text: `${run.progress}%` },
+          meter: { fraction, text: formatRecordedPercent(run.progress) },
         });
       }
     };

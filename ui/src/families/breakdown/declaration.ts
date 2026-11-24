@@ -26,9 +26,14 @@ export interface BreakdownWidgetDeclaration<TOptions> extends Omit<BreakdownWidg
   readonly projectionOptions: (ctx: FamilyPlanContext) => TOptions & BreakdownViewOptions;
 }
 
+function drawnAs<TOptions>(projection: BreakdownProjection<TOptions & BreakdownViewOptions>): BreakdownProjection<TOptions & BreakdownViewOptions> {
+  return { ...projection, project: (readView, options) => ({ ...projection.project(readView, options), view: options.view }) };
+}
+
 export function breakdownDeclaration<TOptions>(spec: BreakdownWidgetSpec<TOptions>): BreakdownWidgetDeclaration<TOptions> {
   return {
     ...spec,
+    projection: drawnAs(spec.projection),
     family: 'breakdown',
     projectionOptions: ctx => ({ ...spec.projectionOptions(ctx), view: breakdownView(ctx.options), namesInRing: ctx.options.namesInRing !== false }),
   };

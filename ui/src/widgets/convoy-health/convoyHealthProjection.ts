@@ -15,6 +15,7 @@ import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import { regionLabel } from '../../families/heat/scale.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
 import { countrySubject, regionLanes } from '../../families/regions/regionRows.ts';
+import { formatProgress } from '../../families/valueFormat.ts';
 import type { ConvoyCellState, ConvoyCountry, ConvoyHealthReply, ConvoyView, HourSpan } from '../../generated/dashboard';
 import { mix } from '../../shell/appearance/color.ts';
 
@@ -42,7 +43,7 @@ export function efficiencyColour(share: number): string {
 }
 
 export function percentText(value: number, scale: number): string {
-  return `${Math.floor((value * 100) / scale)}%`;
+  return formatProgress(value / scale);
 }
 
 function stateCell(state: ConvoyCellState, scale: number): HeatLaneCell {
@@ -55,8 +56,18 @@ function stateReadout(state: ConvoyCellState | undefined, scale: number, surface
   if (!state) return undefined;
   if (state.kind === 'notRecorded') return { kind: 'missing', reason: state.reason };
   if (state.kind === 'noTraffic') return { kind: 'clear', label: 'No convoy traffic' };
-  const value = Number(state.value);
-  return { kind: 'value', form: 'value', primary: percentText(value, scale), secondary: 'Efficiency', swatch: readableColour(efficiencyColour(value / scale), surface, 1) };
+  return efficiencyReadout(Number(state.value), scale, surface);
+}
+
+function efficiencyReadout(value: number, scale: number, surface: string): HeatLaneReadout {
+  return {
+    kind: 'value',
+    form: 'value',
+    primary: percentText(value, scale),
+    meaning: 'Efficiency',
+    ...(value >= scale ? { tone: 'muted' as const } : {}),
+    swatch: readableColour(efficiencyColour(value / scale), surface, 1),
+  };
 }
 
 type Dated = readonly (readonly [number, number, number])[];
@@ -166,7 +177,7 @@ function tradeRows(reply: ConvoyHealthReply, through: number, surface: string): 
     if (!runs.length) continue;
     const value = valueAt(deal.efficiency, through);
     const readout: HeatLaneReadout = value !== null
-      ? { kind: 'value', form: 'value', primary: percentText(value, reply.scale), secondary: 'Efficiency', swatch: readableColour(efficiencyColour(value / reply.scale), surface, 1) }
+      ? efficiencyReadout(value, reply.scale, surface)
       : inSpans(dealsKnown, through) ? { kind: 'clear', label: 'No deal' } : { kind: 'missing', reason: 'Resource deals were not recorded' };
     rows.push({
       row: { id: `deal:${deal.id}`, label: dealName(deal, through), runs, readout },

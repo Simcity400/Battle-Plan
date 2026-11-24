@@ -1,7 +1,7 @@
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { FamilyTooltipEntry, TooltipListItem } from '../host/tooltips.ts';
 import type { BoundedSeries } from '../plan.ts';
-import { formatDateOnly, formatScalar, notRecordedLabel } from '../valueFormat.ts';
+import { formatDateOnly, formatRecordedPercent, formatScalar, formatShare, notRecordedLabel } from '../valueFormat.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import type { TimeChartModel, TimeChartSeriesModel } from './model.ts';
 
@@ -215,7 +215,7 @@ export function hitTestTimeChart(
 
 function formatExactFigure(value: number, model: TimeChartModel): string {
   if (model.yAxis.format === 'percent') {
-    return `${Math.round(value * 10) / 10}%`;
+    return model.mode === 'stack' ? formatShare(value / 100) : formatRecordedPercent(value);
   }
   if (model.yAxis.format === 'signed1') {
     if (Math.abs(value) < 1e-9) return '0';
@@ -225,7 +225,7 @@ function formatExactFigure(value: number, model: TimeChartModel): string {
   if (decimals > 0 && Math.abs(value) < 1000) {
     return formatScalar(value, { decimals: 0, maxDecimals: decimals });
   }
-  return formatScalar(value, { decimals: 0, maxDecimals: 0 });
+  return formatScalar(value, 'integer');
 }
 
 function artUrlOf(slot: { readonly art: { readonly status: string; readonly url?: string } } | undefined): string | undefined {
@@ -418,7 +418,21 @@ export function deriveTimeChartTooltip(
       value: seg.exactText,
       swatch: seg.color,
     }));
-    items.push({ label: 'Total', value: m.totalText, strong: true, divider: true });
+    if (m.missingParts) {
+      for (const part of m.missingParts) {
+        items.push({
+          label: part.label,
+          swatch: part.color,
+          missingReason: part.reason,
+          tone: 'muted',
+        });
+      }
+    }
+    if (m.totalMissingReason) {
+      items.push({ label: 'Total', missingReason: m.totalMissingReason, tone: 'muted', strong: true, divider: true });
+    } else {
+      items.push({ label: 'Total', value: m.totalText, strong: true, divider: true });
+    }
     return {
       hour: m.firstHour,
       rowKey: inspectKey,
@@ -426,6 +440,7 @@ export function deriveTimeChartTooltip(
         title,
         subtitle: model.measureTitle,
         items,
+        ...(m.note ? { note: m.note } : {}),
       },
     };
   }

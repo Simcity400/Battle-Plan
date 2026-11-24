@@ -36,9 +36,12 @@ test('counts at an hour are the three states, the first reason any is missing, o
   assert.equal(supplyAt(undefined, 'A', 10), undefined);
 });
 
-test('supply shares retain exact formatting and zero denominators', () => {
-  assert.equal(formatShare(1, 3), '33.33%');
-  assert.equal(formatShare(2, 3), '66.67%');
+test('supply shares use shared share formatting and preserve zero denominators', () => {
+  assert.equal(formatShare(1, 3), '33%');
+  assert.equal(formatShare(2, 3), '67%');
+  assert.equal(formatShare(7, 100), '7%');
+  assert.equal(formatShare(1, 2000), '<0.1%');
+  assert.equal(formatShare(1, 1), '100%');
   assert.equal(formatShare(0, 0), 'Not known');
   assert.equal(totalDivisions({ noSupply: 1, strained: 3, inSupply: 0 }), 4);
 });
