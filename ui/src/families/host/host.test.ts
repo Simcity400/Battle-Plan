@@ -11,6 +11,7 @@ import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHe
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
 import { lazyActionKeys, type ParsedFamilyHit } from './adapter.ts';
 import { createBoundAuditReader, type BoundAuditEntry } from './auditBinding.ts';
+import { NO_EXPANSION, toggleExpansion } from './expansion.ts';
 import {
   handleFamilyGridKeyDown,
   handleFamilyKeyDown,
@@ -333,6 +334,16 @@ test('parseDefaultRowHit distinguishes row and toggle hits', () => {
   assert.deepEqual(parseDefaultRowHit('toggle:grp-1'), { key: 'grp-1', toggle: true });
   assert.equal(parseDefaultRowHit('header:col'), null);
   assert.equal(parseDefaultRowHit(null), null);
+});
+
+test('toggleExpansion flips the installed tree state of a row and ignores rows that are not trees', () => {
+  const nav: FamilyNavTuple[] = [['war:1', 'War one', 0, 1, ''], ['war:2', 'War two', 1, 0, ''], ['war:2:GER', 'German Reich', 2, -1, 'war:2']];
+  const closed = toggleExpansion(NO_EXPANSION, nav, 'war:1');
+  assert.deepEqual(closed, { next: { 'war:1': false }, open: false, label: 'War one' });
+  const opened = toggleExpansion(closed!.next, nav, 'war:2');
+  assert.deepEqual(opened?.next, { 'war:1': false, 'war:2': true });
+  assert.equal(toggleExpansion(NO_EXPANSION, nav, 'war:2:GER'), null);
+  assert.equal(toggleExpansion(NO_EXPANSION, nav, 'missing'), null);
 });
 
 test('reportFamilyShownHour prefers explicit installedHour over view.through', () => {

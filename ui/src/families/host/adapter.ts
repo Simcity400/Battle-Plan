@@ -155,6 +155,7 @@ export interface FamilyBindingContext<TOptions> {
   readonly identitySnapshot: IdentitySnapshot | null;
   readonly selectedKey: string | null;
   readonly focusedKey: string | null;
+  readonly expanded: Readonly<Record<string, boolean>>;
   readonly audit: boolean;
   readonly auditId: number | undefined;
   readonly pauseFlush: number;

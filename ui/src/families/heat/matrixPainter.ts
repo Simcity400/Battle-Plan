@@ -6,6 +6,7 @@ import {
   drawGradientLegend,
   drawLegendEntry,
   drawNameSlot,
+  drawProgressRing,
   drawRowFocusRing,
   drawRowHairline,
   drawRowHover,
@@ -21,7 +22,11 @@ import type { ArtProvider, FamilyTheme } from '../contract.ts';
 import type { IdentityIndex } from '../identity/index.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
 import type { HeatMatrixLayout } from './matrixLayout.ts';
-import { MATRIX_PAD } from './matrixLayout.ts';
+import { MATRIX_PAD, MATRIX_TRAILING_GAP } from './matrixLayout.ts';
+
+const MARK_SQUARE_PX = 14;
+const MARK_RING_RADIUS_PX = 6.2;
+const MARK_DOT_RADIUS_PX = 1.2;
 import type { HeatMatrixModel, MatrixAxisEntity } from './matrixModel.ts';
 
 export interface HeatMatrixPicture {
@@ -218,10 +223,25 @@ export function drawHeatMatrix(
       } else if (item.kind === 'missing') {
         drawHatchRect(ctx, cx, cy, inner, inner, radius, theme);
       } else if (item.kind === 'empty') {
-        ctx.fillStyle = tokens.barTrack;
+        if (item.mark === 'dot') {
+          ctx.fillStyle = theme.muted;
+          ctx.beginPath();
+          ctx.arc(x + cell / 2, y + cell / 2, MARK_DOT_RADIUS_PX, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          ctx.fillStyle = tokens.barTrack;
+          ctx.beginPath();
+          ctx.roundRect(cx, cy, inner, inner, radius);
+          ctx.fill();
+        }
+      } else if (item.mark === 'square') {
+        const side = Math.min(MARK_SQUARE_PX, inner);
+        ctx.fillStyle = item.color;
         ctx.beginPath();
-        ctx.roundRect(cx, cy, inner, inner, radius);
+        ctx.roundRect(x + (cell - side) / 2, y + (cell - side) / 2, side, side, radius);
         ctx.fill();
+      } else if (item.mark === 'ring') {
+        drawProgressRing(ctx, x + cell / 2, y + cell / 2, MARK_RING_RADIUS_PX, item.fraction ?? 0, item.color, theme);
       } else {
         ctx.fillStyle = item.color;
         ctx.beginPath();
@@ -248,6 +268,15 @@ export function drawHeatMatrix(
       if (focusedCell && focusedCell.row === r && focusedCell.column === c) {
         drawRowFocusRing(ctx, x, y, cell, cell, theme, 0);
       }
+    }
+    const trailing = model.rows[r]!.trailing;
+    if (trailing && layout.trailingWidth > 0) {
+      const tx = layout.gridLeft + model.columns.length * cell - scrollLeft + MATRIX_TRAILING_GAP;
+      ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+      ctx.fillStyle = theme.muted;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(trailing, tx, y + cell / 2 + 0.5);
     }
   }
 
@@ -385,6 +414,14 @@ export function drawHeatMatrix(
 
   ctx.fillStyle = theme.surface;
   ctx.fillRect(0, layout.legendHeight, layout.gridLeft, layout.headerHeight);
+  if (model.corner) {
+    ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+    ctx.fillStyle = theme.muted;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const cornerW = Math.max(0, layout.gridLeft - MATRIX_PAD * 2);
+    ctx.fillText(ellipsise(model.corner, cornerW, s => textWidth(ctx, s)), layout.rowGroupWidth + MATRIX_PAD, colTop + colBandH / 2);
+  }
   drawRowHairline(ctx, 0, layout.width, layout.gridTop - 1, theme, 'strong');
   const gx = Math.floor(layout.gridLeft) - 0.5;
   ctx.strokeStyle = tokens.hairlineStrong;
