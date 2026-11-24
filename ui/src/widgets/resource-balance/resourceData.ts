@@ -2,8 +2,7 @@ import { drawGapSummary, drawLineSummary, summaryExtent } from '../../charts/cha
 import type { ChartSummary } from '../../charts/chartSummary';
 import { SECONDARY_DASH } from '../../charts/palette.ts';
 import type { ChartLayer } from '../../charts/TimeChart';
-import { contentTitle } from '../../dashboard/contentTitles.ts';
-import { artworkUrlValue } from '../../dashboard/payload.ts';
+import { resourceName } from './resourceReply.ts';
 import { chosenShown, largestToken, toggleChosen as toggleKit } from '../../dashboard/chosen.ts';
 import type { ChipAction, ChoiceSource } from '../../dashboard/chosen';
 import { liveKey } from '../../charts/live.ts';
@@ -15,7 +14,6 @@ import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import type { ResourceBalanceReply, ResourceDeal, ResourceInfo, ResourceSizesReply } from '../../generated/dashboard';
 
 
-export const RESOURCE_BALANCE = 'resource-balance';
 export const RESOURCE_SIZES = 'resource-sizes';
 
 const RAW = /^-?\d{1,20}$/;
@@ -44,26 +42,6 @@ export const poolsMissing = (values: LiveValues<number>, id: number) => {
   for (const [column] of POOL_CELLS) if (values.get(liveKey(String(id), column)) === undefined) return values.missing(liveKey(String(id), column));
   return 'Not recorded at this time';
 };
-
-export const poolsOf = (reply: ResourceBalanceReply, values: LiveValues<number>): ResourcePools[] =>
-  reply.pools.flatMap(id => { const pools = poolsAt(values, id); return pools ? [pools] : []; });
-
-export function validateResourceBalance(value: unknown): ResourceBalanceReply {
-  const reply = value as ResourceBalanceReply;
-  const known = (id: unknown) => object(value) && Array.isArray(value.resources) && value.resources.some(item => object(item) && item.id === id);
-  const ok = object(value) && typeof reply.tag === 'string' && Number.isInteger(reply.decimals) && reply.decimals >= 0 && reply.decimals <= 12
-    && Array.isArray(reply.resources) && reply.resources.every((item, index) => object(item) && Number.isInteger(item.id) && typeof item.token === 'string'
-      && item.token.length > 0 && Number.isInteger(item.ordinal) && item.ordinal >= 1 && (item.name === null || typeof item.name === 'string')
-      && (item.icon === null || artworkUrlValue(item.icon)) && (index === 0 || reply.resources[index - 1].id < item.id))
-    && Array.isArray(reply.pools) && reply.pools.every(known) && Array.isArray(reply.shown) && reply.shown.every(known)
-    && (reply.poolsMissing === null || typeof reply.poolsMissing === 'string') && (reply.dealsMissing === null || typeof reply.dealsMissing === 'string')
-    && Array.isArray(reply.deals) && reply.deals.every(deal => object(deal) && typeof deal.deal === 'string' && typeof deal.partner === 'string'
-      && known(deal.resource) && (deal.direction === 'import' || deal.direction === 'export')
-      && Number.isInteger(deal.factories) && Number.isInteger(deal.convoysAssigned) && Number.isInteger(deal.convoysRequired))
-    && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string');
-  if (!ok) throw new Error('The resource balance reply is malformed.');
-  return reply;
-}
 
 export function validateResourceSizes(value: unknown): ResourceSizesReply {
   if (!object(value) || typeof value.tag !== 'string' || !Array.isArray(value.sizes) || !value.sizes.every(size => object(size)
@@ -97,42 +75,6 @@ export function balanceOf(pools: ResourcePools): Balance {
     demand: projects + production + toOverlord + exportReserve,
     net: afterProjects - production,
   };
-}
-
-export function barParts(balance: Balance): { supply: [string, bigint][]; demand: [string, bigint][] } {
-  return { supply: [['produced', balance.produced], ['subjects', balance.fromSubjects], ['imported', balance.imported]],
-    demand: [['needed', balance.projects + balance.production], ['overlord', balance.toOverlord], ['exported', balance.exportReserve]] };
-}
-
-export const barLength = (parts: readonly (readonly [string, bigint])[]) => parts.reduce((sum, [, raw]) => sum + (raw < 0n ? -raw : raw), 0n);
-
-export function momentScale(pools: readonly ResourcePools[]): bigint {
-  let largest = 0n;
-  for (const pool of pools) {
-    const parts = barParts(balanceOf(pool));
-    for (const length of [barLength(parts.supply), barLength(parts.demand)]) if (length > largest) largest = length;
-  }
-  return largest;
-}
-
-export function campaignScale(sizes: ResourceSizesReply | undefined): bigint {
-  let largest = 0n;
-  for (const size of sizes?.sizes ?? []) if (size.longestRaw !== null && BigInt(size.longestRaw) > largest) largest = BigInt(size.longestRaw);
-  return largest;
-}
-
-export const partWidth = (raw: bigint, scale: bigint) => scale > 0n ? `${Number((raw < 0n ? -raw : raw) * 100000n / scale) / 1000}%` : '0%';
-
-export type RowOrder = 'game' | 'shortfall' | 'volume';
-
-export function orderResources(reply: ResourceBalanceReply): ResourceInfo[] {
-  const byId = new Map(reply.resources.map(item => [item.id, item]));
-  return reply.shown.flatMap(id => byId.get(id) ?? []);
-}
-
-export function barStructure(reply: ResourceBalanceReply): string {
-  const held = new Set(reply.pools);
-  return JSON.stringify([reply.poolsMissing, reply.dealsMissing, orderResources(reply).map(item => [item.id, held.has(item.id), item.name, item.icon])]);
 }
 
 export const RESOURCE_PARTS = [
@@ -186,8 +128,6 @@ export function automaticResource(resources: readonly ResourceInfo[], sizes: Res
     return { token: item.token, size: raw ? BigInt(raw) : 0n, recorded: raw != null };
   }));
 }
-
-export const resourceName = (item: Pick<ResourceInfo, 'name' | 'token' | 'ordinal'>) => `${contentTitle(item.name, item.token, 'Resource name unavailable')}${item.ordinal > 1 ? ` (${item.ordinal})` : ''}`;
 
 export type DealAt = ResourceDeal & { deliveredRaw: string | null };
 
@@ -267,16 +207,6 @@ function dealCounts(deals: readonly (Deals | null)[]): number[] {
   return Array.from({ length: Math.min(MAX_DEALS, most) }, (_, index) => Math.min(MAX_DEALS, most) - index);
 }
 
-export function resourceTooltip(head: Pick<TooltipContent, 'title' | 'icon' | 'subtitle' | 'note'>, balance: Balance, deals: Deals | null, decimals: number,
-  partner: CountryLabel, height: number): TooltipContent {
-  function* forms(): Generator<TooltipContent> {
-    for (const count of dealCounts([deals])) yield { ...head, rows: breakdownRows(balance, deals, decimals, partner, count) };
-    const summary = summaryRows(balance, decimals);
-    yield { ...head, rows: [...summary.slice(0, 2), { ...summary[2], divider: true, strong: true }] };
-  }
-  return fitTooltip(forms(), height, { keep: 1 });
-}
-
 export interface LineAt { resource: ResourceInfo; color: string; balance: Balance | null; deals: Deals | null; missing: string | null }
 
 export function overTimeTooltip(title: string, lines: readonly LineAt[], decimals: number, partner: CountryLabel, height: number): TooltipContent {
@@ -294,16 +224,6 @@ export function overTimeTooltip(title: string, lines: readonly LineAt[], decimal
   }
   return fitTooltip(forms(), height, { more: hidden => `${hidden} more` });
 }
-
-export const describeResource = (resource: ResourceInfo, balance: Balance | null, decimals: number) => balance
-  ? `${resourceName(resource)}: supply ${formatAmount(balance.supply, decimals)}, demand ${formatAmount(balance.demand, decimals)}, ${balance.net < 0n ? 'deficit' : 'surplus'} ${formatSigned(balance.net, decimals)}`
-  : `${resourceName(resource)}: not recorded at this time`;
-
-export const segmentLook = (raw: bigint, colour: string | undefined) => raw < 0n
-  ? { background: 'transparent', 'box-shadow': `inset 0 0 0 1.5px ${colour}` } : { background: colour ?? '', 'box-shadow': 'none' };
-
-export const legendFlags = (balances: readonly (Balance | null)[]) =>
-  `${balances.some(balance => balance && balance.fromSubjects !== 0n)}|${balances.some(balance => balance && balance.toOverlord !== 0n)}`;
 
 export interface ResourceTimeLine { id: string; color: string }
 

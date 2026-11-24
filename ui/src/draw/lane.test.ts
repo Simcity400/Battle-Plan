@@ -251,6 +251,28 @@ test('R4-S6: an open picture closes when a finite static bound is supplied later
   assert.equal(panel.page.view(1).through, 28, 'nor does a panel confirmation');
 });
 
+test('R5-S4: paused on an open picture first confirmed at 30, a finite proof [28, 28] invalidates it, on the followed or the panel channel', async () => {
+  const followed = rig();
+  followed.mount(1, [{ id: 5, channel: 'followed' }]);
+  followed.lane.bindRoute(5, ROUTE, NATIVE);
+  followed.lane.receive('follow', message(30, [{ id: 5, hour: 30, answer: rows([1n], [1n]) }], false, NATIVE));
+  await followed.step(30, { playing: false });
+  assert.deepEqual([followed.page.view(1).mode, followed.page.view(1).h, followed.page.view(1).through], ['picture', 30, 30], 'an open followed picture first and confirmed at 30');
+  followed.lane.supply(1, { dated: { h: 28, c: 28 } });
+  await followed.step(30, { playing: false });
+  assert.notEqual(followed.page.view(1).mode, 'picture', 'its hours and its proof do not meet: the page shows no current picture at 30');
+
+  const panel = rig();
+  panel.mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  panel.lane.bindRoute(3, ROUTE, NATIVE);
+  panel.lane.receive('panels', panels([{ id: 3, hour: 30, kind: 'data', stepped: true, data: { shape: 'A' } }, { id: 0, hour: 30, kind: 'completed' }]));
+  await panel.step(30, { playing: false });
+  assert.deepEqual([panel.page.view(1).mode, panel.page.view(1).h], ['picture', 30]);
+  panel.lane.supply(1, { dated: { h: 28, c: 28 } });
+  await panel.step(30, { playing: false });
+  assert.notEqual(panel.page.view(1).mode, 'picture', 'nor on the panel channel');
+});
+
 const at: LaneView = {
   next: (_scene, hour) => (Math.floor(hour / 24) + 1) * 24,
   paint: (input): Painted => ({ surfaces: [], fields: { at: { value: input.hour, content: `at:${input.hour}` } }, motion: false }),
