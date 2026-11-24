@@ -99,17 +99,6 @@ export function raidIcon(data: Pick<RaidLogReply, 'artwork'>, episode: RaidEpiso
   return episode.icon === null ? null : data.artwork.find(art => art.key === episode.icon)?.image ?? null;
 }
 
-export function raidVictimAt(episode: RaidEpisode, hour: number): RaidVictimAt {
-  const list = episode.victims;
-  let found = -1;
-  for (let low = 0, high = list.length - 1; low <= high;) {
-    const middle = (low + high) >> 1;
-    if (list[middle].hour <= hour) { found = middle; low = middle + 1; } else high = middle - 1;
-  }
-  if (found >= 0) return list[found];
-  return list[0] ?? { hour: episode.firstHour, tag: episode.victim, missing: episode.victimMissing, source: episode.victimSource };
-}
-
 export type RaidOutcomeCodes = Pick<RaidLogReply, 'outcomeNone' | 'outcomeFailure' | 'outcomeCanceled'>;
 
 export function raidOutcomeMissing(codes: RaidOutcomeCodes, ended: boolean, disappeared: boolean, outcome: number | null): string | null {
