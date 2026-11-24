@@ -43,7 +43,7 @@ impl FlowEndpoint {
         let Some(slot) = slot else { return Self { slot: None, tag: None, unknown: Some(unlinked.to_owned()) } };
         let country = Country::Slot(slot);
         let tag = holders.tag_at(&country, hour).map(str::to_owned);
-        let unknown = tag.is_none().then(|| holders.unnamed(&country).to_owned());
+        let unknown = tag.is_none().then(|| holders.unnamed(&country, hour));
         Self { slot: Some(slot), tag, unknown }
     }
 }
