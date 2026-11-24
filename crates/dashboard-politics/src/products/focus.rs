@@ -251,18 +251,27 @@ impl Fold {
                 (Some(_), Some(segment)) if extends => &segment.order.completed,
                 _ => &[],
             };
-            let prior_dates: BTreeMap<&str, i32> = if extends {
+            let prior_dates: BTreeMap<&str, Option<i32>> = if extends {
                 BTreeMap::new()
             } else {
                 self.segments
                     .last()
-                    .filter(|segment| segment.slot == who.0)
+                    .filter(|segment| segment.slot == who.0 && segment.id == who.1)
                     .map(|segment| {
+                        let mut prior_counts: BTreeMap<&str, usize> = BTreeMap::new();
+                        for entry in &segment.order.completed {
+                            *prior_counts.entry(entry.token.as_str()).or_default() += 1;
+                        }
+                        let mut now_counts: BTreeMap<&str, usize> = BTreeMap::new();
+                        for token in &order.completed {
+                            *now_counts.entry(token.as_str()).or_default() += 1;
+                        }
                         segment
                             .order
                             .completed
                             .iter()
-                            .filter_map(|entry| entry.completed_by_hour.map(|when| (entry.token.as_str(), when)))
+                            .filter(|entry| prior_counts.get(entry.token.as_str()) == Some(&1) && now_counts.get(entry.token.as_str()) == Some(&1))
+                            .map(|entry| (entry.token.as_str(), entry.completed_by_hour))
                             .collect()
                     })
                     .unwrap_or_default()
@@ -280,7 +289,7 @@ impl Fold {
                     } else if extends {
                         continuing.then_some(hour)
                     } else {
-                        prior_dates.get(token.as_str()).copied()
+                        prior_dates.get(token.as_str()).copied().flatten()
                     },
                 })
                 .collect();

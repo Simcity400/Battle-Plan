@@ -94,10 +94,20 @@ test('tiles join in hour order, each made with its own sides; a tile not read le
   assert.equal(joined.rows[1].cells.length, 6, 'a region a tile does not hold reads as no activity there');
 });
 
-test('merging timeline sides updates stale earlier-tile metadata with the latest assignment while preserving order', () => {
+test('merging timeline sides selects metadata by its last actual day of use while preserving order', () => {
   const early: AirSide = { key: 'f:10', faction: '10', colourFaction: null, factions: ['10'], tag: null, leader: 'GER', coBelligerents: 0, anchor: { tag: 'GER', hour: 0 } };
   const late: AirSide = { key: 'f:10', faction: '10', colourFaction: '10', factions: ['10'], tag: null, leader: 'GER', coBelligerents: 1, anchor: { tag: 'GER', hour: 0 } };
   const other: AirSide = { key: 'f:20', faction: '20', colourFaction: '20', factions: ['20'], tag: null, leader: 'JAP', coBelligerents: 0, anchor: { tag: 'JAP', hour: 100 } };
   const merged = mergeTimelineSides([{ ...reply(), sides: [early] }, { ...reply(), sides: [other, late] }]);
   assert.deepEqual(merged, [late, other]);
+
+  const solo: AirSide = { key: 'f:10', faction: '10', colourFaction: '10', factions: ['10'], tag: null, leader: 'GER', coBelligerents: 0, anchor: { tag: 'GER', hour: 0 } };
+  const coalition: AirSide = { key: 'f:10', faction: '10', colourFaction: '10', factions: ['10', '20'], tag: null, leader: 'GER', coBelligerents: 1, anchor: { tag: 'GER', hour: 0 } };
+  const cellOf = (sideIndex: number) => ({ kind: 'sides' as const, parts: [{ side: sideIndex, tag: 'GER', friendly: '100' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false });
+  const dissolved: AirTimelineReply = {
+    ...reply(), firstHour: 24, lastHour: 95, days: [47, 71, 95], excluded: [0, 0, 0],
+    sides: [solo, coalition],
+    rows: [{ region: 5, name: 'Channel', nameMissing: null, cells: [[1, cellOf(0)], [1, cellOf(1)], [1, cellOf(0)]] }],
+  };
+  assert.deepEqual(mergeTimelineSides([dissolved]), [solo], 'dissolved coalition on day 2 must not override solo faction reused on day 3');
 });

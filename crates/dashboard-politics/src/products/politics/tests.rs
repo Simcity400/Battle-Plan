@@ -1,4 +1,4 @@
-use super::{PoliticsRun, civil_wars, history, state};
+use super::{PoliticsRun, civil_wars, history};
 use dashboard_base::{Source, test_fixtures::{CAMPAIGN, snapshot_records, source}};
 use replay::campaign::Replay;
 use replay_data::rows::{
@@ -207,67 +207,4 @@ fn a_holders_schedule_across_its_raw_ids_is_in_hour_order() {
     assert_eq!(ger.held, [run(FIRST, LAST, 1)]);
     assert_eq!(ger.interval, [run(FIRST, LAST, 48)]);
     assert_eq!(ger.last, [run(FIRST, LAST, last_election())]);
-}
-
-#[test]
-fn scripted_balance_names_expand_for_the_member_country_in_state_and_history() {
-    let (catalogue, _folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
-        ("common/country_tags/synthetic.txt", "GER=\"countries/synthetic_ger.txt\""),
-        ("common/defines/test.lua", "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }"),
-        (
-            "common/scripted_localisation/test.txt",
-            "defined_text = { name = GetTestSide text = { trigger = { tag = GER } localization_key = SIDE_GER } text = { localization_key = SIDE_OTHER } }",
-        ),
-        (
-            "localisation/test_l_english.yml",
-            "\u{feff}l_english:\n GER_bop:0 \"[GetTestSide]\"\n GER_left:0 \"[GetTestSide]\"\n GER_right:0 \"Plain right\"\n SIDE_GER:0 \"Grand Council\"\n SIDE_OTHER:0 \"Other Council\"\n",
-        ),
-    ]);
-    let catalogue = Arc::new(catalogue);
-    catalogue.scripted_content().unwrap().set_synthetic_environment(Default::default());
-
-    let mut one = frame(FIRST);
-    for &table in dashboard_text::scripted_text::TABLES {
-        if !matches!(table, TableId::Countries | TableId::CountryLinks | TableId::Politics | TableId::CountryCounterInputs | TableId::PowerBalances | TableId::PowerBalanceMembers | TableId::CountryCivilWars) {
-            set(&mut one, table, TableRows::empty(table));
-        }
-    }
-    set(
-        &mut one,
-        TableId::PowerBalances,
-        TableRows::PowerBalances(vec![PowerBalanceRow {
-            ordinal: 0,
-            value_raw: 5_000,
-            balance: b"GER_bop".to_vec(),
-            left: b"GER_left".to_vec(),
-            right: b"GER_right".to_vec(),
-            trending: b"GER_left".to_vec(),
-            ..Default::default()
-        }]),
-    );
-    let params = state::PoliticsStateParams { branch_id: "1".into(), view: state::PoliticsView::Balances };
-    let live = dashboard_follow::live::Cells::default();
-    let state_reply = state::read(&one, &params, Some(Ok(catalogue.as_ref())), &live).unwrap();
-    let record = &state_reply.balances[0];
-    assert_eq!(record.name.as_deref(), Some("Grand Council"));
-    assert_eq!(record.left.name.as_deref(), Some("Grand Council"));
-    assert_eq!(record.right.name.as_deref(), Some("Plain right"));
-    assert_eq!(record.trending.as_ref().and_then(|side| side.name.as_deref()), Some("Grand Council"));
-    assert!(!state_reply.unavailable.iter().any(|entry| entry.label == "balance side names"));
-
-    let frames: Vec<DecodedFrame> = (FIRST..=FIRST + 2)
-        .map(|hour| {
-            let mut held = one.clone();
-            held.hour = hour;
-            held
-        })
-        .collect();
-    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[snapshot_records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
-    let source = Source::from_replay(dashboard_base::SourceKey { source_id: "politics-scripted".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
-    let query = dashboard_base::queries::query(&source, 1).unwrap();
-    let history_params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Country, country: Some("GER".into()) };
-    let history_reply = history::answer(&query, &history_params, Some(Ok(Arc::clone(&catalogue))), &AtomicBool::new(false)).unwrap();
-    assert_eq!(history_reply.holder_balances[0].balances[0].name.as_deref(), Some("Grand Council"));
-    assert_eq!(history_reply.names.get("GER_bop").map(String::as_str), Some("Grand Council"));
-    assert_eq!(history_reply.names.get("GER_left").map(String::as_str), Some("Grand Council"));
 }

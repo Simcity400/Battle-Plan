@@ -149,18 +149,54 @@ export function joinTiles(tiles: readonly (AirTimelineReply | undefined)[], span
   return { rows, periods, loading };
 }
 
+function markCellSides(cell: AirDayCell | null, hour: number, lastUsed: number[]): void {
+  if (!cell || cell.kind === 'reason') return;
+  const mark = (side: number) => {
+    if (side >= 0 && side < lastUsed.length && hour > lastUsed[side]) lastUsed[side] = hour;
+  };
+  if (cell.kind === 'view') {
+    if (cell.side !== null) mark(cell.side);
+    return;
+  }
+  for (const part of cell.parts) mark(part.side);
+  for (const [side] of cell.viewpoints) mark(side);
+  for (const side of cell.unknown) mark(side);
+  for (const side of cell.noAirObject) mark(side);
+}
+
 export function mergeTimelineSides(replies: readonly (AirTimelineReply | undefined)[], moment?: AirSuperiorityReply): AirSide[] {
   const held: AirSide[] = [];
+  const bestHour: number[] = [];
   const index = new Map<string, number>();
-  for (const side of [...replies.flatMap(reply => reply?.sides ?? []), ...(moment?.sides ?? [])]) {
+  const record = (side: AirSide, usedHour: number) => {
     const at = index.get(side.key);
     if (at === undefined) {
       index.set(side.key, held.length);
       held.push(side);
-    } else {
+      bestHour.push(usedHour);
+    } else if (usedHour >= bestHour[at]) {
       held[at] = side;
+      bestHour[at] = usedHour;
     }
+  };
+  for (const reply of replies) {
+    if (!reply) continue;
+    const lastUsed = new Array<number>(reply.sides.length).fill(-Infinity);
+    for (const row of reply.rows) {
+      let day = 0;
+      for (const [repeat, cell] of row.cells) {
+        let hour = -Infinity;
+        for (let d = day + repeat - 1; d >= day; d--) {
+          const read = reply.days[d];
+          if (read != null) { hour = read; break; }
+        }
+        if (hour > -Infinity) markCellSides(cell, hour, lastUsed);
+        day += repeat;
+      }
+    }
+    reply.sides.forEach((side, sideIndex) => record(side, lastUsed[sideIndex]));
   }
+  for (const side of moment?.sides ?? []) record(side, Infinity);
   return held;
 }
 

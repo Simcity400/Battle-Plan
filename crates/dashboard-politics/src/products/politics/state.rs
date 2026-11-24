@@ -4,7 +4,7 @@ use super::token;
 use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, at_hour::{At, AtHour}}};
 use crate::products::country_people::{self, Links};
 use dashboard_follow::live::{Cells, Source as Cell};
-use dashboard_text::{catalogue::{View, localised_in}, scripted_text::{self, ScriptedText}};
+use dashboard_text::catalogue::View;
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -188,15 +188,7 @@ impl AtHour for PoliticsState {
     fn tables(params: &Self::Params) -> Vec<TableId> {
         match params.view {
             PoliticsView::Exiles => country_people::EXILE_TABLES.to_vec(),
-            PoliticsView::Balances => {
-                let mut tables = BALANCE_TABLES.to_vec();
-                for &table in scripted_text::TABLES {
-                    if !tables.contains(&table) {
-                        tables.push(table);
-                    }
-                }
-                tables
-            }
+            PoliticsView::Balances => BALANCE_TABLES.to_vec(),
         }
     }
 
@@ -281,28 +273,15 @@ fn exiles(frame: &DecodedFrame, reply: &mut PoliticsStateReply, live: &Cells) {
     }
 }
 
-fn name(frame: &DecodedFrame, catalogue: Option<&Catalogue>, slot: Option<u32>, key: &str, label: &str, reply: &mut PoliticsStateReply) -> Option<String> {
+fn name(catalogue: Option<&Catalogue>, key: &str, label: &str, reply: &mut PoliticsStateReply) -> Option<String> {
     if key.is_empty() {
         return None;
     }
     let catalogue = catalogue?;
     match catalogue.localised(key, View::Plain) {
         Some(text) if text.contains('[') && text.contains(']') => {
-            let Some(slot) = slot else {
-                reply.refuse(label, "the name needs a member country to evaluate scripted localisation", 1);
-                return None;
-            };
-            let expanded = catalogue.scripted_content().and_then(|content| {
-                let scripted = ScriptedText::new(frame, &catalogue.localisation, content, slot);
-                localised_in(&catalogue.localisation, key, &[], &scripted)
-            });
-            match expanded {
-                Ok(text) => Some(text),
-                Err(reason) => {
-                    reply.refuse(label, reason, 1);
-                    None
-                }
-            }
+            reply.refuse(label, "the name needs scripted localisation this view cannot evaluate", 1);
+            None
         }
         Some(text) => Some(text),
         None => {
@@ -312,9 +291,9 @@ fn name(frame: &DecodedFrame, catalogue: Option<&Catalogue>, slot: Option<u32>, 
     }
 }
 
-fn side(frame: &DecodedFrame, catalogue: Option<&Catalogue>, slot: Option<u32>, bytes: &[u8], reply: &mut PoliticsStateReply) -> BalanceSide {
+fn side(catalogue: Option<&Catalogue>, bytes: &[u8], reply: &mut PoliticsStateReply) -> BalanceSide {
     let token = token(bytes);
-    BalanceSide { name: name(frame, catalogue, slot, &token, "balance side names", reply), token }
+    BalanceSide { name: name(catalogue, &token, "balance side names", reply), token }
 }
 
 fn balances(frame: &DecodedFrame, catalogue: Option<Result<&Catalogue, &String>>, reply: &mut PoliticsStateReply, live: &Cells) -> io::Result<()> {
@@ -369,7 +348,6 @@ fn balances(frame: &DecodedFrame, catalogue: Option<Result<&Catalogue, &String>>
     }
     for record in records {
         let balance = token(&record.balance);
-        let slot = members.iter().filter(|member| member.record == record.ordinal).find_map(|member| links.slot(member.country));
         let ranges: Vec<_> = content
             .and_then(|database| database.ranges(&record.balance))
             .map(|ranges| {
@@ -377,7 +355,7 @@ fn balances(frame: &DecodedFrame, catalogue: Option<Result<&Catalogue, &String>>
                     .iter()
                     .map(|range| {
                         let token = token(&range.id);
-                        BalanceRange { name: name(frame, catalogue, slot, &token, "balance range names", reply), token, min: Some(range.min.to_string()), max: Some(range.max.to_string()) }
+                        BalanceRange { name: name(catalogue, &token, "balance range names", reply), token, min: Some(range.min.to_string()), max: Some(range.max.to_string()) }
                     })
                     .collect()
             })
@@ -406,7 +384,7 @@ fn balances(frame: &DecodedFrame, catalogue: Option<Result<&Catalogue, &String>>
                 max: bounds.map(|(_, max)| max),
             }
         });
-        let trending = (!content_reader_parser::parser::c_string(&record.trending).is_empty()).then(|| side(frame, catalogue, slot, &record.trending, reply));
+        let trending = (!content_reader_parser::parser::c_string(&record.trending).is_empty()).then(|| side(catalogue, &record.trending, reply));
         let record_members = members
             .iter()
             .filter(|member| member.record == record.ordinal)
@@ -443,9 +421,9 @@ fn balances(frame: &DecodedFrame, catalogue: Option<Result<&Catalogue, &String>>
             }
             (None, _, _) => None,
         };
-        let balance_name = name(frame, catalogue, slot, &balance, "balance names", reply);
-        let left = side(frame, catalogue, slot, &record.left, reply);
-        let right = side(frame, catalogue, slot, &record.right, reply);
+        let balance_name = name(catalogue, &balance, "balance names", reply);
+        let left = side(catalogue, &record.left, reply);
+        let right = side(catalogue, &record.right, reply);
         live.value(&record.ordinal.to_string(), "value", Cell { table: TableId::PowerBalances, column: value_column, key: record.ordinal.into() }, 1.0);
         reply.balances.push(BalanceRecord {
             ordinal: record.ordinal,

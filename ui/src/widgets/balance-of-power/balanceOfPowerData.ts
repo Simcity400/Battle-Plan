@@ -23,7 +23,7 @@ const UNIT = 100_000;
 
 export const BALANCE_UNAVAILABLE = 'Balance name unavailable';
 export const RANGE_UNAVAILABLE = 'Range name unavailable';
-export const SIDE_UNAVAILABLE = 'Name not recorded';
+export const SIDE_UNAVAILABLE = 'Side name unavailable';
 export const SOURCE_UNAVAILABLE = 'Modifier name unavailable';
 export const COUNTRY_UNAVAILABLE = 'Country unavailable';
 

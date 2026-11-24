@@ -5,13 +5,12 @@ use super::{
     HolderTag, Holding, PoliticsRun, by_id, decimal, holdings, pieces, state::{BalanceRange, BalanceSide}, stretch_runs, tags_of, token,
     value_at, within,
 };
-use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, Product, at_hour, check_reply_budget}};
+use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, Product, check_reply_budget}};
 use dashboard_base::span::HourSpan;
 use dashboard_query::{Query, timeline::Stretch};
-use dashboard_text::{catalogue::{View, localised_in}, scripted_text::{self, ScriptedText}};
+use dashboard_text::catalogue::View;
 use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::rows::TableId;
-use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -348,72 +347,37 @@ fn tokens(history: &History, runs: &[(i32, i32, Option<Cell>)], first: i32, last
 }
 
 struct Presentation<'a> {
-    query: &'a Query<'a>,
     catalogue: Option<&'a Catalogue>,
     balances: Option<&'a content_reader_politics::power_balance::Database>,
-    frames: BTreeMap<i32, Result<DecodedFrame, String>>,
-    reasons: Vec<String>,
 }
 
 impl Presentation<'_> {
-    fn frame_at(&mut self, hour: i32) -> Result<&DecodedFrame, String> {
-        let query = self.query;
-        self.frames
-            .entry(hour)
-            .or_insert_with(|| {
-                let reads: Vec<at_hour::Read> = scripted_text::TABLES.iter().map(|&table| at_hour::Read { table, keys: at_hour::Keys::All }).collect();
-                at_hour::frame(query, hour, &reads, "Balance names").map_err(|error| error.to_string())
-            })
-            .as_ref()
-            .map_err(Clone::clone)
-    }
-
-    fn name(&mut self, token: &str, slot: u32, hour: i32, names: &mut BTreeMap<String, String>, refused: &mut u64) -> Option<String> {
+    fn name(&self, token: &str, names: &mut BTreeMap<String, String>, refused: &mut u64) -> Option<String> {
         if token.is_empty() {
             return None;
         }
         if let Some(name) = names.get(token) {
             return Some(name.clone());
         }
-        let catalogue = self.catalogue?;
-        match catalogue.localised(token, View::Plain) {
+        match self.catalogue.and_then(|catalogue| catalogue.localised(token, View::Plain)) {
             Some(text) if !(text.contains('[') && text.contains(']')) => {
                 names.insert(token.to_owned(), text.clone());
                 Some(text)
             }
-            Some(_) => {
-                let expanded = self.frame_at(hour).and_then(|frame| {
-                    let content = catalogue.scripted_content()?;
-                    let scripted = ScriptedText::new(frame, &catalogue.localisation, content, slot);
-                    localised_in(&catalogue.localisation, token, &[], &scripted)
-                });
-                match expanded {
-                    Ok(text) => {
-                        names.insert(token.to_owned(), text.clone());
-                        Some(text)
-                    }
-                    Err(reason) => {
-                        if !self.reasons.contains(&reason) {
-                            self.reasons.push(reason);
-                        }
-                        *refused += 1;
-                        None
-                    }
-                }
-            }
-            None => {
+            _ if self.catalogue.is_some() => {
                 *refused += 1;
                 None
             }
+            _ => None,
         }
     }
 
-    fn side(&mut self, bytes: &[u8], slot: u32, hour: i32, names: &mut BTreeMap<String, String>, refused: &mut u64) -> BalanceSide {
+    fn side(&self, bytes: &[u8], names: &mut BTreeMap<String, String>, refused: &mut u64) -> BalanceSide {
         let token = token(bytes);
-        BalanceSide { name: self.name(&token, slot, hour, names, refused), token }
+        BalanceSide { name: self.name(&token, names, refused), token }
     }
 
-    fn authored(&mut self, token: &str, slot: u32, hour: i32, names: &mut BTreeMap<String, String>, refused: &mut u64) -> (Option<BalanceSide>, Option<BalanceSide>, Vec<BalanceRange>) {
+    fn authored(&self, token: &str, names: &mut BTreeMap<String, String>, refused: &mut u64) -> (Option<BalanceSide>, Option<BalanceSide>, Vec<BalanceRange>) {
         let Some(balances) = self.balances else { return (None, None, Vec::new()) };
         let definition = balances.definition(token.as_bytes());
         let ranges = balances
@@ -422,10 +386,10 @@ impl Presentation<'_> {
             .iter()
             .map(|range| {
                 let token = super::token(&range.id);
-                BalanceRange { name: self.name(&token, slot, hour, names, refused), token, min: Some(range.min.to_string()), max: Some(range.max.to_string()) }
+                BalanceRange { name: self.name(&token, names, refused), token, min: Some(range.min.to_string()), max: Some(range.max.to_string()) }
             })
             .collect();
-        (definition.map(|definition| self.side(&definition.left, slot, hour, names, refused)), definition.map(|definition| self.side(&definition.right, slot, hour, names, refused)), ranges)
+        (definition.map(|definition| self.side(&definition.left, names, refused)), definition.map(|definition| self.side(&definition.right, names, refused)), ranges)
     }
 }
 
@@ -540,12 +504,9 @@ fn balances(
     if let Some(Err(error)) = &effects {
         reply.warnings.push(format!("1 refused balance ranges: {error}"));
     }
-    let mut presentation = Presentation {
-        query,
+    let presentation = Presentation {
         catalogue: catalogue.as_deref(),
         balances: effects.as_ref().and_then(|effects| effects.as_ref().ok()).and_then(|effects| effects.view(None).power_balances),
-        frames: BTreeMap::new(),
-        reasons: Vec::new(),
     };
     let mut refused = 0_u64;
     for (slot, mut holder) in gathered {
@@ -558,13 +519,9 @@ fn balances(
             held_ranges.sort_by_key(|run| run.0);
             let mut trending = holder.trending.remove(&token).unwrap_or_default();
             trending.sort_by_key(|run| run.0);
-            let at = values.last().map(|run| run.1).unwrap_or(query.timeline.last);
-            let (left, right, ranges) = presentation.authored(&token, slot, at, &mut reply.names, &mut refused);
-            for &(_, end, ref side_token) in &trending {
-                presentation.name(side_token, slot, end, &mut reply.names, &mut refused);
-            }
+            let (left, right, ranges) = presentation.authored(&token, &mut reply.names, &mut refused);
             balances.push(BalanceHistory {
-                name: presentation.name(&token, slot, at, &mut reply.names, &mut refused),
+                name: presentation.name(&token, &mut reply.names, &mut refused),
                 token,
                 left,
                 right,
@@ -584,11 +541,7 @@ fn balances(
         });
     }
     if refused != 0 {
-        if presentation.reasons.is_empty() {
-            reply.warnings.push(format!("{refused} refused balance names: no localisation in the recorded content"));
-        } else {
-            reply.warnings.push(format!("{refused} refused balance names: {}", presentation.reasons.join("; ")));
-        }
+        reply.warnings.push(format!("{refused} refused balance names: no plain localisation in the recorded content"));
     }
     if unresolved != 0 {
         reply.warnings.push(format!("{unresolved} refused balance members: the member has no identity"));
