@@ -27,6 +27,7 @@ export default function WidgetPreview({ definition, initial, runtime }: {
   const icon = useContext(WidgetIconsContext).style(definition.kind);
   const [summary, setSummary] = useState<HTMLSpanElement | null>(null);
   const [country, setCountry] = useState<HTMLSpanElement | null>(null);
+  const [filter, setFilter] = useState<HTMLSpanElement | null>(null);
   const [captionSlot, setCaptionSlot] = useState<HTMLDivElement | null>(null);
   const [hasBodyState, setHasBodyState] = useState(false);
   const stateOwners = useRef(new Set<object>());
@@ -82,6 +83,7 @@ export default function WidgetPreview({ definition, initial, runtime }: {
         hasBodyState={hasBodyState}
         summarySlotRef={setSummary}
         countrySlotRef={setCountry}
+        filterSlotRef={setFilter}
         headerSlotElement={summary}
       />
       <WidgetFrameContext.Provider value={frameValue}>
@@ -89,7 +91,7 @@ export default function WidgetPreview({ definition, initial, runtime }: {
         <div className="dash-widget-caption-slot" ref={setCaptionSlot} hidden={hasBodyState || undefined} />
         <div className="dash-widget-content"><div className="dash-widget-scaled">
           <HeldFailuresContext.Provider value={failures}>
-            <WidgetBody key={`${definition.kind}:${JSON.stringify(initial?.options ?? {})}`} widget={widget} runtime={runtime} headerSlot={summary} countrySlot={country} setOption={noop} setOptions={noop} />
+            <WidgetBody key={`${definition.kind}:${JSON.stringify(initial?.options ?? {})}`} widget={widget} runtime={runtime} headerSlot={summary} countrySlot={country} filterSlot={filter} setOption={noop} setOptions={noop} />
           </HeldFailuresContext.Provider>
         </div></div>
       </WidgetFrameContext.Provider>

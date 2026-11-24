@@ -73,6 +73,9 @@ pub struct TensionStackOther {
 #[serde(rename_all = "camelCase")]
 pub struct TensionStackEvent {
     pub hour: i32,
+    pub slot: Option<u32>,
+    pub second_country: u32,
+    pub place: u32,
     pub tag: Option<String>,
     pub remembered: bool,
     pub reason: String,
@@ -261,6 +264,8 @@ fn row_step(row: &log::Row) -> Option<Step> {
 struct CachedEvent {
     hour: i32,
     slot: Option<u32>,
+    second_country: u32,
+    place: u32,
     reason: String,
     added: Vec<(i32, i64)>,
     first_read: i32,
@@ -526,6 +531,8 @@ fn build_branch(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Res
         .map(|event| CachedEvent {
             hour: event.identity.date,
             slot: event.slot,
+            second_country: event.identity.second,
+            place: event.identity.place,
             reason: dashboard_text::catalogue::display_text(&event.identity.reason).unwrap_or_else(|why| {
                 let raw = String::from_utf8_lossy(&event.identity.reason).into_owned();
                 warnings.push((event.first_read, format!("Threat reason {raw:?} {why}")));
@@ -671,6 +678,7 @@ pub(super) fn compute_stack(
     filter: Option<&HashSet<&str>>,
     max_points: usize,
     mut slot_tag: impl FnMut(u32, i32) -> Option<(String, bool)>,
+    mut slot_next_change: impl FnMut(u32, i32) -> Option<i32>,
 ) -> StackOutput {
     let tension_scale = (cthreat_source::FIXED_POINT_SCALE / cworld_threat::SCALAR_DIVISOR) as f64;
     let contribution_scale = cthreat_source::FIXED_POINT_SCALE as f64;
@@ -682,8 +690,9 @@ pub(super) fn compute_stack(
     };
     bump(&mut next_change, next_run_change(input.sum, last));
     bump(&mut next_change, next_span_change(input.aggregates_complete, last));
-    for runs in input.slots.values() {
+    for (&slot, runs) in input.slots {
         bump(&mut next_change, next_opt_run_change(runs, last));
+        bump(&mut next_change, slot_next_change(slot, last));
     }
     for span in input.missing {
         if span.first_hour > last {
@@ -729,7 +738,7 @@ pub(super) fn compute_stack(
     }
     let mut ranked: Vec<RankedSlot> = Vec::new();
     for (&slot, runs) in input.slots {
-        let resolved = slot_tag(slot, rank_hour);
+        let resolved = slot_tag(slot, last);
         if let Some(wanted) = filter {
             let keep = resolved.as_ref().is_some_and(|(tag, _)| wanted.contains(tag.as_str()));
             if !keep {
@@ -1110,6 +1119,7 @@ impl Product for WorldTensionStack {
             filter.as_ref(),
             max_points,
             |slot, hour| named.slot(slot, hour).map(|(tag, remembered)| (tag.to_owned(), remembered)),
+            |slot, hour| named.next_change(slot, hour),
         );
         let mut next_change_hour = computed.next_change_hour;
         let mut events: Vec<TensionStackEvent> = Vec::new();
@@ -1145,6 +1155,9 @@ impl Product for WorldTensionStack {
                 .flatten();
             events.push(TensionStackEvent {
                 hour: event.hour,
+                slot: event.slot,
+                second_country: event.second_country,
+                place: event.place,
                 tag: resolved.map(|(tag, _)| tag.to_owned()),
                 remembered: resolved.is_some_and(|(_, remembered)| remembered),
                 reason: event.reason.clone(),

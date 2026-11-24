@@ -435,6 +435,12 @@ fn classify_no_texture(
             origin,
             file: Some(path),
         },
+        NoTexture::Unsupported { path, reason } => ArtResolution::Refused {
+            reason: format!("texture {path} is in an unsupported form: {reason}"),
+            construct: "unsupported-texture-format".to_owned(),
+            origin,
+            file: Some(path),
+        },
         NoTexture::Undefined { path, reason } => ArtResolution::Refused {
             reason: format!("texture {path} has undefined format behaviour: {reason}"),
             construct: "undefined-texture-format".to_owned(),
