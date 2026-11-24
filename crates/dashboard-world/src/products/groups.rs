@@ -648,6 +648,26 @@ pub fn faction_name_at(faction: &FactionGroup, hour: i32) -> (Option<String>, Op
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FactionAt {
+    pub id: String,
+    pub name: Option<String>,
+    pub name_missing: Option<String>,
+}
+
+pub fn factions_at(factions: &[FactionGroup], hour: i32) -> HashMap<String, FactionAt> {
+    let mut out = HashMap::new();
+    for faction in factions {
+        let (name, name_missing) = faction_name_at(faction, hour);
+        for run in &faction.members {
+            if run.first_hour <= hour && hour <= run.last_hour {
+                out.entry(run.tag.clone()).or_insert_with(|| FactionAt { id: faction.id.clone(), name: name.clone(), name_missing: name_missing.clone() });
+            }
+        }
+    }
+    out
+}
+
 pub fn cached_groups(source: &dashboard_base::Source, run: u32) -> io::Result<std::sync::Arc<RunGroups>> {
     Runs::held(&source.state::<Runs>(), run, || run_groups(source.replay_ref().recording(), run))
 }

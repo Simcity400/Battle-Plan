@@ -7,6 +7,7 @@ pub mod intel_details;
 pub mod intel_explanations;
 pub mod intel_ranges;
 pub mod operative_content;
+pub mod operative_matrix;
 pub mod placements;
 pub mod roster;
 

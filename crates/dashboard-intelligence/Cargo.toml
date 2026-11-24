@@ -34,6 +34,7 @@ dashboard-declare = { workspace = true }
 dashboard-follow = { path = "../dashboard-follow" }
 dashboard-query = { workspace = true }
 dashboard-text = { workspace = true }
+dashboard-world = { workspace = true }
 engine-intelligence = { workspace = true }
 game-model = { workspace = true }
 replay-columnar = { workspace = true }

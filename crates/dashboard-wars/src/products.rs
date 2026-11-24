@@ -2,6 +2,7 @@ pub mod wars;
 #[cfg(test)]
 mod war_fixtures;
 pub mod casualties;
+pub mod casualty_matrix;
 pub mod peace;
 pub mod volunteers;
 pub mod wargoals;
