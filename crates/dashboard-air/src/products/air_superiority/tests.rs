@@ -352,3 +352,12 @@ fn an_empty_comparison_says_whether_the_widget_left_every_active_region_out_the_
     let (outside, _) = moment_of(&elsewhere, &theatres);
     assert_eq!((outside.regions.len(), outside.empty), (0, Some(NoRegions::Filtered { hidden: 0, outside: 1 })), "the only active region lies outside the chosen theatres");
 }
+
+#[test]
+fn a_reply_holds_until_the_sides_change_so_a_quiet_hour_rebuilds_nothing() {
+    let context = AirContext { names: names(), index: Ok(Arc::new(index::build(groups(100), 0, 100))), resolver: None, resolver_warnings: Vec::new() };
+    let last = context.index.as_ref().unwrap().epoch(50).unwrap().last;
+    assert_eq!(valid_through(&context, 50), last, "the sides are assigned once per stretch of unchanged groups: nothing else the reply shows moves with the clock");
+    let unknown = AirContext { index: Err("no index".into()), ..context };
+    assert_eq!(valid_through(&unknown, 50), 50, "without the sides, the reply proves only its own hour");
+}

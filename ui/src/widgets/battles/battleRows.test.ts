@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { battleChangeHours, battleChanges, battleJumpHour, battleCountryRequests, battleDate, battleDateMoment, battleFlagCount, battleShortDate, battleLogRows, battleMeasure, battleState, battleStateRows, heldWindowsEnd, battleTooltip, battleValueText, battleWinner, isBattleRow,
+import { battleChangeHours, battleChanges, battleJumpHour, battleCountryRequests, battleDate, battleDateMoment, battleFlagCount, battleShortDate, battleLogRows, battleMeasure, battleState, battleStateRows, heldWindowsEnd, battleTooltip, battleValueText, battleWinner, isBattleRow, BATTLE_PARTIAL_REASON, battlePartial, battleValueRow, battleValueTitle, markPartial,
   battlePlaceRequests, heldAtHour, namedBattles, rowsById } from './battleRows.ts';
 import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
 import type { BattleLabels, BattleRow, BattleValue } from './battleRows';
@@ -58,6 +58,12 @@ test('battle rows retain bounds, missing starts, unknown results and explicit ze
   assert.deepEqual(battleMeasure(battle, 'Ships', 'Not read'), { label: 'Ships', value: 5, atLeast: false });
   assert.deepEqual(battleMeasure(battle, 'Sunk', 'Not read'), { label: 'Sunk', value: null, unknown: 'Losses not read; Not read' });
   assert.equal(battleValueText({ label: 'Ships', value: 0 }), '0');
+  const sunk = { label: 'Sunk', value: 3, atLeast: true };
+  assert.deepEqual(battleValueRow('Sunk', sunk, '3 so far', { indent: true }),
+    { indent: true, label: 'Sunk', valueState: { kind: 'partial', text: '3 so far', reason: BATTLE_PARTIAL_REASON } }, 'R2-K7: a partial battle figure keeps its mark and reason');
+  assert.deepEqual(battleValueRow('Ships', { label: 'Ships', value: 5 }, '5'), { label: 'Ships', value: '5' });
+  assert.equal(markPartial('4 h', battlePartial({ label: 'Length', value: 4, atLeast: true })), '4 h partial');
+  assert.equal(battleValueTitle(sunk, '3'), `3, partial: ${BATTLE_PARTIAL_REASON}`);
   for (const value of [0.123456789, 1e-30]) {
     assert.equal(battleValueText({ label: 'Caller measure', value }), String(value));
   }

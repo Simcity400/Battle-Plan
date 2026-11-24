@@ -1,4 +1,4 @@
-import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption, raceViewVariants } from '../../charts/race/options.ts';
+import { RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption, raceViewVariants } from '../../charts/race/options.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { choiceVariants } from '../../dashboard/options.ts';
@@ -16,7 +16,6 @@ export const OPTIONS: readonly OptionField[] = [
     visibleWhen: options => options.measure === 'territory' },
   { key: 'rule', section: 'options', label: 'Territory rule', kind: 'choice', default: 'controlled',
     choices: [{ value: 'controlled', label: 'Controlled' }, { value: 'owned', label: 'Owned' }], visibleWhen: options => options.measure === 'territory' },
-  DATE_OVERLAY_OPTION,
   { key: 'endLabels', section: 'options', label: 'Names at line ends', kind: 'toggle', default: true, visibleWhen: options => options.view === 'lines' },
   ...RACE_TIME_OPTIONS,
   ...RACE_AXIS_OPTIONS,

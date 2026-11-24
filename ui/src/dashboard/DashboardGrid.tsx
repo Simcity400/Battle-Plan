@@ -372,6 +372,7 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
       headerSlotElement={headerSlot}
       source={source}
       onApply={applyWidget}
+      setOption={saveOption}
       onRemove={editing ? () => onRemove(widget.id) : undefined}
       onReset={reset}
       resetUndoVisible={!!resetUndo}

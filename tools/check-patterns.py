@@ -48,7 +48,7 @@ RULE_HINTS = {
     "family-hand-percent": "use formatShare, formatProgress, or formatRecordedPercent from ui/src/families/valueFormat.ts",
     "family-at-least-wording": "show the figure with the partial mark and a plain missing reason; never print 'at least', '≥', or '+ means'",
     "family-private-art-cache": "use resolveCachedArt, toArtSlotState, and toFlagSlotState from ui/src/families/art/adapters.ts, and collectArtUrls from ui/src/families/art/provider.ts",
-    "widget-stored-option": "read the options the host hands the view (props.options), or widgetViewOptions / setWidgetViewOption from ui/src/widgets/manifest.ts",
+    "widget-stored-option": "read the options the host hands the view (props.options), or widgetViewOptions from ui/src/widgets/manifest.ts, and write through props.setOption",
 }
 JS_TEST = re.compile(r"\.test\.(?:ts|tsx|mts|js|mjs|cjs)$")
 TS_FIXTURE = re.compile(r"\.fixtures?\.tsx?$")

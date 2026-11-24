@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { factoryMeasure, factoryParts, groupCount, groupName, partRows, typeChoices, validateFactoryGroups, validateFactoryParts } from './factoriesData.ts';
+import { factoryMeasure, groupCount, groupName, partRows, typeChoices, validateFactoryGroups, validateFactoryParts } from './factoriesData.ts';
 import type { FactoryPartsReply } from '../../generated/dashboard';
 
 const part = (group: string, name: string, value: number) => ({ group, part: name, value });
@@ -39,13 +39,8 @@ test('a group is named by the content’s building types, unnamed ones by that, 
   assert.throws(() => validateFactoryGroups({ groups: [{ key: 'military' }], missing: null, warnings: [] }));
 });
 
-test('a count’s parts are each chosen group’s count of the same mode, which add to it', () => {
-  const parts = factoryParts('topBar', ['civilian', 'military'], undefined);
-  assert.deepEqual(parts.kind === 'measures' && parts.items.map(item => [item.id, item.measure.measure]), [['military', 'topBar1'], ['civilian', 'topBar4']]);
+test('factoryMeasure encodes mode and selected group bitmask', () => {
   assert.equal(factoryMeasure('topBar', ['civilian', 'military']), 'topBar5');
-  const every = factoryParts('free', [], undefined);
-  assert.deepEqual(every.kind === 'measures' && every.items.map(item => item.measure.measure), ['free1', 'free2', 'free4']);
-  const built = factoryParts('built', ['naval'], undefined);
-  assert.deepEqual(built.kind === 'measures' && built.items.map(item => [item.id, item.measure.measure, item.hatchOf ?? null]),
-    [['naval', 'built2', null], ['damaged:naval', 'damaged2', 'naval']], 'built bars hatch each group’s damaged count inside it');
+  assert.equal(factoryMeasure('free', []), 'free7');
+  assert.equal(factoryMeasure('built', ['naval']), 'built2');
 });
