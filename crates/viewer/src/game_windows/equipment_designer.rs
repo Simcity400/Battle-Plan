@@ -3,6 +3,7 @@ use super::{
     GameWindowRender, GameWindowRequest, GameWindowTooltip, Prepared, RenderParams, Service,
     WindowCacheKey, container_holder, layout_window, strip_markup,
 };
+use super::compose::{disable_by_name, find_direct, hide_by_name, set_text_by_name, spell};
 use content_reader_equipment_graphics::equipment_graphics::countries as graphics_countries;
 use content_reader_gui::gui::native::{self, Element, Fields, Kind};
 use content_reader_image::native::Decode;
@@ -1483,18 +1484,6 @@ pub fn render(
     )
 }
 
-fn spell(lexical: &[LexicalTokenRow], token: u32) -> Option<String> {
-    if token == 0 {
-        return None;
-    }
-    let index = lexical.binary_search_by_key(&token, |row| row.token).ok()?;
-    let bytes = c_string(&lexical[index].literal);
-    std::str::from_utf8(bytes)
-        .ok()
-        .filter(|text| !text.is_empty())
-        .map(str::to_owned)
-}
-
 fn slice_by_variant<T>(rows: &[T], variant_id: u64, key: impl Fn(&T) -> u64) -> &[T] {
     let start = rows.partition_point(|row| key(row) < variant_id);
     let end = rows.partition_point(|row| key(row) <= variant_id);
@@ -2233,62 +2222,6 @@ fn apply_equipment_icon(
 
 fn element_name(element: &Element) -> &str {
     std::str::from_utf8(element.name_bytes()).unwrap_or("")
-}
-
-fn find_child<'a>(parent: &'a Element, segment: &str) -> Option<&'a Element> {
-    if let Some(found) = parent
-        .children
-        .iter()
-        .find(|child| child.is_named(segment.as_bytes()))
-    {
-        return Some(found);
-    }
-    if let Fields::DropDown(dd) = &parent.fields {
-        if let Some(expand) = dd.expand_button.as_deref()
-            && expand.is_named(segment.as_bytes())
-        {
-            return Some(expand);
-        }
-        if let Some(found) = dd
-            .inner
-            .children
-            .iter()
-            .find(|child| child.is_named(segment.as_bytes()))
-        {
-            return Some(found);
-        }
-    }
-    None
-}
-
-fn find_direct<'a>(root: &'a Element, path: &str) -> Option<&'a Element> {
-    let mut current = root;
-    for segment in path.split('/') {
-        current = find_child(current, segment)?;
-    }
-    Some(current)
-}
-
-fn hide_by_name(instance: &mut Instance, root: &Element, name: &str) {
-    if let Some(element) = find_direct(root, name) {
-        let _ = instance.hide(root, element);
-    }
-}
-
-fn disable_by_name(instance: &mut Instance, root: &Element, name: &str) {
-    if let Some(element) = find_direct(root, name)
-        && let Ok(bound) = instance.control(root, element)
-    {
-        bound.enabled = Some(false);
-    }
-}
-
-fn set_text_by_name(instance: &mut Instance, root: &Element, name: &str, text: String) {
-    if let Some(element) = find_direct(root, name)
-        && let Ok(bound) = instance.control(root, element)
-    {
-        bound.text = Some(text);
-    }
 }
 
 struct MainWindowContext<'a> {

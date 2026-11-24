@@ -118,7 +118,7 @@ export const worldTensionEventsProjection: TableProjection<WorldTensionEventsOpt
       }
       return { rows: shown, warnings: parsed.warnings };
     },
-    rowKey: row => `${row.hour}:${row.firstRead}:${row.reason}:${row.tag ?? ''}`,
+    rowKey: row => `${row.hour}:${row.firstRead}:${row.slot ?? ''}:${row.secondCountry}:${row.place}:${row.reason}`,
     rowName: row => row.reason,
     tooltipTitle: row => row.reason,
     tooltipNote: row => (row.remembered ? 'Country tag last held this slot before disappearing.' : undefined),

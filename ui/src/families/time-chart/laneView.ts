@@ -4,7 +4,7 @@ import type { LaneFamily, LaneFrame } from '../laneRuntime.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import type { TimeChartBinding } from './declaration.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart, parseChartInspect } from './hitTest.ts';
-import { layoutTimeChart, type TimeChartLayout } from './layout.ts';
+import { hoverTimeChartLayout, layoutTimeChart, type TimeChartLayout } from './layout.ts';
 import type { TimeChartModel } from './model.ts';
 import { collectVisibleChartArt, drawTimeChart } from './painter.ts';
 
@@ -55,7 +55,7 @@ function shownLayout(layout: ChartLayout, inspect: string | null): TimeChartLayo
   if (!inspect || (hoverHour === null && seriesId === null)) return layout.base;
   const held = hovered.get(layout);
   if (held && held.inspect === inspect) return held.layout;
-  const shown = layoutTimeChart(layout.model, layout.width, layout.height, layout.font, layout.measure, hoverHour, seriesId);
+  const shown = hoverTimeChartLayout(layout.base, layout.model.hour, layout.font, layout.measure, hoverHour, seriesId);
   hovered.set(layout, { inspect, layout: shown });
   return shown;
 }
@@ -73,7 +73,7 @@ export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLa
     const model = zoom && projected.view?.x !== zoom ? { ...projected, view: { ...projected.view, x: zoom } } : projected;
     const font = theme.font ?? "'Segoe UI', system-ui, sans-serif";
     const measureText = canvasMeasureText(measure);
-    const base = model.empty ? null : layoutTimeChart(model, surface.width, surface.height, font, measureText, null, null);
+    const base = model.empty ? null : layoutTimeChart(model, surface.width, surface.height, font, measureText);
     return { model, base, width: surface.width, height: surface.height, font, measure: measureText };
   },
   paint(ctx, frame) {

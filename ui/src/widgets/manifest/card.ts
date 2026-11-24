@@ -3,6 +3,15 @@ import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry } from '.
 
 export const CARD_VIEWS: readonly FamilyViewEntry[] = [
   {
+    kind: 'faction-upgrades',
+    view: DEFAULT_VIEW,
+    family: 'card',
+    loadSpec: () => import('../faction-upgrades/factionUpgradesProjection.ts').then(m => ({
+      family: 'card', kind: 'faction-upgrades', view: DEFAULT_VIEW,
+      projection: m.factionUpgradesProjection, declaration: m.factionUpgradesDeclaration,
+    })),
+  },
+  {
     kind: 'national-focus',
     view: DEFAULT_VIEW,
     family: 'card',

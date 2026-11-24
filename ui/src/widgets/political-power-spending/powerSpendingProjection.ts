@@ -9,7 +9,6 @@ import { OFFERED, TABLE_SETTINGS_KEY, tableFamilyOptions, type TableBase } from 
 import { knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { BreakdownPart, PowerSpendingBreakdownReply, SpendCurrency } from '../../generated/dashboard';
-import { spendingCategoryArt } from './spendingCategoryArt.ts';
 
 const UNIT: Readonly<Record<SpendCurrency, string>> = { Political: 'PP', Command: 'CP' };
 
@@ -49,8 +48,7 @@ function amountOf(part: Pick<BreakdownPart, 'raw' | 'state' | 'reason'>, what: s
 }
 
 function picture(readView: BoundedReadView, part: BreakdownPart): TableCell {
-  const handle = spendingCategoryArt(part.key);
-  return { value: knownValue(part.name), artShape: 'square', artName: part.name, ...(handle ? { iconSlot: true, ...artState(readView, handle) } : {}) };
+  return { value: knownValue(part.name), artShape: 'square', artName: part.name, ...(part.art ? { iconSlot: true, ...artState(readView, { kind: 'sprite', ...part.art }) } : {}) };
 }
 
 function row(readView: BoundedReadView, part: BreakdownPart, decimals: number, top: boolean, keyPrefix: string): TableRow {
@@ -61,7 +59,7 @@ function row(readView: BoundedReadView, part: BreakdownPart, decimals: number, t
     name: part.name,
     cells: {
       ...(top ? { picture: picture(readView, part) } : {}),
-      item: { value: knownValue(part.name) },
+      item: part.nameMissing ? { value: notRecorded(part.nameMissing), missingFigure: part.name } : { value: knownValue(part.name) },
       spent: { value: amountOf(part, part.name), format },
       share: top
         ? { value: part.share === null ? notRecorded(part.reason ?? 'No share where the whole is a lower bound') : part.share === 0 ? zeroValue(0) : knownValue(part.share) }

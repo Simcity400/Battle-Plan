@@ -108,6 +108,15 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     })),
   },
   {
+    kind: 'air-statistics',
+    view: DEFAULT_VIEW,
+    family: 'bars',
+    loadSpec: () => import('../air-statistics/airStatisticsProjection.ts').then(mod => ({
+      family: 'bars', kind: 'air-statistics', view: DEFAULT_VIEW,
+      projection: mod.airStatisticsProjection, declaration: mod.airStatisticsDeclaration,
+    })),
+  },
+  {
     kind: 'air-superiority-region',
     view: DEFAULT_VIEW,
     family: 'bars',

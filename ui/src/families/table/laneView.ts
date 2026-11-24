@@ -1,3 +1,4 @@
+import { canvasMeasureText } from '../../charts/textWidth.ts';
 import type { FamilyAuditRow } from '../auditRow.ts';
 import type { Surface } from '../../draw/lane.ts';
 import type { FamilyTheme } from '../contract.ts';
@@ -84,25 +85,6 @@ interface TableLayout {
 }
 
 type TableFrame = LaneFrame<FamilyTableBinding, TableModel, TableLayout>;
-
-const measures = new WeakMap<OffscreenCanvasRenderingContext2D, Map<string, number>>();
-
-function measurer(ctx: OffscreenCanvasRenderingContext2D): (text: string, font: string) => number {
-  let cache = measures.get(ctx);
-  if (!cache) measures.set(ctx, cache = new Map());
-  const held = cache;
-  return (text, font) => {
-    const key = `${font}\u0000${text}`;
-    let width = held.get(key);
-    if (width === undefined) {
-      if (held.size > 8192) held.clear();
-      ctx.font = font;
-      width = ctx.measureText(text).width;
-      held.set(key, width);
-    }
-    return width;
-  };
-}
 
 const pictures = new WeakMap<OffscreenCanvasRenderingContext2D, { width: number; height: number; art: number; list: FamilyTablePicture[] }>();
 
@@ -204,7 +186,7 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
   const widthKey = `${widthConfigOf(model.columns, settings, theme, model.hideHeader === true)}${sampleSignature(samples)}`;
   const fixedWidths = prev && prev.widthKey === widthKey
     ? prev.fixedWidths
-    : measureFixedColumnWidths(baseCols, settings, theme, measurer(measure), samples, { hideHeader: model.hideHeader === true });
+    : measureFixedColumnWidths(baseCols, settings, theme, canvasMeasureText(measure), samples, { hideHeader: model.hideHeader === true });
   const allLayouts = buildColumnLayouts(model.columns, settings, fixedWidths);
   const columns = layoutFamilyTable(allLayouts, Math.max(1, layoutWidth), { rankShown, rankWidth });
   const rowHeight = rowHeightMode === 'media' ? MEDIA_ROW_HEIGHT[settings.density] : ROW_HEIGHT[settings.density];

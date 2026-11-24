@@ -9,7 +9,7 @@ import type { IdentityProvider } from '../plan.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import { resolvePlaybackProvenInterval } from '../broker.ts';
 import type { FamilyTheme } from '../contract.ts';
-import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
+import { assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas } from '../laneRuntime.fixture.ts';
 import { createLaneView } from '../laneRuntime.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { parseBreakdownHit } from './hostAdapter.ts';
@@ -50,6 +50,7 @@ function wire(key: string, ordinal: number, raw: string | null, extra: Partial<W
   return {
     key,
     name: key,
+    nameMissing: null,
     ordinal,
     other: false,
     raw,
@@ -59,6 +60,7 @@ function wire(key: string, ordinal: number, raw: string | null, extra: Partial<W
     parentShare: null,
     count: null,
     last: null,
+    art: null,
     children: [],
     ...extra,
   };
@@ -391,4 +393,35 @@ test('a breakdown reply proves the stretch it stands through, so a quiet hundred
   let asks = 1;
   for (let hour = START + 11; hour <= START + 110; hour++) if (hour > proof[1]) asks++;
   assert.equal(asks, 1);
+});
+
+test('the art asked for is the flags the laid-out rows draw, found once per layout, never a collapsed child and never again for a hover', async () => {
+  const ready = (url: string) => ({ status: 'ready', assetId: url, url, origin: 'game', file: url, frame: { index: 0, count: 1, width: 18, height: 12 }, provenance: 'current' }) as never;
+  const flagged = model(spent());
+  const parts = flagged.parts.map(part => ({ ...part, flagArt: ready(`asset://${part.key}.png`), children: part.children?.map(child => ({ ...child, flagArt: ready(`asset://${child.key}.png`) })) }));
+  registerFamilyProjection({ kind: 'test-breakdown-art', family: 'breakdown', project: () => ({ ...flagged, parts }) });
+  const fetched: string[] = [];
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(breakdownLane, () => {}, { fetchBitmap: async url => { fetched.push(url); return { width: 18, height: 12, close() {} } as never; } }), recording.canvases, { width: 600, height: 300, dpr: 1 });
+    const binding = { family: 'breakdown', kind: 'test-breakdown-art', options: { view: 'parts', namesInRing: true, digits: 0 }, sources: {}, scrollTop: 0, theme: THEME, width: 600, height: 300, expanded: { Decisions: false } };
+    lane.paint({ label: 'closed', binding, hour: START + 10 });
+    for (let i = 0; i < 8; i++) await null;
+    assert.ok(fetched.length > 0 && fetched.every(url => !url.includes('Plan')), `a collapsed part's children are not asked for: ${fetched.join(', ')}`);
+    const asked = fetched.length;
+    lane.paint({ label: 'hovered', binding, hour: START + 10, inspect: 'row:Decisions' });
+    for (let i = 0; i < 8; i++) await null;
+    assert.equal(fetched.length, asked, 'a hover asks for nothing more');
+  } finally {
+    recording.restore();
+  }
+});
+
+test('a name the recording does not hold is the key with its reason, never passed off as a name', () => {
+  const unnamed: Breakdown = { decimals: 0, unrecordedHours: 0, total: { raw: '5', state: 'known', reason: null },
+    parts: [wire('group_a_cat', 0, '5', { share: 1, parentShare: 1, nameMissing: 'the recorded localisation holds no name for group_a_cat' })] };
+  const read = model(unnamed);
+  assert.equal(read.parts[0]!.name, 'group_a_cat');
+  assert.equal(read.parts[0]!.nameMissing, 'The recorded localisation holds no name for group_a_cat');
+  assert.ok(JSON.stringify(buildBreakdownTooltip(read, breakdownLevel(read), 'group_a_cat', THEME)).includes('The recorded localisation holds no name'));
 });

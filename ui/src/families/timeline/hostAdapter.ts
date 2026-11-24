@@ -34,5 +34,5 @@ export const timelineHostAdapter: FamilyHostAdapter<TimelineModel, unknown, Fami
   },
   deriveAuditRows: model => deriveTimelineAudit(model),
   auditOrdered: true,
-  buildBinding: ctx => ({ expanded: ctx.expanded }),
+  buildBinding: ctx => ({ expanded: ctx.expanded, ...(ctx.hovers && Object.keys(ctx.hovers).length ? { hovers: ctx.hovers } : {}) }),
 };

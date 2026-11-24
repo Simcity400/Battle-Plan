@@ -18,7 +18,7 @@ import { drawHeatMatrix } from './matrixPainter.ts';
 import { deriveLanesAudit, deriveLanesMirror, deriveLanesTooltip, findRunAtHour, type HeatLanesModel } from './lanesModel.ts';
 import { hitHeatLanes, layoutHeatLanes, projectLaneRunsToPixels } from './lanesLayout.ts';
 import { drawHeatLanes } from './lanesPainter.ts';
-import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
+import { assertFreshPaint, assertQuietFrames, assertScrollKeepsStructure } from '../laneRuntime.fixture.ts';
 import { createLaneView } from '../laneRuntime.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { heatLanesLane } from './lanesLaneView.ts';
@@ -202,6 +202,9 @@ test('heat matrix supports grouped non-square axes, bounded viewport windows, hi
     { label: 'reorder', binding: lane(reordered), hour: model.hour, check: true },
     { label: 'scrolled', binding: lane(reordered, 4, 6), hour: model.hour, check: true },
   ], surface);
+  const still = lane(model);
+  assertScrollKeepsStructure(() => createLaneView(heatMatrixLane, () => {}), { label: 'matrix', binding: still, hour: model.hour },
+    { label: 'matrix scrolled', binding: { ...still, scrollLeft: 4, scrollTop: 6 }, hour: model.hour }, surface);
 
   const marked: HeatMatrixModel = {
     hour: 1,
@@ -429,6 +432,8 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
     { label: 'reorder', binding: lane(reordered), hour: 119, check: true },
     { label: 'scrolled', binding: lane(reordered, 12), hour: 119, check: true },
   ], surface);
+  assertScrollKeepsStructure(() => createLaneView(heatLanesLane, () => {}), { label: 'lanes', binding: held, hour: 119 },
+    { label: 'lanes scrolled', binding: { ...held, scrollTop: 12 }, hour: 119 }, surface);
 
   const regions = { pickedHeading: 'Your regions', automaticHeading: 'Most active for Germany', addLabel: 'Add region' };
   const regionRows = [{ ...model.rows[0]!, pinned: true, region: 10 }, { ...model.rows[1]!, region: 11 }];

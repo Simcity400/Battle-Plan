@@ -1,5 +1,6 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { ellipsise } from '../../charts/labels.ts';
+import { measureCanvasText, textWidthCacheStats } from '../../charts/textWidth.ts';
 import { formatDateRange } from '../../dashboard/calendar.ts';
 import {
   drawChildRowTint,
@@ -63,7 +64,6 @@ export interface FamilyTablePicture {
   rowMarks: (string | undefined)[];
   cells: Map<string, (string | undefined)[]>;
   ranks: (string | undefined)[];
-  measures: Map<string, number>;
   fittedTexts: Map<string, string>;
   maximaRows?: readonly FlatTableRow[];
   maximaHour?: number;
@@ -84,7 +84,6 @@ export function createTablePicture(): FamilyTablePicture {
     rowMarks: [],
     cells: new Map(),
     ranks: [],
-    measures: new Map(),
     fittedTexts: new Map(),
   };
 }
@@ -310,19 +309,12 @@ export function drawFamilyTable(
   }
 
   let measurements = 0;
-  const measureCache = picture?.measures ?? new Map<string, number>();
   const fitCache = picture?.fittedTexts ?? new Map<string, string>();
 
   const measure = (text: string, font: string): number => {
-    const key = `${font}\u0000${text}`;
-    let w = measureCache.get(key);
-    if (w === undefined) {
-      if (measureCache.size > 4096) measureCache.clear();
-      ctx.font = font;
-      w = ctx.measureText(text).width;
-      measureCache.set(key, w);
-      measurements++;
-    }
+    const before = textWidthCacheStats().misses;
+    const w = measureCanvasText(ctx, text, font);
+    measurements += textWidthCacheStats().misses - before;
     return w;
   };
 
@@ -438,6 +430,7 @@ export function drawFamilyTable(
     sortedColumn: settings.sort.column,
     treeColumn: treeColumnOf(layout.columns),
     treeLevels,
+    hasActionColumn: layout.columns.some(col => col.cellKind === 'action'),
     icons,
     artCache,
     measure,
@@ -1017,8 +1010,14 @@ export function hitFamilyTable(
   for (let colIndex = 0; colIndex < layout.columns.length; colIndex++) {
     const col = layout.columns[colIndex]!;
     if (bodyX >= x && bodyX < x + col.width) {
-      const toggle = colIndex === treeColumnOf(layout.columns) && item.isTreeGroup && bodyX - x <= CELL_INSET + (col.leadInset ?? 0) + treeTextStart(item.level, treeLevelsOf(rows)) + 8;
-      const action = col.cellKind === 'action';
+      const actionCell = item.row.cells[col.key];
+      const hasAction = col.cellKind === 'action' && actionCell && !actionCell.blank && actionCell.actionLabel !== '';
+      const toggle = item.isTreeGroup && (
+        (col.cellKind === 'action' && !hasAction)
+        || (colIndex === treeColumnOf(layout.columns) && bodyX - x <= CELL_INSET + (col.leadInset ?? 0) + treeTextStart(item.level, treeLevelsOf(rows)) + 8)
+        || (item.row.meta === undefined && layout.columns.some(c => c.cellKind === 'action'))
+      );
+      const action = col.cellKind === 'action' && !toggle;
       return { kind: 'row', rowKey: item.key, column: col.key, toggle, action };
     }
     x += col.width;

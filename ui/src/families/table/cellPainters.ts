@@ -75,6 +75,7 @@ export interface CellRenderContext {
   readonly sortedColumn: string;
   readonly treeColumn: number;
   readonly treeLevels: number;
+  readonly hasActionColumn?: boolean;
   readonly icons?: ReadonlyMap<string, ImageBitmap | null>;
   readonly artCache?: LaneArtCache;
   readonly measure: (text: string, font: string) => number;
@@ -148,7 +149,7 @@ function artGeometry(shape: TableCell['artShape'], density: TableDensity, rowHei
   if (shape === 'equipment') return { width: 30, height: 24 };
   if (shape === 'counter') return { width: 30, height: 18 };
   if (shape === 'wide') {
-    const h = Math.min(28, Math.max(20, rowHeight - 14));
+    const h = Math.min(24, Math.max(18, rowHeight - 12));
     const w = Math.round(h * (46 / 28));
     return { width: w, height: h };
   }
@@ -204,8 +205,8 @@ function drawInlineRuns(
     return measure(fitted, font);
   }
   const parts = text.split('\uFFFC');
-  const boxSize = MISSING_BOX_SIZE;
-  const boxPad = 3;
+  const boxH = Math.max(MISSING_BOX_SIZE, 12);
+  const boxPad = 4;
   let cursor = x;
   const limit = x + maxWidth;
   ctx.save();
@@ -227,10 +228,11 @@ function drawInlineRuns(
     }
     if (i + 1 < parts.length) {
       const lead = cursor > x ? boxPad : 0;
-      if (cursor + lead + boxSize > limit) break;
+      const boxW = Math.min(48, Math.max(16, limit - cursor - lead));
+      if (cursor + lead + 16 > limit) break;
       cursor += lead;
-      drawHatchRect(ctx, cursor, Math.round(middle - boxSize / 2), boxSize, boxSize, 2, theme);
-      cursor += boxSize + (parts[i + 1] ? boxPad : 0);
+      drawHatchRect(ctx, cursor, Math.round(middle - boxH / 2), boxW, boxH, 2, theme);
+      cursor += boxW + (parts[i + 1] ? boxPad : 0);
     }
   }
   ctx.restore();
@@ -247,20 +249,29 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   const middle = y + rowHeight / 2;
   let left = leftBase;
 
-  if (column.notRecordedReason || cell?.blank) return;
-
-  if (colIndex === rc.treeColumn) {
-    left += treeTextStart(item.level, rc.treeLevels);
-    if (item.isTreeGroup) drawChevron(ctx, left - TREE_CHEVRON_LANE - 2, middle, item.isOpen, theme);
-  }
-
+  if (column.notRecordedReason) return;
   const kind = column.cellKind;
 
   if (kind === 'action') {
+    if (item.isTreeGroup && (cell?.blank || formatted.kind === 'notApplicable' || cell?.actionLabel === '')) {
+      drawChevron(ctx, right - 10, middle, item.isOpen, theme);
+      return;
+    }
+    if (cell?.blank || formatted.kind === 'notApplicable' || cell?.actionLabel === '') return;
     const label = cell?.actionLabel ?? 'View';
-    if (formatted.kind === 'notApplicable' || cell?.actionLabel === '') return;
     drawActionButton(ctx, right, middle, label, rowHovered || rowFocused, theme);
     return;
+  }
+
+  if (cell?.blank) return;
+
+  if (colIndex === rc.treeColumn) {
+    if (rc.hasActionColumn) {
+      if (item.level > 1) left += (item.level - 1) * TREE_CHEVRON_LANE;
+    } else {
+      left += treeTextStart(item.level, rc.treeLevels);
+      if (item.isTreeGroup) drawChevron(ctx, left - TREE_CHEVRON_LANE - 2, middle, item.isOpen, theme);
+    }
   }
 
   if (kind === 'kind') {
@@ -555,7 +566,22 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   }
 
   if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
-    drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: !!column.numeric, muted: item.row.muted }, theme, measure, fit);
+    let nrLeft = left;
+    if (cell?.inlinePrefix && !column.numeric) {
+      const prefixFont = fontOf(theme, density === 'compact' ? 13 : 13.5, 600);
+      const prefixW = measure(cell.inlinePrefix, prefixFont);
+      if (prefixW + 10 < Math.max(0, right - nrLeft)) {
+        ctx.save();
+        ctx.font = prefixFont;
+        ctx.fillStyle = item.row.muted ? theme.muted : theme.text;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(cell.inlinePrefix, nrLeft, middle);
+        ctx.restore();
+        nrLeft += prefixW + 8;
+      }
+    }
+    drawFormattedValue(ctx, formatted, { left: nrLeft, right, middle, endAligned: !!column.numeric, muted: item.row.muted }, theme, measure, fit);
     return;
   }
 
