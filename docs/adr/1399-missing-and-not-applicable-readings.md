@@ -15,6 +15,7 @@ In `land-battles`, an absent end kind, end hour, `province`, or side roster prev
 Declared computed measures in `dashboard-declare` (`supply-health` shares `noSupplyShare`, `strainedShare`, `inSupplyShare`; `autonomy` `progress`; and `fuel-consumers` `receivedShare`) previously returned `Option<i64>` (`None`) for both a zero denominator and an unrecorded input, making "nothing to divide" and "not recorded" indistinguishable across exact states, follow, and scoreboards.
 
 In `naval-battles`, absent provinces previously defaulted to `0`, moving battles kept only the initial province, unread participant hours with a carried historical peak reported `0` ships, and on complete participant snapshots a missing owner hid the ship count (or a missing ship hid the owner).
+In `lend-lease-history`, ended agreements previously reconstructed fields with `unwrap_or_default()`, turning unrecorded numeric and fuel columns into `0`, passing `0` as an unrecorded `receiver` into tag lookup, and returning empty pools alongside only an aggregate `whole` boolean.
 
 ## Decision
 
@@ -44,6 +45,11 @@ Keep the recording format unchanged and express missing and not-applicable state
   - On exact per-hour state reads (`Line::states` via `replay_lanes::lanes::at_each_with_status`, reading the settled `TableReader::status()` for each asked hour), add an optional `notApplicable?: boolean` flag on `SeriesState` (`true` for `NotApplicable` on complete hours, `false` for unrecorded on complete hours, absent on truncated/non-complete hours so truncated hours stay identical to `main`).
   - Scoreboards (`series/board.rs`) read `Source::read` on complete hours and surface the `NotApplicable` reason directly.
   - Summaries, tiles, and group lines remain identical to `main` (tracked in issue #285 item 14 for the time chart family); occupation means/detail and ranking/older-summary computed-column edges remain in issue #285; truncated-hour semantics remain in issue #286.
+- **Lend-lease ended agreements (`lend-lease-history`)**:
+  - Decode each ended agreement's fields individually (`EndedRow` / `EndedLeaseTerms` / `EndedLease`) without `unwrap_or_default()`, rejecting trailing bytes in pool decoders (`Decoder::finish`) and distinguishing unrecorded pools from corrupt pools.
+  - Known values serialize as bare values identical byte-for-byte to `main`; missing values serialize as `null` paired with an optional sibling `<field>Missing: string` reason emitted only when missing (including `giverMissing` and `receiverMissing` naming any recorded country ID whose tag could not be resolved).
+  - `validateLeaseHistory` accepts both current replies and older hosts' replies unchanged (where `giver`/`receiver` may be `null` without a sibling reason).
+  - Ended-agreement lifetime evidence (`endedBy`, paging), standing partial agreements, and holder-filter distinctions remain identical to `main` and are tracked in issue #285 (items 15–20) to be rebuilt on issue #286's unified status function.
 
 ## Consequences
 
@@ -54,3 +60,4 @@ Keep the recording format unchanged and express missing and not-applicable state
 - `NavalBattlesWidget` validates nullable per-run `provinceId`, includes `provinceId` in its `battleStateRows` state key, and skips place-name requests for `null` provinces.
 - `LandBattlesWidget`, `LandBattleList`, `LandBattleDrill`, and `BattleLog` render missing provinces, endings, rosters, and per-side losses without fabricating zeroes, hiding recorded winners, extending drill curves past settlement, or querying province `0`.
 - `AutonomyWidget` passes the not-applicable reason to `formatProgress` only when `line.notApplicable.has(hour)` is true (keeping `"Not recorded"` on truncated hours and older hosts), and `FuelBranchesWidget` formats tooltip rows as `'No share'` vs `'Not recorded'` with `detail: missing` from `keyedSeriesData`.
+- `LendLeaseAgreementsWidget` and `agreementsData.ts` render missing ended-agreement fields through `ValueState` (and `Table`'s `missingText` for missing Delivered and Lost cells), preserve recorded `activeSince = 0` and `lastDelivery`, keep `main`'s row keys, visibility gate, and country filtering, and accept older hosts' history replies unchanged.

@@ -3132,7 +3132,16 @@ rows: Array<EventFeedRow>,
  * read, refusals of their rows.
  */
 unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
-export type EndedLease = { terms: LeaseTerms, fuelSentRaw: string, fuelSunkRaw: string,
+export type EndedLeaseTerms = { key: string,
+/**
+ * The handle, hexadecimal.
+ */
+id: string, giver: string | null, giverMissing?: string, receiver: string | null, receiverMissing?: string, revision: string | null, revisionMissing?: string, activeSince: number | null, activeSinceMissing?: string, lastDelivery: number | null, lastDeliveryMissing?: string, monthly: Array<MarketItem> | null, monthlyMissing?: string,
+/**
+ * Production shares, /1000 percent.
+ */
+percentage: Array<MarketItem> | null, percentageMissing?: string, once: Array<MarketItem> | null, onceMissing?: string, delivered: Array<MarketItem> | null, deliveredMissing?: string, sunk: Array<MarketItem> | null, sunkMissing?: string, fuelDailyRaw: string | null, fuelDailyRawMissing?: string, fuelPercentageRaw: string | null, fuelPercentageRawMissing?: string, lastFuelDeliveredRaw: string | null, lastFuelDeliveredRawMissing?: string, };
+export type EndedLease = { terms: EndedLeaseTerms, fuelSentRaw: string | null, fuelSentRawMissing?: string, fuelSunkRaw: string | null, fuelSunkRawMissing?: string,
 /**
  * The first hour it stood in its run, within the branch.
  */
