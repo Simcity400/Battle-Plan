@@ -210,6 +210,11 @@ function drawHeader(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: 
     if (model.rightHeader) {
       ctx.fillText(ellipsise(model.rightHeader, layout.plotRight - layout.centerX - 8, s => textWidth(ctx, s)), rightMid, middleY);
     }
+    if (layout.showReadout && model.readoutHeader) {
+      ctx.fillStyle = theme.muted;
+      ctx.textAlign = 'right';
+      ctx.fillText(model.readoutHeader, layout.readoutX + layout.readoutWidth, middleY);
+    }
   } else {
     if (model.caption) {
       ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
@@ -601,6 +606,15 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           ctx.fillText(rightFmt.text, layout.centerX + w + BARS_VALUE_GAP, middleY);
           ctx.restore();
         }
+      }
+      if (layout.showReadout && row.readout) {
+        ctx.save();
+        ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
+        ctx.fillStyle = theme.text;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(ellipsise(row.readout.primary, layout.readoutWidth, s => textWidth(ctx, s)), layout.readoutX + layout.readoutWidth, middleY);
+        ctx.restore();
       }
       continue;
     }
