@@ -22,7 +22,7 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use viewer_native_gui::{
     native_gui::{self, Assets, Layout, Resources, lifecycle::Instance},
-    native_text::ICON,
+    native_text::{COLOR, ICON},
     native_windows::NativeWindows,
 };
 
@@ -170,7 +170,6 @@ struct EquipmentDesignData {
     append_version: bool,
     auto_upgraded: bool,
     naming_group: Option<String>,
-    role_icon_index: i32,
     niche_frame: i32,
     icon_override: Option<String>,
     mio: Option<ResolvedMio>,
@@ -1120,7 +1119,6 @@ fn extract_design_data(
         append_version: definition.append_variant_name != 0,
         auto_upgraded: design_state.is_some_and(|state| state.auto_upgraded != 0),
         naming_group,
-        role_icon_index,
         niche_frame,
         icon_override,
         mio,
@@ -1214,7 +1212,7 @@ fn resolve_ship_naming_group_loc_key(layers: &ResolvedLayers, group_key: &str) -
         .directory_files("common/units/names_ships", ".txt")
         .ok()?;
     for path in files {
-        let Ok(bytes) = layers.read_file(&path) else {
+        let Ok(bytes) = path.read(layers) else {
             continue;
         };
         let Ok(doc) = content_reader_parser::parser::parse(&bytes) else {
@@ -1287,10 +1285,43 @@ fn resolve_blueprint_window(data: &EquipmentDesignData, windows: &NativeWindows)
         .find(|name| windows.gui_type(name.as_bytes()).is_some())
 }
 
+fn expand_loc_refs(localisation: &Localisation, text: &str, depth: usize) -> String {
+    if depth == 0 || !text.contains('$') {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('$') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        if let Some(end) = after.find('$') {
+            let token = &after[..end];
+            let key = token.split('|').next().unwrap_or(token);
+            if !key.is_empty()
+                && let Some(resolved) = localisation.get(key)
+            {
+                let clean = strip_markup(resolved);
+                out.push_str(&expand_loc_refs(localisation, &clean, depth - 1));
+            } else {
+                out.push('$');
+                out.push_str(token);
+                out.push('$');
+            }
+            rest = &after[end + 1..];
+        } else {
+            out.push('$');
+            rest = after;
+            break;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn loc_or<'a>(localisation: &'a Localisation, key: &'a str) -> String {
     localisation
         .get(key)
-        .map(strip_markup)
+        .map(|raw| expand_loc_refs(localisation, &strip_markup(raw), 4))
         .filter(|text| !text.is_empty())
         .unwrap_or_else(|| key.to_owned())
 }
@@ -1620,7 +1651,7 @@ fn configure_main_window(
                     instance,
                     root,
                     "info/ship_designer_naval_dominance_value",
-                    "—".to_owned(),
+                    "--".to_owned(),
                 );
                 if let Some(dom) = find_direct(root, "info/ship_designer_naval_dominance_value") {
                     tooltips.insert(
@@ -1648,7 +1679,10 @@ fn configure_main_window(
                     instance,
                     root,
                     "blueprint_type_name",
-                    loc_for_tag(localisation, &data.tag, &data.equipment_key),
+                    format!(
+                        "{COLOR}W{}{COLOR}!",
+                        loc_for_tag(localisation, &data.tag, &data.equipment_key)
+                    ),
                 );
                 let (role_text, role_frame) = resolve_tank_role_and_frame(data, localisation);
                 set_text_by_name(instance, root, "dropdown_tank_roles/role_text", role_text);
@@ -1707,7 +1741,10 @@ fn configure_main_window(
                     instance,
                     root,
                     "blueprint_type_name",
-                    loc_for_tag(localisation, &data.tag, &data.equipment_key),
+                    format!(
+                        "{COLOR}W{}{COLOR}!",
+                        loc_for_tag(localisation, &data.tag, &data.equipment_key)
+                    ),
                 );
                 set_text_by_name(
                     instance,
@@ -1778,6 +1815,12 @@ fn configure_main_window(
             );
         }
 
+        set_text_by_name(
+            instance,
+            root,
+            "save_button",
+            loc_or(localisation, "SAVE"),
+        );
         disable_by_name(instance, root, "save_button");
         disable_by_name(instance, root, "change_design_team/open_roster");
         disable_by_name(
@@ -1805,7 +1848,6 @@ fn compose_sub_windows(
     scroll: &BTreeMap<String, f32>,
 ) -> Result<ComposedPlan, String> {
     let mut plan = ComposedPlan::default();
-    let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
 
     if data.kind.is_modular() {
         if let Some(bp_name) = blueprint_name
@@ -2305,7 +2347,7 @@ fn compose_stat_grid(
             .unwrap_or_else(|| line.fallback_label.to_owned());
         let is_missing = line.value.is_none();
         let shown_label = if is_missing && slot_width <= 170 {
-            shorten_label(&full_label, 10)
+            shorten_label(&full_label, 9)
         } else {
             full_label.clone()
         };

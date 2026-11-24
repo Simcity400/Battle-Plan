@@ -80,6 +80,12 @@ fn module_and_slot_sprite_resolution_prefers_direct_then_gfx_then_fallback() {
         "GFX_EMI_custom_gun"
     );
     assert_eq!(
+        resolve_fitted_module_sprite("ship_light_battery_2", "custom_gun", |name| {
+            name == "GFX_SMI_ship_light_battery_2"
+        }),
+        "GFX_SMI_ship_light_battery_2"
+    );
+    assert_eq!(
         resolve_fitted_module_sprite("ship_light_battery_2", "GFX_mod_override", |name| {
             name == "GFX_mod_override"
         }),
@@ -116,13 +122,17 @@ fn stat_columns_distinguish_recorded_values_from_not_recorded_rows() {
     values[VariantStatsRow::RELIABILITY] = Some(85_000);
     values[VariantStatsRow::FUEL_CONSUMPTION] = Some(800_000);
     let ship = build_stat_columns(DesignerKind::Ship, Some(&values), Some(300));
-    assert_eq!(ship.base[0].value.as_deref(), Some("35.0 kn"));
+    assert_eq!(ship.base[0].value, None);
     assert_eq!(ship.base[1].value, None);
     assert!(ship.base[1].detail.is_some());
     assert_eq!(ship.base[4].value.as_deref(), Some("85.0%"));
     assert_eq!(ship.base[6].value.as_deref(), Some("300"));
     assert_eq!(ship.misc[0].value.as_deref(), Some("8.00"));
     assert!(ship.combat.iter().all(|line| line.value.is_none()));
+
+    let tank = build_stat_columns(DesignerKind::Tank, Some(&values), None);
+    assert_eq!(tank.base[0].value.as_deref(), Some("35.0 km/h"));
+    assert_eq!(tank.base[1].value.as_deref(), Some("85.0%"));
 
     let missing_all = build_stat_columns(DesignerKind::Plane, None, None);
     assert!(missing_all.base.iter().all(|line| line.value.is_none()));

@@ -552,8 +552,19 @@ pub fn render_composed_layout_offscreen(
     sheets: &dyn Sheets,
     scale: f32,
 ) -> Result<OffscreenOutput, String> {
+    let [min_x, min_y, width, height] = drawn_bounds(main_layout);
     let merged = merge_composed_layout(main_layout, sub_windows);
-    render_layout_offscreen(gpu, pass, &merged, sheets, scale)
+    let mut batch = Batch::default();
+    native_gui::draw(&merged, [-min_x, -min_y], sheets, &mut batch)
+        .map_err(|refusal| format!("Could not draw game window: {refusal}"))?;
+    render_batch_offscreen(
+        gpu,
+        pass,
+        &batch,
+        [width as u32, height as u32],
+        [min_x, min_y],
+        scale,
+    )
 }
 
 pub fn render_layout_offscreen(

@@ -165,7 +165,7 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
           revision: track.source.revision,
           branchId: track.branch.id,
           hour: at,
-          tag,
+          tag: data.tag,
           variant: picked.key,
         }}
         active={active}

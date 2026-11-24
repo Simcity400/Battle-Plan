@@ -68,17 +68,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let replay = source.replay_ref();
     let timelines = replay.timelines().ok_or("replay has no timelines")?;
     let branch_id = timelines.main;
-    let first_hour = timelines
+    let branch = timelines
         .list
         .iter()
         .find(|t| t.id == branch_id)
-        .map(|t| t.first_hour())
         .ok_or("main branch not found")?;
+    let first_hour = branch.first_hour();
+    let last_hour = branch.last_hour();
     let hour = first_hour;
-    println!("branch={branch_id} first_hour={first_hour}");
+    println!("branch={branch_id} first_hour={first_hour} last_hour={last_hour}");
 
     let tables_needed = [
         TableId::VariantDefinitions,
+        TableId::VariantStats,
+        TableId::VariantUpgrades,
         TableId::Countries,
         TableId::CountryLinks,
         TableId::LexicalTokens,
@@ -92,12 +95,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let links = frame.complete::<tables::CountryLinks>()?;
     let lexical = frame.complete::<tables::LexicalTokens>()?;
     let defs = frame.complete::<tables::VariantDefinitions>()?;
+    let stats_rows = frame.complete::<tables::VariantStats>().unwrap_or(&[]);
+    let upgrade_rows = frame.complete::<tables::VariantUpgrades>().unwrap_or(&[]);
     let dlc_mask = frame
         .complete::<tables::SimulationFeatures>()
         .ok()
         .and_then(|rows| rows.first())
         .map_or(0, |r| r.dlc_mask);
-    println!("dlc_mask=0x{dlc_mask:x} total_variants={}", defs.len());
+    println!(
+        "dlc_mask=0x{dlc_mask:x} total_variants={} stats_rows={} upgrade_rows={}",
+        defs.len(),
+        stats_rows.len(),
+        upgrade_rows.len()
+    );
 
     let ger_slot = countries
         .iter()
@@ -116,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_default()
     };
 
-    let mut targets: Vec<(&str, u64, String)> = Vec::new();
+    let mut targets: Vec<(&str, u64, i32, String)> = Vec::new();
     let wanted = [
         ("ship", "Zerstörer 1934A", "ship_hull_light_2"),
         ("tank", "Panzer II", "light_tank_chassis_1"),
@@ -161,13 +171,64 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ))
             .into_owned();
             let eq = spell(def.equipment_token);
+            let st = stats_rows.iter().find(|r| r.variant == def.id);
+            let ups: Vec<_> = upgrade_rows
+                .iter()
+                .filter(|r| r.variant == def.id)
+                .map(|r| (spell(r.definition_token as u32), r.level))
+                .collect();
             println!(
-                "matched {kind}: id={} eq={eq} name={name:?} suffix={suffix:?} append={} icon={:?}",
+                "matched {kind}: id={} eq={eq} name={name:?} suffix={suffix:?} append={} icon={:?} stats={:?} upgrades={ups:?}",
                 def.id,
                 def.append_variant_name,
-                String::from_utf8_lossy(content_reader_parser::parser::c_string(&def.icon))
+                String::from_utf8_lossy(content_reader_parser::parser::c_string(&def.icon)),
+                st.map(|r| r.values),
             );
-            targets.push((kind, def.id, format!("{name} {suffix}")));
+            targets.push((kind, def.id, hour, format!("{name} {suffix}")));
+        }
+    }
+
+    if let Ok(SeekResult::Frame(late)) = replay.seek_selected(branch_id, last_hour, Some(&tables_needed)) {
+        if let (Ok(l_defs), Ok(l_links), Ok(l_lex)) = (
+            late.complete::<tables::VariantDefinitions>(),
+            late.complete::<tables::CountryLinks>(),
+            late.complete::<tables::LexicalTokens>(),
+        ) {
+            let l_stats = late.complete::<tables::VariantStats>().unwrap_or(&[]);
+            let l_ups = late.complete::<tables::VariantUpgrades>().unwrap_or(&[]);
+            let l_spell = |tok: u32| -> String {
+                l_lex
+                    .binary_search_by_key(&tok, |r| r.token)
+                    .ok()
+                    .and_then(|i| {
+                        std::str::from_utf8(content_reader_parser::parser::c_string(&l_lex[i].literal))
+                            .ok()
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_default()
+            };
+            let ac = l_defs
+                .iter()
+                .filter(|def| link_slot(l_links, def.creator_link) == Some(ger_slot))
+                .find(|def| {
+                    let eq = l_spell(def.equipment_token);
+                    eq == "armored_car_equipment_1" || eq.starts_with("armored_car_") || eq.starts_with("mechanized_")
+                });
+            if let Some(def) = ac {
+                let eq = l_spell(def.equipment_token);
+                let name = String::from_utf8_lossy(content_reader_parser::parser::c_string(&def.display_name)).into_owned();
+                let st = l_stats.iter().find(|r| r.variant == def.id);
+                let ups: Vec<_> = l_ups.iter().filter(|r| r.variant == def.id).map(|r| (l_spell(r.definition_token as u32), r.level)).collect();
+                println!("late upgrade match at hour={last_hour}: id={} eq={eq} name={name:?} stats={:?} upgrades={ups:?}", def.id, st.map(|r| r.values));
+                if let Some(slot) = targets.iter_mut().find(|t| t.0 == "upgrade") {
+                    *slot = ("upgrade", def.id, last_hour, format!("{name} ({eq})"));
+                }
+            }
+            for (kind, id, _, _) in &targets {
+                if let Some(st) = l_stats.iter().find(|r| r.variant == *id) {
+                    println!("late stats for {kind} ({id}) at {last_hour}: {:?}", st.values);
+                }
+            }
         }
     }
 
@@ -178,12 +239,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let service = Service::default();
 
-    for (kind, variant_id, label) in &targets {
+    for (kind, variant_id, req_hour, label) in &targets {
         let req = GameWindowRequest {
             source_id: "parity-test".to_owned(),
             revision: "rev-1".to_owned(),
             branch_id: branch_id.to_string(),
-            hour,
+            hour: *req_hour,
             kind: "equipmentDesigner".to_owned(),
             target: serde_json::json!({ "tag": "GER", "variant": variant_id.to_string() }),
             scale: 1.0,
