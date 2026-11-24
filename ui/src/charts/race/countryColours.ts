@@ -1,5 +1,5 @@
 import { useMemo, useRef } from 'react';
-import { categoricalPalette, nudgeApart } from '../palette.ts';
+import { colour, nudgeApart } from '../palette.ts';
 import type { ChartTokens } from '../tokens';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
@@ -21,13 +21,12 @@ export function useCountryColours(tags: readonly string[], color: (tag: string) 
 
 export function countryColourMaps(tags: readonly string[], color: (tag: string) => readonly number[] | null | undefined,
   tokens: Pick<ChartTokens, 'surface' | 'countryColours'>): { colors: Map<string, string>; fallbackColors: Map<string, string> } {
-  const palette = categoricalPalette(tokens.surface);
   const sorted = [...tags].sort(compareTags);
-  const fallbackColors = new Map(sorted.map((tag, index) => [tag, palette[index % palette.length]]));
+  const fallbackColors = new Map(sorted.map((tag, index) => [tag, colour(tokens.surface, index)]));
   const raw = sorted.map((tag, index) => {
     const recorded = color(tag);
-    return recorded ? { r: recorded[0], g: recorded[1], b: recorded[2] } : parseColor(palette[index % palette.length])!;
+    return recorded ? { r: recorded[0], g: recorded[1], b: recorded[2] } : parseColor(colour(tokens.surface, index))!;
   });
   const adjusted = tokens.countryColours === 'fixed' ? nudgeApart(raw, parseColor(tokens.surface) ?? { r: 0, g: 0, b: 0 }) : raw;
-  return { colors: new Map(sorted.map((tag, index) => [tag, toHex(adjusted[index])])), fallbackColors };
+  return { colors: new Map(sorted.map((tag, index) => [tag, toHex(adjusted[index]!)])), fallbackColors };
 }

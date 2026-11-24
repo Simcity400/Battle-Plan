@@ -1,4 +1,5 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
+import { ellipsise } from '../../charts/labels.ts';
 import {
   BAR_GAP,
   CELL_INSET,
@@ -239,13 +240,7 @@ export function drawFamilyTable(
     const key = `${font}\u0000${Math.floor(maxWidth)}\u0000${text}`;
     let cached = fitCache.get(key);
     if (cached === undefined) {
-      let low = 0, high = text.length;
-      while (low < high) {
-        const mid = Math.ceil((low + high) / 2);
-        if (measure(`${text.slice(0, mid).trimEnd()}\u2026`, font) <= maxWidth) low = mid;
-        else high = mid - 1;
-      }
-      cached = low ? `${text.slice(0, low).trimEnd()}\u2026` : '\u2026';
+      cached = ellipsise(text, maxWidth, sample => measure(sample, font));
       if (fitCache.size > 4096) fitCache.clear();
       fitCache.set(key, cached);
     }
@@ -473,7 +468,8 @@ export function drawFamilyTable(
     const marker = markers?.get(item.key);
     if (marker && marker.until > now) {
       ctx.fillStyle = marker.delta > 0 ? theme.green : theme.red;
-      ctx.fillText(`${marker.delta > 0 ? '\u25b2' : '\u25bc'}${Math.abs(marker.delta)}`, x + CELL_INSET + labelW + 3, middle, Math.max(1, rank - CELL_INSET - labelW - 3));
+      const markerText = `${marker.delta > 0 ? '\u25b2' : '\u25bc'}${Math.abs(marker.delta)}`;
+      ctx.fillText(fit(markerText, smallFont, Math.max(0, rank - CELL_INSET - labelW - 3)), x + CELL_INSET + labelW + 3, middle);
     }
   };
 

@@ -118,7 +118,7 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   const tokens = useChartTokens();
   const read = tag && model ? model.readHour(tag, hour) : null;
   const parts = useMemo(() => model ? [...model.parts(read ?? hour), UNATTRIBUTED_PART] : [], [model, read, read == null ? hour : null]);
-  const colours = useMemo(() => partColours(parts, tokens.categories), [parts, tokens.categories]);
+  const colours = useMemo(() => partColours(parts, tokens.categories, undefined, tokens.surface), [parts, tokens.categories, tokens.surface]);
   const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]);
   const bands = useMemo(() => model && tag ? model.bands(tag, range) : null, [model, tag, range]);
   const shownBands = useMemo(() => positiveGeometry ? bands?.map(runs => runs.map(run => ({ ...run, value: Math.max(0, run.value) }))) : bands,

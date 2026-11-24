@@ -1,5 +1,6 @@
 import type { ChartTokens } from '../charts/tokens';
 import { font, dayLabel, LABEL_WEIGHT, VALUE_WEIGHT } from '../charts/draw.ts';
+import { drawFittedLabel, labelLineHeight } from '../charts/labels.ts';
 import { formatAxisValue } from '../charts/valueAxis.ts';
 import { countryRaceItem } from '../charts/race/countryRace.ts';
 import { drawDateOverlay, drawRaceBar, drawRaceEmpty, drawRaceGrid, FLAG, MIN_LABEL, NAME_X, NAME_PAD, VALUE_GAP, VALUE_PAD, wrapText } from '../charts/race/draw.ts';
@@ -188,7 +189,12 @@ export class ArsenalPicture {
         ctx.strokeStyle = tokens.border; ctx.strokeRect(FLAG.x + .5, y - FLAG.height / 2 + .5, FLAG.width - 1, FLAG.height - 1);
       }
       ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = tokens.text;
-      ctx.font = font(tokens, tokens.fontSize.body, LABEL_WEIGHT); ctx.fillText(look?.name ?? row.key, NAME_X, y, layout.left - NAME_X - NAME_PAD);
+      ctx.font = font(tokens, tokens.fontSize.body, LABEL_WEIGHT);
+      drawFittedLabel(ctx, look?.name ?? row.key, NAME_X, y, Math.max(0, layout.left - NAME_X - NAME_PAD), {
+        fontSize: tokens.fontSize.body,
+        lineHeight: labelLineHeight(tokens.fontSize.body),
+        maxLines: 1,
+      });
       const end = drawRaceBar(ctx, layout, tokens, row, min, max);
       ctx.font = font(tokens, tokens.fontSize.body, VALUE_WEIGHT); ctx.fillStyle = tokens.text; ctx.fillText(row.item.label, end + VALUE_GAP, y);
     }

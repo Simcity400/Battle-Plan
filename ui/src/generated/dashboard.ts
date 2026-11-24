@@ -2897,7 +2897,7 @@ export type NavalBattleDetailsParams = { branchId: string, battles: Array<NavalB
 export type NavalBattleDetailsReply = { rows: Array<NavalBattleDetail>, warnings: Array<string>, };
 export type NavalBattleDetailRequest = { id: string, hour: number, };
 export type NavalBattleFleetNames = { names: Array<string>, unknown: string | null, };
-export type NavalBattleNamedShip = { sinkHour: number, knownAt: number, name: string | null, className: string | null, };
+export type NavalBattleNamedShip = { sinkHour: number, knownAt: number, name: string | null, className: string | null, sinkingCause: ShipSinkingAttribution, };
 export type NavalBattleDetail = { id: string, hour: number,
 /**
  * The hour its fleets are read at: the hour asked.
@@ -2941,6 +2941,8 @@ key: string | null, name: string | null,
  */
 icon: string | null, };
 export type ShipSinkingCause = "hostile" | "assisted" | "cause";
+export type ShipSinkingAttribution = { "kind": "cause", text: string, assisted: boolean, } | { "kind": "ship", name: string, classKey: string | null, className: string | null, assisted: boolean, } | { "kind": "airWing", carrierName: string | null, carrierClassKey: string | null, carrierClassName: string | null, assisted: boolean, } | { "kind": "notRecorded", reason: string, };
+export type ShipSinkingBattle = { "kind": "linked", id: string, liveId: string | null, resultId: string | null, firstHour: number | null, resultHour: number | null, } | { "kind": "notRecorded", reason: string, };
 export type ShipsSunkRow = { sinkHour: number,
 /**
  * The first read listing it.
@@ -2949,7 +2951,7 @@ knownAt: number, name: string | null, classIndex: number, recordedNameIndex: num
 /**
  * Always null: both countries are named at the sinking hour.
  */
-victimAsOf: number | null, attackerAsOf: number | null, placeIndex: number | null, cause: ShipSinkingCause, attributionName: string | null, assistedKill: boolean, };
+victimAsOf: number | null, attackerAsOf: number | null, placeIndex: number | null, cause: ShipSinkingCause, attributionName: string | null, assistedKill: boolean, sinkingCause: ShipSinkingAttribution, battle: ShipSinkingBattle, };
 export type NavalLossesParams = { branchId: string, countries: Array<CountryRef>, top: number | null, attribution: NavalAttribution, kind: NavalKind, period: NavalPeriod,
 /**
  * None is the window manifest; a window's runs name it by its index.
@@ -3060,6 +3062,7 @@ reason: string | null,
  * The native operands that change what the event means.
  */
 notes: Array<string>, };
+export type DecisionLifecycleState = { "kind": "active" } | { "kind": "available" } | { "kind": "completed" } | { "kind": "failed", observedHour: number, } | { "kind": "aborted" } | { "kind": "reEnableCooldown" } | { "kind": "unsupported", raw: number, } | { "kind": "notRecorded", reason: string, };
 export type EventFeedRow = { id: string, hour: number,
 /**
  * The read supplying this fact; the head never shows it before this hour.
@@ -3081,7 +3084,7 @@ cause?: EventFeedCause,
 /**
  * A nuclear strike's target and outcome; absent for every other kind.
  */
-strike?: EventFeedStrike, };
+strike?: EventFeedStrike, decisionState?: DecisionLifecycleState, };
 export type EventFeedStrike = { province: number,
 /**
  * None for a province without a state.
@@ -3846,7 +3849,19 @@ gains: Array<SpendGain>,
 /**
  * The span's hours the tag was held, in order; an hour of the span in none was not recorded.
  */
-coverage: Array<SpendCoverage>, icons: Array<EquipmentIcon>,
+coverage: Array<SpendCoverage>,
+/**
+ * The span's hours where instant power changes were read completely.
+ */
+gainCoverage: Array<SpendCoverage>,
+/**
+ * Recorded currency balances over the span and its baseline hour, in order.
+ */
+balances: Array<SpendBalanceRun>,
+/**
+ * Span balance identity and its availability over `from..=to`.
+ */
+reconciliation: SpendReconciliation, icons: Array<EquipmentIcon>,
 /**
  * None where no item is an idea or an advisor.
  */
@@ -3938,17 +3953,21 @@ realizedRaw: string | null,
  * Negative daily costs: a credit, not spending.
  */
 credits: number, };
-export type SpendGain = { read: number,
+export type SpendGain = {
 /**
- * What the days gained before daily costs, fixed5; none where not recorded.
+ * The event's own hour when distinct from `read`; none for daily totals counted at day close.
+ */
+hour: number | null, read: number,
+/**
+ * What the period gained before daily costs, fixed5; none where not recorded.
  */
 gainedRaw: string | null,
 /**
- * What the cap kept off the days' gains.
+ * What the cap kept off the period's gains.
  */
 cappedRaw: string | null, days: number,
 /**
- * Days whose gain was not read.
+ * Days or instant gains whose amount was not read.
  */
 unknownDays: number,
 /**
@@ -3956,6 +3975,40 @@ unknownDays: number,
  */
 unmatched: number, };
 export type SpendCoverage = { firstHour: number, lastHour: number, covered: boolean, reason: string | null, };
+export type SpendBalanceRun = { firstHour: number, lastHour: number,
+/**
+ * Recorded currency balance, fixed5; none when the balance or Countries table was not recorded.
+ */
+valueRaw: string | null, reason: string | null, };
+export type SpendReconciliation = {
+/**
+ * Balance immediately before the span (`from - 1`), fixed5; none when not recorded.
+ */
+openingRaw: string | null,
+/**
+ * Total recorded gains before cap across the span, fixed5; none when not recorded whole.
+ */
+gainedRaw: string | null,
+/**
+ * Total recorded gains lost at cap across the span, fixed5; none when not recorded whole.
+ */
+lostAtCapRaw: string | null,
+/**
+ * Total recorded spending across the span, fixed5; none when not recorded whole.
+ */
+spentRaw: string | null,
+/**
+ * Balance at the end of the span (`to`), fixed5; none when not recorded.
+ */
+closingRaw: string | null,
+/**
+ * Signed difference `closing - opening - (gained - lost_at_cap - spent)`, fixed5; none when any operand was not recorded.
+ */
+otherChangesRaw: string | null,
+/**
+ * Why `other_changes_raw` or an operand was not recorded; none when all operands are recorded.
+ */
+reason: string | null, };
 export type SpendIdeaTooltips = { ideas: Array<IdeaInfo>, artwork: Array<Artwork>, modifiers: Array<ModifierFormat>, texts: Array<LocalisedText>, };
 export type StabilityReadsParams = { branchId: string, from: number, to: number, };
 export type StabilityReadsReply = { reads: Array<HourSpan>, warnings: Array<string>, };

@@ -7,8 +7,11 @@ import { handleFamilyKeyDown, type FamilyNavTuple } from './keyboard.ts';
 import { optionElementId, reconcileFocusedKey, syncListboxMirror } from './mirror.ts';
 import { parseDefaultRowHit } from './pointer.ts';
 import { computeScrollGeometry, logicalToPhysicalTop, physicalToLogicalTop } from './scroll.ts';
+import { engineHour } from '../../dashboard/calendar.ts';
 import { reportFamilyShownHour } from './shownHour.ts';
 import { reducedMotionEnabled, sameFamilyTheme } from './theme.ts';
+import { buildTooltipContent, resolveTooltipEntryContent, type FamilyActionPayload, type FamilyTooltipEntry } from './tooltips.ts';
+import { centerWindowPosition, clampWindowPosition } from './windowPlacement.ts';
 
 const mkEvent = (key: string, extra: Partial<KeyboardEvent> = {}) => {
   let prevented = false;
@@ -308,3 +311,72 @@ test('reportFamilyShownHour prefers explicit installedHour over view.through', (
   assert.equal(reportFamilyShownHour(sink, false, { mode: 'reading', target: 100, dim: false, tooltip: null }), null);
   assert.deepEqual(reported, [75, 90, null]);
 });
+
+test('tooltip payloads carry full truncated text, exact hours, date bounds, missing reasons, and structured lists', () => {
+  const hour = engineHour({ year: 1941, month: 9, day: 14, hour: 8 })!;
+  const entry: FamilyTooltipEntry = {
+    hour,
+    rowKey: 'GER:battle:1',
+    payload: {
+      title: 'Battle of Smol…',
+      fullText: 'Battle of Smolensk',
+      dateBound: { kind: 'by', hour, reason: 'First seen after a recording gap.' },
+      exactValue: '124,850',
+      missingReason: 'Air losses not recorded in this build.',
+      items: [
+        { label: 'Germany', value: '82,100', swatch: '#4f86f7' },
+        { label: 'Soviet Union', missingReason: 'Not sampled on this hour' },
+      ],
+    },
+  };
+  const content = resolveTooltipEntryContent(entry);
+  assert.equal(content.title, 'Battle of Smolensk');
+  assert.equal(content.subtitle, 'By 14 Sep 1941 · 08:00');
+  assert.equal(content.note, 'First seen after a recording gap.');
+  assert.equal(content.rows[0]?.value, '124,850');
+  assert.equal(content.rows[1]?.valueState?.kind, 'missing');
+  assert.equal(content.rows[2]?.label, 'Germany');
+  assert.equal(content.rows[3]?.valueState?.kind, 'missing');
+
+  const dated = buildTooltipContent({ title: 'Factory count', hour });
+  assert.equal(dated.subtitle, '14 Sep 1941 · 08:00');
+
+  const action: FamilyActionPayload = {
+    actionId: 'open-battle',
+    kind: 'battle',
+    subject: 'battle:42',
+    hour,
+    rowKey: 'GER:battle:42',
+  };
+  assert.equal(action.subject, 'battle:42');
+  assert.equal(action.hour, hour);
+});
+
+test('window placement clamps and centres within viewport bounds and sameFamilyTheme detects presentation token changes', () => {
+  assert.deepEqual(centerWindowPosition(400, 300, 1200, 800), { left: 400, top: 250 });
+  assert.deepEqual(clampWindowPosition(-50, 999, 400, 300, 1200, 800), { left: 12, top: 488 });
+  assert.deepEqual(clampWindowPosition(200, 200, 2000, 1500, 800, 600), { left: 12, top: 12 });
+
+  const base: FamilyTheme = {
+    surface: '#111',
+    text: '#eee',
+    muted: '#888',
+    line: '#333',
+    lineSoft: '#222',
+    accent: '#38f',
+    blue: '#38f',
+    red: '#f44',
+    shortage: '#ff6b6f',
+    amber: '#fa0',
+    green: '#2c5',
+    grey: '#888',
+    hatch: '#555',
+    hatchEdge: '#444',
+    font: 'Inter',
+    fontSize: { small: 11, body: 13 },
+    lineWidth: 1,
+    hatchSpacing: 6,
+  };
+  assert.equal(sameFamilyTheme(base, { ...base, shortage: '#e5484d' }), false);
+});
+

@@ -1,6 +1,6 @@
 use super::{
     EventFeedKind, Names,
-    cards::{List, ScriptCurrency, edge},
+    cards::{ScriptCurrency, edge},
     cause, derived, families,
     row::{Columns, FeedEvent, Party, Slot},
     text::Notices,
@@ -204,6 +204,7 @@ fn a_decisions_cost_is_listed_only_when_proven_and_only_the_currencies_it_charge
         amount: None,
         cause: None,
         strike: None,
+        decision_state: None,
     };
     let mut selected = event(EventFeedSource::DecisionSelected as u8, 10, Slot::Of(7), Slot::None);
     selected.costs = Some([Some(-5_000_000), Some(0)]);
@@ -454,4 +455,358 @@ fn two_projects_completing_in_one_hour_are_two_rows() {
     let ids: std::collections::BTreeSet<String> =
         [completion(1, 4), completion(2, 4), completion(1, 7)].into_iter().filter_map(families::completion_row).map(|row| row.id).collect();
     assert_eq!(ids.len(), 3, "each project's completion marker is its own row: {ids:?}");
+}
+
+#[test]
+fn decision_failed_state_requires_container_and_decodes_each_container_without_guessing() {
+    use super::decision_state::{
+        DecisionLifecycleState, MISSION_FAILURE_NOT_RECORDED, decode, enforce_same_incarnation, not_recorded, resolve_in_pack,
+    };
+    use replay_data::event_feed_rows::{
+        EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow, EventFeedScript, EventFeedScriptChange,
+        decisions::{DecisionChange, Operation, REMOVAL, REENABLE, TAKEN, TARGETED, TARGETED_TIMED, TIMED},
+    };
+    use replay_data::rows::Recorded;
+
+    assert_eq!(decode(TIMED, 0, 100), DecisionLifecycleState::Active);
+    assert_eq!(decode(TIMED, 1, 100), DecisionLifecycleState::Completed);
+    assert_eq!(decode(TIMED, 2, 100), DecisionLifecycleState::Failed { observed_hour: 100 });
+    assert_eq!(decode(TIMED, 3, 100), DecisionLifecycleState::Aborted);
+    assert_eq!(decode(TIMED, 4, 100), DecisionLifecycleState::ReEnableCooldown);
+    assert_eq!(decode(TIMED, 99, 100), DecisionLifecycleState::Unsupported { raw: 99 });
+
+    for container in [TARGETED, TARGETED_TIMED] {
+        assert_eq!(decode(container, 0, 100), DecisionLifecycleState::Available);
+        assert_eq!(decode(container, 1, 100), DecisionLifecycleState::Completed);
+        assert_eq!(decode(container, 2, 100), DecisionLifecycleState::ReEnableCooldown);
+        assert_eq!(decode(container, 3, 100), DecisionLifecycleState::Failed { observed_hour: 100 });
+        assert_eq!(decode(container, 4, 100), DecisionLifecycleState::Aborted);
+        assert_eq!(decode(container, -7, 100), DecisionLifecycleState::Unsupported { raw: -7 });
+    }
+    for container in [TAKEN, REENABLE, REMOVAL] {
+        assert_eq!(decode(container, 2, 100), not_recorded());
+    }
+
+    let actor = EventFeedCountry { reference: 11, id: 11, instance: 1 };
+    let feed_ev = |sequence: u64, source: EventFeedSource, instance: Option<u32>, lifecycle: Option<i32>| {
+        let mut ev = event(source as u8, 100, Slot::Of(7), Slot::None);
+        ev.sequence = sequence;
+        ev.read_hour = 101;
+        ev.instance = instance;
+        ev.lifecycle = lifecycle;
+        ev
+    };
+    let history_ev = |sequence: u64, source: EventFeedSource, change: Option<DecisionChange>, instance: Option<u32>, lifecycle: Option<i32>| EventFeedEvent {
+        sequence,
+        generation: 1,
+        hour: 100,
+        source,
+        actor,
+        target: EventFeedCountry::default(),
+        cause: Recorded::NotRecorded,
+        script: Some(EventFeedScript {
+            instance,
+            lifecycle,
+            change: change.map(EventFeedScriptChange::Decision),
+            ..EventFeedScript::default()
+        }),
+    };
+    let make_pack = |coverage: EventFeedCoverage, refusals: u8, events: Vec<EventFeedEvent>| EventFeedHistoryRow {
+        generation: 1,
+        read_hour: 101,
+        coverage,
+        counts: Some(EventFeedCounts::default()),
+        outstanding: 0,
+        failure: None,
+        script_refusals: refusals,
+        events,
+        script_tokens: Vec::new(),
+        script_scopes: Vec::new(),
+    };
+
+    let timed_fail = feed_ev(10, EventFeedSource::DecisionTimedOut, Some(50), Some(2));
+    let ok_pack = make_pack(
+        EventFeedCoverage::Complete,
+        0,
+        vec![history_ev(10, EventFeedSource::DecisionTimedOut, Some(DecisionChange::new(Operation::Update, TIMED)), Some(50), Some(2))],
+    );
+    assert_eq!(resolve_in_pack(&timed_fail, &ok_pack), DecisionLifecycleState::Failed { observed_hour: 101 });
+
+    let targeted_not_failed = make_pack(
+        EventFeedCoverage::Complete,
+        0,
+        vec![history_ev(10, EventFeedSource::DecisionTimedOut, Some(DecisionChange::new(Operation::Update, TARGETED_TIMED)), Some(50), Some(2))],
+    );
+    assert_eq!(resolve_in_pack(&timed_fail, &targeted_not_failed), DecisionLifecycleState::ReEnableCooldown);
+
+    let partial = make_pack(EventFeedCoverage::Partial, 0, ok_pack.events.clone());
+    assert_eq!(resolve_in_pack(&timed_fail, &partial), not_recorded());
+    let unavailable = make_pack(EventFeedCoverage::Unavailable, 0, ok_pack.events.clone());
+    assert_eq!(resolve_in_pack(&timed_fail, &unavailable), not_recorded());
+    let refused_family = make_pack(EventFeedCoverage::Complete, 1, ok_pack.events.clone());
+    assert_eq!(resolve_in_pack(&timed_fail, &refused_family), not_recorded());
+
+    for bad_op in [Operation::Refused, Operation::Invalidate] {
+        let mut events = ok_pack.events.clone();
+        events.push(history_ev(11, EventFeedSource::ScriptState, Some(DecisionChange::new(bad_op, 0)), None, None));
+        assert_eq!(resolve_in_pack(&timed_fail, &make_pack(EventFeedCoverage::Complete, 0, events)), not_recorded());
+    }
+
+    let no_container = make_pack(
+        EventFeedCoverage::Complete,
+        0,
+        vec![history_ev(10, EventFeedSource::DecisionTimedOut, None, Some(50), Some(2))],
+    );
+    assert_eq!(resolve_in_pack(&timed_fail, &no_container), not_recorded());
+
+    let no_instance = make_pack(
+        EventFeedCoverage::Complete,
+        0,
+        vec![history_ev(10, EventFeedSource::DecisionTimedOut, Some(DecisionChange::new(Operation::Update, TIMED)), None, Some(2))],
+    );
+    assert_eq!(resolve_in_pack(&timed_fail, &no_instance), not_recorded());
+
+    let erase_op = make_pack(
+        EventFeedCoverage::Complete,
+        0,
+        vec![history_ev(10, EventFeedSource::DecisionTimedOut, Some(DecisionChange::new(Operation::Erase, TIMED)), Some(50), Some(2))],
+    );
+    assert_eq!(resolve_in_pack(&timed_fail, &erase_op), not_recorded());
+
+    let opener = feed_ev(9, EventFeedSource::DecisionActivated, Some(49), Some(0));
+    let mut rows = vec![
+        Some(super::EventFeedRow {
+            id: opener.id(),
+            hour: 100,
+            read_hour: 100,
+            name_hour: 100,
+            exact: true,
+            category: super::EventFeedCategory::Politics,
+            kind: EventFeedKind::DecisionActivated,
+            tags: Vec::new(),
+            participants: None,
+            item: None,
+            amount: None,
+            cause: None,
+            strike: None,
+            decision_state: Some(DecisionLifecycleState::Active),
+        }),
+        Some(super::EventFeedRow {
+            id: timed_fail.id(),
+            hour: 100,
+            read_hour: 101,
+            name_hour: 100,
+            exact: true,
+            category: super::EventFeedCategory::Politics,
+            kind: EventFeedKind::DecisionTimedOut,
+            tags: Vec::new(),
+            participants: None,
+            item: None,
+            amount: None,
+            cause: None,
+            strike: None,
+            decision_state: Some(DecisionLifecycleState::Failed { observed_hour: 101 }),
+        }),
+    ];
+    enforce_same_incarnation(&[&opener, &timed_fail], &mut rows);
+    assert_eq!(
+        rows[0].as_ref().and_then(|row| row.decision_state.as_ref()),
+        Some(&DecisionLifecycleState::Active),
+        "earlier same-incarnation edge stays unaffected before a later mismatch"
+    );
+    assert_eq!(
+        rows[1].as_ref().and_then(|row| row.decision_state.as_ref()),
+        Some(&DecisionLifecycleState::NotRecorded { reason: MISSION_FAILURE_NOT_RECORDED.to_owned() })
+    );
+}
+
+#[test]
+fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_missing_inputs() {
+    use super::{
+        Decisions, EventFeed, FeedPageParams,
+        decision_state::{DecisionLifecycleState, MISSION_FAILURE_NOT_RECORDED, resolve_all},
+    };
+    use dashboard_base::{
+        products::{LoadContext, Product},
+        test_fixtures::{CAMPAIGN, records, source},
+    };
+    use replay::campaign::Replay;
+    use replay_data::{
+        event_feed_rows::{
+            EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow, EventFeedScript, EventFeedScriptChange,
+            decisions::{DecisionChange, Operation, TARGETED_TIMED, TIMED},
+        },
+        rows::{Recorded, TableId, TableRows},
+    };
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let ger = EventFeedCountry { reference: 9001, id: 9001, instance: 1 };
+    let tokens = b"mod_mission_amod_mission_bmod_mission_cmod_mission_d";
+    let span = |index: u32| (index * 13, 13);
+    let dec_ev = |sequence: u64, hour: i32, source: EventFeedSource, tok: u32, change: Option<DecisionChange>, instance: Option<u32>, lifecycle: Option<i32>, target: Option<u32>| {
+        let (token_start, token_len) = span(tok);
+        EventFeedEvent {
+            sequence,
+            generation: 1,
+            hour,
+            source,
+            actor: ger,
+            target: EventFeedCountry::default(),
+            cause: Recorded::NotRecorded,
+            script: Some(EventFeedScript {
+                token_start,
+                token_len,
+                instance,
+                lifecycle,
+                country_target: target,
+                change: change.map(EventFeedScriptChange::Decision),
+                ..EventFeedScript::default()
+            }),
+        }
+    };
+    let pack = |read_hour: i32, coverage: EventFeedCoverage, events: Vec<EventFeedEvent>| {
+        let count = events.len() as u64;
+        EventFeedHistoryRow {
+            generation: 1,
+            read_hour,
+            coverage,
+            counts: Some(EventFeedCounts { acquired: count, settled: count, failed: 0, rejected: 0 }),
+            outstanding: 0,
+            failure: None,
+            script_refusals: 0,
+            events,
+            script_tokens: tokens.to_vec(),
+            script_scopes: Vec::new(),
+        }
+    };
+    let with_pack = |branch: u64, hour: i32, row: Option<EventFeedHistoryRow>| {
+        let mut frame = source(branch, hour, Some(1));
+        *frame.tables[TableId::EventFeedHistory.index()] = match row {
+            Some(row) => {
+                frame.metrics.table_ns[TableId::EventFeedHistory.index()] = replay_frame::frame::READ_TIME_NOT_RECORDED;
+                TableView::Complete(TableRows::EventFeedHistory(vec![row]))
+            }
+            None => TableView::Unavailable { reason: "older recording lacks event feed history".into() },
+        };
+        frame
+    };
+
+    let b1_h100 = pack(
+        100,
+        EventFeedCoverage::Complete,
+        vec![
+            dec_ev(1, 100, EventFeedSource::DecisionActivated, 0, Some(DecisionChange::new(Operation::Store, TIMED)), Some(10), Some(0), None),
+            dec_ev(2, 100, EventFeedSource::DecisionActivated, 1, Some(DecisionChange::new(Operation::Store, TIMED)), Some(11), Some(0), None),
+            dec_ev(3, 100, EventFeedSource::DecisionActivated, 2, Some(DecisionChange::new(Operation::Store, TARGETED_TIMED)), Some(12), Some(0), Some(9001)),
+            dec_ev(4, 100, EventFeedSource::DecisionActivated, 3, Some(DecisionChange::new(Operation::Store, TIMED)), Some(13), Some(0), None),
+        ],
+    );
+    let b1_h101 = pack(
+        101,
+        EventFeedCoverage::Complete,
+        vec![
+            dec_ev(5, 101, EventFeedSource::DecisionTimedOut, 0, Some(DecisionChange::new(Operation::Update, TIMED)), Some(10), Some(1), None),
+            dec_ev(6, 101, EventFeedSource::DecisionTimedOut, 1, Some(DecisionChange::new(Operation::Update, TIMED)), Some(11), Some(2), None),
+            dec_ev(7, 101, EventFeedSource::DecisionTimedOut, 2, Some(DecisionChange::new(Operation::Update, TARGETED_TIMED)), Some(12), Some(3), Some(9001)),
+            dec_ev(8, 101, EventFeedSource::DecisionCompleted, 3, Some(DecisionChange::new(Operation::Update, TIMED)), Some(99), Some(2), None),
+        ],
+    );
+    let b2_h100 = pack(
+        100,
+        EventFeedCoverage::Complete,
+        vec![dec_ev(2, 100, EventFeedSource::DecisionActivated, 1, None, Some(11), Some(0), None)],
+    );
+    let b2_h101 = pack(
+        101,
+        EventFeedCoverage::Complete,
+        vec![dec_ev(6, 101, EventFeedSource::DecisionTimedOut, 1, None, Some(11), Some(2), None)],
+    );
+
+    let replay = Replay::from_records(
+        recorder_derive::writers(),
+        CAMPAIGN.into(),
+        &[
+            records(1, vec![with_pack(1, 100, Some(b1_h100)), with_pack(1, 101, Some(b1_h101))]),
+            records(2, vec![with_pack(2, 100, Some(b2_h100)), with_pack(2, 101, Some(b2_h101))]),
+            records(3, vec![with_pack(3, 100, None), with_pack(3, 101, None)]),
+        ],
+    )
+    .unwrap()
+    .into_timelines(&Default::default())
+    .unwrap();
+    let replay_source = dashboard_base::Source::from_replay(
+        dashboard_base::SourceKey { source_id: "decision-failed".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let cancel = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let ask = |branch_id: &str| FeedPageParams {
+        branch_id: branch_id.into(),
+        facets: Vec::new(),
+        from: Some(100.0),
+        to: 101.0,
+        cursor: None,
+        page_size: 64,
+        scope: None,
+    };
+
+    let feed_b1 = EventFeed::load(&replay_source, &ask("1"), &context, &cancel).unwrap();
+    let state_of = |page: &super::EventFeedPage, id: &str| {
+        page.rows.iter().filter_map(|row| row.row.as_ref()).find(|row| row.id == id).and_then(|row| row.decision_state.clone())
+    };
+    assert_eq!(state_of(&feed_b1, "native:1:5"), Some(DecisionLifecycleState::Completed));
+    assert_eq!(state_of(&feed_b1, "native:1:6"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
+    assert_eq!(state_of(&feed_b1, "native:1:7"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
+    assert_eq!(state_of(&feed_b1, "native:1:8"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
+
+    let card_end_state = |page: &super::cards::ScriptOccurrencePage, opener_id: &str| {
+        page.rows
+            .iter()
+            .filter_map(|row| row.occurrence.as_ref())
+            .find(|occ| occ.id == opener_id)
+            .and_then(|occ| occ.edges.last())
+            .and_then(|edge| edge.row.decision_state.clone())
+    };
+    let cards_b1_at_100 = Decisions::load(
+        &replay_source,
+        &FeedPageParams { branch_id: "1".into(), facets: Vec::new(), from: Some(100.0), to: 100.0, cursor: None, page_size: 64, scope: None },
+        &context,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(card_end_state(&cards_b1_at_100, "native:1:2"), Some(DecisionLifecycleState::Active));
+    assert_eq!(card_end_state(&cards_b1_at_100, "native:1:4"), Some(DecisionLifecycleState::Active));
+
+    let cards_b1 = Decisions::load(&replay_source, &ask("1"), &context, &cancel).unwrap();
+    assert_eq!(card_end_state(&cards_b1, "native:1:1"), Some(DecisionLifecycleState::Completed));
+    assert_eq!(card_end_state(&cards_b1, "native:1:2"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
+    assert_eq!(card_end_state(&cards_b1, "native:1:3"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
+    assert_eq!(
+        card_end_state(&cards_b1, "native:1:4"),
+        Some(DecisionLifecycleState::NotRecorded { reason: MISSION_FAILURE_NOT_RECORDED.to_owned() }),
+        "different instance incarnation across opener and end must withhold failure state"
+    );
+
+    let feed_b2 = EventFeed::load(&replay_source, &ask("2"), &context, &cancel).unwrap();
+    assert_eq!(
+        state_of(&feed_b2, "native:1:6"),
+        Some(DecisionLifecycleState::NotRecorded { reason: MISSION_FAILURE_NOT_RECORDED.to_owned() }),
+        "branch 2 lacks container metadata and must never join branch 1"
+    );
+
+    let query_b3 = dashboard_base::queries::query(&replay_source, 3).unwrap();
+    let mut bare_timed_out = event(EventFeedSource::DecisionTimedOut as u8, 101, Slot::Of(7), Slot::None);
+    bare_timed_out.sequence = 6;
+    bare_timed_out.actor = party(9001, Slot::Of(7));
+    bare_timed_out.instance = Some(11);
+    bare_timed_out.lifecycle = Some(2);
+    assert_eq!(
+        resolve_all(&query_b3, &[&bare_timed_out]).unwrap(),
+        vec![Some(DecisionLifecycleState::NotRecorded { reason: MISSION_FAILURE_NOT_RECORDED.to_owned() })],
+        "missing EventFeedHistory table must refuse by name rather than guessing from bare lifecycle"
+    );
 }
