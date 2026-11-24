@@ -537,15 +537,13 @@ pub fn read_text_observed<const N: usize, const PREFETCHED: bool>(
             return Err("string terminator invalid");
         }
         if !read_slice(memory, source, &mut value.bytes[..len]) {
+            attempt.payload = Attempt::Completed(Err("string payload unreadable"));
             return Err("string payload unreadable");
         }
         value.len = len;
         Ok(true)
     })();
     attempt.failure = result.as_ref().err().copied();
-    if let Err(reason) = result {
-        attempt.payload = Attempt::Completed(Err(reason));
-    }
     journal.finish_text(
         index,
         attempt,
