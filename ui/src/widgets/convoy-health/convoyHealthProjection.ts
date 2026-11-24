@@ -1,4 +1,4 @@
-import { CONVOY_EFFICIENCY_STOPS, readableColour } from '../../charts/palette.ts';
+import { CHART_MEASURE_COLOURS, CONVOY_EFFICIENCY_STOPS, readableColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
@@ -118,7 +118,7 @@ function seriesRuns(
   values: Dated,
   known: readonly HourSpan[],
   through: number,
-  scale: number,
+  cellOf: (value: number) => HeatLaneCell,
   unknownReason: string,
 ): HeatLaneRun[] {
   const out: HeatLaneRun[] = [];
@@ -131,7 +131,7 @@ function seriesRuns(
     const end = Math.min(through, (points[i + 1] ?? through + 1) - 1);
     const value = valueAt(values, start);
     const cell: HeatLaneCell | null = value !== null
-      ? { kind: 'solid', color: efficiencyColour(value / scale) }
+      ? cellOf(value)
       : inSpans(known, start) ? null : { kind: 'missing', reason: unknownReason };
     if (!cell) continue;
     out.push({ firstHour: start, lastHour: end, readHour: end, cell });
@@ -139,22 +139,27 @@ function seriesRuns(
   return out;
 }
 
-function seriesTooltip(title: string, hour: number, value: number | null, known: readonly HourSpan[], scale: number, none: string, unknownReason: string): FamilyTooltipPayload {
-  if (value !== null) return { title, hour, items: [{ label: 'Efficiency', value: percentText(value, scale), swatch: efficiencyColour(value / scale) }] };
+function seriesTooltip(title: string, hour: number, item: { readonly label: string; readonly value?: string; readonly swatch?: string } | null, known: readonly HourSpan[], none: string, unknownReason: string): FamilyTooltipPayload {
+  if (item) return { title, hour, items: [item] };
   return inSpans(known, hour) ? { title, hour, items: [{ label: none }] } : { title, hour, missingReason: unknownReason };
+}
+
+function routeCell(bad: number, routeBad: string): HeatLaneCell {
+  return bad ? { kind: 'solid', color: routeBad, label: 'Route bad' } : { kind: 'clear', label: 'Route clear' };
 }
 
 function tradeRows(reply: ConvoyHealthReply, through: number, surface: string): ConvoyRow[] {
   const resources = new Map(reply.resources.map(resource => [resource.id, resource.name ?? 'Resource name not recorded']));
   const dealsKnown = reply.known[1] ?? [];
   const clientsKnown = reply.known[2] ?? [];
+  const routeBad = readableColour(CHART_MEASURE_COLOURS.short, surface);
   const dealName = (deal: ConvoyHealthReply['deals'][number], hour: number) => {
     const resource = deal.resource[spanIndexAt(deal.resource, hour, run => run[0])]?.[2] ?? null;
     return `${countryAt(deal.exporter, hour)} · ${resource === null ? 'Resource not recorded' : resources.get(resource) ?? 'Resource name not recorded'}`;
   };
   const rows: ConvoyRow[] = [];
   for (const deal of reply.deals) {
-    const runs = seriesRuns(deal.efficiency, dealsKnown, through, reply.scale, 'Resource deals were not recorded');
+    const runs = seriesRuns(deal.efficiency, dealsKnown, through, value => ({ kind: 'solid', color: efficiencyColour(value / reply.scale) }), 'Resource deals were not recorded');
     if (!runs.length) continue;
     const value = valueAt(deal.efficiency, through);
     const readout: HeatLaneReadout = value !== null
@@ -162,20 +167,27 @@ function tradeRows(reply: ConvoyHealthReply, through: number, surface: string): 
       : inSpans(dealsKnown, through) ? { kind: 'clear', label: 'No deal' } : { kind: 'missing', reason: 'Resource deals were not recorded' };
     rows.push({
       row: { id: `deal:${deal.id}`, label: dealName(deal, through), runs, readout },
-      inspect: hour => seriesTooltip(dealName(deal, hour), hour, valueAt(deal.efficiency, hour), dealsKnown, reply.scale, 'No deal', 'Resource deals were not recorded'),
+      inspect: hour => {
+        const value = valueAt(deal.efficiency, hour);
+        const item = value === null ? null : { label: 'Efficiency', value: percentText(value, reply.scale), swatch: efficiencyColour(value / reply.scale) };
+        return seriesTooltip(dealName(deal, hour), hour, item, dealsKnown, 'No deal', 'Resource deals were not recorded');
+      },
     });
   }
   for (const lease of reply.leases) {
-    const healthy = lease.bad.map(([first, last, bad]) => [first, last, bad ? 0 : reply.scale] as const);
-    const runs = seriesRuns(healthy, clientsKnown, through, reply.scale, 'Convoy clients were not recorded');
+    const runs = seriesRuns(lease.bad, clientsKnown, through, bad => routeCell(bad, routeBad), 'Convoy clients were not recorded');
     if (!runs.length) continue;
     const bad = valueAt(lease.bad, through);
     const readout: HeatLaneReadout = bad === null
       ? inSpans(clientsKnown, through) ? { kind: 'clear', label: 'No route' } : { kind: 'missing', reason: 'Convoy clients were not recorded' }
-      : { kind: 'value', form: 'word', primary: bad ? 'Route bad' : 'Route clear', swatch: readableColour(efficiencyColour(bad ? 0 : 1), surface, 1) };
+      : { kind: 'value', form: 'word', primary: bad ? 'Route bad' : 'Route clear', swatch: bad ? routeBad : 'hollow' };
     rows.push({
       row: { id: `lease:${lease.handle}`, label: `Lend-lease from ${countryAt(lease.giver, through)}`, runs, readout },
-      inspect: hour => seriesTooltip(`Lend-lease from ${countryAt(lease.giver, hour)}`, hour, valueAt(healthy, hour), clientsKnown, reply.scale, 'No route', 'Convoy clients were not recorded'),
+      inspect: hour => {
+        const bad = valueAt(lease.bad, hour);
+        const item = bad === null ? null : bad ? { label: 'Route bad', swatch: routeBad } : { label: 'Route clear' };
+        return seriesTooltip(`Lend-lease from ${countryAt(lease.giver, hour)}`, hour, item, clientsKnown, 'No route', 'Convoy clients were not recorded');
+      },
     });
   }
   return rows;

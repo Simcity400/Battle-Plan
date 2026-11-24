@@ -3,7 +3,7 @@ use crate::{invalid, table_name};
 use dashboard_declare::{Measure, Series};
 use dashboard_query::{
     coverage::CoverageScope,
-    identity::{Country, Holder, Holders, NOT_IN_HISTORY},
+    identity::{Country, Holder, Holders},
     timeline::Timeline,
 };
 use replay_columnar::summary::Source;
@@ -202,7 +202,7 @@ fn tag_rows(query: &Query, hour: Hour) -> Vec<TagRow> {
             if series.key.unowned() {
                 return country.tag().and_then(|tag| series.key.fixed(tag)).map_or_else(|| TagRow::Absent(identity.holders.say(country, hour, |name| format!("{name} names no row of {}", series.kind))), TagRow::Key);
             }
-            let Some(name) = identity.holders.label(country, hour) else { return TagRow::Absent(NOT_IN_HISTORY.to_owned()) };
+            let Some(name) = identity.holders.label(country, hour) else { return TagRow::Absent(identity.holders.unnamed(country).to_owned()) };
             if let Some(reason) = unknown {
                 return TagRow::Absent(format!("Who holds {name} is not known: {reason}"));
             }

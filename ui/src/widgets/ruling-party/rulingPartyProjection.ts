@@ -11,11 +11,8 @@ import {
   type SourcePlan,
 } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { ChartGap, ChartHoverDetail, ChartMarker, ChartMarkerItem } from '../../families/time-chart/model.ts';
 import {
   branchGapsOf,
@@ -208,7 +205,7 @@ function buildRulingMarkers(
     }));
 }
 
-export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = registerTimeChart({
+export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = registerFamilyProjection({
   kind: 'ruling-party',
   family: 'time-chart',
   variant: 'stacked-area',

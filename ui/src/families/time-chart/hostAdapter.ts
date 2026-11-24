@@ -197,21 +197,14 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
     }
 
     return {
-      options: ctx.options,
-      sources: ctx.sources,
       extent: ctx.extent,
-      width: ctx.viewport.width,
-      height: ctx.viewport.height,
-      scrollTop: ctx.viewport.scrollTop,
       ...(ctx.theme ? { theme: ctx.theme } : {}),
-      ...(ctx.artResolutions ? { artResolutions: ctx.artResolutions } : {}),
       ...(ctx.viewport.zoomWindow ? { zoom: { x: ctx.viewport.zoomWindow } } : {}),
       ...(tiledLines.length ? { tiledLines } : {}),
       keepTiled,
       tiledBySource,
       ...(headSourceBySeries ? { headSourceBySeries } : {}),
       ...(ctx.hovers && Object.keys(ctx.hovers).length ? { hovers: ctx.hovers } : {}),
-      ...(ctx.audit ? { audit: true, auditId: ctx.auditId } : {}),
       ...(ctx.focusedKey ? { focusedKey: ctx.focusedKey } : {}),
     };
   },

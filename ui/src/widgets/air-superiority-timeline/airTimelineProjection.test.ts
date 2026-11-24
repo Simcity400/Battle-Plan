@@ -36,9 +36,9 @@ function reply(lastHour: number, extra: Partial<AirTimelineReply> = {}): AirTime
       pinned: false,
       readout: { kind: 'leading', side: 0, share_bp: 7100, as_of_hour: lastHour },
       cells: [
-        [1, { kind: 'sides', parts: [{ side: 0, tag: 'GER', friendly: '71' }, { side: 1, tag: 'ENG', friendly: '29' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false }],
+        [1, { kind: 'sides', parts: [{ side: 0, tag: 'GER', friendly: '71' }, { side: 1, tag: 'ENG', friendly: '29' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false, lead: { kind: 'leading', side: 0, share_bp: 7100 } }],
         [1, null],
-        [1, { kind: 'sides', parts: [{ side: 2, tag: 'ITA', friendly: '50' }, { side: 1, tag: 'ENG', friendly: '50' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false }],
+        [1, { kind: 'sides', parts: [{ side: 2, tag: 'ITA', friendly: '50' }, { side: 1, tag: 'ENG', friendly: '50' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false, lead: { kind: 'contested' } }],
       ],
     }],
     scale: 100000,
@@ -76,7 +76,7 @@ test('an unnamed side says its name was not recorded, never a later name', () =>
 });
 
 test('a hit is answered from its own day, and a painted gap or the readout before any run', () => {
-  const contested = (side: number, tag: string) => ({ kind: 'sides' as const, parts: [{ side, tag, friendly: '50' }, { side: 1, tag: 'ENG', friendly: '50' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false });
+  const contested = (side: number, tag: string) => ({ kind: 'sides' as const, parts: [{ side, tag, friendly: '50' }, { side: 1, tag: 'ENG', friendly: '50' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false, lead: { kind: 'contested' as const } });
   const data = reply(71, {
     days: [23, 47, 71],
     rows: [{ ...reply(71).rows[0]!, cells: [[1, contested(0, 'GER')], [2, contested(2, 'ITA')]] }],
@@ -111,7 +111,7 @@ test('a reply that reaches past the displayed hour draws nothing from it', () =>
 
 test('a day with a side whose score is unknown is not recorded, never a full lead for the known side', () => {
   const data = reply(50);
-  const row = { ...data.rows[0]!, cells: [[3, { kind: 'sides', parts: [{ side: 0, tag: 'GER', friendly: '71' }], viewpoints: [], unknown: [1], noAirObject: [], filtered: false }]] as AirTimelineReply['rows'][number]['cells'] };
+  const row = { ...data.rows[0]!, cells: [[3, { kind: 'sides', parts: [{ side: 0, tag: 'GER', friendly: '71' }], viewpoints: [], unknown: [1], noAirObject: [], filtered: false, lead: { kind: 'unknown' } }]] as AirTimelineReply['rows'][number]['cells'] };
   const model = projectAirTimeline(view(50, { ...data, rows: [row] }), OPTIONS);
   assert.deepEqual(model.rows[0]!.runs[0]!.cell, { kind: 'missing', reason: 'A side’s air score was not recorded' });
 });
@@ -156,7 +156,7 @@ test('a hundred played hours ask each completed tile once, the current tile once
     },
   });
   const sides = reply(0).sides;
-  const cell = (friendly: string) => ({ kind: 'sides' as const, parts: [{ side: 0, tag: 'GER', friendly }, { side: 1, tag: 'ENG', friendly: '10' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false });
+  const cell = (friendly: string) => ({ kind: 'sides' as const, parts: [{ side: 0, tag: 'GER', friendly }, { side: 1, tag: 'ENG', friendly: '10' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false, lead: { kind: 'leading' as const, side: 0, share_bp: 8000 } });
   const tileDays = AIR_TILE_HOURS / 24;
   const tiles = Array.from({ length: completedTiles - 1 }, (_, k): AirTimelineReply => ({
     ...reply(0),

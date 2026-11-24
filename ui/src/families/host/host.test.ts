@@ -330,9 +330,9 @@ test('F8 & F9: listbox mirror uses stable key-based IDs, invalidates on prefix c
   }
 });
 
-test('parseDefaultRowHit distinguishes row and toggle hits', () => {
-  assert.deepEqual(parseDefaultRowHit('row:GER'), { key: 'GER', toggle: false });
-  assert.deepEqual(parseDefaultRowHit('toggle:grp-1'), { key: 'grp-1', toggle: true });
+test('parseDefaultRowHit distinguishes row and toggle hits, naming the subject and the inspect token an adapter without its own parser needs', () => {
+  assert.deepEqual(parseDefaultRowHit('row:GER'), { key: 'GER', subject: 'GER', toggle: false, kind: 'row', inspectToken: 'row:GER' });
+  assert.deepEqual(parseDefaultRowHit('toggle:grp-1'), { key: 'grp-1', subject: 'grp-1', toggle: true, kind: 'toggle', inspectToken: 'row:grp-1' });
   assert.equal(parseDefaultRowHit('header:col'), null);
   assert.equal(parseDefaultRowHit(null), null);
 });

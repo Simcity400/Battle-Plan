@@ -84,6 +84,9 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
       const reason = readout?.reason ?? 'Naval region control was not recorded';
       return { ...base, segments: [], missing: notRecorded(reason), tooltip: { title: named.label, hour, missingReason: reason, items: shipItems(region, look) } };
     }
+    if (idle(readout.friendly, readout.enemy)) {
+      return { ...base, segments: [], tooltip: { title: named.label, hour: readout.as_of_hour, items: [{ label: 'No activity' }, ...shipItems(region, look)] } };
+    }
     const share = shareOf(readout.share, reply.scale);
     if (share === null) {
       return { ...base, segments: [], missing: notRecorded('The supremacy share was not recorded'), tooltip: { title: named.label, hour: readout.as_of_hour, missingReason: 'The supremacy share was not recorded' } };

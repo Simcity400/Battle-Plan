@@ -50,12 +50,12 @@ export function resolveInstalledAction(
   };
 }
 
-export function parseDefaultRowHit(hitKey: string | null): FamilyPointerHit | null {
+export function parseDefaultRowHit(hitKey: string | null): ParsedFamilyHit | null {
   if (!hitKey) return null;
   const toggle = hitKey.startsWith('toggle:');
   if (!toggle && !hitKey.startsWith('row:')) return null;
   const key = hitKey.slice(hitKey.indexOf(':') + 1);
-  return key ? { key, toggle } : null;
+  return key ? { key, subject: key, toggle, kind: toggle ? 'toggle' : 'row', inspectToken: `row:${key}` } : null;
 }
 
 export interface FamilyPointerBindingOptions {

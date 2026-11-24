@@ -46,6 +46,7 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'scoreboard': { load: () => import('./scoreboard') },
   'special-projects': { load: () => import('./special-projects/current.ts') },
   'stability': { load: () => import('./stability') },
+  'war-contribution': { load: () => import('./war-contribution/sides.ts') },
   'convoy-health': { load: () => import('./convoy-health'), slots: ['render', 'countryChip'] },
   'air-superiority-timeline': { load: () => import('./air-superiority-timeline'), slots: ['render', 'countryChip'] },
   'weather-by-region': { load: () => import('./weather-by-region') },
