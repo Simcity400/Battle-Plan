@@ -10,7 +10,7 @@ use content_reader_gui::{
 use content_reader_image::{Rgba8Image, native::Decode};
 use content_reader_layers::{
     LayerRole, ResolvedLayer, ResolvedLayers,
-    content::{ArtFileSource, is_strict},
+    content::is_strict,
     textures::{NoTexture, texture_candidates, texture_within},
 };
 use serde::{Deserialize, Serialize};
@@ -127,7 +127,7 @@ pub enum ArtResolution {
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         file: Option<String>,
-        #[serde(skip, default = "Searched::relayed")]
+        #[serde(skip, default = "evidence::relayed_in_reply")]
         #[ts(skip)]
         searched: Searched,
     },
@@ -150,48 +150,67 @@ pub enum ArtResolution {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Searched(());
+mod evidence {
+    use content_reader_gfx::gfx::{SpriteSet, SpriteType};
+    use content_reader_gui::gui::native::{resources, sprites::SpriteFacts};
+    use content_reader_layers::{ResolvedLayers, content::{ArtFileSource, sanitize}};
+    use serde::{Deserialize, Serialize};
+    use std::io;
 
-impl Searched {
-    fn relayed() -> Self {
-        Self(())
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct Searched(());
+
+    impl Serialize for Searched {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_bool(true)
+        }
+    }
+
+    pub(super) fn relayed_in_reply() -> Searched {
+        Searched(())
+    }
+
+    pub fn relayed_searches<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<[Option<Searched>; 3], D::Error> {
+        let relayed = <[Option<bool>; 3]>::deserialize(deserializer)?;
+        Ok(relayed.map(|searched| (searched == Some(true)).then_some(Searched(()))))
+    }
+
+    pub enum ArtFile {
+        Mounted { layer: usize, path: Vec<u8> },
+        Unmounted { layer: usize, reason: String },
+        Unaddressable,
+        Missing(Searched),
+    }
+
+    pub fn art_file(stack: &ResolvedLayers, vfs: &[u8]) -> io::Result<ArtFile> {
+        if sanitize(vfs).is_none() {
+            return Ok(ArtFile::Unaddressable);
+        }
+        Ok(match stack.art_file_source(vfs)? {
+            ArtFileSource::Mounted { layer, path } => ArtFile::Mounted { layer, path },
+            ArtFileSource::Unmounted { layer, reason } => ArtFile::Unmounted { layer, reason },
+            ArtFileSource::Missing => ArtFile::Missing(Searched(())),
+        })
+    }
+
+    pub fn sprite_definition<'a>(sprites: &'a SpriteSet, name: &str) -> Result<Result<&'a SpriteType, Searched>, String> {
+        Ok(sprites.find(name)?.ok_or(Searched(())))
+    }
+
+    pub fn native_sprite<'a>(registry: &'a resources::Registry, name: &str) -> Result<&'a SpriteFacts, Searched> {
+        registry.sprite(name.as_bytes()).ok_or(Searched(()))
     }
 }
 
-impl Serialize for Searched {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_bool(true)
+pub use evidence::{ArtFile, Searched, art_file, relayed_searches, sprite_definition};
+
+fn unaddressable(file: String, origin: Option<ArtOrigin>) -> ArtResolution {
+    ArtResolution::Refused {
+        reason: format!("{file:?} is not a path inside the content, so no layer can be searched for it"),
+        construct: "unaddressable-art-path".to_owned(),
+        origin,
+        file: Some(file),
     }
-}
-
-impl<'de> Deserialize<'de> for Searched {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        bool::deserialize(deserializer).map(|_| Self::relayed())
-    }
-}
-
-pub enum ArtFile {
-    Mounted { layer: usize, path: Vec<u8> },
-    Unmounted { layer: usize, reason: String, searched: Searched },
-    Missing(Searched),
-}
-
-pub fn art_file(stack: &ResolvedLayers, vfs: &[u8]) -> io::Result<ArtFile> {
-    Ok(match stack.art_file_source(vfs)? {
-        ArtFileSource::Mounted { layer, path } => ArtFile::Mounted { layer, path },
-        ArtFileSource::Unmounted { layer, reason } => ArtFile::Unmounted { layer, reason, searched: Searched(()) },
-        ArtFileSource::Missing => ArtFile::Missing(Searched(())),
-    })
-}
-
-pub fn sprite_definition<'a>(sprites: &'a SpriteSet, name: &str) -> Result<Result<&'a SpriteType, Searched>, String> {
-    Ok(sprites.find(name)?.ok_or(Searched(())))
-}
-
-fn named_texture(raw_name: &[u8]) -> Result<&[u8], Searched> {
-    let name = content_reader_parser::parser::c_string(raw_name);
-    if name.is_empty() { Err(Searched(())) } else { Ok(name) }
 }
 
 impl ArtResolution {
@@ -385,17 +404,17 @@ fn sprite_origin(layers: &ResolvedLayers, sprite: &SpriteType) -> Option<ArtOrig
         .map(|index| ArtOrigin::from_layer(&layers.layers[index]))
 }
 
-fn unmounted_missing(searched: Searched, layer: &ResolvedLayer, reason: &str, file: String) -> ArtResolution {
+fn unmounted_refusal(layer: &ResolvedLayer, reason: &str, file: String) -> ArtResolution {
     let origin = ArtOrigin::from_layer(layer);
-    ArtResolution::confirmed_missing(
-        searched,
-        format!(
+    ArtResolution::Refused {
+        reason: format!(
             "{} is not mounted ({reason}); {file} cannot be resolved without risking a substitute",
             origin.display_name()
         ),
-        Some(origin),
-        Some(file),
-    )
+        construct: "unmounted-layer".to_owned(),
+        origin: Some(origin),
+        file: Some(file),
+    }
 }
 
 fn classify_no_texture(
@@ -467,12 +486,15 @@ fn resolve_texture_candidate(
     raw_name: &[u8],
     fallback_origin: Option<ArtOrigin>,
 ) -> Result<(usize, Vec<u8>, String), Box<ArtResolution>> {
-    let name = match named_texture(raw_name) {
-        Ok(name) => name,
-        Err(searched) => {
-            return Err(Box::new(ArtResolution::confirmed_missing(searched, "artwork names no texture".to_owned(), fallback_origin, None)));
-        }
-    };
+    let name = content_reader_parser::parser::c_string(raw_name);
+    if name.is_empty() {
+        return Err(Box::new(ArtResolution::Refused {
+            reason: "the artwork names no texture, so no layer can be searched for it".to_owned(),
+            construct: "texture-without-name".to_owned(),
+            origin: fallback_origin,
+            file: None,
+        }));
+    }
     let candidates = texture_candidates(name);
     if candidates.is_empty() {
         let text = String::from_utf8_lossy(name).into_owned();
@@ -494,9 +516,10 @@ fn resolve_texture_candidate(
                 let winning = String::from_utf8_lossy(&path).into_owned();
                 return Ok((layer, path, winning));
             }
-            Ok(ArtFile::Unmounted { layer, reason, searched }) => {
-                return Err(Box::new(unmounted_missing(searched, &stack.layers[layer], &reason, display_path)));
+            Ok(ArtFile::Unmounted { layer, reason }) => {
+                return Err(Box::new(unmounted_refusal(&stack.layers[layer], &reason, display_path)));
             }
+            Ok(ArtFile::Unaddressable) => return Err(Box::new(unaddressable(display_path, fallback_origin))),
             Ok(ArtFile::Missing(miss)) => searched = Some(miss),
             Err(error) => {
                 return Err(Box::new(ArtResolution::Failed {
@@ -853,12 +876,10 @@ pub fn resolve_flag_pixels(
             let asset = format!("{}{key}.tga", set.directory());
             let (winning_layer, winning_path) = match art_file(stack, asset.as_bytes()) {
                 Ok(ArtFile::Mounted { layer, path }) => (layer, path),
-                Ok(ArtFile::Unmounted { layer, reason, searched }) => {
-                    return (
-                        unmounted_missing(searched, &stack.layers[layer], &reason, asset),
-                        None,
-                    );
+                Ok(ArtFile::Unmounted { layer, reason }) => {
+                    return (unmounted_refusal(&stack.layers[layer], &reason, asset), None);
                 }
+                Ok(ArtFile::Unaddressable) => return (unaddressable(asset, None), None),
                 Ok(ArtFile::Missing(miss)) => {
                     searched = Some(miss);
                     continue;
@@ -1248,13 +1269,16 @@ fn resolve_native_sprite_in_stack(
     decode: Decode,
     scope_key: &ArtScopeKey,
 ) -> NativeIconResolution {
-    let Some(sprite) = registry.sprite(name.as_bytes()) else {
-        return NativeIconResolution::ConfirmedMissing {
-            reason: format!("interface/*.gfx declares no sprite {name}"),
-            origin: None,
-            file: None,
-            searched: Searched(()),
-        };
+    let sprite = match evidence::native_sprite(registry, name) {
+        Ok(sprite) => sprite,
+        Err(searched) => {
+            return NativeIconResolution::ConfirmedMissing {
+                reason: format!("interface/*.gfx declares no sprite {name}"),
+                origin: None,
+                file: None,
+                searched,
+            };
+        }
     };
     let declared_origin = registry
         .sprite_file(name.as_bytes())
@@ -1703,16 +1727,16 @@ mod tests {
 
         let unmounted = resolve_sprite(&unmounted_cat, "GFX_Shared", 0, 48);
         match unmounted {
-            ArtResolution::ConfirmedMissing { reason, origin, file, .. } => {
+            ArtResolution::Refused { reason, origin, file, .. } => {
                 assert!(reason.contains("Synthetic Mod"), "{reason}");
                 assert!(reason.contains("not installed"), "{reason}");
                 assert_eq!(origin, Some(ArtOrigin::Mod { id: "mod_synthetic".into(), name: "Synthetic Mod".into() }));
                 assert_eq!(file.as_deref(), Some("gfx/shared.dds"));
             }
-            other => panic!("expected ConfirmedMissing when mod unmounted, got {other:?}"),
+            other => panic!("expected a named refusal when the mod is unmounted, got {other:?}"),
         }
         match native(&unmounted_cat, "GFX_Shared") {
-            NativeIconResolution::ConfirmedMissing { reason, .. } => assert!(reason.contains("not installed"), "{reason}"),
+            NativeIconResolution::Refused { reason, .. } => assert!(reason.contains("not installed"), "{reason}"),
             other => panic!("the native icon must not fall through to base-game art, got {other:?}"),
         }
     }
@@ -1862,12 +1886,12 @@ mod tests {
         );
 
         match resolve_flag(&unmounted_cat.content.layers, "english", &[FlagSet::Normal], &cells, &["QQA_red".into(), "QQA".into()], 64) {
-            ArtResolution::ConfirmedMissing { reason, origin, file, .. } => {
+            ArtResolution::Refused { reason, origin, file, .. } => {
                 assert!(reason.contains("Synthetic Mod"), "{reason}");
                 assert_eq!(origin, Some(ArtOrigin::Mod { id: "mod_synthetic".into(), name: "Synthetic Mod".into() }));
                 assert_eq!(file.as_deref(), Some("gfx/flags/QQA_red.tga"));
             }
-            other => panic!("expected ConfirmedMissing for unmounted mod flag, got {other:?}"),
+            other => panic!("expected a named refusal for an unmounted mod flag, got {other:?}"),
         }
     }
 
@@ -1890,6 +1914,40 @@ mod tests {
             resolve_native_texture_in_stack(layers.presentation(), "gfx/sample_icon.png", Decode::default(), &scope_key),
             NativeIconResolution::Ready { .. }
         ));
+    }
+
+    #[test]
+    fn only_a_completed_search_of_every_layer_is_a_confirmed_miss() {
+        let (_, base) = crate::catalogue::tests::localisation_catalogue(&[]);
+        let (_, addon) = crate::catalogue::tests::localisation_catalogue(&[]);
+        write_entries(&base.0, &[
+            ("gfx/shared.png", &png_bytes(&solid(4, 2, [30, 60, 90, 255]))),
+            ("gfx/flags/QQA.tga", &tga(4, 2, [0, 0, 220, 255])),
+        ]);
+        let mut layers = ResolvedLayers::from_folders(&[(&base.0, &[][..]), (&addon.0, &[][..])]).unwrap();
+        layers.layers[1].role = LayerRole::Mod;
+        layers.layers[1].id = "mod_synthetic".to_owned();
+        layers.layers[1].display_name = Some("Synthetic Mod".to_owned());
+        layers.layers[1].art_unmounted = Some("not installed".to_owned());
+        let layers = ResolvedLayers::from_test_layers(layers.layers).unwrap();
+        let scope_key = art_scope_key(&layers, "english");
+        let variant = ArtRenderVariant { max_edge: 48, decode: Decode::default() };
+        let texture = |path: &str| resolve_texture_in_stack(layers.presentation(), path, 1, 0, variant, &scope_key);
+        let construct = |resolution: ArtResolution| match resolution {
+            ArtResolution::Refused { construct, .. } => construct,
+            other => panic!("expected a named refusal, got {other:?}"),
+        };
+        assert_eq!(construct(texture("gfx/shared.png")), "unmounted-layer", "an unmounted layer could hold the winning file");
+        assert_eq!(construct(texture("")), "texture-without-name", "no name, no lookup");
+        assert_eq!(construct(texture("../shared.png")), "unaddressable-art-path", "a path no layer can hold was never searched");
+        let flag = |candidate: &str| resolve_flag_pixels(&layers, "english", &[FlagSet::Normal], &[[4, 2]; 3], &[candidate.to_owned()], 64).0;
+        assert_eq!(construct(flag("QQA")), "unmounted-layer");
+        assert!(matches!(texture("gfx/absent.png"), ArtResolution::Refused { .. }), "the unmounted layer is above every miss too");
+
+        let mounted = ResolvedLayers::from_test_layers(ResolvedLayers::from_folders(&[(&base.0, &[][..])]).unwrap().layers).unwrap();
+        let scope_key = art_scope_key(&mounted, "english");
+        assert!(matches!(resolve_texture_in_stack(mounted.presentation(), "gfx/absent.png", 1, 0, variant, &scope_key), ArtResolution::ConfirmedMissing { .. }));
+        assert!(matches!(resolve_flag_pixels(&mounted, "english", &[FlagSet::Normal], &[[4, 2]; 3], &["QQB".to_owned()], 64).0, ArtResolution::ConfirmedMissing { .. }));
     }
 
     #[test]
