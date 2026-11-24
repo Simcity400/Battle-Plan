@@ -396,7 +396,11 @@ impl Captured {
     }
     pub fn release_daily(&mut self) {
         self.first = Part::vacant();
-        self.extra = [const { None }; MAX_PARTS - 1];
+        for extra in &mut self.extra {
+            if let Some(part) = extra {
+                **part = Part::vacant();
+            }
+        }
         self.unsplit();
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
@@ -812,5 +816,18 @@ mod tests {
         assert!(starts.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(starts[0] > 1 && starts[2] <= 20);
         assert_eq!(whole.next_starts(([7, 0, 0], 1)), ([0; 3], 0));
+
+        struct NoRead;
+        impl Memory for NoRead {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                false
+            }
+        }
+        let mut recycled = Captured::vacant();
+        let mut capacities = Capacities::default();
+        recycled.grow(&mut capacities);
+        recycled.release_daily();
+        assert_eq!(recycled.allocated_bytes(), (MAX_PARTS - 1) * size_of::<Part>());
+        assert_eq!(recycled.prepare_parts(&NoRead, 0, &[5, 10, 15]), MAX_PARTS);
     }
 }

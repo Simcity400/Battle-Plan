@@ -448,6 +448,23 @@ fn large_census_growth_leaves_quarter_capacity_free_without_power_of_two_inflati
     assert_eq!(captured.technology_pointers.as_ptr(), pointers);
     assert_eq!(captured.technology_pointers[0], 0x1234);
     assert_eq!(captured.allocated_bytes(), allocated);
+
+    let mut partial_cap = Capacities::default();
+    partial_cap.rows[2] = 4;
+    let mut partial = Captured::with_capacities(&partial_cap);
+    partial.technologies.rows.reserve_exact(12);
+    partial.technologies.outcome = Outcome::Truncated {
+        len: 4,
+        unread_rows: 8,
+    };
+    collector_test_support::with_allocations_denied(|| {
+        engine_allocation::advisory(|| partial.grow(&mut partial_cap));
+    });
+    assert_eq!(partial.technologies.rows.len(), 4);
+    assert_eq!(partial.technology_pointers.len(), 4);
+    partial.grow(&mut partial_cap);
+    assert_eq!(partial.technologies.rows.len(), 16);
+    assert_eq!(partial.technology_pointers.len(), 16);
 }
 #[test]
 fn prior_failure_and_unread_count_survive_later_empty_country() {

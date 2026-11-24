@@ -630,12 +630,19 @@ impl Captured {
     }
 
     pub fn with_capacities(capacity: &Capacities) -> Self {
+        let mut technologies = CaptureRows::new(capacity.rows[2]);
+        let mut technology_pointers = owned_vec(default_vec(capacity.rows[2]));
+        if technologies.rows.len() != technology_pointers.len() {
+            let common = technologies.rows.len().min(technology_pointers.len());
+            technologies.rows.truncate(common);
+            technology_pointers.truncate(common);
+        }
         Self {
             nested_bytes: OnceLock::new(),
             focus: CaptureRows::new(capacity.rows[0]),
             completed: CaptureRows::new(capacity.rows[1]),
-            technologies: CaptureRows::new(capacity.rows[2]),
-            technology_pointers: owned_vec(default_vec(capacity.rows[2])),
+            technologies,
+            technology_pointers,
             slots: CaptureRows::new(capacity.rows[3]),
             definitions: CaptureRows::new(capacity.rows[4]),
             definitions_pending: false,
@@ -1011,6 +1018,25 @@ impl Captured {
                 .map(|row| row.token.allocated_bytes())
                 .sum::<usize>()
     }
+    fn grow_technologies(&mut self, target: usize) {
+        let rows_len = self.technologies.rows.len();
+        let ptrs_len = self.technology_pointers.len();
+        if rows_len < target || ptrs_len < target {
+            let rows_need = target.saturating_sub(rows_len);
+            let ptrs_need = target.saturating_sub(ptrs_len);
+            if engine_allocation::reserve_exact(&mut self.technologies.rows, rows_need).is_ok()
+                && engine_allocation::reserve_exact(&mut self.technology_pointers, ptrs_need).is_ok()
+            {
+                if rows_len < target {
+                    self.technologies.rows.resize_with(target, Default::default);
+                }
+                if ptrs_len < target {
+                    self.technology_pointers.resize(target, 0);
+                }
+            }
+        }
+    }
+
     pub fn release_transient(&mut self) {
         const STEADY_TECHNOLOGY_CAP: usize = 4_096;
         const STEADY_COMPLETED_CAP: usize = 2_048;
@@ -1140,16 +1166,21 @@ impl Captured {
         if self.daily_released && !tech_truncated {
             grow_large_demand(&self.technologies, &mut capacity.rows[2]);
             let tech_cap = capacity.rows[2].min(STEADY_TECHNOLOGY_CAP);
-            if self.technologies.rows.len() <= tech_cap && self.technology_pointers.len() <= tech_cap {
-                grow_vec(&mut self.technologies.rows, tech_cap);
-                grow_vec(&mut self.technology_pointers, self.technologies.rows.len());
+            if self.technologies.rows.len() <= tech_cap && self.technology_pointers.len() <= tech_cap
+            {
+                self.grow_technologies(tech_cap);
             } else {
-                grow_vec(&mut self.technology_pointers, self.technologies.rows.len());
+                let common = self
+                    .technologies
+                    .rows
+                    .len()
+                    .max(self.technology_pointers.len());
+                self.grow_technologies(common);
             }
         } else {
             capacity.rows[2] = capacity.rows[2].max(self.technologies.rows.len());
-            grow_large(&mut self.technologies, &mut capacity.rows[2]);
-            grow_vec(&mut self.technology_pointers, capacity.rows[2]);
+            grow_large_demand(&self.technologies, &mut capacity.rows[2]);
+            self.grow_technologies(capacity.rows[2]);
         }
         self.definitions.grow(&mut capacity.rows[4]);
         self.politics.grow(&mut capacity.rows[5]);
@@ -1601,11 +1632,6 @@ fn grow_large_demand<R>(rows: &CaptureRows<R>, capacity: &mut usize) {
     if required > capacity.saturating_sub(*capacity / 4) {
         *capacity = (*capacity).max(required.saturating_add(required.div_ceil(3)));
     }
-}
-
-fn grow_large<R: Default + Clone>(rows: &mut CaptureRows<R>, capacity: &mut usize) {
-    grow_large_demand(rows, capacity);
-    grow_vec(&mut rows.rows, *capacity);
 }
 
 fn written<R>(rows: &[R], start: usize, outcome: Outcome) -> &[R] {

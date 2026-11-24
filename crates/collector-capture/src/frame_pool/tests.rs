@@ -304,18 +304,22 @@ fn byte_and_frame_limits_stop_pool_growth_and_resume_when_frames_vacate() {
     assert!(!shared.has_retired_parked());
     assert!(!shared.drain_retired_parked());
 
+    let box_bytes = size_of::<crate::extended::ParkedPacks>() as u64;
     let parked = shared.parked_bytes();
-    assert!(parked > 0);
+    assert!(parked > box_bytes);
     let steady_bytes = pool.live_bytes();
+    let steady_owned = shared.pool_owned();
     let reused = unsafe { shared.take_frame(&mut 0) }.unwrap();
     assert_eq!(shared.parked_bytes(), 0);
-    assert_eq!(pool.live_bytes(), steady_bytes);
+    assert_eq!(pool.live_bytes(), steady_bytes - box_bytes);
+    assert_eq!(shared.pool_owned(), steady_owned - box_bytes);
     assert_eq!(pool.live_bytes(), pool.gauge().live_bytes);
     let second = unsafe { shared.take_frame(&mut 0) }.unwrap();
     let grown = unsafe { shared.take_frame(&mut 0) }.unwrap();
     assert_eq!(pool.live(), STEADY + 1);
     let transfer_total = pool.live_bytes();
-    assert!(!pool.at_limit_with(usize::MAX, transfer_total + 1));
+    let owned_total = shared.pool_owned();
+    assert!(!pool.at_limit_with(usize::MAX, transfer_total + box_bytes + 1));
     let done = std::sync::atomic::AtomicBool::new(false);
     let spiked = std::sync::atomic::AtomicBool::new(false);
     let dipped = std::sync::atomic::AtomicBool::new(false);
@@ -323,20 +327,26 @@ fn byte_and_frame_limits_stop_pool_growth_and_resume_when_frames_vacate() {
         scope.spawn(|| {
             while !done.load(Ordering::Acquire) {
                 let bytes = pool.live_bytes();
-                if bytes > transfer_total {
+                let owned = shared.pool_owned();
+                if bytes > transfer_total + box_bytes || owned > owned_total + box_bytes {
                     spiked.store(true, Ordering::Relaxed);
                 }
-                if bytes < transfer_total {
+                if bytes < transfer_total || owned < owned_total {
                     dipped.store(true, Ordering::Relaxed);
                 }
             }
         });
         // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
         unsafe { shared.prepare_frame_for_reuse(reused) };
+        assert_eq!(pool.live_bytes(), transfer_total + box_bytes);
+        assert_eq!(shared.pool_owned(), owned_total + box_bytes);
+        assert!(shared.parked_bytes() > box_bytes);
         let restored = shared.frames.push(reused);
         assert!(restored.is_ok());
         let again = unsafe { shared.take_frame(&mut 0) }.unwrap();
         assert_eq!(again, reused);
+        assert_eq!(pool.live_bytes(), transfer_total);
+        assert_eq!(shared.pool_owned(), owned_total);
         done.store(true, Ordering::Release);
     });
     assert!(!spiked.load(Ordering::Relaxed));

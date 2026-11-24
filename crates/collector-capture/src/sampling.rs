@@ -1770,7 +1770,6 @@ impl Shared {
                 Ok(mut frame) => {
                     frame.extended.install_parked_packs(parked);
                     self.parked_total_bytes.fetch_sub(bytes, Ordering::Relaxed);
-                    self.pool_bytes.fetch_sub(bytes, Ordering::Relaxed);
                     self.frames
                         .install_claimed_with_credit(index, frame, claim, bytes);
                     Ok(())
@@ -1810,7 +1809,6 @@ impl Shared {
             let delta = after.wrapping_sub(before);
             self.parked_total_bytes.fetch_add(delta, Ordering::Relaxed);
             self.frames.adjust_live_bytes(before, after);
-            self.pool_bytes.fetch_add(delta, Ordering::Relaxed);
         }
     }
 
@@ -1827,7 +1825,6 @@ impl Shared {
                 slots.push(parked);
                 self.parked_total_bytes
                     .fetch_add(parked_bytes, Ordering::Relaxed);
-                self.pool_bytes.fetch_add(parked_bytes, Ordering::Relaxed);
                 self.frames
                     .transfer_slot_bytes(index, frame_after, parked_bytes);
                 None
@@ -1846,7 +1843,6 @@ impl Shared {
                 queue.push(retired);
                 self.parked_total_bytes
                     .fetch_add(parked_bytes, Ordering::Relaxed);
-                self.pool_bytes.fetch_add(parked_bytes, Ordering::Relaxed);
                 self.frames
                     .transfer_slot_bytes(index, frame_after, parked_bytes);
                 self.retired_parked_pending.store(true, Ordering::Release);
@@ -1949,7 +1945,6 @@ impl Shared {
             frame.extended.install_parked_packs(parked);
             let after = frame.allocated_bytes() as u64;
             self.parked_total_bytes.fetch_sub(bytes, Ordering::Relaxed);
-            self.pool_bytes.fetch_sub(bytes, Ordering::Relaxed);
             self.frames
                 .transfer_slot_bytes(index, after, 0_u64.wrapping_sub(bytes));
             true
@@ -2062,15 +2057,10 @@ impl Shared {
     }
 
     pub fn pool_owned(&self) -> u64 {
-        self.frames
-            .slots()
-            .map(|slot| slot.bytes.load(Ordering::Relaxed))
-            .fold(
-                self.pool_bytes
-                    .load(Ordering::Relaxed)
-                    .wrapping_add(self.frames.slot_bytes()),
-                u64::wrapping_add,
-            )
+        self.pool_bytes
+            .load(Ordering::Relaxed)
+            .wrapping_add(self.frames.slot_bytes())
+            .wrapping_add(self.frames.live_bytes())
     }
 
     pub fn pool_total(&self) -> u64 {

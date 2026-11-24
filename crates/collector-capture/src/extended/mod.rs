@@ -509,7 +509,8 @@ pub struct ParkedPacks {
 
 impl ParkedPacks {
     pub fn allocated_bytes(&self) -> usize {
-        self.division_presentation.allocated_bytes()
+        size_of::<Self>()
+            + self.division_presentation.allocated_bytes()
             + self.production.allocated_bytes()
             + self.production_modifiers.allocated_bytes()
             + self.characters.allocated_bytes()
