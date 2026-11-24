@@ -32,8 +32,6 @@ export const barsHostAdapter: FamilyHostAdapter<BarsModel, unknown, FamilyBarsBi
     const meta = fields.meta as { readonly totalHeight?: number } | undefined;
     return meta?.totalHeight !== undefined ? { height: meta.totalHeight } : null;
   },
-  getRowStride: fields => (fields.meta as { readonly rowHeight?: number } | undefined)?.rowHeight ?? 28,
-  getPageStep: (fields, viewport) => Math.max(1, Math.floor(viewport.height / ((fields.meta as { readonly rowHeight?: number } | undefined)?.rowHeight ?? 28))),
   deriveAuditRows: model => deriveBarsAudit(model),
   auditOrdered: true,
   buildBinding: ctx => {

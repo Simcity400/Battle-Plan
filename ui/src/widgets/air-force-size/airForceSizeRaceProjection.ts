@@ -2,7 +2,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { projectForceAtReply, validateForceAtReply, type ForceAtRaceBaseOptions } from '../../families/bars/forceAtRace.ts';
 import type { BarsModel, BarsProjection } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import {
   nextSeriesRaceChange,
   projectSeriesRace,
@@ -12,7 +12,6 @@ import {
   type SeriesRaceBaseOptions,
 } from '../../families/bars/seriesRace.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
-import { OPTIONS } from './definition.ts';
 
 export type AirForceMeasureOption = 'planes' | 'wings';
 export type AirForceOwnershipOption = 'roster' | 'effective';
@@ -29,7 +28,7 @@ function totalsFamily(measure: AirForceMeasureOption, ownership: AirForceOwnersh
   return { kind: 'air-force-totals', measure: `${ownership}${measure === 'wings' ? 'Wings' : 'Planes'}` };
 }
 
-export const airForceSizeRaceProjection: BarsProjection<AirForceSizeRaceOptions> = registerBarsProjection({
+export const airForceSizeRaceProjection: BarsProjection<AirForceSizeRaceOptions> = registerFamilyProjection({
   kind: 'air-force-size',
   family: 'bars',
   nextChange(readView, options) {
@@ -142,7 +141,6 @@ export const airForceSizeRaceDeclaration: BarsWidgetDeclaration<AirForceSizeRace
   subject: 'air forces',
   emptyCampaign: 'Load a campaign to see its air forces.',
   icon: 'layers',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

@@ -4,7 +4,6 @@ import type { BreakdownWidgetSpec } from '../../families/breakdown/declaration.t
 import type { BreakdownModel, BreakdownProjection } from '../../families/breakdown/model.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
 import type { PowerSpendingBreakdownReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 
 export interface PoliticalPowerSpendingOptions {
   readonly digits: number;
@@ -46,7 +45,6 @@ export const ppSpendingBreakdown: BreakdownWidgetSpec<PoliticalPowerSpendingOpti
   subject: 'political power spending',
   emptyCampaign: 'Load a campaign to see political power spending.',
   icon: 'sunburst',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its political power spending.' },
   projection: ppSpendingProjection,
   projectionOptions: ctx => ({ digits: powerDecimals(ctx.options) }),

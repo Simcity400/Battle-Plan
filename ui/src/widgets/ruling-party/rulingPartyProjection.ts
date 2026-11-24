@@ -11,11 +11,8 @@ import {
   type SourcePlan,
 } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { ChartGap, ChartHoverDetail, ChartMarker, ChartMarkerItem } from '../../families/time-chart/model.ts';
 import {
   branchGapsOf,
@@ -23,7 +20,6 @@ import {
   seriesHeadValue,
 } from '../../families/time-chart/seriesHelpers.ts';
 import type { PartyHistoryReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import {
   bandKeys,
   bands,
@@ -209,7 +205,7 @@ function buildRulingMarkers(
     }));
 }
 
-export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = registerTimeChart({
+export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = registerFamilyProjection({
   kind: 'ruling-party',
   family: 'time-chart',
   variant: 'stacked-area',
@@ -338,7 +334,6 @@ export const rulingPartyDeclaration: TimeChartWidgetDeclaration<RulingPartyOptio
   subject: 'ruling party',
   emptyCampaign: 'Load a campaign and choose a country to see its politics.',
   icon: 'palette',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its politics.' },
   aux: {
     product: 'party-history',

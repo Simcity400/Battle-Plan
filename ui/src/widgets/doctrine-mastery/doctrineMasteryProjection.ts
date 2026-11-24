@@ -4,9 +4,8 @@ import { contentKey, contentSet } from '../../dashboard/options.ts';
 import type { TooltipListItem } from '../../families/host/index.ts';
 import type { MeterWidgetDeclaration } from '../../families/meter/declaration.ts';
 import type { MeterModel, MeterProjection, MeterRow, MeterSection } from '../../families/meter/model.ts';
-import { registerMeterProjection } from '../../families/meter/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { MasteryReward } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import {
   activeTracks,
   choiceName,
@@ -62,7 +61,7 @@ function readTrackNumbers(
   };
 }
 
-export const doctrineMasteryProjection: MeterProjection<DoctrineMasteryProjectionOptions> = registerMeterProjection({
+export const doctrineMasteryProjection: MeterProjection<DoctrineMasteryProjectionOptions> = registerFamilyProjection({
   family: 'meters',
   kind: 'doctrine-mastery',
   project(readView, options): MeterModel {
@@ -262,7 +261,6 @@ export const doctrineMasteryDeclaration: MeterWidgetDeclaration<DoctrineMasteryP
   subject: 'doctrines',
   emptyCampaign: 'Load a campaign to see doctrines.',
   icon: 'flask',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its doctrines.' },
   sources: ctx => {
     const params = ctx.countryTag

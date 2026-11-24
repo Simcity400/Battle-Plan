@@ -4,12 +4,12 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
-import { boundedRuns, clipSpansToHour, inHourSpans, nextBoundaryAfter, sortedBoundaries, spanStart, timelineModel, untilItem, urlArtHandle, wholeBranchProof } from '../../families/timeline/helpers.ts';
+import { urlArtHandle } from '../../families/art/provider.ts';
+import { boundedRuns, clipSpansToHour, inHourSpans, nextBoundaryAfter, sortedBoundaries, spanStart, timelineModel, untilItem, wholeBranchProof } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection } from '../../families/timeline/model.ts';
-import { registerTimelineProjection } from '../../families/timeline/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { IdeaHistoryReply } from '../../generated/dashboard';
 import { spirits, spiritsShown } from '../national-spirits/spiritsData.ts';
-import { OPTIONS } from './definition.ts';
 
 export interface SpiritHistoryOptions {
   readonly showEnded: boolean;
@@ -33,7 +33,8 @@ const WORDS = {
   lastSeen: (h: number) => `Last recorded ${formatDateOnly(h)}`,
 };
 
-export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> = registerTimelineProjection<SpiritHistoryOptions>({
+export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> = registerFamilyProjection<TimelineProjection<SpiritHistoryOptions>>({
+  family: 'timeline',
   kind: 'spirit-history',
 
   nextChange(readView) {
@@ -117,7 +118,6 @@ export const spiritHistoryDeclaration: TimelineWidgetDeclaration<SpiritHistoryOp
   subject: 'national spirits',
   emptyCampaign: 'Load a campaign and choose a country to see its national spirits.',
   icon: 'history',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its national spirits.' },
   jumpToDate: true,
   keyByBranch: true,

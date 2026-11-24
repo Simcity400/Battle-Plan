@@ -1,4 +1,4 @@
-import { colour } from '../../charts/palette.ts';
+import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { BoundedReadView } from '../contract.ts';
@@ -9,7 +9,7 @@ import { formatValueState, type ValueFormat } from '../valueFormat.ts';
 import type { ForceAtReply, ForceAtRow, ForcePart, NavalLossesAtReply } from '../../generated/dashboard';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsSegment } from './model.ts';
 
-const PART_SURFACE = '#1e1e1e';
+const PART_SURFACE = DEFAULT_CARD_SURFACE;
 
 export interface ForceAtRaceBaseOptions {
   readonly top: number | null;

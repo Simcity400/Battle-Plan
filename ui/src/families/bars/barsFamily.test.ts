@@ -19,11 +19,11 @@ import {
   deriveBarsTooltip,
   FutureBarsDataError,
   InvalidBarsModelError,
-  type BarsModel,
+  type BarsModel, type BarsProjection,
 } from './model.ts';
 import { axisCeiling, layoutFamilyBars } from './layout.ts';
 import { drawFamilyBars, hitFamilyBars } from './painter.ts';
-import { registerBarsProjection } from './registry.ts';
+import { registerFamilyProjection } from '../registry.ts';
 import { familyBarsLaneView, type FamilyBarsBinding } from './laneView.ts';
 import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
 import { buildShareRowsModel } from './shareRows.ts';
@@ -403,7 +403,7 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
     numeric: 1500 - i,
   }));
 
-  registerBarsProjection<{ readonly swapTop?: boolean }>({
+  registerFamilyProjection({
     kind: 'test-bars-1500',
     family: 'bars',
     project(readView, opts) {
@@ -496,10 +496,14 @@ test('audit rows keep one key per row and cell, so two bars never collapse in th
     { kind: 'data', key: 'USA', label: 'United States', value: { value: knownValue(292) }, numeric: 292 },
   ] });
   assert.equal(new Map(rows.map(row => [row.key, row.value])).size, rows.length);
+  const counted = (primary: string) => new Map(deriveBarsAudit({ form: 'share', hour: h, rows: [
+    { kind: 'data', key: '11', label: 'English Channel', segments: [], readout: { primary } },
+  ] }).map(row => [row.key, row.value]));
+  assert.notDeepEqual(counted('90 air wings'), counted('91 air wings'), 'a painted readout is compared');
 });
 
 test('a backward seek drops a cached model from a later hour', () => {
-  registerBarsProjection<Record<string, never>>({
+  registerFamilyProjection<BarsProjection<Record<string, never>>>({
     kind: 'test-bars-seek-back',
     family: 'bars',
     project(readView) {
@@ -575,7 +579,7 @@ test('a known 40 percent share beside an unavailable part fills 40 percent and m
 
 test('a hover over 1,500 rows reuses navigation, meta and row bounds, and the mirror holds only visible rows', () => {
   const rows = Array.from({ length: 1500 }, (_, i) => ({ kind: 'data' as const, key: `K${i}`, label: `Country ${i}`, value: { value: knownValue(1500 - i) }, numeric: 1500 - i }));
-  registerBarsProjection<Record<string, never>>({
+  registerFamilyProjection<BarsProjection<Record<string, never>>>({
     kind: 'test-bars-hover',
     family: 'bars',
     project(readView) { return { form: 'ordered', hour: readView.hour, rows }; },

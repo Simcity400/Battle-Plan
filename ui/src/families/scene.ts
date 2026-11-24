@@ -14,7 +14,7 @@ export interface SceneSources {
   readonly staticPanels?: Readonly<Record<string, unknown>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly series?: ReadonlyMap<string, ReadonlyMap<string, BoundedSeries>>;
-  readonly hovers?: ReadonlyMap<string, { readonly hour: number; readonly data: unknown }>;
+  readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
 }
 
 export interface SceneReaders {
@@ -73,7 +73,7 @@ function readScene(
     hour,
     revisions,
     ...(sources.series ? { series: sources.series } : {}),
-    ...(sources.hovers ? { hovers: sources.hovers } : {}),
+    ...(sources.hovers ? { hovers: new Map(Object.entries(sources.hovers)) } : {}),
     ...(readers?.identity ? { identity: readers.identity } : {}),
     ...(readers?.art ? { art: readers.art } : {}),
     ...(demands
