@@ -334,10 +334,13 @@ pub struct Lane {
     marks: Vec<u64>,
     marks_at: Vec<usize>,
     read: Vec<u32>,
+    prev_read: Vec<u32>,
     passage: Option<Box<Passage>>,
     log: Option<Box<log::Logs>>,
     #[cfg(test)]
     pub(crate) state_reads: usize,
+    #[cfg(test)]
+    pub(crate) read_compares: usize,
 }
 
 impl Lane {
@@ -384,10 +387,13 @@ impl Lane {
             marks: Vec::new(),
             marks_at: Vec::new(),
             read: Vec::new(),
+            prev_read: Vec::new(),
             passage: None,
             log,
             #[cfg(test)]
             state_reads: 0,
+            #[cfg(test)]
+            read_compares: 0,
         })
     }
 
@@ -594,6 +600,7 @@ impl Lane {
         self.deletes.clear();
         self.inserts.clear();
         self.read.clear();
+        self.prev_read.clear();
         if let Some(passage) = &mut self.passage {
             passage.live = None;
         }
@@ -611,6 +618,9 @@ impl Lane {
         self.retired.clear();
         sought.replay_ns = (replaying.elapsed().as_nanos() as u64).saturating_sub(sought.fetch_ns);
         self.read_status()?;
+        if from_first && target == 0 && matches!(self.status.0, Status::Truncated { .. }) {
+            self.read.extend(self.cells.rows());
+        }
         let mut spent = self.spent();
         subtract(&mut spent, &before);
         sought.spent = spent;
@@ -662,6 +672,10 @@ impl Lane {
         }
         let Some(next) = self.next else { return Err(invalid("A lane steps before it is sought")) };
         out.begin(self.table, &self.columns, self.keyed, false);
+        if matches!(self.status.0, Status::Truncated { .. }) {
+            self.prev_read.clear();
+            self.prev_read.extend_from_slice(&self.read);
+        }
         self.pieces = 0;
         if let Some(passage) = &mut self.passage {
             passage.begin(&self.cells, &self.columns);
@@ -871,6 +885,15 @@ impl Lane {
         self.read_status()?;
         if self.status != held {
             out.status = Some(self.status);
+        }
+        if self.status.0 == held.0 && matches!(self.status.0, Status::Truncated { .. }) {
+            #[cfg(test)]
+            {
+                self.read_compares += 1;
+            }
+            if self.prev_read != self.read {
+                out.read_rows_changed = true;
+            }
         }
         Ok(())
     }

@@ -93,13 +93,13 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
-  const headQuery = useMemo(() => following && active && track && resolved.tags.length ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id,
+  const headQuery = useMemo(() => following && active && track && resolved.tags.length ? gate.follow({ product: 'series-state', coverage: 'row', params: { branchId: track.branch.id,
     family: { kind: 'country-measure', measure: config.measure }, reads: resolved.tags.map(tag => ({ country: countryFromKey(tag) })) } }) : null,
   [following, active, track?.branch.id, config.measure, resolved.tags, gate.follow]);
   const shown = useShownHour();
   const followed = useFollow(store, headQuery, root, useCallback((entry: FollowEntry) => shown(shownThrough(entry)), [shown]));
   const followedHead = followsHead(followed);
-  const ceilingQuery = useMemo(() => following && active && showCeiling && track && resolved.tags.length ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id,
+  const ceilingQuery = useMemo(() => following && active && showCeiling && track && resolved.tags.length ? gate.follow({ product: 'series-state', coverage: 'row', params: { branchId: track.branch.id,
     family: { kind: 'country-stability', measure: 'maxCommandPower' }, reads: resolved.tags.map(tag => ({ country: countryFromKey(tag) })) } }) : null,
   [following, active, showCeiling, track?.branch.id, resolved.tags, gate.follow]);
   const ceilingFollowed = useFollow(store, ceilingQuery, root, NO_PAINT);

@@ -3,7 +3,7 @@ import { dayLabel } from '../../charts/draw.ts';
 import { formatRatio } from '../../charts/butterfly/layout.ts';
 import { formatFixed } from '../../charts/valueAxis.ts';
 import type { TooltipContent } from '../../charts/tooltip';
-import { CELL, cellState, cellValue, rowName } from '../../dashboard/follow/message.ts';
+import { CELL, cellState, cellValue, rowName, rowReason } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { CountryRaceEntry } from '../../charts/race/countryRace';
@@ -16,6 +16,10 @@ export type CasualtyMeasure = typeof MEASURES[number];
 
 export type Held = ReadonlyMap<string, bigint | null>;
 export type HeldMeasures = Readonly<Record<CasualtyMeasure, Held | null>>;
+export type MeasureReasons = ReadonlyMap<string, string>;
+export type HeldReasons = Readonly<Record<CasualtyMeasure, MeasureReasons | null>>;
+
+const unheldReason = (reason: string | null) => reason !== null && reason.endsWith('is held by no country');
 
 export function answerHeld(answer: FollowedAnswer | undefined, asked: readonly string[]): Held | null {
   if (!answer || answer.kind === 'notRecorded') return null;
@@ -24,15 +28,51 @@ export function answerHeld(answer: FollowedAnswer | undefined, asked: readonly s
     const tag = rowName(answer, row) ?? asked[row];
     if (!tag) continue;
     const state = cellState(answer, row * answer.columns);
-    if (state === CELL.noRow) continue;
+    if (state === CELL.noRow) {
+      const reason = rowReason(answer, row);
+      if (reason && !unheldReason(reason)) out.set(tag, null);
+      continue;
+    }
     out.set(tag, state === CELL.value ? cellValue(answer, row * answer.columns) : null);
   }
   return out;
 }
 
+function answerMeasureReasons(answer: FollowedAnswer | undefined, asked: readonly string[]): MeasureReasons | null {
+  if (!answer || answer.kind === 'notRecorded') return null;
+  const out = new Map<string, string>();
+  for (let row = 0; row < answer.rows; row++) {
+    const tag = rowName(answer, row) ?? asked[row];
+    if (!tag || out.has(tag)) continue;
+    const state = cellState(answer, row * answer.columns);
+    if (state === CELL.value) continue;
+    const reason = rowReason(answer, row);
+    if (reason && !unheldReason(reason)) out.set(tag, reason);
+  }
+  return out;
+}
+
+export function answerReasons(answers: readonly (FollowedAnswer | undefined)[], asked: readonly string[]): HeldReasons {
+  return Object.fromEntries(MEASURES.map((measure, at) => [measure, answerMeasureReasons(answers[at], asked)])) as unknown as HeldReasons;
+}
+
 export function stateHeld(reply: SeriesStateReply | undefined): Held | null {
   if (!reply) return null;
   return new Map(reply.states.map(state => [countryKey(state.country), state.run ? BigInt(state.run.valueRaw) : null]));
+}
+
+function stateMeasureReasons(reply: SeriesStateReply | undefined): MeasureReasons | null {
+  if (!reply) return null;
+  const out = new Map<string, string>();
+  for (const state of reply.states) {
+    const tag = countryKey(state.country);
+    if (!state.run && state.missing && !out.has(tag) && !unheldReason(state.missing)) out.set(tag, state.missing);
+  }
+  return out;
+}
+
+export function stateReasons(replies: readonly (SeriesStateReply | undefined)[]): HeldReasons {
+  return Object.fromEntries(MEASURES.map((measure, at) => [measure, stateMeasureReasons(replies[at])])) as unknown as HeldReasons;
 }
 
 export function rankedTags(answer: FollowedAnswer | undefined): string[] {
@@ -48,16 +88,27 @@ export function rankedTags(answer: FollowedAnswer | undefined): string[] {
 export interface CountryCasualties {
   tag: string; hour: number; atLeast: boolean;
   dealt: bigint | null; taken: bigint | null; knownTaken: bigint | null; unknown: bigint | null;
+  reason?: string | null;
+  takenReason?: string | null;
 }
 
-export function casualtyRows(tags: readonly string[], held: HeldMeasures, hour: number, includeUnknown: boolean): CountryCasualties[] {
+export function casualtyRows(tags: readonly string[], held: HeldMeasures, hour: number, includeUnknown: boolean, reasons?: HeldReasons): CountryCasualties[] {
   const rows: CountryCasualties[] = [];
   for (const tag of tags) {
     if (!held.dealt?.has(tag) && !held.taken?.has(tag)) continue;
     const dealt = held.dealt?.get(tag) ?? null, knownTaken = held.taken?.get(tag) ?? null, unknown = held.unknown?.get(tag) ?? null;
     const partial = held.partial?.get(tag);
-    rows.push({ tag, hour, atLeast: partial != null && partial !== 0n, dealt, knownTaken, unknown,
-      taken: includeUnknown ? knownTaken == null || unknown == null ? null : knownTaken + unknown : knownTaken });
+    const taken = includeUnknown ? knownTaken == null || unknown == null ? null : knownTaken + unknown : knownTaken;
+    const takenReason = knownTaken == null ? reasons?.taken?.get(tag) ?? null
+      : includeUnknown && unknown == null ? reasons?.unknown?.get(tag) ?? null
+      : null;
+    const dealtReason = dealt == null ? reasons?.dealt?.get(tag) ?? null : null;
+    const reason = takenReason ?? dealtReason;
+    rows.push({
+      tag, hour, atLeast: partial != null && partial !== 0n, dealt, knownTaken, unknown, taken,
+      ...(reason ? { reason } : {}),
+      ...(takenReason ? { takenReason } : {}),
+    });
   }
   return rows;
 }
@@ -70,7 +121,13 @@ export function rankCasualties(rows: readonly CountryCasualties[], limit = Infin
   }).slice(0, limit);
 }
 
+export function orderCasualtyRows(rows: readonly CountryCasualties[], limit = Infinity, positive = false, preserveOrder = false): CountryCasualties[] {
+  if (preserveOrder && rows.some(row => row.dealt === null || row.knownTaken === null)) return [...rows].slice(0, limit);
+  return rankCasualties(rows, limit, positive);
+}
+
 export function casualtyRaceEntries(rows: readonly CountryCasualties[]): CountryRaceEntry[] {
+  if (rows.some(row => row.knownTaken === null)) return [];
   return rows.filter(row => row.taken !== null && row.knownTaken !== null).sort((a, b) => {
     const x = a.knownTaken!, y = b.knownTaken!;
     return x === y ? compareTags(a.tag, b.tag) : x > y ? -1 : 1;
@@ -85,6 +142,19 @@ export const casualtyBarStretch = (row: CountryCasualties) => JSON.stringify([ro
 
 export const SUBTOTAL_NOTE = '† Incomplete total; ratio unavailable.';
 
+export function casualtyUnknownNote(rows: readonly Pick<CountryCasualties, 'tag' | 'hour' | 'taken' | 'takenReason'>[], name: (tag: string, hour: number) => string): string | null {
+  const missing = rows.filter(row => row.taken === null);
+  if (!missing.length) return null;
+  const reasons = [...new Set(missing.map(row => row.takenReason).filter((reason): reason is string => !!reason))];
+  if (reasons.length === 1 && missing.every(row => row.takenReason === reasons[0])) {
+    return `Losses taken are unknown for ${missing.map(row => name(row.tag, row.hour)).join(', ')}: ${reasons[0]}.`;
+  }
+  return `Losses taken are unknown for ${missing.map(row => {
+    const label = name(row.tag, row.hour);
+    return row.takenReason ? `${label} (${row.takenReason})` : label;
+  }).join(', ')}.`;
+}
+
 export function casualtyTooltip(row: CountryCasualties, name: string, unknownLabel: string): TooltipContent {
   return { title: name, subtitle: dayLabel(row.hour), rows: [
     { label: 'Dealt', value: formatCasualties(row.dealt, row.atLeast) },
@@ -92,9 +162,9 @@ export function casualtyTooltip(row: CountryCasualties, name: string, unknownLab
     { label: unknownLabel, value: row.unknown == null ? 'Unknown' : formatCasualties(row.unknown), tone: 'muted' },
     { label: 'Taken', value: formatCasualties(row.taken, row.atLeast), strong: true },
     { label: 'Ratio', value: casualtyRatio(row), strong: true },
-  ], note: [row.atLeast ? SUBTOTAL_NOTE : '',
+  ], note: [row.reason ?? '', row.atLeast ? SUBTOTAL_NOTE : '',
     signedCorrection(row) ? 'Ratio unavailable for corrections.' : '',
-    row.unknown == null ? 'Losses from unknown attackers are unavailable.' : ''].filter(Boolean).join(' ') || undefined };
+    row.unknown == null && !row.reason ? 'Losses from unknown attackers are unavailable.' : ''].filter(Boolean).join(' ') || undefined };
 }
 
 export interface HeldCasualties<L> { readonly lives: readonly (L | undefined)[]; readonly members: readonly string[] }
