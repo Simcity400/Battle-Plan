@@ -17,7 +17,7 @@ export const OPTIONS: readonly OptionField[] = [
 ];
 
 export const definition = {
-  kind: 'faction-goals', version: 1, title: 'Faction goals', icon: 'target', category: 'Diplomacy',
+  kind: 'faction-goals', version: 1, title: 'Faction goals', icon: 'globe', category: 'Diplomacy',
   description: 'The goals of a country’s faction: done, in progress and cancelled.',
   timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: false,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 6, h: 10 }, countries: { max: 1 }, options: OPTIONS,
