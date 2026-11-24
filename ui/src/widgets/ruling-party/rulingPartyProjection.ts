@@ -2,12 +2,10 @@ import { auditRow } from '../../families/auditRow.ts';
 import { categoricalPalette, DEFAULT_DARK_SURFACE } from '../../charts/palette.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
-import { rowAmount } from '../../dashboard/follow/painters.ts';
-import { followedRow, keyId } from '../../dashboard/keyedSeriesData.ts';
+import { keyId, type SeriesKey } from '../../dashboard/keyedSeriesData.ts';
 import {
   FutureDataError,
   type BoundedReadView,
-  type BoundedSeries,
   type FamilyPlanContext,
   type SourcePlan,
 } from '../../families/contract.ts';
@@ -18,7 +16,9 @@ import type { ChartGap, ChartHoverDetail, ChartMarker, ChartMarkerItem } from '.
 import {
   branchGapsOf,
   buildBoundedStack,
-  seriesHeadValue,
+  headReading,
+  type HeadReading,
+  type StackPart,
 } from '../../families/time-chart/seriesHelpers.ts';
 import { formatShare } from '../../families/valueFormat.ts';
 import type { PartyHistoryReply } from '../../generated/dashboard';
@@ -27,20 +27,21 @@ import {
   bands,
   leaderAt,
   leaderShown,
+  ownedPartAt,
   partyBadges,
   partyNameAt,
   POPULARITY_FAMILY,
   POPULARITY_PART_BITS,
   rulingAt,
-  rulingFirst,
   validatePartyHistoryReply,
   type Band,
 } from './partyData.ts';
 
 const PERCENT_TICKS = [0, 50, 100] as const;
+const Y_AXIS = { format: 'percent', fixed: [0, 100], ticks: PERCENT_TICKS } as const;
 
 export interface RulingPartyOptions {
-  readonly tag: string | null;
+  readonly subject: string | null;
   readonly history: PartyHistoryReply | null;
   readonly extent: readonly [number, number];
   readonly gaps: readonly ChartGap[];
@@ -49,7 +50,7 @@ export interface RulingPartyOptions {
   readonly showLeaders: boolean;
 }
 
-interface RawKeyedState {
+interface HoverState {
   readonly country?: string | number;
   readonly part?: string;
   readonly hour: number;
@@ -57,152 +58,81 @@ interface RawKeyedState {
   readonly missing: string | null;
 }
 
-function bandHeadValue(
-  band: Band,
-  seriesMap: ReadonlyMap<string, BoundedSeries> | undefined,
-  readView: BoundedReadView,
-  decimals: number,
-): number | null {
-  const answer = readView.answer('popularity');
-  if (answer && answer.kind !== 'notRecorded') {
-    for (const key of band.keys) {
-      const row = followedRow(answer, key, POPULARITY_PART_BITS);
-      if (row < 0) continue;
-      const val = rowAmount(answer, row, decimals);
-      if (val !== undefined && val !== null && Number.isFinite(val)) return val;
-    }
+const partKey = (subject: string, part: number): SeriesKey => ({ tag: subject, part: String(part) });
+
+function stackParts(band: Band, subject: string, readView: BoundedReadView): StackPart[] {
+  const byPart = new Map<number, [number, number][]>();
+  for (const owned of band.owned) {
+    const within = byPart.get(owned.part);
+    if (within) within.push([owned.firstHour, owned.lastHour]);
+    else byPart.set(owned.part, [[owned.firstHour, owned.lastHour]]);
   }
-  for (const key of band.keys) {
-    const partSeries = seriesMap?.get(keyId(key)) ?? null;
-    if (!partSeries) continue;
-    const val = seriesHeadValue(partSeries, undefined, 0, decimals, 1);
-    if (val !== null) return val;
-  }
-  return null;
+  const series = readView.series('popularity');
+  return [...byPart].map(([part, within]) => {
+    const bounded = series?.get(keyId(partKey(subject, part)));
+    return bounded ? { series: bounded, within } : { within };
+  });
 }
 
-function hoverBandRaw(
-  band: Band,
-  states: readonly RawKeyedState[],
-  hour: number,
-): { readonly raw: string } | { readonly missing: string } | null {
-  let missingReason: string | null = null;
-  for (const state of states) {
-    if (state.hour !== hour) continue;
-    const tag = state.country === undefined ? '' : countryKey(state.country as string | number);
-    const part = state.part ?? '';
-    if (!band.keys.some(k => k.tag === tag && k.part === part)) continue;
-    if (state.run) return { raw: state.run.valueRaw };
-    if (state.missing) missingReason ??= state.missing;
-  }
-  return missingReason !== null ? { missing: missingReason } : null;
+function bandHead(band: Band, subject: string, readView: BoundedReadView, hour: number, decimals: number): HeadReading | null | undefined {
+  const part = ownedPartAt(band, hour);
+  if (part === null) return undefined;
+  return headReading(readView, 'popularity', { tag: subject, part: String(part), partBits: POPULARITY_PART_BITS }, decimals);
 }
 
-function rulingHoverDetail(
-  readView: BoundedReadView,
-  history: PartyHistoryReply,
-  list: readonly Band[],
-): ChartHoverDetail | null {
+function rulingHoverDetail(readView: BoundedReadView, history: PartyHistoryReply, list: readonly Band[], subject: string): ChartHoverDetail | null {
   let hover;
   try {
-    hover = readView.hover<{ readonly states?: readonly RawKeyedState[]; readonly decimals?: number } | readonly RawKeyedState[]>('popularityHover');
+    hover = readView.hover<{ readonly states?: readonly HoverState[]; readonly decimals?: number }>('popularityHover');
   } catch (error) {
     if (error instanceof FutureDataError) return null;
     throw error;
   }
-  if (!hover) return null;
-  const h = hover.hour;
-  const data = hover.data;
-  const states: readonly RawKeyedState[] = !data
-    ? []
-    : Array.isArray(data)
-      ? data
-      : 'states' in data && Array.isArray(data.states)
-        ? data.states
-        : [];
-  const decimals = data && !Array.isArray(data) && 'decimals' in data && typeof data.decimals === 'number'
-    ? data.decimals
-    : history.decimals;
-  const shown = leaderShown(history, leaderAt(history, h));
-  const partyName = partyNameAt(history, h);
+  if (!hover?.data) return null;
+  const at = hover.hour;
+  const states = Array.isArray(hover.data.states) ? hover.data.states : [];
+  const decimals = typeof hover.data.decimals === 'number' ? hover.data.decimals : history.decimals;
+  const shown = leaderShown(history, leaderAt(history, at));
+  const partyName = partyNameAt(history, at);
   const partyLabel = partyName === undefined ? null : partyName ?? 'Not known';
-  const ruling = rulingAt(history, h);
+  const ruling = rulingAt(history, at);
   const items: TooltipListItem[] = [
-    {
-      label: 'Leader',
-      value: shown.name,
-      ...(shown.known ? { strong: true } : { tone: 'muted' as const }),
-    },
+    { label: 'Leader', value: shown.name, ...(shown.known ? { strong: true } : { tone: 'muted' as const }) },
   ];
   if (shown.ideology || partyLabel) {
-    items.push({
-      label: 'Ideology · party',
-      value: [shown.ideology ?? 'Not recorded', partyLabel ?? 'Not recorded'].join(' · '),
-    });
+    items.push({ label: 'Ideology · party', value: [shown.ideology ?? 'Not recorded', partyLabel ?? 'Not recorded'].join(' · ') });
   }
-  const scored = list.map(band => {
-    const read = hoverBandRaw(band, states, h);
-    return {
-      band,
-      read,
-      sortVal: read && 'raw' in read ? Number(read.raw) : -Infinity,
-    };
-  }).sort((a, b) => b.sortVal - a.sortVal);
-  scored.forEach(({ band, read }, idx) => {
+  let first = true;
+  for (const band of list) {
+    const part = ownedPartAt(band, at);
+    if (part === null) continue;
+    const state = states.find(item => item.hour === at && item.part === String(part)
+      && item.country !== undefined && countryKey(item.country) === subject);
     const label = band.token === ruling ? `${band.name} (ruling)` : band.name;
-    if (read && 'raw' in read) {
-      items.push({
-        label,
-        swatch: band.color,
-        value: formatShare(Number(read.raw) / (10 ** decimals) / 100),
-        ...(idx === 0 ? { divider: true } : {}),
-      });
-    } else {
-      items.push({
-        label,
-        swatch: band.color,
-        missingReason: read && 'missing' in read ? read.missing : 'Not recorded',
-        tone: 'muted',
-        ...(idx === 0 ? { divider: true } : {}),
-      });
-    }
-  });
-  return { hour: h, items, replacesSeries: true };
+    const divider = first ? { divider: true } : {};
+    first = false;
+    items.push(state?.run
+      ? { label, swatch: band.color, value: formatShare(Number(state.run.valueRaw) / 10 ** decimals / 100), ...divider }
+      : { label, swatch: band.color, missingReason: state?.missing ?? 'Not recorded', tone: 'muted', ...divider });
+  }
+  return { hour: at, items, replacesSeries: true };
 }
 
-function buildRulingMarkers(
-  history: PartyHistoryReply,
-  ordered: readonly Band[],
-  options: RulingPartyOptions,
-  hour: number,
-): ChartMarker[] {
+function buildRulingMarkers(history: PartyHistoryReply, list: readonly Band[], options: RulingPartyOptions, hour: number): ChartMarker[] {
   if (!options.showChanges && !options.showLeaders) return [];
-  const names = new Map(
-    history.ideologies.map(ideology => [ideology.token, contentTitle(ideology.name, ideology.token, 'Ideology name unavailable')]),
-  );
-  for (const band of ordered) names.set(band.token, band.name);
+  const names = new Map(history.ideologies.map(ideology => [ideology.token, contentTitle(ideology.name, ideology.token, 'Ideology name unavailable')]));
+  for (const band of list) names.set(band.token, band.name);
   const nameOf = (token: string) => names.get(token) ?? 'Ideology name unavailable';
-  const all = partyBadges(history, nameOf, options.showLeaders);
+  const all = partyBadges(history, nameOf, hour, options.showLeaders);
   const kept = options.showChanges ? all : all.filter(badge => badge.glyph === '♔');
-  const byDay = new Map<number, { hour: number; items: ChartMarkerItem[] }>();
+  const byHour = new Map<number, ChartMarkerItem[]>();
   for (const badge of kept) {
     if (badge.hour < options.extent[0] || badge.hour > hour) continue;
-    const dayKey = Math.floor(badge.hour / 24);
-    let group = byDay.get(dayKey);
-    if (!group) {
-      group = { hour: badge.hour, items: [] };
-      byDay.set(dayKey, group);
-    }
-    group.items.push({ title: badge.label });
+    const items = byHour.get(badge.hour);
+    if (items) items.push({ title: badge.label });
+    else byHour.set(badge.hour, [{ title: badge.label }]);
   }
-  return [...byDay.entries()]
-    .sort((a, b) => a[1].hour - b[1].hour)
-    .map(([dayKey, group]) => ({
-      id: `rp-m:${dayKey}`,
-      hour: group.hour,
-      title: group.items[0]!.title,
-      items: group.items,
-    }));
+  return [...byHour].map(([at, items]) => ({ id: `rp-m:${at}`, hour: at, title: items[0]!.title, items }));
 }
 
 export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = registerFamilyProjection({
@@ -213,24 +143,12 @@ export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = re
   measureTitle: 'Ruling party',
   project(readView: BoundedReadView, options: RulingPartyOptions) {
     const hour = readView.hour;
-    const history = options.history;
-    const tag = options.tag;
-    if (!history || !tag) {
-      return {
-        kind: 'ruling-party',
-        measureTitle: 'Ruling party',
-        mode: 'stack',
-        hour,
-        extent: options.extent,
-        yAxis: { format: 'percent', fixed: [0, 100], ticks: PERCENT_TICKS },
-        series: [],
-        empty: null,
-      };
-    }
+    const { history, subject } = options;
+    const base = { kind: 'ruling-party', measureTitle: 'Ruling party', mode: 'stack', hour, extent: options.extent, yAxis: Y_AXIS, series: [] } as const;
+    if (!history || !subject) return { ...base, empty: null };
 
-    const ordered = bands(history, tag, categoricalPalette(options.surface));
+    const list = bands(history, categoricalPalette(options.surface));
     const ruling = rulingAt(history, hour);
-    const list = rulingFirst(ordered, ruling);
     const leader = leaderShown(history, leaderAt(history, hour));
     const partyName = partyNameAt(history, hour);
     const leaderParts = [leader.name, leader.ideology, partyName ?? null].filter((part): part is string => !!part);
@@ -238,89 +156,52 @@ export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = re
 
     if (!list.length) {
       return {
-        kind: 'ruling-party',
-        measureTitle: 'Ruling party',
-        mode: 'stack',
-        hour,
-        extent: options.extent,
-        yAxis: { format: 'percent', fixed: [0, 100], ticks: PERCENT_TICKS },
-        series: [],
+        ...base,
         note,
         warnings: history.warnings,
-        empty: {
-          message: history.leaders.length ? 'Party popularity is unavailable.' : 'Party data is unavailable.',
-          kind: 'unavailable',
-        },
+        empty: { message: history.leaders.length ? 'Party popularity is unavailable.' : 'Party data is unavailable.', kind: 'unavailable' },
       };
     }
 
-    const seriesMap = readView.series('popularity');
-    const heads = list.map(band => bandHeadValue(band, seriesMap, readView, history.decimals));
-    const stack = buildBoundedStack(
-      list.map((band, idx) => {
-        const parts = band.keys
-          .map(key => seriesMap?.get(keyId(key)))
-          .filter((item): item is BoundedSeries => item !== undefined);
-        const headValue = heads[idx]!;
-        return {
-          id: band.token,
-          key: band.token,
-          name: band.name,
-          color: band.color,
-          opacity: 0.84,
-          parts,
-          valueScale: 1,
-          headValue,
-          endLabel: headValue === null
-            ? null
-            : {
-                colorBar: band.color,
-                name: band.name,
-                fullName: band.token === ruling ? `${band.name} (ruling)` : band.name,
-                value: formatShare(headValue / 100),
-              },
-        };
-      }),
-      hour,
-      { missingMode: 'zero-absent' },
-    );
+    const heads = list.map(band => bandHead(band, subject, readView, hour, history.decimals));
+    const stack = buildBoundedStack(list.map((band, idx) => {
+      const head = heads[idx];
+      const value = head && 'value' in head ? head.value : null;
+      return {
+        id: band.token,
+        key: band.token,
+        name: band.name,
+        color: band.color,
+        opacity: 0.84,
+        parts: stackParts(band, subject, readView),
+        head: head ?? null,
+        endLabel: value === null
+          ? null
+          : { colorBar: band.color, name: band.name, fullName: band.token === ruling ? `${band.name} (ruling)` : band.name, value: formatShare(value / 100) },
+      };
+    }), hour);
 
-    const markers = buildRulingMarkers(history, ordered, options, hour);
+    const markers = buildRulingMarkers(history, list, options, hour);
     const gaps: ChartGap[] = [
       ...options.gaps,
       ...history.unobserved
         .filter(span => span.firstHour <= hour)
-        .map(span => ({
-          firstHour: span.firstHour,
-          lastHour: span.lastHour,
-          reason: 'Parties were not recorded',
-        })),
+        .map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour, reason: 'Parties were not recorded' })),
     ];
-
     const auditRows = list.flatMap((band, idx) => {
       const head = heads[idx];
-      return head === null || head === undefined
-        ? []
-        : [auditRow(band.token, formatShare(head / 100))];
+      if (head === undefined) return [];
+      if (head === null) return [auditRow(band.token, 'Not read')];
+      return [auditRow(band.token, 'value' in head ? formatShare(head.value / 100) : head.missing)];
     });
 
     return {
-      kind: 'ruling-party',
-      measureTitle: 'Ruling party',
-      mode: 'stack',
-      hour,
-      extent: options.extent,
-      yAxis: {
-        format: 'percent',
-        fixed: [0, 100],
-        ticks: PERCENT_TICKS,
-      },
-      series: [],
+      ...base,
       stack,
       markers: markers.length > 0 ? markers : undefined,
       gaps: gaps.length > 0 ? gaps : undefined,
       note,
-      hoverDetail: rulingHoverDetail(readView, history, list),
+      hoverDetail: rulingHoverDetail(readView, history, list, subject),
       warnings: history.warnings,
       auditRows,
     };
@@ -337,66 +218,43 @@ export const rulingPartyDeclaration: TimeChartWidgetDeclaration<RulingPartyOptio
   countries: { mode: 'single', choose: 'Choose a country to see its politics.' },
   aux: {
     product: 'party-history',
-    params: (track, _options, countryTag) => (
-      countryTag ? { branchId: track.branch.id, country: countryFromKey(countryTag) } : null
+    params: (track, _options, _country, subject) => (
+      subject ? { branchId: track.branch.id, country: countryFromKey(subject) } : null
     ),
     validate: validatePartyHistoryReply,
   },
   sources(ctx: FamilyPlanContext<PartyHistoryReply>): SourcePlan {
-    const tag = ctx.countryTag;
+    const subject = ctx.countrySubject;
     const history = ctx.aux;
-    if (!tag || !history) {
-      return { owner: `ruling-party:${ctx.track.source.id}:${ctx.branch.id}:${tag ?? ''}`, entries: [] };
-    }
-    const keys = bandKeys(bands(history, tag, categoricalPalette(DEFAULT_DARK_SURFACE)));
-    if (!keys.length) {
-      return {
-        owner: `ruling-party:${ctx.track.source.id}:${ctx.branch.id}:${tag}:empty`,
-        entries: [],
-        allowEmptyFollow: true,
-      };
-    }
-    const reads = keys.map(key => ({ country: countryFromKey(key.tag), part: key.part }));
+    const owner = `ruling-party:${ctx.track.source.id}:${ctx.branch.id}:${subject ?? ''}`;
+    if (!subject || !history) return { owner, entries: [] };
+    const keys = bandKeys(bands(history, categoricalPalette(DEFAULT_DARK_SURFACE)), subject);
+    if (!keys.length) return { owner: `${owner}:empty`, entries: [], allowEmptyFollow: true };
+    const country = countryFromKey(subject);
+    const reads = keys.map(key => ({ country, part: key.part }));
+    const common = { source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset };
     return {
-      owner: `ruling-party:${ctx.track.source.id}:${ctx.branch.id}:${tag}:${keys.map(keyId).join(',')}`,
+      owner: `${owner}:${keys.map(keyId).join(',')}`,
       entries: [
         {
+          ...common,
           name: 'popularity',
-          source: ctx.track.source,
-          branch: ctx.branch.id,
-          offset: ctx.track.axisOffset,
           read: {
             shape: 'pixel-binned',
             coverage: { mode: 'keyed', keys: keys.map(keyId) },
             family: POPULARITY_FAMILY,
-            tags: [tag],
+            tags: [subject],
             keys,
             partBits: POPULARITY_PART_BITS,
-            headQuery: {
-              product: 'series-state',
-              params: {
-                branchId: ctx.branch.id,
-                family: POPULARITY_FAMILY,
-                reads: [{ country: countryFromKey(tag) }],
-              },
-            },
+            headQuery: { product: 'series-state', params: { branchId: ctx.branch.id, family: POPULARITY_FAMILY, reads: [{ country }] } },
+            params: { branchId: ctx.branch.id, family: POPULARITY_FAMILY, reads },
             exactProduct: 'series-state',
           },
         },
         {
+          ...common,
           name: 'popularityHover',
-          source: ctx.track.source,
-          branch: ctx.branch.id,
-          offset: ctx.track.axisOffset,
-          read: {
-            shape: 'exact-hover',
-            product: 'series-state',
-            params: {
-              branchId: ctx.branch.id,
-              family: POPULARITY_FAMILY,
-              reads,
-            },
-          },
+          read: { shape: 'exact-hover', product: 'series-state', params: { branchId: ctx.branch.id, family: POPULARITY_FAMILY, reads } },
         },
       ],
     };
@@ -404,7 +262,7 @@ export const rulingPartyDeclaration: TimeChartWidgetDeclaration<RulingPartyOptio
   projection: rulingPartyProjection,
   projectionOptions(ctx, { extent, surface }) {
     return {
-      tag: ctx.countryTag,
+      subject: ctx.countrySubject,
       history: ctx.aux ?? null,
       extent,
       gaps: branchGapsOf(ctx.branch),

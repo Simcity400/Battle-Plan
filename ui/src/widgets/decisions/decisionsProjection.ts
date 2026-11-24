@@ -16,7 +16,7 @@ import {
   urlArtHandle,
 } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/rowSource.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
@@ -204,7 +204,7 @@ const ASKED_STATUSES: Readonly<Record<StatusChoice, readonly ScriptStatus[]>> = 
   removed: ['removed'],
 };
 
-export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = registerTableProjection({
+export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = registerFamilyProjection({
   kind: 'decisions',
   family: 'table',
   project(readView, options): TableModel {

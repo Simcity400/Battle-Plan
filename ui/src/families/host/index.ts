@@ -67,7 +67,6 @@ export {
   CLICK_CANCEL_PX,
   clientPointToInstalled,
   parseDefaultRowHit,
-  resolveInstalledAction,
   type FamilyPointerBindingOptions,
   type FamilyPointerGestures,
   type FamilyPointerHit,

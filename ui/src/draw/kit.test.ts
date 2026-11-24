@@ -326,17 +326,34 @@ test('timeline bars hide icon and name under the minimum width, mix ended items 
   const years = computeTimeAxisTicks(h1936, h1941, 600);
   assert.deepEqual(years.map(tick => tick.label), ['1936', '1937', '1938', '1939', '1940', '1941']);
   const h1937 = engineHour({ year: 1937, month: 1, day: 1, hour: 1 })!;
-  assert.ok(computeTimeAxisTicks(h1936, h1937, 600).some(tick => tick.label === 'Jul'), 'under two years the axis shows months');
+  const underTwoYears = computeTimeAxisTicks(h1936, h1937, 600);
+  assert.deepEqual(
+    underTwoYears.filter(tick => tick.label).map(tick => tick.label),
+    ['1936', 'Apr', 'Jul', 'Oct', '1937'],
+    'under two years labels Jan with year and Apr/Jul/Oct as quarters',
+  );
+  assert.equal(underTwoYears.length, 13, 'under two years emits 3px ticks for every month');
+  const hMar37 = engineHour({ year: 1937, month: 3, day: 1, hour: 1 })!;
+  const hDec37 = engineHour({ year: 1937, month: 12, day: 20, hour: 1 })!;
+  const noJanTicks = computeTimeAxisTicks(hMar37, hDec37, 600);
+  assert.deepEqual(
+    noJanTicks.filter(tick => tick.label).map(tick => tick.label),
+    ['Apr 1937', 'Jul', 'Oct'],
+    'without a January in view the first labelled month carries its year',
+  );
   const hWeek = engineHour({ year: 1936, month: 1, day: 8, hour: 1 })!;
   const dayTicks = computeTimeAxisTicks(h1936, hWeek, 600);
   assert.ok(dayTicks.some(tick => tick.label === '4 Jan'), 'short windows show days');
   assert.ok(computeTimeAxisTicks(0, 167, 600, 24).length >= 2, 'non-calendar short windows still yield day ticks');
+  const hugeNonCalendar = computeTimeAxisTicks(0, 43_800_000, 600, 24);
+  assert.ok(hugeNonCalendar.length >= 2 && hugeNonCalendar.length <= 20, 'K10: huge non-calendar span stays bounded');
 
   const axis = makeFakeCtx();
   drawTimeAxis(axis.ctx, years, { plotLeft: 100, plotRight: 700, axisTop: 200, startHour: h1936, endHour: h1941, playhead: h1941, playheadLabel: '15 Sep 1941', theme: THEME });
   const texts = axis.ops.filter(op => op.op === 'fillText').map(op => op.args[0]);
   assert.ok(texts.includes('15 Sep 1941'));
   assert.ok(!texts.includes('1941'), 'a year label under the playhead tab is dropped');
+  assert.ok(axis.ops.some(op => op.op === 'lineTo' && op.args[1] === 205), 'major January ticks are 5px tall');
 });
 
 test('table cell kit primitives handle minimum bar width, win rate tinting, icon strips, actions, stockpile bars and clock summary', () => {
@@ -406,4 +423,67 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
   assert.equal(contrastInkForFill('#1e4fa3', THEME), 'rgba(255, 255, 255, 0.96)');
   assert.equal(contrastInkForFill('#16181d', THEME), 'rgba(255, 255, 255, 0.96)');
   assert.equal(contrastInkForFill('not-a-colour', THEME), THEME.text);
+});
+
+test('K6 & K8: legend strip draws whole entries with +N more overflow, keeps missing key, unifies swatch geometry, and reads lazily', () => {
+  const entries = [
+    { label: 'Oil', color: '#c87d4b' },
+    { label: 'Aluminium', color: '#7fa6d6' },
+    { label: 'Rubber', color: '#64a86e' },
+    { label: 'Tungsten', color: '#a580d2' },
+    { label: 'Steel', color: '#9aa4b2' },
+    { label: 'Chromium', color: '#d49a4c' },
+  ];
+  const narrow = makeFakeCtx();
+  drawLegendStrip(narrow.ctx, 0, 0, 260, 22, { entries, padX: 12, entryGap: 12 }, THEME);
+  const narrowTexts = narrow.ops.filter(op => op.op === 'fillText').map(op => String(op.args[0]));
+  assert.ok(narrowTexts.every(t => !t.includes('…')), 'overflowing entries are never ellipsised');
+  const moreTag = narrowTexts.find(t => /^\+\d+ more$/.test(t));
+  assert.ok(moreTag, `expected +N more overflow tag, got ${JSON.stringify(narrowTexts)}`);
+  const hiddenCount = Number(/^\+(\d+) more$/.exec(moreTag!)![1]);
+  const shownOrdinary = narrowTexts.filter(t => t !== moreTag);
+  assert.equal(shownOrdinary.length + hiddenCount, entries.length, 'shown + hidden equals total ordinary entries');
+  assert.ok(shownOrdinary.length >= 1, 'at least one whole entry fits');
+
+  const withMissing = makeFakeCtx();
+  drawLegendStrip(withMissing.ctx, 0, 0, 260, 22, {
+    entries: [...entries.slice(0, 4), { label: 'Not recorded', hatch: true, muted: true }],
+    padX: 12,
+    entryGap: 12,
+  }, THEME);
+  const missingTexts = withMissing.ops.filter(op => op.op === 'fillText').map(op => String(op.args[0]));
+  assert.ok(missingTexts.includes('Not recorded'), 'missing key is kept in preference to ordinary entries');
+  assert.ok(missingTexts.some(t => /^\+\d+ more$/.test(t)), 'dropped ordinary entries are counted in +N more');
+
+  const fillSwatch = makeFakeCtx();
+  drawLegendStrip(fillSwatch.ctx, 0, 0, 200, 22, { entries: [{ label: 'Steel', color: '#4f86f7' }] }, THEME);
+  assert.ok(
+    fillSwatch.ops.some(op => op.op === 'roundRect' && op.args[2] === 9 && op.args[3] === 9),
+    'fill swatch uses a 9x9 filled square',
+  );
+
+  const lineSwatch = makeFakeCtx();
+  drawLegendStrip(lineSwatch.ctx, 0, 0, 200, 22, { entries: [{ label: 'Germany', color: '#4f86f7', line: true }] }, THEME);
+  const lineMove = lineSwatch.ops.find(op => op.op === 'moveTo');
+  const lineTo = lineSwatch.ops.find(op => op.op === 'lineTo');
+  assert.ok(lineMove && lineTo && Number(lineTo.args[0]) - Number(lineMove.args[0]) === 14, 'line swatch draws a 14px line');
+
+  let reads = 0;
+  const lazy = makeFakeCtx();
+  drawLegendStrip(lazy.ctx, 0, 0, 320, 22, {
+    entries: {
+      length: 1500,
+      at(i: number) {
+        reads++;
+        return { label: `Part ${i}`, color: '#4f86f7' };
+      },
+      trailing: [{ label: 'Not recorded', hatch: true, muted: true }],
+    },
+    padX: 12,
+    entryGap: 12,
+  }, THEME);
+  assert.ok(reads < 20, `K8: lazy legend should stop at the visible edge, read ${reads} of 1500`);
+  const lazyTexts = lazy.ops.filter(op => op.op === 'fillText').map(op => String(op.args[0]));
+  assert.ok(lazyTexts.includes('Not recorded'), 'trailing missing key kept in lazy source');
+  assert.ok(lazyTexts.some(t => /^\+\d+ more$/.test(t)), 'lazy overflow reports exact +N more count');
 });

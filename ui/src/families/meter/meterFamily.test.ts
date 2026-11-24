@@ -111,8 +111,8 @@ function makeIdentity(countries: Readonly<Record<string, { name: string; colour?
 test('activeResearch asks for the research history of the country the gate resolved', () => {
   const track = { branch: { id: 'b1' }, selectedTag: null } as unknown as Parameters<NonNullable<typeof activeResearchDeclaration.aux>['params']>[0];
   const params = activeResearchDeclaration.aux!.params;
-  assert.deepEqual(params(track, {}, 'USA'), { branchId: 'b1', country: 'USA' });
-  assert.equal(params(track, {}, null), null);
+  assert.deepEqual(params(track, {}, 'USA', 'slot:7'), { branchId: 'b1', country: 'USA' });
+  assert.equal(params(track, {}, null, null), null);
 });
 
 test('activeResearchProjection renders researching, idle, missing, stale caption, and daily nextChange', () => {

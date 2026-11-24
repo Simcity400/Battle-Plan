@@ -13,7 +13,7 @@ import {
   urlArtHandle,
 } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/rowSource.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
@@ -274,7 +274,7 @@ function buildFeedTableRow(
   };
 }
 
-export const eventFeedProjection: TableProjection<EventFeedProjectionOptions> = registerTableProjection({
+export const eventFeedProjection: TableProjection<EventFeedProjectionOptions> = registerFamilyProjection({
   kind: 'event-feed',
   family: 'table',
   project(readView, options): TableModel {

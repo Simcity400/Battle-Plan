@@ -151,7 +151,6 @@ const OWN: &[Registered] = &[
     dashboard_politics::registrations::FEED_EVENTFEEDTAIL,
     dashboard_politics::registrations::FEED_EVENTCHOICESTAIL,
     dashboard_politics::registrations::FEED_DECISIONSTAIL,
-    dashboard_economy::registrations::ECONOMY_MARKET_LEDGER_MARKETLEDGER,
     dashboard_economy::registrations::ECONOMY_MARKET_LEDGER_MARKETLEDGERTAIL,
     dashboard_economy::registrations::ECONOMY_FUEL_AWARDS_COUNTRYFUELAWARDS,
     dashboard_economy::registrations::ECONOMY_FUEL_AWARDS_COUNTRYFUELAWARDHISTORY,
