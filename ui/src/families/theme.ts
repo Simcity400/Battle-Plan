@@ -36,12 +36,12 @@ export function derivePresentationTokens(base: Pick<FamilyTheme, 'surface' | 'te
     gridLine: `rgba(${ink}, ${dark ? 0.055 : 0.07})`,
     zeroLine: `rgba(${ink}, ${dark ? 0.18 : 0.22})`,
     tailLine: rgbaColor(base.muted, 0.22, `rgba(${ink}, 0.22)`),
-    playhead: `rgba(${ink}, ${dark ? 0.42 : 0.46})`,
+    playhead: `rgba(${ink}, ${dark ? 0.28 : 0.34})`,
     crosshair: `rgba(${ink}, ${dark ? 0.5 : 0.52})`,
-    dateTabBg: base.accent,
-    dateTabText: dark ? '#0b1018' : '#ffffff',
-    hoverTabBg: base.raised ?? base.surface,
-    hoverTabText: base.text,
+    dateTabBg: base.raised ?? base.surface,
+    dateTabText: base.text,
+    hoverTabBg: base.text,
+    hoverTabText: base.surface,
   };
 }
 

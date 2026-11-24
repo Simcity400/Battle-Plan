@@ -702,12 +702,9 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }, [runtime.client, active, pixelBinnedKey, lastHour]);
 
   const onSeriesViewport = useCallback((nextViewport: TileViewport) => {
-    const stableNextWidth = stabilizeCanvasDimension(nextViewport.width, seriesViewportRef.current?.width, viewportDeadbandPx) ?? nextViewport.width;
-    const normalized: TileViewport = stableNextWidth === nextViewport.width ? nextViewport : { ...nextViewport, width: stableNextWidth };
-    seriesViewportRef.current = normalized;
-    measureViewport(nextViewport.width);
-    for (const tv of tileViewsRef.current.values()) tv.setView(normalized);
-  }, [measureViewport, viewportDeadbandPx]);
+    seriesViewportRef.current = nextViewport;
+    for (const tv of tileViewsRef.current.values()) tv.setView(nextViewport);
+  }, []);
 
   const retryTiles = useCallback(() => {
     for (const tv of tileViewsRef.current.values()) tv.retry();
@@ -757,7 +754,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const playbackBounded = following && needsPlaybackBoundedRead(plan, compiledFollow.subscriptions);
   const usesStatic = !following || playbackBounded;
-
   const frozenGate = useMemo(
     () => freezeGate(gate),
     [gate.open, track, countryTag, singleCountry?.aliases, singleCountry?.historyHeld],
