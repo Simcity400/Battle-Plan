@@ -1,4 +1,4 @@
-import { categoricalPalette } from '../../charts/palette.ts';
+import { categoricalPalette, DEFAULT_DARK_SURFACE } from '../../charts/palette.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
@@ -353,7 +353,7 @@ export const rulingPartyDeclaration: TimeChartWidgetDeclaration<RulingPartyOptio
     if (!tag || !history) {
       return { owner: `ruling-party:${ctx.track.source.id}:${ctx.branch.id}:${tag ?? ''}`, entries: [] };
     }
-    const keys = bandKeys(bands(history, tag, ['#3987e5']));
+    const keys = bandKeys(bands(history, tag, categoricalPalette(DEFAULT_DARK_SURFACE)));
     if (!keys.length) {
       return {
         owner: `ruling-party:${ctx.track.source.id}:${ctx.branch.id}:${tag}:empty`,

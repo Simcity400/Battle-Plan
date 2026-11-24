@@ -4,13 +4,14 @@ import type { DashboardClient } from './client';
 import type { BoundTrack } from './model';
 import { dayLabel } from '../charts/draw.ts';
 
-export interface MioPolicySelection {
-  kind: 'mioPolicyChooser';
+export interface IndustrialOrganisationSelection {
+  kind: 'industrialOrganisation';
   sourceId: string;
   revision: string;
   branchId: string;
   hour: number;
   organisation: string;
+  subView?: 'traits' | 'history' | 'policy';
 }
 
 export interface DivisionDesignerSelection {
@@ -44,7 +45,7 @@ export interface AgencyUpgradesSelection {
 }
 
 export type GameWindowSelection =
-  | MioPolicySelection
+  | IndustrialOrganisationSelection
   | AgencyUpgradesSelection
   | DivisionDesignerSelection
   | EquipmentDesignerSelection;
@@ -57,6 +58,8 @@ export interface GameWindowProps<S extends GameWindowSelection = GameWindowSelec
   onShown?: (shown: ShownWindow | null) => void;
   onClose?: () => void;
 }
+
+export type GameWindowView = 'traits' | 'history' | 'policy';
 
 export interface ShownWindow {
   hour: number;

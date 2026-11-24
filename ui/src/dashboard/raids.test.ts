@@ -42,8 +42,15 @@ test('chosen countries are listed at zero when they raided none, and only they a
 
 test('a chosen slot counts its country under every tag it held, and never another country holding one of them', () => {
   const slot = countryKey(3);
-  const tally = raidTally(episodes, SPAN, [], [slot, 'ENG'], null, (raider, hour) => (raider === 'ENG' && hour <= 35) || (raider === 'PRC' && hour >= 50) ? slot : raider);
-  assert.deepEqual([at(tally, slot, 100), at(tally, 'ENG', 100)], [[2, 2], [1, 0]]);
+  const raids = [
+    syntheticEpisode('1', 10, 'ENG', 20, 30, true, { raiderSlot: 3 }),
+    syntheticEpisode('2', 50, 'PRC', 54, null, false, { raiderSlot: 3 }),
+    syntheticEpisode('3', 40, 'ENG', 45, null, false, { raiderSlot: 5 }),
+    syntheticEpisode('4', 1, 'GER', null, 5, true, { raiderSlot: 3, endedRaider: 'GER', succeededHour: 20 }),
+  ];
+  const tally = raidTally(raids, SPAN, [], [slot, 'ENG'], null);
+  assert.deepEqual([at(tally, slot, 19), at(tally, slot, 20), at(tally, slot, 100), at(tally, 'ENG', 100)], [[0, 0], [1, 1], [2, 2], [1, 0]],
+    'a success counts where it was first read, for the slot that owned it at its end, whatever the slot is called then');
 });
 
 test('a merged raid credits each tally event to the raider tag held at that event hour', () => {
@@ -53,7 +60,7 @@ test('a merged raid credits each tally event to the raider tag held at that even
 });
 
 test('a success is counted from the read that first saw it, never at an earlier native end date', () => {
-  const late = syntheticEpisode('8', 1, 'ENG', null, 5, true, { endedSource: 'nativeEndDate', endedSeenHour: 20 });
+  const late = syntheticEpisode('8', 1, 'ENG', null, 5, true, { endedSource: 'nativeEndDate', succeededHour: 20 });
   const tally = raidTally([late], SPAN, [], ['ENG'], null);
   assert.deepEqual([at(tally, 'ENG', 10), at(tally, 'ENG', 20)], [[0, 0], [0, 1]]);
 });
@@ -94,7 +101,7 @@ test('a raid whose victim is neither named nor said missing, won without ending,
   const reply = syntheticRaidLog(episodes);
   assert.deepEqual(validateRaidLog(reply).episodes, reply.episodes);
   assert.throws(() => validateRaidLog({ ...reply, episodes: [{ ...episodes[0], victim: null }] }));
-  assert.throws(() => validateRaidLog({ ...reply, episodes: [{ ...episodes[2], succeeded: true }] }));
+  assert.throws(() => validateRaidLog({ ...reply, episodes: [{ ...episodes[2], succeededHour: 50 }] }));
   assert.throws(() => validateRaidLog({ ...reply, episodes: [{ ...episodes[0], runs: [...episodes[0].runs].reverse() }] }));
 });
 

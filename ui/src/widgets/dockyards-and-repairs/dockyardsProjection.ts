@@ -5,7 +5,8 @@ import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, textValue, notApplicable, valueFromNullable, type Value } from '../../families/value.ts';
 import type { NavalRepairsReply, RepairPort, YardShip } from '../../generated/dashboard';
-import { fraction, shipLabel, shipStrength, shipTooltip, validateRepairs } from '../refits/yardsData.ts';
+import { fraction, shipLabel, shipPicture, shipPictureCell, shipStrength, shipTooltip, validateRepairs } from '../refits/yardsData.ts';
+import type { ArtState } from '../../families/table/identityCell.ts';
 import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
@@ -15,7 +16,7 @@ const PERCENT = { decimals: 0, maxDecimals: 1, percent: true } as const;
 
 type DockRow =
   | { readonly kind: 'port'; readonly key: string; readonly port: RepairPort; readonly children: readonly DockRow[] }
-  | { readonly kind: 'ship'; readonly key: string; readonly ship: YardShip };
+  | { readonly kind: 'ship'; readonly key: string; readonly ship: YardShip; readonly picture: ArtState };
 
 const portName = (port: RepairPort): Value<string> => textValue(port.name, 'Port name unavailable');
 
@@ -23,7 +24,8 @@ const [NAME, STRENGTH, PRIORITY, DOCKYARDS] = COLUMNS;
 
 const DOCK_COLUMNS: readonly DeclarativeColumnSpec<DockRow, Record<string, never>>[] = [
   { ...NAME!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Wilhelmshaven harbour'],
-    value: row => row.kind === 'port' ? portName(row.port) : knownValue(shipLabel(row.ship).name) },
+    value: row => row.kind === 'port' ? portName(row.port) : knownValue(shipLabel(row.ship).name),
+    iconSlot: true, extra: row => (row.kind === 'ship' ? shipPictureCell(row.ship, row.picture) : {}) },
   { ...STRENGTH!, priority: 1, numeric: true, format: PERCENT, widest: ['100.0%'],
     value: (row, live) => row.kind === 'ship' ? shipStrength(row.ship, live) : notApplicable(ON_SHIP),
     extra: row => (row.kind === 'port' ? { blank: true } : {}),
@@ -54,12 +56,12 @@ export const dockyardsProjection: TableProjection<Record<string, never>> = regis
     kind: 'dockyards-and-repairs',
     validate: validateRepairs,
     columns: DOCK_COLUMNS,
-    rows: reply => {
+    rows: (reply, _live, _hour, _options, readView) => {
       const rows: DockRow[] = reply.ports.map(port => ({
         kind: 'port',
         key: String(port.province),
         port,
-        children: port.queue.map((ship, index) => ({ kind: 'ship', key: `${port.province}|${index}|${ship.handle}`, ship })),
+        children: port.queue.map((ship, index) => ({ kind: 'ship', key: `${port.province}|${index}|${ship.handle}`, ship, picture: shipPicture(ship, readView) })),
       }));
       return {
         rows,

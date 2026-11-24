@@ -32,7 +32,13 @@ export const CHART_MEASURE_COLOURS = {
   opinionNegative: '#d95926',
   opinionPositive: '#199e70',
   intelCoverage: '#3987e5',
+  tailLine: 'rgba(245, 245, 245, 0.22)',
+  mutedFallback: '#8a8a8a',
+  lightInk: '#f5f5f5',
 } as const;
+
+export const DEFAULT_DARK_SURFACE = '#111111';
+export const DEFAULT_CARD_SURFACE = '#1e1e1e';
 
 export const CONVOY_EFFICIENCY_STOPS: readonly (readonly [number, string])[] = [
   [1, '#22364f'],

@@ -1,11 +1,7 @@
-import type { MineLine, MineReport, MinedRegion, MinefieldHistoryReply, MinefieldReportsReply, MinefieldsReply } from '../../generated/dashboard';
-import { liveKey } from '../../charts/live.ts';
-import type { LiveValues } from '../../charts/live';
+import type { MinefieldsReply } from '../../generated/dashboard';
 
 const text = (value: unknown): value is string => typeof value === 'string';
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(text);
-const optional = (value: unknown) => value === null || text(value);
-const decimal = (value: unknown) => text(value) && /^-?\d+$/u.test(value);
 const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
 
 export function validateMinefields(value: unknown): MinefieldsReply {
@@ -19,82 +15,10 @@ export function validateMinefields(value: unknown): MinefieldsReply {
   return reply;
 }
 
-export function validateHistory(value: unknown): MinefieldHistoryReply {
-  const reply = value as MinefieldHistoryReply;
-  const run = (item: unknown) => Array.isArray(item) && item.length === 3 && Number.isSafeInteger(item[0]) && Number.isSafeInteger(item[1])
-    && (item[0] as number) <= (item[1] as number) && (item[2] === null || decimal(item[2]));
-  if (!reply || typeof reply !== 'object' || !count(reply.region) || !Number.isSafeInteger(reply.scale) || reply.scale <= 0 || !strings(reply.warnings)
-    || !Array.isArray(reply.lines) || !reply.lines.every((line: MineLine) => !!line && (typeof line.country === 'number' || text(line.country)) && Array.isArray(line.runs) && line.runs.every(run)))
-    throw new Error('The minefield history reply is malformed.');
-  return reply;
-}
-
-export function validateReports(value: unknown): MinefieldReportsReply {
-  const reply = value as MinefieldReportsReply;
-  if (!reply || typeof reply !== 'object' || !count(reply.region) || !(reply.readHour === null || Number.isSafeInteger(reply.readHour)) || !strings(reply.warnings)
-    || !Array.isArray(reply.reports) || !reply.reports.every((report: MineReport) => !!report && Number.isSafeInteger(report.kind) && Number.isSafeInteger(report.ordinal)
-      && optional(report.victim) && optional(report.mineOwner) && optional(report.ship) && optional(report.equipment) && decimal(report.damage) && typeof report.sunk === 'boolean'))
-    throw new Error('The mine reports reply is malformed.');
-  return reply;
-}
-
 export interface RegionRow { region: string; name: string; owners: { tag: string }[]; unknownOwners: number }
-
-const regionName = (names: ReadonlyMap<string, string>, region: string) => names.get(region) ?? 'Region name unavailable';
-
-export function regionRows(reply: MinefieldsReply, chosen: readonly string[] = []): { rows: RegionRow[]; unlisted: number } {
-  const names = new Map(reply.choices.map(choice => [choice.id, choice.name]));
-  const wanted = chosen.length ? new Set(chosen) : null;
-  const row = (region: MinedRegion): RegionRow => {
-    const id = String(region.region);
-    return { region: id, name: regionName(names, id), owners: region.owners.map(owner => ({ tag: owner.tag })), unknownOwners: region.unknownOwners };
-  };
-  const rows = reply.regions.filter(region => !wanted || wanted.has(String(region.region))).map(row);
-  const unknown = reply.unknown.filter(region => !wanted || wanted.has(String(region.region)));
-  if (wanted) rows.push(...unknown.map(region => row({ region: region.region, owners: [], unknownOwners: region.unknownOwners })));
-  return { rows, unlisted: wanted ? 0 : unknown.length };
-}
-
-export function orderRegions(rows: readonly RegionRow[], order: 'mines' | 'name'): RegionRow[] {
-  return order === 'name' ? [...rows].sort((a, b) => a.name.localeCompare(b.name) || a.region.localeCompare(b.region)) : [...rows];
-}
 
 export function minesText(value: bigint, scale: number): string {
   const negative = value < 0n, magnitude = negative ? -value : value, unit = BigInt(scale);
   const fraction = (magnitude % unit).toString().padStart(String(scale).length - 1, '0').replace(/0+$/u, '');
   return `${negative ? '−' : ''}${(magnitude / unit).toLocaleString('en-US')}${fraction ? `.${fraction}` : ''}`;
-}
-
-const exact = (value: number | undefined) => value === undefined ? null : BigInt(Math.trunc(value));
-export const ownerMines = (values: LiveValues<number>, region: string, tag: string) => exact(values.get(liveKey(region, tag)));
-export const regionTotal = (values: LiveValues<number>, region: string) => exact(values.get(liveKey(region, 'total')));
-
-export function regionTotalText(row: RegionRow, values: LiveValues<number>, scale: number): string {
-  if (!row.owners.length) return row.unknownOwners ? '—' : minesText(0n, scale);
-  const total = regionTotal(values, row.region);
-  return total === null ? values.missing(liveKey(row.region, 'total')) : minesText(total, scale);
-}
-
-export function segmentWidths(rows: readonly RegionRow[], values: LiveValues<number>): Map<string, number[]> {
-  const highest = rows.reduce((max, row) => { const total = regionTotal(values, row.region); return total !== null && total > max ? total : max; }, 0n);
-  return new Map(rows.map(row => [row.region, row.owners.map(owner => {
-    const amount = ownerMines(values, row.region, owner.tag);
-    return highest > 0n && amount !== null && amount > 0n ? Number(amount * 10000n / highest) / 100 : 0;
-  })]));
-}
-
-export function minefieldsStructure(reply: MinefieldsReply): string {
-  const { rows } = regionRows(reply);
-  return JSON.stringify([rows.map(row => [row.region, row.owners.map(owner => owner.tag), row.unknownOwners]), reply.unknown, reply.choices.length]);
-}
-
-export function historyRuns(line: MineLine, scale: number): { firstHour: number; lastHour: number; value: number; breakBefore: boolean }[] {
-  const out: { firstHour: number; lastHour: number; value: number; breakBefore: boolean }[] = [];
-  let gap = true;
-  for (const [firstHour, lastHour, value] of line.runs) {
-    if (value === null) { gap = true; continue; }
-    out.push({ firstHour, lastHour, value: Number(value) / scale, breakBefore: gap });
-    gap = false;
-  }
-  return out;
 }

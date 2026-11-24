@@ -159,7 +159,7 @@ test('guards reject future hours, bare nulls, and missing values carrying bar ma
   const pres = countryRowPresentation(rv, 'GER');
   assert.equal(pres.label, 'German Reich');
   assert.equal(pres.labelMissing, false);
-  assert.equal(pres.color, 'rgb(102, 102, 102)');
+  assert.equal(pres.color, '#666666');
   assert.equal(pres.media.kind, 'flag');
   assert.equal(pres.media.art.status, 'pending');
 });

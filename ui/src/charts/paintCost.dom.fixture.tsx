@@ -3,8 +3,6 @@ import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import TimeChart from './TimeChart';
 import type { ChartLayer } from './TimeChart';
-import { tiledStackLayer } from './tiledStack';
-import type { ChartSummary } from './chartSummary';
 import Timeline from './timeline/Timeline';
 import type { TimelineLane } from './timeline/layout';
 import type { EventBadge } from './badges';
@@ -81,18 +79,6 @@ function lines(count: number): ChartLayer[] {
     };
   });
 }
-function stackSummaries(bands: number, columns: number): ChartSummary[] {
-  const width = HOURS / columns;
-  return Array.from({ length: bands }, (_, band) => {
-    const value = (at: number) => 10 + 8 * Math.sin(at / (17 + band * 5) + band);
-    return { from: 0, to: HOURS - 1, width: columns, buckets: Array.from({ length: columns }, (_, column) => {
-      const first = Math.floor(column * width), last = Math.floor((column + 1) * width) - 1;
-      const [a, b, c] = [value(column), value(column + 0.5), value(column + 1)];
-      return { firstHour: first, lastHour: last, firstValue: a, lastValue: c, lastValueHour: last, minHour: first + 1, minValue: Math.min(a, b, c),
-        maxHour: last - 1, maxValue: Math.max(a, b, c), firstBreak: false, hasBreak: false };
-    }) };
-  });
-}
 let counted: HTMLCanvasElement | null = null;
 const drawn = { fill: 0, stroke: 0 };
 for (const proto of contexts) for (const name of ['fill', 'stroke'] as const) {
@@ -165,25 +151,6 @@ const api = {
     const charts = new Map<string, number[]>();
     for (const time of times.slice(0, -1)) for (const [widget, ms] of painted.get(time) ?? []) charts.set(widget, [...charts.get(widget) ?? [], ms]);
     return { asked: { ...asked }, frames: times.length - 1, charts: Object.fromEntries(charts), feedCommits };
-  },
-  async stack(bands: number, frames: number, hours: number) {
-    const summaries = stackSummaries(bands, 700);
-    const axes = { xFrom: null, xTo: null, yMin: null, yMax: null, log: false };
-    const host = place('stack', 700, 260);
-    host.render(<TimeChart label="stack" extent={[0, HOURS - 1]} playhead={head.read()} liveHead={head} playback="draw-in" hoursPerSecond={1440}
-      axes={axes} branchStart={0} layers={[tiledStackLayer(() => summaries, () => COLOURS.slice(0, bands), () => [0, 20 * bands])]} active revision={0} />);
-    for (let at = 0; at < 60; at++) await frame();
-    counted = document.querySelector<HTMLCanvasElement>('[data-widget="stack"] canvas');
-    drawn.fill = 0; drawn.stroke = 0; painted.clear();
-    const times: number[] = [];
-    for (let at = 0; at < frames; at++) {
-      head.set(head.read() + hours);
-      times.push(await frame());
-    }
-    await frame();
-    counted = null;
-    const paints = times.slice(0, -1).flatMap(time => painted.get(time)?.get('stack') ?? []);
-    return { frames: times.length, fills: drawn.fill, strokes: drawn.stroke, paints };
   },
   async glide(frames: number, hours: number, marks?: { from: string; to: string }, entries = false) {
     const clock = new LiveCell(18_000 + 300 * 11);
