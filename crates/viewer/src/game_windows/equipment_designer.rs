@@ -313,44 +313,64 @@ struct EquipmentDesignData {
     extra_warnings: Vec<String>,
 }
 
-pub fn classify_designer(
-    database: &Database,
-    equipment: &Equipment,
-    dlc_mask: Result<u32, &str>,
-) -> Result<DesignerKind, String> {
-    if !equipment.module_slots.is_empty() {
-        let name = String::from_utf8_lossy(&equipment.name);
-        let families = category_families().map_err(|reason| {
-            format!(
-                "Cannot determine which designer '{name}' uses because the recording does not hold the game's equipment categories ({reason})."
-            )
-        })?;
-        let category = database.category(equipment);
-        if families.has_modular_designer(category) {
-            let mask = dlc_mask.map_err(|reason| {
-                format!(
-                    "Cannot determine whether '{name}' uses the modular or classic designer because active DLC flags are unavailable ({reason})."
-                )
-            })?;
-            match families.modular_designer(category, mask) {
-                Some(ModularDesigner::Ship) => return Ok(DesignerKind::Ship),
-                Some(ModularDesigner::Tank) => return Ok(DesignerKind::Tank),
-                Some(ModularDesigner::Plane) => return Ok(DesignerKind::Plane),
-                None => {}
-            }
+fn named_categories(mask: u64) -> String {
+    match category_names(mask) {
+        Ok(names) if names.is_empty() => "none".to_owned(),
+        Ok(names) => names.join(", "),
+        Err(unknown) => {
+            let known = category_names(mask & !unknown).unwrap_or_default();
+            let mut names: Vec<String> = known.into_iter().map(str::to_owned).collect();
+            names.push(format!("unnamed category bits {unknown:#x}"));
+            names.join(", ")
         }
     }
-    let [land, air, naval] = database.designer_families(equipment)?;
-    if naval {
+}
+
+pub fn classify_designer(
+    equipment: &Equipment,
+    recorded_category: u64,
+    dlc_mask: Result<u32, &str>,
+) -> Result<DesignerKind, String> {
+    let name = String::from_utf8_lossy(&equipment.name);
+    let families = category_families().map_err(|reason| {
+        format!(
+            "Cannot determine which designer '{name}' uses because the recording does not hold the game's equipment categories ({reason})."
+        )
+    })?;
+    if recorded_category == 0 {
+        return Err(format!(
+            "Cannot determine which designer '{name}' uses: the design has no recorded equipment category."
+        ));
+    }
+    if !equipment.module_slots.is_empty() {
+        if !families.has_modular_designer(recorded_category) {
+            return Err(format!(
+                "Cannot determine which designer '{name}' uses: it has module slots, but its recorded categories ({}) belong to no modular designer.",
+                named_categories(recorded_category)
+            ));
+        }
+        let mask = dlc_mask.map_err(|reason| {
+            format!(
+                "Cannot determine whether '{name}' uses the modular or classic designer because active DLC flags are unavailable ({reason})."
+            )
+        })?;
+        match families.modular_designer(recorded_category, mask) {
+            Some(ModularDesigner::Ship) => return Ok(DesignerKind::Ship),
+            Some(ModularDesigner::Tank) => return Ok(DesignerKind::Tank),
+            Some(ModularDesigner::Plane) => return Ok(DesignerKind::Plane),
+            None => {}
+        }
+    }
+    if recorded_category & families.naval != 0 {
         Ok(DesignerKind::Upgrade(UpgradeDomain::Naval))
-    } else if air {
+    } else if recorded_category & families.air != 0 {
         Ok(DesignerKind::Upgrade(UpgradeDomain::Air))
-    } else if land {
+    } else if recorded_category & families.land != 0 {
         Ok(DesignerKind::Upgrade(UpgradeDomain::Land))
     } else {
         Err(format!(
-            "Equipment '{}' does not belong to a supported designer family.",
-            String::from_utf8_lossy(&equipment.name)
+            "Cannot determine which designer '{name}' uses: its recorded categories ({}) belong to no designer family.",
+            named_categories(recorded_category)
         ))
     }
 }
@@ -1034,7 +1054,11 @@ pub fn render(
         .or_else(|| spell(lexical, definition.archetype_token))
         .unwrap_or_else(|| equipment_key.clone());
 
-    let kind = classify_designer(&equipment_db, equipment, dlc_mask.as_ref().copied().map_err(String::as_str))
+    let kind = classify_designer(
+        equipment,
+        definition.classifier_flags,
+        dlc_mask.as_ref().copied().map_err(String::as_str),
+    )
         .map_err(GameWindowError::refused)?;
     let (tag, tag_tables) = resolve_variant_tag(&frame, definition);
     let (design_state, design_state_reason) = match &definition.design {

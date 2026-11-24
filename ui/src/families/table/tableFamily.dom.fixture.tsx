@@ -14,10 +14,11 @@ import { PlaybackController } from '../../dashboard/playback.ts';
 import type { FromLane, ToLane } from '../../draw/laneMessages';
 import { laneDispatch } from '../../draw/laneDispatch.ts';
 import type { CadenceTimers } from '../cadence.ts';
-import { familyTableLaneView } from './laneView.ts';
+import { tableLane } from './laneView.ts';
 import { tableSettingsOf } from './settings.ts';
 import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from './tableFamilyDom.fixture.ts';
 import FamilyHost from '../host/FamilyHost.tsx';
+import { createLaneView } from '../laneRuntime.ts';
 import { tableHostAdapter } from './hostAdapter.ts';
 import TableChrome from './TableChrome.tsx';
 import '../../styles.css';
@@ -121,7 +122,7 @@ function createControlledLane(): LaneWorker {
       queueMicrotask(() => worker.onmessage?.({ data: message } as MessageEvent<FromLane>));
     },
     {
-      views: (_kind, wake) => familyTableLaneView(wake, { timers: controlledTimers }),
+      views: (_kind, wake) => createLaneView(tableLane, wake, { timers: controlledTimers }),
       clock: controlledClock,
       crop: sources => Promise.all(sources.map(source => createImageBitmap(source as OffscreenCanvas))),
       later: run => requestAnimationFrame(() => run()),

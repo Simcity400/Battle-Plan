@@ -10,6 +10,7 @@ export interface CountryFlowText {
   readonly leftHeader: string;
   readonly rightHeader: string;
   readonly unitNote?: string;
+  readonly unit?: string;
   readonly groupLeftHeader: string;
   readonly groupRightHeader: string;
   readonly notRecorded: string;
@@ -74,7 +75,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
 
   const decimals = reply.decimals;
   const shownFormat: ValueFormat = { decimals, maxDecimals: 1 };
-  const exactFormat: ValueFormat = { decimals };
+  const exactFormat: ValueFormat = { decimals, ...(text.unit ? { unit: text.unit } : {}) };
   const value = (amount: string | null) => (amount === null ? null : scaledAmount(amount, decimals));
   const figure = (amount: string | null) => (amount === null ? 'Not recorded' : formatCompactScalar(BigInt(amount), shownFormat).text);
   const exact = (amount: string | null) => (amount === null ? 'Not recorded' : formatScalar(BigInt(amount), exactFormat));

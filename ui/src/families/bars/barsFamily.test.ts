@@ -27,8 +27,9 @@ import { axisCeiling, barsScrollHeight, layoutFamilyBars, visibleBarsRange } fro
 import { barsHostAdapter } from './hostAdapter.ts';
 import { drawFamilyBars, hitFamilyBars } from './painter.ts';
 import { registerFamilyProjection } from '../registry.ts';
-import { familyBarsLaneView, type FamilyBarsBinding } from './laneView.ts';
+import { barsLane, type FamilyBarsBinding } from './laneView.ts';
 import { assertFreshPaint, assertQuietFrames, LaneTransport } from '../laneRuntime.fixture.ts';
+import { createLaneView } from '../laneRuntime.ts';
 import { buildShareRowsModel } from './shareRows.ts';
 
 const THEME: FamilyTheme = {
@@ -445,7 +446,7 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
   }
   (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
   try {
-    const view = familyBarsLaneView(() => {});
+    const view = createLaneView(barsLane, () => {});
     const state = new Map<string, unknown>();
     let seq = 0;
     const content = () => `c${++seq}`;
@@ -546,7 +547,7 @@ test('a backward seek drops a cached model from a later hour', () => {
   }
   (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
   try {
-    const view = familyBarsLaneView(() => {});
+    const view = createLaneView(barsLane, () => {});
     const state = new Map<string, unknown>();
     let seq = 0;
     const options: Record<string, never> = {};
@@ -564,8 +565,8 @@ test('a backward seek drops a cached model from a later hour', () => {
   const options: Record<string, never> = {};
   const binding = { family: 'bars', kind: 'test-bars-seek-back', options, sources: {}, width: 480, height: 240, scrollTop: 0, theme: THEME, reducedMotion: true };
   const surface = { width: 480, height: 240, dpr: 1 };
-  assert.equal(assertQuietFrames(() => familyBarsLaneView(() => {}), { label: 'before the change', binding, hour: 3 }, 24, surface), 10);
-  assertFreshPaint(() => familyBarsLaneView(() => {}), [
+  assert.equal(assertQuietFrames(() => createLaneView(barsLane, () => {}), { label: 'before the change', binding, hour: 3 }, 24, surface), 10);
+  assertFreshPaint(() => createLaneView(barsLane, () => {}), [
     { label: 'before', binding, hour: 5, check: true },
     { label: 'after', binding, hour: 20, speed: 24 },
     { label: 'seek back', binding, hour: 5, check: true },
@@ -582,7 +583,7 @@ test('a backward seek drops a cached model from a later hour', () => {
     nextChange: readView => (readView.hour < 10 ? 10 : Infinity),
   });
   const swapping = { ...binding, kind: 'test-bars-seek-swap', reducedMotion: false };
-  assertFreshPaint(() => familyBarsLaneView(() => {}), [
+  assertFreshPaint(() => createLaneView(barsLane, () => {}), [
     { label: 'swapped later', binding: swapping, hour: 3, speed: 24 },
     { label: 'swapped later', binding: swapping, hour: 20, speed: 24 },
     { label: 'seek back across the swap while playing', binding: swapping, hour: 5, speed: 24, check: true },
@@ -634,7 +635,7 @@ test('a hover over 1,500 rows reuses navigation, meta and row bounds, and the mi
   }
   (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
   try {
-    const view = familyBarsLaneView(() => {});
+    const view = createLaneView(barsLane, () => {});
     const state = new Map<string, unknown>();
     const options: Record<string, never> = {};
     let seq = 0;
