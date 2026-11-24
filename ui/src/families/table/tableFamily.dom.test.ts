@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { withNativePage } from '../../../../tools/native-page.ts';
 
-test('table family plays live with zero React commits, zero layout reads on install, pause flush, independent hover/focus tooltips, drag-out-and-back cancel, keyboard mirror and narrow column chooser', async t => {
+test('table family plays live with zero React commits, zero layout reads on install, pause flush, independent hover/focus tooltips, drag-out-and-back cancel, keyboard mirror and sideways scroll when narrow', async t => {
   await withNativePage('table-family', '/ui/src/families/table/tableFamily.dom.fixture.tsx', page => page.stage('table-family', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.tableFamilyDom.${expression}`);
     const mounted = await act<{ painted: boolean; initialRows: (string | null)[] }>('mount()');
@@ -94,11 +94,11 @@ test('table family plays live with zero React commits, zero layout reads on inst
       cdp.close();
     }
 
-    const kbd = await act<{ firstKey: string | null; afterDown: string | null; activated: string[]; liveStatus: string; moreText: string; menuOpen: boolean; totalInstallReads: number }>('testKeyboardAndNarrow()');
+    const kbd = await act<{ firstKey: string | null; afterDown: string | null; activated: string[]; liveStatus: string; scrollsSideways: boolean; moreButton: boolean; totalInstallReads: number }>('testKeyboardAndNarrow()');
     assert.ok(kbd.afterDown !== null && kbd.afterDown !== kbd.firstKey, `S8: ArrowDown moved focus from ${kbd.firstKey} to ${kbd.afterDown}`);
     assert.equal(kbd.activated.length, 1, 'Enter activates focused row');
-    assert.ok(kbd.moreText.includes('+'), `narrow table shows +N columns button: ${kbd.moreText}`);
-    assert.equal(kbd.menuOpen, true, '+N columns button opens chooser');
+    assert.equal(kbd.scrollsSideways, true, 'a narrow table scrolls sideways and shows the right fade');
+    assert.equal(kbd.moreButton, false, 'a narrow table never drops columns behind a +N button');
 
     const r5 = await act<{ opened: boolean; menuLabel: string | null; tipShown: boolean; hasMissingState: boolean; hasKnownState: boolean }>('testEmptySpaceContextMenuAndValueStateTooltip()');
     assert.equal(r5.opened, true, 'F9: right-clicking empty space with no inspected or focused row opens context menu');

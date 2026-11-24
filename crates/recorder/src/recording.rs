@@ -398,6 +398,7 @@ impl FinalizingAhead {
         content: &GatheredContent,
         settling: Option<Arc<Settling>>,
         idle: Option<Arc<Event>>,
+        facts_packing: Arc<AtomicBool>,
     ) -> Self {
         let stop = settling
             .as_ref()
@@ -474,6 +475,7 @@ impl FinalizingAhead {
                 drop(layers);
                 let stopped = || stopping.load(Ordering::Acquire);
                 let mut live = replay_io::Live::default();
+                live.wait_for_facts(facts_packing);
                 let mut writing = Duration::ZERO;
                 let mut failed = false;
                 let mut fail = |error: String| {
@@ -2357,6 +2359,7 @@ pub(crate) fn capture(
         &content,
         settling.clone(),
         Some(Arc::clone(&idle)),
+        game_facts.packing(),
     );
     let status_path = directory.join("status.json");
     stage(Stage::Recording {

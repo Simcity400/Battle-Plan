@@ -122,6 +122,15 @@ fn register_live(fold: &Fold, live: &dashboard_follow::live::Cells) -> io::Resul
 
 pub struct Minefields;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "lowercase")]
+pub enum MinefieldOrder {
+    #[default]
+    Mines,
+    Name,
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -130,6 +139,14 @@ pub struct MinefieldsParams {
     #[doc = " The owners shown; every owner when none."]
     #[serde(default)]
     pub countries: Option<Vec<Country>>,
+    #[doc = " The sea regions shown; every mined region when none."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub regions: Option<Vec<u32>>,
+    #[doc = " Region ordering; defaults to most mines."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub order: Option<MinefieldOrder>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -172,7 +189,7 @@ impl AtHour for Minefields {
     const TITLE: &'static str = "Minefields";
     const CONTENT_DEPENDENT: bool = true;
     type Params = MinefieldsParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", regions, "regions[]", order];
     type Reply = MinefieldsReply;
     type Context = Context;
 
@@ -185,7 +202,7 @@ impl AtHour for Minefields {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![MinefieldsParams::decl(), MineOwner::decl(), MinedRegion::decl(), UnknownRegion::decl(), Choice::decl(), MinefieldsReply::decl()]
+        vec![MinefieldOrder::decl(), MinefieldsParams::decl(), MineOwner::decl(), MinedRegion::decl(), UnknownRegion::decl(), Choice::decl(), MinefieldsReply::decl()]
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -207,10 +224,28 @@ impl AtHour for Minefields {
         let names = Names::new(at.holders);
         let wanted: Option<BTreeSet<&str>> = params.countries.as_ref().map(|countries| countries.iter().filter_map(|country| at.holders.tag_at(country, frame.hour)).collect());
         let sea = at.context.sea.sea.clone().unwrap_or_default();
-        let fold = fold(rows, |raw| tag_of(&links, &names, raw, frame.hour), |tag| wanted.as_ref().is_none_or(|wanted| wanted.contains(tag)), lost, &sea);
+        let mut fold = fold(rows, |raw| tag_of(&links, &names, raw, frame.hour), |tag| wanted.as_ref().is_none_or(|wanted| wanted.contains(tag)), lost, &sea);
+        if let Some(wanted_regions) = params.regions.as_ref().filter(|regions| !regions.is_empty()) {
+            let keep: BTreeSet<u32> = wanted_regions.iter().copied().collect();
+            fold.mined.retain(|region| keep.contains(&region.region));
+            fold.cells.retain(|(region, ..)| keep.contains(region));
+            for unknown in fold.unknown.drain(..) {
+                if keep.contains(&unknown.region) {
+                    fold.mined.push(MinedRegion { region: unknown.region, owners: Vec::new(), unknown_owners: unknown.unknown_owners });
+                }
+            }
+        }
         register_live(&fold, at.live)?;
         let mut notes = Refusals::default();
         let choices = sea_regions::choices(&at.context.places, &at.context.sea, fold.mined.iter().map(|region| region.region), &mut notes);
+        if params.order == Some(MinefieldOrder::Name) {
+            let names_by_id: HashMap<u32, &str> = choices.iter().filter_map(|choice| Some((choice.id.parse::<u32>().ok()?, choice.name.as_str()))).collect();
+            fold.mined.sort_by(|a, b| {
+                let an = names_by_id.get(&a.region).copied().unwrap_or("Region name unavailable");
+                let bn = names_by_id.get(&b.region).copied().unwrap_or("Region name unavailable");
+                an.to_lowercase().cmp(&bn.to_lowercase()).then_with(|| an.cmp(bn)).then_with(|| a.region.cmp(&b.region))
+            });
+        }
         let mut warnings = at.context.places.warnings();
         warnings.extend(at.context.sea.notes.iter().cloned());
         warnings.extend(notes.lines("sea region names"));
