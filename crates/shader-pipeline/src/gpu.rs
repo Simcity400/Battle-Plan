@@ -1799,7 +1799,6 @@ impl Pipeline {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn with_state(
         device: &wgpu::Device,
         compiled: &Compiled,
@@ -1888,7 +1887,6 @@ impl Core {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn create(
         device: &wgpu::Device,
         compiled: &Compiled,

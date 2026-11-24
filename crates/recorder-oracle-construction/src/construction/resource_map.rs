@@ -42,7 +42,6 @@ fn operand<T: std::fmt::Debug + PartialEq>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn resource_map(
     rows: &ResourceMapRows<'_>,
     saved: &saved::Pack,
@@ -922,7 +921,7 @@ mod client_tests {
                     .any(|d| d.contains(&format!("ConvoyClients.9.{name}")))
             );
         }
-        let mut older = row.clone();
+        let mut older = row;
         older.efficiency_a = Recorded::NotRecorded;
         older.efficiency_b = Recorded::NotRecorded;
         older.convoys_base = Recorded::NotRecorded;
@@ -1176,7 +1175,7 @@ mod market_route_tests {
                 .len(),
             2
         );
-        let mut no_counterpart = saved.clone();
+        let mut no_counterpart = saved;
         no_counterpart
             .country_resources
             .get_mut(b"CC".as_slice())

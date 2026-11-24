@@ -703,7 +703,6 @@ impl Seek {
     }
 }
 
-#[allow(clippy::too_many_arguments, reason = "one table's walk over the run, given whole")]
 fn read_table(
     file: &dyn Extents,
     pages: &[BlockPage],
@@ -850,7 +849,6 @@ fn read_table(
     Ok((lines, checked, dumped))
 }
 
-#[allow(clippy::too_many_arguments, reason = "one table's walk over the run, given whole")]
 fn read_log(
     file: &dyn Extents,
     pages: &[BlockPage],

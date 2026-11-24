@@ -144,7 +144,7 @@ fn copy(base: *mut u8, at: usize, out: &mut [u8]) -> Option<()> {
             source.cast(),
             out.as_mut_ptr().cast(),
             out.len(),
-            &mut read,
+            &raw mut read,
         )
     };
     (copied != 0 && read == out.len()).then_some(())
@@ -153,7 +153,7 @@ fn copy(base: *mut u8, at: usize, out: &mut [u8]) -> Option<()> {
 /// # Safety
 /// The process's main module stays loaded while this runs.
 unsafe fn imports() -> Option<Vec<Slot>> {
-    let base = unsafe { GetModuleHandleW(ptr::null()) } as *mut u8;
+    let base = unsafe { GetModuleHandleW(ptr::null()) }.cast::<u8>();
     if base.is_null() {
         return None;
     }
@@ -315,7 +315,7 @@ unsafe fn install() -> bool {
                 slot.address.cast(),
                 size_of::<usize>(),
                 PAGE_READWRITE,
-                &mut previous,
+                &raw mut previous,
             )
         } == 0
         {
@@ -334,7 +334,7 @@ unsafe fn install() -> bool {
                 slot.address.cast(),
                 size_of::<usize>(),
                 previous,
-                &mut unused,
+                &raw mut unused,
             )
         } == 0
         {

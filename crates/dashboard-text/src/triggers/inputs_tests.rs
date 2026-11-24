@@ -511,7 +511,7 @@ fn an_hour_changing_a_read_field_or_row_reads_again() {
     let since = Since::hour_before(&second, &updates).unwrap();
     assert!(inputs.unchanged(&since));
     assert!(confirm(&mut inputs.clone(), &second, Some(&since)).0);
-    let mut confirmed = inputs.clone();
+    let mut confirmed = inputs;
     assert_eq!(
         reusing(|| confirm(&mut confirmed, &second, Some(&since))),
         (true, 0)
@@ -2317,7 +2317,7 @@ fn character_tables_read_only_their_declared_fields() {
     let frame = character_frame(100, 10, 3);
     let read = |frame: &DecodedFrame| with_world(frame, character_reads);
     let before = read(&frame);
-    let mut unread = frame.clone();
+    let mut unread = frame;
     if let TableView::Complete(TableRows::UnitLeaders(rows)) =
         &mut *unread.tables[TableId::UnitLeaders.index()]
     {

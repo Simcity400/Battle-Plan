@@ -326,7 +326,7 @@ fn ownership_transfer_verifies_count_reset_and_unexplained_decrease_fails() {
     output(&mut frames[1]).construction_raw = 1;
     assert_eq!(checked(&frames).differences.len(), 1);
     output(&mut frames[1]).construction_raw = 0;
-    let mut historical = original.clone();
+    let mut historical = original;
     for f in &mut historical {
         output(f).count_reset = replay_data::rows::Recorded::NotRecorded;
     }

@@ -67,7 +67,7 @@ fn slice_updates_encode_and_commit_the_merged_complete_table() {
     ]);
     let mut merged_encoder = FrameEncoder::new();
     let mut update_encoder = FrameEncoder::new();
-    let mut held = Arc::new(start.clone());
+    let mut held = Arc::new(start);
     let first = frame(0, TableInput::SharedComplete(Arc::clone(&held)));
     assert_eq!(
         merged_encoder
@@ -236,7 +236,7 @@ fn certified_key_ranges_encode_insert_edit_and_delete_exactly_like_complete_hist
         let (token, _) = sparse
             .slice_baseline(TableId::DivisionHistory, 1, hour, false)
             .unwrap();
-        #[allow(
+        #[expect(
             clippy::single_range_in_vec_init,
             reason = "This is one certified key interval, not a vector of the individual keys."
         )]

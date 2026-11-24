@@ -107,7 +107,7 @@ impl Inner {
         let folders = recording_upgrade::Folders {
             games,
             user: content.options.user_dir.clone(),
-            cache: content.options.cache_dir.clone(),
+            cache: content.options.cache_dir,
         };
         match recording_upgrade::upgrade(path, &folders) {
             Ok(recording_upgrade::Outcome::Upgraded { steps }) => {
@@ -835,6 +835,7 @@ pub(super) struct OpenJob {
     pub(super) revision: String,
 }
 
+#[expect(clippy::large_enum_variant, reason = "jobs move one at a time through the loader channel, so the size is paid briefly and boxing would add an allocation per job")]
 pub(super) enum LoadJob {
     HistoryChoice {
         request: Arc<Request>,

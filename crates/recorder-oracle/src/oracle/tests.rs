@@ -353,7 +353,7 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
         source: 7,
         numerator: 9_007_199_254_740_993,
         path_total: 300,
-        path: path.clone(),
+        path: path,
         strategic_redeployment: 255,
         withdrawal: Recorded::Value(Some(0)),
         movement_priority: Recorded::Value(Some(1)),
@@ -824,7 +824,7 @@ fn division_supply_grace_oracle_requires_unconditional_save_fields_at_display_pr
             out_of_supply_days: Recorded::NotRecorded,
             supply_grace_maximum: Recorded::Value(0),
             supply_grace_remaining: Recorded::Value(0),
-            ..row.clone()
+            ..row
         }]));
     let p = &mut saved.divisions.get_mut(&id).unwrap().presentation;
     p.max_supply = None;
@@ -2390,7 +2390,7 @@ fn faction_templates_colours_and_overrides_compare_as_the_save_writes_them() {
             report.differences
         );
     }
-    let mut dropped = frame.clone();
+    let mut dropped = frame;
     let TableView::Complete(TableRows::Factions(rows)) =
         &mut *dropped.tables[TableId::Factions.index()]
     else {
@@ -2473,7 +2473,7 @@ fn faction_members_cannot_duplicate_aliases_skip_ordinals_or_reference_absent_fa
     assert!(
         comparison_error(compare(&changed, &save, &membership, &equipment)).contains("contiguous")
     );
-    let mut duplicate_save = save.clone();
+    let mut duplicate_save = save;
     duplicate_save
         .factions
         .get_mut(&(1_u64 << 63))
@@ -2862,7 +2862,7 @@ fn division_oracle_compares_display_precision_and_three_distinct_owners() {
             "  Divisions.organisation: 0.1 (fixed5, toward zero)".to_owned(),
         ]
     );
-    let mut changed = frame.clone();
+    let mut changed = frame;
     let row = division_row_mut(&mut changed);
     row.hit_points -= 1;
     row.organisation += 1;
@@ -4758,7 +4758,7 @@ fn ace_range_inputs_match_the_saved_rosters_and_wing_references() {
         row(8, dead, 0, 0),
         row(9, other, 0, 1),
     ];
-    let report = run(exact.clone());
+    let report = run(exact);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["AceRangeInputs"], 3);
     let report = run(vec![

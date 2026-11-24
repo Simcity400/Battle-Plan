@@ -604,7 +604,6 @@ pub fn reserved_reference_of(reference: &Recorded<Option<i32>>) -> Result<i32, S
     Ok(if raw > 0 { raw } else { 0 })
 }
 
-#[allow(clippy::type_complexity)]
 fn original_rows<F: Tables + ?Sized>(
     frame: &F,
     slot: u32,

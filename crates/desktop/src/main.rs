@@ -450,7 +450,7 @@ fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
             ProcessFailedEventHandler::create(Box::new(move |_, args| {
                 let Some(args) = args else { return Ok(()) };
                 let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
-                unsafe { args.ProcessFailedKind(&mut kind)? };
+                unsafe { args.ProcessFailedKind(&raw mut kind)? };
                 let leaving = app.state::<Leaving>();
                 if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED
                     || kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
@@ -469,7 +469,7 @@ fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
             NavigationStartingEventHandler::create(Box::new(move |_, args| {
                 let Some(args) = args else { return Ok(()) };
                 let mut navigation = 0_u64;
-                unsafe { args.NavigationId(&mut navigation)? };
+                unsafe { args.NavigationId(&raw mut navigation)? };
                 if !app.state::<Leaving>().navigation_starting(navigation) {
                     eprintln!("BattlePlan is leaving, so its page doesn’t reload until it has left or stays.");
                     unsafe { args.SetCancel(true)? };
@@ -482,7 +482,7 @@ fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
             ContentLoadingEventHandler::create(Box::new(move |page, args| {
                 let Some(args) = args else { return Ok(()) };
                 let mut navigation = 0_u64;
-                unsafe { args.NavigationId(&mut navigation)? };
+                unsafe { args.NavigationId(&raw mut navigation)? };
                 if app.state::<Leaving>().content_loading(navigation) {
                     eprintln!("BattlePlan is leaving, so the page a reload began loading is stopped.");
                     if let Some(page) = page {
@@ -497,7 +497,7 @@ fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
             NavigationCompletedEventHandler::create(Box::new(move |_, args| {
                 let Some(args) = args else { return Ok(()) };
                 let mut navigation = 0_u64;
-                unsafe { args.NavigationId(&mut navigation)? };
+                unsafe { args.NavigationId(&raw mut navigation)? };
                 app.state::<Leaving>().navigation_completed(navigation);
                 Ok(())
             }))
@@ -505,10 +505,10 @@ fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
         let mut token = 0_i64;
         let watched = unsafe {
             webview.controller().CoreWebView2().and_then(|page| {
-                page.add_ProcessFailed(&failed, &mut token)?;
-                page.add_NavigationStarting(&starting, &mut token)?;
-                page.add_ContentLoading(&loading, &mut token)?;
-                page.add_NavigationCompleted(&completed, &mut token)
+                page.add_ProcessFailed(&failed, &raw mut token)?;
+                page.add_NavigationStarting(&starting, &raw mut token)?;
+                page.add_ContentLoading(&loading, &raw mut token)?;
+                page.add_NavigationCompleted(&completed, &raw mut token)
             })
         };
         if let Err(error) = watched {

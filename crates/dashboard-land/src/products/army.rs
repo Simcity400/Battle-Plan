@@ -232,7 +232,7 @@ fn window_reply(source: &Source, query: &Query<'_>, params: &ArmySizeParams, con
         .transpose()?;
     let mut reply = ArmySizeReply {
         branch_id: params.branch_id.clone(),
-        windows: if params.window.is_none() { windows.clone() } else { Vec::new() },
+        windows: if params.window.is_none() { windows } else { Vec::new() },
         window: params.window,
         interval: interval.clone(),
         available: true,
@@ -286,7 +286,7 @@ fn window_reply(source: &Source, query: &Query<'_>, params: &ArmySizeParams, con
     let membership = ranked;
     let wanted: Vec<Country> = match &membership {
         Some(members) => members.keys().cloned().collect(),
-        None => tags.clone(),
+        None => tags,
     };
     for tag in wanted {
         let Some(tag_parts) = parts.get(&tag) else { continue };
@@ -438,7 +438,6 @@ struct Groups {
     content: Option<(Arc<dashboard_base::catalogue::Catalogue>, Result<SubUnits, String>)>,
 }
 
-#[allow(clippy::too_many_arguments, reason = "the composition reads the source, the window, its totals, the series and the content")]
 fn composition(
     source: &Source,
     query: &Query<'_>,
@@ -682,7 +681,7 @@ pub fn tile_family_walk() -> dashboard_query::fields::Walk {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Family {
-    #[allow(dead_code, reason = "names the series this request is routed by")]
+    #[expect(dead_code, reason = "names the series this request is routed by")]
     kind: String,
     measure: ArmyMeasure,
     count_for: ArmyAttribution,

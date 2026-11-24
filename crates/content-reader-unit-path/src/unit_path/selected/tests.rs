@@ -1898,7 +1898,7 @@ fn railway_route_equal_endpoint_still_requires_current_exile_and_null_neighbour_
         .selected_railway_path(&railway_unit(&army), 1),
         Ok(true)
     );
-    let mut no_position = graph.clone();
+    let mut no_position = graph;
     no_position.centroids[0] = None;
     assert_eq!(
         Mover {

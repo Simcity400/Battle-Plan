@@ -185,7 +185,7 @@ fn admitted_count_zero_requires_outer_object_and_omitted_inner_list() {
             .iter()
             .any(|line| line.contains("intel[0]"))
     );
-    let mut refused = frame.clone();
+    let mut refused = frame;
     naming(&mut refused).country_intel_sample = Recorded::Value(None);
     assert!(run(&refused, &save).is_err());
 }
@@ -244,7 +244,7 @@ fn repeated_interleaved_actual_zero_emissions_each_compare_every_positional_lane
             .iter()
             .any(|line| line.contains("emission 3.intel[0].navy"))
     );
-    let mut shorter = save.clone();
+    let mut shorter = save;
     shorter.country_intel.get_mut(RESERVED_TAG).unwrap().pop();
     let report = run(&frame, &shorter).unwrap();
     assert_eq!(report.differences.len(), 4);
@@ -271,7 +271,7 @@ fn original_occurrence_count_order_tag_and_unequal_payloads_cannot_be_projected_
     let mut changed_tag = expected.clone();
     changed_tag[1].tag = b"other".to_vec();
     assert!(document.project(&changed_tag).is_err());
-    let mut changed_bytes = bytes.clone();
+    let mut changed_bytes = bytes;
     let first = changed_bytes
         .windows(7)
         .position(|bytes| bytes == b"4.44444")
@@ -332,7 +332,7 @@ fn absent_refused_or_incomplete_identity_never_manufactures_a_fresh_empty_match(
         reason: "required prefix unavailable".into(),
     };
     assert!(run(&unavailable, &save).is_err());
-    let mut unprojected = save.clone();
+    let mut unprojected = save;
     unprojected.country_emissions = None;
     assert!(run(&frame, &unprojected).is_err());
 }

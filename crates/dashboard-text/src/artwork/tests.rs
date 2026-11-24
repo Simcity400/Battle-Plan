@@ -108,7 +108,7 @@ fn restoring_keeps_only_the_images_the_text_names() {
     let text = format!(r#"{{"icon":"{}"}}"#, source.put(shown.clone()));
     let fresh = Table::new("test:");
     assert!(!fresh.restore(Vec::<Vec<u8>>::new(), &text));
-    assert!(fresh.restore([other.clone(), shown.clone()], &text));
+    assert!(fresh.restore([other, shown.clone()], &text));
     assert_eq!(*fresh.url_bytes(&text[9..text.len() - 2]).unwrap(), *shown);
     assert_eq!(fresh.read().len(), 1, "an image the text does not name is not kept");
     let mut damaged = shown;

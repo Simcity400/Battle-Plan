@@ -9,7 +9,7 @@ pub mod army {
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    #[allow(
+    #[expect(
         clippy::large_enum_variant,
         reason = "capture keeps owned movement operands inline"
     )]

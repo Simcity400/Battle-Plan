@@ -433,7 +433,7 @@ mod tests {
 
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    #[allow(dead_code, reason = "only the field names are read")]
+    #[expect(dead_code, reason = "only the field names are read")]
     struct Asked {
         branch_id: String,
         first_hour: i32,
@@ -456,7 +456,7 @@ mod tests {
 
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
-    #[allow(dead_code, reason = "only the field names are read")]
+    #[expect(dead_code, reason = "only the field names are read")]
     struct View {
         kind: ViewKind,
         month: Option<i32>,
@@ -464,7 +464,7 @@ mod tests {
 
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
-    #[allow(dead_code, reason = "only the field names are read")]
+    #[cfg_attr(not(test), expect(dead_code, reason = "only the field names are read"))]
     enum ViewKind {
         All,
         Month,
@@ -472,7 +472,7 @@ mod tests {
 
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
-    #[allow(dead_code, reason = "only the field names are read")]
+    #[expect(dead_code, reason = "only the field names are read")]
     struct Part {
         slot: u32,
         first_observed_hour: i32,
@@ -480,7 +480,7 @@ mod tests {
     }
 
     #[derive(serde::Deserialize)]
-    #[allow(dead_code, reason = "only the field names are read")]
+    #[expect(dead_code, reason = "only the field names are read")]
     struct Family {
         kind: String,
         membership: Vec<Span>,
@@ -488,7 +488,7 @@ mod tests {
 
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
-    #[allow(dead_code, reason = "only the field names are read")]
+    #[expect(dead_code, reason = "only the field names are read")]
     struct Span {
         first_hour: i32,
         last_hour: i32,
@@ -496,7 +496,7 @@ mod tests {
 
     #[derive(serde::Deserialize)]
     #[serde(untagged)]
-    #[allow(dead_code, reason = "only the field names are read")]
+    #[expect(dead_code, reason = "only the field names are read")]
     enum Country {
         Tag(String),
         Slot(u32),
@@ -504,7 +504,7 @@ mod tests {
 
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
-    #[allow(dead_code, reason = "only the field names are read")]
+    #[expect(dead_code, reason = "only the field names are read")]
     enum Key {
         Home,
         At { hour: i32 },
@@ -513,7 +513,7 @@ mod tests {
 
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
-    #[allow(dead_code, reason = "only the field names are read")]
+    #[expect(dead_code, reason = "only the field names are read")]
     enum Inner {
         Plain,
         Deep { hour: i32 },
@@ -521,7 +521,7 @@ mod tests {
 
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
-    #[allow(dead_code, reason = "only the field names are read")]
+    #[expect(dead_code, reason = "only the field names are read")]
     struct Hidden {
         branch_id: String,
         view: Tagged,
@@ -530,7 +530,7 @@ mod tests {
 
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase", tag = "kind")]
-    #[allow(dead_code, reason = "only the field names are read")]
+    #[expect(dead_code, reason = "only the field names are read")]
     enum Tagged {
         Rules { branch: String },
         Manpower { hours: Vec<i32> },
@@ -572,7 +572,7 @@ mod tests {
 
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
-    #[allow(dead_code, reason = "only the field names are read")]
+    #[expect(dead_code, reason = "only the field names are read")]
     struct Keyed {
         branch_id: String,
         spans: BTreeMap<String, Span>,

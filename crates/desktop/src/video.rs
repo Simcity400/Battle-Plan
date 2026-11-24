@@ -247,6 +247,7 @@ pub fn launch_actions(
     } else {
         settings.vsync
     };
+    #[expect(clippy::redundant_clone, reason = "the frame limit below still reads the settings")]
     let map_ui_scale = if settings.use_game_settings {
         VideoSettings::default()
     } else {

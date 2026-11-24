@@ -814,10 +814,10 @@ mod tests {
         });
         let view: super::DashboardMapView = serde_json::from_value(input.clone()).unwrap();
         view.validate().unwrap();
-        super::validate_map_views("page-origin-1", &[view.clone()]).unwrap();
+        super::validate_map_views("page-origin-1", std::slice::from_ref(&view)).unwrap();
         super::validate_map_views("page-origin-1", &[]).unwrap();
         assert!(super::validate_map_views("", &[]).is_err());
-        assert!(super::validate_map_views("page-origin-2", &[view.clone()]).is_err());
+        assert!(super::validate_map_views("page-origin-2", std::slice::from_ref(&view)).is_err());
         assert_eq!(view.seek_sequence, Some(2));
         assert_eq!(view.hours_per_second, 0.25);
         assert_eq!(view.clock_id, "page-origin-1");
@@ -885,7 +885,7 @@ b"
         let long = super::MapOptions {
             map_mode: Some(format!("scripted:{}", "m".repeat(249))),
             map_mode_slots: vec!["terrain".into(); 300],
-            ..options.clone()
+            ..options
         };
         assert!(
             super::MapAction::Configure { options: long }

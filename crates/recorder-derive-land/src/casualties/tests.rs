@@ -173,7 +173,7 @@ fn an_unknown_total_needs_a_zero_baseline_and_agreeing_increments() {
 
 #[test]
 fn a_gap_loses_unknown_totals_and_marks_lost_lifetimes_partial() {
-    let mut hours = vec![
+    let mut hours = [
         world(&[(10, 20, 0, [1, 1, 0, 0]), (10, 30, 0, [1, 1, 0, 0])]),
         world(&[(10, 20, 0, [2, 2, 0, 0]), (10, 30, 0, [2, 2, 0, 0])]),
         world(&[(10, 20, 0, [3, 3, 0, 0])]),
@@ -199,7 +199,7 @@ fn a_gap_loses_unknown_totals_and_marks_lost_lifetimes_partial() {
 
 #[test]
 fn an_unresolved_relation_withholds_the_hour_and_a_new_identity_starts_new_lifetimes() {
-    let mut hours = vec![
+    let mut hours = [
         world(&[(10, 20, 0, [1, 1, 0, 0])]),
         world(&[(10, 20, 0, [1, 1, 0, 0]), (10, 99, 0, [0, 0, 0, 0])]),
         world(&[(10, 20, 0, [2, 2, 0, 0])]),

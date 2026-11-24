@@ -1288,7 +1288,6 @@ fn an_hour_after_one_dropped_unfinished_writes_what_it_would_have() {
         for (key, cells) in &dropped {
             hour.row(*key, cells).unwrap();
         }
-        drop(hour);
     }
     let before = sides[0].writer.work();
     again(&mut sides, |side| {

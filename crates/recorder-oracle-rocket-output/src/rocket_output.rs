@@ -160,7 +160,7 @@ mod tests {
         assert!(check_change(&before, &next).is_ok());
         let refused = RocketProductionOutputRow {
             exact: false,
-            ..before.clone()
+            ..before
         };
         assert!(check_change(&refused, &before).is_err());
     }
@@ -175,7 +175,7 @@ mod tests {
         };
         let scope = RocketProductionOutputRow {
             country: 5001,
-            ..world.clone()
+            ..world
         };
         let mut previous = BTreeMap::new();
         assert!(check_rows(&mut previous, &[]).is_err());

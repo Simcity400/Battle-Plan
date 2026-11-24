@@ -239,7 +239,7 @@ mod tests {
             },
             CountryPowerDailyCostRow {
                 cost_raw: 8,
-                ..cost.clone()
+                ..cost
             },
         ] {
             assert!(validate_costs(std::slice::from_ref(&day), &[bad]).is_err());

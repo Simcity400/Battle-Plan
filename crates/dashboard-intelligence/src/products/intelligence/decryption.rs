@@ -580,7 +580,7 @@ mod tests {
 
     #[test]
     fn the_race_puts_broken_ciphers_first_then_progress_then_the_exact_share_and_unknown_progress_last() {
-        let mut race = vec![
+        let mut race = [
             ranked("GER", "ENG", 400, Some(1_000), Some(false)),
             ranked("ENG", "GER", 100, None, None),
             ranked("SOV", "GER", 900, Some(1_000), Some(false)),

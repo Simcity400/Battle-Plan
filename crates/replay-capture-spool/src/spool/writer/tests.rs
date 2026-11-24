@@ -405,7 +405,7 @@ fn corruption_never_hides_valid_later_segments_or_resynchronizes_inside_one() {
         assert_eq!(result.records.len(), usize::from(byte >= first_size));
         assert_eq!(recover_prefix(&good).records.len(), 3);
     }
-    let mut oversized = good.clone();
+    let mut oversized = good;
     oversized[6..10].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(recover_prefix(&oversized).records.is_empty());
 }

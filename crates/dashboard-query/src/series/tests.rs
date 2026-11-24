@@ -202,7 +202,7 @@ fn the_next_change_of_a_part_is_the_next_hour_its_row_moves_comes_or_goes() {
     let changes = || (FIRST + 2_001..=FIRST + 3_000).filter(|&hour| produced(&query, 9001, 4, hour) != produced(&query, 9001, 4, hour - 1));
     assert_eq!(inside(FIRST + 1_000, NavigationKey::ArrowRight), Some(FIRST + 2_000), "a step from before the held run lands where it starts");
     assert_eq!(inside(FIRST + 2_000, NavigationKey::ArrowRight), changes().next(), "a change outside the held run is never a step");
-    assert_eq!(inside(FIRST + 5_000, NavigationKey::ArrowLeft), changes().last().or(Some(FIRST + 2_000)), "a step back from after the held run stays inside it");
+    assert_eq!(inside(FIRST + 5_000, NavigationKey::ArrowLeft), changes().next_back().or(Some(FIRST + 2_000)), "a step back from after the held run stays inside it");
 }
 
 #[test]

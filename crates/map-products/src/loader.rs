@@ -56,5 +56,5 @@ pub fn load(layers: &ResolvedLayers, user: &Path, language: &str) -> io::Result<
             triggers: Arc::new(triggers),
         },
     )
-    .with_snow_loader(loader.clone()))
+    .with_snow_loader(loader))
 }

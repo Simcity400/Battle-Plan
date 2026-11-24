@@ -1304,7 +1304,7 @@ fn character_templates(
             .cloned()
             .collect();
         let line = lines
-            .get(&(value as *const Value))
+            .get(&std::ptr::from_ref::<Value>(value))
             .map(|lines| lines.first_token);
         return vec![template(line, template_role_for(&body, roles))];
     }
@@ -1321,7 +1321,7 @@ fn character_templates(
             match body.split_first() {
                 Some((allowed, rest)) if is_key(allowed, "allowed") => {
                     let line = lines
-                        .get(&(&allowed.value as *const Value))
+                        .get(&(&raw const allowed.value))
                         .map(|lines| lines.close);
                     match line {
                         Some(line) => template(Some(line), template_role_for(rest, roles)),
@@ -1371,7 +1371,7 @@ fn index_lines(
     for item in items {
         if let Some(children) = item.value.items() {
             if let Some(&span) = spans.get(*next) {
-                out.insert(&item.value as *const Value, span);
+                out.insert(&raw const item.value, span);
             }
             *next += 1;
             index_lines(children, spans, next, out);
@@ -1453,7 +1453,7 @@ pub fn parse_scientist_visibility_templates(
             };
             if is_key(item, "scientist")
                 && let Some(last) = body.iter().rfind(|item| is_key(item, "visible"))
-                && let Some(line) = lines.get(&(&last.value as *const Value))
+                && let Some(line) = lines.get(&(&raw const last.value))
             {
                 out.push(ScientistVisibilityTemplate {
                     line: line.open,

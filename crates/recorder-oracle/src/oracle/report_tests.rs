@@ -26,7 +26,7 @@ fn oracle_output_keeps_the_latest_uncovered_content_note() {
             .unwrap()
             .starts_with("Content: 1 file(s)")
     );
-    layers.clone().read("gfx/leaders/a.tga").unwrap();
+    layers.read("gfx/leaders/a.tga").unwrap();
     let note = report.content_warning().unwrap();
     assert!(note.starts_with("Content: 2 file(s)"));
     assert!(note.contains(

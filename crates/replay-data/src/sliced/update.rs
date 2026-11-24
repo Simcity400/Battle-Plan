@@ -33,7 +33,8 @@ macro_rules! sliced_pair {
     (@arms $pair:expr, $a:ident, $b:ident, $wrap:ident, $body:expr, $other:expr; $($variant:ident),+) => {
         match $pair {
             $((TableRows::$variant($a), TableRows::$variant($b)) => {
-                #[allow(unused_variables)]
+                #[expect(clippy::allow_attributes, reason = "unused_variables fires only in the expansions whose body leaves the constructor unused")]
+                #[allow(unused_variables, reason = "only some arms' bodies use the constructor")]
                 let $wrap = TableRows::$variant;
                 $body
             })+

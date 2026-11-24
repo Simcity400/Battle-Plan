@@ -65,7 +65,6 @@ macro_rules! row {
                 Ok(())
             }
             #[inline(never)]
-            #[allow(clippy::field_reassign_with_default, reason = "the macro sets only the fields the mask names on a row built from its initial value")]
             fn decode_endpoint_fields(key: u128, mask: u64, input: &mut $crate::codec::Decoder<'_>) -> std::io::Result<Self> {
                 let $key_name = key;
                 let mut row = $initial;
@@ -83,7 +82,6 @@ macro_rules! row {
                 let _ = bit;
                 Ok(())
             }
-            #[allow(clippy::field_reassign_with_default, reason = "the macro sets only the fields the mask names on a row built from its initial value")]
             fn decode_checkpoint_fields(key: u128, input: &mut $crate::codec::Decoder<'_>) -> std::io::Result<Self> {
                 let $key_name = key;
                 let mut row = $initial;

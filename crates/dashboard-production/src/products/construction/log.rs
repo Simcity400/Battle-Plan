@@ -307,7 +307,6 @@ impl Product for ConstructionLog {
     }
 }
 
-#[allow(clippy::too_many_arguments, reason = "one window's read and the identity it names lines by")]
 fn window(source: &Source, run: u32, from: i32, to: i32, lines: &RunLines, names: &Names, links: &RunLinks, warnings: &mut Vec<String>) -> io::Result<Vec<ConstructionProject>> {
     let recording = source.replay_ref().recording();
     let mut keys: Vec<u128> = lines.within(from, to).map(|line| u128::from(line.id)).collect();
