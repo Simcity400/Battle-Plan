@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
-import type { Breakdown, BreakdownPart as WirePart, PowerSpendingBreakdownReply } from '../../generated/dashboard';
+import type { Breakdown, BreakdownPart as WirePart, ConstructionBreakdownReply, PowerSpendingBreakdownReply } from '../../generated/dashboard';
+import { constructionProjection } from '../../widgets/construction-spending/constructionProjection.ts';
 import { ppSpendingProjection } from '../../widgets/political-power-spending-breakdown/ppSpendingProjection.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { FamilyTheme } from '../contract.ts';
@@ -187,4 +188,22 @@ test('political power spending reads the product at the displayed hour', () => {
 test('nothing after the displayed hour reaches the projection', () => {
   const readView = createBoundedReadView({ hour: 10, panels: new Map([['main', reply(spent())]]) });
   assert.throws(() => readView.hover('main', 11), FutureDataError);
+});
+
+test('construction spending reads IC used since the branch began and names what it leaves out', () => {
+  const reply: ConstructionBreakdownReply = {
+    from: START, hour: START + 10, through: START + 20, beforeFirstRead: 2, unattributed: 1, warnings: [],
+    breakdown: { decimals: 5, total: { raw: '162101200000', state: 'known', reason: null }, unrecordedHours: 0,
+      parts: [wire('New buildings', 0, '158376400000', { share: 0.98 }), wire('Repairs', 1, '3724800000', { share: 0.023 })] },
+  };
+  const readView = createBoundedReadView({ hour: START + 10, panels: new Map([['main', reply]]), validInterval: [START + 10, START + 20] });
+  const read = constructionProjection.project(readView, { digits: 0 });
+  assert.equal(read.total.text, '1,621,012');
+  assert.equal(read.total.unit, 'IC');
+  assert.equal(read.periodLabel, 'Used since 1 Jan 1936');
+  assert.deepEqual(read.parts.map(part => part.text), ['1,583,764', '37,248']);
+  assert.deepEqual(read.warnings, [
+    'Output of 2 projects before the recording began is not counted.',
+    'Output of 1 project not traced to a country is not counted.',
+  ]);
 });

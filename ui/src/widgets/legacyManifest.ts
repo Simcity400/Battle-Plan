@@ -19,7 +19,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'command-power', slots: ['render', 'countryChip'], load: () => import('./command-power') },
   { kind: 'command-power-spending', load: () => import('./command-power-spending') },
   { kind: 'construction-log', load: () => import('./construction-log') },
-  { kind: 'construction-spending', load: () => import('./construction-spending') },
   { kind: 'decisions', load: () => import('./decisions') },
   { kind: 'diplomatic-pacts', load: () => import('./diplomatic-pacts') },
   { kind: 'division-equipment', load: () => import('./division-equipment') },
