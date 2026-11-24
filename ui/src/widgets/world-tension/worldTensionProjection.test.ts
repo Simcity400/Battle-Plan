@@ -9,9 +9,9 @@ import { layoutTimeChart } from '../../families/time-chart/layout.ts';
 import { buildLineSubpaths, drawTimeChart } from '../../families/time-chart/painter.ts';
 import type { Canvas2D, MeasureText } from '../../charts/textWidth.ts';
 import type { WorldTensionReply, WorldTensionStackReply } from '../../generated/dashboard';
-import { worldTensionEventsProjection } from './worldTensionEventsProjection.ts';
+import { worldTensionEventsDeclaration, worldTensionEventsProjection } from './worldTensionEventsProjection.ts';
 import { worldTensionLinesDeclaration, worldTensionLinesProjection } from './worldTensionLinesProjection.ts';
-import { worldTensionProjection } from './worldTensionProjection.ts';
+import { worldTensionDeclaration, worldTensionProjection } from './worldTensionProjection.ts';
 
 const H1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
 const H1941 = engineHour({ year: 1941, month: 9, day: 15, hour: 1 })!;
@@ -48,6 +48,7 @@ function sampleStack(): WorldTensionStackReply {
     endHour: H1941,
     cappedEndTension: 100,
     downsampled: false,
+    refused: null,
     hours: [H1936, H1936 + 5000, H1936 + 20000],
     total: [0, 35, 100],
     bands: [
@@ -57,8 +58,8 @@ function sampleStack(): WorldTensionStackReply {
     ],
     other: { count: 31, values: [0, 3, 12], endValue: 12 },
     events: [
-      { hour: H1936 + 5000, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', addedRaw: '500000', firstRead: H1936 + 5000, lastRead: null },
-      { hour: H1941 + 200, tag: 'JAP', remembered: false, reason: 'Future event', addedRaw: '1000000', firstRead: H1941 + 200, lastRead: null },
+      { hour: H1936 + 5000, slot: 1, secondCountry: 0, place: 0, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', addedRaw: '500000', firstRead: H1936 + 5000, lastRead: null },
+      { hour: H1941 + 200, slot: 2, secondCountry: 0, place: 0, tag: 'JAP', remembered: false, reason: 'Future event', addedRaw: '1000000', firstRead: H1941 + 200, lastRead: null },
     ],
     missing: [],
     nextChangeHour: H1941 + 24,
@@ -84,7 +85,7 @@ describe('world-tension projections', () => {
     });
     assert.equal(model.mode, 'stack');
     assert.equal(model.stack?.step, true);
-    assert.equal(model.stack?.bands[0]?.key, 'GER');
+    assert.equal(model.stack?.bands[0]?.key, 'slot:1');
     assert.equal(model.stack?.bands.at(-1)?.id, 'other');
     assert.equal(model.stack?.bands.at(-1)?.endLabel?.name, 'Other (31)');
     assert.equal(model.stack?.bands.at(-1)?.endLabel?.shortName, 'Other');
@@ -140,7 +141,7 @@ describe('world-tension projections', () => {
     });
     assert.equal(model.mode, 'lines');
     assert.equal(model.series.length, 3);
-    assert.equal(model.series[0]?.key, 'GER');
+    assert.equal(model.series[0]?.key, 'slot:1');
     assert.equal(model.series[0]?.step, true);
     assert.equal(model.series[0]?.endLabel?.value, '60%');
     assert.equal(model.series[0]?.points?.length, 3);
@@ -184,6 +185,7 @@ describe('world-tension projections', () => {
       endHour: H1936 + 5000,
       cappedEndTension: 6.5,
       downsampled: false,
+      refused: null,
       hours: [H1936, H1936 + 5000],
       total: [0, 6.5],
       bands: [
@@ -206,7 +208,7 @@ describe('world-tension projections', () => {
     assert.ok(negBand?.endLabel, 'negative contribution band keeps its end label');
     assert.equal(negModel.stack?.total?.endLabel?.value, '6.5%', 'recorded world total label is 6.5%');
     assert.ok(negModel.auditRows?.some(r => r.row === '__total__' && r.value === '6.5%'));
-    assert.ok(negModel.auditRows?.some(r => r.row === 'ITA' && r.value === '\u22120.5%'), 'negative contribution appears in audit');
+    assert.ok(negModel.auditRows?.some(r => r.row === 'slot:3' && r.value === '\u22120.5%'), 'negative contribution appears in audit');
 
     const negLayout = layoutTimeChart(negModel, 720, 260, 'Segoe UI', measure);
     assert.ok(negLayout.yDomain[0] < 0, 'stack yDomain includes room below zero for negative bands');
@@ -265,7 +267,7 @@ describe('world-tension projections', () => {
     const reply: WorldTensionStackReply = {
       ...sampleStack(),
       events: [
-        { hour: hoverHour, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', addedRaw: '900000', firstRead: hoverHour, lastRead: null },
+        { hour: hoverHour, slot: 1, secondCountry: 0, place: 0, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', addedRaw: '900000', firstRead: hoverHour, lastRead: null },
       ],
     };
     const hoverReply: WorldTensionReply = {
@@ -401,5 +403,128 @@ describe('world-tension projections', () => {
       gateSpan: (a: number, b: number) => ({ firstHour: a, lastHour: b }),
     } as never, { width: 800, height: 300, following: false, staticSpan: null });
     assert.ok(plan.entries.some(e => e.name === 'hover' && e.read.shape === 'exact-hover'), 'lines view declares exact-hover entry');
+  });
+
+  it('S14 + R3-S11: keys world-tension bands and audit rows by slot (even when two slots share a tag), and includes secondary country and place in events table rowKey', () => {
+    const sharedTagReply = {
+      ...sampleStack(),
+      bands: [
+        { slot: 1, tag: 'GER', remembered: true, values: [0, 20, 30], minValues: [], maxValues: [], endValue: 30, endRaw: '3000000' },
+        { slot: 2, tag: 'GER', remembered: false, values: [0, 10, 40], minValues: [], maxValues: [], endValue: 40, endRaw: '4000000' },
+      ],
+      other: null,
+      events: [
+        { hour: H1936 + 5000, slot: 1, secondCountry: 2, place: 0, tag: 'GER', remembered: false, reason: 'Declared war', addedRaw: '500000', firstRead: H1936 + 5000, lastRead: null },
+        { hour: H1936 + 5000, slot: 1, secondCountry: 3, place: 0, tag: 'GER', remembered: false, reason: 'Declared war', addedRaw: '400000', firstRead: H1936 + 5000, lastRead: null },
+        { hour: H1936 + 5000, slot: 1, secondCountry: 3, place: 1, tag: 'GER', remembered: false, reason: 'Declared war', addedRaw: '300000', firstRead: H1936 + 5000, lastRead: null },
+      ],
+    } as unknown as WorldTensionStackReply;
+
+    const view = createBoundedReadView({
+      hour: H1941,
+      panels: new Map([['main', sharedTagReply]]),
+      identity: makeIdentity(),
+    });
+    const stackModel = worldTensionProjection.project(view, {
+      extent: [H1936, H1941],
+      surface: '#111111',
+      layers: 5,
+      values: 'recorded',
+      showMarkers: false,
+      gaps: [],
+    });
+    assert.deepEqual(stackModel.stack?.bands.map(b => b.key), ['slot:1', 'slot:2'], 'stack bands key by slot, not tag');
+    const stackAuditKeys = (stackModel.auditRows ?? []).map(r => r.row);
+    assert.equal(new Set(stackAuditKeys).size, stackAuditKeys.length, 'R3-S11: audit keys must be unique when two slots share a tag');
+    assert.ok(stackAuditKeys.includes('slot:1') && stackAuditKeys.includes('slot:2'), 'R3-S11: stack audit keys use slot ids');
+
+    const linesModel = worldTensionLinesProjection.project(view, {
+      extent: [H1936, H1941],
+      surface: '#111111',
+      gaps: [],
+    });
+    assert.deepEqual(linesModel.series.map(s => s.key), ['slot:1', 'slot:2'], 'lines key by slot, not tag');
+    assert.deepEqual(linesModel.series.map(s => s.id), ['slot:1', 'slot:2'], 'lines id by slot, not tag');
+    const linesAuditKeys = (linesModel.auditRows ?? []).map(r => r.row);
+    assert.deepEqual(linesAuditKeys, ['slot:1', 'slot:2'], 'R3-S11: lines audit keys use slot ids');
+
+    const table = worldTensionEventsProjection.project(view, { branchFirst: H1936 });
+    const rowKeys = table.rows.map(r => r.key);
+    assert.equal(new Set(rowKeys).size, 3, 'events table rowKey distinguishes secondary country and occurrence ordinal');
+  });
+
+  it('S15 + S18: passes top and dated GroupSelection to Rust across Stack/Lines/Events, renders refused replies, and skips unused stack/event work', () => {
+    const viewReq = { width: 800, height: 300, following: false, staticSpan: null };
+    const mkCtx = (countries: unknown, widgetCountries: unknown, options: Record<string, unknown> = {}) => ({
+      track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
+      branch: { id: '1', firstHour: H1936, lastHour: H1941, gaps: [] },
+      countries,
+      options,
+      widget: { countries: widgetCountries },
+      gateSpan: (a: number, b: number) => ({ firstHour: a, lastHour: b }),
+    } as never);
+
+    const topCtx = mkCtx({ all: false, tags: [], top: 3 }, { kind: 'top', count: 3 });
+    const stackTopParams = (worldTensionDeclaration.sources(topCtx, viewReq).entries[0]!.read as { params: Record<string, unknown> }).params;
+    const linesTopParams = (worldTensionLinesDeclaration.sources(topCtx, viewReq).entries[0]!.read as { params: Record<string, unknown> }).params;
+    const eventsTopParams = (worldTensionEventsDeclaration.sources(topCtx, viewReq).entries[0]!.read as { params: Record<string, unknown> }).params;
+    assert.equal(stackTopParams.top, 3, 'Stack passes Top-N count to product');
+    assert.equal(stackTopParams.countries, null, 'Stack does not send empty countries array for Top-N');
+    assert.equal(linesTopParams.top, 3, 'Lines passes Top-N count to product');
+    assert.equal(eventsTopParams.top, 3, 'Events passes Top-N count to product');
+    assert.equal(eventsTopParams.includeStack, false, 'S18: Events skips building stack history');
+    assert.equal(linesTopParams.includeEvents, false, 'S18: Lines skips scanning events');
+
+    const noMarkersCtx = mkCtx({ all: true, tags: [], top: null }, { kind: 'all' }, { markers: false });
+    const stackNoMarkers = (worldTensionDeclaration.sources(noMarkersCtx, viewReq).entries[0]!.read as { params: Record<string, unknown> }).params;
+    assert.equal(stackNoMarkers.includeEvents, false, 'S18: Stack with markers off skips scanning events');
+
+    const groupCtx = mkCtx(
+      { all: false, tags: ['GER', 'ITA'], top: null },
+      { kind: 'group', group: { type: 'faction', id: '42' }, membership: 'hour' },
+    );
+    const expectedGroup = { type: 'faction', id: '42', membership: 'hour' };
+    const stackGroupParams = (worldTensionDeclaration.sources(groupCtx, viewReq).entries[0]!.read as { params: Record<string, unknown> }).params;
+    const linesGroupParams = (worldTensionLinesDeclaration.sources(groupCtx, viewReq).entries[0]!.read as { params: Record<string, unknown> }).params;
+    const eventsGroupParams = (worldTensionEventsDeclaration.sources(groupCtx, viewReq).entries[0]!.read as { params: Record<string, unknown> }).params;
+    assert.deepEqual(stackGroupParams.group, expectedGroup, 'Stack sends GroupSelection directly');
+    assert.equal(stackGroupParams.countries, null, 'Stack does not flatten faction group to countries union');
+    assert.deepEqual(linesGroupParams.group, expectedGroup, 'Lines sends GroupSelection directly');
+    assert.deepEqual(eventsGroupParams.group, expectedGroup, 'Events sends GroupSelection directly');
+
+    const refusedReply = {
+      ...sampleStack(),
+      refused: 'Membership of this group is not recorded at this hour',
+      hours: [],
+      total: [],
+      bands: [],
+      other: null,
+      events: [],
+    } as unknown as WorldTensionStackReply;
+    const refusedView = createBoundedReadView({
+      hour: H1941,
+      panels: new Map([['main', refusedReply]]),
+      identity: makeIdentity(),
+    });
+    const refusedStack = worldTensionProjection.project(refusedView, {
+      extent: [H1936, H1941],
+      surface: '#111111',
+      layers: 5,
+      values: 'share',
+      showMarkers: true,
+      gaps: [],
+    });
+    assert.equal(refusedStack.empty?.kind, 'unavailable');
+    assert.equal(refusedStack.empty?.message, 'Membership of this group is not recorded at this hour');
+    const refusedLines = worldTensionLinesProjection.project(refusedView, {
+      extent: [H1936, H1941],
+      surface: '#111111',
+      gaps: [],
+    });
+    assert.equal(refusedLines.empty?.kind, 'unavailable');
+    assert.equal(refusedLines.empty?.message, 'Membership of this group is not recorded at this hour');
+    const refusedEvents = worldTensionEventsProjection.project(refusedView, { branchFirst: H1936 });
+    assert.equal(refusedEvents.emptyKind, 'unavailable');
+    assert.equal(refusedEvents.empty, 'Membership of this group is not recorded at this hour');
   });
 });

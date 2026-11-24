@@ -266,16 +266,14 @@ pub(super) fn index(reply: &PowerSpendingReply, spend_unread: &[(i32, i32, Strin
         let category_ordinal = *categories.entry(item.category.clone()).or_insert(next);
         let (name, identified) = names.get(item.category.as_str()).copied().unwrap_or((OTHER_CATEGORY, false));
         let mut category = Node::new(item.category.clone(), if identified { name } else { "Other spending" }, category_ordinal);
-        if !identified {
-            category = category.other();
-        }
+        category = if identified { category.with_art(naming::category_art(&item.category)) } else { category.other() };
         let mut path = vec![category];
         if let Some(kind) = &item.kind {
             let key = kind.id.clone().unwrap_or_else(|| format!("{}:unrecorded", item.category));
             let next = kinds.len() as u32;
             let ordinal = *kinds.entry(key.clone()).or_insert(next);
             path.push(match &kind.name {
-                Some(name) if kind.id.is_some() => Node::new(key, name.clone(), ordinal),
+                Some(name) if kind.id.is_some() => Node::new(key, name.clone(), ordinal).name_missing(kind.unknown.clone()),
                 _ => Node::new(key, "Category not recorded", ordinal).other(),
             });
         }

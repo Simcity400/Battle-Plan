@@ -157,6 +157,23 @@ function buildScoreboardRow(
   };
 }
 
+function sameValue(a: Value, b: Value): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === 'known' || a.kind === 'zero') return a.value === (b as typeof a).value;
+  if (a.kind === 'partial') return a.value === (b as typeof a).value && a.reason === (b as typeof a).reason && a.atLeast === (b as typeof a).atLeast;
+  return a.reason === (b as typeof a).reason;
+}
+
+function sameRow(before: TableRow, after: TableRow): boolean {
+  if (before.name !== after.name || before.tooltipNote !== after.tooltipNote) return false;
+  for (const key in after.cells) {
+    const a = before.cells[key];
+    const b = after.cells[key]!;
+    if (!a || a.country !== b.country || a.looks !== b.looks || !sameValue(a.value, b.value)) return false;
+  }
+  return true;
+}
+
 function sameRankedEntries(
   entries: readonly { readonly key: string }[],
   rankAnswer: FollowedAnswer | undefined,
@@ -285,7 +302,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
           });
           return nextModel;
         }
-        if (touchedIndices.size * 2 < prevInc.entries.length) {
+        {
           const nextRows = prevInc.model.rows.slice();
           const changedKeys = new Set<string>();
           const changedRows = new Map<string, TableRow>();
@@ -344,7 +361,12 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
       }
     }
 
-    const rows: TableRow[] = activeEntries.map(entry => buildScoreboardRow(entry, readView, hour, options));
+    const held = prevInc ? new Map(prevInc.model.rows.map(row => [row.key, row])) : null;
+    const rows: TableRow[] = activeEntries.map(entry => {
+      const built = buildScoreboardRow(entry, readView, hour, options);
+      const before = held?.get(built.key);
+      return before && sameRow(before, built) ? before : built;
+    });
     const model: TableModel = {
       columns,
       rows,

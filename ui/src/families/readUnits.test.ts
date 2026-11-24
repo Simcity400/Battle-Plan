@@ -10,6 +10,7 @@ import {
   askUnits,
   ReadTarget,
   settleUnits,
+  shownView,
   unitEntries,
   UnitReads,
   type ReadUnit,
@@ -18,6 +19,9 @@ import {
   type UnitResult,
 } from './readUnits.ts';
 import type { FrozenGate } from './sources.ts';
+import { revisionOf } from '../dashboard/follow/payloads.ts';
+import type { FamilyStaticSources } from './host/adapter.ts';
+import { boundDated, ownProof, StaticSupply } from './host/dated.ts';
 
 const END = 10_000;
 const branch = { firstHour: 0, lastHour: END };
@@ -162,10 +166,11 @@ function fakeServer(auto?: (unit: ReadUnit) => unknown) {
 }
 
 function followConfig(entries: readonly SourceEntry[], extra: Partial<Extract<TargetConfig, { following: true }>> = {}): TargetConfig {
-  return { following: true, entries, active: true, content: 0, trackOffset: 0, subscribed: false, playback: () => PLAYBACK, ...extra };
+  return { inputs: 'test', following: true, entries, active: true, content: 0, trackOffset: 0, subscribed: false, playback: () => PLAYBACK, ...extra };
 }
 function pinConfig(entries: readonly SourceEntry[], hour: number): TargetConfig {
   return {
+    inputs: 'test',
     following: false,
     entries,
     active: true,
@@ -248,7 +253,7 @@ test('a unit not yet applicable bounds the bundle by its known absence, and is a
   assert.equal(target.view().bundle?.panels.has('later'), false, 'while it is pending, the bundle proven before it began is held');
   server.answer('later', { rows: [] });
   await settled();
-  assert.deepEqual(target.proof(), { hour: 100, proof: [100, 100] });
+  assert.deepEqual([target.proof()?.hour, target.proof()?.proof, target.proof()?.bundle === target.view().bundle], [100, [100, 100], true]);
   assert.equal(target.view().bundle?.panels.has('later'), true);
   target.dispose();
 
@@ -502,17 +507,16 @@ async function playHundredHours(entries: readonly SourceEntry[]) {
     lane.pipeline.bind(id, [surface()], { surfaces: [{ width: 1, height: 1, dpr: 1 }] }, {}, { family: 'test', kind: 'test', options: {} });
     const generation = lane.pipeline.binding(id);
     const setup = lane.posted.length;
-    let supplied: unknown = null;
+    const sent = new StaticSupply(change => lane.pipeline.supply(id, change));
+    let shown: FamilyStaticSources | null = null;
+    const datedNow = () => boundDated(shown, ownProof(shown, target.proof()), false, false, null) ?? null;
     target.subscribe(() => {
       const bundle = target.view().bundle;
-      if (bundle === supplied) return;
-      supplied = bundle;
-      lane.pipeline.supply(id, { statics: bundle ? { staticPanels: Object.fromEntries(bundle.panels) } : null });
+      if (bundle === (shown?.stamp ?? null)) return;
+      shown = bundle ? { stamp: bundle, proof: bundle.proof, panels: Object.fromEntries(bundle.panels), hour: bundle.hour, follows: true } : null;
+      sent.statics(shown, datedNow());
     });
-    target.subscribeProof(() => {
-      const proof = target.proof();
-      lane.pipeline.supply(id, { dated: proof ? { h: proof.proof[0], c: proof.proof[1] } : null });
-    });
+    target.subscribeProof(() => sent.date(shown, datedNow()));
     lane.pipeline.supply(id, { identity: { countries: Array.from({ length: 200 }, (_, at) => `T${at}`) } });
     target.configure(followConfig(entries));
     await settled();
@@ -534,9 +538,8 @@ async function playHundredHours(entries: readonly SourceEntry[]) {
     return {
       replies,
       requests: server.calls.length,
-      commits: counts.views,
+      notifications: counts.views,
       bundles: counts.bundles.size,
-      binds: posted.filter(item => item.type === 'bind').length,
       identities: posted.filter(item => item.type === 'supply' && typeof (item.message as { identity?: unknown }).identity === 'number').length,
       staticBytes: payloads.reduce((sum, item) => sum + item.bytes, 0),
       staticMessages: statics.length,
@@ -551,11 +554,11 @@ async function playHundredHours(entries: readonly SourceEntry[]) {
   }
 }
 
-test('Class N: a hundred hours at 24 hours a frame cost what the answers changed, never a bind per frame', async () => {
+test('Class N: a hundred hours at 24 hours a frame cost what the answers changed (binds and commits are counted on a mounted host in host.dom.test.ts)', async () => {
   const constant = await playHundredHours([aggregate('factions', 0, undefined, { buildSpanParams: params => params })]);
-  assert.deepEqual([constant.requests, constant.replies, constant.bundles, constant.staticMessages, constant.binds, constant.identities], [1, 1, 1, 1, 0, 1],
-    'a request that never names the hour, with no proof: one request, one bundle, one statics message, no bind after the first and one identity snapshot (main: 100 re-asks, 101 binds each cloning the panels and the snapshot)');
-  assert.ok(constant.commits <= 2, `React commits bounded by 1 + changed answers (${constant.commits})`);
+  assert.deepEqual([constant.requests, constant.replies, constant.bundles, constant.staticMessages, constant.identities], [1, 1, 1, 1, 1],
+    'a request that never names the hour, with no proof: one request, one bundle, one statics message and one identity snapshot');
+  assert.ok(constant.notifications <= 2, `view notifications bounded by 1 + changed answers (${constant.notifications})`);
   assert.ok(constant.datedBytes <= 80, `each proof move is a dated message of ${constant.datedBytes} bytes, never the panels`);
   assert.ok(constant.datedMessages <= 101);
   assert.equal(constant.generationKept, true, 'no supply bumps the binding generation');
@@ -566,9 +569,289 @@ test('Class N: a hundred hours at 24 hours a frame cost what the answers changed
   ] as const) {
     const played = await playHundredHours(entries);
     assert.ok(played.requests <= played.replies + 1, `${name}: requests (${played.requests}) are bounded by replies (${played.replies}): one outstanding target, lag instead of a queue`);
-    assert.ok(played.commits <= played.replies + 1, `${name}: React commits (${played.commits}) bounded by 1 + changed answers (${played.replies})`);
+    assert.ok(played.notifications <= played.replies + 1, `${name}: view notifications (${played.notifications}) bounded by 1 + changed answers (${played.replies})`);
     assert.ok(played.staticMessages <= played.replies, `${name}: statics messages (${played.staticMessages}) bounded by changed answers`);
     assert.ok(played.staticBytes <= played.replies * played.replyBytes, `${name}: statics bytes bounded by changed answers × reply size`);
-    assert.deepEqual([played.binds, played.identities, played.generationKept], [0, 1, true], `${name}: no bind after the first, one identity snapshot, the generation kept`);
+    assert.deepEqual([played.identities, played.generationKept], [1, true], `${name}: one identity snapshot, the generation kept`);
   }
+});
+
+type Proven = { readonly lo: number; readonly hi: number; readonly tag: string };
+
+function pairRig() {
+  const drawn: LaneView = {
+    paint: input => {
+      const main = (input.model as { staticPanels?: { main?: Proven } }).staticPanels?.main;
+      return { surfaces: input.binding.surfaces.map(() => ({ source: { width: 1, height: 1 }, content: main?.tag ?? 'none' })), fields: { main: { value: main ?? null, content: main?.tag ?? 'none' } }, motion: false };
+    },
+  };
+  const lane = inProcess({ views: kind => kind === 'drawn' ? drawn : undefined });
+  lane.clock.setPlaying(false);
+  const id = lane.pipeline.acquire('widget|0', { offset: 0, pin: null, owner: 'X' });
+  lane.pipeline.present(id, 'drawn');
+  lane.pipeline.bind(id, [surface()], { surfaces: [{ width: 1, height: 1, dpr: 1 }] }, {}, { family: 'test', kind: 'test', options: {} });
+  const sent = new StaticSupply(change => lane.pipeline.supply(id, change));
+  const sources = (bundle: { readonly panels: ReadonlyMap<string, unknown>; readonly proof: readonly [number, number] | null; readonly hour: number }): FamilyStaticSources =>
+    ({ stamp: bundle, proof: bundle.proof, panels: Object.fromEntries(bundle.panels), hour: bundle.hour, follows: true });
+  const dated = (shown: FamilyStaticSources | null, proof: Parameters<typeof ownProof>[1]) => boundDated(shown, ownProof(shown, proof), false, false, null) ?? null;
+  const wake = async (hour: number) => {
+    if (lane.clock.getHour() !== hour) lane.clock.seek(hour);
+    for (let round = 0; round < 6; round++) await settled();
+    await lane.settle(() => false, 10);
+  };
+  const outsideOwnStamp = () => {
+    const view = lane.pipeline.view(id);
+    if (!view || view.mode !== 'picture' || view.dim) return null;
+    const main = (view.fields?.main ?? null) as Proven | null;
+    if (!main) return `a current picture with no panels at ${view.h}`;
+    return view.h! < main.lo || (view.through ?? view.h!) > main.hi ? `${main.tag} (proven ${main.lo}..${main.hi}) accepted as current at ${view.h}..${view.through}` : null;
+  };
+  const current = () => {
+    const view = lane.pipeline.view(id);
+    return view && view.mode === 'picture' && !view.dim ? (view.fields?.main as Proven | null)?.tag ?? null : null;
+  };
+  return { lane, id, sent, sources, dated, wake, outsideOwnStamp, current, close: () => lane.close() };
+}
+
+function proven(tag: string, lo: number, hi: number) {
+  return { panels: new Map([['main', { lo, hi, tag }]]), proof: [lo, hi] as const, hour: lo };
+}
+
+test('class PAIR, proof and panels: a reply’s proof never dates the panels before it, in either order, with a worker wake between (R4-S1)', async () => {
+  for (const order of ['proof first', 'panels first'] as const) {
+    const rig = pairRig();
+    try {
+      const a = rig.sources(proven('A', 100, 100));
+      rig.sent.statics(a, rig.dated(a, null));
+      await rig.wake(100);
+      assert.equal(rig.current(), 'A');
+      const bBundle = proven('B', 101, 101);
+      const b = rig.sources(bBundle);
+      const bProof = { bundle: bBundle, hour: 101, proof: [101, 101] as const };
+      if (order === 'proof first') {
+        rig.sent.date(a, rig.dated(a, bProof));
+        rig.lane.pipeline.supply(rig.id, { stamp: revisionOf(bBundle), dated: { h: 101, c: 101 } });
+        await rig.wake(101);
+        assert.equal(rig.outsideOwnStamp(), null, `${order}: the hour-101 proof does not date A`);
+        assert.notEqual(rig.current(), 'A');
+        rig.sent.statics(b, rig.dated(b, bProof));
+      } else {
+        rig.sent.statics(b, rig.dated(b, null));
+        await rig.wake(101);
+        assert.equal(rig.outsideOwnStamp(), null);
+        rig.sent.date(b, rig.dated(b, { ...bProof, proof: [101, 130] }));
+      }
+      await rig.wake(101);
+      assert.equal(rig.outsideOwnStamp(), null, order);
+      assert.equal(rig.current(), 'B', `${order}: B installs at 101 once its panels and proof are both there`);
+    } finally { rig.close(); }
+  }
+});
+
+test('class PAIR, dates: a date for another stamp is dropped whichever arrives first', async () => {
+  for (const order of ['stale date after new panels', 'new date before its panels'] as const) {
+    const rig = pairRig();
+    try {
+      const aBundle = proven('A', 100, 100);
+      const a = rig.sources(aBundle);
+      rig.sent.statics(a, rig.dated(a, null));
+      await rig.wake(100);
+      const b = rig.sources(proven('B', 120, 120));
+      if (order === 'stale date after new panels') {
+        rig.sent.statics(b, rig.dated(b, null));
+        rig.lane.pipeline.supply(rig.id, { stamp: revisionOf(aBundle), dated: { h: 100, c: 140 } });
+      } else {
+        rig.lane.pipeline.supply(rig.id, { stamp: revisionOf(b.stamp), dated: { h: 120, c: 120 } });
+        await rig.wake(120);
+        assert.equal(rig.outsideOwnStamp(), null, `${order}: A is not dated 120`);
+        rig.sent.statics(b, rig.dated(b, null));
+      }
+      await rig.wake(120);
+      assert.equal(rig.outsideOwnStamp(), null, order);
+      assert.equal(rig.current(), 'B', order);
+      await rig.wake(130);
+      assert.equal(rig.current(), null, `${order}: B is not extended by A’s date`);
+    } finally { rig.close(); }
+  }
+});
+
+test('class PAIR, owner: the previous owner’s panels never paint under the new owner, in either order (R4-S2)', async () => {
+  for (const order of ['owner first', 'panels first'] as const) {
+    const rig = pairRig();
+    try {
+      const a = rig.sources(proven('A', 100, 100));
+      rig.sent.statics(a, rig.dated(a, null));
+      await rig.wake(100);
+      assert.equal(rig.current(), 'A');
+      const b = rig.sources(proven('B', 100, 100));
+      if (order === 'owner first') {
+        rig.lane.pipeline.retime(rig.id, { owner: 'Y' });
+        await rig.wake(100);
+        assert.notEqual(rig.current(), 'A', `${order}: X’s panels are cleared under Y`);
+        assert.equal(rig.outsideOwnStamp(), null);
+        rig.sent.statics(b, rig.dated(b, null));
+      } else {
+        rig.sent.statics(b, rig.dated(b, null));
+        rig.lane.pipeline.retime(rig.id, { owner: 'Y' });
+        await rig.wake(100);
+        assert.equal(rig.current(), null, `${order}: panels sent before the owner changed are cleared with it`);
+        rig.sent.statics(b, rig.dated(b, null));
+      }
+      await rig.wake(100);
+      assert.equal(rig.current(), 'B', `${order}: Y’s panels install after the binding that names Y`);
+    } finally { rig.close(); }
+  }
+});
+
+test('class PAIR, span and inputs: the same replies under a new selected span are a new stamp over the same panel map; a stale view is withheld (R4-S2, R4-S3)', async () => {
+  const fixed = aggregate('main', 0, undefined, { buildSpanParams: params => params });
+  const server = fakeServer(() => ({ rows: [] }));
+  const target = new ReadTarget(fakeClock(100, false).clock, server.load);
+  const base = pinConfig([fixed], 100) as Extract<TargetConfig, { following: false }>;
+  const window = (first: number): TargetConfig => ({ ...base, inputs: `window ${first}`, pinned: { ...base.pinned, timeMode: 'range', pinHour: null, window: { firstHour: first, lastHour: 100 } } });
+  target.configure(window(0));
+  await settled();
+  const first = target.view().bundle!;
+  assert.deepEqual(first.span, [0, 100]);
+  target.configure(window(50));
+  await settled();
+  const second = target.view().bundle!;
+  assert.deepEqual(second.span, [50, 100], 'R4-S3: the selected span moves although request and reply are the same');
+  assert.notEqual(second, first, 'a new stamp');
+  assert.equal(second.panels, first.panels, 'over the same panel map, so no panel is sent again');
+  const view = target.view();
+  assert.equal(shownView(view, 'window 50', true), view);
+  assert.equal(shownView(view, 'window 0', true).bundle, null, 'R4-S2: a render whose inputs moved on withholds the view');
+  assert.equal(shownView(view, 'window 0', false).kind, 'none', 'a widget with no units under its new inputs is not loading');
+  target.dispose();
+});
+
+test('class PAIR, re-pin at the target: a configure for new inputs never holds the previous inputs’ bundle (R4-S2)', async () => {
+  const head = point('head');
+  const server = fakeServer();
+  const target = new ReadTarget(fakeClock(500, false).clock, server.load);
+  target.configure({ ...pinConfig([head], 500), inputs: 'pin 500' });
+  server.answer('head', { hour: 500 });
+  await settled();
+  assert.equal(target.view().bundle?.hour, 500);
+  target.configure({ ...pinConfig([head], 100), inputs: 'pin 100' });
+  assert.deepEqual([target.view().inputs, target.view().bundle, target.proof()], ['pin 100', null, null], 'the 500 bundle is not held for the pin at 100');
+  server.answer('head', { hour: 100 });
+  await settled();
+  assert.deepEqual([target.view().inputs, target.view().bundle?.hour], ['pin 100', 100]);
+  target.dispose();
+});
+
+test('sweep-2 P0: a seek back never hands the worker a panel dated after the hour it draws, and a widget that failed recovers on its next bundle', async () => {
+  let throwOnce = false;
+  const bounded: LaneView = {
+    paint: input => {
+      const statics = (input.model as { staticPanels?: Readonly<Record<string, unknown>> }).staticPanels ?? {};
+      if (throwOnce) {
+        throwOnce = false;
+        throw new Error('a projection fault');
+      }
+      const view = createBoundedReadView({ hour: input.hour, panels: new Map(Object.entries(statics)) });
+      const main = view.panel<{ hour: number }>('main');
+      return { surfaces: input.binding.surfaces.map(() => ({ source: { width: 1, height: 1 }, content: `main:${main?.hour}` })), fields: { main: { value: main?.hour ?? null, content: String(main?.hour) } }, motion: false };
+    },
+  };
+  const lane = inProcess({ views: kind => kind === 'drawn' ? bounded : undefined });
+  const id = lane.pipeline.acquire('widget|0', { offset: 0, pin: null });
+  lane.pipeline.present(id, 'drawn');
+  lane.pipeline.bind(id, [surface()], { surfaces: [{ width: 1, height: 1, dpr: 1 }] }, {}, { family: 'test', kind: 'test', options: {} });
+  const cache = new Map<string, unknown>();
+  const time = fakeClock(100);
+  const target = new ReadTarget(time.clock, async asked => {
+    const data = { hour: asked.anchor };
+    cache.set(asked.key!, data);
+    return data;
+  }, asked => cache.get(asked.key!));
+  const sent = new StaticSupply(change => lane.pipeline.supply(id, change));
+  let shown: FamilyStaticSources | null = null;
+  const datedNow = () => boundDated(shown, ownProof(shown, target.proof()), false, false, null) ?? null;
+  const render = () => {
+    const bundle = target.view().bundle;
+    if (bundle === (shown?.stamp ?? null)) return;
+    shown = bundle ? { stamp: bundle, proof: bundle.proof, panels: Object.fromEntries(bundle.panels), hour: bundle.hour, follows: true } : null;
+    sent.statics(shown, datedNow());
+  };
+  target.subscribe(() => { setImmediate(render); });
+  target.subscribeProof(() => sent.date(shown, datedNow()));
+  const failed = () => lane.pipeline.view(id)?.mode === 'failed';
+  const drawn = () => lane.pipeline.view(id)?.fields?.main;
+  try {
+    target.configure(followConfig([point('main', { provenInterval: (_data, hour) => [hour, hour + 23] })]));
+    lane.clock.seek(100);
+    lane.clock.setPlaying(false);
+    for (let hour = 100; hour <= 500; hour += 24) {
+      time.advance(hour);
+      lane.clock.seek(hour);
+      for (let round = 0; round < 4; round++) await settled();
+    }
+    assert.ok(await lane.settle(() => drawn() === 484), `playing forward draws each bundle (${String(drawn())})`);
+    time.seekTo(196);
+    lane.clock.seek(196);
+    for (let round = 0; round < 8; round++) await settled();
+    await lane.settle(() => drawn() === 196 || failed(), 100);
+    assert.equal(failed(), false, `the seek back drew no panel dated after 196 (${lane.pipeline.view(id)?.reason ?? ''})`);
+    assert.equal(drawn(), 196, 'and draws the hour-196 bundle the cache answered');
+
+    throwOnce = true;
+    time.seekTo(292);
+    lane.clock.seek(292);
+    assert.ok(await lane.settle(() => failed()), 'a projection fault fails the widget');
+    time.seekTo(388);
+    lane.clock.seek(388);
+    assert.ok(await lane.settle(() => drawn() === 388 && !failed()), `and its next bundle draws again (${lane.pipeline.view(id)?.mode})`);
+  } finally {
+    target.dispose();
+    lane.close();
+  }
+});
+
+test('a failed sibling never lets the clock re-ask a unit still pending: requests stay bounded by replies (R4-S5)', async () => {
+  const tile = range('tile', 0, 50);
+  const now = aggregate('now');
+  const time = fakeClock(100);
+  const server = fakeServer();
+  const target = new ReadTarget(time.clock, server.load);
+  target.configure(followConfig([tile, now]));
+  assert.deepEqual(server.calls.map(call => call.unit.name).sort(), ['now', 'tile']);
+  server.refuse('tile');
+  await settled();
+  assert.equal(target.view().failure?.name, 'tile');
+  for (let hour = 101; hour <= 110; hour++) {
+    time.advance(hour);
+    await settled();
+  }
+  assert.equal(server.calls.length, 2, 'ten advancing frames while `now` is unanswered ask nothing more');
+  assert.equal(server.pending.filter(call => call.unit.name === 'now').length, 1, 'and the pending read is not cancelled');
+  server.answer('now', {});
+  await settled();
+  assert.ok(server.calls.length <= 3, `once it answers, at most one new ask for the clock's hour (${server.calls.length})`);
+  time.seekTo(200);
+  await settled();
+  assert.ok(server.calls.some(call => call.unit.name === 'tile' && server.calls.indexOf(call) > 1), 'an explicit seek still asks the failed read again');
+  target.dispose();
+});
+
+test('a pinned unit uses its own branch and coverage gate, so a point at +24 on a longer track is asked there (R4-S7)', () => {
+  const longer = { ...source, id: 'other', branches: [{ id: '2', firstHour: 0, lastHour: 1000 }] } as unknown as DashboardSource;
+  const shifted: SourceEntry = { name: 'shifted', source: longer, branch: '2', offset: 24, read: point('shifted').read };
+  const plain = point('plain');
+  const endsAt = (last: number): FrozenGate => ({ ...gate, recorded: (hour: number | null | undefined) => (typeof hour === 'number' && hour <= last ? hour : null) as never });
+  const short = { branch: { firstHour: 0, lastHour: 100 }, gate: endsAt(100) };
+  const long = { branch: { firstHour: 0, lastHour: 1000 }, gate: endsAt(1000) };
+  const units = askUnits([shifted, plain], {
+    following: false,
+    trackOffset: 0,
+    content: 0,
+    displayHour: 90,
+    pinned: { timeMode: 'pin', branch: short.branch, window: { firstHour: 90, lastHour: 90 }, pinHour: 90, gate: short.gate },
+    track: entry => (entry.branch === '2' ? long : short),
+  });
+  assert.equal(unit(units, 'shifted').anchor, 114, 'the secondary is pinned at its own 114, recorded on its own track');
+  assert.ok(unit(units, 'shifted').spec, 'and is asked, not gated away by the primary track ending at 100');
+  assert.equal(unit(units, 'plain').anchor, 90);
 });

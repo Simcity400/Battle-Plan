@@ -55,7 +55,6 @@ export function barPath(ctx: CanvasRenderingContext2D, x: number, y: number, wid
   ctx.closePath();
 }
 
-export { fillHatched } from '../hatch.ts';
 
 export function drawRaceBar(ctx: CanvasRenderingContext2D, layout: RaceLayout, tokens: ChartTokens, row: RaceRow, min: number, max: number): number {
   const centre = rowCentre(layout, row.y);
