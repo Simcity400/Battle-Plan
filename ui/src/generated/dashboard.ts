@@ -1917,7 +1917,11 @@ export type PartyHistoryReply = { branchId: string, tag: string,
 /**
  * The country the request named, which a reply is matched to: a slot follows its country through any tag.
  */
-asked: CountryRef, decimals: number, parties: Array<PartySeries>, ruling: Array<RulingRun>,
+asked: CountryRef, decimals: number,
+/**
+ * Every party the country had, in stack order: the content's ideology order, then token.
+ */
+parties: Array<PartySeries>, ruling: Array<RulingRun>,
 /**
  * The ruling party's leader; an hour without a run was not read.
  */
@@ -1939,9 +1943,9 @@ people: Array<LeaderArtwork>,
  */
 ideologyTypes: Array<IdeologyTypeInfo>,
 /**
- * Hours an election was first seen held.
+ * Each election whose new date was read, at its recorded date.
  */
-elections: Array<number>,
+elections: Array<Election>,
 /**
  * Every ideology group in content order, for colours, names and legend order.
  */
@@ -1951,7 +1955,21 @@ ideologies: Array<IdeologyInfo>,
  * not a change.
  */
 unobserved: Array<HourSpan>, warnings: Array<string>, };
-export type PartySeries = { token: string, parts: Array<number>, };
+export type PartySeries = { token: string,
+/**
+ * The parts this party owned, each over the hours it was read owning it.
+ */
+parts: Array<PartOwnership>, };
+export type PartOwnership = { part: number, firstHour: number, lastHour: number, };
+export type Election = {
+/**
+ * The recorded date of the election.
+ */
+hour: number,
+/**
+ * The hour the new date was first read; nothing shows the election before it.
+ */
+witnessed: number, };
 export type RulingRun = { token: string, firstHour: number, lastHour: number,
 /**
  * Follows an hour not read or another holder, so the change before it is not a change of
