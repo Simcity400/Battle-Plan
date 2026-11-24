@@ -510,13 +510,6 @@ interface ExactPart {
   readonly hover?: unknown;
 }
 
-const NO_ENTRIES: readonly SourceEntry[] = [];
-
-function readsWithoutFollow(read: SourceTimeShape): boolean {
-  if (read.shape === 'range') return true;
-  return (read.shape === 'branch-to-hour' || read.shape === 'trailing-window' || read.shape === 'point') && read.followQuery === null;
-}
-
 export function exactEntries(plan: SourcePlan): readonly SourceEntry[] {
   const primary = primaryExactEntry(plan);
   if (!primary) return NO_ENTRIES;
