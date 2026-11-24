@@ -23,21 +23,28 @@ const raw = { branchId: '1', purchasesMissing: null, unattributed: 1, warnings: 
   agreements: null };
 const reply: MarketAt = { ...validateMarketReply(raw), hour: 7 };
 
-test('contracts and requests are the rows either party matches; an unnamed party may match and is counted', () => {
-  const ger = (tag: string) => tag === 'GER';
+test('contracts and requests are the rows either party matches', () => {
+  const ger = (tag: string | null) => tag === 'GER';
   const contracts = contractRows(reply, 'contracts', ger);
-  assert.deepEqual(contracts.rows.map(row => row.key), ['1']);
-  assert.equal(contracts.unattributed, 0);
-  assert.deepEqual(contracts.rows[0].equipment.map(entry => [entry.name, entry.icon, entry.amount]), [['Rifle', 'data:rifle', 100000n], [null, null, 1n]]);
-  const requests = contractRows(reply, 'requests', ger);
-  assert.deepEqual([requests.rows.length, requests.unattributed], [0, 1], 'a request whose buyer has no tag may be GER\'s');
-  assert.deepEqual(contractRows(reply, 'requests', () => true).rows[0].levels, [{ variant: '5', level: 0 }]);
+  assert.deepEqual(contracts.map(row => row.key), ['1']);
+  assert.deepEqual(contracts[0].equipment.map(entry => [entry.name, entry.icon, entry.amount]), [['Rifle', 'data:rifle', 100000n], [null, null, 1n]]);
+  assert.deepEqual(contractRows(reply, 'requests', ger), []);
+  assert.deepEqual(contractRows(reply, 'requests', () => true)[0].levels, [{ variant: '5', level: 0 }]);
 });
 
-test('inventory lists each matching seller\'s variants in native order with their price levels; a seller with no tag is not listed', () => {
-  const rows = offerRows(reply, () => true);
+test('inventory lists each matching seller\'s variants in native order with their price levels', () => {
+  const rows = offerRows(reply, tag => tag !== null);
   assert.deepEqual(rows.map(row => [row.key, row.name, row.amount, row.level]), [['44:5', 'Rifle', 300000n, null], ['44:6', null, 100000n, 2]]);
   assert.equal(rows[1].missing, 'The recording does not name this design at this hour.');
+});
+
+test('under All countries an offer whose seller has no country is still listed; under a selection the product\'s count says it may match', () => {
+  const view = createBoundedReadView({ hour: 7, panels: new Map([['main', raw]]) });
+  const all = internationalMarketProjection.project(view, { view: 'inventory', filterAll: true, filter: { passing: null, unrecorded: [], bounds: [] } });
+  assert.ok(all.rows.some(row => row.key === '45:5'), 'the recorded quantity is not dropped');
+  const chosen = internationalMarketProjection.project(view, { view: 'requests', filterAll: false, filter: { passing: { GER: [[0, 9]] }, unrecorded: [], bounds: [10] } });
+  assert.equal(chosen.emptyKind, 'unavailable', 'a request with an unnamed buyer may be GER\'s');
+  assert.equal(internationalMarketProjection.nextChange?.(view, { view: 'requests', filterAll: false, filter: { passing: { GER: [[0, 9]] }, unrecorded: [], bounds: [10] } }), 10);
 });
 
 

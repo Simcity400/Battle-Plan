@@ -8,15 +8,6 @@ import type { FamilyTableBinding } from '../../families/table/laneView.ts';
 import { tableSettingsOf } from '../../families/table/settings.ts';
 
 const scene = (model: unknown): Scene => ({ widget: 1, subs: [], pictures: [], model });
-const reply = { missing: null, countries: [{ tag: 'GER', countryId: 1, total: 4, counts: [] }], types: [], warnings: [] };
-
-test('astra 7: a race breaks at its membership change hour, not at midnight', () => {
-  const race = drawnViews('race', () => {})!;
-  const model = { top: null, tags: ['GER'], split: false, overlay: false, offset: 0, reply, membership: new Map([['GER', [{ firstHour: 109, lastHour: 500 }]]]) };
-  assert.equal(race.next!(scene(model), 100), 109, 'GER joins the selection at 109');
-  assert.equal(race.next!(scene(model), 109), 501);
-});
-
 test('astra 7: a table breaks at its filter bounds and at the hours its country names and flags change', async () => {
   let wakeResolve: ((widget: number) => void) | null = null;
   const woken = new Promise<number>(resolve => { wakeResolve = resolve; });

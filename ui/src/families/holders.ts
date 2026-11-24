@@ -329,3 +329,7 @@ export function nextFactionsChange(
   if (incomplete?.length) soonest = Math.min(soonest, nextRangesChange(incomplete, hour));
   return soonest;
 }
+
+export function filterCandidates(passing: Readonly<Record<string, HourRanges>> | null): readonly string[] | null {
+  return passing === null ? null : Object.keys(passing).sort();
+}

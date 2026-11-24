@@ -4,6 +4,7 @@ import type { AnyTableWidgetDeclaration } from './declaration.ts';
 import type { FamilyTableBinding } from './laneView.ts';
 import { buildColumnLayouts, computeRowLayout, layoutFamilyTable, tableRowWindow } from './layout.ts';
 import { deriveTableAudit, resolveTableRows, tableRank, type TableColumnSpec, type TableModel } from './model.ts';
+import { combinedPaneRows, paneGeometry, resolvePanes } from './panes.ts';
 import { encodeTableSettings, MEDIA_ROW_HEIGHT, ROW_HEIGHT, TABLE_SETTINGS_KEY, tableSettingsOf, type TableSettings } from './settings.ts';
 
 interface TableWidthsField {
@@ -19,6 +20,7 @@ interface TableInfoField {
 export interface TableChromeState {
   readonly meta: unknown;
   readonly widths: unknown;
+  readonly panes: unknown;
 }
 
 function tableColumns(declaration: AnyTableWidgetDeclaration, ctx: FamilyPlanContext<unknown> | null): readonly TableColumnSpec[] {
@@ -68,12 +70,11 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
   settings: tableSettingsPolicy,
   chromeState: (fields, previous) => {
     const prev = previous as TableChromeState | undefined;
-    if (prev && prev.meta === fields.meta && prev.widths === fields.widths) return prev;
-    const next: TableChromeState = { meta: fields.meta, widths: fields.widths };
+    if (prev && prev.meta === fields.meta && prev.widths === fields.widths && prev.panes === fields.panes) return prev;
+    const next: TableChromeState = { meta: fields.meta, widths: fields.widths, panes: fields.panes };
     return next;
   },
   parseHit: parseTableHit,
-  inspectToken: key => `row:${key}`,
   getScrollExtent: fields => {
     const widths = fields.widths as TableWidthsField | undefined;
     const table = fields.table as TableInfoField | undefined;
@@ -85,10 +86,12 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
   deriveAuditRows: (model, _hour, { settings, expanded, viewport, theme, fields }) => {
     if (!settings) return [];
     const measured = (fields.widths as TableWidthsField | undefined)?.widths ?? {};
-    const flatRows = resolveTableRows(model, settings, expanded);
     const mode = model.rowHeightMode ?? 'standard';
+    const panes = model.panes ? resolvePanes(model, settings, expanded, mode) : null;
+    const flatRows = panes ? combinedPaneRows(panes) : resolveTableRows(model, settings, expanded);
     const { shown: rankShown, width: rankWidth } = tableRank(model, settings);
-    const layout = layoutFamilyTable(buildColumnLayouts(model.columns, settings, measured), Math.max(1, viewport.width), {
+    const layoutWidth = panes ? paneGeometry(viewport.width, panes.length).width : viewport.width;
+    const layout = layoutFamilyTable(buildColumnLayouts(model.columns, settings, measured), Math.max(1, layoutWidth), {
       rankShown,
       rankWidth,
     });
@@ -97,30 +100,15 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
       flatRows,
       visibleColumns: layout.columns,
       rankShown,
-      window: tableRowWindow(flatRows.length, computeRowLayout(flatRows, settings.density, mode), (mode === 'media' ? MEDIA_ROW_HEIGHT : ROW_HEIGHT)[settings.density], viewport.scrollTop, viewport.height),
+      window: panes ? { first: 0, count: flatRows.length } : tableRowWindow(flatRows.length, computeRowLayout(flatRows, settings.density, mode), (mode === 'media' ? MEDIA_ROW_HEIGHT : ROW_HEIGHT)[settings.density], viewport.scrollTop, viewport.height),
       countryColors: theme ? { countryLooks: theme.countryLooks, country: theme.country } : undefined,
     });
   },
   buildBinding: ctx => (ctx.settings
     ? {
-        options: ctx.options,
         settings: ctx.settings,
-        sources: ctx.sources,
-        ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
-        ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
-        width: ctx.viewport.width,
-        height: ctx.viewport.height,
-        scrollLeft: ctx.viewport.scrollLeft,
-        scrollTop: ctx.viewport.scrollTop,
-        theme: ctx.theme,
-        ...(ctx.identitySnapshot ? { identitySnapshot: ctx.identitySnapshot } : {}),
-        ...(ctx.artResolutions ? { artResolutions: ctx.artResolutions } : {}),
-        selectedKey: ctx.selectedKey,
-        focusedKey: ctx.focusedKey,
         expanded: ctx.expanded,
         reducedMotion: ctx.reducedMotion,
-        pauseFlush: ctx.pauseFlush,
-        ...(ctx.audit ? { audit: true, auditId: ctx.auditId } : {}),
       }
     : null),
 };
