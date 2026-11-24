@@ -72,6 +72,6 @@ test('each amount, price and level belongs to its own variant: reordered levels 
   const contracts = internationalMarketProjection.project(view, { view: 'contracts', filterAll: true, filter: all });
   const several = contracts.rows.find(row => row.key === '1')!;
   assert.equal(several.cells.price!.value.kind, 'notApplicable', 'two equipment never show one price');
-  const extra = typeof several.tooltipExtra === 'function' ? several.tooltipExtra() : several.tooltipExtra!;
+  const extra = (typeof several.tooltipExtra === 'function' ? several.tooltipExtra() : several.tooltipExtra) ?? [];
   assert.deepEqual(extra.filter(entry => entry.lookupKey).map(entry => entry.lookupKey), ['5', '6']);
 });
