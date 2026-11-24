@@ -533,6 +533,10 @@ export type SeriesRankRow = { country: CountryRef,
  */
 slot: number | null,
 /**
+ * Why the row's country is not named at the hour, for a recorded row whose holder is not resolved: it is ranked by its recorded readings.
+ */
+unnamed?: string,
+/**
  * One reading per measure of the reply, in the reply's order, each with its own missing reason.
  */
 readings: Array<SeriesState>, };
