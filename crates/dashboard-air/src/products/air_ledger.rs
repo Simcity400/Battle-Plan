@@ -945,7 +945,7 @@ fn observed_since(source: &Source, query: &Query<'_>, family: MilitaryAirFamily,
 fn latest_incomplete(query: &Query<'_>, (from, to): (i32, i32)) -> io::Result<Option<i32>> {
     let log = dashboard_declare::log(MilitaryAirFamily::Bombing.log()).ok_or_else(|| dashboard_core::invalid("No declared bombing log"))?;
     let reader = log::Reader::new(query, log)?;
-    let unknown = log::FacetFilter { name: "cause".into(), values: vec![BuildingBombingDamageCause::Unknown as i64], countries: Vec::new() };
+    let unknown = log::FacetFilter { name: "cause".into(), values: vec![BuildingBombingDamageCause::Unknown as i64], ..Default::default() };
     let patterns = reader.select(&[unknown], from, to)?.patterns;
     let last_bin = |(from, to): (i32, i32), bin: i64| -> io::Result<Option<(i32, i32)>> {
         let latest = reader.bins(&patterns, from, to, bin)?.into_iter().filter_map(|bins| bins.last().map(|&(start, _)| start)).max();

@@ -3,6 +3,7 @@ dashboard_base::register_products! {
     FOCUS_ARTWORK_FOCUSARTWORK => crate::products::focus_artwork::FocusArtwork,
     TECHNOLOGY_ARTWORK_TECHNOLOGYARTWORK => crate::products::technology_artwork::TechnologyArtwork,
     LOGS_LOGPAGE => crate::products::logs::LogPage,
+    LOGS_LOGTAIL => crate::products::logs::LogTail,
     LOGS_LOGCOUNTS => crate::products::logs::LogCounts,
     POLITICS_HISTORY_POLITICSSTATEHISTORY => crate::products::politics::history::PoliticsStateHistory,
     POLITICS_CIVIL_WARS_CIVILWARS => crate::products::politics::civil_wars::CivilWars,

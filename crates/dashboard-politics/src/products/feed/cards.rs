@@ -153,8 +153,8 @@ pub(crate) fn continuing(query: &Query<'_>, list: List, openers: &[(u64, u64, i3
     let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
     let reader = Reader::new(query, declared)?;
     let filters = [
-        FacetFilter { name: "kind".into(), values: list.continuing().iter().filter_map(|kind| kind.code()).map(i64::from).collect(), countries: Vec::new() },
-        FacetFilter { name: "opener".into(), values: hours.iter().map(|hour| i64::from(*hour)).collect(), countries: Vec::new() },
+        FacetFilter { name: "kind".into(), values: list.continuing().iter().filter_map(|kind| kind.code()).map(i64::from).collect(), ..Default::default() },
+        FacetFilter { name: "opener".into(), values: hours.iter().map(|hour| i64::from(*hour)).collect(), ..Default::default() },
     ];
     let selection = reader.select(&filters, query.timeline.first, to)?;
     let columns = super::row::Columns::new()?;
@@ -252,7 +252,23 @@ impl Product for EventChoices {
     const CONTENT_DEPENDENT: bool = true;
     const REPLAYS: bool = true;
     type Params = FeedPageParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, facets, from: Start, to: End, cursor, pageSize, "scope[].firstHour": Start, "scope[].lastHour": End, "facets[].countries[]", "facets[].values[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
+        branchId,
+        facets,
+        from: Start,
+        to: End,
+        cursor,
+        pageSize,
+        "scope[].firstHour": Start,
+        "scope[].lastHour": End,
+        "facets[].countries[]",
+        "facets[].values[]",
+        "facets[].membership[].country",
+        "facets[].membership[].firstHour": Start,
+        "facets[].membership[].lastHour": End,
+        "facets[].unobserved[].firstHour": Start,
+        "facets[].unobserved[].lastHour": End
+    ];
     type Reply = ScriptOccurrencePage;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -276,7 +292,23 @@ impl Product for Decisions {
     const CONTENT_DEPENDENT: bool = true;
     const REPLAYS: bool = true;
     type Params = FeedPageParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, facets, from: Start, to: End, cursor, pageSize, "scope[].firstHour": Start, "scope[].lastHour": End, "facets[].countries[]", "facets[].values[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
+        branchId,
+        facets,
+        from: Start,
+        to: End,
+        cursor,
+        pageSize,
+        "scope[].firstHour": Start,
+        "scope[].lastHour": End,
+        "facets[].countries[]",
+        "facets[].values[]",
+        "facets[].membership[].country",
+        "facets[].membership[].firstHour": Start,
+        "facets[].membership[].lastHour": End,
+        "facets[].unobserved[].firstHour": Start,
+        "facets[].unobserved[].lastHour": End
+    ];
     type Reply = ScriptOccurrencePage;
 
     #[cfg(any(test, feature = "export-types"))]
