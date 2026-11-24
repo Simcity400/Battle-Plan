@@ -1,6 +1,6 @@
 use super::{
     EventFeedKind, Names,
-    cards::{List, ScriptCurrency, edge},
+    cards::{ScriptCurrency, edge},
     cause, derived, families,
     row::{Columns, FeedEvent, Party, Slot},
     text::Notices,
@@ -503,7 +503,10 @@ fn feed_event_choices_and_decisions_pages_preserve_rows_and_coverage_gaps() {
             frame
         })
         .collect();
-    let writers: Vec<_> = recorder_derive::writers().into_iter().filter(|w| w.name() != "Feed").collect();
+    let current: Vec<usize> = TableId::ALL.iter().map(|table| table.field_count()).collect();
+    let mut held = current.clone();
+    held[TableId::FeedEvents.index()] = 0;
+    let writers = recorder_derive::writers_within(&held, &current);
     let replay = Replay::from_records(writers, CAMPAIGN.into(), &[records(1, frames)])
         .unwrap()
         .into_timelines(&Default::default())

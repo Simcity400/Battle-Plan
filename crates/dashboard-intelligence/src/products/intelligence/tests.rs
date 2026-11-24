@@ -122,10 +122,10 @@ fn captivity_and_cooldown_days_round_as_the_game_does_and_progress_is_never_clam
 }
 
 mod espionage {
-    use super::super::espionage::{Ending, OperationState, current_phase, description, elapsed_days, endings, operatives, preparation_ratio};
+    use super::super::espionage::{Ending, EspionageLog, EspionageLogParams, OperationState, current_phase, description, elapsed_days, endings, operatives, preparation_ratio};
     use dashboard_query::log::Cell;
     use game_model::calendar::HOUR_EPOCH;
-    use replay_data::rows::{OperationAssignmentRow, OperationRow, OperativeMembershipRow, Recorded};
+    use replay_data::rows::{OperationAssignmentRow, OperationCompletionRow, OperationRow, OperativeMembershipRow, Recorded};
 
     fn operation(duration_days: i32, start_hour: i32, phase_count: u32, terminal: u8) -> OperationRow {
         OperationRow { id: 7, duration_days, start_hour, phase_count, terminal, assigned_slots: 2, ..OperationRow::default() }
