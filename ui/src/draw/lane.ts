@@ -13,8 +13,16 @@ export type Value = PanelValue | AnswerValue | SeedValue;
 export interface Sub { id: number; channel: Channel; product?: string; route: number | null }
 
 export interface Surface { width: number; height: number; dpr: number }
+export interface Dated { h: number; c: number }
+
 export interface Binding {
-  generation: number; owner?: string; surfaces: readonly Surface[]; offset: number; pin: number | null; settings?: unknown; dated?: { h: number; c: number };
+  generation: number; owner?: string; surfaces: readonly Surface[]; offset: number; pin: number | null; settings?: unknown; dated?: Dated;
+}
+
+export interface Supply {
+  statics?: { staticPanels?: unknown; staticAnswers?: unknown } | null;
+  identity?: number | null;
+  dated?: Dated | null;
 }
 export interface Bitmapped { readonly width: number; readonly height: number }
 
@@ -77,11 +85,13 @@ export interface LaneHost<B extends Bitmap> {
 interface Sent {
   id: number; owner?: string; request: number; pictures: Picture<Value>[]; h: number; c: number; lo: number; hi: number; binding: number;
   contents: Record<string, string>; fieldKeys: string[]; surfaceCount: number; mode: Entry['mode']; reason?: string;
-  open?: 'followed' | 'panel'; viewport?: InstalledViewport; inspect: string | null; hit?: Painted['hit'];
+  open?: 'followed' | 'panel'; viewport?: InstalledViewport; inspect: string | null; hit?: Painted['hit']; supply: number;
 }
 
+interface Supplied { statics: { staticPanels?: unknown; staticAnswers?: unknown } | null; identity: number | null }
+
 interface Widget {
-  id: number; order: number; subs: number[]; view: string; model: unknown; binding: Binding;
+  id: number; order: number; subs: number[]; view: string; model: unknown; own: unknown; supplied: Supplied; supply: number; binding: Binding;
   installed: Sent | null; inflight: Sent | null; sent: Record<string, string>; forceFull: boolean; motion: boolean; inspect: string | null;
   validWindow: Window | null;
   start: { version: string; hour: number } | null; state: Map<string, unknown>; cost: number; served: number; deferrals: number; halted: number | null; parked: Sent | null;
@@ -226,6 +236,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private readonly gone = new Set<number>();
   private readonly failed = new Set<number>();
   private readonly presented = new Map<number, { widget: number; sent: Sent }>();
+  private readonly identities = new Map<number, unknown>();
+  private readonly earlySupply = new Map<number, Supply>();
   private readonly acks: { installed: readonly Ack[]; refused: readonly Refusal[] }[] = [];
   private ackMs = 0;
   private request: FrameRequest | null = null;
@@ -532,11 +544,16 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   mount(widget: number, subs: readonly number[], view: string, model?: unknown) {
     const was = this.widgets.get(widget);
     if (was) this.unindexWidget(was);
-    const made: Widget = { id: widget, order: was?.order ?? this.nextOrder++, subs: [...subs], view, model,
+    const early = was ? undefined : this.earlySupply.get(widget);
+    this.earlySupply.delete(widget);
+    const supplied: Supplied = was?.supplied ?? { statics: null, identity: null };
+    const made: Widget = { id: widget, order: was?.order ?? this.nextOrder++, subs: [...subs], view, model, own: model, supplied, supply: was?.supply ?? 0,
       binding: was?.binding ?? { generation: 1, surfaces: [], offset: 0, pin: null },
       installed: was?.installed ?? null, inflight: null, sent: {}, forceFull: false, motion: false, inspect: was?.inspect ?? null, validWindow: null, start: null, state: was?.state ?? new Map(), cost: was?.cost ?? 0.1,
       served: was?.served ?? 0, deferrals: 0, halted: null, parked: null };
+    made.model = this.compose(made);
     this.widgets.set(widget, made);
+    if (early) this.supply(widget, early);
     this.indexWidget(made);
     if (made.inspect !== null) this.inspectedWidgets.add(widget);
     this.dirtyWidgets.add(widget);
@@ -551,6 +568,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       this.unindexWidget(held);
       this.widgets.delete(widget);
     }
+    this.earlySupply.delete(widget);
     this.failedWidgets.delete(widget);
     for (const [id, owner] of this.presented) if (owner.widget === widget) this.presented.delete(id);
   }
@@ -560,7 +578,10 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (!held) return;
     const ownerChanged = binding.owner !== undefined && held.binding.owner !== undefined && binding.owner !== held.binding.owner;
     held.binding = binding;
-    if (model !== undefined) held.model = model;
+    if (model !== undefined) {
+      held.own = model;
+      held.model = this.compose(held);
+    }
     held.sent = {};
     held.forceFull = false;
     held.inflight = null;
@@ -580,6 +601,44 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.dirtyWidgets.add(widget);
     this.syncWindowTracking(held);
     this.wake();
+  }
+
+  identity(id: number, snapshot: unknown) {
+    if (snapshot === null) this.identities.delete(id);
+    else this.identities.set(id, snapshot);
+  }
+
+  supply(widget: number, change: Supply) {
+    const held = this.widgets.get(widget);
+    if (!held) {
+      const early = this.earlySupply.get(widget) ?? {};
+      if (change.statics !== undefined) early.statics = change.statics;
+      if (change.identity !== undefined) early.identity = change.identity;
+      if (change.dated !== undefined) early.dated = change.dated;
+      this.earlySupply.set(widget, early);
+      return;
+    }
+    if (change.statics !== undefined) held.supplied = { ...held.supplied, statics: change.statics };
+    if (change.identity !== undefined) held.supplied = { ...held.supplied, identity: change.identity };
+    if (change.dated !== undefined) {
+      const { dated: _, ...rest } = held.binding;
+      held.binding = change.dated ? { ...rest, dated: change.dated } : rest;
+    }
+    if (change.statics !== undefined || change.identity !== undefined) held.model = this.compose(held);
+    held.supply++;
+    this.dirtyWidgets.add(widget);
+    this.syncWindowTracking(held);
+    this.wake();
+  }
+
+  private compose(widget: Widget): unknown {
+    const own = widget.own, { statics, identity } = widget.supplied;
+    if (!own || typeof own !== 'object' || (statics === null && identity === null)) return own;
+    return {
+      ...own,
+      ...statics,
+      ...identity !== null ? { identitySnapshot: this.identities.get(identity) ?? null } : {},
+    };
   }
 
   touch(widget: number) {
@@ -1391,7 +1450,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const view = this.host.views(widget.view);
     if (!view.next) return { pictures, ...joined };
     const scene: Scene = { widget: widget.id, subs: widget.subs.map(id => this.subs.get(id)!), pictures, model: widget.model };
-    const version = widget.subs.length ? pictures.map(picture => picture.parts.map(part => part.version).join('.')).join('|') : `bound:${widget.binding.generation}`;
+    const version = `${widget.subs.length ? pictures.map(picture => picture.parts.map(part => part.version).join('.')).join('|') : `bound:${widget.binding.generation}`}:${widget.supply}`;
     const at = Math.max(joined.window[0], Math.min(target, joined.c));
     let window = changeWindow(joined.window, at, hour => view.next!(scene, hour, widget.state), widget.start?.version === version ? widget.start.hour : undefined);
     if (target > window[1]) window = [window[0], joined.window[1]];
@@ -1427,8 +1486,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     return true;
   }
 
-  private matches(sent: Sent | null, selected: Selected, target: number, binding: number, inspect: string | null, route: number | null) {
-    if (!sent || sent.binding !== binding || sent.inspect !== inspect || sent.pictures.length !== selected.pictures.length) return false;
+  private matches(sent: Sent | null, selected: Selected, target: number, binding: number, supply: number, inspect: string | null, route: number | null) {
+    if (!sent || sent.binding !== binding || sent.supply !== supply || sent.inspect !== inspect || sent.pictures.length !== selected.pictures.length) return false;
     const confirmed = sent.open === 'followed' && route !== null
       ? Math.max(sent.c, this.routeConfirmedFollowed.get(route) ?? -Infinity)
       : sent.open === 'panel' && route !== null
@@ -1438,8 +1497,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       && sent.lo === selected.window[0] && sent.lo <= target && target <= sent.hi;
   }
 
-  private canRedate(sent: Sent | null, selected: Selected, binding: number, inspect: string | null) {
-    return !!sent && sent.binding === binding && sent.inspect === inspect
+  private canRedate(sent: Sent | null, selected: Selected, binding: number, supply: number, inspect: string | null) {
+    return !!sent && sent.binding === binding && sent.supply === supply && sent.inspect === inspect
       && sent.pictures.length === selected.pictures.length
       && sent.pictures.every((picture, at) => samePicture(picture, selected.pictures[at]))
       && sent.lo === selected.window[0]
@@ -1543,9 +1602,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       }
       widget.validWindow = selected.window;
       this.syncWindowTracking(widget);
-      const shown = this.matches(widget.installed, selected, target, widget.binding.generation, key, route);
-      if (this.matches(widget.parked, selected, target, widget.binding.generation, key, route)) continue;
-      const pending = widget.inflight && this.requests - widget.inflight.request <= STALE && this.matches(widget.inflight, selected, target, widget.binding.generation, key, route);
+      const shown = this.matches(widget.installed, selected, target, widget.binding.generation, widget.supply, key, route);
+      if (this.matches(widget.parked, selected, target, widget.binding.generation, widget.supply, key, route)) continue;
+      const pending = widget.inflight && this.requests - widget.inflight.request <= STALE && this.matches(widget.inflight, selected, target, widget.binding.generation, widget.supply, key, route);
       if (pending || shown && !widget.motion && !widget.forceFull) {
         widget.inspect = key;
         if (key === null) this.inspectedWidgets.delete(wid); else this.inspectedWidgets.add(wid);
@@ -1587,7 +1646,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const start = this.time();
       widget.served = this.requests;
       const initialOpen = this.isOpenFollowed(widget, selected) ? 'followed' : this.isOpenPanel(widget, selected) ? 'panel' : undefined;
-      if (!motion && !widget.motion && !widget.forceFull && widget.installed && this.canRedate(widget.installed, selected, widget.binding.generation, widget.inspect)) {
+      if (!motion && !widget.motion && !widget.forceFull && widget.installed && this.canRedate(widget.installed, selected, widget.binding.generation, widget.supply, widget.inspect)) {
         const redated = this.redateEntry(widget, widget.installed, selected, request.seek, initialOpen);
         entries.push(redated);
         made.push({ widget, selected });
@@ -1767,7 +1826,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const route = this.routeOf(widget);
     const gen = route === null ? { seek, reset: 0 } : { seek: this.facts.generation(route).seek, reset: this.applied.get(this.natives.get(route)!) ?? this.resets.get(this.natives.get(route)!) ?? 0 };
     const sent: Sent = { id, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), request: this.requests, pictures: selected.pictures, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
-      binding: widget.binding.generation, contents, fieldKeys: base.fieldKeys, surfaceCount: base.surfaceCount, mode: base.mode, reason: base.reason, open, ...(base.viewport ? { viewport: base.viewport } : {}), inspect: widget.inspect, hit: base.hit };
+      binding: widget.binding.generation, contents, fieldKeys: base.fieldKeys, surfaceCount: base.surfaceCount, mode: base.mode, reason: base.reason, open, ...(base.viewport ? { viewport: base.viewport } : {}), inspect: widget.inspect, hit: base.hit, supply: base.supply };
     widget.sent = { ...contents };
     widget.inflight = sent;
     this.presented.set(id, { widget: widget.id, sent });
@@ -1798,7 +1857,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const primarySurface = widget.binding.surfaces[0];
     const viewport = painted.viewport ?? (primarySurface ? { width: primarySurface.width, height: primarySurface.height, dpr: primarySurface.dpr, scrollLeft: 0, scrollTop: 0 } : undefined);
     const sent: Sent = { id, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), request: this.requests, pictures: selected.pictures, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
-      binding: widget.binding.generation, contents, fieldKeys, surfaceCount: painted.surfaces.length, mode, reason, open, ...(viewport ? { viewport } : {}), inspect: widget.inspect, hit: painted.hit };
+      binding: widget.binding.generation, contents, fieldKeys, surfaceCount: painted.surfaces.length, mode, reason, open, ...(viewport ? { viewport } : {}), inspect: widget.inspect, hit: painted.hit, supply: widget.supply };
     widget.sent = { ...contents };
     widget.inflight = sent;
     this.presented.set(id, { widget: widget.id, sent });
