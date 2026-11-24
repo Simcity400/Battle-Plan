@@ -455,7 +455,7 @@ impl AtHour for AirAcesAt {
         let history = at.context.history(&params.branch_id)?;
         let mut warnings = Vec::new();
         let (missing, mut aces) = roster(frame, &history, at.context.cat.as_deref().ok(), &mut warnings);
-        portraits(frame, &mut aces, at)?;
+        portraits(frame, &mut aces, at, &mut warnings)?;
         at.context.warnings(&mut warnings);
         let reply = AirAcesReply { read_hour: frame.tables[TableId::AirAces.index()].sampled_at(), missing, aces, warnings };
         dashboard_base::products::check_reply_budget(&reply).map_err(|_| dashboard_core::invalid("Ace roster reply exceeds transport budget; no aces were truncated"))?;
@@ -549,7 +549,8 @@ fn cached_portrait(cache: &Mutex<PortraitCache>, facts: &PortraitOperands, cat: 
     found.get().clone()
 }
 
-fn portraits(frame: &DecodedFrame, aces: &mut [AirAce], at: &At<'_, Context>) -> io::Result<()> {
+fn portraits(frame: &DecodedFrame, aces: &mut [AirAce], at: &At<'_, Context>, warnings: &mut Vec<String>) -> io::Result<()> {
+    let mut refusals = Refusals::default();
     let rows: BTreeMap<u64, &AirAceRow> = frame.complete::<tables::AirAces>().map(|rows| rows.iter().map(|row| (row.id, row)).collect()).unwrap_or_default();
     for ace in aces {
         dashboard_text::metadata::check_cancel(at.cancelled)?;
@@ -565,8 +566,12 @@ fn portraits(frame: &DecodedFrame, aces: &mut [AirAce], at: &At<'_, Context>) ->
             });
         match found {
             Ok(image) => ace.portrait = Some(image),
-            Err(reason) => ace.portrait_missing = Some(reason),
+            Err(reason) => {
+                refusals.note(&reason, format!("Ace {}", ace.id));
+                ace.portrait_missing = Some(reason);
+            }
         }
     }
+    warnings.extend(refusals.counts("ace portraits"));
     Ok(())
 }
