@@ -2157,6 +2157,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
     dateGrouped: true,
     rows: [],
     slots: [
+      { kind: 'data', row: mkLogRow('live0', DAY3 + 8, 50, { live: true, title: 'First live same day', statusKind: 'running', statusLabel: 'Running' }) },
       { kind: 'data', row: mkLogRow('live1', DAY3 + 5, 50, { live: true, title: 'Stop the Strikes', inlineSubtext: 'Mission', statusKind: 'running', statusLabel: 'Running', children: [childRow] }) },
       { kind: 'data', row: mkLogRow('h1', DAY2 + 10, 25, { title: 'Event \uFFFC choice', inlinePrefix: 'A', statusKind: 'succeeded', statusLabel: 'Succeeded' }) },
       { kind: 'data', row: mkLogRow('h2', DAY2 + 4, 15, { title: 'Same day exact', statusKind: 'finished', statusLabel: 'Finished' }) },
@@ -2174,7 +2175,8 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
       ? [item.kind, item.key, item.level, item.showDate !== false, item.isDayEnd === true, item.isLiveEnd === true]
       : [item.kind, item.key])),
     [
-      ['data', 'live1', 1, true, false, false],
+      ['data', 'live0', 1, true, false, false],
+      ['data', 'live1', 1, false, false, false],
       ['data', 'c1', 2, true, false, true],
       ['data', 'h1', 1, true, false, false],
       ['data', 'h2', 1, false, false, false],
@@ -2184,7 +2186,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
       ['refused', 'ref:1'],
       ['loading', 'load:1'],
     ],
-    'live block band sits after its last open child, same-day exact repeats hide date while bounded dates stay visible, and gap/refused/loading slots preserve order',
+    'same-day live rows suppress repeat date, live block band sits after its last open child, same-day exact repeats hide date while bounded dates stay visible, and gap/refused/loading slots preserve order',
   );
 
   const geom = computeRowLayout(flatExpanded, 'normal', 'standard');
@@ -2193,7 +2195,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
   const deep = tableRowWindow(queue.length, queueGeom, ROW_HEIGHT.comfortable, queueGeom.tops[100]!, 200);
   assert.equal(deep.first + TABLE_WINDOW_OVERSCAN, 100, 'deep in an expanded queue the published window starts at the row under the scroll position, not at scrollTop / 44');
   assert.ok(queueGeom.tops[deep.first + deep.count - TABLE_WINDOW_OVERSCAN - 1]! < queueGeom.tops[100]! + 200, 'and ends at the last row the viewport shows');
-  const gapTop = geom.tops[5]!;
+  const gapTop = geom.tops[6]!;
   assert.deepEqual(hitFamilyTable(grown, flatExpanded, { x: 40, y: gapTop + 10 }, 36, 0, 0, false, 0, undefined, undefined, undefined, geom), { kind: 'row', rowKey: 'gap:1' });
   const gapTip = deriveTableTooltip(flatExpanded, 'gap:1', logColumns, DAY3 + 12);
   assert.equal(gapTip?.title, 'Not recorded');
@@ -2685,6 +2687,7 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
   const feedSource = buildRowSourceFromHead('feed', { baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '1', rows: feedRows, missing: [] }, undefined, 110)!;
   const feedModel = eventFeedProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', feedSource]]) }), {
     categories: ['diplomacy'],
+    excludedKinds: [],
     artwork: true,
     from: null,
     filter: { passing: null },
