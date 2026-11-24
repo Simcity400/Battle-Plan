@@ -216,6 +216,7 @@ interface ArtScope {
   running: number;
   fetch: ArtFetcher | null;
   retryTimer: (() => void) | null;
+  version: number;
 }
 
 export class SpriteCaches {
@@ -231,7 +232,7 @@ export class SpriteCaches {
     let held = this.scopes.get(scope);
     if (!held) {
       held = { users: 0, resolutions: new Map(), failures: new Map(), failedHandles: new Map(), inFlight: new Set(), queued: new Map(), watchers: new Set(),
-        controllers: new Set(), scheduled: false, running: 0, fetch: null, retryTimer: null };
+        controllers: new Set(), scheduled: false, running: 0, fetch: null, retryTimer: null, version: 0 };
       this.scopes.set(scope, held);
     }
     return held;
@@ -240,6 +241,8 @@ export class SpriteCaches {
   resolutions(scope: string): Map<string, ArtResolution> { return this.held(scope).resolutions; }
 
   failures(scope: string): Map<string, ArtFailure> { return this.held(scope).failures; }
+
+  version(scope: string): number { return this.held(scope).version; }
 
   watch(scope: string, watcher: ArtWatcher): () => void {
     const held = this.held(scope);
@@ -323,6 +326,7 @@ export class SpriteCaches {
           }
         }
         this.armRetry(scope, held);
+        held.version++;
         for (const watcher of [...held.watchers]) watcher(held.resolutions, held.failures);
       }).catch(error => {
         if (this.scopes.get(scope) !== held) return;
@@ -337,6 +341,7 @@ export class SpriteCaches {
           if (!held.resolutions.has(id)) this.fail(held, id, handle, reason, retryable);
         }
         this.armRetry(scope, held);
+        held.version++;
         for (const watcher of [...held.watchers]) watcher(held.resolutions, held.failures);
       }).finally(() => {
         held.controllers.delete(controller);
