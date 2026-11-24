@@ -5007,7 +5007,15 @@ rows: Array<LendLeaseRow>,
 /**
  * Why the histories are not known at the hour.
  */
-missing: string | null, warnings: Array<string>, };
+missing: string | null,
+/**
+ * Why the asked rank is not proven: a history names a country no identity resolves. A top then holds no rows.
+ */
+rankMissing: string | null,
+/**
+ * Why a country not listed may still hold lend-lease or a roster place: a history or roster entry is unresolved, or the rosters were not read.
+ */
+unlisted: string | null, warnings: Array<string>, };
 export type LendLeaseRow = { slot: number,
 /**
  * The tag its slot's country holds at the hour; null where the recorded countries name none.
@@ -6319,6 +6327,10 @@ sides: Array<AirSide>, legend: Array<number>,
  * The viewpoint side's index, when a side is the viewpoint and present.
  */
 viewpoint: number | null, viewpointCountryStyle?: AirCountryStyle, regions: Array<AirRegion>,
+/**
+ * Why a region not listed may still hold scores or wings: a read that lists regions was not whole at the hour.
+ */
+unlisted: string | null,
 /**
  * The comparison of a region no country scores in.
  */
