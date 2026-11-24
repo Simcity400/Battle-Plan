@@ -75,7 +75,6 @@ function reply(product: string, params: Record<string, unknown>): unknown {
     states: [], warnings: [] };
   if (product === 'country-styles') return { branchId: '1', hour: params.hour, styles: [], warnings: [] };
   if (product === 'country-facts') return { branchId: '1', known: [[0, HOURS - 1]], names: [], reasons: [], flags: [], countries: [], warnings: [] };
-  if (product === 'casualty-labels') return { unknownLabel: 'Unknown', warnings: [] };
   if (product === 'combat-log') return { available: false, reason: 'not here' };
   if (product === 'follow') return { available: false, reason: 'not followed here' };
   if (product === 'unfollow' || product === 'follow-clock') return {};
