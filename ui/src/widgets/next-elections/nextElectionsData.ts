@@ -5,13 +5,21 @@ import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import { dayLabel } from '../../charts/draw.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
-import { holderKey, integerAt, integerText, isHolderTags, isPoliticsRuns, tagAt, validatePoliticsHistory, valueAt } from '../../dashboard/politicsHistory.ts';
-import type { PoliticsHistoryReply } from '../../generated/dashboard';
+import { int, object, opaqueTag } from '../../dashboard/validation.ts';
+import type { NextElectionsReply } from '../../generated/dashboard';
 
-export function validateElectionsReply(value: unknown): PoliticsHistoryReply {
-  return validatePoliticsHistory(value, 'elections', reply => Array.isArray(reply.elections) && reply.elections.every(entry =>
-    !!entry && typeof entry === 'object' && isHolderTags(entry.tags) && isPoliticsRuns(entry.held, held => held === '0' || held === '1')
-    && isPoliticsRuns(entry.refused, refused => refused === '1') && isPoliticsRuns(entry.interval, integerText) && isPoliticsRuns(entry.next, integerText) && isPoliticsRuns(entry.last, integerText)));
+export function validateElectionsReply(value: unknown): NextElectionsReply {
+  const reply = value as Record<string, unknown>;
+  const ok = object(reply) && typeof reply.branchId === 'string' && typeof reply.recorded === 'boolean'
+    && int(reply.unknown) && reply.unknown >= 0
+    && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
+    && Array.isArray(reply.rows) && reply.rows.every(entry => object(entry)
+      && typeof entry.key === 'string' && entry.key.length > 0 && opaqueTag(entry.tag)
+      && (entry.interval === null || int(entry.interval))
+      && (entry.next === null || int(entry.next))
+      && (entry.last === null || int(entry.last)));
+  if (!ok) throw new Error('The next elections reply is malformed.');
+  return value as NextElectionsReply;
 }
 
 export interface ElectionRow {
@@ -24,31 +32,27 @@ export interface ElectionRow {
 export const termAt = (row: ElectionRow, hour: number): number | null =>
   row.interval !== null && row.next !== null && row.termStart !== null && row.next > row.termStart ? (hour - row.termStart) / (row.next - row.termStart) : null;
 export const hoursLeftAt = (row: ElectionRow, hour: number): number | null => row.next === null ? null : row.next - hour;
+
 export interface ElectionsView {
   rows: ElectionRow[];
   unknown: number;
 }
 
-export function electionsAt(reply: Pick<PoliticsHistoryReply, 'elections'>, hour: number, matches: (tag: string, hour: number) => boolean): ElectionsView {
+export function electionsStructure(reply: NextElectionsReply): string {
+  return `${reply.recorded ? '1' : '0'}:${reply.unknown}:${reply.rows.map(row => `${row.key}\0${row.tag}\0${row.interval ?? ''}\0${row.next ?? ''}\0${row.last ?? ''}`).join('\n')}`;
+}
+
+export function electionsAt(reply: Pick<NextElectionsReply, 'rows' | 'unknown'>, hour: number, matches: (tag: string, hour: number) => boolean): ElectionsView {
   const rows: ElectionRow[] = [];
   const keys = new Set<string>();
-  let unknown = 0;
-  for (const entry of reply.elections) {
-    const tag = tagAt(entry.tags, hour);
-    if (tag === null || !matches(tag, hour)) continue;
-    const held = valueAt(entry.held, hour);
-    if (held === null) {
-      if (valueAt(entry.refused, hour) !== null) unknown++;
-      continue;
-    }
-    if (held !== '1') continue;
-    const interval = integerAt(entry.interval, hour), next = integerAt(entry.next, hour), termStart = integerAt(entry.last, hour);
-    let key = holderKey(entry.tags)!;
+  for (const entry of reply.rows) {
+    if (!matches(entry.tag, hour)) continue;
+    let key = entry.key;
     if (keys.has(key)) key = `${key}#${rows.length}`;
     keys.add(key);
-    rows.push({ key, tag, interval, next, termStart });
+    rows.push({ key, tag: entry.tag, interval: entry.interval, next: entry.next, termStart: entry.last });
   }
-  return { rows, unknown };
+  return { rows, unknown: reply.unknown };
 }
 
 export function electionsState(view: ElectionsView, membership: string | null): { kind: 'unavailable' | 'empty'; message: string } | null {
@@ -61,26 +65,6 @@ export function electionsState(view: ElectionsView, membership: string | null): 
 export function termSortValues(rows: readonly ElectionRow[]): (hour: number) => LiveValues<SortValue> {
   const byKey = new Map(rows.map(row => [liveKey(row.key, 'term'), row]));
   return hour => ({ get: key => { const row = byKey.get(key); return row ? termAt(row, hour) : undefined; }, missing: () => 'Not recorded' });
-}
-
-export function changeHours(reply: Pick<PoliticsHistoryReply, 'elections' | 'known'>, matching: readonly number[] = []): number[] {
-  const hours = new Set<number>(matching);
-  const spans = (runs: readonly { firstHour: number; lastHour: number }[]) => { for (const run of runs) { hours.add(run.firstHour); hours.add(run.lastHour + 1); } };
-  spans(reply.known);
-  for (const entry of reply.elections) {
-    for (const tag of entry.tags) hours.add(tag.hour);
-    for (const runs of [entry.held, entry.refused, entry.interval, entry.next, entry.last]) spans(runs);
-  }
-  return [...hours].sort((a, b) => a - b);
-}
-
-export function settledHour(hours: readonly number[], hour: number): number {
-  let low = 0, high = hours.length - 1, found = -1;
-  while (low <= high) {
-    const middle = (low + high) >> 1;
-    if (hours[middle] <= hour) { found = middle; low = middle + 1; } else high = middle - 1;
-  }
-  return found < 0 ? hour : hours[found];
 }
 
 export function countdownTexts(rows: readonly ElectionRow[], hour: number): Map<string, string> {
@@ -119,6 +103,6 @@ export function electionTooltip(row: ElectionRow, country: { nameFailure?: Error
   ] };
 }
 
-export function electionWarnings(reply: Pick<PoliticsHistoryReply, 'warnings'>, view: ElectionsView | null): string[] {
+export function electionWarnings(reply: Pick<NextElectionsReply, 'warnings'>, view: ElectionsView | null): string[] {
   return view?.unknown ? [...reply.warnings, `${view.unknown} refused election eligibility: not recorded at this hour`] : reply.warnings;
 }

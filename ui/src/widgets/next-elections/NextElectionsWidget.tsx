@@ -1,5 +1,5 @@
 import { nameReadText } from '../../dashboard/nameReads.ts';
-import { recordedHour } from '../../dashboard/regionTime.ts';
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
@@ -14,29 +14,27 @@ import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { dayLabel } from '../../charts/draw';
 import { fitTooltip } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
-import { useAtHead } from '../../dashboard/atHead';
+import { useChoiceHour } from '../../dashboard/atHead';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt } from '../../dashboard/groups';
+import { useHeadProduct } from '../../dashboard/headProduct';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
-import { POLITICS_HISTORY, readAt } from '../../dashboard/politicsHistory';
-import { useProduct } from '../../dashboard/products';
+import { useGate } from '../../dashboard/regionGate';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { DEFAULT_SORT, OPTIONS } from './definition';
-import { changeHours, countdownTexts, electionValues, electionsAt, electionsState, electionTooltip, electionWarnings, settledHour, termAt, termSortValues, termText, validateElectionsReply } from './nextElectionsData';
+import { countdownTexts, electionValues, electionsAt, electionsState, electionsStructure, electionTooltip, electionWarnings, termAt, termSortValues, termText, validateElectionsReply } from './nextElectionsData';
 import type { ElectionRow } from './nextElectionsData';
 import './nextElections.css';
-import type { PoliticsHistoryReply } from '../../generated/dashboard';
-import { productRequest } from '../../dashboard/request.ts';
 
 const NO_ROWS: readonly ElectionRow[] = [];
 const NO_WARNINGS: string[] = [];
-const NO_HOURS: readonly number[] = [];
+const ALL_PARAMS = {} as const;
 const rowKey = (row: ElectionRow) => row.key;
 const tieKey = (row: ElectionRow) => row.tag;
 
@@ -82,30 +80,35 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
   const options = resolveOptions(OPTIONS, widget.options);
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
-    params: { branchId: track.branch.id, mode: 'elections' } }) : null;
-  const { data, error, retry } = useProduct<PoliticsHistoryReply>(runtime.client, request, active, validateElectionsReply, track?.source);
-  const needsGroups = widget.countries.kind !== 'all';
-  const groups = useCountryGroups(runtime, track, active && needsGroups);
+  const directSelection = widget.countries.kind === 'tags' || widget.countries.kind === 'selected';
   const selected = selectedCountryKeys(widget.countries, track);
   const selectedKey = JSON.stringify(selected);
   const fallback = useMemo(() => selected, [selectedKey]);
-  const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
-    [widget.countries, fallback, groups.data, track?.branch.lastHour]);
-  const hours = useMemo(() => data ? changeHours(data, countryMatchChangeHours(match.matches)) : NO_HOURS, [data, match]);
+  const params = useMemo(() => {
+    if (!track) return null;
+    if (directSelection && fallback.length > 0) return { countries: fallback.map(countryFromKey) };
+    return ALL_PARAMS;
+  }, [track, directSelection, fallback]);
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'next-elections', params, { active, validate: validateElectionsReply, structure: electionsStructure });
+  const data = head.data;
+  const hour = head.at ?? track?.branch.lastHour ?? 0;
+  const needsGroups = widget.countries.kind === 'group';
+  const groups = useCountryGroups(runtime, track, active && needsGroups);
+  const match = useMemo(() => {
+    if (directSelection) {
+      return { ready: true, matches: () => true, known: () => true, reason: fallback.length ? null : 'Choose a country in the widget settings.' };
+    }
+    return countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? hour);
+  }, [directSelection, widget.countries, fallback, groups.data, track?.branch.lastHour, hour]);
+  const choiceAt = useChoiceHour(runtime.clock, active, () => head.atNow() ?? hour, () => head.shownAt(), countryMatchChangeHours(match.matches), head.live.subscribe);
+  const view = useMemo(() => data && data.recorded && match.ready && !match.reason ? electionsAt(data, choiceAt, match.matches) : null,
+    [data, choiceAt, match]);
+  const rows = view?.rows ?? NO_ROWS;
   const trackHour = useCallback((clockHour: number) => {
     const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
     return Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   }, [widget, track, runtime.tracks]);
-  const following = widget.time.mode === 'follow';
-  const hour = useAtHead(runtime.clock, active && following, clockHour => settledHour(hours, trackHour(clockHour)));
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
-  const inside = !!track && !!window && recordedHour(track, hour) !== null;
-  const read = !!data && readAt(data.known, hour);
-  const view = useMemo(() => data && read && match.ready && !match.reason ? electionsAt(data, hour, match.matches) : null,
-    [data, read, hour, match]);
-  const rows = view?.rows ?? NO_ROWS;
-  const shown = useCallback(() => trackHour(runtime.clock.getHour()), [runtime.clock, trackHour]);
+  const shown = useCallback(() => head.shownAt() ?? trackHour(runtime.clock.getHour()), [head.shownAt, runtime.clock, trackHour]);
   const live = useMemo(() => liveTexts(runtime.clock, shown, at => countdownTexts(rows, at)), [runtime.clock, shown, rows]);
   const sortLive = useMemo(() => liveAt(runtime.clock, () => shown(), termSortValues(rows)), [runtime.clock, shown, rows]);
   const [visible, setVisible] = useState<readonly ElectionRow[]>(NO_ROWS);
@@ -128,20 +131,24 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
     return () => onDiagnostics(NO_WARNINGS);
   }, [warnings, onDiagnostics]);
 
-  if (!track) return <WidgetState kind="empty" icon="ballot" message="Load a campaign to see elections." />;
-  if (!window || !inside) return <WidgetState kind="outside" />;
-  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
-  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
-  if (groupFailure && !groups.data) return groupFailure;
-  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
-  if (!data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading elections…" /></>;
-  if (!read) return <>{groupFailure}<WidgetState kind="unavailable" message="Election schedules were not recorded at this date." /></>;
-  const state = view && electionsState(view, membershipUnrecordedAt(widget.countries, groups.data, hour));
-  if (state) return <>{groupFailure}{state.kind === 'empty' ? <WidgetState kind="empty" icon="ballot" message={state.message} /> : <WidgetState kind="unavailable" message={state.message} />}</>;
-  return <div className="next-elections">{groupFailure}
-    <Table rowRevision={row => [row, columns]} key={`${track.source.id}:${track.branch.id}`} label="Next elections" rows={rows} columns={columns} rowKey={rowKey} tieKey={tieKey}
+  let body;
+  if (!track) body = <WidgetState kind="empty" icon="ballot" message="Load a campaign to see elections." />;
+  else if (head.read === 'off') body = <WidgetState kind="outside" />;
+  else if (head.error && !data) body = <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
+  else if (needsGroups && groups.error && !groups.data) body = <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
+  else if (match.reason) body = <WidgetState kind="unavailable" message={match.reason} />;
+  else if (!data || !match.ready) body = <WidgetState kind="loading" label="Loading elections…" />;
+  else if (!data.recorded) body = <WidgetState kind="unavailable" message="Election schedules were not recorded at this date." />;
+  else {
+    const state = view && electionsState(view, membershipUnrecordedAt(widget.countries, groups.data, choiceAt));
+    if (state) body = state.kind === 'empty' ? <WidgetState kind="empty" icon="ballot" message={state.message} /> : <WidgetState kind="unavailable" message={state.message} />;
+    else body = <Table rowRevision={row => [row, columns]} key={`${track.source.id}:${track.branch.id}`} label="Next elections" rows={rows} columns={columns} rowKey={rowKey} tieKey={tieKey}
       sort={sort} setOption={setOption} cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
       density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)}
-      menu={menu} tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} live={sortLive} />
+      menu={menu} tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} live={sortLive} />;
+  }
+  return <div className="next-elections" ref={head.root}>
+    {needsGroups && groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
+    {body}
   </div>;
 }
