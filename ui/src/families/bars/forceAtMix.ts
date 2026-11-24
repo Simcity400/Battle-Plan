@@ -4,7 +4,7 @@ import type { TooltipListItem } from '../host/tooltips.ts';
 import { knownValue, notRecorded, zeroValue, type Value } from '../value.ts';
 import { formatShare, formatValueState, type ValueFormat } from '../valueFormat.ts';
 import type { ForceAtReply, ForcePart } from '../../generated/dashboard';
-import { forcePartLabel, forceRowIdentity, GROUP_EMPTY } from './forceAtRace.ts';
+import { forcePartLabel, forceRowIdentity, GROUP_EMPTY, witnessedPartItems } from './forceAtRace.ts';
 import { type BarsLegendItem, type BarsModel, type BarsSegment } from './model.ts';
 import { buildShareRowsModel, type ShareRowEntry } from './shareRows.ts';
 
@@ -127,7 +127,7 @@ export function projectForceAtMix(
     }
 
     if (item.partsMissing !== null) {
-      tooltipItems.push({ label: config.partsLabel, missingReason: item.partsMissing });
+      tooltipItems.push({ label: config.partsLabel, missingReason: item.partsMissing }, ...witnessedPartItems(reply, item, config.decimals, config.valueFormat));
       rows.push({
         key,
         subject: displayTag,

@@ -3,10 +3,6 @@ export function setText(node: Node | null | undefined, text: string): void {
   if (node && node.textContent !== text) node.textContent = text;
 }
 
-export function setAttr(element: Element | null | undefined, name: string, value: string): void {
-  if (element && element.getAttribute(name) !== value) element.setAttribute(name, value);
-}
-
 export function setHidden(element: HTMLElement | null | undefined, hidden: boolean): void {
   if (element && element.hidden !== hidden) element.hidden = hidden;
 }

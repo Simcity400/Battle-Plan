@@ -6,7 +6,7 @@ import { declareTableProjection, type DeclarativeColumnSpec, type TableProjectio
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
-import { knownValue, textValue, notApplicable, notRecorded, zeroValue, type Value } from '../../families/value.ts';
+import { knownValue, textValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { TrainingDivision, TrainingOrder, TrainingQueueReply } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
@@ -112,7 +112,7 @@ function divisionTooltip(division: TrainingDivision): TooltipExtraRow[] {
       label: need.name ?? 'Equipment name unavailable',
       value: heldMissing === null
         ? knownValue(`${count(Number(BigInt(need.heldRaw) / FIXED))} / ${count(Number(BigInt(need.needRaw) / FIXED))}`)
-        : notRecorded(heldMissing),
+        : partialValue(`${count(Number(BigInt(need.needRaw) / FIXED))} needed`, heldMissing),
       lookupKey: need.archetype,
       ...(at === 0 ? { divider: true } : {}),
     }));

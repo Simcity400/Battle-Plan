@@ -92,6 +92,14 @@ impl Executable {
                 air_graph_colors: Ok([[0.0; 4]; AIR_GRAPH_DISPLAYS]),
                 air_graph_scale: Ok(1.0),
                 air_detection_override_prefix: Ok("synthetic_override_"),
+                category_families: Ok(executable_tables::auxiliary::CategoryFamilies {
+                    land: 0,
+                    air: 0,
+                    naval: 0,
+                    ship_designer: 0,
+                    tank_designer: 0,
+                    plane_designer: 0,
+                }),
             },
             variables: VariableTables {
                 global: Vec::new(),

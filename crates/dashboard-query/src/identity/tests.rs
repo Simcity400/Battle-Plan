@@ -84,6 +84,12 @@ fn a_slot_names_the_tag_it_holds_at_each_hour_and_none_between() {
     assert_eq!(holders.slot_tag(5, 155), None, "no tag between the two runs");
     assert_eq!(holders.slot_tag(5, 199), Some("SPA"));
     assert_eq!(holders.slot_tag(6, 120), None);
+    let overlapping = Holders::new(
+        [("AAA".to_owned(), vec![run(100, 119, GER)]), ("BBB".to_owned(), vec![run(105, 109, GER_AFTER)])].into(),
+        Vec::new(),
+    );
+    assert_eq!(overlapping.slot_tag(5, 107), overlapping.tag_at(&Country::Slot(5), 107), "a later, higher holder id names the slot nowhere");
+    assert_eq!(overlapping.slot_tag(5, 107), Some("AAA"));
 }
 
 #[test]
@@ -107,4 +113,8 @@ fn a_reason_for_no_name_uses_only_what_was_known_at_its_hour() {
     assert_eq!(said(130), "GER has no row");
     assert_eq!(said(145), NOT_HELD_AT_HOUR);
     assert_eq!(said(155), format!("Who holds {} is not known: Countries were not read", country.key()), "an hour whose holders were not read says so");
+    let unlinked = Holders::new([("GER".to_owned(), vec![run(120, 139, GER)]), ("ITA".to_owned(), vec![run(140, 149, Holder::Unresolved)])].into(), Vec::new());
+    let said = |hour: i32| unlinked.say(&country, hour, |name| format!("{name} has no row"));
+    assert_eq!(said(145), format!("Who holds {} is not known: a recorded tag's country was not resolved at this hour", country.key()), "R5-S8: a tag whose country is unresolved could be this slot's");
+    assert_eq!(said(150), NOT_HELD_AT_HOUR, "once every recorded tag is resolved, the slot holds none");
 }

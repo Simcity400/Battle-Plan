@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { paletteCache, readableColour } from '../charts/palette.ts';
 import { clearTextWidthCache, measureCanvasText, textWidthCacheStats, type Canvas2D } from '../charts/textWidth.ts';
-import { colorCache, mix } from '../shell/appearance/color.ts';
-import { engineHour } from '../dashboard/calendar.ts';
+import { colorCache, mix, parseColorAlpha } from '../shell/appearance/color.ts';
+import { engineHour, gameDate } from '../dashboard/calendar.ts';
 import type { FamilyTheme } from '../families/contract.ts';
 import {
   BEHIND_BAR_HEIGHT,
@@ -49,6 +49,9 @@ import {
   TIMELINE_LABEL_MIN_WIDTH,
   computeTimeAxisTicks,
   contrastInkForFill,
+  fitLegendStrip,
+  type LegendFit,
+  type LegendMeasure,
   drawTimeAxis,
   drawTimelineBar,
   winRateColor,
@@ -353,6 +356,21 @@ test('timeline bars hide icon and name under the minimum width, mix ended items 
   const dayTicks = computeTimeAxisTicks(h1936, hWeek, 600);
   assert.ok(dayTicks.some(tick => tick.label === '4 Jan'), 'short windows show days');
   assert.ok(computeTimeAxisTicks(0, 167, 600, 24).length >= 2, 'non-calendar short windows still yield day ticks');
+  const hJan10 = engineHour({ year: 1937, month: 1, day: 10, hour: 1 })!;
+  const hJun37 = engineHour({ year: 1937, month: 6, day: 1, hour: 1 })!;
+  const fromTenth = computeTimeAxisTicks(hJan10, hJun37, 600);
+  assert.equal(fromTenth[0]!.hour, engineHour({ year: 1937, month: 2, day: 1, hour: 1 }), 'R2-K9: a mark sits at a calendar boundary, never moved to the window start');
+  assert.deepEqual(fromTenth.filter(tick => tick.label).map(tick => tick.label), ['Apr 1937']);
+  const oneDay = computeTimeAxisTicks(h1936, h1936 + 24, 600);
+  assert.deepEqual([oneDay[0]?.hour, oneDay[0]?.label, oneDay[0]?.major], [h1936, '1936', true], 'R2-K9: a one-day window starting on 1 January keeps its tick');
+  const hJan3 = engineHour({ year: 1936, month: 1, day: 3, hour: 1 })!;
+  const week = computeTimeAxisTicks(hJan3, hJan3 + 7 * 24, 600);
+  assert.equal(week.find(tick => tick.label)?.label, '3 Jan 1936', 'R2-K9: the first labelled day carries its year');
+  const h1946 = engineHour({ year: 1946, month: 6, day: 1, hour: 1 })!;
+  const decade = computeTimeAxisTicks(h1936, h1946, 200);
+  assert.equal(decade.length, 11, 'R2-K9: every 1 January is marked in a narrow decade');
+  assert.ok(decade.every(tick => tick.major && gameDate(tick.hour)?.month === 1 && gameDate(tick.hour)?.day === 1));
+  assert.deepEqual(decade.filter(tick => tick.label).map(tick => tick.label), ['1940', '1945'], 'labels are thinned apart from the marks');
   const hugeNonCalendar = computeTimeAxisTicks(0, 43_800_000, 600, 24);
   assert.ok(hugeNonCalendar.length >= 2 && hugeNonCalendar.length <= 20, 'K10: huge non-calendar span stays bounded');
 
@@ -431,6 +449,7 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
 
   assert.equal(contrastInkForFill('#f4f6f9', THEME), 'rgba(17, 17, 17, 0.88)');
   assert.equal(contrastInkForFill('#888888', THEME), 'rgba(17, 17, 17, 0.88)');
+  assert.equal(contrastInkForFill('#7a7a7a', THEME), 'rgba(255, 255, 255, 0.96)', 'R2-K8: the inks are compared as painted, translucent over the fill (light 4.10 to 1, dark 3.90 to 1)');
   assert.equal(contrastInkForFill('#1e4fa3', THEME), 'rgba(255, 255, 255, 0.96)');
   assert.equal(contrastInkForFill('#16181d', THEME), 'rgba(255, 255, 255, 0.96)');
   assert.equal(contrastInkForFill('not-a-colour', THEME), THEME.text);
@@ -497,6 +516,21 @@ test('K6 & K8: legend strip draws whole entries with +N more overflow, keeps mis
   const lazyTexts = lazy.ops.filter(op => op.op === 'fillText').map(op => String(op.args[0]));
   assert.ok(lazyTexts.includes('Not recorded'), 'trailing missing key kept in lazy source');
   assert.ok(lazyTexts.some(t => /^\+\d+ more$/.test(t)), 'lazy overflow reports exact +N more count');
+
+  const chars: LegendMeasure = text => text.length * 6;
+  const summary = (fit: LegendFit) => [fit.shown.map(entry => entry.label), fit.hidden, fit.missing.map(entry => entry.label)];
+  const long = { label: 'The Union of Soviet Socialist Republics', color: '#4f86f7' };
+  assert.deepEqual(summary(fitLegendStrip(0, 120, { entries: [long] }, THEME, chars)), [[], 1, []], 'R2-K11: a sole entry that does not fit whole is counted, never ellipsised or dropped');
+  assert.deepEqual(summary(fitLegendStrip(0, 400, { entries: [long] }, THEME, chars)), [[long.label], 0, []]);
+  const oversizedMissing = { label: 'Not recorded for most of this recording', hatch: true };
+  assert.deepEqual(summary(fitLegendStrip(0, 120, { entries: [oversizedMissing] }, THEME, chars)), [[], 1, []], 'R2-K11: a lone oversized missing key is counted');
+  const gradient = { lowLabel: 'Low', highLabel: 'High', stops: ['#000000', '#ffffff'] };
+  const withGradient = fitLegendStrip(0, 345, { gradient, entries: [{ label: 'Germany', color: '#4f86f7' }, { label: 'Italy', color: '#64a86e' }, { label: 'Not recorded', hatch: true }] }, THEME, chars);
+  assert.equal(withGradient.entriesLeft, 3 * 6 + 6 + 64 + 6 + 4 * 6 + 14, 'the gradient is deducted once');
+  assert.deepEqual(summary(withGradient), [['Germany'], 1, ['Not recorded']], 'R2-K11: one fit from the actual cursor keeps the count and the missing key');
+  const one = [{ label: 'Germany', color: '#4f86f7' }, { label: 'Italy', color: '#64a86e' }];
+  const tight = fitLegendStrip(0, 15 + 7 * 6 + 12 + 15 + 5 * 6, { entries: one }, THEME, chars);
+  assert.deepEqual(summary(tight), [['Germany', 'Italy'], 0, []], '"+1 more" is never shown where the entry itself fits');
 });
 
 test('K8 & K9: kit tokens cache per theme, 1,000 cells of 5 colours convert 5 colours, and text measurer stays bounded without native font reads on hits', () => {
@@ -552,4 +586,14 @@ test('K8 & K9: kit tokens cache per theme, 1,000 cells of 5 colours convert 5 co
     measureCanvasText(ctx, 'x', `400 ${10 + i}px Font${i}, sans-serif`);
   }
   assert.ok(textWidthCacheStats().fonts <= 64, `K9: outer font map stays bounded (got ${textWidthCacheStats().fonts})`);
+
+  resolveKitTokens(lightTheme);
+  readableColour('#2a4b8c', lightTheme.surface);
+  for (let i = 0; i < 20; i++) parseColorAlpha(`#1${String(i).padStart(5, '0')}`);
+  const parsesBefore = colorCache.parses;
+  assert.ok(textWidthCacheStats().fonts > 0 && paletteCache.readableSolves > 0);
+  resolveKitTokens({ ...lightTheme, text: '#222222', font: 'Other Sans' });
+  assert.deepEqual([textWidthCacheStats().fonts, paletteCache.readableSolves], [0, 0],
+    'R2-K13: a theme change on the same surface clears the bounded text and palette tables');
+  assert.ok(colorCache.parses < parsesBefore, 'and the colour tables, which only the new theme refills');
 });

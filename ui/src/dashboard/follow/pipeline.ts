@@ -235,7 +235,7 @@ export class Pipeline {
         eligibleHour: shown.installed && view.mode === 'picture' ? clock(Math.min(view.target, shown.installed.c)) : null,
         ...shown.installed ? { entry: shown.installed.id, parts: Object.values(shown.content),
           face: Object.entries(shown.content).filter(([part]) => part !== 'hour').map(([part, id]) => `${part}=${id}`).join('|') } : {},
-        drawMs: shown.installed?.ms ?? 0, ...rows ? { rows } : {}, ...auditId !== undefined ? { auditId } : {}, ...auditMissing ? { auditMissing: true } : {},
+        drawMs: shown.installed?.ms ?? 0, ...rows ? { rows } : {}, ...auditId !== undefined && view.fields ? { auditId, fields: view.fields } : {}, ...auditMissing ? { auditMissing: true } : {},
         mode: view.mode, ...view.reason !== undefined ? { reason: view.reason } : {}, dim: view.dim, reset: shown.installed?.gen.reset ?? 0, binding: shown.installed?.binding ?? shown.binding,
         inspect: shown.inspect, tooltip: view.tooltip !== null });
       }
@@ -570,7 +570,13 @@ export class Pipeline {
     }
     const release = model !== undefined ? this.own(widget, model) : NO_PAYLOADS;
     widget.binding = this.timed(widget, binding);
-    this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: id, binding: widget.binding, ...model !== undefined ? { model: widget.wire } : {} });
+    this.host.lanes[widget.lane]!.postMessage({
+      type: 'bind',
+      widget: id,
+      binding: widget.binding,
+      ...model !== undefined ? { model: widget.wire } : {},
+      ...!same ? { remounted: true } : {},
+    });
     this.payloads[widget.lane]!.release(release);
     this.flush();
   }
@@ -786,7 +792,6 @@ const clockGeneration = new WeakMap<PlaybackController, number>();
 const clockListeners = new WeakMap<PlaybackController, Set<() => void>>();
 const ownerOf = new WeakMap<Pipeline, { clock: PlaybackController; slot: PipelineSlot }>();
 
-export const pipelineOf = (clock: PlaybackController) => byClock.get(clock)?.pipeline ?? null;
 export const pipelineGeneration = (clock: PlaybackController) => clockGeneration.get(clock) ?? 1;
 
 export function pipelineFor(clock: PlaybackController, client: DashboardClient, host: () => PipelineHost): Pipeline {
@@ -804,13 +809,6 @@ export function pipelineFor(clock: PlaybackController, client: DashboardClient, 
   }
   byClock.set(clock, slot);
   return slot.pipeline;
-}
-
-export function subscribePipeline(clock: PlaybackController, client: DashboardClient, listener: () => void): () => void {
-  const slot = pipelines.get(clock)?.get(client);
-  if (!slot) return () => {};
-  slot.listeners.add(listener);
-  return () => { slot.listeners.delete(listener); };
 }
 
 export function subscribeClockPipeline(clock: PlaybackController, listener: () => void): () => void {

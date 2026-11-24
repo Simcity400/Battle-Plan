@@ -1069,6 +1069,7 @@ fn rendered_frames_are_reused_by_fingerprint_bounded_and_dropped_with_their_sour
         regions: Vec::new(),
         warnings: Vec::new(),
         text: Vec::new(),
+        placeholders: Vec::new(),
     };
     let frame = |source: &str, fingerprint: u8| RenderFrameKey {
         window: cache_key(source, "rev-1", "game", "user", "", "english", "ship"),
@@ -1392,4 +1393,55 @@ fn a_list_box_scrolls_to_the_rows_below_its_visible_area() {
     );
     assert!(short.extra_regions.is_empty());
     assert!(short.scrollbars.is_empty());
+}
+
+#[test]
+fn a_placeholder_takes_the_place_and_rectangle_of_the_art_it_stands_for() {
+    content_reader_script::test_game::enter();
+    let gui = native::read_at(
+        br#"guiTypes = {
+            containerWindowType = {
+                name = "badge_panel"
+                size = { width = 200 height = 100 }
+                iconType = { name = "badge" spriteType = "GFX_badge" position = { x = 12 y = 8 } }
+                iconType = { name = "frame" spriteType = "GFX_badge" position = { x = 80 y = 8 } }
+            }
+        }"#,
+        [400, 300],
+    );
+    let root = gui.template("badge_panel").unwrap().clone();
+    let mut resources = gui_fixture::fixture_with(gui);
+    resources.add_sprite("GFX_badge", [20, 10], 1);
+    let badge = root.find(native::Kind::Icon, "badge").unwrap();
+    let mut layout = layout_window(&root, &resources, [400, 300], |_| {}).unwrap();
+    let drawn = layout.regions.iter().find(|region| region.path == badge.path).unwrap().rect;
+
+    let mut plan = ComposedPlan::default();
+    plan.placeholder(&badge.path, None, "Badge", "the chosen badge", "not recorded");
+    plan.placeholder("row:0", Some([1.0, 2.0, 3.0, 4.0]), "Marker", "the marker", "unknown");
+    plan.placeholder("absent", None, "Ghost", "a sprite", "never drawn");
+    let placed = plan.place_placeholders(&mut layout);
+
+    assert_eq!(
+        placed.iter().map(|placeholder| (placeholder.label.as_str(), placeholder.rect)).collect::<Vec<_>>(),
+        [("Badge", drawn), ("Marker", [1.0, 2.0, 3.0, 4.0])]
+    );
+    assert!(!layout.parts.iter().any(|part| part.path == badge.path), "the art it stands for is not drawn");
+    assert!(layout.parts.iter().any(|part| part.path.ends_with("frame")), "other art stays");
+    let tips: Vec<_> = plan.extra_regions.iter().map(|region| (region.path.as_str(), region.rect, region.tooltip.clone())).collect();
+    assert_eq!(tips[0], (badge.path.as_str(), drawn, Some(GameWindowTooltip {
+        title: "Badge".to_owned(),
+        body: Some("the chosen badge: not recorded".to_owned()),
+        detail: None,
+    })), "its own region names item, asset and reason");
+    assert_eq!(layout.regions.iter().filter(|region| region.path == badge.path).count(), 0, "the replaced art's own region and tooltip are gone");
+    assert_eq!(
+        plan.text.iter().map(|entry| (entry.label.as_str(), entry.value.clone(), entry.missing.clone())).collect::<Vec<_>>(),
+        [
+            ("Badge", None, Some("the chosen badge: not recorded".to_owned())),
+            ("Marker", None, Some("the marker: unknown".to_owned())),
+            ("Ghost", None, Some("a sprite: never drawn".to_owned())),
+        ]
+    );
+    assert!(plan.warnings.iter().any(|warning| warning.contains("absent")), "{:?}", plan.warnings);
 }

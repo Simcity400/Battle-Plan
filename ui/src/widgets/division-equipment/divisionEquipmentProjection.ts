@@ -3,7 +3,7 @@ import type { TableWidgetDeclaration } from '../../families/table/declaration.ts
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { knownValue, notRecorded, textValue, zeroValue, type Value } from '../../families/value.ts';
+import { isAbsentValue, knownValue, notRecorded, partialValue, textValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { DivisionEquipmentReply, DivisionEquipmentView, EquipmentTemplate, EquipmentType, StockpileArtworkReply } from '../../generated/dashboard';
 import { productIconArt } from '../../families/art/provider.ts';
@@ -34,7 +34,18 @@ export function share(part: string | null, whole: string | null, reason: string)
   return knownValue(Number((have > top ? top : have) * 1_000_000n / top) / 10_000);
 }
 
-const fraction = (value: Value<number>): Value<number> => value.kind === 'known' ? knownValue(value.value / 100) : value;
+const fraction = (value: Value<number>): Value<number> => value.kind === 'known' ? knownValue(value.value / 100)
+  : value.kind === 'partial' ? partialValue(value.value / 100, value.reason) : value;
+
+function uncompared(unknown: number | null): string | null {
+  if (unknown === null) return 'Divisions not recorded';
+  return unknown > 0 ? `${formatScalar(unknown, 'integer')} ${unknown === 1 ? 'division' : 'divisions'} not recorded` : null;
+}
+
+const compared = (value: Value<number>, reason: string | null): Value<number> =>
+  reason === null || isAbsentValue(value) ? value : partialValue(value.value as number, reason);
+
+const ranked = (value: Value, reason: string | null): Value => reason === null ? value : notRecorded(reason);
 
 export function missingValue(raw: string | null): Value<number> {
   if (raw === null) return notRecorded('Shortfall not recorded');
@@ -46,9 +57,6 @@ const summary = (reply: DivisionEquipmentReply): string | null => reply.division
   ? null
   : `${formatScalar(reply.divisionsShort, 'integer')} ${reply.divisionsShort === 1 ? 'division' : 'divisions'} short`;
 
-const partial = (reply: DivisionEquipmentReply): string | null => reply.unknownDivisions === null
-  ? 'Divisions not recorded'
-  : reply.unknownDivisions > 0 ? `${formatScalar(reply.unknownDivisions, 'integer')} ${reply.unknownDivisions === 1 ? 'division' : 'divisions'} not recorded` : null;
 
 function bodyState(reply: DivisionEquipmentReply): { readonly empty?: string; readonly emptyKind?: 'empty' | 'unavailable' } | null {
   if (reply.missing !== null) return { empty: reply.missing, emptyKind: 'unavailable' };
@@ -60,7 +68,7 @@ const asOf = (reply: DivisionEquipmentReply) => reply.poolHour === null ? undefi
 
 const [PICTURE, TYPE, HELD, NEEDED, MISSING, TYPE_FILL, DIVISIONS_SHORT] = TYPE_COLUMNS;
 
-type TypeRow = EquipmentType & { readonly picture: ArtResult | undefined };
+type TypeRow = EquipmentType & { readonly picture: ArtResult | undefined; readonly coverage: string | null };
 
 export function validateTypePictures(value: unknown): StockpileArtworkReply {
   const reply = value as StockpileArtworkReply;
@@ -97,14 +105,17 @@ const TYPE_SPEC: readonly DeclarativeColumnSpec<TypeRow, Record<string, never>>[
     value: typeName },
   { ...TYPE!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Infantry Equipment'], value: typeName },
   { ...HELD!, priority: 3, numeric: true, format: 'integer', widest: ['999,999'], value: row => amount(row.heldRaw, 'Holdings not recorded') },
-  { ...NEEDED!, priority: 2, numeric: true, format: 'integer', widest: ['999,999'], value: row => amount(row.neededRaw, 'Need not recorded') },
-  { ...MISSING!, priority: 1, numeric: true, format: 'integer', widest: ['−999,999'], value: row => missingValue(row.missingRaw),
+  { ...NEEDED!, priority: 2, numeric: true, format: 'integer', widest: ['999,999'], value: row => compared(amount(row.neededRaw, 'Need not recorded'), row.coverage),
+    sortValue: row => ranked(amount(row.neededRaw, 'Need not recorded'), row.coverage) },
+  { ...MISSING!, priority: 1, numeric: true, format: 'integer', widest: ['−999,999'], value: row => compared(missingValue(row.missingRaw), row.coverage),
     extra: row => (row.missingRaw !== null && BigInt(row.missingRaw) / FIXED > 0n ? { shortage: true } : {}),
-    sortValue: row => row.missingRaw === null ? notRecorded('Shortfall not recorded') : knownValue(BigInt(row.missingRaw)) },
+    sortValue: row => ranked(row.missingRaw === null ? notRecorded('Shortfall not recorded') : knownValue(BigInt(row.missingRaw)), row.coverage) },
   { ...TYPE_FILL!, priority: 4, numeric: true, format: PERCENT, widest: ['100%'],
-    value: row => share(row.filledRaw, row.neededRaw, 'Fill not recorded'),
-    bar: row => ({ fraction: fraction(share(row.filledRaw, row.neededRaw, 'Fill not recorded')) }) },
-  { ...DIVISIONS_SHORT!, priority: 5, numeric: true, format: 'integer', widest: ['9,999'], value: row => count(row.divisionsShort, 'Divisions short not recorded') },
+    value: row => compared(share(row.filledRaw, row.neededRaw, 'Fill not recorded'), row.coverage),
+    sortValue: row => ranked(share(row.filledRaw, row.neededRaw, 'Fill not recorded'), row.coverage),
+    bar: row => ({ fraction: fraction(compared(share(row.filledRaw, row.neededRaw, 'Fill not recorded'), row.coverage)) }) },
+  { ...DIVISIONS_SHORT!, priority: 5, numeric: true, format: 'integer', widest: ['9,999'], value: row => compared(count(row.divisionsShort, 'Divisions short not recorded'), row.coverage),
+    sortValue: row => ranked(count(row.divisionsShort, 'Divisions short not recorded'), row.coverage) },
 ];
 
 function typeTooltip(row: EquipmentType): TooltipExtraRow[] {
@@ -112,6 +123,7 @@ function typeTooltip(row: EquipmentType): TooltipExtraRow[] {
   if (row.unknownDivisions === null || row.unknownDivisions > 0) {
     rows.push({ label: 'Divisions not recorded', value: count(row.unknownDivisions, 'Divisions not recorded'), divider: true });
   }
+  if (row.variantsMissing !== null) rows.push({ label: 'Designs', value: notRecorded(row.variantsMissing), divider: true });
   row.variants.forEach((variant, at) => rows.push({
     label: variant.name ?? 'Design name unavailable', value: amount(variant.heldRaw, 'Holdings not recorded'), format: 'integer', lookupKey: variant.variant,
     indent: true, ...(at === 0 ? { divider: true } : {}),
@@ -130,8 +142,8 @@ export const equipmentTypeProjection: TableProjection<Record<string, never>> = r
       const blocked = bodyState(reply);
       if (blocked) return { rows: [], ...blocked, warnings: reply.warnings };
       const pictures = typePictures(readView.panel<StockpileArtworkReply>('pictures'));
-      const rows = reply.types.map(type => ({ ...type, picture: typePicture(type, pictures, readView) }));
-      return { rows, titleSummary: summary(reply), titleSummaryPartial: partial(reply), warnings: reply.warnings };
+      const rows = reply.types.map(type => ({ ...type, picture: typePicture(type, pictures, readView), coverage: uncompared(type.unknownDivisions) }));
+      return { rows, titleSummary: summary(reply), titleSummaryPartial: uncompared(reply.unknownDivisions), warnings: reply.warnings };
     },
     rowKey: row => row.key,
     rowName: row => row.name ?? 'Equipment name unavailable',
@@ -139,7 +151,7 @@ export const equipmentTypeProjection: TableProjection<Record<string, never>> = r
     tooltipNote: (_row, reply) => asOf(reply),
   }), 'equipment');
 
-interface TemplateRow { readonly template: EquipmentTemplate; readonly icon: ArtResult }
+interface TemplateRow { readonly template: EquipmentTemplate; readonly icon: ArtResult; readonly coverage: string | null }
 
 function templateIcon(template: EquipmentTemplate, readView: BoundedReadView): Pick<TemplateRow, 'icon'> {
   return { icon: productIconArt(readView, template.icon, 'The product drew no counter for this template') };
@@ -160,9 +172,11 @@ const TEMPLATE_SPEC: readonly DeclarativeColumnSpec<TemplateRow, Record<string, 
     value: row => share(row.template.hpRaw, row.template.hpMaxRaw, 'Strength not recorded'),
     bar: row => ({ fraction: fraction(share(row.template.hpRaw, row.template.hpMaxRaw, 'Strength not recorded')) }) },
   { ...FILL!, priority: 2, numeric: true, format: PERCENT, widest: ['100%'],
-    value: row => share(row.template.heldRaw, row.template.neededRaw, 'Equipment fill not recorded'),
-    bar: row => ({ fraction: fraction(share(row.template.heldRaw, row.template.neededRaw, 'Equipment fill not recorded')) }) },
-  { ...TYPES_SHORT!, priority: 5, numeric: true, format: 'integer', widest: ['99'], value: row => count(row.template.typesShort, 'Types short not recorded') },
+    value: row => compared(share(row.template.heldRaw, row.template.neededRaw, 'Equipment fill not recorded'), row.coverage),
+    sortValue: row => ranked(share(row.template.heldRaw, row.template.neededRaw, 'Equipment fill not recorded'), row.coverage),
+    bar: row => ({ fraction: fraction(compared(share(row.template.heldRaw, row.template.neededRaw, 'Equipment fill not recorded'), row.coverage)) }) },
+  { ...TYPES_SHORT!, priority: 5, numeric: true, format: 'integer', widest: ['99'], value: row => compared(count(row.template.typesShort, 'Types short not recorded'), row.coverage),
+    sortValue: row => ranked(count(row.template.typesShort, 'Types short not recorded'), row.coverage) },
 ];
 
 export const equipmentTemplateProjection: TableProjection<Record<string, never>> = registerFamilyProjection(declareTableProjection<DivisionEquipmentReply, TemplateRow, Record<string, never>>({
@@ -173,9 +187,9 @@ export const equipmentTemplateProjection: TableProjection<Record<string, never>>
       const blocked = bodyState(reply);
       if (blocked) return { rows: [], ...blocked, warnings: reply.warnings };
       return {
-        rows: reply.templates.map(template => ({ template, ...templateIcon(template, readView) })),
+        rows: reply.templates.map(template => ({ template, ...templateIcon(template, readView), coverage: uncompared(template.unknownDivisions) })),
         titleSummary: summary(reply),
-        titleSummaryPartial: partial(reply),
+        titleSummaryPartial: uncompared(reply.unknownDivisions),
         warnings: reply.warnings,
       };
     },

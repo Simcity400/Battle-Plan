@@ -4,6 +4,7 @@ import type { BoundedSeries } from '../plan.ts';
 import { formatDateOnly, formatRational, formatRecordedPercent, formatScalar, formatShare, formatShareRatio, notRecordedLabel } from '../valueFormat.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import { seriesLookAt, type ChartValueFormat, type TimeChartModel, type TimeChartSeriesModel } from './model.ts';
+import { hitChartRows, rowsTooltip } from './rows.ts';
 
 export type ParsedChartInspect =
   | { readonly kind: 'marker'; readonly index: number; readonly hour?: number }
@@ -91,7 +92,7 @@ export function sampleSeriesValueAt(
   series: TimeChartSeriesModel,
   hour: number,
   until: number,
-): { readonly value: number; readonly min: number; readonly max: number; readonly exact: boolean } | null {
+): { readonly value: number; readonly min: number; readonly max: number; readonly exact: boolean; readonly raw?: bigint; readonly denominator?: bigint } | null {
   if (hour > until) return null;
   if (series.bounded) {
     const sampled = sampleBoundedAt(series.bounded, hour, series.valueScale ?? 1);
@@ -101,11 +102,17 @@ export function sampleSeriesValueAt(
     }
   }
   if (series.points && series.points.length > 0) {
-    const pointSample = (pt: { readonly value: number | null; readonly min?: number | null; readonly max?: number | null; readonly approximate?: boolean }) => {
+    const pointSample = (pt: { readonly value: number | null; readonly raw?: bigint; readonly denominator?: bigint; readonly min?: number | null; readonly max?: number | null; readonly approximate?: boolean }) => {
       if (pt.value === null) return null;
       const min = pt.min != null && Number.isFinite(pt.min) ? pt.min : pt.value;
       const max = pt.max != null && Number.isFinite(pt.max) ? pt.max : pt.value;
-      return { value: pt.value, min, max, exact: !pt.approximate && min === max };
+      return {
+        value: pt.value,
+        min,
+        max,
+        exact: !pt.approximate && min === max,
+        ...(pt.raw !== undefined && pt.denominator !== undefined ? { raw: pt.raw, denominator: pt.denominator } : {}),
+      };
     };
     let prev: (typeof series.points)[number] | null = null;
     for (const pt of series.points) {
@@ -135,6 +142,7 @@ export function hitTestTimeChart(
 ): string | null {
   const [px, py] = point;
   if (px < 0 || py < 0 || px > layout.width || py > layout.height) return null;
+  if (layout.rows) return hitChartRows(layout.rows, point);
 
   for (const label of layout.endLabels) {
     if (px >= label.x - 4 && px <= label.x + label.width + 4 && py >= label.y - label.height / 2 - 2 && py <= label.y + label.height / 2 + 2) {
@@ -269,19 +277,21 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
     }
     if (at >= 0) {
       const totalVal = model.stack.total?.values[at];
+      const totalExact = model.stack.total?.exact?.[at];
       const totalItem: TooltipListItem | null = totalVal !== null && totalVal !== undefined && Number.isFinite(totalVal)
-        ? { label: model.measureTitle, value: formatExactFigure(totalVal, model, model.yAxis.format), strong: true }
+        ? { label: model.measureTitle, value: formatExactFigure(totalVal, model, model.yAxis.format, totalExact?.raw, totalExact?.denominator), strong: true }
         : null;
       for (const band of model.stack.bands) {
         if (only !== undefined && band.id !== only) continue;
         const v = band.values[at];
         if (v === null || v === undefined || !Number.isFinite(v)) continue;
+        const bandExact = band.exact?.[at];
         const flagUrl = artUrlOf(band.flag);
         entries.push({
           sortVal: v,
           item: {
             label: band.name,
-            value: formatExactFigure(v, model, model.stack.bandFormat ?? model.yAxis.format),
+            value: formatExactFigure(v, model, model.stack.bandFormat ?? model.yAxis.format, bandExact?.raw, bandExact?.denominator),
             swatch: band.color,
             ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
           },
@@ -360,7 +370,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
         continue;
       }
       const text = sampled.exact || sampled.min === sampled.max
-        ? formatExactFigure(sampled.value, model, model.yAxis.format)
+        ? formatExactFigure(sampled.value, model, model.yAxis.format, sampled.raw, sampled.denominator)
         : `${formatChartAxisValue(sampled.min, model.yAxis.format)}\u2013${formatChartAxisValue(sampled.max, model.yAxis.format)}`;
       entries.push({
         sortVal: sampled.value,
@@ -384,6 +394,7 @@ export function deriveTimeChartTooltip(
   layout: TimeChartLayout,
   inspectKey: string | null | undefined,
 ): FamilyTooltipEntry | null {
+  if (layout.rows) return rowsTooltip(model, inspectKey);
   const parsed = parseChartInspect(inspectKey);
   if (!parsed || !inspectKey) return null;
 

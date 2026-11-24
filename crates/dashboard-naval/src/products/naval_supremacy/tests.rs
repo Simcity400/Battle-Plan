@@ -1,3 +1,4 @@
+use replay_columnar::manifest::Status;
 use super::*;
 use dashboard_query::timeline::{Join, Stretch, Timeline};
 
@@ -19,9 +20,9 @@ fn each_day_is_read_at_its_last_held_hour_and_a_day_split_by_runs_takes_the_late
 
 #[test]
 fn equal_days_make_one_run_and_an_unknown_day_ends_it() {
-    let contested = Values { control: Some(0), friendly: Some(5), enemy: Some(5), share: Some(50_000), own: Some(5) };
-    let friendly = Values { control: Some(1), ..contested };
-    let refused = Values { control: None, ..contested };
+    let contested = Values { control: Some(0), friendly: Some(5), enemy: Some(5), share: Some(50_000), own: Some(5), missing: None };
+    let friendly = Values { control: Some(1), ..contested.clone() };
+    let refused = Values { control: None, ..contested.clone() };
     let piece = |day: u32, values: &Values| (day, day, values.clone());
     let runs = runs(BTreeMap::from([(9, vec![piece(3, &contested), piece(4, &friendly), piece(5, &refused), (0, 1, contested.clone())])]));
     let summary: Vec<(u32, u32, Option<i8>)> = runs[&9].iter().map(|run| (run.first_day, run.last_day, run.control)).collect();
@@ -46,6 +47,7 @@ fn a_viewers_row_comes_first_then_the_every_viewer_row_then_zeros_and_a_refusal_
             (key(NavalRegionControlRow::EVERY_VIEWER, 1), vec![step(100, row(9, 9, 9, 0))]),
             (key(NavalRegionControlRow::EVERY_VIEWER, 2), vec![step(100, row(0, 200, 0, 0)), step(150, None)]),
         ],
+        statuses: vec![lanes::StatusRun { first: 0, last: 200, status: Status::Complete }],
         ..Default::default()
     };
     let sea = SeaContent {
@@ -231,13 +233,44 @@ fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
 
 #[test]
 fn the_automatic_regions_are_ranked_by_the_score_of_the_day_read_at_the_hour() {
-    let run = |first_day, last_day, friendly: &str, enemy: &str| SupremacyRun { first_day, last_day, control: Some(0), friendly: Some(friendly.into()), enemy: Some(enemy.into()), share: None, own: None };
+    let run = |first_day, last_day, friendly: &str, enemy: &str| SupremacyRun { first_day, last_day, control: Some(0), friendly: Some(friendly.into()), enemy: Some(enemy.into()), share: None, own: None, missing: None };
     let busy_before = vec![run(0, 4, "900", "900"), run(5, 5, "1", "0")];
     let busy_now = vec![run(0, 4, "0", "0"), run(5, 5, "40", "2")];
     let idle = vec![run(0, 5, "0", "0")];
     let regions = [(7, busy_before), (8, busy_now), (9, idle)];
-    assert_eq!(ranked(regions.iter().map(|(id, runs)| (*id, activity_on(runs, 5))), None), Ok(vec![8, 7]), "the day read at the hour decides, not the days before it; an idle region is not ranked");
-    assert_eq!(ranked(regions.iter().map(|(id, runs)| (*id, activity_on(runs, 2))), Some(1)), Ok(vec![7]));
-    let unread = vec![SupremacyRun { first_day: 0, last_day: 5, control: None, friendly: None, enemy: Some("3".into()), share: None, own: None }];
-    assert!(ranked([(7, activity_on(&regions[0].1, 5)), (10, activity_on(&unread, 5))].into_iter(), Some(1)).is_err(), "a candidate whose score is not recorded leaves the rank unproven");
+    assert_eq!(ranked(regions.iter().map(|(id, runs)| (*id, activity_on(runs, 5)))), Ok(vec![8, 7]), "the day read at the hour decides, not the days before it; an idle region is not ranked");
+    assert_eq!(ranked(regions.iter().map(|(id, runs)| (*id, activity_on(runs, 2)))).map(|order| order[..1].to_vec()), Ok(vec![7]));
+    let unread = vec![SupremacyRun { first_day: 0, last_day: 5, control: None, friendly: None, enemy: Some("3".into()), share: None, own: None, missing: None }];
+    assert!(ranked([(7, activity_on(&regions[0].1, 5)), (10, activity_on(&unread, 5))].into_iter()).is_err(), "a candidate whose score is not recorded leaves the rank unproven");
+}
+
+#[test]
+fn a_region_a_truncated_hour_did_not_reach_is_not_recorded_with_why_never_zero() {
+    let viewer = 7_u32;
+    let key = |holder: u32, region: u32| u128::from(holder) << 32 | u128::from(region);
+    let n = Cell::Number;
+    let row = |friendly| Some(Box::from([n(friendly), n(1), n(friendly), n(1), n(0), Cell::Text(0), Cell::Text(0)]));
+    let step = |hour, cells| lanes::Step { hour, cells };
+    let history = lanes::History {
+        columns: COLUMNS.to_vec(),
+        to: 71,
+        texts: vec![Box::from(&b""[..])],
+        keys: vec![(key(viewer, 1), vec![step(0, row(40)), step(24, None), step(48, row(50))]), (key(viewer, 2), vec![step(0, row(30)), step(24, row(60))])],
+        statuses: vec![
+            lanes::StatusRun { first: 0, last: 23, status: Status::Complete },
+            lanes::StatusRun { first: 24, last: 47, status: Status::Truncated { missing: 3 } },
+            lanes::StatusRun { first: 48, last: 71, status: Status::Complete },
+        ],
+        ..Default::default()
+    };
+    let sea = SeaContent { sea: Ok(BTreeSet::from([1, 2])), land: Ok(BTreeSet::new()), all: BTreeSet::from([1, 2]), minima: (1..=2).map(|region| (region, Ok(1_000))).collect(), ratio: Ok(200_000), notes: Vec::new() };
+    let mut pieces = BTreeMap::new();
+    region_runs(&history, viewer, &[(0, 23), (1, 47), (2, 71)], &BTreeSet::new(), &sea, &mut Refusals::default(), &mut pieces);
+    let at = |region: u32, day: u32| pieces[&region].iter().find(|run: &&(u32, u32, Values)| run.0 <= day && day <= run.1).unwrap().2.clone();
+    assert_eq!(at(2, 1).friendly, Some(60), "the truncated read reached region 2: its value stands");
+    let unread = at(1, 1);
+    assert_eq!((unread.friendly, unread.control), (None, None), "region 1 was not reached: no zero, no earlier value");
+    assert!(unread.missing.is_some_and(|reason| !reason.is_empty()));
+    assert_eq!(at(1, 2).friendly, Some(50));
+    assert_eq!(activity_on(&runs(pieces.clone())[&1], 1), None, "an unread region leaves the rank unproven");
 }

@@ -3,11 +3,16 @@ import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry } from '../../families/manifest.ts';
 import { OPTIONS as AIR_FORCE_OPTIONS } from '../air-force-size/definition.ts';
 import { OPTIONS as ARMY_SIZE_OPTIONS } from '../army-size/definition.ts';
+import { OPTIONS as EQUIPMENT_PRODUCED_OPTIONS } from '../equipment-produced/definition.ts';
+import { OPTIONS as FACTION_STRENGTH_OPTIONS } from '../faction-strength/definition.ts';
+import { OPTIONS as FACTORIES_OPTIONS } from '../factories/definition.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
 import { OPTIONS as NAVAL_LOSSES_OPTIONS } from '../naval-losses/definition.ts';
 import { OPTIONS as NAVY_SIZE_OPTIONS } from '../navy-size/definition.ts';
 import { OPTIONS as NUCLEAR_ARSENAL_OPTIONS } from '../nuclear-arsenal/definition.ts';
 import { OPTIONS as OCCUPATION_TREND_OPTIONS } from '../occupation-trend/definition.ts';
+import { OPTIONS as RESOURCE_BALANCE_OPTIONS } from '../resource-balance/definition.ts';
+import { OPTIONS as TERRITORY_OPTIONS } from '../territory/definition.ts';
 import { OPTIONS as WORLD_TENSION_OPTIONS } from '../world-tension/definition.ts';
 
 function raceScopedOptions(fields: readonly OptionField[], keys: ReadonlySet<string>): readonly OptionField[] {
@@ -22,6 +27,9 @@ const AIR_FORCE_MIX_OPTIONS = raceScopedOptions(AIR_FORCE_OPTIONS, new Set(['vie
 const ARMY_SIZE_RACE_OPTIONS = raceScopedOptions(ARMY_SIZE_OPTIONS, new Set(['view', 'measure', 'countFor', 'byType']))
   .map((field): OptionField => (field.key === 'byType' ? { ...field, visibleWhen: options => options.measure === 'battalions' } : field));
 const ARMY_SIZE_MIX_OPTIONS = raceScopedOptions(ARMY_SIZE_OPTIONS, new Set(['view', 'countFor']));
+const EQUIPMENT_PRODUCED_RACE_OPTIONS = raceScopedOptions(EQUIPMENT_PRODUCED_OPTIONS, new Set(['view', 'count', 'measure', 'included', 'refits']));
+const FACTION_STRENGTH_RACE_OPTIONS = raceScopedOptions(FACTION_STRENGTH_OPTIONS, new Set(['view', 'measure', 'count', 'territoryMeasure', 'rule']));
+const FACTORIES_MIX_OPTIONS = raceScopedOptions(FACTORIES_OPTIONS, new Set(['view', 'count', 'types']));
 const GAME_SCORE_RACE_OPTION_KEYS = new Set(['view', 'topMeasure', 'split']);
 const GAME_SCORE_RACE_OPTIONS = GAME_SCORE_OPTIONS.filter(field => GAME_SCORE_RACE_OPTION_KEYS.has(field.key));
 const NAVAL_LOSSES_RACE_OPTION_KEYS = new Set(['view', 'kind', 'attribution', 'period', 'split']);
@@ -36,7 +44,15 @@ const NUCLEAR_ARSENAL_RACE_OPTIONS = raceScopedOptions(NUCLEAR_ARSENAL_OPTIONS, 
 const NUCLEAR_ARSENAL_MIX_OPTIONS = raceScopedOptions(NUCLEAR_ARSENAL_OPTIONS, new Set(['view']));
 const OCCUPATION_TREND_RACE_OPTION_KEYS = new Set(['view', 'measure', 'rankingMeasure', 'digits']);
 const OCCUPATION_TREND_RACE_OPTIONS = OCCUPATION_TREND_OPTIONS.filter(field => OCCUPATION_TREND_RACE_OPTION_KEYS.has(field.key));
+const RAID_TALLY_RACE_OPTIONS: readonly OptionField[] = [
+  { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'race',
+    choices: [{ value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines' }] },
+  { key: 'metric', section: 'options', label: 'Count', kind: 'choice', default: 'both',
+    choices: [{ value: 'both', label: 'Both' }, { value: 'launched', label: 'Launched' }, { value: 'succeeded', label: 'Succeeded' }] },
+];
+const TERRITORY_RACE_OPTIONS = raceScopedOptions(TERRITORY_OPTIONS, new Set(['view', 'measure', 'rule']));
 const WORLD_TENSION_RACE_OPTIONS = WORLD_TENSION_OPTIONS.filter(field => field.key === 'view');
+const RESOURCE_BALANCE_BARS_OPTIONS = raceScopedOptions(RESOURCE_BALANCE_OPTIONS, new Set(['view', 'hideEmpty']));
 
 export const BARS_VIEWS: readonly FamilyViewEntry[] = [
   {
@@ -192,6 +208,42 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     })),
   },
   {
+    kind: 'equipment-produced',
+    view: 'race',
+    label: 'Race',
+    family: 'bars',
+    viewOption: 'view',
+    options: EQUIPMENT_PRODUCED_RACE_OPTIONS,
+    loadSpec: () => import('../equipment-produced/equipmentProducedRaceProjection.ts').then(mod => ({
+      family: 'bars', kind: 'equipment-produced', view: 'race',
+      projection: mod.equipmentProducedRaceProjection, declaration: mod.equipmentProducedRaceDeclaration,
+    })),
+  },
+  {
+    kind: 'faction-strength',
+    view: 'race',
+    label: 'Race',
+    family: 'bars',
+    viewOption: 'view',
+    options: FACTION_STRENGTH_RACE_OPTIONS,
+    loadSpec: () => import('../faction-strength/factionStrengthRaceProjection.ts').then(mod => ({
+      family: 'bars', kind: 'faction-strength', view: 'race',
+      projection: mod.factionStrengthRaceProjection, declaration: mod.factionStrengthRaceDeclaration,
+    })),
+  },
+  {
+    kind: 'factories',
+    view: 'mix',
+    label: 'Mix',
+    family: 'bars',
+    viewOption: 'view',
+    options: FACTORIES_MIX_OPTIONS,
+    loadSpec: () => import('../factories/factoriesMixProjection.ts').then(mod => ({
+      family: 'bars', kind: 'factories', view: 'mix',
+      projection: mod.factoriesMixProjection, declaration: mod.factoriesMixDeclaration,
+    })),
+  },
+  {
     kind: 'factories',
     view: 'race',
     label: 'Race',
@@ -336,6 +388,42 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     loadSpec: () => import('../occupation-trend/occupationTrendRaceProjection.ts').then(mod => ({
       family: 'bars', kind: 'occupation-trend', view: 'race',
       projection: mod.occupationTrendRaceProjection, declaration: mod.occupationTrendRaceDeclaration,
+    })),
+  },
+  {
+    kind: 'raid-tally',
+    view: 'race',
+    label: 'Race',
+    family: 'bars',
+    viewOption: 'view',
+    options: RAID_TALLY_RACE_OPTIONS,
+    loadSpec: () => import('../raid-tally/raidTallyRaceProjection.ts').then(mod => ({
+      family: 'bars', kind: 'raid-tally', view: 'race',
+      projection: mod.raidTallyRaceProjection, declaration: mod.raidTallyRaceDeclaration,
+    })),
+  },
+  {
+    kind: 'resource-balance',
+    view: 'bars',
+    label: 'Bars',
+    family: 'bars',
+    viewOption: 'view',
+    options: RESOURCE_BALANCE_BARS_OPTIONS,
+    loadSpec: () => import('../resource-balance/resourceBalanceProjection.ts').then(mod => ({
+      family: 'bars', kind: 'resource-balance', view: 'bars',
+      projection: mod.resourceBalanceProjection, declaration: mod.resourceBalanceDeclaration,
+    })),
+  },
+  {
+    kind: 'territory',
+    view: 'race',
+    label: 'Race',
+    family: 'bars',
+    viewOption: 'view',
+    options: TERRITORY_RACE_OPTIONS,
+    loadSpec: () => import('../territory/territoryRaceProjection.ts').then(mod => ({
+      family: 'bars', kind: 'territory', view: 'race',
+      projection: mod.territoryRaceProjection, declaration: mod.territoryRaceDeclaration,
     })),
   },
   {

@@ -424,14 +424,63 @@ window.tableFamilyDom = {
   async mirrorSyncsOverFrames(frames: number) {
     const body = hostNode?.querySelector('table tbody');
     if (!body) throw new Error('No accessible mirror body');
+    const fac: [bigint, bigint, bigint, bigint] = [15n, 95n, 30n, -1n];
+    const cas: [bigint, bigint, bigint, bigint] = [1n, 2n, 0n, 0n];
+    let hour = pipeline.view(pipeId)?.h ?? 0;
+    const step = async () => {
+      hour++;
+      sendHour(hour, fac, cas);
+      const before = installs;
+      clock.step(1);
+      return until(() => installs > before && pipeline.view(pipeId)?.h === hour && !pipeline.view(pipeId)?.dim && body.children.length > 0, 2000);
+    };
+    await step();
     let mutations = 0;
     const observer = new MutationObserver(records => { mutations += records.length; });
     observer.observe(body, { subtree: true, childList: true, attributes: true, characterData: true });
     const installsBefore = installs;
-    const paintsBefore = pipeline.view(pipeId)?.id ?? null;
-    for (let i = 0; i < frames; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    let stepped = 0;
+    for (let i = 0; i < frames; i++) if (await step()) stepped++;
     observer.disconnect();
-    return { mutations, installs: installs - installsBefore, samePicture: (pipeline.view(pipeId)?.id ?? null) === paintsBefore };
+    return { mutations, installs: installs - installsBefore, stepped };
+  },
+
+  async focusAcrossWithheldMirror() {
+    const body = hostNode!.querySelector<HTMLTableSectionElement>('table tbody')!;
+    const table = body.closest('table')!;
+    const row = body.querySelector<HTMLTableRowElement>('tr[data-row-key]')!;
+    const key = row.dataset.rowKey!;
+    const focusedKey = () => (document.activeElement as HTMLElement | null)?.dataset.rowKey ?? null;
+    row.focus();
+    await until(() => (pipeline.view(pipeId)?.fields?.focusTooltip as { text?: { rowKey?: string } | null } | undefined)?.text?.rowKey === key, 2000);
+    let sent = pipeline.view(pipeId)?.h ?? 0;
+    const feed = (hour: number) => {
+      while (sent < hour + 6) {
+        sent++;
+        sendHour(sent, [BigInt(85 + sent), 40n, 30n, -1n], [BigInt(sent * 10), BigInt(sent * 20), 0n, 0n]);
+      }
+    };
+    feed(sent);
+    const stopFeed = clock.onPublish((_prev, next) => feed(next.hour));
+    try {
+      holdCadence(performance.now());
+      clock.setSpeed(48);
+      clock.setPlaying(true);
+      const withheld = await until(() => body.children.length === 0, 4000);
+      const parked = document.activeElement === table;
+      clock.setPlaying(false);
+      const returned = await until(() => body.children.length > 0, 2000);
+      const restored = focusedKey();
+      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      await until(() => focusedKey() !== null && focusedKey() !== key, 2000);
+      return { key, withheld, parked, returned, restored, afterDown: focusedKey() };
+    } finally {
+      cadenceHold = false;
+      heldTimers.clear();
+      stopFeed();
+      clock.setPlaying(false);
+      (document.activeElement as HTMLElement | null)?.blur();
+    }
   },
 
   async verifyRepaintAndHeld() {

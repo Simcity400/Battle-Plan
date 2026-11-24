@@ -109,7 +109,7 @@ fn a_holders_balances_follow_the_records_listing_it_with_their_ranges_and_leanin
     let source = recording();
     let query = dashboard_base::queries::query(&source, 1).unwrap();
     let country = |tag: &str| {
-        let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Country, country: Some(tag.into()), hour: None };
+        let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Country, country: Some(tag.into()), hour: Some(LAST) };
         let reply = history::answer(&query, &params, None, &AtomicBool::new(false)).unwrap();
         assert_eq!(reply.holder_balances.len(), 1, "{tag} has one holder");
         reply.holder_balances[0].clone()
@@ -132,6 +132,50 @@ fn a_holders_balances_follow_the_records_listing_it_with_their_ranges_and_leanin
     assert_eq!(balance("GER_bop").range, [run(120, LAST, "GER_high")], "a member's range runs only while it is listed");
     assert!(balance("ENG_bop").range.is_empty() && balance("ENG_bop").trending.is_empty());
     assert_eq!(eng.shown, [run(120, LAST, "GER_bop")], "the first record listing it, as the game shows it");
+}
+
+#[test]
+fn a_countrys_balances_are_answered_at_the_hour_with_nothing_read_later_and_the_next_change() {
+    let source = recording();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let at = |tag: &str, hour: Option<i32>| {
+        let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Country, country: Some(tag.into()), hour };
+        history::answer(&query, &params, None, &AtomicBool::new(false))
+    };
+    assert!(at("GER", None).is_err(), "a country's balance history names its hour");
+    let ger = at("GER", Some(112)).unwrap();
+    let balance = &ger.holder_balances[0].balances[0];
+    assert_eq!(balance.values, [run(FIRST, 109, 5_000), run(110, 112, 6_000)], "nothing after the asked hour");
+    assert_eq!(balance.range, [run(FIRST, 112, "GER_low")], "the range read at 115 is not known at 112");
+    assert_eq!((ger.hour, ger.next_change), (Some(112), Some(115)));
+    assert_eq!(ger.selected.as_deref(), Some("GER_bop"));
+    assert_eq!(ger.known.iter().map(|span| (span.first_hour, span.last_hour)).collect::<Vec<_>>(), [(FIRST, 112)], "read coverage through the hour");
+    assert_eq!(ger.unread, None);
+    let eng = at("ENG", Some(119)).unwrap();
+    assert!(eng.holder_balances.iter().all(|holder| holder.balances.is_empty()), "ENG is listed from 120");
+    assert_eq!((eng.selected, eng.next_change), (None, Some(120)));
+    assert_eq!(at("ENG", Some(126)).unwrap().selected.as_deref(), Some("GER_bop"), "the record listing it first, as the game shows it");
+}
+
+#[test]
+fn a_records_change_is_the_games_own_arithmetic_over_every_member_and_a_missing_modifier_is_zero() {
+    let mut frame = frame(125);
+    set(
+        &mut frame,
+        TableId::PowerBalanceMembers,
+        TableRows::PowerBalanceMembers(vec![
+            PowerBalanceMemberRow { record: 0, ordinal: 0, country: GER, daily_raw: 1_000, daily_present: true, ..Default::default() },
+            PowerBalanceMemberRow { record: 0, ordinal: 1, country: ENG, weekly_raw: -700, weekly_present: true, ..Default::default() },
+        ]),
+    );
+    let reply = state::read(&frame, &state::PoliticsStateParams { branch_id: "1".into(), view: state::PoliticsView::Balances, country: None }, None, &Cells::default()).unwrap();
+    let change = reply.balances[0].change.clone().unwrap();
+    assert_eq!((change.daily.as_str(), change.weekly.as_str(), change.weekly_change.as_str()), ("1000", "-700", "6300"), "seven days of the daily drift plus the weekly");
+    assert_eq!((change.shown, change.rate.as_str()), (state::ChangeShown::Daily, "900"), "the game shows the daily rate: daily plus a seventh of the weekly");
+    set(&mut frame, TableId::PowerBalanceMembers, TableRows::PowerBalanceMembers(vec![PowerBalanceMemberRow { record: 0, ordinal: 0, country: GER, weekly_raw: 3, weekly_present: true, ..Default::default() }]));
+    let reply = state::read(&frame, &state::PoliticsStateParams { branch_id: "1".into(), view: state::PoliticsView::Balances, country: None }, None, &Cells::default()).unwrap();
+    let change = reply.balances[0].change.clone().unwrap();
+    assert_eq!((change.shown, change.rate.as_str()), (state::ChangeShown::Weekly, "3"), "a daily rate the game rounds to zero shows the weekly change");
 }
 
 #[test]
@@ -378,47 +422,31 @@ fn balance_scripted_names_respect_scopes_causality_staged_reads_and_named_refusa
     let query = dashboard_base::queries::query(&src, 1).unwrap();
     let cancelled = AtomicBool::new(false);
 
-    let without_hour = history::answer(
+    let history = history::answer(
         &query,
-        &history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Country, country: Some("GER".into()), hour: None },
+        &history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Country, country: Some("GER".into()), hour: Some(105) },
         Some(Ok(Arc::clone(&catalogue))),
         &cancelled,
     )
     .unwrap();
-    assert_eq!(without_hour.names.get("GER_bop").map(String::as_str), Some("Power Struggle"));
-    assert!(!without_hour.names.contains_key("GER_left"), "scripted side names must never enter plain token cache");
-    assert!(!without_hour.names.contains_key("GER_low"), "scripted range names must never enter plain token cache");
-    let ger_no_hour = &without_hour.holder_balances[0].balances[0];
-    assert_eq!(ger_no_hour.left.as_ref().unwrap().name, None);
-    assert!(ger_no_hour.left.as_ref().unwrap().reason.is_some());
+    assert_eq!(history.names.get("GER_bop").map(String::as_str), Some("Power Struggle"));
+    assert!(!history.names.contains_key("GER_left"), "scripted side names must never enter plain token cache");
+    assert!(!history.names.contains_key("GER_low"), "scripted range names must never enter plain token cache");
+    let ger = &history.holder_balances[0].balances[0];
+    assert_eq!(ger.left.as_ref().unwrap().name, None, "a scripted name is the at-hour state's, never a history's");
+    assert!(ger.left.as_ref().unwrap().reason.is_some());
 
-    let (early, early_reads) = replay_recording::cells::count_reads(|| {
-        history::answer(
-            &query,
-            &history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Country, country: Some("GER".into()), hour: Some(105) },
-            Some(Ok(Arc::clone(&catalogue))),
-            &cancelled,
-        )
-        .unwrap()
-    });
-    assert!(!early_reads.contains_key(&TableId::Provinces), "staged reads must never touch Provinces");
-    assert!(!early_reads.contains_key(&TableId::States), "staged reads must never touch States");
-    assert!(!early.names.contains_key("GER_left"));
-    let ger_early = &early.holder_balances[0].balances[0];
-    assert_eq!(ger_early.left.as_ref().unwrap().name.as_deref(), Some("Fascist Council"), "left={:?}", ger_early.left);
-    assert_eq!(ger_early.right.as_ref().unwrap().name.as_deref(), Some(""), "right={:?}", ger_early.right);
-    assert_eq!(ger_early.ranges.iter().find(|r| r.token == "GER_low").unwrap().name.as_deref(), Some("GER low"), "ranges={:?}", ger_early.ranges);
-
-    let late = history::answer(
-        &query,
-        &history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Country, country: Some("GER".into()), hour: Some(125) },
-        Some(Ok(Arc::clone(&catalogue))),
-        &cancelled,
-    )
-    .unwrap();
-    let ger_late = &late.holder_balances[0].balances[0];
-    assert_eq!(ger_late.left.as_ref().unwrap().name.as_deref(), Some("Democratic Council"));
-    assert_eq!(ger_late.ranges.iter().find(|r| r.token == "GER_high").unwrap().name.as_deref(), Some("GER high"));
+    let selected = |hour: i32| {
+        let frame = make_frame(hour);
+        let reply = state::read(&frame, &state::PoliticsStateParams { branch_id: "1".into(), view: state::PoliticsView::Balances, country: None }, Some(Ok(catalogue.as_ref())), &Cells::default()).unwrap();
+        assert!(state::names_read_the_date(&frame, catalogue.as_ref()), "a scripted name bounds the reply at the next day");
+        reply
+    };
+    let early = selected(105);
+    assert_eq!(early.balances[0].left.name.as_deref(), Some("Fascist Council"));
+    assert_eq!(early.balances[0].range.as_ref().unwrap().name.as_deref(), Some("GER low"));
+    let late = selected(125);
+    assert_eq!(late.balances[0].left.name.as_deref(), Some("Democratic Council"));
 
     let shared_frame = make_frame(125);
     let shared_reply = state::read(
@@ -435,4 +463,52 @@ fn balance_scripted_names_respect_scopes_causality_staged_reads_and_named_refusa
     assert_eq!(shared.trending.as_ref().unwrap().reason.as_deref(), Some("no localisation in the recorded content"));
     assert_eq!(shared.range.as_ref().unwrap().name, None, "shared multi-member record without chosen country refuses scripted active range");
     assert!(shared.range.as_ref().unwrap().reason.as_deref().unwrap().contains("country event scope"));
+}
+
+#[test]
+fn next_elections_for_a_group_reads_only_its_members_at_the_hour_and_never_guesses_unknown_membership() {
+    use super::elections::{NextElections, NextElectionsParams};
+    use dashboard_base::{products::at_hour::{At, AtHour}, span::HourSpan};
+    use dashboard_query::series::ranked::{GroupKind, GroupMembership, GroupSelection};
+    use dashboard_world::products::{group_members::GroupsAt, groups::{CountryGroupReply, FactionGroup, MembershipRun, UnobservedHours}};
+    let source = recording();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let run = |tag: &str, first_hour, last_hour| MembershipRun { tag: tag.into(), first_hour, last_hour };
+    let groups = GroupsAt::new(
+        Arc::new(CountryGroupReply {
+            branch_id: "1".into(),
+            humans: Vec::new(),
+            factions: vec![FactionGroup {
+                id: "42".into(),
+                name: None,
+                name_reason: None,
+                names: Vec::new(),
+                recorded_name: String::new(),
+                first_hour: FIRST,
+                last_hour: LAST,
+                members: vec![run("GER", FIRST, LAST), run("ENG", 108, LAST)],
+                leaders: Vec::new(),
+                incomplete: vec![HourSpan { first_hour: 125, last_hour: 126 }],
+            }],
+            wars: Vec::new(),
+            war_starts: Vec::new(),
+            capitulations: Vec::new(),
+            identity_changes: Vec::new(),
+            country_identities: Vec::new(),
+            unobserved: UnobservedHours::default(),
+            warnings: Vec::new(),
+        }),
+        FIRST,
+    );
+    let faction = GroupSelection { kind: GroupKind::Faction, id: Some("42".into()), tag: None, membership: GroupMembership::Hour };
+    let params = NextElectionsParams { branch_id: "1".into(), countries: None, group: Some(faction) };
+    assert!(NextElections::validate(&NextElectionsParams { countries: Some(Vec::new()), ..params.clone() }).is_err(), "a group is never sent with countries");
+    let (live, cancelled) = (Cells::default(), AtomicBool::new(false));
+    let at = |hour: i32| At { owner: None, holders: &query.holders, hour, context: &groups, cancelled: &cancelled, live: &live };
+    let before = NextElections::reply(&frame(105), &params, &at(105)).unwrap();
+    assert_eq!((before.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), before.unknown), (vec!["GER"], 0), "ENG's unread schedule is not counted before it joins");
+    assert_eq!(NextElections::valid_through(&frame(105), &params, &at(105)), 107, "the reply holds until the hour before ENG joins");
+    assert_eq!(NextElections::reply(&frame(110), &params, &at(110)).unwrap().unknown, 1, "a member's unread eligibility is counted once it is a member");
+    let unknown = NextElections::reply(&frame(125), &params, &at(125)).unwrap();
+    assert_eq!((unknown.rows.len(), unknown.refused.as_deref()), (0, Some("Membership of this group is not recorded at this hour")));
 }

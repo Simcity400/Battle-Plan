@@ -1,10 +1,9 @@
 import { useCallback, useMemo } from 'react';
 import { dayLabel } from '../../charts/draw';
 import { CountryFlag } from '../../components/CountryFlag';
-import type { FamilyViewCountryChipProps, FamilyViewProps, FamilyViewRenderer, ResolvedViewOptions, WidgetSubjectMenuProps } from '../../dashboard/definitions';
+import type { FamilyViewCountryChipProps, FamilyViewProps, FamilyViewRenderer, FamilyViewSubjectMenuProps, ResolvedViewOptions } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { setToken } from '../../dashboard/options';
-import { setWidgetViewOption, widgetViewOptions } from '../manifest';
 import type { InstalledAction } from '../../families/contract.ts';
 import { FamilyWidget } from '../../families/host/registry';
 import { useIdentity, useIdentityScope } from '../../families/identity/react.ts';
@@ -68,13 +67,10 @@ function WarChip(props: FamilyViewCountryChipProps) {
   </span>;
 }
 
-function WarMenu({ widget, runtime, onApply }: WidgetSubjectMenuProps) {
+function WarMenu({ widget, runtime, options, setOption }: FamilyViewSubjectMenuProps) {
   const wars = useWars(widget, runtime, true);
-  const saved = storedWar(widgetViewOptions(widget.kind, widget.options));
-  const choose = (id: string | null) => {
-    const options = setWidgetViewOption(widget.kind, widget.options, 'war', id === null ? '' : setToken(id));
-    if (options) onApply({ ...widget, options });
-  };
+  const saved = storedWar(options);
+  const choose = (id: string | null) => setOption('war', id === null ? '' : setToken(id));
   return <div className="war-menu" role="group" aria-label="War">
     <div className="war-menu-heading">War</div>
     <button type="button" className={`war-menu-row${saved === null ? ' is-chosen' : ''}`} onClick={() => choose(null)}>The country’s main war at the date</button>

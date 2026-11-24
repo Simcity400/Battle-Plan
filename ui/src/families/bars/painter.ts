@@ -6,6 +6,7 @@ import { linearTicks } from '../../charts/valueAxis.ts';
 import {
   barCornerRadius,
   contrastInkForFill,
+  drawShareBar,
   drawBar,
   drawLegendStrip,
   drawMissingMark,
@@ -43,7 +44,6 @@ import {
   formatBarsValueField,
   type BarsDataRow,
   type BarsModel,
-  type BarsSegment,
   type BarsValueField,
 } from './model.ts';
 import { drawCaptionSides, drawPickList } from './pickList.ts';
@@ -98,65 +98,6 @@ function paintedRowY(
   const progress = (now - entry.startedAt) / glideDuration;
   if (progress >= 1) return baseY;
   return entry.fromY + (baseY - entry.fromY) * easeOutCubic(progress);
-}
-
-function drawShareSegments(
-  ctx: Canvas2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  segments: readonly BarsSegment[],
-  theme: FamilyTheme,
-  radius = 2.5,
-): void {
-  if (width <= 0 || height <= 0) return;
-  const tokens = resolveKitTokens(theme);
-  ctx.save();
-  ctx.fillStyle = tokens.barTrack;
-  ctx.beginPath();
-  ctx.roundRect(x, y, width, height, radius);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.roundRect(x, y, width, height, radius);
-  ctx.clip();
-
-  const active = segments.filter(seg => seg.share > 0);
-  const gap = active.length > 1 ? 1 : 0;
-  const usable = Math.max(0, width - gap * Math.max(0, active.length - 1));
-  let cursor = x;
-  let total = 0;
-  for (let i = 0; i < active.length; i++) total += active[i]!.share;
-  const complete = total >= 0.999;
-  for (let i = 0; i < active.length; i++) {
-    const seg = active[i]!;
-    const segW = complete && i === active.length - 1 ? Math.max(0, x + width - cursor) : usable * seg.share;
-    if (segW <= 0) continue;
-    if (seg.hatched) {
-      drawHatchRect(ctx, cursor, y, segW, height, 0, theme);
-    } else {
-      ctx.fillStyle = readableColour(seg.color, theme.surface);
-      ctx.fillRect(cursor, y, segW, height);
-    }
-    if (!seg.hatched && segW >= 34) {
-      const pctText = formatShare(seg.share);
-      const fullText = seg.inlineLabel ?? `${seg.label} ${pctText}`;
-      ctx.font = `600 11px ${theme.font}`;
-      ctx.fillStyle = contrastInkForFill(readableColour(seg.color, theme.surface), theme);
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      const pad = 6;
-      const room = segW - pad * 2;
-      if (textWidth(ctx, fullText) <= room) {
-        ctx.fillText(fullText, cursor + pad, y + height / 2);
-      } else if (textWidth(ctx, pctText) <= room) {
-        ctx.fillText(pctText, cursor + pad, y + height / 2);
-      }
-    }
-    cursor += segW + gap;
-  }
-  if (!complete && cursor < x + width) drawHatchRect(ctx, cursor, y, x + width - cursor, height, 0, theme);
-  ctx.restore();
 }
 
 function drawStackedPair(ctx: Canvas2D, row: BarsDataRow, layout: BarsLayout, theme: FamilyTheme, fill: string, middleY: number): void {
@@ -424,11 +365,14 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
             : (row.numeric ?? 0) === 0
               ? theme.muted
               : theme.text;
-          ctx.fillText(ellipsise(formatted.text, layout.readoutWidth, s => textWidth(ctx, s)), rightEdge, middleY - 7);
-          const sub = row.value?.caption ?? ((row.numeric ?? 0) < 0 ? 'Short a day' : (row.numeric ?? 0) > 0 ? 'Surplus a day' : 'Balanced');
-          ctx.font = `${LABEL_WEIGHT} 11px ${theme.font}`;
-          ctx.fillStyle = theme.muted;
-          ctx.fillText(ellipsise(sub, layout.readoutWidth, s => textWidth(ctx, s)), rightEdge, middleY + 8);
+          const captioned = layout.showPair;
+          ctx.fillText(ellipsise(formatted.text, layout.readoutWidth, s => textWidth(ctx, s)), rightEdge, captioned ? middleY - 7 : middleY);
+          if (captioned) {
+            const sub = row.value?.caption ?? ((row.numeric ?? 0) < 0 ? 'Short a day' : (row.numeric ?? 0) > 0 ? 'Surplus a day' : 'Balanced');
+            ctx.font = `${LABEL_WEIGHT} 11px ${theme.font}`;
+            ctx.fillStyle = theme.muted;
+            ctx.fillText(ellipsise(sub, layout.readoutWidth, s => textWidth(ctx, s)), rightEdge, middleY + 8);
+          }
           ctx.restore();
         }
       }
@@ -469,7 +413,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         ctx.fillText(ellipsise(msg, Math.max(0, layout.plotWidth - 8), s => textWidth(ctx, s)), layout.plotLeft + layout.plotWidth / 2, middleY);
         ctx.restore();
       } else if (row.segments?.length) {
-        drawShareSegments(ctx, layout.plotLeft, barY, layout.plotWidth, layout.barHeight, row.segments, theme, 2.5);
+        drawShareBar(ctx, layout.plotLeft, barY, layout.plotWidth, layout.barHeight, row.segments.map(seg => ({ share: seg.share, color: seg.color, hatched: seg.hatched, label: seg.inlineLabel ?? `${seg.label} ${formatShare(seg.share)}`, shortLabel: formatShare(seg.share) })), theme, 2.5);
       } else {
         ctx.save();
         ctx.fillStyle = tokens.barTrack;

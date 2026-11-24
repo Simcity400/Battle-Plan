@@ -11,10 +11,17 @@ import { useIdentityScope } from '../identity/react.ts';
 import type { ArtHandle } from '../plan.ts';
 import { sharedDomArtCache, type DomArtCache } from './domCache.ts';
 import { readArtDemands, requestDemandedFlags, type ArtResolutions } from './provider.ts';
-import { SpriteCaches, artCacheScope, fetchArtHandles } from './transport.ts';
+import { SpriteCaches, artCacheScope, artCalls, type ArtFailure } from './transport.ts';
 import { PENDING_ART, artHandleKey, failedArt, type ArtResolution, type ArtResult } from './types.ts';
 
 const caches = new PerClient<SpriteCaches>();
+const failureArts = new WeakMap<ArtFailure, ArtResolution>();
+
+function failureArt(failure: ArtFailure): ArtResolution {
+  let held = failureArts.get(failure);
+  if (!held) failureArts.set(failure, held = failedArt(failure.reason, failure.retryable));
+  return held;
+}
 
 function cachesOf(client: DashboardClient): SpriteCaches {
   let held = caches.get(client);
@@ -70,13 +77,13 @@ export function useArtResolutions(
   const key = JSON.stringify([scope, askedKey]);
   useEffect(() => {
     if (!active || !track || !asked.length) return;
-    held.request(scope, asked, (batch, signal) => fetchArtHandles((request, sent) => loadTransientProduct<unknown>(runtime.client, request, sent), track, batch, signal));
-  }, [runtime.client, held, scope, key, active]);
+    held.request(scope, asked, (batch, signal) => artCalls((request, sent) => loadTransientProduct<unknown>(runtime.client, request, sent), track, batch, signal));
+  }, [runtime.client, held, scope, key, active, landed]);
 
   return useMemo(() => (handle: ArtHandle): ArtResolution => {
     const id = artHandleKey(handle);
     const failed = failures.get(id);
-    if (failed !== undefined) return failedArt(failed.reason, failed.retryable);
+    if (failed !== undefined) return failureArt(failed);
     return resolutions.get(id) ?? PENDING_ART;
   }, [resolutions, failures, landed]);
 }

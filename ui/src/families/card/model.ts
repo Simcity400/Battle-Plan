@@ -1,5 +1,5 @@
 import { artTooltipItem } from '../art/adapters.ts';
-import type { StatusMarkKind } from '../../draw/kit.ts';
+import type { StatusMarkKind, ThresholdTick } from '../../draw/kit.ts';
 import { flagChoiceArt, productIconArt } from '../art/provider.ts';
 import type { ArtResult } from '../art/types.ts';
 import { canonicalAuditValue } from '../audit.ts';
@@ -41,6 +41,7 @@ export interface CardItemRow {
   readonly art?: CardMedia;
   readonly title: Value<string>;
   readonly subtitle?: string;
+  readonly subtitleFlag?: CardMedia;
   readonly place?: string;
   readonly meter?: CardMeter;
   readonly figure?: CardFigure;
@@ -69,7 +70,41 @@ export interface CardHeroRow {
   readonly tooltip?: FamilyTooltipPayload;
 }
 
-export type CardRow = CardItemRow | CardSectionRow | CardHeroRow;
+export interface CardShareSegment {
+  readonly share: number;
+  readonly tone: 'positive' | 'negative';
+  readonly label: string;
+  readonly shortLabel?: string;
+  readonly labelAlign?: 'left' | 'right';
+}
+
+export type CardBar =
+  | { readonly kind: 'meter'; readonly fraction: Value<number>; readonly ticks?: readonly ThresholdTick[] }
+  | { readonly kind: 'share'; readonly segments: readonly CardShareSegment[] };
+
+export interface CardMeterRow {
+  readonly kind: 'meter';
+  readonly key: string;
+  readonly label?: string;
+  readonly name?: string;
+  readonly bar: CardBar;
+  readonly figure?: CardFigure;
+  readonly tooltip?: FamilyTooltipPayload;
+}
+
+export interface CardListRow {
+  readonly kind: 'list';
+  readonly key: string;
+  readonly label?: string;
+  readonly name?: string;
+  readonly items: readonly string[];
+  readonly missing?: string;
+  readonly none: string;
+  readonly tooltip?: FamilyTooltipPayload;
+}
+
+export type CardRow = CardItemRow | CardSectionRow | CardHeroRow | CardMeterRow | CardListRow;
+type CardEntryRow = Exclude<CardRow, CardSectionRow>;
 
 export interface CardColumns {
   readonly date?: boolean;
@@ -118,6 +153,12 @@ export function assertCardModelValid(model: CardModel, displayedHour: number): v
   }
   for (const row of model.rows) {
     if (row.kind === 'section') continue;
+    if (row.kind === 'meter') {
+      if (row.bar.kind === 'meter') assertValue(row.bar.fraction, `card[${row.key}].bar`);
+      if (row.figure) assertValue(row.figure.value, `card[${row.key}].figure`);
+      continue;
+    }
+    if (row.kind === 'list') continue;
     assertValue(row.title, `card[${row.key}].title`);
     if (row.meter) assertValue(row.meter.fraction, `card[${row.key}].meter`);
     if (row.kind === 'item') {
@@ -156,12 +197,21 @@ export function cardTitleText(title: Value<string>, figure = 'Name'): string {
   return title.kind === 'known' || title.kind === 'partial' ? String(title.value) : notRecordedLabel(figure);
 }
 
+export function cardRowName(row: CardEntryRow): string {
+  return row.kind === 'meter' || row.kind === 'list' ? row.name ?? row.label ?? row.key : cardTitleText(row.title);
+}
+
+export function cardListText(row: CardListRow): string {
+  if (row.missing !== undefined) return notRecordedLabel(row.label ?? row.name);
+  return row.items.length ? row.items.join(', ') : row.none;
+}
+
 function figureText(figure: CardFigure): string {
   const formatted = formatValueState(figure.value);
   return formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? notRecordedLabel(figure.figure) : formatted.text;
 }
 
-function rowByKey(model: CardModel, key: string): CardItemRow | CardHeroRow | null {
+function rowByKey(model: CardModel, key: string): CardEntryRow | null {
   for (const row of model.rows) if (row.kind !== 'section' && row.key === key) return row;
   return null;
 }
@@ -170,8 +220,16 @@ export function deriveCardTooltip(model: CardModel, key: string): FamilyTooltipP
   const row = rowByKey(model, key);
   if (!row) return null;
   if (row.tooltip) return row.tooltip.hour !== undefined ? row.tooltip : { ...row.tooltip, hour: model.hour };
-  const title = cardTitleText(row.title);
+  const title = cardRowName(row);
   const items: TooltipListItem[] = [];
+  if (row.kind === 'meter' || row.kind === 'list') {
+    const text = row.kind === 'list' ? cardListText(row) : row.figure ? figureText(row.figure) : row.bar.kind === 'share' ? row.bar.segments.map(s => s.label).join(' · ') : '';
+    const value = row.kind === 'meter' ? row.figure?.value : undefined;
+    const missing = row.kind === 'list' ? row.missing : value && (value.kind === 'notRecorded' || value.kind === 'notApplicable') ? value.reason : undefined;
+    if (missing !== undefined) items.push({ label: row.label ?? 'Value', missingReason: missing });
+    else if (text) items.push({ label: row.label ?? 'Value', value: text });
+    return { title, fullText: title, hour: model.hour, ...(items.length ? { items } : {}) };
+  }
   if (row.title.kind === 'notRecorded') items.push({ label: 'Name', missingReason: row.title.reason });
   if (row.kind === 'item') {
     if (row.date) {
@@ -195,8 +253,14 @@ export function deriveCardTooltip(model: CardModel, key: string): FamilyTooltipP
   return { title, fullText: title, hour: model.hour, ...(items.length ? { items } : {}) };
 }
 
-function spokenRow(row: CardItemRow | CardHeroRow): string[] {
+function spokenRow(row: CardEntryRow): string[] {
   const parts: string[] = [];
+  if (row.kind === 'list') return [cardListText(row)];
+  if (row.kind === 'meter') {
+    if (row.bar.kind === 'share') parts.push(...row.bar.segments.map(s => s.label));
+    if (row.figure) parts.push(figureText(row.figure));
+    return parts;
+  }
   if (row.kind === 'hero') {
     parts.push(row.state.label);
     if (row.detail) parts.push(row.detail);
@@ -219,7 +283,7 @@ export function deriveCardMirror(model: CardModel): MirrorModel {
       rows.push({ key: row.key, name: row.count !== undefined ? `${row.label} ${row.count}` : row.label, rowIndex: index, groupHeader: true, cells: [] });
       return;
     }
-    rows.push({ key: row.key, name: cardTitleText(row.title), rowIndex: index, cells: spokenRow(row).map((spoken, at) => ({ column: String(at), spoken })) });
+    rows.push({ key: row.key, name: cardRowName(row), rowIndex: index, cells: spokenRow(row).map((spoken, at) => ({ column: String(at), spoken })) });
   });
   return { first: 0, total: model.rows.length, rows };
 }
@@ -233,6 +297,17 @@ export function deriveCardAudit(model: CardModel): FamilyAuditRow[] {
   for (const row of model.rows) {
     if (row.kind === 'section') {
       rows.push(auditCell(row.key, 'section', `${row.label}:${row.count ?? ''}`));
+      continue;
+    }
+    if (row.kind === 'meter') {
+      rows.push(auditCell(row.key, 'name', cardRowName(row)));
+      rows.push(auditCell(row.key, 'bar', row.bar.kind === 'meter' ? canonicalAuditValue(row.bar.fraction) : row.bar.segments.map(s => `${s.tone}:${s.share}:${s.label}`).join('|')));
+      if (row.figure) rows.push(auditCell(row.key, 'figure', canonicalAuditValue(row.figure.value)));
+      continue;
+    }
+    if (row.kind === 'list') {
+      rows.push(auditCell(row.key, 'name', cardRowName(row)));
+      rows.push(auditCell(row.key, 'items', row.missing !== undefined ? `notRecorded:${row.missing}` : row.items.join('|')));
       continue;
     }
     rows.push(auditCell(row.key, 'title', canonicalAuditValue(row.title)));

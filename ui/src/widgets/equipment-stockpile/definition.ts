@@ -8,14 +8,17 @@ export const BREAKDOWN = { id: 'stockpile', label: 'Stockpile breakdown' };
 
 const overTime = (options: Readonly<Record<string, OptionValue>>) => options.view === 'time';
 
+const tableOnly = (field: OptionField): OptionField => ({ ...field,
+  visibleWhen: (options, context) => !overTime(options) && (field.visibleWhen?.(options, context) ?? true) });
+
 const VIEW_OPTION: OptionField = { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'bars',
   choices: [{ value: 'bars', label: 'Table' }, { value: 'time', label: 'Over time' }] };
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'stockpileCountry', section: 'options', label: 'Selected country', kind: 'content-choice', automatic: 'Selected country', default: '', visibleWhen: () => false },
-  breakdownOption([BREAKDOWN], 'Equipment stockpile'), DRILL_OPTION,
+  tableOnly(breakdownOption([BREAKDOWN], 'Equipment stockpile')), tableOnly(DRILL_OPTION),
   { key: 'partGroup', section: 'options', label: 'Breakdown equipment', kind: 'content-choice', default: '',
-    automatic: 'Choose an equipment row', visibleWhen: options => options.show === BREAKDOWN.id },
+    automatic: 'Choose an equipment row', visibleWhen: options => !overTime(options) && options.show === BREAKDOWN.id },
   VIEW_OPTION,
   { key: 'count', section: 'options', label: 'Count', kind: 'choice', default: 'units',
     hint: 'IC shows output as the IC its lines put in a day. Stock and surplus stay in units: the game gives stock no IC value.',

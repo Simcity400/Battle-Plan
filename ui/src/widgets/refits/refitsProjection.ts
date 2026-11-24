@@ -4,10 +4,10 @@ import { declareTableProjection, type DeclarativeColumnSpec, type TableProjectio
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
-import { knownValue, textValue, notApplicable, notRecorded, valueFromNullable, type Value } from '../../families/value.ts';
+import { knownValue, textValue, notApplicable, valueFromNullable, type Value } from '../../families/value.ts';
 import type { NavalRefitsReply, RefitLine, YardShip } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
-import { childCount, fixedText, fraction, refitAmounts, refitProgress, shipLabel, shipPicture, shipPictureCell, shipStrength, shipTooltip, validateRefits } from './yardsData.ts';
+import { childCount, fraction, refitAmounts, refitProgress, shipLabel, shipPicture, shipPictureCell, shipStrength, shipTooltip, validateRefits } from './yardsData.ts';
 import type { CellArt } from '../../families/table/identityCell.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
@@ -21,8 +21,6 @@ const ON_SHIP = 'Shown on each ship';
 const PERCENT = { decimals: 0, maxDecimals: 1, percent: true } as const;
 
 const lineName = (line: RefitLine): Value<string> => textValue(line.target, 'Refit design name unavailable');
-
-const icText = (raw: string | null, reason: string): Value<string> => raw === null ? notRecorded(reason) : knownValue(`${fixedText(raw)} IC`);
 
 const [NAME, PROGRESS, STRENGTH, DOCKYARDS] = COLUMNS;
 
@@ -81,7 +79,7 @@ export const refitsProjection: TableProjection<Record<string, never>> = register
       const amounts = refitAmounts(reply, row.line, live);
       return [
           { label: 'Work done', value: amounts.done, divider: true },
-          { label: 'Cost', value: icText(row.line.cost, 'Refit cost not recorded') },
+          { label: 'Cost', value: amounts.cost },
           { label: 'Remaining cost', value: amounts.remaining },
           { label: 'Ships', value: childCount(row.line.ships.length, row.line.shipsMissing) },
           ...(reply.costRead === null ? [] : [{ label: 'Cost read', value: knownValue(formatDateOnly(reply.costRead)) }]),

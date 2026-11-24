@@ -73,7 +73,8 @@ fn a_medal_s_picture_is_its_definition_s_sprite_at_its_authored_frame() {
 
 #[test]
 fn decorated_divisions_answer_the_first_in_order_with_unread_measures_last_and_ties_by_the_other_measures() {
-    use super::careers::{DecoratedRank, Measures, first_in_order};
+    use super::careers::{DecoratedRank, Measures, ranked};
+    let first_in_order = |measured: Vec<Measures>, by: DecoratedRank, descending: bool, count: usize| ranked(measured, by, descending, count).0;
     let division = |id: u64, medals: Option<i32>, experience: Option<i64>, casualties_taken: Option<i32>| Measures { id, medals, experience, casualties_taken, name: None };
     let world = vec![
         division(1, Some(0), Some(10), Some(5)),
@@ -115,33 +116,38 @@ fn decorated_divisions_hold_until_the_country_filter_next_changes() {
     assert_eq!(filter_valid_through(Some(&spans), 400), i32::MAX);
 }
 
+const DECORATED: [u64; 3] = [1, 2, 3];
+
+fn decorated_world(hour: i32, experience: impl Fn(u64) -> i64) -> replay_frame::frame::DecodedFrame {
+    use replay_data::rows::{DivisionHistoryRow, DivisionLandInputsRow, DivisionManpowerContributor, DivisionRow, DivisionStatusRow, TableId, TableRows};
+    use replay_frame::frame::TableView;
+    let mut frame = dashboard_base::test_fixtures::source(1, hour, Some(1));
+    let divisions = DECORATED.iter().map(|&id| DivisionRow { id, roster_owner: 9001, logical_owner: 9001, template: 1, province: if id == 1 { 100 + hour as u32 } else { 7 }, ..Default::default() }).collect();
+    let status = DECORATED.iter().map(|&id| DivisionStatusRow { division: id, entrenchment: i64::from(hour), experience: Recorded::Value(Some(experience(id))), career_counter: Recorded::Value(Some(10)), ..Default::default() }).collect();
+    let inputs = DECORATED.iter().map(|&id| DivisionLandInputsRow { division: id, manpower: vec![DivisionManpowerContributor { country: 9001, amount: 10 }], ..Default::default() }).collect();
+    let history = DECORATED.iter().map(|&id| DivisionHistoryRow { division: id, list: DivisionHistoryRow::SUMMARY, available: 1, amount: 1, ..Default::default() }.into()).collect();
+    *frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(divisions));
+    *frame.tables[TableId::DivisionStatus.index()] = TableView::Complete(TableRows::DivisionStatus(status));
+    *frame.tables[TableId::DivisionLandInputs.index()] = TableView::Complete(TableRows::DivisionLandInputs(inputs));
+    *frame.tables[TableId::DivisionHistory.index()] = TableView::Complete(TableRows::DivisionHistory(history));
+    frame
+}
+
+fn decorated_source(frames: Vec<replay_frame::frame::DecodedFrame>) -> dashboard_base::Source {
+    use dashboard_base::test_fixtures::{CAMPAIGN, records};
+    let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    dashboard_base::Source::from_replay(dashboard_base::SourceKey { source_id: "decorated".into(), revision: "1".into() }, "decorated.battleplan".into(), std::sync::Arc::new(replay), &std::sync::atomic::AtomicBool::new(false)).unwrap()
+}
+
 #[test]
 fn a_quiet_hour_of_decorated_divisions_visits_no_row_while_a_division_moves_and_tokens_stay_unread() {
     use super::careers::{DecoratedDivisions, DecoratedDivisionsParams, DecoratedRank};
-    use dashboard_base::{Source, SourceKey, products::{LoadContext, at_hour::exact_panel}, test_fixtures::{CAMPAIGN, played, records, source}};
-    use replay::campaign::Replay;
-    use replay_data::rows::{DivisionHistoryRow, DivisionLandInputsRow, DivisionManpowerContributor, DivisionRow, DivisionStatusRow, TableId, TableRows};
-    use replay_frame::frame::{DecodedFrame, TableView};
-    use std::sync::{Arc, atomic::AtomicBool};
+    use dashboard_base::{products::{LoadContext, at_hour::exact_panel}, test_fixtures::played};
+    use std::sync::Arc;
     const FIRST: i32 = 1_000;
     const LAST: i32 = 1_020;
     const VETERAN: i32 = 1_015;
-    let ids = [1u64, 2, 3];
-    let frame = |hour: i32| -> DecodedFrame {
-        let mut frame = source(1, hour, Some(1));
-        let experience = |id: u64| if id == 1 && hour >= VETERAN { 300 } else { 30 * id as i64 };
-        let divisions = ids.iter().map(|&id| DivisionRow { id, roster_owner: 9001, logical_owner: 9001, template: 1, province: if id == 1 { 100 + hour as u32 } else { 7 }, ..Default::default() }).collect();
-        let status = ids.iter().map(|&id| DivisionStatusRow { division: id, entrenchment: i64::from(hour), experience: Recorded::Value(Some(experience(id))), career_counter: Recorded::Value(Some(10)), ..Default::default() }).collect();
-        let inputs = ids.iter().map(|&id| DivisionLandInputsRow { division: id, manpower: vec![DivisionManpowerContributor { country: 9001, amount: 10 }], ..Default::default() }).collect();
-        let history = ids.iter().map(|&id| DivisionHistoryRow { division: id, list: DivisionHistoryRow::SUMMARY, available: 1, amount: 1, ..Default::default() }.into()).collect();
-        *frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(divisions));
-        *frame.tables[TableId::DivisionStatus.index()] = TableView::Complete(TableRows::DivisionStatus(status));
-        *frame.tables[TableId::DivisionLandInputs.index()] = TableView::Complete(TableRows::DivisionLandInputs(inputs));
-        *frame.tables[TableId::DivisionHistory.index()] = TableView::Complete(TableRows::DivisionHistory(history));
-        frame
-    };
-    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
-    let source = Source::from_replay(SourceKey { source_id: "decorated-quiet".into(), revision: "1".into() }, "decorated.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let source = decorated_source((FIRST..=LAST).map(|hour| decorated_world(hour, |id| if id == 1 && hour >= VETERAN { 300 } else { 30 * id as i64 })).collect());
     let asked = serde_json::to_value(DecoratedDivisionsParams { branch_id: "1".into(), countries: None, by: DecoratedRank::Experience, descending: true, count: 2 }).unwrap();
     let panel = exact_panel::<DecoratedDivisions>(&source, &LoadContext { content: None }, &asked).unwrap();
     let reads = played(&source.replay(), panel.exact().unwrap(), FIRST, LAST);
@@ -156,4 +162,105 @@ fn a_quiet_hour_of_decorated_divisions_visits_no_row_while_a_division_moves_and_
         assert_eq!((read.rows, read.visited), (0, 0), "hour {}: a move and a dug-in change are not ranked or shown, and unread tokens stay unread", read.hour);
         assert!(Arc::ptr_eq(&read.value, &reads[place - 1].value), "hour {} keeps the held reply", read.hour);
     }
+}
+
+#[test]
+fn unread_country_links_keep_the_ranking_under_all_and_make_a_filtered_ranking_unknown_not_empty() {
+    use super::careers::{CountryHours, DecoratedDivisions, DecoratedDivisionsParams, DecoratedRank};
+    use dashboard_base::products::{LoadContext, at_hour::exact_panel};
+    use replay_data::rows::TableId;
+    use replay_frame::frame::TableView;
+    let unread = |hour: i32| {
+        let mut frame = decorated_world(hour, |id| 30 * id as i64);
+        *frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable { reason: "links unread in the fixture".into() };
+        frame
+    };
+    let source = decorated_source((1_000..=1_002).map(unread).collect());
+    let answer = |countries: Option<Vec<CountryHours>>| {
+        let asked = serde_json::to_value(DecoratedDivisionsParams { branch_id: "1".into(), countries, by: DecoratedRank::Experience, descending: true, count: 2 }).unwrap();
+        let panel = exact_panel::<DecoratedDivisions>(&source, &LoadContext { content: None }, &asked).unwrap();
+        (panel.exact().unwrap().cold)(1_001, &std::sync::atomic::AtomicBool::new(false)).unwrap()
+    };
+    let all = answer(None);
+    let shown: Vec<(&str, &serde_json::Value)> = all["divisions"].as_array().unwrap().iter().map(|row| (row["division"].as_str().unwrap(), &row["tag"])).collect();
+    assert_eq!(shown, [("3", &serde_json::Value::Null), ("2", &serde_json::Value::Null)], "every division still ranks; its country is the missing part");
+    assert_eq!(all["missing"], serde_json::Value::Null);
+    assert!(all["warnings"].as_array().unwrap().iter().any(|line| line.as_str().unwrap().starts_with("Division countries unavailable")), "{all}");
+    let filtered = answer(Some(vec![CountryHours { tag: "GER".into(), first_hour: 1_000, last_hour: 1_002 }]));
+    assert_eq!(filtered["divisions"].as_array().unwrap().len(), 0);
+    assert_eq!(filtered["missing"], "3 divisions' countries were not recorded at this hour, so which belong to the chosen countries is not known", "never an empty list that reads as no divisions");
+}
+
+#[test]
+fn a_tie_at_the_cut_or_between_shown_divisions_decided_by_an_unread_measure_is_not_a_proven_order() {
+    use super::careers::{DecoratedRank, Measures, ranked};
+    let division = |id: u64, medals: Option<i32>, experience: Option<i64>, casualties_taken: Option<i32>| Measures { id, medals, experience, casualties_taken, name: None };
+    let ids = |(rows, unproven): (Vec<Measures>, bool)| (rows.iter().map(|row| row.id).collect::<Vec<_>>(), unproven);
+    let tied = vec![division(1, Some(4), Some(10), Some(1)), division(2, Some(4), None, Some(9)), division(3, Some(1), Some(90), Some(1))];
+    assert_eq!(ids(ranked(tied.clone(), DecoratedRank::Medals, true, 1)), (vec![1], true), "equal medals at the cut, one experience unread");
+    assert_eq!(ids(ranked(tied.clone(), DecoratedRank::Medals, true, 3)), (vec![1, 2, 3], true), "the same tie between shown rows");
+    let known = vec![division(1, Some(4), Some(10), Some(1)), division(2, Some(4), Some(5), None), division(3, Some(1), None, None)];
+    assert_eq!(ids(ranked(known, DecoratedRank::Medals, true, 1)), (vec![1], false), "a tie the read experience decides is proven, though a later measure is unread");
+    assert_eq!(ids(ranked(tied, DecoratedRank::Experience, true, 2)), (vec![3, 1], false), "no tie on the ranked measure");
+}
+
+#[test]
+fn the_selected_division_s_witnessed_rows_give_its_record_though_the_reads_were_truncated_elsewhere() {
+    use super::careers::{DivisionRecord, DivisionRecordParams};
+    use dashboard_base::products::{LoadContext, at_hour::{At, AtHour}};
+    use dashboard_follow::live::Cells;
+    use dashboard_query::identity::Holders;
+    use replay_data::rows::{TableId, TableRows};
+    use replay_frame::frame::TableView;
+    let mut frame = decorated_world(1_000, |id| 30 * id as i64);
+    let truncate = |view: &TableView| match view {
+        TableView::Complete(TableRows::Divisions(rows)) => TableView::Truncated { rows: TableRows::Divisions(rows.iter().filter(|row| row.id == 2).cloned().collect()), missing: 2 },
+        TableView::Complete(TableRows::DivisionStatus(rows)) => TableView::Truncated { rows: TableRows::DivisionStatus(rows.iter().filter(|row| row.division == 2).cloned().collect()), missing: 2 },
+        TableView::Complete(TableRows::DivisionLandInputs(rows)) => TableView::Truncated { rows: TableRows::DivisionLandInputs(rows.iter().filter(|row| row.division == 2).cloned().collect()), missing: 2 },
+        _ => unreachable!(),
+    };
+    for table in [TableId::Divisions, TableId::DivisionStatus, TableId::DivisionLandInputs] {
+        let truncated = truncate(&frame.tables[table.index()]);
+        *frame.tables[table.index()] = truncated;
+    }
+    let source = decorated_source(vec![decorated_world(1_000, |id| 30 * id as i64)]);
+    let content = DivisionRecord::context(&source, &LoadContext { content: None }).unwrap();
+    let (holders, live, cancelled) = (Holders::default(), Cells::default(), std::sync::atomic::AtomicBool::new(false));
+    let at = At { owner: None, holders: &holders, hour: 1_000, context: &content, cancelled: &cancelled, live: &live };
+    let asked = |division: &str| DivisionRecordParams { branch_id: "1".into(), division: division.into() };
+    let reply = DivisionRecord::reply(&frame, &asked("2"), &at).unwrap();
+    assert!(!reply.absent);
+    let facts = reply.facts.expect("the witnessed division has its facts");
+    assert_eq!((facts.casualties_taken, facts.experience_raw.as_deref()), (Some(10), Some("6")), "its status and manpower rows were read");
+    assert!(DivisionRecord::reply(&frame, &asked("3"), &at).is_err(), "an unwitnessed division is not said to be absent");
+}
+
+#[test]
+fn the_type_view_keeps_its_rows_when_the_designs_behind_its_tooltip_are_unread() {
+    use super::equipment::{DivisionEquipment, DivisionEquipmentParams, DivisionEquipmentView};
+    use crate::products::army::ArmyAttribution;
+    use dashboard_base::products::{Country, LoadContext, at_hour::{At, AtHour, Owner}};
+    use dashboard_follow::live::Cells;
+    use dashboard_query::identity::Holders;
+    use replay_data::rows::{DivisionEquipmentCountRow, DivisionEquipmentTypeRow, TableId, TableRows};
+    use replay_frame::frame::TableView;
+    let side = super::side(ArmyAttribution::Owner);
+    let mut frame = dashboard_base::test_fixtures::source(1, 1_000, Some(1));
+    *frame.tables[TableId::DivisionEquipmentCounts.index()] = TableView::Complete(TableRows::DivisionEquipmentCounts(vec![DivisionEquipmentCountRow {
+        slot: 7, side, divisions: Recorded::Value(2), short: Recorded::Value(1), unknown: Recorded::Value(0), unpooled: Recorded::Value(0), unclassified: Recorded::Value(0), ..Default::default()
+    }]));
+    *frame.tables[TableId::DivisionEquipmentByType.index()] = TableView::Complete(TableRows::DivisionEquipmentByType(vec![DivisionEquipmentTypeRow {
+        slot: 7, side, archetype: None, held: Recorded::Value(300_000), needed: Recorded::Value(500_000), filled: Recorded::Value(300_000), missing: Recorded::Value(200_000), short: Recorded::Value(1), stock: Recorded::NotRecorded,
+    }]));
+    *frame.tables[TableId::DivisionEquipmentByDesign.index()] = TableView::Unavailable { reason: "designs unread in the fixture".into() };
+    let source = decorated_source(vec![decorated_world(1_000, |id| 30 * id as i64)]);
+    let context = DivisionEquipment::context(&source, &LoadContext { content: None }).unwrap();
+    let (holders, live, cancelled) = (Holders::default(), Cells::default(), std::sync::atomic::AtomicBool::new(false));
+    let at = At { owner: Some(Owner { slot: 7, id: 9001 }), holders: &holders, hour: 1_000, context: &context, cancelled: &cancelled, live: &live };
+    let params = DivisionEquipmentParams { branch_id: "1".into(), country: Country::from("GER"), count_for: ArmyAttribution::Owner, view: DivisionEquipmentView::Types };
+    let reply = DivisionEquipment::reply(&frame, &params, &at).unwrap();
+    assert_eq!(reply.missing, None, "the by-type holdings are complete");
+    let row = &reply.types[0];
+    assert_eq!((row.held_raw.as_deref(), row.missing_raw.as_deref(), row.divisions_short), (Some("300000"), Some("200000"), Some(1)));
+    assert!(row.variants.is_empty() && row.variants_missing.as_deref().is_some_and(|why| why.contains("designs unread in the fixture")), "the design list says why it is missing");
 }

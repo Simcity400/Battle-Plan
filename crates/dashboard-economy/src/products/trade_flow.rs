@@ -213,9 +213,8 @@ impl AtHour for TradeFlow {
             table: params.table,
             not_recorded: NOT_RECORDED,
             unlinked: UNLINKED,
-            incomplete: None,
         };
-        let mut reply = build_flows(&edges, parts, RESOURCE_DECIMALS, &shape, &|slot| FlowEndpoint::at(at.holders, slot, at.hour, UNLINKED));
+        let mut reply = build_flows(&edges, &[], parts, RESOURCE_DECIMALS, &shape, &|slot| FlowEndpoint::at(at.holders, slot, at.hour, UNLINKED));
         reply.warnings.append(&mut warnings);
         Ok(reply)
     }

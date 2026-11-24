@@ -71,7 +71,7 @@ async function withArtWidgets(count: number, run: (kit: Kit) => Promise<void>) {
       requests.push(sprites.map(sprite => sprite.key));
       if (held) await new Promise<void>(resolve => waiting.push(resolve));
       else await new Promise(resolve => setImmediate(resolve));
-      return { items: sprites.map(sprite => ({ ...sprite, icon: `art://${sprite.key}`, resolution: readySprite(sprite.key) })), warnings: [] };
+      return { items: sprites.map(sprite => ({ ...sprite, icon: sprite.key.startsWith('fail_') ? null : `art://${sprite.key}`, resolution: sprite.key.startsWith('fail_') ? { status: 'failed', reason: 'the read was refused', retryable: false } : readySprite(sprite.key) })), warnings: [] };
     },
   };
   const host = globalThis as typeof globalThis & { __artWidgets?: typeof fixture };
@@ -171,4 +171,19 @@ test('a widget keeps exactly the art its projection read: 513 handles keep the f
   track = { ...track, branch: { id: '2' } };
   pass();
   assert.equal(shown.resolutions, undefined, 'another branch starts with no demand');
+}));
+
+test('a settled failure keeps its object, so another widget settling does not change this widget\'s record', () => withArtWidgets(2, async ({ useArtHandleResolutions, use }) => {
+  const runtime = { client: {} };
+  const track = { source: { id: 's', revision: 'r' }, branch: { id: '1' } };
+  const shown: any[] = [undefined, undefined];
+  const pass = (at: number) => { const hooks = use(at); shown[at] = hooks.render(() => useArtHandleResolutions(runtime, track, true)); hooks.commit(); };
+  pass(0); pass(1);
+  shown[0].onArtDemands([sprite('fail_a'), sprite('ok_a')]);
+  for (let i = 0; i < 8; i++) { pass(0); pass(1); await tick(); }
+  const record = shown[0].resolutions;
+  assert.deepEqual(Object.values(record).map((art: any) => art.status).sort(), ['failed', 'ready']);
+  shown[1].onArtDemands([sprite('ok_b')]);
+  for (let i = 0; i < 8; i++) { pass(0); pass(1); await tick(); }
+  assert.strictEqual(shown[0].resolutions, record, 'an unrelated settlement leaves the record, so the lane is not rebound');
 }));

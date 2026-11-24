@@ -55,6 +55,9 @@ function producedValue(line: ProductionLinesAtReply['lines'][number], outputMiss
   return units === 0 ? zeroValue(0) : knownValue(units);
 }
 
+const producedCell = (value: Value): TableCell =>
+  value.kind === 'partial' ? { value, sortValue: notRecorded(value.reason) } : { value };
+
 function readLiveWhole(live: ReturnType<BoundedReadView['live']>, handle: string, field: string): bigint | null {
   if (!live) return null;
   const raw = live.raw?.(liveKey(handle, field));
@@ -152,7 +155,7 @@ export const productionLinesProjection: TableProjection<ProductionLinesProjectio
               : knownValue(weekly),
           format: { decimals: reply.decimals, maxDecimals: 1 },
         },
-        total: { value: producedValue(line, reply.outputMissing, outputUnits) },
+        total: producedCell(producedValue(line, reply.outputMissing, outputUnits)),
         priority: { value: knownValue(line.priority + 1) },
         cost: {
           value: costRaw === null ? notRecorded('IC cost not recorded') : knownValue(formatAmount(costRaw, reply.decimals)),

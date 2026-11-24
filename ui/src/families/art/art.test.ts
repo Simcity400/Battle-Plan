@@ -8,7 +8,7 @@ import { LaneArtCache } from './laneCache.ts';
 import { drawMediaSlot, flagEntryToArt, resolveCachedArt, spriteImageToArt } from './adapters.ts';
 import { artUrlForHandle, collectArtUrls, createDomArtProvider, createLaneArtProvider, flagArtHandle, laneArtDemand, urlArtHandle } from './provider.ts';
 import { DEFAULT_FAMILY_THEME } from '../../draw/kit.ts';
-import { MAX_ART_CALLS, SpriteCaches, artCacheScope, fetchArtHandles, spriteResolutions } from './transport.ts';
+import { SpriteCaches, artCacheScope, artCalls, settleCall, spriteResolutions } from './transport.ts';
 import type { ArtHandle } from '../plan.ts';
 import {
   artHandleKey,
@@ -21,6 +21,7 @@ import {
   readyArt,
   refusedArt,
   type ArtBitmap,
+  type ArtResolution,
 } from './types.ts';
 import type { CountryFlagChoice } from '../../generated/dashboard';
 
@@ -33,6 +34,11 @@ function fakeBitmap(): ArtBitmap & { closed: boolean } {
     closed: false,
     close() { this.closed = true; },
   };
+}
+
+async function answerHandles(...args: Parameters<typeof artCalls>): Promise<ReadonlyMap<string, ArtResolution>> {
+  const settled = await Promise.all(artCalls(...args).map(call => settleCall(call, args[3])));
+  return new Map(settled.flatMap(map => [...map]));
 }
 
 test('LaneArtCache distinguishes all six Rust ArtResolution states, wakes on load and failure, retries, and flushes on content revision', async () => {
@@ -249,6 +255,7 @@ test('ArtProvider plugs LaneArtCache and DomArtCache behind BoundedReadView.art(
 
   let wakes = 0;
   const laneCache = new LaneArtCache<ArtBitmap>({
+    maxEntries: 1,
     onSettle: () => { wakes++; },
     fetchBitmap: () => Promise.resolve(fakeBitmap()),
   });
@@ -274,7 +281,17 @@ test('ArtProvider plugs LaneArtCache and DomArtCache behind BoundedReadView.art(
   assert.equal(ready.status, 'ready');
   assert.equal(ready.url, 'art://ger-flag');
   assert.equal(ready.provenance.label, 'Current installation');
-  assert.ok(ready.bitmap);
+  assert.equal('bitmap' in ready, false, 'a projection holds the address, never a decoded bitmap the cache may close under it');
+  assert.deepEqual(demanded, ['art://ger-flag', 'art://ger-flag'], 'art a projection holds stays demanded after it decodes');
+  const painted = resolveCachedArt(ready, laneCache as unknown as LaneArtCache<ImageBitmap>);
+  assert.ok(painted.status === 'ready' && painted.bitmap, 'the painter draws it from the cache');
+  const decoded = painted.bitmap as unknown as ReturnType<typeof fakeBitmap>;
+
+  laneCache.requestVisible(['art://other']);
+  for (let i = 0; i < 4; i++) await Promise.resolve();
+  assert.equal(decoded.closed, true, 'art scrolled away is evicted and closed');
+  const repainted = resolveCachedArt(ready, laneCache as unknown as LaneArtCache<ImageBitmap>);
+  assert.ok(repainted.status === 'ready' && repainted.bitmap === undefined, 'a cached model painted again after the eviction draws its art as loading, never the closed bitmap');
 
   const domCache = new DomArtCache<DomArtImage>({
     createImage: () => ({ complete: true, naturalWidth: 41, naturalHeight: 26, src: '', onload: null, onerror: null }),
@@ -356,7 +373,7 @@ test('sprite, portrait, technology and relative-path handles are asked of their 
   const requests: { product: string; params: unknown }[] = [];
   const ready = readyArt('art://drawn');
   const missing = { status: 'unavailable', reason: 'The game generates this portrait from unrecorded inputs' } as const;
-  const answered = await fetchArtHandles(async request => {
+  const answered = await answerHandles(async request => {
     requests.push({ product: request.product, params: request.params });
     if (request.product === 'unit-leader-portraits') return { portraits: [{ reference: '12', image: null, missing: missing.reason, resolution: missing }], warnings: [] };
     if (request.product === 'technology-artwork') {
@@ -459,7 +476,7 @@ test('a portrait is cached per branch: two branches with the same leader referen
   for (const track of tracks) {
     const scope = artCacheScope(track, 4);
     caches.hold(scope);
-    caches.request(scope, [portrait], (batch, signal) => fetchArtHandles(async request => {
+    caches.request(scope, [portrait], (batch, signal) => artCalls(async request => {
       const params = request.params as { branchId: string };
       asked.push(params.branchId);
       return { portraits: [{ reference: '12', image: `art://branch-${params.branchId}`, missing: null, resolution: readyArt(`art://branch-${params.branchId}`) }], warnings: [] };
@@ -472,23 +489,17 @@ test('a portrait is cached per branch: two branches with the same leader referen
   assert.notEqual(artCacheScope(tracks[0]!, 4), artCacheScope(tracks[0]!, 5), 'a content revision (mod stack or presentation) is its own scope');
 });
 
-test('portrait calls are bounded and settle one by one; a retryable failure is retried per handle after its backoff and a refusal stays', async () => {
+test('portrait calls settle one by one; a retryable failure is retried per handle after its backoff and a refusal stays', async () => {
   const portraits: ArtHandle[] = Array.from({ length: 64 }, (_, hour) => ({ kind: 'portrait', leader: '12', hour: 100 + hour }));
-  let open = 0;
-  let most = 0;
   const calls: number[] = [];
-  const answered = await fetchArtHandles(async request => {
+  const answered = await answerHandles(async request => {
     const hour = (request.params as { hour: number }).hour;
     calls.push(hour);
-    open++;
-    most = Math.max(most, open);
     await Promise.resolve();
-    open--;
     if (hour === 103) throw new Error('Request timed out');
     return { portraits: [{ reference: '12', image: `art://${hour}`, missing: null, resolution: readyArt(`art://${hour}`) }], warnings: [] };
   }, { source: { id: 's', revision: 'r' }, branch: { id: '1' } } as never, portraits, new AbortController().signal);
   assert.equal(calls.length, 64);
-  assert.ok(most <= MAX_ART_CALLS, `at most ${MAX_ART_CALLS} product calls at once, saw ${most}`);
   assert.equal([...answered.values()].filter(art => art.status === 'ready').length, 63, 'one rejected call discards none of its siblings');
   assert.equal(answered.get(artHandleKey(portraits[3]!))?.status, 'failed');
 
@@ -501,18 +512,26 @@ test('portrait calls are bounded and settle one by one; a retryable failure is r
   const fetch = async (batch: readonly ArtHandle[]) => new Map(batch.map(handle => [artHandleKey(handle), handle === refused || (handle.kind === 'sprite' && handle.key === 'GFX_refused')
     ? refusedArt('unsupported sprite', 'sprite-render')
     : ++attempts === 1 ? failedArt('transport dropped', true) : readyArt('art://flaky')]));
+  const asCall = (batch: readonly ArtHandle[]) => [{ handles: batch, run: () => fetch(batch) }];
   caches.hold('scope');
-  caches.request('scope', [flaky, refused], fetch);
+  caches.request('scope', [flaky, refused], asCall);
   for (let i = 0; i < 20; i++) await Promise.resolve();
   assert.equal(caches.failures('scope').get(artHandleKey(flaky))?.retryable, true);
   assert.equal(caches.resolutions('scope').get(artHandleKey(refused))?.status, 'refused', 'a refusal is settled, never retried');
-  caches.request('scope', [flaky], fetch);
+  caches.request('scope', [flaky], asCall);
   for (let i = 0; i < 6; i++) await Promise.resolve();
   assert.equal(attempts, 1, 'no new request inside the backoff');
+  let woken = 0;
+  const stop = caches.watch('scope', () => { woken++; });
   now = timers[0]!.at;
   timers.shift()!.run();
   for (let i = 0; i < 6; i++) await Promise.resolve();
-  assert.equal(attempts, 2, 'the failed handle is asked again once its backoff ends');
+  assert.equal(woken, 1, 'the end of the backoff wakes whoever still shows the handle');
+  assert.equal(attempts, 1, 'nothing is fetched for a handle no widget asks for any more');
+  caches.request('scope', [flaky], asCall);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  stop();
+  assert.equal(attempts, 2, 'the failed handle is asked again once a widget asks after its backoff');
   assert.equal(caches.resolutions('scope').get(artHandleKey(flaky))?.status, 'ready');
   assert.equal(caches.failures('scope').size, 0);
 });

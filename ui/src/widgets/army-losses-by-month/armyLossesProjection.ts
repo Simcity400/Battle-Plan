@@ -5,6 +5,7 @@ import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
 import { firstHourOfMonth, gameDate, monthAt, monthIndex, monthNames } from '../../dashboard/calendar.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { NOT_LIVE_CELL } from '../../dashboard/follow/liveCells.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import {
@@ -245,23 +246,27 @@ function resolveBar(
     const part = parts[i]!;
     const staticRaw = BigInt(bar.values[i] ?? '0');
     let raw = staticRaw;
-    if (live && bar.liveRow && staticRaw !== 0n) {
+    if (live && bar.liveRow) {
       const cellKey = liveKey(bar.liveRow, `p${i}`);
       const liveVal = live.raw?.(cellKey) ?? live.get(cellKey);
-      if (liveVal === undefined) {
-        return {
-          year,
-          month,
-          firstHour: bar.firstHour,
-          lastHour: bar.lastHour,
-          status: 'not-recorded',
-          reason: live.missing(cellKey),
-          segments: [],
-          totalValue: 0,
-          totalText: '0',
-        };
+      if (liveVal !== undefined) {
+        raw = wrapRaw(typeof liveVal === 'bigint' ? liveVal : BigInt(Math.round(Number(liveVal))), wrapI32);
+      } else {
+        const reason = live.missing(cellKey);
+        if (reason !== NOT_LIVE_CELL) {
+          return {
+            year,
+            month,
+            firstHour: bar.firstHour,
+            lastHour: bar.lastHour,
+            status: 'not-recorded',
+            reason,
+            segments: [],
+            totalValue: 0,
+            totalText: '0',
+          };
+        }
       }
-      raw = wrapRaw(typeof liveVal === 'bigint' ? liveVal : BigInt(Math.round(Number(liveVal))), wrapI32);
     }
     totalRaw = wrapRaw(totalRaw + raw, wrapI32);
     segments.push({

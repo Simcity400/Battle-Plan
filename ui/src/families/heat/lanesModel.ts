@@ -1,3 +1,5 @@
+import { REGION_ADD_KEY } from '../regions/regionRows.ts';
+import type { ActiveRegions } from '../../generated/dashboard';
 import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import type { ArtResult } from '../art/types.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
@@ -100,6 +102,7 @@ export interface HeatLaneRegions {
   readonly pickedHeading: string;
   readonly automaticHeading: string;
   readonly addLabel: string;
+  readonly active?: ActiveRegions;
 }
 
 export interface HeatLaneGap {
@@ -275,10 +278,12 @@ export function deriveLanesMirror(
   firstRow: number,
   endRow: number,
 ): MirrorModel {
+  const regions = model.regions;
+  const total = model.rows.length + (regions ? 1 : 0);
   const r0 = Math.max(0, firstRow);
-  const r1 = Math.min(model.rows.length, endRow);
+  const r1 = Math.min(total, endRow);
   const rows: MirrorRow[] = [];
-  for (let i = r0; i < r1; i++) {
+  for (let i = r0; i < Math.min(r1, model.rows.length); i++) {
     const row = model.rows[i]!;
     rows.push({
       key: row.id,
@@ -286,6 +291,7 @@ export function deriveLanesMirror(
       rowIndex: i,
       cells: [
         { column: 'Name', spoken: row.label },
+        ...(regions ? [{ column: 'Group', spoken: row.pinned ? regions.pickedHeading : regions.automaticHeading }] : []),
         {
           column: formatDateOnly(model.hour),
           spoken: `${formatDateOnly(model.hour)}: ${readoutAuditText(row.readout) || 'Recorded'}`,
@@ -293,5 +299,6 @@ export function deriveLanesMirror(
       ],
     });
   }
-  return { first: r0, total: model.rows.length, rows };
+  if (regions && r1 === total) rows.push({ key: REGION_ADD_KEY, name: regions.addLabel, rowIndex: model.rows.length, cells: [{ column: 'action', spoken: regions.addLabel }] });
+  return { first: r0, total, rows };
 }

@@ -19,6 +19,7 @@ export const FLOW_NODE_GAP = 6;
 export const FLOW_LABEL_MIN = 14;
 export const FLOW_MISSING_HEIGHT = 6;
 const SAMPLES = 20;
+const FLOW_OTHERS_ALPHA = 0.45;
 const FLAG_GAP = 6;
 
 export interface FlowNodeBox {
@@ -359,6 +360,7 @@ export function drawFlow(ctx: Canvas2D, input: DrawFlowInput): void {
     if (total <= 0) continue;
     ctx.globalAlpha = alpha;
     if (ribbon.others) {
+      ctx.globalAlpha = alpha * FLOW_OTHERS_ALPHA;
       ctx.fillStyle = tokens.barNeutral;
       ribbonPath(ctx, box, 0, 1);
       ctx.fill();

@@ -18,29 +18,10 @@ export function spanRanges(spans: readonly Span[] | undefined, from: number, to:
   return ranges;
 }
 
-export const overlapsSpans = (spans: readonly Span[] | undefined, first: number, last: number) =>
-  !!spans?.some(span => span.firstHour <= last && span.lastHour >= first);
-
-export function preparedKeyItems(approximate: readonly Span[] | undefined, pending: readonly Span[] | undefined,
-  loading?: readonly Span[]): ('approximate' | 'pending' | 'loading')[] {
-  return [...(approximate?.length ? ['approximate' as const] : []), ...(pending?.length ? ['pending' as const] : []),
-    ...(loading?.length ? ['loading' as const] : [])];
-}
-
 export function fillPendingBand(ctx: CanvasRenderingContext2D, tokens: ChartTokens, from: number, to: number, top: number, height: number): void {
   if (!(to > from) || !(height > 0)) return;
   ctx.save(); ctx.fillStyle = tokens.muted; ctx.globalAlpha = PENDING_ALPHA;
   ctx.fillRect(from, top, to - from, height); ctx.restore();
-}
-
-export function markApproximate(ctx: CanvasRenderingContext2D, tokens: ChartTokens, left: number, top: number, width: number, height: number): void {
-  if (!(width > 0) || !(height > 0)) return;
-  ctx.save();
-  ctx.fillStyle = tokens.surface; ctx.globalAlpha = 1 - APPROXIMATE_ALPHA;
-  ctx.fillRect(left, top, width, height);
-  ctx.globalAlpha = 1; ctx.strokeStyle = tokens.muted; ctx.lineWidth = 1; ctx.setLineDash([...APPROXIMATE_DASH]);
-  ctx.strokeRect(left + 0.5, top + 0.5, Math.max(0, width - 1), Math.max(0, height - 1));
-  ctx.restore();
 }
 
 export function pendingLayer(pending: readonly Span[] | undefined): ChartLayer {

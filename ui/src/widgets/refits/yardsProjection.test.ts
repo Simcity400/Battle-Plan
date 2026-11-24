@@ -47,6 +47,18 @@ test('a refit line shows the product’s progress against its cost, its dockyard
   assert.equal(project(refitsProjection, refits({ dockyards: null })).titleSummary, null, 'no total is invented when the census is incomplete');
 });
 
+test('the refit tooltip prints the same validated cost the progress and remaining cost use; the sentinel and an unread cost are not a cost', () => {
+  const tip = (cost: string | null, costRead: number | null = 40) => {
+    const model = project(refitsProjection, refits({ costRead, lines: [{ ...refits().lines[0]!, cost }] }));
+    return [cell(model.rows[0], 'progress'), tipValue(model.rows[0], 'Cost'), tipValue(model.rows[0], 'Remaining cost')];
+  };
+  assert.deepEqual(tip('1000000'), [knownValue(90.6), knownValue('10 IC'), knownValue('0.94 IC')]);
+  const unknown = [notRecorded('Refit cost not recorded'), notRecorded('Refit cost not recorded'), notRecorded('Remaining cost not recorded')];
+  assert.deepEqual(tip('9223372036854775807'), unknown, 'the maximum-integer sentinel');
+  assert.deepEqual(tip('0'), unknown);
+  assert.deepEqual(tip('1000000', null), unknown, 'a cost whose read hour is not known');
+});
+
 test('the hourly progress cell moves the share, the work done and the remaining cost together; a live cell that says missing is never covered by the held value', () => {
   const model = project(refitsProjection, refits(), new Map([[liveKey('7', 'progress'), 500000]]));
   assert.deepEqual(cell(model.rows[0], 'progress'), knownValue(50));

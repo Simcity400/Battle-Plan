@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ResearchHistory } from '../research/types';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
-import { estimateHour, slotValues, slotNumbers, slotsStructure } from '../research/researchSlots.ts';
+import { slotValues, slotNumbers, slotsStructure } from '../research/researchSlots.ts';
 import { activeSlots, openedResearch } from './activeResearchData.ts';
-import { panelStructure, panelViews } from '../../draw/panels/views.ts';
+import { panelViews, readingStructure } from '../../draw/panels/views.ts';
 import type { ResearchEntry, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsAt } from '../research/types';
 
@@ -49,8 +49,9 @@ test('each open slot says what it researches, and its painted numbers count down
   const nextSonar = { ...sonar, state: { ...sonar.state, firstHour: day(101), lastHour: day(101), details: { ...sonar.state.details!, remainingDays: 11, estimateRaw: '1100000' } } };
   const plain = (read: ResearchSlotNow) => ({ ...read, state: { ...read.state, details: read.state.details && { ...read.state.details, modifiers: null } } });
   const opened = reply(day(100), [sonar].map(plain)), next = { ...reply(day(101), [nextSonar].map(plain)), readHour: day(101) };
-  const shown = panelStructure('research-slots', opened, day(100));
-  assert.notEqual(panelStructure('research-slots', next, day(101)), shown, 'the follow structure carries the read that supplied it');
+  const structureOf = readingStructure('research-slots')!;
+  const shown = structureOf({ data: opened } as never, day(100))!;
+  assert.notEqual(structureOf({ data: next } as never, day(101)), shown, 'the follow structure carries the read that supplied it');
   const view = panelViews['research-slots']!;
   assert.equal(view.values(next, null, day(101), shown), null, 'a later read is never painted into the one shown');
   assert.equal(view.values(opened, null, day(100), shown)?.get('1:days'), '8 days left');
@@ -103,18 +104,4 @@ test('a research without a joined assignment keeps the definition it was read wi
   };
   const opened = openedResearch(researching(day(96)));
   assert.deepEqual([opened.databaseIndex, opened.firstObservedHour, opened.readHour], [6, null, day(96)], 'the definition the slot read is kept');
-});
-
-test('U-S7: an open breakdown reads at the installed estimate, and moves only when the shown days left or its read change', () => {
-  const read: ResearchSlotNow = { index: 0, definition: null, state: state('radar', null, { firstHour: day(96), lastHour: day(99), details: { remainingDays: 9, estimateRaw: '900000', bonuses: null, modifiers: null } }),
-    progress: null };
-  const asked = reply(day(96), [read]);
-  const installed = (hour: number, painted = asked) => ({ hour, data: asked, texts: slotValues(painted, hour) });
-  assert.equal(estimateHour(installed(day(97) + 5), asked, 0, 'radar'), day(97), 'the installed hour, not the asked reply, sets the day the breakdown reads');
-  const reread = reply(day(97), [{ ...read, state: { ...read.state, firstHour: day(97) + 3 } }]);
-  assert.equal(estimateHour(installed(day(97) + 5, reread), asked, 0, 'radar'), day(97) + 3,
-    'F-S4: a new read painted with an unchanged structure moves the breakdown to the read the painted days left come from');
-  assert.equal(estimateHour(installed(day(97) + 5), asked, 0, 'radar'), estimateHour(installed(day(97) + 20), asked, 0, 'radar'), 'within one shown days left the breakdown stays put');
-  assert.equal(estimateHour(undefined, asked, 0, 'radar'), day(96), 'with nothing installed it reads at the asked hour');
-  assert.equal(estimateHour(installed(day(97) + 5), asked, 0, 'sonar'), day(97) + 5, 'another research in the slot is not this estimate');
 });
