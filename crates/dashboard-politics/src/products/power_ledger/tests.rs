@@ -1216,9 +1216,10 @@ fn pieces_apart_only_across_unrecorded_hours_break_continuity_and_the_statement_
     use super::{Piece, continuity};
     let piece = |first: i32, last: i32, baseline: Option<i32>| Piece { run: 0, slot: SLOT, id: GER, run_first: FIRST, first, last, baseline };
     let held = [piece(FIRST, 140, None), piece(144, 168, Some(144))];
-    let unrecorded_gap = |first: i32, last: i32| !(first >= 141 && last <= 143);
+    let unrecorded_gap = |first: i32, last: i32| i64::from(!(first >= 141 && last <= 143));
+    let every = |first: i32, last: i32| i64::from(last - first + 1);
     assert_eq!(continuity(FIRST, 168, &held, unrecorded_gap).as_deref(), Some("Continuity broke across a load or recording gap during this span"));
-    assert_eq!(continuity(FIRST, 168, &held, |_, _| true).as_deref(), Some("Country was not held for the entire span"), "recorded hours between pieces are hours not held");
+    assert_eq!(continuity(FIRST, 168, &held, every).as_deref(), Some("Country was not held for the entire span"), "recorded hours between pieces are hours not held");
 
     use dashboard_query::{
         Query,
@@ -1242,6 +1243,12 @@ fn pieces_apart_only_across_unrecorded_hours_break_continuity_and_the_statement_
     let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
     assert_eq!(reply.tag, params.country.key(), "a slot held by no one at the statement's end is the slot, never its later holder");
 
+    let earlier = Holders::new([("GER".to_owned(), vec![run(FIRST, 140, GER)])].into(), Vec::new());
+    let query = Query { replay: &replay, timeline: query.timeline, holders: Arc::new(earlier) };
+    let params = PowerSpendingParams { to: 150, ..params };
+    let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+    assert_eq!(reply.tag, params.country.key(), "a slot held by no one at the statement's end is the slot, never its earlier holder");
+
     let gap = |first: i32, last: i32| dashboard_query::timeline::Unheld { first, last, reason: "not recorded".into() };
     let stretches = vec![Stretch { run: 0, first: FIRST, last: 140, join: Join::Start }, Stretch { run: 0, first: 144, last: 160, join: Join::Break }];
     let timeline = Timeline { id: 1, first: FIRST, last: LAST, stretches, unheld: vec![gap(141, 143), gap(161, LAST)] };
@@ -1255,5 +1262,12 @@ fn pieces_apart_only_across_unrecorded_hours_break_continuity_and_the_statement_
         let params = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from, to };
         let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
         assert_eq!(reply.reconciliation.reason.as_deref(), Some(why), "the statement {from}..{to} gives the recording gap as its reason");
+    }
+    let apart = Holders::new([("GER".to_owned(), vec![run(FIRST, 139, GER), run(144, LAST, GER)])].into(), Vec::new());
+    let query = Query { replay: &replay, timeline: query.timeline, holders: Arc::new(apart) };
+    for (from, to, why) in [(140, 143, "Country was not held for the entire span"), (140, 140, "Country was not held during this span")] {
+        let params = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from, to };
+        let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+        assert_eq!(reply.reconciliation.reason.as_deref(), Some(why), "no holder in {from}..{to}: absence for the whole span needs every hour recorded");
     }
 }

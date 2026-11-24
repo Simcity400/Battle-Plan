@@ -1,3 +1,4 @@
+import { formatProgress } from '../../families/valueFormat.ts';
 import { researchNumber } from './researchBreakdown.ts';
 import { researchDate } from './researchLayout.ts';
 import { isUnjoinedResearch } from './researchData.ts';
@@ -31,7 +32,7 @@ export function slotNumbers(read: ResearchSlotNow, hour: number, progress?: numb
   const remaining = read.state.details?.remainingDays ?? null;
   const left = remaining === null ? null : Math.max(0, remaining - Math.floor((hour - read.state.firstHour) / 24));
   const banked = BigInt(read.state.bankedDaysRaw);
-  return { fraction, percent: fraction === null ? 'Not recorded' : `${Math.round(fraction * 100)}%`, left,
+  return { fraction, percent: fraction === null ? 'Not recorded' : formatProgress(fraction), left,
     days: left === null ? 'Not recorded' : `${left} ${left === 1 ? 'day' : 'days'} left`,
     saved: banked > 0n || read.state.token === null ? `${researchNumber(banked)} days saved` : '' };
 }
