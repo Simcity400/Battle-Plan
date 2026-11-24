@@ -25,6 +25,7 @@ const BONUS_DAYS: usize = 1;
 const BONUS_ACTIVE: usize = 2;
 const DECRYPTING: usize = 3;
 const STRENGTH: usize = 2;
+const WEEK_HOURS: i32 = 168;
 
 const fn pair_key(owner: u32, target: u32) -> u64 {
     ((owner as u64) << 32) | target as u64
@@ -57,6 +58,11 @@ pub struct CipherPair {
     pub started: Option<Observation>,
     #[doc = " When that attempt broke the cipher; none when it has not."]
     pub broken_at: Option<Observation>,
+    #[doc = " The change in progress over the last 7 days, in tenths of a percentage point of the threshold,"]
+    #[doc = " from the reading 168 hours earlier in the same unbroken stretch; none where it is not known."]
+    pub week_change_tenths: Option<i32>,
+    #[doc = " Why the change over the last 7 days is not known, where it is not."]
+    pub week_change_unknown: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -108,10 +114,25 @@ fn race_order(a: &Ranked, b: &Ranked) -> Ordering {
         .then_with(|| tag(&a.pair.target).cmp(&tag(&b.pair.target)))
 }
 
+fn week_change(now: i64, then: Result<i64, String>, required: &Result<i64, String>) -> Result<i32, String> {
+    let required = match required {
+        Ok(required) if *required > 0 => *required,
+        Ok(_) => return Err("The cipher's threshold is zero, so its progress has no scale".into()),
+        Err(reason) => return Err(format!("Progress is not known: {reason}")),
+    };
+    let then = then?;
+    let scaled = (i128::from(now) - i128::from(then)) * 1_000;
+    let required = i128::from(required);
+    let half = required / 2;
+    let rounded = if scaled >= 0 { (scaled + half) / required } else { (scaled - half) / required };
+    i32::try_from(rounded).map_err(|_| "The change over the last 7 days is out of range".into())
+}
+
 fn pairs(
     frame: &DecodedFrame,
     defines: &Result<cryptology::Defines, String>,
     attempts: Option<&Attempts>,
+    history: Result<&CipherHistory, &str>,
     live: &dashboard_follow::live::Cells,
 ) -> io::Result<Vec<CipherPair>> {
     let tags = Tags::read(frame)?;
@@ -139,6 +160,11 @@ fn pairs(
             continue;
         }
         name_cells(live, row);
+        let earlier = match history {
+            Ok(history) => history.amount_at(key, frame.hour - WEEK_HOURS, frame.hour),
+            Err(reason) => Err(format!("Not recorded 7 days earlier: {reason}")),
+        };
+        let change = week_change(row.amount_raw, earlier, &threshold);
         out.push(Ranked {
             amount: row.amount_raw,
             required,
@@ -153,6 +179,8 @@ fn pairs(
                 broken,
                 started,
                 broken_at,
+                week_change_tenths: change.as_ref().ok().copied(),
+                week_change_unknown: change.err(),
             },
         });
     }
@@ -207,7 +235,10 @@ impl AtHour for Decryption {
         let branch: u64 = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
         let attempts = at.context.ciphers.attempts(branch, defines.as_ref().ok().copied());
         let attempts_unknown = attempts.as_ref().err().map(|error| format!("Attempt starts and breaks are not known: {error}"));
-        Ok(match pairs(frame, defines, attempts.as_deref().ok(), at.live) {
+        let history = at.context.ciphers.history(branch);
+        let history_error = history.as_ref().err().map(ToString::to_string).unwrap_or_default();
+        let history = history.as_deref().map_err(|_| history_error.as_str());
+        Ok(match pairs(frame, defines, attempts.as_deref().ok(), history, at.live) {
             Ok(pairs) => DecryptionReply { pairs, missing: None, attempts_unknown, warnings },
             Err(error) => DecryptionReply { pairs: Vec::new(), missing: Some(error.to_string()), attempts_unknown, warnings },
         })
@@ -339,6 +370,7 @@ fn number(cell: Read) -> Option<i64> {
 
 pub struct CipherHistory {
     last: i32,
+    stretches: Vec<(i32, i32)>,
     pairs: BTreeMap<u64, PairSteps>,
     strengths: HashMap<u32, Vec<(i32, Option<i64>)>>,
 }
@@ -346,8 +378,9 @@ pub struct CipherHistory {
 impl CipherHistory {
     fn read(query: &Query<'_>) -> io::Result<Self> {
         let recording = query.replay.recording();
-        let mut out = Self { last: query.timeline.last, pairs: BTreeMap::new(), strengths: HashMap::new() };
+        let mut out = Self { last: query.timeline.last, stretches: Vec::new(), pairs: BTreeMap::new(), strengths: HashMap::new() };
         for stretch in &query.timeline.stretches {
+            out.stretches.push((stretch.first, stretch.last));
             let fresh = if matches!(stretch.join, Join::Load { .. }) { 0 } else { FRESH };
             for steps in out.pairs.values_mut() {
                 steps.push(stretch.first, 0, fresh);
@@ -385,6 +418,22 @@ impl CipherHistory {
             }
         }
         Ok(out)
+    }
+
+    fn amount_at(&self, key: u64, hour: i32, now: i32) -> Result<i64, String> {
+        let stretch = self.stretches.iter().find(|(first, last)| *first <= now && now <= *last);
+        match stretch {
+            Some(&(first, _)) if first <= hour => {}
+            Some(_) => return Err("Not recorded 7 days earlier: the recording breaks within the last 7 days".into()),
+            None => return Err("Not recorded 7 days earlier: this hour is not in the cipher history".into()),
+        }
+        let none = || String::from("Not recorded 7 days earlier: the pair has no reading then");
+        let steps = self.pairs.get(&key).ok_or_else(none)?;
+        let at = steps.hours.partition_point(|&step| step <= hour).checked_sub(1).ok_or_else(none)?;
+        if steps.flags[at] & KNOWN == 0 {
+            return Err("Not recorded 7 days earlier: the pair's reading then is not recorded".into());
+        }
+        Ok(steps.amounts[at])
     }
 
     fn attempts(&self, defines: Option<cryptology::Defines>) -> Attempts {
@@ -514,7 +563,7 @@ mod tests {
     }
 
     fn history(pairs: Vec<(u64, PairSteps)>, strengths: Vec<(u32, Vec<(i32, Option<i64>)>)>, last: i32) -> CipherHistory {
-        CipherHistory { last, pairs: pairs.into_iter().collect(), strengths: strengths.into_iter().collect() }
+        CipherHistory { last, stretches: vec![(0, last)], pairs: pairs.into_iter().collect(), strengths: strengths.into_iter().collect() }
     }
 
     const fn seen(hour: i32, upper_bound: bool) -> Option<Observation> {
@@ -574,6 +623,8 @@ mod tests {
                 broken,
                 started: None,
                 broken_at: None,
+                week_change_tenths: None,
+                week_change_unknown: None,
             },
         }
     }
@@ -590,6 +641,24 @@ mod tests {
         race.sort_by(race_order);
         let owners: Vec<&str> = race.iter().map(|item| item.pair.owner.tag.as_deref().unwrap()).collect();
         assert_eq!(owners, ["ITA", "SOV", "JAP", "GER", "ENG"]);
+    }
+
+    #[test]
+    fn the_week_change_is_witnessed_168_hours_earlier_in_the_same_stretch_or_named_unknown() {
+        let key = pair_key(1, 2);
+        let pair = steps(&[(0, 0, KNOWN | FRESH), (100, 0, KNOWN | WORKING), (150, 0, 0), (160, 2_000, KNOWN | WORKING), (400, 5_000, KNOWN | WORKING)]);
+        let mut held = history(vec![(key, pair)], vec![], 600);
+        held.stretches = vec![(0, 299), (300, 600)];
+        assert_eq!(held.amount_at(key, 120, 288), Ok(0));
+        assert_eq!(held.amount_at(key, 200, 368), Err("Not recorded 7 days earlier: the recording breaks within the last 7 days".into()));
+        assert!(held.amount_at(key, 155, 290).is_err(), "an unknown reading then is not replaced by the nearest one held");
+        assert!(held.amount_at(pair_key(9, 9), 120, 288).is_err());
+        assert!(held.amount_at(key, 500, 700).is_err(), "an hour outside the history has no reading");
+        assert_eq!(week_change(2_400, Ok(1_000), &Ok(10_000)), Ok(140));
+        assert_eq!(week_change(1_000, Ok(1_049), &Ok(10_000)), Ok(-5));
+        assert_eq!(week_change(1_000, Ok(1_055), &Ok(10_000)), Ok(-6));
+        assert!(week_change(1_000, Ok(0), &Err("no strength".into())).is_err());
+        assert!(week_change(1_000, Err("not then".into()), &Ok(10_000)).is_err());
     }
 
 }

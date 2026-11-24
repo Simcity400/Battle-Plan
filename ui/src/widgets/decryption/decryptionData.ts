@@ -15,12 +15,15 @@ export function validateDecryption(value: unknown): DecryptionReply {
     && value.pairs.every(pair => object(pair) && country(pair.owner) && country(pair.target)
       && (pair.thresholdRaw === null ? text(pair.thresholdUnknown) : raw(pair.thresholdRaw) && pair.thresholdUnknown === null)
       && byte(pair.bonusActive) && byte(pair.decrypting) && (pair.broken === null || typeof pair.broken === 'boolean')
-      && observation(pair.started) && observation(pair.brokenAt));
+      && observation(pair.started) && observation(pair.brokenAt)
+      && (pair.weekChangeTenths === null ? text(pair.weekChangeUnknown) : Number.isSafeInteger(pair.weekChangeTenths) && pair.weekChangeUnknown === null));
   if (!ok) throw new Error('The decryption reply is malformed.');
   return value as unknown as DecryptionReply;
 }
 
 export const pairKey = (pair: CipherPair) => `${pair.owner.id}:${pair.target.id}`;
+
+export const weekChangeText = (tenths: number) => `${tenths > 0 ? '+' : tenths < 0 ? '−' : ''}${(Math.abs(tenths) / 10).toFixed(1)} points`;
 
 export function progressPercent(amount: bigint, active: number, threshold: bigint): number | null {
   let ratio: bigint;

@@ -12,6 +12,7 @@ import {
   amountText,
   cipherStatus,
   pairKey,
+  weekChangeText,
   validateDecryption,
   type CipherNumbers,
   type CountrySide,
@@ -135,6 +136,12 @@ export function pairTooltipItems(
         : { value: `${percent}%` }),
     },
     ...(percent === null && numbers.amount !== undefined ? [{ label: 'Recorded amount', value: amountText(numbers) }] : []),
+    ...(pair.broken === true ? [] : [{
+      label: 'Last 7 days',
+      ...(pair.weekChangeTenths === null
+        ? { missingReason: pair.weekChangeUnknown ?? 'Not recorded' }
+        : { value: weekChangeText(pair.weekChangeTenths) }),
+    }]),
     { label: 'Started', value: observationHover(pair.started, attemptUnknown) },
     ...(pair.broken === true ? [{ label: 'Broken', value: observationHover(pair.brokenAt, attemptUnknown) }] : []),
     ...(bonus !== null ? [{ label: 'Active bonus', value: `${bonus} bonus ${bonus === 1 ? 'day' : 'days'}` }] : []),

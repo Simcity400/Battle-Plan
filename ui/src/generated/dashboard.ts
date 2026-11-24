@@ -4599,7 +4599,16 @@ started: Observation | null,
 /**
  * When that attempt broke the cipher; none when it has not.
  */
-brokenAt: Observation | null, };
+brokenAt: Observation | null,
+/**
+ * The change in progress over the last 7 days, in tenths of a percentage point of the threshold,
+ * from the reading 168 hours earlier in the same unbroken stretch; none where it is not known.
+ */
+weekChangeTenths: number | null,
+/**
+ * Why the change over the last 7 days is not known, where it is not.
+ */
+weekChangeUnknown: string | null, };
 export type DecryptionReply = {
 /**
  * The pairs with an attempt or a broken cipher, in the game's race order: broken first, then

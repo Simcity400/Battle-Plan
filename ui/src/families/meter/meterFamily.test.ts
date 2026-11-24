@@ -366,6 +366,8 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
         broken: true,
         started: { hour: 61310000, upperBound: false },
         brokenAt: { hour: 61319000, upperBound: false },
+        weekChangeTenths: 0,
+        weekChangeUnknown: null,
       },
       {
         owner: { id: 2, tag: 'GER' },
@@ -377,6 +379,8 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
         broken: false,
         started: { hour: 61318000, upperBound: false },
         brokenAt: null,
+        weekChangeTenths: 24,
+        weekChangeUnknown: null,
       },
       {
         owner: { id: 1, tag: 'ENG' },
@@ -388,6 +392,8 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
         broken: null,
         started: null,
         brokenAt: null,
+        weekChangeTenths: null,
+        weekChangeUnknown: 'Progress is not known: Target strength not recorded',
       },
     ],
   };
@@ -426,6 +432,9 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
   assert.equal(ciphers.sections![0]!.rows?.length, 2);
   assert.equal(ciphers.sections![0]!.rows![0]!.figure, '62%');
   assert.equal(ciphers.sections![0]!.rows![1]!.figureMissing, true);
+  const weekItem = (row: number) => ciphers.sections![0]!.rows![row]!.tooltip?.items?.find(item => item.label === 'Last 7 days');
+  assert.equal(weekItem(0)?.value, '+2.4 points');
+  assert.equal(weekItem(1)?.missingReason, 'Progress is not known: Target strength not recorded');
   assert.equal(ciphers.sections![1]!.title, 'Cipher broken');
   assert.equal(ciphers.sections![1]!.chipLines?.length, 1);
   assert.equal(ciphers.sections![1]!.chipLines![0]!.ownerName, 'United Kingdom');
