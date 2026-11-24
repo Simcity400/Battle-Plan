@@ -12,7 +12,8 @@ import type {
   UnitLeadersReply,
 } from '../../generated/dashboard';
 import { countryKey } from '../../dashboard/countryKey.ts';
-import { artUrlForHandle, flagArtHandle, mergeArtDemands } from '../art/provider.ts';
+import { LaneArtCache } from '../art/laneCache.ts';
+import { artUrlForHandle, createLaneArtProvider, flagArtHandle, laneArtDemand, mergeArtDemands, requestDemandedFlags } from '../art/provider.ts';
 import { toFlagSlotState } from '../art/adapters.ts';
 import { NO_ART, artHandleKey, missingArt, refusedArt } from '../art/types.ts';
 import { RefusedError } from '../../dashboard/queryError.ts';
@@ -619,6 +620,50 @@ test('1,500 keys at the head resolve once per proven interval, not per frame, an
   clockHour = 600;
   assert.equal(read(), 600, 'crossing the next boundary advances the hour');
   assert.equal(resolved, 3000, 'one resolve per key at the boundary');
+  broker.dispose();
+});
+
+test('a lane flag at a size other than the default is demanded, drawn at that size and found in the next snapshot', async () => {
+  const sizes: string[] = [];
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => sampleFacts(),
+    loadIdentities: async () => sampleIdentities(),
+    loadGroups: async () => sampleGroups(),
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size, batch) => {
+      sizes.push(size);
+      return {
+        size,
+        flags: batch.map((choice, i) => ({ flag: i, asset: `${choice.keys[0]}.tga`, key: `${choice.keys[0]}:${size}`, width: 10, height: 7, png: `flag://${choice.keys[0]}/${size}` })),
+        unavailable: [],
+        warnings: [],
+      };
+    },
+  };
+  const broker = new IdentityBroker({ transport });
+  const handle = flagArtHandle(flagChoiceKey(FLAG_A), 'small');
+  const lane = new LaneArtCache({ fetchBitmap: async () => ({ width: 10, height: 7, close() {} }) as unknown as ImageBitmap });
+
+  const urls = new Set<string>();
+  const asks = new Map<string, ArtHandle>();
+  const before = IdentityIndex.fromSnapshot(broker.snapshotOf(SCOPE));
+  laneArtDemand(handle, before, undefined, urls, asks);
+  assert.deepEqual([...asks.values()], [handle], 'an undrawn flag at its own size is a demand');
+  assert.equal(createLaneArtProvider(lane, { index: before }).resolve(handle).status, 'pending');
+
+  requestDemandedFlags(broker, SCOPE, [...asks.values()]);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  assert.deepEqual(sizes, ['small'], 'the product is asked at the demanded size');
+
+  const after = IdentityIndex.fromSnapshot(structuredClone(broker.snapshotOf(SCOPE)));
+  assert.equal(artUrlForHandle(handle, after), 'flag://GER_a/small');
+  assert.equal(artUrlForHandle(flagArtHandle(flagChoiceKey(FLAG_A), 'panel'), after), null, 'another size is not borrowed');
+  urls.clear();
+  asks.clear();
+  laneArtDemand(handle, after, undefined, urls, asks);
+  assert.equal(asks.size, 0, 'a drawn flag is not asked again');
+  assert.deepEqual([...urls], ['flag://GER_a/small']);
   broker.dispose();
 });
 
