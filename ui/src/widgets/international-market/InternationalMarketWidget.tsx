@@ -23,7 +23,8 @@ interface MarketPick {
 export default function InternationalMarketWidget(props: WidgetProps) {
   const { widget, runtime, active } = props;
   const view = resolveOptions(OPTIONS, widget.options).view;
-  const declaration = view === 'requests' || view === 'inventory' ? MARKET_DECLARATIONS[view] : MARKET_DECLARATIONS.contracts;
+  const tab = view === 'requests' || view === 'inventory' ? view : 'contracts';
+  const declaration = MARKET_DECLARATIONS[tab];
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const [drillShown, setDrillShown] = useState<number | undefined>();
   const anchor = useRef<HTMLDivElement>(null);
@@ -53,6 +54,7 @@ export default function InternationalMarketWidget(props: WidgetProps) {
   return <div ref={anchor} className="game-window-table">
     <FamilyWidget
       family="table"
+      view={tab}
       declaration={declaration}
       {...props}
       onActivate={onActivate}
