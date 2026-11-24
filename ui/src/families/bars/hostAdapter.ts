@@ -1,6 +1,7 @@
 import type { FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
 import { parseRegionHitKey } from '../regions/regionRows.ts';
 import type { FamilyBarsBinding } from './laneView.ts';
+import { barsAuditWindow, layoutFamilyBars } from './layout.ts';
 import { deriveBarsAudit, type BarsModel } from './model.ts';
 import { pickAudit } from './pickList.ts';
 
@@ -31,10 +32,13 @@ export const barsHostAdapter: FamilyHostAdapter<BarsModel, unknown, FamilyBarsBi
   auditOwnerId: -2,
   parseHit: parseBarsHit,
   getScrollExtent: fields => {
-    const meta = fields.meta as { readonly totalHeight?: number } | undefined;
-    return meta?.totalHeight !== undefined ? { height: meta.totalHeight } : null;
+    const meta = fields.meta as { readonly scrollHeight?: number } | undefined;
+    return meta?.scrollHeight !== undefined ? { height: meta.scrollHeight } : null;
   },
-  deriveAuditRows: model => [...(model.pickList ? pickAudit(model.pickList) : []), ...deriveBarsAudit(model)],
+  deriveAuditRows: (model, _hour, { viewport }) => [
+    ...(model.pickList ? pickAudit(model.pickList) : []),
+    ...deriveBarsAudit(model, { window: barsAuditWindow(layoutFamilyBars(model, viewport.width, viewport.height), viewport.scrollTop) }),
+  ],
   auditOrdered: true,
   buildBinding: ctx => ({ reducedMotion: ctx.reducedMotion }),
 };

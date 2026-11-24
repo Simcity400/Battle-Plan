@@ -6,6 +6,7 @@ pub mod party_history;
 pub mod power_ledger;
 pub mod country_people;
 pub mod stability;
+pub mod stability_markers;
 pub mod focus;
 pub mod national_focus;
 pub mod focus_artwork;
