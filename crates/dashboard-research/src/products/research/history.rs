@@ -122,6 +122,7 @@ impl Assignment {
 #[derive(Default)]
 pub(crate) struct Index {
     pub runs: Vec<(i32, i32)>,
+    pub gaps: Vec<(i32, i32)>,
     pub coverage: Vec<ResearchCoverage>,
     pub availability: BTreeMap<u32, Vec<ResearchCoverage>>,
     pub assignments: Vec<Assignment>,
@@ -175,7 +176,7 @@ impl Index {
         for spans in self.availability.values() {
             edges(spans);
         }
-        for &(first, last) in self.runs.iter().chain(&self.unresolved) {
+        for &(first, last) in self.runs.iter().chain(&self.unresolved).chain(&self.gaps) {
             hours.push(first);
             hours.push(last.saturating_add(1));
         }
@@ -237,7 +238,7 @@ impl Index {
             .map(|(first, last)| i64::from(last) - i64::from(first) + 1)
             .sum();
         let read: i64 = coverage.iter().map(|span| i64::from(span.last_hour) - i64::from(span.first_hour) + 1).sum();
-        read < held
+        read < held || self.gaps.iter().any(|(first, _)| *first <= hour)
     }
 }
 
@@ -401,6 +402,13 @@ pub(crate) fn build(source: &Source, query: &Query<'_>, country: &Country, cance
     let coverage_columns = [dashboard_declare::field(TableId::ResearchCoverage, "since")?];
     let assignment_columns = all_columns(TableId::ResearchAssignments);
     let mut index = Index { unresolved, ..Index::default() };
+    let mut next = query.timeline.first;
+    for stretch in &query.timeline.stretches {
+        if stretch.first > next {
+            index.gaps.push((next, stretch.first - 1));
+        }
+        next = next.max(stretch.last.saturating_add(1));
+    }
     for run in query.holders.runs(country) {
         if let Holder::Found { .. } = run.holder {
             index.runs.push((run.first, run.last));
