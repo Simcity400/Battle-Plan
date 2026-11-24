@@ -120,9 +120,6 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
   },
   buildBinding: ctx => (ctx.settings
     ? {
-        family: 'table',
-        kind: ctx.kind,
-        view: ctx.view,
         options: ctx.options,
         settings: ctx.settings,
         sources: ctx.sources,

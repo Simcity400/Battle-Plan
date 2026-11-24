@@ -1,7 +1,8 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artKindCell, artState, identityFlags, identityName, newIdentityBoundary, urlArtHandle, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import { urlArtHandle } from '../../families/art/provider.ts';
+import { artKindCell, artState, identityFlags, identityName, newIdentityBoundary, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableCellIconItem, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
@@ -9,7 +10,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { Country, OperativesRosterReply, OperativeTrait, RosterOperative } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, OPTIONS, TABLE_BASE } from './definition.ts';
 
 export type RosterProjectionOptions = Record<string, never>;
 
@@ -169,6 +170,7 @@ export const rosterProjection: TableProjection<RosterProjectionOptions> = regist
 export const rosterDeclaration: TableWidgetDeclaration<RosterProjectionOptions> = {
   family: 'table',
   kind: 'operatives-roster',
+  optionFields: OPTIONS,
   label: 'Operatives roster',
   subject: 'operatives',
   emptyCampaign: 'Load a campaign to see operatives.',

@@ -8,7 +8,7 @@ import {
   type TableDisplay,
   type TableSettings,
 } from './settings.ts';
-import type { TableColumnSpec, TableHeaderGroup } from './model.ts';
+import type { TableCellKind, TableColumnSpec, TableHeaderGroup } from './model.ts';
 import './tableFamily.css';
 
 export const columnWidthVar = (key: string) => `--tf-w-${key.replace(/[^A-Za-z0-9_-]/g, '_')}`;
@@ -52,6 +52,7 @@ export interface TableHeaderColumn extends TableColumnLayout {
   sortable?: boolean;
   hint?: string;
   headerGroup?: TableHeaderGroup;
+  cellKind?: TableCellKind;
 }
 
 export interface TableHeaderIdentity {
@@ -128,6 +129,7 @@ export function FamilyTableHeader({
   };
 
   const renderLabel = (item: TableHeaderColumn, active: boolean, end: boolean, index: number) => {
+    if (item.cellKind === 'kind') return <span className="sr-only">{item.label}</span>;
     const arrow = active ? (sort.direction === 'descending' ? SORT_ARROW_DOWN : SORT_ARROW_UP) : null;
     if (identity && index === 0) {
       return <>
@@ -181,7 +183,7 @@ export function FamilyTableHeader({
         const end = endAligned(item);
         const isPinned = pinned && index < pinnedCount;
         const isLastPinned = isPinned && index === pinnedCount - 1;
-        const canSort = !unsorted && item.sortable !== false && !item.notRecordedReason;
+        const canSort = !unsorted && item.sortable !== false && !item.notRecordedReason && item.cellKind !== 'kind';
         const canDrag = editableColumns && !unsorted && index >= pinnedCount;
         const dropClass = dropTarget?.key === item.key ? ` is-drop-${dropTarget.side}` : '';
         const title = identity && index === 0 ? identity.name : (item.notRecordedReason ?? item.hint);

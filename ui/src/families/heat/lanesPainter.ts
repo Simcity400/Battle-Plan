@@ -7,8 +7,7 @@ import {
   drawCrosshairLine,
   drawFlagSlot,
   drawGapBand,
-  drawGradientLegend,
-  drawLegendEntry,
+  drawLegendStrip,
   drawMissingMark,
   drawNameSlot,
   drawPlayheadLine,
@@ -23,8 +22,7 @@ import {
 } from '../../draw/kit.ts';
 import { mix } from '../../shell/appearance/color.ts';
 import { toFlagSlotState } from '../art/adapters.ts';
-import type { LaneArtCache } from '../art/laneCache.ts';
-import { artUrlForHandle } from '../art/provider.ts';
+import { collectArtUrls } from '../art/provider.ts';
 import type { ArtProvider, FamilyTheme } from '../contract.ts';
 import type { IdentityIndex } from '../identity/index.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
@@ -39,14 +37,6 @@ import {
 import type { HeatLaneRow, HeatLanesModel } from './lanesModel.ts';
 import { marginColour, splitStripes } from './scale.ts';
 
-export interface HeatLanesPicture {
-  signature: string;
-}
-
-export function createLanesPicture(): HeatLanesPicture {
-  return { signature: '' };
-}
-
 export interface DrawHeatLanesInput {
   readonly model: HeatLanesModel;
   readonly layout: HeatLanesLayout;
@@ -57,7 +47,6 @@ export interface DrawHeatLanesInput {
   readonly selectedRowId: string | null;
   readonly focusedRowId: string | null;
   readonly artProvider?: ArtProvider;
-  readonly artCache?: LaneArtCache;
   readonly identityIndex?: IdentityIndex | null;
 }
 
@@ -66,74 +55,12 @@ export function collectVisibleLaneArt(
   layout: HeatLanesLayout,
   identityIndex?: IdentityIndex | null,
 ): readonly string[] {
-  const urls = new Set<string>();
+  const handles = [];
   for (let i = layout.firstRow; i < layout.endRow; i++) {
     const row = model.rows[i];
-    if (!row?.flag) continue;
-    const url = artUrlForHandle(row.flag, identityIndex);
-    if (url) urls.add(url);
+    if (row?.flag) handles.push(row.flag);
   }
-  return [...urls];
-}
-
-function drawLanesLegend(
-  ctx: Canvas2D,
-  model: HeatLanesModel,
-  layout: HeatLanesLayout,
-  theme: FamilyTheme,
-): void {
-  const legend = model.legend;
-  if (!legend || layout.legendHeight <= 0) return;
-  const middleY = Math.round(layout.legendHeight / 2);
-  let cursor = LANE_PAD;
-  if (legend.gradient) {
-    const drawn = drawGradientLegend(
-      ctx,
-      cursor,
-      middleY,
-      legend.gradient.lowLabel,
-      legend.gradient.highLabel,
-      legend.gradient.stops,
-      theme,
-    );
-    cursor += drawn.width + 14;
-  }
-  if (legend.entries) {
-    for (const entry of legend.entries) {
-      if (cursor > layout.width - 40) break;
-      if (entry.hatched) {
-        drawHatchRect(ctx, cursor, Math.round(middleY - 4.5), 9, 9, 2, theme);
-        ctx.save();
-        ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
-        ctx.fillStyle = theme.muted;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(entry.label, cursor + 15, middleY);
-        cursor += 15 + textWidth(ctx, entry.label) + 12;
-        ctx.restore();
-      } else {
-        const drawn = drawLegendEntry(ctx, cursor, middleY, entry.label, entry.color, theme, {
-          ...(entry.dashed ? { dash: [4, 2] } : {}),
-          ...(entry.muted ? { muted: true } : {}),
-          maxWidth: Math.max(40, layout.width - cursor - LANE_PAD),
-        });
-        cursor += drawn.width + 12;
-      }
-    }
-  }
-  if (legend.rightNote) {
-    ctx.save();
-    ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
-    ctx.fillStyle = theme.muted;
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    const maxW = Math.max(0, layout.width - cursor - LANE_PAD);
-    if (maxW >= 24) {
-      ctx.fillText(ellipsise(legend.rightNote, maxW, s => textWidth(ctx, s)), layout.width - LANE_PAD, middleY);
-    }
-    ctx.restore();
-  }
-  drawRowHairline(ctx, 0, layout.width, layout.legendHeight - 1, theme, 'normal');
+  return collectArtUrls(handles, identityIndex);
 }
 
 function drawRowFlag(
@@ -279,42 +206,29 @@ function drawInRunLabel(
   ctx.restore();
 }
 
-export function drawHeatLanes(
-  ctx: Canvas2D,
-  input: DrawHeatLanesInput,
-  picture?: HeatLanesPicture,
-): { readonly drew: boolean } {
-  const { model, layout, theme, scrollTop, hoveredRow, hoveredHour, selectedRowId, focusedRowId, artProvider, artCache } = input;
+export function drawHeatLanes(ctx: Canvas2D, input: DrawHeatLanesInput): void {
+  const { model, layout, theme, scrollTop, hoveredRow, hoveredHour, selectedRowId, focusedRowId, artProvider } = input;
   const tokens = resolveKitTokens(theme);
-
-  const artRev = artCache ? `${artCache.revision}:${artCache.cachedCount}:${artCache.failedCount}` : '';
-  const sig = JSON.stringify([
-    model.hour,
-    layout.width,
-    layout.height,
-    layout.firstRow,
-    layout.endRow,
-    Math.round(scrollTop),
-    hoveredRow ?? -1,
-    hoveredHour ?? -1,
-    selectedRowId ?? '',
-    focusedRowId ?? '',
-    model.playhead ?? -1,
-    theme.surface,
-    theme.text,
-    theme.accent,
-    artRev,
-  ]);
-  if (picture && picture.signature === sig) {
-    return { drew: false };
-  }
-  if (picture) picture.signature = sig;
 
   ctx.save();
   ctx.fillStyle = theme.surface;
   ctx.fillRect(0, 0, layout.width, layout.height);
 
-  drawLanesLegend(ctx, model, layout, theme);
+  if (model.legend && layout.legendHeight > 0) {
+    drawLegendStrip(ctx, 0, 0, layout.width, layout.legendHeight, {
+      gradient: model.legend.gradient,
+      entries: model.legend.entries?.map(entry => ({
+        label: entry.label,
+        color: entry.color,
+        ...(entry.hatched ? { hatch: true } : {}),
+        ...(entry.dashed ? { dash: [4, 2] } : {}),
+        ...(entry.muted ? { muted: true } : {}),
+      })),
+      rightNote: model.legend.rightNote,
+      padX: LANE_PAD,
+      hairline: true,
+    }, theme);
+  }
 
   const bodyBottom = layout.height - layout.axisHeight;
   ctx.save();
@@ -483,5 +397,4 @@ export function drawHeatLanes(
   });
 
   ctx.restore();
-  return { drew: true };
 }

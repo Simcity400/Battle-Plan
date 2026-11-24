@@ -166,8 +166,9 @@ name = "dead-code"
 group = "linux"
 tier = "check"
 toolchain = "node"
+base = true
 inputs = ["ui/**", "crates/**", "tools/check-dead-code.mjs", "tools/ui-import-graph.mjs", "tools/legacy-widgets-ratchet.json"]
-command = ["{node}", "tools/check-dead-code.mjs", "--report-only"]
+command = ["{node}", "tools/check-dead-code.mjs", "--against", "{base}"]
 
 [[job]]
 name = "ui-tests"

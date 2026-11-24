@@ -1,5 +1,4 @@
 import { fitTooltip, hideTooltip, showTooltip, tooltipText, type TooltipContent, type TooltipRow } from '../../charts/tooltip.ts';
-import { formatDateTime } from '../../dashboard/calendar.ts';
 import { formatBoundDate, formatDateHover, type DateBoundKind } from '../valueFormat.ts';
 
 export const HOVER_OPEN_MS = 150;
@@ -112,8 +111,8 @@ export interface FamilyTooltipField {
 }
 
 interface FittedCache {
-  raw: TooltipContent;
-  subtitle: string;
+  entry: FamilyTooltipEntry;
+  hour: number;
   height: number;
   fitted: TooltipContent;
 }
@@ -163,22 +162,23 @@ export class FamilyTooltipController {
     return this.pinned !== null;
   }
 
-  fitCached(channel: 'hover' | 'focus', raw: TooltipContent, hour: number, viewportHeight: number): TooltipContent {
-    const subtitle = formatDateTime(Math.floor(hour));
+  private fitCached(channel: 'hover' | 'focus', entry: FamilyTooltipEntry, hour: number, viewportHeight: number): TooltipContent {
+    const flooredHour = Math.floor(hour);
     const cached = channel === 'hover' ? this.hoverCache : this.focusCache;
-    if (cached && cached.raw === raw && cached.subtitle === subtitle && cached.height === viewportHeight) {
+    if (cached && cached.entry === entry && cached.hour === flooredHour && cached.height === viewportHeight) {
       return cached.fitted;
     }
-    const dated = raw.subtitle ? raw : { ...raw, subtitle };
+    const raw = resolveTooltipEntryContent(entry);
+    const dated = raw.subtitle ? raw : { ...raw, subtitle: formatDateHover(flooredHour) };
     const fitted = fitTooltip([dated], viewportHeight);
-    const entry: FittedCache = { raw, subtitle, height: viewportHeight, fitted };
-    if (channel === 'hover') this.hoverCache = entry;
-    else this.focusCache = entry;
+    const next: FittedCache = { entry, hour: flooredHour, height: viewportHeight, fitted };
+    if (channel === 'hover') this.hoverCache = next;
+    else this.focusCache = next;
     return fitted;
   }
 
   describeFocused(tip: FamilyTooltipEntry, hour: number, viewportHeight: number): string {
-    return tooltipText(this.fitCached('focus', resolveTooltipEntryContent(tip), hour, viewportHeight));
+    return tooltipText(this.fitCached('focus', tip, hour, viewportHeight));
   }
 
   show(
@@ -198,7 +198,7 @@ export class FamilyTooltipController {
     }
     this.hoverShown = true;
     this.tipVisible = true;
-    const fitted = this.fitCached(channel, resolveTooltipEntryContent(tip), tip.hour, viewportHeight);
+    const fitted = this.fitCached(channel, tip, tip.hour, viewportHeight);
     showTooltip(this.owner, fitted, pos.x, pos.y, tip.rowKey);
   }
 
@@ -280,7 +280,7 @@ export class FamilyTooltipController {
     announce?: (message: string) => void,
   ): boolean {
     if (!tip) return false;
-    const dateText = formatDateTime(Math.floor(hour));
+    const dateText = formatDateHover(Math.floor(hour));
     const pinnedContent: TooltipContent = { ...resolveTooltipEntryContent(tip), subtitle: `Pinned at ${dateText}` };
     this.pinned = { key: tip.rowKey, content: pinnedContent, x: pos.x, y: pos.y };
     this.tipVisible = true;

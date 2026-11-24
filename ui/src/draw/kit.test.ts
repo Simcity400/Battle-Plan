@@ -23,6 +23,7 @@ import {
   drawGapBand,
   drawGradientLegend,
   drawIconStrip,
+  drawLegendStrip,
   drawMissingMark,
   drawNameSlot,
   drawOutOfFigure,
@@ -259,6 +260,23 @@ test('name slots report truncation, status marks use dots/rings, and date/missin
   assert.equal(tab.x, 10);
   const grad = drawGradientLegend(chromeCtx.ctx, 20, 14, '-100', '+100', ['#d95926', '#444444', '#199e70'], THEME);
   assert.ok(grad.width > 64);
+  const stripCtx = makeFakeCtx();
+  drawLegendStrip(stripCtx.ctx, 0, 0, 500, 26, {
+    gradient: { lowLabel: '0%', highLabel: '100%', stops: ['#d95926', '#199e70'] },
+    entries: [
+      { label: 'Not recorded', hatch: true },
+      { label: 'Unobserved', outlined: true },
+      { label: 'Limit', color: '#4f86f7', dash: [4, 2] },
+    ],
+    rightNote: 'As of 1 Jan 1940',
+    padX: 12,
+    hairline: true,
+  }, THEME);
+  const stripTexts = stripCtx.ops.filter(op => op.op === 'fillText').map(op => op.args[0]);
+  assert.ok(stripTexts.includes('Not recorded'));
+  assert.ok(stripTexts.includes('Unobserved'));
+  assert.ok(stripTexts.includes('Limit'));
+  assert.ok(stripTexts.includes('As of 1 Jan 1940'));
   const hoverTab = drawDateTab(chromeCtx.ctx, '1 Sep 1939', 100, 120, THEME, 'hover', { left: 10, right: 200 });
   assert.ok(hoverTab.width > 0);
   const tokens = resolveKitTokens(THEME);
@@ -356,6 +374,7 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
   ], THEME, { kind: 'traits' });
   assert.equal(res.drawnCount + res.overflowCount, 4);
   assert.ok(res.overflowCount > 0);
+  assert.ok(!strip.ops.some(op => op.op === 'fillText' && String(op.args[0]).startsWith('+')), 'a strip that does not fit draws what fits, never a +N mark');
 
   const act = makeFakeCtx();
   const restBox = drawActionButton(act.ctx, 100, 18, 'View', false, THEME);

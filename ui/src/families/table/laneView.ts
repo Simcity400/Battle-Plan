@@ -20,6 +20,7 @@ import {
   deriveTableAudit,
   deriveTableMirror,
   deriveTableTooltip,
+  keepsProductOrder,
   nextTableChange,
   resolveTableRows,
   resolveTableRowsIncremental,
@@ -43,6 +44,7 @@ import {
 import { combinedPaneRows, drawPaneFrame, hitPanes, paneGeometry, paneOfRow, panesHeight, paneScroll, paneTitleText, resolvePanes, visiblePaneRange, type ResolvedPane } from './panes.ts';
 import { ensureTableProjection } from './registry.ts';
 import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, type GlideOffset, type RankMarker, type TableSettings, type TableTheme } from './settings.ts';
+import { unknownProjectionReason } from '../registry.ts';
 
 export interface FamilyTableBinding<TOptions = unknown> {
   readonly family: 'table';
@@ -418,7 +420,7 @@ function metaSignature(model: TableModel, hasTree: boolean, rankShown: boolean, 
     model.notes ?? [],
     model.warnings ?? [],
     hasTree,
-    model.unsorted === true,
+    keepsProductOrder(model),
     rankShown,
     rankWidth,
     model.columns.map(c => [c.key, c.label, c.unit ?? '', c.priority, c.as, c.offered, c.text ? 1 : 0, c.hideable === false ? 0 : 1, c.sortable === false ? 0 : 1, c.numeric ? 1 : 0, c.hint ?? '', c.notRecordedReason ?? '', c.cellKind ?? '', c.pinned ? 1 : 0]),
@@ -430,7 +432,6 @@ export interface FamilyTableLaneOptions {
   readonly clock?: () => number;
   readonly fetchBitmap?: LaneArtFetcher;
   readonly artMaxEntries?: number;
-  readonly artMaxConcurrent?: number;
 }
 
 export function familyTableLaneView(
@@ -441,7 +442,7 @@ export function familyTableLaneView(
     next(scene: Scene, hour: number, state?: Map<string, unknown>): number {
       const bound = scene.model;
       if (!isFamilyTableBinding(bound)) return Infinity;
-      const projection = ensureTableProjection(bound.kind, bound.view, () => wake(scene.widget));
+      const projection = ensureTableProjection(bound, () => wake(scene.widget));
       if (projection === 'loading') return hour + 1;
       if (projection === 'unknown') return Infinity;
       let soonest = Math.min(
@@ -483,12 +484,12 @@ export function familyTableLaneView(
       const bound = input.model;
       const surface = input.binding.surfaces[0];
       if (!isFamilyTableBinding(bound) || !surface) return { surfaces: [], fields: {}, motion: false };
-      const projection = ensureTableProjection(bound.kind, bound.view, () => wake(input.widget));
+      const projection = ensureTableProjection(bound, () => wake(input.widget));
       if (projection === 'loading') {
         return { surfaces: [], fields: {}, motion: false, nextChangeAt: input.hour + 1 };
       }
       if (projection === 'unknown') {
-        return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown table declaration: ${bound.kind}` };
+        return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: unknownProjectionReason(bound) };
       }
       const timed = bound.audit === true;
       const t0 = timed ? performance.now() : 0;
@@ -506,7 +507,6 @@ export function familyTableLaneView(
         const focusTipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
         const art = new LaneArtCache({
           maxEntries: laneOptions?.artMaxEntries,
-          maxConcurrent: laneOptions?.artMaxConcurrent,
           fetchBitmap: laneOptions?.fetchBitmap,
         });
         state.set('familyTable', held = {
@@ -741,7 +741,7 @@ export function familyTableLaneView(
       }
 
       if (modelChanged) held.sampleSig = textSampleSignature(model.columns, flatRows);
-      const rankShown = model.rank === true && (bound.settings.showRank === true || model.defaultRankShown === true);
+      const rankShown = model.rank === true && model.populationPartial === undefined && (bound.settings.showRank === true || model.defaultRankShown === true);
       const rankMarkersOn = rankShown && model.rankMarkers === true;
       const rankWidth = rankShown ? (bound.rankWidth ?? (rankMarkersOn ? 64 : 36)) : 0;
       const panes = held.panes;
@@ -1066,7 +1066,7 @@ export function familyTableLaneView(
               notes: model.notes ?? [],
               warnings: model.warnings ?? [],
               hasTree,
-              unsorted: model.unsorted === true,
+              unsorted: keepsProductOrder(model),
               rankShown,
               rankWidth,
               columns: model.columns,

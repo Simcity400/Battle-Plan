@@ -210,6 +210,11 @@ function nonDataMark(item: Exclude<FlatTableRow, { kind: 'data' }>): string {
   return `load:${item.key}`;
 }
 
+export function treeColumnOf(columns: readonly Pick<FamilyColumnLayout, 'cellKind'>[]): number {
+  const at = columns.findIndex(col => col.cellKind !== 'kind');
+  return at < 0 ? 0 : at;
+}
+
 function barSpanOf(column: FamilyColumnLayout): number {
   return Math.max(1, column.width - CELL_INSET * 2);
 }
@@ -476,6 +481,7 @@ export function drawFamilyTable(
     density: settings.density,
     barsMode: settings.barsBehind ?? 'all',
     sortedColumn: settings.sort.column,
+    treeColumn: treeColumnOf(layout.columns),
     icons,
     artCache,
     measure,
@@ -1055,7 +1061,7 @@ export function hitFamilyTable(
   for (let colIndex = 0; colIndex < layout.columns.length; colIndex++) {
     const col = layout.columns[colIndex]!;
     if (bodyX >= x && bodyX < x + col.width) {
-      const toggle = colIndex === 0 && item.isTreeGroup && bodyX - x <= CELL_INSET + (col.leadInset ?? 0) + (item.level - 1) * TREE_INDENT_PX + TREE_CHEVRON_LANE + 8;
+      const toggle = colIndex === treeColumnOf(layout.columns) && item.isTreeGroup && bodyX - x <= CELL_INSET + (col.leadInset ?? 0) + (item.level - 1) * TREE_INDENT_PX + TREE_CHEVRON_LANE + 8;
       const action = col.cellKind === 'action';
       return { kind: 'row', rowKey: item.key, column: col.key, toggle, action };
     }

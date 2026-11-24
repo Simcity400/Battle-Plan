@@ -9,6 +9,7 @@ import type {
   CountryStyleReply,
   FactionGroup,
   HourSpan,
+  RecordingGap,
 } from '../../generated/dashboard';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import { artHandleKey } from '../art/types.ts';
@@ -192,6 +193,7 @@ export class IdentityIndex {
   private styleFailures = new Map<string, Failure>();
   private entityRuns = new Map<string, EntityRunEntry[]>();
   private entityFailures = new Map<string, Failure>();
+  private entityUnknown = new Map<EntityIdentityKey['kind'], RecordingGap[]>();
   private drawnFlags = new Map<string, DrawnFlagEntry>();
   private resolveChanges = 0;
 
@@ -215,6 +217,9 @@ export class IdentityIndex {
         index.entityRuns.set(key, [...entries].sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour));
       }
     }
+    for (const [kind, spans] of Object.entries(snapshot.entityUnknown ?? {}) as [EntityIdentityKey['kind'], readonly RecordingGap[]][]) {
+      index.entityUnknown.set(kind, [...spans]);
+    }
     if (snapshot.drawnFlags) {
       for (const [key, entry] of Object.entries(snapshot.drawnFlags)) {
         index.drawnFlags.set(key, entry);
@@ -236,6 +241,8 @@ export class IdentityIndex {
     for (const [key, entries] of this.entityRuns) entities[key] = entries;
     const drawnFlags: Record<string, DrawnFlagEntry> = {};
     for (const [key, entry] of this.drawnFlags) drawnFlags[key] = entry;
+    const entityUnknown: Partial<Record<EntityIdentityKey['kind'], readonly RecordingGap[]>> = {};
+    for (const [kind, spans] of this.entityUnknown) entityUnknown[kind] = spans;
     const styleFailures = sentFailures(this.styleFailures);
     const entityFailures = sentFailures(this.entityFailures);
     const failures: SnapshotFailures = {
@@ -253,6 +260,7 @@ export class IdentityIndex {
       ...(this.groups ? { groups: this.groups } : {}),
       ...(this.styleRuns.size ? { styles } : {}),
       ...(this.entityRuns.size ? { entities } : {}),
+      ...(this.entityUnknown.size ? { entityUnknown } : {}),
       ...(this.drawnFlags.size ? { drawnFlags } : {}),
       ...(Object.keys(failures).length ? { failures } : {}),
     };
@@ -399,13 +407,23 @@ export class IdentityIndex {
     this.resolveChanges++;
   }
 
-  addEntityRun(key: EntityIdentityKey, run: EntityRunEntry): void {
+  replaceEntityRuns(key: EntityIdentityKey, from: number, to: number, runs: readonly EntityRunEntry[]): void {
     const id = identityKeyString(key);
-    const kept = (this.entityRuns.get(id) ?? []).filter(item => item.lastHour < run.firstHour || item.firstHour > run.lastHour);
-    kept.push(run);
+    const kept = (this.entityRuns.get(id) ?? []).filter(item => item.lastHour < from || item.firstHour > to);
+    kept.push(...runs);
     kept.sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour);
     this.entityRuns.set(id, kept);
     this.entityFailures.delete(id);
+    this.resolveChanges++;
+  }
+
+  replaceEntityUnknown(kinds: readonly EntityIdentityKey['kind'][], from: number, to: number, spans: readonly RecordingGap[]): void {
+    for (const kind of kinds) {
+      const kept = (this.entityUnknown.get(kind) ?? []).filter(span => span.lastHour < from || span.firstHour > to);
+      kept.push(...spans);
+      kept.sort((a, b) => a.firstHour - b.firstHour);
+      this.entityUnknown.set(kind, kept);
+    }
     this.resolveChanges++;
   }
 
@@ -809,9 +827,25 @@ export class IdentityIndex {
 
   private resolveEntity(key: EntityIdentityKey, at: number): EntityIdentityResult {
     const id = identityKeyString(key);
+    const unknown = this.entityUnknown.get(key.kind) ?? [];
+    const after = unknown.findIndex(span => span.firstHour > at);
+    const before = after < 0 ? unknown.length - 1 : after - 1;
+    const gap = before >= 0 && unknown[before]!.lastHour >= at ? unknown[before]! : null;
+    if (gap) {
+      return {
+        kind: 'known',
+        entityKind: key.kind,
+        valid: [gap.firstHour, gap.lastHour],
+        nextBoundary: nextBoundaryOf(gap.lastHour),
+        name: { kind: 'missing', reason: gap.reason },
+        warnings: [],
+      };
+    }
     const entry = findCoveringEntity(this.entityRuns.get(id), at);
     if (entry) {
-      const valid: HourInterval = [entry.firstHour, entry.lastHour];
+      const opening = before >= 0 ? Math.max(entry.firstHour, unknown[before]!.lastHour + 1) : entry.firstHour;
+      const closing = after >= 0 ? Math.min(entry.lastHour, unknown[after]!.firstHour - 1) : entry.lastHour;
+      const valid: HourInterval = [opening, closing];
       if (entry.absent) {
         return {
           kind: 'absent',

@@ -8,8 +8,7 @@ import {
   contrastInkForFill,
   drawArtSlot,
   drawBar,
-  drawFlagSlot,
-  drawLegendEntry,
+  drawLegendStrip,
   drawMissingMark,
   drawNameSlot,
   drawPartialTab,
@@ -20,11 +19,10 @@ import {
   drawScrollFade,
   drawSplitBar,
   resolveKitTokens,
-  type ArtSlotState,
-  type FlagSlotState,
 } from '../../draw/kit.ts';
-import { toArtSlotState, toFlagSlotState, urlToArt } from '../art/adapters.ts';
+import { drawMediaSlot, toArtSlotState, urlToArt } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
+import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { ArtResult } from '../art/types.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
 import { formatCompactScalar, formatValueState, notRecordedLabel } from '../valueFormat.ts';
@@ -41,7 +39,6 @@ import {
   formatBarsValueField,
   type BarsDataRow,
   type BarsModel,
-  type BarsRowMedia,
   type BarsSegment,
 } from './model.ts';
 
@@ -99,39 +96,6 @@ function paintedRowY(
   const progress = (now - entry.startedAt) / glideDuration;
   if (progress >= 1) return baseY;
   return entry.fromY + (baseY - entry.fromY) * easeOutCubic(progress);
-}
-
-function drawRowMedia(
-  ctx: Canvas2D,
-  x: number,
-  middleY: number,
-  width: number,
-  height: number,
-  media: BarsRowMedia | undefined,
-  theme: FamilyTheme,
-  icons?: BarsIconLookup,
-  artCache?: LaneArtCache,
-): void {
-  if (!media || media.kind === 'none' || width <= 0 || height <= 0) return;
-  const y = Math.round(middleY - height / 2);
-  let resolved = media.art;
-  if (resolved.status === 'ready' && !resolved.bitmap) {
-    const url = media.iconUrl ?? resolved.url;
-    const cached = artCache ? artCache.resolve(resolved) : null;
-    if (cached) {
-      resolved = cached;
-    } else {
-      const bmp = icons?.get(url);
-      if (bmp) resolved = { ...resolved, bitmap: bmp };
-    }
-  }
-  if (media.kind === 'flag') {
-    const state: FlagSlotState = toFlagSlotState(resolved, media.tag);
-    drawFlagSlot(ctx, x, y, state, theme, { width, height, dimmed: media.dimmed });
-    return;
-  }
-  const state: ArtSlotState = toArtSlotState(resolved, media.resolvedName);
-  drawArtSlot(ctx, x, y, width, height, state, theme, { radius: 2 });
 }
 
 function drawShareSegments(
@@ -264,21 +228,6 @@ function drawAxis(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: Fa
   ctx.restore();
 }
 
-function drawLegend(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: FamilyTheme): void {
-  if (layout.legendHeight <= 0 || !model.legend?.length) return;
-  const middleY = layout.legendTop + layout.legendHeight / 2;
-  let x = BARS_PAD_X;
-  const rightLimit = layout.width - BARS_PAD_X;
-  for (let i = 0; i < model.legend.length; i++) {
-    const entry = model.legend[i]!;
-    const room = rightLimit - x;
-    if (room < 32) break;
-    const text = entry.share ? `${entry.label} ${entry.share}` : entry.value ? `${entry.label} ${entry.value}` : entry.label;
-    const drawn = drawLegendEntry(ctx, x, middleY, text, entry.color, theme, { maxWidth: room });
-    x += drawn.width + 14;
-  }
-}
-
 export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsPaintStats {
   const { model, layout, theme, scrollTop, now, glideDuration, glide, icons, artCache, inspectedKey, selectedKey, focusedKey } = input;
   const tokens = resolveKitTokens(theme);
@@ -362,7 +311,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
       drawRowHairline(ctx, BARS_PAD_X, layout.width - BARS_PAD_X, y + rowH - 1, theme, 'normal');
     }
 
-    drawRowMedia(ctx, BARS_PAD_X, middleY, layout.mediaWidth, layout.mediaHeight, row.media, theme, icons, artCache);
+    drawMediaSlot(ctx, BARS_PAD_X, middleY, layout.mediaWidth, layout.mediaHeight, row.media, theme, { icons, artCache, radius: 2 });
 
     if (layout.nameWidth > 0) {
       const reserveRemove = row.removable && (isHovered || isFocused) ? BARS_REMOVE_BUTTON_SIZE + 4 : 0;
@@ -554,7 +503,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           { align: 'right', color: right.labelMissing ? theme.muted : theme.text },
         );
         if (rightName.truncated) truncatedKeys.push(right.key);
-        drawRowMedia(ctx, layout.width - BARS_PAD_X - layout.mediaWidth, middleY, layout.mediaWidth, layout.mediaHeight, right.media, theme, icons, artCache);
+        drawMediaSlot(ctx, layout.width - BARS_PAD_X - layout.mediaWidth, middleY, layout.mediaWidth, layout.mediaHeight, right.media, theme, { icons, artCache, radius: 2 });
       }
       continue;
     }
@@ -742,7 +691,16 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
   }
   ctx.restore();
 
-  if (layout.legendHeight > 0) drawLegend(ctx, model, layout, theme);
+  if (layout.legendHeight > 0 && model.legend?.length) {
+    drawLegendStrip(ctx, 0, layout.legendTop, layout.width, layout.legendHeight, {
+      entries: model.legend.map(entry => ({
+        label: entry.share ? `${entry.label} ${entry.share}` : entry.value ? `${entry.label} ${entry.value}` : entry.label,
+        color: entry.color,
+      })),
+      padX: BARS_PAD_X,
+      entryGap: 14,
+    }, theme);
+  }
 
   return { paintedRows, truncatedKeys };
 }
@@ -802,14 +760,11 @@ export function hitFamilyBars(
 
 export function collectVisibleBarsIcons(model: BarsModel, layout: BarsLayout, scrollTop: number): string[] {
   const { first, last } = visibleBarsRange(layout, scrollTop);
-  const urls = new Set<string>();
+  const items: ArtUrlInput[] = [];
   for (let i = first; i < last; i++) {
     const item = model.rows[i]!;
     if (item.kind !== 'data') continue;
-    if (item.media?.iconUrl) urls.add(item.media.iconUrl);
-    if (item.rightSide?.media?.iconUrl) urls.add(item.rightSide.media.iconUrl);
-    if (item.readout?.iconUrl) urls.add(item.readout.iconUrl);
-    if (item.target?.iconUrl) urls.add(item.target.iconUrl);
+    items.push(item.media, item.rightSide?.media, item.readout?.iconUrl, item.target?.iconUrl);
   }
-  return [...urls];
+  return collectArtUrls(items);
 }

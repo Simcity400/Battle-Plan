@@ -83,6 +83,7 @@ export interface GameWindowViewProps {
   onDiagnostics?: (lines: string[]) => void;
   onShown?: (shown: ShownWindow | null) => void;
   onClose?: () => void;
+  onView?: (view: string) => void;
 }
 
 interface CompletedRender {
@@ -120,6 +121,7 @@ export default function GameWindowView({
   onDiagnostics,
   onShown,
   onClose,
+  onView,
 }: GameWindowViewProps) {
   const detailClose = useDetailWindowClose();
   const effectiveClose = detailClose ?? onClose;
@@ -272,14 +274,15 @@ export default function GameWindowView({
   const handleMove = useCallback((event: MouseEvent<HTMLElement>) => {
     const hits = hitAt(event.clientX, event.clientY);
     const hit = hits?.hover ?? null;
-    setHoveredClose(Boolean(isActivatableClose(hits?.click ?? null) && effectiveClose));
+    const click = hits?.click ?? null;
+    setHoveredClose(Boolean((isActivatableClose(click) && effectiveClose) || (click?.view && onView)));
     const tooltip = hit ? regionTooltipContent(hit) : null;
     if (tooltip) {
       showTooltip(ownerId, tooltip, event.clientX, event.clientY, hit?.path);
     } else {
       hideTooltip(ownerId);
     }
-  }, [hitAt, effectiveClose, ownerId]);
+  }, [hitAt, effectiveClose, onView, ownerId]);
 
   const handleLeave = useCallback(() => {
     setHoveredClose(false);
@@ -295,8 +298,11 @@ export default function GameWindowView({
     if (isActivatableClose(hit)) {
       hideTooltip(ownerId);
       effectiveClose?.();
+    } else if (hit?.view && onView) {
+      hideTooltip(ownerId);
+      onView(hit.view);
     }
-  }, [hitAt, effectiveClose, ownerId]);
+  }, [hitAt, effectiveClose, onView, ownerId]);
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape' && effectiveClose) {

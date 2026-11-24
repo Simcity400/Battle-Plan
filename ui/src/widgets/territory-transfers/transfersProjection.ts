@@ -6,8 +6,9 @@ import type { TableColumnSpec, TableModel, TableProjection, TableRow } from '../
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { TerritoryTransfersReply } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, OPTIONS, TABLE_BASE } from './definition.ts';
 
 export interface TransfersProjectionOptions {
   readonly filter: DeclaredCountryFilter;
@@ -39,7 +40,7 @@ export const TRANSFER_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(column =
   ...(column.key === 'country' ? { pinned: true } : {}),
   ...(column.key === 'gained' || column.key === 'lost' ? { barEligible: true } : {}),
   ...(column.key === 'net' || column.key === 'victoryPoints' ? { format: SIGNED, barEligible: false, widest: ['+9,999'] } : {}),
-  ...(column.key === 'net' ? { cellKind: 'twoWay' as const, minWidth: 160 } : {}),
+  ...(column.key === 'net' ? { cellKind: 'twoWay' as const } : {}),
   ...(column.key === 'victoryPoints' ? { unit: 'net' } : {}),
 }));
 
@@ -67,7 +68,6 @@ export const transfersProjection: TableProjection<TransfersProjectionOptions> = 
     const boundary = newIdentityBoundary();
     const rows: TableRow[] = [];
     const shown = reply.countries.filter(country => passes(options.filter, country.tag, hour));
-    const widest = shown.reduce((top, country) => Math.max(top, Math.abs(country.net)), 0);
     for (const country of shown) {
       const points = country.netVictoryPoints === null ? null : BigInt(country.netVictoryPoints);
       rows.push({
@@ -77,7 +77,7 @@ export const transfersProjection: TableProjection<TransfersProjectionOptions> = 
           country: identityCell(readView, 'country', country.tag, { atHour: Math.min(country.hour, hour), boundary }),
           gained: { value: whole(country.gained), format: 'integer' },
           lost: { value: whole(country.lost), format: 'integer' },
-          net: { value: whole(country.net), bar: widest > 0 && country.net !== 0 ? { fraction: knownValue(Math.abs(country.net) / widest) } : null },
+          net: { value: whole(country.net) },
           victoryPoints: { value: points === null ? notRecorded(country.victoryPointsMissing ?? 'Victory points not recorded') : points === 0n ? zeroValue(0n) : knownValue(points) },
         },
       });
@@ -88,7 +88,7 @@ export const transfersProjection: TableProjection<TransfersProjectionOptions> = 
       hour,
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
-      titleSummary: `${reply.transfers.toLocaleString('en-US')} ${reply.transfers === 1 ? 'transfer' : 'transfers'}`,
+      titleSummary: `${formatScalar(reply.transfers, 'integer')} ${reply.transfers === 1 ? 'transfer' : 'transfers'}`,
       ...(rows.length === 0 ? { empty: 'No territory transfers yet', emptyKind: 'empty' as const } : {}),
       warnings: reply.unobserved.length ? [...reply.warnings, 'Some settlements or ownership were not recorded before this date: the totals may be partial.'] : reply.warnings,
     };
@@ -98,6 +98,7 @@ export const transfersProjection: TableProjection<TransfersProjectionOptions> = 
 export const transfersDeclaration: TableWidgetDeclaration<TransfersProjectionOptions> = {
   family: 'table',
   kind: 'territory-transfers',
+  optionFields: OPTIONS,
   label: 'Territory transfers',
   subject: 'territory transfers',
   emptyCampaign: 'Load a campaign to see territory transfers.',

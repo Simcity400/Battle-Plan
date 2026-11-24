@@ -6,8 +6,9 @@ import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow,
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { ElectionEntry, NextElectionsReply } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, OPTIONS, TABLE_BASE } from './definition.ts';
 
 export interface ElectionsProjectionOptions {
   readonly filter: DeclaredCountryFilter;
@@ -72,7 +73,7 @@ function electionExtra(entry: ElectionEntry): readonly TooltipExtraRow[] {
     label: 'Election interval',
     value: entry.interval === null
       ? notRecorded('Not recorded')
-      : knownValue(`Every ${entry.interval.toLocaleString('en-US')} ${entry.interval === 1 ? 'month' : 'months'}`),
+      : knownValue(`Every ${formatScalar(entry.interval, 'integer')} ${entry.interval === 1 ? 'month' : 'months'}`),
     divider: true,
   }];
 }
@@ -131,6 +132,7 @@ export const electionsProjection: TableProjection<ElectionsProjectionOptions> = 
 export const electionsDeclaration: TableWidgetDeclaration<ElectionsProjectionOptions> = {
   family: 'table',
   kind: 'next-elections',
+  optionFields: OPTIONS,
   label: 'Next elections',
   subject: 'elections',
   emptyCampaign: 'Load a campaign to see elections.',

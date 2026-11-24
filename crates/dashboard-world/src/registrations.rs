@@ -10,6 +10,7 @@ dashboard_base::register_products! {
     SCALARS_FACTORYGROUPS => crate::products::scalars::FactoryGroups,
     SUBJECTS_SUBJECTS => crate::products::subjects::Subjects,
     PLACE_NAMES_PLACENAMES => crate::products::place_names::PlaceNames,
+    PLACE_NAME_RUNS_PLACENAMERUNS => crate::products::place_name_runs::PlaceNameRuns,
     SEA_REGIONS_STRATEGICREGIONS => crate::products::sea_regions::StrategicRegions,
 }
 
@@ -20,6 +21,7 @@ dashboard_base::register_hourly_products! {
     SCALARS_NUCLEARARSENAL => crate::products::scalars::NuclearArsenal,
     SCALARS_WORLDTENSION => crate::products::scalars::WorldTension,
     SCALARS_FACTORYPARTS => crate::products::scalars::FactoryParts,
+    AUTONOMY_LEVELS_AUTONOMYLEVELS => crate::products::autonomy_levels::AutonomyLevels,
 }
 
 use dashboard_base::{Source, products::at_hour::exact_panel};

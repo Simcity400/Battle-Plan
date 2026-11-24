@@ -1,9 +1,9 @@
-import { drawScrollFade, resolveKitTokens, type Canvas2D } from '../../draw/kit.ts';
+import { drawScrollFade, resolveKitTokens } from '../../draw/kit.ts';
 import { formatValueState } from '../valueFormat.ts';
 import type { FamilyTableLayout } from './layout.ts';
 import { resolveTableRows, type FlatTableRow, type TableModel, type TablePane, type TablePaneTitle } from './model.ts';
 import { computeRowLayout, hitFamilyTable, type RowLayoutGeometry } from './painter.ts';
-import type { TableSettings, TableTheme } from './settings.ts';
+import type { TableCanvasContext, TableSettings, TableTheme } from './settings.ts';
 
 export const PANE_GUTTER = 28;
 export const PANE_INDICATOR_HEIGHT = 3;
@@ -133,7 +133,7 @@ export function hitPanes(
 }
 
 export function drawPaneFrame(
-  ctx: Canvas2D,
+  ctx: TableCanvasContext,
   geometry: PaneGeometry,
   layout: FamilyTableLayout,
   scroll: PaneScroll,

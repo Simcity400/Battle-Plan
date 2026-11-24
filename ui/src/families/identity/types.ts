@@ -9,6 +9,7 @@ import type {
   CountryIdentitiesReply,
   CountryStyle,
   HourSpan,
+  RecordingGap,
 } from '../../generated/dashboard';
 
 export type HourInterval = readonly [firstHour: number, lastHour: number];
@@ -211,6 +212,7 @@ export interface IdentitySnapshot {
   readonly groups?: CountryGroupReply;
   readonly styles?: Readonly<Record<string, readonly StyleIntervalEntry[]>>;
   readonly entities?: Readonly<Record<string, readonly EntityRunEntry[]>>;
+  readonly entityUnknown?: Readonly<Partial<Record<EntityIdentityKey['kind'], readonly RecordingGap[]>>>;
   readonly drawnFlags?: Readonly<Record<string, DrawnFlagEntry>>;
   readonly failures?: SnapshotFailures;
 }

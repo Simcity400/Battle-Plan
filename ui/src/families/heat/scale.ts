@@ -1,5 +1,5 @@
 import { mix } from '../../shell/appearance/color.ts';
-import { authoredHex, colour, readableColour } from '../../charts/palette.ts';
+import { readableColour } from '../../charts/palette.ts';
 import type { ArtHandle, BoundedReadView, EntityKind } from '../contract.ts';
 import { flagArtHandle } from '../art/provider.ts';
 
@@ -67,19 +67,6 @@ export function splitStripes(
   return out;
 }
 
-export function resolveOrdinalColour(surface: string, ordinal: number): string {
-  return colour(surface, ordinal);
-}
-
-export function resolveRecordedColour(
-  rgb: readonly [number, number, number] | null | undefined,
-  surface: string,
-  fallbackOrdinal: number,
-): string {
-  const hex = rgb ? authoredHex(rgb) : null;
-  return hex ? readableColour(hex, surface) : colour(surface, fallbackOrdinal);
-}
-
 export interface ResolvedEntityPresentation {
   readonly label: string;
   readonly nameMissing?: string;
@@ -87,6 +74,7 @@ export interface ResolvedEntityPresentation {
   readonly pending?: boolean;
   readonly color?: string;
   readonly flag?: ArtHandle | null;
+  readonly validFrom: number;
 }
 
 export function resolveEntityFromReadView(
@@ -137,7 +125,40 @@ export function resolveEntityFromReadView(
     ...(pending ? { pending: true } : {}),
     ...(color ? { color } : {}),
     ...(flag !== undefined ? { flag } : {}),
+    validFrom: identity.validInterval[0],
   };
+}
+
+export function labelsAtReadings(
+  readView: BoundedReadView,
+  entities: readonly { readonly tag?: string | null; readonly label: string; readonly validFrom: number }[],
+  readHours: Iterable<number>,
+): (index: number, hour: number) => string {
+  const hours = [...new Set(readHours)].sort((a, b) => a - b);
+  const earlier = new Map<string, string>();
+  entities.forEach((entity, index) => {
+    if (!entity.tag) return;
+    for (const hour of hours) {
+      if (hour >= entity.validFrom) break;
+      earlier.set(`${index}@${hour}`, resolveEntityFromReadView(readView, 'country', entity.tag, hour, entity.label).label);
+    }
+  });
+  return (index, hour) => {
+    const entity = entities[index];
+    if (!entity) return '';
+    return hour >= entity.validFrom ? entity.label : earlier.get(`${index}@${hour}`) ?? entity.label;
+  };
+}
+
+export interface DatedColour {
+  readonly colour: string;
+  readonly through: number;
+}
+
+export function countryColourAt(readView: BoundedReadView, key: string, hour: number, surface: string, fallback: string): DatedColour {
+  const identity = readView.who('country', key, hour);
+  const colour = identity.colour?.status === 'ready' ? readableColour(identity.colour.value, surface) : fallback;
+  return { colour, through: identity.validInterval[1] };
 }
 
 export interface RegionLabel {

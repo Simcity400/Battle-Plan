@@ -16,6 +16,7 @@ import type {
 import type { OptionValue } from '../../dashboard/options';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { FamilyPlanContext } from '../plan.ts';
+import { normalizeView } from '../manifest.ts';
 import type { FamilyNavTuple } from './keyboard.ts';
 
 const navActionIndexCache = new WeakMap<readonly FamilyNavTuple[], Map<string, FamilyNavTuple>>();
@@ -218,6 +219,22 @@ export interface FamilyGestureHandlers {
   readonly onDoubleClick?: (point: readonly [number, number], ctx: FamilyGestureContext) => boolean;
 }
 
+export interface FamilyBindingIdentity {
+  readonly family: FamilyId;
+  readonly kind: string;
+  readonly view: string;
+}
+
+export type FamilyBindingBody<TBinding> = Omit<TBinding, keyof FamilyBindingIdentity>;
+
+export function familyBinding<TOptions, TBinding, TSettings>(
+  adapter: FamilyHostAdapter<any, TOptions, TBinding, TSettings>,
+  ctx: FamilyBindingContext<TOptions, TSettings>,
+): (TBinding & FamilyBindingIdentity) | null {
+  const body = adapter.buildBinding(ctx);
+  return body === null ? null : { ...body, family: adapter.family, kind: ctx.kind, view: normalizeView(ctx.view) } as TBinding & FamilyBindingIdentity;
+}
+
 export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBinding = unknown, TSettings = unknown> {
   readonly family: FamilyId;
   readonly skeleton?: FamilySkeletonKind;
@@ -232,7 +249,7 @@ export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBindin
   readonly chromeState?: (fields: Readonly<Record<string, unknown>>, previous: unknown) => unknown;
   readonly auditOwnerId?: number;
   readonly defaultSize?: readonly [width: number, height: number];
-  readonly buildBinding: (ctx: FamilyBindingContext<TOptions, TSettings>) => TBinding | null;
+  readonly buildBinding: (ctx: FamilyBindingContext<TOptions, TSettings>) => FamilyBindingBody<TBinding> | null;
   readonly parseHit: (hitKey: string | null) => ParsedFamilyHit | null;
   readonly inspectToken: (key: string) => string;
   readonly resolveHitAction?: (hit: ParsedFamilyHit, installed: InstalledPicture, fields: Readonly<Record<string, unknown>>) => InstalledAction | null;
@@ -245,4 +262,5 @@ export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBindin
   readonly deriveAuditRows?: (model: TModel, hour: number, context: FamilyAuditContext<TSettings>) => readonly AuditRow[];
   readonly auditOrdered?: boolean;
   readonly gestures?: FamilyGestureHandlers;
+  readonly exclusiveExpansion?: (fields: Readonly<Record<string, unknown>>) => boolean;
 }

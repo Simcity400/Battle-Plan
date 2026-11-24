@@ -1,4 +1,4 @@
-use super::{FocusPages, INCOMPLETE, NO_ROW, NOT_HELD, UNRECORDED, hour_reply, order_page, read};
+use super::{INCOMPLETE, NO_ROW, NOT_HELD, UNRECORDED, read};
 use crate::products::focus_dto::FocusEntry;
 use dashboard_base::{Source, test_fixtures::{CAMPAIGN, records, source}};
 use replay::campaign::Replay;
@@ -80,7 +80,7 @@ fn a_completion_is_dated_only_where_the_list_grew_at_its_end_read_the_hour_befor
 }
 
 #[test]
-fn progress_gains_only_from_the_hour_before_under_the_same_focus_and_replies_read_the_fold() {
+fn progress_gains_only_from_the_hour_before_under_the_same_focus() {
     let source = recording();
     let query = dashboard_base::queries::query(&source, 1).unwrap();
     let fold = read(&query, &"GER".into(), &AtomicBool::new(false)).unwrap();
@@ -89,21 +89,6 @@ fn progress_gains_only_from_the_hour_before_under_the_same_focus_and_replies_rea
     assert_eq!(fold.progress(104), Some((200_000, Some(100_000))));
     assert_eq!(fold.progress(105), Some((0, None)), "a fall is no gain");
     assert_eq!(fold.progress(110), None);
-    let reply = hour_reply(&fold, 103);
-    let focus = reply.focus.unwrap();
-    assert_eq!((focus.slot, focus.country_id, focus.hour, focus.last_hour, focus.at), (7, GER, 100, 104, 103));
-    assert_eq!(focus.order_first_hour, Some(100));
-    assert_eq!(focus.current.as_deref(), Some("b"));
-    assert_eq!(focus.completed, FocusPages { first: 0, count: 1, rows: 1 });
-    assert_eq!((focus.progress_raw.as_str(), focus.daily_gain_raw.as_deref()), ("200000", Some("100000")));
-    let gap = hour_reply(&fold, 111);
-    assert!(gap.focus.is_none());
-    assert_eq!(gap.missing.unwrap().reason, NO_ROW, "an hour not read says why, never an empty order");
-    let pages = hour_reply(&fold, 126).focus.unwrap().completed;
-    assert_eq!(pages, FocusPages { first: 4, count: 1, rows: 2 });
-    assert_eq!(order_page(&fold, 126, &pages, 0).unwrap().entries.unwrap(), [entry(0, "x", None), entry(1, "y", Some(125))]);
-    assert!(order_page(&fold, 126, &pages, 1).unwrap().entries.is_none());
-    assert!(order_page(&fold, 126, &FocusPages { first: 0, count: 1, rows: 2 }, 0).is_err(), "pages of another order are refused");
 }
 
 #[test]
@@ -480,4 +465,20 @@ fn a_focus_card_lists_dated_completions_newest_first_then_undated_and_holds_only
     assert_eq!(progress_figures(Some((150_000, Some(50_000))), Some(70.0)), (Some(1), Some(214), Some(137), None));
     assert_eq!(progress_figures(Some((150_000, None)), Some(70.0)), (Some(1), Some(214), None, Some(NO_GAIN.to_owned())));
     assert_eq!(progress_figures(Some((9_000_000, Some(1))), Some(70.0)).1, Some(10_000), "progress past the duration is complete, not more");
+}
+
+#[test]
+fn completions_are_ordered_by_their_dates_and_each_is_presented_at_the_hour_it_was_observed() {
+    use super::{Fold, Segment};
+    use crate::products::focus_card::{card_at, observed_hours};
+    use crate::products::focus_dto::FocusOrder;
+    let order = FocusOrder { completed: vec![entry(0, "early", None), entry(1, "later", Some(110)), entry(2, "middle", Some(105))], current: Some("now".into()), continuous: None, paused: false };
+    let fold = Fold { segments: vec![Segment { first: 100, last: 200, slot: 7, id: 1, order }], ..Default::default() };
+    let card = card_at(&fold, 150);
+    assert_eq!(card.completed, [("later".to_owned(), Some(110)), ("middle".to_owned(), Some(105)), ("early".to_owned(), None)], "a reordered list still reads newest first by date");
+    let hours = observed_hours(&card);
+    assert_eq!(hours.get(&110), Some(&vec!["later".to_owned()]));
+    assert_eq!(hours.get(&105), Some(&vec!["middle".to_owned()]));
+    assert_eq!(hours.get(&100), Some(&vec!["early".to_owned()]), "an undated completion is presented at the first read that held it, never at the displayed hour");
+    assert!(!hours.contains_key(&150));
 }

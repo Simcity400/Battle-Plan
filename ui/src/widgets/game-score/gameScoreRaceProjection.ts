@@ -1,5 +1,5 @@
 import { liveKey } from '../../charts/live.ts';
-import { colour } from '../../charts/palette.ts';
+import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
@@ -10,10 +10,9 @@ import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import { formatValueState } from '../../families/valueFormat.ts';
 import type { GameScoreRow } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { SCORE_LABELS, scorePart, validateGameScore, type ScorePart } from './gameScoreData.ts';
 
-const PART_SURFACE = '#1e1e1e';
+const PART_SURFACE = DEFAULT_CARD_SURFACE;
 const SPLIT_PARTS = ['army', 'navy', 'air'] as const;
 
 export interface GameScoreRaceOptions {
@@ -246,7 +245,6 @@ export const gameScoreRaceDeclaration: BarsWidgetDeclaration<GameScoreRaceOption
   subject: 'game scores',
   emptyCampaign: 'Load a campaign to see its game scores.',
   icon: 'grid',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

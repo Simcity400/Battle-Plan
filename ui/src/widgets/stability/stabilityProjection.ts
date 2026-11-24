@@ -23,7 +23,7 @@ import type {
   ChartMarkerItem,
   TimeChartSeriesModel,
 } from '../../families/time-chart/model.ts';
-import { notRecordedLabel } from '../../families/valueFormat.ts';
+import { formatScalar, notRecordedLabel } from '../../families/valueFormat.ts';
 import type { StabilityBreakdownReply } from '../../generated/dashboard';
 import {
   assignCountrySeriesColours,
@@ -37,7 +37,6 @@ import {
   seriesHeadAt,
   withinMapOf,
 } from '../../families/time-chart/seriesHelpers.ts';
-import { STABILITY_OPTIONS } from './definition.ts';
 import { breakdownRows, linesPerMeasure, type Measure } from './stabilityData.ts';
 
 export interface StabilityRawMarker {
@@ -69,8 +68,7 @@ export interface StabilityOptions {
 
 
 function formatPct(value: number): string {
-  const rounded = Math.round(value * 10) / 10;
-  return `${Number.isInteger(rounded) ? Math.round(rounded) : rounded.toFixed(1)}%`;
+  return formatScalar(value, { decimals: 0, maxDecimals: 1, percent: true });
 }
 
 function resolveMarkerTitle(m: StabilityRawMarker, readView: BoundedReadView, limitHour: number): string {
@@ -190,7 +188,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
       const tag = ordered[rank]!;
       const isTail = !single && rank >= 8;
       const { name, flag } = countrySeriesIdentity(tag, options.holders, readView, hour, !single);
-      const countryColor = isTail ? 'rgba(245, 245, 245, 0.22)' : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.stability);
+      const countryColor = isTail ? CHART_MEASURE_COLOURS.tailLine : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.stability);
 
       if (options.showStability) {
         const bounded = stabMap?.get(tag) ?? null;
@@ -315,7 +313,6 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
   subject: 'stability and war support',
   emptyCampaign: 'Load a campaign to see stability and war support.',
   icon: 'chart-line',
-  optionFields: STABILITY_OPTIONS,
   countries: { mode: 'multi', labels: true, colours: true, allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
     const tags = ctx.countries.tags;

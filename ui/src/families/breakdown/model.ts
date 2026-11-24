@@ -1,11 +1,12 @@
 import { colour } from '../../charts/palette.ts';
 import type { TooltipContent } from '../../charts/tooltip.ts';
-import { mix, toHex } from '../../shell/appearance/color.ts';
+import { tintColour } from '../../shell/appearance/color.ts';
 import type { AuditRow } from '../../draw/notifications';
 import type { BoundedReadView, FamilyTheme, MirrorModel, MirrorRow } from '../contract.ts';
 import type { ArtResult } from '../plan.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import { buildTooltipContent, type FamilyTooltipPayload, type TooltipListItem } from '../host/tooltips.ts';
+import { formatScalar, formatShare } from '../valueFormat.ts';
 
 export interface BreakdownPart {
   readonly key: string;
@@ -77,32 +78,12 @@ export interface ResolvedBreakdownLevel {
   readonly total: BreakdownTotal;
 }
 
-export function formatShare(share: number | null | undefined): string {
-  if (share == null || !Number.isFinite(share) || share < 0) return '';
-  const pct = share * 100;
-  if (pct === 0) return '0%';
-  if (pct < 0.05) return '<0.1%';
-  if (pct >= 99.95) return '100%';
-  if (pct >= 10) return `${Math.round(pct)}%`;
-  return `${pct.toFixed(1)}%`;
-}
+const TOOLTIP_PARTS = 8;
 
 export function partColour(part: BreakdownPart, theme: FamilyTheme): string {
   if (part.color) return part.color;
   if (part.neutral) return theme.grey;
   return colour(theme.surface, part.ordinal);
-}
-
-export function tintColour(hex: string, amount: number): string {
-  return mix(hex, '#ffffff', amount);
-}
-
-export function shadeColour(hex: string, amount: number): string {
-  return mix(hex, '#000000', amount);
-}
-
-export function rgbHex(r: number, g: number, b: number): string {
-  return toHex({ r, g, b });
 }
 
 export function breakdownLevel(model: BreakdownModel): ResolvedBreakdownLevel {
@@ -173,11 +154,11 @@ export function buildBreakdownTooltip(
   if (targetKey === '__partial__') {
     const reason = level.total.reason ?? level.total.shortReason ?? 'Part of this total was not recorded.';
     const payload: FamilyTooltipPayload = {
-      title: level.total.atLeast ? 'Partly known total' : 'Partial coverage',
+      title: 'Partial',
       hour: model.hour,
       items: [
         {
-          label: level.total.atLeast ? 'Recorded minimum' : level.total.verb,
+          label: level.total.verb,
           value: level.total.unit ? `${level.total.text} ${level.total.unit}` : level.total.text,
           strong: true,
         },
@@ -215,7 +196,7 @@ export function buildBreakdownTooltip(
     if (part.count !== undefined && part.count > 0) {
       items.push({
         label: part.countLabel ?? 'Count',
-        value: part.count.toLocaleString('en-US'),
+        value: formatScalar(part.count, 'integer'),
       });
     }
   }
@@ -229,6 +210,13 @@ export function buildBreakdownTooltip(
   if (part.detailRows) {
     for (const row of part.detailRows) items.push(row);
   }
+  const shown = part.notRecorded ? [] : (part.children ?? []).slice(0, TOOLTIP_PARTS);
+  shown.forEach((child, at) => items.push({
+    label: child.name,
+    ...(child.notRecorded || child.value === null ? { missingReason: child.missingReason ?? 'Not recorded' } : { value: unit ? `${child.text} ${unit}` : child.text }),
+    indent: true,
+    ...(at === 0 ? { divider: true } : {}),
+  }));
   const subtitle = part.subtitle ?? (parent ? parent.name : undefined);
   const note = [part.note, level.total.atLeast ? level.total.reason : undefined]
     .filter((entry): entry is string => Boolean(entry && entry.trim()))
@@ -281,7 +269,7 @@ export function deriveBreakdownAudit(
   const totalVal = level.total.value === null
     ? `notRecorded:${level.total.reason ?? 'Not recorded'}`
     : level.total.atLeast
-      ? `atLeast:${level.total.exact ?? level.total.text}`
+      ? `partial:${level.total.exact ?? level.total.text}`
       : level.total.partial
         ? `partial:${level.total.exact ?? level.total.text}`
         : (level.total.exact ?? level.total.text);

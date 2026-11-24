@@ -1,7 +1,9 @@
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import { knownValue, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
-import type { TooltipExtraRow } from '../../families/table/model.ts';
+import type { TableCellExtra, TooltipExtraRow } from '../../families/table/model.ts';
+import type { BoundedReadView } from '../../families/plan.ts';
+import { artState, type ArtState } from '../../families/table/identityCell.ts';
 import type { NavalRefitsReply, NavalRepairsReply, RefitLine, RepairPort, YardShip } from '../../generated/dashboard';
 
 export const FIXED = 100000n;
@@ -36,6 +38,14 @@ export function validateRefits(value: unknown): NavalRefitsReply {
       && optionalDecimal(line.cost) && optionalInteger(line.dockyards) && optionalDecimal(line.remaining) && Array.isArray(line.ships) && line.ships.every(ship)))
     throw new Error('The naval refits reply is malformed.');
   return reply;
+}
+
+export function shipPicture(ship: YardShip, readView: BoundedReadView): ArtState {
+  return ship.classIcon ? artState(readView, { kind: 'sprite', key: ship.classIcon.key, frame: ship.classIcon.frame }) : {};
+}
+
+export function shipPictureCell(ship: YardShip, picture: ArtState): TableCellExtra {
+  return { iconSlot: true, artShape: 'counter', ...(ship.class ? { artName: ship.class } : {}), ...(picture.icon ? { icon: picture.icon } : {}), ...(picture.iconPending ? { iconPending: true } : {}) };
 }
 
 export type ShipNameSource = 'recorded' | 'rebuilt' | 'design';
