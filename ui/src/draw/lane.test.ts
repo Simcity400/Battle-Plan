@@ -3451,6 +3451,30 @@ test('a date-only supply for a stamp the lane does not hold is dropped, and a ne
   assert.equal(seen.at(-1)?.panels, null, 'the previous owner’s panels are gone');
 });
 
+test('R5-S6, R2-S12: before mount, a statics replacement takes its own stamp, undefined on a clear, and a date for another stamp is dropped', async () => {
+  const seen = new Map<number, { panels: unknown; dated: unknown }>();
+  const watch: LaneView = { paint: input => {
+    seen.set(input.widget, { panels: (input.model as { staticPanels?: unknown } | undefined)?.staticPanels ?? null, dated: input.binding.dated ?? null });
+    return { surfaces: [], fields: {}, motion: false };
+  } };
+  const { lane, mount, step } = rig({ watch });
+  lane.supply(1, { stamp: 5, statics: { staticPanels: { main: { at: 10 } } }, dated: { h: 10, c: 20 } });
+  lane.supply(1, { statics: null });
+  mount(1, [], 'watch', 0, { dated: { h: 0, c: 30 } });
+  lane.bind(1, { generation: 2, surfaces: [], offset: 0, pin: null, dated: { h: 0, c: 30 } }, { family: 'f', kind: 'k' });
+  lane.supply(1, { dated: { h: 0, c: 100 } });
+  await step(50, { playing: false });
+  assert.deepEqual(seen.get(1), { panels: null, dated: { h: 0, c: 100 } }, 'R5-S6: after a clear, an unstamped date extension applies');
+
+  lane.supply(2, { stamp: 5, statics: { staticPanels: { main: { at: 10 } } }, dated: { h: 10, c: 20 } });
+  lane.supply(2, { stamp: 4, dated: { h: 0, c: 100 } });
+  mount(2, [], 'watch', 0, { dated: { h: 10, c: 20 } });
+  lane.bind(2, { generation: 2, surfaces: [], offset: 0, pin: null, dated: { h: 10, c: 20 } }, { family: 'f', kind: 'k' });
+  lane.supply(2, { stamp: 5, dated: { h: 10, c: 30 } });
+  await step(25, { playing: false });
+  assert.deepEqual(seen.get(2), { panels: { main: { at: 10 } }, dated: { h: 10, c: 30 } }, 'R2-S12: the buffered panels keep their own stamp, so their own dates still apply');
+});
+
 test('a view that is waiting presents nothing and is not painted again until it wakes the widget; a family switch disposes the outgoing view', async () => {
   let paints = 0, ready = false;
   const unmounted: string[] = [];
