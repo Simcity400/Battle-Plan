@@ -14,18 +14,7 @@ function registryKey(family: FamilyId, kind: string, view?: string): string {
 }
 
 function resolveLookupKey(family: FamilyId, kind: string, view?: string): string {
-  const exact = registryKey(family, kind, view);
-  if (projections.has(exact) || manifestByKey.has(exact)) return exact;
-  if (!view || view === DEFAULT_VIEW) {
-    const prefix = `${family}\u0000${kind}\u0000`;
-    for (const key of projections.keys()) {
-      if (key.startsWith(prefix)) return key;
-    }
-    for (const key of manifestByKey.keys()) {
-      if (key.startsWith(prefix)) return key;
-    }
-  }
-  return exact;
+  return registryKey(family, kind, view);
 }
 
 export function bindFamilyManifest(entries: readonly FamilyViewEntry[]): void {

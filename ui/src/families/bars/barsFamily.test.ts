@@ -13,22 +13,19 @@ import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, zeroValue } from '../value.ts';
 import {
   assertBarsModelValid,
-  buildShareRowsModel,
   countryRowPresentation,
   deriveBarsAudit,
   deriveBarsMirror,
   deriveBarsTooltip,
-  drawFamilyBars,
-  familyBarsLaneView,
   FutureBarsDataError,
-  hitFamilyBars,
   InvalidBarsModelError,
-  axisCeiling,
-  layoutFamilyBars,
-  registerBarsProjection,
   type BarsModel,
-  type FamilyBarsBinding,
-} from './index.ts';
+} from './model.ts';
+import { axisCeiling, layoutFamilyBars } from './layout.ts';
+import { drawFamilyBars, hitFamilyBars } from './painter.ts';
+import { registerBarsProjection } from './registry.ts';
+import { familyBarsLaneView, type FamilyBarsBinding } from './laneView.ts';
+import { buildShareRowsModel } from './shareRows.ts';
 
 const THEME: FamilyTheme = {
   surface: '#16181d',
@@ -614,4 +611,17 @@ test('bar fills are the identity colour raised to 3:1 against the surface, at fu
   const fills = ops.filter(op => op.op === 'fill').map(op => op.fillStyle);
   assert.ok(fills.includes(readableColour(dark, THEME.surface)));
   assert.ok(!fills.includes(dark), 'a near-invisible map colour is never drawn raw');
+});
+
+test('a two-sided row can carry a ratio column with its own header', () => {
+  const h = engineHour({ year: 1941, month: 9, day: 15, hour: 12 })!;
+  const model: BarsModel = { form: 'two-sided', hour: h, leftHeader: 'Own losses', rightHeader: 'Enemy aircraft destroyed', readoutHeader: 'Ratio', rows: [
+    { kind: 'data', key: 'GER', label: 'German Reich', color: '#888888', left: { value: { value: knownValue(2474) }, numeric: 2474 }, right: { value: { value: knownValue(4453) }, numeric: 4453 }, readout: { primary: '1.80 : 1' } },
+  ] };
+  const layout = layoutFamilyBars(model, 840, 300);
+  assert.ok(layout.showReadout && layout.plotRight < layout.readoutX);
+  const { ctx, ops } = makeFakeCtx();
+  drawFamilyBars(ctx, { model, layout, theme: THEME, scrollTop: 0, now: 0, glideDuration: 0 });
+  const texts = ops.filter(op => op.op === 'fillText').map(op => String(op.args[0]));
+  assert.ok(texts.includes('1.80 : 1') && texts.includes('Ratio'));
 });

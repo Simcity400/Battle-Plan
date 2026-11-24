@@ -9,7 +9,7 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'election', label: 'Election', as: 'plain', offered: OFFERED.number },
 ];
 export const DEFAULT_SORT = { column: 'days', direction: 'ascending' } as const;
-export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: DEFAULT_SORT };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', showRank: false, sort: DEFAULT_SORT };
 export const OPTIONS: readonly OptionField[] = tableFamilyOptions(COLUMNS, TABLE_BASE);
 export const definition = {
   kind: 'next-elections', version: 1, title: 'Next elections', category: 'Politics', icon: 'ballot',
