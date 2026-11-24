@@ -15,7 +15,7 @@ import { CLOSED } from '../../charts/drill/drillState';
 import { useDrill } from '../../charts/drill/useDrill';
 import type { DrillAction } from '../../charts/drill/drillState';
 import Legend from '../../charts/Legend';
-import { lineStyles } from '../../charts/palette';
+import { catalogueColours } from '../../charts/palette';
 import { clipToSpans, lineEndHour, runAt } from '../../charts/series';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
@@ -245,14 +245,14 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
   const requests = useMemo(() => selectedGroups.map(group => ({ key: group.key, group: stockpileGroupKey(group), measure: shareMode ? 'share' as const : 'stock' as const })),
     [selectedGroups, shareMode]);
   const incoming = useStockpileChart(runtime.client, gate, track, catalogue, holders, included, requests, head, active);
-  const styles = useMemo(() => lineStyles(chosen.map(key => ({ key, preferred: groups.findIndex(group => group.key === key) })), tokens.categories), [chosen, groups, tokens]);
+  const groupColours = useMemo(() => catalogueColours(groups.map(group => group.key), tokens.surface), [groups, tokens.surface]);
   const lines = useMemo(() => chosen.flatMap(key => {
     const group = groups.find(item => item.key === key);
-    const style = styles.get(key);
+    const color = groupColours.get(key);
     const summary = incoming.summaries.get(key);
-    return group && style ? [{ group, color: style.color, dash: style.primary, summary,
+    return group && color ? [{ group, color, dash: [] as readonly number[], summary,
       runs: clipToSpans(summary?.runs ?? [], [{ firstHour: extent[0], lastHour: extent[1] }]) }] : [];
-  }), [chosen, groups, styles, incoming.summaries, extent[0], extent[1]]);
+  }), [chosen, groups, groupColours, incoming.summaries, extent[0], extent[1]]);
   const chosenScope = JSON.stringify(chosen);
   const choiceOwner = useMemo(() => ({ pickOwner, chosenScope, extent }), [pickOwner, chosenScope, extent[0], extent[1]]);
   const [selection, setSelection] = useState<{ owner: object; hour: number; keys: readonly string[] } | null>(null);

@@ -24,6 +24,12 @@ test('bands follow content order and colours; unknown ideologies use the palette
   ]);
   assert.equal(list[2].color, '#111111');
   assert.deepEqual(list.map(band => band.keys), [[{ tag: 'GER', part: '0' }, { tag: 'GER', part: '4' }], [{ tag: 'GER', part: '1' }], [{ tag: 'GER', part: '3' }]]);
+  const uncoloured = Array.from({ length: 12 }, (_, index) => ({ token: `mod_${index}`, name: `Mod ${index}`, color: null }));
+  const open = bands({ ...REPLY, ideologies: uncoloured, parties: uncoloured.map((item, index) => ({ token: item.token, parts: [index] })) }, 'GER', ['#111111', '#222222'], '#16181d');
+  assert.equal(new Set(open.map(band => band.color)).size, 12);
+  const subset = bands({ ...REPLY, ideologies: uncoloured, parties: [{ token: 'mod_9', parts: [9] }, { token: 'mod_1', parts: [1] }] }, 'GER', ['#111111', '#222222'], '#16181d');
+  assert.equal(subset.find(band => band.token === 'mod_9')!.color, open[9].color);
+  assert.equal(subset.find(band => band.token === 'mod_1')!.color, open[1].color);
 });
 
 

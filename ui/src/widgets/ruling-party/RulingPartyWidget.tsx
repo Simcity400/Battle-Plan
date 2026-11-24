@@ -77,7 +77,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const [hover, setHover] = useState<number | null>(null);
   const [surface, setSurface] = useState(() => readTokens().surface);
   useEffect(() => subscribeTokens(tokens => setSurface(tokens.surface)), []);
-  const ordered = useMemo(() => data && tag ? bands(data, tag, categoricalPalette(surface)) : [], [data, tag, surface]);
+  const ordered = useMemo(() => data && tag ? bands(data, tag, categoricalPalette(surface), surface) : [], [data, tag, surface]);
   const keys = useMemo(() => bandKeys(ordered), [ordered]);
   const rulingShown = data ? rulingAt(data, head) : null;
   const list = useMemo(() => rulingFirst(ordered, rulingShown), [ordered, rulingShown]);

@@ -104,9 +104,13 @@ test('a subjects reply is validated, down to steps covering their run and naming
   assert.throws(() => validateSubjectReply({ ...reply, levels: undefined }), /malformed/);
 });
 
-test('level colours follow the content order, never a level name, and fold past the palette', () => {
-  const colours = levelColours(levels, ['c0', 'c1', 'c2'], 'other');
-  assert.deepEqual([...colours], [['autonomy_mod_march', 'c0'], ['autonomy_puppet', 'c1'], ['autonomy_mod_unnamed', 'c2'], ['autonomy_mod_unordered', 'other']]);
+test('level colours follow the content order, never a level name, and generate distinct colours past the base palette', () => {
+  const colours = levelColours(levels, ['c0', 'c1', 'c2'], '#16181d');
+  assert.deepEqual([...colours].slice(0, 3), [['autonomy_mod_march', 'c0'], ['autonomy_puppet', 'c1'], ['autonomy_mod_unnamed', 'c2']]);
+  assert.match(colours.get('autonomy_mod_unordered')!, /^#[0-9a-f]{6}$/);
+  const many = Array.from({ length: 12 }, (_, index) => ({ token: `level_${index}`, name: `Level ${index}`, ordered: true }));
+  const generated = levelColours(many, ['c0', 'c1', 'c2'], '#16181d');
+  assert.equal(new Set(generated.values()).size, 12);
   assert.equal(levelName(byToken, 'autonomy_mod_unnamed'), 'Autonomy level name unavailable');
   assert.equal(levelName(byToken, null), 'Level not recorded');
 });

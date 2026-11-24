@@ -119,5 +119,10 @@ test('a repeated technology is named and placed by the definition each assignmen
   assert.equal(researchFolderAt(looks, 'radio', 3)?.name, 'Electronics');
   assert.equal(researchFolderAt(looks, 'radio', 4)?.name, 'Support');
   assert.equal(researchFolderAt(looks, 'radar')?.name, 'Support');
+  assert.equal(researchFolderAt(researchFolderLooks(data, ['radar'], ['red', 'blue']), 'radar')?.colour, 'blue');
+  const manyFolders = Array.from({ length: 12 }, (_, index) => ({ key: `f_${index}`, name: `Folder ${index}` }));
+  const manyLook = researchFolderLooks({ folders: manyFolders, technologyFolders: manyFolders.map((folder, index) => ({ token: `t_${index}`, folder: folder.key })) },
+    manyFolders.map((_, index) => `t_${index}`), ['c0', 'c1'], '#16181d');
+  assert.equal(new Set(manyFolders.map((_, index) => researchFolderAt(manyLook, `t_${index}`)?.colour)).size, 12);
   assert.deepEqual(researchArtworkTokens(researchAt(data.history, 25), 25, false), ['radio']);
 });

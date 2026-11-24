@@ -12,6 +12,7 @@ import type { ColumnPeriod } from '../../charts/columns';
 import { liveAt } from '../../charts/live';
 import type { Live } from '../../charts/live';
 import { useChartTokens } from '../../charts/useChartTokens';
+import { catalogueColours } from '../../charts/palette';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { icDecimals } from '../../dashboard/icDecimals';
 import { resolveOptions } from '../../dashboard/options';
@@ -86,9 +87,12 @@ function emptyAt(kind: PurposeSpendingKind, data: SpendingData, window: Spending
     other.exact == null ? reasonLabel(other.reason) : `No ${kind.measure} spent in this view.`];
 }
 
-function usePurposeColours(bands: readonly unknown[]): string[] {
+function usePurposeColours(bands: readonly { id: string }[]): string[] {
   const tokens = useChartTokens();
-  return useMemo(() => bands.map((_, index) => tokens.categories[index % tokens.categories.length]), [tokens, bands]);
+  return useMemo(() => {
+    const colours = catalogueColours(bands.map(band => band.id), tokens.surface);
+    return bands.map(band => colours.get(band.id)!);
+  }, [tokens.surface, bands]);
 }
 
 type Runtime = WidgetProps['runtime'];

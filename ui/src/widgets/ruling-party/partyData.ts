@@ -2,7 +2,7 @@ import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { EventBadge } from '../../charts/badges';
 import { runAt } from '../../charts/series.ts';
 import { formatFixed } from '../../charts/valueAxis.ts';
-import { GREY_CHROMA } from '../../charts/palette.ts';
+import { catalogueColours, GREY_CHROMA } from '../../charts/palette.ts';
 import { oklchToRgb, parseColor, rgbToOklch, toHex } from '../../shell/appearance/color.ts';
 import type { HourSpan, LeaderRun, PartyHistoryReply } from '../../generated/dashboard';
 import { keyId } from '../../dashboard/keyedSeriesData.ts';
@@ -35,15 +35,19 @@ export function validatePartyHistoryReply(data: unknown): PartyHistoryReply {
   return reply;
 }
 
-export function bands(reply: PartyHistoryReply, tag: string, palette: readonly string[]): Band[] {
+export function bands(reply: PartyHistoryReply, tag: string, palette: readonly string[], surface?: string): Band[] {
+  const byToken = new Map(reply.ideologies.map(ideology => [ideology.token, ideology]));
   const order = new Map(reply.ideologies.map((ideology, index) => [ideology.token, index]));
   const sorted = [...reply.parties].sort((a, b) => (order.get(a.token) ?? Infinity) - (order.get(b.token) ?? Infinity) || a.token.localeCompare(b.token));
   const tone = paletteTone(palette);
-  let fallback = 0;
+  const catalogue = [...reply.ideologies.map(item => item.token), ...sorted.map(series => series.token).filter(token => !order.has(token))];
+  const colours = catalogueColours(catalogue.map(token => {
+    const authored = byToken.get(token)?.color;
+    return { id: token, color: authored ? ideologyColour(authored, tone) : null };
+  }), surface, palette);
   return sorted.map(series => {
-    const ideology = reply.ideologies.find(item => item.token === series.token);
-    const color = ideology?.color ? ideologyColour(ideology.color, tone) : palette[fallback++ % Math.max(1, palette.length)];
-    return { token: series.token, name: contentTitle(ideology?.name, series.token, 'Ideology name unavailable'), color,
+    const ideology = byToken.get(series.token);
+    return { token: series.token, name: contentTitle(ideology?.name, series.token, 'Ideology name unavailable'), color: colours.get(series.token)!,
       keys: series.parts.map(part => ({ tag, part: String(part) })) };
   });
 }

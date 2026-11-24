@@ -20,6 +20,7 @@ import { heldStackSegment } from '../../charts/race/countryRace';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
 import { jumpItem } from '../../charts/jump';
+import { catalogueColours } from '../../charts/palette';
 import { useCountryColours } from '../../charts/race/countryColours';
 import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
@@ -235,8 +236,9 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     return exact ? fitTooltip([pairTooltip(chordPairs(hit, exact), exact.labels, exact.hour)], height) : null;
   }, [height]);
   const stack = useMemo(() => pairHistory(chartReplies, selectedIds), [chartReplies, selected]);
-  const colors = useMemo(() => selectedIds.map((_id, index) => tokens.categories[index % tokens.categories.length]), [selectedIds, tokens.categories]);
-  const colorById = useMemo(() => new Map(selectedIds.map((id, index) => [id, colors[index]])), [selectedIds, colors]);
+  const allPairIds = useMemo(() => [...new Set([...casualtyPairIds([...histories.data.values()]), ...selectedIds])], [histories.data, selectedIds]);
+  const colorById = useMemo(() => catalogueColours(allPairIds, tokens.surface), [allPairIds, tokens.surface]);
+  const colors = useMemo(() => selectedIds.map(id => colorById.get(id) ?? tokens.muted), [selectedIds, colorById, tokens.muted]);
   const layers = useMemo<ChartLayer[]>(() => [{
     draw: (ctx, frame, theme, state) => {
       const until = Math.min(frame.x[1], state.playhead ?? frame.x[1]);

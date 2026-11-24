@@ -164,11 +164,11 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
   const root = useRef<HTMLElement | null>(null);
   const now = useResearchSlots(widget, runtime, active && moment && !!data, slotsStructure, root);
   const { latest } = now;
-  const { categories } = useChartTokens();
+  const { categories, surface } = useChartTokens();
   const slots = useMemo(() => data && hour !== undefined ? researchAt(data.history, hour) : null, [data, hour]);
   const coverage = useMemo(() => data && hour !== undefined ? coverageAt(data.history.coverage, hour) : NO_COVERAGE, [data, hour]);
   const lanes = useMemo(() => data && hour !== undefined ? researchLanesAt(data.history, hour) : NO_LANES, [data, hour]);
-  const looks = useMemo(() => data ? researchFolderLooks(data, historyTokens(data.history), categories) : NO_LOOKS, [data, categories]);
+  const looks = useMemo(() => data ? researchFolderLooks(data, historyTokens(data.history), categories, surface) : NO_LOOKS, [data, categories, surface]);
   const folders = useMemo(() => researchFolderList(looks), [looks]);
   const chosenTokens = useMemo(() => contentSet(options.folders), [options.folders]);
   const chosen = useMemo(() => new Set(chosenTokens.map(contentKey)), [chosenTokens]);

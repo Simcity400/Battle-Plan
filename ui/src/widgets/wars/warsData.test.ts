@@ -449,3 +449,12 @@ test('a losses reply gives each war a run or the reason it has none, never both 
   assert.equal(validateWarContributions(groups), groups);
   assert.throws(() => validateWarContributions({ ...groups, available: 'yes' }), /malformed/);
 });
+
+test('country view coloured by war gives more than eight wars distinct colours without wrapping', () => {
+  const many = Array.from({ length: 12 }, (_, index) => war(`w${String(index).padStart(2, '0')}`, 10 + index, 40));
+  const prepared = prepareWars(reply(many));
+  const shown = warsLanes(prepared, 40, { ...options, view: 'countries', colour: 'war', palette: ['c0', 'c1', 'c2'], surface: '#16181d' });
+  const spanColours = shown.lanes[0].spans.map(span => span.color);
+  assert.deepEqual(spanColours.slice(0, 3), ['c0', 'c1', 'c2']);
+  assert.equal(new Set(spanColours).size, 12);
+});

@@ -1,4 +1,5 @@
 import { runAt } from '../../charts/series.ts';
+import { catalogueColours } from '../../charts/palette.ts';
 import type { Artwork, ResearchBreakdownReply, ResearchCoverage, ResearchEntry, ResearchReply, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsReply } from '../../generated/dashboard';
 import { artworkEntry, keepDrawableIcons } from '../../dashboard/artwork.ts';
@@ -111,7 +112,7 @@ export type ResearchFolderLooks = ReadonlyMap<string, ResearchFolderLook>
   & { readonly definitions?: ReadonlyMap<string, ReadonlyMap<number, ResearchFolderLook>> };
 
 export function researchFolderLooks(reply: Pick<ResearchReply, 'folders' | 'technologyFolders'>, tokens: Iterable<ResearchUse>,
-  palette: readonly string[]): Map<string, ResearchFolderLook> & { definitions: Map<string, Map<number, ResearchFolderLook>> } {
+  palette: readonly string[], surface?: string): Map<string, ResearchFolderLook> & { definitions: Map<string, Map<number, ResearchFolderLook>> } {
   const byToken = new Map<string, string | null>(), byDefinition = new Map<string, Map<number, string | null>>();
   for (const item of reply.technologyFolders) {
     if (item.databaseIndex == null) byToken.set(item.token, item.folder);
@@ -127,8 +128,10 @@ export function researchFolderLooks(reply: Pick<ResearchReply, 'folders' | 'tech
   const wanted = [...tokens];
   const shown = [...new Set(wanted.flatMap(use => folderOf(use) ?? []))]
     .sort((a, b) => (order.get(a) ?? Infinity) - (order.get(b) ?? Infinity) || (a < b ? -1 : a > b ? 1 : 0));
+  const allKeys = [...reply.folders.map(folder => folder.key), ...shown.filter(key => !order.has(key))];
+  const colours = palette.length ? catalogueColours(allKeys, surface, palette) : null;
   const looks = new Map(shown.map((key, index): [string, ResearchFolderLook] => [key, { key, order: index,
-    name: contentTitle(names.get(key), key, 'Folder name unavailable'), colour: palette.length ? palette[index % palette.length] : 'currentColor' }]));
+    name: contentTitle(names.get(key), key, 'Folder name unavailable'), colour: colours?.get(key) ?? 'currentColor' }]));
   const byUse = new Map<string, ResearchFolderLook>(), definitions = new Map<string, Map<number, ResearchFolderLook>>();
   for (const use of wanted) {
     const key = folderOf(use), look = key ? looks.get(key) : undefined;

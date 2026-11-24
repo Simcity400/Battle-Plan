@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { contrast, isDark, oklchToRgb, parseColor, rgbToOklch, solveLightness, toHex } from '../shell/appearance/color.ts';
 import type { Rgb } from '../shell/appearance/color';
 import { BUILT_IN_THEMES, themeColors } from '../shell/appearance/themes.ts';
-import { CATEGORY_LIMIT, categoricalPalette, distance, GREY_CHROMA, MARK_CONTRAST, nudgeApart } from './palette.ts';
+import { CATEGORY_LIMIT, catalogueColours, categoricalPalette, distance, GREY_CHROMA, MARK_CONTRAST, nudgeApart } from './palette.ts';
 import { NearestColours } from './paletteDistance.ts';
 
 function scalarDistance(first: Rgb, second: Rgb): number {
@@ -159,6 +159,67 @@ test('all 5000 fixed country colours stay present without quadratic gap scans', 
     assert.deepEqual(result.slice(0, 16), scalarNudge(colors.slice(0, 16), background, minimum));
     assert.ok(used < 5000 * 1000, `${used} scalar distance comparisons`);
     for (const color of result) assert.ok(contrast(color, background) >= MARK_CONTRAST - 0.05);
+  }
+});
+
+test('open-ended catalogue keeps the first eight exact, respects supplied colours, stays distinct up to 300 and never depends on selection order', () => {
+  const darkSurface = '#16181d';
+  const lightSurface = '#ffffff';
+  const baseDark = categoricalPalette(darkSurface);
+  const baseLight = categoricalPalette(lightSurface);
+  const eight = Array.from({ length: 8 }, (_, index) => `item_${index}`);
+  assert.deepEqual([...catalogueColours(eight, darkSurface).values()], baseDark);
+  assert.deepEqual([...catalogueColours(eight, lightSurface).values()], baseLight);
+
+  const supplied = catalogueColours([
+    { id: 'authored_rgb', color: [20, 40, 180] },
+    { id: 'authored_hex', color: '#44aa88' },
+    { id: 'auto_0' },
+    { id: 'auto_1' },
+  ], darkSurface);
+  assert.equal(supplied.get('authored_hex'), '#44aa88');
+  assert.ok(contrast(parseColor(supplied.get('authored_rgb')!)!, parseColor(darkSurface)!) >= MARK_CONTRAST - 0.05);
+  assert.equal(supplied.get('auto_0'), baseDark[0]);
+  assert.equal(supplied.get('auto_1'), baseDark[1]);
+
+  const thresholds = [[9, 5], [30, 2], [300, 0.9]] as const;
+  for (const [count, minPair] of thresholds) {
+    const ids = Array.from({ length: count }, (_, index) => `cat_${index}`);
+    for (const surface of [darkSurface, lightSurface]) {
+      const background = parseColor(surface)!;
+      const colours = catalogueColours(ids, surface);
+      assert.equal(colours.size, count);
+      const list = ids.map(id => colours.get(id)!);
+      assert.deepEqual(list.slice(0, 8), categoricalPalette(surface));
+      const rgbs = list.map(hex => parseColor(hex)!);
+      for (let i = 0; i < count; i++) {
+        assert.ok(contrast(rgbs[i], background) >= MARK_CONTRAST - 0.05, `${surface} #${i} ${list[i]}`);
+        if (i > 0) assert.ok(distance(rgbs[i - 1], rgbs[i]) >= 12, `${surface} neighbours ${i - 1},${i}`);
+        for (let j = i + 1; j < count; j++) {
+          assert.ok(distance(rgbs[i], rgbs[j]) >= minPair, `${surface} N=${count} pair ${i},${j}: ${distance(rgbs[i], rgbs[j])}`);
+        }
+      }
+    }
+  }
+
+  const full = Array.from({ length: 24 }, (_, index) => `res_${index}`);
+  const fullColours = catalogueColours(full, darkSurface);
+  const subsetReordered = ['res_17', 'res_2', 'res_9', 'res_0'];
+  for (const id of subsetReordered) {
+    assert.equal(fullColours.get(id), catalogueColours(full, darkSurface).get(id));
+  }
+  const withDupes = catalogueColours([...full.slice(0, 10), 'res_0', 'res_10'], darkSurface);
+  assert.equal(withDupes.get('res_10'), fullColours.get('res_10'));
+
+  for (const theme of BUILT_IN_THEMES) {
+    for (const mode of ['dark', 'light'] as const) {
+      const surface = themeColors(theme, mode).surface;
+      const background = parseColor(surface)!;
+      const colours = catalogueColours(Array.from({ length: 40 }, (_, index) => `t_${index}`), surface);
+      for (const hex of colours.values()) {
+        assert.ok(contrast(parseColor(hex)!, background) >= MARK_CONTRAST - 0.05, `${theme.id}/${mode} ${hex}`);
+      }
+    }
   }
 });
 

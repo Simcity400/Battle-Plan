@@ -279,15 +279,17 @@ test('hours whose reads left deals out are said, never shown as the whole trade'
   assert.throws(() => validateTradeFlowsReply({ ...reply(), partial: [{ firstHour: 5, lastHour: 4, deals: 1 }] }));
 });
 
-test('resource colours follow the game order, never the filter, and a ninth folds into other', () => {
-  const resources = Array.from({ length: 10 }, (_, index) => resource(index + 1, `r${index}`));
+test('resource colours follow the game order, never the filter, and generate distinct colours past the base eight', () => {
+  const resources = Array.from({ length: 12 }, (_, index) => resource(index + 1, `r${index}`));
   const order = new Map(resources.map((item, index) => [item.id, index]));
   const palette = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
-  const all = resourceColours(resources, order, palette, 'other');
-  assert.deepEqual([...all.values()], [...palette, 'other', 'other']);
-  const two = resourceColours([resources[5], resources[2]], order, palette, 'other');
+  const all = resourceColours(resources, order, palette, '#16181d');
+  assert.deepEqual([...all.values()].slice(0, 8), palette);
+  assert.equal(new Set(all.values()).size, 12);
+  const two = resourceColours([resources[5], resources[2]], order, palette, '#16181d');
   assert.deepEqual([two.get(3), two.get(6)], ['c', 'f']);
-  assert.deepEqual([...resourceColours([resources[8]], order, palette, 'other').values()], ['other']);
+  assert.equal(resourceColours([resources[8]], order, palette, '#16181d').get(9), all.get(9));
+  assert.notEqual(all.get(9), all.get(10));
 });
 
 function renamedReply(): TradeFlowsReply {

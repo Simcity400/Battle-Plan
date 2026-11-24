@@ -10,7 +10,7 @@ import { drawLineSummary } from '../../charts/chartSummary';
 import type { ChartSummary } from '../../charts/chartSummary';
 import { plotFrame } from '../../charts/frame';
 import { jumpItem } from '../../charts/jump';
-import { categoricalPalette, SECONDARY_DASH } from '../../charts/palette';
+import { catalogueColours, SECONDARY_DASH } from '../../charts/palette';
 import Timeline from '../../charts/timeline/Timeline';
 import { laneRequests } from '../../charts/timeline/laneRequests';
 import type { LaneGeometry, TimelineLane } from '../../charts/timeline/Timeline';
@@ -163,12 +163,9 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
     return state ? formatScore(state.run?.valueRaw, states?.decimals, state.missing) : 'Loading…';
   };
   const order = useMemo(() => levelOrder(data?.levels ?? []), [data]);
-  const palette = useMemo(() => categoricalPalette(tokens.surface), [tokens.surface]);
+  const levelColours = useMemo(() => catalogueColours((data?.levels ?? []).map(level => level.token), tokens.surface), [data, tokens.surface]);
   const neutral = mix(tokens.surface, tokens.text, 0.25);
-  const colour = useCallback((level: string | null) => {
-    const at = level == null ? undefined : order.get(level);
-    return at ? palette[at.index % palette.length] : neutral;
-  }, [order, palette, neutral]);
+  const colour = useCallback((level: string | null) => (level == null ? undefined : levelColours.get(level)) ?? neutral, [levelColours, neutral]);
   const [inView, setInView] = useState<[number, number]>([0, 24]);
   const onLanesInView = useCallback((from: number, to: number) => setInView([from, to]), []);
   const flagTags = useMemo(() => laneRequests(tags, inView).looks, [tags, inView]);

@@ -1,5 +1,6 @@
 import { type Failure } from '../../dashboard/queryError.ts';
 import { runAt } from '../../charts/series.ts';
+import { catalogueColours } from '../../charts/palette.ts';
 import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
 import type { TimelineLabel } from '../../charts/timeline/labelCatalogue';
 import { bridgeGaps } from '../../charts/timeline/runState.ts';
@@ -396,6 +397,7 @@ export interface WarsLaneOptions {
   expanded: ReadonlySet<string>;
   colour: WarsColour;
   palette: readonly string[];
+  surface?: string;
   country: CountryResolver;
   named: ReadonlySet<string>;
   sideColours?: ReadonlyMap<string, ReadonlyMap<NativeSide, string>>;
@@ -433,6 +435,9 @@ export function warsLanes(data: PreparedWars, at: number, options: WarsLaneOptio
   };
   const names = warNamesAt(data.wars.map(view => view.war), at);
   if (options.view === 'countries') {
+    const warColours = options.colour === 'war'
+      ? catalogueColours(data.wars.map(view => view.war.id), options.surface, options.palette)
+      : null;
     for (const view of data.countries) {
       if (view.firstHour > at) continue;
       const tag = countryTagAt(view, at);
@@ -444,7 +449,7 @@ export function warsLanes(data: PreparedWars, at: number, options: WarsLaneOptio
         subrows: view.subrows, spans: pieces.map(piece => {
           const native = piece.run && data.byId.get(piece.war.id)!.nativeSides.get(piece.run);
           const fallback = piece.run?.side === 'attacker' ? options.palette[0] : piece.run?.side === 'defender' ? options.palette[1] : options.neutral;
-          const color = options.colour === 'war' ? options.palette[data.byId.get(piece.war.id)!.order % options.palette.length]
+          const color = options.colour === 'war' ? warColours!.get(piece.war.id)
             : (native && options.sideColours?.get(piece.war.id)?.get(native)) ?? fallback;
           return spanOf(piece, names.get(piece.war)!, color, 10);
         }) });

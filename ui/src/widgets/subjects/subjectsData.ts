@@ -2,6 +2,7 @@ import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { CountryFlagLook } from '../../components/CountryFlag';
 import type { BandStep, TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
 import { isSpan } from '../../charts/series.ts';
+import { catalogueColours } from '../../charts/palette.ts';
 import { bridgeGaps, coverCounts, runState, stretchesOf, withoutHours } from '../../charts/timeline/runState.ts';
 import { Lineage } from '../../dashboard/identity.ts';
 import type { CountryIdentityIndex } from '../../dashboard/countryIdentity.ts';
@@ -126,8 +127,8 @@ export function subjectTagAt(overlord: OverlordView, view: SubjectView, hour: nu
   return overlord.identities ? overlord.identities.aliasesAt(new Set([view.subject]), hour)[0] ?? null : overlord.lineage.tagOf(view.subject, hour);
 }
 
-export function levelColours(levels: readonly SubjectLevel[], palette: readonly string[], other: string): Map<string, string> {
-  return new Map(levels.map((level, index) => [level.token, palette[index] ?? other]));
+export function levelColours(levels: readonly SubjectLevel[], palette: readonly string[], surface?: string): Map<string, string> {
+  return catalogueColours(levels.map(level => level.token), surface, palette);
 }
 
 export const levelName = (levels: ReadonlyMap<string, SubjectLevel>, token: string | null) =>

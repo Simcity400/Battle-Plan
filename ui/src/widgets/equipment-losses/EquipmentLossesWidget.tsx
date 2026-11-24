@@ -15,6 +15,7 @@ import DrillHost from '../../charts/drill/DrillHost';
 import DrillParts from '../../charts/drill/DrillParts';
 import type { LiveDrillParts } from '../../charts/drill/DrillParts';
 import { jumpItem } from '../../charts/jump';
+import { catalogueColours } from '../../charts/palette';
 import { liveAt, liveKey, valuesOf } from '../../charts/live';
 import type { Live, LiveValues } from '../../charts/live';
 import { stackExtent } from '../../charts/stack';
@@ -44,7 +45,7 @@ import { entryAt } from '../../dashboard/reads';
 import { useShownHour } from '../../dashboard/widgetPerf';
 import { DETAIL, OPTIONS } from './definition';
 import { LEVELS, atHead, coverageLegend, destructionCountingNote, destructionLegend, formatLosses, lossItems, lossesTotal, lossesFootnote,
-  lossWindow, lossKey, unknownCauses, withShips } from './lossesData.ts';
+  lossWindow, lossKey, sourceKey, unknownCauses, withShips } from './lossesData.ts';
 import type { LossWindow } from './lossesData';
 import { lossHistory, lossNumbers, lossParts, lossRows, lossSegments, pinLosses, readLossSelection } from './lossDrill';
 import type { LossRow } from './lossDrill';
@@ -160,7 +161,11 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const stack = useMemo(() => history && view ? lossHistory(history, view.first, view.end, view.from, selected, coverageSpans) : null,
     [history, view?.first, view?.end, view?.from, selected, coverageSpans]);
   const known = useMemo(() => stack?.model.hours.map((firstHour, index) => ({ firstHour, value: stack.model.edges[index]?.some(edge => edge.high > edge.low) === true })) ?? [], [stack]);
-  const colors = useMemo(() => stack?.keys.map((_key, index) => tokens.categories[index % tokens.categories.length]) ?? [], [stack, tokens.categories]);
+  const causeColours = useMemo(() => catalogueColours(
+    (history?.causes ?? []).filter(cause => cause.loss && cause.unknown === null && cause.leaves.length > 0).map(cause => sourceKey(cause.source)),
+    tokens.surface,
+  ), [history, tokens.surface]);
+  const colors = useMemo(() => stack?.keys.map(key => causeColours.get(key) ?? tokens.muted) ?? [], [stack, causeColours, tokens.muted]);
   const layers = useMemo<ChartLayer[]>(() => stack ? [{
     draw: (ctx, frame, theme, state) => {
       for (const segment of lossSegments(stack.model, frame.x[0], Math.min(frame.x[1], state.playhead ?? frame.x[1]),

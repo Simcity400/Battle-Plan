@@ -211,8 +211,8 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
     return trade ? trade.reply.resources.filter(item => ids.has(item.id)) : [];
   }, [flows, trade]);
   const otherColour = mix(tokens.surface, tokens.text, 0.4);
-  const resourceColour = useMemo(() => trade ? resourceColours(trade.reply.resources, trade.resourceOrder, tokens.categories, otherColour) : new Map<number, string>(),
-    [trade, tokens.categories, otherColour]);
+  const resourceColour = useMemo(() => trade ? resourceColours(trade.reply.resources, trade.resourceOrder, tokens.categories, tokens.surface) : new Map<number, string>(),
+    [trade, tokens.categories, tokens.surface]);
   const resourceLegend = useMemo(() => resourceLegendItems(shownResources, resourceColour, otherColour), [shownResources, resourceColour, otherColour]);
   const nodeName = useCallback((node: SideNode) => node.identity ? labelOf(node.identity).name
     : `${usNumber.format(node.members.length)} other ${node.side === 'source' ? (node.members.length === 1 ? 'seller' : 'sellers') : (node.members.length === 1 ? 'buyer' : 'buyers')}`, [labelOf]);

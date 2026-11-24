@@ -7,6 +7,7 @@ import HeatChart from '../../charts/heat/HeatChart';
 import type { HeatPeriod, HeatRow } from '../../charts/heat/layout';
 import { hatchStyle } from '../../charts/hatch';
 import { jumpItem } from '../../charts/jump';
+import { catalogueColours } from '../../charts/palette';
 import { dayLabel, drawLine, placeEndLabels } from '../../charts/draw';
 import DrillHost from '../../charts/drill/DrillHost';
 import { useDrill } from '../../charts/drill/useDrill';
@@ -165,9 +166,11 @@ function ConvoyDrill({ row, runtime, track, hour, liveHead, liveFacts, extent, a
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const percent = row.unit === 'percent';
-  const lines = useMemo(() => row.lines.map((line, index) => ({ ...line, color: tokens.categories[index % tokens.categories.length],
-    plotted: line.runs.map((run): Run => ({ firstHour: run[0], lastHour: run[1], value: percent ? Math.round(run[2] * 10000 / scale) / 100 : run[2] })) })),
-  [row, tokens.categories, percent, scale]);
+  const lines = useMemo(() => {
+    const colours = catalogueColours(row.lines.map(line => line.label), tokens.surface);
+    return row.lines.map(line => ({ ...line, color: colours.get(line.label)!,
+      plotted: line.runs.map((run): Run => ({ firstHour: run[0], lastHour: run[1], value: percent ? Math.round(run[2] * 10000 / scale) / 100 : run[2] })) }));
+  }, [row, tokens.surface, percent, scale]);
   const layers = useMemo<ChartLayer[]>(() => [{
     draw: (ctx, frame, chartTokens, state) => {
       for (const line of lines) drawLine(ctx, frame, chartTokens, line.plotted, line.color, { until: state.playhead ?? undefined, held: true });

@@ -135,8 +135,8 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   [prepared, options.view, options.colour, groups.data, at, factions.colours]);
   const { lanes, info } = useMemo(() => prepared ? warsLanes(prepared, at, {
     view: options.view as WarsView, colour: options.colour as WarsColour, expanded,
-    palette: tokens.categories, country: countries, named: namedSet, neutral, sideColours,
-  }) : { lanes: [], info: new Map<string, WarsLaneInfo>() }, [prepared, at, options.view, options.colour, expanded, tokens.categories, countries, namedSet, neutral, sideColours]);
+    palette: tokens.categories, surface: tokens.surface, country: countries, named: namedSet, neutral, sideColours,
+  }) : { lanes: [], info: new Map<string, WarsLaneInfo>() }, [prepared, at, options.view, options.colour, expanded, tokens.categories, tokens.surface, countries, namedSet, neutral, sideColours]);
   const viewpoint = data ? viewpointAt(data, at) : null;
   const requests = laneRequests(lanes, inView);
   const wantedKey = JSON.stringify([...new Set([...laneCountries(requests.looks, info, at), ...(viewpoint ? [viewpoint] : [])])]);

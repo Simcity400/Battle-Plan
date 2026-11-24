@@ -64,7 +64,7 @@ export function useResearchSlots(widget: WidgetSpec, runtime: WidgetRuntime, act
 
 export function useResearchChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const { data } = useResearchReply(widget, runtime, true);
-  const { categories } = useChartTokens();
-  return useMemo(() => ({ folders: data ? researchFolderList(researchFolderLooks(data, historyTokens(data.history), categories))
-    .map(look => ({ value: setToken(look.key), label: look.name })) : [] }), [data, categories]);
+  const { categories, surface } = useChartTokens();
+  return useMemo(() => ({ folders: data ? researchFolderList(researchFolderLooks(data, historyTokens(data.history), categories, surface))
+    .map(look => ({ value: setToken(look.key), label: look.name })) : [] }), [data, categories, surface]);
 }

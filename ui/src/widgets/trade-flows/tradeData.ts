@@ -1,6 +1,7 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { artworkUrlValue } from '../../dashboard/payload.ts';
 import { runAt } from '../../charts/series.ts';
+import { catalogueColours } from '../../charts/palette.ts';
 import type { Span } from '../../charts/series';
 import type { TooltipRow } from '../../charts/tooltip';
 import { formatAmount, rescale, rescaleSum } from '../../charts/valueAxis.ts';
@@ -506,11 +507,11 @@ export function heldScale(held: HeldScale | undefined, key: string, read: number
   return held?.key === key ? held : { key };
 }
 
-export function resourceColours(resources: readonly ResourceInfo[], order: ReadonlyMap<number, number>, palette: readonly string[], other: string): Map<number, string> {
-  return new Map(resources.map(item => {
-    const place = order.get(item.id) ?? palette.length;
-    return [item.id, place < palette.length ? palette[place] : other];
-  }));
+export function resourceColours(resources: readonly ResourceInfo[], order: ReadonlyMap<number, number>, palette: readonly string[], surface?: string): Map<number, string> {
+  const orderedIds = [...order.entries()].sort((a, b) => a[1] - b[1]).map(([id]) => id);
+  for (const item of resources) if (!order.has(item.id)) orderedIds.push(item.id);
+  const all = catalogueColours(orderedIds, surface, palette);
+  return new Map(resources.map(item => [item.id, all.get(item.id)!]));
 }
 
 export const resourceName = (item: Pick<ResourceInfo, 'name' | 'token' | 'ordinal'>) => `${contentTitle(item.name, item.token, 'Resource name unavailable')}${item.ordinal > 1 ? ` (${item.ordinal})` : ''}`;
