@@ -2860,9 +2860,17 @@ export type ForcePart = { key: string, name: string | null, unresolved: boolean,
 export type NavalAttribution = "lost" | "sunkBy";
 export type NavalKind = "ships" | "convoys" | "both";
 export type NavalPeriod = "running" | "month";
-export type NavalLossesAtParams = { branchId: string, hour: number, countries: Array<CountryRef>, top?: number, attribution: NavalAttribution, kind: NavalKind, period: NavalPeriod, };
+export type NavalLossesAtParams = { branchId: string, hour: number, countries: Array<CountryRef>, top?: number,
+/**
+ * The group whose members at the hour are the rows; never with countries or a top.
+ */
+group?: GroupSelection, attribution: NavalAttribution, kind: NavalKind, period: NavalPeriod, };
 export type NavalLossesAtReply = { firstHour: number, lastHour: number, parts: Array<ForcePart>, rows: Array<ForceAtRow>, missing: string | null, warnings: Array<string>, };
-export type ForceAtRow = { country: CountryRef, tag: string, total: number | null, referenceTotal?: number | null, missing: string | null, values: Array<number | null>, partsMissing: string | null, };
+export type ForceAtRow = { country: CountryRef,
+/**
+ * The recorded slot holding the country at the hour; none where its holder is not resolved.
+ */
+slot: number | null, tag: string, total: number | null, referenceTotal?: number | null, missing: string | null, values: Array<number | null>, partsMissing: string | null, };
 export type ResearchReply = { history: ResearchHistory, artwork: Array<Artwork>, folders: Array<ResearchFolder>, technologyFolders: Array<ResearchTechnologyFolder>, warnings: Array<string>, definitions?: Array<ResearchDefinitionText>, };
 export type ResearchHistory = { coverage: Array<ResearchCoverage>, slots: Array<ResearchSlotHistory>, };
 export type ResearchSlotHistory = { index: number, availability: Array<ResearchCoverage>, entries: Array<ResearchEntry>, };
@@ -6722,17 +6730,29 @@ export type ArmyLossMonthArmy = { army: LossArmy, manpower: [number, number, num
 export type ArmyLossMonthDetail = { month: number, firstHour: number, lastHour: number, missing: string | null, armies: Array<ArmyLossMonthArmy>, };
 export type ArmyLossesAvailability = { armies: string | null, manpower: string | null, months: string | null, ownEquipment: string | null, enemyEquipment: string | null, };
 export type ArmyLossesParamsAtHour = ArmyLossesParams & { hour: number };
-export type AirForceAtParams = { branchId: string, countries: Array<CountryRef>, top?: number, measure: AirForceMeasure, ownership: AirForceOwnership, };
+export type AirForceAtParams = { branchId: string, countries: Array<CountryRef>, top?: number,
+/**
+ * The group whose members at the hour are the rows; never with countries or a top.
+ */
+group?: GroupSelection, measure: AirForceMeasure, ownership: AirForceOwnership, };
 export type ForceAtReply = { parts: Array<ForcePart>, rows: Array<ForceAtRow>, missing: string | null, warnings: Array<string>, };
 export type AirForceMeasure = "planes" | "wings";
 export type AirForceOwnership = "roster" | "effective";
 export type AirForceAtParamsAtHour = AirForceAtParams & { hour: number };
-export type NavyAtParams = { branchId: string, countries: Array<CountryRef>, top?: number, ownership: NavyOwnership, grouping: NavyGrouping, measure: NavyMeasure, };
+export type NavyAtParams = { branchId: string, countries: Array<CountryRef>, top?: number,
+/**
+ * The group whose members at the hour are the rows; never with countries or a top.
+ */
+group?: GroupSelection, ownership: NavyOwnership, grouping: NavyGrouping, measure: NavyMeasure, };
 export type NavyMeasure = "ships" | "strength";
 export type NavyOwnership = "roster" | "logical";
 export type NavyGrouping = "class" | "type";
 export type NavyAtParamsAtHour = NavyAtParams & { hour: number };
-export type ArmyAtParams = { branchId: string, countries: Array<CountryRef>, top?: number, countFor: ArmyAttribution, };
+export type ArmyAtParams = { branchId: string, countries: Array<CountryRef>, top?: number,
+/**
+ * The group whose members at the hour are the rows; never with countries or a top.
+ */
+group?: GroupSelection, countFor: ArmyAttribution, };
 export type ArmyAtParamsAtHour = ArmyAtParams & { hour: number };
 /** The native command byte budget, including its envelope. */
 export const MAX_MESSAGE_BYTES = 33554432;
@@ -6940,7 +6960,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
 export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "node" | "leaf" | "any">>>> = {
   "agency-comparison": { "branchId": "leaf", "hour": "leaf", "includeUncreated": "leaf", "top": "node", "top.by": "leaf", "top.count": "leaf" },
   "air-aces": { "branchId": "leaf", "hour": "leaf" },
-  "air-force-at": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "measure": "leaf", "ownership": "leaf", "top": "leaf" },
+  "air-force-at": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "measure": "leaf", "ownership": "leaf", "top": "leaf" },
   "air-missions": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "air-statistics": { "branchId": "leaf", "channel": "leaf", "country": "any", "hour": "leaf", "regions": "node", "regions[]": "leaf", "theatres": "node", "theatres[]": "leaf", "top": "leaf" },
   "air-statistics-regions": { "branchId": "leaf", "country": "any" },
@@ -6948,7 +6968,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "air-superiority-choices": { "branchId": "leaf" },
   "air-superiority-timeline": { "branchId": "leaf", "every": "leaf", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "mode": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "top": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
   "aircraft-catalogue": { "count": "leaf", "first": "leaf", "origin": "node", "origin.mod": "leaf", "query": "leaf" },
-  "army-at": { "branchId": "leaf", "countFor": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "top": "leaf" },
+  "army-at": { "branchId": "leaf", "countFor": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "top": "leaf" },
   "army-losses": { "branchId": "leaf", "country": "any", "hour": "leaf", "limit": "leaf", "stack": "leaf", "view": "node", "view.kind": "leaf", "view.ledgers": "node", "view.ledgers[]": "leaf", "view.month": "leaf" },
   "army-size": { "branchId": "leaf", "byType": "leaf", "countFor": "leaf", "countries": "node", "countries[]": "any", "measure": "leaf", "top": "leaf", "window": "leaf" },
   "autonomy-levels": { "branchId": "leaf", "hour": "leaf" },
@@ -7046,12 +7066,12 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "naval-battles-manifest": { "branchId": "leaf" },
   "naval-battles-ranking": { "branchId": "leaf", "countries": "node", "countries.countries": "node", "countries.countries[]": "any", "countries.membership": "node", "countries.membership[]": "node", "countries.membership[].firstHour": "leaf", "countries.membership[].lastHour": "leaf", "countries.membership[].tag": "leaf", "countries.unobserved": "node", "countries.unobserved[]": "node", "countries.unobserved[].firstHour": "leaf", "countries.unobserved[].lastHour": "leaf", "firstHour": "leaf", "lastHour": "leaf", "measure": "leaf", "topN": "leaf" },
   "naval-losses": { "attribution": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "kind": "leaf", "period": "leaf", "top": "leaf", "window": "leaf" },
-  "naval-losses-at": { "attribution": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "kind": "leaf", "period": "leaf", "top": "leaf" },
+  "naval-losses-at": { "attribution": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "kind": "leaf", "period": "leaf", "top": "leaf" },
   "naval-management": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "naval-refits": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "naval-repairs": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "naval-supremacy": { "branchId": "leaf", "country": "any", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "top": "leaf", "window": "leaf" },
-  "navy-at": { "branchId": "leaf", "countries": "node", "countries[]": "any", "grouping": "leaf", "hour": "leaf", "measure": "leaf", "ownership": "leaf", "top": "leaf" },
+  "navy-at": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "grouping": "leaf", "hour": "leaf", "measure": "leaf", "ownership": "leaf", "top": "leaf" },
   "next-elections": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
   "nuclear-arsenal": { "branchId": "leaf", "hour": "leaf", "top": "leaf" },
   "occupation-at": { "branchId": "leaf", "collaboration": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },

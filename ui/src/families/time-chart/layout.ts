@@ -33,7 +33,7 @@ function axisDecimalPlaces(ticks: readonly number[] | undefined, cap: number): n
 
 export function formatChartAxisValue(value: number, format: ChartValueFormat, ticks?: readonly number[]): string {
   if (!Number.isFinite(value)) return '';
-  if (format === 'percent') {
+  if (format === 'percent' || format === 'share' || format === 'signedPercent') {
     const places = axisDecimalPlaces(ticks, 2) ?? Math.min(2, exactDecimal(value).scale);
     return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0, percent: true });
   }
@@ -478,7 +478,7 @@ export function layoutTimeChart(
   } else if (model.yAxis.fixed) {
     yLo = model.yAxis.fixed[0];
     yHi = model.yAxis.fixed[1];
-  } else if (model.yAxis.format === 'percent' && model.yAxis.fixed !== null) {
+  } else if ((model.yAxis.format === 'percent' || model.yAxis.format === 'share') && model.yAxis.fixed !== null) {
     yLo = 0;
     yHi = 100;
   } else if (dataMin <= dataMax) {
