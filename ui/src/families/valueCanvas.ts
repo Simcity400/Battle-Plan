@@ -16,8 +16,8 @@ export interface ValueCanvasTheme {
 
 export const MISSING_BOX_SIZE = 10;
 export const MISSING_BOX_GAP = 6;
-export const PARTIAL_TAB_WIDTH = 5;
-export const PARTIAL_TAB_HEIGHT = 11;
+export const PARTIAL_TAB_WIDTH = 6;
+export const PARTIAL_TAB_HEIGHT = 13;
 export const PARTIAL_TAB_GAP = 5;
 export const PARTIAL_WORD_GAP = 4;
 
@@ -71,7 +71,15 @@ export function drawFormattedValue(
   ctx.textBaseline = 'middle';
 
   if (formatted.kind === 'notRecorded') {
-    const labelWidth = measure(NOT_RECORDED_LABEL, smallFont);
+    const label = formatted.label || NOT_RECORDED_LABEL;
+    if (formatted.gameWindow) {
+      ctx.font = smallFont;
+      ctx.fillStyle = theme.muted;
+      ctx.textAlign = endAligned ? 'right' : 'left';
+      ctx.fillText(fit(label, smallFont, available), endAligned ? right : left, middle);
+      return;
+    }
+    const labelWidth = measure(label, smallFont);
     const fullWidth = MISSING_BOX_SIZE + MISSING_BOX_GAP + labelWidth;
     const showWords = available >= fullWidth;
     const totalWidth = showWords ? fullWidth : MISSING_BOX_SIZE;
@@ -82,7 +90,7 @@ export function drawFormattedValue(
       ctx.font = smallFont;
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'left';
-      ctx.fillText(NOT_RECORDED_LABEL, boxX + MISSING_BOX_SIZE + MISSING_BOX_GAP, middle);
+      ctx.fillText(label, boxX + MISSING_BOX_SIZE + MISSING_BOX_GAP, middle);
     }
     return;
   }
@@ -125,9 +133,5 @@ export function drawFormattedValue(
   ctx.font = bodyFont;
   ctx.fillStyle = muted ? theme.muted : theme.text;
   ctx.textAlign = endAligned ? 'right' : 'left';
-  if (endAligned) {
-    ctx.fillText(formatted.text, right, middle, Math.max(1, available));
-  } else {
-    ctx.fillText(fit(formatted.text, bodyFont, available), left, middle);
-  }
+  ctx.fillText(fit(formatted.text, bodyFont, available), endAligned ? right : left, middle);
 }

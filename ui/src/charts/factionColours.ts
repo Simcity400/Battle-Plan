@@ -1,6 +1,6 @@
 import { oklchToRgb, parseColor, rgbToOklch, toHex } from '../shell/appearance/color.ts';
 import type { Rgb } from '../shell/appearance/color';
-import { categoricalPalette, distance } from './palette.ts';
+import { colour, distance } from './palette.ts';
 
 export const FACTION_APART = 8;
 
@@ -9,29 +9,31 @@ export function factionColours(
   chosen: Readonly<Record<string, string | undefined>>,
   surface: string,
 ): Map<string, string> {
-  const palette = categoricalPalette(surface).map(hex => parseColor(hex)!);
   const ordered = [...factions].sort((a, b) => compareIds(a.id, b.id));
   const fixed = ordered.flatMap(faction => {
-    const colour = chosen[faction.id] && parseColor(chosen[faction.id]);
-    return colour ? [{ id: faction.id, colour }] : [];
+    const picked = chosen[faction.id] && parseColor(chosen[faction.id]);
+    return picked ? [{ id: faction.id, colour: picked }] : [];
   });
   const open = ordered.filter(faction => !fixed.some(item => item.id === faction.id));
   const placed: Rgb[] = fixed.map(item => item.colour);
   const result = new Map<string, string>();
   for (const item of fixed) result.set(item.id, toHex(item.colour));
-  const place = (id: string, colour: Rgb) => { placed.push(colour); result.set(id, toHex(colour)); };
+  const place = (id: string, rgb: Rgb) => { placed.push(rgb); result.set(id, toHex(rgb)); };
   for (const faction of open) if (faction.leaderColor) place(faction.id, apart(faction.leaderColor, placed));
   let next = 0;
   for (const faction of open) {
     if (faction.leaderColor) continue;
-    let chosenAt = -1;
-    for (let offset = 0; offset < palette.length && chosenAt < 0; offset++) {
-      const candidate = palette[(next + offset) % palette.length];
-      if (placed.every(other => distance(candidate, other) >= FACTION_APART)) chosenAt = (next + offset) % palette.length;
+    let picked: Rgb | null = null;
+    for (let offset = 0; offset < 32; offset++) {
+      const candidate = parseColor(colour(surface, next + offset))!;
+      if (placed.every(other => distance(candidate, other) >= FACTION_APART)) {
+        next = next + offset + 1;
+        picked = candidate;
+        break;
+      }
     }
-    const at = chosenAt < 0 ? next % palette.length : chosenAt;
-    next = at + 1;
-    place(faction.id, apart(palette[at], placed));
+    const candidate = picked ?? parseColor(colour(surface, next++))!;
+    place(faction.id, apart(candidate, placed));
   }
   return result;
 }

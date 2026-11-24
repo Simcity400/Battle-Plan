@@ -1,6 +1,6 @@
 import { mix } from '../../shell/appearance/color.ts';
 import type { Rgb } from '../../shell/appearance/color';
-import { CATEGORY_LIMIT } from '../palette.ts';
+import { CATEGORY_LIMIT, colour } from '../palette.ts';
 import type { TooltipContent, TooltipRow } from '../tooltip';
 import { fractionSum } from '../valueAxis.ts';
 
@@ -325,7 +325,7 @@ export function sliceColours(focus: SunburstNode, palette: readonly string[], sh
     });
   };
   focus.children.filter(child => drawable(child) || child.keepZero && child.colour != null)
-    .forEach((child, index) => paint(child, child.colour ?? palette[index % Math.max(1, palette.length)] ?? shades.light));
+    .forEach((child, index) => paint(child, child.colour ?? (index < palette.length ? palette[index] : colour(shades.dark, index)) ?? shades.light));
   return colours;
 }
 

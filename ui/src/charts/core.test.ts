@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fitLabelWidth, layoutEndLabels } from './labels.ts';
+import { drawFittedLabel, ellipsise, fitLabel, fitLabelWidth, fitLine, labelFitsTwoLines, labelLineHeight, layoutEndLabels } from './labels.ts';
 import { FrameScheduler } from './scheduler.ts';
 import type { FrameTask } from './scheduler.ts';
 import { monotonePath, runAt, samplePoints, segments, stack, valueAt } from './series.ts';
@@ -164,3 +164,74 @@ test('whole-campaign playback stops at the playhead unless set to show past it',
   assert.equal(shownUntil(500, 'window', true), 500);
   assert.equal(shownUntil(null, 'cursor', false), null);
 });
+
+test('text fitter wraps two balanced lines at word boundaries, cuts with end ellipsis only, and handles CJK, SEA, RTL, emoji, and tight bounds', () => {
+  const mono = (text: string) => [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)].length * 8;
+
+  const single = fitLabel('Infantry Equipment', 200, mono, { maxLines: 2 });
+  assert.deepEqual(single, { lines: ['Infantry Equipment'], truncated: false, full: 'Infantry Equipment' });
+
+  const balanced = fitLabel('Medium Tank Chassis 1940', 112, mono, { maxLines: 2 });
+  assert.equal(balanced.truncated, false);
+  assert.equal(balanced.lines.length, 2);
+  assert.equal(balanced.lines.join(' '), 'Medium Tank Chassis 1940');
+  assert.ok(Math.abs(balanced.lines[0]!.length - balanced.lines[1]!.length) <= 4);
+
+  const cutTwo = fitLabel('Super Heavy Self Propelled Anti Aircraft Artillery', 100, mono, { maxLines: 2 });
+  assert.equal(cutTwo.truncated, true);
+  assert.equal(cutTwo.full, 'Super Heavy Self Propelled Anti Aircraft Artillery');
+  assert.equal(cutTwo.lines.length, 2);
+  assert.equal(cutTwo.lines[1]!.endsWith('\u2026'), true);
+  assert.equal(cutTwo.lines[1]!.startsWith('\u2026'), false);
+  assert.ok(mono(cutTwo.lines[0]!) <= 100 && mono(cutTwo.lines[1]!) <= 100);
+
+  const longWord = fitLabel('Supercalifragilisticexpialidocious', 80, mono, { maxLines: 2 });
+  assert.equal(longWord.truncated, true);
+  assert.equal(longWord.lines.length, 1);
+  assert.equal(longWord.lines[0]!.endsWith('\u2026'), true);
+  assert.ok(mono(longWord.lines[0]!) <= 80);
+
+  const cjk = fitLabel('大日本帝国陸軍省特別攻撃隊', 64, mono, { maxLines: 2 });
+  assert.equal(cjk.lines.length, 2);
+  assert.equal(cjk.full, '大日本帝国陸軍省特別攻撃隊');
+  assert.ok(mono(cjk.lines[0]!) <= 64 && mono(cjk.lines[1]!) <= 64);
+
+  const korean = fitLabel('대한민국임시정부광복군', 56, mono, { maxLines: 2 });
+  assert.equal(korean.lines.length, 2);
+  assert.ok(mono(korean.lines[0]!) <= 56 && mono(korean.lines[1]!) <= 56);
+
+  const kinsoku = fitLabel('日本帝国。陸軍', 40, mono, { maxLines: 2 });
+  assert.equal(kinsoku.lines[1]!.startsWith('。'), false);
+
+  const thai = fitLabel('กองทัพบกไทยและกองทัพเรือ', 96, mono, { maxLines: 2 });
+  assert.equal(thai.lines.length, 2);
+  assert.ok(mono(thai.lines[0]!) <= 96 && mono(thai.lines[1]!) <= 96);
+
+  const rtl = fitLabel('المملكة العربية السعودية المتحدة', 120, mono, { maxLines: 2 });
+  assert.equal(rtl.lines.length, 2);
+  assert.ok(mono(rtl.lines[0]!) <= 120 && mono(rtl.lines[1]!) <= 120);
+
+  const emoji = fitLine('👨‍👩‍👧‍👦🇺🇸abc', 24, mono);
+  assert.equal(emoji.truncated, true);
+  assert.equal(emoji.text, '👨‍👩‍👧‍👦🇺🇸\u2026');
+  assert.equal(ellipsise('Hello', 0, mono), '');
+  assert.equal(ellipsise('Hello', 8, mono), '\u2026');
+
+  assert.equal(labelFitsTwoLines(28, labelLineHeight(12)), false);
+  assert.equal(labelFitsTwoLines(36, labelLineHeight(12)), true);
+
+  const drawn: { text: string; x: number; y: number }[] = [];
+  const fakeCtx = {
+    font: '12px sans-serif',
+    textAlign: 'left',
+    textBaseline: 'middle',
+    measureText: (t: string) => ({ width: mono(t) }),
+    fillText: (text: string, x: number, y: number) => { drawn.push({ text, x, y }); },
+  };
+  const rendered = drawFittedLabel(fakeCtx as never, 'Long Division Template Name Here', 10, 20, 80, { fontSize: 12, lineHeight: 15, maxLines: 2 });
+  assert.equal(rendered.truncated, true);
+  assert.equal(rendered.full, 'Long Division Template Name Here');
+  assert.equal(drawn.length, 2);
+  assert.equal(drawn[1]!.y - drawn[0]!.y, 15);
+});
+
