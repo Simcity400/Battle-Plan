@@ -69,6 +69,12 @@ export const cicLabel = (raw: bigint | null) => raw === null ? '—' : `${format
 export const levelText = (level: number | null) => priceLevel(level);
 export const firstWithMore = (list: readonly unknown[]) => list.length > 1 ? `+${list.length - 1}` : null;
 
+export const PRICE_MISSING = 'Agreed price not recorded';
+
+export function quoteText(amount: bigint, price: bigint | undefined, level: number | undefined, contract: boolean): string {
+  return [units(amount), ...(price !== undefined ? [cic(price)] : contract ? [PRICE_MISSING] : []), ...(level !== undefined ? [levelText(level)] : [])].join(' · ');
+}
+
 export const collectedText = (value: number) => cicLabel(BigInt(Math.trunc(value)));
 
 export interface MarketDetailLine { readonly label: string; readonly value: string; readonly marked?: boolean; readonly country?: string }
@@ -121,11 +127,9 @@ export function marketDetail(reply: MarketLendLeaseReply, selected: MarketRowKey
       { label: 'Kind', value: terms.request ? 'Request' : 'Contract' },
       { label: 'Factory assignment', value: String(terms.speed) },
     ] },
-    { title: 'Equipment', empty: 'None', lines: terms.equipment.map(item => {
-      const agreed = price.get(item.variant);
-      const asked = level.get(item.variant);
-      return { label: name(item), value: [units(BigInt(item.amountRaw)), ...(agreed !== undefined ? [cic(agreed)] : []), ...(asked !== undefined ? [levelText(asked)] : [])].join(' · ') };
-    }) },
+    { title: 'Equipment', empty: 'None', lines: terms.equipment.map(item => ({
+      label: name(item), value: quoteText(BigInt(item.amountRaw), price.get(item.variant), level.get(item.variant), !terms.request),
+    })) },
     { title: 'Subsidies', empty: 'No subsidies.', lines: grantLines(terms.subsidies) },
   ] };
 }

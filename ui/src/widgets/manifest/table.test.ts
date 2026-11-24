@@ -125,3 +125,25 @@ test('agency comparison asks the product for the stored top measure and for uncr
   assert.equal(params({ includeUncreated: true }).includeUncreated, true);
   assert.equal(params({}).includeUncreated, false);
 });
+
+test('governments in exile does not report none when an exile with a known other country has an unknown host', async () => {
+  const table = await hosted('governments-in-exile');
+  const reply = { branchId: '1', view: 'exiles', exiles: [{ id: '9', tag: 'XXX', host: null }], exilesMissing: null, balances: [], current: null, unavailable: [], warnings: [] };
+  const readView = createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', reply]]), identity });
+  const ctx = context(table.options({}));
+  const onlyHost = { passing: { HHH: [[0, 1000]] as [number, number][] }, unrecorded: [], bounds: [] };
+  const filtered = { ...ctx, countries: { ...ctx.countries, filter: onlyHost } } as DeclaredTableContext;
+  const model = table.projection.project(readView, table.declaration.projectionOptions(filtered));
+  assert.equal(model.rows.length, 0);
+  assert.equal(model.emptyKind, 'unavailable', 'the exile may be hosted by the selected country');
+  assert.notEqual(model.empty, 'No governments in exile');
+});
+
+test('territory transfers keeps the product order and no rank when its counts are only those observed', async () => {
+  const table = await hosted('territory-transfers');
+  const country = (key: string, gained: number) => ({ key, tag: key, hour: 10, gained, lost: 0, net: null, netVictoryPoints: null, victoryPointsMissing: 'gap' });
+  const reply = { branchId: '1', through: 500, transfers: 3, countries: [country('AAA', 1), country('BBB', 2)], nextChange: null, partial: 'gap', warnings: [] };
+  const readView = createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', reply]]), identity });
+  const model = table.projection.project(readView, table.declaration.projectionOptions(context(table.options({}))));
+  assert.equal(model.populationPartial, 'gap', 'the rows are not table-sorted or ranked as exact');
+});
