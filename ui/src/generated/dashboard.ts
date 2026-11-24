@@ -5600,7 +5600,11 @@ export type CareerAward = {
  * Index into the reply's medals.
  */
 medal: number, count: number, };
-export type CareerMedal = { key: string, name: string | null, };
+export type CareerMedal = { key: string, name: string | null,
+/**
+ * The medal's sprite and frame as its definition names them; none with `icon_missing` saying why.
+ */
+icon: SpriteFrame | null, iconMissing: string | null, };
 export type CareerTemplate = { template: string, name: string | null, icon: string | null, };
 export type DivisionCareersParamsAtHour = DivisionCareersParams & { hour: number };
 export type DivisionRecordParams = { branchId: string,
