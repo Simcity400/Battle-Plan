@@ -179,9 +179,9 @@ fn public_token_lookup_keeps_null_and_last_duplicate_semantics() {
     with_world(&frame, |world| {
         assert!(world.literals.get().is_none());
         assert_eq!(world.token(7).unwrap(), Some([7, 0, 2, 255].as_slice()));
-        let held = world.literals.get().unwrap() as *const _;
+        let held = std::ptr::from_ref(world.literals.get().unwrap());
         assert_eq!(world.token(0).unwrap(), Some([0, 0, 1, 255].as_slice()));
-        assert_eq!(held, world.literals.get().unwrap() as *const _);
+        assert_eq!(held, std::ptr::from_ref(world.literals.get().unwrap()));
     });
     let frame = self::frame(1, TableView::Complete(TableRows::LexicalTokens(Vec::new())));
     with_world(&frame, |world| {

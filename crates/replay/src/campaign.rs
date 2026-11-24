@@ -968,7 +968,6 @@ fn build_history(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn validate_records(
     identity: &Identity,
     campaign_id: &[u8],

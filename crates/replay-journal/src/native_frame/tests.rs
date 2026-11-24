@@ -290,6 +290,7 @@ fn same(tables: &[TableId], rows: &DecodedFrame, columnar: &DecodedFrame) {
 }
 
 #[test]
+#[expect(clippy::single_range_in_vec_init, reason = "a slice update lists the key ranges it covers, and this one covers one")]
 fn every_conversion_form_walks_to_the_row_recordings_views() {
     let mut paths = Paths::new();
     let research = |rows: Vec<ResearchInputRow>| Arc::new(TableRows::ResearchInputs(rows));

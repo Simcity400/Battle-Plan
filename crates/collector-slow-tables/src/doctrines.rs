@@ -1684,7 +1684,7 @@ mod tests {
             }
         }
         let store_mutex = Mutex::new(store);
-        let context = &store_mutex as *const Mutex<Store> as usize;
+        let context = &raw const store_mutex as usize;
         let mut store = store_mutex.lock().unwrap();
         collector_test_support::with_allocations_denied(|| {
             unsafe { observe_gain(context, 0x300, i64::MIN) };

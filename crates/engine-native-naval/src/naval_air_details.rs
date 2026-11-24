@@ -98,7 +98,7 @@ pub(crate) fn read_hits(
     Ok(())
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the test supplies separate buffers and counters for wing types and plane wings"
 )]
@@ -129,7 +129,7 @@ pub(crate) fn read(
     )
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "each output arena has independent written and required entry counts"
 )]

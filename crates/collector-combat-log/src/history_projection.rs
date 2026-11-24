@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, sync::Arc};
 macro_rules! held_rows {
     ($(($index:literal, $variant:ident, $row:ty)),+ $(,)?) => {
         #[derive(Clone)]
-        #[allow(
+        #[expect(
             clippy::enum_variant_names,
             reason = "Variants share the replay table names used by the generated conversions."
         )]

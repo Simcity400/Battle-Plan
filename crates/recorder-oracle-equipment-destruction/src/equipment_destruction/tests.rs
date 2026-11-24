@@ -392,7 +392,7 @@ fn invalid_deletion_owner_identity_causes_and_partial_intervals_refuse() {
         DivisionEquipmentDeletionRow {
             disposition: DivisionDeletionDisposition::Loss,
             cause: Some(EquipmentDestructionCause::LandCombat),
-            ..row.clone()
+            ..row
         },
     ] {
         deletion_rows(&mut frame, vec![bad]);
@@ -1183,7 +1183,7 @@ fn owner_matches_previous_census_through_aliases_when_expeditionary_status_is_un
         &mut current,
         vec![DivisionEquipmentDeletionRow {
             country: 5000,
-            ..correct.clone()
+            ..correct
         }],
     );
     let mut report = Report::default();

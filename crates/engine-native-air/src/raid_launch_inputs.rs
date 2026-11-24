@@ -938,7 +938,10 @@ struct Sliced {
     reservations_len: usize,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the country reader, buffers, selection, rows and reservation count are separate caller-owned parts of one walk"
+)]
 fn sliced(
     memory: &impl Memory,
     base: usize,
@@ -1270,7 +1273,10 @@ fn sliced(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the list, slot, list index and vtables locate one batch, and the ordinal, sites and output are caller-owned"
+)]
 fn sites_batch(
     memory: &impl Memory,
     list: &[usize],

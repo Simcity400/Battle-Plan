@@ -414,7 +414,7 @@ impl Stamp {
             let mut basic: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
             let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
             let handle = file.as_raw_handle();
-            if unsafe { GetFileInformationByHandle(handle, &mut information) } == 0
+            if unsafe { GetFileInformationByHandle(handle, &raw mut information) } == 0
                 || unsafe {
                     GetFileInformationByHandleEx(
                         handle,

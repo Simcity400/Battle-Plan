@@ -714,7 +714,7 @@ fn a_slot_reused_inside_a_step_gives_one_passing_row_per_life_and_the_survivor_i
     assert_eq!(got[1].3[1..], ["Missing".to_owned(), "List([2, 0, 0, 0])".to_owned(), got[0].3[3].clone()]);
     let Value::Text(id) = changes.passing().columns()[3].value(0) else { panic!("a text cell") };
     assert_eq!(changes.texts().iter().find(|&(held, _)| held == id).map(|(_, text)| text), Some(&b"text 2"[..]), "the text is named in the step");
-    let mut sorted = got.clone();
+    let mut sorted = got;
     sorted.sort();
     assert_eq!(passed(&states, 1, 23), sorted);
 }

@@ -599,7 +599,6 @@ impl Report {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn scalar_displayed_by(
         &mut self,
         tag: &str,

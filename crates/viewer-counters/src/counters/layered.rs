@@ -33,7 +33,7 @@ fn same<T>(a: &Option<Arc<T>>, b: &Option<Arc<T>>) -> bool {
 }
 
 fn address<T>(held: &Option<Arc<T>>) -> usize {
-    held.as_ref().map_or(0, |held| Arc::as_ptr(held) as *const () as usize)
+    held.as_ref().map_or(0, |held| Arc::as_ptr(held).cast::<()>() as usize)
 }
 
 impl Layered {

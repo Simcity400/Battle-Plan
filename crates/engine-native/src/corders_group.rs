@@ -174,7 +174,10 @@ fn prefetch_dependents(memory: &impl Memory, record: Gathered<'_>) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the roots, visits and both sources come from earlier walks, and the plans, orders and names are caller-owned"
+)]
 pub fn walk_plans(
     memory: &impl Memory,
     base: usize,

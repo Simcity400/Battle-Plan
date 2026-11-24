@@ -483,7 +483,10 @@ impl MembershipPacket {
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the slot, set, roots, ordinal and previous root identify one root"
+    )]
     fn root(
         &mut self,
         memory: &impl Memory,

@@ -889,7 +889,7 @@ fn sparse_authored_ids_and_absent_members_use_compact_ordinals() {
     let sparse_raster = ProvinceGraph::build(2, 1, &[1, huge], &rows).unwrap();
     assert_eq!(sparse_raster.ids, [1, 1_000_000, huge]);
     assert_eq!(sparse_raster.edge_count(), 2);
-    let mut raster_lookup = lookup.clone();
+    let mut raster_lookup = lookup;
     raster_lookup.remove(&2);
     raster_lookup.get_mut(&1).unwrap().retain(|&id| id != 2);
     for area in [members(&pool), members(&[huge, 77]), members(&[1, huge])] {

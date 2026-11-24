@@ -262,7 +262,6 @@ pub fn movement_modifier(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn movement_modifier_with(
     memory: &impl Memory,
     base: usize,

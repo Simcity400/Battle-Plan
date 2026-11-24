@@ -885,7 +885,6 @@ fn compare_deployment(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn compare_lines_of(
     parent: &str,
     conveyor: u64,

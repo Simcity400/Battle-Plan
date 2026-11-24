@@ -259,7 +259,7 @@ fn base_due(written: Option<&BaseWritten>, quiet: bool, same: bool) -> BaseDue {
 }
 
 impl BaseWritten {
-    #[allow(clippy::too_many_arguments, reason = "every input a base icon's update reads")]
+    #[expect(clippy::too_many_arguments, reason = "every input a base icon's update reads")]
     fn same(
         &self,
         province: u32,
@@ -589,7 +589,7 @@ impl UpdateLaps {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the counter inputs, the plan, the plates and columns, the frame's time and pointer, and the batches it fills")]
 pub fn present(
     inputs: &CounterInputs<'_>,
     plan: &Plan,
@@ -2004,7 +2004,7 @@ fn planned_update<'p>(
     (Cow::Owned(update), None)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the windows and pool, the window and slot, the update, the resources and the report")]
 fn update_combat(
     windows: &mut Windows,
     pool: &mut Pool<CombatOwner>,
@@ -3305,7 +3305,7 @@ fn draw_combats(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the windows, the region and slot, the window's layout and placement, the resources and the report")]
 pub fn compose_mission_grids(
     windows: &Windows,
     region: u32,
@@ -3436,7 +3436,7 @@ pub fn compose_mission_grids(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the windows, the base, the window and grid, the resources, the viewport and the report")]
 fn port_parts(
     windows: &Windows,
     base: &Visible<'_, u32>,
@@ -3521,7 +3521,7 @@ fn resources_stamp(inputs: &CounterInputs<'_>, countries: Option<&Countries>) ->
     hasher.finish()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the counter inputs, the plan and windows, the carrier views, the resources and the batches it fills")]
 fn draw_ports(
     inputs: &CounterInputs<'_>,
     plan: &Plan,

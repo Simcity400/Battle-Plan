@@ -47,13 +47,13 @@ pub fn started_in(module: HMODULE) -> Result<Vec<u32>, String> {
         let current = unsafe { GetCurrentThreadId() };
         let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
         entry.dwSize = size_of::<THREADENTRY32>() as u32;
-        let mut more = unsafe { Thread32First(snapshot, &mut entry) };
+        let mut more = unsafe { Thread32First(snapshot, &raw mut entry) };
         while more != 0 {
             let id = entry.th32ThreadID;
             if entry.th32OwnerProcessID == process && id != current && runs_from(id, &image)? {
                 found.push(id);
             }
-            more = unsafe { Thread32Next(snapshot, &mut entry) };
+            more = unsafe { Thread32Next(snapshot, &raw mut entry) };
         }
         match unsafe { GetLastError() } {
             ERROR_NO_MORE_FILES => Ok(()),

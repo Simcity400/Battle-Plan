@@ -194,7 +194,10 @@ impl Log {
 
 static SERIAL: AtomicU64 = AtomicU64::new(1);
 static CURRENT: AtomicPtr<Log> = AtomicPtr::new(std::ptr::null_mut());
-#[allow(clippy::vec_box)]
+#[expect(
+    clippy::vec_box,
+    reason = "CURRENT points into a boxed log, so each log keeps its address when the list grows"
+)]
 static LOGS: Mutex<Vec<Box<Log>>> = Mutex::new(Vec::new());
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static PUBLISHED: AtomicU64 = AtomicU64::new(0);
@@ -277,7 +280,7 @@ fn lease() -> Option<Lease> {
 
 fn lane_index(log: &Log) -> usize {
     LANE.with(|cache| {
-        let address = log as *const Log as usize;
+        let address = std::ptr::from_ref::<Log>(log) as usize;
         let (cached, serial, index) = cache.get();
         if cached == address && serial == log.serial {
             return index;
@@ -493,7 +496,7 @@ pub unsafe fn assemble(seal: Seal, output: &mut Assembled) -> Result<(), &'stati
     output.admitted.store(false, Ordering::Relaxed);
     let mut header = [0_u8; HEADER];
     for log in generations() {
-        let generation = log as *const Log as usize;
+        let generation = std::ptr::from_ref::<Log>(log) as usize;
         for (index, lane) in log.lanes.iter().enumerate() {
             let published = lane.published.load(Ordering::Acquire);
             let mut position = lane.assembled.load(Ordering::Acquire);
@@ -774,7 +777,7 @@ pub(crate) fn grow(lanes: usize, lane_bytes: usize) -> Result<bool, &'static str
     };
     let fresh = engine_allocation::boxed(Log::new(lanes, lane_bytes, shared)?)
         .map_err(|_| "map event lane allocation failed")?;
-    let pointer = &*fresh as *const Log as *mut Log;
+    let pointer = &raw const *fresh as *mut Log;
     let mut retained = LOGS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);

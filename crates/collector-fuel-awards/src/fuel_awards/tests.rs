@@ -731,7 +731,7 @@ fn stale_callback_pointer_follows_prepared_growth_without_epoch_loss() {
     let call = LOG.enter();
     let lease = publishing(unsafe { &*stale }).unwrap();
     assert_eq!(
-        lease.0 as *const Buffer as *mut Buffer,
+        std::ptr::from_ref::<Buffer>(lease.0) as *mut Buffer,
         LIVE.load(Ordering::SeqCst)
     );
     crate::test_support::with_allocations_denied(|| {
@@ -829,7 +829,7 @@ fn stale_publisher_can_fill_successor_before_the_boundary_publishes_it() {
         None,
         &memory
     ));
-    old.next.store(&mut fresh, Ordering::Release);
+    old.next.store(&raw mut fresh, Ordering::Release);
     assert!(
         old.publishers
             .compare_exchange(0, usize::MAX, Ordering::AcqRel, Ordering::Relaxed)

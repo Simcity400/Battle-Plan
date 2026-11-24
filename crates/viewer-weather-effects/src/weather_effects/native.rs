@@ -189,6 +189,7 @@ impl EntitySimulations {
             if !self.0.contains_key(name) {
                 self.0.insert(name.clone(), BTreeMap::new());
             }
+            #[expect(clippy::mutable_key_type, reason = "asset keys cache display data outside equality and ordering")]
             let runtimes = self.0.get_mut(name).expect("registered particle name");
             for (ordinal, emitter) in emitters.iter().enumerate() {
                 let runtime = runtimes
@@ -283,6 +284,7 @@ impl EntitySimulations {
                 && (runtime.simulation.emitting || !runtime.simulation.particles.is_empty())
         };
         self.0.retain(|_, runtimes| {
+            #[expect(clippy::mutable_key_type, reason = "asset keys cache display data outside equality and ordering")]
             let held: std::collections::BTreeSet<_> = runtimes
                 .iter()
                 .filter(|(_, runtime)| alive(runtime))
@@ -340,6 +342,7 @@ impl EntitySimulations {
                 }
                 let name = event.definition.particle.as_ref()?;
                 let (scale, emitters) = entities.get(name)?;
+                #[expect(clippy::mutable_key_type, reason = "asset keys cache display data outside equality and ordering")]
                 let runtimes = self.0.get(name)?;
                 Some((actor, event, *scale, emitters, runtimes))
             })
@@ -929,7 +932,7 @@ impl Renderer {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the arena, encoder and targets, plus the projection, eye, view, inputs and packets of one draw")]
     pub fn draw(
         &mut self,
         arena: &gpu::Arena,
@@ -986,7 +989,7 @@ impl Renderer {
                 stream.bind_constants(1, stage, Some(bytemuck::bytes_of(&projection)));
             }
             stream.bind_constants(2, Stage::Pixel, Some(inputs.grid));
-            stream.bind_depth_stencil(depth.clone());
+            stream.bind_depth_stencil(depth);
             let map_samplers = viewer_scene_base::mesh_shader::map_samplers();
             for (slot, texture) in inputs.textures.iter().enumerate() {
                 let slot = slot as u32 + 4;
@@ -1406,6 +1409,7 @@ mod tests {
                 .enumerate()
                 .filter(|(_, event)| !event.hidden)
                 .flat_map(|(actor, event)| {
+                    #[expect(clippy::mutable_key_type, reason = "asset keys cache display data outside equality and ordering")]
                     let runtimes = &simulations.0[event.definition.particle.as_ref().unwrap()];
                     (0..3).filter_map(move |ordinal| {
                         runtimes

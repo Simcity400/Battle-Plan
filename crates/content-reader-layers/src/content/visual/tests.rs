@@ -433,7 +433,7 @@ fn selections_mount_in_the_engines_order_and_name_what_cannot_mount() {
         "{:?}",
         cycle.warnings
     );
-    assert!(std::ptr::eq(layers.presentation(), &layers));
+    assert!(std::ptr::eq(layers.presentation(), &raw const layers));
 }
 
 #[test]
@@ -457,7 +457,7 @@ fn an_empty_selection_shows_the_recorded_artwork() {
     );
     let plan = apply(&mut layers, &machine.options, &[], &[], &never()).unwrap();
     assert_eq!(plan, Plan::default());
-    assert!(std::ptr::eq(layers.presentation(), &layers));
+    assert!(std::ptr::eq(layers.presentation(), &raw const layers));
 }
 
 #[test]

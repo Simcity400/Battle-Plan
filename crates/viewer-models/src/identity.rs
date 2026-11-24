@@ -267,6 +267,7 @@ mod tests {
         archive.archive = true;
         let mut replaced = a.clone();
         replaced.replace_paths.push(b"gfx/models".to_vec());
+        #[expect(clippy::mutable_key_type, reason = "asset keys cache display data outside equality and ordering")]
         let keys = BTreeSet::from([
             ordinary.clone(),
             reversed,

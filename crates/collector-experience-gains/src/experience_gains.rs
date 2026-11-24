@@ -627,7 +627,7 @@ fn release(store: &Mutex<Option<Store>>) {
             .lanes
             .table
             .store(std::ptr::null_mut(), Ordering::SeqCst);
-        if std::ptr::eq(store.lanes, &LIVE) {
+        if std::ptr::eq(store.lanes, &raw const LIVE) {
             PREPARED.store(0, Ordering::Release);
         }
     }
@@ -1024,7 +1024,7 @@ mod tests {
         let published = |store: &Store| {
             std::ptr::eq(
                 LANES.table.load(Ordering::SeqCst),
-                &**store.table.as_ref().unwrap(),
+                &raw const **store.table.as_ref().unwrap(),
             )
         };
         let mut store = Store {

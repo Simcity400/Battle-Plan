@@ -214,7 +214,10 @@ impl Inputs {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the pointer, offset, kind and goal identify one target list, and state pointers is a flag"
+    )]
     fn copy_targets(
         &mut self,
         m: &impl Memory,

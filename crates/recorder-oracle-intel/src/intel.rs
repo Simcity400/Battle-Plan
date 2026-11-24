@@ -22,7 +22,6 @@ pub struct ScopeKinds {
     pub character: u8,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn compare(
     frame: &DecodedFrame,
     save: &saved::Pack,
@@ -6751,7 +6750,7 @@ mod tests {
                 report.differences
             );
         }
-        let mut unsaved = rows.clone();
+        let mut unsaved = rows;
         unsaved[0].pending_variant = None;
         unsaved[0].pending_state = Some(8);
         unsaved[1].pending_ideology = b"democratic".to_vec();

@@ -117,7 +117,7 @@ pub struct Inputs<'a> {
     pub heights: HeightField<'a>,
     pub viewer: u32,
     pub highlighted_bases: &'a [u64],
-    #[allow(clippy::type_complexity)]
+    #[expect(clippy::type_complexity, reason = "the caller's base lookup, which can refuse or find no position")]
     pub base_position: &'a dyn Fn(&AirBaseRow) -> Result<Option<[f32; 3]>, String>,
     pub region_position: &'a dyn Fn(u32) -> Option<[f32; 3]>,
 }

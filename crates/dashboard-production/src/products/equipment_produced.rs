@@ -507,8 +507,8 @@ impl Dated {
             return Ok(Vec::new());
         };
         let key = (stretch.run, stretch.first, stretch.last);
-        if !self.stretches.contains_key(&key) {
-            self.stretches.insert(key, reads_in(query, stretch.run, stretch.first, stretch.last)?);
+        if let std::collections::hash_map::Entry::Vacant(slot) = self.stretches.entry(key) {
+            slot.insert(reads_in(query, stretch.run, stretch.first, stretch.last)?);
         }
         let reads: Vec<i32> = self.stretches[&key].iter().copied().filter(|&read| span.first <= read && read <= span.last).collect();
         self.reads.extend(&reads);

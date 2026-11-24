@@ -148,7 +148,7 @@ fn the_hq_frame_counts_only_forward_group_members_of_the_viewers_side() {
     };
     let bare = replay_data::rows::TaskForceRow {
         id: 31,
-        ..force.clone()
+        ..force
     };
     let forces = BTreeMap::from([
         (30, Ok((&force, 1))),

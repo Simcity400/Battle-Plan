@@ -2472,7 +2472,7 @@ mod tests {
             assert_eq!(kept.localise(key.as_bytes()), read.localise(key.as_bytes()), "{key}");
         }
         assert!(Localisation::from_kept(&std::sync::Arc::new(bytes[..end - 1].to_vec()), 6).is_err());
-        let mut grown = kept.clone();
+        let mut grown = kept;
         grown.entries.insert("D".into(), "late key".into());
         assert_eq!((grown.get("A"), grown.get("D"), grown.len()), (Some("early"), Some("late key"), read.len() + 1));
     }

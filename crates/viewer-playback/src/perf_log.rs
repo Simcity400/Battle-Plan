@@ -215,7 +215,7 @@ fn startup_memory() -> Option<(u64, u64, u64)> {
         let ok = unsafe {
             GetProcessMemoryInfo(
                 windows_sys::Win32::System::Threading::GetCurrentProcess(),
-                (&mut memory as *mut Memory).cast(),
+                (&raw mut memory).cast(),
                 memory.size,
             )
         };

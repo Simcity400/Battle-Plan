@@ -140,7 +140,7 @@ pub type Read<'a> = Result<Tables<'a, Origin, Client, Route, Regional>, String>;
 pub trait Routes: Send + Sync {
     fn stops(&self, route: &Route, reverse: bool, provinces: &Provinces) -> Result<Option<Stops>, String>;
 
-    #[allow(clippy::too_many_arguments, reason = "the builder's tables, countries, exchanges, culture, provinces and stops are each the layer's")]
+    #[expect(clippy::too_many_arguments, reason = "the builder's tables, countries, exchanges, culture, provinces and stops are each the layer's")]
     fn build(
         &self,
         ours: u32,

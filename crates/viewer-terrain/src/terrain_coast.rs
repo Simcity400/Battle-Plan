@@ -106,7 +106,7 @@ impl Coast {
         changed
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "the block, where it stands, and the map it samples"
     )]
@@ -418,7 +418,7 @@ mod tests {
         let side = (super::super::terrain_shader::SIDE + 1) as usize;
         let island = 25 * side + 18;
         assert_eq!(raw[island][0], 1500);
-        let mut capped = raw.clone();
+        let mut capped = raw;
         coast.cap(&positions, [64, 0], 2, &mut capped);
         assert_eq!(capped[island][0], 940);
     }

@@ -33,7 +33,6 @@ macro_rules! sliced_pair {
     (@arms $pair:expr, $a:ident, $b:ident, $wrap:ident, $body:expr, $other:expr; $($variant:ident),+) => {
         match $pair {
             $((TableRows::$variant($a), TableRows::$variant($b)) => {
-                #[allow(unused_variables)]
                 let $wrap = TableRows::$variant;
                 $body
             })+

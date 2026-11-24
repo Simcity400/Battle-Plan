@@ -27,7 +27,7 @@ fn cycles() -> u64 {
     unsafe {
         QueryThreadCycleTime(
             windows_sys::Win32::System::Threading::GetCurrentThread(),
-            &mut value,
+            &raw mut value,
         );
     }
     value

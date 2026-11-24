@@ -1054,7 +1054,7 @@ mod tests {
                 .scripted
                 .contains(b"base_only".as_slice())
         );
-        let mut roster = vanilla.layers.clone();
+        let mut roster = vanilla.layers;
         let additional =
             ResolvedLayers::from_test_common_folders(&[(&over, &["common/scripted_triggers"])])
                 .unwrap();

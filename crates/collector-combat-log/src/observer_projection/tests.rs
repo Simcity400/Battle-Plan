@@ -60,7 +60,7 @@ fn combat_log_collection_insertions_keep_other_parents_and_kinds_keyed() {
 fn combat_log_ordered_reconstruction_keeps_duplicates_and_every_word() {
     let native = sample();
     let expected: Vec<_> = native.iter().map(CombatLogObserverRow::fact).collect();
-    let mut captured = native.clone();
+    let mut captured = native;
     captured.reverse();
     let mut actual = project(&captured, &[]).unwrap();
     actual.sort_unstable_by_key(CombatLogObserverRow::logical_order);

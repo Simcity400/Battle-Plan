@@ -1897,7 +1897,6 @@ impl Tracks {
         self.changes.ended();
     }
 
-    #[allow(clippy::type_complexity, reason = "a key's life and its columns' tokens, returned together")]
     fn replay(&self, at: usize, changes: &[u8], columns: &[Column], end: i64, end_bucket: i64) -> io::Result<Option<(Vec<u8>, Vec<Vec<u8>>)>> {
         let first_hour = self.first_hour;
         let first_bucket = bucket_of(first_hour, 0);

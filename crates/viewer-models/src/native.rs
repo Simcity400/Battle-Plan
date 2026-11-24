@@ -567,7 +567,7 @@ fn note_entered(label: &'static str, queue: Queue, entered: &[u64; kept::ENTERED
     }
 }
 
-#[allow(clippy::too_many_arguments, reason = "one line names the figure, its frame and why")]
+#[expect(clippy::too_many_arguments, reason = "one line names the figure, its frame and why")]
 fn note_culled(
     label: &str,
     mesh: &str,
@@ -629,7 +629,7 @@ fn part_programs<'r>(
     }
 }
 
-#[allow(clippy::too_many_arguments, reason = "one line names the part, its place and its order")]
+#[expect(clippy::too_many_arguments, reason = "one line names the part, its place and its order")]
 fn note_part(
     key: usize,
     mesh: usize,
@@ -1235,7 +1235,7 @@ impl ModelPass {
         self.drawn.set(0);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the arena, encoder and targets, plus the frame, inputs, queue and constants of one draw")]
     pub fn draw_native(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -1260,7 +1260,6 @@ impl ModelPass {
         self.record_native(arena, &mut pass, frame, inputs, queue, object)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_native(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -1834,7 +1833,6 @@ impl ModelPass {
         }
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the frame, the walk and what changed in it")]
     fn splice_list(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -2268,7 +2266,6 @@ impl ModelPass {
         self.walk_native(arena, frame, inputs, queue, object, None)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "one walk serves the frame's arena and the retained list's recording")]
     fn walk_native(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -3405,7 +3402,7 @@ mod tests {
         let cutout = BlendState {
             enable: false,
             alpha_test: true,
-            ..opaque.clone()
+            ..opaque
         };
         let opaque = BlendState {
             enable: false,

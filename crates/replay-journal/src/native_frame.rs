@@ -1092,7 +1092,7 @@ impl<T> Disjoint<'_, T> {
 
     /// # Safety
     /// `index < self.len` and no other reference to element `index` exists concurrently.
-    #[allow(clippy::mut_from_ref, reason = "disjoint per-index access across workers")]
+    #[expect(clippy::mut_from_ref, reason = "disjoint per-index access across workers")]
     unsafe fn get_mut(&self, index: usize) -> &mut T {
         debug_assert!(index < self.len);
         unsafe { &mut *self.ptr.add(index) }

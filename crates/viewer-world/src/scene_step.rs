@@ -251,7 +251,6 @@ pub(super) struct Beside {
 }
 
 impl Beside {
-    #[expect(clippy::mutable_key_type, reason = "actor keys cache display data outside equality and ordering")]
     pub(super) fn step(mut self) -> Self {
         let Self { graphics, camera, size, animation_time, pose_tick, .. } = self;
         if let Some((pass, assets, plan)) = self.aircraft.as_mut() {

@@ -298,6 +298,7 @@ pub(crate) fn dump_window(
     }
     let (sent, ended) = mpsc::sync_channel(1);
     let closing = window.clone();
+    #[expect(clippy::redundant_clone, reason = "this thread keeps its own handle, and with it the window's input link, alive while it pumps the window's messages")]
     let drawn = window.clone();
     spawn(
         "map (window dump)",
@@ -333,6 +334,7 @@ pub(crate) fn paced_window(
     let (window, inputs) = Window::create(None, size, "BattlePlan map (paced)")?;
     let (sent, ended) = mpsc::sync_channel(1);
     let closing = window.clone();
+    #[expect(clippy::redundant_clone, reason = "this thread keeps its own handle, and with it the window's input link, alive while it pumps the window's messages")]
     let drawn = window.clone();
     spawn(
         "map (harness)",

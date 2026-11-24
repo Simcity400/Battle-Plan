@@ -298,7 +298,7 @@ impl Sorties {
         )
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "The observer borrows the same capture inputs without bundling independent acquisition lifetimes."
     )]
@@ -317,7 +317,10 @@ impl Sorties {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the read operands travel beside the registered wings, base witnesses and region observer"
+    )]
     fn capture_mode<'a>(
         &mut self,
         memory: &impl Memory,
@@ -366,7 +369,7 @@ impl Sorties {
         };
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "Keep the registered wing stream, witnesses and observer borrowed independently during acquisition."
     )]
@@ -745,7 +748,7 @@ impl Sorties {
         Ok(())
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "The selected key shares the existing country reader and cache while forwarding its reached region."
     )]

@@ -412,7 +412,10 @@ fn demand_advisors(
     Ok((rows, bytes))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the roster, slot mode, carry and selection pick the walk, and the output and byte buffers are caller-owned"
+)]
 fn walk_inner(
     memory: &impl Memory,
     base: usize,

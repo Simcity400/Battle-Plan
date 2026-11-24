@@ -1302,7 +1302,6 @@ impl Counters {
         let joins = Joins::new(self, seen, tables, columns, fields.id, fields.province);
         let joined = division_member(fields, &joins);
         let read = joins.read.get();
-        drop(joins);
         self.index_sight(slot, read);
         let Some((source, member)) = joined else { return };
         self.touched.insert(source);

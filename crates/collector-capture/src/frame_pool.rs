@@ -98,10 +98,7 @@ impl Slot {
 
     #[doc = "# Safety"]
     #[doc = "The caller must hold the occupied slot exclusively for the duration of this borrow."]
-    #[allow(
-        clippy::mut_from_ref,
-        reason = "The frame owner has exclusive access to its slot"
-    )]
+    #[expect(clippy::mut_from_ref, reason = "The frame owner has exclusive access to its slot")]
     pub unsafe fn captured_mut(&self) -> &mut Captured {
         unsafe { &mut *self.load(Ordering::Acquire) }
     }
@@ -618,10 +615,7 @@ impl FramePool {
     /// # Safety
     /// The caller holds `index`: no other thread touches its job, and the caller makes no other
     /// borrow of it while the returned one lives.
-    #[allow(
-        clippy::mut_from_ref,
-        reason = "the holder of the index owns the job alone"
-    )]
+    #[expect(clippy::mut_from_ref, reason = "the holder of the index owns the job alone")]
     pub unsafe fn job(&self, index: usize) -> &mut DecodeJob {
         unsafe { &mut *self.slot(index).job.get() }
     }

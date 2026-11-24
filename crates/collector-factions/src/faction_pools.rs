@@ -726,7 +726,7 @@ impl Store {
                     return Err("faction pool publication overlaps a writer");
                 }
                 MISSED.store(false, Ordering::SeqCst);
-                POINTER.store(&mut *storage, Ordering::SeqCst);
+                POINTER.store(&raw mut *storage, Ordering::SeqCst);
                 let old = self.storage.replace(storage);
                 CLOSED.store(false, Ordering::SeqCst);
                 drop(old);
@@ -903,7 +903,7 @@ impl Drop for Store {
         let Some(storage) = self.storage.take() else {
             return;
         };
-        if std::ptr::eq(POINTER.load(Ordering::SeqCst), &*storage) {
+        if std::ptr::eq(POINTER.load(Ordering::SeqCst), &raw const *storage) {
             CLOSED.store(true, Ordering::SeqCst);
             POINTER.store(ptr::null_mut(), Ordering::SeqCst);
             if active() != 0 || READERS.load(Ordering::SeqCst) != 0 {

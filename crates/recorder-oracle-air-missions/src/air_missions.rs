@@ -1677,7 +1677,7 @@ mod tests {
                     fuel_modifier: None.into(),
                     combat_modifiers_known: false.into(),
                     type_combat_flags: 0.into(),
-                    ..row.clone()
+                    ..row
                 },
                 false,
             ),
@@ -2033,7 +2033,7 @@ mod tests {
             },
             false,
         );
-        assert!(histories_structure(&[row.clone(), marker.clone(), witness(4)], &slots).is_ok());
+        assert!(histories_structure(&[row.clone(), marker, witness(4)], &slots).is_ok());
         assert!(histories_structure(&[row], &slots).is_err());
         assert!(histories_structure(&[witness(4), witness(4)], &slots).is_err());
         let mut malformed = witness(4);

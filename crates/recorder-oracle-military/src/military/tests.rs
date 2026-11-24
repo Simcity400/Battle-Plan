@@ -921,7 +921,7 @@ fn land_combat_classes_follow_the_saved_roster_of_each_participant() {
             name: None,
             fleet: 11,
             roster_owner: owner.clone(),
-            logical_owner: owner.clone(),
+            logical_owner: owner,
             expeditionary_owner: None,
             province: Some(1),
             mission: 0,
@@ -2015,7 +2015,7 @@ fn division_panel_stats_checks_its_own_roster_and_every_operand() {
     set(
         &mut frame,
         TableId::DivisionPanelStats,
-        TableRows::DivisionPanelStats(vec![row.clone()]),
+        TableRows::DivisionPanelStats(vec![row]),
     );
     let mut report = Report::default();
     compare_division_panel_stats(&frame, &save, &mut report).unwrap();

@@ -400,7 +400,7 @@ fn write_details(record: &TerminalWitness) {
             handle as _,
             buffer.bytes.as_ptr(),
             buffer.len as u32,
-            &mut written,
+            &raw mut written,
             std::ptr::null_mut(),
         );
         FlushFileBuffers(handle as _);
@@ -974,7 +974,7 @@ fn write_witness(handle: usize, bytes: &[u8; WITNESS_BYTES]) -> bool {
                 handle as _,
                 bytes[offset..].as_ptr(),
                 (bytes.len() - offset) as u32,
-                &mut written,
+                &raw mut written,
                 std::ptr::null_mut(),
             )
         };

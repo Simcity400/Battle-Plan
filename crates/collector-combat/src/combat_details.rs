@@ -240,7 +240,10 @@ struct DivisionOutputs<'r, 'n> {
     exile_tags: engine_native_memory::walk::Buffer<'r, u32>,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one division read fills the sources, scratch and outputs for its role, pointer and handle"
+)]
 fn read_division<M: Memory, C: Memory>(
     memory: &M,
     base: usize,

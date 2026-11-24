@@ -227,8 +227,8 @@ fn facts(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadCont
     let mut given: HashMap<(u32, u32, Arc<str>), [i32; 4]> = HashMap::new();
     for stretch in &query.timeline.stretches {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        if !runs_read.contains_key(&stretch.run) {
-            runs_read.insert(stretch.run, crate::products::styles::cached_looks(source, stretch.run)?);
+        if let std::collections::hash_map::Entry::Vacant(slot) = runs_read.entry(stretch.run) {
+            slot.insert(crate::products::styles::cached_looks(source, stretch.run)?);
         }
         let run = &runs_read[&stretch.run];
         let mut cursor = stretch.first;

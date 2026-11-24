@@ -168,11 +168,11 @@ impl Recorder {
             .shards
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if !entries.contains_key(&entry) {
+        if let std::collections::btree_map::Entry::Vacant(slot) = entries.entry(entry) {
             shards.retain(|purposes, _| {
-                !purposes.iter().any(|wanted| wanted == entry.0.location().1)
+                !purposes.iter().any(|wanted| wanted == slot.key().0.location().1)
             });
-            entries.insert(entry, None);
+            slot.insert(None);
         }
     }
     pub fn record_read(&self, read: ContentRead) {

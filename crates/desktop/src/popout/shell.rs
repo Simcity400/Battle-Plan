@@ -70,7 +70,7 @@ impl Shell {
             return None;
         }
         let mut rect = RECT::default();
-        (unsafe { GetClientRect(hwnd as HWND, &mut rect) } != 0).then(|| {
+        (unsafe { GetClientRect(hwnd as HWND, &raw mut rect) } != 0).then(|| {
             (
                 (rect.right - rect.left).max(1) as u32,
                 (rect.bottom - rect.top).max(1) as u32,
@@ -205,7 +205,7 @@ fn run(
         );
         description.hIcon = icon;
         description.hIconSm = icon;
-        RegisterClassExW(&description);
+        RegisterClassExW(&raw const description);
         let adopted = Arc::new(AtomicBool::new(false));
         let state = Box::into_raw(Box::new(State {
             callback,
@@ -243,9 +243,9 @@ fn run(
         ShowWindow(hwnd, SW_SHOW);
         let _ = ready.send(Ok(()));
         let mut message: MSG = std::mem::zeroed();
-        while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
+        while GetMessageW(&raw mut message, std::ptr::null_mut(), 0, 0) > 0 {
+            TranslateMessage(&raw const message);
+            DispatchMessageW(&raw const message);
         }
     }
 }
@@ -262,7 +262,7 @@ fn monitors() -> Vec<HMONITOR> {
             std::ptr::null_mut(),
             std::ptr::null(),
             Some(each),
-            &mut found as *mut _ as LPARAM,
+            &raw mut found as LPARAM,
         )
     };
     found
@@ -271,7 +271,7 @@ fn monitors() -> Vec<HMONITOR> {
 fn work_area(monitor: HMONITOR) -> Area {
     let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
     info.cbSize = size_of::<MONITORINFO>() as u32;
-    unsafe { GetMonitorInfoW(monitor, &mut info) };
+    unsafe { GetMonitorInfoW(monitor, &raw mut info) };
     info.rcWork.into()
 }
 

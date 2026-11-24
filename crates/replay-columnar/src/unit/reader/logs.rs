@@ -313,7 +313,6 @@ impl<'a> Names<'a> {
     }
 }
 
-#[allow(clippy::too_many_arguments, reason = "the block's place and the call's filters, given apart")]
 fn read_block<'a>(
     source: &dyn Extents,
     pages: &'a [BlockPage],
@@ -542,7 +541,6 @@ fn part_rows(part: &mut Part, kinds: &[Kind], columns: &[usize], ordinal: u64, a
     Ok(rows)
 }
 
-#[allow(clippy::too_many_arguments, reason = "the block's place and the call's state, given apart")]
 fn read_rows<'a>(
     source: &dyn Extents,
     pages: &'a [BlockPage],

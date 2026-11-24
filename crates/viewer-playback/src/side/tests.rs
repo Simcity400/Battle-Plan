@@ -46,7 +46,7 @@ fn a_view_asked_between_two_steps_is_taken_at_the_next_one() {
     let high = View { camera_height: 4.0, ..View::default() };
     side.ask(View::default(), Head::Paced(4), None, None);
     side.wait_window(|side| side.applied() == Some(4)).unwrap();
-    side.ask(high.clone(), Head::Paced(6), None, None);
+    side.ask(high, Head::Paced(6), None, None);
     side.wait_window(|side| side.view().camera_height == 4.0).unwrap();
     let heights = side.with_side(|side| side.parts().unwrap().1[0].any().downcast_ref::<Sum>().unwrap().viewed.clone());
     assert!(heights.contains(&4.0), "the camera the view asked for reached the layer: {heights:?}");

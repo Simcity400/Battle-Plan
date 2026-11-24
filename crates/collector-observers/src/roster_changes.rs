@@ -64,7 +64,6 @@ pub trait Roster: Sync {
     fn record(&self, table: Table, counts: &Counts);
 }
 
-#[cfg_attr(any(test, feature = "test-support"), allow(dead_code))]
 pub struct Observer;
 impl Roster for Observer {
     fn token(&self) -> Option<(u64, u64)> {

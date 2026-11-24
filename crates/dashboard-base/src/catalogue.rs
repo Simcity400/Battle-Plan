@@ -326,7 +326,7 @@ mod present_tests {
         };
         let (drawn, line) = fallback_line(|| {
             present("the icon", &admitted, &recorded, |cat| {
-                if std::ptr::eq(cat, &*admitted) {
+                if std::ptr::eq(cat, &raw const *admitted) {
                     assert!(content_reader_layers::content::is_strict());
                     note("discarded selector note");
                     Err("the mod's sprite does not load".to_owned())
@@ -372,7 +372,7 @@ mod present_tests {
                 |cat| {
                     attempts.set(attempts.get() + 1);
                     assert!(!content_reader_layers::content::is_strict());
-                    assert!(std::ptr::eq(cat, &*plain));
+                    assert!(std::ptr::eq(cat, &raw const *plain));
                     Ok::<_, String>(1)
                 },
             )
@@ -395,7 +395,7 @@ mod present_tests {
                 || "the icon".to_owned(),
                 &shown,
                 |cat| {
-                    if std::ptr::eq(cat, &*shown) {
+                    if std::ptr::eq(cat, &raw const *shown) {
                         Err("the mod's sprite does not load".to_owned())
                     } else {
                         Ok::<_, String>(2)
@@ -422,7 +422,7 @@ mod present_tests {
                 || "the inner icon".to_owned(),
                 cat,
                 |drawing| {
-                    if std::ptr::eq(drawing, &*shown) {
+                    if std::ptr::eq(drawing, &raw const *shown) {
                         assert!(content_reader_layers::content::is_strict());
                         Err("the mod's inner sprite does not load".to_owned())
                     } else {
@@ -439,7 +439,7 @@ mod present_tests {
                 &shown,
                 |cat| {
                     let inner = inner(cat)?;
-                    Ok::<_, String>(if std::ptr::eq(cat, &*shown) {
+                    Ok::<_, String>(if std::ptr::eq(cat, &raw const *shown) {
                         "shown"
                     } else {
                         inner

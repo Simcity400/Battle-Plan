@@ -11,7 +11,7 @@ use viewer_runtime::geometry::contains;
 use viewer_native_gui::gui_resources::hit_rectangle;
 use viewer_native_gui::native_gui;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the window, its layout and holder, its placement, the resources and the flotilla")]
 pub fn presented(
     window: &native::Element,
     layout: &native_gui::Layout,

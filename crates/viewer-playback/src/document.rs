@@ -408,6 +408,7 @@ impl OverlayHits {
     }
 }
 
+#[cfg_attr(test, expect(clippy::large_enum_variant, reason = "the empty variant exists only in tests, where its size does not matter"))]
 enum OverlayCounters {
     Prepared(counters::PreparedCounters),
     #[cfg(test)]
@@ -761,7 +762,7 @@ impl LaidIcons {
         self.occupation_icons_by
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the camera, view and layer product")]
+    #[expect(clippy::too_many_arguments, reason = "the camera, view and layer product")]
     pub fn replace_resource_icons(
         &mut self,
         hour: &impl IconHost,
@@ -776,7 +777,7 @@ impl LaidIcons {
         self.resource_icons_by = MadeBy::Layer(version);
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the camera, viewing country, mode and layer product")]
+    #[expect(clippy::too_many_arguments, reason = "the camera, viewing country, mode and layer product")]
     pub fn replace_occupation_icons(
         &mut self,
         hour: &impl IconHost,
@@ -840,7 +841,7 @@ impl PreparedOverlay {
         *self = placed;
     }
 
-    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one placing")]
+    #[expect(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one placing")]
     pub fn project(
         &mut self,
         hour: &Hour<'_>,
@@ -914,7 +915,6 @@ impl PreparedOverlay {
         self.counter_view.presentation.windows.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).retries()
     }
 
-    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     pub fn draw(
         &mut self,
         hour: &Hour<'_>,
@@ -937,7 +937,7 @@ impl PreparedOverlay {
         ))
     }
 
-    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
+    #[expect(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     pub fn draw_quiet(
         &mut self,
         hour: &Hour<'_>,
@@ -1042,7 +1042,7 @@ impl PreparedOverlay {
         counters
     }
 
-    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
+    #[expect(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     pub fn draw_into(
         &mut self,
         hour: &Hour<'_>,
@@ -1378,7 +1378,7 @@ impl PreparedOverlay {
         self.laid_icons.replace_resource_icons(hour, camera, viewport, ui_scale, self.counter_view.visibility, icons, version);
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the camera, the viewing country and the layer's product")]
+    #[expect(clippy::too_many_arguments, reason = "the camera, the viewing country and the layer's product")]
     pub fn replace_occupation_icons(&mut self, hour: &impl IconHost, camera: Camera, viewport: [u32; 2], ui_scale: f32, country: u32, marks: &viewer_map_icons::occupation_icons::Marks, version: u64) {
         self.laid_icons.replace_occupation_icons(hour, camera, viewport, ui_scale, self.counter_view.occupation, country, marks, version);
     }
@@ -1598,7 +1598,7 @@ impl Document {
             .bind_map(crate::map_binding::MapBinding::new(source));
     }
 
-    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
+    #[expect(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     pub fn load_shared(
         path: &Path,
         options: &ResolveOptions,
@@ -1680,7 +1680,7 @@ impl Document {
         Ok(document)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
+    #[expect(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     fn load_shared_once(
         path: &Path,
         options: &ResolveOptions,
@@ -1711,7 +1711,7 @@ impl Document {
         })
     }
 
-    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
+    #[expect(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     fn load_shared_scoped(
         path: &Path,
         options: &ResolveOptions,
@@ -1846,7 +1846,7 @@ impl Document {
         )
     }
 
-    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
+    #[expect(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     fn load_product_content(
         path: &Path,
         options: &ResolveOptions,
@@ -3277,7 +3277,7 @@ impl Document {
         self.hour()?.place_names(mode)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
+    #[expect(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     pub fn dump_overlay(
         &self,
         camera: Camera,
@@ -3463,7 +3463,7 @@ impl OverlayTables {
     }
 
     pub fn identity(&self) -> usize {
-        Arc::as_ptr(&self.air) as *const () as usize
+        Arc::as_ptr(&self.air).cast::<()>() as usize
     }
 
     pub fn vision(&self) -> &Arc<perspective::Vision> {
@@ -4492,7 +4492,7 @@ impl<'a> Hour<'a> {
         self.hour_tables_of(perspective, raids, engaged.map(|index| index.shared.as_ref()), left_out, labels_by_layers, spans, radar, counters::Need::WHOLE)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the tables' inputs, what the view draws and the timings")]
+    #[expect(clippy::too_many_arguments, reason = "the tables' inputs, what the view draws and the timings")]
     pub fn hour_tables_at_head(
         &self,
         perspective: &perspective::Choice,
@@ -4513,7 +4513,7 @@ impl<'a> Hour<'a> {
         Ok(tables)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the tables' inputs, the parts left to layers and the timings")]
+    #[expect(clippy::too_many_arguments, reason = "the tables' inputs, the parts left to layers and the timings")]
     fn hour_tables_of(
         &self,
         perspective: &perspective::Choice,
@@ -4621,7 +4621,6 @@ impl<'a> Hour<'a> {
         self.prepare_overlay_at(camera, viewport, ui_scale, tables, view, &OverlayRows::default())
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the overlay's inputs and the rows they read")]
     pub fn prepare_overlay_at(
         &self,
         camera: Camera,
@@ -4795,7 +4794,7 @@ impl<'a> Hour<'a> {
         })
     }
 
-    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
+    #[expect(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     fn prepare_overlay_with(
         &self,
         camera: Camera,
@@ -5017,7 +5016,7 @@ impl<'a> Hour<'a> {
         }))
     }
 
-    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
+    #[expect(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     fn dump_overlay(
         self,
         camera: Camera,
@@ -5405,7 +5404,7 @@ mod tests {
         assert_eq!(decided("A"), Some((key.clone(), probing)));
         assert_eq!(decided("B"), None);
         let restored = BTreeMap::from([(
-            key.clone(),
+            key,
             crate::visual_fallback::Decision::Restored {
                 excused: BTreeSet::new(),
             },

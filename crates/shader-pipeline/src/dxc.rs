@@ -31,13 +31,13 @@ pub(crate) fn product_version(path: &Path) -> Result<String, String> {
             return Err(MISSING.into());
         }
         let (mut found, mut length) = (ptr::null_mut(), 0u32);
-        if VerQueryValueW(block.as_ptr().cast(), wide("\\VarFileInfo\\Translation").as_ptr(), &mut found, &mut length) == 0 || length < 4 {
+        if VerQueryValueW(block.as_ptr().cast(), wide("\\VarFileInfo\\Translation").as_ptr(), &raw mut found, &raw mut length) == 0 || length < 4 {
             return Err(MISSING.into());
         }
         let language = *found.cast::<u16>();
         let page = *found.cast::<u16>().add(1);
         let key = wide(format!("\\StringFileInfo\\{language:04x}{page:04x}\\ProductVersion"));
-        if VerQueryValueW(block.as_ptr().cast(), key.as_ptr(), &mut found, &mut length) == 0 || length == 0 {
+        if VerQueryValueW(block.as_ptr().cast(), key.as_ptr(), &raw mut found, &raw mut length) == 0 || length == 0 {
             return Err(MISSING.into());
         }
         let text = std::slice::from_raw_parts(found.cast::<u16>(), length as usize);
@@ -159,7 +159,7 @@ impl Library {
 
     fn compiler(&self) -> Result<Com<Compiler3Vtbl>, String> {
         let mut out = ptr::null_mut();
-        let hr = unsafe { (self.create)(&CLSID_DXC_COMPILER, &IID_COMPILER3, &mut out) };
+        let hr = unsafe { (self.create)(&CLSID_DXC_COMPILER, &IID_COMPILER3, &raw mut out) };
         if hr < 0 {
             return Err(format!("DXC made no compiler (HRESULT {hr:#010x})"));
         }
@@ -175,12 +175,12 @@ impl Library {
         let hr = unsafe {
             (compiler.vtbl().compile)(
                 compiler.this(),
-                &buffer,
+                &raw const buffer,
                 pointers.as_ptr(),
                 pointers.len() as u32,
                 ptr::null_mut(),
                 &IID_RESULT,
-                &mut out,
+                &raw mut out,
             )
         };
         let result = (hr >= 0).then(|| unsafe { Com::<ResultVtbl>::from_raw(out) }).flatten();
@@ -189,12 +189,12 @@ impl Library {
         };
         let mut status = 0;
         unsafe {
-            if (result.vtbl().status)(result.this(), &mut status) < 0 {
+            if (result.vtbl().status)(result.this(), &raw mut status) < 0 {
                 return Err("DXC gave no status".into());
             }
             if status < 0 {
                 let mut errors = ptr::null_mut();
-                let text = match ((result.vtbl().errors)(result.this(), &mut errors) >= 0)
+                let text = match ((result.vtbl().errors)(result.this(), &raw mut errors) >= 0)
                     .then(|| Com::<BlobVtbl>::from_raw(errors))
                     .flatten()
                 {
@@ -204,7 +204,7 @@ impl Library {
                 return Err(if text.is_empty() { format!("HRESULT {status:#010x}") } else { text });
             }
             let mut object = ptr::null_mut();
-            if (result.vtbl().result)(result.this(), &mut object) < 0 {
+            if (result.vtbl().result)(result.this(), &raw mut object) < 0 {
                 return Err("DXC gave no object".into());
             }
             let blob = Com::<BlobVtbl>::from_raw(object).ok_or("DXC gave no object")?;

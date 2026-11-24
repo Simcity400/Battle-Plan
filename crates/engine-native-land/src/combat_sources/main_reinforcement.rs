@@ -1,5 +1,3 @@
-#![allow(dead_code, clippy::all)]
-
 use engine_sites::Rva;
 use engine_native_memory::{Memory, cpdx_array::Array, read};
 use engine_native::{carmy, ccountry, cgame_state, cprovince, cunit};
@@ -108,7 +106,6 @@ fn auth(memory: &impl Memory, base: usize, p: usize, key: Rva) -> Result<(), &'s
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn append_modifiers(
     memory: &impl Memory,
     base: usize,
@@ -378,7 +375,6 @@ fn infrastructure(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn air(
     memory: &impl Memory,
     base: usize,
@@ -463,7 +459,10 @@ fn transport_intel_lane(
     Ok(value)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the army and location locate one context, and the modifier and transport arenas are caller-owned"
+)]
 fn transport_context(
     memory: &impl Memory,
     base: usize,
@@ -626,7 +625,10 @@ fn transport_context(
     Ok(row)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the army and expected handle identify one context, and each term arena is caller-owned"
+)]
 pub fn capture_context(
     memory: &impl Memory,
     base: usize,

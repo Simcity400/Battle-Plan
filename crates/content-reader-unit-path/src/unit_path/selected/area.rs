@@ -125,7 +125,7 @@ pub fn areas_connect(
     let mut visited = BTreeSet::new();
     visited.insert(valid_index(start_index, nonsea_count)?);
     let mut queue = AreaQueue::default();
-    for label in start_node.neighbors.clone()? {
+    for label in start_node.neighbors? {
         let neighbor = node(label)?;
         let value = cost(&neighbor)?;
         if value < 0 {

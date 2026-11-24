@@ -81,6 +81,7 @@ impl MaskedShield {
         shader_pipeline::artwork::render_layers(layers, drawables, decode).map_err(refuse)
     }
 
+    #[expect(clippy::single_range_in_vec_init, reason = "a draw lists the byte ranges of its constants, and each of these uploads one")]
     fn passes(&self, flag: &dds::Texture) -> Vec<Draw> {
         let overlay = self.overlay.as_ref().map_or([0.0; 2], |overlay| {
             [overlay.width, overlay.height].map(|edge| edge as f32)

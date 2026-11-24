@@ -75,7 +75,7 @@ impl AirOrders {
 }
 
 impl Viewer {
-    #[allow(clippy::too_many_arguments, reason = "a click's whole context, as its siblings take it")]
+    #[expect(clippy::too_many_arguments, reason = "a click's whole context, as its siblings take it")]
     pub(super) fn air_order(&mut self, document: &Document, point: [f32; 2], under: Option<Under>, order: usize, shift: bool, pick: impl FnOnce([f32; 2]) -> Option<u32>, ctx: &egui::Context) {
         let wings = Arc::clone(self.air_selection.wings());
         let region = match under {

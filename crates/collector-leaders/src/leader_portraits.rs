@@ -293,7 +293,7 @@ mod tests {
             capture.table_inputs(Some(&mut projection))[0],
             TableInput::ComparedChanges { .. }
         ));
-        capture.rows.rows[0] = original.clone();
+        capture.rows.rows[0] = original;
         capture.rows.rows[0].leader -= 1;
         assert!(matches!(
             capture.table_inputs(Some(&mut projection))[0],

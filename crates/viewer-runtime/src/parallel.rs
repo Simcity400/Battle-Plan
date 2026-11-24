@@ -64,7 +64,7 @@ pub fn usable_processors() -> usize {
         use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessAffinityMask};
         let (mut process, mut system) = (0usize, 0usize);
         let read =
-            unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) };
+            unsafe { GetProcessAffinityMask(GetCurrentProcess(), &raw mut process, &raw mut system) };
         if read != 0 && process != 0 {
             return process.count_ones() as usize;
         }
