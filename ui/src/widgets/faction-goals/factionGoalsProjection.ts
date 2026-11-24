@@ -84,7 +84,7 @@ const [ICON, GOAL, PROGRESS, STATE] = COLUMNS;
 const GOAL_COLUMNS: readonly DeclarativeColumnSpec<GoalRow, FactionGoalsOptions>[] = [
   { ...ICON!, priority: 3, sortable: false, cellKind: 'kind', iconSlot: true, icon: row => row.icon, extra: row => ({ artShape: 'square', ...(row.definition.name ? { artName: row.definition.name } : {}) }),
     value: row => goalName(row.definition) },
-  { ...GOAL!, priority: 0, text: true, hideable: false, widest: ['Conquest and Domination'], value: row => goalName(row.definition) },
+  { ...GOAL!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Conquest and Domination'], value: row => goalName(row.definition) },
   { ...PROGRESS!, priority: 1, numeric: true, format: PERCENT, widest: ['100%'],
     value: (row, live) => goalProgress(live, row.ordinal, row.state),
     bar: (row, live) => ({ fraction: fraction(goalProgress(live, row.ordinal, row.state)) }) },
@@ -129,7 +129,7 @@ export const factionGoalsDeclaration: TableWidgetDeclaration<FactionGoalsOptions
   label: 'Faction goals',
   subject: 'faction goals',
   emptyCampaign: 'Load a campaign to see faction goals.',
-  icon: 'target',
+  icon: 'globe',
   optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its faction’s goals.' },
   sources: ctx => {
