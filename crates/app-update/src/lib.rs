@@ -16,6 +16,9 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager};
 
+type Publish = Box<dyn Fn(UpdateState) + Send + Sync>;
+type LoadChannel = fn() -> Result<Option<Channel>, String>;
+
 const RELEASES: Option<&str> = option_env!("BATTLEPLAN_RELEASES");
 const VERSION: &str = match option_env!("BATTLEPLAN_VERSION") {
     Some(version) if !version.is_empty() => version,
@@ -192,6 +195,8 @@ pub struct Updates {
     check_now: std::sync::atomic::AtomicBool,
     client: Option<reqwest::Client>,
     current: semver::Version,
+    load_channel: LoadChannel,
+    publish: Publish,
     inner: Mutex<Inner>,
     wake: Condvar,
 }
@@ -299,56 +304,74 @@ pub fn init(app: &AppHandle, role: Role, host: Arc<dyn Host>) -> std::io::Result
                 role.app()
             )
         });
-    let updates = Arc::new(Updates {
-        role,
-        host: Arc::clone(&host),
-        control_error,
-        check_now: std::sync::atomic::AtomicBool::new(false),
-        client: client.ok(),
-        current: semver::Version::parse(VERSION).expect("Cargo versions are semver"),
-        inner: Mutex::new(Inner {
-            state,
-            update: None,
-            package: None,
-            busy: false,
-            checking: false,
-        }),
-        wake: Condvar::new(),
-    });
+    let publish = {
+        let app = app.clone();
+        Box::new(move |state: UpdateState| {
+            if let Err(error) = app.emit(STATE_EVENT, state) {
+                eprintln!("The update state could not reach the window: {error}");
+            }
+        })
+    };
+    let updates = Arc::new(Updates::new(role, host, control_error, client.ok(), state, channel::load, publish));
     app.manage(Arc::clone(&updates));
     if disabled.is_none() {
-        let app = app.clone();
         std::thread::Builder::new()
             .name("update checks".into())
-            .spawn(move || updates.poll(&app))?;
+            .spawn(move || updates.poll())?;
     }
     Ok(())
 }
 
 impl Updates {
+    fn new(
+        role: Role,
+        host: Arc<dyn Host>,
+        control_error: Option<String>,
+        client: Option<reqwest::Client>,
+        state: UpdateState,
+        load_channel: LoadChannel,
+        publish: Publish,
+    ) -> Self {
+        Self {
+            role,
+            host,
+            control_error,
+            check_now: std::sync::atomic::AtomicBool::new(false),
+            client,
+            current: semver::Version::parse(VERSION).expect("Cargo versions are semver"),
+            load_channel,
+            publish,
+            inner: Mutex::new(Inner {
+                state,
+                update: None,
+                package: None,
+                busy: false,
+                checking: false,
+            }),
+            wake: Condvar::new(),
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn emit(&self, app: &AppHandle, state: UpdateState) {
-        if let Err(error) = app.emit(STATE_EVENT, state) {
-            eprintln!("The update state could not reach the window: {error}");
-        }
+    fn emit(&self, state: UpdateState) {
+        (self.publish)(state);
     }
 
-    fn change<T>(&self, app: &AppHandle, change: impl FnOnce(&mut Inner) -> T) -> T {
+    fn change<T>(&self, change: impl FnOnce(&mut Inner) -> T) -> T {
         let (result, state) = {
             let mut inner = self.lock();
             let result = change(&mut inner);
             (result, inner.state.clone())
         };
-        self.emit(app, state);
+        self.emit(state);
         result
     }
 
     fn start<T>(
         &self,
-        app: &AppHandle,
         checking: bool,
         start: impl FnOnce(&mut Inner) -> Result<T, String>,
     ) -> Result<T, String> {
@@ -368,7 +391,7 @@ impl Updates {
             }
             (found, inner.state.clone())
         };
-        self.emit(app, state);
+        self.emit(state);
         found
     }
 
@@ -385,8 +408,8 @@ impl Updates {
         Ok(())
     }
 
-    fn finish(&self, app: &AppHandle, change: impl FnOnce(&mut Inner)) -> UpdateState {
-        let state = self.change(app, |inner| {
+    fn finish(&self, change: impl FnOnce(&mut Inner)) -> UpdateState {
+        let state = self.change(|inner| {
             inner.busy = false;
             inner.checking = false;
             change(inner);
@@ -400,7 +423,7 @@ impl Updates {
         self.lock().state.clone()
     }
 
-    fn poll(self: Arc<Self>, app: &AppHandle) {
+    fn poll(self: Arc<Self>) {
         let mut next_check = Instant::now() + FIRST_CHECK;
         loop {
             let now = Instant::now();
@@ -409,11 +432,11 @@ impl Updates {
                 .swap(false, std::sync::atomic::Ordering::AcqRel);
             if now >= next_check || asked {
                 next_check = now + CHECK_EVERY;
-                let _ = tauri::async_runtime::block_on(self.check(app));
+                let _ = tauri::async_runtime::block_on(self.check());
             }
             let waiting = self.lock().package.is_some();
             if waiting {
-                self.refresh_blocked(app);
+                self.refresh_blocked();
             }
             let until = next_check.saturating_duration_since(Instant::now());
             let inner = self.lock();
@@ -434,7 +457,7 @@ impl Updates {
         }
     }
 
-    fn refresh_blocked(&self, app: &AppHandle) {
+    fn refresh_blocked(&self) {
         let blocked = self.blocked();
         let changed = {
             let mut inner = self.lock();
@@ -443,13 +466,13 @@ impl Updates {
             changed.then(|| inner.state.clone())
         };
         if let Some(state) = changed {
-            self.emit(app, state);
+            self.emit(state);
         }
     }
 
-    pub async fn check(&self, app: &AppHandle) -> Result<UpdateState, String> {
-        let saved = channel::load();
-        let channel = self.start(app, true, |inner| {
+    pub async fn check(&self) -> Result<UpdateState, String> {
+        let saved = (self.load_channel)();
+        let channel = self.start(true, |inner| {
             let channel = match &saved {
                 Ok(saved) => saved.unwrap_or(inner.state.build.channel()),
                 Err(_) => inner.state.channel,
@@ -478,7 +501,7 @@ impl Updates {
                     )
                 }),
         };
-        let state = self.finish(app, |inner| {
+        let state = self.finish(|inner| {
             inner.state.checked_at = now_ms();
             match result {
                 Ok(Some(update)) => {
@@ -530,7 +553,7 @@ impl Updates {
     }
 
     fn reconcile_channel(&self, inner: &mut Inner) -> Result<(), String> {
-        let channel = channel::load()?.unwrap_or(inner.state.build.channel());
+        let channel = (self.load_channel)()?.unwrap_or(inner.state.build.channel());
         if channel == inner.state.channel {
             return Ok(());
         }
@@ -562,8 +585,8 @@ impl Updates {
         inner.state.downgrade = false;
     }
 
-    pub async fn download(self: &Arc<Self>, app: &AppHandle) -> Result<UpdateState, String> {
-        let update = self.start(app, false, |inner| {
+    pub async fn download(self: &Arc<Self>) -> Result<UpdateState, String> {
+        let update = self.start(false, |inner| {
             self.reconcile_channel(inner)?;
             let update = inner
                 .update
@@ -578,7 +601,6 @@ impl Updates {
         })?;
         let progress = {
             let updates = Arc::clone(self);
-            let app = app.clone();
             move |received: u64, total: Option<u64>| {
                 let Some(total) = total.filter(|&total| total > 0) else {
                     return;
@@ -586,7 +608,7 @@ impl Updates {
                 let percent = (received as f64 * 100.0 / total as f64).min(100.0);
                 let shown = updates.lock().state.download_percent;
                 if shown.is_none_or(|shown| percent.floor() > shown.floor()) {
-                    updates.change(&app, |inner| inner.state.download_percent = Some(percent));
+                    updates.change(|inner| inner.state.download_percent = Some(percent));
                 }
             }
         };
@@ -595,7 +617,7 @@ impl Updates {
             None => Err("the update client didn’t start".to_owned()),
         };
         let blocked = result.as_ref().ok().and_then(|_| self.blocked());
-        let state = self.finish(app, |inner| {
+        let state = self.finish(|inner| {
             inner.state.download_percent = None;
             match result {
                 Ok(package) => {
@@ -620,8 +642,8 @@ impl Updates {
         }
     }
 
-    pub fn install(&self, app: &AppHandle) -> Result<(), String> {
-        let (package, version) = self.start(app, false, |inner| {
+    pub fn install(&self) -> Result<(), String> {
+        let (package, version) = self.start(false, |inner| {
             self.reconcile_channel(inner)?;
             let found = inner
                 .package
@@ -633,7 +655,7 @@ impl Updates {
             Ok(found)
         })?;
         if let Some(reason) = self.blocked() {
-            self.finish(app, |inner| {
+            self.finish(|inner| {
                 inner.state.install_blocked = Some(reason.clone())
             });
             return Err(reason);
@@ -642,7 +664,7 @@ impl Updates {
         let launch: Launch = Box::new(move || install::launch(&version, &package, arguments));
         let result = self.host.install(launch);
         if let Err(error) = &result {
-            self.finish(app, |inner| {
+            self.finish(|inner| {
                 inner.state.status = Status::Error;
                 inner.state.error_context = Some(Action::Install);
                 inner.state.message = Some(error.clone());
@@ -651,8 +673,8 @@ impl Updates {
         result
     }
 
-    pub fn set_channel(&self, app: &AppHandle, channel: Channel) -> Result<UpdateState, String> {
-        self.change(app, |inner| {
+    pub fn set_channel(&self, channel: Channel) -> Result<UpdateState, String> {
+        self.change(|inner| {
             if inner.busy {
                 return Err("Wait for the update to finish before changing the channel.".into());
             }
@@ -667,5 +689,131 @@ impl Updates {
             }
             Ok(inner.state.clone())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Action, Arc, Build, Channel, Host, Launch, Mutex, Role, Status, UpdateState, Updates, VERSION};
+    use std::{panic::AssertUnwindSafe, sync::mpsc};
+
+    const RECORDING: &str = "BattlePlan Recorder is recording.";
+
+    #[derive(Default)]
+    struct App {
+        while_blocked: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    }
+
+    impl Host for App {
+        fn install_blocked(&self) -> Option<String> {
+            let meanwhile = self.while_blocked.lock().unwrap().take();
+            if let Some(meanwhile) = meanwhile {
+                meanwhile();
+            }
+            Some(RECORDING.to_owned())
+        }
+
+        fn install(&self, _: Launch) -> Result<(), String> {
+            unreachable!("no install in these tests")
+        }
+
+        fn close_for_update(&self) -> Result<(), String> {
+            unreachable!("no close in these tests")
+        }
+
+        fn write_preference(&self, _: &std::path::Path, _: &[u8]) -> std::io::Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    enum First {
+        Hold(mpsc::Sender<()>, mpsc::Receiver<()>),
+        Panic,
+    }
+
+    fn updates(host: Arc<App>, first: Option<First>) -> Updates {
+        let first = Mutex::new(first);
+        let publish = Box::new(move |_: UpdateState| {
+            let first = first.lock().unwrap().take();
+            match first {
+                Some(First::Hold(entered, go)) => {
+                    entered.send(()).unwrap();
+                    go.recv().unwrap();
+                }
+                Some(First::Panic) => panic!("the window went away mid-update"),
+                None => {}
+            }
+        });
+        let state = UpdateState {
+            enabled: true,
+            status: Status::Idle,
+            channel: Channel::Stable,
+            build: Build::Stable,
+            current_version: VERSION,
+            available_version: None,
+            downloaded_version: None,
+            releases: Vec::new(),
+            unlisted: false,
+            download_percent: None,
+            checked_at: None,
+            message: None,
+            error_context: None,
+            install_blocked: None,
+            channel_warning: None,
+            downgrade: false,
+        };
+        Updates::new(Role::Dashboard, host, None, None, state, || Ok(Some(Channel::Stable)), publish)
+    }
+
+    #[test]
+    fn a_channel_chosen_during_a_background_check_is_kept_and_the_old_feeds_answer_is_dropped() {
+        let (entered, checking) = mpsc::channel();
+        let (go, held) = mpsc::channel();
+        let updates = updates(Arc::default(), Some(First::Hold(entered, held)));
+        std::thread::scope(|scope| {
+            let check = scope.spawn(|| tauri::async_runtime::block_on(updates.check()));
+            checking.recv().unwrap();
+            let chosen = scope.spawn(|| updates.set_channel(Channel::Nightly));
+            while !chosen.is_finished() && updates.state().channel != Channel::Nightly {
+                std::thread::yield_now();
+            }
+            go.send(()).unwrap();
+            assert!(chosen.join().unwrap().is_ok(), "a background check doesn’t refuse a channel change");
+            let _ = check.join().unwrap();
+        });
+        let state = updates.state();
+        assert_eq!(state.channel, Channel::Nightly, "the check doesn’t put back the channel it started on");
+        assert_eq!((state.status, state.message), (Status::Idle, None), "the stable feed’s answer isn’t shown as nightly’s");
+    }
+
+    #[test]
+    fn an_install_block_read_while_the_download_was_dropped_isnt_written_back() {
+        let host = Arc::new(App::default());
+        let updates = Arc::new(updates(Arc::clone(&host), None));
+        {
+            let mut inner = updates.lock();
+            inner.package = Some(Arc::new(vec![0]));
+            inner.state.downloaded_version = Some("9.0.0".into());
+            inner.state.status = Status::Downloaded;
+        }
+        let dropping = Arc::downgrade(&updates);
+        *host.while_blocked.lock().unwrap() = Some(Box::new(move || {
+            dropping.upgrade().unwrap().set_channel(Channel::Nightly).unwrap();
+        }));
+        updates.refresh_blocked();
+        let state = updates.state();
+        assert_eq!(state.downloaded_version, None, "changing the channel dropped the download");
+        assert_eq!(state.install_blocked, None, "no install is blocked once nothing is waiting to install");
+    }
+
+    #[test]
+    fn a_check_that_panics_frees_the_updater_and_says_it_stopped() {
+        let updates = updates(Arc::default(), Some(First::Panic));
+        let panicked = std::panic::catch_unwind(AssertUnwindSafe(|| tauri::async_runtime::block_on(updates.check())));
+        assert!(panicked.is_err());
+        let state = updates.state();
+        assert_eq!((state.status, state.error_context), (Status::Error, Some(Action::Check)), "the check is shown as stopped, not still checking");
+        let inner = updates.lock();
+        assert!(!inner.busy && !inner.checking, "a later check, download or install isn’t refused or left waiting");
     }
 }
