@@ -40,6 +40,20 @@ function makeBucket(firstHour: number, lastHour: number, v: number, minV = v, ma
   };
 }
 
+function makeTiledLine(tag: string, buckets: readonly ChartBucket[]): TiledLine {
+  const from = buckets[0]?.firstHour ?? 0;
+  const to = buckets[buckets.length - 1]?.lastHour ?? from;
+  return {
+    tag,
+    head: 'h',
+    decimals: 0,
+    summary: { from, to, width: buckets.length, buckets: [...buckets], tiles: { binHours: 96, valueAt: () => null } },
+    missing: [],
+    parts: [],
+    marks: null,
+  };
+}
+
 function mockCanvas(width: number, height: number): { readonly canvas: OffscreenCanvas; readonly ctx: Canvas2D; readonly ops: string[] } {
   const ops: string[] = [];
   const grad = { addColorStop: () => {} };
