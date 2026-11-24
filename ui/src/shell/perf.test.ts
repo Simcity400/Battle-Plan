@@ -29,6 +29,7 @@ test('review 5 finding 18: a picture matches its exact read in displayed order, 
   const exact = new Map([['A:v', '1'], ['B:v', '2']]);
   assert.equal(pictureError('table', shown, { values: exact }), null, 'unordered reads compare by key');
   assert.match(pictureError('table', shown, { values: exact, ordered: true }) ?? '', /order/, 'a table compares in the order it shows');
+  assert.match(pictureError('heat-matrix', [...shown, { row: 'A', key: 'A:v', value: '1' }], { values: exact, ordered: false }) ?? '', /twice/, 'R3-S12: an unordered comparison refuses a painted key shown twice, even with its right value');
   const live = panelAuditRows('wargoals', { goals: [], justifications: [] }, new Map([['J1\u0000points', 5]]));
   assert.equal(pictureError('page', live, { values: new Map(live.map(row => [row.key, row.value])) }), null, 'live cells keep their identity');
   const owned = panelAuditRows('wargoals', { goals: [{ handle: 1, actor: 'GER', recipient: 'POL', name: 'Conquer', available: true, expires: null }], justifications: [] }, null);

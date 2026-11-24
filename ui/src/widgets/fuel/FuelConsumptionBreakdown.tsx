@@ -12,7 +12,7 @@ import type { Span } from '../../charts/series';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import WindowedRows from '../../charts/WindowedRows';
 import type { WidgetRuntime } from '../../dashboard/definitions';
-import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
+import type { BoundTrack, WidgetBase } from '../../dashboard/model';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
@@ -50,7 +50,7 @@ const familyStructure = (reply: CountryFuelReply) => JSON.stringify([reply.consu
 
 export default function FuelConsumptionBreakdown({ runtime, gate, widget, track, tag, hour, follows, within, selection, onSelection, level, onLevel, digits, campaign,
   aliases, detailHours, history, ...chart }: {
-  runtime: WidgetRuntime; gate: Gate; widget: WidgetSpec; track: BoundTrack; tag: string; hour: number | null; follows: boolean; digits: number; campaign: string;
+  runtime: WidgetRuntime; gate: Gate; widget: WidgetBase; track: BoundTrack; tag: string; hour: number | null; follows: boolean; digits: number; campaign: string;
   aliases?: ReadonlyMap<string, readonly Span[]>; history: CountryAt['history'];
   selection: FuelConsumptionSelection | null; onSelection: (selection: FuelConsumptionSelection | null) => void;
   level: FuelConsumptionLevel | null; onLevel: (level: FuelConsumptionLevel | null) => void;

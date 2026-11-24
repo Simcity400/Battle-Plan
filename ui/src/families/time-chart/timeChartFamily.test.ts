@@ -19,7 +19,7 @@ import { type TimeChartBinding } from './declaration.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from './hitTest.ts';
 import { createTimeChartGestures, parseTimeChartHit, timeChartHostAdapter } from './hostAdapter.ts';
-import { timeChartLaneView } from './laneView.ts';
+import { timeChartLane } from './laneView.ts';
 import { assertFreshPaint, assertQuietFrames, LANE_THEME, LaneTransport } from '../laneRuntime.fixture.ts';
 import { SceneTiles } from '../sceneTiles.ts';
 import { formatChartAxisValue, hoverTimeChartLayout, layoutTimeChart } from './layout.ts';
@@ -34,6 +34,7 @@ import { navyLinesProjection } from '../../widgets/navy-size/navyLinesProjection
 import { armyLinesProjection } from '../../widgets/army-size/armyLinesProjection.ts';
 import { supplyHealthProjection } from '../../widgets/supply-health/supplyHealthProjection.ts';
 import { rulingPartyProjection } from '../../widgets/ruling-party/rulingPartyProjection.ts';
+import { createLaneView } from '../laneRuntime.ts';
 import { drawTimeChart } from './painter.ts';
 
 const measure: MeasureText = (text: string) => text.length * 6.5;
@@ -117,7 +118,7 @@ function laneOn(created: { readonly ctx: Canvas2D }) {
     constructor(width: number, height: number) { this.width = width; this.height = height; }
     getContext() { return created.ctx; }
   };
-  return timeChartLaneView(() => {});
+  return createLaneView(timeChartLane, () => {});
 }
 
 describe('time-chart BoundedSeries & Foundation C integration', () => {
@@ -864,9 +865,9 @@ describe('time-chart picture authority', () => {
       tiledBySource: { main: { GER: tiled(first, last) } },
     } satisfies TimeChartBinding);
     const surface = { width: 600, height: 240, dpr: 1 };
-    assert.equal(assertQuietFrames(() => timeChartLaneView(() => {}), { label: 'chart', binding: bound(10, 30), hour, speed: 24 }, 24, surface), hour + 1, 'a playing chart changes every hour');
+    assert.equal(assertQuietFrames(() => createLaneView(timeChartLane, () => {}), { label: 'chart', binding: bound(10, 30), hour, speed: 24 }, 24, surface), hour + 1, 'a playing chart changes every hour');
     const held = bound(10, 30);
-    assertFreshPaint(() => timeChartLaneView(() => {}), [
+    assertFreshPaint(() => createLaneView(timeChartLane, () => {}), [
       { label: 'held', binding: held, hour, check: true },
       { label: 'earlier', binding: held, hour: hour - 20, speed: 24, check: true },
       { label: 'back to the head', binding: held, hour, check: true },
@@ -1043,7 +1044,7 @@ describe('several countries, one measure', () => {
       { tags: [], top: 3, membership: null, decimals: 0, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
     assert.deepEqual(model.series.map(s => s.id), ['A07', 'A01', 'A03']);
     assert.equal(model.series.find(s => s.id === 'A07')!.exact, null);
-    assert.deepEqual(model.series.find(s => s.id === 'A01')!.exact, { hour: base + 10, value: 1234 });
+    assert.deepEqual(model.series.find(s => s.id === 'A01')!.exact, { hour: base + 10, value: 1234, raw: 1234n, denominator: 1n });
     assert.deepEqual(model.series.find(s => s.id === 'A03')!.exact, { hour: base + 10, value: null, reason: 'Country did not exist' });
     assert.equal(model.series[0]!.endLabel?.value, '7,000');
   });
@@ -1082,6 +1083,39 @@ describe('several countries, one measure', () => {
     const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', lines]]), hovers }),
       { tags, top: null, membership, decimals: 0, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
     assert.equal(model.series.find(s => s.id === 'A10')!.exact, null, 'not a member at the hovered hour: no reading shown');
+  });
+
+  it('names, flags and colours a historical hit by the identity at the hit hour, never the playhead’s', () => {
+    const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: 'b', content: 0 }, [base, base + 95]);
+    index.setFacts({
+      branchId: 'b',
+      known: [[base, base + 95]],
+      names: ['Germany', 'German Reich', 'Italy'],
+      reasons: [],
+      flags: [{ keys: ['GER', null, null], reasons: [null, null, null] }, { keys: ['GER_fascism', null, null], reasons: [null, null, null] }, { keys: ['ITA', null, null], reasons: [null, null, null] }],
+      countries: [
+        { tag: 'A07', runs: [[base, 0, 0x3366cc, -1, 0], [base + 30, 1, 0xcc3333, -1, 1]] },
+        { tag: 'A01', runs: [[base, 2, 0x33aa55, -1, 2]] },
+      ],
+      warnings: [],
+    });
+    const named = new Map(['A07', 'A01'].map(tag => [tag, lines.get(tag)!]));
+    const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', named]]), identity: createSnapshotIdentityProvider(index) }),
+      { tags: ['A07', 'A01'], top: null, membership: null, decimals: 0, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
+    const layout = layoutTimeChart(model, 600, 220, FONT, measure);
+    const item = (at: number) => deriveTimeChartTooltip(model, layout, `plot:${at}`)?.payload?.items?.find(entry => entry.value === '7,000');
+    const early = item(base + 10)!;
+    const now = item(hour)!;
+    assert.equal(early.label, 'Germany', 'an earlier hit is named as the country was named then');
+    assert.equal(now.label, 'German Reich');
+    assert.notEqual(early.swatch, now.swatch, 'and coloured as it was coloured then');
+    assert.equal(model.series[0]!.endLabel?.name, 'German Reich', 'the end label stays at the displayed hour');
+
+    const { ctx } = mockCanvas(600, 220);
+    const strokes: string[] = [];
+    (ctx as unknown as { stroke: () => void }).stroke = function (this: { strokeStyle: string }) { strokes.push(this.strokeStyle); };
+    drawTimeChart(ctx, model, layout, LANE_THEME, null, 1);
+    assert.ok(strokes.includes(early.swatch!) && strokes.includes(now.swatch!), 'the line is drawn in each stretch’s own colour');
   });
 });
 
@@ -1341,5 +1375,169 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     assert.equal(narrowLabel.value, '0.36', 'value never truncates before the name');
     assert.ok(narrowLabel.name === null || narrowLabel.name.endsWith('…'), 'narrow end-label truncates or drops name before clipping value');
     assert.ok(narrowLabel.x + narrowLabel.width <= 320, 'fitted end-label stays inside the chart width');
+  });
+
+  it('formats series head, end label, tooltip, and audit from the exact recorded integer and scale without float drift', () => {
+    const base = Math.floor(H1936 / 96) * 96;
+    const hour = base + 90;
+    const hoverAt = base + 50;
+
+    const supplyAnswer = parseFollowed(message(hour, [{
+      id: 1,
+      answer: { keys: [1n], names: ['GER'], columns: 1, values: [14_500n], states: [0] },
+    }])).answers[0]!.answer;
+    const supplyModel = supplyHealthProjection.project(createBoundedReadView({
+      hour,
+      answers: new Map([['inSupply', supplyAnswer]]),
+      hovers: new Map([['hover', {
+        hour: hoverAt,
+        data: {
+          branchId: '1',
+          hour: hoverAt,
+          family: { kind: 'country-supply-health', measure: 'divisions' },
+          measures: [
+            { name: 'divisions', decimals: 0 },
+            { name: 'inSupply', decimals: 0 },
+            { name: 'strained', decimals: 0 },
+            { name: 'noSupply', decimals: 0 },
+            { name: 'inSupplyShare', decimals: 5 },
+            { name: 'strainedShare', decimals: 5 },
+            { name: 'noSupplyShare', decimals: 5 },
+          ],
+          rows: [{
+            country: 'GER',
+            readings: [
+              { hour: hoverAt, run: { valueRaw: '100' }, missing: null },
+              { hour: hoverAt, run: { valueRaw: '14' }, missing: null },
+              { hour: hoverAt, run: { valueRaw: '3' }, missing: null },
+              { hour: hoverAt, run: { valueRaw: '83' }, missing: null },
+              { hour: hoverAt, run: { valueRaw: '14500' }, missing: null },
+              { hour: hoverAt, run: { valueRaw: '2850' }, missing: null },
+              { hour: hoverAt, run: { valueRaw: '82650' }, missing: null },
+            ],
+          }],
+          warnings: [],
+        },
+      }]]),
+    }), { subject: 'GER', extent: [base, base + 95], gaps: [] });
+    const inSupplyBand = supplyModel.stack!.bands.find(b => b.id === 'inSupply')!;
+    assert.equal(inSupplyBand.endLabel?.value, '15%', '14,500/100,000 exact share prints 15%, not float 14%');
+    assert.equal(supplyModel.auditRows?.find(r => r.row === 'inSupply')?.value, '15%');
+    assert.equal(supplyModel.hoverDetail?.items.find(i => i.label === 'In supply')?.value, '15% · 14 divisions');
+    assert.equal(supplyModel.hoverDetail?.items.find(i => i.label === 'Strained')?.value, '2.9% · 3 divisions');
+
+    const rulingHistory = {
+      branchId: '1',
+      tag: 'GER',
+      asked: 'GER',
+      decimals: 5,
+      ideologies: [{ token: 'fascism', name: 'Fascist', color: [150, 75, 0] as [number, number, number] }],
+      parties: [{ token: 'fascism', parts: [{ part: 0, firstHour: base, lastHour: hour }] }],
+      ruling: [{ token: 'fascism', firstHour: base, lastHour: hour, startsSegment: true }],
+      elections: [],
+      leaders: [],
+      people: [],
+      ideologyTypes: [],
+      partyNames: ['NSDAP'],
+      partyNameRuns: [{ name: 0, firstHour: base, lastHour: hour }],
+      unobserved: [],
+      warnings: [],
+    };
+    const rulingModel = rulingPartyProjection.project(createBoundedReadView({
+      hour,
+      panels: new Map([['popularity', {
+        decimals: 5,
+        states: [{ country: 'GER', part: '0', hour, run: { valueRaw: '1450000' }, missing: null }],
+      }]]),
+      hovers: new Map([['popularityHover', {
+        hour: hoverAt,
+        data: {
+          decimals: 5,
+          states: [{ country: 'GER', part: '0', hour: hoverAt, run: { valueRaw: '285000' }, missing: null }],
+        },
+      }]]),
+    }), { subject: 'GER', history: rulingHistory, extent: [base, base + 95], gaps: [], surface: '#111111', showChanges: false, showLeaders: false });
+    assert.equal(rulingModel.stack!.bands[0]!.endLabel?.value, '15%', '1,450,000/10,000,000 popularity prints 15%, not float 14%');
+    assert.equal(rulingModel.auditRows?.find(r => r.row === 'fascism')?.value, '15%');
+    assert.equal(rulingModel.hoverDetail?.items.find(i => i.label.startsWith('Fascist'))?.value, '2.9%');
+
+    const fuelAnswer = parseFollowed(message(hour, [{
+      id: 1,
+      answer: { keys: [1n], names: ['GER'], columns: 1, values: [597_999n * 32_768n + 20_000n], states: [0] },
+    }])).answers[0]!.answer;
+    const tinyFuelAnswer = parseFollowed(message(hour, [{
+      id: 1,
+      answer: { keys: [1n], names: ['GER'], columns: 1, values: [1n], states: [0] },
+    }])).answers[0]!.answer;
+    const fuelModel = fuelProjection.project(createBoundedReadView({
+      hour,
+      answers: new Map([['fuel', fuelAnswer], ['capacity', tinyFuelAnswer]]),
+    }), { tag: 'GER', capacity: true, area: true, digits: 0, extent: [base, base + 95], gaps: [] });
+    assert.equal(fuelModel.series[0]!.endLabel?.value, '597K', '597,999.61 fuel truncates to 597K, never rounds to 598K');
+    assert.equal(fuelModel.series[1]!.endLabel?.value, '<1', 'non-zero 1/32,768 fuel prints <1, never 0');
+    assert.equal(fuelModel.auditRows?.find(r => r.row === 'fuel')?.value, '597K');
+    assert.equal(fuelModel.auditRows?.find(r => r.row === 'capacity')?.value, '<1');
+
+    const ppLine = { ...makeTiledLine('GER', [makeBucket(base, base + 95, 10)]), decimals: 5 };
+    const ppAnswer = parseFollowed(message(hour, [{
+      id: 1,
+      answer: { keys: [1n], names: ['GER'], columns: 1, values: [999_999_999_999_999_999n], states: [0] },
+    }])).answers[0]!.answer;
+    const ppModel = politicalPowerProjection.project(createBoundedReadView({
+      hour,
+      answers: new Map([['main', ppAnswer]]),
+      series: new Map([['main', new Map([['GER', boundTiledSeries(ppLine, displayedHour(hour), {})]])]]),
+      hovers: new Map([['hover', {
+        hour: hoverAt,
+        data: { decimals: 5, states: [{ country: 'GER', hour: hoverAt, run: { valueRaw: '999999999999999999' }, missing: null }] },
+      }]]),
+    }), { tags: ['GER'], extent: [base, base + 95], gaps: [], surface: '#111111' });
+    assert.equal(ppModel.series[0]!.endLabel?.value, '9.99T', 'exact integer PP preserves digits where float rounds up to 10T');
+    assert.equal(ppModel.auditRows?.find(r => r.row === 'GER')?.value, '9.99T');
+    const ppHover = deriveTimeChartTooltip(ppModel, layoutTimeChart(ppModel, 600, 260, FONT, measure), `plot:${hoverAt}`);
+    assert.equal(ppHover?.payload?.items?.[0]?.value, '9,999,999,999,999');
+
+    const cpModel = commandPowerProjection.project(createBoundedReadView({
+      hour,
+      panels: new Map([
+        ['main', { decimals: 5, states: [{ country: 'GER', hour, run: { valueRaw: '999999999999999999' }, missing: null }] }],
+        ['ceiling', { decimals: 5, states: [{ country: 'GER', hour, run: { valueRaw: '2260000' }, missing: null }] }],
+      ]),
+      series: new Map([['main', new Map([['GER', boundTiledSeries(ppLine, displayedHour(hour), {})]])]]),
+      hovers: new Map([['hover', {
+        hour: hoverAt,
+        data: { decimals: 5, states: [{ country: 'GER', hour: hoverAt, run: { valueRaw: '999999999999999999' }, missing: null }] },
+      }]]),
+    }), { tags: ['GER'], extent: [base, base + 95], gaps: [], surface: '#111111', showCeiling: true, showSpendTicks: false });
+    assert.equal(cpModel.series[0]!.endLabel?.value, '9.99T');
+    assert.equal(cpModel.series[1]!.endLabel?.value, '22');
+    const cpHover = deriveTimeChartTooltip(cpModel, layoutTimeChart(cpModel, 600, 260, FONT, measure), `plot:${hoverAt}`);
+    assert.equal(cpHover?.payload?.items?.[0]?.value, '9,999,999,999,999');
+
+    const stabModel = stabilityProjection.project(createBoundedReadView({
+      hour,
+      panels: new Map([
+        ['stability', { decimals: 5, states: [{ country: 'GER', hour, run: { valueRaw: '99999999999999999' }, missing: null }] }],
+        ['warSupport', { decimals: 5, states: [{ country: 'GER', hour, run: { valueRaw: '29000' }, missing: null }] }],
+      ]),
+    }), { tags: ['GER'], extent: [base, base + 95], gaps: [], surface: '#111111', showStability: true, showWarSupport: true, zoom: false });
+    assert.equal(stabModel.series[0]!.endLabel?.value, '99,999,999,999,999.999%', 'exact stability percent keeps every digit without float rounding');
+    assert.equal(stabModel.series[1]!.endLabel?.value, '29%');
+
+    const armyModel = armyLinesProjection.project(createBoundedReadView({
+      hour,
+      panels: new Map([['main', {
+        measures: [{ decimals: 5 }],
+        rows: [{ country: 'GER', readings: [{ country: 'GER', run: { valueRaw: '999999999999999999' }, missing: null }] }],
+      }]]),
+      hovers: new Map([['hover', {
+        hour: hoverAt,
+        data: { decimals: 5, states: [{ country: 'GER', hour: hoverAt, run: { valueRaw: '999999999999999999' }, missing: null }] },
+      }]]),
+    }), { tags: ['GER'], top: null, decimals: 5, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
+    assert.equal(armyModel.series[0]!.endLabel?.value, '9.99T');
+    assert.equal(armyModel.auditRows?.find(r => r.row === 'GER')?.value, '9.99T');
+    const armyHover = deriveTimeChartTooltip(armyModel, layoutTimeChart(armyModel, 600, 260, FONT, measure), `plot:${hoverAt}`);
+    assert.equal(armyHover?.payload?.items?.[0]?.value, '9,999,999,999,999');
   });
 });

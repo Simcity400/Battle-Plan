@@ -1,4 +1,4 @@
-import type { WidgetRenderer } from '../../dashboard/definitions';
+import type { FamilyViewRenderer } from '../../dashboard/definitions';
 import NavySizeWidget from './NavySizeWidget';
 
-export default { render: NavySizeWidget } satisfies WidgetRenderer;
+export default { render: NavySizeWidget } satisfies FamilyViewRenderer;

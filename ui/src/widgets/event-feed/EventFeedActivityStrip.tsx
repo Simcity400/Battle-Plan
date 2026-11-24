@@ -1,28 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { validateLogCounts, type BoundFacetFilter } from '../../charts/log/logSource.ts';
 import { formatDay } from '../../dashboard/calendar.ts';
 import { validateProductReply } from '../../dashboard/client.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
-import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
+import type { BoundTrack, WidgetBase } from '../../dashboard/model';
 import { useGate } from '../../dashboard/regionGate.ts';
 import { productRequest } from '../../dashboard/request.ts';
-import type { FeedKindCode, MembershipRun, MissingSpan } from '../../generated/dashboard';
+import { groupSelection } from '../../families/groupSelection.ts';
+import type { EventFeedActivityReply, EventFeedKindInfo, MissingSpan } from '../../generated/dashboard';
 import { CATEGORIES } from './definition.ts';
-import { feedFacets } from './eventFeedData.ts';
 import './eventFeedActivityStrip.css';
 
 const STRIP_WINDOW_HOURS = 60 * 24;
 
 export interface EventFeedActivityStripProps {
-  readonly widget: WidgetSpec;
+  readonly widget: WidgetBase;
   readonly track: BoundTrack | undefined;
   readonly runtime: WidgetRuntime;
   readonly active: boolean;
   readonly categories: readonly string[];
   readonly excludedKinds?: readonly string[];
-  readonly kinds: readonly FeedKindCode[] | null;
-  readonly scopeRuns?: readonly MembershipRun[];
+  readonly kinds: readonly EventFeedKindInfo[] | null;
   readonly from: number | null;
   readonly pinnedHour?: number | null;
 }
@@ -57,7 +55,6 @@ export default function EventFeedActivityStrip({
   categories,
   excludedKinds,
   kinds,
-  scopeRuns,
   from,
   pinnedHour,
 }: EventFeedActivityStripProps) {
@@ -81,10 +78,9 @@ export default function EventFeedActivityStrip({
     const bound = gate.span(stripFrom, displayedHour);
     if (!bound) return null;
     const binHours = stripBinHours(bound.lastHour - bound.firstHour);
-    const scopeKey = scopeRuns ? scopeRuns.map(r => `${r.tag}:${r.firstHour}:${r.lastHour}`).join(',') : 'all';
     const exKey = excludedKinds?.length ? [...excludedKinds].sort().join(',') : '';
-    return JSON.stringify([track.source.id, track.source.revision, track.branch.id, bound.firstHour, bound.lastHour, binHours, categories, exKey, scopeKey]);
-  }, [track, active, displayedHour, kinds, categories, excludedKinds, scopeRuns, from, gate]);
+    return JSON.stringify([track.source.id, track.source.revision, track.branch.id, bound.firstHour, bound.lastHour, binHours, categories, exKey, widget.countries]);
+  }, [track, active, displayedHour, kinds, categories, excludedKinds, from, gate, widget.countries]);
 
   useEffect(() => {
     if (!track || !queryKey || displayedHour === null || !kinds) return;
@@ -93,75 +89,51 @@ export default function EventFeedActivityStrip({
     const bound = gate.span(stripFrom, displayedHour);
     if (!bound) return;
     const binHours = stripBinHours(bound.lastHour - bound.firstHour);
-    const excludedSet = excludedKinds?.length ? new Set(excludedKinds) : undefined;
-    const asks: { readonly category: string; readonly facets: BoundFacetFilter[] }[] = [];
-    for (const cat of CATEGORIES) {
-      if (!categories.includes(cat.value)) continue;
-      const facets = feedFacets(kinds, new Set([cat.value]), excludedSet);
-      if (facets) asks.push({ category: cat.value, facets });
-    }
-    if (!asks.length) {
+    const asked = CATEGORIES.filter(cat => categories.includes(cat.value)).map(cat => cat.value);
+    if (!asked.length) {
       setStrip(null);
       return;
     }
-    const gatedScope = scopeRuns?.flatMap(run => {
-      const span = gate.span(run.firstHour, run.lastHour);
-      return span ? [{ tag: run.tag, firstHour: span.firstHour, lastHour: span.lastHour }] : [];
+    const cutoff = gate.recorded(bound.lastHour);
+    if (cutoff === null) return;
+    const group = groupSelection(widget.countries);
+    const countries = widget.countries.kind === 'tags' ? widget.countries.tags : null;
+    const request = productRequest({
+      sourceId: track.source.id,
+      revision: track.source.revision,
+      product: 'event-feed-activity',
+      params: {
+        branchId: track.branch.id,
+        hour: cutoff,
+        from: bound.firstHour,
+        binHours,
+        categories: asked,
+        ...(excludedKinds?.length ? { exclude: excludedKinds } : {}),
+        ...(group ? { group } : countries ? { countries } : {}),
+      },
     });
     const controller = new AbortController();
-    Promise.all(
-      asks.map(async ask => {
-        const request = productRequest({
-          sourceId: track.source.id,
-          revision: track.source.revision,
-          product: 'log-counts',
-          params: {
-            branchId: track.branch.id,
-            log: 'feed-events',
-            facets: ask.facets,
-            from: bound.firstHour,
-            to: bound.lastHour,
-            binHours,
-            ...(gatedScope ? { scope: gatedScope } : {}),
-          },
-        });
-        const reply = await runtime.client.product(request, controller.signal);
-        const data = validateProductReply(reply, request).data;
-        return { category: ask.category, counts: validateLogCounts(data, bound.firstHour, bound.lastHour) };
-      }),
-    ).then(results => {
+    runtime.client.product(request, controller.signal).then(reply => {
       if (controller.signal.aborted) return;
-      const first = results[0]!.counts;
-      const binCount = first.counts.length;
-      const missing: MissingSpan[] = [];
-      const seenMissing = new Set<string>();
-      for (const res of results) {
-        for (const span of res.counts.missing) {
-          const clippedLast = Math.min(span.lastHour, bound.lastHour);
-          if (span.firstHour > bound.lastHour || clippedLast < bound.firstHour) continue;
-          const k = `${span.firstHour}:${clippedLast}:${span.reason}`;
-          if (!seenMissing.has(k)) {
-            seenMissing.add(k);
-            missing.push({ firstHour: Math.max(span.firstHour, bound.firstHour), lastHour: clippedLast, reason: span.reason });
-          }
-        }
-      }
+      const data = validateProductReply(reply, request).data as EventFeedActivityReply;
+      const binCount = Math.max(0, Math.floor((bound.lastHour - data.firstHour) / data.binHours) + 1);
       lastKeyRef.current = queryKey;
       setStrip({
         key: queryKey,
-        firstHour: first.firstHour,
+        firstHour: data.firstHour,
         lastHour: bound.lastHour,
-        binHours: first.binHours,
+        binHours: data.binHours,
         binCount,
-        series: results.map(res => ({
-          category: res.category,
-          counts: res.counts.counts,
-        })),
-        missing,
+        series: data.lines.map(line => {
+          const counts = new Array<number>(binCount).fill(0);
+          for (const [at, count] of line.bins) if (at < binCount) counts[at] = count;
+          return { category: line.category, counts };
+        }),
+        missing: data.missing,
       });
     }).catch(() => {});
     return () => controller.abort();
-  }, [track, runtime.client, queryKey, displayedHour, kinds, categories, excludedKinds, scopeRuns, from, gate]);
+  }, [track, runtime.client, queryKey, displayedHour, kinds, categories, excludedKinds, from, gate, widget.countries]);
 
   if (!strip || strip.binCount === 0) return null;
 
