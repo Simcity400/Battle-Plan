@@ -1,5 +1,5 @@
 import type { LogRow } from '../../charts/log/logData';
-import { beforeBreak, breakAfter, dayOf, daysBetween, daysText, edgesAt, occurrenceItem, occurrenceMatches } from '../event-feed/scriptOccurrences.ts';
+import { beforeBreak, breakAfter, dayOf, daysBetween, daysText, edgesAt, occurrenceItem } from '../event-feed/scriptOccurrences.ts';
 import type { RecordingBreak } from '../event-feed/scriptOccurrences';
 import { plainScripted } from '../event-feed/scriptedGaps.ts';
 import type { EventFeedItem, ScriptEdge, ScriptOccurrence } from '../../generated/dashboard';
@@ -39,13 +39,11 @@ export function choiceCard(occurrence: ScriptOccurrence | null): ChoiceCard | nu
   return { occurrence, item: occurrenceItem(occurrence), first, fired, country, sender };
 }
 
-export function choiceAt(row: LogRow<ChoiceCard | null>, hour: number, breaks: readonly RecordingBreak[], awaiting: boolean,
-  country: ((tag: string, hour: number) => boolean) | null): LogRow<ChoiceAt> | null {
+export function choiceAt(row: LogRow<ChoiceCard | null>, hour: number, breaks: readonly RecordingBreak[]): LogRow<ChoiceAt> | null {
   const card = row.item;
-  if (!card || (row.revealedHour ?? row.hour) > hour || (country && !occurrenceMatches(card.occurrence, country))) return null;
+  if (!card || (row.revealedHour ?? row.hour) > hour) return null;
   const choice = edgesAt(card.occurrence.edges, hour).filter(isChoice).at(-1) ?? null;
   const pause = choice ? null : breakAfter(breaks, row.revealedHour ?? row.hour, hour);
-  if (awaiting && (choice || pause)) return null;
   return { ...row, item: { card, hour, choice, pause } };
 }
 
