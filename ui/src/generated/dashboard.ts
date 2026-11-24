@@ -1014,7 +1014,11 @@ countedFrom: number | null, available: boolean, observed: Array<HourSpan>,
 /**
  * Reads that may miss events: read only in part, or holding a caller whose membership in aircraft bombing is unknown.
  */
-incomplete: Array<HourSpan>, countries: Array<MilitaryAirCountry>, openings: Array<MilitaryAirOpening>, parts: Array<MilitaryAirPart>, regions: Array<MilitaryAirName>, buildings: Array<MilitaryAirName>, notes: Array<MilitaryAirNote>, warnings: Array<string>, };
+incomplete: Array<HourSpan>,
+/**
+ * Hours whose events were read but whose country links were not, so no event can be credited to a country.
+ */
+unjoined: Array<HourSpan>, countries: Array<MilitaryAirCountry>, openings: Array<MilitaryAirOpening>, parts: Array<MilitaryAirPart>, regions: Array<MilitaryAirName>, buildings: Array<MilitaryAirName>, notes: Array<MilitaryAirNote>, warnings: Array<string>, };
 export type MilitaryAirAtParams = { branchId: string, family: MilitaryAirFamily, regions: Array<number>, causes: Array<number>,
 /**
  * A range starts at the events' own game hour; the timeline's first observed hour when absent.
