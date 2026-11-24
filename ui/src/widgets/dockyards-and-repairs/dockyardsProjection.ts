@@ -22,9 +22,9 @@ const portName = (port: RepairPort): Value<string> => valueFromNullable(port.nam
 const [NAME, STRENGTH, PRIORITY, DOCKYARDS] = COLUMNS;
 
 const DOCK_COLUMNS: readonly DeclarativeColumnSpec<DockRow, Record<string, never>>[] = [
-  { ...NAME!, priority: 0, text: true, hideable: false, widest: ['Wilhelmshaven'],
+  { ...NAME!, priority: 0, text: true, hideable: false, widest: ['Wilhelmshaven harbour'],
     value: row => row.kind === 'port' ? portName(row.port) : knownValue(shipLabel(row.ship).name) },
-  { ...STRENGTH!, priority: 1, numeric: true, format: PERCENT, widest: ['100%'],
+  { ...STRENGTH!, priority: 1, numeric: true, format: PERCENT, widest: ['100.0%'],
     value: (row, live) => row.kind === 'ship' ? shipStrength(row.ship, live) : notApplicable(ON_SHIP),
     bar: (row, live) => row.kind === 'ship' ? { fraction: fraction(shipStrength(row.ship, live)) } : null },
   { ...PRIORITY!, priority: 2, numeric: true, format: 'integer', widest: ['9'],

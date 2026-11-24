@@ -55,7 +55,7 @@ const outOf = (have: number, need: number): Value<string> => knownValue(`${count
 const [DIVISION, TRAINING, EQUIPMENT, MANPOWER] = COLUMNS;
 
 const QUEUE_COLUMNS: readonly DeclarativeColumnSpec<QueueRow, Record<string, never>>[] = [
-  { ...DIVISION!, priority: 0, text: true, hideable: false, widest: ['197. Infanterie-Division'], iconSlot: true,
+  { ...DIVISION!, priority: 0, text: true, hideable: false, widest: ['Motorized Infantry Division 1941 B'], iconSlot: true,
     icon: row => row.kind === 'order' ? row.icon : undefined,
     value: row => row.kind === 'order'
       ? valueFromNullable(row.order.templateName, { kind: 'notRecorded', reason: row.order.templateMissing ?? 'Template name unavailable' })
@@ -66,7 +66,7 @@ const QUEUE_COLUMNS: readonly DeclarativeColumnSpec<QueueRow, Record<string, nev
   { ...EQUIPMENT!, priority: 2, numeric: true, format: PERCENT, widest: ['100%'],
     value: row => row.kind === 'division' ? equipmentShare(row.division) : notApplicable(ON_DIVISION),
     bar: row => row.kind === 'division' ? { fraction: fraction(equipmentShare(row.division)) } : null },
-  { ...MANPOWER!, priority: 3, numeric: true, widest: ['99,999 / 99,999'], hint: 'available / needed',
+  { ...MANPOWER!, priority: 3, numeric: true, widest: ['999,999 / 999,999'], hint: 'available / needed',
     value: row => row.kind === 'order' ? outOf(row.order.manpower, row.order.manpowerNeeded) : outOf(row.division.manpower, row.division.manpowerNeeded),
     sortValue: row => knownValue(row.kind === 'order' ? row.order.manpower : row.division.manpower) },
 ];
