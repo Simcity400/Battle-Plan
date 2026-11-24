@@ -27,6 +27,7 @@ pub mod country_tactic_unlocks;
 pub mod cstats_observer;
 pub mod division_land_inputs;
 pub mod doctrine_state;
+pub mod land_edges;
 pub mod land_events;
 pub mod land_wipe;
 pub mod movement_defines;
