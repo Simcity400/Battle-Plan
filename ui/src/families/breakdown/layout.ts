@@ -1,4 +1,5 @@
 import { contrastInkForFill } from '../../draw/kit.ts';
+import { shadeColour, tintColour } from '../../shell/appearance/color.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { BreakdownViewMode } from './options.ts';
 import {
@@ -6,8 +7,6 @@ import {
   partColour,
   resolveExpandedMap,
   resolveRingOpenKey,
-  shadeColour,
-  tintColour,
   type BreakdownComparison,
   type BreakdownPart,
   type BreakdownTotal,
