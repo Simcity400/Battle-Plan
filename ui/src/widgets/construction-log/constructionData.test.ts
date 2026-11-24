@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { deepFreeze } from '../../testFrozen.ts';
+import { deepFreeze } from '../../test-support/frozen.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { resolveCountries } from '../../dashboard/groups.ts';
 import { definition } from './definition.ts';

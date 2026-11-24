@@ -635,7 +635,6 @@ fn a_request_naming_1500_countries_is_answered() {
     let outside: SeriesKeyReply =
         serde_json::from_value(ask("series-next-change", serde_json::json!({ "countries": ["GER"], "within": held, "key": "ArrowRight", "from": hour, "firstHour": first, "lastHour": last }))).unwrap();
     assert_eq!(outside.hour, None, "a step from outside the held runs, with nothing after it inside them, goes nowhere rather than back to its origin");
-    ask("events-page", serde_json::json!({ "countries": tags, "from": first, "to": last, "pageSize": 16 }));
 }
 
 fn line_of<'q, 'r>(query: &'q Query<'r>) -> Line<'q, 'r> {

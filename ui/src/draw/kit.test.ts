@@ -23,6 +23,7 @@ import {
   drawGapBand,
   drawGradientLegend,
   drawIconStrip,
+  drawLegendStrip,
   drawMissingMark,
   drawNameSlot,
   drawOutOfFigure,
@@ -43,6 +44,7 @@ import {
   resolveKitTokens,
   TIMELINE_LABEL_MIN_WIDTH,
   computeTimeAxisTicks,
+  contrastInkForFill,
   drawTimeAxis,
   drawTimelineBar,
   winRateColor,
@@ -258,6 +260,23 @@ test('name slots report truncation, status marks use dots/rings, and date/missin
   assert.equal(tab.x, 10);
   const grad = drawGradientLegend(chromeCtx.ctx, 20, 14, '-100', '+100', ['#d95926', '#444444', '#199e70'], THEME);
   assert.ok(grad.width > 64);
+  const stripCtx = makeFakeCtx();
+  drawLegendStrip(stripCtx.ctx, 0, 0, 500, 26, {
+    gradient: { lowLabel: '0%', highLabel: '100%', stops: ['#d95926', '#199e70'] },
+    entries: [
+      { label: 'Not recorded', hatch: true },
+      { label: 'Unobserved', outlined: true },
+      { label: 'Limit', color: '#4f86f7', dash: [4, 2] },
+    ],
+    rightNote: 'As of 1 Jan 1940',
+    padX: 12,
+    hairline: true,
+  }, THEME);
+  const stripTexts = stripCtx.ops.filter(op => op.op === 'fillText').map(op => op.args[0]);
+  assert.ok(stripTexts.includes('Not recorded'));
+  assert.ok(stripTexts.includes('Unobserved'));
+  assert.ok(stripTexts.includes('Limit'));
+  assert.ok(stripTexts.includes('As of 1 Jan 1940'));
   const hoverTab = drawDateTab(chromeCtx.ctx, '1 Sep 1939', 100, 120, THEME, 'hover', { left: 10, right: 200 });
   assert.ok(hoverTab.width > 0);
   const tokens = resolveKitTokens(THEME);
@@ -305,9 +324,13 @@ test('timeline bars hide icon and name under the minimum width, mix ended items 
   const h1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
   const h1941 = engineHour({ year: 1941, month: 9, day: 15, hour: 1 })!;
   const years = computeTimeAxisTicks(h1936, h1941, 600);
-  assert.deepEqual(years.map(tick => tick.label), ['1937', '1938', '1939', '1940', '1941']);
+  assert.deepEqual(years.map(tick => tick.label), ['1936', '1937', '1938', '1939', '1940', '1941']);
   const h1937 = engineHour({ year: 1937, month: 1, day: 1, hour: 1 })!;
   assert.ok(computeTimeAxisTicks(h1936, h1937, 600).some(tick => tick.label === 'Jul'), 'under two years the axis shows months');
+  const hWeek = engineHour({ year: 1936, month: 1, day: 8, hour: 1 })!;
+  const dayTicks = computeTimeAxisTicks(h1936, hWeek, 600);
+  assert.ok(dayTicks.some(tick => tick.label === '4 Jan'), 'short windows show days');
+  assert.ok(computeTimeAxisTicks(0, 167, 600, 24).length >= 2, 'non-calendar short windows still yield day ticks');
 
   const axis = makeFakeCtx();
   drawTimeAxis(axis.ctx, years, { plotLeft: 100, plotRight: 700, axisTop: 200, startHour: h1936, endHour: h1941, playhead: h1941, playheadLabel: '15 Sep 1941', theme: THEME });
@@ -376,4 +399,9 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
     spanText: '1 Jan 1936 – 1 Jan 1940',
   }, THEME);
   assert.ok(clock.ops.some(op => op.op === 'fillText' && op.args[0] === '12:30:00'));
+
+  assert.equal(contrastInkForFill('#f4f6f9', THEME), 'rgba(17, 17, 17, 0.88)');
+  assert.equal(contrastInkForFill('#3987e5', THEME), 'rgba(255, 255, 255, 0.96)');
+  assert.equal(contrastInkForFill('#16181d', THEME), 'rgba(255, 255, 255, 0.96)');
+  assert.equal(contrastInkForFill('not-a-colour', THEME), THEME.text);
 });

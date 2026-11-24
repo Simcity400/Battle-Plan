@@ -10,7 +10,6 @@ use ts_rs::TS;
 #[cfg(test)]
 mod tests;
 
-const AHEAD: i32 = 24 * 31;
 const OTHER_CATEGORY: &str = "notIdentified";
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -83,9 +82,10 @@ impl Product for PowerSpendingBreakdown {
             country: params.country.clone(),
             currency: params.currency,
             from: params.from,
-            to: params.hour.saturating_add(AHEAD).min(query.timeline.last.max(params.hour)),
+            to: query.timeline.last.max(params.hour),
         };
-        let reply = at_hour(&spending(source, &query, &span, &naming, cancelled)?, params.hour);
+        let whole = breakdown::held(source, span.clone(), || spending(source, &query, &span, &naming, cancelled))?;
+        let reply = at_hour(&whole, params.hour);
         check_reply_budget(&reply)?;
         Ok(reply)
     }
@@ -134,6 +134,7 @@ pub(super) fn at_hour(reply: &PowerSpendingReply, hour: i32) -> PowerSpendingBre
     let names: HashMap<&str, (&str, bool)> = reply.categories.iter().map(|category| (category.id.as_str(), (category.name.as_str(), category.identified))).collect();
     let mut categories: HashMap<String, u32> = HashMap::new();
     let mut groups: HashMap<String, u32> = HashMap::new();
+    let mut kinds: HashMap<String, u32> = HashMap::new();
     let mut named: HashMap<String, String> = HashMap::new();
     let mut leaves = Vec::new();
     for entry in &entries {
@@ -149,15 +150,22 @@ pub(super) fn at_hour(reply: &PowerSpendingReply, hour: i32) -> PowerSpendingBre
         if !identified {
             category = category.other();
         }
-        let path = match &item.name {
-            None => vec![category],
-            Some(name) => {
-                named.insert(item.group_id.clone(), name.clone());
-                let ordinal = groups.len() as u32;
-                let group_ordinal = *groups.entry(item.group_id.clone()).or_insert(ordinal);
-                vec![category, Node::new(item.group_id.clone(), name.clone(), group_ordinal)]
-            }
-        };
+        let mut path = vec![category];
+        if let Some(kind) = &item.kind {
+            let key = kind.id.clone().unwrap_or_else(|| format!("{}:unrecorded", item.category));
+            let next = kinds.len() as u32;
+            let ordinal = *kinds.entry(key.clone()).or_insert(next);
+            path.push(match &kind.name {
+                Some(name) if kind.id.is_some() => Node::new(key, name.clone(), ordinal),
+                _ => Node::new(key, "Category not recorded", ordinal).other(),
+            });
+        }
+        if let Some(name) = &item.name {
+            named.insert(item.group_id.clone(), name.clone());
+            let ordinal = groups.len() as u32;
+            let group_ordinal = *groups.entry(item.group_id.clone()).or_insert(ordinal);
+            path.push(Node::new(item.group_id.clone(), name.clone(), group_ordinal));
+        }
         let count = Some(u64::from(entry.payments));
         let unknown = if entry.charge.is_none() { entry.payments.max(1) } else { entry.unknown };
         if let Some(charge) = entry.charge {
@@ -170,7 +178,7 @@ pub(super) fn at_hour(reply: &PowerSpendingReply, hour: i32) -> PowerSpendingBre
         }
     }
     for leaf in &mut leaves {
-        if let Some(node) = leaf.path.get_mut(1)
+        if let Some(node) = leaf.path.last_mut()
             && let Some(name) = named.get(&node.key)
         {
             node.name.clone_from(name);

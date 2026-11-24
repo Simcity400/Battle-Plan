@@ -28,7 +28,7 @@ const MEASURES: readonly BattleMeasure<LandBattleRow>[] = [
 const rankedBy = (measure: string) => `Ranked by ${measure === 'Peak size' ? 'most divisions at once' : measure === 'Length' ? 'length' : 'casualties, both sides'}.`;
 
 const adapter: BattleViewAdapter<LandBattleRow, LandBattlesWindow, LandBattlesRanking> = {
-  definition, product: 'land-battles', landPlaceNames: true, validateManifest: validateLandBattlesManifest, validateWindow: validateLandBattlesReply,
+  definition, product: 'land-battles', manifestProduct: 'land-battles-manifest', rankingProduct: 'land-battles-ranking', landPlaceNames: true, validateManifest: validateLandBattlesManifest, validateWindow: validateLandBattlesReply,
   validateRanking: validateLandBattlesRanking, rows: landBattleRows, row: landBattleRow, changes: landBattleChanges, windowPlaces: landWindowPlaces, rankedRows: rankedLandBattleRows,
   state: row => battleState(row, true),
   labels: LABELS, measures: MEASURES, compactSides: SIDES, formatLoss: landLossText, view: LandBattleList,

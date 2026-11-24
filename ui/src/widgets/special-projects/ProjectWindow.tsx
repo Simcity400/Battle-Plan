@@ -4,8 +4,6 @@ import { useGate } from '../../dashboard/regionGate';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import ArtFallback from '../../components/ArtFallback';
-import FloatingPanel from '../../components/FloatingPanel';
-import type { FloatingAnchor } from '../../components/FloatingPanel';
 import WidgetState from '../../components/WidgetState';
 import '../../components/Dossier.css';
 import { dayLabel } from '../../charts/draw';
@@ -30,17 +28,17 @@ import type { ProjectChoice, ProjectEffects, ProjectRuntimeDetails, SpecialProje
 const STATES = { running: 'In progress', paused: 'Paused', unknown: 'State unknown', completed: 'Completed', cancelled: 'Cancelled' } as const;
 const STATE_TONES = { running: '', paused: ' is-paused', unknown: ' is-quiet', completed: ' is-done', cancelled: ' is-quiet' } as const;
 
-type WindowProps = Asked & { reply: SpecialProjectsReply; card: ProjectCard | null; hour: number; through: () => number | null; missing: string; feed: PanelFeed | null;
-  anchor: FloatingAnchor; onClose: () => void };
+type WindowProps = Asked & { reply: SpecialProjectsReply; card: ProjectCard | null; hour: number; through: () => number | null; missing: string; feed: PanelFeed | null };
 
-export default function ProjectWindow({ reply, card, hour, through, missing, feed, anchor, onClose, ...asked }: WindowProps) {
-  return <FloatingPanel title="Special project" label="special project details" anchor={anchor} onClose={onClose} className="project-window">
-    <GameArtFor runtime={asked.runtime} widget={asked.widget} active={asked.active}>{card ? <div className="dossier is-blueprint">
-      <Summary reply={reply} card={card} hour={hour} feed={feed} active={asked.active} clock={asked.runtime.clock} />
-      <Runtime {...asked} reply={reply} card={card} hour={hour} through={through} />
-    </div> : <div className="dossier-body"><WidgetState kind="unavailable" message={missing} /></div>}</GameArtFor>
-  </FloatingPanel>;
+type DossierProps = WindowProps;
+
+export function ProjectDossier({ reply, card, hour, through, missing, feed, ...asked }: DossierProps) {
+  return <GameArtFor runtime={asked.runtime} widget={asked.widget} active={asked.active}>{card ? <div className="dossier is-blueprint">
+    <Summary reply={reply} card={card} hour={hour} feed={feed} active={asked.active} clock={asked.runtime.clock} />
+    <Runtime {...asked} reply={reply} card={card} hour={hour} through={through} />
+  </div> : <div className="dossier-body"><WidgetState kind="unavailable" message={missing} /></div>}</GameArtFor>;
 }
+
 
 function Summary({ reply, card, hour, feed, active, clock }: { reply: SpecialProjectsReply; card: ProjectCard; hour: number; feed: PanelFeed | null; active: boolean; clock: Asked['runtime']['clock'] }) {
   const facts = useRef<HTMLDivElement>(null);

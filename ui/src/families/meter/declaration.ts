@@ -31,11 +31,3 @@ export interface MeterWidgetDeclaration<TProjectionOptions = Record<string, neve
 }
 
 export type AnyMeterWidgetDeclaration = MeterWidgetDeclaration<any, any>;
-
-export function isMeterWidgetDeclaration(value: unknown): value is AnyMeterWidgetDeclaration {
-  return !!value
-    && typeof value === 'object'
-    && (value as { family?: unknown }).family === 'meters'
-    && 'sources' in value
-    && 'projection' in value;
-}

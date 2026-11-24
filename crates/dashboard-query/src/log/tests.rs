@@ -256,7 +256,7 @@ fn a_tag_filter_over_two_facets_preserves_each_pattern_by_default_and_deduplicat
 }
 
 #[test]
-fn balance_drops_page_and_mark_as_the_values_fall() {
+fn balance_drops_mark_as_the_values_fall() {
     let fixture = Fixture::campaign(Data::Power);
     let query = fixture.query();
     let series = dashboard_declare::series("country-measure").unwrap();
@@ -266,33 +266,6 @@ fn balance_drops_page_and_mark_as_the_values_fall() {
     let drops = |from: i32, to: i32| -> Vec<(i32, usize)> {
         (from..=to).flat_map(|hour| (0..2).filter(move |&at| held(timeline, TAGS[at], hour) && dropped(9001 + at as u32, hour)).map(move |at| (hour, at))).collect()
     };
-    let from = FIRST + 3_000;
-    let wanted = drops(from, LAST);
-    let before = drops(FIRST, from - 1);
-    let mut own = [0u64; 2];
-    for &(_, at) in &before {
-        own[at] += 1;
-    }
-    let mut seen = Vec::new();
-    let mut cursor = 0u64;
-    loop {
-        let page = line.page(&tags, from, LAST, cursor, 31).unwrap();
-        assert_eq!(page.total, wanted.len().to_string());
-        assert_eq!(page.first_ordinal, cursor.max(before.len() as u64).to_string());
-        for event in &page.rows {
-            let at = TAGS.iter().position(|tag| event.country.tag() == Some(*tag)).unwrap();
-            assert_eq!(event.ordinal, own[at].to_string(), "{}'s drop at {}", event.country, event.hour);
-            own[at] += 1;
-            let id = 9001 + at as u32;
-            assert_eq!((event.row.before_raw.clone(), event.row.after_raw.clone()), (power(id, event.hour - 1).unwrap().to_string(), power(id, event.hour).unwrap().to_string()));
-            seen.push((event.hour, at));
-        }
-        match page.cursor {
-            Some(next) => cursor = next.parse().unwrap(),
-            None => break,
-        }
-    }
-    assert_eq!(seen, wanted);
     let (view_from, view_to) = (FIRST + 2_000, FIRST + 2_500);
     let marks = line.marks_of(&tags, view_from, view_to, 120).unwrap();
     for (at, summary) in marks.iter().enumerate() {

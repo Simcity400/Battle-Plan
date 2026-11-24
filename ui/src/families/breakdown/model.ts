@@ -1,6 +1,6 @@
 import { colour } from '../../charts/palette.ts';
 import type { TooltipContent } from '../../charts/tooltip.ts';
-import { mix, parseColor, toHex } from '../../shell/appearance/color.ts';
+import { mix, toHex } from '../../shell/appearance/color.ts';
 import type { AuditRow } from '../../draw/notifications';
 import type { BoundedReadView, FamilyTheme, MirrorModel, MirrorRow } from '../contract.ts';
 import type { ArtResult } from '../plan.ts';
@@ -53,12 +53,6 @@ export interface BreakdownComparison {
   readonly note?: string;
 }
 
-export interface BreakdownEmptyAction {
-  readonly label: string;
-  readonly option: string;
-  readonly value: string;
-}
-
 export interface BreakdownModel {
   readonly hour: number;
   readonly rootLabel: string;
@@ -69,31 +63,21 @@ export interface BreakdownModel {
   readonly empty?: string;
   readonly emptyDetail?: string;
   readonly emptyKind?: 'empty' | 'unavailable';
-  readonly emptyAction?: BreakdownEmptyAction;
-  readonly refused?: string;
   readonly warnings?: readonly string[];
-  readonly footnote?: string;
-  readonly nextChangeAt?: number;
 }
 
 export interface BreakdownProjection<TOptions = unknown> {
   readonly family: 'breakdown';
   readonly kind: string;
   project(readView: BoundedReadView, options: TOptions): BreakdownModel;
-  nextChange?(readView: BoundedReadView, options: TOptions): number;
-}
-
-export interface BreakdownCrumb {
-  readonly key: string;
-  readonly label: string;
 }
 
 export interface ResolvedBreakdownLevel {
   readonly parts: readonly BreakdownPart[];
   readonly total: BreakdownTotal;
-  readonly crumbs: readonly BreakdownCrumb[];
-  readonly parentPart: BreakdownPart | null;
 }
+
+const TOOLTIP_PARTS = 8;
 
 export function formatShare(share: number | null | undefined): string {
   if (share == null || !Number.isFinite(share) || share < 0) return '';
@@ -119,49 +103,12 @@ export function shadeColour(hex: string, amount: number): string {
   return mix(hex, '#000000', amount);
 }
 
-export function relativeLuminance(hex: string): number {
-  const rgb = parseColor(hex);
-  if (!rgb) return 0;
-  const channel = (c: number) => {
-    const v = c / 255;
-    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
-  };
-  return 0.2126 * channel(rgb.r) + 0.7152 * channel(rgb.g) + 0.0722 * channel(rgb.b);
-}
-
-export function inkOnColour(hex: string): string {
-  return relativeLuminance(hex) > 0.32 ? 'rgba(17, 17, 17, 0.88)' : 'rgba(255, 255, 255, 0.96)';
-}
-
 export function rgbHex(r: number, g: number, b: number): string {
   return toHex({ r, g, b });
 }
 
-export function resolveDrillLevel(model: BreakdownModel, drillPath: readonly string[]): ResolvedBreakdownLevel {
-  let parts = model.parts;
-  let total = model.total;
-  let parentPart: BreakdownPart | null = null;
-  const crumbs: BreakdownCrumb[] = [{ key: '', label: model.rootLabel }];
-  for (const step of drillPath) {
-    const found = parts.find(item => item.key === step);
-    if (!found || !found.children || !found.children.length) break;
-    parentPart = found;
-    parts = found.children;
-    crumbs.push({ key: found.key, label: found.name });
-    total = {
-      known: !found.notRecorded && !found.partial && model.total.known && !model.total.atLeast,
-      atLeast: model.total.atLeast || found.notRecorded,
-      partial: found.partial || model.total.partial,
-      value: found.value,
-      text: found.text,
-      exact: found.exact,
-      unit: model.total.unit,
-      verb: model.total.verb,
-      reason: found.partialReason ?? found.missingReason ?? model.total.reason,
-      shortReason: model.total.shortReason,
-    };
-  }
-  return { parts, total, crumbs, parentPart };
+export function breakdownLevel(model: BreakdownModel): ResolvedBreakdownLevel {
+  return { parts: model.parts, total: model.total };
 }
 
 export function computeDefaultExpanded(
@@ -284,6 +231,13 @@ export function buildBreakdownTooltip(
   if (part.detailRows) {
     for (const row of part.detailRows) items.push(row);
   }
+  const shown = part.notRecorded ? [] : (part.children ?? []).slice(0, TOOLTIP_PARTS);
+  shown.forEach((child, at) => items.push({
+    label: child.name,
+    ...(child.notRecorded || child.value === null ? { missingReason: child.missingReason ?? 'Not recorded' } : { value: unit ? `${child.text} ${unit}` : child.text }),
+    indent: true,
+    ...(at === 0 ? { divider: true } : {}),
+  }));
   const subtitle = part.subtitle ?? (parent ? parent.name : undefined);
   const note = [part.note, level.total.atLeast ? level.total.reason : undefined]
     .filter((entry): entry is string => Boolean(entry && entry.trim()))
@@ -330,9 +284,8 @@ export function deriveBreakdownNavAndMirror(
 
 export function deriveBreakdownAudit(
   model: BreakdownModel,
-  drillPath: readonly string[] = [],
 ): readonly AuditRow[] {
-  const level = resolveDrillLevel(model, drillPath);
+  const level = breakdownLevel(model);
   const rows: AuditRow[] = [];
   const totalVal = level.total.value === null
     ? `notRecorded:${level.total.reason ?? 'Not recorded'}`

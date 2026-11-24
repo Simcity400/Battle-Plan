@@ -12,7 +12,7 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'since', label: 'Since', as: 'plain', offered: OFFERED.text },
 ];
 export const DEFAULT_SORT = { column: 'delivered', direction: 'descending' } as const;
-export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: DEFAULT_SORT };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', showRank: false, sort: DEFAULT_SORT };
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'direction', section: 'options', label: 'Direction', kind: 'choice', default: 'sent', choices: [...DIRECTIONS] },

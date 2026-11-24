@@ -37,6 +37,7 @@ pub struct WarContributionGroup {
     pub viewpoint_side: Vec<String>,
     pub opposing_side: Vec<String>,
     pub participants: Vec<WarContributionCountry>,
+    pub measures: Vec<super::measures::WarMeasure>,
     pub reason: Option<String>,
 }
 
@@ -100,6 +101,7 @@ pub(crate) fn contributions(
                 viewpoint_side: blob.first.iter().map(|id| tags[id].clone()).collect(),
                 opposing_side: blob.second.iter().map(|id| tags[id].clone()).collect(),
                 participants: Vec::new(),
+                measures: Vec::new(),
                 reason: None,
             };
             let result = (|| -> Result<Vec<WarContributionCountry>, String> {
@@ -146,7 +148,10 @@ pub(crate) fn contributions(
                 Ok(participants)
             })();
             match result {
-                Ok(participants) => group.participants = participants,
+                Ok(participants) => {
+                    group.measures = super::measures::measures(&group.viewpoint_side, &group.opposing_side, &participants);
+                    group.participants = participants;
+                }
                 Err(reason) => group.reason = Some(reason),
             }
             group

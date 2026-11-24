@@ -90,7 +90,13 @@ export interface TimeChartBinding<TOptions = unknown> {
   readonly tiledLines?: readonly SerializedTiledLine[];
   readonly keepTiled?: readonly number[];
   readonly tiledBySource?: Readonly<Record<string, Readonly<Record<string, number>>>>;
-  readonly headSourceBySeries?: Readonly<Record<string, { readonly answerName: string; readonly tags: readonly string[]; readonly decimals?: number }>>;
+  readonly headSourceBySeries?: Readonly<Record<string, {
+    readonly answerName: string;
+    readonly tags: readonly string[];
+    readonly keys?: readonly { readonly tag: string; readonly part: string }[];
+    readonly partBits?: number;
+    readonly decimals?: number;
+  }>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;

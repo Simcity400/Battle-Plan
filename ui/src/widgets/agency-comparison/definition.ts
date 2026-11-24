@@ -11,7 +11,7 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'view', label: '', as: 'plain', offered: OFFERED.text, hideable: false },
 ];
 export const DEFAULT_SORT = { column: 'defense', direction: 'descending' } as const;
-export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: DEFAULT_SORT };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', showRank: false, sort: DEFAULT_SORT };
 export const OPTIONS: readonly OptionField[] = [
   { key: 'includeUncreated', section: 'options', label: 'Include agencies not created', kind: 'toggle', default: false },
   { key: 'topMeasure', section: 'options', label: 'Top countries by', kind: 'choice', default: 'defense', visibleWhen: (_options, countries) => countries?.kind === 'group' && countries.group.type === 'top',

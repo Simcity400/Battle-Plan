@@ -113,6 +113,17 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'ruling-party',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'ruling-party',
+      DEFAULT_VIEW,
+      () => import('../ruling-party/rulingPartyProjection.ts'),
+      mod => ({ projection: mod.rulingPartyProjection, declaration: mod.rulingPartyDeclaration }),
+    ),
+  },
+  {
     kind: 'stability',
     view: DEFAULT_VIEW,
     family: 'time-chart',
@@ -121,6 +132,17 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       DEFAULT_VIEW,
       () => import('../stability/stabilityProjection.ts'),
       mod => ({ projection: mod.stabilityProjection, declaration: mod.stabilityDeclaration }),
+    ),
+  },
+  {
+    kind: 'supply-health',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'supply-health',
+      DEFAULT_VIEW,
+      () => import('../supply-health/supplyHealthProjection.ts'),
+      mod => ({ projection: mod.supplyHealthProjection, declaration: mod.supplyHealthDeclaration }),
     ),
   },
 ];
