@@ -1118,7 +1118,7 @@ test('FieldStatus failed distinguishes retryable transport errors and non-retrya
 
 test('ArtHandle discriminated union covers flag, sprite, portrait, path, and url, and BoundedReadView fires demand callbacks once', () => {
   const handles: readonly ArtHandle[] = [
-    flagArtHandle('GER_fascism', 'shield', 64),
+    flagArtHandle('GER_fascism', 'shield'),
     { kind: 'sprite', key: 'GFX_pol_power', frame: 0, recorded: 'pol_power', text: true },
     { kind: 'portrait', key: 'GFX_portrait_ger', owner: 'GER', recorded: 'leader_1' },
     { kind: 'path', path: 'gfx/interface/icons/icon.dds', frame: 1, frames: 2 },

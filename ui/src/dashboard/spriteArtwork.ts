@@ -1,10 +1,11 @@
 import type { ArtResolution, SpriteImage } from '../generated/dashboard';
 import { spriteImageToArt } from '../families/art/adapters.ts';
+import { artHandleKey } from '../families/art/types.ts';
 import { drawableIcon } from './artwork.ts';
 
 export interface SpriteFrame { key: string; frame: number; recorded?: string; text?: boolean }
 
-export const spriteId = (sprite: SpriteFrame) => JSON.stringify([sprite.frame, sprite.key, sprite.recorded ?? null, sprite.text === true]);
+export const spriteId = (sprite: SpriteFrame) => artHandleKey({ kind: 'sprite', ...sprite });
 
 export const optionalKey = (value: unknown) => value === undefined || typeof value === 'string' && value.length > 0;
 

@@ -19,6 +19,7 @@ import type {
   ArtOrigin as GeneratedArtOrigin,
   ArtProvenance as GeneratedArtProvenance,
   ArtResolution as GeneratedArtResolution,
+  CountryFlagSize,
   HourSpan,
   MissingSpan,
 } from '../generated/dashboard';
@@ -216,14 +217,13 @@ export interface IdentityResult {
   readonly nextChangeAt: number;
 }
 
-export type ArtFlagSize = 'panel' | 'shield' | 'normal' | 'medium' | 'small';
+export type ArtFlagSize = CountryFlagSize;
 
 export type ArtHandle =
   | {
       readonly kind: 'flag';
       readonly choice: string;
       readonly size: ArtFlagSize;
-      readonly maxEdge?: number;
     }
   | {
       readonly kind: 'sprite';
@@ -231,21 +231,18 @@ export type ArtHandle =
       readonly frame?: number;
       readonly recorded?: string;
       readonly text?: boolean;
-      readonly maxEdge?: number;
     }
   | {
       readonly kind: 'portrait';
       readonly key: string;
       readonly owner?: string;
       readonly recorded?: string;
-      readonly maxEdge?: number;
     }
   | {
       readonly kind: 'path';
       readonly path: string;
       readonly frame?: number;
       readonly frames?: number;
-      readonly maxEdge?: number;
     }
   | {
       readonly kind: 'url';
