@@ -8,6 +8,13 @@
   background: var(--surface);
 }
 
+.tf-title-hatch {
+  display: inline-block;
+  margin-left: 6px;
+  vertical-align: -1px;
+  box-sizing: border-box;
+}
+
 .tf-title-summary {
   margin-left: 6px;
   color: var(--muted);
@@ -196,7 +203,8 @@
   color: var(--muted);
 }
 
-.tf-th-hatch {
+.tf-th-hatch,
+.tf-title-hatch {
   flex: none;
   width: 10px;
   height: 10px;
