@@ -6783,7 +6783,7 @@ fallback: AirCell, scale: number, badBelow: number, goodAbove: number, warnings:
 export type AirMode = "sides" | "viewpoint";
 export type AirRegionOrder = "contested" | "active" | "name";
 export type AirAnchor = { tag: string, hour: number, };
-export type AirCountryStyle = { tag: string, hour: number, name: string | null, nameMissing: string | null, color: [number, number, number] | null, colorMissing: string | null, };
+export type AirCountryStyle = { tag: string, name: string | null, nameMissing: string | null, color: [number, number, number] | null, colorMissing: string | null, };
 export type AirSide = { key: string,
 /**
  * Its anchor faction's id.
