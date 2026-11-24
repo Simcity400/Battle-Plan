@@ -178,19 +178,22 @@ pub async fn download(
 
 struct Body {
     what: &'static str,
-    declared: usize,
+    declared: Option<usize>,
     bytes: Vec<u8>,
 }
 
 impl Body {
     fn new(what: &'static str, declared: Option<u64>) -> Result<Self, String> {
-        let declared = declared.ok_or_else(|| format!("{what} gave no length"))?;
-        let declared = usize::try_from(declared)
-            .ok()
-            .filter(|&declared| declared <= isize::MAX as usize)
-            .ok_or_else(|| {
-                format!("{what} declares {declared} bytes, more than this app can hold")
-            })?;
+        let declared = declared
+            .map(|declared| {
+                usize::try_from(declared)
+                    .ok()
+                    .filter(|&declared| declared <= isize::MAX as usize)
+                    .ok_or_else(|| {
+                        format!("{what} declares {declared} bytes, more than this app can hold")
+                    })
+            })
+            .transpose()?;
         Ok(Self {
             what,
             declared,
@@ -200,16 +203,20 @@ impl Body {
 
     fn take(&mut self, chunk: &[u8]) -> Result<(), String> {
         let what = self.what;
+        let limit = self.declared.unwrap_or(isize::MAX as usize);
         let needed = self
             .bytes
             .len()
             .checked_add(chunk.len())
-            .filter(|&needed| needed <= self.declared)
-            .ok_or_else(|| format!("{what} ran past the {} bytes it declared", self.declared))?;
+            .filter(|&needed| needed <= limit)
+            .ok_or_else(|| match self.declared {
+                Some(declared) => format!("{what} ran past the {declared} bytes it declared"),
+                None => format!("{what} is larger than this app can hold"),
+            })?;
         if needed > self.bytes.capacity() {
             let grown = needed
                 .max(self.bytes.capacity().saturating_mul(2))
-                .min(self.declared);
+                .min(limit);
             self.bytes
                 .try_reserve_exact(grown - self.bytes.len())
                 .map_err(|_| format!("{what} needs more memory than is free"))?;
@@ -219,12 +226,11 @@ impl Body {
     }
 
     fn finish(self) -> Result<Vec<u8>, String> {
-        if self.bytes.len() < self.declared {
+        if let Some(declared) = self.declared.filter(|&declared| self.bytes.len() < declared) {
             return Err(format!(
-                "{} stopped at {} of the {} bytes it declared",
+                "{} stopped at {} of the {declared} bytes it declared",
                 self.what,
-                self.bytes.len(),
-                self.declared
+                self.bytes.len()
             ));
         }
         Ok(self.bytes)
@@ -277,7 +283,7 @@ mod tests {
         assert_eq!(read(Some(6), &[b"abc", b"def"]), Ok(b"abcdef".to_vec()));
         assert!(read(Some(4), &[b"abc", b"def"]).is_err());
         assert!(read(Some(5), &[b"abc"]).is_err());
-        assert!(read(None, &[b"abc"]).is_err());
+        assert_eq!(read(None, &[b"abc", b"def"]), Ok(b"abcdef".to_vec()));
         assert!(read(Some(u64::MAX), &[b"abc"]).is_err());
         assert!(read(Some(isize::MAX as u64), &[b"abc"]).is_err());
     }
