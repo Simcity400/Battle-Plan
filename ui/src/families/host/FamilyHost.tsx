@@ -36,13 +36,14 @@ import {
   type FamilyHostAdapter,
   type FamilyMetaState,
   type FamilyRowWindow,
+  type FamilyStaticProof,
   type FamilyStaticSources,
   type FamilyViewportChange,
   type FamilyViewportState,
   type ParsedFamilyHit,
 } from './adapter.ts';
 import { createPlanAuditVerifier, type FamilyAuditVerifier, type PlanAuditSnapshot } from './auditBinding.ts';
-import { boundDated } from './dated.ts';
+import { boundDated, type BoundDated } from './dated.ts';
 import { renderFamilyBodyState } from './FamilyBodyState.tsx';
 import {
   handleFamilyGridKeyDown,
@@ -188,6 +189,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly allowEmptyFollow?: boolean;
   readonly owner?: string;
   readonly staticSources?: FamilyStaticSources | null;
+  readonly staticProof?: FamilyStaticProof;
   readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly tiledRevision?: number;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
@@ -236,6 +238,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   allowEmptyFollow = false,
   owner,
   staticSources = null,
+  staticProof,
   tiledSeries,
   tiledRevision = 0,
   hovers,
@@ -405,13 +408,13 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     theme,
     reducedMotion,
     staticSources,
+    staticProof,
     tiledSeries,
     hovers,
     artResolutions,
     extent,
     plan,
     exactReadView,
-    identitySnapshot,
     onIdentityDemands,
     onArtDemands,
     onViewportChange,
@@ -478,6 +481,17 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const syncMirrorRef = useRef(syncMirror);
   syncMirrorRef.current = syncMirror;
 
+  const datedNow = useCallback(() => {
+    const cur = latestRef.current;
+    return boundDated(
+      cur.staticSources,
+      cur.staticProof?.read()?.proof ?? null,
+      Object.keys(sourceIdsRef.current).length > 0,
+      cur.allowEmptyFollow || (!!cur.tiledSeries && Object.keys(cur.tiledSeries).length > 0),
+      cur.bounds,
+    );
+  }, [sourceIdsRef]);
+
   const bind = useCallback(() => {
     const mounted = surfaceRef.current;
     if (!mounted || !pipeline || pipe === null) return;
@@ -532,8 +546,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       }
     }
 
-    const staticPanels = cur.staticSources?.panels;
-    const staticAnswers = cur.staticSources?.answers;
     const binding = familyBinding(curAdapter, {
       kind: cur.declaration.kind,
       view: cur.view,
@@ -541,8 +553,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       settings: cur.settings,
       window: windowRef.current,
       sources: sourceIdsRef.current,
-      ...(staticPanels && Object.keys(staticPanels).length ? { staticPanels } : {}),
-      ...(staticAnswers && Object.keys(staticAnswers).length ? { staticAnswers } : {}),
       ...(cur.tiledSeries ? { tiledSeries: cur.tiledSeries } : {}),
       ...(cur.hovers ? { hovers: cur.hovers } : {}),
       ...(cur.artResolutions ? { artResolutions: cur.artResolutions } : {}),
@@ -551,7 +561,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       viewport,
       theme: cur.theme,
       reducedMotion: cur.reducedMotion,
-      identitySnapshot: cur.identitySnapshot,
       selectedKey: cur.selectedKey,
       focusedKey: focusInsideRef.current ? focusedKeyRef.current : null,
       expanded: expansionRef.current,
@@ -566,15 +575,12 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     if (mounted.canvas.style.width !== widthPx) mounted.canvas.style.width = widthPx;
     if (mounted.canvas.style.height !== heightPx) mounted.canvas.style.height = heightPx;
     pipeline.present(pipe, curAdapter.family);
-    const dated = boundDated(
-      cur.staticSources,
-      Object.keys(sourceIdsRef.current).length > 0,
-      cur.allowEmptyFollow || (!!cur.tiledSeries && Object.keys(cur.tiledSeries).length > 0),
-      cur.bounds,
-    );
+    const dated = datedNow();
+    suppliedDatedRef.current = dated ?? null;
     pipeline.bind(pipe, [mounted.surface], { surfaces: [{ width: w, height: h, dpr }], ...(dated ? { dated } : {}) }, {}, binding);
-  }, [pipeline, pipe, audit.capture, sourceIdsRef]);
+  }, [pipeline, pipe, audit.capture, sourceIdsRef, datedNow]);
 
+  const suppliedDatedRef = useRef<BoundDated | null>(null);
   const bindRef = useRef(bind);
   bindRef.current = bind;
   const clearHoverRef = useRef<() => void>(() => {});
@@ -1073,7 +1079,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     artResolutions,
     extent,
     plan,
-    identitySnapshot,
     selectedKey,
     subsReady,
     auditable,
@@ -1081,6 +1086,28 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     audit.captureActive,
     settings,
   ]);
+
+  const supplyDated = useCallback(() => {
+    if (!pipeline || pipe === null) return;
+    const dated = datedNow() ?? null;
+    const was = suppliedDatedRef.current;
+    if (was === dated || (was && dated && was.h === dated.h && was.c === dated.c)) return;
+    suppliedDatedRef.current = dated;
+    pipeline.supply(pipe, { dated });
+  }, [pipeline, pipe, datedNow]);
+
+  useLayoutEffect(() => {
+    if (!pipeline || pipe === null) return;
+    pipeline.supply(pipe, { statics: staticSources ? { staticPanels: staticSources.panels, staticAnswers: staticSources.answers } : null });
+    supplyDated();
+  }, [pipeline, pipe, staticSources, supplyDated]);
+
+  useLayoutEffect(() => {
+    if (!pipeline || pipe === null) return;
+    pipeline.supply(pipe, { identity: identitySnapshot });
+  }, [pipeline, pipe, identitySnapshot]);
+
+  useLayoutEffect(() => staticProof?.subscribe(supplyDated), [staticProof, supplyDated]);
 
   useFamilyPauseFlush(runtime.clock, () => {
     if (!pipeline || pipe === null) return;
