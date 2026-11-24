@@ -97,6 +97,7 @@ function drawMarginColumn(
   theme: FamilyTheme,
   scrollTop: number,
   hoveredRow: number | null,
+  focusedRow: number | null,
 ): void {
   const margin = model.margin;
   if (!margin || layout.marginWidth <= 0) return;
@@ -120,6 +121,7 @@ function drawMarginColumn(
   for (let r = layout.firstRow; r < layout.endRow; r++) {
     const y = layout.gridTop + r * ch - scrollTop;
     if (hoveredRow === r) drawRowHover(ctx, left, y, layout.marginWidth, ch, theme, 0);
+    if (focusedRow === r) drawRowFocusRing(ctx, left, y, layout.marginWidth, ch, theme, 0);
     const item = margin.cell(r);
     const middle = y + ch / 2;
     if (item.kind === 'missing') {
@@ -461,7 +463,7 @@ export function drawHeatMatrix(ctx: Canvas2D, input: DrawHeatMatrixInput): void 
     ctx.fillText(ellipsise(model.corner, cornerW, s => textWidth(ctx, s)), layout.rowGroupWidth + MATRIX_PAD, flagBandTop + flagBandH / 2);
     ctx.restore();
   }
-  drawMarginColumn(ctx, model, layout, theme, scrollTop, hoveredCell?.row ?? null);
+  drawMarginColumn(ctx, model, layout, theme, scrollTop, hoveredCell?.row ?? null, focusedCell?.column === model.columns.length ? focusedCell.row : null);
   if (!layout.wide) {
     drawRowHairline(ctx, 0, layout.width, layout.gridTop - 1, theme, 'strong');
     const gx = Math.floor(layout.gridLeft) - 0.5;

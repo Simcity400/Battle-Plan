@@ -131,18 +131,18 @@ test('frame subtitles identify only campaigns different from the sidebar, warnin
       const header = renderToStaticMarkup(createElement(CountryChip, { widget: { ...chipWidget,
         countries: { kind: 'tags', tags: countryNames.slice(0, count).map((_, i) => String(i)) } }, runtime, active: false }));
       if (count === 1) assert.doesNotMatch(header, /<span class="dash-widget-country" data-tooltip=/);
-      else assert.match(header, count === 3 ? /data-tooltip="Alpha, Beta, Gamma"/ : /data-tooltip="Alpha, Beta, Gamma and 2 more"/);
-      assert.doesNotMatch(header, /Delta|Epsilon/);
+      else assert.match(header, count === 3 ? /data-tooltip="Loading…, Loading…, Loading…"/ : /data-tooltip="Loading…, Loading…, Loading… and 2 more"/);
+      assert.doesNotMatch(header, /Alpha|Beta|Gamma|Delta|Epsilon/, 'names come from the dated identity, never from the recording metadata');
     }
     const tags = Array.from({ length: 5000 }, (_, index) => `country-${index}`);
     tracks[0].source.metadata.countries = tags.map((tag, id) => ({ id: String(id), tag, name: `Name ${id}`, observedBranchId: 'branch', observedHour: 43801000 }));
     const large = renderToStaticMarkup(createElement(CountryChip, { widget: { ...chipWidget,
       countries: { kind: 'tags', tags } }, runtime, active: false }));
-    assert.match(large, /data-tooltip="Name 0, Name 1, Name 2 and 4997 more"/);
+    assert.match(large, /data-tooltip="Loading…, Loading…, Loading… and 4997 more"/);
     assert.match(large, />\+4999</);
     const faction = renderToStaticMarkup(createElement(CountryChip, { widget: { ...chipWidget,
       countries: { kind: 'group', group: { type: 'faction', id: '42' }, membership: 'hour', aggregate: false } }, runtime, active: false }));
-    assert.match(faction, /Unnamed faction/);
+    assert.match(faction, /Loading faction…/);
     assert.doesNotMatch(faction, /Synthetic native naming refusal|data-tooltip=/);
   } finally { await vite.close(); delete (globalThis as { __frameReset?: unknown }).__frameReset; }
 });

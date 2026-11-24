@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
-import type { CategoryInfo, IdeaHistoryReply, IdeaInfo } from '../../generated/dashboard';
+import type { CategoryInfo, IdeaHistoryReply, IdeaHolding, IdeaInfo, IdeaLook } from '../../generated/dashboard';
 import { ideaTimelineProjection } from '../../widgets/idea-timeline/ideaTimelineProjection.ts';
 import { createBoundedReadView } from '../boundedView.ts';
 import { timelineHostAdapter } from './hostAdapter.ts';
 import { frameTimeline, placeTimeline } from './layout.ts';
 import { resolutionFor } from './resolution.ts';
-import { untilItem } from './helpers.ts';
 import { familyTimelineLaneView, nextDayStart, type FamilyTimelineBinding } from './laneView.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import type { PaintInput } from '../../draw/lane.ts';
@@ -25,23 +24,35 @@ const GOVERNMENT: CategoryInfo = { token: 'government', name: 'Laws', kind: null
   { token: 'economy', name: 'Economy law', character: false, seats: 1, laws: ['civilian', 'war'] },
   { token: 'trade', name: 'Trade law', character: false, seats: 1, laws: ['free', 'autarky'] },
 ] };
-const REPLY: IdeaHistoryReply = {
-  branchId: '1', tag: 'GER', asked: 'GER', identityStarts: [], modifiers: [], texts: [], warnings: [], categories: [GOVERNMENT],
-  unobserved: [{ firstHour: H(1938, 6), lastHour: H(1938, 10) - 1 }],
-  spans: [
-    { token: 'civilian', firstHour: FIRST, lastHour: H(1937, 6) - 1, slot: null, character: null },
-    { token: 'war', firstHour: H(1937, 6), lastHour: H(1941), slot: null, character: null },
-    { token: 'free', firstHour: FIRST, lastHour: H(1938, 6) - 1, slot: null, character: null },
-    { token: 'autarky', firstHour: H(1938, 10), lastHour: H(1941), slot: null, character: null },
-  ],
-  ideas: [idea('civilian', 'economy'), idea('war', 'economy'), idea('free', 'trade'), idea('autarky', 'trade')],
-  artwork: [{ token: 'war', name: 'War Economy', description: null, baseDurationDays: null, icon: 'asset://icons/war.png' }],
-  holders: [],
-};
+const GAP = { firstHour: H(1938, 6), lastHour: H(1938, 10) - 1 };
+const LOOKS: IdeaLook[] = [
+  { info: idea('civilian', 'economy'), artwork: { token: 'civilian', name: null, description: null, baseDurationDays: null, icon: null } },
+  { info: idea('war', 'economy'), artwork: { token: 'war', name: 'War Economy', description: null, baseDurationDays: null, icon: 'asset://icons/war.png' } },
+  { info: idea('free', 'trade'), artwork: { token: 'free', name: null, description: null, baseDurationDays: null, icon: null } },
+  { info: idea('autarky', 'trade'), artwork: { token: 'autarky', name: null, description: null, baseDurationDays: null, icon: null } },
+];
+const holding = (look: number, firstHour: number, lastHour: number, start: IdeaHolding['start'], end: IdeaHolding['end']): IdeaHolding =>
+  ({ token: LOOKS[look]!.info.token, firstHour, lastHour, start, end, slot: null, character: null, look });
+const replyAt = (hour: number, holdings: IdeaHolding[], extra: Partial<IdeaHistoryReply> = {}): IdeaHistoryReply => ({
+  branchId: '1', tag: 'GER', asked: 'GER', hour, nextChange: null, unrecorded: null, holdings,
+  held: holdings.flatMap((item, at) => item.end.kind === 'held' ? [at] : []), looks: LOOKS, categories: [GOVERNMENT],
+  unobserved: [], modifiers: [], texts: [], warnings: [], ...extra,
+});
+const REPLIES = new Map<number, IdeaHistoryReply>([
+  [H(1937, 3), replyAt(H(1937, 3), [holding(0, FIRST, H(1937, 3), 'heldBefore', { kind: 'held' }), holding(2, FIRST, H(1937, 3), 'heldBefore', { kind: 'held' })], { nextChange: H(1937, 6) })],
+  [H(1938, 7), replyAt(H(1938, 7), [
+    holding(0, FIRST, H(1937, 6) - 1, 'heldBefore', { kind: 'ended' }), holding(2, FIRST, H(1938, 6) - 1, 'heldBefore', { kind: 'lastSeen' }),
+    holding(1, H(1937, 6), H(1938, 6) - 1, 'seen', { kind: 'lastSeen' }),
+  ], { unrecorded: 'Ideas not read at this hour', unobserved: [{ firstHour: GAP.firstHour, lastHour: H(1938, 7) }], nextChange: H(1938, 10) })],
+  [H(1940), replyAt(H(1940), [
+    holding(0, FIRST, H(1937, 6) - 1, 'heldBefore', { kind: 'ended' }), holding(2, FIRST, H(1938, 6) - 1, 'heldBefore', { kind: 'endedBy', hour: H(1938, 10) }),
+    holding(1, H(1937, 6), H(1940), 'seen', { kind: 'held' }), holding(3, H(1938, 10), H(1940), 'firstObserved', { kind: 'held' }),
+  ], { unobserved: [GAP], nextChange: H(1941) + 1 })],
+]);
 const OPTIONS = { category: '', iconsOnBars: true, firstHour: FIRST, surface: '#161616' };
 
-function project(hour: number): TimelineModel {
-  const readView = createBoundedReadView({ hour, panels: new Map([['main', REPLY]]) });
+function project(hour: number, displayed = hour): TimelineModel {
+  const readView = createBoundedReadView({ hour: displayed, panels: new Map([['main', REPLIES.get(hour)!]]) });
   return ideaTimelineProjection.project(readView, OPTIONS);
 }
 
@@ -56,6 +67,8 @@ test('at the displayed hour nothing later is drawn, and a held item runs square 
   assert.equal(economy.subtitle, 'Idea name unavailable');
   assert.equal(economy.spans[0]!.heldBefore, true, 'held when the recording began');
   assert.equal(model.nextChangeAt, H(1937, 6));
+  const later = project(H(1937, 3), H(1937, 5));
+  assert.deepEqual(lane(later, 'economy').spans.map(span => [span.lastHour, span.open]), [[H(1937, 5), true]], 'inside the proven stretch a held item runs on to the displayed hour');
 });
 
 test('an item that ended is not open, an item with no art is a named missing icon, and art comes from the recorded path', () => {
@@ -69,6 +82,7 @@ test('an item that ended is not open, an item with no art is a named missing ico
 test('a slot read during an unrecorded stretch says so, and an end inside the stretch is not a guessed edge', () => {
   const trade = lane(project(H(1938, 7)), 'trade');
   assert.equal(trade.subtitle, 'Not recorded');
+  assert.deepEqual(project(H(1938, 7), H(1938, 8)).unobserved, [{ firstHour: GAP.firstHour, lastHour: H(1938, 8) }], 'an open unread stretch runs on to the displayed hour');
   const later = lane(project(H(1940)), 'trade');
   assert.equal(later.spans[0]!.endUnseen, true, 'last seen just before the gap: its end is somewhere in the gap');
   assert.deepEqual([later.spans[1]!.heldBefore, later.spans[1]!.startBy], [undefined, true], 'first seen just after the gap: a "by" start, not held before the recording');
@@ -102,18 +116,6 @@ test('the picture repaints at each new day so the playhead and open bars follow 
   assert.equal(nextDayStart(H(1940, 12, 31) + 23), H(1941));
 });
 
-test('an item read on both sides of an unrecorded stretch is one bar, while a change across the stretch stays two', () => {
-  const split: IdeaHistoryReply = { ...REPLY, spans: [
-    ...REPLY.spans.filter(span => span.token !== 'war'),
-    { token: 'war', firstHour: H(1937, 6), lastHour: H(1938, 6) - 1, slot: null, character: null },
-    { token: 'war', firstHour: H(1938, 10), lastHour: H(1941), slot: null, character: null },
-  ] };
-  const readView = createBoundedReadView({ hour: H(1940), panels: new Map([['main', split]]) });
-  const model = ideaTimelineProjection.project(readView, OPTIONS);
-  assert.deepEqual(lane(model, 'economy').spans.map(span => [span.firstHour, span.open]), [[FIRST, false], [H(1937, 6), true]]);
-  assert.equal(lane(model, 'trade').spans.length, 2);
-});
-
 test('a pointer over a painted bar hits that bar, even when an earlier bar ends within the slack, and keeps its own hour', () => {
   const lanes: TimelineLane[] = [{ key: 'l', kind: 'item', label: 'Lane', auditValue: 'Lane', spans: [
     { id: 'a', firstHour: FIRST, lastHour: H(1938) - 1, color: '#fff', open: false },
@@ -129,24 +131,14 @@ test('a pointer over a painted bar hits that bar, even when an earlier bar ends 
   assert.ok(hit.hour! >= H(1938), 'the hour is the pointer hour, not clamped to the earlier bar');
 });
 
-test('an item last seen before an unrecorded stretch is "last seen" during it and "ended by" once its absence is read', () => {
-  const span = { id: 's', firstHour: FIRST, lastHour: 99 + FIRST, color: '#fff', open: false, endUnseen: true } as const;
-  const words = { held: 'Held now', until: 'Until' };
-  assert.equal(untilItem(span, [{ firstHour: FIRST + 100, lastHour: FIRST + 150 }], FIRST + 150, words).label, 'Last seen');
-  assert.equal(untilItem(span, [{ firstHour: FIRST + 100, lastHour: FIRST + 199 }], FIRST + 250, words).label, 'Ended by');
-});
-
 test('consecutive holders with the same name and different recorded ids stay two bars', () => {
   const advisors: CategoryInfo = { token: 'government', name: 'Laws', kind: null, hidden: false, politicsTab: true, slots: [
     { token: 'advisor', name: 'Advisor', character: true, seats: 1, laws: [] },
   ] };
-  const art = { token: 'adv', name: 'Same Name', description: null, baseDurationDays: null, icon: null };
-  const reply: IdeaHistoryReply = { ...REPLY, categories: [advisors], ideas: [idea('adv', 'advisor')], unobserved: [],
-    spans: [
-      { token: 'adv', firstHour: FIRST, lastHour: FIRST + 99, slot: 'advisor', character: { id: 1, token: 'A', name: 'Same Name' } },
-      { token: 'adv', firstHour: FIRST + 100, lastHour: FIRST + 200, slot: 'advisor', character: { id: 2, token: 'B', name: 'Same Name' } },
-    ],
-    holders: [{ token: 'adv', character: 1, characterToken: 'A', name: 'Same Name', artwork: art }, { token: 'adv', character: 2, characterToken: 'B', name: 'Same Name', artwork: art }] };
+  const looks: IdeaLook[] = [1, 2].map(() => ({ info: idea('adv', 'advisor'), artwork: { token: 'adv', name: 'Same Name', description: null, baseDurationDays: null, icon: null } }));
+  const holder = (id: number, look: number, firstHour: number, lastHour: number, end: IdeaHolding['end']): IdeaHolding =>
+    ({ token: 'adv', firstHour, lastHour, start: 'seen', end, slot: 'advisor', character: { id, token: String(id), name: 'Same Name' }, look });
+  const reply = replyAt(FIRST + 200, [holder(1, 0, FIRST, FIRST + 99, { kind: 'ended' }), holder(2, 1, FIRST + 100, FIRST + 200, { kind: 'held' })], { categories: [advisors], looks });
   const model = ideaTimelineProjection.project(createBoundedReadView({ hour: FIRST + 200, panels: new Map([['main', reply]]) }), OPTIONS);
   assert.equal(model.lanes[0]!.spans.length, 2);
 });

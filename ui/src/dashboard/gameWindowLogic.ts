@@ -1,5 +1,5 @@
 import type { TooltipContent } from '../charts/tooltip.ts';
-import type { GameWindowRegion, GameWindowRequest } from './client.ts';
+import type { GameWindowRegion, GameWindowRequest, GameWindowScroll } from './client.ts';
 
 export function normalizeScale(dpr: number): number {
   if (!Number.isFinite(dpr) || dpr <= 0) return 1;
@@ -41,6 +41,7 @@ export function normalizeGameWindowRequest(request: GameWindowRequest): GameWind
     target: stableValue(request.target ?? null),
     scale: normalizeScale(request.scale),
     subView: request.subView ?? null,
+    scroll: stableValue(request.scroll ?? {}) as Record<string, number>,
   };
 }
 
@@ -69,6 +70,7 @@ export function gameWindowRequestKey(request: GameWindowRequest, contentRevision
     normalized.target,
     normalized.scale,
     normalized.subView,
+    normalized.scroll,
     contentRevision,
   ]);
 }
@@ -179,6 +181,25 @@ export function hitTestClick(
     if (contains(region, x, y)) return region;
   }
   return null;
+}
+
+export function hitTestScroll(
+  regions: readonly GameWindowRegion[],
+  x: number,
+  y: number,
+): GameWindowRegion | null {
+  for (let index = regions.length - 1; index >= 0; index--) {
+    const region = regions[index];
+    if (region.scroll && region.scroll.range > 0 && contains(region, x, y)) return region;
+  }
+  return null;
+}
+
+export function wheelScrollPosition(scroll: GameWindowScroll, current: number | undefined, deltaY: number): number {
+  const from = current ?? scroll.position;
+  if (deltaY === 0 || !Number.isFinite(deltaY)) return from;
+  const next = from + Math.sign(deltaY) * scroll.wheel;
+  return Math.min(scroll.range, Math.max(0, next));
 }
 
 export function regionTooltipContent(region: GameWindowRegion): TooltipContent | null {

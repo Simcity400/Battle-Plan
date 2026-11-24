@@ -90,6 +90,7 @@ export interface GameWindowRequest {
   target?: unknown;
   scale: number;
   subView?: string | null;
+  scroll?: Readonly<Record<string, number>>;
 }
 
 export interface GameWindowTooltip {
@@ -104,6 +105,12 @@ export interface GameWindowAlphaMask {
   readonly bitsBase64: string;
 }
 
+export interface GameWindowScroll {
+  readonly position: number;
+  readonly range: number;
+  readonly wheel: number;
+}
+
 export interface GameWindowRegion {
   path: string;
   rect: readonly [number, number, number, number];
@@ -114,6 +121,7 @@ export interface GameWindowRegion {
   view?: string | null;
   tooltip: GameWindowTooltip | null;
   alphaMask?: GameWindowAlphaMask | null;
+  scroll?: GameWindowScroll | null;
 }
 
 export interface GameWindowRender {
