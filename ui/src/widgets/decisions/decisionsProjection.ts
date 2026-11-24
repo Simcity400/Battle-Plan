@@ -153,6 +153,7 @@ function decisionTimerCell(at: DecisionAt): { readonly cell: TableCell; readonly
 function buildDecisionRow(
   readView: BoundedReadView,
   at: DecisionAt,
+  live: boolean,
   artwork: boolean,
   boundary: ReturnType<typeof newIdentityBoundary>,
 ): { readonly row: TableRow; readonly nextChangeAt: number } {
@@ -252,7 +253,7 @@ function buildDecisionRow(
       key: card.occurrence.id,
       name: safeName,
       rowHour: firstRow.hour,
-      live: at.status === 'active',
+      live,
       muted,
       cells: {
         date: logDateCell(firstRow.hour),
@@ -336,7 +337,9 @@ export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = 
         );
         if (!resolved) return null;
         const recorded = rawRow.status ? RECORDED_STATUS[rawRow.status] : null;
-        const built = buildDecisionRow(readView, recorded ? { ...resolved.item, status: recorded } : resolved.item, options.artwork, boundary);
+        const effective = recorded ? { ...resolved.item, status: recorded } : resolved.item;
+        const live = typeof rawRow.live === 'boolean' ? rawRow.live : effective.status === 'active';
+        const built = buildDecisionRow(readView, effective, live, options.artwork, boundary);
         if (built.nextChangeAt > hour && built.nextChangeAt < nextTimerChange) nextTimerChange = built.nextChangeAt;
         return built.row;
       },

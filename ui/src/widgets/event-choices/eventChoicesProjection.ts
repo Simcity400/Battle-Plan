@@ -46,16 +46,23 @@ export interface EventChoicesProjectionOptions {
 const HEAD_LIMIT = 256;
 const nonBlank = (value: string | null | undefined): string | null => (value && value.trim().length > 0 ? value : null);
 
+interface ChoicePageInfo {
+  readonly open: boolean;
+  readonly live: boolean;
+  readonly notRecorded: boolean;
+}
+
 function buildChoiceRow(
   readView: BoundedReadView,
   at: ChoiceAt,
+  page: ChoicePageInfo,
   artwork: boolean,
   boundary: ReturnType<typeof newIdentityBoundary>,
 ): TableRow {
   const { card } = at;
   const firstRow = card.first.row;
   const nameHour = firstRow.nameHour;
-  const open = isOpen(at);
+  const open = page.open;
   const reasons = reasonsOf(card.item);
   const lines = optionLines(at);
   const chosenLine = lines.find(line => line.chosen) ?? null;
@@ -89,7 +96,10 @@ function buildChoiceRow(
       choiceCell = { value: notRecorded('Choice not recorded'), missingFigure: 'Choice' };
     }
   } else {
-    choiceCell = { value: notRecorded(at.pause ? 'Choice not recorded (recording paused)' : 'Choice not recorded'), missingFigure: 'Choice' };
+    choiceCell = {
+      value: notRecorded(at.pause || page.notRecorded ? 'Choice not recorded (recording paused)' : 'Choice not recorded'),
+      missingFigure: 'Choice',
+    };
   }
 
   const rawTitle = nonBlank(card.item?.name);
@@ -110,7 +120,7 @@ function buildChoiceRow(
     chosenOrdinal: at.choice?.option ?? null,
     awaiting: open,
     chosenHour: at.choice?.row.hour ?? null,
-    noChoiceReason: at.choice ? null : noChoiceText(at),
+    noChoiceReason: at.choice ? null : (page.notRecorded ? 'No choice recorded' : noChoiceText(at)),
   };
 
   const tooltipExtra = (): TooltipExtraRow[] => {
@@ -129,7 +139,7 @@ function buildChoiceRow(
     key: card.occurrence.id,
     name: safeChoiceText,
     rowHour: firstRow.hour,
-    live: open,
+    live: page.live,
     cells: {
       date: logDateCell(firstRow.hour),
       kind: artwork
@@ -204,19 +214,23 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
           options.breaks,
         );
         if (!resolved) return null;
-        if (isOpen(resolved.item)) {
+        const open = rawRow.status != null ? rawRow.status === 'awaiting' : isOpen(resolved.item);
+        const live = typeof rawRow.live === 'boolean' ? rawRow.live : open;
+        const page: ChoicePageInfo = { open, live, notRecorded: rawRow.status === 'notRecorded' };
+        if (open) {
           const startHour = resolved.item.card.first.row.hour;
           const elapsed = Math.max(0, daysBetween(startHour, hour));
           const nextDay = startHour + (elapsed + 1) * 24;
           if (nextDay > hour && nextDay < nextAwaitingChange) nextAwaitingChange = nextDay;
         }
-        return buildChoiceRow(readView, resolved.item, options.artwork, boundary);
+        return buildChoiceRow(readView, resolved.item, page, options.artwork, boundary);
       },
     );
 
-    const titleSummary = !options.awaiting && source.total > 0
-      ? `${formatScalar(source.total, 'integer')} ${source.total === 1 ? 'event' : 'events'}`
-      : null;
+    const awaitingCount = source.facetTotals?.get('awaiting') ?? source.total;
+    const titleSummary = options.awaiting
+      ? (awaitingCount > 0 ? `${formatScalar(awaitingCount, 'integer')} awaiting` : null)
+      : (source.total > 0 ? `${formatScalar(source.total, 'integer')} ${source.total === 1 ? 'event' : 'events'}` : null);
     const rawHead = source.rawHead as { readonly warnings?: readonly string[]; readonly unavailable?: readonly { readonly label: string; readonly reason: string }[] } | undefined;
     const warnings = [
       ...(rawHead?.warnings ?? []),
