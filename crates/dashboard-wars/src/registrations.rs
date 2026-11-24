@@ -2,7 +2,6 @@ dashboard_base::register_products! {
     FACTIONS_FACTIONLINES => crate::products::factions::FactionLines,
     DIPLOMACY_DIPLOMATICPACTS => crate::products::diplomacy::DiplomaticPacts,
     CASUALTIES_CASUALTYBREAKDOWN => crate::products::casualties::CasualtyBreakdown,
-    CASUALTIES_CASUALTYLABELS => crate::products::casualties::CasualtyLabels,
     PEACE_PEACEDEALS => crate::products::peace::PeaceDeals,
     TERRITORY_TRANSFERS_TERRITORYTRANSFERS => crate::products::territory_transfers::TerritoryTransfers,
     OCCUPATION_RESERVE_RESERVEHISTORY => crate::products::occupation_reserve::ReserveHistory,
