@@ -1176,3 +1176,63 @@ fn command_power_ground_crews_capped_refunds_and_allocation_clamps_reconcile() {
         "ground-crew start/stop, allocation clamp, and capped refund reconcile to exact 0 other_changes"
     );
 }
+
+#[test]
+fn a_payment_whose_item_is_not_witnessed_at_the_spans_end_keeps_its_amount_with_an_unrecorded_item() {
+    let frames = (FIRST..=LAST)
+        .map(|hour| {
+            let mut frame = frame(hour);
+            if hour == LAST {
+                frame.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "countries refused".into() }.into();
+            }
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(dashboard_base::SourceKey { source_id: "power-ledger-unwitnessed".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    use dashboard_query::{
+        Query,
+        identity::{Holder, HolderRun, Holders},
+        timeline::{Join, Stretch, Timeline},
+    };
+    let held = HolderRun { first: FIRST, last: LAST, holder: Holder::Found { slot: SLOT, id: GER }, starts_segment: true };
+    let holders = Holders::new([("GER".to_owned(), vec![held])].into(), Vec::new());
+    let timeline = Timeline { id: 1, first: FIRST, last: LAST, stretches: vec![Stretch { run: 0, first: FIRST, last: LAST, join: Join::Start }], unheld: Vec::new() };
+    let replay = source.replay();
+    let query = Query { replay: &replay, timeline: Arc::new(timeline), holders: Arc::new(holders) };
+    let naming = naming::context(&source, &LoadContext { content: None }).unwrap();
+    let params = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from: FIRST, to: LAST };
+    let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+    let reads: Vec<_> = reply.payments.iter().map(|payment| (payment.read, payment.known_raw.clone())).collect();
+    assert_eq!(reads, [(104, Some("5000000".into())), (120, Some("7500000".into()))], "witnessed spending keeps its amount");
+    let item = &reply.items[reply.payments[1].item as usize];
+    assert_eq!((item.category.as_str(), item.name.as_deref()), ("notIdentified", None));
+    assert!(item.unknown.as_deref().is_some_and(|why| why.starts_with("Power items")), "{:?}", item.unknown);
+    assert!(reply.categories.iter().any(|category| category.id == "notIdentified" && !category.identified));
+}
+
+#[test]
+fn pieces_apart_only_across_unrecorded_hours_break_continuity_and_the_statement_names_its_own_end() {
+    use super::{Piece, continuity};
+    let piece = |first: i32, last: i32, baseline: Option<i32>| Piece { run: 0, slot: SLOT, id: GER, run_first: FIRST, first, last, baseline };
+    let held = [piece(FIRST, 140, None), piece(144, 168, Some(144))];
+    let unrecorded_gap = |first: i32, last: i32| !(first >= 141 && last <= 143);
+    assert_eq!(continuity(FIRST, 168, &held, unrecorded_gap).as_deref(), Some("Continuity broke across a load or recording gap during this span"));
+    assert_eq!(continuity(FIRST, 168, &held, |_, _| true).as_deref(), Some("Country was not held for the entire span"), "recorded hours between pieces are hours not held");
+
+    use dashboard_query::{
+        Query,
+        identity::{Holder, HolderRun, Holders},
+        timeline::{Join, Stretch, Timeline},
+    };
+    let source = recording();
+    let run = |first: i32, last: i32, id: u32| HolderRun { first, last, holder: Holder::Found { slot: SLOT, id }, starts_segment: true };
+    let holders = Holders::new([("GER".to_owned(), vec![run(FIRST, 140, GER)]), ("ITA".to_owned(), vec![run(141, LAST, 9002)])].into(), Vec::new());
+    let timeline = Timeline { id: 1, first: FIRST, last: LAST, stretches: vec![Stretch { run: 0, first: FIRST, last: LAST, join: Join::Start }], unheld: Vec::new() };
+    let replay = source.replay();
+    let query = Query { replay: &replay, timeline: Arc::new(timeline), holders: Arc::new(holders) };
+    let naming = naming::context(&source, &LoadContext { content: None }).unwrap();
+    let params = PowerSpendingParams { branch_id: "1".into(), country: dashboard_base::products::Country::Slot(SLOT), currency: SpendCurrency::Political, from: FIRST, to: 130 };
+    let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+    assert_eq!(reply.tag, "GER", "a slot is named by who held it at the statement's end, not at the branch's last hour");
+}

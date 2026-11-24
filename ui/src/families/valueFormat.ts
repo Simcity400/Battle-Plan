@@ -118,7 +118,10 @@ export function formatFixed5Amount(value: number | bigint): string {
   const big = exactTruncBigInt(value);
   if (big === 0n) return '0';
   if (big < 0n) return '!';
-  return formatNativeFixed5(big, 2);
+  const [whole, fraction = ''] = formatNativeFixed5(big, 2).split('.');
+  const grouped = whole!.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const kept = fraction.replace(/0+$/, '');
+  return kept ? `${grouped}.${kept}` : grouped;
 }
 
 export function formatScalar(raw: Scalar, format?: ValueFormat): string {

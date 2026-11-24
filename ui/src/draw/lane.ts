@@ -591,10 +591,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.wake();
   }
 
-  pointer(widget: number, _surface: number, point: [number, number] | null) {
+  pointer(widget: number, _surface: number, point: [number, number] | null, installed?: number) {
     const held = this.widgets.get(widget);
     if (!held) return;
-    const inst = held.installed;
+    const accepted = installed === undefined ? undefined : this.presented.get(installed);
+    const inst = accepted && accepted.widget === widget && accepted.sent.binding === held.binding.generation ? accepted.sent : held.installed;
     const hit = inst?.hit;
     this.host.hit?.(widget, point && hit ? hit(point) : null, inst?.id, inst?.owner);
   }

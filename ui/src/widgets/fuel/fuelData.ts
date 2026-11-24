@@ -1,6 +1,5 @@
 import type { ChartSummary } from '../../charts/chartSummary';
 import type { Run } from '../../charts/series';
-import type { StripBar } from '../../charts/strip';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatAmount, formatSigned, rescale } from '../../charts/valueAxis.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
@@ -211,29 +210,4 @@ export function summaryRuns(summary: ChartSummary | undefined): Run[] {
     return ordered.map(([hour, value], index) => ({ firstHour: hour, lastHour: bucket.hasBreak ? hour : ordered[index + 1] ? ordered[index + 1][0] - 1 : bucket.lastHour,
       value, breakBefore: bucket.hasBreak || index === 0 && bucket.firstBreak }));
   });
-}
-
-export function stripBars(gain: ChartSummary | undefined, burn: ChartSummary | undefined, dayHours: number): StripBar[] {
-  const bars = new Map<number, StripBar>();
-  for (const [summary, field, scale] of [[gain, 'up', GAIN_SCALE], [burn, 'down', QUANTITY_SCALE]] as const) {
-    const points = summary?.runs?.map(run => [run.firstHour - dayHours, run.firstHour, run.value, false] as const)
-      ?? summary?.buckets.flatMap(bucket => bucket ? [[bucket.firstHour - 1, bucket.lastHour, bucket.maxValue, true] as const] : []) ?? [];
-    for (const [first, hour, value, span] of points) {
-      const bar = bars.get(hour) ?? { firstHour: first, lastHour: hour, up: 0, down: 0, ...span ? { span: true as const } : {} };
-      bar.firstHour = Math.min(bar.firstHour, first);
-      bar[field] = value / scale;
-      bars.set(hour, bar);
-    }
-  }
-  return [...bars.values()].sort((a, b) => a.lastHour - b.lastHour);
-}
-
-export interface StripLines { landed: boolean; unrecorded: string | null; failure: string | null }
-
-export function stripNote(bars: number, gain: StripLines, burn: StripLines): { text: string; reason: string | null } | null {
-  if (bars > 0) return null;
-  const failure = gain.failure ?? burn.failure;
-  if (failure) return { text: 'Gain and burn could not be loaded', reason: failure };
-  if (!gain.landed || !burn.landed) return { text: 'Loading gain and burn…', reason: null };
-  return { text: 'Gain and burn not recorded', reason: gain.unrecorded ?? burn.unrecorded ?? 'No day of fuel was read in these hours.' };
 }

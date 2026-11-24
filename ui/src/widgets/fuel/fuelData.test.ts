@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dayAmounts, fuelParts, fuelTooltips, partsStructure, percentFull, stripBars, stripNote, validateCountryFuel, validateFuelAwardHistory, validateFuelAwards } from './fuelData.ts';
+import { dayAmounts, fuelParts, fuelTooltips, partsStructure, percentFull, validateCountryFuel, validateFuelAwardHistory, validateFuelAwards } from './fuelData.ts';
 import type { CountryFuelReply, FuelLabel, FuelReadAt } from '../../generated/dashboard';
 
 const label = (key: string, template: string | null = `${key}: {NUM}`): FuelLabel => ({ key, template, arguments: ['NUM'], reason: template ? null : 'absent' });
@@ -58,31 +58,6 @@ test('the tooltip says why a day is left out and never shows a zero for it', () 
   assert.deepEqual(full.rows.find(row => row.label === 'Gained and burned')?.value, 'Not known');
   const [missing] = fuelTooltips(reply({ read: null, missing: 'No fuel status is recorded' }), 'Day', { fuel: 'a', capacity: 'b', gained: 'c', burned: 'd' }, 0);
   assert.deepEqual(missing.rows.map(row => row.label), ['No fuel status is recorded']);
-});
-
-test('the strip has a bar a read, gained up and burned down in fuel', () => {
-  const run = (hour: number, value: number) => ({ firstHour: hour, lastHour: hour + 23, value });
-  const summary = (runs: ReturnType<typeof run>[]) => ({ from: 0, to: 100, width: 4, buckets: [], runs });
-  assert.deepEqual(stripBars(summary([run(24, 200000), run(48, 100000)]), summary([run(24, 65536)]), 24),
-    [{ firstHour: 0, lastHour: 24, up: 2, down: 2 }, { firstHour: 24, lastHour: 48, up: 1, down: 0 }]);
-});
-
-test('a bin of many reads is a span bar over its hours with each half\'s greatest read, never a bar at a bucket\'s hour', () => {
-  const bin = (first: number, last: number, most: number) => ({ firstHour: first, lastHour: last, firstValue: 0, lastValue: 0, lastValueHour: first,
-    minHour: first, minValue: 0, maxHour: first, maxValue: most, firstBreak: false, hasBreak: false });
-  const summary = (buckets: ReturnType<typeof bin>[]) => ({ from: 0, to: 191, width: 2, buckets });
-  assert.deepEqual(stripBars(summary([bin(0, 95, 200000), bin(96, 191, 100000)]), summary([bin(0, 95, 65536), bin(96, 191, 0)]), 24), [
-    { firstHour: -1, lastHour: 95, up: 2, down: 2, span: true }, { firstHour: 95, lastHour: 191, up: 1, down: 0, span: true }]);
-});
-
-test('a strip with no bar says why, never a blank band: not recorded with its reason, loading, or a failed read', () => {
-  const lines = (patch: Partial<{ landed: boolean; unrecorded: string | null; failure: string | null }> = {}) => ({ landed: true, unrecorded: null, failure: null, ...patch });
-  const why = 'FuelDays held no row at these hours';
-  assert.equal(stripNote(3, lines({ unrecorded: why }), lines()), null, 'a bar drawn needs no words');
-  assert.deepEqual(stripNote(0, lines({ unrecorded: why }), lines({ unrecorded: why })), { text: 'Gain and burn not recorded', reason: why });
-  assert.deepEqual(stripNote(0, lines({ landed: false }), lines()), { text: 'Loading gain and burn…', reason: null });
-  assert.deepEqual(stripNote(0, lines(), lines({ failure: 'refused' })), { text: 'Gain and burn could not be loaded', reason: 'refused' });
-  assert.equal(stripNote(0, lines(), lines())?.text, 'Gain and burn not recorded', 'lines landed with no value in view are not a zero');
 });
 
 test('recipients are listed once each, and a recipient history names why a day is unknown', () => {

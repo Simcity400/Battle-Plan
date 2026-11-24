@@ -1,3 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import MostDecoratedWidget from './MostDecoratedWidget';
-export default { render: MostDecoratedWidget } satisfies WidgetRenderer;
+import { mostDecoratedDeclaration } from './mostDecoratedProjection';
+
+export default { declaration: mostDecoratedDeclaration } satisfies WidgetRenderer;

@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import { useArtResolutions } from '../../dashboard/useSpriteArtwork.ts';
+import { identityBrokerFor } from '../identity/broker.ts';
+import { useIdentityScope } from '../identity/react.ts';
 import type { ArtHandle } from '../plan.ts';
 import { sharedDomArtCache, type DomArtCache } from './domCache.ts';
-import { mergeArtDemands, needsArtResolution, type ArtResolutions } from './provider.ts';
+import { mergeArtDemands, needsArtResolution, requestDemandedFlags, type ArtResolutions } from './provider.ts';
 import { artHandleKey, type ArtResolution, type ArtResult } from './types.ts';
 
 const NO_HANDLES: readonly ArtHandle[] = [];
@@ -19,10 +21,12 @@ export function useArtHandleResolutions(
   readonly onArtDemands: (handles: readonly ArtHandle[]) => void;
 } {
   const [demanded, setDemanded] = useState<readonly ArtHandle[]>(NO_HANDLES);
+  const scope = useIdentityScope(runtime.client, track?.source, track?.branch.id, active && !!track);
   const onArtDemands = useCallback((handles: readonly ArtHandle[]) => {
     forward?.(handles);
+    if (scope) requestDemandedFlags(identityBrokerFor(runtime.client), scope, handles, track?.source);
     setDemanded(held => mergeArtDemands(held, handles.filter(needsArtResolution)));
-  }, [forward]);
+  }, [forward, scope, runtime.client, track?.source]);
   const resolve = useArtResolutions(runtime, track, demanded, active && demanded.length > 0);
   const resolutions = useMemo(() => {
     if (!demanded.length) return undefined;
@@ -40,6 +44,7 @@ export function useDomArt(
 ): ArtResult<HTMLImageElement> {
   const [, setTick] = useState(0);
   const url = resolution.status === 'ready' ? resolution.url : null;
+  const shown = useRef<string>('');
 
   useEffect(() => {
     cache.setContentRevision(contentRevision);
@@ -47,10 +52,13 @@ export function useDomArt(
 
   useEffect(() => {
     if (!url) return;
-    return cache.subscribe(url, () => setTick(value => value + 1));
+    const stop = cache.subscribe(url, () => setTick(value => value + 1));
+    if (cache.stateOfUrl(url) !== shown.current) setTick(value => value + 1);
+    return stop;
   }, [cache, url]);
 
   const state = cache.resolve(resolution);
+  shown.current = state.status;
   const retry = useCallback(() => {
     if (state.status === 'failed') state.retry?.();
   }, [state]);

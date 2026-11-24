@@ -12,13 +12,16 @@ import type {
   UnitLeadersReply,
 } from '../../generated/dashboard';
 import { countryKey } from '../../dashboard/countryKey.ts';
-import { artUrlForHandle, flagArtHandle, mergeArtDemands } from '../art/provider.ts';
-import { artHandleKey } from '../art/types.ts';
+import { LaneArtCache } from '../art/laneCache.ts';
+import { artUrlForHandle, createLaneArtProvider, flagArtHandle, laneArtDemand, mergeArtDemands, requestDemandedFlags } from '../art/provider.ts';
+import { toFlagSlotState } from '../art/adapters.ts';
+import { NO_ART, artHandleKey, missingArt, refusedArt } from '../art/types.ts';
+import { RefusedError } from '../../dashboard/queryError.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
-import type { ArtHandle } from '../plan.ts';
+import type { ArtHandle, DisplayedHour } from '../plan.ts';
 import { IdentityBroker, type IdentityTransport } from './broker.ts';
 import { createBrokerIdentityProvider, createSnapshotIdentityProvider, parseEntityKey } from './provider.ts';
-import { readIdentityAtHeadHour, subscribeIdentityAtHead } from './react.ts';
+import { UNHELD_HEAD_HOUR, readIdentityAtHeadHour, subscribeIdentityAtHead, type HeldHeadHour } from './react.ts';
 import {
   IdentityIndex,
   countrySlotKey,
@@ -526,7 +529,7 @@ test('useIdentityAtHead does not subscribe to the frame clock or churn snapshots
     subscribeFrame: (_cb: () => void) => { frameSubscribes++; return () => {}; },
     subscribe: (_cb: () => void) => { anchorSubscribes++; return () => {}; },
   };
-  const held = { current: { key: '', hour: null as number | null } };
+  const held: { current: HeldHeadHour } = { current: UNHELD_HEAD_HOUR };
 
   const unsubNoScope = subscribeIdentityAtHead(broker, clock, null, true, true, true, null, undefined, () => {});
   const unsubNoKeys = subscribeIdentityAtHead(broker, clock, SCOPE, true, true, false, null, undefined, () => {});
@@ -555,6 +558,112 @@ test('useIdentityAtHead does not subscribe to the frame clock or churn snapshots
   const h3 = readIdentityAtHeadHour(broker, clock, SCOPE, true, [countryTagKey('GER')], h => h, null, [0, 500], held);
   assert.equal(h3, 150, 'crossing the run boundary advances the hour');
   unsubActive();
+  broker.dispose();
+});
+
+test('1,500 keys at the head resolve once per proven interval, not per frame, and settled flags do not invalidate them', async () => {
+  const countries = Array.from({ length: 1500 }, (_, i) => `X${String(i).padStart(4, '0')}`);
+  const flags: CountryFlagChoice[] = countries.map(tag => ({ keys: [tag, null, null], reasons: [null, null, null] }));
+  const factsReply: CountryFactsReply = {
+    branchId: '1',
+    known: [[0, 1000]],
+    names: [...countries.map(tag => `Country ${tag}`), 'Renamed'],
+    reasons: [],
+    flags,
+    countries: countries.map((tag, i) => ({ tag, runs: i === 7 ? [[0, i, i, -1, i], [600, 1500, i, -1, i]] : [[0, i, i, -1, i]] })),
+    warnings: [],
+  };
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => factsReply,
+    loadIdentities: async () => ({ branchId: '1', known: [], countries: [], unknown: [], warnings: [] }),
+    loadGroups: async () => sampleGroups(),
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size, batch) => ({
+      size,
+      flags: batch.map((choice, i) => ({ flag: i, asset: `${choice.keys[0]}.tga`, key: `${choice.keys[0]}:${size}`, width: 41, height: 26, png: `flag://${choice.keys[0]}` })),
+      unavailable: [],
+      warnings: [],
+    }),
+  };
+  const broker = new IdentityBroker({ transport });
+  const keys = countries.map(countryTagKey);
+  broker.setDemand({}, SCOPE, { asks: keys.map(key => ({ key, hour: 100 })), needFlags: true, flagSize: 'panel' }, undefined, [0, 1000]);
+  for (let i = 0; i < 120; i++) await Promise.resolve();
+
+  const index = broker.indexOf(SCOPE);
+  assert.equal(broker.flagFor(SCOPE, 'panel', flags[1499]!)?.url, 'flag://X1499', 'every flag batch settled');
+  const revision = index.resolveRevision();
+  let resolved = 0;
+  const resolve = index.resolve.bind(index);
+  index.resolve = ((key, hour) => { resolved++; return resolve(key, hour); }) as typeof index.resolve;
+
+  let clockHour = 100;
+  const clock = { getHour: () => clockHour };
+  const held: { current: HeldHeadHour } = { current: UNHELD_HEAD_HOUR };
+  const read = () => readIdentityAtHeadHour(broker, clock, SCOPE, true, keys, h => h, null, [0, 1000], held);
+  assert.equal(read(), 100);
+  assert.equal(resolved, 1500, 'the first frame resolves each key once');
+  for (let frame = 0; frame < 600; frame++) {
+    clockHour = 100 + frame * 0.8;
+    assert.equal(read(), 100, 'a frame inside the proven interval keeps the held hour');
+  }
+  assert.equal(resolved, 1500, 'frames inside the proven interval resolve nothing');
+
+  broker.requestFlagChoices(SCOPE, 'small', flags, undefined);
+  for (let i = 0; i < 120; i++) await Promise.resolve();
+  assert.equal(broker.flagFor(SCOPE, 'small', flags[1499]!)?.url, 'flag://X1499');
+  assert.equal(index.resolveRevision(), revision, 'settled flag batches leave every resolve answer, and the host scan keyed on it, untouched');
+  assert.equal(read(), 100);
+  assert.equal(resolved, 1500);
+
+  clockHour = 600;
+  assert.equal(read(), 600, 'crossing the next boundary advances the hour');
+  assert.equal(resolved, 3000, 'one resolve per key at the boundary');
+  broker.dispose();
+});
+
+test('a lane flag at a size other than the default is demanded, drawn at that size and found in the next snapshot', async () => {
+  const sizes: string[] = [];
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => sampleFacts(),
+    loadIdentities: async () => sampleIdentities(),
+    loadGroups: async () => sampleGroups(),
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size, batch) => {
+      sizes.push(size);
+      return {
+        size,
+        flags: batch.map((choice, i) => ({ flag: i, asset: `${choice.keys[0]}.tga`, key: `${choice.keys[0]}:${size}`, width: 10, height: 7, png: `flag://${choice.keys[0]}/${size}` })),
+        unavailable: [],
+        warnings: [],
+      };
+    },
+  };
+  const broker = new IdentityBroker({ transport });
+  const handle = flagArtHandle(flagChoiceKey(FLAG_A), 'small');
+  const lane = new LaneArtCache({ fetchBitmap: async () => ({ width: 10, height: 7, close() {} }) as unknown as ImageBitmap });
+
+  const urls = new Set<string>();
+  const asks = new Map<string, ArtHandle>();
+  const before = IdentityIndex.fromSnapshot(broker.snapshotOf(SCOPE));
+  laneArtDemand(handle, before, undefined, urls, asks);
+  assert.deepEqual([...asks.values()], [handle], 'an undrawn flag at its own size is a demand');
+  assert.equal(createLaneArtProvider(lane, { index: before }).resolve(handle).status, 'pending');
+
+  requestDemandedFlags(broker, SCOPE, [...asks.values()]);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  assert.deepEqual(sizes, ['small'], 'the product is asked at the demanded size');
+
+  const after = IdentityIndex.fromSnapshot(structuredClone(broker.snapshotOf(SCOPE)));
+  assert.equal(artUrlForHandle(handle, after), 'flag://GER_a/small');
+  assert.equal(artUrlForHandle(flagArtHandle(flagChoiceKey(FLAG_A), 'panel'), after), null, 'another size is not borrowed');
+  urls.clear();
+  asks.clear();
+  laneArtDemand(handle, after, undefined, urls, asks);
+  assert.equal(asks.size, 0, 'a drawn flag is not asked again');
+  assert.deepEqual([...urls], ['flag://GER_a/small']);
   broker.dispose();
 });
 
@@ -717,4 +826,48 @@ test('a country the lane asks for and the snapshot lacks becomes a broker demand
   assert.equal(alp.flagChoice?.status, 'ready');
   assert.equal(artUrlForHandle(flagArtHandle(alp.flagChoice!.status === 'ready' ? alp.flagChoice!.value : '', 'panel'), IdentityIndex.fromSnapshot(broker.snapshotOf(SCOPE))), 'flag://GER_a');
   broker.dispose();
+});
+
+test('a status is carried, not rebuilt: unresolved holders, failures across the worker snapshot, retried flags and refused art', async () => {
+  const index = new IdentityIndex(SCOPE, [0, 500]);
+  index.setFacts(sampleFacts(), true);
+  index.setIdentities({ ...sampleIdentities(), countries: [{ tag: 'GER', identities: [], unresolved: [{ firstHour: 0, lastHour: 500 }] }] });
+  index.setGroupsFailure(new RefusedError('Unsupported faction table'));
+  const worker = createSnapshotIdentityProvider(IdentityIndex.fromSnapshot(structuredClone(index.exportSnapshot())));
+  const ger = worker.resolve('country', 'GER', 100 as DisplayedHour);
+  assert.deepEqual(ger.tag, { status: 'ready', value: 'GER' });
+  assert.equal(ger.holder.status, 'absent');
+  assert.deepEqual(worker.resolve('faction', '7', 100 as DisplayedHour).name, { status: 'failed', reason: 'Unsupported faction table', retryable: false });
+
+  let now = 0;
+  const timers: { at: number; run: () => void }[] = [];
+  let flagCalls = 0;
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => sampleFacts(),
+    loadIdentities: async () => sampleIdentities(),
+    loadGroups: () => deferred<CountryGroupReply>().promise,
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size, choices) => {
+      flagCalls++;
+      if (flagCalls === 1) throw new TypeError('connection reset');
+      return { size, flags: choices.map((choice, flag) => ({ flag, asset: 'a.tga', key: 'k', width: 41, height: 26, png: `flag://${choice.keys[0]}` })), unavailable: [], warnings: [] };
+    },
+  };
+  const broker = new IdentityBroker({ transport, clock: { now: () => now, after: (ms, run) => { timers.push({ at: now + ms, run }); return () => {}; } } });
+  broker.setDemand({}, SCOPE, { asks: [{ key: countryTagKey('GER'), hour: 100 }], needFlags: true, flagSize: 'panel' });
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(flagCalls, 1);
+  assert.ok(broker.flagFor(SCOPE, 'panel', FLAG_A)?.failed);
+  assert.equal(timers.length, 1, 'a retryable flag failure schedules its retry');
+  now = timers[0]!.at;
+  timers[0]!.run();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(flagCalls, 2);
+  assert.equal(broker.flagFor(SCOPE, 'panel', FLAG_A)?.url, 'flag://GER_a');
+  broker.dispose();
+
+  assert.deepEqual(toFlagSlotState(refusedArt('Unsupported flag format')), { kind: 'refused', reason: 'Unsupported flag format' });
+  assert.deepEqual(toFlagSlotState(NO_ART), { kind: 'none' });
+  assert.deepEqual(toFlagSlotState(missingArt('No flag file'), 'GER'), { kind: 'missing', tag: 'GER' });
 });

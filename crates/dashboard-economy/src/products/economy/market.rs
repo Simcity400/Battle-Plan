@@ -1,5 +1,4 @@
 
-pub mod history;
 pub mod ledger;
 
 use dashboard_base::products::Country;

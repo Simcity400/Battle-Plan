@@ -38,6 +38,8 @@ pub const OUTCOME_CANCELED: i32 = 5;
 pub const END_DATE_VTABLE_WITHHELD: &str = "raid end date vtable withheld";
 pub const END_DATE_VTABLE_MISMATCH: &str = "raid end date vtable mismatch";
 pub const END_DATE_PRESENCE_INVALID: &str = "raid end date presence invalid";
+pub const END_DATE_UNREADABLE: &str = "raid end date unreadable";
+pub const COMPLETION_COUNTRY_UNREADABLE: &str = "raid completion country unreadable";
 pub const COMPLETION_COUNTRY_NEGATIVE: &str = "raid completion country handle negative";
 pub const COMPLETION_COUNTRY_UNLINKED: &str = "raid completion country handle unlinked";
 pub const COMPLETION_COUNTRY_OUT_OF_RANGE: &str = "raid completion country handle outside country table";
@@ -136,6 +138,7 @@ pub(crate) fn read_row(
     let mut tail = [0_u8; COMPLETION_COUNTRY + 4 - DETECTED];
     let mut unit = [0_u8; 16];
     let mut travelled = [0_u8; 8];
+    let (mut end_readable, mut completion_readable) = (true, true);
     let field = |offset| {
         address
             .checked_add(offset)
@@ -160,7 +163,41 @@ pub(crate) fn read_row(
         ],
     ) != 6
     {
-        return Err("raid instance unreadable");
+        let mut flag = [0_u8; 1];
+        let mut handles = [0_u8; 16];
+        if memory.copy_scattered(
+            [
+                address,
+                field(PHASE)?,
+                field(RAID_TYPE)?,
+                field(DETECTED)?,
+                field(SHOW_FOR_COUNTRIES)?,
+                field(UNIT)?,
+                field(DISTANCE)?,
+            ],
+            &mut [
+                &mut identity,
+                &mut state,
+                &mut definition,
+                &mut flag,
+                &mut handles,
+                &mut unit,
+                &mut travelled,
+            ],
+        ) != 7
+        {
+            return Err("raid instance unreadable");
+        }
+        tail[0] = flag[0];
+        tail[SHOW_FOR_COUNTRIES - DETECTED..][..16].copy_from_slice(&handles);
+        end_readable = memory.copy_scattered(
+            [field(END_DATE)?],
+            &mut [&mut tail[END_DATE - DETECTED..=END_PRESENT - DETECTED]],
+        ) == 1;
+        completion_readable = memory.copy_scattered(
+            [field(COMPLETION_COUNTRY)?],
+            &mut [&mut tail[COMPLETION_COUNTRY - DETECTED..]],
+        ) == 1;
     }
     let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected as u64 {
@@ -195,6 +232,7 @@ pub(crate) fn read_row(
         engine_sites::at(base, cgame_date::VTABLE_RVA),
         engine_sites::at(base, cgame_date::PERSISTENT_VTABLE_RVA),
     ) {
+        _ if !end_readable => (None, Some(END_DATE_UNREADABLE)),
         (Some(primary), Some(persistent)) => match tail[END_PRESENT - DETECTED] {
             0 => (Some(None), None),
             1 => {
@@ -222,7 +260,9 @@ pub(crate) fn read_row(
             .try_into()
             .unwrap(),
     );
-    let (completion_country, completion_country_refusal) = if raw_victim == 0 {
+    let (completion_country, completion_country_refusal) = if !completion_readable {
+        (None, Some(COMPLETION_COUNTRY_UNREADABLE))
+    } else if raw_victim == 0 {
         (Some(None), None)
     } else if raw_victim < 0 {
         (None, Some(COMPLETION_COUNTRY_NEGATIVE))
