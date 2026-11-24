@@ -131,6 +131,7 @@ impl TableView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Keys {
     All,
     These(Vec<u128>),
