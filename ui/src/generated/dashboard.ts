@@ -3182,7 +3182,11 @@ export type WarLossesReply = { branchId: string, hour: number,
  * Each war the viewpoint saw at the hour, in the order of the wars.
  */
 wars: Array<WarCasualties>, warnings: Array<string>, };
-export type SpecialProjectsParams = { hour?: number, branchId: string, country: CountryRef, };
+export type SpecialProjectsParams = { hour?: number, branchId: string, country: CountryRef,
+/**
+ * Only the projects shown at the hour, each with the statuses and markers that decide it: the Current view.
+ */
+current?: boolean, };
 export type ProjectPerson = {
 /**
  * None where the recorded reference cannot say whether a scientist is assigned.
@@ -3264,7 +3268,11 @@ owner: number, local: number,
  */
 firstRead: number, firstState: ProjectState, statuses: Array<ProjectStatus>, entries: Array<ProjectEntry>, attempts: Array<ProjectAttempt>, };
 export type ShownCompleted = { project: number, date: number | null, };
-export type ProjectsShown = { through: number | null, running: Array<number>, completed: Array<ShownCompleted>, undated: number, };
+export type ProjectsShown = { through: number | null, running: Array<number>,
+/**
+ * Projects whose state was read but not understood: neither in progress nor completed.
+ */
+unknown: Array<number>, completed: Array<ShownCompleted>, undated: number, };
 export type SpecialProjectsReply = { branchId: string, tag: string,
 /**
  * The tag's holders over the branch.
@@ -4510,10 +4518,14 @@ export type WargoalPair = { actor: string, recipient: string,
  * What the recorded wars and factions prove about the pair; none when neither applies.
  */
 standing: WargoalStanding | null, };
-export type WargoalStanding = "atWar" | "sameFaction";
-export type WargoalState = "atWar" | "ready" | "inUse" | "expired";
+export type WargoalStanding = "atWar" | "sameFaction" | "warUnread";
+export type WargoalState = "atWar" | "ready" | "inUse" | "expired" | "unknown";
 export type WargoalStateName = { id: number, name: string, known: boolean, };
-export type WargoalRemoved = { handle: string, name: string | null, recipient: string | null, granted: number | null, grantedMissing: string | null, removed: number, removedExact: boolean, reasonMissing: string, };
+export type WargoalRemoved = { handle: string, name: string | null, recipient: string | null,
+/**
+ * The last hour the goal was witnessed held: its target is named as it was then.
+ */
+seen: number, granted: number | null, grantedMissing: string | null, removed: number, removedExact: boolean, reasonMissing: string, };
 export type WargoalsParamsAtHour = WargoalsParams & { hour: number };
 export type DecryptionParams = { branchId: string, };
 export type Country = { id: number, tag: string | null, };
@@ -6688,8 +6700,8 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "special-project-effects": { "branchId": "leaf", "country": "any", "hour": "leaf", "owner": "leaf", "project": "leaf" },
   "special-project-iteration": { "branchId": "leaf", "country": "any", "hour": "leaf", "ordinal": "leaf", "owner": "leaf", "project": "leaf", "read": "leaf" },
   "special-project-rewards": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "special-projects": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "special-projects-history": { "branchId": "leaf", "country": "any", "hour": "leaf" },
+  "special-projects": { "branchId": "leaf", "country": "any", "current": "leaf", "hour": "leaf" },
+  "special-projects-history": { "branchId": "leaf", "country": "any", "current": "leaf", "hour": "leaf" },
   "sprite-artwork": { "sprites": "node", "sprites[]": "node", "sprites[].frame": "leaf", "sprites[].key": "leaf", "sprites[].recorded": "leaf", "sprites[].text": "leaf", "textures": "node", "textures[]": "node", "textures[].frame": "leaf", "textures[].frames": "leaf", "textures[].path": "leaf" },
   "stability-part-names": { "branchId": "leaf", "country": "any", "hour": "leaf", "parts": "node", "parts[]": "leaf" },
   "stockpile-artwork": { "branchId": "leaf", "country": "any", "hour": "leaf", "variants": "node", "variants[]": "leaf" },

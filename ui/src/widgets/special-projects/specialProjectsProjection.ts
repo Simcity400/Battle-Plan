@@ -126,8 +126,8 @@ export const specialProjectsDeclaration: CardWidgetDeclaration<Record<string, ne
             channel: 'panel',
             coverage: { mode: 'keyed', keys: [ctx.countryTag] },
             product: 'special-projects',
-            followQuery: { panel: 'special-projects', branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) },
-            params: { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) },
+            followQuery: { panel: 'special-projects', branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag), current: true },
+            params: { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag), current: true },
             validate: validateSpecialProjectsReply,
           },
         }]

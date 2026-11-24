@@ -56,6 +56,10 @@ pub struct SpecialProjectsParams {
     pub hour: Option<i32>,
     pub branch_id: String,
     pub country: Country,
+    #[doc = " Only the projects shown at the hour, each with the statuses and markers that decide it: the Current view."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub current: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -1084,6 +1088,12 @@ fn spans(spans: &[(i32, i32)]) -> Vec<HourSpan> {
     spans.iter().map(|&(first, last)| HourSpan { first_hour: first, last_hour: last }).collect()
 }
 
+pub(crate) fn shown_runs(runs: &[facts::Run], hour: i32) -> Option<std::ops::RangeInclusive<usize>> {
+    let at = runs.partition_point(|run| run.last < hour);
+    let run = runs.get(at).filter(|run| run.first <= hour)?;
+    (run.state != ProjectState::Cancelled).then(|| at.saturating_sub(1)..=at)
+}
+
 fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, follow: &incremental::Follow, tag: &str, cancelled: &AtomicBool, cache: &mut Option<Spelling>) -> io::Result<SpecialProjectsReply> {
     let facts = &follow.facts;
     let mut naming = Naming::new(content);
@@ -1186,11 +1196,22 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
         ProjectRecord { id: format!("{}:{}:{owner}:{local}", country.0, country.1), owner, local, first_read: first.0, first_state: first.1, statuses, entries, attempts }
     };
     let mut projects = Vec::with_capacity(facts.projects.len());
-    for project in &facts.projects {
-        let evidence = facts.evidence_of(project).unwrap_or(&none);
-        projects.push(record(project.country, project.owner, project.local, project.first, &project.runs, evidence, &mut naming));
+    if let (Some(true), Some(hour)) = (params.current, follow.through()) {
+        for project in &facts.projects {
+            let Some(shown) = shown_runs(&project.runs, hour) else { continue };
+            let mut markers = facts::Evidence::default();
+            if project.runs[*shown.end()].state == ProjectState::Completed {
+                markers.entries = facts.evidence_of(project).unwrap_or(&none).entries.iter().filter(|kept| kept.entry.completion() && kept.counted).cloned().collect();
+            }
+            projects.push(record(project.country, project.owner, project.local, project.first, &project.runs[shown], &markers, &mut naming));
+        }
+    } else {
+        for project in &facts.projects {
+            let evidence = facts.evidence_of(project).unwrap_or(&none);
+            projects.push(record(project.country, project.owner, project.local, project.first, &project.runs, evidence, &mut naming));
+        }
     }
-    for (&(slot, id, owner, local), evidence) in facts.unlisted() {
+    for (&(slot, id, owner, local), evidence) in facts.unlisted().filter(|_| params.current != Some(true)) {
         let first = evidence.entries.iter().map(|kept| kept.read).min().unwrap_or(i32::MAX);
         projects.push(record((slot, id), owner, local, (first, ProjectState::Unknown), &[], evidence, &mut naming));
     }
@@ -1223,7 +1244,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
         available: spans(&facts.observed),
         partial: spans(&facts.partial),
         projects,
-        reads: facts.reads.iter().flat_map(|(&owner, spans)| spans.iter().map(move |&(first_hour, last_hour, read_hour)| OwnerRead { owner, first_hour, last_hour, read_hour })).collect(),
+        reads: facts.reads.iter().filter(|_| params.current != Some(true)).flat_map(|(&owner, spans)| spans.iter().map(move |&(first_hour, last_hour, read_hour)| OwnerRead { owner, first_hour, last_hour, read_hour })).collect(),
         presentations: presentations.values,
         people: people.values,
         iteration_texts,
@@ -1263,7 +1284,7 @@ impl Product for SpecialProjects {
     const KEY: &'static str = "special-projects";
     const CONTENT_DEPENDENT: bool = true;
     type Params = SpecialProjectsParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![hour: Read, branchId, country];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![hour: Read, branchId, country, current];
     type Reply = SpecialProjectsReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

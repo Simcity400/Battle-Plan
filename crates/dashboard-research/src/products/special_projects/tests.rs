@@ -1151,3 +1151,16 @@ fn the_card_at_an_hour_orders_running_by_progress_and_dates_a_completion_only_by
     assert!(shown.completed[2..].iter().all(|item| item.date.is_none()));
     assert_eq!(shown_at(&projects, &presentations, &available, 60), ProjectsShown { through: Some(60), ..ProjectsShown::default() }, "an hour not recorded shows nothing");
 }
+
+#[test]
+fn the_current_view_carries_only_the_status_at_the_hour_and_the_one_before_it_whatever_the_history() {
+    use super::{facts::Run, shown_runs};
+    let run = |first: i32, last: i32, state: ProjectState| Run { first, last, read: first, look: 0, progress: 0, state, iterations: None, scientist_read: None, last_scientist_read: None };
+    let mut history: Vec<Run> = (0..1_000).map(|day| run(day * 24, day * 24 + 23, ProjectState::Running)).collect();
+    history.push(run(24_000, 24_100, ProjectState::Completed));
+    assert_eq!(shown_runs(&history, 24_050), Some(999..=1000), "a completed project keeps the status that dates its attempt and nothing older");
+    assert_eq!(shown_runs(&history, 12), Some(0..=0));
+    assert_eq!(shown_runs(&history, 30_000), None, "not held at the hour is not shown");
+    let cancelled = [run(0, 9, ProjectState::Running), run(10, 20, ProjectState::Cancelled)];
+    assert_eq!(shown_runs(&cancelled, 15), None, "a cancelled project leaves Current");
+}
