@@ -76,6 +76,17 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     })),
   },
   {
+    kind: 'air-kills-losses',
+    view: 'paired',
+    label: 'Paired bars',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../air-kills-losses/airKillsLossesProjection.ts').then(mod => ({
+      family: 'bars', kind: 'air-kills-losses', view: 'paired',
+      projection: mod.airKillsLossesPairedProjection, declaration: mod.airKillsLossesPairedDeclaration,
+    })),
+  },
+  {
     kind: 'air-superiority-region',
     view: DEFAULT_VIEW,
     family: 'bars',

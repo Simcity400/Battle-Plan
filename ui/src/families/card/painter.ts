@@ -2,9 +2,7 @@ import { ellipsise } from '../../charts/labels.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import {
   DATE_COLUMN_WIDTH,
-  drawArtSlot,
   drawDateColumn,
-  drawFlagSlot,
   drawMissingMark,
   drawRowFocusRing,
   drawRowHairline,
@@ -15,9 +13,9 @@ import {
   drawTrackBar,
   resolveKitTokens,
 } from '../../draw/kit.ts';
-import { toArtSlotState, toFlagSlotState } from '../art/adapters.ts';
+import { drawMediaSlot } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
-import type { ArtResult } from '../art/types.ts';
+import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { formatValueState } from '../valueFormat.ts';
 import {
@@ -30,7 +28,7 @@ import {
   visibleCardRange,
   type CardLayout,
 } from './layout.ts';
-import { cardTitleText, type CardHeroRow, type CardItemRow, type CardMedia, type CardMeter, type CardModel, type CardSectionRow } from './model.ts';
+import { cardTitleText, type CardHeroRow, type CardItemRow, type CardMeter, type CardModel, type CardSectionRow } from './model.ts';
 
 export interface DrawCardsInput {
   readonly model: CardModel;
@@ -54,23 +52,6 @@ function line(ctx: Canvas2D, text: string, x: number, y: number, width: number, 
   const shown = ellipsise(text, width, s => textWidth(ctx, s));
   ctx.fillText(shown, align === 'right' ? x + width : x, y);
   return textWidth(ctx, shown);
-}
-
-function resolveMedia(media: CardMedia, artCache?: LaneArtCache): ArtResult {
-  const art = media.art;
-  if (art.status === 'ready' && !art.bitmap && artCache) return artCache.resolve(art) ?? art;
-  return art;
-}
-
-function drawMedia(ctx: Canvas2D, media: CardMedia | undefined, x: number, middleY: number, width: number, height: number, theme: FamilyTheme, artCache?: LaneArtCache): void {
-  if (!media) return;
-  const y = Math.round(middleY - height / 2);
-  const art = resolveMedia(media, artCache);
-  if (media.kind === 'flag') {
-    drawFlagSlot(ctx, x, y, toFlagSlotState(art, media.tag), theme, { width, height });
-    return;
-  }
-  drawArtSlot(ctx, x, y, width, height, toArtSlotState(art, media.name), theme, { radius: 3 });
 }
 
 function meterFraction(meter: CardMeter): number | null {
@@ -113,7 +94,7 @@ function drawHero(ctx: Canvas2D, row: CardHeroRow, top: number, layout: CardLayo
   const artW = 54;
   const artH = 48;
   const artMid = top + 12 + artH / 2;
-  drawMedia(ctx, row.art, inner, artMid, artW, artH, theme, artCache);
+  drawMediaSlot(ctx, inner, artMid, artW, artH, row.art, theme, { artCache, radius: 3 });
   const textX = inner + artW + 14;
   let figureW = 0;
   if (row.figure) {
@@ -139,11 +120,11 @@ function drawItem(ctx: Canvas2D, model: CardModel, row: CardItemRow, top: number
   ctx.save();
   if (row.muted) ctx.globalAlpha = MUTED_ROW_ALPHA;
   if (columns.date && row.date) drawDateColumn(ctx, layout.dateX, top, height, row.date.hour, theme);
-  if (columns.flag && row.flag) drawMedia(ctx, row.flag, layout.flagX + layout.flagInset, middleY, CARD_FLAG_WIDTH, CARD_FLAG_HEIGHT, theme, artCache);
+  if (columns.flag && row.flag) drawMediaSlot(ctx, layout.flagX + layout.flagInset, middleY, CARD_FLAG_WIDTH, CARD_FLAG_HEIGHT, row.flag, theme, { artCache, radius: 3 });
   const shift = columns.date && !row.date ? -(DATE_COLUMN_WIDTH + 12) : 0;
   const titleX = layout.titleX + shift;
   const titleWidth = layout.titleWidth - shift;
-  if (columns.art && row.art) drawMedia(ctx, row.art, layout.artX + shift, middleY, columns.art.width, columns.art.height, theme, artCache);
+  if (columns.art && row.art) drawMediaSlot(ctx, layout.artX + shift, middleY, columns.art.width, columns.art.height, row.art, theme, { artCache, radius: 3 });
   const subtitle = layout.compact && row.place ? (row.subtitle ? `${row.subtitle} · ${row.place}` : row.place) : row.subtitle;
   const titleFont = `${columns.titleWeight ?? 500} 13px ${theme.font}`;
   const titleColor = row.title.kind === 'notRecorded' ? theme.muted : theme.text;
@@ -219,13 +200,13 @@ export function hitCards(layout: CardLayout, model: CardModel, point: { readonly
 
 export function visibleCardIcons(model: CardModel, layout: CardLayout, scrollTop: number): string[] {
   const { first, last } = visibleCardRange(layout, scrollTop);
-  const urls = new Set<string>();
+  const items: ArtUrlInput[] = [];
   for (let i = first; i < last; i++) {
     const row = model.rows[i]!;
     if (row.kind === 'section') continue;
-    if (row.art?.iconUrl) urls.add(row.art.iconUrl);
-    if (row.kind === 'item' && row.flag?.iconUrl) urls.add(row.flag.iconUrl);
+    items.push(row.art);
+    if (row.kind === 'item') items.push(row.flag);
   }
-  return [...urls];
+  return collectArtUrls(items);
 }
 

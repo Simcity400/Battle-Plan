@@ -1,16 +1,17 @@
 import { object, signed32, unsigned32, signed64, unsigned64, opaqueTag } from '../../dashboard/validation.ts';
 import type { WargoalsReply } from '../../generated/dashboard';
 
-const STATES = new Set(['atWar', 'ready', 'inUse', 'expired']);
+const STATES = new Set(['atWar', 'ready', 'inUse', 'expired', 'unknown']);
+const STANDINGS = new Set(['atWar', 'sameFaction', 'warUnread']);
 const text = (v: unknown): v is string => typeof v === 'string';
 const list = (v: unknown, check: (v: unknown) => boolean): v is unknown[] => Array.isArray(v) && v.every(check);
 export function validateWargoalsReply(v: unknown): WargoalsReply {
   if (!object(v) || !unsigned64(v.branchId) || !opaqueTag(v.tag) || !list(v.warnings, text) || !list(v.stateNames, r => object(r) && unsigned32(r.id) && text(r.name) && typeof r.known === 'boolean')
-    || !list(v.standings, r => object(r) && opaqueTag(r.actor) && opaqueTag(r.recipient) && (r.standing === null || r.standing === 'atWar' || r.standing === 'sameFaction'))
+    || !list(v.standings, r => object(r) && opaqueTag(r.actor) && opaqueTag(r.recipient) && (r.standing === null || STANDINGS.has(r.standing as string)))
     || !list(v.goals, r => object(r) && unsigned64(r.handle) && text(r.name) && opaqueTag(r.actor) && opaqueTag(r.recipient) && typeof r.available === 'boolean'
       && (r.expires === null || signed32(r.expires)) && list(r.states, unsigned32) && list(r.liberate, opaqueTag) && list(r.puppets, opaqueTag) && STATES.has(r.state as string)
       && (r.granted === null || signed32(r.granted)) && (r.grantedMissing === null || text(r.grantedMissing)))
-    || !list(v.removed, r => object(r) && unsigned64(r.handle) && (r.name === null || text(r.name)) && (r.recipient === null || opaqueTag(r.recipient))
+    || !list(v.removed, r => object(r) && unsigned64(r.handle) && (r.name === null || text(r.name)) && (r.recipient === null || opaqueTag(r.recipient)) && signed32(r.seen) && signed32(r.removed) && (r.seen as number) < (r.removed as number)
       && (r.granted === null || signed32(r.granted)) && (r.grantedMissing === null || text(r.grantedMissing)) && signed32(r.removed)
       && typeof r.removedExact === 'boolean' && text(r.reasonMissing))
     || !list(v.justifications, r => object(r) && unsigned64(r.id) && unsigned32(r.ordinal) && text(r.name) && opaqueTag(r.actor) && opaqueTag(r.recipient) && list(r.states, unsigned32)
