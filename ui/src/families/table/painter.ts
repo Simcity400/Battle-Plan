@@ -1,5 +1,6 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { ellipsise } from '../../charts/labels.ts';
+import { measureCanvasText, textWidthCacheStats } from '../../charts/textWidth.ts';
 import { formatDateRange } from '../../dashboard/calendar.ts';
 import {
   drawChildRowTint,
@@ -61,7 +62,6 @@ export interface FamilyTablePicture {
   rowMarks: (string | undefined)[];
   cells: Map<string, (string | undefined)[]>;
   ranks: (string | undefined)[];
-  measures: Map<string, number>;
   fittedTexts: Map<string, string>;
   maximaRows?: readonly FlatTableRow[];
   maximaHour?: number;
@@ -82,7 +82,6 @@ export function createTablePicture(): FamilyTablePicture {
     rowMarks: [],
     cells: new Map(),
     ranks: [],
-    measures: new Map(),
     fittedTexts: new Map(),
   };
 }
@@ -308,19 +307,12 @@ export function drawFamilyTable(
   }
 
   let measurements = 0;
-  const measureCache = picture?.measures ?? new Map<string, number>();
   const fitCache = picture?.fittedTexts ?? new Map<string, string>();
 
   const measure = (text: string, font: string): number => {
-    const key = `${font}\u0000${text}`;
-    let w = measureCache.get(key);
-    if (w === undefined) {
-      if (measureCache.size > 4096) measureCache.clear();
-      ctx.font = font;
-      w = ctx.measureText(text).width;
-      measureCache.set(key, w);
-      measurements++;
-    }
+    const before = textWidthCacheStats().misses;
+    const w = measureCanvasText(ctx, text, font);
+    measurements += textWidthCacheStats().misses - before;
     return w;
   };
 

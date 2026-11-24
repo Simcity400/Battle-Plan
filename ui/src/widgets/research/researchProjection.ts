@@ -4,6 +4,7 @@ import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
 import type { LegendStripEntry } from '../../draw/kit.ts';
+import type { BoundedReadView } from '../../families/plan.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { inHourSpans, nextBoundaryAfter, timelineModel, wholeBranchProof } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineModel, type TimelineProjection, type TimelineSpan } from '../../families/timeline/model.ts';
@@ -150,6 +151,20 @@ function slotNextChange(slotsNow: ResearchSlotsReply | undefined, hour: number):
     }
   }
   return next;
+}
+
+interface SlotsAtHit {
+  readonly reply: ResearchSlotsReply | undefined;
+  readonly live: LiveValues<string | number | bigint> | null | undefined;
+  readonly pending: boolean;
+}
+
+function slotsAtHit(readView: BoundedReadView, at: number): SlotsAtHit {
+  if (at >= readView.hour) {
+    return { reply: readView.panel<ResearchSlotsReply>('slots'), live: readView.live('slots'), pending: false };
+  }
+  const reply = readView.hover<ResearchSlotsReply>('hover', at)?.data;
+  return { reply, live: null, pending: !reply };
 }
 
 function slotClosedHour(slot: ResearchSlotHistory, coverage: readonly HourSpan[], hour: number): number | null {
@@ -325,10 +340,9 @@ export const researchProjection: TimelineProjection<ResearchTimelineOptions> = r
   tooltip(model, hit, readView) {
     const lane = laneByKey(model, hit.laneKey);
     if (!lane) return null;
-    const at = hit.hour ?? model.hour;
+    const at = Math.min(hit.hour ?? model.hour, readView.hour);
     const data = readView.panel<ResearchData>('main');
-    const slotsNow = readView.panel<ResearchSlotsReply>('slots');
-    const live = readView.live('slots');
+    const slotsHit = slotsAtHit(readView, at);
     const span = spanAt(lane, hit);
 
     if (!span) {
@@ -360,8 +374,8 @@ export const researchProjection: TimelineProjection<ResearchTimelineOptions> = r
           ],
         };
       }
-      const nowRead = laneMeta ? slotsNow?.slots.find(item => item.index === laneMeta.slotIndex) : undefined;
-      const saved = nowRead && nowRead.state.token === null ? slotNumbers(nowRead, model.hour).saved : '';
+      const hitRead = laneMeta ? slotsHit.reply?.slots.find(item => item.index === laneMeta.slotIndex) : undefined;
+      const saved = hitRead && hitRead.state.token === null ? slotNumbers(hitRead, at).saved : '';
       return {
         title: lane.label,
         hour: at,
@@ -375,10 +389,13 @@ export const researchProjection: TimelineProjection<ResearchTimelineOptions> = r
     const meta = span.meta as ResearchSpanMeta;
     const subtitle = meta.folderName ? `${meta.folderName} · Slot ${meta.slotIndex + 1}` : `Slot ${meta.slotIndex + 1}`;
     if (span.open) {
-      const nowRead = slotsNow?.slots.find(item => item.index === meta.slotIndex);
-      const numbers = nowRead && nowRead.state.token === meta.token
-        ? slotNumbers(nowRead, model.hour, liveProgressOf(live, meta.slotIndex))
+      const hitRead = slotsHit.reply?.slots.find(item => item.index === meta.slotIndex);
+      const numbers = hitRead && hitRead.state.token === meta.token
+        && (meta.entry === null || hitRead.state.entryFirstObservedHour === meta.entry.firstObservedHour)
+        ? slotNumbers(hitRead, at, liveProgressOf(slotsHit.live, meta.slotIndex))
         : null;
+      const reading = slotsHit.pending ? { value: 'Loading…', tone: 'muted' as const } : null;
+      const unread = slotsHit.reply?.missing ?? null;
       const items = [
         { label: 'Status', value: 'In progress' },
         ...(meta.entry
@@ -391,15 +408,15 @@ export const researchProjection: TimelineProjection<ResearchTimelineOptions> = r
           : []),
         {
           label: 'Progress',
-          ...(numbers && numbers.fraction !== null
+          ...(reading ?? (numbers && numbers.fraction !== null
             ? { value: numbers.percent }
-            : { missingReason: 'Research progress not recorded' }),
+            : { missingReason: unread ?? 'Research progress not recorded' })),
         },
         {
           label: 'Days left',
-          ...(numbers && numbers.left !== null
+          ...(reading ?? (numbers && numbers.left !== null
             ? { value: formatScalar(numbers.left, 'integer') }
-            : { missingReason: 'Days left estimate not recorded' }),
+            : { missingReason: unread ?? 'Days left estimate not recorded' })),
         },
       ];
       const note = meta.unjoined
@@ -498,6 +515,18 @@ export const researchDeclaration: TimelineWidgetDeclaration<ResearchTimelineOpti
             coverage: { mode: 'keyed', keys: [tag] },
             product: 'research-slots',
             followQuery: { panel: 'research-slots', branchId: ctx.branch.id, country },
+            params: { branchId: ctx.branch.id, country },
+            validate: validateResearchSlots,
+          },
+        },
+        {
+          name: 'hover',
+          source: ctx.track.source,
+          branch: ctx.branch.id,
+          offset: ctx.track.axisOffset,
+          read: {
+            shape: 'exact-hover',
+            product: 'research-slots',
             params: { branchId: ctx.branch.id, country },
             validate: validateResearchSlots,
           },
