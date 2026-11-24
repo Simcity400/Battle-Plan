@@ -1224,5 +1224,7 @@ impl Product for RaidLog {
     }
 }
 
+pub mod tally;
+
 #[cfg(test)]
 mod tests;
