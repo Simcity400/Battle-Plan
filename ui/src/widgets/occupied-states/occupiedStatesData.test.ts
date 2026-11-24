@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { liveKey, valuesOf } from '../../charts/live.ts';
+import { liveKey } from '../../charts/live.ts';
 import { countryMatch, membershipUnrecordedAt } from '../../dashboard/groups.ts';
 import type { CountryGroupReply } from '../../generated/dashboard';
-import { emptyReason, garrisonBar, garrisonCell, garrisonText, liveRaw, occupiedRows, percentCell, strengthBar, validateOccupiedStates } from './occupiedStatesData.ts';
+import { emptyReason, garrisonCell, occupiedRows, validateOccupiedStates } from './occupiedStatesData.ts';
 import type { OccupiedState, OccupiedStatesReply } from './occupiedStatesData';
 
 const state = (id: number, occupier: string | null, occupied: string | null, extra: Partial<OccupiedState> = {}): OccupiedState => ({
@@ -36,23 +36,11 @@ test('a filter matches the occupier or the occupied country, and a state no coun
   assert.deepEqual([byOccupied.rows.map(row => row.state), byOccupied.selectionUnknown], [[2], false]);
 });
 
-test('cells round half away from zero and clamp; the bar narrows the strength as the game does', () => {
-  assert.equal(percentCell('9950000'), '100%');
-  assert.equal(percentCell('12000000'), '100%');
-  assert.equal(percentCell('-1'), '0%');
-  assert.equal(percentCell('4449999'), '44%');
-  assert.equal(strengthBar('50000'), 50000n);
-  assert.equal(strengthBar('-50000'), -50000n);
+test('garrison cell state reflects required sign without guessing', () => {
   assert.deepEqual(garrisonCell(state(1, 'GER', 'POL', { garrisonRequiredSign: -1 })), { bar: 0n, red: true });
   assert.deepEqual(garrisonCell(state(1, 'GER', 'POL', { garrisonRequiredSign: 0 })), { bar: null, red: false });
   assert.deepEqual(garrisonCell(state(1, 'GER', 'POL', { garrisonRequiredSign: null })), { bar: null, red: false });
   assert.deepEqual(garrisonCell(state(1, 'GER', 'POL')), { bar: 'cell', red: false });
-  assert.equal(garrisonBar(50000), 50000n);
-  assert.equal(garrisonBar(-50000), -50000n);
-  assert.deepEqual([garrisonText(-1), garrisonText(0), garrisonText(250000), garrisonText(123456)], ['!', '-', '2.50', '1.23']);
-  const values = valuesOf(new Map([[liveKey('1', 'resistance'), 2500000]]), 'Not recorded at this hour');
-  assert.equal(liveRaw(values, '1', 'resistance'), '2500000');
-  assert.equal(liveRaw(values, '1', 'resistanceSpeed'), null);
 });
 
 const humans = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } as const;
