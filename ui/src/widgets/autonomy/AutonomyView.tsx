@@ -12,7 +12,7 @@ import { useGate } from '../../dashboard/regionGate';
 import { SPEC } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { useIdentitySnapshot } from '../../families/identity/react';
+import { useTimelineIdentity } from '../../families/timeline/useTimelineIdentity';
 import FamilyTimelineHost from '../../families/timeline/FamilyTimelineHost';
 import type { SubjectReply } from '../../generated/dashboard';
 import { useMeasureSeries } from '../country-measure/measureSeries';
@@ -126,7 +126,7 @@ export default function AutonomyView({ widget, runtime, active, headerSlot, onDi
     return out;
   }, [tags, series.lineOf, series.lines, series.held]);
 
-  const { snapshot: identitySnapshot, onDemands: onIdentityDemands } = useIdentitySnapshot(runtime.client, track, active);
+  const { snapshot: identitySnapshot, onDemands: onIdentityDemands } = useTimelineIdentity(runtime.client, track, active);
 
   const projectionOptions = useMemo<AutonomyProjectionOptions>(() => ({
     view,
@@ -138,8 +138,8 @@ export default function AutonomyView({ widget, runtime, active, headerSlot, onDi
   }), [view, bySubject, filter.tags, track?.branch.firstHour, seriesSamples]);
 
   const staticSources = useMemo(() => (data
-    ? { panels: { main: data }, hour: head }
-    : null), [data, head]);
+    ? { panels: { main: data }, hour: head, provenInterval: following && track ? [track.branch.firstHour, track.branch.lastHour] as const : null }
+    : null), [data, head, following, track]);
 
   const bounds = useMemo<readonly [number, number] | null>(
     () => (track ? [track.branch.firstHour, track.branch.lastHour] : null),

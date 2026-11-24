@@ -13,7 +13,6 @@ export const definition = {
   kind: 'spirit-history', version: 1, title: 'National spirits history', icon: 'history',
   description: 'Every national spirit the country had, and when.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
-  playsBackDated: true,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 8, h: 9 },
   options: OPTIONS,
 } as const satisfies WidgetMeta;

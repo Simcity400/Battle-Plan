@@ -20,7 +20,6 @@ import {
   drawThresholdMeter,
   drawTimelineSpanBar,
   drawTrackBar,
-  FLAG_LOSER_ALPHA,
   FLAG_SLOT_HEIGHT,
   FLAG_SLOT_WIDTH,
   resolveKitTokens,

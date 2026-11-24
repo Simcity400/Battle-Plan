@@ -8,7 +8,7 @@ import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { productRequest } from '../../dashboard/request';
 import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime';
-import { useIdentitySnapshot } from '../../families/identity/react';
+import { useTimelineIdentity } from '../../families/timeline/useTimelineIdentity';
 import FamilyTimelineHost from '../../families/timeline/FamilyTimelineHost';
 import type { FactionRulesReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
@@ -42,7 +42,7 @@ export default function FactionUpgradesView({ widget, runtime, active, headerSlo
     [track, faction, viewpointTag],
   );
   const reply = useProduct<FactionRulesReply>(runtime.client, req, active, undefined, track?.source);
-  const { snapshot: identitySnapshot, onDemands: onIdentityDemands } = useIdentitySnapshot(runtime.client, track, active);
+  const { snapshot: identitySnapshot, onDemands: onIdentityDemands } = useTimelineIdentity(runtime.client, track, active);
 
   const factionName = faction && chosenAt !== null ? factionNameAt(faction, chosenAt, displayNames[faction.id]) : '';
 
@@ -53,8 +53,8 @@ export default function FactionUpgradesView({ widget, runtime, active, headerSlo
   }), [factionName, options.endedProgrammes, track?.branch.firstHour]);
 
   const staticSources = useMemo(() => (reply.data
-    ? { panels: { main: reply.data }, hour: chosenAt ?? track?.branch.lastHour ?? 0 }
-    : null), [reply.data, chosenAt, track?.branch.lastHour]);
+    ? { panels: { main: reply.data }, hour: chosenAt ?? track?.branch.lastHour ?? 0, provenInterval: following && track ? [track.branch.firstHour, track.branch.lastHour] as const : null }
+    : null), [reply.data, chosenAt, following, track]);
 
   const bounds = useMemo<readonly [number, number] | null>(
     () => (track ? [track.branch.firstHour, track.branch.lastHour] : null),

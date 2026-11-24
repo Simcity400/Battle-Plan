@@ -7,15 +7,25 @@ import type { FailureOrigin } from '../../dashboard/follow/page.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { WidgetSpec } from '../../dashboard/model';
 import { PreparingPage } from '../../dashboard/preparing.ts';
-import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
+import { useWidgetSkeleton, WidgetCaption } from '../../dashboard/widgetFrame.tsx';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { holdElement } from '../../draw/bitmapSurface.ts';
 import { perfLog } from '../../shell/perf.ts';
-import type { BoundedReadView, EntityKind, FamilySourceSubscription } from '../contract.ts';
+import { auditIdOf } from '../audit.ts';
+import { displayedHour } from '../boundedView.ts';
+import type {
+  BoundedReadView,
+  EntityKind,
+  FamilySourceSubscription,
+  InstalledAction,
+  InstalledActionTarget,
+  InstalledPicture,
+} from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import {
   attachAuditWatch,
   bindFamilyPointer,
+  createPlanAuditVerifier,
   handleFamilyKeyDown,
   mountFamilyCanvas,
   renderFamilyBodyState,
@@ -31,29 +41,15 @@ import {
   type FamilyNavTuple,
   type FamilyTooltipField,
   type MountedFamilyCanvas,
+  type PlanAuditSnapshot,
 } from '../host/index.ts';
 import type { CountryLooksMap } from '../looks.ts';
 import type { FamilyTimelineBinding } from './laneView.ts';
-import { deriveTimelineAudit, type TimelineProjection } from './model.ts';
+import { deriveTimelineAudit, type TimelineModel, type TimelineProjection } from './model.ts';
 import { decodeTimelineHit } from './painter.ts';
 import './timelineFamily.css';
 
-const TIMELINE_AUDIT = -2;
-
-interface AuditSnapshot<TOptions> {
-  readonly declaration: TimelineProjection<TOptions>;
-  readonly options: TOptions;
-  readonly expanded: Readonly<Record<string, boolean>>;
-  readonly exactReadView: (hour: number) => Promise<BoundedReadView | null>;
-}
-
-async function verifyTimelineAuditSnapshot<TOptions>(hour: number, snap: AuditSnapshot<TOptions>) {
-  const exact = await snap.exactReadView(hour);
-  if (!exact) return null;
-  const model = snap.declaration.project(exact, snap.options, snap.expanded);
-  const rows = deriveTimelineAudit(model, snap.expanded);
-  return { values: new Map(rows.map(r => [r.key, r.value ?? ''])), ordered: true };
-}
+const TIMELINE_AUDIT = -3;
 
 export interface FamilyTimelineHostProps<TOptions> {
   readonly declaration: TimelineProjection<TOptions>;
@@ -66,7 +62,13 @@ export interface FamilyTimelineHostProps<TOptions> {
   readonly subscriptions: readonly FamilySourceSubscription[];
   readonly allowEmptyFollow?: boolean;
   readonly owner?: string;
-  readonly staticSources?: { readonly panels?: Readonly<Record<string, unknown>>; readonly answers?: Readonly<Record<string, FollowedAnswer>>; readonly hour: number } | null;
+  readonly staticSources?: {
+    readonly panels?: Readonly<Record<string, unknown>>;
+    readonly answers?: Readonly<Record<string, FollowedAnswer>>;
+    readonly hour: number;
+    readonly provenInterval?: readonly [number, number] | null;
+  } | null;
+  readonly onViewportSize?: (width: number, height: number, dpr: number) => void;
   readonly hoverPanels?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly exactReadView?: (hour: number) => Promise<BoundedReadView | null>;
   readonly offset: number;
@@ -114,6 +116,7 @@ export default function FamilyTimelineHost<TOptions>({
   allowEmptyFollow = true,
   owner,
   staticSources = null,
+  onViewportSize,
   hoverPanels,
   exactReadView,
   offset,
@@ -160,6 +163,7 @@ export default function FamilyTimelineHost<TOptions>({
   const dimRef = useRef(false);
   const pauseFlushRef = useRef(0);
   const navRef = useRef<readonly FamilyNavTuple[]>([]);
+  const installedPictureRef = useRef<InstalledPicture | null>(null);
   const lastHourRef = useRef(staticSources?.hour ?? bounds?.[1] ?? 0);
   const typeaheadRef = useRef<{ query: string; until: number }>({ query: '', until: 0 });
   const lastExtentHeightRef = useRef(-1);
@@ -179,7 +183,7 @@ export default function FamilyTimelineHost<TOptions>({
   const metaSigRef = useRef('');
 
   const { theme } = useFamilyTheme(countryColours, countryLooks);
-  const { announce, liveRegionRef } = useFamilyAnnouncer('timeline');
+  const { announce, hasFrame, liveRegionRef } = useFamilyAnnouncer('timeline');
 
   const enabled = active && !prepared && !blockedState && (subscriptions.length > 0 || staticSources !== null || allowEmptyFollow);
   const auditable = !!exactReadView;
@@ -207,7 +211,11 @@ export default function FamilyTimelineHost<TOptions>({
   const tooltips = useFamilyTooltip(tooltipOwner, dataContextKey);
   useFamilyHold(frameRef, held, tooltips);
 
-  const audit = useFamilyAudit<AuditSnapshot<TOptions>>({
+  const auditVerifier = useMemo(
+    () => createPlanAuditVerifier<TimelineModel, { readonly options: TOptions; readonly expanded: Readonly<Record<string, boolean>> }>(),
+    [],
+  );
+  const audit = useFamilyAudit<PlanAuditSnapshot<TimelineModel, { readonly options: TOptions; readonly expanded: Readonly<Record<string, boolean>> }>>({
     pipeline,
     pipe,
     ownerId: TIMELINE_AUDIT,
@@ -225,6 +233,7 @@ export default function FamilyTimelineHost<TOptions>({
     options,
     theme,
     staticSources,
+    onViewportSize,
     hoverPanels,
     exactReadView,
     selectedKey,
@@ -244,6 +253,7 @@ export default function FamilyTimelineHost<TOptions>({
     options,
     theme,
     staticSources,
+    onViewportSize,
     hoverPanels,
     exactReadView,
     selectedKey,
@@ -271,12 +281,18 @@ export default function FamilyTimelineHost<TOptions>({
 
     let auditId: number | undefined;
     if (perfLog && cur.captureActive && cur.exactReadView) {
+      const expandedSnap = expandedRef.current;
+      const decl = cur.declaration;
       auditId = audit.capture({
-        declaration: cur.declaration,
-        options: cur.options,
-        expanded: expandedRef.current,
+        projection: {
+          kind: decl.kind,
+          family: 'timeline',
+          project: (readView, wrapped) => decl.project(readView, wrapped.options, wrapped.expanded),
+        },
+        options: { options: cur.options, expanded: expandedSnap },
         exactReadView: cur.exactReadView,
-      }, verifyTimelineAuditSnapshot);
+        deriveRows: model => deriveTimelineAudit(model, expandedSnap),
+      }, auditVerifier);
     }
 
     const bindingModel: FamilyTimelineBinding<TOptions> = {
@@ -303,10 +319,12 @@ export default function FamilyTimelineHost<TOptions>({
     mounted.canvas.style.height = `${h}px`;
     pipeline.present(pipe, 'timeline');
     const dated = Object.keys(sourceIdsRef.current).length === 0
-      ? (cur.bounds
-        ? { h: cur.bounds[0], c: cur.bounds[1] }
-        : cur.staticSources
-          ? { h: cur.staticSources.hour, c: cur.staticSources.hour }
+      ? (cur.staticSources
+        ? (cur.staticSources.provenInterval
+          ? { h: cur.staticSources.provenInterval[0], c: cur.staticSources.provenInterval[1] }
+          : { h: cur.staticSources.hour, c: cur.staticSources.hour })
+        : cur.bounds
+          ? { h: cur.bounds[0], c: cur.bounds[1] }
           : undefined)
       : undefined;
 
@@ -320,7 +338,7 @@ export default function FamilyTimelineHost<TOptions>({
       {},
       bindingModel,
     );
-  }, [pipeline, pipe, audit.capture, sourceIdsRef]);
+  }, [pipeline, pipe, audit.capture, auditVerifier, sourceIdsRef]);
 
   const bindRef = useRef(bind);
   bindRef.current = bind;
@@ -348,6 +366,18 @@ export default function FamilyTimelineHost<TOptions>({
       onCaptureChange: activeAudit => { latestRef.current.captureActive = activeAudit; },
       bindNow: () => bindRef.current(),
     });
+
+    const activateHit = (key: string, isToggle: boolean, action?: InstalledAction) => {
+      const installed = installedPictureRef.current;
+      if (!installed) return;
+      if (action && (action.installedId !== installed.id || action.owner !== installed.owner)) return;
+      const target = installed.actionKeys.get(key);
+      if (isToggle || target?.toggle) {
+        toggleKeyRef.current(key);
+        return;
+      }
+      latestRef.current.onActivate?.(target?.subject ?? key, target?.meta, target?.hour ?? installed.hour);
+    };
 
     const install = () => {
       const shown = pipeline.view(pipe);
@@ -407,7 +437,8 @@ export default function FamilyTimelineHost<TOptions>({
         latestRef.current.onIdentityDemands(demandsField);
       }
 
-      if (!visible || !shown?.fields) {
+      if (!visible || !shown?.fields || shown.id === undefined) {
+        installedPictureRef.current = null;
         tooltips.hideIfUnpinned();
         return;
       }
@@ -420,6 +451,45 @@ export default function FamilyTimelineHost<TOptions>({
 
       const navField = shown.fields.nav as readonly FamilyNavTuple[] | undefined;
       if (navField) navRef.current = navField;
+      const activeNav = navField ?? navRef.current;
+      const installedHour = displayedHour(shownHour ?? shown.painted ?? shown.h ?? lastHourRef.current);
+      const actionKeys = new Map<string, InstalledActionTarget>();
+      for (const entry of activeNav) {
+        actionKeys.set(entry[0], {
+          subject: entry[0],
+          hour: installedHour,
+          ...(entry[3] >= 0 ? { toggle: true } : {}),
+          label: entry[1],
+          meta: entry[5],
+        });
+      }
+      const installedViewport = shown.viewport ?? {
+        width: viewportRef.current.width,
+        height: viewportRef.current.height,
+        dpr: typeof devicePixelRatio === 'number' ? devicePixelRatio : 1,
+        scrollLeft: 0,
+        scrollTop: viewportRef.current.scrollTop,
+      };
+      const installedAuditId = auditIdOf(shown.fields.audit);
+      installedPictureRef.current = {
+        id: shown.id,
+        owner: shown.installedOwner ?? shown.owner ?? '',
+        generation: {
+          seek: shown.gen?.seek ?? 0,
+          reset: shown.gen?.reset ?? 0,
+          binding: shown.installedBinding ?? shown.binding ?? 0,
+        },
+        factRevisions: {},
+        validInterval: shown.validInterval ?? [installedHour, installedHour],
+        through: shown.through ?? installedHour,
+        hour: installedHour,
+        viewport: installedViewport,
+        optionsRevision: '',
+        themeRevision: '',
+        actionKeys,
+        accessibleDescription: null,
+        ...(installedAuditId !== undefined ? { auditId: installedAuditId } : {}),
+      };
 
       const hoverTipField = shown.fields.tooltip as FamilyTooltipField | undefined;
       const focusTipField = shown.fields.focusTooltip as FamilyTooltipField | undefined;
@@ -443,9 +513,12 @@ export default function FamilyTimelineHost<TOptions>({
       const box = node.getBoundingClientRect();
       const nextW = Math.round(box.width);
       const nextH = Math.round(box.height);
+      const frameBox = frameRef.current?.getBoundingClientRect();
+      if (frameBox) focusAnchorRef.current = { x: frameBox.left + Math.min(200, frameBox.width / 2), y: frameBox.top + 48 };
       if (nextW === viewportRef.current.width && nextH === viewportRef.current.height) return;
       viewportRef.current.width = nextW;
       viewportRef.current.height = nextH;
+      latestRef.current.onViewportSize?.(nextW, nextH, typeof devicePixelRatio === 'number' ? devicePixelRatio : 1);
       bindRef.current();
     };
     updateSize();
@@ -472,7 +545,8 @@ export default function FamilyTimelineHost<TOptions>({
       focusedKeyRef,
       focusAnchorRef,
       accessibleRef,
-      isBlocked: () => dimRef.current || heldRef.current,
+      isBlocked: () => dimRef.current || heldRef.current || !installedPictureRef.current,
+      getInstalled: () => installedPictureRef.current,
       getViewportHeight: () => latestRef.current.viewportHeight,
       parseHit: raw => {
         const parsed = decodeTimelineHit(raw);
@@ -481,19 +555,13 @@ export default function FamilyTimelineHost<TOptions>({
         return { key: parsed.key, toggle: parsed.kind === 'toggle' };
       },
       inspectToken: key => `row:${key}`,
-      onActivate: (key, isToggle) => {
-        const entry = navRef.current.find(item => item[0] === key);
-        if (isToggle || (entry && entry[3] >= 0)) {
-          toggleKeyRef.current(key);
-          return;
-        }
-        latestRef.current.onActivate?.(key, entry?.[5], lastHourRef.current);
-      },
+      onActivate: activateHit,
       onContextMenu: (key, x, y) => {
+        const installed = installedPictureRef.current;
         const build = latestRef.current.contextMenuItems;
-        if (!build) return false;
-        const entry = key ? navRef.current.find(item => item[0] === key) : undefined;
-        const items = build(key, entry?.[1] ?? null, lastHourRef.current);
+        if (!installed || !build) return false;
+        const target = key ? installed.actionKeys.get(key) : undefined;
+        const items = build(key, key ? (target?.label ?? key) : null, target?.hour ?? installed.hour);
         if (!items.length) return false;
         contextMenuRef.current.open(x, y, items);
         return true;
@@ -511,14 +579,15 @@ export default function FamilyTimelineHost<TOptions>({
       auditWatch.dispose();
       mounted.unmount();
       surfaceRef.current = null;
+      reportFamilyShownHour(reportShownRef.current, false, null);
     };
   }, [pipeline, pipe, tooltips]);
 
   useEffect(() => {
     bind();
-  }, [bind, declaration, options, theme, staticSources, hoverPanels, identitySnapshot, expanded, selectedKey, subsReady]);
+  }, [bind, declaration, options, theme, staticSources, hoverPanels, identitySnapshot, expanded, selectedKey, subsReady, audit.captureActive]);
 
-  useFamilyPauseFlush(runtime.clock, active, () => {
+  useFamilyPauseFlush(runtime.clock, () => {
     pauseFlushRef.current++;
     bindRef.current();
   });
@@ -536,25 +605,39 @@ export default function FamilyTimelineHost<TOptions>({
     handleFamilyKeyDown(event, {
       nav: navRef.current,
       focusedKey: focusedKeyRef.current,
-      typeahead: typeaheadRef.current,
+      typeaheadRef,
       pageStep: Math.max(1, Math.floor((viewportRef.current.height || 200) / 36)),
-      isBlocked: () => dimRef.current || heldRef.current,
-      focusKey: key => {
+      blocked: dimRef.current || heldRef.current || !installedPictureRef.current,
+      isPinnedTooltip: () => tooltips.isPinned(),
+      onFocusKey: key => {
         focusedKeyRef.current = key;
         const entry = navRef.current.find(item => item[0] === key);
-        if (entry && scrollRangeIntoView(bodyRef.current, viewportRef.current, entry[2] * 36, 36)) {
-          bindRef.current();
-        } else {
-          bindRef.current();
+        if (entry) {
+          scrollRangeIntoView(bodyRef.current, viewportRef.current, entry[2] * 36, 36);
         }
+        bindRef.current();
       },
-      toggleKey: key => toggleKeyRef.current(key),
-      activateKey: key => {
-        const entry = navRef.current.find(item => item[0] === key);
-        latestRef.current.onActivate?.(key, entry?.[5], lastHourRef.current);
+      onToggleTree: key => toggleKeyRef.current(key),
+      onActivate: entry => {
+        const installed = installedPictureRef.current;
+        if (!installed) return;
+        const target = installed.actionKeys.get(entry[0]);
+        latestRef.current.onActivate?.(target?.subject ?? entry[0], target?.meta ?? entry[5], target?.hour ?? installed.hour);
       },
-      unpinTooltip: () => tooltips.unpin(announce),
-      togglePinTooltip: () => {
+      onContextMenu: entry => {
+        const installed = installedPictureRef.current;
+        const build = latestRef.current.contextMenuItems;
+        if (!installed || !build) return false;
+        const key = entry?.[0] ?? null;
+        const target = key ? installed.actionKeys.get(key) : undefined;
+        const items = build(key, key ? (target?.label ?? entry?.[1] ?? key) : null, target?.hour ?? installed.hour);
+        if (!items.length) return false;
+        const pos = focusAnchorRef.current;
+        contextMenuRef.current.open(pos.x, pos.y, items);
+        return true;
+      },
+      onUnpinTooltip: () => tooltips.unpin(announce),
+      onTogglePinTooltip: () => {
         if (tooltips.isPinned()) {
           tooltips.unpin(announce);
           return;
@@ -567,7 +650,6 @@ export default function FamilyTimelineHost<TOptions>({
           tooltips.pinFocused(tip, lastHourRef.current, pos, latestRef.current.viewportHeight, announce);
         }
       },
-      announce,
     });
   }, [announce, pipeline, pipe, tooltips]);
 
@@ -578,9 +660,12 @@ export default function FamilyTimelineHost<TOptions>({
     empty: meta.empty,
     emptyDetail: meta.emptyDetail,
     emptyKind: meta.emptyKind,
+    subject,
     loadingLabel: loadingLabel ?? `Loading ${subject}…`,
+    pipeline,
+    pipe,
     onRetryStream: retryStream,
-    onRetryLocal: retryLocal,
+    onRetryLocal: () => retryLocal(),
   });
 
   const headerPortal = headerSlot && meta.headerSummary
@@ -590,28 +675,29 @@ export default function FamilyTimelineHost<TOptions>({
   return (
     <div ref={frameRef} className={`tl-frame ${className ?? ''}`.trim()} role="region" aria-label={label}>
       {headerPortal}
-      {bodyState ?? (
-        <div
-          ref={bodyRef}
-          className="tl-body"
-          tabIndex={0}
-          onFocus={() => {
-            focusInsideRef.current = true;
-            if (!focusedKeyRef.current && navRef.current.length > 0) {
-              focusedKeyRef.current = navRef.current[0]![0];
-            }
-            bindRef.current();
-          }}
-          onBlur={() => {
-            focusInsideRef.current = false;
-            tooltips.hideIfUnpinned();
-            bindRef.current();
-          }}
-          onKeyDown={onKeyDown}
-        />
-      )}
+      {bodyState}
+      <div
+        ref={bodyRef}
+        className="tl-body"
+        style={bodyState ? { display: 'none' } : undefined}
+        tabIndex={0}
+        onFocus={() => {
+          focusInsideRef.current = true;
+          if (!focusedKeyRef.current && navRef.current.length > 0) {
+            focusedKeyRef.current = navRef.current[0]![0];
+          }
+          bindRef.current();
+        }}
+        onBlur={() => {
+          focusInsideRef.current = false;
+          tooltips.hideIfUnpinned();
+          bindRef.current();
+        }}
+        onKeyDown={onKeyDown}
+      />
+      {meta.notes.length > 0 ? <WidgetCaption>{meta.notes.join(' ')}</WidgetCaption> : null}
       <div ref={accessibleRef} className="tl-sr-only" aria-hidden="true" />
-      <div ref={liveRegionRef} className="tl-sr-only" aria-live="polite" />
+      {!hasFrame ? <div ref={liveRegionRef} className="tl-sr-only" aria-live="polite" /> : null}
       {contextMenu.menu}
     </div>
   );

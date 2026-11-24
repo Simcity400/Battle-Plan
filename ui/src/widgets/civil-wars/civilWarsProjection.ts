@@ -50,8 +50,6 @@ export const civilWarsProjection: TimelineProjection<CivilWarsProjectionOptions>
       : view.wars;
 
     const headerSummary = summaryText({
-      ...view,
-      wars: filteredWars,
       total: filteredWars.length,
       ongoing: filteredWars.filter(w => w.ongoing).length,
     });

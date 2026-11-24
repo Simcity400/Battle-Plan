@@ -11,7 +11,6 @@ export const definition = {
   kind: 'idea-timeline', version: 1, title: 'Idea timeline', icon: 'layers',
   description: 'Laws, advisors and designers over time.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
-  playsBackDated: true,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 6, h: 9 },
   options: OPTIONS,
 } as const satisfies WidgetMeta;

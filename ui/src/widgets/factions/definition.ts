@@ -14,7 +14,6 @@ export const definition = {
   kind: 'factions', version: 1, title: 'Factions', icon: 'shield',
   description: 'Every faction and its members over time, with each faction’s leader marked.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
-  playsBackDated: true,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 8, h: 10 },
   countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   factionColours: true,

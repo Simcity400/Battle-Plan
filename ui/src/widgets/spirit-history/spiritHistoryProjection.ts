@@ -1,6 +1,6 @@
 import { formatDay } from '../../dashboard/calendar.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { validateIdeaHistory } from '../../dashboard/ideaHistoryReply.ts';
+import { validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
 import { describeRun, startUnseen } from '../../charts/timeline/runState.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { clipSpansToHour, inHourSpans, nextBoundaryAfter, paletteAt, urlArtHandle } from '../../families/timeline/helpers.ts';
@@ -191,7 +191,7 @@ export const spiritHistoryDeclaration: TimelineWidgetDeclaration<SpiritHistoryPr
             followQuery: null,
             params: { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) },
             buildSpanParams: base => base,
-            validate: validateIdeaHistory,
+            validate: validateIdeaHistoryReply,
           },
         }]
       : [],

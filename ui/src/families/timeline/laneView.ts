@@ -30,12 +30,13 @@ import {
   type TimelineModel,
 } from './model.ts';
 import { decodeTimelineHit, drawFamilyTimeline, encodeTimelineHit, hitFamilyTimeline } from './painter.ts';
-import { timelineProjection } from './registry.ts';
+import { ensureTimelineProjection, timelineProjection } from './registry.ts';
 import type { FamilyTooltipEntry } from '../host/tooltips.ts';
 
 export interface FamilyTimelineBinding<TOptions = unknown> {
   readonly family: 'timeline';
   readonly kind: string;
+  readonly view?: string;
   readonly options: TOptions;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
@@ -258,7 +259,7 @@ export function familyTimelineLaneView(
     next(scene: Scene, hour: number, state?: Map<string, unknown>): number {
       if (!isFamilyTimelineBinding(scene.model)) return Infinity;
       const binding = scene.model;
-      const projection = timelineProjection(binding.kind);
+      const projection = timelineProjection(binding.kind, binding.view);
       const nextDay = (Math.floor(hour / 24) + 1) * 24;
       if (!projection?.nextChange) return nextDay;
       const held = state?.get('family-timeline') as HeldFamilyTimeline | undefined;
@@ -279,8 +280,11 @@ export function familyTimelineLaneView(
         return { surfaces: [], fields: {}, motion: false };
       }
       const binding = input.model;
-      const projection = timelineProjection(binding.kind);
-      if (!projection) {
+      const projection = ensureTimelineProjection(binding.kind, binding.view, () => wake(input.widget));
+      if (projection === 'loading') {
+        return { surfaces: [], fields: {}, motion: false };
+      }
+      if (projection === 'unknown') {
         return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown timeline view: ${binding.kind}` };
       }
 
@@ -292,6 +296,8 @@ export function familyTimelineLaneView(
           maxEntries: 256,
           fetchBitmap: options?.fetchBitmap,
         });
+        const tipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
+        const focusTipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
         held = {
           canvas,
           ctx,
@@ -311,11 +317,11 @@ export function familyTimelineLaneView(
           metaField: null,
           navField: null,
           navSig: '',
-          tipGate: new CadenceGate(TOOLTIP_CADENCE_MS),
+          tipGate,
           tipField: null,
-          focusTipGate: new CadenceGate(TOOLTIP_CADENCE_MS),
+          focusTipGate,
           focusTipField: null,
-          flusher: new TrailingFlushScheduler(options?.timers),
+          flusher: new TrailingFlushScheduler([tipGate, focusTipGate], options?.timers),
           auditId: 0,
           auditField: null,
         };
@@ -433,16 +439,16 @@ export function familyTimelineLaneView(
       }
       fields.nav = held.navField;
 
-      const playing = input.speed > 0;
       const tipNow = input.now;
       if (inspectedHit) {
-        if (!playing || held.tipGate.due(tipNow) || held.tipField === null) {
+        const inspectKey = input.inspect ?? inspectedHit.key;
+        if (held.tipGate.due(tipNow, input.speed, inspectKey) || held.tipField === null) {
           const rawTip = projection.tooltip
             ? projection.tooltip(model, inspectedHit, inspectedHit.hour ?? input.hour, readView, binding.options)
             : defaultTimelineTooltip(model, inspectedHit, inspectedHit.hour ?? input.hour);
           const entry = normalizeTooltipEntry(rawTip, inspectedHit.key, inspectedHit.hour ?? input.hour);
           held.tipField = { value: { key: input.inspect, text: entry }, content: content() };
-          held.tipGate.mark(tipNow);
+          held.tipGate.record(tipNow, inspectKey);
         }
         fields.tooltip = held.tipField;
       } else {
@@ -450,14 +456,14 @@ export function familyTimelineLaneView(
       }
 
       if (binding.focusedKey) {
-        if (!playing || held.focusTipGate.due(tipNow) || held.focusTipField === null) {
+        if (held.focusTipGate.due(tipNow, input.speed, binding.focusedKey) || held.focusTipField === null) {
           const focusHit = { kind: 'lane' as const, key: binding.focusedKey, laneKey: binding.focusedKey, hour: input.hour };
           const rawTip = projection.tooltip
             ? projection.tooltip(model, focusHit, input.hour, readView, binding.options)
             : defaultTimelineTooltip(model, focusHit, input.hour);
           const entry = normalizeTooltipEntry(rawTip, binding.focusedKey, input.hour);
           held.focusTipField = { value: { key: `row:${binding.focusedKey}`, text: entry }, content: content() };
-          held.focusTipGate.mark(tipNow);
+          held.focusTipGate.record(tipNow, binding.focusedKey);
         }
         fields.focusTooltip = held.focusTipField;
       } else {

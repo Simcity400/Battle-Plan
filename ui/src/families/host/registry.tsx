@@ -8,6 +8,8 @@ import DeclaredTableWidget from '../table/DeclaredTableWidget';
 import type { AnyTableWidgetDeclaration } from '../table/declaration.ts';
 import type { TimeChartWidgetDeclaration } from '../time-chart/declaration.ts';
 import DeclaredTimeChartWidget from '../time-chart/DeclaredTimeChartWidget';
+import type { AnyTimelineWidgetDeclaration } from '../timeline/declaration.ts';
+import DeclaredTimelineWidget from '../timeline/DeclaredTimelineWidget';
 
 export interface FamilyHostProps extends WidgetProps {
   readonly spec: FamilyViewModule;
@@ -39,7 +41,12 @@ function TimeChartFamilyHostAdapter({ spec, ...props }: FamilyHostProps) {
   return <DeclaredTimeChartWidget declaration={spec.declaration as TimeChartWidgetDeclaration<any, any>} {...props} />;
 }
 
+function TimelineFamilyHostAdapter({ spec, ...props }: FamilyHostProps) {
+  return <DeclaredTimelineWidget declaration={spec.declaration as AnyTimelineWidgetDeclaration} {...props} />;
+}
+
 registerFamilyHost('table', TableFamilyHostAdapter);
 registerFamilyHost('bars', BarsFamilyHostAdapter);
 registerFamilyHost('time-chart', TimeChartFamilyHostAdapter);
 registerFamilyHost('series', TimeChartFamilyHostAdapter);
+registerFamilyHost('timeline', TimelineFamilyHostAdapter);

@@ -14,7 +14,6 @@ export const definition = {
   kind: 'autonomy', version: 1, title: 'Autonomy', icon: 'link',
   description: 'Each subject’s level and its progress towards moving up or down a level, over time.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
-  playsBackDated: true,
   viewSwitch: { option: 'view' },
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 11 },
   countries: { max: Number.MAX_SAFE_INTEGER },

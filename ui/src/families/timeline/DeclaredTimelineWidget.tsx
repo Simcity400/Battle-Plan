@@ -89,6 +89,7 @@ export default function DeclaredTimelineWidget<TProjectionOptions, TAux>({
       panels,
       answers: plan.staticBundle?.answers,
       hour: plan.staticBundle?.hour ?? plan.moment,
+      provenInterval: plan.staticBundle?.provenInterval ?? null,
     };
   }, [plan.staticBundle, extraPanels, plan.moment]);
 
@@ -115,6 +116,7 @@ export default function DeclaredTimelineWidget<TProjectionOptions, TAux>({
       countryLooks={plan.displayedCountryLooks}
       identitySnapshot={plan.identitySnapshot}
       onIdentityDemands={plan.onIdentityDemands}
+      onViewportSize={plan.measureViewport}
       selectedKey={selectedKey}
       onActivate={onActivate}
       onHoverHour={onHoverHour}

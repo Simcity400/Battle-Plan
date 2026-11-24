@@ -4,9 +4,9 @@ import { flagArtHandle } from '../art/provider.ts';
 import type { ArtHandle, BoundedReadView, DisplayedHour } from '../plan.ts';
 import type { TimelineCountryChip } from './model.ts';
 
-export function urlArtHandle(url: string | null | undefined, scope = 'url'): ArtHandle | null {
+export function urlArtHandle(url: string | null | undefined): ArtHandle | null {
   if (!url) return null;
-  return { scope, choice: url, path: url };
+  return { kind: 'url', url };
 }
 
 export function resolveCountryChip(

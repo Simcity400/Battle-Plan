@@ -1,4 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import WarsWidget from './WarsWidget';
+import WarsView from './WarsView';
 
-export default { render: WarsWidget } satisfies WidgetRenderer;
+export default { render: WarsView } satisfies WidgetRenderer;

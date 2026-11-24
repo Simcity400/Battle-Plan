@@ -1,7 +1,7 @@
 import { formatDay } from '../../dashboard/calendar.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { ideaName, ideaNameMissing, validateIdeaHistory } from '../../dashboard/ideaHistoryReply.ts';
+import { ideaName, ideaNameMissing, validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
 import { startUnseen } from '../../charts/timeline/runState.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { clipSpansToHour, inHourSpans, nextBoundaryAfter, paletteAt, urlArtHandle } from '../../families/timeline/helpers.ts';
@@ -255,7 +255,7 @@ export const ideaTimelineDeclaration: TimelineWidgetDeclaration<IdeaTimelineProj
             followQuery: null,
             params: { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) },
             buildSpanParams: base => base,
-            validate: validateIdeaHistory,
+            validate: validateIdeaHistoryReply,
           },
         }]
       : [],

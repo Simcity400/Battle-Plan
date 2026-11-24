@@ -222,6 +222,7 @@ export interface TimelineHitTarget {
 }
 
 export interface TimelineProjection<TOptions = Record<string, never>> {
+  readonly family: 'timeline';
   readonly kind: string;
   project(readView: BoundedReadView, options: TOptions, expanded?: Readonly<Record<string, boolean>>): TimelineModel;
   nextChange?(readView: BoundedReadView, options: TOptions): number;
@@ -267,34 +268,37 @@ export function deriveTimelineAudit(
   expanded: Readonly<Record<string, boolean>>,
 ): AuditRow[] {
   const rows: AuditRow[] = [];
+  const push = (key: string, value: string) => {
+    rows.push({ row: key, key, value });
+  };
   if (model.headerSummary) {
-    rows.push({ key: '__summary__', value: model.headerSummary });
+    push('__summary__', model.headerSummary);
   }
   if (model.headerCard) {
-    rows.push({
-      key: '__header__',
-      value: `${model.headerCard.name}|${model.headerCard.stats.map(s => `${s.label}:${s.value}`).join('|')}`,
-    });
+    push(
+      '__header__',
+      `${model.headerCard.name}|${model.headerCard.stats.map(s => `${s.label}:${s.value}`).join('|')}`,
+    );
   }
   if (model.mode === 'lanes' && model.lanes) {
     for (const lane of visibleLanesOf(model.lanes, expanded)) {
       if (lane.kind === 'section-header') continue;
       const val = lane.auditValue
         ?? (lane.matchup ? `${lane.label}|${lane.matchup.outcome.label}` : lane.subtitle ? `${lane.label}|${lane.subtitle}` : lane.label);
-      rows.push({ key: lane.key, value: val });
+      push(lane.key, val);
     }
   } else if (model.mode === 'meters' && model.meters) {
     for (const meter of model.meters) {
-      rows.push({ key: meter.key, value: meter.auditValue ?? `${meter.label}|${meter.valueText}` });
+      push(meter.key, meter.auditValue ?? `${meter.label}|${meter.valueText}`);
     }
   } else if (model.mode === 'series' && model.series) {
     for (const line of model.series.lines) {
-      rows.push({ key: line.key, value: line.auditValue ?? `${line.label}|${line.endLabel ?? ''}` });
+      push(line.key, line.auditValue ?? `${line.label}|${line.endLabel ?? ''}`);
     }
   } else if (model.mode === 'sections' && model.sections) {
     for (const section of model.sections) {
       for (const item of section.items) {
-        rows.push({ key: item.key, value: `${section.title}|${item.label}|${item.rightText}` });
+        push(item.key, `${section.title}|${item.label}|${item.rightText}`);
       }
     }
   }
@@ -361,7 +365,15 @@ export function collectTimelineArtHandles(
   const handles: ArtHandle[] = [];
   const push = (handle: ArtHandle | null | undefined) => {
     if (!handle) return;
-    const key = `${handle.scope}|${handle.choice}|${handle.path ?? ''}|${handle.sprite ?? ''}|${handle.frame ?? 0}`;
+    const key = handle.kind === 'flag'
+      ? `flag|${handle.choice}|${handle.size}`
+      : handle.kind === 'sprite'
+        ? `sprite|${handle.key}|${handle.frame ?? 0}`
+        : handle.kind === 'portrait'
+          ? `portrait|${handle.key}|${handle.owner ?? ''}`
+          : handle.kind === 'path'
+            ? `path|${handle.path}|${handle.frame ?? 0}`
+            : `url|${handle.url}|${handle.frame ?? 0}`;
     if (seen.has(key)) return;
     seen.add(key);
     handles.push(handle);
