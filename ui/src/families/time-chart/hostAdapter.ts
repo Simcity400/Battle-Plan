@@ -154,6 +154,7 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
   parseHit: parseTimeChartHit,
   inspectToken: key => key,
   gestures: createTimeChartGestures(),
+  deriveAuditRows: model => model.auditRows ?? [],
   buildBinding: ctx => {
     if (!ctx.extent) return null;
     const tiledLines: SerializedTiledLine[] = [];
@@ -204,6 +205,7 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
       ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
       ...(ctx.hovers && Object.keys(ctx.hovers).length ? { hovers: ctx.hovers } : {}),
       ...(ctx.audit ? { audit: true, auditId: ctx.auditId } : {}),
+      ...(ctx.focusedKey ? { focusedKey: ctx.focusedKey } : {}),
     };
   },
 };

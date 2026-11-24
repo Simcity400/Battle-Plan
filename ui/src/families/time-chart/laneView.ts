@@ -22,6 +22,8 @@ import {
 } from './declaration.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart, parseChartInspect } from './hitTest.ts';
 import { layoutTimeChart, type TimeChartLayout } from './layout.ts';
+import type { FamilyNavTuple } from '../host/keyboard.ts';
+import { formatDateOnly } from '../valueFormat.ts';
 import type { TimeChartModel } from './model.ts';
 import { collectVisibleChartArt, drawTimeChart } from './painter.ts';
 
@@ -85,6 +87,12 @@ interface HeldTimeChart {
   lastModel: TimeChartModel | null;
   lastLayout: TimeChartLayout | null;
   lastTipText: string;
+  lastNavSig: string;
+  lastNavText: string;
+  lastNavContent: string;
+  lastNav: readonly FamilyNavTuple[];
+  lastFocusText: string;
+  lastFocusContent: string;
   lastTipContent: string;
   lastMetaText: string;
   lastMetaContent: string;
@@ -238,6 +246,19 @@ function buildReadView(
   });
 }
 
+export function chartNavStops(model: TimeChartModel, layout: TimeChartLayout): readonly FamilyNavTuple[] {
+  const stops: { readonly hour: number; readonly key: string; readonly name: string }[] = [];
+  for (const tick of layout.axisTicks) {
+    if (tick.hour <= model.hour) stops.push({ hour: tick.hour, key: `plot:${tick.hour}`, name: formatDateOnly(tick.hour) });
+  }
+  for (const placed of layout.markers) {
+    stops.push({ hour: placed.marker.hour, key: `marker:${placed.index}@${placed.marker.hour}`, name: placed.marker.title });
+  }
+  stops.push({ hour: model.hour, key: `plot:${model.hour}`, name: formatDateOnly(model.hour) });
+  stops.sort((a, b) => a.hour - b.hour);
+  return stops.map((stop, index) => [stop.key, stop.name, index, 0, ''] as const);
+}
+
 export function timeChartLaneView(
   wake?: (widget: number) => void,
   options?: TimeChartLaneOptions,
@@ -281,6 +302,12 @@ export function timeChartLaneView(
           lastModel: null,
           lastLayout: null,
           lastTipText: '',
+          lastNavSig: '',
+          lastNavText: '',
+          lastNavContent: content(),
+          lastNav: [],
+          lastFocusText: '',
+          lastFocusContent: content(),
           lastTipContent: content(),
           lastMetaText: '',
           lastMetaContent: content(),
@@ -511,9 +538,32 @@ export function timeChartLaneView(
       }
       fields.meta = { value: metaPayload, content: `meta:${held.lastMetaContent}` };
 
+      if (sig !== held.lastNavSig) {
+        held.lastNavSig = sig;
+        const stops = chartNavStops(model, layout);
+        const text = JSON.stringify(stops);
+        if (text !== held.lastNavText) {
+          held.lastNavText = text;
+          held.lastNavContent = content();
+        }
+        held.lastNav = stops;
+      }
+      fields.nav = { value: held.lastNav, content: `nav:${held.lastNavContent}` };
+
+      if (binding.focusedKey) {
+        const focusTip = deriveTimeChartTooltip(model, layout, binding.focusedKey);
+        const tipObj = { key: `focus:${binding.focusedKey}`, text: focusTip };
+        const focusText = JSON.stringify(tipObj);
+        if (focusText !== held.lastFocusText) {
+          held.lastFocusText = focusText;
+          held.lastFocusContent = content();
+        }
+        fields.focusTooltip = { value: tipObj, content: `focus:${held.lastFocusContent}` };
+      }
+
       if (binding.audit && model.auditRows) {
         fields.audit = {
-          value: { auditId: binding.auditId, rows: model.auditRows },
+          value: { id: binding.auditId, rows: model.auditRows },
           content: `audit:${binding.auditId ?? 0}:${held.content}`,
         };
       }

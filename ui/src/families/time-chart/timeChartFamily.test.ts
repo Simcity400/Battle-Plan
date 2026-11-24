@@ -15,7 +15,7 @@ import { commandPowerProjection } from '../../widgets/command-power/commandPower
 import { stabilityProjection } from '../../widgets/stability/stabilityProjection.ts';
 import { registerTimeChart, type TimeChartBinding } from './declaration.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from './hitTest.ts';
-import { createTimeChartGestures, parseTimeChartHit } from './hostAdapter.ts';
+import { createTimeChartGestures, parseTimeChartHit, timeChartHostAdapter } from './hostAdapter.ts';
 import { timeChartLaneView } from './laneView.ts';
 import { formatChartAxisValue, layoutTimeChart, niceChartTicks } from './layout.ts';
 import type { ChartMonthSlot, TimeChartModel } from './model.ts';
@@ -424,6 +424,25 @@ describe('time-chart laneView integration', () => {
     assert.deepEqual(painted.fields.artDemands?.value, [{ kind: 'sprite', key: 'GFX_pol_power', frame: 0, recorded: 'recorded-sprite', text: true }],
       'the full sprite handle goes to the art request');
     assert.ok(created.ops.some(op => op.startsWith('text:120')));
+    assert.equal((painted.fields.audit?.value as { id?: number }).id, 7, 'the audit field names its id where the host reads it');
+    const stops = painted.fields.nav?.value as readonly (readonly [string, string, number])[];
+    assert.ok(stops.length >= 2, 'the chart publishes navigation stops');
+    assert.equal(stops[stops.length - 1]![0], `plot:${H1936 + 100 * 24}`, 'the last stop is the playhead');
+    assert.ok(stops.every((stop, index) => stop[2] === index));
+    assert.deepEqual(timeChartHostAdapter.deriveAuditRows?.({ auditRows: [{ row: 'GER', key: 'GER', value: '120' }] } as unknown as TimeChartModel, 0),
+      [{ row: 'GER', key: 'GER', value: '120' }]);
+    const focused = view.paint({
+      widget: 1,
+      subs: [],
+      pictures: [],
+      model: { ...binding, focusedKey: `plot:${H1936 + 100 * 24}` },
+      hour: H1936 + 100 * 24,
+      speed: 0,
+      binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
+      inspect: null,
+      now: 0,
+    }, state, () => `c${seq++}`);
+    assert.equal((focused.fields.focusTooltip?.value as { key: string }).key, `focus:plot:${H1936 + 100 * 24}`, 'a focused stop has its tooltip');
     const hit = painted.hit?.([300, 100]);
     assert.ok(hit && (hit.startsWith('plot:') || hit.startsWith('line:')));
 
