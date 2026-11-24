@@ -1055,7 +1055,7 @@ export interface DeclarativeColumnSpec<TRow, TOptions = unknown> extends TableCo
 }
 
 export type TableCellExtra = Partial<Pick<TableCell,
-  'secondaryValue' | 'subtext' | 'flags' | 'icons' | 'iconStripKind' | 'artShape' | 'artName' | 'icon' | 'iconPending' | 'shortage' | 'blank' | 'actionLabel'>>;
+  'secondaryValue' | 'subtext' | 'flags' | 'icons' | 'iconStripKind' | 'artShape' | 'artName' | 'icon' | 'iconPending' | 'shortage' | 'blank' | 'actionLabel' | 'statusKind'>>;
 
 export interface DeclarativeTableSpec<TReply, TRow, TOptions = unknown> {
   readonly kind: string;
