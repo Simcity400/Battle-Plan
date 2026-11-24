@@ -162,7 +162,7 @@ function drawRowReadout(
     ctx.restore();
     return;
   }
-  ctx.font = `${VALUE_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
+  ctx.font = `${readout.tone === 'muted' ? LABEL_WEIGHT : VALUE_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
   ctx.fillStyle = color;
   const slot = Math.min(READOUT_VALUE_SLOT, Math.max(0, x + width - cursor));
   if (readout.primary) {

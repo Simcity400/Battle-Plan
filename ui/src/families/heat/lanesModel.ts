@@ -45,6 +45,7 @@ export type HeatLaneReadout =
       readonly swatch?: string | 'hollow';
       readonly primary: string;
       readonly secondary?: string;
+      readonly meaning?: string;
       readonly tone?: 'positive' | 'negative' | 'neutral' | 'muted';
       readonly color?: string;
       readonly audit?: string;
@@ -182,7 +183,8 @@ export function readoutAuditText(readout: HeatLaneReadout | undefined): string {
   if (!readout) return '';
   if (readout.audit !== undefined) return readout.audit;
   if (readout.kind === 'value') {
-    return readout.secondary ? `${readout.primary} (${readout.secondary})` : readout.primary;
+    const note = readout.secondary ?? readout.meaning;
+    return note ? `${readout.primary} (${note})` : readout.primary;
   }
   if (readout.kind === 'clear') return readout.label;
   return readout.figure ? `${readout.figure} not recorded` : `Not recorded (${readout.reason})`;
@@ -193,7 +195,8 @@ function readoutTooltip(row: HeatLaneRow, hour: number): FamilyTooltipPayload {
   if (!readout) return { title: row.label, hour, missingReason: 'Not recorded at this hour' };
   if (readout.kind === 'missing') return { title: row.label, hour, missingReason: readout.reason };
   if (readout.kind === 'clear') return { title: row.label, hour, items: [{ label: readout.label, tone: 'muted' }] };
-  return { title: row.label, hour, exactValue: readout.primary, ...(readout.secondary ? { note: readout.secondary } : {}) };
+  const note = readout.secondary ?? readout.meaning;
+  return { title: row.label, hour, exactValue: readout.primary, ...(note ? { note } : {}) };
 }
 
 export function laneCellTooltip(title: string, hour: number, cell: HeatLaneCell): FamilyTooltipPayload {

@@ -41,7 +41,12 @@ test('no traffic is the empty lane, unrecorded hours keep their reason, and the 
   assert.deepEqual(runs[3]!.cell, { kind: 'missing', reason: 'collector queue overflow' });
   const readout = model.rows[0]!.readout!;
   assert.equal(readout.kind === 'value' && readout.primary, '38%');
-  assert.equal(readout.kind === 'value' && readout.secondary, 'Efficiency');
+  assert.equal(readout.kind === 'value' && readout.secondary, undefined, 'the column shows the figure only');
+  assert.equal(readout.kind === 'value' && readout.meaning, 'Efficiency', 'what it is goes to the tooltip, mirror and audit');
+  assert.equal(readout.kind === 'value' && readout.tone, undefined, 'a damaged route is emphasised');
+  const full = { ...reply(50), regions: [{ ...reply(50).regions[0]!, readout: { kind: 'efficiency' as const, value: 100000n } }] };
+  const quiet = projectConvoyHealth(view(50, full), OPTIONS).rows[0]!.readout!;
+  assert.equal(quiet.kind === 'value' && quiet.tone, 'muted', 'a full route is quiet');
   assert.equal(runs.at(-1)!.lastHour, 50);
 });
 

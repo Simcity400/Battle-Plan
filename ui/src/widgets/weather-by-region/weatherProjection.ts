@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS, colour, readableColour } from '../../charts/palette.ts';
+import { CHART_MEASURE_COLOURS, identityColour, readableColour } from '../../charts/palette.ts';
 import { contentKey } from '../../dashboard/options.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
@@ -57,7 +57,7 @@ interface Palette {
 
 function palette(reply: RegionalWeatherReply, surface: string): Palette {
   const flag = new Map<string, string>();
-  reply.flags.forEach((item, ordinal) => flag.set(item.id, colour(surface, ordinal)));
+  reply.flags.forEach((item, ordinal) => flag.set(item.id, identityColour(surface, 'weather', item.id, ordinal)));
   return {
     flag,
     track: surfaceMix(surface, 0.04),
