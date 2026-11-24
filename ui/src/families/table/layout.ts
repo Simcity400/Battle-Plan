@@ -2,6 +2,7 @@ import { VALUE_WEIGHT } from '../../charts/draw.ts';
 import {
   CELL_INSET,
   displayExtra,
+  ROW_MARGIN_X,
   type TableColumnLayout,
   type TableLayout,
   type TableOverflow,
@@ -26,6 +27,8 @@ export interface FamilyColumnLayout extends TableColumnLayout {
   readonly minWidth?: number;
   readonly maxWidth?: number;
   readonly grow?: number;
+  readonly leadInset?: number;
+  readonly trailInset?: number;
 }
 
 export interface FamilyTableLayout extends Omit<TableLayout, 'columns'> {
@@ -162,6 +165,16 @@ export function measureFixedColumnWidths(
   return out;
 }
 
+function withEdgeInsets(shown: readonly FamilyColumnLayout[]): FamilyColumnLayout[] {
+  const last = shown.length - 1;
+  return shown.map((col, idx) => {
+    if (idx !== 0 && idx !== last) return col;
+    const lead = idx === 0 ? ROW_MARGIN_X : 0;
+    const trail = idx === last ? ROW_MARGIN_X : 0;
+    return { ...col, width: col.width + lead + trail, ...(lead ? { leadInset: lead } : {}), ...(trail ? { trailInset: trail } : {}) };
+  });
+}
+
 export function growWeight(column: FamilyColumnLayout): number {
   if (column.grow !== undefined) return Math.max(0, column.grow);
   if (column.display === 'flag' || column.cellKind === 'action' || column.cellKind === 'track' || column.cellKind === 'skill') return 0;
@@ -202,7 +215,8 @@ export function layoutFamilyTable(
     readonly protectedKeys?: ReadonlySet<string>;
   } = {},
 ): FamilyTableLayout {
-  const shown = columns.filter(col => col.shown);
+  const plain = columns.filter(col => col.shown);
+  const shown = withEdgeInsets(plain);
   const rank = options.rankShown ? (options.rankWidth ?? 36) : 0;
   let pinnedCount = 0;
   for (let i = 0; i < shown.length; i++) {
@@ -241,15 +255,14 @@ export function layoutFamilyTable(
   const protectedKeys = new Set<string>(options.protectedKeys ?? []);
   for (let i = 0; i < pinnedCount; i++) if (shown[i]) protectedKeys.add(shown[i]!.key);
   const hidden = new Set<string>();
-  const kept = shown.slice();
-  const candidates = shown
+  let kept = shown;
+  const candidates = plain
     .filter(col => !protectedKeys.has(col.key))
     .sort((a, b) => b.priority - a.priority);
   for (const col of candidates) {
     if (totalOf(kept) <= available) break;
     hidden.add(col.key);
-    const next = kept.filter(item => !hidden.has(item.key));
-    kept.splice(0, kept.length, ...next);
+    kept = withEdgeInsets(plain.filter(item => !hidden.has(item.key)));
   }
   return {
     columns: kept,

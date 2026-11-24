@@ -9,6 +9,7 @@ const paths = {
   map: <><path d="M9 4 3.5 6v14L9 18l6 2 5.5-2V4L15 6 9 4Z" /><path d="M9 4v14M15 6v14" /></>,
   globe: <><circle cx="12" cy="12" r="8.75" /><path d="M3.5 12h17" /><path d="M12 3.25c2.4 2.4 3.6 5.3 3.6 8.75s-1.2 6.35-3.6 8.75c-2.4-2.4-3.6-5.3-3.6-8.75S9.6 5.65 12 3.25Z" /></>,
   grid: <><rect x="3.5" y="3.5" width="7" height="7" rx="1.75" /><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5" /><rect x="13.5" y="11" width="7" height="9.5" rx="1.75" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.75" /></>,
+  table: <><rect x="3.5" y="4.5" width="17" height="15" rx="2" /><path d="M3.5 9.5h17M9 9.5v10" /></>,
   'chart-bars': <><path d="M4 3.5v17h17" /><path d="M8 16V11M13 16V6M18 16V9" /></>,
   'chart-line': <><path d="M4 18.5h16" /><path d="m5.5 14 4.5-4.5 3.5 3 5-6" /></>,
   parliament: <path d="m3 8 9-5 9 5H3ZM3 21h18M5 18h14M6 8v10M10 8v10M14 8v10M18 8v10" />,
