@@ -46,6 +46,7 @@ export const OPTIONS: readonly OptionField[] = [
     kind: 'toggle' as const,
     default: true,
   })),
+  { key: 'activityStrip', section: 'options', label: 'Activity strip', kind: 'toggle', default: true },
   { key: 'artwork', section: 'options', label: 'Game artwork', kind: 'toggle', default: true },
   columnsControl(EVENT_FEED_COLUMNS, LOG_TABLE_BASE, { key: TABLE_SETTINGS_KEY }),
 ];

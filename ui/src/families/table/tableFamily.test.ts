@@ -40,6 +40,7 @@ import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partia
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
 import { computeColumnMaxima, declareTableProjection, tableRank, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type FlatTableRow, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
 import { createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
+import { LaneArtCache } from '../art/laneCache.ts';
 import { treeLevelsOf, treeTextStart } from './cellPainters.ts';
 import { TREE_CHEVRON_LANE } from './layout.ts';
 import { computeRowLayout, TABLE_WINDOW_OVERSCAN, tableRowWindow } from './layout.ts';
@@ -274,6 +275,21 @@ test('scoreboard projection matches followed and exact audits with missing, part
     assert.ok(followedAudit.find(r => r.key === 'FRA:casualties')?.value?.includes(canonicalAuditValue(zeroValue(0))), 'known zero renders zero state');
     assert.ok(followedAudit.find(r => r.key === 'ITA:casualties')?.value?.includes(canonicalAuditValue(partialValue(500n, 'Some inputs were not recorded at this hour'))));
   }
+
+  const hourly = { shown: columns, candidates: ['GER', 'FRA', 'ITA', 'ENG'], top: null, rankMarkers: false, looks };
+  const at = (hour: number, gerFactories: bigint) => scoreboardProjection.project(createBoundedReadView({
+    hour,
+    answers: new Map([
+      ['factories', answer({ keys: [1n, 2n, 3n, 4n], columns: 1, names: ['ITA', 'FRA', 'GER', 'ENG'], values: [10n, 10n, gerFactories, 0n], states: [CELL.value, CELL.value, CELL.value, CELL.missing], reasons: [null, null, null, 'Factories not recorded'] })],
+      ['casualties', answer({ keys: [1n, 2n, 3n, 4n], columns: 1, names: ['ITA', 'FRA', 'GER', 'ENG'], values: [500n, 0n, 200n, 0n], states: [CELL.value, CELL.value, CELL.value, CELL.value] })],
+      ['casualties:partial', answer({ keys: [1n, 2n, 3n, 4n], columns: 1, names: ['ITA', 'FRA', 'GER', 'ENG'], values: [1n, 0n, 0n, 0n], states: [CELL.value, CELL.value, CELL.value, CELL.value] })],
+    ]),
+  }), hourly);
+  const first = at(40, 0n);
+  const quiet = at(41, 0n);
+  assert.deepEqual(quiet.rows.map((row, index) => row === first.rows[index]), [true, true, true, true], 'a quiet hour\'s fresh answers rebuild no row');
+  const moved = at(42, 7n);
+  assert.deepEqual(moved.rows.map(row => row === quiet.rows.find(held => held.key === row.key)), moved.rows.map(row => row.key !== 'GER'), 'only the row whose answer changed is rebuilt');
 });
 
 test('apm-table projection matches followed wire answers and exact replies, including partial gaps and notApplicable zero minutes', () => {
@@ -722,7 +738,7 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
     assert.equal((p1.fields.focusTooltip?.value as { text: { rowKey: string } } | undefined)?.text.rowKey, 'GER', 'focusTooltip tracks focused GER independently of hover');
 
     const p2 = paintAt(rowsB, 1100, 1440, 'row:FRA', 'GER');
-    assert.deepEqual((p2.fields.mirror!.value as { rows: { key: string }[] }).rows.map(r => r.key), ['GER', 'FRA'], 'throttled inside 1s window');
+    assert.equal(p2.fields.mirror, undefined, 'inside the 1 s window the mirror of changed rows is withheld, never the old rows beside the new picture');
 
     const p3 = paintAt(rowsB, 2100, 1440, 'row:FRA', 'GER');
     assert.deepEqual((p3.fields.mirror!.value as { rows: { key: string }[] }).rows.map(r => r.key), ['FRA', 'GER'], 'dirty mirror flushes when due even without a new model change');
@@ -2161,6 +2177,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
     dateGrouped: true,
     rows: [],
     slots: [
+      { kind: 'data', row: mkLogRow('live0', DAY3 + 8, 50, { live: true, title: 'First live same day', statusKind: 'running', statusLabel: 'Running' }) },
       { kind: 'data', row: mkLogRow('live1', DAY3 + 5, 50, { live: true, title: 'Stop the Strikes', inlineSubtext: 'Mission', statusKind: 'running', statusLabel: 'Running', children: [childRow] }) },
       { kind: 'data', row: mkLogRow('h1', DAY2 + 10, 25, { title: 'Event \uFFFC choice', inlinePrefix: 'A', statusKind: 'succeeded', statusLabel: 'Succeeded' }) },
       { kind: 'data', row: mkLogRow('h2', DAY2 + 4, 15, { title: 'Same day exact', statusKind: 'finished', statusLabel: 'Finished' }) },
@@ -2178,7 +2195,8 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
       ? [item.kind, item.key, item.level, item.showDate !== false, item.isDayEnd === true, item.isLiveEnd === true]
       : [item.kind, item.key])),
     [
-      ['data', 'live1', 1, true, false, false],
+      ['data', 'live0', 1, true, false, false],
+      ['data', 'live1', 1, false, false, false],
       ['data', 'c1', 2, true, false, true],
       ['data', 'h1', 1, true, false, false],
       ['data', 'h2', 1, false, false, false],
@@ -2188,7 +2206,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
       ['refused', 'ref:1'],
       ['loading', 'load:1'],
     ],
-    'live block band sits after its last open child, same-day exact repeats hide date while bounded dates stay visible, and gap/refused/loading slots preserve order',
+    'same-day live rows suppress repeat date, live block band sits after its last open child, same-day exact repeats hide date while bounded dates stay visible, and gap/refused/loading slots preserve order',
   );
 
   const geom = computeRowLayout(flatExpanded, 'normal', 'standard');
@@ -2197,7 +2215,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
   const deep = tableRowWindow(queue.length, queueGeom, ROW_HEIGHT.comfortable, queueGeom.tops[100]!, 200);
   assert.equal(deep.first + TABLE_WINDOW_OVERSCAN, 100, 'deep in an expanded queue the published window starts at the row under the scroll position, not at scrollTop / 44');
   assert.ok(queueGeom.tops[deep.first + deep.count - TABLE_WINDOW_OVERSCAN - 1]! < queueGeom.tops[100]! + 200, 'and ends at the last row the viewport shows');
-  const gapTop = geom.tops[5]!;
+  const gapTop = geom.tops[6]!;
   assert.deepEqual(hitFamilyTable(grown, flatExpanded, { x: 40, y: gapTop + 10 }, 36, 0, 0, false, 0, undefined, undefined, undefined, geom), { kind: 'row', rowKey: 'gap:1' });
   const gapTip = deriveTableTooltip(flatExpanded, 'gap:1', logColumns, DAY3 + 12);
   assert.equal(gapTip?.title, 'Not recorded');
@@ -2689,6 +2707,7 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
   const feedSource = buildRowSourceFromHead('feed', { baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '1', rows: feedRows, missing: [] }, undefined, 110)!;
   const feedModel = eventFeedProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', feedSource]]) }), {
     categories: ['diplomacy'],
+    excludedKinds: [],
     artwork: true,
     from: null,
     filter: { passing: null },
@@ -2714,4 +2733,127 @@ test('the audit compares which art a cell shows, never whether its bytes have ar
   assert.equal(pictureError('table', arrived, { values: new Map(arriving.map(row => [row.key, row.value!])), ordered: true }), null);
   const other = audit({ ...base, rows: base.rows.map(row => ({ ...row, cells: { ...row.cells, [column]: { ...row.cells[column]!, iconSlot: true, iconArt: JSON.stringify(['sprite', 'GFX_other', 0, null, false]), iconPending: true } } })) });
   assert.notEqual(pictureError('table', arrived, { values: new Map(other.map(row => [row.key, row.value!])), ordered: true }), null, 'a different picture is still a difference');
+});
+
+test('cold table art and flag slots waiting behind the fetch concurrency limit paint as pending, not confirmed missing', () => {
+  const artCache = new LaneArtCache({
+    maxConcurrent: 6,
+    fetchBitmap: () => new Promise<ImageBitmap>(() => {}),
+  });
+  const columns: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true, widest: ['Country 7'] },
+    { key: 'badge', label: 'Kind', as: 'plain', offered: ['plain'], priority: 1, cellKind: 'kind', widest: ['Kind'] },
+  ];
+  const settings = tableSettingsOf(undefined, columns, { density: 'compact', sort: { column: 'country', direction: 'ascending' } });
+  const baseCols = buildColumnLayouts(columns, settings);
+  const fixedWidths = measureFixedColumnWidths(baseCols, settings, TEST_THEME, text => text.length * 7);
+  const layout = layoutFamilyTable(buildColumnLayouts(columns, settings, fixedWidths), 320, { rankShown: false, rankWidth: 0 });
+
+  const flagUrls = Array.from({ length: 7 }, (_, i) => `art://flag-${i + 1}`);
+  const iconUrls = Array.from({ length: 7 }, (_, i) => `art://icon-${i + 1}`);
+  artCache.requestVisible([...flagUrls, ...iconUrls]);
+  assert.equal(artCache.stateOfUrl(flagUrls[0]!), 'pending');
+  assert.equal(artCache.stateOfUrl(flagUrls[6]!), 'unrequested');
+  assert.equal(artCache.stateOfUrl(iconUrls[6]!), 'unrequested');
+
+  const rows = resolveTableRows({
+    columns,
+    hour: 10,
+    rows: Array.from({ length: 7 }, (_, i) => ({
+      key: `R${i + 1}`,
+      name: `Country ${i + 1}`,
+      cells: {
+        country: {
+          value: knownValue(`Country ${i + 1}`),
+          country: `T0${i + 1}`,
+          iconSlot: true,
+          icon: flagUrls[i]!,
+        },
+        badge: {
+          value: knownValue(`Icon ${i + 1}`),
+          iconSlot: true,
+          icon: iconUrls[i]!,
+          artName: `Icon ${i + 1}`,
+        },
+      },
+    })),
+  }, settings);
+
+  const texts: string[] = [];
+  let roundRectCalls = 0;
+  const base = instrumentedContext().ctx;
+  const recordingCtx = {
+    ...base,
+    measureText(text: string) {
+      return { width: text.length * 5 };
+    },
+    fillText(text: string) {
+      texts.push(text);
+    },
+    roundRect() {
+      roundRectCalls++;
+    },
+  } as unknown as CanvasRenderingContext2D;
+
+  drawFamilyTable(recordingCtx, {
+    layout,
+    rows,
+    settings,
+    hour: 10,
+    width: 320,
+    height: 400,
+    scrollLeft: 0,
+    scrollTop: 0,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: 1,
+    glideDuration: 0,
+    glide: new Map(),
+    artCache,
+    icons: artCache.map,
+    iconVersion: artCache.version,
+    dpr: 1,
+  });
+
+  assert.equal(texts.includes('T07'), false, '7th queued flag waiting behind concurrency limit must not draw missing tag text');
+  assert.equal(roundRectCalls, 0, 'queued unrequested art and flag slots must stay pending with no hatched missing box');
+
+  const missingRows = resolveTableRows({
+    columns,
+    hour: 10,
+    rows: [{
+      key: 'M1',
+      name: 'No Art',
+      cells: {
+        country: { value: knownValue('No Art'), country: 'MIS', iconSlot: true },
+        badge: { value: knownValue('Missing'), iconSlot: true, artName: 'Missing' },
+      },
+    }],
+  }, settings);
+  texts.length = 0;
+  roundRectCalls = 0;
+  drawFamilyTable(recordingCtx, {
+    layout,
+    rows: missingRows,
+    settings,
+    hour: 10,
+    width: 320,
+    height: 120,
+    scrollLeft: 0,
+    scrollTop: 0,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: 2,
+    glideDuration: 0,
+    glide: new Map(),
+    artCache,
+    icons: artCache.map,
+    iconVersion: artCache.version,
+    dpr: 1,
+  });
+  assert.ok(roundRectCalls > 0, 'confirmed-unavailable table art and flag slots still paint the hatched missing box');
+  assert.ok(texts.includes('MIS'), 'confirmed-unavailable flag slot still paints the country tag');
+  artCache.dispose();
 });

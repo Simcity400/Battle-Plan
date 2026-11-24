@@ -113,6 +113,7 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   const [active, setActive] = useState<boolean | null>(typeof IntersectionObserver === 'undefined' ? true : null);
   const [headerSlot, setHeaderSlot] = useState<HTMLSpanElement | null>(null);
   const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(null);
+  const [filterSlot, setFilterSlot] = useState<HTMLSpanElement | null>(null);
   const [captionSlot, setCaptionSlot] = useState<HTMLDivElement | null>(null);
   const [hasBodyState, setHasBodyState] = useState(false);
   const stateOwners = useRef(new Set<object>());
@@ -129,14 +130,14 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   const [hasTimeOpener, setHasTimeOpener] = useState(false);
   const [failures] = useState(() => new HeldFailures());
   const [slots] = useState(() => {
-    const noted: Record<'header' | 'country', HTMLSpanElement | null> = { header: null, country: null };
+    const noted: Record<'header' | 'country' | 'filter', HTMLSpanElement | null> = { header: null, country: null, filter: null };
     let shown = false;
     const slot = (key: keyof typeof noted, set: (element: HTMLSpanElement | null) => void) => (element: HTMLSpanElement | null) => {
       noted[key] = element;
       if (shown) set(element);
     };
-    return { header: slot('header', setHeaderSlot), country: slot('country', setCountrySlot),
-      show() { shown = true; setHeaderSlot(noted.header); setCountrySlot(noted.country); } };
+    return { header: slot('header', setHeaderSlot), country: slot('country', setCountrySlot), filter: slot('filter', setFilterSlot),
+      show() { shown = true; setHeaderSlot(noted.header); setCountrySlot(noted.country); setFilterSlot(noted.filter); } };
   });
 
   useLayoutEffect(() => {
@@ -367,6 +368,7 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
       readingBadge={widget.kind === 'map' ? readingBadge : null}
       summarySlotRef={slots.header}
       countrySlotRef={slots.country}
+      filterSlotRef={slots.filter}
       headerSlotElement={headerSlot}
       source={source}
       onApply={applyWidget}
@@ -386,7 +388,7 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
       <div ref={contentRef} className="dash-widget-content">
         <div className="dash-widget-scaled" style={{ zoom: (widget.contentScale ?? 100) / 100 }}>
           {!drawnHere ? null : active === null ? <WidgetState kind="loading" label={`Loading ${wording.subject}…`} /> : <HeldFailuresContext.Provider value={failures}><MeasuredWidget.Provider value={prepared ? null : widget.id}><FollowedWidgetKey.Provider value={widget.id}><FollowedWidgetKind.Provider value={widget.kind}><FollowedCard.Provider value={card}>
-            <Body key={widget.kind === 'map' ? 0 : pipelineGen} widget={widget} runtime={bodyRuntime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} setOption={saveOption} setOptions={saveOptions} />
+            <Body key={widget.kind === 'map' ? 0 : pipelineGen} widget={widget} runtime={bodyRuntime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} filterSlot={filterSlot} setOption={saveOption} setOptions={saveOptions} />
           </FollowedCard.Provider></FollowedWidgetKind.Provider></FollowedWidgetKey.Provider></MeasuredWidget.Provider></HeldFailuresContext.Provider>}
         </div>
         {widget.kind !== 'map' && readingBadge && <div className="dash-reading-badge">{readingBadge}</div>}
