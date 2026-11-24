@@ -149,6 +149,6 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
     const shown = visibleBarsRange(frame.layout, frame.binding.scrollTop);
     return deriveBarsMirror(frame.model, { first: shown.first, count: Math.max(0, shown.last - shown.first) }, frame.binding.focusedKey);
   },
-  audit: frame => [...(frame.model.pickList ? pickAudit(frame.model.pickList) : []), ...deriveBarsAudit(frame.model, { window: barsAuditWindow(frame.layout, frame.binding.scrollTop) })],
+  audit: frame => [...(frame.model.pickList && frame.layout.pickWidth > 0 ? pickAudit(frame.model.pickList) : []), ...deriveBarsAudit(frame.model, { window: barsAuditWindow(frame.layout, frame.binding.scrollTop) })],
   visibleArt: frame => collectVisibleBarsIcons(frame.model, frame.layout, frame.binding.scrollTop),
 };

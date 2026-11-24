@@ -118,7 +118,6 @@ pub struct AirAnchor {
 #[serde(rename_all = "camelCase")]
 pub struct AirCountryStyle {
     pub tag: String,
-    pub hour: i32,
     pub name: Option<String>,
     pub name_missing: Option<String>,
     pub color: Option<[u8; 3]>,
@@ -481,7 +480,6 @@ pub(crate) fn country_style_at(tag: &str, hour: i32, resolver: &mut dyn SideReso
     let look = resolver.country(tag, hour);
     AirCountryStyle {
         tag: tag.to_owned(),
-        hour,
         name: look.name,
         name_missing: look.name_missing,
         color: look.color,
@@ -907,7 +905,7 @@ impl AtHour for AirSuperiorityAt {
     const KEY: &'static str = "air-superiority";
     const TITLE: &'static str = "Air superiority";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads country appearance looks and faction name runs from branch history context and stamps reply hour");
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = AirSuperiorityParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, mode, viewpoint, viewpointCountry, sides, pinnedRegions, hiddenRegions, theatres, order, "pinnedRegions[]", "hiddenRegions[]"];
     type Reply = AirSuperiorityReply;
@@ -996,6 +994,10 @@ impl AtHour for AirSuperiorityAt {
         })
     }
 
+    fn valid_through(_frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        valid_through(at.context, at.hour)
+    }
+
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         if let Some(resolver) = &at.context.resolver {
             let mut active: &BranchSideResolver = resolver;
@@ -1006,6 +1008,26 @@ impl AtHour for AirSuperiorityAt {
         let mut null = NullSideResolver;
         moment(frame, params, at.holders, at.hour, at.context, at.live, &mut null)
     }
+}
+
+fn valid_through(context: &AirContext, hour: i32) -> i32 {
+    let Ok(index) = &context.index else { return hour };
+    let at = index.epochs.partition_point(|epoch| epoch.last < hour);
+    let mut through = match index.epochs.get(at) {
+        Some(epoch) if epoch.first <= hour => epoch.last,
+        Some(next) => next.first - 1,
+        None => i32::MAX,
+    };
+    if let Some(resolver) = &context.resolver {
+        through = through.min(resolver.looks.next_change(hour).saturating_sub(1));
+        for group in resolver.factions.values() {
+            let next = group.names.iter().flat_map(|run| [run.first_hour, run.last_hour.saturating_add(1)]).filter(|&boundary| boundary > hour).min();
+            if let Some(next) = next {
+                through = through.min(next - 1);
+            }
+        }
+    }
+    through.max(hour)
 }
 
 pub struct AirSuperiorityChoices;

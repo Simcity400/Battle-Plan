@@ -13,7 +13,7 @@ import type { FamilyId } from './plan.ts';
 import { ensureBoundProjection, familyProjectionFailure, forgetProjectionWaiter, retryFamilyProjection, unknownProjectionReason } from './registry.ts';
 import { projectScene, samePictures, sceneReadView, snapshotPictures, stringifyTooltipPayload, type SceneProjection, type SceneReaders, type SceneSources } from './scene.ts';
 import { SceneTiles, type TiledSources } from './sceneTiles.ts';
-import type { PagedRowsSnapshot, RowWindow } from './table/rowSource.ts';
+import type { PagedRows, RowWindow } from './table/rowSource.ts';
 
 export interface LaneBinding<TOptions = unknown> extends TiledSources {
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
@@ -35,7 +35,7 @@ export interface LaneBinding<TOptions = unknown> extends TiledSources {
   readonly audit?: boolean;
   readonly auditId?: number;
   readonly revisions?: Revisions;
-  readonly pagedRows?: Readonly<Record<string, PagedRowsSnapshot>>;
+  readonly pagedRows?: PagedRows;
   readonly window?: RowWindow;
 }
 
@@ -352,7 +352,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     && held.viewName === binding.view
     && held.owner === scene.owner
     && sameInputRevisions(held.inputs, binding.revisions)
-    && (!held.projected.reads.rows || held.windowKey === windowKeyOf(binding))
+    && (!held.projected.reads.window || held.windowKey === windowKeyOf(binding))
     && hour >= held.validFrom
     && hour < held.validUntil
     && samePictures(held.parts, scene.pictures);

@@ -8,6 +8,7 @@ import { OPTIONS as NAVAL_LOSSES_OPTIONS } from '../naval-losses/definition.ts';
 import { OPTIONS as NAVY_SIZE_OPTIONS } from '../navy-size/definition.ts';
 import { OPTIONS as NUCLEAR_ARSENAL_OPTIONS } from '../nuclear-arsenal/definition.ts';
 import { OPTIONS as OCCUPATION_TREND_OPTIONS } from '../occupation-trend/definition.ts';
+import { OPTIONS as RESOURCE_BALANCE_OPTIONS } from '../resource-balance/definition.ts';
 import { OPTIONS as WORLD_TENSION_OPTIONS } from '../world-tension/definition.ts';
 
 function raceScopedOptions(fields: readonly OptionField[], keys: ReadonlySet<string>): readonly OptionField[] {
@@ -37,6 +38,7 @@ const NUCLEAR_ARSENAL_MIX_OPTIONS = raceScopedOptions(NUCLEAR_ARSENAL_OPTIONS, n
 const OCCUPATION_TREND_RACE_OPTION_KEYS = new Set(['view', 'measure', 'rankingMeasure', 'digits']);
 const OCCUPATION_TREND_RACE_OPTIONS = OCCUPATION_TREND_OPTIONS.filter(field => OCCUPATION_TREND_RACE_OPTION_KEYS.has(field.key));
 const WORLD_TENSION_RACE_OPTIONS = WORLD_TENSION_OPTIONS.filter(field => field.key === 'view');
+const RESOURCE_BALANCE_BARS_OPTIONS = raceScopedOptions(RESOURCE_BALANCE_OPTIONS, new Set(['view', 'hideEmpty']));
 
 export const BARS_VIEWS: readonly FamilyViewEntry[] = [
   {
@@ -336,6 +338,18 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     loadSpec: () => import('../occupation-trend/occupationTrendRaceProjection.ts').then(mod => ({
       family: 'bars', kind: 'occupation-trend', view: 'race',
       projection: mod.occupationTrendRaceProjection, declaration: mod.occupationTrendRaceDeclaration,
+    })),
+  },
+  {
+    kind: 'resource-balance',
+    view: 'bars',
+    label: 'Bars',
+    family: 'bars',
+    viewOption: 'view',
+    options: RESOURCE_BALANCE_BARS_OPTIONS,
+    loadSpec: () => import('../resource-balance/resourceBalanceProjection.ts').then(mod => ({
+      family: 'bars', kind: 'resource-balance', view: 'bars',
+      projection: mod.resourceBalanceProjection, declaration: mod.resourceBalanceDeclaration,
     })),
   },
   {

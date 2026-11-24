@@ -26,12 +26,22 @@ test('a fuel reply holds a read or says why not, and its day or why it is left o
   assert.throws(() => validateCountryFuel(reply({ read: read({ fuelRaw: '1.5' }) })), /malformed/);
 });
 
-test('a day is gained, burned and net, rounded once from the recorded values; an applied day nets its converted gain', () => {
-  assert.deepEqual(dayAmounts(reply(), read(), 0), { gained: 5n, burned: 3n, net: 2n, gaining: true });
-  assert.deepEqual(dayAmounts(reply(), applied(), 0), { gained: 5n, burned: 3n, net: 2n, gaining: true });
-  assert.equal(dayAmounts(reply(), read({ day: null, leftOut: 'overlaps' }), 0), null);
-  assert.equal(percentFull(read()), 80n);
+test('a day is gained, burned and net as exact fractions of the recorded values; an applied day nets its converted gain', () => {
+  assert.deepEqual(dayAmounts(reply(), read()), { gained: [500000n, 100000n], burned: [3n * 32768n, 32768n], net: [500000n * 32768n - 3n * 32768n * 100000n, 100000n * 32768n], gaining: true });
+  assert.deepEqual(dayAmounts(reply(), applied()), { gained: [500000n, 100000n], burned: [3n * 32768n, 32768n], net: [2n * 32768n, 32768n], gaining: true });
+  assert.equal(dayAmounts(reply(), read({ day: null, leftOut: 'overlaps' })), null);
+  assert.equal(percentFull(read()), '80%');
+  assert.equal(percentFull(read({ fuelRaw: String(99 * 32768 + 32767) })), '99%', 'a tank short of full is never shown full');
   assert.equal(percentFull(read({ capacityRaw: '0' })), null);
+});
+
+test('fuel figures are cut from the recorded value at the chosen decimals, never rounded up', () => {
+  const tank = read({ fuelRaw: '19583717548', capacityRaw: '21790720000' });
+  const at = (digits: number) => fuelTooltips(reply({ read: tank }), 'Day', { fuel: 'a', capacity: 'b', gained: 'c', burned: 'd' }, digits)[0]!.rows;
+  assert.equal(at(0).find(row => row.label === 'Fuel')?.value, '597,647');
+  assert.equal(at(2).find(row => row.label === 'Fuel')?.value, '597,647.63');
+  assert.equal(at(2).find(row => row.label === 'Capacity')?.value, '665,000.00');
+  assert.equal(at(0).find(row => row.label === 'Full')?.value, '89%');
 });
 
 test('a burned day splits into consumers, transfers, other and the conversion residual, which sum to the total exactly', () => {

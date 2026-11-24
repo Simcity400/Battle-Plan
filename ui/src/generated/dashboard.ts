@@ -1522,13 +1522,21 @@ raidTypeHour: number | null,
  */
 raidType: string | null, raidTypeName: string | null,
 /**
+ * The hour the icon was settled (the type spelled, the target read and its building spelled); none, and no icon, before it.
+ */
+iconHour: number | null,
+/**
  * The sprite key into the reply's artwork, or why there is none.
  */
 icon: string | null, iconMissing: string | null,
 /**
  * The hour the target's place was first read; none, and no place, before it.
  */
-placeHour: number | null, province: number | null, state: number | null,
+placeHour: number | null, province: number | null,
+/**
+ * The hour the target's state was first read; none, and no state, before it.
+ */
+stateHour: number | null, state: number | null,
 /**
  * Its last phase, and its last outcome read.
  */
@@ -1544,7 +1552,11 @@ ends: Array<RaidEndAt>,
 /**
  * The first read that saw it ended and successful: what a later read reveals is never counted before it.
  */
-succeededHour: number | null, disappearedHour: number | null, disappearedExact: boolean, };
+succeededHour: number | null, disappearedHour: number | null, disappearedExact: boolean,
+/**
+ * With countries asked, the hour a read first named one of them; the raid is not among theirs before it.
+ */
+memberHour: number | null, };
 export type RaidLogReply = {
 /**
  * False only when the content proves no raid type exists; true once a raid was recorded; none
@@ -2924,6 +2936,13 @@ export type ResearchBreakdownSlot = { slot: number, firstObservedHour: number, s
  * Why no read of it is known, when none is.
  */
 missing: string | null, };
+export type ResearchHistoryParams = { branchId: string, country: CountryRef, hour: number, folders: Array<string>, };
+export type ResearchHistoryReply = { hour: number, nextChange: number | null, unrecorded: string | null, partial: string | null, completed: number, coverage: Array<ResearchCoverage>, slots: Array<ResearchSlotAt>, artwork: Array<Artwork>, folders: Array<ResearchFolder>, technologyFolders: Array<ResearchTechnologyFolder>, definitions: Array<ResearchDefinitionText>, unnamed: string, warnings: Array<string>, };
+export type ResearchSlotAt = { index: number, availability: Array<ResearchCoverage>, items: Array<ResearchItem>, };
+export type ResearchItem = { token: string, databaseIndex: number, firstObservedHour: number, outcome: ResearchOutcome, pieces: Array<ResearchCoverage>, start: ResearchBound, end: ResearchBound | null, origin: ResearchOrigin | null, tookDays: number | null, };
+export type ResearchBound = { kind: BoundKind, hour: number, };
+export type BoundKind = "exact" | "by" | "heldBefore" | "lastSeen";
+export type ResearchOrigin = { slot: number, start: ResearchBound, };
 export type OccurrenceDirection = "descending" | "ascending";
 export type OccurrenceSort = { column: string, direction: OccurrenceDirection, };
 export type OccurrenceGap = { firstHour: number, lastHour: number, reason: string,
@@ -5309,11 +5328,7 @@ index: number, requested: string, received: string, priority: number, };
 export type FuelBranchesParamsAtHour = FuelBranchesParams & { hour: number };
 export type ResourceBalanceParams = { branchId: string, country: CountryRef,
 /**
- * The order `shown` lists the resources in; the game's when absent.
- */
-order?: ResourceOrder,
-/**
- * Leave out of `shown` the resources with nothing in either bar.
+ * Leave out of `rows` the resources recorded with nothing in or out.
  */
 hideEmpty?: boolean, };
 export type ResourceBalanceReply = { tag: string, decimals: number,
@@ -5327,9 +5342,14 @@ resources: Array<ResourceInfo>,
  */
 pools: Array<number>,
 /**
- * The resources the bars show, in the asked order (those with no row last, in the game's).
+ * The balance of each resource: shortages first (largest first), then surpluses (largest first), then the
+ * balanced, then those not recorded; a tie keeps the game's order.
  */
-shown: Array<number>,
+rows: Array<ResourceNet>,
+/**
+ * How many recorded rows are short; rows not recorded are counted in `unrecorded`, never here.
+ */
+short: number, unrecorded: number,
 /**
  * Why the pools are not known at the hour.
  */
@@ -5355,7 +5375,27 @@ ordinal: number, name: string | null,
  * An artwork URL; null when content has no icon for it.
  */
 icon: string | null, };
-export type ResourceOrder = "game" | "shortfall" | "volume";
+export type ResourceNet = {
+/**
+ * The resource's native index, as in `resources`.
+ */
+resource: number,
+/**
+ * What is left a day after special projects and production lines, fixed-point at `decimals`; null when not recorded.
+ */
+net: string | null,
+/**
+ * In a day: produced, from subjects and imported.
+ */
+supply: string | null,
+/**
+ * Out a day: special projects, production lines, to the overlord and the export reserve.
+ */
+demand: string | null,
+/**
+ * Why the figures are not recorded for this resource at the hour.
+ */
+missing: string | null, };
 export type ResourceDeal = {
 /**
  * The deal's native handle, as a decimal string.
@@ -6783,7 +6823,7 @@ fallback: AirCell, scale: number, badBelow: number, goodAbove: number, warnings:
 export type AirMode = "sides" | "viewpoint";
 export type AirRegionOrder = "contested" | "active" | "name";
 export type AirAnchor = { tag: string, hour: number, };
-export type AirCountryStyle = { tag: string, hour: number, name: string | null, nameMissing: string | null, color: [number, number, number] | null, colorMissing: string | null, };
+export type AirCountryStyle = { tag: string, name: string | null, nameMissing: string | null, color: [number, number, number] | null, colorMissing: string | null, };
 export type AirSide = { key: string,
 /**
  * Its anchor faction's id.
@@ -6884,7 +6924,7 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "technology-artwork", "country-flags", "doctrines", "aircraft-catalogue", "sprite-artwork", "army-size", "army-breakdown", "country-facts", "country-styles", "country-groups", "land-owners", "military-air-ledger", "military-air-at", "politics-state-history", "factory-groups", "subjects", "diplomatic-pacts", "espionage-types", "raid-log", "production-line-breakdown", "place-names", "place-name-runs", "strategic-regions", "naval-supremacy", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "regional-weather", "focus-card", "idea-history", "party-history", "stability-markers", "casualty-breakdown", "peace-deals", "territory-transfers", "convoy-health", "production-spending", "production-spending-months", "construction-log-manifest", "construction-log", "construction-breakdown", "division-log", "division-log-manifest", "land-battle-course", "land-battle-terrain", "naval-battle-details", "ships-sunk-manifest", "ships-sunk", "research", "research-breakdown", "event-feed-tail", "event-choices-tail", "decisions-tail", "event-feed-activity", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "equipment-stockpile-catalogue", "equipment-stockpile-chart", "equipment-stockpile-lines", "faction-state", "wars", "war-timeline", "special-projects", "air-superiority-choices", "combat-log-history", "equipment-losses", "air-statistics-regions", "scoreboard-columns", "equipment-produced", "equipment-produced-types", "equipment-produced-country", "equipment-produced-at", "power-spending-breakdown", "power-spend-markers", "air-superiority-timeline", "espionage-type-tokens", "template-roster", "air-statistics", "politics-state", "territory-breakdown", "game-score", "nuclear-arsenal", "autonomy-levels", "training-queue", "trade-flow", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "fuel-branches", "resource-balance", "production-lines-at", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "decorated-divisions", "division-equipment", "research-slots", "air-missions", "occupied-states", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "army-losses", "air-force-at", "navy-at", "army-at"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "technology-artwork", "country-flags", "doctrines", "aircraft-catalogue", "sprite-artwork", "army-size", "army-breakdown", "country-facts", "country-styles", "country-groups", "land-owners", "military-air-ledger", "military-air-at", "politics-state-history", "factory-groups", "subjects", "diplomatic-pacts", "espionage-types", "raid-log", "production-line-breakdown", "place-names", "place-name-runs", "strategic-regions", "naval-supremacy", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "regional-weather", "focus-card", "idea-history", "party-history", "stability-markers", "casualty-breakdown", "peace-deals", "territory-transfers", "convoy-health", "production-spending", "production-spending-months", "construction-log-manifest", "construction-log", "construction-breakdown", "division-log", "division-log-manifest", "land-battle-course", "land-battle-terrain", "naval-battle-details", "ships-sunk-manifest", "ships-sunk", "research", "research-breakdown", "research-history", "event-feed-tail", "event-choices-tail", "decisions-tail", "event-feed-activity", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "equipment-stockpile-catalogue", "equipment-stockpile-chart", "equipment-stockpile-lines", "faction-state", "wars", "war-timeline", "special-projects", "air-superiority-choices", "combat-log-history", "equipment-losses", "air-statistics-regions", "scoreboard-columns", "equipment-produced", "equipment-produced-types", "equipment-produced-country", "equipment-produced-at", "power-spending-breakdown", "power-spend-markers", "air-superiority-timeline", "espionage-type-tokens", "template-roster", "air-statistics", "politics-state", "territory-breakdown", "game-score", "nuclear-arsenal", "autonomy-levels", "training-queue", "trade-flow", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "fuel-branches", "resource-balance", "production-lines-at", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "decorated-divisions", "division-equipment", "research-slots", "air-missions", "occupied-states", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "army-losses", "air-force-at", "navy-at", "army-at"] as const;
 /** Products served separately from whole-branch history reads. */
 export const INTERACTIVE_PRODUCTS = ["campaign-clock", "player-apm", "technology-artwork", "country-flags", "doctrines", "sprite-artwork", "army-breakdown", "country-styles", "log-tail", "world-tension-stack", "espionage-operation", "espionage-ended", "espionage-types", "production-line-breakdown", "place-names", "place-name-runs", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "production-spending-months", "occupation-reserve-history", "land-battle-terrain", "naval-losses-at", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "combat-log-history", "scoreboard", "equipment-produced-at", "template-roster", "air-statistics", "politics-state", "next-elections", "territory-share", "territory-breakdown", "faction-rosters", "game-score", "nuclear-arsenal", "world-tension", "factory-parts", "autonomy-levels", "training-queue", "diplomatic-relations", "volunteer-flow", "trade-flow", "casualty-matrix", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "espionage-operations", "occupation-reserve-manpower", "intel-network-coverage", "fuel-branches", "resource-balance", "lend-lease-balance", "production-lines-at", "production-licences", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "decorated-divisions", "division-equipment", "research-slots", "air-missions", "occupied-states", "occupation-at", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "equipment-loss-head", "army-losses", "air-force-at", "navy-at", "army-at"] as const;
 /** Pages that replay recorded tables to their rows' hours: served apart, so no other request waits behind them. */
@@ -7032,6 +7072,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "regional-weather": { "firstHour": "start", "lastHour": "end" },
   "research": {},
   "research-breakdown": { "parts[].firstObservedHour": "read", "parts[].lastHour": "end" },
+  "research-history": { "hour": "read" },
   "research-slots": { "hour": "read" },
   "resource-balance": { "hour": "read" },
   "resource-sizes": { "from": "start", "to": "end" },
@@ -7219,8 +7260,9 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "regional-weather": { "branchId": "leaf", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "modifier": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "show": "leaf", "top": "leaf", "width": "leaf" },
   "research": { "branchId": "leaf", "country": "any" },
   "research-breakdown": { "branchId": "leaf", "country": "any", "parts": "node", "parts[]": "node", "parts[].firstObservedHour": "leaf", "parts[].lastHour": "leaf", "parts[].slot": "leaf", "parts[].started": "leaf" },
+  "research-history": { "branchId": "leaf", "country": "any", "folders": "node", "folders[]": "leaf", "hour": "leaf" },
   "research-slots": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "resource-balance": { "branchId": "leaf", "country": "any", "hideEmpty": "leaf", "hour": "leaf", "order": "leaf" },
+  "resource-balance": { "branchId": "leaf", "country": "any", "hideEmpty": "leaf", "hour": "leaf" },
   "resource-sizes": { "branchId": "leaf", "country": "any", "from": "leaf", "to": "leaf" },
   "scoreboard": { "branchId": "leaf", "columns": "node", "columns[]": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "top": "node", "top.count": "leaf", "top.descending": "leaf", "top.sort": "leaf" },
   "scoreboard-columns": { "branchId": "leaf" },
@@ -7406,6 +7448,7 @@ export type RequestParams<E, B> = {
   "regional-weather": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
   "research": {};
   "research-breakdown": { readonly [key: string]: unknown; readonly "parts"?: readonly ({ readonly [key: string]: unknown; readonly "firstObservedHour"?: E | null; readonly "lastHour"?: B | null })[] | null };
+  "research-history": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "research-slots": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "resource-balance": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "resource-sizes": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
