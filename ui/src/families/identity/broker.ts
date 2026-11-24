@@ -121,6 +121,10 @@ export const FLAG_BATCH_MAX = 32;
 export const FLAG_MAX_CONCURRENT = 2;
 export const ENTITY_MAX_CONCURRENT = 2;
 
+function drawn(entry: DrawnFlagEntry | undefined): boolean {
+  return entry !== undefined && entry.failed === undefined;
+}
+
 const REGION_ABSENT = 'Not a strategic region of this recording';
 const LEADER_ABSENT = 'Not a leader of this country at this hour';
 const LEADER_NAME_MISSING = 'Leader name not recorded';
@@ -358,7 +362,7 @@ export class IdentityBroker {
     const wanted = new Map<string, CountryFlagChoice>();
     for (const choice of choices) {
       const key = drawnFlagKey(size, choice);
-      if (state.index.getDrawnFlag(size, choice) || state.flagInflightKeys.has(key)) continue;
+      if (drawn(state.index.getDrawnFlag(size, choice)) || state.flagInflightKeys.has(key)) continue;
       wanted.set(key, choice);
     }
     if (wanted.size) this.pumpFlags(state, size, wanted);
@@ -459,7 +463,7 @@ export class IdentityBroker {
         if (!Number.isFinite(at)) continue;
         if (ask.key.kind === 'country') {
           wantFacts = true;
-          if (ask.key.by === 'slot' || ask.key.by === 'holder') wantIdentities = true;
+          wantIdentities = true;
           const resolved = state.index.resolve(ask.key, at);
           if (resolved.kind === 'pending') {
             const tag = this.tagForAsk(state, ask.key, at);
@@ -473,7 +477,7 @@ export class IdentityBroker {
           } else if (resolved.kind === 'known' && demand.needFlags && resolved.flagChoice.kind === 'known') {
             const size: CountryFlagSize = demand.flagSize ?? 'panel';
             const flagKey = drawnFlagKey(size, resolved.flagChoice.value);
-            if (!state.index.getDrawnFlag(size, resolved.flagChoice.value) && !state.flagInflightKeys.has(flagKey)) {
+            if (!drawn(state.index.getDrawnFlag(size, resolved.flagChoice.value)) && !state.flagInflightKeys.has(flagKey)) {
               let map = wantedFlagsBySize.get(size);
               if (!map) wantedFlagsBySize.set(size, map = new Map());
               map.set(flagKey, resolved.flagChoice.value);
@@ -816,7 +820,7 @@ export class IdentityBroker {
     let soonestRetry = Infinity;
     const ready: [string, CountryFlagChoice][] = [];
     for (const [key, choice] of wanted) {
-      if (state.index.getDrawnFlag(size, choice) || state.flagInflightKeys.has(key)) continue;
+      if (drawn(state.index.getDrawnFlag(size, choice)) || state.flagInflightKeys.has(key)) continue;
       const failed = state.flagFailures.get(key);
       if (failed && failed.at > now) {
         soonestRetry = Math.min(soonestRetry, failed.at);
@@ -850,15 +854,17 @@ export class IdentityBroker {
         if (state.flagRunning.get(id) !== task || controller.signal.aborted) return;
         state.flagRunning.delete(id);
         const images = new Map(reply.flags.map(image => [image.flag, image]));
-        const unavailable = new Map(reply.unavailable.map(item => [item.flag, item.reason]));
+        const unavailable = new Map(reply.unavailable.map(item => [item.flag, item.resolution]));
         batch.forEach(([key, choice], index) => {
           state.flagInflightKeys.delete(key);
           state.flagFailures.delete(key);
           const image = images.get(index);
-          const reason = unavailable.get(index);
+          const resolution = unavailable.get(index);
           const entry: DrawnFlagEntry = image
             ? { url: image.png, image }
-            : { reason: reason ?? 'Flag unavailable' };
+            : resolution
+              ? { resolution }
+              : { resolution: { status: 'failed', reason: 'The flag reply left this choice out', retryable: true } };
           state.index.setDrawnFlag(size, choice, entry);
         });
         this.notify(state);

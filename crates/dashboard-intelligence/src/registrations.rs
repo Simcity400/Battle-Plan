@@ -13,7 +13,7 @@ dashboard_base::register_hourly_products! {
     INTELLIGENCE_AGENCIES_AGENCYCOMPARISON => crate::products::intelligence::agencies::AgencyComparison,
     INTELLIGENCE_DECRYPTION_DECRYPTION => crate::products::intelligence::decryption::Decryption,
     INTELLIGENCE_ESPIONAGE_ESPIONAGEOPERATIONS => crate::products::intelligence::espionage::EspionageOperations,
-    INTELLIGENCE_PLACEMENTS_OPERATIVEPLACEMENTS => crate::products::intelligence::placements::OperativePlacements,
+    INTELLIGENCE_OPERATIVE_MATRIX_OPERATIVEMATRIX => crate::products::intelligence::operative_matrix::OperativeMatrix,
     INTELLIGENCE_ROSTER_OPERATIVESROSTER => crate::products::intelligence::roster::OperativesRoster,
 }
 

@@ -17,7 +17,7 @@ export function mixCountry(countries: CountrySelection, fallback: string | null,
 export function raceViewOption(mixLabel?: string, defaultView: RaceView = 'race',
   extraViews: readonly { value: string; label: string }[] = []): OptionField {
   return { key: 'view', section: 'options', label: 'View', kind: 'choice', default: defaultView,
-    choices: [{ value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines over time' },
+    choices: [{ value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines' },
       ...(mixLabel === undefined ? [] : [{ value: 'mix', label: `One country by ${mixLabel}` }]), ...extraViews] };
 }
 

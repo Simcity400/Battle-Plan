@@ -56,18 +56,13 @@ export function splitStripes(
   top: number,
   height: number,
 ): readonly { readonly color: string; readonly top: number; readonly height: number }[] {
-  let sum = 0;
-  for (const part of parts) {
-    if (part.share > 0) sum += part.share;
-  }
-  if (!(sum > 0)) return [];
   let used = 0;
   const out: { readonly color: string; readonly top: number; readonly height: number }[] = [];
   for (const part of parts) {
-    if (part.share <= 0) continue;
-    const h = (part.share / sum) * height;
-    out.push({ color: part.color, top: top + (used / sum) * height, height: h });
-    used += part.share;
+    const share = Math.min(Math.max(0, part.share), Math.max(0, 1 - used));
+    if (share <= 0) continue;
+    out.push({ color: part.color, top: top + used * height, height: share * height });
+    used += share;
   }
   return out;
 }
@@ -143,4 +138,16 @@ export function resolveEntityFromReadView(
     ...(color ? { color } : {}),
     ...(flag !== undefined ? { flag } : {}),
   };
+}
+
+export interface RegionLabel {
+  readonly label: string;
+  readonly nameMissing?: string;
+}
+
+export function regionLabel(readView: BoundedReadView, id: string | number, pendingLabel: string | null): RegionLabel {
+  const name = readView.who('region', String(id)).name;
+  if (name.status === 'ready') return { label: name.value };
+  if (name.status === 'absent' || name.status === 'failed') return { label: 'Region name not recorded', nameMissing: name.reason };
+  return pendingLabel ? { label: pendingLabel } : { label: 'Region name not recorded', nameMissing: 'Region name not read yet' };
 }

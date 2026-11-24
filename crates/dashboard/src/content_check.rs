@@ -355,10 +355,6 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             Ok("No content dependency: countries are named by their recorded tags.".into())
         }
         economy::resources::ResourceSizes::KEY => Ok("No content dependency: bar lengths are computed from the recorded pools.".into()),
-        economy::lend_lease_partners::LendLeasePartners::KEY => {
-            findings.push(Finding::new(Kind::Offline, key, "a country's partners over time need recorded WarLendLeaseHistories rows; unavailable offline"));
-            Ok("No content dependency: partners are named by their recorded tags.".into())
-        }
         key if key == <economy::fuel::CountryFuel as at_hour::AtHour>::KEY => {
             findings.push(Finding::new(Kind::Offline, key, "the tank, its days and current consumption need recorded CountryFuel, FuelDays and FuelDemandTotals rows; unavailable offline"));
             Ok("Consumer and source labels are the fuel panel's own localisation keys, resolved through the recorded content stack.".into())

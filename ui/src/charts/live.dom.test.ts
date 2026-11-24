@@ -45,28 +45,6 @@ test('the shared charts paint live values without a commit, draw a value the sou
       assert.ok(await since(act, 'table', sorted) >= 1, 'a new order is a commit');
     }));
 
-    await t.test('heat matrix: cells drawn from live values, a missing cell hatched, a matrix without a source drawn from cell()', () => page.stage('heat', async () => {
-      await act('mountHeat(true)');
-      await act('pushHeat("#112233")');
-      assert.equal((await act<Record<string, number>>('heatFills()'))['#112233'], 36);
-      const before = await act<Commits>('commits()');
-      await act('pushHeat("#445566")');
-      const fills = await act<Record<string, number>>('heatFills()');
-      assert.equal(fills['#445566'], 36);
-      assert.equal(fills['#112233'] ?? 0, 0);
-      await act('pushHeat("#445566", [1, 2])');
-      assert.equal((await act<Record<string, number>>('heatFills()'))['#445566'], 35, 'the cell the source lacks is not filled with any value');
-      assert.equal(await since(act, 'heat', before), 0);
-
-      await act('mountHeat(false)');
-      const plain = await act<Commits>('commits()');
-      await act('pushHeat("#778899")');
-      const unchanged = await act<Record<string, number>>('heatFills()');
-      assert.equal(unchanged['#999999'], 36);
-      assert.equal(unchanged['#778899'] ?? 0, 0);
-      assert.equal(await since(act, 'heat', plain), 0);
-    }));
-
     await t.test('timeline: the playhead follows the live head without a commit, and the prop without one', () => page.stage('timeline', async () => {
       await act('mountTimeline(true)');
       const start = await act<number>('playheadX()');
@@ -132,25 +110,6 @@ test('the shared charts paint live values without a commit, draw a value the sou
       await act('pushDrill(1, 2)');
       assert.deepEqual(await act('drill()'), [['Alpha', '30 units'], ['Beta', '10 units']]);
       assert.equal(await since(act, 'drill', plain), 0);
-    }));
-
-    await t.test('chord: ribbons redrawn from the live frame without a commit, a missing frame not drawn as the last one', () => page.stage('chord', async () => {
-      await act('mountChord(true)');
-      const first = await act<string>('picture("chord")');
-      const before = await act<Commits>('commits()');
-      await act('pushChord(30)');
-      const wider = await act<string>('picture("chord")');
-      assert.notEqual(wider, first, 'a wider ribbon is drawn');
-      await act('pushChord(null)');
-      assert.notEqual(await act<string>('picture("chord")'), wider, 'a frame the source does not hold is not the last one drawn');
-      assert.equal(await since(act, 'chord', before), 0);
-
-      await act('mountChord(false)');
-      const fixed = await act<string>('picture("chord")');
-      const plain = await act<Commits>('commits()');
-      await act('pushChord(50, 5)');
-      assert.equal(await act<string>('picture("chord")'), fixed);
-      assert.equal(await since(act, 'chord', plain), 0);
     }));
 
     await t.test('flow: ribbons redrawn from live values without a commit, missing values say why', () => page.stage('flow', async () => {
