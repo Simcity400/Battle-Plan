@@ -4,7 +4,7 @@ import type { TableWidgetDeclaration } from '../../families/table/declaration.ts
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, valueFromLive, valueFromNullable, zeroValue } from '../../families/value.ts';
+import { knownValue, textValue, valueFromLive, zeroValue } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { AirMissionChoice, AirMissionRegion, AirMissionsReply } from '../../generated/dashboard';
 import { validateAirMissions } from './airMissionsData.ts';
@@ -16,7 +16,7 @@ type MissionRow = { readonly region: AirMissionRegion; readonly flown: ReadonlyS
 
 const REGION_COLUMN: DeclarativeColumnSpec<MissionRow, Record<string, never>> = {
   ...COLUMNS[0]!, priority: 0, text: true, hideable: false, widest: ['Eastern Poland'],
-  value: row => valueFromNullable(row.region.name, { kind: 'notRecorded', reason: row.region.missing ?? 'Region name unavailable' }),
+  value: row => textValue(row.region.name, row.region.missing ?? 'Region name unavailable'),
 };
 
 const WINGS: DeclarativeColumnSpec<MissionRow, Record<string, never>> = {

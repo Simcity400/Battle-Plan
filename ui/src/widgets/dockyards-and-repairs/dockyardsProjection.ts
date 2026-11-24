@@ -3,7 +3,7 @@ import type { TableWidgetDeclaration } from '../../families/table/declaration.ts
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notApplicable, valueFromNullable, type Value } from '../../families/value.ts';
+import { knownValue, textValue, notApplicable, valueFromNullable, type Value } from '../../families/value.ts';
 import type { NavalRepairsReply, RepairPort, YardShip } from '../../generated/dashboard';
 import { fraction, shipLabel, shipStrength, shipTooltip, validateRepairs } from '../refits/yardsData.ts';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
@@ -17,7 +17,7 @@ type DockRow =
   | { readonly kind: 'port'; readonly key: string; readonly port: RepairPort; readonly children: readonly DockRow[] }
   | { readonly kind: 'ship'; readonly key: string; readonly ship: YardShip };
 
-const portName = (port: RepairPort): Value<string> => valueFromNullable(port.name, { kind: 'notRecorded', reason: 'Port name unavailable' });
+const portName = (port: RepairPort): Value<string> => textValue(port.name, 'Port name unavailable');
 
 const [NAME, STRENGTH, PRIORITY, DOCKYARDS] = COLUMNS;
 
@@ -76,7 +76,7 @@ export const dockyardsProjection: TableProjection<Record<string, never>> = regis
     tooltipExtra: (row): TooltipExtraRow[] => row.kind === 'ship'
       ? shipTooltip(row.ship)
       : [
-          { label: 'Repair priority', value: valueFromNullable(row.port.policy, { kind: 'notRecorded', reason: 'Repair priority name not localised' }), divider: true },
+          { label: 'Repair priority', value: textValue(row.port.policy, 'Repair priority name not localised'), divider: true },
           { label: 'Ships waiting', value: knownValue(row.port.queue.length.toLocaleString('en-US')) },
         ],
   }),
