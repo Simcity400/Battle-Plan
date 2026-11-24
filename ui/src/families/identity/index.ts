@@ -44,6 +44,25 @@ import {
 type FactRun = readonly [number, number, number, number, number];
 type EntityFailure = { readonly from: number; readonly to: number; readonly failure: Failure };
 
+function spliceSpan<T extends { readonly firstHour: number; readonly lastHour: number }>(held: readonly T[], from: number, to: number, added: readonly T[]): T[] {
+  let lo = 0;
+  let hi = held.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (held[mid]!.lastHour < from) lo = mid + 1;
+    else hi = mid;
+  }
+  let end = lo;
+  hi = held.length;
+  while (end < hi) {
+    const mid = (end + hi) >> 1;
+    if (held[mid]!.firstHour <= to) end = mid + 1;
+    else hi = mid;
+  }
+  const middle = added.length > 1 ? [...added].sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour) : added;
+  return [...held.slice(0, lo), ...middle, ...held.slice(end)];
+}
+
 function withoutSpan(failures: readonly EntityFailure[] | undefined, from: number, to: number): readonly EntityFailure[] {
   return (failures ?? []).filter(held => held.to < from || held.from > to);
 }
@@ -205,6 +224,7 @@ export class IdentityIndex {
   private entityUnknown = new Map<EntityIdentityKey['kind'], RecordingGap[]>();
   private drawnFlags = new Map<string, DrawnFlagEntry>();
   private resolveChanges = 0;
+  private countryChanges = 0;
 
   constructor(scope: IdentityScope, branchBounds?: HourInterval) {
     this.scope = scope;
@@ -284,10 +304,15 @@ export class IdentityIndex {
     if (this.branchBounds[0] === bounds[0] && this.branchBounds[1] === bounds[1]) return;
     this.branchBounds = bounds;
     this.resolveChanges++;
+    this.countryChanges++;
   }
 
   resolveRevision(): number {
     return this.resolveChanges;
+  }
+
+  countryRevision(): number {
+    return this.countryChanges;
   }
 
   bounds(): HourInterval {
@@ -301,6 +326,7 @@ export class IdentityIndex {
     this.factsKnown = reply.known.map(span => [span[0], span[1]] as const);
     this.factsByTag = new Map(reply.countries.map(country => [country.tag, country.runs as readonly FactRun[]]));
     this.resolveChanges++;
+    this.countryChanges++;
   }
 
   setReadFailure(read: BranchRead, failure: Failure | undefined): void {
@@ -317,6 +343,7 @@ export class IdentityIndex {
         break;
     }
     this.resolveChanges++;
+    this.countryChanges++;
   }
 
   readFailure(read: BranchRead): Failure | undefined {
@@ -406,6 +433,7 @@ export class IdentityIndex {
     }
     this.slotChanges++;
     this.resolveChanges++;
+    this.countryChanges++;
   }
 
   setGroups(reply: CountryGroupReply): void {
@@ -429,16 +457,19 @@ export class IdentityIndex {
     this.styleRuns.set(style.tag, mergeStyleEntry(existing, entry));
     this.styleFailures.delete(`${Math.floor(hour)}\u0000${style.tag}`);
     this.resolveChanges++;
+    this.countryChanges++;
   }
 
   setStyleFailure(tag: string, hour: number, failure: Failure): void {
     this.styleFailures.set(`${Math.floor(hour)}\u0000${tag}`, failure);
     this.resolveChanges++;
+    this.countryChanges++;
   }
 
   clearStyleFailure(tag: string, hour: number): void {
     this.styleFailures.delete(`${Math.floor(hour)}\u0000${tag}`);
     this.resolveChanges++;
+    this.countryChanges++;
   }
 
   setEntityRuns(key: EntityIdentityKey, runs: readonly EntityRunEntry[]): void {
@@ -450,10 +481,7 @@ export class IdentityIndex {
 
   replaceEntityRuns(key: EntityIdentityKey, from: number, to: number, runs: readonly EntityRunEntry[]): void {
     const id = identityKeyString(key);
-    const kept = (this.entityRuns.get(id) ?? []).filter(item => item.lastHour < from || item.firstHour > to);
-    kept.push(...runs);
-    kept.sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour);
-    this.entityRuns.set(id, kept);
+    this.entityRuns.set(id, spliceSpan(this.entityRuns.get(id) ?? [], from, to, runs));
     const failures = withoutSpan(this.entityFailures.get(id), from, to);
     if (failures.length) this.entityFailures.set(id, failures);
     else this.entityFailures.delete(id);
@@ -461,11 +489,18 @@ export class IdentityIndex {
   }
 
   replaceEntityUnknown(kinds: readonly EntityIdentityKey['kind'][], from: number, to: number, spans: readonly RecordingGap[]): void {
-    for (const kind of kinds) {
-      const kept = (this.entityUnknown.get(kind) ?? []).filter(span => span.lastHour < from || span.firstHour > to);
-      kept.push(...spans);
-      kept.sort((a, b) => a.firstHour - b.firstHour);
-      this.entityUnknown.set(kind, kept);
+    for (const kind of kinds) this.entityUnknown.set(kind, spliceSpan(this.entityUnknown.get(kind) ?? [], from, to, spans));
+    this.resolveChanges++;
+  }
+
+  dropEntityRuns(keys: Iterable<EntityIdentityKey>, from: number, to: number): void {
+    for (const key of keys) {
+      const id = identityKeyString(key);
+      const held = this.entityRuns.get(id);
+      if (!held) continue;
+      const kept = spliceSpan(held, from, to, []);
+      if (kept.length) this.entityRuns.set(id, kept);
+      else this.entityRuns.delete(id);
     }
     this.resolveChanges++;
   }
@@ -872,8 +907,8 @@ export class IdentityIndex {
   private resolveEntity(key: EntityIdentityKey, at: number): EntityIdentityResult {
     const id = identityKeyString(key);
     const unknown = this.entityUnknown.get(key.kind) ?? [];
-    const after = unknown.findIndex(span => span.firstHour > at);
-    const before = after < 0 ? unknown.length - 1 : after - 1;
+    const before = findRunBeforeOrAt(unknown, at, span => span.firstHour);
+    const after = before + 1 < unknown.length ? before + 1 : -1;
     const gap = before >= 0 && unknown[before]!.lastHour >= at ? unknown[before]! : null;
     if (gap) {
       const unrecorded: IdentityField<never> = { kind: 'missing', reason: gap.reason };

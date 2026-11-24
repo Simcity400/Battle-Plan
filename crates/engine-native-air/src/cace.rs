@@ -21,6 +21,8 @@ pub const NAME: usize = 0xf0;
 pub const SURNAME: usize = 0x110;
 pub const CALLSIGN: usize = 0x130;
 pub const PORTRAIT_GENDER: usize = 0x150;
+pub const GUI_MALE_PORTRAIT_POOLS: usize = 0xd78;
+pub const GUI_FEMALE_PORTRAIT_POOLS: usize = 0xd90;
 #[cfg(any(test, feature = "test-support"))]
 pub const PORTRAIT_POOL_INDEX: usize = 0x154;
 pub const ALIVE: usize = 0x158;
@@ -319,7 +321,11 @@ pub fn portrait_sources(
     {
         return Err("ace GUI identity mismatch");
     }
-    let offset = if gender == 0 { 0xc98 } else { 0xcb0 };
+    let offset = if gender == 0 {
+        GUI_MALE_PORTRAIT_POOLS
+    } else {
+        GUI_FEMALE_PORTRAIT_POOLS
+    };
     let countries = Array::read(
         memory,
         gui.checked_add(offset).ok_or("ace pool address overflow")?,
@@ -687,7 +693,7 @@ mod tests {
         memory.inline(DEFINITION + TYPE_NAME, b"custommod_type");
         memory.u64(engine_native_politics::cgui::SINGLETON_RVA.0, GUI as u64);
         memory.u64(GUI, engine_native_politics::cgame_gui::VTABLE_RVA.0 as u64);
-        memory.array(GUI + 0xcb0, POOLS, 2);
+        memory.array(GUI + 0xd90, POOLS, 2);
         memory.array(POOLS + engine_native_memory::cpdx_array::STRIDE, STRINGS, 2);
         memory.inline(STRINGS, b"GFX_other_ace");
         memory.inline(STRINGS + msvc_string::STRIDE, b"GFX_stale_ace");
@@ -721,6 +727,28 @@ mod tests {
         assert_eq!(result.outcome, Outcome::Rows { len: 1 });
         assert_eq!(rows[0].presentation, None);
         assert_eq!(rows[0].id, IDS[0]);
+    }
+
+    #[test]
+    fn a_male_ace_selects_from_the_male_pool_of_its_country_slot() {
+        const GUI: usize = 0xa000;
+        const POOLS: usize = 0xb000;
+        const STRINGS: usize = 0xc000;
+        let mut memory = fixture();
+        memory.array(COUNTRY + ccountry::ACES, ROSTER, 1);
+        memory.bytes(ACE[0] + PORTRAIT_GENDER, &[0, 0, 0, 0, 5, 0, 0, 0]);
+        memory.u64(ACE[0] + TYPE_DEFINITION, 0);
+        memory.u64(engine_native_politics::cgui::SINGLETON_RVA.0, GUI as u64);
+        memory.u64(GUI, engine_native_politics::cgame_gui::VTABLE_RVA.0 as u64);
+        memory.array(GUI + 0xd78, POOLS, 2);
+        memory.array(POOLS + engine_native_memory::cpdx_array::STRIDE, STRINGS, 2);
+        memory.inline(STRINGS, b"GFX_male_a");
+        memory.inline(STRINGS + msvc_string::STRIDE, b"GFX_male_b");
+        let mut rows = vec![Row::default(); 1];
+        let mut names = vec![0; 64];
+        assert_eq!(walk(&memory, 0, GS, &mut rows, &mut names).outcome, Outcome::Rows { len: 1 });
+        let cached = rows[0].presentation.unwrap().portrait.unwrap().cached.unwrap();
+        assert_eq!(&names[cached.start..cached.start + cached.len], b"GFX_male_b", "index 5 of a two-sprite pool selects the second");
     }
 
     #[test]

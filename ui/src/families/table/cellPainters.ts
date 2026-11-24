@@ -345,7 +345,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     ctx.font = font;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    const producedText = sp.producedMissing ? '' : sp.produced !== null ? `+${formatScalar(sp.produced, 'integer')}/d` : '0';
+    const producedText = sp.producedMissing ? '' : sp.produced !== null ? `+${formatScalar(sp.produced, 'integer')}/d` : '';
     ctx.fillStyle = sp.produced && sp.produced > 0 ? theme.text : theme.muted;
     if (producedText) ctx.fillText(fit(producedText, font, partW - 6), left + partW - 4, middle);
     if (sp.needMissing == null && sp.need !== null) {
