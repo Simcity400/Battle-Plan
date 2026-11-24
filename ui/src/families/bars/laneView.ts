@@ -160,7 +160,7 @@ export interface BarsReadViewProviders {
 
 export function barsReadViewFromScene(
   scene: Scene,
-  binding: FamilyBarsBinding,
+  binding: Pick<FamilyBarsBinding, 'sources' | 'staticPanels' | 'staticAnswers'>,
   hour: number,
   providers?: BarsReadViewProviders,
 ): BoundedReadView {

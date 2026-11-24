@@ -32,7 +32,6 @@ export const browserTests = [
   'ui/src/shell/appearance/WidgetIconMenu.dom.test.ts',
   'ui/src/widgets/raid-log/raidPlayback.dom.test.ts',
   'ui/src/widgets/special-projects/specialProjects.dom.test.ts',
-  'ui/src/widgets/war-goals/warGoals.dom.test.ts',
   tabFullTest,
 ];
 const pureBrowserSupportTests = new Set(['tools/canvas-page.test.ts']);

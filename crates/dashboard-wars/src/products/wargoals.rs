@@ -1,5 +1,6 @@
 use dashboard_base::products::{LoadContext, at_hour::{At, AtHour}};
 use dashboard_base::Source;
+use super::wargoal_dates::{self, Incarnation};
 use dashboard_follow::live::Source as Cell;
 use dashboard_base::{
     catalogue::{self, Catalogue, View},
@@ -44,6 +45,42 @@ pub struct WargoalEntry {
     pub states: Vec<u32>,
     pub liberate: Vec<String>,
     pub puppets: Vec<String>,
+    pub state: WargoalState,
+    pub granted: Option<i32>,
+    pub granted_missing: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct WargoalRemoved {
+    pub handle: String,
+    pub name: Option<String>,
+    pub recipient: Option<String>,
+    pub granted: Option<i32>,
+    pub granted_missing: Option<String>,
+    pub removed: i32,
+    pub removed_exact: bool,
+    pub reason_missing: String,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum WargoalState {
+    AtWar,
+    Ready,
+    InUse,
+    Expired,
+}
+pub fn goal_state(at_war: bool, available: bool, expires: Option<i32>, hour: i32) -> WargoalState {
+    if at_war {
+        WargoalState::AtWar
+    } else if expires.is_some_and(|expires| expires <= hour) {
+        WargoalState::Expired
+    } else if available {
+        WargoalState::Ready
+    } else {
+        WargoalState::InUse
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -98,6 +135,7 @@ pub struct WargoalsReply {
     pub standings: Vec<WargoalPair>,
     pub goals: Vec<WargoalEntry>,
     pub justifications: Vec<WargoalJustification>,
+    pub removed: Vec<WargoalRemoved>,
     pub warnings: Vec<String>,
     pub state_names: Vec<WargoalStateName>,
 }
@@ -125,6 +163,7 @@ dashboard_base::reply_warnings!(WargoalsReply);
 
 pub struct WargoalContent {
     catalogue: Result<Arc<Catalogue>, String>,
+    dates: Result<Arc<Vec<Incarnation>>, String>,
 }
 
 impl AtHour for Wargoals {
@@ -151,7 +190,9 @@ impl AtHour for Wargoals {
             WargoalsReply::decl(),
             WargoalPair::decl(),
             WargoalStanding::decl(),
+            WargoalState::decl(),
             WargoalStateName::decl(),
+            WargoalRemoved::decl(),
         ]
     }
 
@@ -165,12 +206,22 @@ impl AtHour for Wargoals {
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
         let catalogue = load.content().and_then(|options| catalogue::catalogue(source, options)).map_err(|why| why.to_string());
-        Ok(WargoalContent { catalogue })
+        Ok(WargoalContent { catalogue, dates: Err("War-goal dates need the branch's history".into()) })
+    }
+
+    fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        let catalogue = load.content().and_then(|options| catalogue::catalogue(source, options)).map_err(|why| why.to_string());
+        let dates = params
+            .branch_id
+            .parse::<u64>()
+            .map_err(|_| "Invalid branch".to_owned())
+            .and_then(|branch| wargoal_dates::follow(source, branch).map_err(|why| format!("War-goal dates refused: {why}")));
+        Ok(WargoalContent { catalogue, dates })
     }
 
     fn reply(frame: &DecodedFrame, p: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("War goals country is unavailable at this hour"))?;
-        let reply = reply(frame, &WargoalsAsk { branch_id: p.branch_id.clone(), hour: at.hour, tag: at.holders.name(&p.country, at.hour), country: p.country.clone() }, owner.slot, &at.context.catalogue)?;
+        let reply = reply(frame, &WargoalsAsk { branch_id: p.branch_id.clone(), hour: at.hour, tag: at.holders.name(&p.country, at.hour), country: p.country.clone() }, owner.slot, &at.context.catalogue, &at.context.dates)?;
         let progress = dashboard_declare::field(TableId::WargoalJustifications, "progress_raw")?;
         for justification in &reply.justifications {
             let key = justification.id.parse::<u128>().map_err(|_| invalid("War-goal justification key is not a number"))?;
@@ -180,7 +231,7 @@ impl AtHour for Wargoals {
     }
 }
 
-fn reply(frame: &DecodedFrame, p: &WargoalsAsk, slot: u32, catalogue: &Result<Arc<Catalogue>, String>) -> io::Result<WargoalsReply> {
+fn reply(frame: &DecodedFrame, p: &WargoalsAsk, slot: u32, catalogue: &Result<Arc<Catalogue>, String>, dates: &Result<Arc<Vec<Incarnation>>, String>) -> io::Result<WargoalsReply> {
     let held = catalogue.as_ref().ok().map(|cat| {
         cat.content
             .layers
@@ -200,7 +251,7 @@ fn reply(frame: &DecodedFrame, p: &WargoalsAsk, slot: u32, catalogue: &Result<Ar
     });
     let links: BTreeMap<_, _> = frame.complete::<tables::CountryLinks>()?.iter().map(|r| (r.id, r.canonical_slot)).collect();
     let mut name_warnings = Vec::new();
-    let mut reply = inventory(frame, p, |literal, actor, recipient| {
+    let mut name_of = |literal: &[u8], actor: u32, recipient: u32| -> io::Result<String> {
         let slots = || -> Result<(u32, u32), String> {
             Ok((*links.get(&actor).ok_or("War-goal actor is unresolved")?, *links.get(&recipient).ok_or("War-goal target is unresolved")?))
         };
@@ -222,7 +273,29 @@ fn reply(frame: &DecodedFrame, p: &WargoalsAsk, slot: u32, catalogue: &Result<Ar
                 "Not recorded".into()
             }
         })
-    })?;
+    };
+    let mut reply = inventory(frame, p, &mut name_of)?;
+    let literals: BTreeMap<_, _> = frame.complete::<tables::LexicalTokens>()?.iter().map(|r| (r.token, r.literal.clone())).collect();
+    let countries = frame.complete::<tables::Countries>()?;
+    let tags: BTreeMap<_, _> = countries.iter().map(|r| (r.canonical_slot, String::from_utf8_lossy(&r.tag).into_owned())).collect();
+    match dates {
+        Ok(dates) => apply_dates(&mut reply, dates, p.hour, |raw| links.get(&raw) == Some(&slot), |incarnation| {
+            let token = incarnation.goal_type.and_then(|token| u32::try_from(token).ok());
+            let actor = incarnation.actor.and_then(|raw| u32::try_from(raw).ok());
+            let recipient = incarnation.recipient.and_then(|raw| u32::try_from(raw).ok());
+            let name = match (token.and_then(|token| literals.get(&token)), actor, recipient) {
+                (Some(literal), Some(actor), Some(recipient)) => name_of(literal, actor, recipient).ok().filter(|name| name != "Not recorded"),
+                _ => None,
+            };
+            (name, recipient.and_then(|raw| links.get(&raw)).and_then(|slot| tags.get(slot)).cloned())
+        }),
+        Err(why) => {
+            for goal in &mut reply.goals {
+                goal.granted_missing = Some(why.clone());
+            }
+            reply.warnings.push(why.clone());
+        }
+    }
     reply.warnings.extend(name_warnings);
     let ids: BTreeSet<_> = reply
         .goals
@@ -247,6 +320,45 @@ fn reply(frame: &DecodedFrame, p: &WargoalsAsk, slot: u32, catalogue: &Result<Ar
     }
     check_reply_budget(&reply)?;
     Ok(reply)
+}
+
+pub(crate) fn apply_dates(
+    reply: &mut WargoalsReply,
+    dates: &[Incarnation],
+    hour: i32,
+    same: impl Fn(u32) -> bool,
+    mut describe: impl FnMut(&Incarnation) -> (Option<String>, Option<String>),
+) {
+    let held_at = |incarnation: &Incarnation| incarnation.granted.is_none_or(|granted| granted <= hour) && incarnation.removed.is_none_or(|removed| removed > hour);
+    for goal in &mut reply.goals {
+        let found = goal.handle.parse::<u64>().ok().and_then(|handle| dates.iter().find(|incarnation| incarnation.handle == handle && held_at(incarnation)));
+        match found {
+            Some(incarnation) => {
+                goal.granted = incarnation.granted;
+                goal.granted_missing = incarnation.granted.is_none().then(|| wargoal_dates::HELD_AT_BRANCH_START.to_owned());
+            }
+            None => goal.granted_missing = Some("The war goal's grant was not read".into()),
+        }
+    }
+    let mut removed: Vec<WargoalRemoved> = dates
+        .iter()
+        .filter(|incarnation| same(incarnation.country) && incarnation.removed.is_some_and(|removed| removed <= hour))
+        .map(|incarnation| {
+            let (name, recipient) = describe(incarnation);
+            WargoalRemoved {
+                handle: incarnation.handle.to_string(),
+                name,
+                recipient,
+                granted: incarnation.granted,
+                granted_missing: incarnation.granted.is_none().then(|| wargoal_dates::HELD_AT_BRANCH_START.to_owned()),
+                removed: incarnation.removed.unwrap_or(hour),
+                removed_exact: incarnation.removed_exact,
+                reason_missing: wargoal_dates::REMOVAL_REASON.to_owned(),
+            }
+        })
+        .collect();
+    removed.sort_by_key(|item| std::cmp::Reverse(item.removed));
+    reply.removed = removed;
 }
 
 fn invalid(why: impl Into<String>) -> io::Error {
@@ -474,6 +586,9 @@ fn inventory(
                 .into_iter()
                 .map(|v| tag(v as u32))
                 .collect::<io::Result<_>>()?,
+            state: WargoalState::InUse,
+            granted: None,
+            granted_missing: None,
         });
     }
     let mut just = Vec::new();
@@ -518,6 +633,15 @@ fn inventory(
         .chain(just.iter().map(|r| (r.actor.clone(), r.recipient.clone())))
         .collect::<BTreeSet<_>>();
     let standings = standings(frame, &pairs);
+    let at_war: BTreeSet<(&str, &str)> = standings
+        .iter()
+        .filter(|pair| pair.standing == Some(WargoalStanding::AtWar))
+        .map(|pair| (pair.actor.as_str(), pair.recipient.as_str()))
+        .collect();
+    for goal in &mut out {
+        goal.state = goal_state(at_war.contains(&(goal.actor.as_str(), goal.recipient.as_str())), goal.available, goal.expires, p.hour);
+    }
+    out.sort_by_key(|goal| goal.state);
     Ok(WargoalsReply {
         branch_id: p.branch_id.clone(),
         tag: p.tag.clone(),
@@ -525,6 +649,7 @@ fn inventory(
         standings,
         goals: out,
         justifications: just,
+        removed: Vec::new(),
         warnings,
         state_names: Vec::new(),
     })
@@ -606,6 +731,7 @@ mod tests {
             reply.goals[0].available,
             "daily-stale expiry cannot remove native membership"
         );
+        assert_eq!(reply.goals[0].state, WargoalState::AtWar, "a goal against a country at war is at war, its expiry passed or not");
         assert_eq!(reply.goals[0].states, [50, 51, 50]);
         assert_eq!(reply.goals[0].liberate, ["THREE"]);
         assert_eq!(reply.goals[0].puppets, ["TWO"]);
@@ -697,6 +823,50 @@ mod tests {
         assert!(localised_goal_name(&frame, &loc, b"custom_goal", 1, 2).is_err());
     }
 
+    #[test]
+    fn a_goal_is_followed_by_its_handle_across_shifting_rows_and_dated_only_where_read() {
+        use replay_lanes::lanes::CoveredValue::{Unvalued, Value};
+        let row = |ordinal: u128| (1u128 << 32) | ordinal;
+        let handles = std::collections::HashMap::from([
+            (row(0), vec![(100, 109, Value(7)), (110, 111, Unvalued), (112, 130, Value(9))]),
+            (row(1), vec![(100, 109, Unvalued), (110, 120, Value(7)), (121, 130, Unvalued)]),
+        ]);
+        let attributes: [std::collections::HashMap<u128, replay_lanes::lanes::Runs>; 4] = [
+            std::collections::HashMap::from([(row(1), vec![(100, 130, Some(1))])]),
+            std::collections::HashMap::from([(row(1), vec![(100, 130, Some(2))])]),
+            std::collections::HashMap::from([(row(1), vec![(100, 130, Some(42))])]),
+            std::collections::HashMap::new(),
+        ];
+        let found = wargoal_dates::incarnations(&handles, &attributes, Some(100), 130);
+        let seven = found.iter().find(|item| item.handle == 7).unwrap();
+        assert_eq!((seven.granted, seven.removed, seven.removed_exact, seven.country), (None, Some(121), true, 1), "held at the first read: granted before the branch; removed the hour it was first read gone");
+        assert_eq!((seven.recipient, seven.goal_type), (Some(2), Some(42)), "its terms are read from the row that held it last");
+        let nine = found.iter().find(|item| item.handle == 9).unwrap();
+        assert_eq!((nine.granted, nine.removed), (Some(112), None), "still held at the branch's last read");
+        let mut reply = WargoalsReply {
+            branch_id: "1".into(), tag: "ONE".into(), asked: "ONE".into(), standings: Vec::new(),
+            goals: vec![WargoalEntry { handle: "9".into(), name: "Conquer".into(), actor: "ONE".into(), recipient: "TWO".into(), available: true, expires: None, states: Vec::new(), liberate: Vec::new(), puppets: Vec::new(), state: WargoalState::Ready, granted: None, granted_missing: None }],
+            justifications: Vec::new(), removed: Vec::new(), warnings: Vec::new(), state_names: Vec::new(),
+        };
+        apply_dates(&mut reply, &found, 120, |raw| raw == 1, |_| (Some("Conquer".into()), Some("TWO".into())));
+        assert_eq!(reply.goals[0].granted, Some(112));
+        assert!(reply.removed.is_empty(), "a removal after the displayed hour is not shown");
+        apply_dates(&mut reply, &found, 125, |raw| raw == 1, |_| (Some("Conquer".into()), Some("TWO".into())));
+        assert_eq!(reply.removed.len(), 1);
+        assert_eq!((reply.removed[0].removed, reply.removed[0].granted_missing.as_deref()), (121, Some(wargoal_dates::HELD_AT_BRANCH_START)));
+        assert_eq!(reply.removed[0].reason_missing, wargoal_dates::REMOVAL_REASON);
+    }
+    #[test]
+    fn a_goal_state_puts_war_before_readiness_and_expiry_before_both_unless_at_war() {
+        assert_eq!(goal_state(true, true, Some(10), 20), WargoalState::AtWar);
+        assert_eq!(goal_state(false, true, Some(20), 20), WargoalState::Expired, "a goal is expired from its expiry hour");
+        assert_eq!(goal_state(false, true, Some(21), 20), WargoalState::Ready);
+        assert_eq!(goal_state(false, true, None, 20), WargoalState::Ready, "no recorded expiry is not an expiry");
+        assert_eq!(goal_state(false, false, None, 20), WargoalState::InUse);
+        let mut states = [WargoalState::Expired, WargoalState::InUse, WargoalState::Ready, WargoalState::AtWar];
+        states.sort();
+        assert_eq!(states, [WargoalState::AtWar, WargoalState::Ready, WargoalState::InUse, WargoalState::Expired]);
+    }
     #[test]
     fn inventory_pair_standing_uses_live_wars_and_nonzero_factions_only() {
         let mut frame = super::super::war_fixtures::recorded(100);
@@ -900,6 +1070,7 @@ mod tests {
             },
             1,
             &Ok(Arc::new(cat)),
+            &Ok(Arc::new(Vec::new())),
         )
         .unwrap();
         assert_eq!(
