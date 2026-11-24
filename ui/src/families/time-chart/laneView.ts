@@ -128,7 +128,7 @@ export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLa
       nav: chartNavStops(model, base),
     };
   },
-  mirror: () => null,
+  mirror: null,
   audit: frame => frame.layout.model.auditRows ?? [],
   visibleArt: frame => (frame.layout.base ? collectVisibleChartArt(frame.layout.model, frame.layout.base) : []),
 };

@@ -5,7 +5,7 @@ import { flagChoiceArt } from '../../families/art/provider.ts';
 import type { BreakdownWidgetSpec } from '../../families/breakdown/declaration.ts';
 import type { BreakdownModel, BreakdownPart, BreakdownProjection } from '../../families/breakdown/model.ts';
 import { breakdownParts, breakdownTotal, type BreakdownWords } from '../../families/breakdown/product.ts';
-import { groupSelection, groupUnavailable } from '../../families/groupSelection.ts';
+import { groupSelection } from '../../families/groupSelection.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { TerritoryBreakdownReply } from '../../generated/dashboard';
@@ -112,6 +112,5 @@ export const territoryBreakdown: BreakdownWidgetSpec<TerritoryBreakdownOptions> 
     rule: ctx.options.rule === 'owned' ? 'owned' : 'controlled',
     chosen: ctx.widget.countries.kind !== 'all',
   }),
-  unavailable: ctx => groupUnavailable(ctx.widget.countries),
   sources,
 };

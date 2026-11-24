@@ -898,4 +898,17 @@ test('a pinned unit uses its own branch and coverage gate, so a point at +24 on 
   assert.equal(unit(units, 'shifted').anchor, 114, 'the secondary is pinned at its own 114, recorded on its own track');
   assert.ok(unit(units, 'shifted').spec, 'and is asked, not gated away by the primary track ending at 100');
   assert.equal(unit(units, 'plain').anchor, 90);
+
+  const aligned: SourceEntry = { ...shifted, name: 'aligned', offset: 0 };
+  const gapAt90 = { branch: long.branch, gate: { ...gate, recorded: (hour: number | null | undefined) => (typeof hour === 'number' && hour !== 90 ? hour : null) as never } };
+  const zero = askUnits([plain, aligned], {
+    following: false,
+    trackOffset: 0,
+    content: 0,
+    displayHour: 90,
+    pinned: { timeMode: 'pin', branch: short.branch, window: { firstHour: 90, lastHour: 90 }, pinHour: 90, gate: short.gate },
+    track: entry => (entry.branch === '2' ? gapAt90 : short),
+  });
+  assert.ok(unit(zero, 'plain').spec, 'the primary is recorded at 90 and asked');
+  assert.equal(unit(zero, 'aligned').spec, null, 'R5-S3: at zero shift the secondary is gated on its own track, which did not record 90');
 });

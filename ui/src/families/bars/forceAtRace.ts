@@ -41,7 +41,13 @@ export function forceSelection(ctx: FamilyPlanContext): ForceSelection {
   };
 }
 
-export function forceAtSources(ctx: FamilyPlanContext, owner: string, product: DeclaredProduct, extra: Readonly<Record<string, unknown>>): SourcePlan {
+export function forceAtSources(
+  ctx: FamilyPlanContext,
+  owner: string,
+  product: DeclaredProduct,
+  extra: Readonly<Record<string, unknown>>,
+  validate: (value: unknown) => unknown = validateForceAtReply,
+): SourcePlan {
   const selection = forceSelection(ctx);
   const params = { branchId: ctx.branch.id, ...selection.params, ...extra };
   return {
@@ -58,7 +64,7 @@ export function forceAtSources(ctx: FamilyPlanContext, owner: string, product: D
         product,
         followQuery: { panel: product, ...params },
         params,
-        validate: validateForceAtReply,
+        validate,
       },
     }],
     allowEmptyFollow: selection.none,
