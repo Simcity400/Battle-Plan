@@ -2152,7 +2152,7 @@ export type TerritoryTransfersParams = { branchId: string,
 through: number, };
 export type TerritoryTransfersReply = { branchId: string, through: number,
 /**
- * State transfers known by `through`, a state transferred twice counted twice; at least this many when `partial`.
+ * State transfers known by `through`, a state transferred twice counted twice; only those observed when `partial`.
  */
 transfers: number,
 /**
@@ -2177,7 +2177,7 @@ key: string,
  */
 tag: string, hour: number,
 /**
- * Transfers observed; at least this many when the reply is `partial`.
+ * Transfers observed; only those observed when the reply is `partial`.
  */
 gained: number, lost: number,
 /**
