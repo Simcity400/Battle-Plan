@@ -143,10 +143,14 @@ export function createTabFixture(render: (node: ReactNode) => void) {
     async anchor(side: Side, id: string, control = 'summary') {
       const at = items.findIndex(item => item.id === id);
       section(side).querySelector<HTMLElement>('[data-scroll]')!.scrollTop = at * height;
-      if (side === 'virtual') await settle();
-      const target = section(side).querySelector<HTMLElement>(`[data-control="${id}:${control}"]`)
-        ?? section(side).querySelector<HTMLElement>(`[data-control="${id}:static"]`)!;
-      target.focus();
+      const find = () => section(side).querySelector<HTMLElement>(`[data-control="${id}:${control}"]`)
+        ?? section(side).querySelector<HTMLElement>(`[data-control="${id}:static"]`);
+      let target = find();
+      if (side === 'virtual') {
+        await settle();
+        for (let tries = 0; tries < 30 && !(target = find()); tries++) await frame();
+      }
+      target!.focus();
       if (side === 'virtual') await frame();
     },
     async scrollAway(side: Side) {
