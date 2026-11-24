@@ -155,6 +155,13 @@ impl Failure {
         record_resolutions(&self.identities);
     }
 
+    pub(crate) fn input_tables(&self) -> impl Iterator<Item = TableId> + '_ {
+        self.identities.iter().filter_map(|identity| match identity {
+            Identity::Input { table, .. } => Some(*table),
+            Identity::Unsupported(_) => None,
+        })
+    }
+
     pub(crate) fn consumed(&self) {
         #[cfg(test)]
         assert_reached(self);

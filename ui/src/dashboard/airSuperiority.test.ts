@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { liveKey, valuesOf } from '../charts/live.ts';
-import { airPercent, airState, airTooltip, cellView, momentViews, orderedRegions, sideOrder, validateAirSuperiority } from './airSuperiority.ts';
+import { airPercent, airState, airTooltip, cellView, sideOrder, validateAirSuperiority } from './airSuperiority.ts';
 import type { AirLooks } from './airSuperiority';
 import type { AirSide, AirSuperiorityReply } from '../generated/dashboard';
 
@@ -18,11 +18,11 @@ const reply: AirSuperiorityReply = {
   missing: null, sides: SIDES, legend: [0, 1], viewpoint: null, scale: 100_000, badBelow: 40_000, goodAbove: 60_000, warnings: [],
   fallback: { kind: 'sides', parts: [], viewpoints: [], unknown: [], noAirObject: [], filtered: false, excluded: 0 },
   regions: [
-    { id: 10, name: 'North Sea', nameMissing: null, active: true, wings: 'live',
+    { id: 10, name: 'North Sea', nameMissing: null, active: true, pinned: false, wings: 'live',
       cell: { kind: 'sides', parts: [{ side: 1, tag: 'GER', live: 'GER@10' }, { side: 0, tag: 'ENG', live: 'ENG@10' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false, excluded: 0 } },
-    { id: 11, name: 'Baltic', nameMissing: null, active: true, wings: 'none',
+    { id: 11, name: 'Baltic', nameMissing: null, active: true, pinned: false, wings: 'none',
       cell: { kind: 'sides', parts: [{ side: 0, tag: 'ENG', live: 'ENG@11' }, { side: 1, tag: 'GER', live: 'GER@11' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false, excluded: 0 } },
-    { id: 12, name: 'Atlantic', nameMissing: null, active: false, wings: 'unknown', cell: { kind: 'reason', reason: 'outside-theatres' } },
+    { id: 12, name: 'Atlantic', nameMissing: null, active: false, pinned: false, wings: 'unknown', cell: { kind: 'reason', reason: 'outside-theatres' } },
   ],
 };
 
@@ -53,17 +53,6 @@ test('a viewpoint\'s state is the game\'s strict thresholds over friendly agains
     tag => ({ name: `Country ${tag}` }), false, id => `Faction ${id}`);
   assert.ok(tooltip.rows.some(row => row.label === 'State' && row.value === 'Air superiority'));
   assert.ok(tooltip.rows.some(row => row.label === 'Air wings assigned to the region' && row.value === '2'));
-});
-
-test('regions are ordered by contest, activity or name, and those outside the theatres are not shown', () => {
-  const rows = momentViews(reply, values({ 'GER@10.friendly': 300, 'ENG@10.friendly': 100, 'ENG@11.friendly': 50, 'GER@11.friendly': 60, '10.wings': 4 }), looks);
-  assert.equal(rows.find(row => row.region.id === 10)?.view.wings, 4);
-  assert.equal(rows.find(row => row.region.id === 11)?.view.wings, 0, 'a complete wings table without the row: none');
-  assert.deepEqual(orderedRegions(rows, 'contested').map(row => row.region.id), [11, 10]);
-  assert.deepEqual(orderedRegions(rows, 'active').map(row => row.region.id), [10, 11]);
-  assert.deepEqual(orderedRegions(rows, 'name').map(row => row.region.id), [11, 10]);
-  const named = momentViews(reply, values({}), looks, [{ id: 13, name: 'Arctic' }]);
-  assert.ok(named.some(row => row.region.id === 13 && !row.active), 'a chosen region not in the reply reads as the fallback');
 });
 
 test('a reply naming a side it does not hold is refused', () => {

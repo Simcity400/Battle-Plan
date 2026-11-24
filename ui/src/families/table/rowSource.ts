@@ -69,6 +69,15 @@ export interface HeadApplyOptions {
   readonly forceFull?: boolean;
 }
 
+export interface PagedRowsSnapshot {
+  readonly identity: string;
+  readonly frozenHour: number | null;
+  readonly headLimit: number;
+  readonly pageSize: number;
+  readonly pages: Readonly<Record<number, readonly DatedLogRow[]>>;
+  readonly refusals: Readonly<Record<number, string>>;
+}
+
 export interface TableRowSource<TRow extends DatedLogRow> {
   readonly identity: string;
   readonly total: number;
@@ -77,6 +86,8 @@ export interface TableRowSource<TRow extends DatedLogRow> {
   readonly missing: readonly MissingSpan[];
   readonly refused: string | null;
   readonly frozen: FreezeState | null;
+  readonly facetTotals?: ReadonlyMap<string, number>;
+  readonly rawHead?: unknown;
   sliceAt(hour: number, first: number, count: number): readonly LogRowSlot<TRow>[];
 }
 
@@ -102,16 +113,23 @@ const isSpan = (value: unknown): value is MissingSpan => isObject(value)
   && Number.isSafeInteger(value.firstHour) && Number.isSafeInteger(value.lastHour)
   && (value.firstHour as number) <= (value.lastHour as number) && typeof value.reason === 'string' && value.reason.length > 0;
 
-export function validateTailReply(value: unknown, readAt?: number): TailReply<LogReplyRow> {
+export function validateRowTailReply<TRow extends DatedLogRow>(
+  value: unknown,
+  mapRow: (row: Record<string, unknown>, columns: readonly string[]) => TRow,
+  readAt?: number,
+): TailReply<TRow> {
   const malformed = () => new Error('The log tail reply is malformed.');
-  if (!isObject(value) || !Array.isArray(value.columns) || !value.columns.every(column => typeof column === 'string') || !Array.isArray(value.rows)) {
+  if (!isObject(value) || !Array.isArray(value.rows)) {
+    throw malformed();
+  }
+  const columns = value.columns === undefined ? [] : value.columns;
+  if (!Array.isArray(columns) || !columns.every(column => typeof column === 'string')) {
     throw malformed();
   }
   const total = parseCount(value.total);
   const offset = parseCount(value.offset);
   const baseOrdinal = parseCount(value.baseOrdinal ?? '0');
   const firstOrdinal = parseCount(value.firstOrdinal ?? '0');
-  const columns = value.columns as string[];
   if (total === null || offset === null || baseOrdinal === null || firstOrdinal === null || offset + value.rows.length > total) {
     throw malformed();
   }
@@ -125,21 +143,127 @@ export function validateTailReply(value: unknown, readAt?: number): TailReply<Lo
     if (!isObject(entry) || typeof entry.key !== 'string' || count === null) throw malformed();
     facetTotals.set(entry.key, count);
   }
-  const rows = (value.rows as unknown[]).map((row): LogReplyRow => {
-    if (!isObject(row) || typeof row.key !== 'string' || !Number.isSafeInteger(row.hour)
-      || !Array.isArray(row.cells) || row.cells.length !== columns.length || !row.cells.every(isCell)) {
+  const rows = (value.rows as unknown[]).map((raw): TRow => {
+    if (!isObject(raw) || typeof raw.key !== 'string' || !Number.isSafeInteger(raw.hour)) {
       throw malformed();
     }
-    const hour = row.hour as number;
+    const hour = raw.hour as number;
     if (readAt !== undefined && hour > readAt) throw new Error(`The log tail reply contained a row from hour ${hour} after displayed hour ${readAt}.`);
-    return {
-      key: row.key,
-      hour,
-      cells: Object.fromEntries(columns.map((column, index) => [column, (row.cells as LogCell[])[index]!])),
-      fields: row,
-    };
+    return mapRow(raw, columns);
   });
   return { total, offset, baseOrdinal, firstOrdinal, rows, facetTotals, missing };
+}
+
+export function validateTailReply(value: unknown, readAt?: number): TailReply<LogReplyRow> {
+  return validateRowTailReply(
+    value,
+    (row, columns): LogReplyRow => {
+      if (!Array.isArray(row.cells) || row.cells.length !== columns.length || !row.cells.every(isCell)) {
+        throw new Error('The log tail reply is malformed.');
+      }
+      return {
+        key: row.key as string,
+        hour: row.hour as number,
+        cells: Object.fromEntries(columns.map((column, index) => [column, (row.cells as LogCell[])[index]!])),
+        fields: row,
+      };
+    },
+    readAt,
+  );
+}
+
+export function validateGenericTailReply(value: unknown, readAt?: number): TailReply<DatedLogRow> {
+  return validateRowTailReply(
+    value,
+    (row, columns): DatedLogRow => {
+      if (columns.length > 0 && Array.isArray(row.cells) && row.cells.length === columns.length && row.cells.every(isCell)) {
+        return {
+          key: row.key as string,
+          hour: row.hour as number,
+          cells: Object.fromEntries(columns.map((column, index) => [column, (row.cells as LogCell[])[index]!])),
+          fields: row,
+        } as LogReplyRow;
+      }
+      return row as unknown as DatedLogRow;
+    },
+    readAt,
+  );
+}
+
+export function isTailReplyLike(value: unknown): boolean {
+  return isObject(value) && Array.isArray(value.rows) && typeof value.total === 'string' && typeof value.offset === 'string';
+}
+
+export function buildRowSourceFromHead(
+  identity: string,
+  headRaw: unknown,
+  headRefused: string | undefined,
+  hour: number,
+  snapshot?: PagedRowsSnapshot,
+): TableRowSource<DatedLogRow> | null {
+  const pageSize = snapshot?.pageSize ?? DEFAULT_TAIL_PAGE_SIZE;
+  if (headRefused !== undefined) {
+    const controller = new TailWindowController<DatedLogRow>(identity, pageSize);
+    controller.refuseHead(hour, headRefused);
+    return controller.snapshot();
+  }
+  if (!isTailReplyLike(headRaw)) return null;
+  const activeHour = snapshot?.frozenHour !== null && snapshot?.frozenHour !== undefined && snapshot.frozenHour <= hour
+    ? snapshot.frozenHour
+    : hour;
+  const head = validateGenericTailReply(headRaw, activeHour);
+  const frozenState: FreezeState | null = snapshot?.frozenHour !== null && snapshot?.frozenHour !== undefined && snapshot.frozenHour <= hour
+    ? { hour: snapshot.frozenHour, total: head.total, firstOrdinal: head.firstOrdinal, missing: head.missing }
+    : null;
+  const pages = snapshot ? new Map<number, readonly DatedLogRow[]>(Object.entries(snapshot.pages).map(([k, v]) => [Number(k), v])) : null;
+  const refusals = snapshot ? new Map<number, string>(Object.entries(snapshot.refusals).map(([k, v]) => [Number(k), v])) : null;
+  const headRows = head.rows;
+  const total = head.total;
+  const missing = head.missing;
+  return {
+    identity,
+    total,
+    liveCount: 0,
+    at: activeHour,
+    missing,
+    refused: null,
+    frozen: frozenState,
+    facetTotals: head.facetTotals,
+    rawHead: headRaw,
+    sliceAt(reqHour: number, first: number, count: number): readonly LogRowSlot<DatedLogRow>[] {
+      const start = Math.max(0, Math.floor(first));
+      const len = Math.max(0, Math.floor(count));
+      if (len === 0) return [];
+      const out: LogRowSlot<DatedLogRow>[] = [];
+      const end = Math.min(total, start + len);
+      const baseOffset = headRows.length;
+      for (let ordinal = start; ordinal < end; ordinal++) {
+        if (ordinal < baseOffset) {
+          const row = headRows[ordinal]!;
+          out.push(row.hour <= reqHour
+            ? { kind: 'data', ordinal, readAt: reqHour, row }
+            : { kind: 'refused', ordinal, readAt: reqHour, reason: `Row ${row.key} came from after the displayed hour.` });
+          continue;
+        }
+        const pageOffset = baseOffset + Math.floor((ordinal - baseOffset) / pageSize) * pageSize;
+        const pageRefused = refusals?.get(pageOffset);
+        if (pageRefused !== undefined) {
+          out.push({ kind: 'refused', ordinal, readAt: reqHour, reason: pageRefused });
+          continue;
+        }
+        const page = pages?.get(pageOffset);
+        const row = page?.[ordinal - pageOffset];
+        if (row) {
+          out.push(row.hour <= reqHour
+            ? { kind: 'data', ordinal, readAt: reqHour, row }
+            : { kind: 'refused', ordinal, readAt: reqHour, reason: `Row ${row.key} came from after the displayed hour.` });
+        } else {
+          out.push({ kind: 'loading', ordinal, readAt: reqHour });
+        }
+      }
+      return out;
+    },
+  };
 }
 
 export function buildNavigableSlots<TRow extends DatedLogRow>(

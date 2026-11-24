@@ -6,8 +6,7 @@ use dashboard_intelligence::products::intelligence::Tags;
 use dashboard_query::read::{self, touched};
 use dashboard_text::metadata::check_cancel;
 use dashboard_world::products::{
-    holder_tags,
-    place_name_runs::{Answer, NameRun, RunBook},
+    place_name_runs::{Answer, NameRun, Presence, RunBook},
 };
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
@@ -19,6 +18,7 @@ use ts_rs::TS;
 
 const LEADER_ABSENT: &str = "Not a leader of this country at this hour";
 const LEADER_NAME_MISSING: &str = "Leader name not recorded";
+const OWNER_UNNAMED: &str = "The leader's owner is not named at this hour";
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -81,11 +81,17 @@ fn read_hour(query: &dashboard_query::Query<'_>, frames: &mut at_hour::Frames<'_
     Ok(frame)
 }
 
+fn owned_by(owner: &Country, slot: Option<u32>, tag: Option<String>) -> Option<bool> {
+    match owner {
+        Country::Slot(asked) => slot.map(|held| held == *asked),
+        Country::Tag(asked) => tag.map(|held| held == *asked),
+    }
+}
+
 fn answers(frame: &DecodedFrame, content: &Content, owner: &Country, keys: &[u64]) -> Vec<Answer> {
-    let missing = |reason: String| Answer { name: None, missing: Some(reason), absent: false };
     let leaders = match frame.complete::<tables::UnitLeaders>() {
         Ok(leaders) => leaders,
-        Err(why) => return keys.iter().map(|_| missing(why.to_string())).collect(),
+        Err(why) => return keys.iter().map(|_| Answer::unknown(why.to_string())).collect(),
     };
     let tags = Tags::read(frame).map_err(|error| format!("Leaders' owners are not named at this hour: {error}"));
     let characters = frame.complete::<tables::Characters>().ok();
@@ -93,20 +99,21 @@ fn answers(frame: &DecodedFrame, content: &Content, owner: &Country, keys: &[u64
     keys.iter()
         .map(|&key| {
             let Some(row) = leaders.iter().find(|row| handle(row) == key) else {
-                return Answer { name: None, missing: Some(LEADER_ABSENT.into()), absent: true };
+                return Answer { name: None, missing: Some(LEADER_ABSENT.into()), presence: Presence::Absent };
             };
             let tags = match &tags {
                 Ok(tags) => tags,
-                Err(why) => return missing(why.clone()),
+                Err(why) => return Answer::unknown(why.clone()),
             };
-            let owned = tags.slot(row.owner).zip(tags.tag(row.owner));
-            if !owned.is_some_and(|(slot, tag)| holder_tags::matches(owner, (slot, 0), &tag)) {
-                return Answer { name: None, missing: Some(LEADER_ABSENT.into()), absent: true };
+            match owned_by(owner, tags.slot(row.owner), tags.tag(row.owner)) {
+                Some(true) => {}
+                Some(false) => return Answer { name: None, missing: Some(LEADER_ABSENT.into()), presence: Presence::Absent },
+                None => return Answer::unknown(OWNER_UNNAMED.into()),
             }
             let character = characters.and_then(|rows| rows.binary_search_by_key(&row.character_id, |character| character.id).ok().map(|at| &rows[at]));
             match content.person_name(character, lexical) {
-                Some(name) => Answer { name: Some(name), missing: None, absent: false },
-                None => missing(LEADER_NAME_MISSING.into()),
+                Some(name) => Answer { name: Some(name), missing: None, presence: Presence::Present },
+                None => Answer { name: None, missing: Some(LEADER_NAME_MISSING.into()), presence: Presence::Present },
             }
         })
         .collect()
@@ -172,7 +179,7 @@ impl Product for LeaderNameRuns {
                 }
                 let named = match read_hour(&query, &mut frames, hour, &dirty) {
                     Ok(frame) => answers(&frame, &content, &params.owner, &dirty),
-                    Err(reason) => dirty.iter().map(|_| Answer { name: None, missing: Some(reason.clone()), absent: false }).collect(),
+                    Err(reason) => dirty.iter().map(|_| Answer::unknown(reason.clone())).collect(),
                 };
                 for (key, answer) in dirty.into_iter().zip(named) {
                     book.settle(key, answer, hour, &unknown);
@@ -188,5 +195,22 @@ impl Product for LeaderNameRuns {
         let reply = LeaderNameRunsReply { from, to, unknown, leaders, warnings };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_slot_owner_matches_on_the_slot_alone_and_an_unnamed_owner_is_unknown_not_another_country() {
+        let slot = Country::Slot(7);
+        let tag = Country::Tag("AAA".into());
+        assert_eq!(owned_by(&slot, Some(7), None), Some(true), "a matching slot with an unnamed tag is the same owner");
+        assert_eq!(owned_by(&slot, Some(8), Some("AAA".into())), Some(false));
+        assert_eq!(owned_by(&slot, None, None), None, "an unlinked slot is not known to be another owner");
+        assert_eq!(owned_by(&tag, Some(7), None), None, "a tag owner with an unnamed tag is unknown, not absent");
+        assert_eq!(owned_by(&tag, Some(7), Some("AAA".into())), Some(true));
+        assert_eq!(owned_by(&tag, Some(7), Some("BBB".into())), Some(false));
     }
 }

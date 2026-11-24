@@ -14,10 +14,11 @@ import {
   type HeatLanesModel,
   type HeatLanesProjection,
 } from '../../families/heat/lanesModel.ts';
-import { countryColourAt, type DatedColour } from '../../families/heat/scale.ts';
+import { countryColourAt, regionLabel, type DatedColour } from '../../families/heat/scale.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
-import { regionIds } from '../../families/regionTokens.ts';
+import { readRegionChoice, regionParams, type RegionChoice } from '../../families/regions/regionChoice.ts';
+import { countrySubject, regionLanes } from '../../families/regions/regionRows.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { AirDayCell, AirReadout, AirSide, AirTimelineReply, AirTimelineRow } from '../../generated/dashboard';
 import { LANE_READOUT_MAX_WIDTH } from '../../families/heat/lanesLayout.ts';
@@ -35,7 +36,7 @@ interface AirMode {
   readonly mode: 'sides' | 'viewpoint';
   readonly viewpoint: string;
   readonly sides: readonly string[];
-  readonly regions: readonly number[];
+  readonly regions: RegionChoice;
   readonly theatres: readonly string[];
 }
 
@@ -49,7 +50,7 @@ export function airTimelineMode(ctx: Pick<FamilyPlanContext, 'options' | 'track'
     : chosen
       ? contentKey(chosen).startsWith('country:') ? contentKey(chosen) : airChoiceKey(campaign, chosen) ?? ''
       : ctx.countryTag ? `country:${ctx.countryTag}` : '';
-  const regions = regionIds(options.regions);
+  const regions = readRegionChoice(options.regions);
   return {
     mode,
     viewpoint,
@@ -71,7 +72,7 @@ export function airTimelineParams(ctx: FamilyPlanContext, mode: AirMode): Record
       : {}),
     ...(mode.sides.length ? { sides: mode.sides } : {}),
     ...(mode.theatres.length ? { theatres: mode.theatres } : {}),
-    ...(mode.regions.length ? { pinnedRegions: mode.regions } : {}),
+    ...regionParams(mode.regions),
     top,
   };
 }
@@ -297,6 +298,7 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
     viewer: viewpointCountry ? at => countryColourAt(readView, viewpointCountry, at, surface, noViewer) : null,
     noViewer,
   };
+  const subject = countrySubject(readView, options.viewpointCountry);
   const held = tiles.map(tile => tileLanes(tile, `${surface}|${look.contested}|${datedSignature(look, tile.firstHour, tile.lastHour)}`, look, surface));
   const cellsOf = new Map<string, HeatLaneCell>();
   const pieces: Piece[][] = now.rows.map(row => [
@@ -308,8 +310,7 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
     { reply: now, lane: lane(row.cells, now, through, look, surface, cellsOf), cells: row.cells },
   ]);
   const rows: HeatLaneRow[] = now.rows.map((row, index) => {
-    const label = row.name ?? 'Region name not recorded';
-    const nameMissing = row.name === null ? row.nameMissing ?? 'Region name not recorded' : undefined;
+    const { label, nameMissing } = regionLabel(readView, row.region, row.name);
     const readout = readoutOf(row.readout, now, look, surface);
     const own = pieces[index]!;
     return {
@@ -317,6 +318,7 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
       label,
       ...(nameMissing ? { nameMissing } : {}),
       pinned: row.pinned,
+      region: row.region,
       runs: own.length === 1 ? own[0]!.lane.runs : own.flatMap(piece => piece.lane.runs),
       ...(readout ? { readout } : {}),
     };
@@ -331,13 +333,14 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
     playhead: through,
     gaps: [...gaps.values()],
     rows,
+    regions: regionLanes(subject),
     readoutWidth: LANE_READOUT_MAX_WIDTH,
     inspect: (rowIndex, at) => {
       const own = pieces[rowIndex];
       const piece = own?.[spanIndexAt(own, at, item => item.reply.firstHour)];
       return piece && at <= piece.reply.lastHour ? inspectDay(piece, rows[rowIndex]!.label, at, look, surface) : null;
     },
-    ...(rows.length ? {} : { empty: 'No air activity at this date.' }),
+    ...(rows.length ? {} : { empty: `No air activity${subject ? ` for ${subject}` : ''} at this date.` }),
     warnings: [...new Set([...tiles, now].flatMap(reply => reply.warnings))],
   };
 }

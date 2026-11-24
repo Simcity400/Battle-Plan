@@ -4,18 +4,19 @@ import { answersKey, countryFromKey } from '../../dashboard/countryKey.ts';
 import { defaultCountryKey } from '../../dashboard/countrySelection.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveCountries } from '../../dashboard/groups.ts';
-import { ideaName, validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
+import { holdingLabel, lookOf, validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { useProduct } from '../../dashboard/products.ts';
+import { useCampaignGate } from '../../dashboard/regionGate.ts';
 import { productRequest } from '../../dashboard/request.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups.ts';
 import { DeclaredFamilyWidget } from '../../families/host/index.ts';
 import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
 import type {
-  Artwork,
   FocusReply,
   HourSpan,
   IdeaHistoryReply,
+  IdeaHolding,
   PartyHistoryReply,
 } from '../../generated/dashboard';
 import { validateFocusReply } from '../national-focus/focusData.ts';
@@ -49,11 +50,12 @@ export default function StabilityWidget(props: WidgetProps) {
   );
   const singleTag = resolved.tags.length === 1 ? resolved.tags[0]! : null;
 
+  const ideasEnd = useCampaignGate(runtime, widget, active && wantGov).hour;
   const ideasReq = useMemo(
-    () => (track && singleTag && wantGov
-      ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'idea-history', params: { branchId: track.branch.id, country: countryFromKey(singleTag) } })
+    () => (track && singleTag && wantGov && ideasEnd !== null
+      ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'idea-history', params: { branchId: track.branch.id, country: countryFromKey(singleTag), hour: ideasEnd } })
       : null),
-    [track, singleTag, wantGov],
+    [track, singleTag, wantGov, ideasEnd],
   );
   const partiesReq = useMemo(
     () => (track && singleTag && wantGov
@@ -115,41 +117,29 @@ export default function StabilityWidget(props: WidgetProps) {
     if (wantGov && ideaReply) {
       const laws = new Set(ideaReply.categories.flatMap(c => c.slots.flatMap(s => s.laws)));
       const seats = new Set(ideaReply.categories.flatMap(c => c.slots.filter(s => s.character).map(s => s.token)));
-      const infos = new Map(ideaReply.ideas.map(i => [i.token, i]));
-      const artwork = new Map<string, Artwork>(ideaReply.artwork.map(a => [a.token, a]));
-      const holderKey = (tok: string, ch: number, script: string, nm: string) => JSON.stringify([tok, ch, script, nm]);
-      const holders = new Map(ideaReply.holders.map(h => [holderKey(h.token, h.character, h.characterToken, h.name), h.artwork]));
-      const holding = (span: IdeaHistoryReply['spans'][number], h: number) =>
-        span.character ? `c#${span.slot}#${span.character.id}#${h}` : `i#${span.token}#${span.slot}#${h}`;
-      const endings = new Set(ideaReply.spans.map(sp => holding(sp, sp.lastHour + 1)));
-      const starts = new Set(ideaReply.identityStarts);
-      for (const span of ideaReply.spans) {
-        if (span.firstHour <= branchFirst || inSpans(ideaReply.unobserved, span.firstHour - 1) || starts.has(span.firstHour)) continue;
-        if (endings.has(holding(span, span.firstHour))) continue;
-        const info = infos.get(span.token);
-        const slot = span.slot ?? info?.slot ?? null;
-        const art = artwork.get(span.token);
-        if (info?.law === true || laws.has(span.token)) {
+      const holderAt = (holding: IdeaHolding, h: number) => `${holding.slot}#${holding.character?.id}#${h}`;
+      const endings = new Set(ideaReply.holdings.flatMap(holding => holding.character ? [holderAt(holding, holding.lastHour + 1)] : []));
+      for (const holding of ideaReply.holdings) {
+        if (holding.start !== 'seen' || holding.firstHour <= branchFirst) continue;
+        if (holding.character && endings.has(holderAt(holding, holding.firstHour))) continue;
+        const look = lookOf(ideaReply, holding);
+        const slot = holding.slot ?? look.info.slot;
+        const art = look.artwork;
+        if (look.info.law || laws.has(holding.token)) {
           out.push({
-            id: `law:${span.token}:${span.firstHour}`,
-            hour: span.firstHour,
+            id: `law:${holding.token}:${holding.firstHour}`,
+            hour: holding.firstHour,
             kind: 'idea',
-            title: `Law: ${ideaName(art, info, 'Idea name unavailable')}`,
-            sprite: art?.sprite ?? null,
+            title: `Law: ${holdingLabel(look, holding)}`,
+            sprite: art.sprite ?? null,
           });
         } else if (slot && seats.has(slot)) {
-          const holderArt = span.character
-            ? holders.get(holderKey(span.token, span.character.id, span.character.token, span.character.name))
-            : undefined;
-          const label = span.character
-            ? (holderArt?.name ?? 'holder not recorded')
-            : ideaName(art, info, 'Idea name unavailable');
           out.push({
-            id: `adv:${span.token}:${span.firstHour}`,
-            hour: span.firstHour,
+            id: `adv:${holding.token}:${holding.firstHour}`,
+            hour: holding.firstHour,
             kind: 'idea',
-            title: `Advisor: ${label}`,
-            sprite: holderArt?.sprite ?? art?.sprite ?? null,
+            title: `Advisor: ${holdingLabel(look, holding)}`,
+            sprite: art.sprite ?? null,
           });
         }
       }

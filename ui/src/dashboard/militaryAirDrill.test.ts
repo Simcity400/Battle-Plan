@@ -83,7 +83,7 @@ const common = {
   '/charts/useChartTokens.ts': `const tokens = ${JSON.stringify(tokensFromValues(() => '#777', 'sans-serif'))}; export const useChartTokens = () => tokens;`,
 };
 
-test('actual Air view opens the witnessed chooser, holds days, follows the clock, pins and rejects replaced owners', async () => {
+test('actual Air view opens the witnessed chooser, holds days, follows the clock and rejects replaced owners', async () => {
   const state = fixture(), globals = globalThis as typeof globalThis & { __airDrill?: ReturnType<typeof fixture> };
   globals.__airDrill = state;
   const vite = await server({ ...common,
@@ -130,32 +130,20 @@ test('actual Air view opens the witnessed chooser, holds days, follows the clock
     assert.equal(state.detail!.hour, 12); assert.equal(state.detail!.identity, '1:9');
     assert.equal(state.chart!.active, false, 'inline Drill suspends its inert main chart');
     state.detail!.onPick(14.9); render(); assert.equal(state.detail!.hour, 14);
-    assert.equal(state.host!.onPin, undefined, 'no Pin is offered while the country’s identity is unknown');
-    assert.equal(state.host!.pinRefused, 'Country identities are still loading.', 'the refused Pin says why');
-    state.groups = { retry() {}, data: { countryIdentities: ['A', 'B', 'C'].map((tag, slot) => ({ tag, identities: [{ slot, countryId: 9, firstHour: 10, lastHour: 20 }] })) } };
-    render();
-    state.host!.onPin!();
-    assert.deepEqual(state.added[0].time, { mode: 'pin', windows: { track: { firstOffset: 4, lastOffset: 4 } } });
-    assert.equal(state.added[0].options!.show, 'breakdown');
-    assert.equal(state.added[0].options!.holder, JSON.stringify(['campaign', 'branch', 'B', '1:9']));
     state.host!.onFollow(); render(); assert.equal(state.detail!.hour, 18);
     state.hour = -981; render(); assert.equal(state.detail!.hour, 19, 'native history survives leaving top N');
     state.host!.onPause!(); render(); assert.equal(state.detail!.hour, 19);
     state.hour = -982; render(); assert.equal(state.detail!.hour, 19, 'pause holds the shown hour when playback seeks');
-    state.host!.onPin!(); assert.deepEqual(state.added.at(-1)!.time, { mode: 'pin', windows: { track: { firstOffset: 9, lastOffset: 9 } } });
-    state.added.pop();
     state.host!.onFollow(); render(); assert.equal(state.detail!.hour, 18); state.hour = -981; render();
-    const stableOwner = state.chart!.pickOwner, oldPick = state.chart!.onPick!, oldPin = state.host!.onPin!, oldFollow = state.host!.onFollow;
+    const stableOwner = state.chart!.pickOwner, oldPick = state.chart!.onPick!, oldFollow = state.host!.onFollow;
     state.track.source.revision++; state.data = { ...state.data, regions: [{ id: '40001', name: 'Reloaded content', missing: null }], warnings: ['content reload'] };
     render(); assert.equal(state.chart!.pickOwner, stableOwner); assert.equal(state.detail!.identity, '1:9');
     props.runtime.client = {} as typeof props.runtime.client;
     render(); assert.equal(state.host!.open, false);
-    oldPick(12, 'B'); staleChooser('B', null); oldFollow(); oldPin(); render();
+    oldPick(12, 'B'); staleChooser('B', null); oldFollow(); render();
     assert.equal(state.host!.open, false, 'a replaced client cannot reopen an old actor');
-    assert.equal(state.added.length, 1, 'a replaced client cannot pin an old actor');
-    props.runtime.client = initialClient; render(); oldPick(12, 'B'); oldFollow(); oldPin(); render();
+    props.runtime.client = initialClient; render(); oldPick(12, 'B'); oldFollow(); render();
     assert.equal(state.host!.open, false, 'A → B → A cannot restore an earlier pick owner');
-    assert.equal(state.added.length, 1);
     state.playing = true; state.chart!.onPick!(19, 'B'); render(); assert.equal(state.host!.following, true);
     state.detail!.onPick(13); render(); assert.equal(state.host!.following, false); assert.equal(state.detail!.hour, 13);
     props.widget.options = { ...props.widget.options, drill: 'popout' }; render();
@@ -164,19 +152,12 @@ test('actual Air view opens the witnessed chooser, holds days, follows the clock
     state.playing = false; state.chart!.onPick!(12, undefined, ['B', 'A']); render(); state.picker!.onChange('B', null); render();
     assert.equal(state.detail!.hour, 12); assert.equal(state.host!.canFollow, true, 'Campaign still offers the actual shared clock');
     state.host!.onFollow(); render(); assert.equal(state.detail!.hour, 19, 'Follow is independent of the parent campaign end');
-    state.host!.onPin!(); assert.deepEqual(state.added.at(-1)!.time, { mode: 'follow' });
     state.hour = -979; render(); assert.equal(state.detail!.hour, 21, 'an out-of-branch clock is never replaced with campaign end');
     assert.equal(state.host!.canFollow, false); assert.equal(state.host!.onPin, undefined);
     state.hour = -981;
     props.widget.time = { mode: 'pin', windows: { track: { firstOffset: 2, lastOffset: 2 } } }; render();
     state.chart!.onPick!(12, undefined, ['B', 'A']); render(); state.picker!.onChange('B', null); render();
     state.host!.onFollow(); render(); assert.equal(state.detail!.hour, 19, 'a parent Pin does not pin the independent Follow clock');
-    props.widget.time = { mode: 'range', firstOffset: 1, lastOffset: 10 }; render();
-    state.chart!.onPick!(15, 'B'); render(); state.detail!.onPick(15); render(); state.host!.onPin!();
-    assert.deepEqual(state.added.at(-1)!.time, { mode: 'range', firstOffset: 1, lastOffset: 5 });
-    props.widget = state.added.at(-1)!; render(); assert.equal(state.host, undefined);
-    assert.equal(state.detail!.hour, 15); assert.equal(state.detail!.from, 11); assert.equal(state.detail!.identity, '1:9');
-    assert.match(render(), /Follow/, 'a restored range breakdown can follow the clock independently of its held upper bound');
     state.hour = -977;
     props.widget.time = { mode: 'follow' };
     assert.match(render(), /This time is outside the recording/); assert.equal(state.detail, undefined);

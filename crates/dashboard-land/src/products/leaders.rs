@@ -840,25 +840,25 @@ pub struct LeaderPortraitsReply {
 }
 
 fn portrait(frame: &DecodedFrame, reference: u64, politics: &PoliticsContent, edge: u32) -> ArtResolution {
-    let missing = |reason: String| ArtResolution::ConfirmedMissing { reason, origin: None, file: None };
+    let unrecorded = |reason: String| ArtResolution::Unavailable { reason };
     let leaders = match frame.complete::<tables::UnitLeaders>() {
         Ok(leaders) => leaders,
-        Err(error) => return missing(error.to_string()),
+        Err(error) => return unrecorded(error.to_string()),
     };
     let Some(row) = leaders.binary_search_by_key(&reference, handle).ok().map(|at| &leaders[at]) else {
-        return missing("Leader not recorded at this hour".into());
+        return ArtResolution::NoArtExpected;
     };
     let holders = match frame.complete::<tables::CharacterPortraits>() {
         Ok(holders) => holders,
-        Err(error) => return missing(error.to_string()),
+        Err(error) => return unrecorded(error.to_string()),
     };
     let Some(holder) = holders.binary_search_by_key(&row.character_id, |holder| holder.character).ok().map(|at| &holders[at]) else {
-        return missing("Character portrait holder not recorded".into());
+        return unrecorded("Character portrait holder not recorded".into());
     };
     let category = if row.kind == KIND_NAVY { PORTRAIT_NAVY } else { PORTRAIT_ARMY };
     match replay_data::rows::portrait_entry(&holder.portraits, category, replay_data::rows::PORTRAIT_LARGE).filter(|entry| entry.is_set != 0) {
         Some(entry) => politics.recorded_portrait_art(entry.kind, &entry.identity, edge),
-        None => missing("The game generates this portrait from unrecorded inputs".into()),
+        None => unrecorded("The game generates this portrait from unrecorded inputs".into()),
     }
 }
 
@@ -897,7 +897,7 @@ impl Product for LeaderPortraits {
         let query = dashboard_base::queries::query(source, parse_branch(&params.branch_id).map_err(dashboard_core::invalid)?)?;
         let every = |resolution: ArtResolution| params.references.iter().map(|reference| leader_portrait(reference, resolution.clone())).collect();
         let Some(stretch) = query.timeline.at(params.hour) else {
-            let unrecorded = ArtResolution::ConfirmedMissing { reason: "Portrait hour not recorded".into(), origin: None, file: None };
+            let unrecorded = ArtResolution::Unavailable { reason: format!("Portrait hour not recorded: {}", query.timeline.reason(params.hour)) };
             return Ok(LeaderPortraitsReply { portraits: every(unrecorded), warnings: Vec::new() });
         };
         let politics = context.content().and_then(|options| recorded_politics_content(source, options));

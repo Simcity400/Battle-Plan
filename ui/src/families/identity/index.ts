@@ -832,12 +832,14 @@ export class IdentityIndex {
     const before = after < 0 ? unknown.length - 1 : after - 1;
     const gap = before >= 0 && unknown[before]!.lastHour >= at ? unknown[before]! : null;
     if (gap) {
+      const unrecorded: IdentityField<never> = { kind: 'missing', reason: gap.reason };
       return {
         kind: 'known',
         entityKind: key.kind,
         valid: [gap.firstHour, gap.lastHour],
         nextBoundary: nextBoundaryOf(gap.lastHour),
-        name: { kind: 'missing', reason: gap.reason },
+        holder: unrecorded,
+        name: unrecorded,
         warnings: [],
       };
     }
@@ -867,11 +869,15 @@ export class IdentityIndex {
         : entry.artKey !== null
           ? { kind: 'known', value: entry.artKey }
           : { kind: 'missing', reason: entry.artReason ?? `${key.kind} art unavailable` };
+      const holder: IdentityField<string> = entry.holderReason === undefined
+        ? { kind: 'known', value: id }
+        : { kind: 'missing', reason: entry.holderReason };
       return {
         kind: 'known',
         entityKind: key.kind,
         valid,
         nextBoundary: nextBoundaryOf(valid[1]),
+        holder,
         name,
         ...(subtitle ? { subtitle } : {}),
         ...(artKey ? { artKey } : {}),
