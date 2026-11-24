@@ -34,7 +34,7 @@ function country(readView: BoundedReadView, part: BreakdownPart): BreakdownPart 
   return {
     ...part,
     name: identity.name.status === 'ready' ? identity.name.value : part.name,
-    flag: identity.tag.status === 'ready' ? identity.tag.value : part.name,
+    flag: identity.tag?.status === 'ready' ? identity.tag.value : part.name,
     flagArt: flagChoiceArt(readView, identity.flagChoice),
     ...(identity.colour?.status === 'ready' ? { color: identity.colour.value } : {}),
   };
