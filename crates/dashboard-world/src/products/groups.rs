@@ -6,6 +6,7 @@ use dashboard_base::{Source, catalogue, content, span::HourSpan};
 use dashboard_query::{Query, identity::Holder, read};
 use content_reader_politics::faction_templates::Catalog;
 use content_reader_localisation::localisation::Localisation;
+use content_reader_layers::ResolvedContent;
 use replay_recording::columnar_frames::Recording;
 use replay_columnar::store::{TableView, Value};
 use replay_data::rows::{GroupSpanRow as Span, TableId, TagHolderRow, WarEventRow};
@@ -305,6 +306,23 @@ struct Naming {
     templates: Result<Arc<Catalog>, String>,
     localisation: Arc<Localisation>,
     recorded_language: String,
+    generation: Option<Generation>,
+}
+
+#[derive(Clone)]
+enum Generation {
+    Uncontent,
+    Of(std::sync::Weak<ResolvedContent>),
+}
+
+impl Generation {
+    fn is(&self, current: Option<&Arc<ResolvedContent>>) -> bool {
+        match (self, current) {
+            (Self::Uncontent, None) => true,
+            (Self::Of(built), Some(current)) => built.upgrade().is_some_and(|built| Arc::ptr_eq(&built, current)),
+            _ => false,
+        }
+    }
 }
 
 fn naming(source: &Source, context: &LoadContext, warnings: &mut Vec<String>) -> Naming {
@@ -313,24 +331,24 @@ fn naming(source: &Source, context: &LoadContext, warnings: &mut Vec<String>) ->
         content::check_replay(source.replay_ref(), options.allow_unverified, warnings)?;
         let layers = source.content(&options.options)?;
         let localisation = content::localisation(source, options)?;
-        Ok::<_, io::Error>((layers.layers.faction_templates(), localisation))
+        Ok::<_, io::Error>((layers.layers.faction_templates(), localisation, Arc::downgrade(&layers)))
     });
     let stored = || {
         let mut stored = Localisation::default();
         stored.language = recorded_language.clone();
         Arc::new(stored)
     };
-    let (templates, localisation) = match loaded {
-        Some(Ok((templates, localisation))) => {
+    let (templates, localisation, generation) = match loaded {
+        Some(Ok((templates, localisation, layers))) => {
             if let Ok(templates) = &templates {
                 warnings.extend(templates.warnings.iter().cloned());
             }
-            (templates, localisation)
+            (templates, localisation, Some(Generation::Of(layers)))
         }
-        Some(Err(error)) => (Err(format!("Faction naming content is unavailable: {error}")), stored()),
-        None => (Err("Faction naming content is unavailable until the game folders are chosen".into()), stored()),
+        Some(Err(error)) => (Err(format!("Faction naming content is unavailable: {error}")), stored(), None),
+        None => (Err("Faction naming content is unavailable until the game folders are chosen".into()), stored(), Some(Generation::Uncontent)),
     };
-    Naming { templates, localisation, recorded_language }
+    Naming { templates, localisation, recorded_language, generation }
 }
 
 fn faction_name(naming: &Naming, name: &NameOperands, lexical: &mut dyn FnMut(&[u8]) -> Result<Option<u32>, String>) -> Result<String, String> {
@@ -369,6 +387,10 @@ fn lexicon(recording: &Recording, run: u32) -> io::Result<HashMap<Vec<u8>, u32>>
 }
 
 pub fn groups(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<CountryGroupReply> {
+    built(source, query, branch_id, context, cancelled).map(|(reply, _)| reply)
+}
+
+fn built(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<(CountryGroupReply, Option<Generation>)> {
     let mut warnings = Vec::new();
     let naming = naming(source, context, &mut warnings);
     let recording = query.replay.recording();
@@ -619,7 +641,7 @@ pub fn groups(source: &Source, query: &Query<'_>, branch_id: &str, context: &Loa
         .collect();
     let mut identity_changes: Vec<IdentityChange> = identity_changes.into_iter().collect();
     identity_changes.sort_by_key(|change| change.hour);
-    Ok(CountryGroupReply {
+    let reply = CountryGroupReply {
         branch_id: branch_id.to_owned(),
         humans,
         factions,
@@ -630,7 +652,8 @@ pub fn groups(source: &Source, query: &Query<'_>, branch_id: &str, context: &Loa
         country_identities,
         unobserved,
         warnings,
-    })
+    };
+    Ok((reply, naming.generation))
 }
 
 pub struct CountryGroups;
@@ -711,16 +734,27 @@ pub fn factions_at(factions: &[FactionGroup], hour: i32) -> HashMap<String, Fact
 }
 
 #[derive(Default)]
-struct Replies(HashMap<(u64, Option<dashboard_base::content::LocalisationKey>), Arc<CountryGroupReply>>);
+struct Replies(HashMap<(u64, Option<dashboard_base::content::LocalisationKey>), (Generation, Arc<CountryGroupReply>)>);
 
 pub fn shared(source: &Source, query: &Query<'_>, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<CountryGroupReply>> {
     let key = (query.timeline.id, context.content.as_ref().map(dashboard_base::content::localisation_key));
+    let current = match &context.content {
+        None => Some(None),
+        Some(options) => source.content(&options.options).ok().map(Some),
+    };
     let held = source.state::<Replies>();
-    if let Some(reply) = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.get(&key) {
+    if let Some(current) = &current
+        && let Some((generation, reply)) = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.get(&key)
+        && generation.is(current.as_ref())
+    {
         return Ok(Arc::clone(reply));
     }
-    let reply = Arc::new(groups(source, query, &query.timeline.id.to_string(), context, cancelled)?);
-    Ok(Arc::clone(held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.entry(key).or_insert(reply)))
+    let (reply, generation) = built(source, query, &query.timeline.id.to_string(), context, cancelled)?;
+    let reply = Arc::new(reply);
+    if let Some(generation) = generation {
+        held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.insert(key, (generation, Arc::clone(&reply)));
+    }
+    Ok(reply)
 }
 
 pub fn cached_groups(source: &dashboard_base::Source, run: u32) -> io::Result<std::sync::Arc<RunGroups>> {
