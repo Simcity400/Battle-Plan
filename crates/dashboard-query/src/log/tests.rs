@@ -642,3 +642,76 @@ fn filtered_quiet_advance_skips_bucket_with_only_unselected_event_kinds() {
     assert!(!has, "dense hour holds only kind 20, not kind 10");
     assert_eq!(examined, 0, "bucket summary with no matching facet must examine zero entries");
 }
+
+#[test]
+fn stretch_boundary_windows_within_six_hours_cross_gaps_with_exact_bins_and_pages() {
+    let first = 10_003;
+    let run0_last = 10_203;
+    let run1_first = 10_401;
+    let last = 11_200;
+    let fixture = Fixture::with_gap(Data::Market, first..=last, (run0_last + 1)..=(run1_first - 1));
+    let query = fixture.query();
+    let reader = market(&query);
+
+    let all_sel = reader.select(&[], first, last).unwrap();
+    let filtered_sel = reader
+        .select(
+            &[FacetFilter { name: "country|receiver".into(), countries: vec!["GER".into()], deduplicate: true, ..Default::default() }],
+            first,
+            last,
+        )
+        .unwrap();
+
+    let windows = [
+        (run0_last - 2, last),
+        (run0_last, last),
+        (first, run1_first + 1),
+        (first, run1_first),
+        (run0_last - 2, run1_first + 2),
+        (run1_first, run1_first + 24),
+    ];
+
+    for (from, to) in windows {
+        let wanted = events(&query, from, to, |_, _, _| true);
+        let expected_before = events(&query, first, from - 1, |_, _, _| true).len() as u64;
+
+        for (label, sel) in [("each", &all_sel), ("first-match", &filtered_sel)] {
+            for bin_hours in [6, 96] {
+                let counts = reader.counts_with(&sel.patterns, sel.groups.len(), from, to, bin_hours, sel.overlap).unwrap();
+                assert_eq!(counts[0].before, expected_before, "{label} before for {from}..={to} bin={bin_hours}");
+                let first_bin = i64::from(from).div_euclid(bin_hours) * bin_hours;
+                let mut expected_bins: BTreeMap<u32, u64> = BTreeMap::new();
+                for event in &wanted {
+                    *expected_bins.entry(((i64::from(event.0) - first_bin) / bin_hours) as u32).or_default() += 1;
+                }
+                assert_eq!(
+                    counts[0].bins,
+                    expected_bins.into_iter().collect::<Vec<_>>(),
+                    "{label} bins for {from}..={to} bin={bin_hours}"
+                );
+            }
+
+            let mut forward = Vec::new();
+            let mut cursor = 0;
+            loop {
+                let page = reader.page_with(&sel.patterns, sel.groups.len(), from, to, cursor, 32, sel.overlap).unwrap();
+                assert_eq!((page.base, page.total()), (expected_before, wanted.len() as u64));
+                forward.extend(page.rows.iter().map(|p| (p.row.hour, p.row.key)));
+                match page.cursor() {
+                    Some(next) => cursor = next,
+                    None => break,
+                }
+            }
+            let expected_keys: Vec<(i32, u128)> = wanted.iter().map(|e| (e.0, e.1)).collect();
+            assert_eq!(forward, expected_keys, "{label} forward page for {from}..={to}");
+
+            let tail = reader.newest_page_with(&sel.patterns, sel.groups.len(), from, to, 0, 128, sel.overlap).unwrap();
+            assert_eq!(tail.total, wanted.len() as u64, "{label} tail total for {from}..={to}");
+            let mut expected_tail = expected_keys.clone();
+            expected_tail.sort_by_key(|&(hour, key)| (Reverse(hour), key));
+            expected_tail.truncate(128);
+            let got_tail: Vec<(i32, u128)> = tail.rows.iter().map(|p| (p.row.hour, p.row.key)).collect();
+            assert_eq!(got_tail, expected_tail, "{label} tail rows for {from}..={to}");
+        }
+    }
+}
