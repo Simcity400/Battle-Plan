@@ -1,5 +1,6 @@
 import type { Failure } from '../dashboard/queryError';
 import type { PlotFrame } from './frame.ts';
+import type { Canvas2D } from './textWidth.ts';
 import type { ChartTokens } from './tokens.ts';
 import type { TooltipRow } from './tooltip.ts';
 import { APPROXIMATE_ALPHA, APPROXIMATE_DASH } from './prepared.ts';
@@ -44,7 +45,7 @@ export function badgeRows(badges: readonly EventBadge[]): TooltipRow[] {
     ...(badge.approximate ? { value: 'Approximate' } : {}) }));
 }
 
-export function drawBadges(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, badges: readonly EventBadge[], playhead: number | null): void {
+export function drawBadges(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, badges: readonly EventBadge[], playhead: number | null): void {
   const visible = visibleBadges(badges, frame.x, playhead);
   if (!visible.length) return;
   const y = centreY(frame);
