@@ -1,3 +1,4 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import {
@@ -293,7 +294,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
         ? { message: 'Both lines are switched off in the settings.' }
         : null,
       auditRows: series.slice(0, 8).flatMap(s =>
-        s.endLabel ? [{ row: s.id, key: s.id, value: s.endLabel.value }] : [],
+        s.endLabel ? [auditRow(s.id, s.endLabel.value)] : [],
       ),
     };
   },

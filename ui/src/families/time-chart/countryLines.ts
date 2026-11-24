@@ -1,3 +1,4 @@
+import { auditRow } from '../auditRow.ts';
 import { CHART_MEASURE_COLOURS, SECONDARY_DASH } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { OptionValue } from '../../dashboard/options';
@@ -175,7 +176,7 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
         ...(legend ? { legend } : {}),
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
         hoverDetail: spec.hover ? spec.hover.detail(readView, lines, options) : undefined,
-        auditRows: series.flatMap(s => (s.endLabel ? [{ row: s.id, key: s.id, value: s.endLabel.value }] : [])),
+        auditRows: series.flatMap(s => (s.endLabel ? [auditRow(s.id, s.endLabel.value)] : [])),
       };
     },
   }, spec.view);

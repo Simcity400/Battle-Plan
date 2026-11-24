@@ -1,3 +1,4 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
@@ -111,7 +112,7 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
       auditRows: ordered.slice(0, 8).flatMap(tag => {
         const v = headByTag.get(tag);
-        return v === null || v === undefined ? [] : [{ row: tag, key: tag, value: formatEndAmount(v) }];
+        return v === null || v === undefined ? [] : [auditRow(tag, formatEndAmount(v))];
       }),
     };
   },

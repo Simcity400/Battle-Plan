@@ -69,15 +69,18 @@ interface AgreementMeta {
   readonly variant: string | null;
 }
 
+interface Lookups {
+  readonly variants: ReadonlyMap<string, MarketLendLeaseReply['variants'][number]>;
+  readonly images: ReadonlyMap<string, string>;
+}
+
 function agreementRows(
   readView: BoundedReadView,
-  reply: MarketLendLeaseReply,
+  { variants, images }: Lookups,
   terms: LeaseTerms,
   live: LiveValues<number | bigint | string> | null,
   boundary: ReturnType<typeof newIdentityBoundary>,
 ): TableRow[] {
-  const variants = new Map(reply.variants.map(variant => [variant.id, variant]));
-  const images = new Map(reply.icons.map(icon => [icon.key, icon.image]));
   const monthly = amounts(terms.monthly);
   const percentage = amounts(terms.percentage);
   const once = amounts(terms.once);
@@ -162,9 +165,10 @@ export const agreementsProjection: TableProjection<AgreementsProjectionOptions> 
     const live = readView.live('main') ?? null;
     const boundary = newIdentityBoundary();
     const rows: TableRow[] = [];
+    const lookups: Lookups = { variants: new Map(reply.variants.map(variant => [variant.id, variant])), images: new Map(reply.icons.map(icon => [icon.key, icon.image])) };
     for (const terms of reply.agreements) {
       if (!passes(options.filter, options.direction === 'sent' ? terms.giver : terms.receiver, hour)) continue;
-      rows.push(...agreementRows(readView, reply, terms, live, boundary));
+      rows.push(...agreementRows(readView, lookups, terms, live, boundary));
     }
     const membership = unrecordedAt(options.filter, hour);
     const side = options.direction === 'sent' ? 'givers' : 'receivers';

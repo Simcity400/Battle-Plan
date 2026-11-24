@@ -1,3 +1,4 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { categoricalPalette, CHART_MEASURE_COLOURS, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
@@ -147,7 +148,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
     });
     const auditRows = series
       .filter(s => s.role === 'primary' && s.headValue !== null && s.headValue !== undefined)
-      .map(s => ({ row: s.name, key: s.id, value: formatContributionPct(s.headValue!) }));
+      .map(s => (auditRow(s.id, formatContributionPct(s.headValue!))));
     return {
       kind: 'world-tension',
       measureTitle: 'Contribution to world tension',

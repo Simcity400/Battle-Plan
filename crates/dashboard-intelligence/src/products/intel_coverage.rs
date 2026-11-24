@@ -244,6 +244,7 @@ impl AtHour for IntelNetworkCoverage {
     const KEY: &'static str = "intel-network-coverage";
     const TITLE: &'static str = "Intel network coverage";
     const CONTENT_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = IntelCoverageParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", top, touching, measure, basis];
     type Reply = IntelCoverageReply;

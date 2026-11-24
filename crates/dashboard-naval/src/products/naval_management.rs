@@ -141,6 +141,7 @@ impl AtHour for NavalManagement {
     const KEY: &'static str = "naval-management";
     const TITLE: &'static str = "Naval management";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = NavalManagementParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = NavalManagementReply;

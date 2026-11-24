@@ -1,3 +1,4 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import {
@@ -166,7 +167,7 @@ export const supplyHealthProjection: TimeChartProjection<SupplyHealthOptions> = 
       const head = headsByState[idx];
       return head === null || head === undefined
         ? []
-        : [{ row: state, key: state, value: formatDerivedShare(head / 100) }];
+        : [auditRow(state, formatDerivedShare(head / 100))];
     });
 
     return {
