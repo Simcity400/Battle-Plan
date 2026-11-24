@@ -3,7 +3,7 @@ name: Rust cache
 on:
   workflow_run:
     workflows: [CI]
-    types: [completed]
+    types: [requested]
     branches: [main]
   workflow_dispatch:
 
@@ -19,17 +19,17 @@ jobs:
   warm:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion != 'cancelled' && github.event.workflow_run.head_repository.full_name == github.repository)
-    name: cache ${{ matrix.job }}
+      (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository)
+    name: cache ${{ matrix.cache }}
     runs-on: windows-latest
     timeout-minutes: 300
     concurrency:
-      group: rust-cache-${{ matrix.job }}
+      group: rust-cache-${{ matrix.cache }}
       cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
-        job: [rust-clippy, rust-test, fuzz-build]
+        cache: [rust-clippy, rust-test, group-rust]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -47,16 +47,16 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             .cargo-target
-          key: rust-${{ matrix.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
+          key: rust-${{ matrix.cache }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
           restore-keys: |
-            rust-${{ matrix.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
-            rust-${{ matrix.job }}-
+            rust-${{ matrix.cache }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
+            rust-${{ matrix.cache }}-
       - run: python tools/ci.py times --target .cargo-target
       - id: warm
         shell: bash
         env:
-          JOB: ${{ matrix.job }}
-        run: python tools/ci.py warm --job "$JOB" --target .cargo-target --github-output "$GITHUB_OUTPUT"
+          CACHE: ${{ matrix.cache }}
+        run: python tools/ci.py warm --cache "$CACHE" --target .cargo-target --github-output "$GITHUB_OUTPUT"
       - if: steps.warm.outputs.save == 'true'
         uses: actions/cache/save@v6
         with:
@@ -65,4 +65,4 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             .cargo-target
-          key: rust-${{ matrix.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
+          key: rust-${{ matrix.cache }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}

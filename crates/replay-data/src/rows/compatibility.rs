@@ -3743,6 +3743,50 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             "combat engagement refresh witnesses",
         )
     };
+    history[TableId::Raids.index()] = appended_at(
+        TableId::Raids,
+        RAID_COMPLETION_FIELDS_FORMAT,
+        "raid completion date and country",
+        &[
+            AppendedField {
+                index: 18,
+                name: "end_hour",
+                introduced: RAID_COMPLETION_FIELDS_FORMAT,
+            },
+            AppendedField {
+                index: 19,
+                name: "completion_country",
+                introduced: RAID_COMPLETION_FIELDS_FORMAT,
+            },
+            AppendedField {
+                index: 20,
+                name: "completion_recorded",
+                introduced: RAID_COMPLETION_FIELDS_FORMAT,
+            },
+        ],
+    );
+    history[TableId::RaidEnds.index()] = appended_at(
+        TableId::RaidEnds,
+        RAID_COMPLETION_FIELDS_FORMAT,
+        "raid completion date and country",
+        &[
+            AppendedField {
+                index: 24,
+                name: "end_hour",
+                introduced: RAID_COMPLETION_FIELDS_FORMAT,
+            },
+            AppendedField {
+                index: 25,
+                name: "completion_country",
+                introduced: RAID_COMPLETION_FIELDS_FORMAT,
+            },
+            AppendedField {
+                index: 26,
+                name: "completion_country_slot",
+                introduced: RAID_COMPLETION_FIELDS_FORMAT,
+            },
+        ],
+    );
     history
 };
 
@@ -4083,6 +4127,9 @@ mod tests {
             }
             if format < EQUIPMENT_DESTRUCTION_STARTUP_FORMAT {
                 fewer.push((TableId::EquipmentLossCoverage, 15));
+            }
+            if format < RAID_COMPLETION_FIELDS_FORMAT {
+                fewer.extend([(TableId::Raids, 18), (TableId::RaidEnds, 24)]);
             }
             if format < CONSTRUCTION_OUTPUT_OWNER_FORMAT {
                 fewer.push((TableId::ConstructionLineOutput, 15));
@@ -4662,7 +4709,8 @@ mod tests {
         assert_eq!(VARIANT_STAT_WITNESS_FORMAT, 144);
         assert_eq!(EQUIPMENT_DESTRUCTION_STARTUP_FORMAT, 145);
         assert_eq!(ENGAGED_REFRESH_WITNESS_FORMAT, 146);
-        assert_eq!(FORMAT_VERSION, ENGAGED_REFRESH_WITNESS_FORMAT);
+        assert_eq!(RAID_COMPLETION_FIELDS_FORMAT, 147);
+        assert_eq!(FORMAT_VERSION, RAID_COMPLETION_FIELDS_FORMAT);
         let refreshes = TableId::CombatEngagementRefreshes.last_change();
         assert_eq!(refreshes.introduced, ENGAGED_REFRESH_WITNESS_FORMAT);
         assert_eq!(refreshes.format, ENGAGED_REFRESH_WITNESS_FORMAT);

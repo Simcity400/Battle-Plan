@@ -134,3 +134,9 @@ export {
   type FamilyHeatLanesBinding,
   type FamilyHeatLanesLaneOptions,
 } from './lanesLaneView.ts';
+export {
+  heatLanesHostAdapter,
+  heatMatrixHostAdapter,
+  parseHeatLanesHit,
+  parseHeatMatrixHit,
+} from './hostAdapter.ts';
