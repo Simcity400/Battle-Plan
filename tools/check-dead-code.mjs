@@ -374,10 +374,16 @@ function parseFamilyViewUiMap(root) {
         if (prop.type !== 'Property') continue;
         const kind = prop.key?.value ?? prop.key?.name;
         if (typeof kind !== 'string') continue;
+        const viewsProp = prop.value?.type === 'ObjectExpression'
+          ? prop.value.properties.find(item => item.type === 'Property' && (item.key?.name ?? item.key?.value) === 'views')
+          : undefined;
+        const views = viewsProp?.value?.type === 'ArrayExpression'
+          ? viewsProp.value.elements.filter(item => item?.type === 'Literal' && typeof item.value === 'string').map(item => item.value)
+          : null;
         walkAst(prop.value, inner => {
           if (!out.has(kind) && inner.type === 'ImportExpression' && inner.source?.type === 'Literal' && typeof inner.source.value === 'string') {
             const target = resolveLocalImport(manifestPath, inner.source.value, root);
-            if (target) out.set(kind, relPosix(root, target));
+            if (target) out.set(kind, { target: relPosix(root, target), views });
           }
         });
       }
@@ -687,7 +693,8 @@ export function checkConvertedLegacyReach(root, uiResult, legacyResult, runtimeF
   const violations = [];
   for (const entry of familyViews) {
     const starts = [entry.specTarget];
-    const uiEntry = familyViewUi.get(entry.kind);
+    const ui = familyViewUi.get(entry.kind);
+    const uiEntry = ui && (!ui.views || ui.views.includes(entry.view)) ? ui.target : undefined;
     if (uiEntry && !starts.includes(uiEntry)) starts.push(uiEntry);
     const chain = shortestChain(starts);
     if (chain) {
