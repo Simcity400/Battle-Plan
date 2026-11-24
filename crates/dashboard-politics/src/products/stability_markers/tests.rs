@@ -14,7 +14,7 @@ fn groups() -> CountryGroupReply {
         "capitulations": [{ "hour": 400, "tag": "ETH" }, { "hour": 420, "tag": "POL" }],
         "identityChanges": [],
         "countryIdentities": [],
-        "unobserved": { "humans": [], "factions": [], "wars": [] },
+        "unobserved": { "humans": [], "factions": [], "wars": [], "unattributed": [] },
         "warnings": []
     }))
     .unwrap()
