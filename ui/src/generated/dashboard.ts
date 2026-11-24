@@ -4353,7 +4353,11 @@ needRaw: string,
  */
 heldRaw: string, };
 export type TrainingQueueParamsAtHour = TrainingQueueParams & { hour: number };
-export type DiplomaticRelationsParams = { branchId: string, countries: Array<CountryRef>, top?: number, order?: OpinionOrder, };
+export type DiplomaticRelationsParams = { branchId: string, countries: Array<CountryRef>, top?: number, order?: OpinionOrder,
+/**
+ * A group: its members at the hour (or every member so far), resolved in Rust; replaces `countries` and `top`.
+ */
+group?: GroupSelection, };
 export type OpinionOrder = "faction" | "name";
 export type OpinionMatrixCell = { "kind": "value", opinion: number, } | { "kind": "diagonal" } | { "kind": "missing", reason: string, };
 export type OpinionOwner = { tag: string,
@@ -4372,9 +4376,9 @@ known: boolean,
 reason: string | null, readHour?: number, name?: string, nameMissing?: string, color?: [number, number, number], factionId?: string, factionName?: string, };
 export type DiplomaticRelationsReply = {
 /**
- * Why the asked top countries are not known: factories, which rank them, were not read whole, or a row names an unresolved country. No owners then.
+ * Why the countries to show are not known at this hour: factories, which rank a top, were not read whole or name an unresolved country, or a group's membership is not recorded. No owners then.
  */
-topMissing: string | null, owners: Array<OpinionOwner>, cells: Array<OpinionMatrixCell>, domain: [number, number], warnings: Array<string>, };
+chosenMissing: string | null, owners: Array<OpinionOwner>, cells: Array<OpinionMatrixCell>, domain: [number, number], warnings: Array<string>, };
 export type DiplomaticRelationsParamsAtHour = DiplomaticRelationsParams & { hour: number };
 export type VolunteerFlowParams = { branchId: string,
 /**
@@ -4968,7 +4972,11 @@ readHour: number | null,
  */
 unnamed: number, missing: string | null, warnings: Array<string>, };
 export type OccupationReserveParamsAtHour = OccupationReserveParams & { hour: number };
-export type IntelCoverageParams = { branchId: string, countries?: Array<CountryRef>, top?: number, touching?: boolean, measure?: IntelCoverageMeasure, basis?: IntelCoverageBasis, };
+export type IntelCoverageParams = { branchId: string, countries?: Array<CountryRef>, top?: number, touching?: boolean, measure?: IntelCoverageMeasure, basis?: IntelCoverageBasis,
+/**
+ * A group: its members at the hour (or every member so far), resolved in Rust; replaces `countries` and `top`.
+ */
+group?: GroupSelection, };
 export type IntelCoverageMeasure = "covered" | "strength" | "strongest";
 export type IntelCoverageBasis = "controlled" | "core";
 export type IntelCoverageCell = { "kind": "present", value: bigint, covered_controlled: number, covered_core: number, controlled_strength: bigint, core_strength: bigint, max_strength: bigint, } | { "kind": "noNetwork" } | { "kind": "diagonal" } | { "kind": "missing", reason: string, };
@@ -4987,7 +4995,11 @@ networks: Array<IntelNetwork>, displayed: Array<Country>, cells: Array<IntelCove
  * The summaries' read hour the rows hold (they are taken daily); it moves daily, so a widget
  * renders nothing for it.
  */
-readHour: number | null, missing: string | null, warnings: Array<string>, };
+readHour: number | null, missing: string | null,
+/**
+ * Why the countries to show are not known at this hour (a group whose membership is not recorded); none are shown then.
+ */
+chosenMissing: string | null, warnings: Array<string>, };
 export type IntelCoverageParamsAtHour = IntelCoverageParams & { hour: number };
 export type FuelBranchesParams = { branchId: string, country: CountryRef, };
 export type FuelBranchesReply = { tag: string, scale: number,
@@ -6796,7 +6808,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "decorated-divisions": { "branchId": "leaf", "by": "leaf", "count": "leaf", "countries": "node", "countries[]": "node", "countries[].firstHour": "leaf", "countries[].lastHour": "leaf", "countries[].tag": "leaf", "descending": "leaf", "hour": "leaf" },
   "decryption": { "branchId": "leaf", "hour": "leaf" },
   "diplomatic-pacts": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "diplomatic-relations": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "order": "leaf", "top": "leaf" },
+  "diplomatic-relations": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "order": "leaf", "top": "leaf" },
   "division-careers": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
   "division-equipment": { "branchId": "leaf", "countFor": "leaf", "country": "any", "hour": "leaf", "view": "leaf" },
   "division-log": { "branchId": "leaf", "cursor": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "pageSize": "leaf", "to": "leaf" },
@@ -6840,7 +6852,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "head:player-apm": { "branchId": "leaf", "firstHour": "leaf", "group": "leaf", "lastHour": "leaf", "membership": "node", "membership[]": "node", "membership[].firstHour": "leaf", "membership[].lastHour": "leaf", "membership[].tag": "leaf", "players": "node", "players[]": "leaf", "tags": "node", "tags[]": "leaf", "windowHours": "leaf" },
   "idea-history": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "industrial-organisations": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "intel-network-coverage": { "basis": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "measure": "leaf", "top": "leaf", "touching": "leaf" },
+  "intel-network-coverage": { "basis": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "measure": "leaf", "top": "leaf", "touching": "leaf" },
   "land-battle-course": { "branchId": "leaf", "id": "leaf" },
   "land-battle-terrain": { "provinces": "node", "provinces[]": "leaf" },
   "land-battles": { "branchId": "leaf", "window": "leaf" },
