@@ -135,6 +135,10 @@ export function measureFixedColumnWidths(
       out[column.key] = column.minWidth ?? KIND_COLUMN_ART + CELL_INSET * 2;
       continue;
     }
+    if (column.cellKind === 'item' && !column.widest?.length) {
+      out[column.key] = Math.ceil(Math.max(column.minWidth ?? 160, hideHeader ? 0 : measure(column.label, headFont) + CELL_INSET * 2));
+      continue;
+    }
     if (column.cellKind === 'stockpileSum') {
       out[column.key] = column.minWidth ?? 210;
       continue;

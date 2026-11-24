@@ -5,6 +5,7 @@ import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
 import { DEFAULT_DARK_SURFACE } from '../../charts/palette.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
+import type { OptionField } from '../../dashboard/options';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { perfLog } from '../../shell/perf.ts';
 import { useArtHandleResolutions } from '../art/react.ts';
@@ -32,6 +33,11 @@ import { renderFamilyStatus } from './FamilyBodyState.tsx';
 import FamilyHost, { type FamilyChromeProps } from './FamilyHost.tsx';
 import { useFamilyTheme } from './theme.ts';
 import { useFamilyPlan } from './useFamilyPlan.ts';
+import { Popover, usePopover } from '../../components/Popover';
+import RegionChooser, { type RegionInChart } from '../regions/RegionChooser.tsx';
+import { addRegion, AUTOMATIC_REGIONS, isAutomatic, moveRegion, readRegionChoice, removeRegion, writeRegionChoice, type RegionChoice } from '../regions/regionChoice.ts';
+import { keyboardMove, type RegionCommand } from '../regions/regionRows.ts';
+import { useRegionList } from '../regions/useRegionList.ts';
 
 const SERIES_PLOT_INSET_PX = 60;
 
@@ -221,6 +227,46 @@ export default function DeclaredFamilyWidget<
   );
   const resolvedContextMenuItems = customContextMenuItems ?? (enableJump ? defaultContextMenuItems : undefined);
 
+  const regionField = optionFields?.find((field): field is Extract<OptionField, { kind: 'regions' }> => field.kind === 'regions');
+  const regionChoice = regionField ? readRegionChoice(plan.options[regionField.key]) : AUTOMATIC_REGIONS;
+  const chooser = usePopover('start');
+  const [inChart, setInChart] = useState<readonly RegionInChart[]>([]);
+  const regionList = useRegionList(runtime.client, plan.track, !!regionField && chooser.open);
+  const storeRegions = useCallback((next: RegionChoice) => {
+    if (regionField && setOption) setOption(regionField.key, writeRegionChoice(next));
+  }, [regionField, setOption]);
+  const onRegions = useCallback((command: RegionCommand): string | null => {
+    switch (command.op) {
+      case 'open':
+        setInChart(command.rows.map(row => ({ id: row.id, label: row.label, ...(row.activity ? { activity: row.activity } : {}) })));
+        chooser.openAt({ left: command.x, right: command.x, top: command.y, bottom: command.y });
+        return null;
+      case 'remove':
+        storeRegions(removeRegion(regionChoice, command.row.id));
+        return `${command.row.label} removed.`;
+      case 'step': {
+        const next = keyboardMove(command.row, command.delta, regionChoice);
+        if (!next) return null;
+        storeRegions(next);
+        return `${command.row.label} moved ${command.delta < 0 ? 'up' : 'down'}.`;
+      }
+      case 'drop':
+        storeRegions(moveRegion(regionChoice, command.row.id, command.to));
+        return `${command.row.label} moved to position ${command.to + 1} of your regions.`;
+    }
+  }, [chooser, regionChoice, storeRegions]);
+  const regionsEditable = !!regionField && !!setOption;
+  const emptyAction = regionsEditable
+    ? <button type="button" className="button small" onClick={event => onRegions({ op: 'open', ...anchorBelow(event.currentTarget), rows: [] })}>Add region</button>
+    : undefined;
+  const regionChooser = regionsEditable
+    ? <Popover menu={chooser} className="region-chooser-popover" aria-label="Add region">
+      {chooser.open && <RegionChooser list={regionList} inChart={inChart} seaOnly={regionField.sea === true} automatic={isAutomatic(regionChoice)}
+        onChoose={(id, charted) => { storeRegions(charted ? removeRegion(regionChoice, id) : addRegion(regionChoice, id)); chooser.close(); }}
+        onReset={() => { storeRegions(AUTOMATIC_REGIONS); chooser.close(); }} />}
+    </Popover>
+    : null;
+
   const customUnavailable = displayedCtx && declaration.unavailable
     ? declaration.unavailable(displayedCtx, plan.staticBundle?.hour ?? plan.moment)
     : null;
@@ -255,6 +301,12 @@ export default function DeclaredFamilyWidget<
     };
   }, [plan.staticBundle]);
 
+  const onRowWindow = plan.onRowWindow;
+  const handleWindowChange = useCallback((win: FamilyRowWindow, hour: number | null) => {
+    onRowWindow(win, hour);
+    onWindowChange?.(win, hour);
+  }, [onRowWindow, onWindowChange]);
+
   const host = (
     <FamilyHost
       key={branchKey}
@@ -263,7 +315,7 @@ export default function DeclaredFamilyWidget<
       {...(editableSettings ? { onSettings } : {})}
       editableSettings={editableSettings}
       {...(chrome ? { chrome } : {})}
-      {...(onWindowChange ? { onWindowChange } : {})}
+      onWindowChange={handleWindowChange}
       declaration={declaration.projection}
       view={view}
       options={projectionOptions}
@@ -278,6 +330,7 @@ export default function DeclaredFamilyWidget<
       owner={view === DEFAULT_VIEW ? plan.owner : JSON.stringify([plan.owner, view])}
       staticSources={staticSources}
       staticProof={plan.staticProof}
+      pagedRows={plan.pagedRows}
       tiledSeries={hasPixelBinned ? plan.tiledSeries : undefined}
       tiledRevision={hasPixelBinned ? plan.tiledRevision : 0}
       hovers={plan.hovers}
@@ -297,6 +350,7 @@ export default function DeclaredFamilyWidget<
       selectedKey={selectedKey}
       onActivate={onActivate}
       onToggle={onToggle}
+      {...(regionsEditable ? { onRegions, emptyAction } : {})}
       contextMenuItems={resolvedContextMenuItems}
       headerSlot={headerSlot}
       onDiagnostics={onDiagnostics}
@@ -307,11 +361,17 @@ export default function DeclaredFamilyWidget<
     />
   );
 
-  if (!declaration.className && !bannerFailure) return host;
+  if (!declaration.className && !bannerFailure) return regionChooser ? <>{host}{regionChooser}</> : host;
   return (
     <div className={declaration.className} data-detail={plan.nameFailureDetail}>
       {bannerFailure}
       {host}
+      {regionChooser}
     </div>
   );
+}
+
+function anchorBelow(element: HTMLElement): { readonly x: number; readonly y: number } {
+  const box = element.getBoundingClientRect();
+  return { x: box.left, y: box.bottom };
 }

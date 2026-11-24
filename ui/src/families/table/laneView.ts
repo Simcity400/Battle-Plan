@@ -1,8 +1,8 @@
+import type { FamilyAuditRow } from '../auditRow.ts';
 import type { LiveValues } from '../../charts/live';
 import { NOT_LIVE_CELL, NOT_RECORDED, repliedCells } from '../../dashboard/follow/liveCells.ts';
 import type { Picture } from '../../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
-import type { AuditRow } from '../../draw/notifications';
 import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '../../draw/lane.ts';
 import { sectionLiveValues, type LiveMap } from '../../draw/views/fields.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
@@ -42,6 +42,7 @@ import {
 } from './painter.ts';
 import { combinedPaneGeometry, combinedPaneRows, drawPaneFrame, hitPanes, paneGeometry, paneOfRow, panesHeight, paneScroll, paneTitleText, resolvePanes, visiblePaneRange, type ResolvedPane } from './panes.ts';
 import { ensureTableProjection } from './registry.ts';
+import { buildRowSourceFromHead, type DatedLogRow, type PagedRowsSnapshot, type TableRowSource } from './rowSource.ts';
 import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, type GlideOffset, type RankMarker, type TableSettings, type TableTheme } from './settings.ts';
 import { unknownProjectionReason } from '../registry.ts';
 
@@ -55,6 +56,8 @@ export interface FamilyTableBinding<TOptions = unknown> {
   readonly staticPanels?: Readonly<Record<string, unknown>>;
   readonly staticShifts?: Readonly<Record<string, number>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
+  readonly pagedRows?: Readonly<Record<string, PagedRowsSnapshot>>;
+  readonly window?: { readonly first: number; readonly count: number };
   readonly width: number;
   readonly height: number;
   readonly scrollLeft: number;
@@ -120,6 +123,8 @@ interface HeldFamilyTable {
   prevOptions: unknown;
   prevStaticPanels: unknown;
   prevStaticAnswers: unknown;
+  prevPagedRows: unknown;
+  prevWindowKey: string;
   prevSortKey: string;
   prevExpanded: unknown;
   validFrom: number;
@@ -168,7 +173,7 @@ interface HeldFamilyTable {
 
   cachedMaxima: Map<string, number> | null;
   cachedMaximaCols: string;
-  rowAuditCache: WeakMap<TableRow, { readonly sig: string; readonly rows: readonly AuditRow[] }>;
+  rowAuditCache: WeakMap<TableRow, { readonly sig: string; readonly rows: readonly FamilyAuditRow[] }>;
 
   auditId: number;
   auditWindowKey: string;
@@ -264,10 +269,30 @@ export function readViewFromScene(
     const rev = at < 0 ? undefined : scene.pictures[at]?.parts[0]?.version;
     if (rev !== undefined) revisions[name] = rev;
   }
+  const rowSources = new Map<string, TableRowSource<DatedLogRow>>();
+  const addRowSource = (name: string, raw: unknown, refusedReason?: string) => {
+    const snap = binding.pagedRows?.[name];
+    const source = buildRowSourceFromHead(snap?.identity ?? `${binding.kind}:${name}`, raw, refusedReason, hour, snap);
+    if (source) rowSources.set(name, source);
+  };
+  if (binding.staticPanels) {
+    for (const [name, data] of Object.entries(binding.staticPanels)) addRowSource(name, data);
+  }
+  for (const [name, subId] of Object.entries(binding.sources)) {
+    const at = scene.subs.findIndex(sub => sub.id === subId);
+    const picture = at < 0 ? undefined : scene.pictures[at];
+    const head = picture?.parts[0]?.value;
+    if (head?.kind === 'panel') {
+      if (head.refused === null) addRowSource(name, head.data);
+      else addRowSource(name, undefined, head.refused);
+    }
+  }
   return createBoundedReadView({
     hour,
     revisions,
     ...(binding.staticShifts ? { panelShifts: binding.staticShifts } : {}),
+    ...(binding.window ? { rowWindow: binding.window } : {}),
+    ...(rowSources.size ? { rows: rowSources } : {}),
     ensureNonLive: () => {
       const answers = new Map<string, FollowedAnswer | undefined>();
       const panels = new Map<string, unknown>();
@@ -541,6 +566,8 @@ export function familyTableLaneView(
           prevOptions: undefined,
           prevStaticPanels: undefined,
           prevStaticAnswers: undefined,
+          prevPagedRows: undefined,
+          prevWindowKey: '',
           prevSortKey: '',
           prevExpanded: undefined,
           validFrom: Infinity,
@@ -618,6 +645,8 @@ export function familyTableLaneView(
       held.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
       const sortSig = `${bound.settings.sort.column}\u0000${bound.settings.sort.direction}`;
+      const windowKey = bound.window ? `${bound.window.first}:${bound.window.count}` : '';
+      const windowMatters = bound.pagedRows !== undefined || held.cachedModel?.windowOffset !== undefined || held.cachedModel?.totalRows !== undefined;
       const canReuseModel = held.cachedModel !== null
         && !snapshotChanged
         && held.cachedModelKind === bound.kind
@@ -625,6 +654,8 @@ export function familyTableLaneView(
         && held.prevOptions === bound.options
         && held.prevStaticPanels === bound.staticPanels
         && held.prevStaticAnswers === bound.staticAnswers
+        && held.prevPagedRows === bound.pagedRows
+        && (!windowMatters || held.prevWindowKey === windowKey)
         && held.prevSortKey === sortSig
         && held.prevExpanded === bound.expanded
         && input.hour >= held.validFrom
@@ -724,6 +755,8 @@ export function familyTableLaneView(
         held.prevOptions = bound.options;
         held.prevStaticPanels = bound.staticPanels;
         held.prevStaticAnswers = bound.staticAnswers;
+        held.prevPagedRows = bound.pagedRows;
+        held.prevWindowKey = windowKey;
         held.prevSortKey = sortSig;
         held.prevExpanded = bound.expanded;
         held.validFrom = input.hour;
@@ -822,10 +855,15 @@ export function familyTableLaneView(
           held.cachedRowGeomKey = geomKey;
         }
       }
-      const totalHeight = panes ? panesHeight(panes) : rowGeom ? rowGeom.totalHeight : flatRows.length * rowHeight;
+      const localTotalHeight = panes ? panesHeight(panes) : rowGeom ? rowGeom.totalHeight : flatRows.length * rowHeight;
+      const windowOffset = panes ? 0 : (model.windowOffset ?? 0);
+      const totalCount = panes ? flatRows.length : Math.max(windowOffset + flatRows.length, model.totalRows ?? flatRows.length);
+      const totalHeight = localTotalHeight + (panes ? 0 : Math.max(0, totalCount - flatRows.length) * rowHeight);
+      const windowTop = windowOffset * rowHeight;
+      const localScrollTop = Math.max(0, bound.scrollTop - windowTop);
       const paneSpans = panes ? combinedPaneGeometry(panes) : null;
-      const rowWindow = paneSpans ? { first: 0, count: flatRows.length } : tableRowWindow(flatRows.length, rowGeom, rowHeight, bound.scrollTop, bound.height);
-      const rowTop = (index: number) => (paneSpans ? paneSpans.tops[index]! : rowGeom ? rowGeom.tops[index]! : index * rowHeight);
+      const rowWindow = paneSpans ? { first: 0, count: flatRows.length } : tableRowWindow(flatRows.length, rowGeom, rowHeight, localScrollTop, bound.height);
+      const rowTop = (index: number) => (paneSpans ? paneSpans.tops[index]! : (rowGeom ? rowGeom.tops[index]! : index * rowHeight) + windowTop);
       const rowSpan = (index: number) => (paneSpans ? paneSpans.heights[index]! : rowGeom ? rowGeom.heights[index]! : rowHeight);
       if (modelChanged) {
         const forwardStep = input.speed > 0 && Number.isFinite(held.priorHour) && model.hour > held.priorHour;
@@ -914,17 +952,17 @@ export function familyTableLaneView(
         let hi = flatRows.length;
         while (lo < hi) {
           const mid = (lo + hi) >>> 1;
-          if (rowGeom.tops[mid]! + rowGeom.heights[mid]! <= bound.scrollTop) lo = mid + 1;
+          if (rowGeom.tops[mid]! + rowGeom.heights[mid]! <= localScrollTop) lo = mid + 1;
           else hi = mid;
         }
         visibleFirst = lo;
         let end = visibleFirst;
-        const bottomEdge = bound.scrollTop + bound.height;
+        const bottomEdge = localScrollTop + bound.height;
         while (end < flatRows.length && rowGeom.tops[end]! < bottomEdge) end++;
         visibleLast = Math.min(flatRows.length, end + (held.glide.size && glideMs > 0 ? 2 : 0));
       } else {
-        visibleFirst = Math.max(0, Math.floor(bound.scrollTop / rowHeight));
-        visibleLast = Math.min(flatRows.length, Math.ceil((bound.scrollTop + bound.height) / rowHeight) + (held.glide.size && glideMs > 0 ? 2 : 0));
+        visibleFirst = Math.max(0, Math.floor(localScrollTop / rowHeight));
+        visibleLast = Math.min(flatRows.length, Math.ceil((localScrollTop + bound.height) / rowHeight) + (held.glide.size && glideMs > 0 ? 2 : 0));
       }
       const visibleIcons = panes
         ? panes.flatMap(pane => {
@@ -987,7 +1025,7 @@ export function familyTableLaneView(
           width: bound.width,
           height: bound.height,
           scrollLeft: bound.scrollLeft,
-          scrollTop: bound.scrollTop,
+          scrollTop: localScrollTop,
           rankShown,
           rankWidth,
           theme: bound.theme,
@@ -1106,10 +1144,10 @@ export function familyTableLaneView(
         ? (panes ? (paneOfRow(panes, focusedKey)?.index ?? -1) : (held.cachedRowIndex.get(focusedKey) ?? -1))
         : -1;
       const inspectedPresent = inspectedKey ? held.cachedRowIndex.has(inspectedKey) : false;
-      const tSig = `${flatRows.length}:${totalHeight}:${focusedIndex}:${inspectedPresent ? 1 : 0}`;
+      const tSig = `${totalCount}:${totalHeight}:${focusedIndex}:${inspectedPresent ? 1 : 0}`;
       if (tSig !== held.tableSig || !held.tableField) {
         held.tableSig = tSig;
-        held.tableField = { value: { count: flatRows.length, totalHeight, focusedIndex, inspectedPresent }, content: content() };
+        held.tableField = { value: { count: totalCount, totalHeight, focusedIndex, inspectedPresent }, content: content() };
       }
       fields.table = held.tableField;
       const rangeKey = `${rowWindow.first}:${rowWindow.count}`;
@@ -1217,7 +1255,7 @@ export function familyTableLaneView(
       const hit = (point: readonly [number, number]) => {
         if (model.clockSummary) return null;
         if (panes && paneGeom) return hitPanes(layout, panes, paneGeom, { x: point[0], y: point[1] }, rowHeight, paneScroll(layout, paneGeom, bound.scrollLeft), bound.scrollTop);
-        const at = hitFamilyTable(layout, flatRows, { x: point[0], y: point[1] }, rowHeight, bound.scrollLeft, bound.scrollTop, rankShown, rankWidth, glideSnapshot, now, glideMs, rowGeom, held!.cachedRowIndex, bound.height);
+        const at = hitFamilyTable(layout, flatRows, { x: point[0], y: point[1] }, rowHeight, bound.scrollLeft, localScrollTop, rankShown, rankWidth, glideSnapshot, now, glideMs, rowGeom, held!.cachedRowIndex, bound.height);
         if (at.kind !== 'row' || !at.rowKey) return null;
         return at.toggle ? `toggle:${at.rowKey}` : `row:${at.rowKey}`;
       };

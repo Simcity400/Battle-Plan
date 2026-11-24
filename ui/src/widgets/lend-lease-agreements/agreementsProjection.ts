@@ -2,6 +2,7 @@ import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import { FIXED5, fixedText, FUEL_QUANTITY, MARKET, SHARE, validateMarketReply } from '../../dashboard/market.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
+import { filterCandidates } from '../../families/holders.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { urlArtHandle } from '../../families/art/provider.ts';
 import { artNameCell, identityFlags, identityName, newIdentityBoundary } from '../../families/table/identityCell.ts';
@@ -32,7 +33,7 @@ export const AGREEMENT_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(column 
 }));
 
 const passes = (filter: DeclaredCountryFilter, tag: string | null, hour: number): boolean =>
-  tag !== null && (filter.passing === null || !!filter.passing[tag]?.some(([first, last]) => first <= hour && hour <= last));
+  filter.passing === null || (tag !== null && !!filter.passing[tag]?.some(([first, last]) => first <= hour && hour <= last));
 
 const unrecordedAt = (filter: DeclaredCountryFilter, hour: number): string | null =>
   filter.unrecorded.find(([first, last]) => first <= hour && hour <= last)?.[2] ?? null;
@@ -68,15 +69,18 @@ interface AgreementMeta {
   readonly variant: string | null;
 }
 
+interface Lookups {
+  readonly variants: ReadonlyMap<string, MarketLendLeaseReply['variants'][number]>;
+  readonly images: ReadonlyMap<string, string>;
+}
+
 function agreementRows(
   readView: BoundedReadView,
-  reply: MarketLendLeaseReply,
+  { variants, images }: Lookups,
   terms: LeaseTerms,
   live: LiveValues<number | bigint | string> | null,
   boundary: ReturnType<typeof newIdentityBoundary>,
 ): TableRow[] {
-  const variants = new Map(reply.variants.map(variant => [variant.id, variant]));
-  const images = new Map(reply.icons.map(icon => [icon.key, icon.image]));
   const monthly = amounts(terms.monthly);
   const percentage = amounts(terms.percentage);
   const once = amounts(terms.once);
@@ -161,16 +165,15 @@ export const agreementsProjection: TableProjection<AgreementsProjectionOptions> 
     const live = readView.live('main') ?? null;
     const boundary = newIdentityBoundary();
     const rows: TableRow[] = [];
-    let unattributed = 0;
+    const lookups: Lookups = { variants: new Map(reply.variants.map(variant => [variant.id, variant])), images: new Map(reply.icons.map(icon => [icon.key, icon.image])) };
     for (const terms of reply.agreements) {
-      const own = options.direction === 'sent' ? terms.giver : terms.receiver;
-      if (own === null) { unattributed++; continue; }
-      if (!passes(options.filter, own, hour)) continue;
-      rows.push(...agreementRows(readView, reply, terms, live, boundary));
+      if (!passes(options.filter, options.direction === 'sent' ? terms.giver : terms.receiver, hour)) continue;
+      rows.push(...agreementRows(readView, lookups, terms, live, boundary));
     }
     const membership = unrecordedAt(options.filter, hour);
     const side = options.direction === 'sent' ? 'givers' : 'receivers';
-    const warnings = unattributed ? [...reply.warnings, `${unattributed} agreements whose ${side} were not recorded at this date may also match`] : reply.warnings;
+    const unattributed = reply.unattributed;
+    const warnings = reply.warnings;
     return {
       columns: AGREEMENT_COLUMNS,
       rows,
@@ -197,24 +200,32 @@ export const agreementsDeclaration: TableWidgetDeclaration<AgreementsProjectionO
   emptyCampaign: 'Load a campaign to see lend-lease.',
   icon: 'link',
   countries: { mode: 'filter' },
-  sources: ctx => ({
-    owner: `lend-lease-agreements:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
-    entries: [{
-      name: 'main',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'point',
-        channel: 'panel',
-        coverage: { mode: 'population', form: 'all' },
-        product: MARKET,
-        followQuery: { panel: MARKET, branchId: ctx.branch.id, countries: [], only: 'agreements' },
-        params: { branchId: ctx.branch.id, countries: [], only: 'agreements' },
-        validate: validateMarketReply,
-      },
-    }],
-  }),
+  sources: ctx => {
+    const params = {
+      branchId: ctx.branch.id,
+      countries: filterCandidates(ctx.countries.filter.passing) ?? [],
+      only: 'agreements',
+      leaseSide: ctx.options.direction === 'received' ? 'received' : 'sent',
+    };
+    return {
+      owner: `lend-lease-agreements:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
+      entries: [{
+        name: 'main',
+        source: ctx.track.source,
+        branch: ctx.branch.id,
+        offset: ctx.track.axisOffset,
+        read: {
+          shape: 'point',
+          channel: 'panel',
+          coverage: { mode: 'population', form: 'all' },
+          product: MARKET,
+          followQuery: { panel: MARKET, ...params },
+          params,
+          validate: validateMarketReply,
+        },
+      }],
+    };
+  },
   projection: agreementsProjection,
   columns: AGREEMENT_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: TABLE_BASE },

@@ -1,3 +1,4 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { categoricalPalette, DEFAULT_DARK_SURFACE } from '../../charts/palette.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
@@ -301,7 +302,7 @@ export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = re
       const head = heads[idx];
       return head === null || head === undefined
         ? []
-        : [{ row: band.token, key: band.token, value: formatShare(head) }];
+        : [auditRow(band.token, formatShare(head))];
     });
 
     return {

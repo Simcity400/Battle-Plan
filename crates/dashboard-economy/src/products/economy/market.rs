@@ -2,7 +2,7 @@
 pub mod ledger;
 
 use dashboard_base::products::Country;
-use dashboard_base::{Source, products::{LoadContext, check_reply_budget, at_hour::{At, AtHour, Owner, Read}}, queries::country_ids::Names};
+use dashboard_base::{Source, products::{LoadContext, check_reply_budget, at_hour::{At, AtHour, Owner, Read}}};
 use dashboard_world::products::equipment_names::{EquipmentIcon, VariantName, self as names, Named};
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::identity::{Holder, Holders};
@@ -41,6 +41,18 @@ pub struct MarketLendLeaseParams {
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub only: Option<MarketSection>,
+    #[doc = " Lend-lease rows the chosen countries give (`sent`) or receive (`received`); either side when absent."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub lease_side: Option<LeaseSide>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum LeaseSide {
+    Sent,
+    Received,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -140,7 +152,7 @@ pub struct MarketLendLeaseReply {
     pub agreements: Option<Vec<LeaseTerms>>,
     #[doc = " Why purchase progress is not known at the hour, when contracts are shown and it is not."]
     pub purchases_missing: Option<String>,
-    #[doc = " Rows whose country in the chosen side has no tag at the hour: a chosen country may be theirs."]
+    #[doc = " Rows left out because a country on the chosen side has no country at the hour: a chosen country may be theirs."]
     pub unattributed: u32,
     pub variants: Vec<VariantName>,
     pub icons: Vec<EquipmentIcon>,
@@ -151,13 +163,13 @@ dashboard_base::reply_warnings!(MarketLendLeaseReply);
 
 pub(crate) struct Parties<'a> {
     links: &'a [CountryLinkRow],
-    names: Names,
+    holders: &'a Holders,
     hour: i32,
 }
 
 impl<'a> Parties<'a> {
-    pub(crate) fn new(links: &'a [CountryLinkRow], holders: &Holders, hour: i32) -> Self {
-        Self { links, names: Names::new(holders), hour }
+    pub(crate) fn new(links: &'a [CountryLinkRow], holders: &'a Holders, hour: i32) -> Self {
+        Self { links, holders, hour }
     }
 
     fn slot(&self, raw: u32) -> Option<u32> {
@@ -165,7 +177,7 @@ impl<'a> Parties<'a> {
     }
 
     pub(crate) fn tag(&self, raw: u32) -> Option<String> {
-        self.names.slot_tag(self.slot(raw)?, self.hour).map(str::to_owned)
+        self.holders.slot_tag(self.slot(raw)?, self.hour).map(str::to_owned)
     }
 }
 
@@ -265,8 +277,9 @@ impl AtHour for MarketLendLease {
     const KEY: &'static str = "market-lendlease";
     const TITLE: &'static str = "Market and lend-lease";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = MarketLendLeaseParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, only, "countries[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, only, leaseSide, "countries[]"];
     type Reply = MarketLendLeaseReply;
     type Context = names::Context;
 
@@ -281,6 +294,7 @@ impl AtHour for MarketLendLease {
             MarketLendLeaseParams::decl(),
             MarketLendLeaseReply::decl(),
             MarketSection::decl(),
+            LeaseSide::decl(),
             MarketItem::decl(),
             MarketLevel::decl(),
             MarketGrant::decl(),
@@ -390,13 +404,33 @@ pub(crate) fn market_at(frame: &DecodedFrame, params: &MarketLendLeaseParams, ho
     };
     let parties = Parties::new(links, holders, hour);
     let wanted = chosen(holders, &params.countries, hour, &mut reply.warnings);
-    let selected = |raw: u32| wanted.as_ref().is_none_or(|slots| parties.slot(raw).is_some_and(|slot| slots.contains(&slot)));
+    let mut unattributed = 0_u32;
+    let mut keep = |sides: &[u32]| -> bool {
+        let Some(slots) = wanted.as_ref() else { return true };
+        let held: Vec<Option<u32>> = sides.iter().map(|&raw| parties.slot(raw).filter(|_| parties.tag(raw).is_some())).collect();
+        if held.iter().flatten().any(|slot| slots.contains(slot)) {
+            return true;
+        }
+        if held.iter().any(Option::is_none) {
+            unattributed += 1;
+        }
+        false
+    };
     let offers = section(show_offers, frame.complete::<tables::CountryMarket>(), "Market offers", &mut reply.warnings);
     let terms = section(show_contracts, frame.complete::<tables::MarketContractTerms>(), "Market requests and contracts", &mut reply.warnings);
     let leases = section(show_agreements, frame.complete::<tables::LendLeaseAgreements>(), "Lend-lease agreements", &mut reply.warnings);
-    let offers: Option<Vec<_>> = offers.map(|rows| rows.iter().filter(|row| selected(row.country)).collect());
-    let terms: Option<Vec<_>> = terms.map(|rows| rows.iter().filter(|row| selected(row.country) || selected(row.buyer)).collect());
-    let leases: Option<Vec<_>> = leases.map(|rows| rows.iter().filter(|row| selected(row.country) || selected(row.receiver)).collect());
+    let offers: Option<Vec<_>> = offers.map(|rows| rows.iter().filter(|row| keep(&[row.country])).collect());
+    let terms: Option<Vec<_>> = terms.map(|rows| rows.iter().filter(|row| keep(&[row.country, row.buyer])).collect());
+    let leases: Option<Vec<_>> = leases.map(|rows| {
+        rows.iter()
+            .filter(|row| match params.lease_side {
+                Some(LeaseSide::Sent) => keep(&[row.country]),
+                Some(LeaseSide::Received) => keep(&[row.receiver]),
+                None => keep(&[row.country, row.receiver]),
+            })
+            .collect()
+    });
+    reply.unattributed = unattributed;
 
     let mut variants: BTreeSet<u64> = BTreeSet::new();
     for row in offers.iter().flatten() {
@@ -450,9 +484,6 @@ pub(crate) fn market_at(frame: &DecodedFrame, params: &MarketLendLeaseParams, ho
                 }
             }
             let (seller, buyer) = (parties.tag(row.country), parties.tag(row.buyer));
-            if wanted.is_some() && (seller.is_none() || buyer.is_none()) {
-                reply.unattributed += 1;
-            }
             out.push(MarketTerms {
                 key,
                 id: format!("{:016x}", row.id),
@@ -478,15 +509,12 @@ pub(crate) fn market_at(frame: &DecodedFrame, params: &MarketLendLeaseParams, ho
             let key = lease_key(row);
             live.value(&terms.key, "fuelSent", Cell { table: TableId::LendLeaseAgreements, column: sent, key }, 1.0);
             live.value(&terms.key, "fuelLost", Cell { table: TableId::LendLeaseAgreements, column: lost, key }, 1.0);
-            if wanted.is_some() && (terms.giver.is_none() || terms.receiver.is_none()) {
-                reply.unattributed += 1;
-            }
             out.push(terms);
         }
         reply.agreements = Some(out);
     }
     if reply.unattributed > 0 {
-        reply.warnings.push(format!("{} market or lend-lease rows name a country with no tag at this hour; a chosen country may take part in them", reply.unattributed));
+        reply.warnings.push(format!("{} market or lend-lease rows name a country with no tag at this hour; a chosen country may take part in them, so they are not listed", reply.unattributed));
     }
     reply.warnings.extend(std::mem::take(&mut named.warnings));
     reply.icons = named.icons();

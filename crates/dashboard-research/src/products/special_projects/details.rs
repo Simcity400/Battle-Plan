@@ -644,6 +644,7 @@ impl AtHour for SpecialProjectDetailsAt {
     const KEY: &'static str = "special-project-details";
     const TITLE: &'static str = "Special project details";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads staggered project coverage spans, custody history, scoped content and stamps at.hour into reply");
     type Params = SpecialProjectDetailsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = SpecialProjectDetails;
@@ -1307,6 +1308,7 @@ impl AtHour for SpecialProjectEffectsAt {
     const KEY: &'static str = "special-project-effects";
     const TITLE: &'static str = "Special project effects";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads staggered project coverage spans and custody history and stamps at.hour into reply");
     type Params = SpecialProjectEffectsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, owner, project];
     type Reply = SpecialProjectEffects;

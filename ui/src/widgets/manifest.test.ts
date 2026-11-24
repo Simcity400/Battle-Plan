@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { WidgetMeta } from '../dashboard/definitions';
-import { addOrderedToken, contentSet, moveOrderedToken, parseStoredOptions, removeOrderedToken, resolveOptions, setOption, type OptionField, type OptionValue, type WidgetOptions } from '../dashboard/options.ts';
+import { parseStoredOptions, resolveOptions, setOption, type OptionField, type OptionValue, type WidgetOptions } from '../dashboard/options.ts';
+import { addRegion, moveRegion, readRegionChoice, regionParams, removeRegion, writeRegionChoice } from '../families/regions/regionChoice.ts';
+import { keyboardMove, regionDropAt, type RegionRowsField } from '../families/regions/regionRows.ts';
 import {
   DEFAULT_VIEW,
   declaredViewChoices,
@@ -9,6 +11,7 @@ import {
   normalizeView,
   resolveActiveView,
   scopedOptionFields,
+  viewOwnedFields,
   type FamilyViewEntry,
   type LegacyWidgetEntry,
 } from '../families/manifest.ts';
@@ -65,8 +68,8 @@ function otherValue(field: OptionField): OptionValue {
     case 'choice': return field.choices.find(choice => choice.value !== field.default)?.value ?? field.default;
     case 'number': return field.default === field.min ? field.max : field.min;
     case 'content-choice':
-    case 'content-set':
-    case 'ordered-set': return 'GER';
+    case 'content-set': return 'GER';
+    case 'regions': return 'r:3a:16';
     case 'table': return 'edited';
   }
 }
@@ -323,17 +326,23 @@ test('shared data-driven settings controls expose bars-behind, three row heights
   assert.deepEqual(BARS_BEHIND_CHOICES.map(c => c.label), ['Every column', 'Sorted column', 'Off']);
   assert.deepEqual(ROW_HEIGHT_CHOICES.map(c => c.label), ['Compact', 'Default', 'Comfortable']);
 
-  const added1 = addOrderedToken('', 'reg_1');
-  const added2 = addOrderedToken(added1!, 'reg_2');
-  const added3 = addOrderedToken(added2!, 'reg_3');
-  assert.deepEqual(contentSet(added3!), ['reg_1', 'reg_2', 'reg_3']);
-  const moved = moveOrderedToken(added3!, 2, -1);
-  assert.deepEqual(contentSet(moved), ['reg_1', 'reg_3', 'reg_2']);
-  const removed = removeOrderedToken(moved, 'reg_3');
-  assert.deepEqual(contentSet(removed), ['reg_1', 'reg_2']);
-  const stored = setOption(fields, undefined, 'regions', removed);
-  assert.deepEqual(stored, { regions: 'reg_1 reg_2' });
-  assert.equal(resolveOptions(fields, stored!).regions, 'reg_1 reg_2');
+  const choice = moveRegion(removeRegion(addRegion(addRegion(readRegionChoice(''), 12), 4), 30), 4, 0);
+  assert.deepEqual(choice, { picks: [4, 12], hidden: [30] }, 'removing an automatic region hides it');
+  assert.deepEqual(readRegionChoice(writeRegionChoice(choice)), choice);
+  assert.deepEqual(removeRegion(choice, 12), { picks: [4], hidden: [30] }, 'removing a pick does not hide it');
+  assert.deepEqual(addRegion(choice, 30), { picks: [4, 12, 30], hidden: [] }, 'choosing a hidden region picks it');
+  assert.deepEqual(regionParams(choice), { pinnedRegions: [4, 12], hiddenRegions: [30] });
+  const stored = setOption(fields, undefined, 'regions', writeRegionChoice(choice));
+  assert.equal(resolveOptions(fields, stored!).regions, writeRegionChoice(choice));
+
+  const row = (id: number, picked: boolean, top: number) => ({ key: `r${id}`, id, label: `R${id}`, picked, top, height: 26 });
+  const shown: RegionRowsField = { rows: [row(4, true, 20), row(12, true, 50), row(7, false, 100), row(9, false, 130)], add: { top: 160, height: 26 }, nameLeft: 8 };
+  assert.deepEqual(regionDropAt(shown, shown.rows[1]!, 22), { to: 0, lineY: 20 }, 'a pick dragged above the first pick leads');
+  assert.deepEqual(regionDropAt(shown, shown.rows[2]!, 55), { to: 1, lineY: 50 }, 'an automatic row dragged among the picks becomes a pick');
+  assert.equal(regionDropAt(shown, shown.rows[3]!, 140), null, 'an automatic row dropped among the automatic rows does nothing');
+  assert.deepEqual(keyboardMove(shown.rows[0]!, 1, choice), { picks: [12, 4], hidden: [30] });
+  assert.equal(keyboardMove(shown.rows[0]!, -1, choice), null);
+  assert.deepEqual(keyboardMove(shown.rows[2]!, -1, choice), { picks: [4, 12, 7], hidden: [30] }, 'Alt+Up on an automatic row picks it');
 
   const tblDefaults = tableDefaults(cols, base);
   assert.equal(tblDefaults.density, 'normal');
@@ -385,6 +394,8 @@ test('scopedOptionFields and manifestViewSwitch support a second family view on 
   assert.equal(resolveOptions(tableFields, stored).rowHeight, otherValue, 'the table view reads the row height it stored');
   assert.equal(resolveOptions(barsFields, { ...stored, view: 'bars' }).rowHeight, rowHeightField.default, 'the bars view keeps its own row height');
   assert.equal(resolveOptions(barsFields, { ...stored, view: 'bars' }).view, 'bars', 'the view switch itself is shared by the kind');
+  const picked = setOption(barsFields, { view: 'bars' }, 'regions', 'r:3a:16')!;
+  assert.equal(resolveOptions(viewOwnedFields([regionPickerControl()], 'timeline'), picked).regions, 'r:3a:16', 'every view shows the same regions in the same order');
   assert.deepEqual(manifestViewSwitch(undefined, entries, legacy), {
     option: 'view',
     choices: [{ value: 'table', label: 'Table' }, { value: 'bars', label: 'Bars' }],

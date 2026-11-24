@@ -1,3 +1,4 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { liveKey } from '../../charts/live.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
@@ -317,11 +318,7 @@ export const armyLossesProjection: TimeChartProjection<ArmyLossesChartOptions> =
     ];
     const auditRows = slots
       .filter(s => s.status === 'recorded')
-      .map(s => ({
-        row: formatMonthTitle(s.year * 12 + s.month - 1),
-        key: `${s.year}-${String(s.month).padStart(2, '0')}`,
-        value: s.totalText,
-      }));
+      .map(s => auditRow(`${s.year}-${String(s.month).padStart(2, '0')}`, s.totalText));
     return {
       kind: 'army-losses-by-month',
       measureTitle,

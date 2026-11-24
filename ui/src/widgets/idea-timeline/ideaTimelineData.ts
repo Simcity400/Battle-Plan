@@ -1,17 +1,12 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import { ideaName } from '../../dashboard/ideaHistoryReply.ts';
-import type { Artwork, CategoryInfo, IdeaHistoryReply, IdeaInfo, IdeaSpan } from '../../generated/dashboard';
-
-export const UNIDENTIFIED_HOLDER = 'Holder not recorded';
+import { holdingLabel, lookOf } from '../../dashboard/ideaHistoryReply.ts';
+import type { CategoryInfo, IdeaHistoryReply, IdeaHolding, IdeaInfo } from '../../generated/dashboard';
 
 export interface IdeaLaneSpan {
   readonly id: string;
-  readonly token: string;
-  readonly firstHour: number;
-  readonly lastHour: number;
+  readonly holding: IdeaHolding;
   readonly label: string;
   readonly icon: string | null;
-  readonly holder: number | null;
 }
 
 export interface IdeaLane {
@@ -30,27 +25,27 @@ export function chosenCategory(categories: readonly CategoryInfo[], chosen: stri
   return chosen ? eligible.find(category => category.token === chosen) ?? null : eligible[0] ?? null;
 }
 
+interface Seat { readonly spans: IdeaLaneSpan[]; last: IdeaHolding | null }
+
 export function lanesFor(reply: IdeaHistoryReply, category: CategoryInfo): IdeaLane[] {
-  const infos = new Map<string, IdeaInfo>(reply.ideas.map(info => [info.token, info]));
-  const art = new Map<string, Artwork>(reply.artwork.map(item => [item.token, item]));
-  const holder = (token: string, character: number, script: string, name: string) => JSON.stringify([token, character, script, name]);
-  const holders = new Map<string, Artwork>(reply.holders.map(item => [holder(item.token, item.character, item.characterToken, item.name), item.artwork]));
-  const span = (item: IdeaSpan): IdeaLaneSpan => {
-    const base = { id: `${item.token}:${item.firstHour}`, token: item.token, firstHour: item.firstHour, lastHour: item.lastHour, holder: item.character?.id ?? null };
-    if (item.character) {
-      const look = holders.get(holder(item.token, item.character.id, item.character.token, item.character.name));
-      return look ? { ...base, label: look.name ?? 'Holder name unavailable', icon: look.icon ?? null } : { ...base, label: UNIDENTIFIED_HOLDER, icon: null };
-    }
-    const look = art.get(item.token);
-    return { ...base, label: ideaName(look, infos.get(item.token), 'Idea name unavailable'), icon: look?.icon ?? null };
+  const bySlot = new Map<string, IdeaHolding[]>();
+  for (const holding of reply.holdings) {
+    const slot = holding.slot ?? lookOf(reply, holding).info.slot;
+    if (slot === null) continue;
+    const list = bySlot.get(slot);
+    if (list) list.push(holding); else bySlot.set(slot, [holding]);
+  }
+  const span = (holding: IdeaHolding): IdeaLaneSpan => {
+    const look = lookOf(reply, holding);
+    return { id: `${holding.token}:${holding.firstHour}`, holding, label: holdingLabel(look, holding), icon: look.artwork.icon ?? null };
   };
   const lanes: IdeaLane[] = [];
   for (const slot of category.slots) {
     const label = contentTitle(slot.name, slot.token, 'Slot name unavailable');
-    const held = reply.spans.filter(item => (item.slot ?? infos.get(item.token)?.slot) === slot.token).sort((a, b) => a.firstHour - b.firstHour);
-    const seats: { spans: IdeaLaneSpan[]; last: IdeaSpan | null }[] = Array.from({ length: slot.character ? Math.max(1, slot.seats) : 1 }, () => ({ spans: [], last: null }));
+    const held = bySlot.get(slot.token) ?? [];
+    const seats: Seat[] = Array.from({ length: slot.character ? Math.max(1, slot.seats) : 1 }, () => ({ spans: [], last: null }));
     const endings = new Set(held.flatMap(other => other.character ? [`${other.character.id}#${other.lastHour + 1}`] : []));
-    const continues = (item: IdeaSpan) => item.character != null && endings.has(`${item.character.id}#${item.firstHour}`);
+    const continues = (item: IdeaHolding) => item.character != null && endings.has(`${item.character.id}#${item.firstHour}`);
     const order = held.map(item => ({ item, first: continues(item) ? 0 : 1 }))
       .sort((a, b) => a.item.firstHour - b.item.firstHour || a.first - b.first).map(entry => entry.item);
     for (const item of order) {

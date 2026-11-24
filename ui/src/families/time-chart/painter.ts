@@ -656,13 +656,23 @@ export function drawTimeChart(
     ctx.restore();
   }
 
-  if (model.overlays && !layout.small) {
+  if (model.overlays && layout.plotHeight >= 72 && layout.plotWidth >= 240) {
     for (const ov of model.overlays) {
       ctx.save();
       ctx.font = overlayFont;
       const tw = textWidth(ctx, ov.text);
       const ox = layout.left + layout.plotWidth - 8 - tw;
       const oy = ov.position === 'top-right' ? layout.top + 12 : layout.baseY - 12;
+      const arrowW = ov.arrow ? 12 : 0;
+      const padX = 5;
+      const plateLeft = Math.max(layout.left + 2, ox - arrowW - padX);
+      const plateRight = Math.min(layout.left + layout.plotWidth - 2, ox + tw + padX);
+      if (plateRight > plateLeft) {
+        ctx.fillStyle = theme.surface;
+        ctx.beginPath();
+        ctx.roundRect(plateLeft, oy - 8, plateRight - plateLeft, 16, 3);
+        ctx.fill();
+      }
       if (ov.arrow) {
         ctx.fillStyle = ov.color ?? textSecondary;
         ctx.beginPath();

@@ -1,3 +1,5 @@
+import { pictureError } from '../../shell/perf.ts';
+import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { tooltipStore } from '../../charts/tooltip.ts';
@@ -5,12 +7,12 @@ import { engineHour } from '../../dashboard/calendar.ts';
 import type { Pipeline, PointerHitMeta } from '../../dashboard/follow/pipeline.ts';
 import { AuditSnapshotStore } from '../audit.ts';
 import { barsHostAdapter, parseBarsHit } from '../bars/hostAdapter.ts';
-import { displayedHour } from '../boundedView.ts';
+import { createBoundedReadView, displayedHour } from '../boundedView.ts';
 import type { FamilyTheme, InstalledAction, InstalledPicture } from '../contract.ts';
 import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHeatMatrixHit } from '../heat/hostAdapter.ts';
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
 import { lazyActionKeys, type ParsedFamilyHit } from './adapter.ts';
-import { createBoundAuditReader, type BoundAuditEntry } from './auditBinding.ts';
+import { createBoundAuditReader, createPlanAuditVerifier, type BoundAuditEntry } from './auditBinding.ts';
 import { boundDated } from './dated.ts';
 import { NO_EXPANSION, toggleExpansion } from './expansion.ts';
 import {
@@ -153,6 +155,12 @@ test('handleFamilyKeyDown avoids activating row 0 when focus key was evicted and
   });
   assert.equal(enter.prevented(), true);
   assert.deepEqual(activated, [], 'Enter on an evicted row activates nothing, never the first remaining row');
+  const tree: FamilyNavTuple[] = [['GRP', 'Group', 0, 0, '', null], ['GER', 'Germany', 1, -1, 'GRP', null]];
+  const toggled: string[] = [];
+  for (const key of ['ArrowRight', 'ArrowLeft']) {
+    handleFamilyKeyDown(mkEvent(key).event, { nav: tree, focusedKey: 'evicted-key', pageStep: 5, blocked: false, isPinnedTooltip: () => false, onFocusKey: k => focused.push(k), onActivate: () => {}, onToggleTree: k => toggled.push(k) });
+  }
+  assert.deepEqual([toggled, focused], [[], []], 'tree keys on an evicted row expand or move nothing');
 
   const keyOptions = (focusedKey: string, blocked: boolean) => ({
     nav,
@@ -256,6 +264,16 @@ test('F6: bound audit reader verifies an earlier snapshot with the verifier capt
   assert.deepEqual(calls, ['verifierA:snapA@100', 'verifierB:snapB@200']);
   assert.equal(resA?.values.get('row'), 'A');
   assert.equal(resB?.values.get('row'), 'B');
+
+  const shown = [auditCell('GER', 'label', 'Germany'), auditCell('GER', 'value', '3'), auditCell('FRA', 'label', 'France'), auditCell('FRA', 'value', '2')];
+  const exactOf = (rows: readonly FamilyAuditRow[]) => createPlanAuditVerifier<null, Record<string, never>>()(5, {
+    projection: { family: 'bars', kind: 'synthetic-audit', project: () => null },
+    options: {},
+    exactReadView: async () => createBoundedReadView({ hour: 5, panels: new Map() }),
+    deriveRows: () => rows,
+  }, undefined);
+  assert.equal(pictureError('bars', shown, await exactOf(shown)), null, 'two rows with the same cell names compare cell by cell and a correct picture passes');
+  await assert.rejects(exactOf([auditRow('GER', '3'), auditRow('GER', '4')]), /Audit key GER repeats/, 'a repeated audit key is refused, never collapsed');
 });
 
 test('F8 & F9: listbox mirror uses stable key-based IDs, invalidates on prefix change, and honors explicit selected state', () => {
@@ -445,6 +463,7 @@ test('syncTableMirror updates existing table rows and cells in place without rec
       append(...nodes: MockCell[]): void;
       replaceChildren(...nodes: MockCell[]): void;
       contains(node: unknown): boolean;
+      focus(): void;
       remove(): void;
     }
     const makeNode = (isFrag = false): MockCell => {
@@ -474,6 +493,7 @@ test('syncTableMirror updates existing table rows and cells in place without rec
         append(...nodes) { for (const n of nodes) this.appendChild(n); },
         replaceChildren(...nodes) { this.children = []; for (const n of nodes) this.appendChild(n); },
         contains() { return false; },
+        focus() { (globalThis as unknown as { document: { activeElement: unknown } }).document.activeElement = node; },
         remove() {},
       };
       if (isFrag) node.attrs.set('__frag', '1');
@@ -487,7 +507,8 @@ test('syncTableMirror updates existing table rows and cells in place without rec
     const body = makeNode();
     const opts = {
       selectedKey: null,
-      focusedKeyRef: { current: null },
+      rowsFocusable: true,
+      focusedKeyRef: { current: null as string | null },
       focusInsideRef: { current: false },
       restoringFocusRef: { current: false },
       lastMirrorKeyRef: { current: '' },
@@ -524,6 +545,22 @@ test('syncTableMirror updates existing table rows and cells in place without rec
       rows: [{ key: 'GER', name: 'Germany', rowIndex: 0, rank: 1, cells: [{ column: 'name', spoken: 'Germany' }, { column: 'val', spoken: '105' }] }],
     }, opts);
     assert.equal(body.children.length, 1, 'shrinking rows trims trailing tr nodes');
+
+    const rows = (keys: readonly string[]) => ({ first: 0, total: keys.length, rows: keys.map((key, rowIndex) => ({ key, name: key, rowIndex, cells: [] })) });
+    syncTableMirror(body as unknown as HTMLTableSectionElement, rows(['GER', 'FRA']), { ...opts, focusedKeyRef: { current: 'GER' } });
+    const focusedRef = { current: 'GER' as string | null };
+    const prevElement = (globalThis as { HTMLElement?: unknown }).HTMLElement;
+    (globalThis as { HTMLElement?: unknown }).HTMLElement = Object;
+    body.contains = () => true;
+    body.children[0]!.focus();
+    const moved = syncTableMirror(body as unknown as HTMLTableSectionElement, rows(['FRA']), { ...opts, focusedKeyRef: focusedRef, focusInsideRef: { current: true } });
+    assert.equal(moved, true, 'when the focused row goes, the mirror reports that it moved focus');
+    assert.equal(focusedRef.current, 'FRA', 'and the host focus key follows the row that took DOM focus');
+    (globalThis as { HTMLElement?: unknown }).HTMLElement = prevElement;
+
+    const bodyFocus = makeNode();
+    syncTableMirror(bodyFocus as unknown as HTMLTableSectionElement, rows(['GER', 'FRA']), { ...opts, rowsFocusable: false, lastMirrorKeyRef: { current: '' } });
+    assert.ok(bodyFocus.children.every(tr => !tr.hasAttribute('tabindex') && tr.tabIndex === -1), 'a mirror of a body-focused family has no tabbable rows outside the keyboard handler');
   } finally {
     (globalThis as { document: unknown }).document = prevDoc;
   }
@@ -781,7 +818,7 @@ test('grid and points keyboard navigation and family host adapters cover all fou
   assert.deepEqual(activatedPts, ['plot:200']);
 
   assert.deepEqual(parseBarsHit('right:GER'), { key: 'GER', subject: 'GER', kind: 'right-row', toggle: false, inspectToken: 'right:GER' });
-  assert.deepEqual(parseBarsHit('remove:reg1'), { key: 'reg1', subject: 'reg1', kind: 'remove-region', toggle: true, inspectToken: 'remove:reg1' });
+  assert.equal(parseBarsHit('remove:reg1'), null, 'removing a region is the regions control, never a canvas hit');
   assert.deepEqual(parseHeatMatrixHit('cell:2:5'), { key: '2:5', subject: '2:5', toggle: false, inspectToken: 'cell:2:5' });
   assert.equal(parseHeatLanesHit('lane:#0@144')?.hour, 144);
   assert.equal(parseTimeChartHit('line:GER@512')?.hour, 512);

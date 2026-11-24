@@ -31,6 +31,7 @@ import { sharedDomArtCache } from '../art/domCache.ts';
 import { createDomArtProvider } from '../art/provider.ts';
 import { boundedUnrecorded, type UnrecordedLine } from '../boundedView.ts';
 import {
+  buildTailPageRequest,
   compileFollowPlan,
   currentHovers,
   FamilySourceBroker,
@@ -86,6 +87,13 @@ import {
   trackGate,
   type FrozenGate,
 } from '../sources.ts';
+import {
+  DEFAULT_TAIL_PAGE_SIZE,
+  validateGenericTailReply,
+  type DatedLogRow,
+  type PagedRowsSnapshot,
+} from '../table/rowSource.ts';
+import type { FamilyRowWindow } from './adapter.ts';
 
 const NO_TAGS: readonly string[] = [];
 const NO_LOOKS: CountryLooksMap = {};
@@ -182,6 +190,8 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly staticBundle: StaticBundle | null;
   readonly staticProof: StaticProof;
   readonly staticHeld: boolean;
+  readonly pagedRows: Readonly<Record<string, PagedRowsSnapshot>> | undefined;
+  readonly onRowWindow: (window: FamilyRowWindow, hour: number | null) => void;
   readonly tiledSeries: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly tiledRevision: number;
   readonly onSeriesViewport: (viewport: TileViewport) => void;
@@ -724,7 +734,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
                 sourceId: entry.source.id,
                 revision: entry.source.revision,
                 product: 'series-tiles',
-                params: { branchId: entry.branch, family: read.family, binHours, index, top: readTop.n, ...(readTop.least ? { least: true } : {}), hour: gated, ...(read.marks ? { withMarks: true } : {}) },
+                params: { branchId: entry.branch, family: read.family, binHours, index, top: readTop.n, ...(readTop.least ? { least: true } : {}), ...(readTop.by ? { rankBy: readTop.by } : {}), hour: gated, ...(read.marks ? { withMarks: true } : {}) },
               });
               return validateProductReply(await runtime.client.product<TileReply>(request, new AbortController().signal), request).data;
             },
@@ -793,6 +803,156 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     hoverBrokerRef.current?.dispose();
     hoverBrokerRef.current = null;
   }, []);
+
+  interface HeldPagedEntry {
+    readonly identity: string;
+    readonly headLimit: number;
+    readonly pageSize: number;
+    frozenHour: number | null;
+    readonly pages: Map<number, readonly DatedLogRow[]>;
+    readonly refusals: Map<number, string>;
+    readonly inFlight: Set<number>;
+  }
+  const pageBrokerRef = useRef<FamilySourceBroker | null>(null);
+  const pagedHeldRef = useRef<{ sig: string; entries: Map<string, HeldPagedEntry> }>({ sig: '', entries: new Map() });
+  const [pagedRowsState, setPagedRowsState] = useState<{ readonly sig: string; readonly map: Readonly<Record<string, PagedRowsSnapshot>> }>({ sig: '', map: {} });
+  const pagedPlanRef = useRef<{ plan: SourcePlan | null; sig: string; active: boolean }>({ plan, sig, active });
+  pagedPlanRef.current = { plan, sig, active };
+
+  const publishPagedRows = useCallback((forSig: string) => {
+    const held = pagedHeldRef.current;
+    if (held.sig !== forSig) return;
+    const map: Record<string, PagedRowsSnapshot> = {};
+    for (const [name, state] of held.entries) {
+      map[name] = {
+        identity: state.identity,
+        frozenHour: state.frozenHour,
+        headLimit: state.headLimit,
+        pageSize: state.pageSize,
+        pages: Object.fromEntries(state.pages),
+        refusals: Object.fromEntries(state.refusals),
+      };
+    }
+    setPagedRowsState({ sig: forSig, map });
+  }, []);
+
+  useEffect(() => {
+    pageBrokerRef.current?.dispose();
+    pageBrokerRef.current = null;
+    pagedHeldRef.current = { sig, entries: new Map() };
+    setPagedRowsState({ sig, map: {} });
+  }, [sig]);
+
+  useEffect(() => () => {
+    pageBrokerRef.current?.dispose();
+    pageBrokerRef.current = null;
+  }, []);
+
+  const onRowWindow = useCallback((rowWindow: FamilyRowWindow, installedHour: number | null) => {
+    const { plan: curPlan, sig: curSig, active: curActive } = pagedPlanRef.current;
+    if (!curPlan || !curActive) return;
+    const pagedEntries = curPlan.entries.filter(
+      (entry): entry is SourceEntry & { readonly read: Extract<SourceEntry['read'], { shape: 'paged-rows' }> } => entry.read.shape === 'paged-rows',
+    );
+    if (!pagedEntries.length) return;
+    if (pagedHeldRef.current.sig !== curSig) {
+      pageBrokerRef.current?.dispose();
+      pageBrokerRef.current = null;
+      pagedHeldRef.current = { sig: curSig, entries: new Map() };
+    }
+    if (!pageBrokerRef.current) pageBrokerRef.current = new FamilySourceBroker();
+    const pageBroker = pageBrokerRef.current;
+    const first = Math.max(0, Math.floor(rowWindow.first));
+    const count = Math.max(0, Math.floor(rowWindow.count));
+    const end = first + count;
+    let changed = false;
+
+    for (const entry of pagedEntries) {
+      const headLimit = Math.max(1, entry.read.tailQuery.limit);
+      const pageSize = Math.max(1, entry.read.pageSize ?? DEFAULT_TAIL_PAGE_SIZE);
+      const identity = `${entry.source.id}|${entry.branch}|${entry.name}`;
+      let state = pagedHeldRef.current.entries.get(entry.name);
+      if (!state) {
+        state = { identity, headLimit, pageSize, frozenHour: null, pages: new Map(), refusals: new Map(), inFlight: new Set() };
+        pagedHeldRef.current.entries.set(entry.name, state);
+      }
+
+      if (first === 0 && end <= headLimit) {
+        if (state.frozenHour !== null || state.pages.size > 0 || state.refusals.size > 0 || state.inFlight.size > 0) {
+          for (const offset of state.inFlight) pageBroker.cancelSlot(`page:${entry.name}:${offset}`);
+          state.inFlight.clear();
+          state.frozenHour = null;
+          state.pages.clear();
+          state.refusals.clear();
+          changed = true;
+        }
+        continue;
+      }
+
+      if (end <= headLimit || installedHour === null || !Number.isFinite(installedHour)) continue;
+      const hour = Math.floor(installedHour);
+      if (state.frozenHour !== null && hour < state.frozenHour) {
+        for (const offset of state.inFlight) pageBroker.cancelSlot(`page:${entry.name}:${offset}`);
+        state.inFlight.clear();
+        state.frozenHour = null;
+        state.pages.clear();
+        state.refusals.clear();
+        changed = true;
+      }
+      if (state.frozenHour === null) {
+        state.frozenHour = hour;
+        changed = true;
+      }
+      const frozenHour = state.frozenHour;
+      const startPage = Math.max(0, Math.floor((Math.max(first, headLimit) - headLimit) / pageSize));
+      const endPage = Math.floor((end - 1 - headLimit) / pageSize);
+      const wanted = new Set<number>();
+      for (let p = startPage; p <= endPage; p++) wanted.add(headLimit + p * pageSize);
+
+      for (const offset of [...state.inFlight]) {
+        if (!wanted.has(offset)) {
+          state.inFlight.delete(offset);
+          pageBroker.cancelSlot(`page:${entry.name}:${offset}`);
+        }
+      }
+
+      for (const offset of wanted) {
+        if (state.pages.has(offset) || state.refusals.has(offset) || state.inFlight.has(offset)) continue;
+        const req = buildTailPageRequest(entry, { offset, limit: pageSize, hour: frozenHour });
+        if (!req) continue;
+        state.inFlight.add(offset);
+        const heldState = state;
+        const validate = entry.read.validate ?? validateGenericTailReply;
+        pageBroker.runSlot(
+          `page:${entry.name}:${offset}`,
+          `${curSig}|${entry.name}|${frozenHour}|${offset}|${pageSize}`,
+          async signal => {
+            const reply = validateProductReply(await runtime.client.product(req, signal), req);
+            return validate(reply.data, frozenHour);
+          },
+          tail => {
+            if (pagedHeldRef.current.sig !== curSig || heldState.frozenHour !== frozenHour) return;
+            heldState.inFlight.delete(offset);
+            heldState.refusals.delete(offset);
+            heldState.pages.set(offset, tail.rows);
+            publishPagedRows(curSig);
+          },
+          error => {
+            if (pagedHeldRef.current.sig !== curSig || heldState.frozenHour !== frozenHour) return;
+            heldState.inFlight.delete(offset);
+            heldState.refusals.set(offset, asFailure(error).message);
+            publishPagedRows(curSig);
+          },
+        );
+      }
+    }
+    if (changed) publishPagedRows(curSig);
+  }, [runtime.client, publishPagedRows]);
+
+  const pagedRows = useMemo(
+    () => (pagedRowsState.sig === sig && Object.keys(pagedRowsState.map).length ? pagedRowsState.map : undefined),
+    [pagedRowsState, sig],
+  );
 
   const currentTiled = tiledState.key === pixelBinnedKey ? tiledState : null;
   const trackOffset = track?.axisOffset ?? 0;
@@ -1165,6 +1325,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     staticBundle,
     staticProof,
     staticHeld,
+    pagedRows,
+    onRowWindow,
     tiledSeries: currentTiled?.series ?? {},
     tiledRevision: currentTiled?.revision ?? 0,
     onSeriesViewport,

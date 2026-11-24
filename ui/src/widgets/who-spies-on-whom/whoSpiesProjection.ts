@@ -101,14 +101,12 @@ export function projectOperativeMatrix(readView: BoundedReadView): HeatMatrixMod
       : { kind: 'value', intensity: count / most, text: String(count), value: count, selectable: true });
   }
   const noOperatives: MatrixCell = { kind: 'empty', label: 'No operatives', audit: '0' };
-  const cells = {
-    present,
-    absent: (r: number): MatrixCell => {
-      const missing = reply.rows[r]!.missing;
-      return missing ? { kind: 'missing', reason: missing } : noOperatives;
-    },
-    self: { kind: 'diagonal', outlined: true } as MatrixCell,
+  const home: MatrixCell = { kind: 'diagonal', outlined: true };
+  const unknownOr = (known: MatrixCell) => (r: number): MatrixCell => {
+    const missing = reply.rows[r]!.missing;
+    return missing ? { kind: 'missing', reason: missing } : known;
   };
+  const cells = { present, absent: unknownOr(noOperatives), self: unknownOr(home) };
 
   const margin = (r: number): MatrixMarginCell => {
     const capacity = reply.rows[r]!.capacity;

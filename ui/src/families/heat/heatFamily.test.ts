@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Canvas2D } from '../../charts/textWidth.ts';
-import { computeTimeAxisTicks } from '../../draw/kit.ts';
+import { computeTimeAxisTicks, ROW_SECTION_HEIGHT } from '../../draw/kit.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { marginColour, sequentialRampColour, signedRampColour, splitStripes } from './scale.ts';
 import {
@@ -163,12 +163,12 @@ test('heat matrix supports grouped non-square axes, bounded viewport windows, hi
   assert.equal(tip?.missingReason, 'Opinions not recorded');
   assert.equal(deriveMatrixTooltip(model, 0, 0), null);
 
-  const audit = deriveMatrixAudit(model);
+  const audit = deriveMatrixAudit(model, { firstRow: 0, endRow: 2, firstCol: 0, endCol: 3 });
   assert.deepEqual(audit, [
-    { key: 'ENG->FRA', row: 'United Kingdom → France', value: '+50' },
-    { key: 'ENG->GER', row: 'United Kingdom → German Reich', value: '-80' },
-    { key: 'GER->ENG', row: 'German Reich → United Kingdom', value: 'No network' },
-    { key: 'GER->FRA', row: 'German Reich → France', value: 'Not recorded (Opinions not recorded)' },
+    { key: 'ENG:FRA', row: 'ENG', value: '+50' },
+    { key: 'ENG:GER', row: 'ENG', value: '-80' },
+    { key: 'GER:ENG', row: 'GER', value: 'No network' },
+    { key: 'GER:FRA', row: 'GER', value: 'Not recorded (Opinions not recorded)' },
   ]);
 
   const mirror = deriveMatrixMirror(model, 0, 2, 0, 3);
@@ -245,7 +245,7 @@ test('heat matrix scales to 1,500 countries with bounded visible row and column 
   assert.ok(layout.endCol - layout.firstCol < 35);
 });
 
-test('a 1,500 by 1,500 matrix reads only the cells a 20 by 20 viewport shows, its tooltip and its audit', () => {
+test('a 1,500 by 1,500 matrix reads only the cells a 20 by 20 viewport shows, its tooltip and its audit', async () => {
   const entities: MatrixAxisEntity[] = Array.from({ length: 1500 }, (_, i) => ({ id: `C${i}`, label: `Country ${i}`, tag: `C${i}` }));
   let visits = 0;
   class CountingMap extends Map<number, MatrixCell> {
@@ -266,9 +266,14 @@ test('a 1,500 by 1,500 matrix reads only the cells a 20 by 20 viewport shows, it
   deriveMatrixAudit(model, { firstRow: layout.firstRow, endRow: layout.endRow, firstCol: layout.firstCol, endCol: layout.endCol });
   deriveMatrixTooltip(model, layout.firstRow, layout.firstCol);
   assert.ok(visits <= shown * 3 + 1, `cells read: ${visits} for ${shown} shown`);
-  visits = 0;
-  assert.equal(deriveMatrixAudit(model).length, 1501, 'the whole-model audit lists the present pairs and the absent cell once');
-  assert.equal(visits, 0, 'and reads no absent pair');
+  const { heatMatrixHostAdapter } = await import('./hostAdapter.ts');
+  const { pictureError } = await import('../../shell/perf.ts');
+  const installed = deriveMatrixAudit(model, { firstRow: layout.firstRow, endRow: layout.endRow, firstCol: layout.firstCol, endCol: layout.endCol });
+  const extent = { gridLeft: layout.gridLeft, gridTop: layout.gridTop, marginWidth: layout.marginWidth, cellWidth: layout.cellWidth, cellSize: layout.cellSize, margin: null, rows: entities, columns: entities };
+  const viewport = { width: layout.width, height: layout.height, dpr: 1, scrollLeft: 22 * 700, scrollTop: 22 * 700, zoomWindow: null };
+  const exact = heatMatrixHostAdapter.deriveAuditRows!(model, 1, { viewport, settings: undefined, expanded: {}, theme: undefined, fields: { extent } });
+  assert.deepEqual(exact.map(row => row.key), installed.map(row => row.key), 'the exact audit compares the same visible cells');
+  assert.equal(pictureError('heat-matrix', installed.map(row => ({ key: row.key, row: row.row, value: String(row.value) })), { values: new Map(exact.map(row => [row.key, String(row.value)])), ordered: false }), null, 'a correct sparse picture passes its audit');
 });
 
 test('heat lanes never leak readings past displayed hour, never stretch over uncovered days, and keep 1px midnight terminal column', () => {
@@ -364,7 +369,7 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
   });
   assert.equal(layout.showReadout, true);
 
-  const hit = hitHeatLanes(layout.plotLeft + 20, layout.plotTop + 10, 0, layout, model.rows.length);
+  const hit = hitHeatLanes(layout.plotLeft + 20, layout.plotTop + 10, 0, layout, model.rows);
   assert.equal(hit?.kind, 'lane');
   if (hit?.kind === 'lane') {
     assert.equal(hit.rowIndex, 0);
@@ -377,10 +382,13 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
   const gapTip = deriveLanesTooltip(model, 0, 55);
   assert.equal(gapTip?.missingReason, 'Recorder paused');
 
-  const audit = deriveLanesAudit(model);
+  const audit = deriveLanesAudit(model, { firstRow: 0, endRow: 2 });
   assert.deepEqual(audit, [
-    { key: '10', row: 'English Channel', value: '70% (Since 4 Jan)' },
-    { key: '11', row: 'Northern France', value: 'Air not recorded' },
+    { key: '10:readout', row: '10', value: '70% (Since 4 Jan)' },
+    { key: '10:lane', row: '10', value: '0-47 Allies 70% #4f86f7, Axis 30% #e55353; 72-119 Allies #4f86f7' },
+    { key: '11:readout', row: '11', value: 'Air not recorded' },
+    { key: '11:lane', row: '11', value: '0-119 Not recorded (Scores withheld)' },
+    { key: 'gaps', row: 'gaps', value: '48-71' },
   ]);
 
   const mirror = deriveLanesMirror(model, 0, 2);
@@ -420,6 +428,24 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
     { label: 'reorder', binding: lane(reordered), hour: 119, check: true },
     { label: 'scrolled', binding: lane(reordered, 12), hour: 119, check: true },
   ], surface);
+
+  const regions = { pickedHeading: 'Your regions', automaticHeading: 'Most active for Germany', addLabel: 'Add region' };
+  const regionRows = [{ ...model.rows[0]!, pinned: true, region: 10 }, { ...model.rows[1]!, region: 11 }];
+  const regionLayout = layoutHeatLanes({ width: 720, height: 220, scrollTop: 0, firstHour: model.firstHour, lastHour: model.lastHour, displayedHour: model.hour, rows: regionRows, regions });
+  const stride = regionLayout.rowStride;
+  assert.deepEqual(regionLayout.sections, [{ label: 'Your regions', top: 0 }, { label: 'Most active for Germany', top: ROW_SECTION_HEIGHT + stride }]);
+  assert.deepEqual(regionLayout.rowTops, [ROW_SECTION_HEIGHT, 2 * ROW_SECTION_HEIGHT + stride]);
+  assert.equal(regionLayout.addTop, 2 * ROW_SECTION_HEIGHT + 2 * stride);
+  const middle = (top: number) => regionLayout.plotTop + top + regionLayout.rowHeight / 2;
+  assert.deepEqual(hitHeatLanes(10, middle(regionLayout.addTop!), 0, regionLayout, regionRows), { kind: 'add' });
+  assert.equal(hitHeatLanes(10, regionLayout.plotTop + 5, 0, regionLayout, regionRows), null, 'a section label is not a row');
+  assert.deepEqual(hitHeatLanes(regionLayout.nameWidth - 4, middle(regionLayout.rowTops[1]!), 0, regionLayout, regionRows, 1), { kind: 'remove', rowIndex: 1 });
+  assert.deepEqual(hitHeatLanes(regionLayout.nameWidth - 4, middle(regionLayout.rowTops[1]!), 0, regionLayout, regionRows, null), { kind: 'row', rowIndex: 1 }, 'no remove where none is drawn');
+  assert.deepEqual(hitHeatLanes(4, middle(regionLayout.rowTops[0]!), 0, regionLayout, regionRows, 0), { kind: 'grip', rowIndex: 0 });
+  const regionPaint = makeFakeCtx();
+  drawHeatLanes(regionPaint.ctx, { model: { ...model, rows: regionRows, regions }, layout: regionLayout, theme: THEME, scrollTop: 0, hoveredRow: 1, hoveredHour: null, selectedRowId: null, focusedRowId: null });
+  const texts = regionPaint.ops.filter(op => op.op === 'fillText').map(op => String(op.args[0]));
+  for (const text of ['Your regions', 'Most active for Germany', 'Add region', '×']) assert.ok(texts.includes(text), `${text} is drawn`);
 });
 
 test('heat scale helpers preserve zero neutrality, signed extremes, margin blend, and proportional stripes', () => {
@@ -463,7 +489,7 @@ test('a sub-pixel last observation gets one pixel at its own hour, and an uncove
   assert.equal(deriveLanesTooltip(model, 0, null)?.exactValue, '71%', 'the readout answers only when the readout itself is hit');
   const layout = layoutHeatLanes({ width: 400, height: 120, scrollTop: 0, firstHour: 0, lastHour: 1000, displayedHour: 500, rows: model.rows });
   const pastPlayhead = layout.plotLeft + layout.plotWidth * 0.9;
-  assert.equal(hitHeatLanes(pastPlayhead, layout.plotTop + 4, 0, layout, 1), null, 'nothing after the displayed hour is hit');
+  assert.equal(hitHeatLanes(pastPlayhead, layout.plotTop + 4, 0, layout, model.rows), null, 'nothing after the displayed hour is hit');
 });
 
 test('stripes draw the fractions they are given and leave an unknown remainder unfilled', () => {
