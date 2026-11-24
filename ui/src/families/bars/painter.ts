@@ -571,7 +571,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         const rightName = drawNameSlot(
           ctx,
           right.labelMissing ? notRecordedLabel('Name') : right.label,
-          layout.rightNameX,
+          layout.rightNameX + layout.rightNameWidth,
           y,
           layout.rightNameWidth,
           rowH,

@@ -3,7 +3,9 @@ import { dayLabel } from '../../charts/draw';
 import { CountryFlag } from '../../components/CountryFlag';
 import type { WidgetCountryChipProps, WidgetProps, WidgetRenderer, WidgetSubjectMenuProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
-import { setToken } from '../../dashboard/options';
+import { scopedOptionKey, setToken } from '../../dashboard/options';
+import type { WidgetSpec } from '../../dashboard/model';
+import { resolveWidgetActiveView } from '../manifest';
 import type { InstalledAction } from '../../families/contract.ts';
 import { FamilyWidget } from '../../families/host/registry';
 import { useIdentity, useIdentityScope } from '../../families/identity/react.ts';
@@ -14,6 +16,9 @@ import { MEASURE_VIEW, warContributionMeasureDeclaration } from './measureProjec
 import { warContributionSidesDeclaration } from './sidesProjection.ts';
 import { chosenWar } from './warContributionData.ts';
 import { savedWar } from './warContributionPlan.ts';
+
+const warKey = (widget: WidgetSpec) => scopedOptionKey('war', resolveWidgetActiveView(widget.kind, widget.options));
+const storedWar = (widget: WidgetSpec) => savedWar({ war: widget.options?.[warKey(widget)] });
 import { useWarChoices, useWars } from './useWarChoices';
 import './warContribution.css';
 
@@ -32,7 +37,7 @@ function useChosenWar(props: Pick<WidgetProps, 'widget' | 'runtime' | 'active'>)
   const { widget, runtime, active } = props;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const wars = useWars(widget, runtime, active);
-  const saved = savedWar(widget.options ?? {});
+  const saved = storedWar(widget);
   const shownHour = useCallback((clockHour: number) => (track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null), [track, widget, runtime.tracks]);
   const hour = useHeadHour(runtime.clock, active && widget.time.mode === 'follow', clockHour => {
     const at = shownHour(clockHour);
@@ -69,8 +74,11 @@ function WarChip(props: WidgetCountryChipProps) {
 
 function WarMenu({ widget, runtime, onApply }: WidgetSubjectMenuProps) {
   const wars = useWars(widget, runtime, true);
-  const saved = savedWar(widget.options ?? {});
-  const choose = (id: string | null) => onApply({ ...widget, options: { ...(widget.options ?? {}), war: id === null ? '' : setToken(id) } });
+  const saved = storedWar(widget);
+  const choose = (id: string | null) => {
+    const { [warKey(widget)]: _held, ...rest } = widget.options ?? {};
+    onApply({ ...widget, options: id === null ? rest : { ...rest, [warKey(widget)]: setToken(id) } });
+  };
   return <div className="war-menu" role="group" aria-label="War">
     <div className="war-menu-heading">War</div>
     <button type="button" className={`war-menu-row${saved === null ? ' is-chosen' : ''}`} onClick={() => choose(null)}>The country’s main war at the date</button>
