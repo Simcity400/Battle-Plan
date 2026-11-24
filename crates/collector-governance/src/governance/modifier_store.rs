@@ -82,7 +82,10 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
         Plan { certificate, carry }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one country's modifiers carry into separate row, token and value outputs with their starts"
+    )]
     pub fn carry(
         &mut self,
         country: engine_native_memory::country_identity::Country,

@@ -720,7 +720,7 @@ impl Captured {
         Ok(())
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "the walk's context, the stitch's storage and the occurrence"
     )]

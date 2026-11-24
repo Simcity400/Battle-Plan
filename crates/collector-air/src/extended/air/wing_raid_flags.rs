@@ -71,7 +71,6 @@ impl Store {
     pub fn allocated_bytes(&self) -> u64 {
         ((self.previous.capacity() + self.current.capacity()) * size_of::<Entry>()) as u64
     }
-    #[allow(clippy::too_many_arguments)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -117,7 +116,6 @@ impl Store {
             },
         )
     }
-    #[allow(clippy::too_many_arguments)]
     fn capture_with(
         &mut self,
         pointer: usize,

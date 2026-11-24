@@ -11,7 +11,6 @@ pub struct SlotRun {
 }
 
 impl SlotRun {
-    #[cfg_attr(test, allow(dead_code))]
     pub fn current() -> Self {
         Self {
             dense: cfg!(feature = "air_base_changes"),
@@ -26,7 +25,6 @@ pub struct SlotReport {
     pub refusals: [u64; DenseRefusal::COUNT],
 }
 
-#[cfg_attr(test, allow(dead_code))]
 pub fn record(report: &SlotReport) {
     for (total, value) in BASES.iter().zip([report.dense, report.full]) {
         total.fetch_add(value, Ordering::Relaxed);

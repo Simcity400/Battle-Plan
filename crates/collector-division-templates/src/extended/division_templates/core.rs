@@ -269,7 +269,10 @@ impl Store {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one remembered template keeps its certificate, deployment, row and each borrowed table"
+    )]
     pub fn remember(
         &mut self,
         changes: &dyn Changes,

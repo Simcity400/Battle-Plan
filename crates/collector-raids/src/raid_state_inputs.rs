@@ -203,7 +203,6 @@ impl Captured {
         self.capture_sliced_with(memory, base, game_state, hour, force_full, stores)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn capture_sliced_with(
         &mut self,
         memory: &impl Memory,

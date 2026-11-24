@@ -333,7 +333,7 @@ pub fn install_offered() {
         return;
     }
     if let Some(mut next) = swap.next.take() {
-        LOG.store(&mut *next, Ordering::Release);
+        LOG.store(&raw mut *next, Ordering::Release);
         swap.retired = swap.current.replace(next);
     }
 }
@@ -774,11 +774,11 @@ mod tests {
         let displacement = i32::from_le_bytes(first[2..].try_into().unwrap());
         assert_eq!(
             (entry + 6).wrapping_add_signed(displacement as isize),
-            &RETURN as *const _ as usize
+            &raw const RETURN as usize
         );
         let pc = peace_finalizer_body as *const () as u64;
         let mut image_base = 0;
-        let function = unsafe { RtlLookupFunctionEntry(pc, &mut image_base, ptr::null_mut()) };
+        let function = unsafe { RtlLookupFunctionEntry(pc, &raw mut image_base, ptr::null_mut()) };
         assert!(
             !function.is_null(),
             "bridge must have a runtime function record"
@@ -808,9 +808,9 @@ mod tests {
                 image_base,
                 pc,
                 function,
-                &mut context,
-                &mut handler_data,
-                &mut establisher,
+                &raw mut context,
+                &raw mut handler_data,
+                &raw mut establisher,
                 ptr::null_mut(),
             );
         }
@@ -954,7 +954,7 @@ mod tests {
         fixture.u64(roster, 0x100);
         let memory = fixture.memory();
         presize(Capacities::default());
-        let offered = SWAP.lock().unwrap().next.as_ref().unwrap().as_ref() as *const Log;
+        let offered = std::ptr::from_ref::<Log>(SWAP.lock().unwrap().next.as_ref().unwrap().as_ref());
         ALLOCATION_REFUSED.store(false, Ordering::Relaxed);
         engine_allocation::set_hooks(None, Some(allocation_failed));
         let capacity = crate::test_support::with_allocations_denied(|| {
@@ -963,7 +963,7 @@ mod tests {
             capacity
         });
         engine_allocation::set_hooks(None, None);
-        let unchanged = SWAP.lock().unwrap().next.as_ref().unwrap().as_ref() as *const Log;
+        let unchanged = std::ptr::from_ref::<Log>(SWAP.lock().unwrap().next.as_ref().unwrap().as_ref());
         *SWAP.lock().unwrap() = Swap::default();
         assert_eq!(capacity, Capacities::default());
         assert_eq!(offered, unchanged);

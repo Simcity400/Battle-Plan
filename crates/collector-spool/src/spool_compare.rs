@@ -744,7 +744,7 @@ mod tests {
             );
             assert_eq!(input.tables[TableId::States.index()], other, "{index}");
         }
-        let mut input = frame(1, rows.clone());
+        let mut input = frame(1, rows);
         compare_frame(
             &encoder,
             Target {

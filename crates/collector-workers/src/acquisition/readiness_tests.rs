@@ -314,14 +314,14 @@ fn readiness_dispatches_dependents_before_an_unrelated_fixed_join() {
         .recv_timeout(collector_test_support::TEST_HANG_GUARD)
         .unwrap();
     let loan = Box::new([0; 4]);
-    let address = (&*loan) as *const [usize; 4];
+    let address = &raw const *loan;
     let mut pending = submit(Job { stage: 1, loan });
     for stage in 1..=4 {
         pool.wait_ready(|| pool.is_complete(pending).then_some(()));
         assert!(!pool.is_complete(unrelated));
         let completed = pool.finish(pending).unwrap();
         assert_eq!(completed.report, Ok(stage));
-        assert_eq!((&*completed.request.loan) as *const [usize; 4], address);
+        assert_eq!(&raw const *completed.request.loan, address);
         assert_eq!(
             completed.request.loan[..stage],
             (1..=stage).collect::<Vec<_>>()
@@ -411,7 +411,7 @@ fn readiness_failure_and_cancellation_keep_partial_requests_and_loans() {
         value: 2,
         loan: Box::new(22),
     };
-    let addresses = [(&*first.loan) as *const u8, (&*second.loan) as *const u8];
+    let addresses = [&raw const *first.loan, &raw const *second.loan];
     let first = unsafe { pool.submit(&mut Some(first)).unwrap() };
     running
         .recv_timeout(collector_test_support::TEST_HANG_GUARD)
@@ -426,8 +426,8 @@ fn readiness_failure_and_cancellation_keep_partial_requests_and_loans() {
     assert_eq!(first.report, Err(Failure::Panicked));
     assert_eq!(second.report, Err(Failure::Stopped));
     assert_eq!((first.request.value, second.request.value), (9, 2));
-    assert_eq!((&*first.request.loan) as *const u8, addresses[0]);
-    assert_eq!((&*second.request.loan) as *const u8, addresses[1]);
+    assert_eq!(&raw const *first.request.loan, addresses[0]);
+    assert_eq!(&raw const *second.request.loan, addresses[1]);
     assert!(running.try_recv().is_err(), "cancelled producer ran");
     assert_eq!(pool.calibration().uncollected, 0);
     assert_eq!(

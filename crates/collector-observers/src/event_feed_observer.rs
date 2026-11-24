@@ -518,7 +518,7 @@ impl Owner {
         unsafe {
             WaitOnAddress(
                 self.busy.as_ptr().cast(),
-                (&parked as *const u64).cast(),
+                (&raw const parked).cast(),
                 size_of::<u64>(),
                 1,
             )
@@ -1176,8 +1176,8 @@ impl Hooks {
             .map_err(|_| "Event feed decision certificate allocation failed")?;
         script_capacities(&store);
         let owner = Owner::new(base, store);
-        let range = unsafe { &event_stub_start } as *const u8 as usize
-            ..unsafe { &event_stub_end } as *const u8 as usize;
+        let range = (&raw const event_stub_start) as usize
+            ..(&raw const event_stub_end) as usize;
         let make = |site: native::CallSite, callback| {
             let code = engine_sites::hook(base, site.rva)?;
             unsafe {
@@ -1265,8 +1265,8 @@ impl Hooks {
             .flat_map(Hook::executable_ranges)
             .chain(held.taps.iter().flat_map(Tap::executable_ranges))
             .chain(std::iter::once(
-                unsafe { &event_stub_start } as *const u8 as usize
-                    ..unsafe { &event_stub_end } as *const u8 as usize,
+                (&raw const event_stub_start) as usize
+                    ..(&raw const event_stub_end) as usize,
             ))
             .collect()
     }
@@ -2890,7 +2890,7 @@ mod tests {
             assert_eq!(first, &[0x48, 0x81, 0xec, 8, 1, 0, 0]);
             let pc = entry as u64 + 7;
             let mut image_base = 0;
-            let function = unsafe { RtlLookupFunctionEntry(pc, &mut image_base, ptr::null_mut()) };
+            let function = unsafe { RtlLookupFunctionEntry(pc, &raw mut image_base, ptr::null_mut()) };
             assert!(!function.is_null());
             assert_eq!(
                 image_base + unsafe { (*function).BeginAddress } as u64,
@@ -2914,9 +2914,9 @@ mod tests {
                     image_base,
                     pc,
                     function,
-                    &mut context,
-                    &mut handler_data,
-                    &mut establisher,
+                    &raw mut context,
+                    &raw mut handler_data,
+                    &raw mut establisher,
                     ptr::null_mut(),
                 );
             }

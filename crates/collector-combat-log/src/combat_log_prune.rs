@@ -58,7 +58,10 @@ impl Log {
     /// # Safety
     /// The caller alone reserved `range`, which lies within the log, and makes no other borrow of
     /// it while the returned slice lives.
-    #[allow(clippy::mut_from_ref)]
+    #[expect(
+        clippy::mut_from_ref,
+        reason = "callers reserve disjoint row ranges, so each gets its own mutable slice of the shared log"
+    )]
     unsafe fn rows_mut(&self, range: Range<usize>) -> &mut [Row] {
         unsafe {
             std::slice::from_raw_parts_mut(
@@ -437,7 +440,7 @@ pub fn status() -> impl serde::Serialize {
         .map(|value| value.load(Ordering::Relaxed));
     let mut frequency = 0;
     let clock = unsafe {
-        windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
+        windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&raw mut frequency)
     } != 0
         && frequency > 0;
     let ns = |counter: &AtomicU64| {

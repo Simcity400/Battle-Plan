@@ -7,7 +7,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 #[test]
 #[ignore = "isolated shared retirement lifecycle; run with --test-threads=1"]
-#[allow(clippy::field_reassign_with_default)]
 fn abandoned_orders_loan_retires_once_on_drop_and_callback_unwind() {
     let _serial = collector_hooks::hook::FAMILY_TEST
         .lock()

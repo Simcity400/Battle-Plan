@@ -115,7 +115,10 @@ impl Captured {
             .fail_capture(hour, force_full, reason);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the country rows, links, clock and appearance store are separate inputs of one request"
+    )]
     pub(crate) fn take_countries_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
@@ -283,7 +286,10 @@ impl Captured {
     }
 
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the inline capture takes the modifier guard and naval-mission loan beside the hourly operands"
+    )]
     pub(crate) fn capture_ordinary_inline(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
@@ -880,7 +886,10 @@ impl Captured {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the late request takes the orders and naval choice beside the hourly operands"
+    )]
     pub(crate) fn take_late_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
@@ -962,7 +971,10 @@ impl Captured {
         self.army_icon_inputs = icons;
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the request takes ownership of the air scores and rail store beside the hourly operands"
+    )]
     pub(crate) fn take_scores_rails_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
@@ -990,7 +1002,6 @@ impl Captured {
         }
     }
 
-    #[allow(clippy::type_complexity)]
     pub(crate) fn take_air_supply_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
@@ -2349,7 +2360,10 @@ impl LatePacks {
         .ok()
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the unit inputs, divisions, air scores and rails"
+    )]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -2691,7 +2705,6 @@ impl FinalInputsRequest {
     }
 }
 impl Captured {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_final_inputs_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,

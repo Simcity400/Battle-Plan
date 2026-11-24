@@ -72,12 +72,7 @@ pub fn active() -> usize {
 static LOG_SERIAL: AtomicU64 = AtomicU64::new(1);
 static LOG: AtomicUsize = AtomicUsize::new(0);
 static OFFERED: AtomicUsize = AtomicUsize::new(0);
-#[allow(clippy::vec_box)]
 static LOGS: Mutex<Vec<Box<[Log]>>> = Mutex::new(Vec::new());
-#[allow(
-    clippy::vec_box,
-    reason = "superseded logs stay boxed until dropped off the capture path"
-)]
 static RETIRED_LOGS: Mutex<Vec<Box<[Log]>>> = Mutex::new(Vec::new());
 static UNHOOKED: OnceLock<String> = OnceLock::new();
 static COUNTERS: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
@@ -508,7 +503,7 @@ pub fn thread_slots() -> usize {
 }
 thread_local! { static LANE: Cell<(usize,u64,usize,usize)> = const {Cell::new((0,0,0,0))}; }
 fn lane_index(log: &Log) -> Option<usize> {
-    let pointer = log as *const Log as usize;
+    let pointer = std::ptr::from_ref::<Log>(log) as usize;
     LANE.with(|cached| {
         let (old, serial, index, _) = cached.get();
         if old == pointer && serial == log.serial {
@@ -521,7 +516,7 @@ fn lane_index(log: &Log) -> Option<usize> {
             index,
             log.lanes
                 .get(index)
-                .map_or(0, |lane| lane as *const Lane as usize),
+                .map_or(0, |lane| std::ptr::from_ref::<Lane>(lane) as usize),
         ));
         if index >= log.lanes.len() {
             REQUIRED_LANES.fetch_max(index + 1, Ordering::Relaxed);
@@ -536,7 +531,7 @@ fn lane_index(log: &Log) -> Option<usize> {
 fn cached_lane(log: &Log) -> Option<&Lane> {
     LANE.with(|cached| {
         let (pointer, serial, _, lane) = cached.get();
-        if pointer == log as *const Log as usize && serial == log.serial && lane != 0 {
+        if pointer == std::ptr::from_ref::<Log>(log) as usize && serial == log.serial && lane != 0 {
             return Some(unsafe { &*(lane as *const Lane) });
         }
         lane_index(log).map(|index| &log.lanes[index])
@@ -792,7 +787,7 @@ pub unsafe fn release() {
         .fill(None);
 }
 #[inline(always)]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "one power change records every field of its row")]
 fn power_record(
     owner: native::Owner,
     currency: PowerCurrency,
@@ -825,7 +820,7 @@ fn power_record(
     raw
 }
 #[inline(always)]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "one power change records every field of its row")]
 fn power(
     owner: native::Owner,
     currency: PowerCurrency,
@@ -1162,9 +1157,9 @@ fn handoff_buffer(
     }
     offered.base_cursor.store(log.frontier(), Ordering::Release);
     let sealed = handoff_from_buffer(log, cursors, true);
-    LOG.store(offered as *const Log as usize, Ordering::Release);
+    LOG.store(std::ptr::from_ref::<Log>(offered) as usize, Ordering::Release);
     let _ = OFFERED.compare_exchange(
-        offered as *const Log as usize,
+        std::ptr::from_ref::<Log>(offered) as usize,
         0,
         Ordering::AcqRel,
         Ordering::Relaxed,
@@ -1204,7 +1199,7 @@ fn close_for_handoff(log: &Log, offered: &Log) -> bool {
         .consumed_epoch
         .store(EPOCH.load(Ordering::Acquire), Ordering::Relaxed);
     log.next
-        .store(offered as *const Log as usize, Ordering::Release);
+        .store(std::ptr::from_ref::<Log>(offered) as usize, Ordering::Release);
     log.publishers
         .compare_exchange(0, usize::MAX, Ordering::AcqRel, Ordering::Relaxed)
         .is_ok()
@@ -1225,7 +1220,7 @@ fn handoff_from_buffer(
     }
     let shared_rejected = log.shared.rejected();
     Ok(Handoff {
-        log: log as *const Log as usize,
+        log: std::ptr::from_ref::<Log>(log) as usize,
         epoch: EPOCH.load(Ordering::Acquire),
         cursor: log.frontier(),
         lanes: count,
@@ -1722,7 +1717,7 @@ unsafe fn set_power(a: usize, b: usize, c: usize, d: usize, fifth: usize) -> usi
         unsafe { std::mem::transmute(ORIGINAL[SET_POWER_ENTRY].load(Ordering::Acquire)) };
     let mut flight = crate::event_feed_observer::WriterFlight::enter();
     let mut staged: Option<SetPower> = None;
-    let _frame = Frame(SET_POWER_FRAME.replace(&mut staged as *mut _));
+    let _frame = Frame(SET_POWER_FRAME.replace(&raw mut staged));
     let records = POWER_RECORDS.get();
     let result = timing.original(|| unsafe { original(a, b, c, d, fifth) });
     drop(_frame);
@@ -2285,7 +2280,6 @@ fn daily(owner: native::Owner, gross: i64, cost: i64, net: i64) {
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 unsafe extern "system-unwind" fn entry_body(
     a: usize,
     b: usize,
@@ -2320,7 +2314,10 @@ unsafe extern "system-unwind" fn entry_body(
 /// # Safety
 /// Only the entry stubs call this, on the native thread running the hooked call, with that call's
 /// arguments, its site index and the caller's return address.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the forwarder passes every native register operand through"
+)]
 unsafe fn entry_forward(
     a: usize,
     b: usize,
@@ -3397,7 +3394,7 @@ mod tests {
         ENABLED.store(true, Ordering::SeqCst);
         let sealed = handoff_growing(&mut cursors).unwrap();
         ENABLED.store(false, Ordering::SeqCst);
-        assert_eq!(sealed.log, old as *const Log as usize);
+        assert_eq!(sealed.log, std::ptr::from_ref::<Log>(old) as usize);
         assert_eq!(LOG.load(Ordering::Acquire), offered);
         assert!(cursors.len() >= log().unwrap().lanes.len());
         let mut events = [Event::default()];
@@ -3516,7 +3513,7 @@ mod tests {
         let epoch = EPOCH.load(Ordering::Acquire);
         assert!(epoch > prior);
         resize_checked(entries.checked_add(1).unwrap(), 0).unwrap();
-        assert_eq!(log().unwrap() as *const Log, first as *const Log);
+        assert_eq!(std::ptr::from_ref::<Log>(log().unwrap()), std::ptr::from_ref::<Log>(first));
         seal_staging();
         assert!(log().unwrap().key_stride >= stride);
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
@@ -3709,8 +3706,8 @@ mod tests {
             (output[0].country, output[0].sequence),
             (2 * HALF + 1, 2 * HALF as u64 + 1)
         );
-        assert_eq!(retained_log, old as *const Log as usize);
-        assert_ne!(fresh as *const Log, old as *const Log);
+        assert_eq!(retained_log, std::ptr::from_ref::<Log>(old) as usize);
+        assert_ne!(std::ptr::from_ref::<Log>(fresh), std::ptr::from_ref::<Log>(old));
         assert_eq!(retained_epoch, epoch);
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
         clear_staging();
@@ -3770,7 +3767,7 @@ mod tests {
         let offered = OFFERED.load(Ordering::Acquire);
         let epoch = EPOCH.load(Ordering::Acquire);
         seal_staging();
-        assert_eq!(LOG.load(Ordering::Acquire), old as *const Log as usize);
+        assert_eq!(LOG.load(Ordering::Acquire), std::ptr::from_ref::<Log>(old) as usize);
         assert_eq!(OFFERED.load(Ordering::Acquire), offered);
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
         drop(lease);
@@ -3818,7 +3815,7 @@ mod tests {
         });
         ENABLED.store(false, Ordering::SeqCst);
         assert_eq!(refused, Some("capture buffer allocation failed"));
-        assert_eq!(LOG.load(Ordering::Acquire), old as *const Log as usize);
+        assert_eq!(LOG.load(Ordering::Acquire), std::ptr::from_ref::<Log>(old) as usize);
         assert_eq!(OFFERED.load(Ordering::Acquire), offered);
         seal_staging();
         assert_eq!(LOG.load(Ordering::Acquire), offered);
@@ -4148,7 +4145,7 @@ mod tests {
             unsafe {
                 entry_body(
                     1,
-                    &cost as *const i64 as usize,
+                    &raw const cost as usize,
                     0,
                     0,
                     0,
@@ -4162,7 +4159,7 @@ mod tests {
         unsafe {
             entry_body(
                 1,
-                &cost as *const i64 as usize,
+                &raw const cost as usize,
                 0,
                 0,
                 0,

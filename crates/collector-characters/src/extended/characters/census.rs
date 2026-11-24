@@ -520,7 +520,6 @@ impl CensusCarry {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn acquire(
         &mut self,
         memory: &impl Memory,

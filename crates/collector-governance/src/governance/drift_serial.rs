@@ -53,7 +53,10 @@ impl Store {
         self.research.remove(&owner);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one country's technologies are held from its rows, pointers and slots"
+    )]
     pub fn hold_technologies(
         &mut self,
         memory: &impl Memory,
@@ -100,7 +103,10 @@ impl Store {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one country's technologies are carried into separate row and pointer outputs"
+    )]
     pub fn carry_technologies(
         &self,
         memory: &impl Memory,
@@ -209,7 +215,10 @@ impl Store {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one country's research carries into three separate walk buffers"
+    )]
     pub fn carry_research(
         &self,
         memory: &impl Memory,

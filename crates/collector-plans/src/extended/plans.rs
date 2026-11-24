@@ -476,7 +476,10 @@ impl Captured {
         presentation.install_order_transport(&mut self.execution);
     }
     #[cfg(any(test, feature = "test-support"))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the visit reads roots, visits and successors with both sources and both owned tables"
+    )]
     pub fn visit(
         &mut self,
         memory: &impl Memory,
@@ -504,7 +507,10 @@ impl Captured {
             None,
         )
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the visit reads roots, visits and successors with both sources, both owned tables and the parts"
+    )]
     pub fn visit_parts(
         &mut self,
         memory: &impl Memory,
@@ -534,7 +540,10 @@ impl Captured {
             Some((parts, part_ticks)),
         )
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the visit reads roots, visits and successors with both sources, both owned tables and the parts"
+    )]
     fn visit_with(
         &mut self,
         memory: &impl Memory,

@@ -575,7 +575,7 @@ impl<J, R, O: Observer> Shared<J, R, O> {
             unsafe {
                 WaitOnAddress(
                     self.active.as_ptr().cast(),
-                    (&active as *const usize).cast(),
+                    (&raw const active).cast(),
                     size_of::<usize>(),
                     u32::MAX,
                 )
@@ -973,7 +973,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
             }
             let mut frequency = 0_i64;
             if unsafe {
-                windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
+                windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&raw mut frequency)
             } == 0
                 || frequency <= 0
             {
@@ -992,7 +992,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
         let spin_ticks = {
             let mut frequency = 0_i64;
             if unsafe {
-                windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
+                windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&raw mut frequency)
             } != 0
                 && frequency > 0
             {
@@ -1283,7 +1283,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
                 }
                 let handle = thread.as_raw_handle();
                 // SAFETY: a live worker handle owned by `threads`, held through these calls.
-                if unsafe { SetThreadPriority(handle as _, THREAD_PRIORITY_ABOVE_NORMAL) } == 0 {
+                if unsafe { SetThreadPriority(handle.cast(), THREAD_PRIORITY_ABOVE_NORMAL) } == 0 {
                     PRIORITY_REFUSALS.fetch_add(1, Ordering::Relaxed);
                 }
                 if clear_away {
@@ -1501,7 +1501,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
             unsafe {
                 WaitOnAddress(
                     value.as_ptr().cast(),
-                    (&observed as *const u64).cast(),
+                    (&raw const observed).cast(),
                     size_of::<u64>(),
                     u32::MAX,
                 )
@@ -1617,7 +1617,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
                 unsafe {
                     WaitOnAddress(
                         value.as_ptr().cast(),
-                        (&observed as *const u64).cast(),
+                        (&raw const observed).cast(),
                         size_of::<u64>(),
                         u32::MAX,
                     )
@@ -1737,7 +1737,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
             unsafe {
                 WaitOnAddress(
                     self.shared.ready_wake.as_ptr().cast(),
-                    (&wake as *const u64).cast(),
+                    (&raw const wake).cast(),
                     size_of::<u64>(),
                     u32::MAX,
                 )
@@ -1990,7 +1990,7 @@ fn cpus(machine: usize, allowed: Option<usize>) -> usize {
 fn allowed_cpus() -> Option<usize> {
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessAffinityMask};
     let (mut process, mut system) = (0_usize, 0_usize);
-    let ok = unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) };
+    let ok = unsafe { GetProcessAffinityMask(GetCurrentProcess(), &raw mut process, &raw mut system) };
     (ok != 0 && process != 0).then(|| process.count_ones() as usize)
 }
 
@@ -2188,7 +2188,7 @@ mod tests {
             // SAFETY: Test owns this local acquisition pool and drops it before test exit.
             let pool = unsafe {
                 Pool::start(workers, 2, move |job: &mut Request| {
-                    let address = job as *mut Request as usize;
+                    let address = std::ptr::from_mut::<Request>(job) as usize;
                     job.bytes[0] = 42;
                     entered_tx.send(address).unwrap();
                     address
@@ -3125,7 +3125,7 @@ mod tests {
         let reads = collector_memory::read_accounting::Capture::new();
         collector_test_support::with_allocations_denied(|| {
             assert!(pool.finish_parked_into(ticket, &mut out, |request| {
-                assert_eq!(request as *mut _, unsafe {
+                assert_eq!(std::ptr::from_mut(request), unsafe {
                     std::ptr::addr_of_mut!((*cell).request)
                 });
                 request[0] = 9;
