@@ -435,7 +435,7 @@ describe('time-chart laneView integration', () => {
     assert.ok(stops.length >= 2, 'the chart publishes navigation stops');
     assert.equal(stops[stops.length - 1]![0], `plot:${H1936 + 100 * 24}`, 'the last stop is the playhead');
     assert.ok(stops.every((stop, index) => stop[2] === index));
-    assert.deepEqual(timeChartHostAdapter.deriveAuditRows?.({ auditRows: [{ row: 'GER', key: 'GER', value: '120' }] } as unknown as TimeChartModel, 0, { viewport: {} as never, settings: undefined, expanded: {}, window: null, theme: undefined, fields: {} }),
+    assert.deepEqual(timeChartHostAdapter.deriveAuditRows?.({ auditRows: [{ row: 'GER', key: 'GER', value: '120' }] } as unknown as TimeChartModel, 0, { viewport: {} as never, settings: undefined, expanded: {}, theme: undefined, fields: {} }),
       [{ row: 'GER', key: 'GER', value: '120' }]);
     const focused = view.paint({
       widget: 1,
